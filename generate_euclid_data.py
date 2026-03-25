@@ -12,6 +12,7 @@ HR:
 LR:
     Euclid-like observed image on the low-resolution grid.
     Includes Euclid PSF, sky background, Poisson noise, and read noise.
+    Use --no-noise to disable noise (LR will have only PSF convolution).
 
 Output format
 -------------
@@ -36,6 +37,9 @@ Important
     * the directory containing that file
 - No per-image normalization is applied.
 - Float images are converted to PNG using one fixed global scale factor.
+- Use --no-noise to generate clean LR images (PSF only, no sky/detector noise).
+- Use --flux-boost to increase galaxy/star brightness (e.g., 100 for ML-friendly data).
+- Use --percentile-clip to handle outliers (e.g., 99.5 clips top/bottom 0.5%).
 """
 
 import argparse
@@ -80,18 +84,44 @@ def readfits(fnfits):
     return image, header, pixel_scale, num_pix
 
 
-def normalize_data(data, nbit=16):
+def normalize_data(data, nbit=16, percentile_clip=None):
     """
-    Per-image min-max normalization to fill the full bit range.
-    Matches the original hr2lr.py convention so the training
-    pipeline sees the same [0, 2^nbit - 1] integer images.
+    Normalize data to fit in bit range, convert to specified dtype.
+
+    Parameters:
+    -----------
+    data : ndarray
+        Input data to normalize
+    nbit : int
+        Number of bits for output (8 or 16)
+    percentile_clip : float or None
+        If specified, clip values at this percentile (e.g., 99.5) before scaling.
+        This prevents outliers from dominating the normalization.
+        Default: None (use min-max normalization)
+
+    Returns:
+    --------
+    ndarray
+        Normalized data as uint8 or uint16
     """
     data = np.asarray(data, dtype=np.float64)
-    data = data - data.min()
-    dmax = data.max()
+
+    if percentile_clip is not None:
+        # Percentile clipping: ignore extreme outliers
+        vmin = np.percentile(data, 100 - percentile_clip)
+        vmax = np.percentile(data, percentile_clip)
+        data = np.clip(data, vmin, vmax)
+        data = data - vmin
+        dmax = vmax - vmin
+    else:
+        # Min-max normalization (original behavior)
+        data = data - data.min()
+        dmax = data.max()
+
     if dmax > 0:
         data = data / dmax
     data *= (2**nbit - 1)
+
     if nbit == 16:
         return data.astype(np.uint16)
     elif nbit == 8:
@@ -167,6 +197,7 @@ class EuclidSimulator:
         rng=None,
         gal_density_arcmin2=DEFAULT_GAL_DENSITY_ARCMIN2,
         star_density_arcmin2=DEFAULT_STAR_DENSITY_ARCMIN2,
+        flux_boost=1.0,
     ):
         self.image_size = int(image_size)
         self.pixel_scale_hr = float(pixel_scale_hr)
@@ -175,6 +206,7 @@ class EuclidSimulator:
         self.psf_dir = psf_dir
         self.gal_density_arcmin2 = float(gal_density_arcmin2)
         self.star_density_arcmin2 = float(star_density_arcmin2)
+        self.flux_boost = float(flux_boost)
         self.gsparams = galsim.GSParams(
             maximum_fft_size=16384,
             folding_threshold=1e-2,
@@ -342,6 +374,12 @@ class EuclidSimulator:
             rng=self.rng,
             gsparams=self.gsparams,
         )
+
+        # Apply flux boost if requested
+        if self.flux_boost != 1.0:
+            original_flux = gal.flux
+            gal = gal.withFlux(original_flux * self.flux_boost)
+
         return gal, index
 
     def _sky_level_to_counts(self, sky_mag):
@@ -587,6 +625,9 @@ class EuclidSimulator:
             zp = self.euclid_params[self.band]["zeropoint"]
             flux = 10 ** (-0.4 * (mag - zp))
 
+            # Apply flux boost to stars as well
+            flux *= self.flux_boost
+
             # HR: place a point source (delta function) at the nearest pixel.
             # No GalSim draw needed — just deposit flux directly.
             ix_hr = int(round(x_hr))
@@ -695,6 +736,9 @@ def create_LR_image_sim(
     psf_dir=None,
     star_density_arcmin2=DEFAULT_STAR_DENSITY_ARCMIN2,
     gal_density_arcmin2=DEFAULT_GAL_DENSITY_ARCMIN2,
+    noise=True,
+    flux_boost=1.0,
+    percentile_clip=None,
 ):
     """
     Create Euclid-like HR/LR pairs and save them as PNGs.
@@ -703,9 +747,20 @@ def create_LR_image_sim(
         clean parametric target (no PSF, no noise)
     LR:
         blurred/noisy observation (Euclid PSF + sky + Poisson + read noise)
+        If noise=False, LR includes only PSF convolution (no sky or detector noise)
 
-    Both HR and LR are independently min-max normalized to the full
-    uint16 [0, 65535] range, matching the original hr2lr.py convention.
+    Both HR and LR are independently normalized to the full uint16 [0, 65535] range.
+
+    Parameters:
+    -----------
+    flux_boost : float
+        Boost factor for galaxy and star fluxes. Values > 1.0 make sources brighter.
+        Useful for creating ML-friendly data with better visibility.
+        Default: 1.0 (use original COSMOS fluxes).
+    percentile_clip : float or None
+        If specified (e.g., 99.5), clip values at this percentile before normalization.
+        This prevents extreme outliers from dominating the normalization range.
+        Default: None (use min-max normalization).
     """
     if subset not in ("train", "valid"):
         raise ValueError("subset must be 'train' or 'valid'.")
@@ -730,6 +785,7 @@ def create_LR_image_sim(
         psf_dir=psf_dir,
         gal_density_arcmin2=gal_density_arcmin2,
         star_density_arcmin2=star_density_arcmin2,
+        flux_boost=flux_boost,
     )
 
     images_lr = []
@@ -752,7 +808,7 @@ def create_LR_image_sim(
 
         data_hr, data_lr, obj_params = sim.simulate_field(
             catalog=catalog,
-            noise=True,
+            noise=noise,
             ccd=0,
         )
 
@@ -763,6 +819,8 @@ def create_LR_image_sim(
         obj_params["band"] = band
         obj_params["rebin"] = int(rebin)
         obj_params["catalog_nobjects"] = int(catalog.nobjects)
+        obj_params["flux_boost"] = float(flux_boost)
+        obj_params["percentile_clip"] = percentile_clip
         obj_params["hr_float_min"] = float(data_hr.min())
         obj_params["hr_float_max"] = float(data_hr.max())
         obj_params["hr_float_mean"] = float(data_hr.mean())
@@ -793,8 +851,8 @@ def create_LR_image_sim(
 
             data_lr_skysub = np.clip(data_lr - sky_level, 0, None)
 
-            data_hr_out = normalize_data(data_hr, nbit=nbit)
-            data_lr_out = normalize_data(data_lr_skysub, nbit=nbit)
+            data_hr_out = normalize_data(data_hr, nbit=nbit, percentile_clip=percentile_clip)
+            data_lr_out = normalize_data(data_lr_skysub, nbit=nbit, percentile_clip=percentile_clip)
 
             print(f"  [{base}] HR float  : min={data_hr.min():.4g}  max={data_hr.max():.4g}  "
                   f"mean={data_hr.mean():.4g}")
@@ -913,7 +971,25 @@ def parse_args():
         default=DEFAULT_GAL_DENSITY_ARCMIN2,
         help=f"default {DEFAULT_GAL_DENSITY_ARCMIN2} galaxies/arcmin^2",
     )
-
+    parser.add_argument(
+        "--no-noise",
+        action="store_true",
+        help="disable noise in LR images (generate clean LR with only PSF convolution)",
+    )
+    parser.add_argument(
+        "--flux-boost",
+        type=float,
+        default=1.0,
+        help="boost galaxy and star fluxes by this factor (default: 1.0, use e.g. 100 for brighter galaxies)",
+    )
+    parser.add_argument(
+        "--percentile-clip",
+        type=float,
+        default=None,
+        help="clip outliers at this percentile before normalization (e.g., 99.5). "
+             "Prevents extreme outliers from dominating the dynamic range. "
+             "Default: None (use min-max normalization)",
+    )
 
     return parser.parse_args()
 
@@ -964,6 +1040,9 @@ def main():
     print(f"Output directory: {options.fdout}")
     print(f"Galaxy density: {options.gal_density} galaxies/arcmin^2")
     print(f"Star density: {options.star_density} stars/arcmin^2")
+    print(f"Flux boost: {options.flux_boost}x")
+    print(f"Percentile clipping: {options.percentile_clip if options.percentile_clip else 'None (min-max)'}")
+    print(f"Noise enabled: {not options.no_noise}")
     print("Using euclidlike for PSF generation")
     print("Using parametric COSMOS galaxies")
 
@@ -987,6 +1066,9 @@ def main():
         psf_dir=options.psf_dir,
         star_density_arcmin2=options.star_density,
         gal_density_arcmin2=options.gal_density,
+        noise=not options.no_noise,
+        flux_boost=options.flux_boost,
+        percentile_clip=options.percentile_clip,
     )
 
     print("\nGenerating validation set...")
@@ -1007,6 +1089,9 @@ def main():
         psf_dir=options.psf_dir,
         star_density_arcmin2=options.star_density,
         gal_density_arcmin2=options.gal_density,
+        noise=not options.no_noise,
+        flux_boost=options.flux_boost,
+        percentile_clip=options.percentile_clip,
     )
 
     print("\nDone!")
