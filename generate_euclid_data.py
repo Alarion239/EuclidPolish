@@ -54,6 +54,8 @@ import galsim
 import numpy as np
 from astropy.io import fits
 from scipy import signal
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 import euclidlike
 
@@ -719,6 +721,103 @@ class EuclidSimulator:
         return psf_image.array
 
 
+def _generate_single_image(args):
+    """
+    Worker function for parallel image generation.
+    Each process creates its own simulator to avoid thread-safety issues.
+    """
+    (ii, nstart, subset, rebin, pixel_scale_hr, image_size, nbit, band, psf_dir,
+     gal_density_arcmin2, star_density_arcmin2, noise, flux_boost, percentile_clip,
+     fdirout, seed, catalog_path, catalog_file) = args
+
+    # Set up random seed for this worker process
+    rng = galsim.BaseDeviate(seed)
+
+    # Load catalog in this worker process
+    catalog = galsim.COSMOSCatalog(
+        file_name=os.path.basename(catalog_file),
+        dir=os.path.dirname(catalog_file) if os.path.isfile(catalog_path) else catalog_path,
+    )
+
+    # Create simulator for this worker
+    sim = EuclidSimulator(
+        image_size=image_size,
+        pixel_scale_hr=pixel_scale_hr,
+        pixel_scale_lr=pixel_scale_hr * rebin,
+        band=band,
+        psf_dir=psf_dir,
+        rng=rng,
+        gal_density_arcmin2=gal_density_arcmin2,
+        star_density_arcmin2=star_density_arcmin2,
+        flux_boost=flux_boost,
+    )
+
+    base = f"{ii + nstart:04d}"
+
+    # Set up paths
+    fdiroutLR = os.path.join(fdirout, f"POLISH_{subset}_LR_bicubic", f"X{rebin}")
+    fdiroutHR = os.path.join(fdirout, f"POLISH_{subset}_HR")
+    fdiroutPSF = os.path.join(fdirout, "psf")
+    fdiroutObjParams = os.path.join(fdirout, "objparams")
+
+    fnoutLR = os.path.join(fdiroutLR, base + f"x{rebin}.png")
+    fnoutHR = os.path.join(fdiroutHR, base + ".png")
+    fnoutPSF = os.path.join(fdiroutPSF, base + "-psf.npy")
+    fnoutObjParams = os.path.join(fdiroutObjParams, base + "ObjParams.json")
+
+    # Check if already exists
+    if os.path.isfile(fnoutLR):
+        return {"status": "skipped", "index": ii}
+
+    try:
+        # Generate the image
+        data_hr, data_lr, obj_params = sim.simulate_field(
+            catalog=catalog,
+            noise=noise,
+            ccd=0,
+        )
+
+        psf_array = sim.render_psf_image(size=64, ccd=0).astype(np.float32)
+        np.save(fnoutPSF, psf_array)
+
+        # Add metadata
+        obj_params["nbit"] = int(nbit)
+        obj_params["band"] = band
+        obj_params["rebin"] = int(rebin)
+        obj_params["catalog_nobjects"] = int(catalog.nobjects)
+        obj_params["flux_boost"] = float(flux_boost)
+        obj_params["percentile_clip"] = percentile_clip
+        obj_params["hr_float_min"] = float(data_hr.min())
+        obj_params["hr_float_max"] = float(data_hr.max())
+        obj_params["hr_float_mean"] = float(data_hr.mean())
+        obj_params["lr_float_min"] = float(data_lr.min())
+        obj_params["lr_float_max"] = float(data_lr.max())
+        obj_params["lr_float_mean"] = float(data_lr.mean())
+
+        with open(fnoutObjParams, "w") as f:
+            json.dump(obj_params, f, indent=2)
+
+        # Sky subtraction and normalization
+        sky_level = obj_params.get("sky_level_per_pixel", 0.0)
+        data_lr_skysub = np.clip(data_lr - sky_level, 0, None)
+
+        data_hr_out = normalize_data(data_hr, nbit=nbit, percentile_clip=percentile_clip)
+        data_lr_out = normalize_data(data_lr_skysub, nbit=nbit, percentile_clip=percentile_clip)
+
+        # Save images
+        if nbit == 8:
+            cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint8))
+            cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint8))
+        elif nbit == 16:
+            cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint16))
+            cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint16))
+
+        return {"status": "success", "index": ii}
+
+    except Exception as e:
+        return {"status": "error", "index": ii, "error": str(e)}
+
+
 def create_LR_image_sim(
     nimages,
     kernel,
@@ -739,6 +838,9 @@ def create_LR_image_sim(
     noise=True,
     flux_boost=1.0,
     percentile_clip=None,
+    nproc=1,
+    catalog_file=None,
+    catalog_dir=None,
 ):
     """
     Create Euclid-like HR/LR pairs and save them as PNGs.
@@ -761,6 +863,13 @@ def create_LR_image_sim(
         If specified (e.g., 99.5), clip values at this percentile before normalization.
         This prevents extreme outliers from dominating the normalization range.
         Default: None (use min-max normalization).
+    nproc : int
+        Number of parallel processes for multiprocessing. Use 1 for serial execution.
+        Use 0 or -1 for all available CPUs. Default: 1 (serial).
+    catalog_file : str
+        Path to the COSMOS catalog FITS file (required for multiprocessing).
+    catalog_dir : str
+        Directory containing the catalog (required for multiprocessing).
     """
     if subset not in ("train", "valid"):
         raise ValueError("subset must be 'train' or 'valid'.")
@@ -788,6 +897,61 @@ def create_LR_image_sim(
         flux_boost=flux_boost,
     )
 
+    # Handle parallel processing
+    if nproc == 0 or nproc == -1:
+        nproc = cpu_count()
+    elif nproc < 0:
+        raise ValueError(f"Invalid nproc={nproc}. Use 0, -1, or positive integer.")
+
+    if nproc > 1:
+        # Parallel execution using multiprocessing
+        if plotit:
+            print("Warning: --plotit is not compatible with parallel execution. Disabling plots.")
+            plotit = False
+
+        if catalog_file is None or catalog_dir is None:
+            raise ValueError("catalog_file and catalog_dir must be provided for multiprocessing")
+
+        print(f"Using {nproc} parallel processes...")
+
+        # Create task list
+        tasks = []
+        for ii in range(nimages):
+            # Use different random seed for each task
+            import time
+            seed = int(time.time() * 1000) % 2**32 + ii
+            task = (
+                ii, nstart, subset, rebin, pixel_scale_hr, image_size, nbit,
+                band, psf_dir, gal_density_arcmin2, star_density_arcmin2,
+                noise, flux_boost, percentile_clip, fdirout, seed,
+                catalog_dir, catalog_file
+            )
+            tasks.append(task)
+
+        # Run in parallel
+        with Pool(processes=nproc) as pool:
+            results = pool.map(_generate_single_image, tasks)
+
+        # Report results
+        success_count = sum(1 for r in results if r["status"] == "success")
+        skip_count = sum(1 for r in results if r["status"] == "skipped")
+        error_count = sum(1 for r in results if r["status"] == "error")
+
+        print(f"\nParallel generation complete:")
+        print(f"  Success: {success_count}")
+        print(f"  Skipped: {skip_count}")
+        print(f"  Errors: {error_count}")
+
+        if error_count > 0:
+            print("\nErrors encountered:")
+            for r in results:
+                if r["status"] == "error":
+                    print(f"  Image {r['index']}: {r.get('error', 'Unknown error')}")
+
+        # Return empty lists for compatibility (images not loaded in parallel mode)
+        return [], []
+
+    # Serial execution (original code)
     images_lr = []
     images_hr = []
 
@@ -990,6 +1154,14 @@ def parse_args():
              "Prevents extreme outliers from dominating the dynamic range. "
              "Default: None (use min-max normalization)",
     )
+    parser.add_argument(
+        "--nproc",
+        type=int,
+        default=1,
+        help="number of parallel processes (default: 1 for serial). "
+             "Use 0 or -1 for all available CPUs. "
+             "Speeds up generation significantly on multi-core systems.",
+    )
 
     return parser.parse_args()
 
@@ -1043,6 +1215,8 @@ def main():
     print(f"Flux boost: {options.flux_boost}x")
     print(f"Percentile clipping: {options.percentile_clip if options.percentile_clip else 'None (min-max)'}")
     print(f"Noise enabled: {not options.no_noise}")
+    nproc_display = options.nproc if options.nproc > 0 else f"{cpu_count()} (all CPUs)"
+    print(f"Parallel processes: {nproc_display}")
     print("Using euclidlike for PSF generation")
     print("Using parametric COSMOS galaxies")
 
@@ -1069,6 +1243,9 @@ def main():
         noise=not options.no_noise,
         flux_boost=options.flux_boost,
         percentile_clip=options.percentile_clip,
+        nproc=options.nproc,
+        catalog_file=catalog_file,
+        catalog_dir=catalog_dir,
     )
 
     print("\nGenerating validation set...")
@@ -1092,6 +1269,9 @@ def main():
         noise=not options.no_noise,
         flux_boost=options.flux_boost,
         percentile_clip=options.percentile_clip,
+        nproc=options.nproc,
+        catalog_file=catalog_file,
+        catalog_dir=catalog_dir,
     )
 
     print("\nDone!")
