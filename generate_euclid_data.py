@@ -56,6 +56,7 @@ from astropy.io import fits
 from scipy import signal
 from multiprocessing import Pool, cpu_count
 from functools import partial
+from tqdm import tqdm
 
 import euclidlike
 
@@ -928,25 +929,31 @@ def create_LR_image_sim(
             )
             tasks.append(task)
 
-        # Run in parallel
+        # Run in parallel with progress bar
         with Pool(processes=nproc) as pool:
-            results = pool.map(_generate_single_image, tasks)
+            results = list(tqdm(
+                pool.imap(_generate_single_image, tasks),
+                total=len(tasks),
+                desc=f"Generating {subset} images",
+                unit="img",
+                ncols=100,
+            ))
 
         # Report results
         success_count = sum(1 for r in results if r["status"] == "success")
         skip_count = sum(1 for r in results if r["status"] == "skipped")
         error_count = sum(1 for r in results if r["status"] == "error")
 
-        print(f"\nParallel generation complete:")
-        print(f"  Success: {success_count}")
-        print(f"  Skipped: {skip_count}")
-        print(f"  Errors: {error_count}")
+        tqdm.write(f"\nGeneration complete:")
+        tqdm.write(f"  Success: {success_count}")
+        tqdm.write(f"  Skipped: {skip_count}")
+        tqdm.write(f"  Errors: {error_count}")
 
         if error_count > 0:
-            print("\nErrors encountered:")
+            tqdm.write("\nErrors encountered:")
             for r in results:
                 if r["status"] == "error":
-                    print(f"  Image {r['index']}: {r.get('error', 'Unknown error')}")
+                    tqdm.write(f"  Image {r['index']}: {r.get('error', 'Unknown error')}")
 
         # Return empty lists for compatibility (images not loaded in parallel mode)
         return [], []
@@ -955,7 +962,7 @@ def create_LR_image_sim(
     images_lr = []
     images_hr = []
 
-    for ii in range(nimages):
+    for ii in tqdm(range(nimages), desc=f"Generating {subset} images", unit="img", ncols=100):
         base = f"{ii + nstart:04d}"
 
         fnoutLR = os.path.join(fdiroutLR, base + f"x{rebin}.png")
@@ -964,11 +971,7 @@ def create_LR_image_sim(
         fnoutObjParams = os.path.join(fdiroutObjParams, base + "ObjParams.json")
 
         if os.path.isfile(fnoutLR):
-            print(f"File exists, skipping {fnoutLR}")
             continue
-
-        if ii % 10 == 0:
-            print(f"Finished {ii}/{nimages}")
 
         data_hr, data_lr, obj_params = sim.simulate_field(
             catalog=catalog,
