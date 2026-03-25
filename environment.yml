@@ -15,8 +15,6 @@ dependencies:
     - tensorflow-probability
     - tf-keras
     - pip:
-          - EuclidLike==0.9.0
-          - git+https://github.com/GalSim-developers/GalSim-Euclid-Like.git
           - python-dateutil==2.9.0.post0
 
 prefix: "/Users/alarion239/miniforge3/envs/EuclidPolishEnv"
