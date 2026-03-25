@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import tensorflow as tf
 from optparse import OptionParser
+tf.config.optimizer.set_jit(True)
 
 from data import RadioSky
 from model.wdsr import wdsr
@@ -87,6 +88,8 @@ if __name__=='__main__':
                       help="number of training images", default=800)
     parser.add_option('--nvalid', dest='nvalid', type=int,
                       help="number of validation images", default=100)
+    parser.add_option("-b", "--batchsize", dest="batchsize", type=int, default=16,
+                      help="batch size for training")
 
     options, args = parser.parse_args()
     images_dir = args[0]
@@ -106,4 +109,5 @@ if __name__=='__main__':
          nchan=options.nchan,
          nbit=options.nbit,
          num_res_blocks=options.num_res_blocks,
-         train_steps=options.train_steps)
+         train_steps=options.train_steps,
+         batchsize=options.batchsize)

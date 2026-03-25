@@ -59,7 +59,7 @@ class RadioSky:
         return len(self.image_ids)
 
     def dataset(self, batch_size=16, repeat_count=None, random_transform=True):
-        ds = tf.data.Dataset.zip((self.lr_dataset(), self.hr_dataset()))
+        ds = tf.data.Dataset.zip((self.lr_dataset().repeat(), self.hr_dataset().repeat()))
         if random_transform:
             ds = ds.map(lambda lr, hr: random_crop(lr, hr, scale=self.scale), num_parallel_calls=AUTOTUNE)
             ds = ds.map(random_rotate, num_parallel_calls=AUTOTUNE)

@@ -86,7 +86,7 @@ def plot_reconstruction(datalr, datasr, datahr=None, vm=1,
               aspect='auto', extent=(0,1,0,1))
     plt.axis('off')
 
-    if nsub==3 and datahr:
+    if nsub==3 and datahr is not None:
         ax3 = plt.subplot(1,nsub,3, sharex=ax1, sharey=ax1)
         plt.title('True sky', c='k', fontsize=17)
         plt.imshow(datahr, cmap=cmap, vmax=vmaxsr, vmin=vminsr,
@@ -121,7 +121,7 @@ if __name__=='__main__':
     options, args = parser.parse_args()
     fn_img, fn_model = args
 
-    datalr, datasr, datahr = reconstruct(fn_img, fn_model, options.scale,
+    datalr, datasr, datahr = reconstruct(fn_img, fn_model, int(options.scale),
                                  fnhr=options.fnhr, nbit=options.nbit)
 
     if datahr is not None:

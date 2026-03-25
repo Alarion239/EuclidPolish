@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Generate Euclid-like HR/LR image pairs using GalSim + euclidlike.
@@ -773,15 +774,34 @@ def create_LR_image_sim(
             json.dump(obj_params, f, indent=2)
 
         if save_img:
-            # Per-image min-max normalization, same as hr2lr.py.
-            # Both HR and LR independently map [min, max] -> [0, 65535].
+            # ----------------------------------------------------------
+            # Sky subtraction for LR before normalization.
+            #
+            # The LR image is dominated by sky background (~820 counts/
+            # pixel for VIS).  If we min-max normalize the raw LR, the
+            # sky noise fills the entire uint16 range and the galaxies
+            # are invisible.  The network then learns to output black.
+            #
+            # Fix: subtract the known sky level from LR and clip
+            # negatives.  Now the LR image contains galaxy signal +
+            # positive noise residual, similar in character to the HR
+            # image (galaxy signal only).  min-max normalization then
+            # stretches the galaxy features to fill the uint16 range,
+            # with noise as realistic texture on top.
+            # ----------------------------------------------------------
+            sky_level = obj_params.get("sky_level_per_pixel", 0.0)
+
+            data_lr_skysub = np.clip(data_lr - sky_level, 0, None)
+
             data_hr_out = normalize_data(data_hr, nbit=nbit)
-            data_lr_out = normalize_data(data_lr, nbit=nbit)
+            data_lr_out = normalize_data(data_lr_skysub, nbit=nbit)
 
             print(f"  [{base}] HR float  : min={data_hr.min():.4g}  max={data_hr.max():.4g}  "
                   f"mean={data_hr.mean():.4g}")
             print(f"  [{base}] LR float  : min={data_lr.min():.4g}  max={data_lr.max():.4g}  "
-                  f"mean={data_lr.mean():.4g}")
+                  f"mean={data_lr.mean():.4g}  sky={sky_level:.1f}")
+            print(f"  [{base}] LR skysub : min={data_lr_skysub.min():.4g}  "
+                  f"max={data_lr_skysub.max():.4g}")
 
             if nbit == 8:
                 cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint8))
