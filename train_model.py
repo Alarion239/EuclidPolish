@@ -3,7 +3,6 @@ import sys
 import numpy as np
 import tensorflow as tf
 from optparse import OptionParser
-tf.config.optimizer.set_jit(True)
 
 from data import RadioSky
 from model.wdsr import wdsr

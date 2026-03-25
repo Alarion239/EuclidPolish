@@ -42,12 +42,17 @@ Important
 - Use --percentile-clip to handle outliers (e.g., 99.5 clips top/bottom 0.5%).
 """
 
+import os
+# Set thread limits BEFORE importing numerical libraries
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import argparse
 import glob
 import json
-import os
 import sys
-import warnings
 
 import cv2
 import galsim
@@ -55,10 +60,12 @@ import numpy as np
 from astropy.io import fits
 from scipy import signal
 from multiprocessing import Pool, cpu_count
-from functools import partial
 from tqdm import tqdm
 
 import euclidlike
+
+# Global worker state for multiprocessing
+_worker_state = {}
 
 
 VALID_BANDS = ("VIS", "NISP_H", "NISP_J", "NISP_Y")
@@ -485,8 +492,6 @@ class EuclidSimulator:
         y_hr = 0.5 * (self.image_size + 1)
         x_lr, y_lr = self._hr_to_lr_position(x_hr, y_hr)
 
-        gal_flux = float(getattr(gal, "flux", 1e4))
-
         self._draw_profile_to_image(
             gal,
             image_hr,
@@ -521,7 +526,7 @@ class EuclidSimulator:
 
         return image_hr.array, image_lr.array, psf_hr_image.array
 
-    def simulate_field(self, n_galaxies=None, n_stars=None, catalog=None, noise=True, ccd=0):
+    def simulate_field(self, n_galaxies=None, n_stars=None, catalog=None, noise=True, ccd=0, np_rng=None):
         """
         Simulate one field.
 
@@ -529,13 +534,25 @@ class EuclidSimulator:
             Clean intrinsic scene (parametric galaxies, no PSF).
         LR:
             Euclid-observed scene with PSF + noise.
+
+        Parameters:
+        -----------
+        np_rng : np.random.Generator, optional
+            NumPy random number generator for reproducible Poisson draws.
+            If None, uses np.random.poisson (non-reproducible).
         """
         area_arcmin2 = (self.image_size * self.pixel_scale_hr / 60.0) ** 2
 
         if n_galaxies is None:
-            n_galaxies = int(np.random.poisson(self.gal_density_arcmin2 * area_arcmin2))
+            if np_rng is not None:
+                n_galaxies = int(np_rng.poisson(self.gal_density_arcmin2 * area_arcmin2))
+            else:
+                n_galaxies = int(np.random.poisson(self.gal_density_arcmin2 * area_arcmin2))
         if n_stars is None:
-            n_stars = int(np.random.poisson(self.star_density_arcmin2 * area_arcmin2))
+            if np_rng is not None:
+                n_stars = int(np_rng.poisson(self.star_density_arcmin2 * area_arcmin2))
+            else:
+                n_stars = int(np.random.poisson(self.star_density_arcmin2 * area_arcmin2))
 
         image_hr = galsim.ImageF(self.image_size, self.image_size, scale=self.pixel_scale_hr)
         image_lr = galsim.ImageF(
@@ -722,25 +739,18 @@ class EuclidSimulator:
         return psf_image.array
 
 
-def _generate_single_image(args):
-    """
-    Worker function for parallel image generation.
-    Each process creates its own simulator to avoid thread-safety issues.
-    """
-    (ii, nstart, subset, rebin, pixel_scale_hr, image_size, nbit, band, psf_dir,
-     gal_density_arcmin2, star_density_arcmin2, noise, flux_boost, percentile_clip,
-     fdirout, seed, catalog_path, catalog_file) = args
+def _init_worker(catalog_file, catalog_dir, image_size, pixel_scale_hr, rebin,
+                 band, psf_dir, gal_density_arcmin2, star_density_arcmin2,
+                 flux_boost):
+    global _worker_state
 
-    # Set up random seed for this worker process
-    rng = galsim.BaseDeviate(seed)
+    rng = galsim.BaseDeviate()
 
-    # Load catalog in this worker process
     catalog = galsim.COSMOSCatalog(
         file_name=os.path.basename(catalog_file),
-        dir=os.path.dirname(catalog_file) if os.path.isfile(catalog_path) else catalog_path,
+        dir=catalog_dir,
     )
 
-    # Create simulator for this worker
     sim = EuclidSimulator(
         image_size=image_size,
         pixel_scale_hr=pixel_scale_hr,
@@ -753,9 +763,43 @@ def _generate_single_image(args):
         flux_boost=flux_boost,
     )
 
+    _worker_state["catalog"] = catalog
+    _worker_state["sim"] = sim
+    _worker_state["band"] = band
+    _worker_state["flux_boost"] = flux_boost
+
+
+def _is_image_complete(fnoutLR, fnoutHR, fnoutPSF, fnoutObjParams, save_img=True):
+    """Check if all required output files for an image exist."""
+    required = [fnoutPSF, fnoutObjParams]
+    if save_img:
+        required.extend([fnoutLR, fnoutHR])
+    return all(os.path.isfile(p) for p in required)
+
+
+def _generate_single_image(task):
+    """
+    Worker function for parallel image generation.
+    Processes one image using pre-initialized catalog and simulator.
+
+    Task format: (ii, nstart, subset, rebin, nbit, noise, percentile_clip, fdirout, base_seed, save_img)
+    """
+    global _worker_state
+
+    ii, nstart, subset, rebin, nbit, noise, percentile_clip, fdirout, base_seed, save_img = task
+
+    sim = _worker_state["sim"]
+    catalog = _worker_state["catalog"]
+    band = _worker_state["band"]
+    flux_boost = _worker_state["flux_boost"]
+
+    seed = int((base_seed + ii) % (2**32))
     base = f"{ii + nstart:04d}"
 
-    # Set up paths
+    sim.rng = galsim.BaseDeviate(seed)
+    sim.ud = galsim.UniformDeviate(sim.rng)
+    np_rng = np.random.default_rng(seed)
+
     fdiroutLR = os.path.join(fdirout, f"POLISH_{subset}_LR_bicubic", f"X{rebin}")
     fdiroutHR = os.path.join(fdirout, f"POLISH_{subset}_HR")
     fdiroutPSF = os.path.join(fdirout, "psf")
@@ -766,22 +810,20 @@ def _generate_single_image(args):
     fnoutPSF = os.path.join(fdiroutPSF, base + "-psf.npy")
     fnoutObjParams = os.path.join(fdiroutObjParams, base + "ObjParams.json")
 
-    # Check if already exists
-    if os.path.isfile(fnoutLR):
+    if _is_image_complete(fnoutLR, fnoutHR, fnoutPSF, fnoutObjParams, save_img):
         return {"status": "skipped", "index": ii}
 
     try:
-        # Generate the image
         data_hr, data_lr, obj_params = sim.simulate_field(
             catalog=catalog,
             noise=noise,
             ccd=0,
+            np_rng=np_rng,
         )
 
         psf_array = sim.render_psf_image(size=64, ccd=0).astype(np.float32)
         np.save(fnoutPSF, psf_array)
 
-        # Add metadata
         obj_params["nbit"] = int(nbit)
         obj_params["band"] = band
         obj_params["rebin"] = int(rebin)
@@ -798,20 +840,18 @@ def _generate_single_image(args):
         with open(fnoutObjParams, "w") as f:
             json.dump(obj_params, f, indent=2)
 
-        # Sky subtraction and normalization
-        sky_level = obj_params.get("sky_level_per_pixel", 0.0)
-        data_lr_skysub = np.clip(data_lr - sky_level, 0, None)
+        if save_img:
+            sky_level = obj_params.get("sky_level_per_pixel", 0.0)
+            data_lr_skysub = np.clip(data_lr - sky_level, 0, None)
 
-        data_hr_out = normalize_data(data_hr, nbit=nbit, percentile_clip=percentile_clip)
-        data_lr_out = normalize_data(data_lr_skysub, nbit=nbit, percentile_clip=percentile_clip)
+            data_hr_out = normalize_data(data_hr, nbit=nbit, percentile_clip=percentile_clip)
+            data_lr_out = normalize_data(data_lr_skysub, nbit=nbit, percentile_clip=percentile_clip)
 
-        # Save images
-        if nbit == 8:
-            cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint8))
-            cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint8))
-        elif nbit == 16:
-            cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint16))
-            cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint16))
+            dtype = np.uint16 if nbit == 16 else np.uint8
+            ok_hr = cv2.imwrite(fnoutHR, data_hr_out.astype(dtype))
+            ok_lr = cv2.imwrite(fnoutLR, data_lr_out.astype(dtype))
+            if not (ok_hr and ok_lr):
+                raise RuntimeError(f"Failed to write PNG files for image {base}")
 
         return {"status": "success", "index": ii}
 
@@ -824,6 +864,8 @@ def create_LR_image_sim(
     kernel,
     fdirout=".",
     catalog=None,
+    catalog_file=None,
+    catalog_dir=None,
     subset="train",
     nstart=0,
     rebin=4,
@@ -840,8 +882,6 @@ def create_LR_image_sim(
     flux_boost=1.0,
     percentile_clip=None,
     nproc=1,
-    catalog_file=None,
-    catalog_dir=None,
 ):
     """
     Create Euclid-like HR/LR pairs and save them as PNGs.
@@ -866,18 +906,37 @@ def create_LR_image_sim(
         Default: None (use min-max normalization).
     nproc : int
         Number of parallel processes for multiprocessing. Use 1 for serial execution.
-        Use 0 or -1 for all available CPUs. Default: 1 (serial).
-    catalog_file : str
-        Path to the COSMOS catalog FITS file (required for multiprocessing).
-    catalog_dir : str
-        Directory containing the catalog (required for multiprocessing).
+        Use 0 or -1 for all available CPUs (capped at 8). Default: 1 (serial).
+    catalog : galsim.COSMOSCatalog, optional
+        Pre-loaded COSMOS catalog. Required for serial mode (nproc=1).
+        Ignored in parallel mode (workers load their own copies).
+    catalog_file : str, optional
+        Path to COSMOS catalog FITS file. Required for parallel mode (nproc>1).
+    catalog_dir : str, optional
+        Directory containing the catalog. Required for parallel mode (nproc>1).
     """
     if subset not in ("train", "valid"):
         raise ValueError("subset must be 'train' or 'valid'.")
     if psf_dir is None:
         raise ValueError("psf_dir is required.")
-    if catalog is None:
-        raise ValueError("A loaded COSMOSCatalog is required.")
+
+    # Validate catalog requirements based on execution mode
+    n_available = cpu_count()
+    if nproc == 0 or nproc == -1:
+        nproc = min(n_available, 8)
+    elif nproc < 0:
+        raise ValueError(f"Invalid nproc={nproc}. Use 0, -1, or positive integer.")
+    else:
+        nproc = min(nproc, 8)
+
+    if nproc > 1:
+        # Parallel mode: need catalog_file and catalog_dir
+        if catalog_file is None or catalog_dir is None:
+            raise ValueError("catalog_file and catalog_dir are required for parallel mode (nproc > 1)")
+    else:
+        # Serial mode: need catalog object
+        if catalog is None:
+            raise ValueError("catalog (COSMOSCatalog object) is required for serial mode (nproc=1)")
 
     fdiroutHR = os.path.join(fdirout, f"POLISH_{subset}_HR")
     fdiroutLR = os.path.join(fdirout, f"POLISH_{subset}_LR_bicubic", f"X{rebin}")
@@ -887,6 +946,77 @@ def create_LR_image_sim(
     for d in (fdiroutHR, fdiroutLR, fdiroutPSF, fdiroutObjParams):
         os.makedirs(d, exist_ok=True)
 
+    if nproc > 1:
+        if plotit:
+            tqdm.write("Warning: --plotit is not compatible with parallel execution. Disabling plots.")
+            plotit = False
+
+        import time
+        base_seed = int(time.time() * 1000) % (2**32)
+        tasks = [
+            (
+                ii,
+                nstart,
+                subset,
+                rebin,
+                nbit,
+                noise,
+                percentile_clip,
+                fdirout,
+                base_seed,
+                save_img,
+            )
+            for ii in range(nimages)
+        ]
+
+        tqdm.write(f"Using {nproc} workers (cap applied; host has {n_available} CPUs).")
+        tqdm.write(f"Submitting {len(tasks)} image tasks.")
+
+        results = []
+        with Pool(
+            processes=nproc,
+            initializer=_init_worker,
+            initargs=(
+                catalog_file,
+                catalog_dir,
+                image_size,
+                pixel_scale_hr,
+                rebin,
+                band,
+                psf_dir,
+                gal_density_arcmin2,
+                star_density_arcmin2,
+                flux_boost,
+            ),
+        ) as pool:
+            with tqdm(
+                total=nimages,
+                desc=f"Generating {subset} images",
+                unit="img",
+                ncols=100,
+            ) as pbar:
+                for result in pool.imap_unordered(_generate_single_image, tasks, chunksize=1):
+                    results.append(result)
+                    pbar.update(1)
+
+        success_count = sum(1 for r in results if r["status"] == "success")
+        skip_count = sum(1 for r in results if r["status"] == "skipped")
+        error_count = sum(1 for r in results if r["status"] == "error")
+
+        tqdm.write("\nGeneration complete:")
+        tqdm.write(f"  Success: {success_count}")
+        tqdm.write(f"  Skipped: {skip_count}")
+        tqdm.write(f"  Errors: {error_count}")
+
+        if error_count > 0:
+            tqdm.write("\nErrors encountered:")
+            for r in results:
+                if r["status"] == "error":
+                    tqdm.write(f"  Image {r['index']}: {r.get('error', 'Unknown error')}")
+
+        return [], []
+
+    # Serial execution (original code)
     sim = EuclidSimulator(
         image_size=image_size,
         pixel_scale_hr=pixel_scale_hr,
@@ -898,67 +1028,6 @@ def create_LR_image_sim(
         flux_boost=flux_boost,
     )
 
-    # Handle parallel processing
-    if nproc == 0 or nproc == -1:
-        nproc = cpu_count()
-    elif nproc < 0:
-        raise ValueError(f"Invalid nproc={nproc}. Use 0, -1, or positive integer.")
-
-    if nproc > 1:
-        # Parallel execution using multiprocessing
-        if plotit:
-            print("Warning: --plotit is not compatible with parallel execution. Disabling plots.")
-            plotit = False
-
-        if catalog_file is None or catalog_dir is None:
-            raise ValueError("catalog_file and catalog_dir must be provided for multiprocessing")
-
-        print(f"Using {nproc} parallel processes...")
-
-        # Create task list
-        tasks = []
-        for ii in range(nimages):
-            # Use different random seed for each task
-            import time
-            seed = int(time.time() * 1000) % 2**32 + ii
-            task = (
-                ii, nstart, subset, rebin, pixel_scale_hr, image_size, nbit,
-                band, psf_dir, gal_density_arcmin2, star_density_arcmin2,
-                noise, flux_boost, percentile_clip, fdirout, seed,
-                catalog_dir, catalog_file
-            )
-            tasks.append(task)
-
-        # Run in parallel with progress bar
-        with Pool(processes=nproc) as pool:
-            results = list(tqdm(
-                pool.imap(_generate_single_image, tasks),
-                total=len(tasks),
-                desc=f"Generating {subset} images",
-                unit="img",
-                ncols=100,
-            ))
-
-        # Report results
-        success_count = sum(1 for r in results if r["status"] == "success")
-        skip_count = sum(1 for r in results if r["status"] == "skipped")
-        error_count = sum(1 for r in results if r["status"] == "error")
-
-        tqdm.write(f"\nGeneration complete:")
-        tqdm.write(f"  Success: {success_count}")
-        tqdm.write(f"  Skipped: {skip_count}")
-        tqdm.write(f"  Errors: {error_count}")
-
-        if error_count > 0:
-            tqdm.write("\nErrors encountered:")
-            for r in results:
-                if r["status"] == "error":
-                    tqdm.write(f"  Image {r['index']}: {r.get('error', 'Unknown error')}")
-
-        # Return empty lists for compatibility (images not loaded in parallel mode)
-        return [], []
-
-    # Serial execution (original code)
     images_lr = []
     images_hr = []
 
@@ -970,13 +1039,16 @@ def create_LR_image_sim(
         fnoutPSF = os.path.join(fdiroutPSF, base + "-psf.npy")
         fnoutObjParams = os.path.join(fdiroutObjParams, base + "ObjParams.json")
 
-        if os.path.isfile(fnoutLR):
+        if _is_image_complete(fnoutLR, fnoutHR, fnoutPSF, fnoutObjParams, save_img):
             continue
+
+        np_rng = np.random.default_rng(ii + nstart)
 
         data_hr, data_lr, obj_params = sim.simulate_field(
             catalog=catalog,
             noise=noise,
             ccd=0,
+            np_rng=np_rng,
         )
 
         psf_array = sim.render_psf_image(size=64, ccd=0).astype(np.float32)
@@ -1021,19 +1093,19 @@ def create_LR_image_sim(
             data_hr_out = normalize_data(data_hr, nbit=nbit, percentile_clip=percentile_clip)
             data_lr_out = normalize_data(data_lr_skysub, nbit=nbit, percentile_clip=percentile_clip)
 
-            print(f"  [{base}] HR float  : min={data_hr.min():.4g}  max={data_hr.max():.4g}  "
-                  f"mean={data_hr.mean():.4g}")
-            print(f"  [{base}] LR float  : min={data_lr.min():.4g}  max={data_lr.max():.4g}  "
-                  f"mean={data_lr.mean():.4g}  sky={sky_level:.1f}")
-            print(f"  [{base}] LR skysub : min={data_lr_skysub.min():.4g}  "
-                  f"max={data_lr_skysub.max():.4g}")
+            # Statistics for debugging (commented out for cleaner output)
+            # print(f"  [{base}] HR float  : min={data_hr.min():.4g}  max={data_hr.max():.4g}  "
+            #       f"mean={data_hr.mean():.4g}")
+            # print(f"  [{base}] LR float  : min={data_lr.min():.4g}  max={data_lr.max():.4g}  "
+            #       f"mean={data_lr.mean():.4g}  sky={sky_level:.1f}")
+            # print(f"  [{base}] LR skysub : min={data_lr_skysub.min():.4g}  "
+            #       f"max={data_lr_skysub.max():.4g}")
 
-            if nbit == 8:
-                cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint8))
-                cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint8))
-            elif nbit == 16:
-                cv2.imwrite(fnoutHR, data_hr_out.astype(np.uint16))
-                cv2.imwrite(fnoutLR, data_lr_out.astype(np.uint16))
+            dtype = np.uint16 if nbit == 16 else np.uint8
+            ok_hr = cv2.imwrite(fnoutHR, data_hr_out.astype(dtype))
+            ok_lr = cv2.imwrite(fnoutLR, data_lr_out.astype(dtype))
+            if not (ok_hr and ok_lr):
+                raise RuntimeError(f"Failed to write PNG files for image {base}")
 
         images_hr.append(data_hr)
         images_lr.append(data_lr)
@@ -1218,8 +1290,15 @@ def main():
     print(f"Flux boost: {options.flux_boost}x")
     print(f"Percentile clipping: {options.percentile_clip if options.percentile_clip else 'None (min-max)'}")
     print(f"Noise enabled: {not options.no_noise}")
-    nproc_display = options.nproc if options.nproc > 0 else f"{cpu_count()} (all CPUs)"
-    print(f"Parallel processes: {nproc_display}")
+
+    if options.nproc in (0, -1):
+        effective_nproc = min(cpu_count(), 8)
+    elif options.nproc > 0:
+        effective_nproc = min(options.nproc, 8)
+    else:
+        effective_nproc = options.nproc
+
+    print(f"Parallel processes: {effective_nproc}")
     print("Using euclidlike for PSF generation")
     print("Using parametric COSMOS galaxies")
 
