@@ -4,9 +4,6 @@ import numpy as np
 import tensorflow as tf
 from optparse import OptionParser
 
-import tf_keras
-tf_keras.mixed_precision.set_global_policy("mixed_float16")
-
 from data import RadioSky
 from model.wdsr import wdsr
 from train import Trainer
