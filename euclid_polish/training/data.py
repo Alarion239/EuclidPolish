@@ -1,285 +1,145 @@
 """
 Data loader module for training.
 
-This module provides the RadioSky class for loading training data.
+This module provides EuclidDataset for loading paired clean/dirty TFRecord data.
 """
 
 import os
 import tensorflow as tf
-import tf_keras
-
 from tensorflow.python.data.experimental import AUTOTUNE
 
+from euclid_polish.config import Config
+from euclid_polish.sky.tfrecord import parse_record_graph
 
-class RadioSky:
-    """Data loader for radio sky super-resolution dataset."""
+
+class EuclidDataset:
+    """
+    Data loader for Euclid super-resolution training.
+
+    Reads paired clean (HR) and dirty (LR) images from sharded TFRecords under
+    Config.RECORDS_DIR and returns a tf.data.Dataset of (lr_patch, hr_patch) pairs.
+    """
 
     def __init__(
         self,
-        scale=2,
-        subset='train',
-        downgrade='bicubic',
-        images_dir='.radiosky/images',
-        caches_dir='.radiosky/caches',
-        nchan=1,
-        ntrain=800,
-        nvalid=100,
+        subset: str = 'train',
+        records_dir: str = Config.RECORDS_DIR,
+        scale: int = 4,
+        hr_patch_size: int = 256,
     ):
         """
-        Initialize the data loader.
-
-        Parameters:
-        -----------
-        scale : int
-            Super-resolution scale factor (2, 3, 4, or 8).
+        Parameters
+        ----------
         subset : str
-            'train' or 'valid'.
-        downgrade : str
-            Downgrade method ('bicubic', 'unknown', 'mild', 'difficult').
-        images_dir : str
-            Directory containing images.
-        caches_dir : str
-            Directory for caching.
-        nchan : int
-            Number of channels (1 or 3).
-        ntrain : int
-            Number of training images.
-        nvalid : int
-            Number of validation images.
+            'train' or 'validate'.
+        records_dir : str
+            Directory containing sharded TFRecord files.
+        scale : int
+            Super-resolution scale factor (hr_patch_size // scale = lr_patch_size).
+        hr_patch_size : int
+            Spatial size of HR patches used during training.
         """
-        self._ntire_2018 = True
-        self._nchan = nchan
-
-        _scales = [2, 3, 4, 8]
-
-        if scale in _scales:
-            self.scale = scale
-        else:
-            raise ValueError(f'scale must be in ${_scales}')
-
-        if subset == 'train':
-            self.image_ids = range(0, ntrain)
-        elif subset == 'valid':
-            self.image_ids = range(ntrain, ntrain + nvalid)
-        else:
-            raise ValueError("subset must be 'train' or 'valid'")
-
-        _downgrades_a = ['bicubic', 'unknown']
-        _downgrades_b = ['mild', 'difficult']
-
-        if scale == 8 and downgrade != 'bicubic':
-            raise ValueError(f'scale 8 only allowed for bicubic downgrade')
-
-        if downgrade in _downgrades_b and scale != 4:
-            raise ValueError(f'{downgrade} downgrade requires scale 4')
-
-        if downgrade == 'bicubic' and scale == 8:
-            self.downgrade = 'x8'
-        elif downgrade in _downgrades_b:
-            self.downgrade = downgrade
-        else:
-            self.downgrade = downgrade
-            self._ntire_2018 = False
-
-        self.subset = subset
-        self.images_dir = images_dir
-        self.caches_dir = caches_dir
-        os.makedirs(images_dir, exist_ok=True)
-        os.makedirs(caches_dir, exist_ok=True)
-
-    def __len__(self):
-        """Return the number of images."""
-        return len(self.image_ids)
+        if subset not in ('train', 'validate'):
+            raise ValueError("subset must be 'train' or 'validate'")
+        self.scale         = scale
+        self.hr_patch_size = hr_patch_size
+        self.clean_glob    = os.path.join(records_dir, f'clean_{subset}-*.tfrecord')
+        self.dirty_glob    = os.path.join(records_dir, f'dirty_{subset}-*.tfrecord')
 
     def dataset(
         self,
-        batch_size=16,
-        repeat_count=None,
-        random_transform=True,
-    ):
+        batch_size: int = 16,
+        random_transform: bool = True,
+        repeat_count: int | None = None,
+    ) -> tf.data.Dataset:
         """
-        Create a tf.data.Dataset for training.
+        Build and return the tf.data.Dataset.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         batch_size : int
-            Batch size.
-        repeat_count : int, optional
-            Number of times to repeat the dataset.
+            Number of (lr, hr) pairs per batch.
         random_transform : bool
-            Whether to apply random transformations.
+            Apply random crop, flip, and rotation (set False for validation).
+        repeat_count : int or None
+            Times to repeat; None repeats indefinitely.
 
-        Returns:
-        --------
-        tf.data.Dataset
-            Dataset yielding (lr, hr) image pairs.
+        Returns
+        -------
+        tf.data.Dataset yielding (lr_patch, hr_patch) float32 tensors.
         """
-        ds = tf.data.Dataset.zip(
-            (self.lr_dataset().repeat(), self.hr_dataset().repeat())
-        )
+        clean_files = tf.data.Dataset.list_files(self.clean_glob, shuffle=random_transform)
+        dirty_files = tf.data.Dataset.list_files(self.dirty_glob, shuffle=random_transform)
+
+        # Parallel shard reads — the primary TFRecord speedup
+        clean_ds = clean_files.interleave(
+            tf.data.TFRecordDataset,
+            cycle_length=AUTOTUNE,
+            num_parallel_calls=AUTOTUNE,
+        ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
+
+        dirty_ds = dirty_files.interleave(
+            tf.data.TFRecordDataset,
+            cycle_length=AUTOTUNE,
+            num_parallel_calls=AUTOTUNE,
+        ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
+
+        ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
+
         if random_transform:
+            hr_patch = self.hr_patch_size
+            scale    = self.scale
             ds = ds.map(
-                lambda lr, hr: random_crop(lr, hr, scale=self.scale),
+                lambda lr, hr: _random_crop(lr, hr, hr_patch, scale),
                 num_parallel_calls=AUTOTUNE,
             )
-            ds = ds.map(random_rotate, num_parallel_calls=AUTOTUNE)
-            ds = ds.map(random_flip, num_parallel_calls=AUTOTUNE)
-        ds = ds.batch(batch_size)
+            ds = ds.map(_random_flip,   num_parallel_calls=AUTOTUNE)
+            ds = ds.map(_random_rotate, num_parallel_calls=AUTOTUNE)
+            ds = ds.shuffle(buffer_size=200)
+
         ds = ds.repeat(repeat_count)
-        ds = ds.prefetch(buffer_size=AUTOTUNE)
-        return ds
-
-    def hr_dataset(self):
-        """Get the high-resolution dataset."""
-        if not os.path.exists(self._hr_images_dir()):
-            print("HR/I_sky dataset not found:")
-            print(self._hr_images_dir())
-            print("Did you choose the correct rebin/scale factor for the data?")
-            exit()
-
-        ds = self._images_dataset(self._hr_image_files()).cache(self._hr_cache_file())
-
-        if not os.path.exists(self._hr_cache_index()):
-            self._populate_cache(ds, self._hr_cache_file())
-
-        return ds
-
-    def lr_dataset(self):
-        """Get the low-resolution dataset."""
-        if not os.path.exists(self._lr_images_dir()):
-            print("LR/I_d dataset not found:")
-            print(self._lr_images_dir())
-            print("Did you choose the correct rebin/scale factor for the data?")
-            exit()
-
-        ds = self._images_dataset(self._lr_image_files()).cache(self._lr_cache_file())
-
-        if not os.path.exists(self._lr_cache_index()):
-            self._populate_cache(ds, self._lr_cache_file())
-
-        return ds
-
-    def _hr_cache_file(self):
-        return os.path.join(self.caches_dir, f'POLISH_{self.subset}_HR.cache')
-
-    def _lr_cache_file(self):
-        return os.path.join(
-            self.caches_dir, f'POLISH_{self.subset}_LR_{self.downgrade}_X{self.scale}.cache'
-        )
-
-    def _hr_cache_index(self):
-        return f'{self._hr_cache_file()}.index'
-
-    def _lr_cache_index(self):
-        return f'{self._lr_cache_file()}.index'
-
-    def _hr_image_files(self):
-        images_dir = self._hr_images_dir()
-        return [os.path.join(images_dir, f'{image_id:04}.png') for image_id in self.image_ids]
-
-    def _lr_image_files(self):
-        images_dir = self._lr_images_dir()
-        return [
-            os.path.join(images_dir, self._lr_image_file(image_id)) for image_id in self.image_ids
-        ]
-
-    def _lr_image_file(self, image_id):
-        if not self._ntire_2018 or self.scale == 8:
-            return f'{image_id:04}x{self.scale}.png'
-        else:
-            return f'{image_id:04}x{self.scale}{self.downgrade[0]}.png'
-
-    def _hr_images_dir(self):
-        return os.path.join(self.images_dir, f'POLISH_{self.subset}_HR')
-
-    def _lr_images_dir(self):
-        if self._ntire_2018:
-            return os.path.join(self.images_dir, f'POLISH_{self.subset}_LR_{self.downgrade}')
-        else:
-            return os.path.join(
-                self.images_dir, f'POLISH_{self.subset}_LR_{self.downgrade}', f'X{self.scale}'
-            )
-
-    def _hr_images_archive(self):
-        return f'POLISH_{self.subset}_HR.zip'
-
-    def _lr_images_archive(self):
-        if self._ntire_2018:
-            return f'POLISH_{self.subset}_LR_{self.downgrade}.zip'
-        else:
-            return f'POLISH_{self.subset}_LR_{self.downgrade}_X{self.scale}.zip'
-
-    @staticmethod
-    def _images_dataset(image_files, nchan=1):
-        ds = tf.data.Dataset.from_tensor_slices(image_files)
-        ds = ds.map(tf.io.read_file)
-        if nchan == 3:
-            ds = ds.map(lambda x: tf.image.decode_png(x, channels=3), num_parallel_calls=AUTOTUNE)
-        elif nchan == 1:
-            ds = ds.map(
-                lambda x: tf.image.decode_png(x, dtype=tf.uint16, channels=1),
-                num_parallel_calls=AUTOTUNE,
-            )
-        else:
-            print("Wrong number of channels")
-            return
-
-        return ds
-
-    @staticmethod
-    def _populate_cache(ds, cache_file):
-        print(f'Caching decoded images in {cache_file} ...')
-        for _ in ds:
-            pass
-        print(f'Cached decoded images in {cache_file}.')
+        return ds.batch(batch_size).prefetch(AUTOTUNE)
 
 
-# -----------------------------------------------------------
-#  Transformations
-# -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Augmentation helpers
+# ---------------------------------------------------------------------------
+
+def _random_crop(
+    lr: tf.Tensor,
+    hr: tf.Tensor,
+    hr_patch_size: int,
+    scale: int,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Crop aligned patches from LR and HR images."""
+    lr_patch_size = hr_patch_size // scale
+    hr_h = tf.shape(hr)[0]
+    hr_w = tf.shape(hr)[1]
+
+    # Choose top-left in HR space, snapped to scale grid
+    max_x = (hr_h - hr_patch_size) // scale * scale
+    max_y = (hr_w - hr_patch_size) // scale * scale
+    hr_x  = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
+    hr_y  = tf.random.uniform([], 0, max_y + 1, dtype=tf.int32)
+    hr_x  = hr_x // scale * scale
+    hr_y  = hr_y // scale * scale
+
+    hr_patch = hr[hr_x : hr_x + hr_patch_size, hr_y : hr_y + hr_patch_size, :]
+    lr_x     = hr_x // scale
+    lr_y     = hr_y // scale
+    lr_patch = lr[lr_x : lr_x + lr_patch_size, lr_y : lr_y + lr_patch_size, :]
+    return lr_patch, hr_patch
 
 
-def random_crop(lr_img, hr_img, hr_crop_size=96, scale=2):
-    """Randomly crop both LR and HR images."""
-    lr_crop_size = hr_crop_size // scale
-    lr_img_shape = tf.shape(lr_img)[:2]
-
-    lr_w = tf.random.uniform(shape=(), maxval=lr_img_shape[1] - lr_crop_size + 1, dtype=tf.int32)
-    lr_h = tf.random.uniform(shape=(), maxval=lr_img_shape[0] - lr_crop_size + 1, dtype=tf.int32)
-
-    hr_w = lr_w * scale
-    hr_h = lr_h * scale
-
-    lr_img_cropped = lr_img[lr_h : lr_h + lr_crop_size, lr_w : lr_w + lr_crop_size]
-    hr_img_cropped = hr_img[hr_h : hr_h + hr_crop_size, hr_w : hr_w + hr_crop_size]
-
-    return lr_img_cropped, hr_img_cropped
+def _random_flip(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    """Random left-right flip applied identically to both images."""
+    if tf.random.uniform(()) < 0.5:
+        lr = tf.image.flip_left_right(lr)
+        hr = tf.image.flip_left_right(hr)
+    return lr, hr
 
 
-def random_flip(lr_img, hr_img):
-    """Randomly flip left-right."""
-    rn = tf.random.uniform(shape=(), maxval=1)
-    return tf.cond(
-        rn < 0.5,
-        lambda: (lr_img, hr_img),
-        lambda: (tf.image.flip_left_right(lr_img), tf.image.flip_left_right(hr_img)),
-    )
-
-
-def random_rotate(lr_img, hr_img):
-    """Randomly rotate by 0, 90, 180, or 270 degrees."""
-    rn = tf.random.uniform(shape=(), maxval=4, dtype=tf.int32)
-    return tf.image.rot90(lr_img, rn), tf.image.rot90(hr_img, rn)
-
-
-# -----------------------------------------------------------
-#  IO
-# -----------------------------------------------------------
-
-
-def download_archive(file, target_dir, extract=True):
-    """Download and extract archive (not used in current setup)."""
-    source_url = f'http://data.vision.ee.ethz.ch/cvl/DIV2K/{file}'
-    target_dir = os.path.abspath(target_dir)
-    tf_keras.utils.get_file(file, source_url, cache_subdir=target_dir, extract=extract)
-    os.remove(os.path.join(target_dir, file))
+def _random_rotate(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    """Random rotation by 0 / 90 / 180 / 270° applied identically to both images."""
+    k = tf.random.uniform([], 0, 4, dtype=tf.int32)
+    return tf.image.rot90(lr, k), tf.image.rot90(hr, k)

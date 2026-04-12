@@ -39,12 +39,12 @@ from euclid_polish.euclid import (
 from euclid_polish.sky import CleanSkyGenerator
 from euclid_polish.sky.clean_generator import GeneratorConfig
 from euclid_polish.sky.psf_convolution import PSFConvolution, ConvolutionConfig
-from euclid_polish.training import Trainer, RadioSky
+from euclid_polish.training import Trainer, EuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid.psf_extractor import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_clean_dirty_pair
-from euclid_polish.sky.tfrecord import read_tfrecord
+from euclid_polish.sky.tfrecord import read_tfrecord, shard_paths, open_shard_writers
 
 
 class InteractiveCLI:
@@ -549,19 +549,15 @@ class InteractiveCLI:
 
         # Resolve which subsets exist
         subsets_to_run = []
-        for subset in ("train", "valid"):
-            tfrecord_path = os.path.join(data_dir, subset, f"{subset}_clean.tfrecord")
-            if os.path.exists(tfrecord_path):
-                metadata_path = os.path.join(data_dir, subset, f"{subset}_clean_metadata.json")
-                if os.path.exists(metadata_path):
-                    with open(metadata_path) as f:
-                        n_images = len(json.load(f))
-                else:
-                    print(f"\n⚠️  Metadata not found for {subset}, counting records (may be slow)...")
-                    n_images = sum(1 for _ in tf.data.TFRecordDataset(tfrecord_path))
-                subsets_to_run.append((subset, tfrecord_path, n_images))
+        for subset in ("train", "validate"):
+            subset_shards = sorted(glob.glob(
+                os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
+            ))
+            if subset_shards:
+                n_images = sum(1 for _ in tf.data.TFRecordDataset(subset_shards))
+                subsets_to_run.append((subset, subset_shards, n_images))
             else:
-                print(f"  ⚠️  Skipping {subset}: {tfrecord_path} not found")
+                print(f"  ⚠️  Skipping {subset}: no clean_{subset}-*.tfrecord found in {Config.RECORDS_DIR}")
 
         if not subsets_to_run:
             print(f"\n✗ No clean TFRecords found in {data_dir}")
@@ -576,18 +572,19 @@ class InteractiveCLI:
 
         all_viz_pairs = []
 
-        for subset, tfrecord_path, n_images in subsets_to_run:
-            dirty_dir = os.path.join(data_dir, f"dirty_{subset}")
-            os.makedirs(dirty_dir, exist_ok=True)
-            dirty_tfrecord_path = os.path.join(dirty_dir, f"{subset}_dirty.tfrecord")
+        n_dirty_shards = Config.TRAIN_SHARDS
+        for subset, clean_shards, n_images in subsets_to_run:
+            n_dirty_shards = Config.TRAIN_SHARDS if subset == 'train' else Config.VALIDATE_SHARDS
+            dirty_paths  = shard_paths(Config.RECORDS_DIR, f'dirty_{subset}', n_dirty_shards)
+            dirty_writers = open_shard_writers(dirty_paths)
 
             n_ok = 0
             n_err = 0
             n_viz = 5
             viz_pairs = []
-            raw_dataset = tf.data.TFRecordDataset(tfrecord_path)
+            raw_dataset = tf.data.TFRecordDataset(clean_shards)
 
-            with tf.io.TFRecordWriter(dirty_tfrecord_path) as writer:
+            try:
                 for raw_record in tqdm(raw_dataset, total=n_images, desc=f"Convolving {subset}"):
                     try:
                         example = tf.io.parse_single_example(raw_record, feature_description)
@@ -602,18 +599,17 @@ class InteractiveCLI:
                         # Convolve and downsample (float output, no normalization)
                         lr_data, _ = convolver.process_hr_to_lr(hr_data, psf_kernel)
 
-                        # Write dirty LR image as fp16 TFRecord
+                        # Write dirty LR image as fp16 TFRecord shard
                         lr_h, lr_w = lr_data.shape
                         lr_fp16 = lr_data.flatten().astype(np.float16)
                         feature = {
-                            'image': tf.train.Feature(bytes_list=tf.train.BytesList(value=[lr_fp16.tobytes()])),
-                            'index': tf.train.Feature(int64_list=tf.train.Int64List(value=[index])),
+                            'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[lr_fp16.tobytes()])),
+                            'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[index])),
                             'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[lr_h])),
-                            'width': tf.train.Feature(int64_list=tf.train.Int64List(value=[lr_w])),
+                            'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[lr_w])),
                         }
-                        writer.write(
-                            tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
-                        )
+                        serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
+                        dirty_writers[n_ok % n_dirty_shards].write(serialized)
 
                         if len(viz_pairs) < n_viz:
                             viz_pairs.append((hr_data, lr_data, index))
@@ -623,8 +619,11 @@ class InteractiveCLI:
                     except Exception as e:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
+            finally:
+                for w in dirty_writers:
+                    w.close()
 
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → {dirty_tfrecord_path}")
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}-* ({n_dirty_shards} shards)")
             all_viz_pairs.append((subset, viz_pairs))
 
         if any(pairs for _, pairs in all_viz_pairs):
@@ -703,29 +702,39 @@ class InteractiveCLI:
                     nstart=0,
                 )
 
-                def _write_tfrecord(images, output_path, image_shape, desc):
+                def _write_tfrecord_sharded(images, name, image_shape, desc, n_shards):
                     h, w = image_shape
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    with tf.io.TFRecordWriter(output_path) as writer:
+                    os.makedirs(Config.RECORDS_DIR, exist_ok=True)
+                    paths   = shard_paths(Config.RECORDS_DIR, name, n_shards)
+                    writers = open_shard_writers(paths)
+                    try:
                         for idx, img in enumerate(tqdm(images, desc=desc, unit="img")):
                             arr_fp16 = img.flatten().astype(np.float16)
                             feature = {
-                                'image': tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
-                                'index': tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
+                                'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
+                                'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
                                 'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[h])),
-                                'width': tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
+                                'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
                             }
-                            writer.write(tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString())
+                            serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
+                            writers[idx % n_shards].write(serialized)
+                    finally:
+                        for writer in writers:
+                            writer.close()
 
-                # Write training TFRecord
-                train_output = os.path.join(output_dir, 'train', 'train_clean.tfrecord')
-                _write_tfrecord(images_train, train_output, (image_size_val, image_size_val), "Saving train")
-                print(f"  Saved: {train_output}")
+                # Write training TFRecord shards
+                _write_tfrecord_sharded(
+                    images_train, 'clean_train', (image_size_val, image_size_val),
+                    "Saving train", Config.TRAIN_SHARDS,
+                )
+                print(f"  Saved: {Config.RECORDS_DIR}/clean_train-* ({Config.TRAIN_SHARDS} shards)")
 
-                # Write validation TFRecord
-                valid_output = os.path.join(output_dir, 'valid', 'valid_clean.tfrecord')
-                _write_tfrecord(images_valid, valid_output, (image_size_val, image_size_val), "Saving valid")
-                print(f"  Saved: {valid_output}")
+                # Write validation TFRecord shards
+                _write_tfrecord_sharded(
+                    images_valid, 'clean_validate', (image_size_val, image_size_val),
+                    "Saving validate", Config.VALIDATE_SHARDS,
+                )
+                print(f"  Saved: {Config.RECORDS_DIR}/clean_validate-* ({Config.VALIDATE_SHARDS} shards)")
 
                 print("\n✓ Clean data generation completed!")
 
@@ -1054,11 +1063,10 @@ class InteractiveCLI:
             print(f"\n✗ Data directory not found: {data_dir}")
             return
 
-        # Find TFRecord file
-        tfrecord_path = os.path.join(data_dir, subset, f"{subset}_clean.tfrecord")
-        if not os.path.exists(tfrecord_path):
-            print(f"\n✗ TFRecord file not found: {tfrecord_path}")
-            print(f"   (Expected: {subset}_clean.tfrecord)")
+        # Find TFRecord shards
+        tfrecord_path = os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
+        if not glob.glob(tfrecord_path):
+            print(f"\n✗ No TFRecord shards found: {tfrecord_path}")
             return
 
         # Output directory for visualizations

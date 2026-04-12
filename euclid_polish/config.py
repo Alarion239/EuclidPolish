@@ -18,6 +18,11 @@ class Config:
     CATALOG_FILE = "stars.json"
     CUTOUTS_SUBDIR = "cutouts"
 
+    # TFRecord storage
+    RECORDS_DIR     = "./data/images/records"
+    TRAIN_SHARDS    = 8
+    VALIDATE_SHARDS = 4
+
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 256
     DEFAULT_CLIP_PERCENTILE = 99.5

@@ -3,8 +3,6 @@ Trainer module for WDSR super-resolution models.
 
 This module provides the Trainer class for training WDSR models.
 """
-
-import os
 import time
 
 import numpy as np
@@ -27,7 +25,7 @@ class Trainer:
         model,
         loss=MeanAbsoluteError(),
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
-        checkpoint_dir='./ckpt/edsr',
+        checkpoint_dir='./ckpt/wdsr',
         nbit=16,
         fn_kernel=None,
     ):
@@ -51,6 +49,7 @@ class Trainer:
         """
         self.now = None
         self.loss = loss
+        self.nbit = nbit
         self.checkpoint = tf.train.Checkpoint(
             step=tf.Variable(0),
             psnr=tf.Variable(-1.0),
@@ -81,7 +80,6 @@ class Trainer:
         steps=300000,
         evaluate_every=1000,
         save_best_only=True,
-        nbit=16,
     ):
         """
         Train the model.
@@ -98,8 +96,6 @@ class Trainer:
             Evaluate every N steps.
         save_best_only : bool
             Only save checkpoints when PSNR improves.
-        nbit : int
-            Number of bits for image data.
         """
         loss_mean = Mean()
 
@@ -119,7 +115,7 @@ class Trainer:
                 loss_mean.reset_state()
 
                 # Compute PSNR on validation dataset
-                psnr_value = self.evaluate(valid_dataset, nbit=nbit)
+                psnr_value = self.evaluate(valid_dataset, nbit=self.nbit)
 
                 duration = time.perf_counter() - self.now
                 print(
@@ -142,7 +138,7 @@ class Trainer:
         print(lr.shape, lr_estimate[2::4, 2::4].shape)
 
     @tf.function
-    def train_step(self, lr, hr, gg=1.0):
+    def train_step(self, lr, hr):
         """
         Perform one training step.
 
@@ -152,8 +148,6 @@ class Trainer:
             Low-resolution input.
         hr : tf.Tensor
             High-resolution target.
-        gg : float
-            Gain factor (unused).
 
         Returns:
         --------
