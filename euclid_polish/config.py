@@ -47,6 +47,31 @@ class Config:
     # Header formatting
     HEADER_WIDTH = 60
 
+    # Sky generation defaults
+    DEFAULT_IMAGE_SIZE           = 2048
+    DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
+    DEFAULT_GAL_DENSITY_ARCMIN2  = 40.0
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 2.0
+    DEFAULT_NIMAGES              = 100
+
+    # VIS instrument
+    DEFAULT_VIS_ZEROPOINT        = 26.2     # mag → flux conversion
+
+    # Star magnitude distribution (probability thresholds and ranges)
+    STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
+    STAR_MAG_PROB_MID            = 0.95     # below → mid bin
+    STAR_MAG_FAINT_BASE          = 22.0
+    STAR_MAG_FAINT_RANGE         = 3.0
+    STAR_MAG_MID_BASE            = 18.0
+    STAR_MAG_MID_RANGE           = 4.0
+    STAR_MAG_BRIGHT_BASE         = 16.0
+    STAR_MAG_BRIGHT_RANGE        = 2.0
+
+    # GalSim numerical parameters
+    GALSIM_MAX_FFT_SIZE          = 16384
+    GALSIM_FOLDING_THRESHOLD     = 1e-4
+    GALSIM_MAXK_THRESHOLD        = 1e-2
+
     # PSF extraction defaults
     DEFAULT_PSF_SIZE = 255
     DEFAULT_PSF_FWHM = 3.0

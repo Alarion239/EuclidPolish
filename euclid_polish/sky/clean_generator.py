@@ -10,28 +10,24 @@ import glob
 
 import galsim
 import numpy as np
-from multiprocessing import cpu_count
 from tqdm import tqdm
 from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass
+
+from euclid_polish.config import Config
 
 
 # Global worker state for multiprocessing
 _worker_state = {}
 
-# Default densities
-DEFAULT_GAL_DENSITY_ARCMIN2 = 40.0
-DEFAULT_STAR_DENSITY_ARCMIN2 = 2.0
-
 
 @dataclass
 class GeneratorConfig:
     """Configuration for clean sky generation."""
-    image_size: int = 2048
-    pixel_scale: float = 0.05
-    gal_density_arcmin2: float = DEFAULT_GAL_DENSITY_ARCMIN2
-    star_density_arcmin2: float = DEFAULT_STAR_DENSITY_ARCMIN2
-    nproc: int = 1
+    image_size: int             = Config.DEFAULT_IMAGE_SIZE
+    pixel_scale: float          = Config.DEFAULT_PIXEL_SCALE
+    gal_density_arcmin2: float  = Config.DEFAULT_GAL_DENSITY_ARCMIN2
+    star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
@@ -51,20 +47,20 @@ class CleanGalaxySimulator:
 
     def __init__(
         self,
-        image_size=2048,
-        pixel_scale=0.05,
+        image_size=Config.DEFAULT_IMAGE_SIZE,
+        pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         rng=None,
-        gal_density_arcmin2=DEFAULT_GAL_DENSITY_ARCMIN2,
-        star_density_arcmin2=DEFAULT_STAR_DENSITY_ARCMIN2,
+        gal_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+        star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
     ):
         self.image_size = int(image_size)
         self.pixel_scale = float(pixel_scale)
         self.gal_density_arcmin2 = float(gal_density_arcmin2)
         self.star_density_arcmin2 = float(star_density_arcmin2)
         self.gsparams = galsim.GSParams(
-            maximum_fft_size=16384,
-            folding_threshold=1e-4,
-            maxk_threshold=1e-2,
+            maximum_fft_size=Config.GALSIM_MAX_FFT_SIZE,
+            folding_threshold=Config.GALSIM_FOLDING_THRESHOLD,
+            maxk_threshold=Config.GALSIM_MAXK_THRESHOLD,
         )
 
         if self.pixel_scale <= 0:
@@ -227,21 +223,19 @@ class CleanGalaxySimulator:
                 print(f"Skipping one galaxy after repeated draw failures: {last_error}")
 
         # Generate stars as point sources
-        zeropoint = 26.2  # VIS-like zeropoint for magnitude to flux conversion
-
         for _ in range(n_stars):
             x_hr, y_hr = self._random_position()
 
             # Sample stellar magnitudes
             u = self.ud()
-            if u < 0.7:
-                mag = 22.0 + 3.0 * self.ud()
-            elif u < 0.95:
-                mag = 18.0 + 4.0 * self.ud()
+            if u < Config.STAR_MAG_PROB_FAINT:
+                mag = Config.STAR_MAG_FAINT_BASE   + Config.STAR_MAG_FAINT_RANGE   * self.ud()
+            elif u < Config.STAR_MAG_PROB_MID:
+                mag = Config.STAR_MAG_MID_BASE     + Config.STAR_MAG_MID_RANGE     * self.ud()
             else:
-                mag = 16.0 + 2.0 * self.ud()
+                mag = Config.STAR_MAG_BRIGHT_BASE  + Config.STAR_MAG_BRIGHT_RANGE  * self.ud()
 
-            flux = 10 ** (-0.4 * (mag - zeropoint))
+            flux = 10 ** (-0.4 * (mag - Config.DEFAULT_VIS_ZEROPOINT))
 
             # HR: place a point source at the nearest pixel
             ix_hr = int(round(x_hr))
@@ -353,7 +347,7 @@ class CleanSkyGenerator:
         catalog: galsim.COSMOSCatalog,
         output_dir: str,
         subset: str = "train",
-        nimages: int = 100,
+        nimages: int = Config.DEFAULT_NIMAGES,
         nstart: int = 0,
     ) -> Tuple[List[np.ndarray], List[Dict]]:
         """
@@ -382,49 +376,32 @@ class CleanSkyGenerator:
         if subset not in ("train", "valid"):
             raise ValueError("subset must be 'train' or 'valid'.")
 
-        # Validate and setup nproc
-        nproc = self.config.nproc
-        n_available = cpu_count()
-        if nproc == 0 or nproc == -1:
-            nproc = min(n_available, 8)
-        elif nproc < 0:
-            raise ValueError(f"Invalid nproc={nproc}. Use 0, -1, or positive integer.")
-        else:
-            nproc = min(nproc, 8)
-
         output_dir_data = os.path.join(output_dir, subset)
         os.makedirs(output_dir_data, exist_ok=True)
 
-        if nproc > 1:
-            # Parallel execution
-            catalog_file = None  # Would need to be passed in
-            catalog_dir = None  # Would need to be passed in
-            raise NotImplementedError("Parallel execution requires catalog_file and catalog_dir")
-        else:
-            # Serial execution
-            sim = CleanGalaxySimulator(
-                image_size=self.config.image_size,
-                pixel_scale=self.config.pixel_scale,
-                gal_density_arcmin2=self.config.gal_density_arcmin2,
-                star_density_arcmin2=self.config.star_density_arcmin2,
+        sim = CleanGalaxySimulator(
+            image_size=self.config.image_size,
+            pixel_scale=self.config.pixel_scale,
+            gal_density_arcmin2=self.config.gal_density_arcmin2,
+            star_density_arcmin2=self.config.star_density_arcmin2,
+        )
+
+        images = []
+        metadata = []
+
+        for ii in tqdm(range(nimages), desc=f"Generating {subset}", unit="img", ncols=100):
+            np_rng = np.random.default_rng(ii + nstart)
+
+            data_hr, obj_params = sim.simulate_field(
+                catalog=catalog,
+                np_rng=np_rng,
             )
 
-            images = []
-            metadata = []
-
-            for ii in tqdm(range(nimages), desc=f"Generating {subset}", unit="img", ncols=100):
-                np_rng = np.random.default_rng(ii + nstart)
-
-                data_hr, obj_params = sim.simulate_field(
-                    catalog=catalog,
-                    np_rng=np_rng,
-                )
-
-                images.append(data_hr)
-                meta = obj_params.copy()
-                meta["image_index"] = int(ii)
-                meta["image_size"] = int(self.config.image_size)
-                meta["pixel_scale"] = float(self.config.pixel_scale)
-                metadata.append(meta)
+            images.append(data_hr)
+            meta = obj_params.copy()
+            meta["image_index"] = int(ii)
+            meta["image_size"] = int(self.config.image_size)
+            meta["pixel_scale"] = float(self.config.pixel_scale)
+            metadata.append(meta)
 
         return images, metadata
