@@ -1,0 +1,11 @@
+dsa-example/*
+dsa-example-cache/*
+monopsfs_euclidlike/*
+data/COSMOS
+euclid256*
+EuclidPSF*
+.claude*
+monopsfs*
+*.png
+*.zip
+*.gz
