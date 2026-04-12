@@ -41,7 +41,8 @@ from euclid_polish.sky.clean_generator import GeneratorConfig
 from euclid_polish.sky.psf_convolution import PSFConvolution, ConvolutionConfig
 from euclid_polish.training import Trainer, RadioSky
 from euclid_polish.training.models.wdsr import wdsr
-from euclid_polish.visualization import BaseVisualizer, estimate_fwhm
+from euclid_polish.visualization import BaseVisualizer
+from euclid_polish.euclid.psf_extractor import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_clean_dirty_pair
 from euclid_polish.sky.tfrecord import read_tfrecord
 

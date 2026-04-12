@@ -5,7 +5,7 @@ This module provides visualization utilities for all aspects of the project,
 including Euclid data, sky generation, and training results.
 """
 
-from euclid_polish.visualization.base import BaseVisualizer, estimate_fwhm
+from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.visualization.methods import (
     draw_clean_image,
     draw_dirty_image,
@@ -16,7 +16,6 @@ from euclid_polish.visualization.methods import (
 
 __all__ = [
     "BaseVisualizer",
-    "estimate_fwhm",
     "draw_clean_image",
     "draw_dirty_image",
     "draw_cutout",

@@ -145,29 +145,3 @@ class BaseVisualizer:
             self._fig = None
             self._gs = None
 
-def estimate_fwhm(profile: np.ndarray) -> float:
-    """
-    Estimate FWHM from a 1D profile.
-
-    Parameters:
-    -----------
-    profile : numpy.ndarray
-        1D profile through the PSF.
-
-    Returns:
-    --------
-    float
-        Estimated FWHM in pixels.
-    """
-    peak = np.max(profile)
-    half_max = peak / 2.0
-
-    above_half = profile > half_max
-
-    if not np.any(above_half):
-        return 0.0
-
-    indices = np.where(above_half)[0]
-    fwhm = indices[-1] - indices[0] + 1
-
-    return float(fwhm)
