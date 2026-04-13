@@ -9,7 +9,7 @@ import os
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
-
+import glob as _glob
 
 # ---------------------------------------------------------------------------
 # Sharded write helpers
@@ -113,7 +113,6 @@ def read_tfrecord(
     -------
     list of (image, index, height, width)
     """
-    import glob as _glob
     paths = sorted(_glob.glob(tfrecord_path)) or [tfrecord_path]
     dataset = tf.data.TFRecordDataset(paths)
     all_images = [

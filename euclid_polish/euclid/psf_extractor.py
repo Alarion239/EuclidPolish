@@ -16,6 +16,7 @@ from photutils.psf import EPSFModel, EPSFBuilder, EPSFStars, EPSFStar
 from tqdm import tqdm
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.types import PSF
 
 
 @dataclass
@@ -299,55 +300,38 @@ class PSFExtractor:
 
         return epsf, fitted_stars
 
-    def save_psf(
-        self,
-        output_dir: str,
-        filename_fits: str = "euclid_psf.fits",
-        filename_npy: str = "euclid_psf.npy"
-    ) -> Tuple[str, str]:
+    def to_psf(self, pixel_scale: float) -> PSF:
         """
-        Save the extracted PSF to FITS and numpy files.
+        Wrap the built ePSF in a typed PSF object.
 
         Parameters:
         -----------
-        output_dir : str
-            Output directory.
-        filename_fits : str
-            FITS filename.
-        filename_npy : str
-            Numpy filename.
+        pixel_scale : float
+            Pixel scale of the ePSF kernel grid in arcsec/pixel.
+            For a Euclid VIS PSF built with oversampling=4 at native 0.10 arcsec/pix,
+            this would be 0.10 / 4 = 0.025 arcsec/pix.
 
         Returns:
         --------
-        tuple
-            (fits_path, npy_path) - Paths to saved files.
+        PSF
+            Typed PSF with data, pixel_scale, fwhm_arcsec, and oversampling set.
         """
         if self.epsf is None:
             raise ValueError("No PSF has been built yet. Call build_epsf() first.")
 
-        os.makedirs(output_dir, exist_ok=True)
+        oversamp_val = (
+            self.epsf.oversampling[0]
+            if hasattr(self.epsf.oversampling, '__iter__')
+            else self.epsf.oversampling
+        )
 
-        # Save as FITS
-        fits_path = os.path.join(output_dir, filename_fits)
-        psf_data = self.epsf.data
-
-        primary_hdu = fits.PrimaryHDU(data=psf_data)
-        primary_hdu.header['AUTHOR'] = 'PSFExtractor'
-        oversamp_val = self.epsf.oversampling[0] if hasattr(self.epsf.oversampling, '__iter__') else self.epsf.oversampling
-        primary_hdu.header['OVERSAMP'] = (oversamp_val, 'Oversampling factor')
-        primary_hdu.header['COMMENT'] = 'Euclid VIS PSF extracted from bright star cutouts'
-
-        hdul = fits.HDUList([primary_hdu])
-        hdul.writeto(fits_path, overwrite=True)
-
-        # Save as numpy
-        npy_path = os.path.join(output_dir, filename_npy)
-        np.save(npy_path, psf_data)
-
-        print(f"Saved PSF to: {fits_path}")
-        print(f"Saved PSF numpy array to: {npy_path}")
-
-        return fits_path, npy_path
+        psf = PSF(
+            data=self.epsf.data.astype(np.float32),
+            pixel_scale=pixel_scale,
+            oversampling=int(oversamp_val),
+        )
+        psf.fwhm_arcsec = psf.fwhm_pixels() * pixel_scale
+        return psf
 
     def get_summary(self) -> dict:
         """
@@ -369,28 +353,3 @@ class PSFExtractor:
             'oversampling': self.epsf.oversampling,
             'data_type': str(self.epsf.data.dtype),
         }
-
-
-def estimate_fwhm(profile: np.ndarray) -> float:
-    """
-    Estimate FWHM from a 1D PSF profile.
-
-    Parameters:
-    -----------
-    profile : numpy.ndarray
-        1D profile through the PSF.
-
-    Returns:
-    --------
-    float
-        Estimated FWHM in pixels.
-    """
-    peak = np.max(profile)
-    half_max = peak / 2.0
-    above_half = profile > half_max
-
-    if not np.any(above_half):
-        return 0.0
-
-    indices = np.where(above_half)[0]
-    return float(indices[-1] - indices[0] + 1)

@@ -13,6 +13,7 @@ import numpy as np
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.validator import angular_separation_arcsec
 
 # Constants
 POSITION_TOLERANCE_ARCSEC = 0.05  # Tolerance for duplicate detection (arcsec)
@@ -123,20 +124,26 @@ class StarCatalog:
         dict
             Summary with counts and metadata.
         """
-        status = self.get_stars_by_status()
         catalog = self.load()
+        stars = catalog.get('stars', [])
+
+        valid     = [s for s in stars if s.get('valid', False)]
+        corrupted = [s for s in stars if s.get('corrupted', False)]
+        failed    = [s for s in stars if s.get('download_failed', False)]
+        pending   = [s for s in stars if not s.get('valid', False)
+                     and not s.get('corrupted', False)
+                     and not s.get('download_failed', False)]
 
         summary = {
-            'total': len(status['all']),
-            'valid': len(status['valid']),
-            'corrupted': len(status['corrupted']),
-            'failed': len(status['failed']),
-            'pending': len(status['pending']),
-            'next_id': catalog.get('next_id', 0),
+            'total':    len(stars),
+            'valid':    len(valid),
+            'corrupted': len(corrupted),
+            'failed':   len(failed),
+            'pending':  len(pending),
+            'next_id':  catalog.get('next_id', 0),
         }
 
-        # Calculate magnitude range
-        mags = [s['magnitude'] for s in status['all'] if s.get('magnitude') is not None]
+        mags = [s['magnitude'] for s in stars if s.get('magnitude') is not None]
         if mags:
             summary['mag_min'] = min(mags)
             summary['mag_max'] = max(mags)
@@ -164,17 +171,9 @@ class StarCatalog:
         bool
             True if star is a duplicate (within tolerance).
         """
-        tolerance_deg = tolerance_arcsec / 3600.0  # Convert arcsec to degrees
-
         for star in existing_stars:
-            # Calculate angular separation (simple approximation for small distances)
-            ra_diff = (ra - star['ra']) * np.cos(np.deg2rad((dec + star['dec']) / 2))
-            dec_diff = dec - star['dec']
-            separation_deg = np.sqrt(ra_diff**2 + dec_diff**2)
-
-            if separation_deg < tolerance_deg:
+            if angular_separation_arcsec(ra, dec, star['ra'], star['dec']) < tolerance_arcsec:
                 return True
-
         return False
 
     def _query_bright_stars(self, ra: float, dec: float, radius: float,
@@ -229,9 +228,6 @@ class StarCatalog:
                 else:
                     results = results[sorted_indices]
 
-                # VIS zeropoint
-                vis_zeropoint = 26.2
-
                 # Filter out invalid/missing flux values
                 valid_flux_mask = []
                 for flux in results['flux_vis_1fwhm_aper']:
@@ -253,7 +249,7 @@ class StarCatalog:
                 # Convert valid fluxes to magnitudes
                 magnitudes = []
                 for flux in results_valid['flux_vis_1fwhm_aper']:
-                    mag = -2.5 * np.log10(flux) + vis_zeropoint
+                    mag = -2.5 * np.log10(flux) + Config.DEFAULT_VIS_ZEROPOINT
                     magnitudes.append(mag)
 
                 # Add magnitude column

@@ -17,12 +17,11 @@ import astropy.units as u
 from tqdm import tqdm
 
 from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.validator import FitsValidator
+from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
 from euclid_polish.config import Config
 
 
 # Constants
-VIS_PIXEL_SCALE_ARCSEC = 0.10  # VIS pixel scale: 0.10 arcsec/pixel
 POSITION_TOLERANCE_ARCSEC = 0.5  # Tolerance for position matching (arcsec)
 SIZE_TOLERANCE_PIXELS = 10  # Tolerance for cutout size matching (pixels)
 
@@ -220,9 +219,7 @@ class EuclidCutoutDownloader:
         bool
             True if positions match within tolerance.
         """
-        return self.validator._positions_match(
-            ra1, dec1, ra2, dec2, self.config.position_tolerance
-        )
+        return angular_separation_arcsec(ra1, dec1, ra2, dec2) < self.config.position_tolerance
 
     def download(
         self,
@@ -266,7 +263,7 @@ class EuclidCutoutDownloader:
             self.catalog.save(catalog)
 
         # Calculate cutout radius
-        pixel_scale_arcmin = VIS_PIXEL_SCALE_ARCSEC / 60.0
+        pixel_scale_arcmin = Config.VIS_PIXEL_SCALE_ARCSEC / 60.0
         cutout_radius_arcmin = (self.config.cutout_size / 2.0) * pixel_scale_arcmin
         cutout_size = self.config.cutout_size
 

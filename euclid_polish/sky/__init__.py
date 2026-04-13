@@ -5,6 +5,9 @@ This module provides classes for generating clean and dirty sky images,
 including PSF convolution and downsampling operations.
 """
 
+# Types are pure dataclasses — import eagerly with no heavy deps.
+from euclid_polish.sky.types import SkyImage
+
 # PSFConvolution is lightweight (numpy + scipy only) — import eagerly.
 from euclid_polish.sky.psf_convolution import PSFConvolution
 
@@ -12,6 +15,7 @@ from euclid_polish.sky.psf_convolution import PSFConvolution
 # which are slow to import.  They are loaded lazily on first access so that
 # importing this package (e.g. to get PSFConvolution) doesn't stall startup.
 __all__ = [
+    "SkyImage",
     "CleanSkyGenerator",
     "CleanGalaxySimulator",
     "PSFConvolution",

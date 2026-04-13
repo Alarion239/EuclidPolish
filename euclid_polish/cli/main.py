@@ -39,10 +39,12 @@ from euclid_polish.euclid import (
 from euclid_polish.sky import CleanSkyGenerator
 from euclid_polish.sky.clean_generator import GeneratorConfig
 from euclid_polish.sky.psf_convolution import PSFConvolution, ConvolutionConfig
+from euclid_polish.sky.types import SkyImage
+from euclid_polish.euclid.types import PSF
 from euclid_polish.training import Trainer, EuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
-from euclid_polish.euclid.psf_extractor import estimate_fwhm
+from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_clean_dirty_pair
 from euclid_polish.sky.tfrecord import read_tfrecord, shard_paths, open_shard_writers
 
@@ -393,7 +395,9 @@ class InteractiveCLI:
         # Extract PSF
         try:
             epsf, fitted_stars = extractor.build_epsf(selected_files)
-            fits_path, npy_path = extractor.save_psf(psf_dir)
+            epsf_pixel_scale = Config.VIS_PIXEL_SCALE_ARCSEC / config.oversampling
+            psf = extractor.to_psf(epsf_pixel_scale)
+            fits_path, npy_path = psf.save(psf_dir)
 
             print(f"\n✓ PSF extraction completed!")
             print(f"  FITS file: {fits_path}")
@@ -526,10 +530,11 @@ class InteractiveCLI:
             print(f"\n✗ PSF file not found: {psf_path}")
             return
 
-        # Load PSF
+        # Load PSF — assumed to be sampled at the HR image pixel scale
         print(f"\nLoading PSF from {psf_path}...")
-        psf_kernel = np.load(psf_path)
-        print(f"  PSF shape: {psf_kernel.shape}, dtype: {psf_kernel.dtype}")
+        psf_array = np.load(psf_path)
+        print(f"  PSF shape: {psf_array.shape}, dtype: {psf_array.dtype}")
+        psf_kernel = PSF(data=psf_array, pixel_scale=Config.DEFAULT_PIXEL_SCALE)
 
         # Configure convolution (no noise, normalize=False → store raw float values as fp16)
         config = ConvolutionConfig(
@@ -597,11 +602,12 @@ class InteractiveCLI:
                         hr_data = tf.cast(tf.reshape(image_bytes, [height, width]), tf.float32).numpy()
 
                         # Convolve and downsample (float output, no normalization)
-                        lr_data, _ = convolver.process_hr_to_lr(hr_data, psf_kernel)
+                        hr_image = SkyImage(data=hr_data, pixel_scale=Config.DEFAULT_PIXEL_SCALE, is_clean=True)
+                        lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
 
                         # Write dirty LR image as fp16 TFRecord shard
-                        lr_h, lr_w = lr_data.shape
-                        lr_fp16 = lr_data.flatten().astype(np.float16)
+                        lr_h, lr_w = lr_image.data.shape
+                        lr_fp16 = lr_image.data.flatten().astype(np.float16)
                         feature = {
                             'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[lr_fp16.tobytes()])),
                             'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[index])),
@@ -612,7 +618,7 @@ class InteractiveCLI:
                         dirty_writers[n_ok % n_dirty_shards].write(serialized)
 
                         if len(viz_pairs) < n_viz:
-                            viz_pairs.append((hr_data, lr_data, index))
+                            viz_pairs.append((hr_data, lr_image.data, index))
 
                         n_ok += 1
 
@@ -709,7 +715,7 @@ class InteractiveCLI:
                     writers = open_shard_writers(paths)
                     try:
                         for idx, img in enumerate(tqdm(images, desc=desc, unit="img")):
-                            arr_fp16 = img.flatten().astype(np.float16)
+                            arr_fp16 = img.data.flatten().astype(np.float16)
                             feature = {
                                 'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
                                 'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),

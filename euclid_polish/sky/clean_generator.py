@@ -15,6 +15,7 @@ from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass
 
 from euclid_polish.config import Config
+from euclid_polish.sky.types import SkyImage
 
 
 # Global worker state for multiprocessing
@@ -253,7 +254,7 @@ class CleanGalaxySimulator:
                 }
             )
 
-        return image_hr.array, {
+        obj_params = {
             "field_area_arcmin2": float(area_arcmin2),
             "galaxy_density_arcmin2": float(self.gal_density_arcmin2),
             "star_density_arcmin2": float(self.star_density_arcmin2),
@@ -262,6 +263,12 @@ class CleanGalaxySimulator:
             "galaxies": galaxy_params,
             "stars": star_params,
         }
+        return SkyImage(
+            data=image_hr.array,
+            pixel_scale=self.pixel_scale,
+            is_clean=True,
+            metadata=obj_params,
+        ), obj_params
 
 
 class CleanSkyGenerator:
@@ -349,7 +356,7 @@ class CleanSkyGenerator:
         subset: str = "train",
         nimages: int = Config.DEFAULT_NIMAGES,
         nstart: int = 0,
-    ) -> Tuple[List[np.ndarray], List[Dict]]:
+    ) -> Tuple[List[SkyImage], List[Dict]]:
         """
         Generate clean HR galaxy and star images.
 
@@ -360,7 +367,7 @@ class CleanSkyGenerator:
         output_dir : str
             Output directory.
         subset : str
-            Either 'train' or 'valid'.
+            Either 'train' or 'validate'.
         nimages : int
             Number of images to generate.
         nstart : int
@@ -368,13 +375,13 @@ class CleanSkyGenerator:
 
         Returns:
         --------
-        images : list of ndarray
-            Generated images.
+        images : list of SkyImage
+            Generated clean HR images with pixel_scale and metadata attached.
         metadata : list of dict
             Metadata for each image.
         """
-        if subset not in ("train", "valid"):
-            raise ValueError("subset must be 'train' or 'valid'.")
+        if subset not in ("train", "validate"):
+            raise ValueError("subset must be 'train' or 'validate'.")
 
         output_dir_data = os.path.join(output_dir, subset)
         os.makedirs(output_dir_data, exist_ok=True)
@@ -392,12 +399,14 @@ class CleanSkyGenerator:
         for ii in tqdm(range(nimages), desc=f"Generating {subset}", unit="img", ncols=100):
             np_rng = np.random.default_rng(ii + nstart)
 
-            data_hr, obj_params = sim.simulate_field(
+            sky_image, obj_params = sim.simulate_field(
                 catalog=catalog,
                 np_rng=np_rng,
             )
+            sky_image.index = int(ii)
+            sky_image.subset = subset
 
-            images.append(data_hr)
+            images.append(sky_image)
             meta = obj_params.copy()
             meta["image_index"] = int(ii)
             meta["image_size"] = int(self.config.image_size)

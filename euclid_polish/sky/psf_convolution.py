@@ -10,15 +10,19 @@ from scipy import signal
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
+from euclid_polish.config import Config
+from euclid_polish.sky.types import SkyImage
+from euclid_polish.euclid.types import PSF
+
 
 @dataclass
 class ConvolutionConfig:
     """Configuration for PSF convolution."""
-    rebin_factor: int = 4
-    add_noise: bool = True
-    noise_std: float = 5.0
-    normalize: bool = True
-    nbit: int = 16
+    rebin_factor: int  = Config.DEFAULT_REBIN_FACTOR
+    add_noise: bool    = Config.DEFAULT_ADD_NOISE
+    noise_std: float   = Config.DEFAULT_NOISE_STD
+    normalize: bool    = Config.DEFAULT_NORMALIZE
+    nbit: int          = Config.DEFAULT_NBIT
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
@@ -146,20 +150,20 @@ class PSFConvolution:
 
     def process_hr_to_lr(
         self,
-        hr_data: np.ndarray,
-        kernel: np.ndarray,
+        hr_image: SkyImage,
+        psf: PSF,
         normalize: Optional[bool] = None,
         nbit: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[SkyImage, SkyImage]:
         """
-        Complete pipeline: convolve HR with PSF, add noise, downsample to LR.
+        Complete pipeline: convolve HR SkyImage with PSF, downsample to LR SkyImage.
 
         Parameters:
         -----------
-        hr_data : ndarray
-            High-resolution input data.
-        kernel : ndarray
-            PSF kernel for convolution.
+        hr_image : SkyImage
+            High-resolution input image.
+        psf : PSF
+            PSF kernel. Must have the same pixel_scale as hr_image.
         normalize : bool, optional
             Whether to normalize output. Uses config default if not specified.
         nbit : int, optional
@@ -167,17 +171,29 @@ class PSFConvolution:
 
         Returns:
         --------
-        lr_data : ndarray
-            Low-resolution (dirty) image.
-        hr_noisy : ndarray
-            HR image with noise (before convolution).
+        lr_image : SkyImage
+            Low-resolution (dirty) image with pixel_scale = hr_image.pixel_scale * rebin_factor.
+        hr_noisy : SkyImage
+            HR image with noise added (before convolution).
+
+        Raises:
+        -------
+        ValueError
+            If hr_image.pixel_scale != psf.pixel_scale.
         """
+        if hr_image.pixel_scale != psf.pixel_scale:
+            raise ValueError(
+                f"Pixel scale mismatch: image has {hr_image.pixel_scale} arcsec/pix "
+                f"but PSF has {psf.pixel_scale} arcsec/pix. "
+                "Resample the PSF to match the image pixel scale before convolving."
+            )
+
         normalize = normalize if normalize is not None else self.config.normalize
         nbit = nbit if nbit is not None else self.config.nbit
 
         # Add noise and convolve
-        hr_noisy = self._add_noise(hr_data) if self.config.add_noise else hr_data
-        lr_full = signal.fftconvolve(hr_noisy, kernel, mode='same')
+        hr_noisy_data = self._add_noise(hr_image.data) if self.config.add_noise else hr_image.data
+        lr_full = signal.fftconvolve(hr_noisy_data, psf.data, mode='same')
 
         # Downsample
         lr_data = self.downsample(lr_full)
@@ -185,11 +201,24 @@ class PSFConvolution:
         # Normalize if requested
         if normalize:
             lr_data = self.normalize_data(lr_data, nbit=nbit)
-            hr_data_norm = self.normalize_data(hr_data, nbit=nbit)
-        else:
-            hr_data_norm = hr_data
 
-        return lr_data, hr_noisy
+        rebin = self.config.rebin_factor
+        lr_image = SkyImage(
+            data=lr_data,
+            pixel_scale=hr_image.pixel_scale * rebin,
+            is_clean=False,
+            index=hr_image.index,
+            subset=hr_image.subset,
+        )
+        hr_noisy = SkyImage(
+            data=hr_noisy_data,
+            pixel_scale=hr_image.pixel_scale,
+            is_clean=True,
+            index=hr_image.index,
+            subset=hr_image.subset,
+            metadata=hr_image.metadata,
+        )
+        return lr_image, hr_noisy
 
     def _add_noise(self, data: np.ndarray) -> np.ndarray:
         """Add Gaussian noise to data."""

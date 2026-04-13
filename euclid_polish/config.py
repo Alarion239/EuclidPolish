@@ -56,6 +56,14 @@ class Config:
 
     # VIS instrument
     DEFAULT_VIS_ZEROPOINT        = 26.2     # mag → flux conversion
+    VIS_PIXEL_SCALE_ARCSEC       = 0.10     # native Euclid VIS pixel scale (arcsec/pixel)
+
+    # PSF convolution defaults
+    DEFAULT_REBIN_FACTOR         = 4
+    DEFAULT_ADD_NOISE            = True
+    DEFAULT_NOISE_STD            = 5.0
+    DEFAULT_NORMALIZE            = True
+    DEFAULT_NBIT                 = 16
 
     # Star magnitude distribution (probability thresholds and ranges)
     STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
@@ -78,3 +86,5 @@ class Config:
     DEFAULT_PSF_THRESHOLD = 50.0
     DEFAULT_PSF_MAX_ITERS = 10
     DEFAULT_PSF_ACCURACY = 0.001
+    DEFAULT_PSF_FITS_FILENAME = "euclid_psf.fits"
+    DEFAULT_PSF_NPY_FILENAME  = "euclid_psf.npy"

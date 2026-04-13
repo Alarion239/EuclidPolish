@@ -11,6 +11,32 @@ from astropy.io import fits
 from typing import Tuple, Optional
 
 
+def angular_separation_arcsec(
+    ra1: float, dec1: float,
+    ra2: float, dec2: float,
+) -> float:
+    """
+    Return the angular separation between two sky positions in arcseconds.
+
+    Uses the small-angle approximation (accurate to ~1% within a few degrees).
+
+    Parameters:
+    -----------
+    ra1, dec1 : float
+        First position (degrees).
+    ra2, dec2 : float
+        Second position (degrees).
+
+    Returns:
+    --------
+    float
+        Separation in arcseconds.
+    """
+    ra_diff  = (ra1 - ra2) * np.cos(np.deg2rad((dec1 + dec2) / 2))
+    dec_diff = dec1 - dec2
+    return np.sqrt(ra_diff**2 + dec_diff**2) * 3600.0
+
+
 class FitsValidator:
     """
     Comprehensive FITS file validator.
@@ -154,15 +180,8 @@ class FitsValidator:
                     fits_ra = float(header['CRVAL1'])
                     fits_dec = float(header['CRVAL2'])
 
-                    if not self._positions_match(
-                        fits_ra, fits_dec,
-                        expected_ra, expected_dec,
-                        tolerance_arcsec
-                    ):
-                        separation = self._calculate_separation(
-                            fits_ra, fits_dec,
-                            expected_ra, expected_dec
-                        )
+                    separation = angular_separation_arcsec(fits_ra, fits_dec, expected_ra, expected_dec)
+                    if separation >= tolerance_arcsec:
                         return False, f"Center displaced: {separation:.2f} arcsec from expected"
 
         except Exception as e:
@@ -236,50 +255,7 @@ class FitsValidator:
         ra2: float, dec2: float,
         tolerance_arcsec: float
     ) -> bool:
-        """
-        Check if two positions match within tolerance.
-
-        Parameters:
-        -----------
-        ra1, dec1 : float
-            First position (degrees).
-        ra2, dec2 : float
-            Second position (degrees).
-        tolerance_arcsec : float
-            Tolerance in arcseconds.
-
-        Returns:
-        --------
-        bool
-            True if positions match within tolerance.
-        """
-        separation = self._calculate_separation(ra1, dec1, ra2, dec2)
-        return separation < tolerance_arcsec
-
-    def _calculate_separation(
-        self,
-        ra1: float, dec1: float,
-        ra2: float, dec2: float
-    ) -> float:
-        """
-        Calculate angular separation between two positions.
-
-        Parameters:
-        -----------
-        ra1, dec1 : float
-            First position (degrees).
-        ra2, dec2 : float
-            Second position (degrees).
-
-        Returns:
-        --------
-        float
-            Separation in arcseconds.
-        """
-        ra_diff = (ra1 - ra2) * np.cos(np.deg2rad((dec1 + dec2) / 2))
-        dec_diff = dec1 - dec2
-        separation_deg = np.sqrt(ra_diff**2 + dec_diff**2)
-        return separation_deg * 3600.0
+        return angular_separation_arcsec(ra1, dec1, ra2, dec2) < tolerance_arcsec
 
 
 def validate_file_exists(filepath: str, name: str = "File") -> Tuple[bool, Optional[str]]:
