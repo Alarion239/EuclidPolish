@@ -645,108 +645,96 @@ class InteractiveCLI:
 
     def _generate_clean_data(self):
         """Generate clean sky data."""
-        output_dir = input("Enter output directory (default ./data/clean_data): ").strip() or "./data/clean_data"
         catalog_path = input("Enter path to COSMOS catalog: ").strip()
 
         if not os.path.exists(catalog_path):
             print(f"\n✗ Catalog not found: {catalog_path}")
             return
 
-        ntrain = input("Number of training images (default 100): ").strip() or "100"
-        nvalid = input("Number of validation images (default 20): ").strip() or "20"
-        pixel_scale = input("Pixel scale in arcsec (default 0.05): ").strip() or "0.05"
-        image_size = input("Image size (default 256): ").strip() or "256"
+        ntrain     = input(f"Number of training images (default {Config.DEFAULT_NIMAGES}): ").strip() or str(Config.DEFAULT_NIMAGES)
+        nvalid     = input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip() or str(Config.DEFAULT_NIMAGES // 5)
+        pixel_scale = input(f"Pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip() or str(Config.DEFAULT_PIXEL_SCALE)
+        image_size  = input(f"Image size in pixels (default {Config.DEFAULT_IMAGE_SIZE}): ").strip() or str(Config.DEFAULT_IMAGE_SIZE)
 
-        # Validate inputs
         try:
-            ntrain_val = int(ntrain)
-            nvalid_val = int(nvalid)
+            ntrain_val      = int(ntrain)
+            nvalid_val      = int(nvalid)
             pixel_scale_val = float(pixel_scale)
-            image_size_val = int(image_size)
+            image_size_val  = int(image_size)
         except ValueError:
             print("\n✗ Invalid input: values must be numbers")
             return
 
-        if confirm("\nGenerate clean sky data with these parameters?", default=True).ask():
-            print(f"\nConfiguration:")
-            print(f"  Output directory: {output_dir}")
-            print(f"  Catalog: {catalog_path}")
-            print(f"  Training images: {ntrain_val}")
-            print(f"  Validation images: {nvalid_val}")
-            print(f"  Pixel scale: {pixel_scale_val} arcsec")
-            print(f"  Image size: {image_size_val}x{image_size_val}")
+        print(f"\nConfiguration:")
+        print(f"  COSMOS catalog:    {catalog_path}")
+        print(f"  Training images:   {ntrain_val}")
+        print(f"  Validation images: {nvalid_val}")
+        print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix")
+        print(f"  Image size:        {image_size_val} x {image_size_val}")
+        print(f"  Output (TFRecord): {Config.RECORDS_DIR}/")
+        print(f"    clean_train-*    ({Config.TRAIN_SHARDS} shards)")
+        print(f"    clean_validate-* ({Config.VALIDATE_SHARDS} shards)")
 
-            try:
-                # Resolve COSMOS catalog
-                catalog, catalog_file, catalog_dir = CleanSkyGenerator.resolve_cosmos_catalog(catalog_path)
-                print(f"\nCOSMOS catalog loaded: {catalog.nobjects} objects")
+        if not confirm("\nGenerate clean sky data?", default=True).ask():
+            return
 
-                # Create generator
-                config = GeneratorConfig(
-                    image_size=image_size_val,
-                    pixel_scale=pixel_scale_val,
-                )
-                generator = CleanSkyGenerator(config)
+        try:
+            catalog, catalog_file, catalog_dir = CleanSkyGenerator.resolve_cosmos_catalog(catalog_path)
+            print(f"\nCOSMOS catalog loaded: {catalog.nobjects} objects")
 
-                # Generate validation set
-                print("\nGenerating validation set...")
-                images_valid, metadata_valid = generator.generate(
-                    catalog=catalog,
-                    output_dir=output_dir,
-                    subset='valid',
-                    nimages=nvalid_val,
-                    nstart=ntrain_val,
-                )
+            config = GeneratorConfig(
+                image_size=image_size_val,
+                pixel_scale=pixel_scale_val,
+            )
+            generator = CleanSkyGenerator(config)
 
-                # Generate training set
-                print("\nGenerating training set...")
-                images_train, metadata_train = generator.generate(
-                    catalog=catalog,
-                    output_dir=output_dir,
-                    subset='train',
-                    nimages=ntrain_val,
-                    nstart=0,
-                )
+            print("\nGenerating training set...")
+            images_train, _ = generator.generate(
+                catalog=catalog,
+                subset='train',
+                nimages=ntrain_val,
+                nstart=0,
+            )
 
-                def _write_tfrecord_sharded(images, name, image_shape, desc, n_shards):
-                    h, w = image_shape
-                    os.makedirs(Config.RECORDS_DIR, exist_ok=True)
-                    paths   = shard_paths(Config.RECORDS_DIR, name, n_shards)
-                    writers = open_shard_writers(paths)
-                    try:
-                        for idx, img in enumerate(tqdm(images, desc=desc, unit="img")):
-                            arr_fp16 = img.data.flatten().astype(np.float16)
-                            feature = {
-                                'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
-                                'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
-                                'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[h])),
-                                'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
-                            }
-                            serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
-                            writers[idx % n_shards].write(serialized)
-                    finally:
-                        for writer in writers:
-                            writer.close()
+            print("\nGenerating validation set...")
+            images_valid, _ = generator.generate(
+                catalog=catalog,
+                subset='validate',
+                nimages=nvalid_val,
+                nstart=ntrain_val,  # different seeds from training
+            )
 
-                # Write training TFRecord shards
-                _write_tfrecord_sharded(
-                    images_train, 'clean_train', (image_size_val, image_size_val),
-                    "Saving train", Config.TRAIN_SHARDS,
-                )
-                print(f"  Saved: {Config.RECORDS_DIR}/clean_train-* ({Config.TRAIN_SHARDS} shards)")
+            def _write_sharded(images, name, n_shards, desc):
+                os.makedirs(Config.RECORDS_DIR, exist_ok=True)
+                paths   = shard_paths(Config.RECORDS_DIR, name, n_shards)
+                writers = open_shard_writers(paths)
+                h = w = image_size_val
+                try:
+                    for idx, img in enumerate(tqdm(images, desc=desc, unit="img")):
+                        arr_fp16 = img.data.flatten().astype(np.float16)
+                        feature = {
+                            'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
+                            'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
+                            'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[h])),
+                            'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
+                        }
+                        serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
+                        writers[idx % n_shards].write(serialized)
+                finally:
+                    for writer in writers:
+                        writer.close()
 
-                # Write validation TFRecord shards
-                _write_tfrecord_sharded(
-                    images_valid, 'clean_validate', (image_size_val, image_size_val),
-                    "Saving validate", Config.VALIDATE_SHARDS,
-                )
-                print(f"  Saved: {Config.RECORDS_DIR}/clean_validate-* ({Config.VALIDATE_SHARDS} shards)")
+            _write_sharded(images_train, 'clean_train',    Config.TRAIN_SHARDS,    "Saving train")
+            print(f"  ✓ clean_train-* → {Config.RECORDS_DIR} ({Config.TRAIN_SHARDS} shards)")
 
-                print("\n✓ Clean data generation completed!")
+            _write_sharded(images_valid, 'clean_validate', Config.VALIDATE_SHARDS, "Saving validate")
+            print(f"  ✓ clean_validate-* → {Config.RECORDS_DIR} ({Config.VALIDATE_SHARDS} shards)")
 
-            except Exception as e:
-                print(f"\n✗ Generation failed: {e}")
-                traceback.print_exc()
+            print("\n✓ Clean data generation completed!")
+
+        except Exception as e:
+            print(f"\n✗ Generation failed: {e}")
+            traceback.print_exc()
 
     def _training_menu(self):
         """Model training menu."""

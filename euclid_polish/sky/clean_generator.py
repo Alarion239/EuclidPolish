@@ -352,7 +352,6 @@ class CleanSkyGenerator:
     def generate(
         self,
         catalog: galsim.COSMOSCatalog,
-        output_dir: str,
         subset: str = "train",
         nimages: int = Config.DEFAULT_NIMAGES,
         nstart: int = 0,
@@ -364,14 +363,12 @@ class CleanSkyGenerator:
         -----------
         catalog : galsim.COSMOSCatalog
             COSMOS galaxy catalog.
-        output_dir : str
-            Output directory.
         subset : str
             Either 'train' or 'validate'.
         nimages : int
             Number of images to generate.
         nstart : int
-            Starting index for naming.
+            Starting index (used to seed RNG, avoids train/validate overlap).
 
         Returns:
         --------
@@ -382,9 +379,6 @@ class CleanSkyGenerator:
         """
         if subset not in ("train", "validate"):
             raise ValueError("subset must be 'train' or 'validate'.")
-
-        output_dir_data = os.path.join(output_dir, subset)
-        os.makedirs(output_dir_data, exist_ok=True)
 
         sim = CleanGalaxySimulator(
             image_size=self.config.image_size,
