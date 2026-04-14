@@ -54,7 +54,7 @@ def parse_record_graph(raw_record: tf.Tensor) -> tf.Tensor:
     Returns a float32 tensor of shape [H, W, 1].
     """
     ex = tf.io.parse_single_example(raw_record, SkyImage._TFRECORD_FEATURES)
-    pixels = tf.cast(tf.io.decode_raw(ex['image'], tf.float16), tf.float32)
+    pixels = tf.io.decode_raw(ex['image'], tf.float32)
     h = tf.cast(ex['height'], tf.int32)
     w = tf.cast(ex['width'],  tf.int32)
     return tf.reshape(pixels, [h, w, 1])

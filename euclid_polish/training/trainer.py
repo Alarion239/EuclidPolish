@@ -15,6 +15,7 @@ from tf_keras.optimizers import Adam
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
 
+from euclid_polish.config import Config
 from euclid_polish.training.models.common import evaluate
 
 
@@ -81,6 +82,7 @@ class Trainer:
         steps=300000,
         evaluate_every=1000,
         save_best_only=True,
+        validate_images=Config.DEFAULT_VALIDATE_IMAGES,
     ):
         """
         Train the model.
@@ -97,6 +99,8 @@ class Trainer:
             Evaluate every N steps.
         save_best_only : bool
             Only save checkpoints when PSNR improves.
+        validate_images : int
+            Max number of validation images to evaluate on during training.
         """
         loss_mean = Mean()
 
@@ -130,8 +134,8 @@ class Trainer:
                 loss_value = loss_mean.result()
                 loss_mean.reset_state()
 
-                # Compute PSNR on validation dataset
-                psnr_value = self.evaluate(valid_dataset)
+                # Compute PSNR on validation dataset (capped at validate_images)
+                psnr_value = self.evaluate(valid_dataset.take(validate_images))
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(

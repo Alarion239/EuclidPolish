@@ -70,6 +70,7 @@ class Config:
     DEFAULT_NOISE_STD            = 0.01
     DEFAULT_NORMALIZE            = True
     DEFAULT_NBIT                 = 16
+    MAX_PIXEL_VALUE              = float(2 ** DEFAULT_NBIT - 1)  # 65535.0
 
     # Star magnitude distribution (probability thresholds and ranges)
     STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
@@ -90,6 +91,7 @@ class Config:
     DEFAULT_TRAIN_STEPS          = 100_000
     DEFAULT_BATCH_SIZE           = 16
     DEFAULT_EVALUATE_EVERY       = 1000
+    DEFAULT_VALIDATE_IMAGES      = 30
     DEFAULT_NUM_RES_BLOCKS       = 32
     DEFAULT_CHECKPOINT_DIR       = "./ckpt/wdsr"
     DEFAULT_HR_CROP_SIZE         = 96

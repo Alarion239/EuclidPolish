@@ -3,15 +3,18 @@ import tensorflow_probability as tfp
 from tf_keras.layers import Add, Conv2D, Input, Lambda
 from tf_keras.models import Model
 
+from euclid_polish.config import Config
 from euclid_polish.training.models.common import pixel_shuffle
 
+_HALF = 2.0 ** Config.DEFAULT_NBIT / 2.0   # 32768.0 — matches polish-pub
 
-# Fixed linear transforms: [0, 1] ↔ [-1, 1]
+
+# Fixed linear transforms: [0, 65535] ↔ ~[-1, 1]  (matching polish-pub)
 def _normalize(x):
-    return x * 2.0 - 1.0
+    return (x - _HALF) / _HALF
 
 def _denormalize(x):
-    return (x + 1.0) / 2.0
+    return x * _HALF + _HALF
 
 
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
@@ -39,9 +42,9 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 
 
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6, res_block_scaling=None, nchan=1):
-    """WDSR model. Expects input in [0, 1] (pre-normalized per image)."""
+    """WDSR model. Expects input in [0, 65535] (pre-normalized per image)."""
     x_in = Input(shape=(None, None, nchan))
-    x = Lambda(_normalize)(x_in)   # [0, 1] → [-1, 1]
+    x = Lambda(_normalize)(x_in)   # [0, 65535] → [-1, 1]
 
     # main branch
     m = conv2d_weightnorm(num_filters, nchan, padding='same')(x)
@@ -55,6 +58,6 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6, res_blo
     s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])
-    x = Lambda(_denormalize)(x)    # [-1, 1] → [0, 1]
+    x = Lambda(_denormalize)(x)    # [-1, 1] → [0, 65535]
 
     return Model(x_in, x, name="wdsr")

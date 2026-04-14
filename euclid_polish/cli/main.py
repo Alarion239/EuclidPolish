@@ -551,13 +551,8 @@ class InteractiveCLI:
             rebin_factor=Config.DEFAULT_REBIN_FACTOR,
             add_noise=Config.DEFAULT_ADD_NOISE,
             noise_std=Config.DEFAULT_NOISE_STD,
-            normalize=False,  # we handle normalization below
+            normalize=False,  # raw flux values stored; normalization at training time
         ))
-
-        def _normalize_01(data):
-            d = data - data.min()
-            dmax = d.max()
-            return (d / max(dmax, 1e-8)).astype(np.float32)
 
         all_viz_pairs = []
 
@@ -581,13 +576,6 @@ class InteractiveCLI:
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
                         lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
-
-                        # Match polish-pub normalization:
-                        # 1. Noise was already added at the raw-flux scale
-                        #    (before normalization), matching convolvehr()
-                        # 2. Normalize both HR and LR independently to [0, 1]
-                        hr_image.data = _normalize_01(hr_image.data)
-                        lr_image.data = _normalize_01(lr_image.data)
 
                         dirty_writer.write(lr_image.to_tfrecord())
                         clean_writer.write(hr_image.to_tfrecord())

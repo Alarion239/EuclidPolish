@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.training.models.common import resolve_single, normalize_01
+from euclid_polish.training.models.common import resolve_single, normalize
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
@@ -103,7 +103,7 @@ def reconstruct(
     lr_data : ndarray, shape (H, W)
         The input LR image (2-D, original values).
     sr_data : ndarray, shape (H', W')
-        The super-resolved output (2-D, in [-1, 1] space).
+        The super-resolved output (2-D, clipped to [0, 1]).
     """
     # Load from file if needed
     if isinstance(lr_input, str):
@@ -123,9 +123,9 @@ def reconstruct(
     if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_data = lr_data[..., 0]
 
-    # Normalize to [0, 1] — same as training data (normalized at generation time)
+    # Normalize to [0, 1] — matching the per-image normalization in the data loader
     lr_3d = tf.constant(lr_data[:, :, None])
-    lr_norm = normalize_01(lr_3d)
+    lr_norm = normalize(lr_3d)
 
     sr_01 = resolve_single(model, lr_norm).numpy()
     sr_data = sr_01[..., 0] if sr_01.ndim == 3 else sr_01
