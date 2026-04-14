@@ -25,7 +25,7 @@ class EuclidDataset:
         subset: str = 'train',
         records_dir: str = Config.RECORDS_DIR,
         scale: int = 4,
-        hr_patch_size: int = 256,
+        hr_patch_size: int = Config.DEFAULT_HR_CROP_SIZE,
     ):
         """
         Parameters
@@ -68,10 +68,10 @@ class EuclidDataset:
         -------
         tf.data.Dataset yielding (lr_patch, hr_patch) float32 tensors.
         """
-        clean_files = tf.data.Dataset.list_files(self.clean_glob, shuffle=random_transform)
-        dirty_files = tf.data.Dataset.list_files(self.dirty_glob, shuffle=random_transform)
+        # Deterministic shard ordering so clean/dirty stay aligned after zip
+        clean_files = tf.data.Dataset.list_files(self.clean_glob, shuffle=False)
+        dirty_files = tf.data.Dataset.list_files(self.dirty_glob, shuffle=False)
 
-        # Parallel shard reads — the primary TFRecord speedup
         clean_ds = clean_files.interleave(
             tf.data.TFRecordDataset,
             cycle_length=AUTOTUNE,
@@ -84,9 +84,14 @@ class EuclidDataset:
             num_parallel_calls=AUTOTUNE,
         ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
 
+        # Cache decoded images in memory — avoids re-parsing TFRecords each epoch
+        clean_ds = clean_ds.cache()
+        dirty_ds = dirty_ds.cache()
+
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
 
         if random_transform:
+            ds = ds.shuffle(buffer_size=200)
             hr_patch = self.hr_patch_size
             scale    = self.scale
             ds = ds.map(
@@ -95,7 +100,6 @@ class EuclidDataset:
             )
             ds = ds.map(_random_flip,   num_parallel_calls=AUTOTUNE)
             ds = ds.map(_random_rotate, num_parallel_calls=AUTOTUNE)
-            ds = ds.shuffle(buffer_size=200)
 
         ds = ds.repeat(repeat_count)
         return ds.batch(batch_size).prefetch(AUTOTUNE)

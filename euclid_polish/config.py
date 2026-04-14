@@ -93,6 +93,17 @@ class Config:
     GALSIM_FOLDING_THRESHOLD     = 1e-4
     GALSIM_MAXK_THRESHOLD        = 1e-2
 
+    # Training defaults
+    DEFAULT_TRAIN_STEPS          = 100_000
+    DEFAULT_BATCH_SIZE           = 16
+    DEFAULT_EVALUATE_EVERY       = 1000
+    DEFAULT_NUM_RES_BLOCKS       = 32
+    DEFAULT_CHECKPOINT_DIR       = "./ckpt/wdsr"
+    DEFAULT_HR_CROP_SIZE         = 96
+
+    # Reconstruction output
+    VIS_RECONSTRUCTION_DIR       = "./data/vis/reconstruction"
+
     # PSF extraction defaults
     DEFAULT_PSF_SIZE = 255
     DEFAULT_PSF_FWHM = 3.0

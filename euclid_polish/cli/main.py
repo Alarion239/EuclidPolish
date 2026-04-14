@@ -677,7 +677,8 @@ class InteractiveCLI:
                 choices=[
                     {"name": "🏋️  Train WDSR model", "value": "train"},
                     {"name": "📈 Evaluate model", "value": "evaluate"},
-                    {"name": "🔄 Restore from checkpoint", "value": "restore"},
+                    {"name": "🔬 Reconstruct image (inference)", "value": "reconstruct"},
+                    {"name": "🔄 Inspect checkpoints", "value": "inspect"},
                     {"name": "🔙 Back to main menu", "value": "back"},
                 ]
             ).ask()
@@ -688,23 +689,29 @@ class InteractiveCLI:
             if choice == "train":
                 self._train_model()
             elif choice == "evaluate":
-                print("\n📈 Evaluate model")
-                print("Use the training script with --evaluate flag")
-            elif choice == "restore":
-                print("\n🔄 Restore from checkpoint")
-                print("See restore.py for examples")
+                self._evaluate_model()
+            elif choice == "reconstruct":
+                self._reconstruct_image()
+            elif choice == "inspect":
+                self._inspect_checkpoints()
 
     def _train_model(self):
         """Train WDSR model."""
         scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
-        num_res_blocks = input("Number of residual blocks (default 32): ").strip() or "32"
-        checkpoint_dir = input("Checkpoint directory (default ./ckpt/wdsr): ").strip() or "./ckpt/wdsr"
+        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
+        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+        steps = input(f"Training steps (default {Config.DEFAULT_TRAIN_STEPS}): ").strip() or str(Config.DEFAULT_TRAIN_STEPS)
+        batch_size = input(f"Batch size (default {Config.DEFAULT_BATCH_SIZE}): ").strip() or str(Config.DEFAULT_BATCH_SIZE)
+        evaluate_every = input(f"Evaluate every N steps (default {Config.DEFAULT_EVALUATE_EVERY}): ").strip() or str(Config.DEFAULT_EVALUATE_EVERY)
 
         try:
             scale_val = int(scale)
             num_res_blocks_val = int(num_res_blocks)
+            steps_val = int(steps)
+            batch_size_val = int(batch_size)
+            evaluate_every_val = int(evaluate_every)
         except ValueError:
-            print("\n✗ Invalid input: scale and num_res_blocks must be integers")
+            print("\n✗ Invalid input: all values must be integers")
             return
 
         # Check that TFRecords exist
@@ -723,6 +730,9 @@ class InteractiveCLI:
         print(f"\nConfiguration:")
         print(f"  Scale: {scale_val}x")
         print(f"  Residual blocks: {num_res_blocks_val}")
+        print(f"  Training steps: {steps_val}")
+        print(f"  Batch size: {batch_size_val}")
+        print(f"  Evaluate every: {evaluate_every_val} steps")
         print(f"  Records: {Config.RECORDS_DIR}")
         print(f"  Checkpoint directory: {checkpoint_dir}")
 
@@ -751,17 +761,24 @@ class InteractiveCLI:
                 )
 
                 # Create datasets
-                train_ds = train_loader.dataset(batch_size=16, random_transform=True)
+                train_ds = train_loader.dataset(batch_size=batch_size_val, random_transform=True)
                 valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
                 # Train
                 print("\nStarting training...")
-                trainer.train(train_ds, valid_ds.take(10), steps=10000)
+                trainer.train(train_ds, valid_ds.take(10), steps=steps_val, evaluate_every=evaluate_every_val)
 
                 # Restore and evaluate
                 trainer.restore()
                 psnr = trainer.evaluate(valid_ds)
                 print(f'\nFinal PSNR = {psnr.numpy():.3f}')
+
+                # Offer to export weights
+                if confirm("\nExport trained weights to .h5 file?", default=True).ask():
+                    weights_dir = os.path.dirname(checkpoint_dir) or "."
+                    weights_path = os.path.join(weights_dir, f"wdsr_x{scale_val}.h5")
+                    trainer.model.save_weights(weights_path)
+                    print(f"  ✓ Weights saved to: {weights_path}")
 
                 print("\n✓ Training completed!")
 
@@ -770,6 +787,143 @@ class InteractiveCLI:
             except Exception as e:
                 print(f"\n✗ Training failed: {e}")
                 traceback.print_exc()
+
+    def _evaluate_model(self):
+        """Evaluate a trained model on the validation set."""
+        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
+        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
+
+        try:
+            scale_val = int(scale)
+            num_res_blocks_val = int(num_res_blocks)
+        except ValueError:
+            print("\n✗ Invalid input: scale and num_res_blocks must be integers")
+            return
+
+        if not tf.train.latest_checkpoint(checkpoint_dir):
+            print(f"\n✗ No checkpoints found in {checkpoint_dir}")
+            return
+
+        # Check that validation TFRecords exist
+        dirty_valid = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_validate-*.tfrecord"))
+        if not dirty_valid:
+            print(f"\n✗ No validation shards found in {Config.RECORDS_DIR}")
+            return
+
+        try:
+            from euclid_polish.training.inference import load_model_from_checkpoint
+
+            print(f"\nLoading model from {checkpoint_dir}...")
+            model = load_model_from_checkpoint(checkpoint_dir, scale_val, num_res_blocks_val)
+
+            valid_loader = EuclidDataset(scale=scale_val, subset='validate')
+            valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
+
+            print("Evaluating on validation set...")
+            psnr = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
+            print(f"\n✓ Validation PSNR = {psnr.numpy():.3f}")
+
+        except Exception as e:
+            print(f"\n✗ Evaluation failed: {e}")
+            traceback.print_exc()
+
+    def _inspect_checkpoints(self):
+        """List available checkpoints in a directory."""
+        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+
+        if not os.path.isdir(checkpoint_dir):
+            print(f"\n✗ Directory not found: {checkpoint_dir}")
+            return
+
+        ckpt_state = tf.train.get_checkpoint_state(checkpoint_dir)
+        if ckpt_state is None or not ckpt_state.all_model_checkpoint_paths:
+            print(f"\n✗ No checkpoints found in {checkpoint_dir}")
+            return
+
+        latest = tf.train.latest_checkpoint(checkpoint_dir)
+        print(f"\nCheckpoints in {checkpoint_dir}:\n")
+
+        for path in ckpt_state.all_model_checkpoint_paths:
+            marker = " ← latest" if path == latest else ""
+            print(f"  {os.path.basename(path)}{marker}")
+
+        print(f"\n  Total: {len(ckpt_state.all_model_checkpoint_paths)} checkpoint(s)")
+
+    def _reconstruct_image(self):
+        """Apply super-resolution to a single LR image."""
+        lr_path = input("Path to LR image (.npy or .png): ").strip()
+        if not lr_path or not os.path.exists(lr_path):
+            print(f"\n✗ File not found: {lr_path}")
+            return
+
+        source = select(
+            "Load model from:",
+            choices=[
+                {"name": "Checkpoint directory", "value": "checkpoint"},
+                {"name": ".h5 weights file", "value": "weights"},
+            ]
+        ).ask()
+
+        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
+        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
+
+        try:
+            scale_val = int(scale)
+            num_res_blocks_val = int(num_res_blocks)
+        except ValueError:
+            print("\n✗ Invalid input: scale and num_res_blocks must be integers")
+            return
+
+        try:
+            from euclid_polish.training.inference import (
+                load_model_from_checkpoint,
+                load_model_from_weights,
+                reconstruct,
+                plot_reconstruction,
+            )
+
+            if source == "checkpoint":
+                ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+                if not tf.train.latest_checkpoint(ckpt_dir):
+                    print(f"\n✗ No checkpoints found in {ckpt_dir}")
+                    return
+                print(f"\nLoading model from checkpoint {ckpt_dir}...")
+                model = load_model_from_checkpoint(ckpt_dir, scale_val, num_res_blocks_val)
+            else:
+                weights_path = input("Path to .h5 weights file: ").strip()
+                if not weights_path or not os.path.exists(weights_path):
+                    print(f"\n✗ Weights file not found: {weights_path}")
+                    return
+                print(f"\nLoading model from {weights_path}...")
+                model = load_model_from_weights(weights_path, scale_val, num_res_blocks_val)
+
+            hr_path = input("Path to HR ground truth (optional, press Enter to skip): ").strip() or None
+            hr_data = None
+            if hr_path:
+                if not os.path.exists(hr_path):
+                    print(f"  ⚠️  HR file not found, skipping: {hr_path}")
+                elif hr_path.endswith(".npy"):
+                    hr_data = np.load(hr_path)
+                elif hr_path.endswith(".png"):
+                    raw = tf.io.read_file(hr_path)
+                    hr_data = tf.image.decode_png(raw, dtype=tf.uint16).numpy().astype(np.float32)
+                    if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
+                        hr_data = hr_data[..., 0]
+
+            print("Running super-resolution...")
+            lr_data, sr_data = reconstruct(model, lr_path)
+
+            os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
+            basename = os.path.splitext(os.path.basename(lr_path))[0]
+            output_path = os.path.join(Config.VIS_RECONSTRUCTION_DIR, f"reconstruct_{basename}.png")
+
+            plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
+            print(f"\n✓ Reconstruction saved to: {output_path}")
+
+        except Exception as e:
+            print(f"\n✗ Reconstruction failed: {e}")
+            traceback.print_exc()
 
     def _ask_clip_percentile(self) -> float:
         """Prompt the user for a clip percentile, defaulting to Config.DEFAULT_CLIP_PERCENTILE."""
