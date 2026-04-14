@@ -13,6 +13,7 @@ from tf_keras.losses import MeanAbsoluteError
 from tf_keras.metrics import Mean
 from tf_keras.optimizers import Adam
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+from tqdm import tqdm
 
 from euclid_polish.training.models.common import evaluate
 
@@ -102,13 +103,27 @@ class Trainer:
         ckpt_mgr = self.checkpoint_manager
         ckpt = self.checkpoint
 
+        start_step = int(ckpt.step.numpy())
+        remaining = steps - start_step
+
+        pbar = tqdm(
+            train_dataset.take(remaining),
+            total=remaining,
+            initial=0,
+            desc="Training",
+            unit="step",
+            ncols=120,
+        )
+
         self.now = time.perf_counter()
 
-        for lr, hr in train_dataset.take(steps - ckpt.step.numpy()):
+        for lr, hr in pbar:
             ckpt.step.assign_add(1)
             step = ckpt.step.numpy()
             loss = self.train_step(lr, hr)
             loss_mean(loss)
+
+            pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
 
             if step % evaluate_every == 0:
                 loss_value = loss_mean.result()
@@ -118,8 +133,12 @@ class Trainer:
                 psnr_value = self.evaluate(valid_dataset, nbit=self.nbit)
 
                 duration = time.perf_counter() - self.now
-                print(
-                    f"{step}/{steps}: loss = {loss_value.numpy():.3f}, "
+                pbar.set_postfix(
+                    loss=f"{loss_value.numpy():.3f}",
+                    PSNR=f"{psnr_value.numpy():.3f}",
+                )
+                tqdm.write(
+                    f"  Step {step}/{steps}: loss = {loss_value.numpy():.3f}, "
                     f"PSNR = {psnr_value.numpy():.3f} ({duration:.2f}s)"
                 )
 
@@ -129,8 +148,11 @@ class Trainer:
 
                 ckpt.psnr = psnr_value
                 ckpt_mgr.save()
+                tqdm.write(f"  ✓ Checkpoint saved (PSNR: {psnr_value.numpy():.3f})")
 
                 self.now = time.perf_counter()
+
+        pbar.close()
 
     def kernel_loss(self, sr, lr):
         """Compute kernel loss (experimental)."""

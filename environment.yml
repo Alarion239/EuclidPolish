@@ -1,19 +1,20 @@
 name: EuclidPolishEnv
 channels:
-    - conda-forge
+  - conda-forge
 dependencies:
-    - astropy
-    - galsim
-    - matplotlib
-    - numpy
-    - opencv
-    - pandas
-    - python=3.12
-    - scikit-image
-    - scipy
-    - tensorflow
-    - tensorflow-probability
-    - tf-keras
-    - tqdm
-    - pip:
-          - python-dateutil==2.9.0.post0
+  - python=3.12
+  - tensorflow
+  - numpy
+  - pandas
+  - tensorflow-probability
+  - matplotlib
+  - opencv
+  - scipy
+  - astropy
+  - scikit-image
+  - tf-keras
+  - galsim
+  - tqdm
+  - astroquery
+  - photutils
+  - questionary
