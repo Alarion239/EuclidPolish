@@ -105,8 +105,10 @@ def _augment(
     hr_patch_size: int,
     scale: int,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Random crop + flip + rotate in a single map call (less threading overhead)."""
-    # --- crop ---
+    """Random crop only. Rotation and flip are disabled because the PSF is
+    non-symmetric — rotating a (LR, HR) pair would break the LR↔HR
+    correspondence (the rotated LR is not what you'd get by convolving the
+    rotated HR with the original PSF)."""
     lr_patch_size = hr_patch_size // scale
     hr_h = tf.shape(hr)[0]
     hr_w = tf.shape(hr)[1]
@@ -123,11 +125,4 @@ def _augment(
     lr_y = hr_y // scale
     lr = lr[lr_x : lr_x + lr_patch_size, lr_y : lr_y + lr_patch_size, :]
 
-    # --- flip ---
-    if tf.random.uniform(()) < 0.5:
-        lr = tf.image.flip_left_right(lr)
-        hr = tf.image.flip_left_right(hr)
-
-    # --- rotate ---
-    k = tf.random.uniform([], 0, 4, dtype=tf.int32)
-    return tf.image.rot90(lr, k), tf.image.rot90(hr, k)
+    return lr, hr
