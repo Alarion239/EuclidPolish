@@ -13,6 +13,17 @@ def normalize_minmax(x: tf.Tensor) -> tf.Tensor:
     return (x - x_min) / denom * 2.0 - 1.0
 
 
+def normalize_pair(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+    """Normalize an (LR, HR) pair using shared min/max so the same
+    physical value maps to the same normalized value in both images."""
+    pair_min = tf.minimum(tf.reduce_min(lr), tf.reduce_min(hr))
+    pair_max = tf.maximum(tf.reduce_max(lr), tf.reduce_max(hr))
+    denom = tf.maximum(pair_max - pair_min, 1e-8)
+    lr_norm = (lr - pair_min) / denom * 2.0 - 1.0
+    hr_norm = (hr - pair_min) / denom * 2.0 - 1.0
+    return lr_norm, hr_norm
+
+
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------

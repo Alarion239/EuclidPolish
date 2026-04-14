@@ -9,6 +9,7 @@ from euclid_polish.training.models.common import (
     resolve_single,
     evaluate,
     normalize_minmax,
+    normalize_pair,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "resolve_single",
     "evaluate",
     "normalize_minmax",
+    "normalize_pair",
 ]

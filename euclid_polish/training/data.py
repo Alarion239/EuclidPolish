@@ -10,7 +10,7 @@ from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
 from euclid_polish.sky.tfrecord import parse_record_graph, tfrecord_path
-from euclid_polish.training.models.common import normalize_minmax
+from euclid_polish.training.models.common import normalize_pair
 
 
 class EuclidDataset:
@@ -71,17 +71,19 @@ class EuclidDataset:
         """
         clean_ds = tf.data.TFRecordDataset(self.clean_file).map(
             parse_record_graph, num_parallel_calls=AUTOTUNE,
-        ).map(normalize_minmax, num_parallel_calls=AUTOTUNE)
-
+        )
         dirty_ds = tf.data.TFRecordDataset(self.dirty_file).map(
             parse_record_graph, num_parallel_calls=AUTOTUNE,
-        ).map(normalize_minmax, num_parallel_calls=AUTOTUNE)
+        )
 
-        # Cache AFTER normalization — cached data is already in [-1, 1]
+        # Cache decoded images before normalization
         clean_ds = clean_ds.cache()
         dirty_ds = dirty_ds.cache()
 
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
+
+        # Normalize each (LR, HR) pair with shared min/max
+        ds = ds.map(normalize_pair, num_parallel_calls=AUTOTUNE)
 
         if random_transform:
             ds = ds.shuffle(buffer_size=200)
