@@ -117,11 +117,9 @@ class Trainer:
 
         self.now = time.perf_counter()
 
-        # Track step in Python to avoid GPU→CPU sync (.numpy()) on every iteration
-        step = start_step
-
         for lr, hr in pbar:
-            step += 1
+            ckpt.step.assign_add(1)
+            step = ckpt.step.numpy()
             loss = self.train_step(lr, hr)
             loss_mean(loss)
 
@@ -129,9 +127,6 @@ class Trainer:
                 pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
 
             if step % evaluate_every == 0:
-                # Sync TF checkpoint step only at evaluation points
-                ckpt.step.assign(step)
-
                 loss_value = loss_mean.result()
                 loss_mean.reset_state()
 
@@ -158,8 +153,6 @@ class Trainer:
 
                 self.now = time.perf_counter()
 
-        # Final sync so checkpoint has the correct step count
-        ckpt.step.assign(step)
         pbar.close()
 
     def kernel_loss(self, sr, lr):
@@ -185,10 +178,9 @@ class Trainer:
             Loss value.
         """
         with tf.GradientTape() as tape:
-            lr = tf.cast(lr, tf.float16)
-            hr = tf.cast(hr, tf.float16)
+            lr = tf.cast(lr, tf.float32)
+            hr = tf.cast(hr, tf.float32)
             sr = self.checkpoint.model(lr, training=True)
-            sr = tf.cast(sr, tf.float16)
             loss_value = self.loss(sr, hr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
