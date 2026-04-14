@@ -123,7 +123,8 @@ class Trainer:
             loss = self.train_step(lr, hr)
             loss_mean(loss)
 
-            pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
+            if step % 50 == 0:
+                pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
 
             if step % evaluate_every == 0:
                 loss_value = loss_mean.result()

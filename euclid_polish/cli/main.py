@@ -766,7 +766,7 @@ class InteractiveCLI:
 
                 # Train
                 print("\nStarting training...")
-                trainer.train(train_ds, valid_ds.take(10), steps=steps_val, evaluate_every=evaluate_every_val)
+                trainer.train(train_ds, valid_ds, steps=steps_val, evaluate_every=evaluate_every_val)
 
                 # Restore and evaluate
                 trainer.restore()

@@ -84,7 +84,9 @@ class EuclidDataset:
             num_parallel_calls=AUTOTUNE,
         ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
 
-        # Cache decoded images in memory — avoids re-parsing TFRecords each epoch
+        # Cache decoded images in memory — avoids re-parsing TFRecords each epoch.
+        # cache() must see the full dataset before repeat/take, otherwise TF
+        # discards the partial cache with a warning on every pass.
         clean_ds = clean_ds.cache()
         dirty_ds = dirty_ds.cache()
 
@@ -94,12 +96,11 @@ class EuclidDataset:
             ds = ds.shuffle(buffer_size=200)
             hr_patch = self.hr_patch_size
             scale    = self.scale
+            # Single map for all augmentations — avoids 3 separate AUTOTUNE thread pools
             ds = ds.map(
-                lambda lr, hr: _random_crop(lr, hr, hr_patch, scale),
+                lambda lr, hr: _augment(lr, hr, hr_patch, scale),
                 num_parallel_calls=AUTOTUNE,
             )
-            ds = ds.map(_random_flip,   num_parallel_calls=AUTOTUNE)
-            ds = ds.map(_random_rotate, num_parallel_calls=AUTOTUNE)
 
         ds = ds.repeat(repeat_count)
         return ds.batch(batch_size).prefetch(AUTOTUNE)
@@ -109,18 +110,18 @@ class EuclidDataset:
 # Augmentation helpers
 # ---------------------------------------------------------------------------
 
-def _random_crop(
+def _augment(
     lr: tf.Tensor,
     hr: tf.Tensor,
     hr_patch_size: int,
     scale: int,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Crop aligned patches from LR and HR images."""
+    """Random crop + flip + rotate in a single map call (less threading overhead)."""
+    # --- crop ---
     lr_patch_size = hr_patch_size // scale
     hr_h = tf.shape(hr)[0]
     hr_w = tf.shape(hr)[1]
 
-    # Choose top-left in HR space, snapped to scale grid
     max_x = (hr_h - hr_patch_size) // scale * scale
     max_y = (hr_w - hr_patch_size) // scale * scale
     hr_x  = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
@@ -128,22 +129,16 @@ def _random_crop(
     hr_x  = hr_x // scale * scale
     hr_y  = hr_y // scale * scale
 
-    hr_patch = hr[hr_x : hr_x + hr_patch_size, hr_y : hr_y + hr_patch_size, :]
-    lr_x     = hr_x // scale
-    lr_y     = hr_y // scale
-    lr_patch = lr[lr_x : lr_x + lr_patch_size, lr_y : lr_y + lr_patch_size, :]
-    return lr_patch, hr_patch
+    hr = hr[hr_x : hr_x + hr_patch_size, hr_y : hr_y + hr_patch_size, :]
+    lr_x = hr_x // scale
+    lr_y = hr_y // scale
+    lr = lr[lr_x : lr_x + lr_patch_size, lr_y : lr_y + lr_patch_size, :]
 
-
-def _random_flip(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-    """Random left-right flip applied identically to both images."""
+    # --- flip ---
     if tf.random.uniform(()) < 0.5:
         lr = tf.image.flip_left_right(lr)
         hr = tf.image.flip_left_right(hr)
-    return lr, hr
 
-
-def _random_rotate(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-    """Random rotation by 0 / 90 / 180 / 270° applied identically to both images."""
+    # --- rotate ---
     k = tf.random.uniform([], 0, 4, dtype=tf.int32)
     return tf.image.rot90(lr, k), tf.image.rot90(hr, k)
