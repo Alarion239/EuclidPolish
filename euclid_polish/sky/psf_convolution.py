@@ -181,7 +181,7 @@ class PSFConvolution:
         ValueError
             If hr_image.pixel_scale != psf.pixel_scale.
         """
-        if hr_image.pixel_scale != psf.pixel_scale:
+        if abs(hr_image.pixel_scale - psf.pixel_scale) > 1e-4:
             raise ValueError(
                 f"Pixel scale mismatch: image has {hr_image.pixel_scale} arcsec/pix "
                 f"but PSF has {psf.pixel_scale} arcsec/pix. "

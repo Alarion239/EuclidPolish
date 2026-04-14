@@ -28,7 +28,7 @@ class PSFExtractionConfig:
     max_iters: int = Config.DEFAULT_PSF_MAX_ITERS
     accuracy: float = Config.DEFAULT_PSF_ACCURACY
     progress_bar: bool = True
-    oversampling: int = 4
+    oversampling: int = Config.DEFAULT_REBIN_FACTOR
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""

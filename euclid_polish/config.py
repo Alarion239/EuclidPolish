@@ -11,6 +11,7 @@ class Config:
 
     # Directory and file constants
     DATA_DIR = "./data"
+    DEFAULT_COSMOS_CATALOG_DIR = "./data/COSMOS"
     DEFAULT_OUTPUT_DIR = "./data/euclid_stars"
     CLEAN_DATA_DIR = "./data/clean_data"
     DIRTY_DATA_DIR = "./data/dirty_data"
@@ -18,10 +19,22 @@ class Config:
     CATALOG_FILE = "stars.json"
     CUTOUTS_SUBDIR = "cutouts"
 
+    # Visualization output
+    VIS_DIR              = "./data/vis"
+    VIS_CUTOUTS_DIR      = "./data/vis/cutouts"
+    VIS_PSF_DIR          = "./data/vis/psf"
+    VIS_CLEAN_DIR        = "./data/vis/clean"
+    VIS_DIRTY_DIR        = "./data/vis/dirty"
+
     # TFRecord storage
-    RECORDS_DIR     = "./data/images/records"
-    TRAIN_SHARDS    = 8
-    VALIDATE_SHARDS = 4
+    RECORDS_DIR          = "./data/images/records"
+    RECORDS_PER_SHARD    = 50   # target number of records per shard file
+
+    @staticmethod
+    def shard_count(n_images: int) -> int:
+        """Return a sensible shard count: ~50 images per shard, at least 1."""
+        count = max(1, round(n_images / Config.RECORDS_PER_SHARD))
+        return min(count, n_images)
 
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 256
@@ -48,7 +61,7 @@ class Config:
     HEADER_WIDTH = 60
 
     # Sky generation defaults
-    DEFAULT_IMAGE_SIZE           = 2048
+    DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     DEFAULT_GAL_DENSITY_ARCMIN2  = 40.0
     DEFAULT_STAR_DENSITY_ARCMIN2 = 2.0
@@ -59,7 +72,7 @@ class Config:
     VIS_PIXEL_SCALE_ARCSEC       = 0.10     # native Euclid VIS pixel scale (arcsec/pixel)
 
     # PSF convolution defaults
-    DEFAULT_REBIN_FACTOR         = 4
+    DEFAULT_REBIN_FACTOR         = 2
     DEFAULT_ADD_NOISE            = True
     DEFAULT_NOISE_STD            = 5.0
     DEFAULT_NORMALIZE            = True
@@ -87,4 +100,3 @@ class Config:
     DEFAULT_PSF_MAX_ITERS = 10
     DEFAULT_PSF_ACCURACY = 0.001
     DEFAULT_PSF_FITS_FILENAME = "euclid_psf.fits"
-    DEFAULT_PSF_NPY_FILENAME  = "euclid_psf.npy"

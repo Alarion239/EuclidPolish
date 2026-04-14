@@ -6,25 +6,20 @@ This module provides an interactive command-line interface for all EuclidPolish 
 """
 
 import glob
-import json
 import os
-import subprocess
 import sys
 import traceback
 
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
+
 from astropy.io import fits
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
+from questionary import select, confirm
 
-try:
-    from questionary import select, confirm, password
-except ImportError:
-    print("Installing questionary...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "questionary"])
-    from questionary import select, confirm, password
 
 from euclid_polish.config import Config
 from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
@@ -45,8 +40,8 @@ from euclid_polish.training import Trainer, EuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
-from euclid_polish.visualization.methods import draw_clean_image, draw_clean_dirty_pair
-from euclid_polish.sky.tfrecord import read_tfrecord, shard_paths, open_shard_writers
+from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair
+from euclid_polish.sky.tfrecord import read_tfrecord, read_skyimages, shard_paths, open_shard_writers, write_skyimages
 
 
 class InteractiveCLI:
@@ -397,11 +392,10 @@ class InteractiveCLI:
             epsf, fitted_stars = extractor.build_epsf(selected_files)
             epsf_pixel_scale = Config.VIS_PIXEL_SCALE_ARCSEC / config.oversampling
             psf = extractor.to_psf(epsf_pixel_scale)
-            fits_path, npy_path = psf.save(psf_dir)
+            fits_path = psf.save(psf_dir)
 
             print(f"\n✓ PSF extraction completed!")
             print(f"  FITS file: {fits_path}")
-            print(f"  NPY file: {npy_path}")
 
             # Show summary
             summary = extractor.get_summary()
@@ -518,108 +512,64 @@ class InteractiveCLI:
 
     def _convolve_hr_to_lr(self):
         """Convolve HR images to LR (dirty sky)."""
-        data_dir = input("Clean data directory (default ./data/clean_data): ").strip() or "./data/clean_data"
-        psf_path = input("PSF file path (default ./data/euclid_psf/euclid_psf.npy): ").strip() or "./data/euclid_psf/euclid_psf.npy"
-
-        # Validate paths
-        if not os.path.exists(data_dir):
-            print(f"\n✗ Data directory not found: {data_dir}")
-            return
+        default_psf = os.path.join(Config.EUCLID_PSF_DIR, Config.DEFAULT_PSF_FITS_FILENAME)
+        psf_path = input(f"PSF file path (default {default_psf}): ").strip() or default_psf
 
         if not os.path.exists(psf_path):
             print(f"\n✗ PSF file not found: {psf_path}")
             return
 
-        # Load PSF — assumed to be sampled at the HR image pixel scale
+        # Load PSF with metadata
         print(f"\nLoading PSF from {psf_path}...")
-        psf_array = np.load(psf_path)
-        print(f"  PSF shape: {psf_array.shape}, dtype: {psf_array.dtype}")
-        psf_kernel = PSF(data=psf_array, pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+        psf_kernel = PSF.from_fits(psf_path)
 
-        # Configure convolution (no noise, normalize=False → store raw float values as fp16)
-        config = ConvolutionConfig(
-            rebin_factor=4,
-            add_noise=False,
-            normalize=False,
-        )
+        print(f"  PSF shape: {psf_kernel.shape}, pixel_scale: {psf_kernel.pixel_scale} arcsec/pix")
 
-        convolver = PSFConvolution(config)
-
-        feature_description = {
-            'image': tf.io.FixedLenFeature([], tf.string),
-            'index': tf.io.FixedLenFeature([], tf.int64),
-            'height': tf.io.FixedLenFeature([], tf.int64),
-            'width': tf.io.FixedLenFeature([], tf.int64),
-        }
-
-        # Resolve which subsets exist
+        # Discover which subsets have clean TFRecords
         subsets_to_run = []
         for subset in ("train", "validate"):
-            subset_shards = sorted(glob.glob(
-                os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
-            ))
-            if subset_shards:
-                n_images = sum(1 for _ in tf.data.TFRecordDataset(subset_shards))
-                subsets_to_run.append((subset, subset_shards, n_images))
+            shards = sorted(glob.glob(os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")))
+            if shards:
+                n_images = sum(1 for _ in tf.data.TFRecordDataset(shards))
+                subsets_to_run.append((subset, shards, n_images))
             else:
-                print(f"  ⚠️  Skipping {subset}: no clean_{subset}-*.tfrecord found in {Config.RECORDS_DIR}")
+                print(f"  ⚠️  Skipping {subset}: no clean_{subset}-*.tfrecord in {Config.RECORDS_DIR}")
 
         if not subsets_to_run:
-            print(f"\n✗ No clean TFRecords found in {data_dir}")
+            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
             return
 
-        for subset, tfr_str, n_images in subsets_to_run:
-            print(f"\n  {subset}: {n_images} images")
+        print(f"\nSource: {Config.RECORDS_DIR}")
+        for subset, _, n_images in subsets_to_run:
+            n_dirty = Config.shard_count(n_images)
+            print(f"  clean_{subset}-*  →  dirty_{subset}-*  ({n_images} images → {n_dirty} shard{'s' if n_dirty > 1 else ''})")
         total = sum(n for _, _, n in subsets_to_run)
 
-        if not confirm(f"\nConvolve {total} images (train+valid) to dirty LR?", default=True).ask():
+        if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
             return
+
+        convolver = PSFConvolution(ConvolutionConfig(rebin_factor=Config.DEFAULT_REBIN_FACTOR, add_noise=False, normalize=False))
 
         all_viz_pairs = []
 
-        n_dirty_shards = Config.TRAIN_SHARDS
         for subset, clean_shards, n_images in subsets_to_run:
-            n_dirty_shards = Config.TRAIN_SHARDS if subset == 'train' else Config.VALIDATE_SHARDS
-            dirty_paths  = shard_paths(Config.RECORDS_DIR, f'dirty_{subset}', n_dirty_shards)
-            dirty_writers = open_shard_writers(dirty_paths)
-
-            n_ok = 0
-            n_err = 0
-            n_viz = 5
+            n_dirty_shards = Config.shard_count(n_images)
+            dirty_writers = open_shard_writers(
+                shard_paths(Config.RECORDS_DIR, f'dirty_{subset}', n_dirty_shards)
+            )
+            n_ok = n_err = 0
             viz_pairs = []
-            raw_dataset = tf.data.TFRecordDataset(clean_shards)
 
             try:
-                for raw_record in tqdm(raw_dataset, total=n_images, desc=f"Convolving {subset}"):
+                for raw_record in tqdm(tf.data.TFRecordDataset(clean_shards),
+                                       total=n_images, desc=f"Convolving {subset}"):
                     try:
-                        example = tf.io.parse_single_example(raw_record, feature_description)
-                        height = int(example['height'].numpy())
-                        width = int(example['width'].numpy())
-                        index = int(example['index'].numpy())
-
-                        # Decode fp16 image and cast to float32 for processing
-                        image_bytes = tf.io.decode_raw(example['image'], tf.float16)
-                        hr_data = tf.cast(tf.reshape(image_bytes, [height, width]), tf.float32).numpy()
-
-                        # Convolve and downsample (float output, no normalization)
-                        hr_image = SkyImage(data=hr_data, pixel_scale=Config.DEFAULT_PIXEL_SCALE, is_clean=True)
+                        hr_image = SkyImage.from_tfrecord(raw_record)
                         lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
+                        dirty_writers[n_ok % n_dirty_shards].write(lr_image.to_tfrecord())
 
-                        # Write dirty LR image as fp16 TFRecord shard
-                        lr_h, lr_w = lr_image.data.shape
-                        lr_fp16 = lr_image.data.flatten().astype(np.float16)
-                        feature = {
-                            'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[lr_fp16.tobytes()])),
-                            'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[index])),
-                            'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[lr_h])),
-                            'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[lr_w])),
-                        }
-                        serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
-                        dirty_writers[n_ok % n_dirty_shards].write(serialized)
-
-                        if len(viz_pairs) < n_viz:
-                            viz_pairs.append((hr_data, lr_image.data, index))
-
+                        if len(viz_pairs) < 10:
+                            viz_pairs.append((hr_image.data, lr_image.data, hr_image.index or n_ok))
                         n_ok += 1
 
                     except Exception as e:
@@ -629,23 +579,24 @@ class InteractiveCLI:
                 for w in dirty_writers:
                     w.close()
 
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}-* ({n_dirty_shards} shards)")
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}-* ({n_dirty_shards} shard{'s' if n_dirty_shards > 1 else ''})")
             all_viz_pairs.append((subset, viz_pairs))
 
-        if any(pairs for _, pairs in all_viz_pairs):
-            if confirm(f"\nVisualize sample HR/LR pairs?", default=True).ask():
-                for subset, viz_pairs in all_viz_pairs:
-                    if viz_pairs:
-                        vis_dir = os.path.join(data_dir, "vis", f"dirty_{subset}")
-                        os.makedirs(vis_dir, exist_ok=True)
-                        for hr_data, lr_data, index in viz_pairs:
-                            output_path = os.path.join(vis_dir, f'pair_{index:05d}.png')
-                            draw_clean_dirty_pair(hr_data, lr_data, output_path, index=index)
-                        print(f"  ✓ {subset}: {len(viz_pairs)} pair plots → {vis_dir}")
+        all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
+        if all_pairs:
+            if confirm("\nVisualize sample HR/LR pairs?", default=True).ask():
+                chosen = np.random.default_rng(42).permutation(len(all_pairs))[:5]
+                os.makedirs(Config.VIS_DIRTY_DIR, exist_ok=True)
+                for i in chosen:
+                    hr_data, lr_data, index = all_pairs[i]
+                    draw_clean_dirty_pair(hr_data, lr_data,
+                                          os.path.join(Config.VIS_DIRTY_DIR, f'pair_{index:05d}.png'),
+                                          index=index)
+                print(f"  ✓ {len(chosen)} pair plots → {Config.VIS_DIRTY_DIR}")
 
     def _generate_clean_data(self):
         """Generate clean sky data."""
-        catalog_path = input("Enter path to COSMOS catalog: ").strip()
+        catalog_path = input(f"Enter path to COSMOS catalog (default {Config.DEFAULT_COSMOS_CATALOG_DIR}): ").strip() or Config.DEFAULT_COSMOS_CATALOG_DIR
 
         if not os.path.exists(catalog_path):
             print(f"\n✗ Catalog not found: {catalog_path}")
@@ -671,9 +622,11 @@ class InteractiveCLI:
         print(f"  Validation images: {nvalid_val}")
         print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix")
         print(f"  Image size:        {image_size_val} x {image_size_val}")
+        n_train_shards = Config.shard_count(ntrain_val)
+        n_valid_shards = Config.shard_count(nvalid_val)
         print(f"  Output (TFRecord): {Config.RECORDS_DIR}/")
-        print(f"    clean_train-*    ({Config.TRAIN_SHARDS} shards)")
-        print(f"    clean_validate-* ({Config.VALIDATE_SHARDS} shards)")
+        print(f"    clean_train-*    ({n_train_shards} shard{'s' if n_train_shards > 1 else ''})")
+        print(f"    clean_validate-* ({n_valid_shards} shard{'s' if n_valid_shards > 1 else ''})")
 
         if not confirm("\nGenerate clean sky data?", default=True).ask():
             return
@@ -704,31 +657,11 @@ class InteractiveCLI:
                 nstart=ntrain_val,  # different seeds from training
             )
 
-            def _write_sharded(images, name, n_shards, desc):
-                os.makedirs(Config.RECORDS_DIR, exist_ok=True)
-                paths   = shard_paths(Config.RECORDS_DIR, name, n_shards)
-                writers = open_shard_writers(paths)
-                h = w = image_size_val
-                try:
-                    for idx, img in enumerate(tqdm(images, desc=desc, unit="img")):
-                        arr_fp16 = img.data.flatten().astype(np.float16)
-                        feature = {
-                            'image':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[arr_fp16.tobytes()])),
-                            'index':  tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
-                            'height': tf.train.Feature(int64_list=tf.train.Int64List(value=[h])),
-                            'width':  tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
-                        }
-                        serialized = tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
-                        writers[idx % n_shards].write(serialized)
-                finally:
-                    for writer in writers:
-                        writer.close()
+            write_skyimages(images_train, 'clean_train', n_train_shards)
+            print(f"  ✓ clean_train-* → {Config.RECORDS_DIR} ({n_train_shards} shard{'s' if n_train_shards > 1 else ''})")
 
-            _write_sharded(images_train, 'clean_train',    Config.TRAIN_SHARDS,    "Saving train")
-            print(f"  ✓ clean_train-* → {Config.RECORDS_DIR} ({Config.TRAIN_SHARDS} shards)")
-
-            _write_sharded(images_valid, 'clean_validate', Config.VALIDATE_SHARDS, "Saving validate")
-            print(f"  ✓ clean_validate-* → {Config.RECORDS_DIR} ({Config.VALIDATE_SHARDS} shards)")
+            write_skyimages(images_valid, 'clean_validate', n_valid_shards)
+            print(f"  ✓ clean_validate-* → {Config.RECORDS_DIR} ({n_valid_shards} shard{'s' if n_valid_shards > 1 else ''})")
 
             print("\n✓ Clean data generation completed!")
 
@@ -763,13 +696,10 @@ class InteractiveCLI:
 
     def _train_model(self):
         """Train WDSR model."""
-        scale = input("Scale factor (default 2): ").strip() or "2"
+        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
         num_res_blocks = input("Number of residual blocks (default 32): ").strip() or "32"
-
-        images_dir = input("Images directory (default ./data/clean_data): ").strip() or "./data/clean_data"
         checkpoint_dir = input("Checkpoint directory (default ./ckpt/wdsr): ").strip() or "./ckpt/wdsr"
 
-        # Validate inputs
         try:
             scale_val = int(scale)
             num_res_blocks_val = int(num_res_blocks)
@@ -777,34 +707,31 @@ class InteractiveCLI:
             print("\n✗ Invalid input: scale and num_res_blocks must be integers")
             return
 
-        if not os.path.exists(images_dir):
-            print(f"\n✗ Images directory not found: {images_dir}")
+        # Check that TFRecords exist
+        clean_train = glob.glob(os.path.join(Config.RECORDS_DIR, "clean_train-*.tfrecord"))
+        dirty_train = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_train-*.tfrecord"))
+
+        if not clean_train or not dirty_train:
+            print(f"\n✗ Training data not found in {Config.RECORDS_DIR}")
+            print("  Run clean sky generation and HR→LR convolution first.")
             return
 
-        # Check for dirty images
-        dirty_train_dir = os.path.join(images_dir, 'dirty_train')
-        dirty_valid_dir = os.path.join(images_dir, 'dirty_valid')
-
-        if not os.path.exists(dirty_train_dir):
-            print(f"\n⚠️  Warning: Dirty training images not found at {dirty_train_dir}")
-            print("    You may need to run HR to LR convolution first")
-            if not confirm("Continue anyway?", default=False).ask():
-                return
+        dirty_valid = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_validate-*.tfrecord"))
+        if not dirty_valid:
+            print(f"\n⚠️  No validation shards in {Config.RECORDS_DIR} — will train without validation")
 
         print(f"\nConfiguration:")
         print(f"  Scale: {scale_val}x")
         print(f"  Residual blocks: {num_res_blocks_val}")
-        print(f"  Images directory: {images_dir}")
+        print(f"  Records: {Config.RECORDS_DIR}")
         print(f"  Checkpoint directory: {checkpoint_dir}")
 
         if confirm("\nStart training?", default=True).ask():
             print("\n⚠️  Training will run until interrupted (Ctrl+C) or completion")
 
             try:
-                # Create model
                 model = wdsr(scale=scale_val, num_res_blocks=num_res_blocks_val, nchan=1)
 
-                # Create trainer
                 learning_rate = PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4])
                 trainer = Trainer(
                     model=model,
@@ -813,17 +740,14 @@ class InteractiveCLI:
                     checkpoint_dir=checkpoint_dir,
                 )
 
-                # Create data loaders
-                train_loader = RadioSky(
+                train_loader = EuclidDataset(
                     scale=scale_val,
                     subset='train',
-                    images_dir=images_dir,
                 )
 
-                valid_loader = RadioSky(
+                valid_loader = EuclidDataset(
                     scale=scale_val,
-                    subset='valid',
-                    images_dir=images_dir,
+                    subset='validate',
                 )
 
                 # Create datasets
@@ -846,6 +770,21 @@ class InteractiveCLI:
             except Exception as e:
                 print(f"\n✗ Training failed: {e}")
                 traceback.print_exc()
+
+    def _ask_clip_percentile(self) -> float:
+        """Prompt the user for a clip percentile, defaulting to Config.DEFAULT_CLIP_PERCENTILE."""
+        default = Config.DEFAULT_CLIP_PERCENTILE
+        raw = input(f"Clip percentile for visualization (default {default}): ").strip()
+        if not raw:
+            return default
+        try:
+            value = float(raw)
+            if not (0.0 < value <= 100.0):
+                raise ValueError
+            return value
+        except ValueError:
+            print(f"  ⚠️  Invalid value, using default ({default})")
+            return default
 
     def _visualization_menu(self):
         """Visualization menu."""
@@ -890,6 +829,8 @@ class InteractiveCLI:
             print("\n✗ Invalid input: number of stars must be an integer")
             return
 
+        clip_percentile = self._ask_clip_percentile()
+
         # Load catalog
         catalog = StarCatalog(output_dir)
         if not catalog.exists():
@@ -908,7 +849,7 @@ class InteractiveCLI:
 
         # Visualize each star
         cutout_dir = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
-        vis_dir = os.path.join(output_dir, Config.VIS_SUBDIR)
+        vis_dir = Config.VIS_CUTOUTS_DIR
         os.makedirs(vis_dir, exist_ok=True)
 
         print(f"\nVisualizing {len(selected_stars)} stars...")
@@ -924,15 +865,12 @@ class InteractiveCLI:
                 with fits.open(fits_files[0]) as hdul:
                     data = hdul[0].data
 
-                visualizer = BaseVisualizer()
+                visualizer = BaseVisualizer(clip_percentile=clip_percentile, rows=1, cols=3, figsize=(18, 6))
                 visualizer.add_scale_panel(data)
                 visualizer.add_scale_panel(data, log_scale=True)
-                visualizer.add_central_slices_panel(data)
-                visualizer.add_contours_panel(data)
-                visualizer.add_radial_profile_panel(data)
 
                 mag_str = f"{star['magnitude']:.2f}" if star.get('magnitude') else "N/A"
-                stats_dict = {
+                visualizer.add_statistics_panel(data, {
                     'title': 'Star Information:',
                     'stats': {
                         'ID': f"{star['id']:04d}",
@@ -940,9 +878,8 @@ class InteractiveCLI:
                         'Dec': f"{star['dec']:.6f}°",
                         'Magnitude': mag_str,
                     },
-                    'include_data_stats': True
-                }
-                visualizer.add_statistics_panel(data, stats_dict)
+                    'include_data_stats': True,
+                })
 
                 # Save figure
                 output_path = os.path.join(vis_dir, f'star_{star["id"]:04d}.png')
@@ -971,77 +908,69 @@ class InteractiveCLI:
             print(f"\n✗ PSF directory not found: {psf_dir}")
             return
 
-        # Look for PSF file
-        psf_file = os.path.join(psf_dir, "euclid_psf.npy")
+        # Look for PSF FITS file
+        psf_file = os.path.join(psf_dir, Config.DEFAULT_PSF_FITS_FILENAME)
         if not os.path.exists(psf_file):
             print(f"\n✗ PSF file not found: {psf_file}")
             return
 
+        clip_percentile = self._ask_clip_percentile()
+
         # Load PSF
         print(f"\nLoading PSF from {psf_file}...")
-        psf_data = np.load(psf_file)
+        psf = PSF.from_fits(psf_file)
+        psf_data = psf.data
 
-        # Create visualization
-        visualizer = BaseVisualizer()
+        # Create visualization (linear, log, stats)
+        visualizer = BaseVisualizer(clip_percentile=clip_percentile, rows=1, cols=3, figsize=(18, 6))
 
-        # 1. PSF image (linear scale with clipping)
         visualizer.add_scale_panel(psf_data, title_suffix='\nEuclid VIS PSF')
-
-        # 2. PSF image (log scale)
         visualizer.add_scale_panel(psf_data, log_scale=True)
 
-        # 3. Central slice through PSF
-        visualizer.add_central_slices_panel(psf_data)
-
-        # 4. PSF contour plot
-        visualizer.add_contours_panel(psf_data)
-
-        # 5. Radial profile
-        visualizer.add_radial_profile_panel(psf_data)
-
-        # 6. PSF statistics
         center_y, center_x = psf_data.shape[0] // 2, psf_data.shape[1] // 2
         x_slice = psf_data[center_y, :]
         y_slice = psf_data[:, center_x]
-
-        # Calculate statistics
-        total_flux = np.sum(psf_data)
         fwhm_y = estimate_fwhm(x_slice)
         fwhm_x = estimate_fwhm(y_slice)
         ellipticity = abs(fwhm_y - fwhm_x) / ((fwhm_y + fwhm_x) / 2) if (fwhm_y + fwhm_x) > 0 else 0
 
-        stats_dict = {
-            'title': 'PSF Statistics:',
-            'stats': {
-                'Shape': f"{psf_data.shape[0]} x {psf_data.shape[1]} pixels",
-                'Total Flux': f"{total_flux:.6f}",
-                'Center': f"({center_x}, {center_y})",
-                '': '',  # spacer
-                'FWHM X': f"{fwhm_x:.2f} pixels",
-                'FWHM Y': f"{fwhm_y:.2f} pixels",
-                'Ellipticity': f"{ellipticity:.4f}",
-            },
-            'include_data_stats': True
+        stats = {
+            'Pixel Scale': f"{psf.pixel_scale} arcsec/pix",
+            'Total Flux': f"{np.sum(psf_data):.6f}",
+            'Center': f"({center_x}, {center_y})",
+            'FWHM X': f"{fwhm_x:.2f} pixels",
+            'FWHM Y': f"{fwhm_y:.2f} pixels",
+            'Ellipticity': f"{ellipticity:.4f}",
         }
+        if psf.oversampling is not None:
+            stats['Oversampling'] = f"{psf.oversampling}x"
+        if psf.fwhm_arcsec is not None:
+            stats['FWHM'] = f"{psf.fwhm_arcsec:.3f} arcsec"
 
-        visualizer.add_statistics_panel(psf_data, stats_dict)
+        visualizer.add_statistics_panel(psf_data, {
+            'title': 'PSF Statistics:',
+            'stats': stats,
+            'include_data_stats': True,
+        })
 
-        plt.suptitle('Euclid VIS\nPSF', fontsize=16, y=0.98)
+        plt.suptitle('Euclid VIS PSF', fontsize=16, y=1.02)
 
-        # Save figure
-        output_path = os.path.join(psf_dir, 'euclid_psf_visualization.png')
+        # Save figure — name after the PSF directory
+        os.makedirs(Config.VIS_PSF_DIR, exist_ok=True)
+        dir_name = os.path.basename(os.path.normpath(psf_dir))
+        output_path = os.path.join(Config.VIS_PSF_DIR, f'{dir_name}.png')
         visualizer.save_figure(output_path)
 
         print(f"\n✓ PSF visualization saved to: {output_path}")
 
     def _visualize_training_data(self):
-        """Visualize training data."""
-        data_dir = input("Enter data directory (default ./data/clean_data): ").strip() or "./data/clean_data"
-        subset = select(
-            "Select subset:",
+        """Visualize training data (clean, dirty, or paired)."""
+        mode = select(
+            "What to visualize:",
             choices=[
-                {"name": "train", "value": "train"},
-                {"name": "valid", "value": "valid"},
+                {"name": "Clean (HR) images", "value": "clean"},
+                {"name": "Dirty (LR) images", "value": "dirty"},
+                {"name": "Clean + Dirty pairs", "value": "pair"},
             ]
         ).ask()
 
@@ -1052,32 +981,76 @@ class InteractiveCLI:
             print("\n✗ Invalid input: number of images must be an integer")
             return
 
-        # Validate directory
-        if not os.path.exists(data_dir):
-            print(f"\n✗ Data directory not found: {data_dir}")
+        clip_percentile = self._ask_clip_percentile()
+
+        # Glob across both train and validate subsets
+        clean_pattern = os.path.join(Config.RECORDS_DIR, "clean_*-*.tfrecord")
+        dirty_pattern = os.path.join(Config.RECORDS_DIR, "dirty_*-*.tfrecord")
+
+        need_clean = mode in ("clean", "pair")
+        need_dirty = mode in ("dirty", "pair")
+
+        if need_clean and not glob.glob(clean_pattern):
+            print(f"\n✗ No clean TFRecord shards found in {Config.RECORDS_DIR}")
             return
-
-        # Find TFRecord shards
-        tfrecord_path = os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
-        if not glob.glob(tfrecord_path):
-            print(f"\n✗ No TFRecord shards found: {tfrecord_path}")
+        if need_dirty and not glob.glob(dirty_pattern):
+            print(f"\n✗ No dirty TFRecord shards found in {Config.RECORDS_DIR}")
             return
-
-        # Output directory for visualizations
-        vis_dir = os.path.join(data_dir, 'vis')
-        os.makedirs(vis_dir, exist_ok=True)
-
-        # Visualize
-        print(f"\nVisualizing {num_images} images from {tfrecord_path}...")
 
         try:
-            images = read_tfrecord(tfrecord_path, num_images=num_images, mode='first')
-            for image, index, height, width in images:
-                output_path = os.path.join(vis_dir, f'image_{index:04d}.png')
-                draw_clean_image(image, output_path, index=index)
+            if mode == "clean":
+                vis_dir = Config.VIS_CLEAN_DIR
+                os.makedirs(vis_dir, exist_ok=True)
+                images = read_skyimages(clean_pattern, num_images=num_images, mode='random')
+                for img in images:
+                    path = os.path.join(vis_dir, f'clean_{img.index:04d}.png')
+                    draw_clean_image(img.data, path, index=img.index, clip_percentile=clip_percentile)
+                print(f"\n✓ {len(images)} clean images → {vis_dir}")
 
-            print(f"\n✓ Visualizations saved to {vis_dir}")
-            print(f"  Created {len(images)} images")
+            elif mode == "dirty":
+                vis_dir = Config.VIS_DIRTY_DIR
+                os.makedirs(vis_dir, exist_ok=True)
+                images = read_skyimages(dirty_pattern, num_images=num_images, mode='random')
+                for img in images:
+                    path = os.path.join(vis_dir, f'dirty_{img.index:04d}.png')
+                    draw_dirty_image(img.data, path, index=img.index, clip_percentile=clip_percentile)
+                print(f"\n✓ {len(images)} dirty images → {vis_dir}")
+
+            elif mode == "pair":
+                vis_dir = Config.VIS_DIRTY_DIR
+                os.makedirs(vis_dir, exist_ok=True)
+                n_drawn = 0
+
+                # Collect matched pairs per subset to avoid index-space collisions.
+                # Both subsets independently use 0-based indices, so matching across
+                # subsets with a combined dirty dict would pair wrong scenes.
+                all_pairs: list[tuple[SkyImage, SkyImage]] = []
+                for subset in ("train", "validate"):
+                    clean_sub = os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
+                    dirty_sub = os.path.join(Config.RECORDS_DIR, f"dirty_{subset}-*.tfrecord")
+                    if not glob.glob(clean_sub) or not glob.glob(dirty_sub):
+                        continue
+                    dirty_by_index = {
+                        img.index: img
+                        for img in read_skyimages(dirty_sub, num_images=9999)
+                    }
+                    for hr in read_skyimages(clean_sub, num_images=9999):
+                        lr = dirty_by_index.get(hr.index)
+                        if lr is not None:
+                            all_pairs.append((hr, lr))
+
+                if not all_pairs:
+                    print("\n✗ No matched clean/dirty pairs found")
+                    return
+
+                rng = np.random.default_rng(42)
+                chosen = rng.choice(len(all_pairs), min(num_images, len(all_pairs)), replace=False)
+                for i in chosen:
+                    hr, lr = all_pairs[i]
+                    path = os.path.join(vis_dir, f'pair_{hr.index:04d}.png')
+                    draw_clean_dirty_pair(hr.data, lr.data, path, index=hr.index, clip_percentile=clip_percentile)
+                    n_drawn += 1
+                print(f"\n✓ {n_drawn} pair plots → {vis_dir}")
 
         except Exception as e:
             print(f"\n✗ Visualization failed: {e}")

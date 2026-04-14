@@ -73,32 +73,29 @@ class PSF:
     def save(
         self,
         output_dir: str,
-        filename_fits: str = Config.DEFAULT_PSF_FITS_FILENAME,
-        filename_npy: str = Config.DEFAULT_PSF_NPY_FILENAME,
-    ) -> tuple[str, str]:
+        filename: str = Config.DEFAULT_PSF_FITS_FILENAME,
+    ) -> str:
         """
-        Save the PSF to FITS and numpy files.
+        Save the PSF to a FITS file.
 
-        The FITS file includes PXSCALE and OVERSAMP header keywords so the
-        kernel can be fully reconstructed from the file alone.
+        The FITS file includes PXSCALE, OVERSAMP, and FWHM header keywords
+        so the kernel can be fully reconstructed from the file alone.
 
         Parameters:
         -----------
         output_dir : str
             Output directory (created if absent).
-        filename_fits : str
+        filename : str
             FITS filename.
-        filename_npy : str
-            Numpy filename.
 
         Returns:
         --------
-        tuple[str, str]
-            (fits_path, npy_path)
+        str
+            Path to the saved FITS file.
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        fits_path = os.path.join(output_dir, filename_fits)
+        fits_path = os.path.join(output_dir, filename)
         primary_hdu = fits.PrimaryHDU(data=self.data)
         primary_hdu.header['PXSCALE'] = (self.pixel_scale, 'Pixel scale (arcsec/pixel)')
         if self.oversampling is not None:
@@ -108,31 +105,8 @@ class PSF:
         primary_hdu.header['COMMENT'] = 'Euclid VIS PSF extracted from bright star cutouts'
         fits.HDUList([primary_hdu]).writeto(fits_path, overwrite=True)
 
-        npy_path = os.path.join(output_dir, filename_npy)
-        np.save(npy_path, self.data)
-
         print(f"Saved PSF to: {fits_path}")
-        print(f"Saved PSF numpy array to: {npy_path}")
-        return fits_path, npy_path
-
-    @classmethod
-    def load(cls, npy_path: str, pixel_scale: float) -> PSF:
-        """
-        Load a PSF from a numpy file.
-
-        Parameters:
-        -----------
-        npy_path : str
-            Path to the .npy file.
-        pixel_scale : float
-            Pixel scale of the kernel grid in arcsec/pixel.
-
-        Returns:
-        --------
-        PSF
-        """
-        data = np.load(npy_path).astype(np.float32)
-        return cls(data=data, pixel_scale=pixel_scale)
+        return fits_path
 
     @classmethod
     def from_fits(cls, fits_path: str) -> PSF:

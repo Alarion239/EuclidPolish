@@ -9,6 +9,7 @@ layout (linear + log10 side-by-side) and differ only in title text.
 import numpy as np
 import matplotlib.pyplot as plt
 
+from euclid_polish.config import Config
 from euclid_polish.visualization.base import BaseVisualizer
 
 
@@ -16,7 +17,7 @@ def _draw_single(
     data: np.ndarray,
     output_path: str,
     title: str,
-    clip_percentile: float = 99.5,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """Core helper: 1×3 figure (linear | log10 | statistics) for a single image."""
     vis = BaseVisualizer(clip_percentile=clip_percentile, rows=1, cols=3, figsize=(22, 7))
@@ -24,7 +25,6 @@ def _draw_single(
     vis.add_scale_panel(data, log_scale=True)
     vis.add_statistics_panel(data, {'title': 'Statistics:', 'include_data_stats': True})
     plt.suptitle(title, fontsize=14)
-    plt.tight_layout()
     vis.save_figure(output_path)
 
 
@@ -32,7 +32,7 @@ def draw_clean_image(
     data: np.ndarray,
     output_path: str,
     index: int | None = None,
-    clip_percentile: float = 99.5,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """Visualize a clean (HR) sky image."""
     title = f'Clean Sky Image {index:04d}' if index is not None else 'Clean Sky Image'
@@ -43,7 +43,7 @@ def draw_dirty_image(
     data: np.ndarray,
     output_path: str,
     index: int | None = None,
-    clip_percentile: float = 99.5,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """Visualize a dirty (LR, PSF-convolved) image."""
     title = f'Dirty Image {index:04d}' if index is not None else 'Dirty Image'
@@ -54,7 +54,7 @@ def draw_cutout(
     data: np.ndarray,
     output_path: str,
     star_id: int | None = None,
-    clip_percentile: float = 99.5,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """Visualize a Euclid cutout around a star."""
     title = f'Cutout — Star {star_id:04d}' if star_id is not None else 'Cutout'
@@ -64,7 +64,7 @@ def draw_cutout(
 def draw_psf(
     data: np.ndarray,
     output_path: str,
-    clip_percentile: float = 99.5,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """Visualize a PSF."""
     _draw_single(data, output_path, 'Euclid VIS PSF', clip_percentile)
@@ -75,7 +75,7 @@ def draw_clean_dirty_pair(
     lr_data: np.ndarray,
     output_path: str,
     index: int | None = None,
-    clip_percentile: float = 95.0,
+    clip_percentile: float = Config.DEFAULT_CLIP_PERCENTILE,
 ) -> None:
     """
     Visualize a clean/dirty image pair.
@@ -93,5 +93,4 @@ def draw_clean_dirty_pair(
     vis.add_statistics_panel(lr_data, {'title': 'LR Dirty Stats:', 'include_data_stats': True})
     title = f'HR Clean vs LR Dirty — Image {index:05d}' if index is not None else 'HR Clean vs LR Dirty'
     plt.suptitle(title, fontsize=14)
-    plt.tight_layout()
     vis.save_figure(output_path)

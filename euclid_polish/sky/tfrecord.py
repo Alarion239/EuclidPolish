@@ -11,6 +11,9 @@ import tensorflow as tf
 from tqdm import tqdm
 import glob as _glob
 
+from euclid_polish.config import Config
+from euclid_polish.sky.types import SkyImage
+
 # ---------------------------------------------------------------------------
 # Sharded write helpers
 # ---------------------------------------------------------------------------
@@ -47,21 +50,8 @@ def parse_tfrecord_example(raw_record: bytes) -> tuple[np.ndarray, int, int, int
     height : int
     width : int
     """
-    feature_description = {
-        'image':  tf.io.FixedLenFeature([], tf.string),
-        'index':  tf.io.FixedLenFeature([], tf.int64),
-        'height': tf.io.FixedLenFeature([], tf.int64),
-        'width':  tf.io.FixedLenFeature([], tf.int64),
-    }
-    example = tf.io.parse_single_example(raw_record, feature_description)
-
-    image_bytes = tf.io.decode_raw(example['image'], tf.float16)
-    height = int(example['height'].numpy())
-    width  = int(example['width'].numpy())
-    index  = int(example['index'].numpy())
-    image  = tf.cast(tf.reshape(image_bytes, [height, width]), tf.float32).numpy()
-
-    return image, index, height, width
+    img = SkyImage.from_tfrecord(raw_record)
+    return img.data, img.index or 0, *img.shape
 
 
 def parse_record_graph(raw_record: tf.Tensor) -> tf.Tensor:
@@ -70,12 +60,7 @@ def parse_record_graph(raw_record: tf.Tensor) -> tf.Tensor:
 
     Returns a float32 tensor of shape [H, W, 1].
     """
-    ex = tf.io.parse_single_example(raw_record, {
-        'image':  tf.io.FixedLenFeature([], tf.string),
-        'index':  tf.io.FixedLenFeature([], tf.int64),
-        'height': tf.io.FixedLenFeature([], tf.int64),
-        'width':  tf.io.FixedLenFeature([], tf.int64),
-    })
+    ex = tf.io.parse_single_example(raw_record, SkyImage._TFRECORD_FEATURES)
     pixels = tf.cast(tf.io.decode_raw(ex['image'], tf.float16), tf.float32)
     h = tf.cast(ex['height'], tf.int32)
     w = tf.cast(ex['width'],  tf.int32)
@@ -132,5 +117,49 @@ def read_tfrecord(
     if mode == 'random':
         np.random.seed(seed)
         chosen = np.random.choice(len(all_images), n, replace=False)
+        return [all_images[i] for i in chosen]
+    raise ValueError(f"mode must be 'first' or 'random', got {mode!r}")
+
+
+# ---------------------------------------------------------------------------
+# Batch I/O with SkyImage
+# ---------------------------------------------------------------------------
+
+def write_skyimages(
+    images: list[SkyImage],
+    name: str,
+    n_shards: int,
+    records_dir: str = Config.RECORDS_DIR,
+) -> None:
+    """Write SkyImage objects to sharded TFRecords with progress bar."""
+    os.makedirs(records_dir, exist_ok=True)
+    paths = shard_paths(records_dir, name, n_shards)
+    writers = open_shard_writers(paths)
+    try:
+        for idx, img in enumerate(tqdm(images, desc=f"Writing {name}", unit="img")):
+            writers[idx % n_shards].write(img.to_tfrecord(index=idx))
+    finally:
+        for w in writers:
+            w.close()
+
+
+def read_skyimages(
+    tfrecord_path: str,
+    num_images: int = 5,
+    mode: str = 'first',
+) -> list[SkyImage]:
+    """Read TFRecords and return SkyImage objects.
+
+    pixel_scale and is_clean are read from the stored records.
+    """
+    paths = sorted(_glob.glob(tfrecord_path)) or [tfrecord_path]
+    dataset = tf.data.TFRecordDataset(paths)
+    all_images = [SkyImage.from_tfrecord(raw) for raw in tqdm(dataset, desc="Reading TFRecord")]
+
+    n = min(num_images, len(all_images))
+    if mode == 'first':
+        return all_images[:n]
+    if mode == 'random':
+        chosen = np.random.default_rng(42).choice(len(all_images), n, replace=False)
         return [all_images[i] for i in chosen]
     raise ValueError(f"mode must be 'first' or 'random', got {mode!r}")
