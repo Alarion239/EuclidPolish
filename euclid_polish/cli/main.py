@@ -41,7 +41,7 @@ from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair
-from euclid_polish.sky.tfrecord import read_tfrecord, read_skyimages, shard_paths, open_shard_writers, write_skyimages
+from euclid_polish.sky.tfrecord import read_tfrecord, read_skyimages, write_skyimages, tfrecord_path
 
 
 class InteractiveCLI:
@@ -528,12 +528,12 @@ class InteractiveCLI:
         # Discover which subsets have clean TFRecords
         subsets_to_run = []
         for subset in ("train", "validate"):
-            shards = sorted(glob.glob(os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")))
-            if shards:
-                n_images = sum(1 for _ in tf.data.TFRecordDataset(shards))
-                subsets_to_run.append((subset, shards, n_images))
+            clean_path = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+            if os.path.exists(clean_path):
+                n_images = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
+                subsets_to_run.append((subset, clean_path, n_images))
             else:
-                print(f"  ⚠️  Skipping {subset}: no clean_{subset}-*.tfrecord in {Config.RECORDS_DIR}")
+                print(f"  ⚠️  Skipping {subset}: {clean_path} not found")
 
         if not subsets_to_run:
             print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
@@ -541,8 +541,7 @@ class InteractiveCLI:
 
         print(f"\nSource: {Config.RECORDS_DIR}")
         for subset, _, n_images in subsets_to_run:
-            n_dirty = Config.shard_count(n_images)
-            print(f"  clean_{subset}-*  →  dirty_{subset}-*  ({n_images} images → {n_dirty} shard{'s' if n_dirty > 1 else ''})")
+            print(f"  clean_{subset}.tfrecord  →  dirty_{subset}.tfrecord  ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
 
         if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
@@ -552,21 +551,19 @@ class InteractiveCLI:
 
         all_viz_pairs = []
 
-        for subset, clean_shards, n_images in subsets_to_run:
-            n_dirty_shards = Config.shard_count(n_images)
-            dirty_writers = open_shard_writers(
-                shard_paths(Config.RECORDS_DIR, f'dirty_{subset}', n_dirty_shards)
-            )
+        for subset, clean_file, n_images in subsets_to_run:
+            dirty_path = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
+            dirty_writer = tf.io.TFRecordWriter(dirty_path)
             n_ok = n_err = 0
             viz_pairs = []
 
             try:
-                for raw_record in tqdm(tf.data.TFRecordDataset(clean_shards),
+                for raw_record in tqdm(tf.data.TFRecordDataset(clean_file),
                                        total=n_images, desc=f"Convolving {subset}"):
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
                         lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
-                        dirty_writers[n_ok % n_dirty_shards].write(lr_image.to_tfrecord())
+                        dirty_writer.write(lr_image.to_tfrecord())
 
                         if len(viz_pairs) < 10:
                             viz_pairs.append((hr_image.data, lr_image.data, hr_image.index or n_ok))
@@ -576,10 +573,9 @@ class InteractiveCLI:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             finally:
-                for w in dirty_writers:
-                    w.close()
+                dirty_writer.close()
 
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}-* ({n_dirty_shards} shard{'s' if n_dirty_shards > 1 else ''})")
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}.tfrecord")
             all_viz_pairs.append((subset, viz_pairs))
 
         all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
@@ -622,11 +618,9 @@ class InteractiveCLI:
         print(f"  Validation images: {nvalid_val}")
         print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix")
         print(f"  Image size:        {image_size_val} x {image_size_val}")
-        n_train_shards = Config.shard_count(ntrain_val)
-        n_valid_shards = Config.shard_count(nvalid_val)
         print(f"  Output (TFRecord): {Config.RECORDS_DIR}/")
-        print(f"    clean_train-*    ({n_train_shards} shard{'s' if n_train_shards > 1 else ''})")
-        print(f"    clean_validate-* ({n_valid_shards} shard{'s' if n_valid_shards > 1 else ''})")
+        print(f"    clean_train.tfrecord")
+        print(f"    clean_validate.tfrecord")
 
         if not confirm("\nGenerate clean sky data?", default=True).ask():
             return
@@ -657,11 +651,11 @@ class InteractiveCLI:
                 nstart=ntrain_val,  # different seeds from training
             )
 
-            write_skyimages(images_train, 'clean_train', n_train_shards)
-            print(f"  ✓ clean_train-* → {Config.RECORDS_DIR} ({n_train_shards} shard{'s' if n_train_shards > 1 else ''})")
+            write_skyimages(images_train, 'clean_train')
+            print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
 
-            write_skyimages(images_valid, 'clean_validate', n_valid_shards)
-            print(f"  ✓ clean_validate-* → {Config.RECORDS_DIR} ({n_valid_shards} shard{'s' if n_valid_shards > 1 else ''})")
+            write_skyimages(images_valid, 'clean_validate')
+            print(f"  ✓ clean_validate.tfrecord → {Config.RECORDS_DIR}")
 
             print("\n✓ Clean data generation completed!")
 
@@ -715,17 +709,17 @@ class InteractiveCLI:
             return
 
         # Check that TFRecords exist
-        clean_train = glob.glob(os.path.join(Config.RECORDS_DIR, "clean_train-*.tfrecord"))
-        dirty_train = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_train-*.tfrecord"))
+        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train")
+        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
 
-        if not clean_train or not dirty_train:
+        if not os.path.exists(clean_train) or not os.path.exists(dirty_train):
             print(f"\n✗ Training data not found in {Config.RECORDS_DIR}")
             print("  Run clean sky generation and HR→LR convolution first.")
             return
 
-        dirty_valid = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_validate-*.tfrecord"))
-        if not dirty_valid:
-            print(f"\n⚠️  No validation shards in {Config.RECORDS_DIR} — will train without validation")
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        if not os.path.exists(dirty_valid):
+            print(f"\n⚠️  No validation data in {Config.RECORDS_DIR} — will train without validation")
 
         print(f"\nConfiguration:")
         print(f"  Scale: {scale_val}x")
@@ -806,9 +800,9 @@ class InteractiveCLI:
             return
 
         # Check that validation TFRecords exist
-        dirty_valid = glob.glob(os.path.join(Config.RECORDS_DIR, "dirty_validate-*.tfrecord"))
-        if not dirty_valid:
-            print(f"\n✗ No validation shards found in {Config.RECORDS_DIR}")
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        if not os.path.exists(dirty_valid):
+            print(f"\n✗ No validation data found in {Config.RECORDS_DIR}")
             return
 
         try:
@@ -852,10 +846,56 @@ class InteractiveCLI:
 
     def _reconstruct_image(self):
         """Apply super-resolution to a single LR image."""
-        lr_path = input("Path to LR image (.npy or .png): ").strip()
-        if not lr_path or not os.path.exists(lr_path):
-            print(f"\n✗ File not found: {lr_path}")
-            return
+        input_source = select(
+            "Load LR image from:",
+            choices=[
+                {"name": "TFRecords (dirty images from training data)", "value": "tfrecord"},
+                {"name": "File path (.npy or .png)", "value": "file"},
+            ]
+        ).ask()
+
+        if input_source == "tfrecord":
+            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
+            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+            available = []
+            if os.path.exists(dirty_train):
+                available.append({"name": "dirty_train.tfrecord", "value": dirty_train})
+            if os.path.exists(dirty_valid):
+                available.append({"name": "dirty_validate.tfrecord", "value": dirty_valid})
+            if not available:
+                print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
+                return
+            tfr_path = select("Which dataset:", choices=available).ask()
+            num_str = input("Image index to reconstruct (default 0): ").strip() or "0"
+            try:
+                img_idx = int(num_str)
+            except ValueError:
+                print("\n✗ Invalid index")
+                return
+            images = read_skyimages(tfr_path, num_images=9999)
+            match = [img for img in images if img.index == img_idx]
+            if not match:
+                print(f"\n✗ No image with index {img_idx} found (available: 0–{len(images)-1})")
+                return
+            lr_data_input = match[0].data
+            lr_path = f"dirty_idx{img_idx}"
+
+            # Also try to load matching HR for comparison
+            clean_file = tfr_path.replace("dirty_", "clean_")
+            hr_data_auto = None
+            if os.path.exists(clean_file):
+                clean_images = read_skyimages(clean_file, num_images=9999)
+                hr_match = [img for img in clean_images if img.index == img_idx]
+                if hr_match:
+                    hr_data_auto = hr_match[0].data
+        else:
+            lr_file = input("Path to LR image (.npy or .png): ").strip()
+            if not lr_file or not os.path.exists(lr_file):
+                print(f"\n✗ File not found: {lr_file}")
+                return
+            lr_data_input = lr_file
+            lr_path = lr_file
+            hr_data_auto = None
 
         source = select(
             "Load model from:",
@@ -898,24 +938,26 @@ class InteractiveCLI:
                 print(f"\nLoading model from {weights_path}...")
                 model = load_model_from_weights(weights_path, scale_val, num_res_blocks_val)
 
-            hr_path = input("Path to HR ground truth (optional, press Enter to skip): ").strip() or None
-            hr_data = None
-            if hr_path:
-                if not os.path.exists(hr_path):
-                    print(f"  ⚠️  HR file not found, skipping: {hr_path}")
-                elif hr_path.endswith(".npy"):
-                    hr_data = np.load(hr_path)
-                elif hr_path.endswith(".png"):
-                    raw = tf.io.read_file(hr_path)
-                    hr_data = tf.image.decode_png(raw, dtype=tf.uint16).numpy().astype(np.float32)
-                    if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
-                        hr_data = hr_data[..., 0]
+            # HR ground truth: auto-loaded from TFRecord or manual path
+            hr_data = hr_data_auto if input_source == "tfrecord" else None
+            if hr_data is None and input_source != "tfrecord":
+                hr_path = input("Path to HR ground truth (optional, press Enter to skip): ").strip() or None
+                if hr_path:
+                    if not os.path.exists(hr_path):
+                        print(f"  ⚠️  HR file not found, skipping: {hr_path}")
+                    elif hr_path.endswith(".npy"):
+                        hr_data = np.load(hr_path)
+                    elif hr_path.endswith(".png"):
+                        raw = tf.io.read_file(hr_path)
+                        hr_data = tf.image.decode_png(raw, dtype=tf.uint16).numpy().astype(np.float32)
+                        if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
+                            hr_data = hr_data[..., 0]
 
             print("Running super-resolution...")
-            lr_data, sr_data = reconstruct(model, lr_path)
+            lr_data, sr_data = reconstruct(model, lr_data_input)
 
             os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
-            basename = os.path.splitext(os.path.basename(lr_path))[0]
+            basename = os.path.basename(lr_path).replace(".", "_")
             output_path = os.path.join(Config.VIS_RECONSTRUCTION_DIR, f"reconstruct_{basename}.png")
 
             plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
@@ -1137,18 +1179,18 @@ class InteractiveCLI:
 
         clip_percentile = self._ask_clip_percentile()
 
-        # Glob across both train and validate subsets
-        clean_pattern = os.path.join(Config.RECORDS_DIR, "clean_*-*.tfrecord")
-        dirty_pattern = os.path.join(Config.RECORDS_DIR, "dirty_*-*.tfrecord")
+        # Discover available TFRecord files
+        clean_pattern = os.path.join(Config.RECORDS_DIR, "clean_*.tfrecord")
+        dirty_pattern = os.path.join(Config.RECORDS_DIR, "dirty_*.tfrecord")
 
         need_clean = mode in ("clean", "pair")
         need_dirty = mode in ("dirty", "pair")
 
         if need_clean and not glob.glob(clean_pattern):
-            print(f"\n✗ No clean TFRecord shards found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
             return
         if need_dirty and not glob.glob(dirty_pattern):
-            print(f"\n✗ No dirty TFRecord shards found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
             return
 
         try:
@@ -1180,9 +1222,9 @@ class InteractiveCLI:
                 # subsets with a combined dirty dict would pair wrong scenes.
                 all_pairs: list[tuple[SkyImage, SkyImage]] = []
                 for subset in ("train", "validate"):
-                    clean_sub = os.path.join(Config.RECORDS_DIR, f"clean_{subset}-*.tfrecord")
-                    dirty_sub = os.path.join(Config.RECORDS_DIR, f"dirty_{subset}-*.tfrecord")
-                    if not glob.glob(clean_sub) or not glob.glob(dirty_sub):
+                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
+                    if not os.path.exists(clean_sub) or not os.path.exists(dirty_sub):
                         continue
                     dirty_by_index = {
                         img.index: img

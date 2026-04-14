@@ -9,14 +9,15 @@ import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import parse_record_graph
+from euclid_polish.sky.tfrecord import parse_record_graph, tfrecord_path
+from euclid_polish.training.models.common import normalize_minmax
 
 
 class EuclidDataset:
     """
     Data loader for Euclid super-resolution training.
 
-    Reads paired clean (HR) and dirty (LR) images from sharded TFRecords under
+    Reads paired clean (HR) and dirty (LR) images from TFRecords under
     Config.RECORDS_DIR and returns a tf.data.Dataset of (lr_patch, hr_patch) pairs.
     """
 
@@ -33,7 +34,7 @@ class EuclidDataset:
         subset : str
             'train' or 'validate'.
         records_dir : str
-            Directory containing sharded TFRecord files.
+            Directory containing TFRecord files.
         scale : int
             Super-resolution scale factor (hr_patch_size // scale = lr_patch_size).
         hr_patch_size : int
@@ -43,8 +44,8 @@ class EuclidDataset:
             raise ValueError("subset must be 'train' or 'validate'")
         self.scale         = scale
         self.hr_patch_size = hr_patch_size
-        self.clean_glob    = os.path.join(records_dir, f'clean_{subset}-*.tfrecord')
-        self.dirty_glob    = os.path.join(records_dir, f'dirty_{subset}-*.tfrecord')
+        self.clean_file    = tfrecord_path(records_dir, f'clean_{subset}')
+        self.dirty_file    = tfrecord_path(records_dir, f'dirty_{subset}')
 
     def dataset(
         self,
@@ -68,25 +69,15 @@ class EuclidDataset:
         -------
         tf.data.Dataset yielding (lr_patch, hr_patch) float32 tensors.
         """
-        # Deterministic shard ordering so clean/dirty stay aligned after zip
-        clean_files = tf.data.Dataset.list_files(self.clean_glob, shuffle=False)
-        dirty_files = tf.data.Dataset.list_files(self.dirty_glob, shuffle=False)
+        clean_ds = tf.data.TFRecordDataset(self.clean_file).map(
+            parse_record_graph, num_parallel_calls=AUTOTUNE,
+        ).map(normalize_minmax, num_parallel_calls=AUTOTUNE)
 
-        clean_ds = clean_files.interleave(
-            tf.data.TFRecordDataset,
-            cycle_length=AUTOTUNE,
-            num_parallel_calls=AUTOTUNE,
-        ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
+        dirty_ds = tf.data.TFRecordDataset(self.dirty_file).map(
+            parse_record_graph, num_parallel_calls=AUTOTUNE,
+        ).map(normalize_minmax, num_parallel_calls=AUTOTUNE)
 
-        dirty_ds = dirty_files.interleave(
-            tf.data.TFRecordDataset,
-            cycle_length=AUTOTUNE,
-            num_parallel_calls=AUTOTUNE,
-        ).map(parse_record_graph, num_parallel_calls=AUTOTUNE)
-
-        # Cache decoded images in memory — avoids re-parsing TFRecords each epoch.
-        # cache() must see the full dataset before repeat/take, otherwise TF
-        # discards the partial cache with a warning on every pass.
+        # Cache AFTER normalization — cached data is already in [-1, 1]
         clean_ds = clean_ds.cache()
         dirty_ds = dirty_ds.cache()
 
@@ -96,7 +87,6 @@ class EuclidDataset:
             ds = ds.shuffle(buffer_size=200)
             hr_patch = self.hr_patch_size
             scale    = self.scale
-            # Single map for all augmentations — avoids 3 separate AUTOTUNE thread pools
             ds = ds.map(
                 lambda lr, hr: _augment(lr, hr, hr_patch, scale),
                 num_parallel_calls=AUTOTUNE,

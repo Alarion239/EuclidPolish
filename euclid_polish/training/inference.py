@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.training.models.common import resolve_single
+from euclid_polish.training.models.common import resolve_single, normalize_minmax
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
@@ -46,8 +46,13 @@ def load_model_from_checkpoint(
     from tf_keras.losses import MeanAbsoluteError
 
     model = wdsr(scale=scale, num_res_blocks=num_res_blocks, nchan=nchan)
-    trainer = Trainer(model=model, loss=MeanAbsoluteError(), checkpoint_dir=checkpoint_dir)
-    return trainer.model
+    checkpoint = tf.train.Checkpoint(model=model)
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
+    checkpoint.restore(latest).expect_partial()
+    print(f"Model restored from checkpoint at {latest}.")
+    return model
 
 
 def load_model_from_weights(
@@ -82,7 +87,6 @@ def load_model_from_weights(
 def reconstruct(
     model,
     lr_input,
-    nbit: int = 16,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Apply super-resolution to a single LR image.
@@ -93,15 +97,13 @@ def reconstruct(
         Trained WDSR model.
     lr_input : str or np.ndarray
         Either a file path (.npy or .png) or a numpy array.
-    nbit : int
-        Bit depth for output clipping.
 
     Returns
     -------
     lr_data : ndarray, shape (H, W)
-        The input LR image (2-D).
+        The input LR image (2-D, original values).
     sr_data : ndarray, shape (H', W')
-        The super-resolved output (2-D).
+        The super-resolved output (2-D, in [-1, 1] space).
     """
     # Load from file if needed
     if isinstance(lr_input, str):
@@ -121,10 +123,12 @@ def reconstruct(
     if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_data = lr_data[..., 0]
 
-    # Add channel dimension for model input
-    lr_3d = lr_data[:, :, None]
-    sr_3d = resolve_single(model, lr_3d, nbit=nbit).numpy()
-    sr_data = sr_3d[..., 0] if sr_3d.ndim == 3 else sr_3d
+    # Normalize to [-1, 1] (same as training pipeline)
+    lr_3d = tf.constant(lr_data[:, :, None])
+    lr_norm = normalize_minmax(lr_3d)
+
+    sr_norm = resolve_single(model, lr_norm).numpy()
+    sr_data = sr_norm[..., 0] if sr_norm.ndim == 3 else sr_norm
 
     return lr_data, sr_data
 

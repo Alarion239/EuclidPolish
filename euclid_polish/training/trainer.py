@@ -131,7 +131,7 @@ class Trainer:
                 loss_mean.reset_state()
 
                 # Compute PSNR on validation dataset
-                psnr_value = self.evaluate(valid_dataset, nbit=self.nbit)
+                psnr_value = self.evaluate(valid_dataset)
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -178,8 +178,6 @@ class Trainer:
             Loss value.
         """
         with tf.GradientTape() as tape:
-            lr = tf.cast(lr, tf.float32)
-            hr = tf.cast(hr, tf.float32)
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)
 
@@ -190,7 +188,7 @@ class Trainer:
 
         return loss_value
 
-    def evaluate(self, dataset, nbit=16):
+    def evaluate(self, dataset):
         """
         Evaluate the model on a dataset.
 
@@ -198,15 +196,13 @@ class Trainer:
         -----------
         dataset : tf.data.Dataset
             Dataset to evaluate on.
-        nbit : int
-            Number of bits for image data.
 
         Returns:
         --------
         psnr_value : tf.Tensor
             Mean PSNR value.
         """
-        return evaluate(self.checkpoint.model, dataset, nbit=nbit)
+        return evaluate(self.checkpoint.model, dataset)
 
     def restore(self):
         """Restore model from checkpoint if available."""

@@ -14,25 +14,18 @@ import glob as _glob
 from euclid_polish.config import Config
 from euclid_polish.sky.types import SkyImage
 
+
 # ---------------------------------------------------------------------------
-# Sharded write helpers
+# File path helpers
 # ---------------------------------------------------------------------------
 
-def shard_paths(records_dir: str, name: str, n_shards: int) -> list[str]:
-    """Return the list of shard file paths for a given split name.
+def tfrecord_path(records_dir: str, name: str) -> str:
+    """Return the path for a single TFRecord file.
 
-    Example: shard_paths('./data/images/records', 'clean_train', 8)
-    → ['./data/images/records/clean_train-00000-of-00008.tfrecord', ...]
+    Example: tfrecord_path('./data/images/records', 'clean_train')
+    → './data/images/records/clean_train.tfrecord'
     """
-    return [
-        os.path.join(records_dir, f"{name}-{i:05d}-of-{n_shards:05d}.tfrecord")
-        for i in range(n_shards)
-    ]
-
-
-def open_shard_writers(paths: list[str]) -> list[tf.io.TFRecordWriter]:
-    """Open one TFRecordWriter per shard path."""
-    return [tf.io.TFRecordWriter(p) for p in paths]
+    return os.path.join(records_dir, f"{name}.tfrecord")
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +65,7 @@ def parse_record_graph(raw_record: tf.Tensor) -> tf.Tensor:
 # ---------------------------------------------------------------------------
 
 def read_tfrecord(
-    tfrecord_path: str,
+    tfrecord_path_or_glob: str,
     num_images: int = 5,
     mode: str = 'first',
     indices: list[int] | None = None,
@@ -83,8 +76,8 @@ def read_tfrecord(
 
     Parameters
     ----------
-    tfrecord_path : str
-        Path to a TFRecord file or a glob pattern matching multiple shards.
+    tfrecord_path_or_glob : str
+        Path to a TFRecord file or a glob pattern.
     num_images : int
         Number of images to return when mode is 'first' or 'random'.
     mode : str
@@ -98,7 +91,7 @@ def read_tfrecord(
     -------
     list of (image, index, height, width)
     """
-    paths = sorted(_glob.glob(tfrecord_path)) or [tfrecord_path]
+    paths = sorted(_glob.glob(tfrecord_path_or_glob)) or [tfrecord_path_or_glob]
     dataset = tf.data.TFRecordDataset(paths)
     all_images = [
         parse_tfrecord_example(raw)
@@ -128,23 +121,25 @@ def read_tfrecord(
 def write_skyimages(
     images: list[SkyImage],
     name: str,
-    n_shards: int,
     records_dir: str = Config.RECORDS_DIR,
-) -> None:
-    """Write SkyImage objects to sharded TFRecords with progress bar."""
+) -> str:
+    """Write SkyImage objects to a single TFRecord file.
+
+    Returns the path to the written file.
+    """
     os.makedirs(records_dir, exist_ok=True)
-    paths = shard_paths(records_dir, name, n_shards)
-    writers = open_shard_writers(paths)
+    path = tfrecord_path(records_dir, name)
+    writer = tf.io.TFRecordWriter(path)
     try:
         for idx, img in enumerate(tqdm(images, desc=f"Writing {name}", unit="img")):
-            writers[idx % n_shards].write(img.to_tfrecord(index=idx))
+            writer.write(img.to_tfrecord(index=idx))
     finally:
-        for w in writers:
-            w.close()
+        writer.close()
+    return path
 
 
 def read_skyimages(
-    tfrecord_path: str,
+    tfrecord_path_or_glob: str,
     num_images: int = 5,
     mode: str = 'first',
 ) -> list[SkyImage]:
@@ -152,7 +147,7 @@ def read_skyimages(
 
     pixel_scale and is_clean are read from the stored records.
     """
-    paths = sorted(_glob.glob(tfrecord_path)) or [tfrecord_path]
+    paths = sorted(_glob.glob(tfrecord_path_or_glob)) or [tfrecord_path_or_glob]
     dataset = tf.data.TFRecordDataset(paths)
     all_images = [SkyImage.from_tfrecord(raw) for raw in tqdm(dataset, desc="Reading TFRecord")]
 

@@ -28,13 +28,6 @@ class Config:
 
     # TFRecord storage
     RECORDS_DIR          = "./data/images/records"
-    RECORDS_PER_SHARD    = 50   # target number of records per shard file
-
-    @staticmethod
-    def shard_count(n_images: int) -> int:
-        """Return a sensible shard count: ~50 images per shard, at least 1."""
-        count = max(1, round(n_images / Config.RECORDS_PER_SHARD))
-        return min(count, n_images)
 
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 256
