@@ -24,7 +24,7 @@ class EuclidDataset:
         self,
         subset: str = 'train',
         records_dir: str = Config.RECORDS_DIR,
-        scale: int = 4,
+        scale: int = Config.DEFAULT_REBIN_FACTOR,
         hr_patch_size: int = Config.DEFAULT_HR_CROP_SIZE,
     ):
         """
@@ -48,7 +48,7 @@ class EuclidDataset:
 
     def dataset(
         self,
-        batch_size: int = 16,
+        batch_size: int = Config.DEFAULT_BATCH_SIZE,
         random_transform: bool = True,
         repeat_count: int | None = None,
     ) -> tf.data.Dataset:

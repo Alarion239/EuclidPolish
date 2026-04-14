@@ -67,7 +67,7 @@ class Config:
     # PSF convolution defaults
     DEFAULT_REBIN_FACTOR         = 2
     DEFAULT_ADD_NOISE            = True
-    DEFAULT_NOISE_STD            = 5.0
+    DEFAULT_NOISE_STD            = 0.01
     DEFAULT_NORMALIZE            = True
     DEFAULT_NBIT                 = 16
 

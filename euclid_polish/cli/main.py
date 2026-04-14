@@ -547,26 +547,50 @@ class InteractiveCLI:
         if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
             return
 
-        convolver = PSFConvolution(ConvolutionConfig(rebin_factor=Config.DEFAULT_REBIN_FACTOR, add_noise=False, normalize=False))
+        convolver = PSFConvolution(ConvolutionConfig(
+            rebin_factor=Config.DEFAULT_REBIN_FACTOR,
+            add_noise=Config.DEFAULT_ADD_NOISE,
+            noise_std=Config.DEFAULT_NOISE_STD,
+            normalize=False,  # we handle normalization below
+        ))
+
+        def _normalize_01(data):
+            d = data - data.min()
+            dmax = d.max()
+            return (d / max(dmax, 1e-8)).astype(np.float32)
 
         all_viz_pairs = []
 
         for subset, clean_file, n_images in subsets_to_run:
             dirty_path = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
+            clean_out_path = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+
+            # Read all clean records first (can't read/write the same file)
+            clean_records = list(tqdm(
+                tf.data.TFRecordDataset(clean_file),
+                total=n_images, desc=f"Loading {subset}",
+            ))
+
             dirty_writer = tf.io.TFRecordWriter(dirty_path)
+            clean_writer = tf.io.TFRecordWriter(clean_out_path)
             n_ok = n_err = 0
             viz_pairs = []
 
             try:
-                for raw_record in tqdm(tf.data.TFRecordDataset(clean_file),
-                                       total=n_images, desc=f"Convolving {subset}"):
+                for raw_record in tqdm(clean_records, desc=f"Convolving {subset}"):
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
                         lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
-                        # Normalize LR to [0, 1] (same as clean images)
-                        d = lr_image.data
-                        lr_image.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
+
+                        # Match polish-pub normalization:
+                        # 1. Noise was already added at the raw-flux scale
+                        #    (before normalization), matching convolvehr()
+                        # 2. Normalize both HR and LR independently to [0, 1]
+                        hr_image.data = _normalize_01(hr_image.data)
+                        lr_image.data = _normalize_01(lr_image.data)
+
                         dirty_writer.write(lr_image.to_tfrecord())
+                        clean_writer.write(hr_image.to_tfrecord())
 
                         if len(viz_pairs) < 10:
                             viz_pairs.append((hr_image.data, lr_image.data, hr_image.index or n_ok))
@@ -577,8 +601,9 @@ class InteractiveCLI:
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             finally:
                 dirty_writer.close()
+                clean_writer.close()
 
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}.tfrecord")
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}.tfrecord + clean_{subset}.tfrecord")
             all_viz_pairs.append((subset, viz_pairs))
 
         all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
@@ -654,14 +679,9 @@ class InteractiveCLI:
                 nstart=ntrain_val,  # different seeds from training
             )
 
-            # Normalize each image independently to [0, 1] before writing
-            for img in images_train:
-                d = img.data
-                img.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
-            for img in images_valid:
-                d = img.data
-                img.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
-
+            # Store raw flux values — normalization to [0, 1] is done
+            # during HR→LR convolution, where both clean and dirty can be
+            # normalized jointly (matching polish-pub's approach).
             write_skyimages(images_train, 'clean_train')
             print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
 
