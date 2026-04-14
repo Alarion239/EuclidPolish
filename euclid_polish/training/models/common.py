@@ -2,26 +2,19 @@ import tensorflow as tf
 
 
 # ---------------------------------------------------------------------------
-# Per-image min-max normalization (used in the data pipeline, NOT in the model)
+# Per-image min-max normalization to [0, 1].
+#
+# Applied once at data-generation time so that every image (LR and HR alike)
+# is independently mapped to [0, 1] and stored that way in TFRecords.
+# This makes training and inference see the exact same value range.
 # ---------------------------------------------------------------------------
 
-def normalize_minmax(x: tf.Tensor) -> tf.Tensor:
-    """Per-image min-max normalization to [-1, 1]."""
+def normalize_01(x: tf.Tensor) -> tf.Tensor:
+    """Per-image min-max normalization to [0, 1]."""
     x_min = tf.reduce_min(x)
     x_max = tf.reduce_max(x)
     denom = tf.maximum(x_max - x_min, 1e-8)
-    return (x - x_min) / denom * 2.0 - 1.0
-
-
-def normalize_pair(lr: tf.Tensor, hr: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-    """Normalize an (LR, HR) pair using shared min/max so the same
-    physical value maps to the same normalized value in both images."""
-    pair_min = tf.minimum(tf.reduce_min(lr), tf.reduce_min(hr))
-    pair_max = tf.maximum(tf.reduce_max(lr), tf.reduce_max(hr))
-    denom = tf.maximum(pair_max - pair_min, 1e-8)
-    lr_norm = (lr - pair_min) / denom * 2.0 - 1.0
-    hr_norm = (hr - pair_min) / denom * 2.0 - 1.0
-    return lr_norm, hr_norm
+    return (x - x_min) / denom
 
 
 # ---------------------------------------------------------------------------
@@ -35,12 +28,11 @@ def resolve_single(model, lr):
 
 
 def evaluate(model, dataset):
-    """Evaluate model PSNR on a dataset of (lr, hr) pairs in [-1, 1] space."""
+    """Evaluate model PSNR on a dataset of (lr, hr) pairs in [0, 1] space."""
     psnr_values = []
     for lr, hr in dataset:
         sr = model(lr)
-        # Both sr and hr should be in [-1, 1]; compute PSNR with max_val=2.0
-        psnr_value = tf.image.psnr(hr, sr, max_val=2.0)[0]
+        psnr_value = tf.image.psnr(hr, sr, max_val=1.0)[0]
         psnr_values.append(psnr_value)
     return tf.reduce_mean(psnr_values)
 

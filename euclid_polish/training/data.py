@@ -10,7 +10,6 @@ from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
 from euclid_polish.sky.tfrecord import parse_record_graph, tfrecord_path
-from euclid_polish.training.models.common import normalize_pair
 
 
 class EuclidDataset:
@@ -81,9 +80,7 @@ class EuclidDataset:
         dirty_ds = dirty_ds.cache()
 
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
-
-        # Normalize each (LR, HR) pair with shared min/max
-        ds = ds.map(normalize_pair, num_parallel_calls=AUTOTUNE)
+        # Data is already in [0, 1] from TFRecords (normalized at generation time)
 
         if random_transform:
             ds = ds.shuffle(buffer_size=200)

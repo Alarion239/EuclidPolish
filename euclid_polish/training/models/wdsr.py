@@ -6,6 +6,14 @@ from tf_keras.models import Model
 from euclid_polish.training.models.common import pixel_shuffle
 
 
+# Fixed linear transforms: [0, 1] ↔ [-1, 1]
+def _normalize(x):
+    return x * 2.0 - 1.0
+
+def _denormalize(x):
+    return (x + 1.0) / 2.0
+
+
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
     return tfp.layers.weight_norm.WeightNorm(
     	Conv2D(
@@ -14,7 +22,8 @@ def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **k
             padding=padding,
             activation=activation,
             **kwargs,
-        )
+        ),
+        data_init=False,
     )
 
 
@@ -30,20 +39,22 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 
 
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6, res_block_scaling=None, nchan=1):
-    """WDSR model. Expects input already normalized to [-1, 1]."""
+    """WDSR model. Expects input in [0, 1] (pre-normalized per image)."""
     x_in = Input(shape=(None, None, nchan))
+    x = Lambda(_normalize)(x_in)   # [0, 1] → [-1, 1]
 
     # main branch
-    m = conv2d_weightnorm(num_filters, nchan, padding='same')(x_in)
+    m = conv2d_weightnorm(num_filters, nchan, padding='same')(x)
     for i in range(num_res_blocks):
         m = res_block(m, num_filters, res_block_expansion, kernel_size=3, scaling=res_block_scaling)
     m = conv2d_weightnorm(nchan * scale ** 2, 3, padding='same', name=f'conv2d_main_scale_{scale}')(m)
     m = Lambda(pixel_shuffle(scale))(m)
 
     # skip branch
-    s = conv2d_weightnorm(nchan * scale ** 2, 5, padding='same', name=f'conv2d_skip_scale_{scale}')(x_in)
+    s = conv2d_weightnorm(nchan * scale ** 2, 5, padding='same', name=f'conv2d_skip_scale_{scale}')(x)
     s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])
+    x = Lambda(_denormalize)(x)    # [-1, 1] → [0, 1]
 
     return Model(x_in, x, name="wdsr")

@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.training.models.common import resolve_single, normalize_minmax
+from euclid_polish.training.models.common import resolve_single, normalize_01
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
@@ -123,12 +123,12 @@ def reconstruct(
     if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_data = lr_data[..., 0]
 
-    # Normalize to [-1, 1] (same as training pipeline)
+    # Normalize to [0, 1] — same as training data (normalized at generation time)
     lr_3d = tf.constant(lr_data[:, :, None])
-    lr_norm = normalize_minmax(lr_3d)
+    lr_norm = normalize_01(lr_3d)
 
-    sr_norm = resolve_single(model, lr_norm).numpy()
-    sr_data = sr_norm[..., 0] if sr_norm.ndim == 3 else sr_norm
+    sr_01 = resolve_single(model, lr_norm).numpy()
+    sr_data = sr_01[..., 0] if sr_01.ndim == 3 else sr_01
 
     return lr_data, sr_data
 

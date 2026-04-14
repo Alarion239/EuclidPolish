@@ -563,6 +563,9 @@ class InteractiveCLI:
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
                         lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
+                        # Normalize LR to [0, 1] (same as clean images)
+                        d = lr_image.data
+                        lr_image.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
                         dirty_writer.write(lr_image.to_tfrecord())
 
                         if len(viz_pairs) < 10:
@@ -650,6 +653,14 @@ class InteractiveCLI:
                 nimages=nvalid_val,
                 nstart=ntrain_val,  # different seeds from training
             )
+
+            # Normalize each image independently to [0, 1] before writing
+            for img in images_train:
+                d = img.data
+                img.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
+            for img in images_valid:
+                d = img.data
+                img.data = ((d - d.min()) / max(d.max() - d.min(), 1e-8)).astype(np.float32)
 
             write_skyimages(images_train, 'clean_train')
             print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
