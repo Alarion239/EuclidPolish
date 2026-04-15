@@ -26,12 +26,16 @@ def resolve_single(model, lr):
 
 
 def evaluate(model, dataset):
-    """Evaluate model PSNR on a dataset of (lr, hr) pairs in [0, 65535] space."""
+    """Evaluate model PSNR on a dataset of (lr, hr) pairs in [0, 65535] space.
+
+    Both hr (from TFRecords) and sr are kept as float32 so that
+    tf.image.psnr receives matching dtypes.  The clip + round already
+    simulates uint16 quantisation without changing the tensor type.
+    """
     psnr_values = []
     for lr, hr in dataset:
         sr = tf.clip_by_value(model(lr), 0.0, MAX_VAL)
         sr = tf.round(sr)
-        sr = tf.cast(sr, tf.uint16)
         psnr_value = tf.image.psnr(hr, sr, max_val=MAX_VAL)[0]
         psnr_values.append(psnr_value)
     return tf.reduce_mean(psnr_values)
