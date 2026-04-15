@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.training.models.common import resolve_single, normalize
+from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
@@ -91,19 +91,24 @@ def reconstruct(
     """
     Apply super-resolution to a single LR image.
 
+    The input must already be in [0, 65535] (the same range the model was
+    trained on).  Normalized uint16 PNGs or the ``*_norm`` TFRecords
+    satisfy this requirement directly.  No additional per-image
+    normalization is applied here.
+
     Parameters
     ----------
     model : tf.keras.Model
         Trained WDSR model.
     lr_input : str or np.ndarray
-        Either a file path (.npy or .png) or a numpy array.
+        Either a file path (.npy or .png) or a numpy array in [0, 65535].
 
     Returns
     -------
     lr_data : ndarray, shape (H, W)
-        The input LR image (2-D, original values).
+        The input LR image (2-D).
     sr_data : ndarray, shape (H', W')
-        The super-resolved output (2-D, clipped to [0, 1]).
+        The super-resolved output (2-D, clipped to [0, 65535]).
     """
     # Load from file if needed
     if isinstance(lr_input, str):
@@ -123,12 +128,10 @@ def reconstruct(
     if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_data = lr_data[..., 0]
 
-    # Normalize to [0, 1] — matching the per-image normalization in the data loader
+    # Feed directly to model — input must already be in [0, 65535]
     lr_3d = tf.constant(lr_data[:, :, None])
-    lr_norm = normalize(lr_3d)
-
-    sr_01 = resolve_single(model, lr_norm).numpy()
-    sr_data = sr_01[..., 0] if sr_01.ndim == 3 else sr_01
+    sr = resolve_single(model, lr_3d).numpy().astype(np.float32)
+    sr_data = sr[..., 0] if sr.ndim == 3 else sr
 
     return lr_data, sr_data
 
@@ -159,15 +162,22 @@ def plot_reconstruction(
     ncols = 3 if hr_data is not None else 2
     vis = BaseVisualizer(
         clip_percentile=clip_percentile,
-        rows=1,
+        rows=2,
         cols=ncols,
-        figsize=(11 * ncols, 10),
+        figsize=(11 * ncols, 20),
     )
 
+    # Row 1: linear scale
     vis.add_scale_panel(lr_data, title_suffix="\nDirty (LR)")
     vis.add_scale_panel(sr_data, title_suffix="\nPOLISH Reconstruction (SR)")
     if hr_data is not None:
         vis.add_scale_panel(hr_data, title_suffix="\nTrue Sky (HR)")
+
+    # Row 2: log scale
+    vis.add_scale_panel(lr_data, title_suffix="\nDirty (LR)", log_scale=True)
+    vis.add_scale_panel(sr_data, title_suffix="\nPOLISH Reconstruction (SR)", log_scale=True)
+    if hr_data is not None:
+        vis.add_scale_panel(hr_data, title_suffix="\nTrue Sky (HR)", log_scale=True)
 
     plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
     vis.save_figure(output_path)

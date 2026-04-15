@@ -540,8 +540,10 @@ class InteractiveCLI:
             return
 
         print(f"\nSource: {Config.RECORDS_DIR}")
+        print(f"  Noise: {Config.DEFAULT_NOISE_FRACTION*100:.1f}% of per-image mean flux")
+        print(f"  Rebin factor: {Config.DEFAULT_REBIN_FACTOR}x")
         for subset, _, n_images in subsets_to_run:
-            print(f"  clean_{subset}.tfrecord  →  dirty_{subset}.tfrecord  ({n_images} images)")
+            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord + *_norm.tfrecord  ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
 
         if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
@@ -550,15 +552,14 @@ class InteractiveCLI:
         convolver = PSFConvolution(ConvolutionConfig(
             rebin_factor=Config.DEFAULT_REBIN_FACTOR,
             add_noise=Config.DEFAULT_ADD_NOISE,
-            noise_std=Config.DEFAULT_NOISE_STD,
-            normalize=False,  # raw flux values stored; normalization at training time
         ))
 
         all_viz_pairs = []
 
         for subset, clean_file, n_images in subsets_to_run:
-            dirty_path = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
-            clean_out_path = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+            clean_out_path   = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+            dirty_norm_path  = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}_norm")
+            clean_norm_path  = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}_norm")
 
             # Read all clean records first (can't read/write the same file)
             clean_records = list(tqdm(
@@ -566,8 +567,9 @@ class InteractiveCLI:
                 total=n_images, desc=f"Loading {subset}",
             ))
 
-            dirty_writer = tf.io.TFRecordWriter(dirty_path)
-            clean_writer = tf.io.TFRecordWriter(clean_out_path)
+            clean_writer      = tf.io.TFRecordWriter(clean_out_path)
+            dirty_norm_writer = tf.io.TFRecordWriter(dirty_norm_path)
+            clean_norm_writer = tf.io.TFRecordWriter(clean_norm_path)
             n_ok = n_err = 0
             viz_pairs = []
 
@@ -575,23 +577,37 @@ class InteractiveCLI:
                 for raw_record in tqdm(clean_records, desc=f"Convolving {subset}"):
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
-                        lr_image, _ = convolver.process_hr_to_lr(hr_image, psf_kernel)
 
-                        dirty_writer.write(lr_image.to_tfrecord())
+                        # Matching polish-pub pipeline:
+                        #   noise → convolve → normalize uint16 full-res →
+                        #   downsample → normalize uint16 again
+                        # Also normalizes noise-free HR → uint16.
+                        lr_norm, hr_norm, _ = convolver.process_hr_to_lr(
+                            hr_image, psf_kernel,
+                        )
+
+                        # Save raw float32 clean HR (before normalization)
                         clean_writer.write(hr_image.to_tfrecord())
 
+                        # Save normalized pair (uint16-valued, [0, 65535])
+                        clean_norm_writer.write(hr_norm.to_tfrecord())
+                        dirty_norm_writer.write(lr_norm.to_tfrecord())
+
                         if len(viz_pairs) < 10:
-                            viz_pairs.append((hr_image.data, lr_image.data, hr_image.index or n_ok))
+                            viz_pairs.append((hr_norm.data, lr_norm.data, hr_image.index or n_ok))
                         n_ok += 1
 
                     except Exception as e:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             finally:
-                dirty_writer.close()
                 clean_writer.close()
+                dirty_norm_writer.close()
+                clean_norm_writer.close()
 
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → dirty_{subset}.tfrecord + clean_{subset}.tfrecord")
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped")
+            print(f"    Raw:  clean_{subset}.tfrecord (raw float32 HR)")
+            print(f"    Norm: dirty_{subset}_norm.tfrecord + clean_{subset}_norm.tfrecord")
             all_viz_pairs.append((subset, viz_pairs))
 
         all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
@@ -667,9 +683,9 @@ class InteractiveCLI:
                 nstart=ntrain_val,  # different seeds from training
             )
 
-            # Store raw flux values — normalization to [0, 1] is done
-            # during HR→LR convolution, where both clean and dirty can be
-            # normalized jointly (matching polish-pub's approach).
+            # Store raw flux values — per-image min-max normalization
+            # to [0, 65535] happens later during the HR→LR convolution step,
+            # which normalizes both HR and LR independently.
             write_skyimages(images_train, 'clean_train')
             print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
 
@@ -727,16 +743,16 @@ class InteractiveCLI:
             print("\n✗ Invalid input: all values must be integers")
             return
 
-        # Check that TFRecords exist
-        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train")
-        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
+        # Check that normalized TFRecords exist
+        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train_norm")
+        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train_norm")
 
         if not os.path.exists(clean_train) or not os.path.exists(dirty_train):
-            print(f"\n✗ Training data not found in {Config.RECORDS_DIR}")
+            print(f"\n✗ Normalized training data not found in {Config.RECORDS_DIR}")
             print("  Run clean sky generation and HR→LR convolution first.")
             return
 
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
         if not os.path.exists(dirty_valid):
             print(f"\n⚠️  No validation data in {Config.RECORDS_DIR} — will train without validation")
 
@@ -818,8 +834,8 @@ class InteractiveCLI:
             print(f"\n✗ No checkpoints found in {checkpoint_dir}")
             return
 
-        # Check that validation TFRecords exist
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        # Check that normalized validation TFRecords exist
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
         if not os.path.exists(dirty_valid):
             print(f"\n✗ No validation data found in {Config.RECORDS_DIR}")
             return
@@ -874,39 +890,42 @@ class InteractiveCLI:
         ).ask()
 
         if input_source == "tfrecord":
-            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
-            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train_norm")
+            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
             available = []
             if os.path.exists(dirty_train):
-                available.append({"name": "dirty_train.tfrecord", "value": dirty_train})
+                available.append({"name": "dirty_train_norm.tfrecord", "value": dirty_train})
             if os.path.exists(dirty_valid):
-                available.append({"name": "dirty_validate.tfrecord", "value": dirty_valid})
+                available.append({"name": "dirty_validate_norm.tfrecord", "value": dirty_valid})
             if not available:
                 print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
                 return
             tfr_path = select("Which dataset:", choices=available).ask()
-            num_str = input("Image index to reconstruct (default 0): ").strip() or "0"
+            num_str = input("Number of random images to reconstruct (default 5): ").strip() or "5"
             try:
-                img_idx = int(num_str)
+                num_reconstruct = int(num_str)
             except ValueError:
-                print("\n✗ Invalid index")
+                print("\n✗ Invalid number")
                 return
             images = read_skyimages(tfr_path, num_images=9999)
-            match = [img for img in images if img.index == img_idx]
-            if not match:
-                print(f"\n✗ No image with index {img_idx} found (available: 0–{len(images)-1})")
+            if not images:
+                print(f"\n✗ No images found in {tfr_path}")
                 return
-            lr_data_input = match[0].data
-            lr_path = f"dirty_idx{img_idx}"
+            num_reconstruct = min(num_reconstruct, len(images))
+            rng = np.random.default_rng()
+            chosen_indices = rng.choice(len(images), size=num_reconstruct, replace=False)
+            chosen_lr = [images[i] for i in chosen_indices]
 
             # Also try to load matching HR for comparison
             clean_file = tfr_path.replace("dirty_", "clean_")
-            hr_data_auto = None
+            chosen_hr = [None] * num_reconstruct
             if os.path.exists(clean_file):
                 clean_images = read_skyimages(clean_file, num_images=9999)
-                hr_match = [img for img in clean_images if img.index == img_idx]
-                if hr_match:
-                    hr_data_auto = hr_match[0].data
+                clean_by_idx = {img.index: img for img in clean_images}
+                for i, lr_img in enumerate(chosen_lr):
+                    hr_match = clean_by_idx.get(lr_img.index)
+                    if hr_match is not None:
+                        chosen_hr[i] = hr_match.data
         else:
             lr_file = input("Path to LR image (.npy or .png): ").strip()
             if not lr_file or not os.path.exists(lr_file):
@@ -957,9 +976,22 @@ class InteractiveCLI:
                 print(f"\nLoading model from {weights_path}...")
                 model = load_model_from_weights(weights_path, scale_val, num_res_blocks_val)
 
-            # HR ground truth: auto-loaded from TFRecord or manual path
-            hr_data = hr_data_auto if input_source == "tfrecord" else None
-            if hr_data is None and input_source != "tfrecord":
+            os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
+
+            if input_source == "tfrecord":
+                print(f"Running super-resolution on {num_reconstruct} images...")
+                for i, lr_img in enumerate(chosen_lr):
+                    lr_data, sr_data = reconstruct(model, lr_img.data)
+                    hr_data = chosen_hr[i]
+                    output_path = os.path.join(
+                        Config.VIS_RECONSTRUCTION_DIR,
+                        f"reconstruct_idx{lr_img.index}.png",
+                    )
+                    plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
+                    print(f"  ✓ [{i+1}/{num_reconstruct}] Index {lr_img.index} → {output_path}")
+                print(f"\n✓ {num_reconstruct} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
+            else:
+                hr_data = None
                 hr_path = input("Path to HR ground truth (optional, press Enter to skip): ").strip() or None
                 if hr_path:
                     if not os.path.exists(hr_path):
@@ -972,15 +1004,12 @@ class InteractiveCLI:
                         if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
                             hr_data = hr_data[..., 0]
 
-            print("Running super-resolution...")
-            lr_data, sr_data = reconstruct(model, lr_data_input)
-
-            os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
-            basename = os.path.basename(lr_path).replace(".", "_")
-            output_path = os.path.join(Config.VIS_RECONSTRUCTION_DIR, f"reconstruct_{basename}.png")
-
-            plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
-            print(f"\n✓ Reconstruction saved to: {output_path}")
+                print("Running super-resolution...")
+                lr_data, sr_data = reconstruct(model, lr_data_input)
+                basename = os.path.basename(lr_path).replace(".", "_")
+                output_path = os.path.join(Config.VIS_RECONSTRUCTION_DIR, f"reconstruct_{basename}.png")
+                plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
+                print(f"\n✓ Reconstruction saved to: {output_path}")
 
         except Exception as e:
             print(f"\n✗ Reconstruction failed: {e}")
@@ -1189,6 +1218,19 @@ class InteractiveCLI:
             ]
         ).ask()
 
+        # Raw flux is only available for clean (HR) images; dirty TFRecords
+        # are always normalized so there is no raw variant to visualise.
+        if mode == "clean":
+            variant = select(
+                "Which variant:",
+                choices=[
+                    {"name": "Normalized [0, 65535] (what the model sees)", "value": "norm"},
+                    {"name": "Raw flux (physical units)", "value": "raw"},
+                ]
+            ).ask()
+        else:
+            variant = "norm"
+
         num_images_input = input("Number of images to visualize (default 5): ").strip() or "5"
         try:
             num_images = int(num_images_input)
@@ -1198,38 +1240,60 @@ class InteractiveCLI:
 
         clip_percentile = self._ask_clip_percentile()
 
-        # Discover available TFRecord files
-        clean_pattern = os.path.join(Config.RECORDS_DIR, "clean_*.tfrecord")
-        dirty_pattern = os.path.join(Config.RECORDS_DIR, "dirty_*.tfrecord")
+        # Build explicit file names — no globs that could mix raw and norm
+        suffix = "_norm" if variant == "norm" else ""
+        tag = "norm" if variant == "norm" else "raw"
 
         need_clean = mode in ("clean", "pair")
         need_dirty = mode in ("dirty", "pair")
 
-        if need_clean and not glob.glob(clean_pattern):
-            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
+        # Check at least one subset exists
+        def _find_subsets(prefix):
+            found = []
+            for subset in ("train", "validate"):
+                path = tfrecord_path(Config.RECORDS_DIR, f"{prefix}_{subset}{suffix}")
+                if os.path.exists(path):
+                    found.append((subset, path))
+            return found
+
+        clean_files = _find_subsets("clean") if need_clean else []
+        dirty_files = _find_subsets("dirty") if need_dirty else []
+
+        if need_clean and not clean_files:
+            print(f"\n✗ No clean {tag} TFRecords found in {Config.RECORDS_DIR}")
             return
-        if need_dirty and not glob.glob(dirty_pattern):
-            print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
+        if need_dirty and not dirty_files:
+            print(f"\n✗ No dirty {tag} TFRecords found in {Config.RECORDS_DIR}")
             return
 
         try:
             if mode == "clean":
                 vis_dir = Config.VIS_CLEAN_DIR
                 os.makedirs(vis_dir, exist_ok=True)
-                images = read_skyimages(clean_pattern, num_images=num_images, mode='random')
-                for img in images:
-                    path = os.path.join(vis_dir, f'clean_{img.index:04d}.png')
-                    draw_clean_image(img.data, path, index=img.index, clip_percentile=clip_percentile)
-                print(f"\n✓ {len(images)} clean images → {vis_dir}")
+                all_images = []
+                for _, path in clean_files:
+                    all_images.extend(read_skyimages(path, num_images=9999))
+                rng = np.random.default_rng(42)
+                chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
+                for i in chosen:
+                    img = all_images[i]
+                    out = os.path.join(vis_dir, f'clean_{tag}_{img.index:04d}.png')
+                    draw_clean_image(img.data, out, index=img.index, clip_percentile=clip_percentile)
+                print(f"\n✓ {len(chosen)} clean ({tag}) images → {vis_dir}")
 
             elif mode == "dirty":
                 vis_dir = Config.VIS_DIRTY_DIR
                 os.makedirs(vis_dir, exist_ok=True)
-                images = read_skyimages(dirty_pattern, num_images=num_images, mode='random')
-                for img in images:
-                    path = os.path.join(vis_dir, f'dirty_{img.index:04d}.png')
-                    draw_dirty_image(img.data, path, index=img.index, clip_percentile=clip_percentile)
-                print(f"\n✓ {len(images)} dirty images → {vis_dir}")
+                all_images = []
+                for _, path in dirty_files:
+                    all_images.extend(read_skyimages(path, num_images=9999))
+                rng = np.random.default_rng(42)
+                chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
+                for i in chosen:
+                    img = all_images[i]
+                    out = os.path.join(vis_dir, f'dirty_{tag}_{img.index:04d}.png')
+                    draw_dirty_image(img.data, out, index=img.index, clip_percentile=clip_percentile)
+                print(f"\n✓ {len(chosen)} dirty ({tag}) images → {vis_dir}")
 
             elif mode == "pair":
                 vis_dir = Config.VIS_DIRTY_DIR
@@ -1237,12 +1301,10 @@ class InteractiveCLI:
                 n_drawn = 0
 
                 # Collect matched pairs per subset to avoid index-space collisions.
-                # Both subsets independently use 0-based indices, so matching across
-                # subsets with a combined dirty dict would pair wrong scenes.
                 all_pairs: list[tuple[SkyImage, SkyImage]] = []
                 for subset in ("train", "validate"):
-                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
-                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
+                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}{suffix}")
+                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}{suffix}")
                     if not os.path.exists(clean_sub) or not os.path.exists(dirty_sub):
                         continue
                     dirty_by_index = {
@@ -1262,10 +1324,10 @@ class InteractiveCLI:
                 chosen = rng.choice(len(all_pairs), min(num_images, len(all_pairs)), replace=False)
                 for i in chosen:
                     hr, lr = all_pairs[i]
-                    path = os.path.join(vis_dir, f'pair_{hr.index:04d}.png')
+                    path = os.path.join(vis_dir, f'pair_{tag}_{hr.index:04d}.png')
                     draw_clean_dirty_pair(hr.data, lr.data, path, index=hr.index, clip_percentile=clip_percentile)
                     n_drawn += 1
-                print(f"\n✓ {n_drawn} pair plots → {vis_dir}")
+                print(f"\n✓ {n_drawn} pair ({tag}) plots → {vis_dir}")
 
         except Exception as e:
             print(f"\n✗ Visualization failed: {e}")

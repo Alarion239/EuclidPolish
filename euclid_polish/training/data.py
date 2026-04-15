@@ -10,7 +10,6 @@ from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
 from euclid_polish.sky.tfrecord import parse_record_graph, tfrecord_path
-from euclid_polish.training.models.common import normalize
 
 
 class EuclidDataset:
@@ -44,8 +43,8 @@ class EuclidDataset:
             raise ValueError("subset must be 'train' or 'validate'")
         self.scale         = scale
         self.hr_patch_size = hr_patch_size
-        self.clean_file    = tfrecord_path(records_dir, f'clean_{subset}')
-        self.dirty_file    = tfrecord_path(records_dir, f'dirty_{subset}')
+        self.clean_file    = tfrecord_path(records_dir, f'clean_{subset}_norm')
+        self.dirty_file    = tfrecord_path(records_dir, f'dirty_{subset}_norm')
 
     def dataset(
         self,
@@ -61,7 +60,7 @@ class EuclidDataset:
         batch_size : int
             Number of (lr, hr) pairs per batch.
         random_transform : bool
-            Apply random crop, flip, and rotation (set False for validation).
+            Apply random crop (set False for validation).
         repeat_count : int or None
             Times to repeat; None repeats indefinitely.
 
@@ -76,17 +75,12 @@ class EuclidDataset:
             parse_record_graph, num_parallel_calls=AUTOTUNE,
         )
 
-        # Per-image min-max normalization to [0, 1].
-        # TFRecords store raw flux values; we normalize here so the model
-        # always sees [0, 1] input regardless of the original dynamic range.
-        clean_ds = clean_ds.map(normalize, num_parallel_calls=AUTOTUNE)
-        dirty_ds = dirty_ds.map(normalize, num_parallel_calls=AUTOTUNE)
-
-        # Cache after normalization so it's computed once
-        clean_ds = clean_ds.cache()
-        dirty_ds = dirty_ds.cache()
-
+        # *_norm TFRecords are already in [0, 65535] (normalized at generation time)
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
+
+        # Cache the zipped dataset so that downstream .take() doesn't
+        # trigger "did not fully read the cached dataset" warnings.
+        ds = ds.cache()
 
         if random_transform:
             ds = ds.shuffle(buffer_size=200)

@@ -18,18 +18,17 @@ from euclid_polish.euclid.types import PSF
 @dataclass
 class ConvolutionConfig:
     """Configuration for PSF convolution."""
-    rebin_factor: int  = Config.DEFAULT_REBIN_FACTOR
-    add_noise: bool    = Config.DEFAULT_ADD_NOISE
-    noise_std: float   = Config.DEFAULT_NOISE_STD
-    normalize: bool    = Config.DEFAULT_NORMALIZE
-    nbit: int          = Config.DEFAULT_NBIT
+    rebin_factor: int    = Config.DEFAULT_REBIN_FACTOR
+    add_noise: bool      = Config.DEFAULT_ADD_NOISE
+    noise_fraction: float = Config.DEFAULT_NOISE_FRACTION  # fraction of per-image mean flux
+    nbit: int            = Config.DEFAULT_NBIT
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
         if self.rebin_factor <= 0:
             return False, "Rebin factor must be positive"
-        if self.noise_std < 0:
-            return False, "Noise std must be non-negative"
+        if self.noise_fraction < 0:
+            return False, "Noise fraction must be non-negative"
         if self.nbit not in (8, 16):
             return False, "nbit must be 8 or 16"
         return True, None
@@ -59,22 +58,15 @@ class PSFConvolution:
     @staticmethod
     def normalize_data(data: np.ndarray, nbit: int = 16) -> np.ndarray:
         """
-        Normalize data to fit in bit range and convert to specified dtype.
+        Min-max normalize and cast to uint dtype.
 
-        Parameters:
-        -----------
-        data : ndarray
-            Input data.
-        nbit : int
-            Number of bits (8 or 16).
-
-        Returns:
-        --------
-        ndarray
-            Normalized data.
+        Matches polish-pub ``normalize_data``: subtract min, divide by max,
+        scale to [0, 2^nbit - 1], cast to uint16 or uint8.
         """
         data = data - data.min()
-        data = data / data.max()
+        dmax = data.max()
+        if dmax > 0:
+            data = data / dmax
         data *= (2**nbit - 1)
         if nbit == 16:
             data = data.astype(np.uint16)
@@ -87,7 +79,7 @@ class PSFConvolution:
         data: np.ndarray,
         kernel: np.ndarray,
         add_noise: Optional[bool] = None,
-        noise_std: Optional[float] = None,
+        noise_fraction: Optional[float] = None,
     ) -> np.ndarray:
         """
         Convolve data with PSF kernel.
@@ -95,13 +87,14 @@ class PSFConvolution:
         Parameters:
         -----------
         data : ndarray
-            High-resolution input data.
+            High-resolution input data (raw flux).
         kernel : ndarray
             PSF kernel for convolution.
         add_noise : bool, optional
             Whether to add Gaussian noise. Uses config default if not specified.
-        noise_std : float, optional
-            Standard deviation of noise. Uses config default if not specified.
+        noise_fraction : float, optional
+            Noise std as a fraction of the image mean flux.
+            Uses config default if not specified.
 
         Returns:
         --------
@@ -109,18 +102,15 @@ class PSFConvolution:
             Convolved data (same shape as input).
         """
         add_noise = add_noise if add_noise is not None else self.config.add_noise
-        noise_std = noise_std if noise_std is not None else self.config.noise_std
+        noise_fraction = noise_fraction if noise_fraction is not None else self.config.noise_fraction
 
-        # Add noise if requested
         if add_noise:
+            noise_std = noise_fraction * abs(data.mean())
             data_noise = data + np.random.normal(0, noise_std, data.shape)
         else:
             data_noise = data
 
-        # Convolve with kernel using FFT
-        data_convolved = signal.fftconvolve(data_noise, kernel, mode='same')
-
-        return data_convolved
+        return signal.fftconvolve(data_noise, kernel, mode='same')
 
     def downsample(
         self,
@@ -152,29 +142,33 @@ class PSFConvolution:
         self,
         hr_image: SkyImage,
         psf: PSF,
-        normalize: Optional[bool] = None,
-        nbit: Optional[int] = None,
-    ) -> Tuple[SkyImage, SkyImage]:
+    ) -> Tuple[SkyImage, SkyImage, SkyImage]:
         """
-        Complete pipeline: convolve HR SkyImage with PSF, downsample to LR SkyImage.
+        Produce normalized training pair, matching polish-pub's pipeline.
+
+        Steps (matching ``convolvehr`` + ``create_LR_image`` in polish-pub):
+          1. Add noise to raw HR
+          2. FFT convolve at full resolution
+          3. ``normalize_data`` full-res convolved → uint16
+          4. Stride downsample (on uint16 data)
+          5. ``normalize_data`` downsampled → uint16  (re-stretches range)
+          6. ``normalize_data`` noise-free HR → uint16
 
         Parameters:
         -----------
         hr_image : SkyImage
-            High-resolution input image.
+            High-resolution input image (raw flux).
         psf : PSF
             PSF kernel. Must have the same pixel_scale as hr_image.
-        normalize : bool, optional
-            Whether to normalize output. Uses config default if not specified.
-        nbit : int, optional
-            Number of bits for output. Uses config default if not specified.
 
         Returns:
         --------
-        lr_image : SkyImage
-            Low-resolution (dirty) image with pixel_scale = hr_image.pixel_scale * rebin_factor.
-        hr_noisy : SkyImage
-            HR image with noise added (before convolution).
+        lr_norm : SkyImage
+            Normalized dirty LR (uint16-valued float32, [0, 65535]).
+        hr_norm : SkyImage
+            Normalized noise-free clean HR (uint16-valued float32, [0, 65535]).
+        lr_raw : SkyImage
+            Raw dirty LR before normalization (for inspection).
 
         Raises:
         -------
@@ -188,41 +182,49 @@ class PSFConvolution:
                 "Resample the PSF to match the image pixel scale before convolving."
             )
 
-        normalize = normalize if normalize is not None else self.config.normalize
-        nbit = nbit if nbit is not None else self.config.nbit
-
-        # Add noise and convolve
-        hr_noisy_data = self._add_noise(hr_image.data) if self.config.add_noise else hr_image.data
-        lr_full = signal.fftconvolve(hr_noisy_data, psf.data, mode='same')
-
-        # Downsample
-        lr_data = self.downsample(lr_full)
-
-        # Normalize if requested
-        if normalize:
-            lr_data = self.normalize_data(lr_data, nbit=nbit)
-
+        nbit = self.config.nbit
         rebin = self.config.rebin_factor
-        lr_image = SkyImage(
-            data=lr_data,
-            pixel_scale=hr_image.pixel_scale * rebin,
-            is_clean=False,
-            index=hr_image.index,
-            subset=hr_image.subset,
+
+        # 1. Add noise
+        if self.config.add_noise:
+            noise_std = self.config.noise_fraction * abs(hr_image.data.mean())
+            hr_noisy = hr_image.data + np.random.normal(0, noise_std, hr_image.data.shape)
+        else:
+            hr_noisy = hr_image.data
+
+        # 2. FFT convolve at full resolution
+        lr_fullres = signal.fftconvolve(hr_noisy, psf.data, mode='same')
+
+        # 3. Normalize full-res convolved → uint16
+        lr_fullres = self.normalize_data(lr_fullres, nbit=nbit)
+
+        # 4. Stride downsample (on uint16 data)
+        lr_downsampled = self.downsample(lr_fullres)
+
+        # Keep a raw copy before second normalization (for inspection)
+        lr_raw_data = lr_downsampled.astype(np.float32)
+
+        # 5. Normalize downsampled → uint16 (re-stretches after downsample)
+        lr_final = self.normalize_data(lr_downsampled, nbit=nbit).astype(np.float32)
+
+        # 6. Normalize noise-free HR → uint16
+        hr_final = self.normalize_data(hr_image.data.copy(), nbit=nbit).astype(np.float32)
+
+        lr_ps = hr_image.pixel_scale * rebin
+        lr_norm = SkyImage(
+            data=lr_final, pixel_scale=lr_ps,
+            is_clean=False, index=hr_image.index, subset=hr_image.subset,
         )
-        hr_noisy = SkyImage(
-            data=hr_noisy_data,
-            pixel_scale=hr_image.pixel_scale,
-            is_clean=True,
-            index=hr_image.index,
-            subset=hr_image.subset,
+        hr_norm = SkyImage(
+            data=hr_final, pixel_scale=hr_image.pixel_scale,
+            is_clean=True, index=hr_image.index, subset=hr_image.subset,
             metadata=hr_image.metadata,
         )
-        return lr_image, hr_noisy
-
-    def _add_noise(self, data: np.ndarray) -> np.ndarray:
-        """Add Gaussian noise to data."""
-        return data + np.random.normal(0, self.config.noise_std, data.shape)
+        lr_raw = SkyImage(
+            data=lr_raw_data, pixel_scale=lr_ps,
+            is_clean=False, index=hr_image.index, subset=hr_image.subset,
+        )
+        return lr_norm, hr_norm, lr_raw
 
     @staticmethod
     def gaussian2d_kernel(

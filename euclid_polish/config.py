@@ -31,7 +31,7 @@ class Config:
 
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 256
-    DEFAULT_CLIP_PERCENTILE = 99.5
+    DEFAULT_CLIP_PERCENTILE = 100
     DEFAULT_MAGNITUDE_LIMIT = 20.0
     DEFAULT_RADIUS = 0.5
     DEFAULT_NUM_STARS = 5
@@ -67,8 +67,7 @@ class Config:
     # PSF convolution defaults
     DEFAULT_REBIN_FACTOR         = 2
     DEFAULT_ADD_NOISE            = True
-    DEFAULT_NOISE_STD            = 0.01
-    DEFAULT_NORMALIZE            = True
+    DEFAULT_NOISE_FRACTION       = 0.1     # fraction of per-image mean flux
     DEFAULT_NBIT                 = 16
     MAX_PIXEL_VALUE              = float(2 ** DEFAULT_NBIT - 1)  # 65535.0
 
