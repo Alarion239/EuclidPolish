@@ -5,10 +5,8 @@ This module provides the Trainer class for training WDSR models.
 """
 import time
 
-import numpy as np
 import tensorflow as tf
 
-from scipy import signal
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.metrics import Mean
 from tf_keras.optimizers import Adam
@@ -28,8 +26,6 @@ class Trainer:
         loss=MeanAbsoluteError(),
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
         checkpoint_dir='./ckpt/wdsr',
-        nbit=16,
-        fn_kernel=None,
     ):
         """
         Initialize the trainer.
@@ -44,14 +40,9 @@ class Trainer:
             Learning rate schedule.
         checkpoint_dir : str
             Directory for saving checkpoints.
-        nbit : int
-            Number of bits for image data (8 or 16).
-        fn_kernel : str, optional
-            Path to kernel file for kernel loss.
         """
         self.now = None
         self.loss = loss
-        self.nbit = nbit
         self.checkpoint = tf.train.Checkpoint(
             step=tf.Variable(0),
             psnr=tf.Variable(-1.0),
@@ -65,10 +56,6 @@ class Trainer:
         )
 
         self.restore()
-        if fn_kernel is not None:
-            self.kernel = np.load(fn_kernel)
-        else:
-            self.kernel = None
 
     @property
     def model(self):
@@ -158,11 +145,6 @@ class Trainer:
                 self.now = time.perf_counter()
 
         pbar.close()
-
-    def kernel_loss(self, sr, lr):
-        """Compute kernel loss (experimental)."""
-        lr_estimate = signal.fftconvolve(sr.numpy(), self.kernel, mode='same')
-        print(lr.shape, lr_estimate[2::4, 2::4].shape)
 
     @tf.function
     def train_step(self, lr, hr):

@@ -10,7 +10,7 @@ MAX_VAL = tf.constant(Config.MAX_PIXEL_VALUE, dtype=tf.float32)
 #
 # The model expects input already in [0, 65535].  Training TFRecords are
 # written with per-image min-max normalization at *generation* time (see
-# CLI _generate_dirty), so no additional normalization is needed here.
+# CLI _convolve_hr_to_lr), so no additional normalization is needed here.
 # ---------------------------------------------------------------------------
 
 def resolve_single(model, lr):

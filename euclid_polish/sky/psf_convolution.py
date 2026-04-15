@@ -74,44 +74,6 @@ class PSFConvolution:
             data = data.astype(np.uint8)
         return data
 
-    def convolve_with_psf(
-        self,
-        data: np.ndarray,
-        kernel: np.ndarray,
-        add_noise: Optional[bool] = None,
-        noise_fraction: Optional[float] = None,
-    ) -> np.ndarray:
-        """
-        Convolve data with PSF kernel.
-
-        Parameters:
-        -----------
-        data : ndarray
-            High-resolution input data (raw flux).
-        kernel : ndarray
-            PSF kernel for convolution.
-        add_noise : bool, optional
-            Whether to add Gaussian noise. Uses config default if not specified.
-        noise_fraction : float, optional
-            Noise std as a fraction of the image mean flux.
-            Uses config default if not specified.
-
-        Returns:
-        --------
-        ndarray
-            Convolved data (same shape as input).
-        """
-        add_noise = add_noise if add_noise is not None else self.config.add_noise
-        noise_fraction = noise_fraction if noise_fraction is not None else self.config.noise_fraction
-
-        if add_noise:
-            noise_std = noise_fraction * abs(data.mean())
-            data_noise = data + np.random.normal(0, noise_std, data.shape)
-        else:
-            data_noise = data
-
-        return signal.fftconvolve(data_noise, kernel, mode='same')
-
     def downsample(
         self,
         data: np.ndarray,
@@ -225,26 +187,3 @@ class PSFConvolution:
             is_clean=False, index=hr_image.index, subset=hr_image.subset,
         )
         return lr_norm, hr_norm, lr_raw
-
-    @staticmethod
-    def gaussian2d_kernel(
-        size: int = 8,
-        std: float = 1.0
-    ) -> np.ndarray:
-        """
-        Create a 2D Gaussian kernel.
-
-        Parameters:
-        -----------
-        size : int
-            Kernel size (will be size x size).
-        std : float
-            Standard deviation of Gaussian.
-
-        Returns:
-        --------
-        ndarray
-            2D Gaussian kernel.
-        """
-        kernel1D = signal.windows.gaussian(size, std=std).reshape(size, 1)
-        return np.outer(kernel1D, kernel1D)

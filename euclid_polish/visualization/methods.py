@@ -80,9 +80,9 @@ def draw_clean_dirty_pair(
     """
     Visualize a clean/dirty image pair.
 
-    Layout (2×2):
-        [HR linear]  [LR linear]
-        [HR log10]   [LR log10]
+    Layout (2×3):
+        [HR linear]  [LR linear]  [HR stats]
+        [HR log10]   [LR log10]   [LR stats]
     """
     vis = BaseVisualizer(clip_percentile=clip_percentile, rows=2, cols=3, figsize=(22, 12))
     vis.add_scale_panel(hr_data, title_suffix='\nHR Clean')

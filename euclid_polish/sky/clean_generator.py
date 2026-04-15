@@ -18,10 +18,6 @@ from euclid_polish.config import Config
 from euclid_polish.sky.types import SkyImage
 
 
-# Global worker state for multiprocessing
-_worker_state = {}
-
-
 @dataclass
 class GeneratorConfig:
     """Configuration for clean sky generation."""
