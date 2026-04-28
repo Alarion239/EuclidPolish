@@ -110,11 +110,11 @@ class Config:
     # at the small end the hole vanishes into a fuzzy blob; at the large end
     # the ring/arc structure survives but the hole is partially filled in.
     DEFAULT_DONUT_DENSITY_ARCMIN2 = 60.0   # ≈2.7 donuts per 256² HR field at 0.05"/pix
-    DONUT_RADIUS_ARCSEC_MIN       = 0.12   # ring radius lower bound (arcsec)
-    DONUT_RADIUS_ARCSEC_MAX       = 0.36   # ring radius upper bound (arcsec)
+    DONUT_RADIUS_ARCSEC_MIN       = 0.06   # ring radius lower bound (arcsec)
+    DONUT_RADIUS_ARCSEC_MAX       = 0.20   # ring radius upper bound (arcsec)
     DONUT_THICKNESS_FRAC          = 0.15   # σ_thickness / radius (Gaussian thickness)
-    DONUT_MAG_MIN                 = 21.0   # bright end of donut magnitude range
-    DONUT_MAG_MAX                 = 24.0   # faint end
+    DONUT_MAG_MIN                 = 22.5   # bright end of donut magnitude range
+    DONUT_MAG_MAX                 = 25.5   # faint end (~4× fainter than 21–24 default)
     DONUT_ELLIPTICITY_MAX         = 0.40   # |g_total| upper bound for random shear
     DONUT_STAMP_PIX               = 64     # numpy stamp side at HR pixel scale (3.2")
 
