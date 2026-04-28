@@ -1,46 +1,33 @@
 import tensorflow as tf
 
-from euclid_polish.config import Config
-
-
-# PSNR is reported in the **normalized** tanh space ([-1, 1]) so the metric
-# is bounded and not dominated by saturated bright stars. The dynamic range
-# is 2.0; ``max_val=2.0`` gives 0 dB at unit RMSE in that space.
-_PSNR_MAX_VAL = tf.constant(2.0, dtype=tf.float32)
-_TANH_SCALE = tf.constant(float(Config.TANH_SCALE_E), dtype=tf.float32)
-
-
-def _to_tanh_space(x: tf.Tensor) -> tf.Tensor:
-    return tf.tanh(x / _TANH_SCALE)
+# PSNR is reported in the **asinh-stretched** space (the same space the
+# network and loss operate in). The typical bright-end value for our data is
+# around asinh(5e6 / 1000) ≈ 9.2, so max_val = 10 yields meaningful dB
+# numbers for the bulk of the dynamic range without being dominated by the
+# rare extreme outliers.
+_PSNR_MAX_VAL = tf.constant(10.0, dtype=tf.float32)
 
 
 # ---------------------------------------------------------------------------
 # Inference helpers
 #
-# Inputs and outputs of the model are raw electron fluxes (float32). The
-# model itself wraps tanh/arctanh as its first/last layers (see wdsr.py).
+# The model takes asinh-stretched LR and emits asinh-stretched SR. Callers
+# that want raw electrons should apply ``sinh(out) * STRETCH_SCALE_E`` (see
+# ``training/inference.py``).
 # ---------------------------------------------------------------------------
 
 def resolve_single(model, lr):
-    """Run SR on a single image (raw float32 electrons) and return float32."""
+    """Run SR on one image. Input/output are asinh-stretched float32."""
     sr = model(tf.expand_dims(lr, axis=0))
     return sr[0]
 
 
 def evaluate(model, dataset):
-    """Evaluate model PSNR on a dataset of (lr, hr) pairs in flux space.
-
-    The metric itself is computed in tanh-stretched space so saturated
-    bright pixels don't dominate.
-    """
+    """Validation PSNR on stretched (lr, hr) pairs."""
     psnr_values = []
     for lr, hr in dataset:
         sr = model(lr)
-        psnr_value = tf.image.psnr(
-            _to_tanh_space(hr),
-            _to_tanh_space(sr),
-            max_val=_PSNR_MAX_VAL,
-        )[0]
+        psnr_value = tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL)[0]
         psnr_values.append(psnr_value)
     return tf.reduce_mean(psnr_values)
 

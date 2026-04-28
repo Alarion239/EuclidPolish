@@ -68,15 +68,22 @@ class EuclidDataset:
         -------
         tf.data.Dataset yielding (lr_patch, hr_patch) float32 tensors.
         """
+        # TFRecords store raw float32 electrons. We compress the dynamic range
+        # with asinh(x / k) here so the network and loss operate in a
+        # well-behaved (~[-10, 10]) signed space. Inference applies sinh
+        # externally to recover electrons (see training/inference.py).
+        scale_e = tf.constant(float(Config.STRETCH_SCALE_E), dtype=tf.float32)
+
+        def _parse_and_stretch(raw):
+            return tf.asinh(parse_record_graph(raw) / scale_e)
+
         clean_ds = tf.data.TFRecordDataset(self.clean_file).map(
-            parse_record_graph, num_parallel_calls=AUTOTUNE,
+            _parse_and_stretch, num_parallel_calls=AUTOTUNE,
         )
         dirty_ds = tf.data.TFRecordDataset(self.dirty_file).map(
-            parse_record_graph, num_parallel_calls=AUTOTUNE,
+            _parse_and_stretch, num_parallel_calls=AUTOTUNE,
         )
 
-        # TFRecords store raw float32 electrons (per pixel, over the stacked
-        # integration). The model applies tanh/arctanh internally.
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
 
         # Cache the zipped dataset so that downstream .take() doesn't

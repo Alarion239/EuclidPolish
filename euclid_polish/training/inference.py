@@ -92,8 +92,12 @@ def reconstruct(
     Apply super-resolution to a single LR image.
 
     Inputs and outputs are raw float32 electrons (over the stacked Euclid VIS
-    integration). The model wraps tanh/arctanh as its first/last layers, so no
-    on-disk normalization is required.
+    integration). Internally this function
+
+      1. asinh-stretches the input by Config.STRETCH_SCALE_E,
+      2. runs the model (which operates entirely in stretched space),
+      3. clips the stretched output for safety, and
+      4. applies sinh × scale to recover electrons.
 
     Parameters
     ----------
@@ -123,9 +127,17 @@ def reconstruct(
     if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_data = lr_data[..., 0]
 
-    lr_3d = tf.constant(lr_data[:, :, None])
-    sr = resolve_single(model, lr_3d).numpy().astype(np.float32)
-    sr_data = sr[..., 0] if sr.ndim == 3 else sr
+    scale_e = float(Config.STRETCH_SCALE_E)
+
+    # Stretch → model → unstretch. ``clip(±20)`` is a defensive guard against
+    # an untrained / pathological model output: ``sinh(20) ≈ 2.4×10⁸``, well
+    # above any realistic source, but finite in float32 (sinh overflows at ~89).
+    lr_stretched = np.arcsinh(lr_data / scale_e).astype(np.float32)
+    lr_3d = tf.constant(lr_stretched[:, :, None])
+    sr_stretched = resolve_single(model, lr_3d).numpy().astype(np.float32)
+    sr_stretched = np.clip(sr_stretched, -20.0, 20.0)
+    sr_data = (np.sinh(sr_stretched.astype(np.float64)) * scale_e).astype(np.float32)
+    sr_data = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
 
     return lr_data, sr_data
 

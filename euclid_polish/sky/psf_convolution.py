@@ -10,10 +10,10 @@ Pipeline (HR is 0.05"/pix electrons over the stacked integration; LR is
        subtract sky/dark, add Gaussian
        read noise scaled by sqrt(N_exp)
 
-The output of ``process_hr_to_lr`` is **raw electrons (float32)**; the tanh
-stretch lives inside the model (see ``training/models/wdsr.py``) so that
-network input/output stays in physical units. The numpy ``tanh_stretch`` /
-``inverse_tanh_stretch`` helpers below are kept for diagnostics only.
+The output of ``process_hr_to_lr`` is **raw electrons (float32)**; the asinh
+stretch is applied in the data loader before the network. The numpy
+``asinh_stretch`` / ``inverse_asinh_stretch`` helpers below are kept for
+diagnostics only.
 """
 
 import numpy as np
@@ -77,20 +77,18 @@ class PSFConvolution:
         return view.sum(axis=(1, 3))
 
     @staticmethod
-    def tanh_stretch(data_e: np.ndarray, scale_e: float = Config.TANH_SCALE_E) -> np.ndarray:
-        """Map electrons → float32 in (-1, 1) via fixed tanh stretch (numpy).
+    def asinh_stretch(data_e: np.ndarray, scale_e: float = Config.STRETCH_SCALE_E) -> np.ndarray:
+        """Map electrons → float32 via fixed asinh stretch (numpy).
 
-        The model uses the equivalent TF op as its first layer. This numpy
-        version is kept for diagnostics and visualization.
+        Linear near zero, logarithmic for |x| ≫ scale, signed. Smooth and
+        invertible everywhere — see :func:`inverse_asinh_stretch`.
         """
-        return np.tanh(data_e.astype(np.float64) / scale_e).astype(np.float32)
+        return np.arcsinh(data_e.astype(np.float64) / scale_e).astype(np.float32)
 
     @staticmethod
-    def inverse_tanh_stretch(y: np.ndarray, scale_e: float = Config.TANH_SCALE_E) -> np.ndarray:
-        """Inverse of :func:`tanh_stretch` (numpy). Clips to (-1, 1) − ε."""
-        eps = 1e-12
-        y_clipped = np.clip(y.astype(np.float64), -1.0 + eps, 1.0 - eps)
-        return (np.arctanh(y_clipped) * scale_e).astype(np.float32)
+    def inverse_asinh_stretch(y: np.ndarray, scale_e: float = Config.STRETCH_SCALE_E) -> np.ndarray:
+        """Inverse of :func:`asinh_stretch` (numpy)."""
+        return (np.sinh(y.astype(np.float64)) * scale_e).astype(np.float32)
 
     def _apply_vis_noise(
         self,

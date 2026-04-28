@@ -90,7 +90,10 @@ class Config:
     # PSF convolution / model normalization defaults
     DEFAULT_REBIN_FACTOR         = 2
     DEFAULT_ADD_NOISE            = True
-    TANH_SCALE_E                 = 1000.0   # e⁻ mapped to tanh(1) ≈ 0.76 in model's normalization layer
+    # Stretch scale used to compress the dynamic range of pixel values before
+    # the network sees them: stretched = asinh(x / STRETCH_SCALE_E). Linear for
+    # |x| ≪ scale, log-like for |x| ≫ scale; signed; smooth inverse (sinh).
+    STRETCH_SCALE_E              = 1000.0   # e⁻ — knee between linear and log regimes
 
     # Star magnitude distribution (probability thresholds and ranges)
     STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
