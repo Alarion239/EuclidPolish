@@ -137,7 +137,8 @@ class Trainer:
                     PSNR=f"{psnr_value.numpy():.3f}",
                 )
                 tqdm.write(
-                    f"  Step {step}/{steps}: loss = {loss_value.numpy():.3f}, "
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
                     f"PSNR = {psnr_value.numpy():.3f} ({duration:.2f}s)"
                 )
 

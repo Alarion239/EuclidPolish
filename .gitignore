@@ -1,7 +1,6 @@
 dsa-example/*
 dsa-example-cache/*
 monopsfs_euclidlike/*
-data/COSMOS
 euclid256*
 EuclidPSF*
 .claude*
@@ -15,11 +14,9 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
-# Generated training artefacts
-ckpt/
-data/euclid_stars/
-data/images/
-data/vis/
+# Data: only data/euclid_psf/ is tracked; everything else is generated/local.
+data/*
+!data/euclid_psf/
 
 # Vendored reference code (heavy data examples)
 scripts/polish-pub/
