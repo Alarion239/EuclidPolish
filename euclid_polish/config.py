@@ -123,6 +123,10 @@ class Config:
     GALSIM_FOLDING_THRESHOLD     = 1e-4
     GALSIM_MAXK_THRESHOLD        = 1e-2
 
+    # Gradient clipping by global L2 norm. Bounds the worst-case update so a
+    # bad-batch spike can't corrupt weights. Set to math.inf to disable.
+    GRAD_CLIP_NORM               = 5.0
+
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000
     DEFAULT_BATCH_SIZE           = 16

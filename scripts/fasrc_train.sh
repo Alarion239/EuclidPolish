@@ -78,7 +78,7 @@ python -u scripts/run_pipeline.py \
   --ntrain 6400 \
   --nvalid 1600 \
   --image-size 512 \
-  --batch-size 4 \
+  --batch-size 16 \
   --steps 400000
 
 echo "============================================================"
