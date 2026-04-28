@@ -3,6 +3,8 @@ Trainer module for WDSR super-resolution models.
 
 This module provides the Trainer class for training WDSR models.
 """
+import json
+import os
 import time
 
 import tensorflow as tf
@@ -15,6 +17,8 @@ from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.training.models.common import evaluate
+
+TRAINING_LOG_FILENAME = "training_log.jsonl"
 
 
 class Trainer:
@@ -97,6 +101,9 @@ class Trainer:
         start_step = int(ckpt.step.numpy())
         remaining = steps - start_step
 
+        log_path = os.path.join(ckpt_mgr.directory, TRAINING_LOG_FILENAME)
+        os.makedirs(ckpt_mgr.directory, exist_ok=True)
+
         pbar = tqdm(
             train_dataset.take(remaining),
             total=remaining,
@@ -133,6 +140,17 @@ class Trainer:
                     f"  Step {step}/{steps}: loss = {loss_value.numpy():.3f}, "
                     f"PSNR = {psnr_value.numpy():.3f} ({duration:.2f}s)"
                 )
+
+                # Persist (step, loss, PSNR) for later plotting. Append-only
+                # so multiple training sessions accumulate into one log.
+                with open(log_path, "a") as fh:
+                    fh.write(json.dumps({
+                        "step":      int(step),
+                        "loss":      float(loss_value.numpy()),
+                        "psnr":      float(psnr_value.numpy()),
+                        "duration_s": float(duration),
+                        "wall_time": time.time(),
+                    }) + "\n")
 
                 if save_best_only and psnr_value <= ckpt.psnr:
                     self.now = time.perf_counter()

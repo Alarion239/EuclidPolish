@@ -69,27 +69,40 @@ class PSFExtractor:
         self.epsf: Optional[EPSFModel] = None
         self.fitted_stars = None
 
-    def get_cutout_files(self, cutout_dir: str) -> List[Tuple[int, str]]:
+    def get_cutout_files(
+        self,
+        cutout_dir: str,
+        cutout_size: Optional[int] = None,
+    ) -> List[Tuple[int, str]]:
         """
-        Get all FITS cutout files from directory, sorted by index.
+        Get FITS cutout files from directory, sorted by index.
 
         Parameters:
         -----------
         cutout_dir : str
             Directory containing cutout files.
+        cutout_size : int, optional
+            If given, only return files whose filename encodes this cutout
+            size (``star_XXXX_<size>.fits``). PSF extraction must run on a
+            single cutout size since the assumed image dimensions feed into
+            the centered-crop math in :meth:`extract_psf_star_from_cutout`.
 
         Returns:
         --------
         list of tuple
             List of (index, filepath) tuples sorted by index.
         """
-        fits_files = glob.glob(os.path.join(cutout_dir, "*.fits"))
+        if cutout_size is not None:
+            pattern = f"star_[0-9][0-9][0-9][0-9]_{cutout_size}.fits"
+        else:
+            pattern = "*.fits"
+        fits_files = glob.glob(os.path.join(cutout_dir, pattern))
 
         file_info = []
         for filepath in fits_files:
             filename = os.path.basename(filepath)
             try:
-                # Extract index from "star_XXXX_..."
+                # Filename: "star_XXXX_SIZE.fits"
                 parts = filename.split('_')
                 if len(parts) >= 2 and parts[0] == 'star':
                     index = int(parts[1])

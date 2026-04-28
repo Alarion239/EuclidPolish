@@ -30,6 +30,7 @@ from euclid_polish.euclid import (
     PSFExtractor,
     PSFExtractionConfig,
     FitsValidator,
+    auth,
 )
 from euclid_polish.sky import CleanSkyGenerator
 from euclid_polish.sky.clean_generator import GeneratorConfig
@@ -40,7 +41,7 @@ from euclid_polish.training import Trainer, EuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
-from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair
+from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
 from euclid_polish.sky.tfrecord import read_tfrecord, read_skyimages, write_skyimages, tfrecord_path
 
 
@@ -110,17 +111,22 @@ class InteractiveCLI:
     def _euclid_menu(self):
         """Euclid operations menu."""
         while True:
-            choice = select(
-                "🔭 Euclid Operations - Select an action:",
-                choices=[
-                    {"name": "📊 Show catalog info", "value": "info"},
-                    {"name": "🔍 Query bright stars catalog", "value": "query"},
-                    {"name": "⬇️  Download cutouts", "value": "download"},
-                    {"name": "✨ Extract PSF", "value": "extract_psf"},
-                    {"name": "✔️  Check cutouts integrity", "value": "check"},
-                    {"name": "🔙 Back to main menu", "value": "back"},
-                ]
-            ).ask()
+            choices = [
+                {"name": "📊 Show catalog info", "value": "info"},
+                {"name": "🔍 Query bright stars catalog (region)", "value": "query"},
+                {"name": "🌟 Query brightest N stars", "value": "query_brightest"},
+                {"name": "⬇️  Download cutouts", "value": "download"},
+                {"name": "✨ Extract PSF", "value": "extract_psf"},
+                {"name": "✔️  Check cutouts integrity", "value": "check"},
+            ]
+            if auth.is_authenticated():
+                user = auth.current_user() or "authenticated"
+                choices.append({"name": f"🔓 Logout ({user})", "value": "logout"})
+            else:
+                choices.append({"name": "🔐 Login to Euclid archive", "value": "login"})
+            choices.append({"name": "🔙 Back to main menu", "value": "back"})
+
+            choice = select("🔭 Euclid Operations - Select an action:", choices=choices).ask()
 
             if choice == "back" or choice is None:
                 break
@@ -129,12 +135,18 @@ class InteractiveCLI:
                 self._show_catalog_info()
             elif choice == "query":
                 self._query_catalog()
+            elif choice == "query_brightest":
+                self._query_brightest_stars()
             elif choice == "download":
                 self._download_cutouts()
             elif choice == "extract_psf":
                 self._extract_psf()
             elif choice == "check":
                 self._check_integrity()
+            elif choice == "login":
+                self._login_euclid()
+            elif choice == "logout":
+                self._logout_euclid()
 
     def _show_catalog_info(self):
         """Show star catalog information."""
@@ -239,6 +251,9 @@ class InteractiveCLI:
                 elif result['added'] == 0 and result['total'] > 0:
                     print("\n✓ Catalog already has the requested stars")
 
+                # Auto-update star positions plot
+                self._visualize_star_positions(output_dir=output_dir)
+
             except Exception as e:
                 print(f"\n✗ Query failed: {e}")
                 traceback.print_exc()
@@ -264,34 +279,49 @@ class InteractiveCLI:
                 self._query_catalog()
             return
 
-        # Get catalog summary
-        summary = catalog.get_summary()
-        print(f"\n📊 Catalog contains {summary['total']} stars")
-        print(f"  Valid: {summary['valid']}")
-        print(f"  Corrupted: {summary['corrupted']}")
-        print(f"  Failed: {summary['failed']}")
-        print(f"  Pending: {summary['pending']}")
+        cutout_size_input = input(f"Enter cutout size in pixels (default {Config.DEFAULT_CUTOUT_SIZE}): ").strip()
+        cutout_size = int(cutout_size_input) if cutout_size_input else Config.DEFAULT_CUTOUT_SIZE
 
-        if summary['pending'] == 0 and summary['total'] > 0:
-            print(f"\n✓ All stars already have cutouts!")
-            if confirm("Re-download existing cutouts?", default=False).ask():
-                pass  # Continue with download
-            else:
-                return
+        # Per-size breakdown — every status field is size-specific
+        catalog_data = catalog.load()
+        stars = catalog_data.get('stars', [])
+        total = len(stars)
+        valid_for_size = sum(1 for s in stars if StarCatalog.is_valid(s, cutout_size))
+        corrupted_for_size = sum(1 for s in stars if StarCatalog.is_corrupted(s, cutout_size))
+        failed_for_size = sum(1 for s in stars if StarCatalog.is_download_failed(s, cutout_size))
+        pending_for_size = total - valid_for_size - corrupted_for_size - failed_for_size
 
-        cutout_size_input = input("Enter cutout size in pixels (default 256): ").strip()
-        cutout_size = int(cutout_size_input) if cutout_size_input else 256
+        print(f"\n📊 Catalog contains {total} stars (size {cutout_size}):")
+        print(f"  Valid: {valid_for_size}")
+        print(f"  Corrupted: {corrupted_for_size}")
+        print(f"  Failed: {failed_for_size}")
+        print(f"  Pending: {pending_for_size}")
 
-        # Configure downloader
+        if pending_for_size <= 0:
+            print(f"\n✓ Nothing to download — all stars are accounted for at size {cutout_size}")
+            return
+
+        default_workers = DownloadConfig.max_workers
+        workers_input = input(
+            f"Parallel workers (default {default_workers}, ESA fair-use ~8): "
+        ).strip()
+        try:
+            max_workers = int(workers_input) if workers_input else default_workers
+        except ValueError:
+            print(f"  ⚠️  Invalid workers value, using default ({default_workers})")
+            max_workers = default_workers
+
         config = DownloadConfig(
             cutout_size=cutout_size,
+            max_workers=max_workers,
         )
 
         downloader = EuclidCutoutDownloader(catalog, config)
 
-        # Confirm
-        num_to_download = summary['pending'] if summary['pending'] > 0 else summary['total']
-        if not confirm(f"\nDownload cutouts for {num_to_download} stars?", default=True).ask():
+        if not confirm(
+            f"\nDownload cutouts for up to {pending_for_size} stars (size {cutout_size}, {max_workers} parallel)?",
+            default=True,
+        ).ask():
             return
 
         # Download
@@ -299,13 +329,17 @@ class InteractiveCLI:
             print("\nDownloading...")
             result = downloader.download(show_progress=True)
 
-            print(f"\n✓ Download completed!")
+            print(f"\n✓ Download completed (size {result.get('cutout_size', cutout_size)}):")
             print(f"  Downloaded: {result['downloaded']}")
             print(f"  Valid: {result['valid']}")
             print(f"  Corrupted: {result['corrupted']}")
+            if result.get('failed'):
+                print(f"  Failed (no tile): {result['failed']}")
 
             if result.get('corrupted_ids'):
-                print(f"\n⚠️  Failed star IDs: {result['corrupted_ids']}")
+                print(f"\n⚠️  Corrupted star IDs: {result['corrupted_ids']}")
+            if result.get('unmatched_ids'):
+                print(f"\n⚠️  Unmatched star IDs (no VIS tile): {result['unmatched_ids']}")
 
         except Exception as e:
             print(f"\n✗ Download failed: {e}")
@@ -336,26 +370,44 @@ class InteractiveCLI:
         if psf_dir == "custom":
             psf_dir = input("Enter path: ").strip()
 
+        # Cutout size first — PSF extraction operates on a single cutout size,
+        # since extract_psf_star_from_cutout does a centered crop based on the
+        # input image dimensions.
+        if not os.path.exists(cutout_dir):
+            print(f"\n✗ Cutout directory not found: {cutout_dir}")
+            return
+
+        cutout_size_input = input(
+            f"Cutout size to use (default {Config.DEFAULT_CUTOUT_SIZE}): "
+        ).strip()
+        try:
+            cutout_size = int(cutout_size_input) if cutout_size_input else Config.DEFAULT_CUTOUT_SIZE
+        except ValueError:
+            print(f"\n✗ Invalid cutout size: must be an integer")
+            return
+
         num_stars_input = input("Number of stars to use (default: all): ").strip()
 
-        # PSF size configuration
-        psf_size_input = input(f"PSF size in pixels (must be odd, default {Config.DEFAULT_PSF_SIZE}): ").strip()
+        # PSF size — default to the largest odd value <= cutout_size - 1 so
+        # the centered crop fits inside the cutout.
+        default_psf_size = (cutout_size - 1) if (cutout_size % 2 == 0) else (cutout_size - 2)
+        psf_size_input = input(
+            f"PSF size in pixels (must be odd, default {default_psf_size}): "
+        ).strip()
         if psf_size_input:
             try:
                 psf_size = int(psf_size_input)
                 if psf_size <= 0 or psf_size % 2 == 0:
                     print(f"\n✗ PSF size must be a positive odd integer (got {psf_size})")
                     return
+                if psf_size > cutout_size:
+                    print(f"\n✗ PSF size ({psf_size}) cannot exceed cutout size ({cutout_size})")
+                    return
             except ValueError:
                 print(f"\n✗ Invalid PSF size: must be an integer")
                 return
         else:
-            psf_size = Config.DEFAULT_PSF_SIZE
-
-        # Check if cutout directory exists
-        if not os.path.exists(cutout_dir):
-            print(f"\n✗ Cutout directory not found: {cutout_dir}")
-            return
+            psf_size = default_psf_size
 
         # Configure PSF extractor
         config = PSFExtractionConfig(
@@ -365,14 +417,14 @@ class InteractiveCLI:
 
         extractor = PSFExtractor(config)
 
-        # Get cutout files
-        all_files = extractor.get_cutout_files(cutout_dir)
+        # Get cutout files filtered to the requested size
+        all_files = extractor.get_cutout_files(cutout_dir, cutout_size=cutout_size)
 
         if len(all_files) == 0:
-            print(f"\n✗ No FITS files found in {cutout_dir}")
+            print(f"\n✗ No FITS files of size {cutout_size} found in {cutout_dir}")
             return
 
-        print(f"\nFound {len(all_files)} cutout files")
+        print(f"\nFound {len(all_files)} cutout files at size {cutout_size}")
 
         # Select files
         if num_stars_input:
@@ -470,17 +522,21 @@ class InteractiveCLI:
             catalog_data = catalog.load()
             stars = catalog_data.get('stars', [])
 
-            # Update star status based on validation
+            # Update star status based on validation — per-size, not whole-star
             for filepath, error_msg in results['corrupted']:
                 filename = os.path.basename(filepath)
-                # Try to extract star ID from filename
                 parts = filename.split('_')
                 if len(parts) >= 2 and parts[0] == 'star':
                     try:
                         star_id = int(parts[1])
+                        size = int(parts[2].replace('.fits', '')) if len(parts) >= 3 else None
                         for star in stars:
                             if star.get('id') == star_id:
-                                star['corrupted'] = True
+                                if size is not None:
+                                    StarCatalog.set_corrupted(star, size)
+                                else:
+                                    # Size unknown — fall back to legacy whole-star flag
+                                    star['corrupted'] = True
                                 break
                     except ValueError:
                         pass
@@ -489,6 +545,131 @@ class InteractiveCLI:
             print(f"\n✓ Updated catalog with validation results")
 
         print(f"\n✓ Integrity check completed!")
+
+    def _login_euclid(self):
+        """Log into the Euclid archive via env / file / interactive prompt."""
+        if auth.is_authenticated():
+            DisplayFormatter.print_success(
+                f"Already logged in as {auth.current_user() or '(unknown)'}. Logout first to switch accounts."
+            )
+            return
+
+        method = select(
+            "Login method:",
+            choices=[
+                {"name": "Environment variables (EUCLID_USER / EUCLID_PASSWORD)", "value": "env"},
+                {"name": f"Credentials file (2 lines: user, password)", "value": "file"},
+                {"name": "Enter username and password now", "value": "interactive"},
+                {"name": "Cancel", "value": "cancel"},
+            ]
+        ).ask()
+
+        if method in (None, "cancel"):
+            DisplayFormatter.print_cancelled()
+            return
+
+        if method == "env":
+            ok = auth.login_from_env()
+            if not ok:
+                DisplayFormatter.print_error(
+                    "EUCLID_USER and/or EUCLID_PASSWORD not set, or login was rejected."
+                )
+        elif method == "file":
+            default_path = Config.DEFAULT_CREDENTIALS_FILE
+            path = input(f"Credentials file (default {default_path}): ").strip() or default_path
+            ok = auth.login_with_file(path)
+        else:
+            ok = auth.login_interactive()
+
+        if ok:
+            DisplayFormatter.print_success(
+                f"Logged in as {auth.current_user() or '(unknown)'}. "
+                f"All subsequent Euclid queries will use this session."
+            )
+
+    def _logout_euclid(self):
+        """Log out from the Euclid archive."""
+        if not auth.is_authenticated():
+            DisplayFormatter.print_error("Not logged in.")
+            return
+        if auth.logout():
+            DisplayFormatter.print_success("Logged out.")
+        else:
+            DisplayFormatter.print_error("Logout raised — local session cleared anyway.")
+
+    def _query_brightest_stars(self):
+        """Query the brightest N stars from the Euclid archive (async)."""
+        output_dir = select(
+            "Select output directory:",
+            choices=[
+                {"name": "./data/euclid_stars (default)", "value": "./data/euclid_stars"},
+                {"name": "Custom path...", "value": "custom"},
+            ]
+        ).ask()
+        if output_dir == "custom":
+            output_dir = input("Enter path: ").strip()
+
+        num_raw = input(f"Number of brightest stars (default {Config.DEFAULT_BRIGHTEST_N}): ").strip() \
+            or str(Config.DEFAULT_BRIGHTEST_N)
+        num_check = ValidationResult.validate_positive_number(num_raw, "num_stars")
+        if num_check is not True:
+            DisplayFormatter.print_error(num_check)
+            return
+        num_stars = int(float(num_raw))
+
+        use_cone = confirm("Restrict to a sky region (cone)?", default=False).ask()
+        ra_val = dec_val = radius_val = None
+        if use_cone:
+            ra = input("RA (degrees): ").strip()
+            dec = input("Dec (degrees): ").strip()
+            radius = input("Radius (degrees, default 1): ").strip() or "1"
+            for raw, check, name in (
+                (ra, ValidationResult.validate_ra(ra), "RA"),
+                (dec, ValidationResult.validate_dec(dec), "Dec"),
+                (radius, ValidationResult.validate_positive_number(radius, "Radius"), "Radius"),
+            ):
+                if check is not True:
+                    DisplayFormatter.print_error(check)
+                    return
+            ra_val, dec_val, radius_val = float(ra), float(dec), float(radius)
+
+        use_mag = confirm("Apply faint-end magnitude limit?", default=False).ask()
+        mag_val = None
+        if use_mag:
+            mag = input(f"Magnitude limit (default {Config.DEFAULT_MAGNITUDE_LIMIT}): ").strip() \
+                or str(Config.DEFAULT_MAGNITUDE_LIMIT)
+            mag_check = ValidationResult.validate_positive_number(mag, "Magnitude limit")
+            if mag_check is not True:
+                DisplayFormatter.print_error(mag_check)
+                return
+            mag_val = float(mag)
+
+        if not auth.is_authenticated():
+            print("\n⚠️  Not logged in: async job results are still fetched now, but")
+            print("    the job record is garbage-collected after 72h on the server.")
+
+        if not confirm(f"\nQuery brightest {num_stars} stars (async)?", default=True).ask():
+            DisplayFormatter.print_cancelled()
+            return
+
+        try:
+            catalog = StarCatalog(output_dir)
+            print("\nSubmitting async query...")
+            result = catalog.query_brightest_stars(
+                num_stars=num_stars,
+                ra=ra_val,
+                dec=dec_val,
+                radius=radius_val,
+                magnitude_limit=mag_val,
+            )
+            print(f"\n{result['message']}")
+            if result.get('skipped', 0) > 0:
+                print(f"  (Skipped {result['skipped']} duplicate stars)")
+
+            self._visualize_star_positions(output_dir=output_dir)
+        except Exception as e:
+            DisplayFormatter.print_error(f"Query failed: {e}")
+            traceback.print_exc()
 
     def _sky_menu(self):
         """Sky generation menu."""
@@ -540,10 +721,15 @@ class InteractiveCLI:
             return
 
         print(f"\nSource: {Config.RECORDS_DIR}")
-        print(f"  Noise: {Config.DEFAULT_NOISE_FRACTION*100:.1f}% of per-image mean flux")
+        print(
+            f"  Noise: Euclid VIS — Poisson(signal+sky+dark) + Gaussian read "
+            f"({Config.N_EXPOSURES}×{Config.EXPOSURE_TIME_S:.0f}s, "
+            f"σ_read={Config.READ_NOISE_E}e⁻, sky={Config.SKY_MAG_AB_ARCSEC2:.2f}mag/arcsec²)"
+        )
+        print(f"  Output: raw float32 electrons (model applies tanh internally)")
         print(f"  Rebin factor: {Config.DEFAULT_REBIN_FACTOR}x")
         for subset, _, n_images in subsets_to_run:
-            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord + *_norm.tfrecord  ({n_images} images)")
+            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord  ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
 
         if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
@@ -557,19 +743,15 @@ class InteractiveCLI:
         all_viz_pairs = []
 
         for subset, clean_file, n_images in subsets_to_run:
-            clean_out_path   = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
-            dirty_norm_path  = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}_norm")
-            clean_norm_path  = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}_norm")
+            dirty_path = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
 
-            # Read all clean records first (can't read/write the same file)
+            # Read all clean records first so the writer doesn't race the reader.
             clean_records = list(tqdm(
                 tf.data.TFRecordDataset(clean_file),
                 total=n_images, desc=f"Loading {subset}",
             ))
 
-            clean_writer      = tf.io.TFRecordWriter(clean_out_path)
-            dirty_norm_writer = tf.io.TFRecordWriter(dirty_norm_path)
-            clean_norm_writer = tf.io.TFRecordWriter(clean_norm_path)
+            dirty_writer = tf.io.TFRecordWriter(dirty_path)
             n_ok = n_err = 0
             viz_pairs = []
 
@@ -578,36 +760,22 @@ class InteractiveCLI:
                     try:
                         hr_image = SkyImage.from_tfrecord(raw_record)
 
-                        # Matching polish-pub pipeline:
-                        #   noise → convolve → normalize uint16 full-res →
-                        #   downsample → normalize uint16 again
-                        # Also normalizes noise-free HR → uint16.
-                        lr_norm, hr_norm, _ = convolver.process_hr_to_lr(
-                            hr_image, psf_kernel,
-                        )
+                        lr, hr = convolver.process_hr_to_lr(hr_image, psf_kernel)
 
-                        # Save raw float32 clean HR (before normalization)
-                        clean_writer.write(hr_image.to_tfrecord())
-
-                        # Save normalized pair (uint16-valued, [0, 65535])
-                        clean_norm_writer.write(hr_norm.to_tfrecord())
-                        dirty_norm_writer.write(lr_norm.to_tfrecord())
+                        dirty_writer.write(lr.to_tfrecord())
 
                         if len(viz_pairs) < 10:
-                            viz_pairs.append((hr_norm.data, lr_norm.data, hr_image.index or n_ok))
+                            viz_pairs.append((hr.data, lr.data, hr_image.index or n_ok))
                         n_ok += 1
 
                     except Exception as e:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             finally:
-                clean_writer.close()
-                dirty_norm_writer.close()
-                clean_norm_writer.close()
+                dirty_writer.close()
 
             print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped")
-            print(f"    Raw:  clean_{subset}.tfrecord (raw float32 HR)")
-            print(f"    Norm: dirty_{subset}_norm.tfrecord + clean_{subset}_norm.tfrecord")
+            print(f"    Output: dirty_{subset}.tfrecord (raw float32 electrons)")
             all_viz_pairs.append((subset, viz_pairs))
 
         all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
@@ -683,9 +851,8 @@ class InteractiveCLI:
                 nstart=ntrain_val,  # different seeds from training
             )
 
-            # Store raw flux values — per-image min-max normalization
-            # to [0, 65535] happens later during the HR→LR convolution step,
-            # which normalizes both HR and LR independently.
+            # Store raw float32 electron counts (over the stacked integration).
+            # The model applies tanh internally; no on-disk normalization.
             write_skyimages(images_train, 'clean_train')
             print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
 
@@ -708,6 +875,7 @@ class InteractiveCLI:
                     {"name": "📈 Evaluate model", "value": "evaluate"},
                     {"name": "🔬 Reconstruct image (inference)", "value": "reconstruct"},
                     {"name": "🔄 Inspect checkpoints", "value": "inspect"},
+                    {"name": "📉 Plot training log", "value": "plot_log"},
                     {"name": "🔙 Back to main menu", "value": "back"},
                 ]
             ).ask()
@@ -723,6 +891,8 @@ class InteractiveCLI:
                 self._reconstruct_image()
             elif choice == "inspect":
                 self._inspect_checkpoints()
+            elif choice == "plot_log":
+                self._plot_training_log()
 
     def _train_model(self):
         """Train WDSR model."""
@@ -743,16 +913,16 @@ class InteractiveCLI:
             print("\n✗ Invalid input: all values must be integers")
             return
 
-        # Check that normalized TFRecords exist
-        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train_norm")
-        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train_norm")
+        # Check that training TFRecords exist
+        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train")
+        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
 
         if not os.path.exists(clean_train) or not os.path.exists(dirty_train):
-            print(f"\n✗ Normalized training data not found in {Config.RECORDS_DIR}")
+            print(f"\n✗ Training data not found in {Config.RECORDS_DIR}")
             print("  Run clean sky generation and HR→LR convolution first.")
             return
 
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
         if not os.path.exists(dirty_valid):
             print(f"\n⚠️  No validation data in {Config.RECORDS_DIR} — will train without validation")
 
@@ -834,8 +1004,8 @@ class InteractiveCLI:
             print(f"\n✗ No checkpoints found in {checkpoint_dir}")
             return
 
-        # Check that normalized validation TFRecords exist
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
+        # Check that validation TFRecords exist
+        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
         if not os.path.exists(dirty_valid):
             print(f"\n✗ No validation data found in {Config.RECORDS_DIR}")
             return
@@ -879,6 +1049,38 @@ class InteractiveCLI:
 
         print(f"\n  Total: {len(ckpt_state.all_model_checkpoint_paths)} checkpoint(s)")
 
+    def _plot_training_log(self):
+        """Plot the per-evaluation loss / PSNR curves from a training log."""
+        from euclid_polish.training.log_plot import (
+            default_log_path, plot_training_log,
+        )
+
+        checkpoint_dir = input(
+            f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): "
+        ).strip() or Config.DEFAULT_CHECKPOINT_DIR
+
+        log_path = default_log_path(checkpoint_dir)
+        if not os.path.exists(log_path):
+            print(f"\n✗ No training log at {log_path}")
+            print("  (Logs are written automatically by the trainer at each evaluation.)")
+            return
+
+        smooth_str = input("Smoothing window in evaluations (default 0 = none): ").strip() or "0"
+        try:
+            smooth_window = int(smooth_str)
+        except ValueError:
+            print("  ⚠️  Invalid window, using 0")
+            smooth_window = 0
+
+        output_path = os.path.join(checkpoint_dir, "training_log.png")
+        try:
+            n, last_step = plot_training_log(log_path, output_path, smooth_window=smooth_window)
+            print(f"\n✓ Plotted {n} evaluations (last step: {last_step})")
+            print(f"  Saved: {output_path}")
+        except Exception as e:
+            print(f"\n✗ Plot failed: {e}")
+            traceback.print_exc()
+
     def _reconstruct_image(self):
         """Apply super-resolution to a single LR image."""
         input_source = select(
@@ -890,13 +1092,13 @@ class InteractiveCLI:
         ).ask()
 
         if input_source == "tfrecord":
-            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train_norm")
-            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate_norm")
+            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
+            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
             available = []
             if os.path.exists(dirty_train):
-                available.append({"name": "dirty_train_norm.tfrecord", "value": dirty_train})
+                available.append({"name": "dirty_train.tfrecord", "value": dirty_train})
             if os.path.exists(dirty_valid):
-                available.append({"name": "dirty_validate_norm.tfrecord", "value": dirty_valid})
+                available.append({"name": "dirty_validate.tfrecord", "value": dirty_valid})
             if not available:
                 print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
                 return
@@ -977,6 +1179,7 @@ class InteractiveCLI:
                 model = load_model_from_weights(weights_path, scale_val, num_res_blocks_val)
 
             os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
+            vmax = self._ask_vmax()
 
             if input_source == "tfrecord":
                 print(f"Running super-resolution on {num_reconstruct} images...")
@@ -987,7 +1190,7 @@ class InteractiveCLI:
                         Config.VIS_RECONSTRUCTION_DIR,
                         f"reconstruct_idx{lr_img.index}.png",
                     )
-                    plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
+                    plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path, vmax=vmax)
                     print(f"  ✓ [{i+1}/{num_reconstruct}] Index {lr_img.index} → {output_path}")
                 print(f"\n✓ {num_reconstruct} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
             else:
@@ -1015,19 +1218,25 @@ class InteractiveCLI:
             print(f"\n✗ Reconstruction failed: {e}")
             traceback.print_exc()
 
-    def _ask_clip_percentile(self) -> float:
-        """Prompt the user for a clip percentile, defaulting to Config.DEFAULT_CLIP_PERCENTILE."""
-        default = Config.DEFAULT_CLIP_PERCENTILE
-        raw = input(f"Clip percentile for visualization (default {default}): ").strip()
+
+    @staticmethod
+    def _ask_vmax(default: float | None = None) -> float | None:
+        """Prompt for the upper colour-scale limit (vmax) for linear plots.
+
+        Default ``None`` lets matplotlib auto-scale per image. Pixel values are
+        raw electrons, so a fixed scale rarely fits both faint and bright fields.
+        """
+        prompt_default = "auto" if default is None else f"{default:.0f}"
+        raw = input(f"Upper colour-scale limit for linear plots (default {prompt_default}): ").strip()
         if not raw:
             return default
         try:
             value = float(raw)
-            if not (0.0 < value <= 100.0):
+            if value <= 0:
                 raise ValueError
             return value
         except ValueError:
-            print(f"  ⚠️  Invalid value, using default ({default})")
+            print(f"  ⚠️  Invalid value, using default ({prompt_default})")
             return default
 
     def _visualization_menu(self):
@@ -1039,6 +1248,7 @@ class InteractiveCLI:
                     {"name": "🔭 Visualize Euclid cutouts", "value": "viz_cutouts"},
                     {"name": "✨ Visualize PSF", "value": "viz_psf"},
                     {"name": "🌌 Visualize training data", "value": "viz_training"},
+                    {"name": "⭐ Visualize star positions", "value": "viz_star_positions"},
                     {"name": "🔙 Back to main menu", "value": "back"},
                 ]
             ).ask()
@@ -1052,6 +1262,36 @@ class InteractiveCLI:
                 self._visualize_psf()
             elif choice == "viz_training":
                 self._visualize_training_data()
+            elif choice == "viz_star_positions":
+                self._visualize_star_positions()
+
+    def _visualize_star_positions(self, output_dir: str = None):
+        """Visualize star positions from the catalog."""
+        if output_dir is None:
+            output_dir = select(
+                "Select catalog directory:",
+                choices=[
+                    {"name": "./data/euclid_stars (default)", "value": "./data/euclid_stars"},
+                    {"name": "Custom path...", "value": "custom"},
+                ]
+            ).ask()
+            if output_dir == "custom":
+                output_dir = input("Enter path: ").strip()
+
+        catalog = StarCatalog(output_dir)
+        if not catalog.exists():
+            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+            return
+
+        data = catalog.load()
+        stars = data.get("stars", [])
+        if not stars:
+            print("\n✗ Catalog is empty — nothing to plot")
+            return
+
+        output_path = Config.VIS_STAR_POSITIONS
+        draw_star_positions(stars, output_path)
+        print(f"\n✓ Star positions plot saved to {output_path} ({len(stars)} stars)")
 
     def _visualize_cutouts(self):
         """Visualize Euclid cutouts."""
@@ -1073,7 +1313,7 @@ class InteractiveCLI:
             print("\n✗ Invalid input: number of stars must be an integer")
             return
 
-        clip_percentile = self._ask_clip_percentile()
+
 
         # Load catalog
         catalog = StarCatalog(output_dir)
@@ -1109,7 +1349,8 @@ class InteractiveCLI:
                 with fits.open(fits_files[0]) as hdul:
                     data = hdul[0].data
 
-                visualizer = BaseVisualizer(clip_percentile=clip_percentile, rows=1, cols=3, figsize=(18, 6))
+                visualizer = BaseVisualizer(rows=1, cols=3, figsize=(18, 6),
+                                            vmin=float(np.min(data)), vmax=float(np.max(data)))
                 visualizer.add_scale_panel(data)
                 visualizer.add_scale_panel(data, log_scale=True)
 
@@ -1158,15 +1399,16 @@ class InteractiveCLI:
             print(f"\n✗ PSF file not found: {psf_file}")
             return
 
-        clip_percentile = self._ask_clip_percentile()
+
 
         # Load PSF
         print(f"\nLoading PSF from {psf_file}...")
         psf = PSF.from_fits(psf_file)
         psf_data = psf.data
 
-        # Create visualization (linear, log, stats)
-        visualizer = BaseVisualizer(clip_percentile=clip_percentile, rows=1, cols=3, figsize=(18, 6))
+        # Create visualization (linear, log, stats) — PSF has its own flux range
+        visualizer = BaseVisualizer(rows=1, cols=3, figsize=(18, 6),
+                                    vmin=float(np.min(psf_data)), vmax=float(np.max(psf_data)))
 
         visualizer.add_scale_panel(psf_data, title_suffix='\nEuclid VIS PSF')
         visualizer.add_scale_panel(psf_data, log_scale=True)
@@ -1218,19 +1460,6 @@ class InteractiveCLI:
             ]
         ).ask()
 
-        # Raw flux is only available for clean (HR) images; dirty TFRecords
-        # are always normalized so there is no raw variant to visualise.
-        if mode == "clean":
-            variant = select(
-                "Which variant:",
-                choices=[
-                    {"name": "Normalized [0, 65535] (what the model sees)", "value": "norm"},
-                    {"name": "Raw flux (physical units)", "value": "raw"},
-                ]
-            ).ask()
-        else:
-            variant = "norm"
-
         num_images_input = input("Number of images to visualize (default 5): ").strip() or "5"
         try:
             num_images = int(num_images_input)
@@ -1238,20 +1467,15 @@ class InteractiveCLI:
             print("\n✗ Invalid input: number of images must be an integer")
             return
 
-        clip_percentile = self._ask_clip_percentile()
-
-        # Build explicit file names — no globs that could mix raw and norm
-        suffix = "_norm" if variant == "norm" else ""
-        tag = "norm" if variant == "norm" else "raw"
+        vmax = self._ask_vmax()
 
         need_clean = mode in ("clean", "pair")
         need_dirty = mode in ("dirty", "pair")
 
-        # Check at least one subset exists
         def _find_subsets(prefix):
             found = []
             for subset in ("train", "validate"):
-                path = tfrecord_path(Config.RECORDS_DIR, f"{prefix}_{subset}{suffix}")
+                path = tfrecord_path(Config.RECORDS_DIR, f"{prefix}_{subset}")
                 if os.path.exists(path):
                     found.append((subset, path))
             return found
@@ -1260,10 +1484,10 @@ class InteractiveCLI:
         dirty_files = _find_subsets("dirty") if need_dirty else []
 
         if need_clean and not clean_files:
-            print(f"\n✗ No clean {tag} TFRecords found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
             return
         if need_dirty and not dirty_files:
-            print(f"\n✗ No dirty {tag} TFRecords found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
             return
 
         try:
@@ -1277,9 +1501,9 @@ class InteractiveCLI:
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
                     img = all_images[i]
-                    out = os.path.join(vis_dir, f'clean_{tag}_{img.index:04d}.png')
-                    draw_clean_image(img.data, out, index=img.index, clip_percentile=clip_percentile)
-                print(f"\n✓ {len(chosen)} clean ({tag}) images → {vis_dir}")
+                    out = os.path.join(vis_dir, f'clean_{img.index:04d}.png')
+                    draw_clean_image(img.data, out, index=img.index, vmax=vmax)
+                print(f"\n✓ {len(chosen)} clean images → {vis_dir}")
 
             elif mode == "dirty":
                 vis_dir = Config.VIS_DIRTY_DIR
@@ -1291,9 +1515,9 @@ class InteractiveCLI:
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
                     img = all_images[i]
-                    out = os.path.join(vis_dir, f'dirty_{tag}_{img.index:04d}.png')
-                    draw_dirty_image(img.data, out, index=img.index, clip_percentile=clip_percentile)
-                print(f"\n✓ {len(chosen)} dirty ({tag}) images → {vis_dir}")
+                    out = os.path.join(vis_dir, f'dirty_{img.index:04d}.png')
+                    draw_dirty_image(img.data, out, index=img.index, vmax=vmax)
+                print(f"\n✓ {len(chosen)} dirty images → {vis_dir}")
 
             elif mode == "pair":
                 vis_dir = Config.VIS_DIRTY_DIR
@@ -1303,8 +1527,8 @@ class InteractiveCLI:
                 # Collect matched pairs per subset to avoid index-space collisions.
                 all_pairs: list[tuple[SkyImage, SkyImage]] = []
                 for subset in ("train", "validate"):
-                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}{suffix}")
-                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}{suffix}")
+                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
                     if not os.path.exists(clean_sub) or not os.path.exists(dirty_sub):
                         continue
                     dirty_by_index = {
@@ -1324,10 +1548,10 @@ class InteractiveCLI:
                 chosen = rng.choice(len(all_pairs), min(num_images, len(all_pairs)), replace=False)
                 for i in chosen:
                     hr, lr = all_pairs[i]
-                    path = os.path.join(vis_dir, f'pair_{tag}_{hr.index:04d}.png')
-                    draw_clean_dirty_pair(hr.data, lr.data, path, index=hr.index, clip_percentile=clip_percentile)
+                    path = os.path.join(vis_dir, f'pair_{hr.index:04d}.png')
+                    draw_clean_dirty_pair(hr.data, lr.data, path, index=hr.index, vmax=vmax)
                     n_drawn += 1
-                print(f"\n✓ {n_drawn} pair ({tag}) plots → {vis_dir}")
+                print(f"\n✓ {n_drawn} pair plots → {vis_dir}")
 
         except Exception as e:
             print(f"\n✗ Visualization failed: {e}")

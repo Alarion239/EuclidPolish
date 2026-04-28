@@ -43,8 +43,8 @@ class EuclidDataset:
             raise ValueError("subset must be 'train' or 'validate'")
         self.scale         = scale
         self.hr_patch_size = hr_patch_size
-        self.clean_file    = tfrecord_path(records_dir, f'clean_{subset}_norm')
-        self.dirty_file    = tfrecord_path(records_dir, f'dirty_{subset}_norm')
+        self.clean_file    = tfrecord_path(records_dir, f'clean_{subset}')
+        self.dirty_file    = tfrecord_path(records_dir, f'dirty_{subset}')
 
     def dataset(
         self,
@@ -75,7 +75,8 @@ class EuclidDataset:
             parse_record_graph, num_parallel_calls=AUTOTUNE,
         )
 
-        # *_norm TFRecords are already in [0, 65535] (normalized at generation time)
+        # TFRecords store raw float32 electrons (per pixel, over the stacked
+        # integration). The model applies tanh/arctanh internally.
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))  # (lr, hr)
 
         # Cache the zipped dataset so that downstream .take() doesn't

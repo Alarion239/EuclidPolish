@@ -12,6 +12,7 @@ from euclid_polish.visualization.methods import (
     draw_cutout,
     draw_psf,
     draw_clean_dirty_pair,
+    draw_star_positions,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "draw_cutout",
     "draw_psf",
     "draw_clean_dirty_pair",
+    "draw_star_positions",
 ]

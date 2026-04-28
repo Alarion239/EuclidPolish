@@ -1,3 +1,4 @@
+import tensorflow as tf
 import tensorflow_probability as tfp
 
 from tf_keras.layers import Add, Conv2D, Input, Lambda
@@ -6,15 +7,22 @@ from tf_keras.models import Model
 from euclid_polish.config import Config
 from euclid_polish.training.models.common import pixel_shuffle
 
-_HALF = 2.0 ** Config.DEFAULT_NBIT / 2.0   # 32768.0 — matches polish-pub
+
+# Network sees fluxes (electrons) at input, emits fluxes at output.
+# Internally it operates on the tanh-stretched representation in (-1, 1).
+_TANH_SCALE = float(Config.TANH_SCALE_E)
+_TANH_EPS = 1e-6
 
 
-# Fixed linear transforms: [0, 65535] ↔ ~[-1, 1]  (matching polish-pub)
 def _normalize(x):
-    return (x - _HALF) / _HALF
+    """Electrons → (-1, 1) via fixed tanh stretch."""
+    return tf.tanh(x / _TANH_SCALE)
 
-def _denormalize(x):
-    return x * _HALF + _HALF
+
+def _denormalize(y):
+    """(-1, 1) → electrons via arctanh, with a tiny clip to avoid ±∞."""
+    y_clipped = tf.clip_by_value(y, -1.0 + _TANH_EPS, 1.0 - _TANH_EPS)
+    return tf.atanh(y_clipped) * _TANH_SCALE
 
 
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
@@ -42,9 +50,14 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 
 
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6, res_block_scaling=None, nchan=1):
-    """WDSR model. Expects input in [0, 65535] (pre-normalized per image)."""
+    """WDSR model. Input/output are raw electrons (float32).
+
+    The first layer applies a fixed tanh stretch (electrons → (-1, 1)); the
+    final layer applies arctanh (back to electrons). The residual core
+    operates on the normalized representation so values stay bounded.
+    """
     x_in = Input(shape=(None, None, nchan))
-    x = Lambda(_normalize)(x_in)   # [0, 65535] → [-1, 1]
+    x = Lambda(_normalize)(x_in)   # electrons → (-1, 1)
 
     # main branch
     m = conv2d_weightnorm(num_filters, nchan, padding='same')(x)
@@ -58,6 +71,6 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6, res_blo
     s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])
-    x = Lambda(_denormalize)(x)    # [-1, 1] → [0, 65535]
+    x = Lambda(_denormalize)(x)    # (-1, 1) → electrons
 
     return Model(x_in, x, name="wdsr")

@@ -17,6 +17,7 @@ from euclid_polish.euclid.validator import (
 )
 from euclid_polish.euclid.psf_extractor import PSFExtractor, PSFExtractionConfig
 from euclid_polish.euclid.downloader import EuclidCutoutDownloader, DownloadConfig
+from euclid_polish.euclid import auth
 
 __all__ = [
     "PSF",
@@ -32,4 +33,5 @@ __all__ = [
     "validate_directory_exists",
     "validate_range",
     "validate_positive",
+    "auth",
 ]

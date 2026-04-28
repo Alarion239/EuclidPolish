@@ -5,6 +5,8 @@ This module provides a single source of truth for all configuration values,
 eliminating magic strings and numbers scattered throughout the codebase.
 """
 
+import math
+
 
 class Config:
     """Configuration constants for EuclidPolish."""
@@ -25,13 +27,13 @@ class Config:
     VIS_PSF_DIR          = "./data/vis/psf"
     VIS_CLEAN_DIR        = "./data/vis/clean"
     VIS_DIRTY_DIR        = "./data/vis/dirty"
+    VIS_STAR_POSITIONS   = "./data/vis/star_positions.png"
 
     # TFRecord storage
     RECORDS_DIR          = "./data/images/records"
 
     # Default values for command-line arguments
-    DEFAULT_CUTOUT_SIZE = 256
-    DEFAULT_CLIP_PERCENTILE = 100
+    DEFAULT_CUTOUT_SIZE = 512
     DEFAULT_MAGNITUDE_LIMIT = 20.0
     DEFAULT_RADIUS = 0.5
     DEFAULT_NUM_STARS = 5
@@ -56,20 +58,39 @@ class Config:
     # Sky generation defaults
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
-    DEFAULT_GAL_DENSITY_ARCMIN2  = 40.0
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 2.0
+    DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389 (5×10³ stars / deg²)
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
-    DEFAULT_VIS_ZEROPOINT        = 26.2     # mag → flux conversion
+    # Catalog zeropoint: interprets MER catalog flux_vis_1fwhm_aper → AB mag
+    # (used by euclid/catalog.py — do not change without re-validating against
+    # real Euclid Q1 catalog data).
+    DEFAULT_VIS_ZEROPOINT        = 26.2
     VIS_PIXEL_SCALE_ARCSEC       = 0.10     # native Euclid VIS pixel scale (arcsec/pixel)
 
-    # PSF convolution defaults
+    # Euclid VIS detector parameters (MSSL VIS-PP, Cropper+ 2014, Euclid Q1 docs)
+    EXPOSURE_TIME_S              = 565.0    # single VIS frame duration (s)
+    N_EXPOSURES                  = 4        # Wide Survey dithers per stack
+    T_TOTAL_S                    = N_EXPOSURES * EXPOSURE_TIME_S  # 2260.0 s
+    READ_NOISE_E                 = 4.5      # RMS read noise per exposure (e⁻)
+    GAIN_E_PER_ADU               = 3.1      # documentation only; pipeline stays in e⁻
+    DARK_E_PER_S_PER_PIX         = 0.001    # dark current (e⁻/pix/s)
+    SKY_MAG_AB_ARCSEC2           = 22.35    # typical Wide Survey sky brightness
+    VIS_AB_ZP_E_PER_S            = 25.50    # m_AB of source giving 1 e⁻/s
+
+    # Simulator zeropoint: m_AB of a source contributing 1 e⁻ over the full
+    # stacked integration. Used by clean_generator.py to convert magnitude →
+    # expected electrons-per-pixel for a synthetic point source.
+    SIM_VIS_ZEROPOINT_E          = VIS_AB_ZP_E_PER_S + 2.5 * math.log10(T_TOTAL_S)
+
+    # Sky surface brightness in e⁻/s/arcsec², derived from VIS_AB_ZP_E_PER_S.
+    SKY_E_PER_S_PER_ARCSEC2      = 10 ** (-0.4 * (SKY_MAG_AB_ARCSEC2 - VIS_AB_ZP_E_PER_S))
+
+    # PSF convolution / model normalization defaults
     DEFAULT_REBIN_FACTOR         = 2
     DEFAULT_ADD_NOISE            = True
-    DEFAULT_NOISE_FRACTION       = 0.1     # fraction of per-image mean flux
-    DEFAULT_NBIT                 = 16
-    MAX_PIXEL_VALUE              = float(2 ** DEFAULT_NBIT - 1)  # 65535.0
+    TANH_SCALE_E                 = 1000.0   # e⁻ mapped to tanh(1) ≈ 0.76 in model's normalization layer
 
     # Star magnitude distribution (probability thresholds and ranges)
     STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
@@ -80,6 +101,19 @@ class Config:
     STAR_MAG_MID_RANGE           = 4.0
     STAR_MAG_BRIGHT_BASE         = 16.0
     STAR_MAG_BRIGHT_RANGE        = 2.0
+
+    # Donut-galaxy (toy gravitational-lens ring) defaults.
+    # Sized so the central hole is blurred by the Euclid VIS PSF (FWHM ≈ 0.14"):
+    # at the small end the hole vanishes into a fuzzy blob; at the large end
+    # the ring/arc structure survives but the hole is partially filled in.
+    DEFAULT_DONUT_DENSITY_ARCMIN2 = 60.0   # ≈2.7 donuts per 256² HR field at 0.05"/pix
+    DONUT_RADIUS_ARCSEC_MIN       = 0.12   # ring radius lower bound (arcsec)
+    DONUT_RADIUS_ARCSEC_MAX       = 0.36   # ring radius upper bound (arcsec)
+    DONUT_THICKNESS_FRAC          = 0.15   # σ_thickness / radius (Gaussian thickness)
+    DONUT_MAG_MIN                 = 21.0   # bright end of donut magnitude range
+    DONUT_MAG_MAX                 = 24.0   # faint end
+    DONUT_ELLIPTICITY_MAX         = 0.40   # |g_total| upper bound for random shear
+    DONUT_STAMP_PIX               = 64     # numpy stamp side at HR pixel scale (3.2")
 
     # GalSim numerical parameters
     GALSIM_MAX_FFT_SIZE          = 16384
@@ -105,3 +139,7 @@ class Config:
     DEFAULT_PSF_MAX_ITERS = 10
     DEFAULT_PSF_ACCURACY = 0.001
     DEFAULT_PSF_FITS_FILENAME = "euclid_psf.fits"
+
+    # Euclid archive authentication
+    DEFAULT_CREDENTIALS_FILE = "~/.euclid_credentials"   # two lines: username, password
+    DEFAULT_BRIGHTEST_N       = 1000

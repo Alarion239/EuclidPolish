@@ -9,3 +9,24 @@ monopsfs*
 *.png
 *.zip
 *.gz
+
+# Python / IDE / OS
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Generated training artefacts
+ckpt/
+data/euclid_stars/
+data/images/
+data/vis/
+
+# Vendored reference code (heavy data examples)
+scripts/polish-pub/
+
+# Secrets / credentials
+.env
+.env.*
+*.credentials
+.euclid_credentials
+euclid_credentials*

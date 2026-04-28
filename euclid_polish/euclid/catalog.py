@@ -72,6 +72,103 @@ class StarCatalog:
         """Check if the catalog file exists."""
         return os.path.exists(self.catalog_path)
 
+    @staticmethod
+    def is_valid(star: dict, size: int | None = None) -> bool:
+        """
+        Check whether a star has a valid cutout.
+
+        Parameters
+        ----------
+        star : dict
+            Star entry from the catalog.
+        size : int or None
+            Cutout size to check.  If None, returns True when *any* size is valid.
+
+        Returns
+        -------
+        bool
+        """
+        v = star.get('valid', False)
+        if isinstance(v, dict):
+            if size is not None:
+                return v.get(str(size), False)
+            return any(v.values())
+        # Legacy bool format
+        return bool(v)
+
+    @staticmethod
+    def set_valid(star: dict, size: int) -> None:
+        """Mark a star as valid for a given cutout size, clearing any per-size
+        corruption flag at the same size (a successful re-download supersedes
+        a prior corruption record)."""
+        v = star.get('valid', {})
+        if not isinstance(v, dict):
+            v = {}
+        v[str(size)] = True
+        star['valid'] = v
+        c = star.get('corrupted')
+        if isinstance(c, dict):
+            c.pop(str(size), None)
+            if not c:
+                star.pop('corrupted', None)
+
+    @staticmethod
+    def valid_sizes(star: dict) -> list[int]:
+        """Return the list of cutout sizes for which this star is valid."""
+        v = star.get('valid', False)
+        if isinstance(v, dict):
+            return [int(k) for k, ok in v.items() if ok]
+        if v:
+            return []  # legacy bool — size unknown
+        return []
+
+    @staticmethod
+    def is_corrupted(star: dict, size: int | None = None) -> bool:
+        """
+        Check whether a star's cutout is flagged corrupted.
+
+        Legacy bool ``corrupted=True`` applies to every size (the size at which
+        corruption originally occurred is unrecoverable from a bare bool).
+        """
+        c = star.get('corrupted', False)
+        if isinstance(c, dict):
+            if size is not None:
+                return c.get(str(size), False)
+            return any(c.values())
+        return bool(c)
+
+    @staticmethod
+    def set_corrupted(star: dict, size: int) -> None:
+        """Mark a star's cutout as corrupted at the given size, clearing any
+        validity flag at the same size."""
+        c = star.get('corrupted', {})
+        if not isinstance(c, dict):
+            c = {}
+        c[str(size)] = True
+        star['corrupted'] = c
+        v = star.get('valid')
+        if isinstance(v, dict):
+            v.pop(str(size), None)
+
+    @staticmethod
+    def is_download_failed(star: dict, size: int | None = None) -> bool:
+        """Check whether download was flagged as failed at the given size."""
+        f = star.get('download_failed', False)
+        if isinstance(f, dict):
+            if size is not None:
+                return f.get(str(size), False)
+            return any(f.values())
+        return bool(f)
+
+    @staticmethod
+    def set_download_failed(star: dict, size: int) -> None:
+        """Mark a star as having a failed download at the given size."""
+        f = star.get('download_failed', {})
+        if not isinstance(f, dict):
+            f = {}
+        f[str(size)] = True
+        star['download_failed'] = f
+
     def get_stars_by_status(self) -> dict:
         """
         Categorize stars by their status.
@@ -86,10 +183,10 @@ class StarCatalog:
         stars = catalog.get('stars', [])
 
         return {
-            'valid': [s for s in stars if s.get('valid', False)],
+            'valid': [s for s in stars if self.is_valid(s)],
             'corrupted': [s for s in stars if s.get('corrupted', False)],
             'failed': [s for s in stars if s.get('download_failed', False)],
-            'pending': [s for s in stars if not s.get('valid', False)
+            'pending': [s for s in stars if not self.is_valid(s)
                        and not s.get('corrupted', False)
                        and not s.get('download_failed', False)],
             'all': stars,
@@ -127,10 +224,10 @@ class StarCatalog:
         catalog = self.load()
         stars = catalog.get('stars', [])
 
-        valid     = [s for s in stars if s.get('valid', False)]
+        valid     = [s for s in stars if self.is_valid(s)]
         corrupted = [s for s in stars if s.get('corrupted', False)]
         failed    = [s for s in stars if s.get('download_failed', False)]
-        pending   = [s for s in stars if not s.get('valid', False)
+        pending   = [s for s in stars if not self.is_valid(s)
                      and not s.get('corrupted', False)
                      and not s.get('download_failed', False)]
 
@@ -350,10 +447,20 @@ class StarCatalog:
                 'message': "No new stars found in this region"
             }
 
-        # Filter out duplicates and add stars
+        return self._ingest_stars(new_stars, catalog, num_to_add=num_to_add)
+
+    def _ingest_stars(
+        self,
+        new_stars: List[Dict[str, Any]],
+        catalog: dict,
+        num_to_add: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Dedupe + assign IDs + persist. Shared by all query methods."""
+        existing_stars = catalog['stars']
+        next_id = catalog['next_id']
+
         added_count = 0
         skipped_count = 0
-
         for star in new_stars:
             if num_to_add is not None and added_count >= num_to_add:
                 break
@@ -365,7 +472,6 @@ class StarCatalog:
                 next_id += 1
                 added_count += 1
 
-        # Update and save catalog
         catalog['stars'] = existing_stars
         catalog['next_id'] = next_id
         self.save(catalog)
@@ -377,3 +483,103 @@ class StarCatalog:
             'next_id': next_id,
             'message': f"Added {added_count} stars → {len(existing_stars)} total in catalog"
         }
+
+    def query_brightest_stars(
+        self,
+        num_stars: int,
+        ra: Optional[float] = None,
+        dec: Optional[float] = None,
+        radius: Optional[float] = None,
+        magnitude_limit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Query the Euclid archive for the brightest ``num_stars`` stars, sorted
+        server-side by VIS flux (descending).
+
+        Uses ``launch_job_async``, which bypasses the 2000-row synchronous cap.
+        Authenticated users get persistent server-side storage of the job; the
+        job results themselves are fetched immediately either way.
+
+        Parameters
+        ----------
+        num_stars : int
+            Maximum number of bright stars to return (ADQL ``TOP N``).
+        ra, dec, radius : float, optional
+            Optional cone (degrees) to restrict the search. All three must be
+            provided together; omit all to search the full mer_catalogue.
+        magnitude_limit : float, optional
+            Faint-end magnitude cutoff; converted server-side to a flux lower
+            bound using ``Config.DEFAULT_VIS_ZEROPOINT``.
+
+        Returns
+        -------
+        dict
+            Same shape as :meth:`query_euclid_catalog`.
+        """
+        if num_stars <= 0:
+            raise ValueError("num_stars must be positive")
+
+        cone_given = [v is not None for v in (ra, dec, radius)]
+        if any(cone_given) and not all(cone_given):
+            raise ValueError("ra, dec, and radius must be provided together")
+
+        where_clauses = [
+            "flux_vis_1fwhm_aper IS NOT NULL",
+            "flux_vis_1fwhm_aper > 0",
+        ]
+        if magnitude_limit is not None:
+            flux_min = 10 ** ((Config.DEFAULT_VIS_ZEROPOINT - magnitude_limit) / 2.5)
+            where_clauses.append(f"flux_vis_1fwhm_aper > {flux_min}")
+        if all(cone_given):
+            where_clauses.append(
+                f"CONTAINS(POINT('ICRS', right_ascension, declination), "
+                f"CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1"
+            )
+
+        query = (
+            f"SELECT TOP {num_stars} right_ascension, declination, flux_vis_1fwhm_aper "
+            f"FROM catalogue.mer_catalogue "
+            f"WHERE {' AND '.join(where_clauses)} "
+            f"ORDER BY flux_vis_1fwhm_aper DESC"
+        )
+
+        try:
+            job = Euclid.launch_job_async(query)
+            results = job.get_results()
+        except Exception as e:
+            print(f"    Async query failed: {e}")
+            return {
+                'added': 0, 'skipped': 0,
+                'total': 0, 'next_id': 0,
+                'message': f"Query failed: {e}",
+            }
+
+        if results is None or len(results) == 0:
+            catalog = self.load()
+            return {
+                'added': 0, 'skipped': 0,
+                'total': len(catalog.get('stars', [])),
+                'next_id': catalog.get('next_id', 0),
+                'message': "No stars returned",
+            }
+
+        new_stars: List[Dict[str, Any]] = []
+        for row in results:
+            flux_raw = row['flux_vis_1fwhm_aper']
+            # Even with `flux_vis_1fwhm_aper IS NOT NULL` in the WHERE clause,
+            # astropy still returns a masked Table — guard against masked /
+            # None / NaN before converting to float.
+            if flux_raw is None or (hasattr(flux_raw, 'mask') and bool(flux_raw.mask)):
+                continue
+            flux = float(flux_raw)
+            if not np.isfinite(flux) or flux <= 0:
+                continue
+            mag = -2.5 * np.log10(flux) + Config.DEFAULT_VIS_ZEROPOINT
+            new_stars.append({
+                'ra': float(row['right_ascension']),
+                'dec': float(row['declination']),
+                'magnitude': float(mag),
+            })
+
+        catalog = self.load()
+        return self._ingest_stars(new_stars, catalog, num_to_add=num_stars)

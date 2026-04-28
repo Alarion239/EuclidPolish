@@ -21,10 +21,11 @@ from euclid_polish.sky.types import SkyImage
 @dataclass
 class GeneratorConfig:
     """Configuration for clean sky generation."""
-    image_size: int             = Config.DEFAULT_IMAGE_SIZE
-    pixel_scale: float          = Config.DEFAULT_PIXEL_SCALE
-    gal_density_arcmin2: float  = Config.DEFAULT_GAL_DENSITY_ARCMIN2
-    star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
+    image_size: int              = Config.DEFAULT_IMAGE_SIZE
+    pixel_scale: float           = Config.DEFAULT_PIXEL_SCALE
+    gal_density_arcmin2: float   = Config.DEFAULT_GAL_DENSITY_ARCMIN2
+    star_density_arcmin2: float  = Config.DEFAULT_STAR_DENSITY_ARCMIN2
+    donut_density_arcmin2: float = Config.DEFAULT_DONUT_DENSITY_ARCMIN2
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
@@ -36,6 +37,8 @@ class GeneratorConfig:
             return False, "Galaxy density must be non-negative"
         if self.star_density_arcmin2 < 0:
             return False, "Star density must be non-negative"
+        if self.donut_density_arcmin2 < 0:
+            return False, "Donut density must be non-negative"
         return True, None
 
 
@@ -49,11 +52,13 @@ class CleanGalaxySimulator:
         rng=None,
         gal_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
         star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
+        donut_density_arcmin2=Config.DEFAULT_DONUT_DENSITY_ARCMIN2,
     ):
         self.image_size = int(image_size)
         self.pixel_scale = float(pixel_scale)
         self.gal_density_arcmin2 = float(gal_density_arcmin2)
         self.star_density_arcmin2 = float(star_density_arcmin2)
+        self.donut_density_arcmin2 = float(donut_density_arcmin2)
         self.gsparams = galsim.GSParams(
             maximum_fft_size=Config.GALSIM_MAX_FFT_SIZE,
             folding_threshold=Config.GALSIM_FOLDING_THRESHOLD,
@@ -62,8 +67,9 @@ class CleanGalaxySimulator:
 
         if self.pixel_scale <= 0:
             raise ValueError("Pixel scale must be positive.")
-        if self.gal_density_arcmin2 < 0 or self.star_density_arcmin2 < 0:
-            raise ValueError("Source densities must be non-negative.")
+        for d in (self.gal_density_arcmin2, self.star_density_arcmin2, self.donut_density_arcmin2):
+            if d < 0:
+                raise ValueError("Source densities must be non-negative.")
 
         if rng is None:
             rng = galsim.BaseDeviate()
@@ -71,7 +77,17 @@ class CleanGalaxySimulator:
         self.ud = galsim.UniformDeviate(self.rng)
 
     def get_cosmos_galaxy(self, catalog=None, index=None):
-        """Get a COSMOS galaxy from the catalog."""
+        """Get a COSMOS galaxy and rescale its flux to Euclid VIS electrons.
+
+        ``galsim.COSMOSCatalog.makeGalaxy(gal_type='parametric')`` returns a
+        profile whose flux is in COSMOS HST F814W native counts — typical
+        magnitude-25 galaxies come out with ``gal.flux ≈ 2`` (vastly below
+        the Euclid noise floor). We rescale to the expected total electrons
+        over the stacked VIS integration using the catalog's ``mag_auto``
+        and ``Config.SIM_VIS_ZEROPOINT_E``. Treating F814W as VIS magnitude
+        is the standard simulator approximation (the bandpasses overlap
+        substantially); a colour correction can be folded in later.
+        """
         if catalog is None:
             raise ValueError("No COSMOSCatalog provided.")
 
@@ -94,7 +110,63 @@ class CleanGalaxySimulator:
             gsparams=self.gsparams,
         )
 
+        record = catalog.getParametricRecord(index)
+        mag_auto = float(record["mag_auto"])
+        electrons_total = 10.0 ** (-0.4 * (mag_auto - Config.SIM_VIS_ZEROPOINT_E))
+        gal = gal.withFlux(electrons_total)
+
         return gal, index
+
+    def _make_donut_profile(self, np_rng):
+        """Build one toy gravitational-lens ring as a galsim.GSObject.
+
+        A Gaussian-thickness annulus is rendered onto a small numpy stamp,
+        wrapped in galsim.InterpolatedImage, then sheared / rotated to give
+        the ring an arbitrary orientation. Some realisations look like full
+        rings, others like elongated arcs (depending on the random shear).
+        Total flux is rescaled to the expected electrons over the stack via
+        ``Config.SIM_VIS_ZEROPOINT_E`` — same calibration used for stars
+        and COSMOS galaxies.
+
+        Returns
+        -------
+        prof : galsim.GSObject
+            Profile ready for ``_draw_profile_to_image``.
+        params : dict
+            Diagnostic record (radius, thickness, shear, mag, flux).
+        """
+        radius_arcsec = float(np_rng.uniform(
+            Config.DONUT_RADIUS_ARCSEC_MIN, Config.DONUT_RADIUS_ARCSEC_MAX))
+        sigma_arcsec  = Config.DONUT_THICKNESS_FRAC * radius_arcsec
+        theta_deg     = float(np_rng.uniform(0.0, 180.0))
+        g_mag         = float(np_rng.uniform(0.0, Config.DONUT_ELLIPTICITY_MAX))
+        g_phase       = float(np_rng.uniform(0.0, 2.0 * np.pi))
+        g1            = g_mag * np.cos(g_phase)
+        g2            = g_mag * np.sin(g_phase)
+        mag           = float(np_rng.uniform(Config.DONUT_MAG_MIN, Config.DONUT_MAG_MAX))
+        electrons_total = 10.0 ** (-0.4 * (mag - Config.SIM_VIS_ZEROPOINT_E))
+
+        # Build numpy ring on a centred stamp.
+        N = int(Config.DONUT_STAMP_PIX)
+        yy, xx = np.indices((N, N), dtype=np.float64) - (N - 1) / 2.0
+        r_arcsec = np.sqrt(xx * xx + yy * yy) * self.pixel_scale
+        ring = np.exp(-((r_arcsec - radius_arcsec) ** 2) / (2.0 * sigma_arcsec ** 2))
+
+        img = galsim.Image(ring.astype(np.float32), scale=self.pixel_scale)
+        prof = galsim.InterpolatedImage(img, gsparams=self.gsparams)
+        prof = prof.shear(g1=g1, g2=g2).rotate(theta_deg * galsim.degrees)
+        prof = prof.withFlux(electrons_total)
+
+        params = {
+            "type": "donut",
+            "radius_arcsec": radius_arcsec,
+            "sigma_arcsec": sigma_arcsec,
+            "theta_deg": theta_deg,
+            "g1": g1, "g2": g2,
+            "mag": mag,
+            "flux": float(electrons_total),
+        }
+        return prof, params
 
     def _random_position(self):
         """Generate random position within the image."""
@@ -140,9 +212,9 @@ class CleanGalaxySimulator:
         profile.drawImage(**kwargs)
         image[bounds] += stamp
 
-    def simulate_field(self, catalog=None, n_galaxies=None, n_stars=None, np_rng=None):
+    def simulate_field(self, catalog=None, n_galaxies=None, n_stars=None, n_donuts=None, np_rng=None):
         """
-        Simulate one clean field with galaxies and stars.
+        Simulate one clean field with galaxies, stars, and donut-galaxies.
 
         Parameters:
         -----------
@@ -152,6 +224,9 @@ class CleanGalaxySimulator:
             Number of galaxies to generate. If None, sampled from Poisson distribution.
         n_stars : int, optional
             Number of stars to generate. If None, sampled from Poisson distribution.
+        n_donuts : int, optional
+            Number of donut-galaxies (toy lensing rings/arcs). If None, sampled
+            from Poisson distribution.
         np_rng : np.random.Generator, optional
             NumPy random number generator for reproducible sampling.
 
@@ -164,20 +239,22 @@ class CleanGalaxySimulator:
         """
         area_arcmin2 = (self.image_size * self.pixel_scale / 60.0) ** 2
 
+        rng_for_poisson = np_rng if np_rng is not None else np.random
         if n_galaxies is None:
-            if np_rng is not None:
-                n_galaxies = int(np_rng.poisson(self.gal_density_arcmin2 * area_arcmin2))
-            else:
-                n_galaxies = int(np.random.poisson(self.gal_density_arcmin2 * area_arcmin2))
+            n_galaxies = int(rng_for_poisson.poisson(self.gal_density_arcmin2 * area_arcmin2))
         if n_stars is None:
-            if np_rng is not None:
-                n_stars = int(np_rng.poisson(self.star_density_arcmin2 * area_arcmin2))
-            else:
-                n_stars = int(np.random.poisson(self.star_density_arcmin2 * area_arcmin2))
+            n_stars = int(rng_for_poisson.poisson(self.star_density_arcmin2 * area_arcmin2))
+        if n_donuts is None:
+            n_donuts = int(rng_for_poisson.poisson(self.donut_density_arcmin2 * area_arcmin2))
+
+        # Donuts need a NumPy Generator (uniform sampling of geometry); fall back
+        # to a fresh default RNG if the caller didn't pass one.
+        donut_rng = np_rng if np_rng is not None else np.random.default_rng()
 
         image_hr = galsim.ImageF(self.image_size, self.image_size, scale=self.pixel_scale)
         galaxy_params = []
         star_params = []
+        donut_params = []
 
         for _ in range(n_galaxies):
             success = False
@@ -232,7 +309,8 @@ class CleanGalaxySimulator:
             else:
                 mag = Config.STAR_MAG_BRIGHT_BASE  + Config.STAR_MAG_BRIGHT_RANGE  * self.ud()
 
-            flux = 10 ** (-0.4 * (mag - Config.DEFAULT_VIS_ZEROPOINT))
+            # Total expected electrons over the stacked Euclid VIS integration.
+            flux = 10 ** (-0.4 * (mag - Config.SIM_VIS_ZEROPOINT_E))
 
             # HR: place a point source at the nearest pixel
             ix_hr = int(round(x_hr))
@@ -250,14 +328,50 @@ class CleanGalaxySimulator:
                 }
             )
 
+        # Donut-galaxies (toy gravitational-lens rings / arcs)
+        for _ in range(n_donuts):
+            success = False
+            last_error = None
+
+            for _attempt in range(5):
+                try:
+                    x_hr, y_hr = self._random_position()
+                    prof, params = self._make_donut_profile(donut_rng)
+
+                    self._draw_profile_to_image(
+                        prof,
+                        image_hr,
+                        x_hr,
+                        y_hr,
+                        stamp_size=2 * self.image_size,
+                        pixel_scale=self.pixel_scale,
+                        method="no_pixel",
+                    )
+
+                    params["x_pix"] = float(x_hr)
+                    params["y_pix"] = float(y_hr)
+                    donut_params.append(params)
+
+                    success = True
+                    break
+
+                except (galsim.GalSimFFTSizeWarning, galsim.GalSimError, RuntimeError) as e:
+                    last_error = e
+
+            if not success:
+                print(f"Skipping one donut after repeated draw failures: {last_error}")
+
         obj_params = {
             "field_area_arcmin2": float(area_arcmin2),
             "galaxy_density_arcmin2": float(self.gal_density_arcmin2),
             "star_density_arcmin2": float(self.star_density_arcmin2),
+            "donut_density_arcmin2": float(self.donut_density_arcmin2),
             "n_galaxies": int(n_galaxies),
             "n_stars": int(n_stars),
+            "n_donuts": int(n_donuts),
             "galaxies": galaxy_params,
             "stars": star_params,
+            "donuts": donut_params,
         }
         return SkyImage(
             data=image_hr.array,
@@ -381,6 +495,7 @@ class CleanSkyGenerator:
             pixel_scale=self.config.pixel_scale,
             gal_density_arcmin2=self.config.gal_density_arcmin2,
             star_density_arcmin2=self.config.star_density_arcmin2,
+            donut_density_arcmin2=self.config.donut_density_arcmin2,
         )
 
         images = []

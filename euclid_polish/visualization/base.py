@@ -1,147 +1,209 @@
 """
 Shared visualization base for EuclidPolish.
 
-This module provides common visualization functionality used across multiple
-visualization scripts, eliminating code duplication.
+Two stretch modes are supported on intensity panels:
+
+* ``linear``  — straight imshow with percentile-clipped colour bounds. Good
+                for inspecting the noise floor and morphology of typical
+                pixels; saturated bright peaks read as "clipped" but the
+                surrounding structure stays visible.
+* ``asinh``   — ``arcsinh(x / scale)`` (Lupton+ 2004). Linear near zero
+                (preserves the sky-subtracted noise structure including
+                negatives) and logarithmic for ``|x| >> scale`` (compresses
+                bright stars). ``scale`` defaults to the median absolute
+                deviation of the image so that ±1 in stretched units roughly
+                corresponds to ±1σ of the noise.
+* ``log10``   — legacy log of clamped data. Useful for strictly-positive
+                domains like PSFs and cutouts; misleading on sky-subtracted
+                images that contain negatives.
 """
 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
+
+
+def _percentile_bounds(
+    data: np.ndarray,
+    lo: float = 1.0,
+    hi: float = 99.5,
+) -> Tuple[float, float]:
+    """Return (vmin, vmax) at the given percentiles, with sane fallbacks.
+
+    For *sparse* images (e.g. clean-HR with isolated point sources, where
+    >99.5% of pixels are zero), the [p1, p99.5] window collapses to a
+    degenerate range. In that case, fall back to the actual data range so
+    bright pixels remain visible.
+    """
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    full_min = float(finite.min())
+    full_max = float(finite.max())
+    if full_max <= full_min:
+        return full_min, full_min + 1.0
+
+    vmin, vmax = (float(v) for v in np.percentile(finite, [lo, hi]))
+    range_full = full_max - full_min
+    range_perc = vmax - vmin
+    # Degenerate percentile window (sparse outliers dominate the dynamic range)
+    if range_perc < 0.01 * range_full:
+        return full_min, full_max
+    if vmax <= vmin:
+        return full_min, full_max
+    return vmin, vmax
+
+
+def _asinh_scale(data: np.ndarray) -> float:
+    """Robust per-image asinh scale based on median absolute deviation.
+
+    For sparse images where MAD = 0 (most pixels identical), fall back to a
+    fraction of the dynamic range so the stretch still compresses bright
+    pixels meaningfully.
+    """
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return 1.0
+    mad = float(np.median(np.abs(finite - np.median(finite))))
+    if mad > 1e-6:
+        return mad
+    full = float(finite.max() - finite.min())
+    if full > 0:
+        return full * 0.01
+    std = float(finite.std())
+    return std if std > 1e-6 else 1.0
 
 
 class BaseVisualizer:
-    """Base class for visualizations with common plot layouts."""
+    """Thin wrapper around a matplotlib GridSpec figure."""
 
     def __init__(
         self,
-        clip_percentile: float = 99.5,
         rows: int = 2,
         cols: int = 3,
         figsize=(16, 12),
         hspace: float = 0.3,
         wspace: float = 0.3,
+        vmin: float | None = None,
+        vmax: float | None = None,
     ):
         """
-        Initialize the visualizer and create the figure.
-
-        Parameters:
-        -----------
-        clip_percentile : float
-            Percentile for clipping in linear scale plots.
-        rows : int
-            Number of GridSpec rows.
-        cols : int
-            Number of GridSpec columns.
-        figsize : tuple
-            Figure size in inches.
-        hspace : float
-            Vertical spacing between subplots.
-        wspace : float
-            Horizontal spacing between subplots.
+        Parameters
+        ----------
+        vmin, vmax : float, optional
+            Linear-scale colour bounds. ``None`` triggers percentile-clipped
+            bounds (1% / 99.5%) computed from the data of each panel.
         """
-        self.clip_percentile = clip_percentile
+        self.vmin = vmin
+        self.vmax = vmax
         self._ncols = cols
         self._next_panel = 0
         self._fig = plt.figure(figsize=figsize)
         self._gs = GridSpec(rows, cols, figure=self._fig, hspace=hspace, wspace=wspace)
 
     def _next_gs_position(self):
-        """Return the next GridSpec slot and advance the internal counter."""
         row = self._next_panel // self._ncols
         col = self._next_panel % self._ncols
         self._next_panel += 1
         return self._gs[row, col]
 
-    def add_scale_panel(self, data, title_suffix: str = "", log_scale: bool = False):
-        """
-        Add a scale plot panel (linear with clipping or log10).
+    def add_scale_panel(
+        self,
+        data: np.ndarray,
+        title_suffix: str = "",
+        stretch: str = "linear",
+        asinh_scale: float | None = None,
+        colorbar_label: str = "Electrons",
+        log_scale: bool | None = None,    # legacy — prefer ``stretch``
+    ) -> None:
+        """Add an intensity panel.
 
-        Parameters:
-        -----------
-        data : numpy.ndarray
-            2D data array.
-        title_suffix : str
-            Additional suffix for the title.
-        log_scale : bool
-            If True, display log10 scale (FP16-safe). If False, display linear scale with clipping.
+        Parameters
+        ----------
+        stretch : {"linear", "asinh", "log10"}
+            How pixel values are mapped to colour. ``"asinh"`` is recommended
+            for sky-subtracted electron data. ``"log10"`` is a legacy clamp-
+            to-positive log for PSF/cutout-like inputs.
+        asinh_scale : float, optional
+            ``scale`` parameter for the asinh stretch. ``None`` picks the
+            image's MAD (median absolute deviation).
+        log_scale : bool, optional
+            Deprecated. ``True`` is equivalent to ``stretch="log10"``.
         """
+        if log_scale is not None:
+            stretch = "log10" if log_scale else stretch
+
         ax = self._fig.add_subplot(self._next_gs_position())
-        if log_scale:
-            fp16_min = np.finfo(np.float16).smallest_subnormal
-            display_data = np.log10(np.maximum(data, fp16_min))
-            title = f'Log10 Scale{title_suffix}'
-            colorbar_label = 'log10(Flux)'
+
+        if stretch == "log10":
+            fp16_min = float(np.finfo(np.float16).smallest_subnormal)
+            display = np.log10(np.maximum(data, fp16_min))
+            vmin, vmax = _percentile_bounds(display)
+            title = f"log10{title_suffix}"
+            cbar_label = f"log10({colorbar_label})"
+            im = ax.imshow(display, cmap="viridis", origin="lower",
+                           interpolation="nearest", vmin=vmin, vmax=vmax)
+        elif stretch == "asinh":
+            scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
+            display = np.arcsinh(data / scale)
+            vmin, vmax = _percentile_bounds(display)
+            title = f"asinh (scale={scale:.3g}){title_suffix}"
+            cbar_label = f"asinh({colorbar_label} / {scale:.3g})"
+            im = ax.imshow(display, cmap="viridis", origin="lower",
+                           interpolation="nearest", vmin=vmin, vmax=vmax)
+        elif stretch == "linear":
+            if self.vmin is None or self.vmax is None:
+                vmin, vmax = _percentile_bounds(data)
+            else:
+                vmin, vmax = self.vmin, self.vmax
+            title = f"linear [p1, p99.5]{title_suffix}" if self.vmax is None \
+                else f"linear [{vmin:.3g}, {vmax:.3g}]{title_suffix}"
+            cbar_label = colorbar_label
+            im = ax.imshow(data, cmap="viridis", origin="lower",
+                           interpolation="nearest", vmin=vmin, vmax=vmax)
         else:
-            clip_value = np.percentile(data, self.clip_percentile)
-            display_data = np.clip(data, None, clip_value)
-            title = f'Linear Scale (clipped at {self.clip_percentile}%){title_suffix}'
-            colorbar_label = 'Flux'
-        im = ax.imshow(display_data, cmap='viridis', origin='lower', interpolation='nearest')
+            raise ValueError(f"Unknown stretch: {stretch!r}")
+
         ax.set_title(title, fontsize=12)
-        ax.set_xlabel('X (pixels)')
-        ax.set_ylabel('Y (pixels)')
-        plt.colorbar(im, ax=ax, label=colorbar_label)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+        plt.colorbar(im, ax=ax, label=cbar_label)
 
-    def add_statistics_panel(self, data, stats_dict: Dict[str, Any]):
-        """
-        Add statistics text panel.
-
-        Parameters:
-        -----------
-        data : numpy.ndarray
-            2D data array.
-        stats_dict : dict
-            Dictionary of statistics to display.
-        """
+    def add_statistics_panel(self, data: np.ndarray, stats_dict: Dict[str, Any]) -> None:
         ax = self._fig.add_subplot(self._next_gs_position())
-        ax.axis('off')
+        ax.axis("off")
 
-        # Build stats text
-        lines = [stats_dict.get('title', 'Statistics:'), '=' * 30]
+        lines = [stats_dict.get("title", "Statistics:"), "=" * 30]
 
-        for key, value in stats_dict.get('stats', {}).items():
+        for key, value in stats_dict.get("stats", {}).items():
             lines.append(f"{key}: {value}")
 
-        # Add data stats if provided
-        if stats_dict.get('include_data_stats', True):
+        if stats_dict.get("include_data_stats", True):
+            finite = data[np.isfinite(data)]
+            p1, p50, p99, p999 = np.percentile(finite, [1, 50, 99, 99.9]) if finite.size else (0, 0, 0, 0)
             lines.append(f"\nShape: {data.shape[0]} x {data.shape[1]} pixels")
-            lines.append(f"Peak: {np.max(data):.6e}")
-            lines.append(f"Median: {np.median(data):.6e}")
-            lines.append(f"Std Dev: {np.std(data):.6e}")
-
-        stats_text = '\n'.join(lines)
+            lines.append(f"Min:    {finite.min():.4g}")
+            lines.append(f"p1:     {p1:.4g}")
+            lines.append(f"Median: {p50:.4g}")
+            lines.append(f"p99:    {p99:.4g}")
+            lines.append(f"p99.9:  {p999:.4g}")
+            lines.append(f"Max:    {finite.max():.4g}")
+            lines.append(f"Std:    {finite.std():.4g}")
+            lines.append(f"% < 0:  {(data < 0).mean() * 100:.1f}%")
 
         ax.text(
-            0.1,
-            0.5,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment='center',
-            fontfamily='monospace',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3),
+            0.1, 0.5, "\n".join(lines),
+            transform=ax.transAxes, fontsize=10,
+            verticalalignment="center", fontfamily="monospace",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
         )
 
-    def save_figure(self, output_path: str, dpi: int = 150, close: bool = True):
-        """
-        Save the current figure to file.
-
-        Parameters:
-        -----------
-        output_path : str
-            Output file path.
-        dpi : int
-            DPI for saved figure.
-        close : bool
-            Whether to close the figure after saving.
-        """
-        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-        self._fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    def save_figure(self, output_path: str, dpi: int = 150, close: bool = True) -> None:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        self._fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
         if close:
             plt.close(self._fig)
             self._fig = None
             self._gs = None
-
