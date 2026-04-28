@@ -123,6 +123,17 @@ class Config:
     GALSIM_FOLDING_THRESHOLD     = 1e-4
     GALSIM_MAXK_THRESHOLD        = 1e-2
 
+    # Gradient clipping by global L2 norm. Bounds the worst-case update so a
+    # bad-batch spike can't corrupt weights. Set to math.inf to disable.
+    GRAD_CLIP_NORM               = 5.0
+
+    # Reference dynamic range used to normalise the *raw-electron* PSNR
+    # metric (training reports PSNR in both stretched and raw space —
+    # stretched is what the loss optimises; raw is for human-readable
+    # comparison to typical photometric scales). 1e6 ≈ a moderately bright
+    # source pixel.
+    RAW_PSNR_MAX_VAL             = 1.0e6
+
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000
     DEFAULT_BATCH_SIZE           = 16

@@ -171,6 +171,90 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label=cbar_label)
 
+    def add_diverging_panel(
+        self,
+        data: np.ndarray,
+        asinh_scale: float | None = None,
+        title_suffix: str = "",
+        colorbar_label: str = "Residual (e⁻)",
+    ) -> None:
+        """Add a signed/divergent panel (e.g. residual = HR − SR).
+
+        ``asinh`` stretch with **symmetric** colour limits around zero and a
+        red-blue diverging colormap. Negative residuals (model over-predicted)
+        render blue, positive (under-predicted) render red. Black is zero.
+        """
+        scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
+        display = np.arcsinh(data / scale)
+
+        # Symmetric vmin/vmax around 0 — use a high percentile of |display| so
+        # one extreme outlier doesn't flatten the colourbar.
+        finite = display[np.isfinite(display)]
+        v = float(np.percentile(np.abs(finite), 99.5)) if finite.size else 1.0
+        if v <= 0:
+            v = 1.0
+
+        ax = self._fig.add_subplot(self._next_gs_position())
+        im = ax.imshow(display, cmap="RdBu_r", origin="lower",
+                       interpolation="nearest", vmin=-v, vmax=+v)
+        ax.set_title(f"residual asinh (scale={scale:.3g}){title_suffix}", fontsize=12)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+        plt.colorbar(im, ax=ax, label=f"asinh({colorbar_label} / {scale:.3g})")
+
+    def add_pixel_psnr_panel(
+        self,
+        residual_stretched: np.ndarray,
+        max_val: float = 10.0,
+        title_suffix: str = "",
+        clip_db: tuple = (10.0, 80.0),
+    ) -> None:
+        """Add a per-pixel PSNR heatmap from a stretched-space residual.
+
+        ``PSNR_i = 20 · log10(max_val / (|residual_i| + ε))``. Larger values
+        (yellow) are pixels the model reconstructs well; smaller (purple) are
+        the worst-fit pixels. Clipped to ``clip_db`` for a useful colourbar.
+        """
+        eps = 1e-7
+        psnr = 20.0 * np.log10(max_val / (np.abs(residual_stretched) + eps))
+        psnr = np.clip(psnr, clip_db[0], clip_db[1])
+
+        ax = self._fig.add_subplot(self._next_gs_position())
+        im = ax.imshow(psnr, cmap="viridis", origin="lower",
+                       interpolation="nearest", vmin=clip_db[0], vmax=clip_db[1])
+        ax.set_title(f"PSNR per pixel{title_suffix}", fontsize=12)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+        plt.colorbar(im, ax=ax, label="PSNR (dB)")
+
+    def add_residual_histogram_panel(
+        self,
+        residual_stretched: np.ndarray,
+        title_suffix: str = "",
+    ) -> None:
+        """Add a histogram of stretched residuals + overlay simple stats."""
+        ax = self._fig.add_subplot(self._next_gs_position())
+        flat = residual_stretched[np.isfinite(residual_stretched)].ravel()
+        if flat.size == 0:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+            return
+        # Clip the tail for binning so the histogram isn't dominated by outliers
+        lo, hi = np.percentile(flat, [0.5, 99.5])
+        ax.hist(np.clip(flat, lo, hi), bins=80, color="tab:gray", edgecolor="none")
+        ax.axvline(0.0, color="red", lw=1.0, ls="--", alpha=0.8)
+        ax.set_xlabel("residual (asinh space)")
+        ax.set_ylabel("count")
+        ax.set_title(f"residual histogram{title_suffix}", fontsize=12)
+        # Stats overlay
+        mean = float(np.mean(flat))
+        std  = float(np.std(flat))
+        med  = float(np.median(flat))
+        ax.text(0.02, 0.95,
+                f"mean = {mean:+.3g}\nmedian = {med:+.3g}\nstd  = {std:.3g}\nN = {flat.size}",
+                transform=ax.transAxes, va="top", ha="left",
+                fontsize=9, fontfamily="monospace",
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.4))
+
     def add_statistics_panel(self, data: np.ndarray, stats_dict: Dict[str, Any]) -> None:
         ax = self._fig.add_subplot(self._next_gs_position())
         ax.axis("off")

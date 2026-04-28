@@ -969,8 +969,11 @@ class InteractiveCLI:
 
                 # Restore and evaluate
                 trainer.restore()
-                psnr = trainer.evaluate(valid_ds)
-                print(f'\nFinal PSNR = {psnr.numpy():.3f}')
+                psnr_stretched, psnr_raw = trainer.evaluate(valid_ds)
+                print(
+                    f"\nFinal PSNR = {psnr_stretched.numpy():.3f} dB (stretched, loss-aligned), "
+                    f"{psnr_raw.numpy():.3f} dB (raw e⁻)"
+                )
 
                 # Offer to export weights
                 if confirm("\nExport trained weights to .h5 file?", default=True).ask():
@@ -1020,8 +1023,11 @@ class InteractiveCLI:
             valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
             print("Evaluating on validation set...")
-            psnr = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
-            print(f"\n✓ Validation PSNR = {psnr.numpy():.3f}")
+            psnr_stretched, psnr_raw = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
+            print(
+                f"\n✓ Validation PSNR = {psnr_stretched.numpy():.3f} dB (stretched, loss-aligned), "
+                f"{psnr_raw.numpy():.3f} dB (raw e⁻)"
+            )
 
         except Exception as e:
             print(f"\n✗ Evaluation failed: {e}")

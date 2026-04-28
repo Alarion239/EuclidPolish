@@ -20,6 +20,11 @@ from euclid_polish.training.models.common import evaluate
 
 TRAINING_LOG_FILENAME = "training_log.jsonl"
 
+# Gradient clipping by global L2 norm — see ``Config.GRAD_CLIP_NORM``.
+# Direction-preserving; has no effect when natural gradient norm < clip
+# value. Set ``Config.GRAD_CLIP_NORM = math.inf`` to disable.
+GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
+
 
 class Trainer:
     """Trainer for WDSR super-resolution models."""
@@ -94,6 +99,8 @@ class Trainer:
             Max number of validation images to evaluate on during training.
         """
         loss_mean = Mean()
+        gnorm_mean = Mean()
+        gnorm_max  = tf.Variable(0.0, trainable=False)
 
         ckpt_mgr = self.checkpoint_manager
         ckpt = self.checkpoint
@@ -118,18 +125,26 @@ class Trainer:
         for lr, hr in pbar:
             ckpt.step.assign_add(1)
             step = ckpt.step.numpy()
-            loss = self.train_step(lr, hr)
+            loss, gnorm = self.train_step(lr, hr)
             loss_mean(loss)
+            gnorm_mean(gnorm)
+            gnorm_max.assign(tf.maximum(gnorm_max, gnorm))
 
             if step % 50 == 0:
                 pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
 
             if step % evaluate_every == 0:
-                loss_value = loss_mean.result()
+                loss_value  = loss_mean.result()
+                gnorm_avg   = gnorm_mean.result()
+                gnorm_peak  = float(gnorm_max.numpy())
                 loss_mean.reset_state()
+                gnorm_mean.reset_state()
+                gnorm_max.assign(0.0)
 
-                # Compute PSNR on validation dataset (capped at validate_images)
-                psnr_value = self.evaluate(valid_dataset.take(validate_images))
+                # Compute PSNR on validation dataset (capped at validate_images).
+                # Returns (stretched, raw); the stretched value is what
+                # 'save best' compares against (it's loss-aligned).
+                psnr_value, psnr_raw = self.evaluate(valid_dataset.take(validate_images))
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -139,18 +154,25 @@ class Trainer:
                 tqdm.write(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"PSNR = {psnr_value.numpy():.3f} ({duration:.2f}s)"
+                    f"PSNR = {psnr_value.numpy():.3f} dB (stretched), "
+                    f"{psnr_raw.numpy():.3f} dB (raw e⁻), "
+                    f"|g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
+                    f"({duration:.2f}s)"
                 )
 
-                # Persist (step, loss, PSNR) for later plotting. Append-only
-                # so multiple training sessions accumulate into one log.
+                # Persist for later plotting. Append-only so multiple training
+                # sessions accumulate into one log.
                 with open(log_path, "a") as fh:
                     fh.write(json.dumps({
-                        "step":      int(step),
-                        "loss":      float(loss_value.numpy()),
-                        "psnr":      float(psnr_value.numpy()),
+                        "step":       int(step),
+                        "loss":       float(loss_value.numpy()),
+                        "psnr":       float(psnr_value.numpy()),
+                        "psnr_raw":   float(psnr_raw.numpy()),
+                        "gnorm_avg":  float(gnorm_avg.numpy()),
+                        "gnorm_max":  float(gnorm_peak),
+                        "clip_norm":  float(GRAD_CLIP_NORM),
                         "duration_s": float(duration),
-                        "wall_time": time.time(),
+                        "wall_time":  time.time(),
                     }) + "\n")
 
                 if save_best_only and psnr_value <= ckpt.psnr:
@@ -159,7 +181,7 @@ class Trainer:
 
                 ckpt.psnr = psnr_value
                 ckpt_mgr.save()
-                tqdm.write(f"  ✓ Checkpoint saved (PSNR: {psnr_value.numpy():.3f})")
+                tqdm.write(f"  ✓ Checkpoint saved (PSNR stretched: {psnr_value.numpy():.3f}, raw: {psnr_raw.numpy():.3f})")
 
                 self.now = time.perf_counter()
 
@@ -170,28 +192,26 @@ class Trainer:
         """
         Perform one training step.
 
-        Parameters:
-        -----------
-        lr : tf.Tensor
-            Low-resolution input.
-        hr : tf.Tensor
-            High-resolution target.
-
-        Returns:
-        --------
+        Returns
+        -------
         loss_value : tf.Tensor
-            Loss value.
+            Loss for this batch.
+        gnorm : tf.Tensor
+            Global L2 norm of the gradient *before* clipping (useful for
+            monitoring; ``GRAD_CLIP_NORM`` is the rescaled magnitude actually
+            applied).
         """
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
+        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
 
-        return loss_value
+        return loss_value, gnorm
 
     def evaluate(self, dataset):
         """

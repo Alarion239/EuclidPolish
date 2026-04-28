@@ -74,7 +74,7 @@ echo "============================================================"
 python -u scripts/run_pipeline.py \
   --skip-generate \
   --skip-convolve \
-  --batch-size 4 \
+  --batch-size 16 \
   --steps 400000
 
 echo "============================================================"

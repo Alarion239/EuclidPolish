@@ -152,19 +152,20 @@ def plot_reconstruction(
     """
     Visualize LR input, SR output, and optionally HR ground truth.
 
+    When ``hr_data`` is provided, a third row is rendered with:
+      * the residual ``HR − SR`` (asinh, divergent),
+      * a per-pixel PSNR heatmap (computed in asinh-stretched space — the
+        same space the network optimises in),
+      * a histogram of the stretched residuals with mean/median/std.
+
     Parameters
     ----------
-    lr_data : ndarray
-        Low-resolution input (2-D, electrons).
-    sr_data : ndarray
-        Super-resolved output (2-D, electrons).
-    hr_data : ndarray, optional
-        High-resolution ground truth (2-D, electrons).
+    lr_data, sr_data, hr_data : ndarray
+        2-D images in raw electrons. ``hr_data`` is optional.
     output_path : str
-        Path to save the figure.
+        PNG output path.
     vmax : float, optional
-        Upper bound for the linear colour scale. ``None`` (default) lets
-        matplotlib auto-scale per panel.
+        Override the linear-scale upper bound (``None`` → percentile clip).
     """
     from euclid_polish.visualization.base import _asinh_scale
 
@@ -173,10 +174,11 @@ def plot_reconstruction(
     shared_scale = _asinh_scale(lr_data)
 
     ncols = 3 if hr_data is not None else 2
+    nrows = 3 if hr_data is not None else 2
     vis = BaseVisualizer(
-        rows=2,
+        rows=nrows,
         cols=ncols,
-        figsize=(11 * ncols, 20),
+        figsize=(11 * ncols, 10 * nrows),
         vmax=vmax,
     )
 
@@ -191,6 +193,23 @@ def plot_reconstruction(
     vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale, title_suffix="\nPOLISH Reconstruction (SR)")
     if hr_data is not None:
         vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale, title_suffix="\nTrue Sky (HR)")
+
+    # Row 3 (only if HR available): residual map, PSNR-per-pixel in stretched
+    # space (loss-aligned), PSNR-per-pixel in raw electrons (photometric).
+    if hr_data is not None:
+        scale_e = float(Config.STRETCH_SCALE_E)
+        residual_e         = hr_data - sr_data
+        residual_stretched = (np.arcsinh(hr_data / scale_e)
+                              - np.arcsinh(sr_data / scale_e)).astype(np.float32)
+
+        vis.add_diverging_panel(residual_e, asinh_scale=shared_scale,
+                                title_suffix="\nResidual = HR − SR")
+        vis.add_pixel_psnr_panel(residual_stretched, max_val=10.0,
+                                 title_suffix="\nasinh space, max_val=10")
+        vis.add_pixel_psnr_panel(residual_e,
+                                 max_val=float(Config.RAW_PSNR_MAX_VAL),
+                                 title_suffix=f"\nraw e⁻, max_val={Config.RAW_PSNR_MAX_VAL:.0e}",
+                                 clip_db=(0.0, 100.0))
 
     plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
     vis.save_figure(output_path)
