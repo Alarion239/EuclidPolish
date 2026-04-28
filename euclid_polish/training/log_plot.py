@@ -56,6 +56,10 @@ def plot_training_log(
     losses = np.array([r["loss"]  for r in records])
     psnrs  = np.array([r["psnr"]  for r in records])
 
+    has_psnr_raw = all("psnr_raw" in r for r in records)
+    if has_psnr_raw:
+        psnrs_raw = np.array([r["psnr_raw"] for r in records])
+
     has_gnorm = all("gnorm_avg" in r for r in records)
     if has_gnorm:
         gnorm_avg = np.array([r["gnorm_avg"] for r in records])
@@ -80,7 +84,12 @@ def plot_training_log(
 
     ax_psnr = ax_loss.twinx()
     color_psnr = "tab:red"
-    ax_psnr.plot(steps, psnrs, color=color_psnr, alpha=0.85, lw=1.4, label="PSNR (dB)")
+    color_psnr_raw = "tab:orange"
+    ax_psnr.plot(steps, psnrs, color=color_psnr, alpha=0.85, lw=1.4,
+                 label="PSNR stretched (dB)")
+    if has_psnr_raw:
+        ax_psnr.plot(steps, psnrs_raw, color=color_psnr_raw, alpha=0.85, lw=1.4,
+                     ls="--", label="PSNR raw e⁻ (dB)")
     ax_psnr.set_ylabel("PSNR (dB)", color=color_psnr)
     ax_psnr.tick_params(axis="y", labelcolor=color_psnr)
 
@@ -90,7 +99,11 @@ def plot_training_log(
         psnr_s  = np.convolve(psnrs,  kernel, mode="valid")
         steps_s = steps[smooth_window - 1:]
         ax_loss.plot(steps_s, loss_s, color=color_loss, lw=2.4, label=f"loss (MA{smooth_window})")
-        ax_psnr.plot(steps_s, psnr_s, color=color_psnr, lw=2.4, label=f"PSNR (MA{smooth_window})")
+        ax_psnr.plot(steps_s, psnr_s, color=color_psnr, lw=2.4, label=f"PSNR str (MA{smooth_window})")
+        if has_psnr_raw:
+            psnr_raw_s = np.convolve(psnrs_raw, kernel, mode="valid")
+            ax_psnr.plot(steps_s, psnr_raw_s, color=color_psnr_raw, lw=2.4, ls="--",
+                         label=f"PSNR raw (MA{smooth_window})")
 
     h1, l1 = ax_loss.get_legend_handles_labels()
     h2, l2 = ax_psnr.get_legend_handles_labels()

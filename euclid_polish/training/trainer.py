@@ -141,8 +141,10 @@ class Trainer:
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
 
-                # Compute PSNR on validation dataset (capped at validate_images)
-                psnr_value = self.evaluate(valid_dataset.take(validate_images))
+                # Compute PSNR on validation dataset (capped at validate_images).
+                # Returns (stretched, raw); the stretched value is what
+                # 'save best' compares against (it's loss-aligned).
+                psnr_value, psnr_raw = self.evaluate(valid_dataset.take(validate_images))
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -152,7 +154,8 @@ class Trainer:
                 tqdm.write(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"PSNR = {psnr_value.numpy():.3f}, "
+                    f"PSNR = {psnr_value.numpy():.3f} dB (stretched), "
+                    f"{psnr_raw.numpy():.3f} dB (raw e⁻), "
                     f"|g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
                 )
@@ -164,6 +167,7 @@ class Trainer:
                         "step":       int(step),
                         "loss":       float(loss_value.numpy()),
                         "psnr":       float(psnr_value.numpy()),
+                        "psnr_raw":   float(psnr_raw.numpy()),
                         "gnorm_avg":  float(gnorm_avg.numpy()),
                         "gnorm_max":  float(gnorm_peak),
                         "clip_norm":  float(GRAD_CLIP_NORM),
@@ -177,7 +181,7 @@ class Trainer:
 
                 ckpt.psnr = psnr_value
                 ckpt_mgr.save()
-                tqdm.write(f"  ✓ Checkpoint saved (PSNR: {psnr_value.numpy():.3f})")
+                tqdm.write(f"  ✓ Checkpoint saved (PSNR stretched: {psnr_value.numpy():.3f}, raw: {psnr_raw.numpy():.3f})")
 
                 self.now = time.perf_counter()
 

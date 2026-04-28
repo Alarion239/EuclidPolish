@@ -194,7 +194,8 @@ def plot_reconstruction(
     if hr_data is not None:
         vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale, title_suffix="\nTrue Sky (HR)")
 
-    # Row 3: residual + PSNR-per-pixel + histogram (only if HR available)
+    # Row 3 (only if HR available): residual map, PSNR-per-pixel in stretched
+    # space (loss-aligned), PSNR-per-pixel in raw electrons (photometric).
     if hr_data is not None:
         scale_e = float(Config.STRETCH_SCALE_E)
         residual_e         = hr_data - sr_data
@@ -204,9 +205,11 @@ def plot_reconstruction(
         vis.add_diverging_panel(residual_e, asinh_scale=shared_scale,
                                 title_suffix="\nResidual = HR − SR")
         vis.add_pixel_psnr_panel(residual_stretched, max_val=10.0,
-                                 title_suffix="\nasinh-space, max_val=10")
-        vis.add_residual_histogram_panel(residual_stretched,
-                                         title_suffix="\nasinh space")
+                                 title_suffix="\nasinh space, max_val=10")
+        vis.add_pixel_psnr_panel(residual_e,
+                                 max_val=float(Config.RAW_PSNR_MAX_VAL),
+                                 title_suffix=f"\nraw e⁻, max_val={Config.RAW_PSNR_MAX_VAL:.0e}",
+                                 clip_db=(0.0, 100.0))
 
     plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
     vis.save_figure(output_path)
