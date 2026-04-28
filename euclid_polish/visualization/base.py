@@ -22,6 +22,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+
+from euclid_polish.config import Config
 from typing import Dict, Any, Tuple
 
 
@@ -57,7 +59,22 @@ def _percentile_bounds(
 
 
 def _asinh_scale(data: np.ndarray) -> float:
-    """Robust per-image asinh scale based on median absolute deviation.
+    """Default asinh scale used by all training-aligned visualization.
+
+    Returns ``Config.STRETCH_SCALE_E`` — the same scale the network trains in.
+    Using the same constant everywhere makes the viz directly comparable
+    across images and to the loss/PSNR metrics.
+
+    The legacy MAD-based behaviour is still available via
+    :func:`_asinh_scale_mad` for callers that explicitly want a per-image
+    adaptive stretch (used by domains where the data is in different units,
+    e.g. Q1 ADU/s cutouts).
+    """
+    return float(Config.STRETCH_SCALE_E)
+
+
+def _asinh_scale_mad(data: np.ndarray) -> float:
+    """Per-image asinh scale based on median absolute deviation.
 
     For sparse images where MAD = 0 (most pixels identical), fall back to a
     fraction of the dynamic range so the stretch still compresses bright

@@ -20,6 +20,7 @@ from scipy.ndimage import gaussian_filter
 from euclid_polish.visualization.base import (
     BaseVisualizer,
     _asinh_scale,
+    _asinh_scale_mad,
 )
 
 
@@ -105,9 +106,14 @@ def draw_cutout(
     output_path: str,
     star_id: int | None = None,
 ) -> None:
-    """Visualize a Euclid Q1 cutout (ADU/s, sky-subtracted — has negatives)."""
+    """Visualize a Euclid Q1 cutout (ADU/s, sky-subtracted — has negatives).
+
+    Cutouts are in different units from the simulator (ADU/s vs electrons),
+    so the simulator's STRETCH_SCALE_E doesn't apply dimensionally. Use a
+    per-image MAD scale instead.
+    """
     title = f"Cutout — Star {star_id:04d}" if star_id is not None else "Cutout"
-    _draw_single_electrons(data, output_path, title)
+    _draw_single_electrons(data, output_path, title, asinh_scale=_asinh_scale_mad(data))
 
 
 def draw_psf(data: np.ndarray, output_path: str) -> None:
@@ -134,7 +140,9 @@ def draw_clean_dirty_pair(
     the noise floor that defines the natural unit of "small"). Both panels
     use the same scale so brightness is comparable across HR/LR.
     """
-    shared_scale = _asinh_scale(lr_data)
+    # Use the same asinh scale the network trains in, so the viz is
+    # directly comparable to the loss/PSNR metrics.
+    shared_scale = _asinh_scale(lr_data)  # = Config.STRETCH_SCALE_E
     hr_display = _smooth_for_display(hr_data) if _is_sparse(hr_data) else hr_data
 
     vis = BaseVisualizer(rows=2, cols=3, figsize=(22, 12), vmin=vmin, vmax=vmax)
