@@ -185,25 +185,72 @@ def _residual_asinh_stats(residual_stretched: np.ndarray, residual_e: np.ndarray
     }
 
 
-def _psnr_stats(residual_stretched: np.ndarray, residual_e: np.ndarray) -> dict:
-    """Global PSNR / MSE / MAE numbers for the reconstruction."""
+def _noise_floor_lr_var() -> float:
+    """Expected per-LR-pixel noise variance (e⁻²) from the noise model."""
+    t_total = Config.EXPOSURE_TIME_S * Config.N_EXPOSURES
+    pixel_area = Config.VIS_PIXEL_SCALE_ARCSEC ** 2
+    sky_e   = Config.SKY_E_PER_S_PER_ARCSEC2 * pixel_area * t_total
+    dark_e  = Config.DARK_E_PER_S_PER_PIX * t_total
+    read_var = Config.READ_NOISE_E ** 2 * Config.N_EXPOSURES
+    return float(sky_e + dark_e + read_var)
+
+
+def _expected_sigma_e(hr: np.ndarray) -> np.ndarray:
+    """Per-pixel expected noise std σ in raw electrons given HR signal.
+
+    σ²_i = max(HR_i, 0) (Poisson signal contribution)
+         + σ²_floor / r²  (per-HR-pixel constant noise floor)
+
+    where σ²_floor = sky + dark + N·read² is the LR-pixel variance and the
+    factor r² = REBIN² accounts for the fact that HR pixels see 1/r² of
+    the area-integrated noise that LR pixels do.
+    """
+    floor_var_lr = _noise_floor_lr_var()
+    rebin = float(Config.DEFAULT_REBIN_FACTOR)
+    floor_var_hr = floor_var_lr / (rebin ** 2)
+    return np.sqrt(np.maximum(hr, 0.0) + floor_var_hr).astype(np.float32)
+
+
+def _expected_sigma_stretched(hr: np.ndarray, hr_stretched: np.ndarray) -> np.ndarray:
+    """σ in asinh-stretched space, propagated from raw σ via the asinh
+    derivative: ``d asinh(x/k)/dx = 1 / sqrt(k² + x²)``.
+    """
+    sigma_e = _expected_sigma_e(hr)
+    k = float(Config.STRETCH_SCALE_E)
+    jacobian = 1.0 / np.sqrt(k * k + hr * hr).astype(np.float32)
+    return (sigma_e * jacobian).astype(np.float32)
+
+
+def _residual_metrics(residual_stretched: np.ndarray,
+                      residual_e: np.ndarray,
+                      hr_stretched: np.ndarray,
+                      hr_e: np.ndarray) -> dict:
+    """SNR / RMSE / MAE numbers for the reconstruction in both spaces."""
     eps = 1e-7
     rmse_str = float(np.sqrt(np.mean(residual_stretched ** 2)) + eps)
     rmse_raw = float(np.sqrt(np.mean(residual_e ** 2)) + eps)
+
+    var_hr_str = float(np.var(hr_stretched))
+    var_hr_raw = float(np.var(hr_e))
+    snr_var_str = 10.0 * np.log10(var_hr_str / (np.var(residual_stretched) + eps))
+    snr_var_raw = 10.0 * np.log10(var_hr_raw / (np.var(residual_e) + eps))
+
+    sigma_floor = float(np.sqrt(_noise_floor_lr_var()))
+    snr_floor   = 20.0 * np.log10(sigma_floor / rmse_raw)
+
     psnr_str_global = 20.0 * np.log10(10.0 / rmse_str)
-    psnr_raw_global = 20.0 * np.log10(float(Config.RAW_PSNR_MAX_VAL) / rmse_raw)
+
     return {
-        "PSNR (asinh, max=10)":                 f"{psnr_str_global:>10.3f} dB",
-        f"PSNR (raw, max={Config.RAW_PSNR_MAX_VAL:.0e})": f"{psnr_raw_global:>10.3f} dB",
-        "MAE (asinh)":                          f"{np.mean(np.abs(residual_stretched)):>12.4g}",
-        "MAE (raw e⁻)":                         f"{np.mean(np.abs(residual_e)):>12.4g}",
-        "MSE (asinh)":                          f"{np.mean(residual_stretched ** 2):>12.4g}",
-        "MSE (raw e⁻)":                         f"{np.mean(residual_e ** 2):>12.4g}",
-        "RMSE (asinh)":                         f"{rmse_str:>12.4g}",
-        "RMSE (raw e⁻)":                        f"{rmse_raw:>12.4g}",
-        "Worst pixel |Δ| (asinh)":              f"{np.max(np.abs(residual_stretched)):>12.4g}",
-        "Worst pixel |Δ| (raw e⁻)":             f"{np.max(np.abs(residual_e)):>12.4g}",
-        "Best pixel |Δ| (asinh)":               f"{np.min(np.abs(residual_stretched)):>12.4g}",
+        "PSNR_str (max=10)":                f"{psnr_str_global:>10.3f} dB",
+        "SNR_var (asinh)":                  f"{snr_var_str:>+10.3f} dB",
+        "SNR_var (raw e⁻)":                f"{snr_var_raw:>+10.3f} dB",
+        f"SNR_floor (σ={sigma_floor:.1f}e⁻)": f"{snr_floor:>+10.3f} dB",
+        "MAE (asinh)":                      f"{np.mean(np.abs(residual_stretched)):>12.4g}",
+        "MAE (raw e⁻)":                    f"{np.mean(np.abs(residual_e)):>12.4g}",
+        "RMSE (asinh)":                     f"{rmse_str:>12.4g}",
+        "RMSE (raw e⁻)":                   f"{rmse_raw:>12.4g}",
+        "Worst pixel |Δ| (asinh)":          f"{np.max(np.abs(residual_stretched)):>12.4g}",
+        "Worst pixel |Δ| (raw e⁻)":        f"{np.max(np.abs(residual_e)):>12.4g}",
     }
 
 
@@ -245,10 +292,13 @@ def plot_reconstruction(
         vis.save_figure(output_path)
         return
 
-    # Pre-compute residuals once
+    # Pre-compute residuals & expected per-pixel noise
+    hr_stretched       = np.arcsinh(hr_data / shared_scale).astype(np.float32)
+    sr_stretched       = np.arcsinh(sr_data / shared_scale).astype(np.float32)
     residual_e         = (hr_data - sr_data).astype(np.float32)
-    residual_stretched = (np.arcsinh(hr_data / shared_scale)
-                          - np.arcsinh(sr_data / shared_scale)).astype(np.float32)
+    residual_stretched = (hr_stretched - sr_stretched).astype(np.float32)
+    sigma_e            = _expected_sigma_e(hr_data)
+    sigma_str          = _expected_sigma_stretched(hr_data, hr_stretched)
 
     vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
 
@@ -259,10 +309,8 @@ def plot_reconstruction(
     vis.add_diverging_panel(residual_e, stretch="linear",
                             title_suffix="\nResidual = HR − SR (raw e⁻)",
                             colorbar_label="Residual (e⁻)")
-    vis.add_pixel_psnr_panel(residual_e,
-                             max_val=float(Config.RAW_PSNR_MAX_VAL),
-                             title_suffix=f"\nraw e⁻, max_val={Config.RAW_PSNR_MAX_VAL:.0e}",
-                             clip_db=(0.0, 100.0))
+    vis.add_zscore_panel(residual_e, sigma_e,
+                         title_suffix="\nraw e⁻, σ from noise model")
 
     # ---- Row 2: asinh (loss-aligned) ----
     vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
@@ -273,8 +321,8 @@ def plot_reconstruction(
                         title_suffix="\nTrue Sky (HR)")
     vis.add_diverging_panel(residual_e, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nResidual = HR − SR")
-    vis.add_pixel_psnr_panel(residual_stretched, max_val=10.0,
-                             title_suffix="\nasinh space, max_val=10")
+    vis.add_zscore_panel(residual_stretched, sigma_str,
+                         title_suffix="\nasinh space, σ propagated")
 
     # ---- Row 3: stats ----
     vis.add_statistics_panel(lr_data, {
@@ -298,8 +346,9 @@ def plot_reconstruction(
         "include_data_stats": False,
     })
     vis.add_statistics_panel(residual_e, {
-        "title": "PSNR / error metrics:",
-        "stats": _psnr_stats(residual_stretched, residual_e),
+        "title": "SNR / error metrics:",
+        "stats": _residual_metrics(residual_stretched, residual_e,
+                                   hr_stretched, hr_data),
         "include_data_stats": False,
     })
 

@@ -141,21 +141,27 @@ class Trainer:
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
 
-                # Compute PSNR on validation dataset (capped at validate_images).
-                # Returns (stretched, raw); the stretched value is what
-                # 'save best' compares against (it's loss-aligned).
-                psnr_value, psnr_raw = self.evaluate(valid_dataset.take(validate_images))
+                # Compute validation metrics (capped at validate_images).
+                # Returns dict with PSNR (stretched, loss-aligned) and three
+                # SNRs (variance-ratio in str/raw, noise-floor in raw).
+                metrics = self.evaluate(valid_dataset.take(validate_images))
+                psnr_str  = float(metrics["psnr_stretched"].numpy())
+                snr_var_s = float(metrics["snr_var_stretched"].numpy())
+                snr_var_r = float(metrics["snr_var_raw"].numpy())
+                snr_floor = float(metrics["snr_noise_raw"].numpy())
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
                     loss=f"{loss_value.numpy():.3f}",
-                    PSNR=f"{psnr_value.numpy():.3f}",
+                    PSNR=f"{psnr_str:.3f}",
+                    SNRf=f"{snr_floor:.2f}",
                 )
                 tqdm.write(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"PSNR = {psnr_value.numpy():.3f} dB (stretched), "
-                    f"{psnr_raw.numpy():.3f} dB (raw e⁻), "
+                    f"PSNR(str) = {psnr_str:.3f} dB, "
+                    f"SNR_var(str/raw) = {snr_var_s:.2f}/{snr_var_r:.2f} dB, "
+                    f"SNR_floor(raw) = {snr_floor:+.2f} dB, "
                     f"|g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
                 )
@@ -164,24 +170,31 @@ class Trainer:
                 # sessions accumulate into one log.
                 with open(log_path, "a") as fh:
                     fh.write(json.dumps({
-                        "step":       int(step),
-                        "loss":       float(loss_value.numpy()),
-                        "psnr":       float(psnr_value.numpy()),
-                        "psnr_raw":   float(psnr_raw.numpy()),
-                        "gnorm_avg":  float(gnorm_avg.numpy()),
-                        "gnorm_max":  float(gnorm_peak),
-                        "clip_norm":  float(GRAD_CLIP_NORM),
-                        "duration_s": float(duration),
-                        "wall_time":  time.time(),
+                        "step":              int(step),
+                        "loss":              float(loss_value.numpy()),
+                        "psnr":              psnr_str,                  # legacy alias
+                        "psnr_stretched":    psnr_str,
+                        "snr_var_stretched": snr_var_s,
+                        "snr_var_raw":       snr_var_r,
+                        "snr_noise_raw":     snr_floor,
+                        "gnorm_avg":         float(gnorm_avg.numpy()),
+                        "gnorm_max":         float(gnorm_peak),
+                        "clip_norm":         float(GRAD_CLIP_NORM),
+                        "duration_s":        float(duration),
+                        "wall_time":         time.time(),
                     }) + "\n")
 
-                if save_best_only and psnr_value <= ckpt.psnr:
+                # save-best on PSNR (stretched) — same metric as before
+                if save_best_only and metrics["psnr_stretched"] <= ckpt.psnr:
                     self.now = time.perf_counter()
                     continue
 
-                ckpt.psnr = psnr_value
+                ckpt.psnr = metrics["psnr_stretched"]
                 ckpt_mgr.save()
-                tqdm.write(f"  ✓ Checkpoint saved (PSNR stretched: {psnr_value.numpy():.3f}, raw: {psnr_raw.numpy():.3f})")
+                tqdm.write(
+                    f"  ✓ Checkpoint saved (PSNR_str={psnr_str:.3f}, "
+                    f"SNR_floor={snr_floor:+.2f} dB)"
+                )
 
                 self.now = time.perf_counter()
 

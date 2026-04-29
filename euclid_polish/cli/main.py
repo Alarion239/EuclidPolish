@@ -969,10 +969,13 @@ class InteractiveCLI:
 
                 # Restore and evaluate
                 trainer.restore()
-                psnr_stretched, psnr_raw = trainer.evaluate(valid_ds)
+                metrics = trainer.evaluate(valid_ds)
                 print(
-                    f"\nFinal PSNR = {psnr_stretched.numpy():.3f} dB (stretched, loss-aligned), "
-                    f"{psnr_raw.numpy():.3f} dB (raw e⁻)"
+                    f"\nFinal metrics:\n"
+                    f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
+                    f"  SNR_var (stretched):            {float(metrics['snr_var_stretched']):+.3f} dB\n"
+                    f"  SNR_var (raw e⁻):              {float(metrics['snr_var_raw']):+.3f} dB\n"
+                    f"  SNR_floor (raw e⁻):            {float(metrics['snr_noise_raw']):+.3f} dB"
                 )
 
                 # Offer to export weights
@@ -1023,10 +1026,13 @@ class InteractiveCLI:
             valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
             print("Evaluating on validation set...")
-            psnr_stretched, psnr_raw = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
+            metrics = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
             print(
-                f"\n✓ Validation PSNR = {psnr_stretched.numpy():.3f} dB (stretched, loss-aligned), "
-                f"{psnr_raw.numpy():.3f} dB (raw e⁻)"
+                f"\n✓ Validation metrics:\n"
+                f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
+                f"  SNR_var (stretched):            {float(metrics['snr_var_stretched']):+.3f} dB\n"
+                f"  SNR_var (raw e⁻):              {float(metrics['snr_var_raw']):+.3f} dB\n"
+                f"  SNR_floor (raw e⁻):            {float(metrics['snr_noise_raw']):+.3f} dB"
             )
 
         except Exception as e:

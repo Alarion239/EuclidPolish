@@ -236,30 +236,43 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label=cbar_label)
 
-    def add_pixel_psnr_panel(
+    def add_zscore_panel(
         self,
-        residual_stretched: np.ndarray,
-        max_val: float = 10.0,
+        residual: np.ndarray,
+        sigma: np.ndarray,
         title_suffix: str = "",
-        clip_db: tuple = (10.0, 80.0),
+        clip: tuple = (0.0, 5.0),
+        cmap: str = "magma",
     ) -> None:
-        """Add a per-pixel PSNR heatmap from a stretched-space residual.
+        """Add a per-pixel z-score map: ``|residual| / σ``.
 
-        ``PSNR_i = 20 · log10(max_val / (|residual_i| + ε))``. Larger values
-        (yellow) are pixels the model reconstructs well; smaller (purple) are
-        the worst-fit pixels. Clipped to ``clip_db`` for a useful colourbar.
+        Parameters
+        ----------
+        residual : ndarray
+            The pixel-wise residual ``HR − SR`` in the same units as σ.
+        sigma : ndarray
+            Per-pixel expected noise std. Must broadcast against ``residual``.
+            Use a single scalar for "constant noise floor" or a 2-D array for
+            "signal-dependent noise" (Poisson + readout).
+        clip : (low, high)
+            Display range. Defaults to ``[0, 5]`` σ — z<1 reads as
+            "within noise", z>3 as "outlier", z>5 as "model failure".
+        cmap : str
+            ``magma`` (default): black at z≈0 (good), bright yellow at the
+            high end (bad). Inverts the usual viridis convention to match
+            astronomical residual-map conventions.
         """
         eps = 1e-7
-        psnr = 20.0 * np.log10(max_val / (np.abs(residual_stretched) + eps))
-        psnr = np.clip(psnr, clip_db[0], clip_db[1])
+        z = np.abs(residual) / (np.asarray(sigma) + eps)
+        z = np.clip(z, clip[0], clip[1])
 
         ax = self._fig.add_subplot(self._next_gs_position())
-        im = ax.imshow(psnr, cmap="viridis", origin="lower",
-                       interpolation="nearest", vmin=clip_db[0], vmax=clip_db[1])
-        ax.set_title(f"PSNR per pixel{title_suffix}", fontsize=12)
+        im = ax.imshow(z, cmap=cmap, origin="lower",
+                       interpolation="nearest", vmin=clip[0], vmax=clip[1])
+        ax.set_title(f"z-score per pixel  |residual| / σ{title_suffix}", fontsize=12)
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
-        plt.colorbar(im, ax=ax, label="PSNR (dB)")
+        plt.colorbar(im, ax=ax, label="|Δ| / σ")
 
     def add_residual_histogram_panel(
         self,
