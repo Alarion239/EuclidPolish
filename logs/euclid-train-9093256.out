@@ -1,0 +1,74 @@
+============================================================
+Job:       9093256
+Host:      holygpu8a22404.rc.fas.harvard.edu
+Started:   Tue Apr 28 12:53:58 EDT 2026
+Workdir:   /n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish
+GPUs:
+name, driver_version, memory.total [MiB]
+NVIDIA A100-SXM4-80GB, 575.57.08, 81920 MiB
+============================================================
+Python:    /n/holylabs/lconnor_lab/Lab/abelotserkovtsev/bin/python
+Python v:  Python 3.12.13
+CUDA dev:  0
+============================================================
+Pipeline started at 2026-04-28 12:54:37
+  args = {'catalog': './data/COSMOS', 'psf': './data/euclid_psf/euclid_psf.fits', 'records_dir': './data/images/records', 'checkpoint_dir': './ckpt/wdsr', 'ntrain': 6400, 'nvalid': 1600, 'image_size': 512, 'steps': 200000, 'batch_size': 4, 'evaluate_every': 1000, 'num_res_blocks': 32, 'skip_generate': False, 'skip_convolve': False, 'skip_train': False}
+
+======================================================================
+[2026-04-28 12:54:37] STEP 1: Generate clean fields  (6400 train + 1600 valid, 512² @ 0.05"/pix)
+======================================================================
+[2026-04-28 12:54:37] COSMOS catalog: /n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/data/COSMOS/real_galaxy_catalog_25.2.fits  (81499 objects)
+[2026-04-28 12:54:37] Train generation: starting (6400 images)
+[2026-04-28 13:15:14] Train generation: done — 6400 images, 1236.6 s
+[2026-04-28 13:15:14] Validate generation: starting (1600 images)
+[2026-04-28 13:20:23] Validate generation: done — 1600 images, 309.5 s
+
+======================================================================
+[2026-04-28 13:20:24] STEP 2: Convolve HR → LR  (512² → 256²)
+======================================================================
+[2026-04-28 13:20:24] PSF: (1023, 1023), 0.05"/pix
+[2026-04-28 13:20:37] Convolution (train): starting on 6400 images
+[2026-04-28 13:25:18] Convolution (train): done — 281.3 s → ./data/images/records/dirty_train.tfrecord
+[2026-04-28 13:25:21] Convolution (validate): starting on 1600 images
+[2026-04-28 13:26:31] Convolution (validate): done — 69.8 s → ./data/images/records/dirty_validate.tfrecord
+
+======================================================================
+[2026-04-28 13:26:31] STEP 3: Train WDSR for 200000 steps  (eval every 1000, batch 4)
+======================================================================
+  TFRecords: ./data/images/records
+  Checkpoints: ./ckpt/wdsr
+[2026-04-28 13:27:56] Step 1000/200000: loss = 7228.6968, PSNR = 6.015 (82.32s)
+  ✓ Checkpoint saved (PSNR: 6.015)
+[2026-04-28 13:28:36] Step 2000/200000: loss = 7248.7285, PSNR = 6.015 (39.49s)
+[2026-04-28 13:29:15] Step 3000/200000: loss = 7248.3242, PSNR = 6.015 (38.89s)
+[2026-04-28 13:29:54] Step 4000/200000: loss = 7248.0688, PSNR = 6.015 (38.89s)
+[2026-04-28 13:30:33] Step 5000/200000: loss = 7248.0215, PSNR = 6.015 (38.94s)
+[2026-04-28 13:31:12] Step 6000/200000: loss = 7248.1157, PSNR = 6.015 (38.88s)
+[2026-04-28 13:31:51] Step 7000/200000: loss = 7248.1943, PSNR = 6.015 (38.86s)
+[2026-04-28 13:32:30] Step 8000/200000: loss = 7248.0898, PSNR = 6.015 (38.90s)
+[2026-04-28 13:33:09] Step 9000/200000: loss = 7248.2056, PSNR = 6.015 (39.18s)
+[2026-04-28 13:33:48] Step 10000/200000: loss = 7247.9390, PSNR = 6.015 (39.11s)
+[2026-04-28 13:34:27] Step 11000/200000: loss = 7248.0747, PSNR = 6.015 (38.88s)
+[2026-04-28 13:35:06] Step 12000/200000: loss = 7248.2261, PSNR = 6.015 (38.90s)
+[2026-04-28 13:35:45] Step 13000/200000: loss = 7248.6841, PSNR = 6.015 (38.90s)
+[2026-04-28 13:36:24] Step 14000/200000: loss = 7247.9692, PSNR = 6.015 (39.03s)
+[2026-04-28 13:37:03] Step 15000/200000: loss = 7248.0913, PSNR = 6.015 (38.91s)
+[2026-04-28 13:37:42] Step 16000/200000: loss = 7247.8545, PSNR = 6.015 (38.85s)
+[2026-04-28 13:38:20] Step 17000/200000: loss = 7248.2441, PSNR = 6.015 (38.87s)
+[2026-04-28 13:38:59] Step 18000/200000: loss = 7248.2476, PSNR = 6.015 (38.86s)
+[2026-04-28 13:39:38] Step 19000/200000: loss = 7248.1636, PSNR = 6.015 (38.86s)
+[2026-04-28 13:40:17] Step 20000/200000: loss = 7248.6787, PSNR = 6.015 (38.86s)
+[2026-04-28 13:40:56] Step 21000/200000: loss = 7247.8979, PSNR = 6.015 (38.97s)
+[2026-04-28 13:41:35] Step 22000/200000: loss = 7247.8208, PSNR = 6.015 (38.86s)
+[2026-04-28 13:42:14] Step 23000/200000: loss = 7248.2266, PSNR = 6.015 (38.93s)
+[2026-04-28 13:42:53] Step 24000/200000: loss = 7247.8237, PSNR = 6.015 (38.87s)
+[2026-04-28 13:43:32] Step 25000/200000: loss = 7247.9624, PSNR = 6.015 (39.43s)
+[2026-04-28 13:44:12] Step 26000/200000: loss = 7248.2666, PSNR = 6.015 (39.48s)
+[2026-04-28 13:44:52] Step 27000/200000: loss = 7247.9521, PSNR = 6.015 (40.00s)
+[2026-04-28 13:45:31] Step 28000/200000: loss = 7248.5449, PSNR = 6.015 (39.17s)
+[2026-04-28 13:46:10] Step 29000/200000: loss = 7248.2075, PSNR = 6.015 (38.89s)
+[2026-04-28 13:46:48] Step 30000/200000: loss = 7248.0933, PSNR = 6.015 (38.87s)
+[2026-04-28 13:47:27] Step 31000/200000: loss = 7247.8394, PSNR = 6.015 (38.88s)
+[2026-04-28 13:48:06] Step 32000/200000: loss = 7247.8843, PSNR = 6.015 (38.88s)
+[2026-04-28 13:48:45] Step 33000/200000: loss = 7248.4629, PSNR = 6.015 (38.88s)
+[2026-04-28 13:49:24] Step 34000/200000: loss = 7247.8569, PSNR = 6.015 (38.90s)

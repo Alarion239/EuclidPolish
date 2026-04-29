@@ -3,15 +3,15 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 # -----------------------------------------------------------------------------
 # Harvard FASRC Cannon — full EuclidPolish pipeline:
-#   generate 6400 train + 1600 validate clean fields (512² HR @ 0.05"/pix)
+#   generate 6400 train + 200 validate clean fields (512² HR @ 0.05"/pix)
 # → convolve to 256² LR with realistic Euclid VIS noise
-# → train WDSR for 100 000 iterations
+# → train WDSR for 400 000 iterations
 #
 # Submit from the project root:
 #     sbatch scripts/fasrc_train.sh

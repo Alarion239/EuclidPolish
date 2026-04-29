@@ -1,0 +1,19 @@
+============================================================
+Job:       9088687
+Host:      holygpu8a22205.rc.fas.harvard.edu
+Started:   Tue Apr 28 12:32:34 EDT 2026
+Workdir:   /n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish
+GPUs:
+name, driver_version, memory.total [MiB]
+NVIDIA A100-SXM4-80GB, 575.57.08, 81920 MiB
+============================================================
+Python:    /n/holylabs/lconnor_lab/Lab/abelotserkovtsev/bin/python
+Python v:  Python 3.12.13
+CUDA dev:  0
+============================================================
+Pipeline started at 2026-04-28 12:33:20
+  args = {'catalog': './data/COSMOS', 'psf': './data/euclid_psf/euclid_psf.fits', 'records_dir': './data/images/records', 'checkpoint_dir': './ckpt/wdsr', 'ntrain': 6400, 'nvalid': 1600, 'image_size': 512, 'steps': 400000, 'batch_size': 4, 'evaluate_every': 1000, 'num_res_blocks': 32, 'skip_generate': False, 'skip_convolve': False, 'skip_train': False}
+
+======================================================================
+[2026-04-28 12:33:20] STEP 1: Generate clean fields  (6400 train + 1600 valid, 512² @ 0.05"/pix)
+======================================================================

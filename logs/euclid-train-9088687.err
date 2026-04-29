@@ -1,0 +1,24 @@
+2026-04-28 12:32:52.556490: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-04-28 12:32:52.887287: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1777393972.923324 1295621 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1777393972.934284 1295621 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1777393973.292497 1295621 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1777393973.292517 1295621 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1777393973.292519 1295621 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1777393973.292521 1295621 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2026-04-28 12:32:53.319061: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX512F AVX512_VNNI, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+I0000 00:00:1777394000.124401 1295621 gpu_device.cc:2019] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 79192 MB memory:  -> device: 0, name: NVIDIA A100-SXM4-80GB, pci bus id: 0000:e3:00.0, compute capability: 8.0
+Traceback (most recent call last):
+  File "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/scripts/run_pipeline.py", line 215, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/scripts/run_pipeline.py", line 195, in main
+    step_generate(args)
+  File "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/scripts/run_pipeline.py", line 94, in step_generate
+    catalog, cat_file, _ = CleanSkyGenerator.resolve_cosmos_catalog(args.catalog)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/euclid_polish/sky/clean_generator.py", line 443, in resolve_cosmos_catalog
+    raise FileNotFoundError(
+FileNotFoundError: No real_galaxy_catalog_*.fits found inside directory: /n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/data/COSMOS
