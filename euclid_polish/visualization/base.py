@@ -194,18 +194,35 @@ class BaseVisualizer:
         asinh_scale: float | None = None,
         title_suffix: str = "",
         colorbar_label: str = "Residual (e⁻)",
+        stretch: str = "asinh",
     ) -> None:
         """Add a signed/divergent panel (e.g. residual = HR − SR).
 
-        ``asinh`` stretch with **symmetric** colour limits around zero and a
-        red-blue diverging colormap. Negative residuals (model over-predicted)
-        render blue, positive (under-predicted) render red. Black is zero.
-        """
-        scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
-        display = np.arcsinh(data / scale)
+        Parameters
+        ----------
+        stretch : {"asinh", "linear"}
+            ``asinh``: apply ``asinh(x / asinh_scale)`` first, then divergent
+            colourmap with symmetric limits.
+            ``linear``: plot raw values directly with symmetric percentile-
+            based limits.
 
-        # Symmetric vmin/vmax around 0 — use a high percentile of |display| so
-        # one extreme outlier doesn't flatten the colourbar.
+        Negative values (model over-predicted) render blue; positive
+        (under-predicted) render red; zero is white.
+        """
+        if stretch == "asinh":
+            scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
+            display = np.arcsinh(data / scale)
+            cbar_label = f"asinh({colorbar_label} / {scale:.3g})"
+            title = f"residual asinh (scale={scale:.3g}){title_suffix}"
+        elif stretch == "linear":
+            display = data
+            cbar_label = colorbar_label
+            title = f"residual linear{title_suffix}"
+        else:
+            raise ValueError(f"Unknown stretch: {stretch!r}")
+
+        # Symmetric vmin/vmax around 0 — high percentile of |display| so a
+        # single extreme outlier doesn't flatten the colourbar.
         finite = display[np.isfinite(display)]
         v = float(np.percentile(np.abs(finite), 99.5)) if finite.size else 1.0
         if v <= 0:
@@ -214,10 +231,10 @@ class BaseVisualizer:
         ax = self._fig.add_subplot(self._next_gs_position())
         im = ax.imshow(display, cmap="RdBu_r", origin="lower",
                        interpolation="nearest", vmin=-v, vmax=+v)
-        ax.set_title(f"residual asinh (scale={scale:.3g}){title_suffix}", fontsize=12)
+        ax.set_title(title, fontsize=12)
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
-        plt.colorbar(im, ax=ax, label=f"asinh({colorbar_label} / {scale:.3g})")
+        plt.colorbar(im, ax=ax, label=cbar_label)
 
     def add_pixel_psnr_panel(
         self,
