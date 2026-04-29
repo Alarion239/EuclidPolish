@@ -143,26 +143,26 @@ def reconstruct(
 
 
 def _image_stats(data: np.ndarray) -> dict:
-    """Compact dict of useful per-image statistics."""
+    """Per-image statistics. Values are raw numerics — the stats panel
+    auto-formats them consistently (``.4e`` for floats)."""
     finite = data[np.isfinite(data)]
     p1, p10, p50, p90, p99, p999 = np.percentile(finite, [1, 10, 50, 90, 99, 99.9])
-    pos = finite[finite > 0]
     return {
-        "Shape":         f"{data.shape[0]} × {data.shape[1]}",
-        "Dtype":         str(data.dtype),
-        "min":           f"{finite.min():>+12.4g}",
-        "p1":            f"{p1:>+12.4g}",
-        "p10":           f"{p10:>+12.4g}",
-        "median":        f"{p50:>+12.4g}",
-        "p90":           f"{p90:>+12.4g}",
-        "p99":           f"{p99:>+12.4g}",
-        "p99.9":         f"{p999:>+12.4g}",
-        "max":           f"{finite.max():>+12.4g}",
-        "mean":          f"{np.mean(finite):>+12.4g}",
-        "std":           f"{np.std(finite):>12.4g}",
-        "% < 0":         f"{(data < 0).mean() * 100:>11.2f}%",
-        "Total flux":    f"{np.sum(finite):>12.4g}",
-        "# bright (>p99)": f"{(finite > p99).sum():>12d}",
+        "Shape":           f"{data.shape[0]} × {data.shape[1]}",
+        "Dtype":           str(data.dtype),
+        "min":             float(finite.min()),
+        "p1":              float(p1),
+        "p10":             float(p10),
+        "median":          float(p50),
+        "p90":             float(p90),
+        "p99":             float(p99),
+        "p99.9":           float(p999),
+        "max":             float(finite.max()),
+        "mean":            float(np.mean(finite)),
+        "std":             float(np.std(finite)),
+        "% < 0":           f"{(data < 0).mean() * 100:>9.2f} %",
+        "Total flux":      float(np.sum(finite)),
+        "# bright (>p99)": int((finite > p99).sum()),
     }
 
 
@@ -172,16 +172,17 @@ def _residual_asinh_stats(residual_stretched: np.ndarray, residual_e: np.ndarray
     p1, p50, p99 = np.percentile(finite, [1, 50, 99])
     abs_err = np.abs(finite)
     return {
-        "mean (bias)":           f"{np.mean(finite):>+12.4g}",
-        "median":                f"{p50:>+12.4g}",
-        "std (noise level)":     f"{np.std(finite):>12.4g}",
-        "p1, p99":               f"[{p1:+.3g}, {p99:+.3g}]",
-        "median |Δ|":            f"{np.median(abs_err):>12.4g}",
-        "mean |Δ| (MAE)":        f"{np.mean(abs_err):>12.4g}",
-        "max |Δ|":               f"{abs_err.max():>12.4g}",
-        "# pixels |Δ|>3σ":       f"{(abs_err > 3 * np.std(finite)).sum():>12d}",
-        "RMSE":                  f"{np.sqrt(np.mean(finite ** 2)):>12.4g}",
-        "Median residual electron-equiv": f"{float(np.sinh(p50) * Config.STRETCH_SCALE_E):>+12.4g}",
+        "mean (bias)":           float(np.mean(finite)),
+        "median":                float(p50),
+        "std (noise level)":     float(np.std(finite)),
+        "p1":                    float(p1),
+        "p99":                   float(p99),
+        "median |Δ|":            float(np.median(abs_err)),
+        "mean |Δ| (MAE)":        float(np.mean(abs_err)),
+        "max |Δ|":               float(abs_err.max()),
+        "# pixels |Δ|>3σ":       int((abs_err > 3 * np.std(finite)).sum()),
+        "RMSE":                  float(np.sqrt(np.mean(finite ** 2))),
+        "Median e⁻ equiv":       float(np.sinh(p50) * Config.STRETCH_SCALE_E),
     }
 
 
@@ -217,15 +218,15 @@ def _residual_metrics(residual_stretched: np.ndarray,
     psnr_raw = 20.0 * np.log10(peak_raw / rmse_raw)
 
     return {
-        f"PSNR (asinh, peak={peak_str:.2f})":    f"{psnr_str:>10.3f} dB",
-        f"PSNR (raw, peak={peak_raw:.2e})":      f"{psnr_raw:>10.3f} dB",
-        "MAE (asinh)":             f"{np.mean(np.abs(residual_stretched)):>12.4g}",
-        "MAE (raw e⁻)":           f"{np.mean(np.abs(residual_e)):>12.4g}",
-        "RMSE (asinh)":            f"{rmse_str:>12.4g}",
-        "RMSE (raw e⁻)":          f"{rmse_raw:>12.4g}",
-        "Worst pixel |Δ| (asinh)": f"{np.max(np.abs(residual_stretched)):>12.4g}",
-        "Worst pixel |Δ| (raw e⁻)": f"{np.max(np.abs(residual_e)):>12.4g}",
-        "Best pixel |Δ| (asinh)":  f"{np.min(np.abs(residual_stretched)):>12.4g}",
+        "PSNR str (peak=mag17)":   f"{psnr_str:>9.3f} dB",
+        "PSNR raw (peak=mag17)":   f"{psnr_raw:>9.3f} dB",
+        "MAE (asinh)":             float(np.mean(np.abs(residual_stretched))),
+        "MAE (raw e⁻)":           float(np.mean(np.abs(residual_e))),
+        "RMSE (asinh)":            float(rmse_str),
+        "RMSE (raw e⁻)":          float(rmse_raw),
+        "Worst |Δ| (asinh)":       float(np.max(np.abs(residual_stretched))),
+        "Worst |Δ| (raw e⁻)":      float(np.max(np.abs(residual_e))),
+        "Best |Δ| (asinh)":        float(np.min(np.abs(residual_stretched))),
     }
 
 

@@ -315,31 +315,63 @@ class BaseVisualizer:
                 bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.4))
 
     def add_statistics_panel(self, data: np.ndarray, stats_dict: Dict[str, Any]) -> None:
+        """Render a fixed-width key/value statistics panel.
+
+        Caller-provided ``stats_dict["stats"]`` is rendered as ``key  value``
+        with the keys left-padded and the values right-padded so that all
+        rows line up in monospace. Numeric values that come in as plain
+        floats / ints are auto-formatted (``.4e`` for floats, ``d`` for
+        ints); pre-formatted strings are passed through unchanged.
+        """
         ax = self._fig.add_subplot(self._next_gs_position())
         ax.axis("off")
 
-        lines = [stats_dict.get("title", "Statistics:"), "=" * 30]
-
-        for key, value in stats_dict.get("stats", {}).items():
-            lines.append(f"{key}: {value}")
+        title = stats_dict.get("title", "Statistics:")
+        stats_items = list(stats_dict.get("stats", {}).items())
 
         if stats_dict.get("include_data_stats", True):
             finite = data[np.isfinite(data)]
-            p1, p50, p99, p999 = np.percentile(finite, [1, 50, 99, 99.9]) if finite.size else (0, 0, 0, 0)
-            lines.append(f"\nShape: {data.shape[0]} x {data.shape[1]} pixels")
-            lines.append(f"Min:    {finite.min():.4g}")
-            lines.append(f"p1:     {p1:.4g}")
-            lines.append(f"Median: {p50:.4g}")
-            lines.append(f"p99:    {p99:.4g}")
-            lines.append(f"p99.9:  {p999:.4g}")
-            lines.append(f"Max:    {finite.max():.4g}")
-            lines.append(f"Std:    {finite.std():.4g}")
-            lines.append(f"% < 0:  {(data < 0).mean() * 100:.1f}%")
+            if finite.size:
+                p1, p50, p99, p999 = np.percentile(finite, [1, 50, 99, 99.9])
+            else:
+                p1 = p50 = p99 = p999 = 0.0
+            stats_items += [
+                ("Shape",  f"{data.shape[0]} × {data.shape[1]}"),
+                ("min",    float(finite.min()) if finite.size else 0.0),
+                ("p1",     float(p1)),
+                ("median", float(p50)),
+                ("p99",    float(p99)),
+                ("p99.9",  float(p999)),
+                ("max",    float(finite.max()) if finite.size else 0.0),
+                ("std",    float(finite.std()) if finite.size else 0.0),
+                ("% < 0",  f"{(data < 0).mean() * 100:>9.2f} %"),
+            ]
+
+        # Auto-format raw numeric values; leave pre-formatted strings alone.
+        formatted = []
+        for k, v in stats_items:
+            if isinstance(v, str):
+                s = v
+            elif isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                s = f"{int(v):>11d}"
+            elif isinstance(v, (float, np.floating)):
+                s = f"{float(v):>+11.4e}"
+            else:
+                s = str(v)
+            formatted.append((str(k), s))
+
+        # Column widths for clean alignment.
+        key_w = max((len(k) for k, _ in formatted), default=0)
+        val_w = max((len(v) for _, v in formatted), default=0)
+        bar_w = key_w + 2 + val_w
+        lines = [title, "─" * bar_w]
+        for k, v in formatted:
+            lines.append(f"{k:<{key_w}}  {v:>{val_w}}")
 
         ax.text(
-            0.1, 0.5, "\n".join(lines),
+            0.05, 0.95, "\n".join(lines),
             transform=ax.transAxes, fontsize=10,
-            verticalalignment="center", fontfamily="monospace",
+            verticalalignment="top", fontfamily="monospace",
             bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
         )
 
