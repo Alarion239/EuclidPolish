@@ -31,10 +31,10 @@ def plot_training_log(
     output_path: str,
     smooth_window: int = 0,
 ) -> Tuple[int, int]:
-    """Plot loss + SNR_var (and gradient norm if logged) vs step.
+    """Plot loss + PSNR (and gradient norm if logged) vs step.
 
     Layout:
-      - Top: loss (left axis, log scale) + SNR_var stretched/raw (right axis).
+      - Top: loss (left axis, log scale) + PSNR stretched/raw (right axis).
       - Bottom (only if log contains ``gnorm_avg``): gradient-norm trace
         with the configured ``clip_norm`` shown as a horizontal reference.
 
@@ -45,7 +45,7 @@ def plot_training_log(
     output_path : str
         Where to save the PNG.
     smooth_window : int, optional
-        If > 1, overlay a moving-average curve on top of the raw loss / SNR.
+        If > 1, overlay a moving-average curve on top of the raw loss / PSNR.
 
     Returns
     -------
@@ -54,8 +54,8 @@ def plot_training_log(
     records = read_training_log(log_path)
     steps  = np.array([r["step"]  for r in records])
     losses = np.array([r["loss"]  for r in records])
-    snr_var_str = np.array([r["snr_var_stretched"] for r in records])
-    snr_var_raw = np.array([r["snr_var_raw"]       for r in records])
+    psnr_str = np.array([r["psnr_stretched"] for r in records])
+    psnr_raw = np.array([r["psnr_raw"]       for r in records])
 
     has_gnorm = all("gnorm_avg" in r for r in records)
     if has_gnorm:
@@ -79,31 +79,31 @@ def plot_training_log(
     if (losses > 0).all():
         ax_loss.set_yscale("log")
 
-    ax_snr = ax_loss.twinx()
-    color_snr_str = "tab:red"
-    color_snr_raw = "tab:orange"
+    ax_psnr = ax_loss.twinx()
+    color_psnr_str = "tab:red"
+    color_psnr_raw = "tab:orange"
 
-    ax_snr.plot(steps, snr_var_str, color=color_snr_str, alpha=0.85, lw=1.4,
-                label="SNR_var stretched")
-    ax_snr.plot(steps, snr_var_raw, color=color_snr_raw, alpha=0.85, lw=1.4,
-                ls="--", label="SNR_var raw e⁻")
-    ax_snr.set_ylabel("SNR_var (dB)", color="black")
-    ax_snr.tick_params(axis="y", labelcolor="black")
+    ax_psnr.plot(steps, psnr_str, color=color_psnr_str, alpha=0.85, lw=1.4,
+                 label="PSNR stretched")
+    ax_psnr.plot(steps, psnr_raw, color=color_psnr_raw, alpha=0.85, lw=1.4,
+                 ls="--", label="PSNR raw e⁻")
+    ax_psnr.set_ylabel("PSNR (dB)", color="black")
+    ax_psnr.tick_params(axis="y", labelcolor="black")
 
     if smooth_window and smooth_window > 1 and len(steps) >= smooth_window:
         kernel = np.ones(smooth_window) / smooth_window
-        loss_s     = np.convolve(losses, kernel, mode="valid")
-        snr_str_s  = np.convolve(snr_var_str, kernel, mode="valid")
-        snr_raw_s  = np.convolve(snr_var_raw, kernel, mode="valid")
-        steps_s    = steps[smooth_window - 1:]
+        loss_s    = np.convolve(losses,   kernel, mode="valid")
+        psnr_s_s  = np.convolve(psnr_str, kernel, mode="valid")
+        psnr_r_s  = np.convolve(psnr_raw, kernel, mode="valid")
+        steps_s   = steps[smooth_window - 1:]
         ax_loss.plot(steps_s, loss_s, color=color_loss, lw=2.4, label=f"loss (MA{smooth_window})")
-        ax_snr.plot(steps_s, snr_str_s, color=color_snr_str, lw=2.4,
-                    label=f"SNR_var str (MA{smooth_window})")
-        ax_snr.plot(steps_s, snr_raw_s, color=color_snr_raw, lw=2.4, ls="--",
-                    label=f"SNR_var raw (MA{smooth_window})")
+        ax_psnr.plot(steps_s, psnr_s_s, color=color_psnr_str, lw=2.4,
+                     label=f"PSNR str (MA{smooth_window})")
+        ax_psnr.plot(steps_s, psnr_r_s, color=color_psnr_raw, lw=2.4, ls="--",
+                     label=f"PSNR raw (MA{smooth_window})")
 
     h1, l1 = ax_loss.get_legend_handles_labels()
-    h2, l2 = ax_snr.get_legend_handles_labels()
+    h2, l2 = ax_psnr.get_legend_handles_labels()
     ax_loss.legend(h1 + h2, l1 + l2, loc="upper left", framealpha=0.9)
 
     if ax_g is not None:

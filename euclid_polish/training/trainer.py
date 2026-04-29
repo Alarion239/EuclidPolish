@@ -52,13 +52,12 @@ class Trainer:
         """
         self.now = None
         self.loss = loss
-        # ``snr`` tracks the best SNR_var_stretched seen so far (used by
-        # save-best). The variable replaces the legacy ``psnr`` slot — old
-        # checkpoints lose their stored best-metric on restore but the
-        # model weights still load.
+        # ``psnr`` tracks the best PSNR_stretched seen so far (used by
+        # save-best). max_val for PSNR is set in models/common.py from
+        # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
         self.checkpoint = tf.train.Checkpoint(
             step=tf.Variable(0),
-            snr=tf.Variable(-1e9),
+            psnr=tf.Variable(-1.0),
             optimizer=Adam(learning_rate),
             model=model,
         )
@@ -98,7 +97,7 @@ class Trainer:
         evaluate_every : int
             Evaluate every N steps.
         save_best_only : bool
-            Only save checkpoints when SNR_var (stretched) improves.
+            Only save checkpoints when PSNR (stretched) improves.
         validate_images : int
             Max number of validation images to evaluate on during training.
         """
@@ -145,22 +144,22 @@ class Trainer:
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
 
-                # Compute validation metrics — variance-ratio SNR in
-                # stretched (loss-aligned, used for save-best) and raw space.
-                metrics = self.evaluate(valid_dataset.take(validate_images))
-                snr_var_s = float(metrics["snr_var_stretched"].numpy())
-                snr_var_r = float(metrics["snr_var_raw"].numpy())
+                # Compute validation PSNR (stretched: loss-aligned, used for
+                # save-best; raw: photometric).
+                metrics  = self.evaluate(valid_dataset.take(validate_images))
+                psnr_str = float(metrics["psnr_stretched"].numpy())
+                psnr_raw = float(metrics["psnr_raw"].numpy())
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
                     loss=f"{loss_value.numpy():.3f}",
-                    SNRs=f"{snr_var_s:.2f}",
-                    SNRr=f"{snr_var_r:.2f}",
+                    PSNRs=f"{psnr_str:.2f}",
+                    PSNRr=f"{psnr_raw:.2f}",
                 )
                 tqdm.write(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"SNR_var(str/raw) = {snr_var_s:+.3f}/{snr_var_r:+.3f} dB, "
+                    f"PSNR(str/raw) = {psnr_str:.3f}/{psnr_raw:.3f} dB, "
                     f"|g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
                 )
@@ -169,27 +168,27 @@ class Trainer:
                 # sessions accumulate into one log.
                 with open(log_path, "a") as fh:
                     fh.write(json.dumps({
-                        "step":              int(step),
-                        "loss":              float(loss_value.numpy()),
-                        "snr_var_stretched": snr_var_s,
-                        "snr_var_raw":       snr_var_r,
-                        "gnorm_avg":         float(gnorm_avg.numpy()),
-                        "gnorm_max":         float(gnorm_peak),
-                        "clip_norm":         float(GRAD_CLIP_NORM),
-                        "duration_s":        float(duration),
-                        "wall_time":         time.time(),
+                        "step":           int(step),
+                        "loss":           float(loss_value.numpy()),
+                        "psnr_stretched": psnr_str,
+                        "psnr_raw":       psnr_raw,
+                        "gnorm_avg":      float(gnorm_avg.numpy()),
+                        "gnorm_max":      float(gnorm_peak),
+                        "clip_norm":      float(GRAD_CLIP_NORM),
+                        "duration_s":     float(duration),
+                        "wall_time":      time.time(),
                     }) + "\n")
 
-                # save-best on SNR_var_stretched (loss-aligned).
-                if save_best_only and metrics["snr_var_stretched"] <= ckpt.snr:
+                # save-best on PSNR_stretched (loss-aligned).
+                if save_best_only and metrics["psnr_stretched"] <= ckpt.psnr:
                     self.now = time.perf_counter()
                     continue
 
-                ckpt.snr = metrics["snr_var_stretched"]
+                ckpt.psnr = metrics["psnr_stretched"]
                 ckpt_mgr.save()
                 tqdm.write(
-                    f"  ✓ Checkpoint saved (SNR_var str={snr_var_s:+.3f} dB, "
-                    f"raw={snr_var_r:+.3f} dB)"
+                    f"  ✓ Checkpoint saved (PSNR str={psnr_str:.3f}, "
+                    f"raw={psnr_raw:.3f} dB)"
                 )
 
                 self.now = time.perf_counter()
@@ -234,8 +233,8 @@ class Trainer:
         Returns:
         --------
         metrics : dict
-            See ``models.common.evaluate`` — keys are ``snr_var_stretched``
-            and ``snr_var_raw``.
+            See ``models.common.evaluate`` — keys are ``psnr_stretched``
+            and ``psnr_raw``.
         """
         return evaluate(self.checkpoint.model, dataset)
 

@@ -95,6 +95,14 @@ class Config:
     # |x| ≪ scale, log-like for |x| ≫ scale; signed; smooth inverse (sinh).
     STRETCH_SCALE_E              = 1000.0   # e⁻ — knee between linear and log regimes
 
+    # PSNR peak references — set to a mag-17 star's electron count over the
+    # stack (a "very bright" plausible source). The asinh-space peak is the
+    # asinh of the raw peak under the same STRETCH_SCALE_E. Both are derived
+    # quantities; change PSNR_PEAK_MAG to retune.
+    PSNR_PEAK_MAG                = 17.0
+    PSNR_PEAK_E                  = 10 ** (-0.4 * (PSNR_PEAK_MAG - SIM_VIS_ZEROPOINT_E))
+    PSNR_PEAK_STRETCHED          = math.asinh(PSNR_PEAK_E / STRETCH_SCALE_E)
+
     # Star magnitude distribution (probability thresholds and ranges)
     STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
     STAR_MAG_PROB_MID            = 0.95     # below → mid bin

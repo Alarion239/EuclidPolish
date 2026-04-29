@@ -225,19 +225,22 @@ def _residual_metrics(residual_stretched: np.ndarray,
                       residual_e: np.ndarray,
                       hr_stretched: np.ndarray,
                       hr_e: np.ndarray) -> dict:
-    """SNR / RMSE / MAE numbers for the reconstruction in both spaces."""
+    """PSNR / RMSE / MAE numbers for the reconstruction in both spaces.
+
+    Peaks come from ``Config.PSNR_PEAK_*`` (mag-17 star).
+    """
     eps = 1e-7
     rmse_str = float(np.sqrt(np.mean(residual_stretched ** 2)) + eps)
     rmse_raw = float(np.sqrt(np.mean(residual_e ** 2)) + eps)
 
-    var_hr_str = float(np.var(hr_stretched))
-    var_hr_raw = float(np.var(hr_e))
-    snr_var_str = 10.0 * np.log10(var_hr_str / (np.var(residual_stretched) + eps))
-    snr_var_raw = 10.0 * np.log10(var_hr_raw / (np.var(residual_e) + eps))
+    peak_str = float(Config.PSNR_PEAK_STRETCHED)
+    peak_raw = float(Config.PSNR_PEAK_E)
+    psnr_str = 20.0 * np.log10(peak_str / rmse_str)
+    psnr_raw = 20.0 * np.log10(peak_raw / rmse_raw)
 
     return {
-        "SNR_var (asinh, loss)":   f"{snr_var_str:>+10.3f} dB",
-        "SNR_var (raw e⁻)":       f"{snr_var_raw:>+10.3f} dB",
+        f"PSNR (asinh, peak={peak_str:.2f})":    f"{psnr_str:>10.3f} dB",
+        f"PSNR (raw, peak={peak_raw:.2e})":      f"{psnr_raw:>10.3f} dB",
         "MAE (asinh)":             f"{np.mean(np.abs(residual_stretched)):>12.4g}",
         "MAE (raw e⁻)":           f"{np.mean(np.abs(residual_e)):>12.4g}",
         "RMSE (asinh)":            f"{rmse_str:>12.4g}",
@@ -265,7 +268,7 @@ def plot_reconstruction(
         Row 2 (asinh):
             LR asinh | SR asinh | HR asinh | residual asinh | z-score asinh
         Row 3 (stats):
-            LR stats | SR stats | HR stats | asinh-residual stats | SNR stats
+            LR stats | SR stats | HR stats | asinh-residual stats | PSNR stats
 
     All asinh panels share ``Config.STRETCH_SCALE_E`` (the network's
     training scale), so brightness is directly comparable to the loss.
@@ -340,7 +343,7 @@ def plot_reconstruction(
         "include_data_stats": False,
     })
     vis.add_statistics_panel(residual_e, {
-        "title": "SNR / error metrics:",
+        "title": "PSNR / error metrics:",
         "stats": _residual_metrics(residual_stretched, residual_e,
                                    hr_stretched, hr_data),
         "include_data_stats": False,

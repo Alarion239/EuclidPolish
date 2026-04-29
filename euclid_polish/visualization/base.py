@@ -63,7 +63,7 @@ def _asinh_scale(data: np.ndarray) -> float:
 
     Returns ``Config.STRETCH_SCALE_E`` — the same scale the network trains in.
     Using the same constant everywhere makes the viz directly comparable
-    across images and to the loss / SNR metrics.
+    across images and to the loss / PSNR metrics.
 
     The legacy MAD-based behaviour is still available via
     :func:`_asinh_scale_mad` for callers that explicitly want a per-image

@@ -972,8 +972,8 @@ class InteractiveCLI:
                 metrics = trainer.evaluate(valid_ds)
                 print(
                     f"\nFinal metrics:\n"
-                    f"  SNR_var (stretched, loss-aligned): {float(metrics['snr_var_stretched']):+.3f} dB\n"
-                    f"  SNR_var (raw e⁻):                 {float(metrics['snr_var_raw']):+.3f} dB"
+                    f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
+                    f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
                 )
 
                 # Offer to export weights
@@ -1027,8 +1027,8 @@ class InteractiveCLI:
             metrics = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
             print(
                 f"\n✓ Validation metrics:\n"
-                f"  SNR_var (stretched, loss-aligned): {float(metrics['snr_var_stretched']):+.3f} dB\n"
-                f"  SNR_var (raw e⁻):                 {float(metrics['snr_var_raw']):+.3f} dB"
+                f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
+                f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
             )
 
         except Exception as e:
@@ -1058,7 +1058,7 @@ class InteractiveCLI:
         print(f"\n  Total: {len(ckpt_state.all_model_checkpoint_paths)} checkpoint(s)")
 
     def _plot_training_log(self):
-        """Plot the per-evaluation loss / SNR curves from a training log."""
+        """Plot the per-evaluation loss / PSNR curves from a training log."""
         from euclid_polish.training.log_plot import (
             default_log_path, plot_training_log,
         )
