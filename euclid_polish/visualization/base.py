@@ -236,43 +236,55 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label=cbar_label)
 
-    def add_zscore_panel(
+    def add_relative_error_panel(
         self,
         residual: np.ndarray,
-        sigma: np.ndarray,
+        signal: np.ndarray,
+        floor: float,
         title_suffix: str = "",
-        clip: tuple = (0.0, 5.0),
+        clip: tuple = (1e-3, 1.0),
         cmap: str = "magma",
     ) -> None:
-        """Add a per-pixel z-score map: ``|residual| / σ``.
+        """Add a per-pixel **relative error** map: ``|residual| / max(|signal|, floor)``.
+
+        For pixels well above the noise floor, this reads as the fraction of
+        signal the model gets wrong (e.g. 0.05 = 5% photometric error). For
+        sky-floor pixels where ``|signal| < floor``, the denominator clamps
+        to ``floor`` so the display reduces to a noise-normalised z-score
+        instead of blowing up to ∞.
 
         Parameters
         ----------
         residual : ndarray
-            The pixel-wise residual ``HR − SR`` in the same units as σ.
-        sigma : ndarray
-            Per-pixel expected noise std. Must broadcast against ``residual``.
-            Use a single scalar for "constant noise floor" or a 2-D array for
-            "signal-dependent noise" (Poisson + readout).
+            ``HR − SR`` in the same units as ``signal``.
+        signal : ndarray
+            Reference signal (typically HR) in the same units as ``residual``.
+        floor : float
+            Minimum value used for the denominator — typically the noise std
+            in the same units as ``residual``. Anything ≥ noise level works.
         clip : (low, high)
-            Display range. Defaults to ``[0, 5]`` σ — z<1 reads as
-            "within noise", z>3 as "outlier", z>5 as "model failure".
+            Log-display range. Default ``[1e-3, 1.0]`` shows three decades:
+            <0.1% (yellow → black), 1% (mid), 10% (orange), ≥100% (saturated
+            yellow / model failure).
         cmap : str
-            ``magma`` (default): black at z≈0 (good), bright yellow at the
-            high end (bad). Inverts the usual viridis convention to match
-            astronomical residual-map conventions.
+            ``magma``: black at low rel-err (good), bright yellow at high
+            (bad).
         """
         eps = 1e-7
-        z = np.abs(residual) / (np.asarray(sigma) + eps)
-        z = np.clip(z, clip[0], clip[1])
+        denom = np.maximum(np.abs(signal), float(floor))
+        rel = np.abs(residual) / (denom + eps)
+        rel = np.clip(rel, clip[0], clip[1])
 
         ax = self._fig.add_subplot(self._next_gs_position())
-        im = ax.imshow(z, cmap=cmap, origin="lower",
-                       interpolation="nearest", vmin=clip[0], vmax=clip[1])
-        ax.set_title(f"z-score per pixel  |residual| / σ{title_suffix}", fontsize=12)
+        im = ax.imshow(rel, cmap=cmap, origin="lower", interpolation="nearest",
+                       norm=plt.matplotlib.colors.LogNorm(vmin=clip[0], vmax=clip[1]))
+        ax.set_title(
+            f"|residual| / max(|signal|, floor)  (floor={floor:.3g}){title_suffix}",
+            fontsize=12,
+        )
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
-        plt.colorbar(im, ax=ax, label="|Δ| / σ")
+        plt.colorbar(im, ax=ax, label="|Δ| / |signal|")
 
     def add_residual_histogram_panel(
         self,

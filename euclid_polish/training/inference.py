@@ -185,40 +185,18 @@ def _residual_asinh_stats(residual_stretched: np.ndarray, residual_e: np.ndarray
     }
 
 
-def _noise_floor_lr_var() -> float:
-    """Expected per-LR-pixel noise variance (e⁻²) from the noise model."""
+def _noise_floor_lr_std_e() -> float:
+    """Expected per-LR-pixel noise std (e⁻) from the analytical noise model.
+
+    Used as the denominator floor in relative-error panels — keeps the plot
+    finite where signal → 0.
+    """
     t_total = Config.EXPOSURE_TIME_S * Config.N_EXPOSURES
     pixel_area = Config.VIS_PIXEL_SCALE_ARCSEC ** 2
     sky_e   = Config.SKY_E_PER_S_PER_ARCSEC2 * pixel_area * t_total
     dark_e  = Config.DARK_E_PER_S_PER_PIX * t_total
     read_var = Config.READ_NOISE_E ** 2 * Config.N_EXPOSURES
-    return float(sky_e + dark_e + read_var)
-
-
-def _expected_sigma_e(hr: np.ndarray) -> np.ndarray:
-    """Per-pixel expected noise std σ in raw electrons given HR signal.
-
-    σ²_i = max(HR_i, 0) (Poisson signal contribution)
-         + σ²_floor / r²  (per-HR-pixel constant noise floor)
-
-    where σ²_floor = sky + dark + N·read² is the LR-pixel variance and the
-    factor r² = REBIN² accounts for the fact that HR pixels see 1/r² of
-    the area-integrated noise that LR pixels do.
-    """
-    floor_var_lr = _noise_floor_lr_var()
-    rebin = float(Config.DEFAULT_REBIN_FACTOR)
-    floor_var_hr = floor_var_lr / (rebin ** 2)
-    return np.sqrt(np.maximum(hr, 0.0) + floor_var_hr).astype(np.float32)
-
-
-def _expected_sigma_stretched(hr: np.ndarray, hr_stretched: np.ndarray) -> np.ndarray:
-    """σ in asinh-stretched space, propagated from raw σ via the asinh
-    derivative: ``d asinh(x/k)/dx = 1 / sqrt(k² + x²)``.
-    """
-    sigma_e = _expected_sigma_e(hr)
-    k = float(Config.STRETCH_SCALE_E)
-    jacobian = 1.0 / np.sqrt(k * k + hr * hr).astype(np.float32)
-    return (sigma_e * jacobian).astype(np.float32)
+    return float(np.sqrt(sky_e + dark_e + read_var))
 
 
 def _residual_metrics(residual_stretched: np.ndarray,
@@ -264,9 +242,9 @@ def plot_reconstruction(
     Layout when HR is provided — 3 rows × 5 cols:
 
         Row 1 (raw / linear):
-            LR raw | SR raw | HR raw | residual raw | z-score raw
+            LR raw | SR raw | HR raw | residual raw | rel-err raw
         Row 2 (asinh):
-            LR asinh | SR asinh | HR asinh | residual asinh | z-score asinh
+            LR asinh | SR asinh | HR asinh | residual asinh | rel-err asinh
         Row 3 (stats):
             LR stats | SR stats | HR stats | asinh-residual stats | PSNR stats
 
@@ -289,13 +267,14 @@ def plot_reconstruction(
         vis.save_figure(output_path)
         return
 
-    # Pre-compute residuals & expected per-pixel noise
+    # Pre-compute residuals & noise floors (used as denominator clamps in
+    # the rel-err panels so they don't blow up at sky-floor pixels).
     hr_stretched       = np.arcsinh(hr_data / shared_scale).astype(np.float32)
     sr_stretched       = np.arcsinh(sr_data / shared_scale).astype(np.float32)
     residual_e         = (hr_data - sr_data).astype(np.float32)
     residual_stretched = (hr_stretched - sr_stretched).astype(np.float32)
-    sigma_e            = _expected_sigma_e(hr_data)
-    sigma_str          = _expected_sigma_stretched(hr_data, hr_stretched)
+    floor_e            = _noise_floor_lr_std_e()
+    floor_str          = float(np.arcsinh(floor_e / shared_scale))
 
     vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
 
@@ -306,8 +285,8 @@ def plot_reconstruction(
     vis.add_diverging_panel(residual_e, stretch="linear",
                             title_suffix="\nResidual = HR − SR (raw e⁻)",
                             colorbar_label="Residual (e⁻)")
-    vis.add_zscore_panel(residual_e, sigma_e,
-                         title_suffix="\nraw e⁻, σ from noise model")
+    vis.add_relative_error_panel(residual_e, hr_data, floor=floor_e,
+                                 title_suffix="\nraw e⁻")
 
     # ---- Row 2: asinh (loss-aligned) ----
     vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
@@ -318,8 +297,8 @@ def plot_reconstruction(
                         title_suffix="\nTrue Sky (HR)")
     vis.add_diverging_panel(residual_e, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nResidual = HR − SR")
-    vis.add_zscore_panel(residual_stretched, sigma_str,
-                         title_suffix="\nasinh space, σ propagated")
+    vis.add_relative_error_panel(residual_stretched, hr_stretched, floor=floor_str,
+                                 title_suffix="\nasinh space")
 
     # ---- Row 3: stats ----
     vis.add_statistics_panel(lr_data, {
