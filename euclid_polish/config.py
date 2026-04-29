@@ -127,18 +127,12 @@ class Config:
     # bad-batch spike can't corrupt weights. Set to math.inf to disable.
     GRAD_CLIP_NORM               = 5.0
 
-    # Reference dynamic range used to normalise the *raw-electron* PSNR
-    # metric (training reports PSNR in both stretched and raw space —
-    # stretched is what the loss optimises; raw is for human-readable
-    # comparison to typical photometric scales). 1e6 ≈ a moderately bright
-    # source pixel.
-    RAW_PSNR_MAX_VAL             = 1.0e6
 
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000
     DEFAULT_BATCH_SIZE           = 16
     DEFAULT_EVALUATE_EVERY       = 1000
-    DEFAULT_VALIDATE_IMAGES      = 30
+    DEFAULT_VALIDATE_IMAGES      = 300
     DEFAULT_NUM_RES_BLOCKS       = 32
     DEFAULT_CHECKPOINT_DIR       = "./ckpt/wdsr"
     DEFAULT_HR_CROP_SIZE         = 96

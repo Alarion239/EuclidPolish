@@ -235,22 +235,16 @@ def _residual_metrics(residual_stretched: np.ndarray,
     snr_var_str = 10.0 * np.log10(var_hr_str / (np.var(residual_stretched) + eps))
     snr_var_raw = 10.0 * np.log10(var_hr_raw / (np.var(residual_e) + eps))
 
-    sigma_floor = float(np.sqrt(_noise_floor_lr_var()))
-    snr_floor   = 20.0 * np.log10(sigma_floor / rmse_raw)
-
-    psnr_str_global = 20.0 * np.log10(10.0 / rmse_str)
-
     return {
-        "PSNR_str (max=10)":                f"{psnr_str_global:>10.3f} dB",
-        "SNR_var (asinh)":                  f"{snr_var_str:>+10.3f} dB",
-        "SNR_var (raw e⁻)":                f"{snr_var_raw:>+10.3f} dB",
-        f"SNR_floor (σ={sigma_floor:.1f}e⁻)": f"{snr_floor:>+10.3f} dB",
-        "MAE (asinh)":                      f"{np.mean(np.abs(residual_stretched)):>12.4g}",
-        "MAE (raw e⁻)":                    f"{np.mean(np.abs(residual_e)):>12.4g}",
-        "RMSE (asinh)":                     f"{rmse_str:>12.4g}",
-        "RMSE (raw e⁻)":                   f"{rmse_raw:>12.4g}",
-        "Worst pixel |Δ| (asinh)":          f"{np.max(np.abs(residual_stretched)):>12.4g}",
-        "Worst pixel |Δ| (raw e⁻)":        f"{np.max(np.abs(residual_e)):>12.4g}",
+        "SNR_var (asinh, loss)":   f"{snr_var_str:>+10.3f} dB",
+        "SNR_var (raw e⁻)":       f"{snr_var_raw:>+10.3f} dB",
+        "MAE (asinh)":             f"{np.mean(np.abs(residual_stretched)):>12.4g}",
+        "MAE (raw e⁻)":           f"{np.mean(np.abs(residual_e)):>12.4g}",
+        "RMSE (asinh)":            f"{rmse_str:>12.4g}",
+        "RMSE (raw e⁻)":          f"{rmse_raw:>12.4g}",
+        "Worst pixel |Δ| (asinh)": f"{np.max(np.abs(residual_stretched)):>12.4g}",
+        "Worst pixel |Δ| (raw e⁻)": f"{np.max(np.abs(residual_e)):>12.4g}",
+        "Best pixel |Δ| (asinh)":  f"{np.min(np.abs(residual_stretched)):>12.4g}",
     }
 
 
@@ -267,14 +261,14 @@ def plot_reconstruction(
     Layout when HR is provided — 3 rows × 5 cols:
 
         Row 1 (raw / linear):
-            LR raw | SR raw | HR raw | residual raw | PSNR-pp raw
+            LR raw | SR raw | HR raw | residual raw | z-score raw
         Row 2 (asinh):
-            LR asinh | SR asinh | HR asinh | residual asinh | PSNR-pp asinh
+            LR asinh | SR asinh | HR asinh | residual asinh | z-score asinh
         Row 3 (stats):
-            LR stats | SR stats | HR stats | asinh-residual stats | PSNR stats
+            LR stats | SR stats | HR stats | asinh-residual stats | SNR stats
 
     All asinh panels share ``Config.STRETCH_SCALE_E`` (the network's
-    training scale), so brightness is directly comparable to loss/PSNR.
+    training scale), so brightness is directly comparable to the loss.
 
     When HR is missing, falls back to a 2 × 2 LR/SR layout (raw + asinh).
     """
