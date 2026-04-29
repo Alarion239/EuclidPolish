@@ -140,7 +140,7 @@ class Config:
     DEFAULT_TRAIN_STEPS          = 100_000
     DEFAULT_BATCH_SIZE           = 16
     DEFAULT_EVALUATE_EVERY       = 1000
-    DEFAULT_VALIDATE_IMAGES      = 300
+    DEFAULT_VALIDATE_IMAGES      = 100
     DEFAULT_NUM_RES_BLOCKS       = 32
     DEFAULT_CHECKPOINT_DIR       = "./ckpt/wdsr"
     DEFAULT_HR_CROP_SIZE         = 96
