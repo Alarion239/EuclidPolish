@@ -112,7 +112,10 @@ class PSF:
     def from_fits(cls, fits_path: str) -> PSF:
         """
         Load a PSF from a FITS file, reading pixel scale and oversampling
-        from the header keywords written by :meth:`save`.
+        from the header keywords written by :meth:`save`. The kernel is
+        **normalised to sum=1** before being returned, which is what every
+        downstream convolution step expects (otherwise the convolution
+        rescales total flux by ``data.sum()``).
 
         Parameters:
         -----------
@@ -129,9 +132,10 @@ class PSF:
         pixel_scale = float(header.get('PXSCALE', 0.0))
         oversampling = int(header['OVERSAMP']) if 'OVERSAMP' in header else None
         fwhm_arcsec  = float(header['FWHM'])   if 'FWHM'    in header else None
-        return cls(
+        psf = cls(
             data=data,
             pixel_scale=pixel_scale,
             fwhm_arcsec=fwhm_arcsec,
             oversampling=oversampling,
         )
+        return psf.normalized()
