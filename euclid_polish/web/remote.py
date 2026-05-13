@@ -55,6 +55,9 @@ class BitwardenClient:
 
     def __init__(self, bw_path: str = "bw") -> None:
         self.bw_path = bw_path
+        # Per-instance cache for is_installed() so multiple clients (and
+        # tests) don't see each other's cached state.
+        self._installed_cache: Optional[bool] = None
         self._session: Optional[str] = None
 
     # ----------------------------- public ---------------------------------
@@ -63,14 +66,23 @@ class BitwardenClient:
     def unlocked(self) -> bool:
         return self._session is not None
 
+    # ``bw --version`` is a 50–200 ms subprocess. It's called on every
+    # page render via STATE.public_status — that's a noticeable fraction
+    # of the page-load latency. The result is monotone for a given
+    # ``bw_path`` (once installed, always installed during this process)
+    # so we cache it per instance for the lifetime of the client.
     def is_installed(self) -> bool:
+        if self._installed_cache is not None:
+            return self._installed_cache
         try:
             subprocess.run([self.bw_path, "--version"],
                            check=True, capture_output=True, timeout=5)
-            return True
+            ok = True
         except (FileNotFoundError, subprocess.CalledProcessError,
                 subprocess.TimeoutExpired):
-            return False
+            ok = False
+        self._installed_cache = ok
+        return ok
 
     def status(self) -> dict:
         """Returns the parsed JSON from ``bw status`` (no session needed)."""
@@ -190,24 +202,48 @@ class SSHSession:
     multiplexed channel with no auth at all.
     """
 
+    # ``ssh -O check`` is a 50–500 ms subprocess (worst case 5 s on a
+    # hung ControlMaster). Called on every public_status() request and
+    # at the top of every other route. Cache its result for a short TTL
+    # so a burst of requests (page render + sidebar poll + status route)
+    # only fires one check.
+    _CONNECTED_TTL_S: float = 2.0
+
     def __init__(self, cfg: SSHConfig) -> None:
         self.cfg = cfg
         self._lock = threading.Lock()
+        # Per-instance is_connected() cache so each SSHSession has its
+        # own (test isolation; otherwise a class-level tuple leaks).
+        self._connected_cache: tuple[float, bool] = (0.0, False)
 
     # ----------------------------- status ---------------------------------
 
     def is_connected(self) -> bool:
-        """``ssh -O check`` against the socket; True if the master is alive."""
+        """``ssh -O check`` against the socket; True if the master is alive.
+
+        Result is cached for ``_CONNECTED_TTL_S`` seconds so rapid-fire
+        page loads + sidebar polling don't fire one subprocess each.
+        """
+        now = time.monotonic()
+        cached_at, cached_ok = self._connected_cache
+        if now - cached_at < self._CONNECTED_TTL_S:
+            return cached_ok
         if not os.path.exists(self.cfg.socket):
+            self._connected_cache = (now, False)
             return False
         try:
             r = subprocess.run(
                 ["ssh", "-S", self.cfg.socket, "-O", "check", self.cfg.target],
                 capture_output=True, timeout=5,
             )
-            return r.returncode == 0
+            ok = r.returncode == 0
         except subprocess.TimeoutExpired:
-            return False
+            ok = False
+        self._connected_cache = (now, ok)
+        return ok
+
+    def _invalidate_connection_cache(self) -> None:
+        self._connected_cache = (0.0, False)
 
     def disconnect(self) -> None:
         """Close the master socket cleanly."""
@@ -224,6 +260,9 @@ class SSHSession:
                 os.unlink(self.cfg.socket)
             except OSError:
                 pass
+        # Forget the cached "connected" answer so the next is_connected()
+        # call re-probes the (now-missing) socket.
+        self._invalidate_connection_cache()
 
     # ----------------------------- connect --------------------------------
 

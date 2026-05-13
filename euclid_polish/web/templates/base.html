@@ -186,17 +186,30 @@
 
   // Sidebar live job ticker — local jobs from REGISTRY plus, if a
   // FASRC SLURM job is currently RUNNING, that one pinned to the top.
+  //
+  // Latency note: ``/api/fasrc/training-status`` is the expensive endpoint
+  // (squeue + multi-file tail over SSH). We avoid hitting it at all when
+  // we know SSH isn't connected. Once it 400s on us, we skip it for ~30s
+  // before re-probing — this keeps every page snappy when the user
+  // hasn't logged in to FASRC.
+  let __FASRC_NEXT_PROBE = 0;
   async function refreshJobs() {
     try {
+      const fasrcPromise = (Date.now() >= __FASRC_NEXT_PROBE)
+        ? fetch('/api/fasrc/training-status').catch(() => null)
+        : Promise.resolve(null);
       const [localRes, fasrcRes] = await Promise.all([
         fetch('/api/jobs').catch(() => null),
-        fetch('/api/fasrc/training-status').catch(() => null),
+        fasrcPromise,
       ]);
       const local = localRes && localRes.ok ? await localRes.json() : [];
       let fasrc = null;
       if (fasrcRes && fasrcRes.ok) {
         const j = await fasrcRes.json();
         if (j.ok && j.running) fasrc = j;
+      } else if (fasrcRes && fasrcRes.status === 400) {
+        // "not connected" — don't pester FASRC for 30s.
+        __FASRC_NEXT_PROBE = Date.now() + 30_000;
       }
 
       let html = '';
@@ -241,9 +254,10 @@
     } catch (e) { /* offline; ignore */ }
   }
   refreshJobs();
-  // Local jobs poll every 1.5s; FASRC status is cheap enough to ride
-  // along on the same cadence (it does at most one SSH call per beat).
-  setInterval(refreshJobs, 2000);
+  // 3 s cadence — keeps the FASRC training-status server-cache (2 s TTL)
+  // mostly warm so each poll is essentially free, while still feeling
+  // live to the user.
+  setInterval(refreshJobs, 3000);
   </script>
 
   {% block scripts %}{% endblock %}

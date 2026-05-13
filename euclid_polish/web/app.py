@@ -1527,11 +1527,16 @@ def create_app() -> Flask:
 
     @app.route("/fasrc")
     def fasrc_page():
+        # Don't call STATE.public_status() here — it runs ``bw --version``
+        # and ``ssh -O check`` subprocesses (up to ~600 ms combined on a
+        # warm cache, several seconds on a cold one) and the template
+        # doesn't even use the result. The page's own JS fetches connection
+        # state via /api/fasrc/status after the DOM loads, which is async
+        # and doesn't block render.
         cfg = fasrc_config.load()
         return render_template(
             "fasrc.html",
             cfg=cfg,
-            state=STATE.public_status(),
             recent=fasrc_jobs.DB.list_recent(20),
         )
 
@@ -2142,7 +2147,16 @@ def create_app() -> Flask:
         return jsonify({"ok": True, "path": path, "lines": lines,
                         "content": out})
 
-    # ---- parsed live status (.out + .err + training_log.jsonl) -----------
+    # ---- parsed live status (.out + .err + training_log) -----------------
+    #
+    # The sidebar polls this every couple of seconds AND every page in the
+    # app pulls it on initial render — without a cache that's a fresh
+    # squeue + multi-file tail per poll, which is what makes the UI feel
+    # sluggish. A 2-second TTL coalesces bursts and keeps live progress
+    # visibly fresh (next poll arrives just after expiry).
+
+    _TRAINING_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "resp": None}
+    _TRAINING_STATUS_TTL_S: float = 2.0
 
     @app.route("/api/fasrc/training-status")
     def api_fasrc_training_status():
@@ -2150,8 +2164,8 @@ def create_app() -> Flask:
 
         Identifies the currently running job (RUNNING state in squeue,
         cross-referenced against local sqlite), reads the tail of its
-        ``.out`` / ``.err`` / ``training_log.jsonl`` over SSH, and
-        returns a parsed summary. Errors are reported in-band as
+        ``.out`` / ``.err`` / ``training_log`` over SSH, and returns a
+        parsed summary. Errors are reported in-band as
         ``{"ok": False, "error": ...}`` rather than raising — a 5xx
         here would just look like the dashboard "disconnecting" to
         the user, when really the SSH is fine and only one log read
@@ -2160,15 +2174,24 @@ def create_app() -> Flask:
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
 
+        # Serve from the cache if a recent (<2 s) response is available.
+        now = time.monotonic()
+        if (_TRAINING_STATUS_CACHE["resp"] is not None
+                and now - _TRAINING_STATUS_CACHE["at"] < _TRAINING_STATUS_TTL_S):
+            return _TRAINING_STATUS_CACHE["resp"]
+
         try:
-            return _build_training_status()
+            resp = _build_training_status()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return jsonify({
+            resp = jsonify({
                 "ok":    False,
                 "error": f"{type(e).__name__}: {e}",
             }), 200
+        _TRAINING_STATUS_CACHE["at"]   = now
+        _TRAINING_STATUS_CACHE["resp"] = resp
+        return resp
 
     def _build_training_status():
         cfg = fasrc_config.load()
