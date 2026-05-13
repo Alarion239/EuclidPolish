@@ -171,6 +171,81 @@ def lupton_rgb_from_channels(
     return np.clip(rgb, 0.0, 1.0).astype(np.float32)
 
 
+def calibrated_rgb_panel(
+    cube: np.ndarray,
+    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    scheme: str = "vis_nisp",
+    reference: str = "solar",
+    stretch: str = "asinh",
+    asinh_scale_e: float = 1000.0,
+) -> np.ndarray:
+    """4-band cube → RGB with the same ``stretch`` semantics as the
+    grayscale ``add_scale_panel``: per-channel ``[p1, p99.5]`` clipping
+    on top of the chosen stretch.
+
+    Why this and not ``lupton_rgb``: Lupton applies *one* asinh on the
+    summed intensity and rescales channels by a shared factor — great
+    for a single composite image, but the asinh "scale" knob has no
+    natural per-band analogue. Here we want to drop in as a colour
+    replacement for the existing grayscale linear / asinh panels, so we
+    do the per-channel thing: calibrate each band, apply the same
+    stretch the grayscale panel would, then independently normalise to
+    [0, 1] via the [p1, p99.5] window. The colour bar in the title
+    ("linear [p1, p99.5]" / "asinh (scale=…)") therefore carries the
+    same meaning as in the grayscale panel.
+    """
+    if stretch not in ("linear", "asinh"):
+        raise ValueError(f"stretch must be 'linear' or 'asinh'; got {stretch!r}")
+    if cube.ndim != 3:
+        raise ValueError(f"cube must be 3-D; got shape {cube.shape}")
+    if scheme not in RGB_SCHEMES:
+        raise ValueError(f"scheme must be one of {list(RGB_SCHEMES)}; got {scheme!r}")
+    idx = {name: i for i, name in enumerate(band_names)}
+    rgb_names = RGB_SCHEMES[scheme]
+    try:
+        chans = [cube[..., idx[n]].astype(np.float64, copy=True) for n in rgb_names]
+    except KeyError as exc:
+        raise ValueError(
+            f"scheme {scheme!r} needs band {exc.args[0]!r}, which is "
+            f"not present in band_names={band_names}"
+        ) from exc
+
+    # 1. Per-band flux calibration. Same factors as `calibrate()` but
+    # applied to the picked R/G/B channels only.
+    for i, name in enumerate(rgb_names):
+        chans[i] *= _ab_flux_norm(name)
+        if reference == "solar":
+            chans[i] *= _solar_balance(name)
+        elif reference != "ab_flat":
+            raise ValueError(f"unknown reference {reference!r}")
+
+    # 2. Apply the requested stretch. For asinh, the knee in calibrated
+    # units is what ``asinh_scale_e`` electrons would calibrate to under
+    # VIS's normalisation — that keeps the visual "knee" tied to the
+    # same physical brightness across linear / asinh panels.
+    if stretch == "asinh":
+        knee = float(asinh_scale_e) * _ab_flux_norm("VIS")
+        if reference == "solar":
+            knee *= _solar_balance("VIS")
+        if knee <= 0:
+            knee = 1.0
+        chans = [np.arcsinh(c / knee) for c in chans]
+
+    # 3. Per-channel [p1, p99.5] normalisation so each channel uses its
+    # full dynamic range — same convention as the grayscale panels.
+    out = []
+    for c in chans:
+        finite = c[np.isfinite(c)]
+        if finite.size == 0:
+            out.append(np.zeros_like(c, dtype=np.float32))
+            continue
+        lo, hi = np.percentile(finite, [1.0, 99.5])
+        if hi <= lo:
+            hi = lo + 1.0
+        out.append(np.clip((c - lo) / (hi - lo), 0.0, 1.0).astype(np.float32))
+    return np.stack(out, axis=-1)
+
+
 def lupton_rgb(
     cube: np.ndarray,
     band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,

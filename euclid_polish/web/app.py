@@ -955,12 +955,18 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     data = img.data
 
     if band == "color" and data.shape[-1] >= len(Config.LR_INPUT_BAND_NAMES):
-        # 4-band Lupton RGB. Solar-balanced so sun-like stars render
-        # neutral white and color is informative about the source SED.
-        from euclid_polish.visualization.color import lupton_rgb
-        rgb = lupton_rgb(
+        # 4-band solar-balanced RGB with per-channel [p1, p99.5]
+        # normalisation — same dynamic-range convention as the
+        # grayscale single-band panels in the rest of the sky tab.
+        from euclid_polish.visualization.color import calibrated_rgb_panel
+        # ``clean`` records live on the HR grid (band-independent
+        # asinh-stretch knee unspecified) — use the VIS knee as the
+        # shared reference, matching how the rest of the UI treats HR.
+        rgb = calibrated_rgb_panel(
             data, band_names=Config.LR_INPUT_BAND_NAMES,
-            scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
+            scheme="vis_nisp", reference="solar",
+            stretch="asinh",
+            asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
         )
         fig, ax = plt.subplots(figsize=(6.5, 6.5))
         ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",

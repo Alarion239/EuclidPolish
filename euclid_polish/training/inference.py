@@ -298,23 +298,31 @@ def plot_reconstruction(
     """
     shared_scale = float(Config.STRETCH_SCALE_E)
 
-    lr_rgb = _safe_lupton_rgb(lr_cube)
-    hr_rgb = _safe_lupton_rgb(hr_cube)
-
     if hr_data is None:
-        # 2 × 3 layout when HR is unknown (real-Euclid inference flow):
-        # row 1 = LR raw / SR raw / color LR ; row 2 = LR asinh / SR asinh / (blank).
-        cols = 3 if lr_rgb is not None else 2
-        vis = BaseVisualizer(rows=2, cols=cols, figsize=(8 * cols, 16), vmax=vmax)
-        vis.add_scale_panel(lr_data, stretch="linear", title_suffix="\nDirty (LR)")
-        vis.add_scale_panel(sr_data, stretch="linear", title_suffix="\nReconstruction (SR)")
-        if lr_rgb is not None:
-            vis.add_rgb_panel(lr_rgb, title_suffix="\nLR (4-band, solar-balanced)")
-        vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
-                            title_suffix="\nDirty (LR)")
+        # 2 × 2 layout when HR is unknown (real-Euclid inference flow).
+        # LR panels render in colour when we have the full 4-band cube;
+        # SR stays grayscale because the model emits only VIS.
+        vis = BaseVisualizer(rows=2, cols=2, figsize=(18, 18), vmax=vmax)
+        if lr_cube is not None and lr_cube.ndim == 3 \
+                and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES):
+            vis.add_rgb_scale_panel(lr_cube, stretch="linear",
+                                    title_suffix="\nDirty (LR)")
+        else:
+            vis.add_scale_panel(lr_data, stretch="linear",
+                                title_suffix="\nDirty (LR)")
+        vis.add_scale_panel(sr_data, stretch="linear",
+                            title_suffix="\nReconstruction (SR)")
+        if lr_cube is not None and lr_cube.ndim == 3 \
+                and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES):
+            vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
+                                    asinh_scale=shared_scale,
+                                    title_suffix="\nDirty (LR)")
+        else:
+            vis.add_scale_panel(lr_data, stretch="asinh",
+                                asinh_scale=shared_scale,
+                                title_suffix="\nDirty (LR)")
         vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nReconstruction (SR)")
-        # blank cell in the third column on row 2 is left empty if rgb exists.
         plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
         vis.save_figure(output_path)
         return
@@ -328,33 +336,32 @@ def plot_reconstruction(
     floor_e            = _noise_floor_lr_std_e()
     floor_str          = float(np.arcsinh(floor_e / shared_scale))
 
-    # If we have at least one color cube, add an extra row dedicated to
-    # color composites. SR is intentionally left blank in this row — the
-    # model only emits VIS, so it has no color information of its own.
-    has_color_row = (lr_rgb is not None) or (hr_rgb is not None)
-    rows = 4 if has_color_row else 3
-    vis = BaseVisualizer(rows=rows, cols=5,
-                         figsize=(45, 6 * rows), vmax=vmax)
+    # 3 × 5 layout. LR / HR cells render in colour when we have the
+    # full 4-band cube available; SR cells are always grayscale because
+    # the model emits only VIS.
+    vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
 
-    if has_color_row:
-        # Row 0: LR color | (SR blank) | HR color | (blank) | (blank).
-        if lr_rgb is not None:
-            vis.add_rgb_panel(lr_rgb, title_suffix="\nDirty (LR), 4-band solar")
-        else:
-            vis._next_panel += 1   # skip the LR cell
-        # SR slot is deliberately blank — the model emits VIS only.
-        vis._next_panel += 1
-        if hr_rgb is not None:
-            vis.add_rgb_panel(hr_rgb, title_suffix="\nTrue Sky (HR), 4-band solar")
-        else:
-            vis._next_panel += 1
-        # Fill remaining two cells in the row.
-        vis._next_panel += 2
+    nbands = len(Config.LR_INPUT_BAND_NAMES)
+    lr_color = (lr_cube is not None and lr_cube.ndim == 3
+                and lr_cube.shape[-1] == nbands)
+    hr_color = (hr_cube is not None and hr_cube.ndim == 3
+                and hr_cube.shape[-1] == nbands)
 
     # ---- Row 1: linear (raw electrons) ----
-    vis.add_scale_panel(lr_data, stretch="linear", title_suffix="\nDirty (LR)")
-    vis.add_scale_panel(sr_data, stretch="linear", title_suffix="\nReconstruction (SR)")
-    vis.add_scale_panel(hr_data, stretch="linear", title_suffix="\nTrue Sky (HR)")
+    if lr_color:
+        vis.add_rgb_scale_panel(lr_cube, stretch="linear",
+                                title_suffix="\nDirty (LR)")
+    else:
+        vis.add_scale_panel(lr_data, stretch="linear",
+                            title_suffix="\nDirty (LR)")
+    vis.add_scale_panel(sr_data, stretch="linear",
+                        title_suffix="\nReconstruction (SR)")
+    if hr_color:
+        vis.add_rgb_scale_panel(hr_cube, stretch="linear",
+                                title_suffix="\nTrue Sky (HR)")
+    else:
+        vis.add_scale_panel(hr_data, stretch="linear",
+                            title_suffix="\nTrue Sky (HR)")
     vis.add_diverging_panel(residual_e, stretch="linear",
                             title_suffix="\nResidual = HR − SR (raw e⁻)",
                             colorbar_label="Residual (e⁻)")
@@ -362,12 +369,22 @@ def plot_reconstruction(
                                  title_suffix="\nraw e⁻")
 
     # ---- Row 2: asinh (loss-aligned) ----
-    vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
-                        title_suffix="\nDirty (LR)")
+    if lr_color:
+        vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
+                                asinh_scale=shared_scale,
+                                title_suffix="\nDirty (LR)")
+    else:
+        vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
+                            title_suffix="\nDirty (LR)")
     vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                         title_suffix="\nReconstruction (SR)")
-    vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale,
-                        title_suffix="\nTrue Sky (HR)")
+    if hr_color:
+        vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
+                                asinh_scale=shared_scale,
+                                title_suffix="\nTrue Sky (HR)")
+    else:
+        vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale,
+                            title_suffix="\nTrue Sky (HR)")
     vis.add_diverging_panel(residual_e, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nResidual = HR − SR")
     vis.add_relative_error_panel(residual_stretched, hr_stretched, floor=floor_str,

@@ -193,13 +193,7 @@ class BaseVisualizer:
         rgb: np.ndarray,
         title_suffix: str = "",
     ) -> None:
-        """Display a pre-rendered ``(H, W, 3)`` RGB image in ``[0, 1]``.
-
-        Use this for color composites coming out of
-        :func:`euclid_polish.visualization.color.lupton_rgb` — the
-        stretch / calibration is the caller's responsibility, so this
-        method just shows what it's given.
-        """
+        """Display a pre-rendered ``(H, W, 3)`` RGB image in ``[0, 1]``."""
         if rgb.ndim != 3 or rgb.shape[-1] != 3:
             raise ValueError(
                 f"rgb must be (H, W, 3); got shape {rgb.shape}"
@@ -208,6 +202,47 @@ class BaseVisualizer:
         ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
                   interpolation="nearest")
         ax.set_title(f"color composite{title_suffix}", fontsize=12)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+
+    def add_rgb_scale_panel(
+        self,
+        cube: np.ndarray,
+        band_names: tuple = None,
+        stretch: str = "asinh",
+        asinh_scale: float | None = None,
+        title_suffix: str = "",
+    ) -> None:
+        """Color version of :meth:`add_scale_panel` for 4-band cubes.
+
+        Per-band flux-calibrated, then linear or asinh-stretched,
+        then per-channel ``[p1, p99.5]`` normalised — so the panel's
+        title-line ``[p1, p99.5]`` colour-range carries the same
+        meaning as in the grayscale panel. The display itself is a
+        true colour composite, not a viridis lookup.
+        """
+        # Imported lazily to avoid a hard dep cycle if someone imports
+        # BaseVisualizer without the color module.
+        from euclid_polish.config import Config as _Cfg
+        from euclid_polish.visualization.color import calibrated_rgb_panel
+        if band_names is None:
+            band_names = _Cfg.LR_INPUT_BAND_NAMES
+        scale = float(asinh_scale) if asinh_scale is not None \
+            else float(_Cfg.STRETCH_SCALE_E)
+        rgb = calibrated_rgb_panel(
+            cube, band_names=band_names,
+            scheme="vis_nisp", reference="solar",
+            stretch=stretch, asinh_scale_e=scale,
+        )
+        ax = self._fig.add_subplot(self._next_gs_position())
+        ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
+                  interpolation="nearest")
+        if stretch == "linear":
+            title = f"linear (4-band solar) [p1, p99.5]{title_suffix}"
+        else:
+            title = (f"asinh (scale={scale:.3g}, 4-band solar) "
+                     f"[p1, p99.5]{title_suffix}")
+        ax.set_title(title, fontsize=12)
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
 
