@@ -184,27 +184,66 @@
     return { bind, refresh, get, set };
   })();
 
-  // Sidebar live job ticker — short summary of every job, newest first.
+  // Sidebar live job ticker — local jobs from REGISTRY plus, if a
+  // FASRC SLURM job is currently RUNNING, that one pinned to the top.
   async function refreshJobs() {
     try {
-      const res = await fetch('/api/jobs');
-      const list = await res.json();
-      const html = list.length === 0
-        ? '<p class="muted">no jobs yet</p>'
-        : list.slice(0, 8).map(j => {
-            const p = j.progress || {};
-            const pctText = p.total > 0 ? ` · ${p.pct.toFixed(0)}%` : '';
-            return `
-              <div class="job job-${j.status}">
-                <div class="job-label">${polishUI.escapeHtml(j.label)}</div>
-                <div class="job-meta">${j.status} · ${j.duration.toFixed(1)}s${pctText}</div>
-              </div>`;
-          }).join('');
+      const [localRes, fasrcRes] = await Promise.all([
+        fetch('/api/jobs').catch(() => null),
+        fetch('/api/fasrc/training-status').catch(() => null),
+      ]);
+      const local = localRes && localRes.ok ? await localRes.json() : [];
+      let fasrc = null;
+      if (fasrcRes && fasrcRes.ok) {
+        const j = await fasrcRes.json();
+        if (j.ok && j.running) fasrc = j;
+      }
+
+      let html = '';
+
+      // ── FASRC pinned row ───────────────────────────────────────────────
+      if (fasrc) {
+        const stage = fasrc.stage || 'init';
+        const pct = (fasrc.progress && fasrc.progress.pct != null)
+          ? fasrc.progress.pct.toFixed(1) + '%' : null;
+        const lbl = fasrc.job.label || ('job ' + fasrc.job.jobid);
+        const elapsed = fasrc.job.elapsed || '';
+        const bar = pct
+          ? `<div style="background:#2a3144; height:3px; border-radius:2px; margin-top:3px; overflow:hidden;">
+               <div style="background:#6aa6ff; height:100%; width:${Math.min(100, fasrc.progress.pct).toFixed(2)}%;"></div>
+             </div>`
+          : '';
+        html += `
+          <a href="/fasrc" class="job job-running"
+             style="display:block; text-decoration:none; color:inherit;
+                    border-left: 3px solid #6aa6ff; padding-left:6px;">
+            <div class="job-label">🟦 FASRC · ${polishUI.escapeHtml(lbl)}</div>
+            <div class="job-meta">${polishUI.escapeHtml(stage)}${pct ? ' · ' + pct : ''} · ${polishUI.escapeHtml(elapsed)}</div>
+            ${bar}
+          </a>`;
+      }
+
+      // ── Local in-process jobs ───────────────────────────────────────────
+      if (local.length > 0) {
+        html += local.slice(0, 8).map(j => {
+          const p = j.progress || {};
+          const pctText = p.total > 0 ? ` · ${p.pct.toFixed(0)}%` : '';
+          return `
+            <div class="job job-${j.status}">
+              <div class="job-label">${polishUI.escapeHtml(j.label)}</div>
+              <div class="job-meta">${j.status} · ${j.duration.toFixed(1)}s${pctText}</div>
+            </div>`;
+        }).join('');
+      }
+
+      if (!html) html = '<p class="muted">no jobs yet</p>';
       document.getElementById('jobs-list').innerHTML = html;
     } catch (e) { /* offline; ignore */ }
   }
   refreshJobs();
-  setInterval(refreshJobs, 1500);
+  // Local jobs poll every 1.5s; FASRC status is cheap enough to ride
+  // along on the same cadence (it does at most one SSH call per beat).
+  setInterval(refreshJobs, 2000);
   </script>
 
   {% block scripts %}{% endblock %}

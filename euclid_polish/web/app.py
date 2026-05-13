@@ -1712,6 +1712,51 @@ def create_app() -> Flask:
                         "label": label, "params": params,
                         "log_path":   f"{cfg.repo_path}/{built['out']}"})
 
+    @app.route("/api/fasrc/extend-time", methods=["POST"])
+    def api_fasrc_extend_time():
+        """Add wall time to a running job via ``scontrol update job=…
+        TimeLimit=+HH:MM:SS``.
+
+        SLURM lets users extend their own running jobs up to the
+        partition's ``MaxTime``. We don't try to read the partition cap
+        client-side — if SLURM refuses, its error message comes back in
+        the response. Safety cap of 168 h (one week) per single call.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        jid   = request.form.get("jobid", "").strip()
+        hours = request.form.get("hours", "1").strip()
+        if not jid.isdigit():
+            return jsonify({"ok": False, "error": "bad jobid"}), 400
+        try:
+            h = float(hours)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "hours must be numeric"}), 400
+        if h <= 0 or h > 168:
+            return jsonify({"ok": False,
+                            "error": "hours must be 0 < h ≤ 168"}), 400
+
+        secs = int(round(h * 3600))
+        hh, rem = divmod(secs, 3600)
+        mm, ss  = divmod(rem, 60)
+        delta = f"+{hh:02d}:{mm:02d}:{ss:02d}"
+
+        # ``scontrol update`` is silent on success — chase it with
+        # ``scontrol show`` so we can echo the new effective TimeLimit
+        # back to the UI.
+        cmd = (f"scontrol update job={jid} TimeLimit={delta} && "
+               f"scontrol show job={jid} | tr ' ' '\\n' | grep TimeLimit=")
+        rc, out, err = STATE.ssh.run(cmd, timeout=15)
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": err.strip() or out.strip()
+                                     or "scontrol failed"}), 500
+        return jsonify({
+            "ok":         True,
+            "delta":      delta,
+            "scontrol":   out.strip(),
+        })
+
     @app.route("/api/fasrc/cancel", methods=["POST"])
     def api_fasrc_cancel():
         if not STATE.ssh or not STATE.ssh.is_connected():

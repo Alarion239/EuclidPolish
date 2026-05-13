@@ -90,7 +90,19 @@
           <dt>Label</dt>       <dd id="run-label">—</dd>
           <dt>Node</dt>        <dd><code id="run-node">—</code></dd>
           <dt>Elapsed</dt>     <dd id="run-elapsed">—</dd>
-          <dt>Limit</dt>       <dd id="run-limit">—</dd>
+          <dt>Limit</dt>
+          <dd>
+            <span id="run-limit">—</span>
+            <span style="margin-left:8px; display:inline-flex; gap:4px; align-items:center;">
+              <input id="extend-hours" type="number" min="0.25" max="24"
+                     step="0.25" value="1" style="width:55px; padding:2px 4px;">
+              <button id="btn-extend" type="button" class="secondary"
+                      style="padding:2px 8px;" title="scontrol update job=… TimeLimit=+HH:MM:SS">
+                + hours
+              </button>
+            </span>
+            <span id="extend-msg" class="muted" style="margin-left:6px; font-size:11px;"></span>
+          </dd>
           <dt>Stage</dt>       <dd id="run-stage">—</dd>
           <dt>ETA</dt>         <dd id="run-eta">—</dd>
         </dl>
@@ -510,6 +522,24 @@ function renderValidationTable(rows) {
   }
   $('val-table').innerHTML = html;
 }
+
+$('btn-extend').onclick = async () => {
+  const jid   = $('run-jobid').textContent.trim();
+  const hours = $('extend-hours').value;
+  if (!jid || jid === '—') return;
+  $('extend-msg').textContent = 'extending…';
+  const r = await fetch('/api/fasrc/extend-time', {
+    method: 'POST',
+    body: new URLSearchParams({ jobid: jid, hours }),
+  });
+  const data = await r.json();
+  if (data.ok) {
+    $('extend-msg').textContent = `+${hours}h (${data.delta}) — ${data.scontrol || ''}`;
+    setTimeout(refreshTraining, 800);
+  } else {
+    $('extend-msg').textContent = 'failed: ' + (data.error || '?');
+  }
+};
 
 $('btn-run-cancel').onclick = async () => {
   const jid = $('run-jobid').textContent.trim();

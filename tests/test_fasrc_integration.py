@@ -578,6 +578,76 @@ def test_env_update_refuses_when_disconnected(client, monkeypatch):
     assert "not connected" in r.get_data(as_text=True)
 
 
+def test_extend_time_invokes_scontrol(fake_remote, client):
+    """Run a fake scontrol that records argv + echoes a TimeLimit line.
+
+    Asserts the route formats ``+HH:MM:SS`` correctly, calls scontrol
+    with the right shape, and surfaces the new TimeLimit to the UI.
+    """
+    bin_dir = fake_remote["bin_dir"]
+    scontrol_log = bin_dir / "scontrol.argv"
+    (bin_dir / "scontrol").write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        printf '%s\\n' "$@" >> {scontrol_log}
+        case "$1" in
+          update) exit 0 ;;
+          show)   echo 'JobId=99999 TimeLimit=04:30:00 RunTime=00:30:00 ...' ;;
+        esac
+    """))
+    os.chmod(bin_dir / "scontrol", 0o755)
+
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "99999", "hours": "1.5"})
+    assert r.status_code == 200, r.get_json()
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["delta"] == "+01:30:00"
+    assert "TimeLimit=" in data["scontrol"]
+
+    # And scontrol was called with the right update spec.
+    argv = scontrol_log.read_text()
+    assert "update" in argv
+    assert "job=99999" in argv
+    assert "TimeLimit=+01:30:00" in argv
+
+
+def test_extend_time_rejects_zero_or_negative(client, fake_remote):
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "1", "hours": "0"})
+    assert r.status_code == 400
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "1", "hours": "-5"})
+    assert r.status_code == 400
+
+
+def test_extend_time_rejects_above_cap(client, fake_remote):
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "1", "hours": "200"})
+    assert r.status_code == 400
+
+
+def test_extend_time_rejects_non_numeric_jobid(client, fake_remote):
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "abc", "hours": "1"})
+    assert r.status_code == 400
+
+
+def test_extend_time_surfaces_scontrol_error(fake_remote, client):
+    """If SLURM refuses (e.g. above partition MaxTime), the error text
+    comes back instead of a generic 500."""
+    bin_dir = fake_remote["bin_dir"]
+    (bin_dir / "scontrol").write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        echo 'slurm_update error: Time limit exceeds maximum' >&2
+        exit 1
+    """))
+    os.chmod(bin_dir / "scontrol", 0o755)
+    r = client.post("/api/fasrc/extend-time",
+                    data={"jobid": "1", "hours": "1"})
+    assert r.status_code == 500
+    assert "maximum" in r.get_json()["error"].lower()
+
+
 def test_cancel_endpoint_marks_job_cancelled(fake_remote, client):
     # Plant a fake scancel and a queued job.
     bin_dir = fake_remote["bin_dir"]
