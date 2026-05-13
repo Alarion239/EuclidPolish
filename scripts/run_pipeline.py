@@ -120,13 +120,16 @@ def step_generate(args: argparse.Namespace) -> None:
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
-    for subset, n, seed in (("train", args.ntrain, 0),
-                            ("validate", args.nvalid, args.ntrain)):
-        _log(f"  {subset}: generating {n} images")
+    for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
+        # Entropy-seeded master RNG so repeat runs see fresh randomness.
+        # The seed is logged so a curious-looking run can be replayed
+        # later by hard-coding the printed value here.
+        master_seed = int.from_bytes(os.urandom(8), "little")
+        rng = np.random.default_rng(master_seed)
+        _log(f"  {subset}: generating {n} images  (master_seed={master_seed})")
         t0 = time.perf_counter()
         imgs = []
         for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
-            rng = np.random.default_rng(seed + i)
             sky, _ = sim.simulate_field(rng)
             sky.index = i
             sky.subset = subset
@@ -163,10 +166,14 @@ def step_convolve(args: argparse.Namespace) -> None:
             continue
 
         records = list(tf.data.TFRecordDataset(clean_path))
-        rng = np.random.default_rng(0xEC11D + (1 if subset == "validate" else 0))
+        # Entropy-seeded forward-model RNG — different noise / artifact
+        # realisation every run. Master seed is logged for replay.
+        master_seed = int.from_bytes(os.urandom(8), "little")
+        rng = np.random.default_rng(master_seed)
         lr_imgs, hr_imgs = [], []
 
-        _log(f"  {subset}: forward-modelling {len(records)} fields")
+        _log(f"  {subset}: forward-modelling {len(records)} fields  "
+             f"(master_seed={master_seed})")
         t0 = time.perf_counter()
         for i, raw in enumerate(tqdm(records, desc=f"  {subset}", unit="img")):
             # clean_{subset} stores the 4-channel HR clean field (kept

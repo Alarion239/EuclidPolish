@@ -893,9 +893,11 @@ class InteractiveCLI:
         )
 
         for subset, clean_file, n_images in subsets_to_run:
-            rng = np.random.default_rng(
-                0xEC11D + (1 if subset == "validate" else 0)
-            )
+            # Entropy-seeded forward-model RNG so each run draws fresh
+            # noise/CR/streak realisations. Master seed logged for replay.
+            master_seed = int.from_bytes(os.urandom(8), "little")
+            rng = np.random.default_rng(master_seed)
+            print(f"  forward {subset}: master_seed={master_seed}")
             records = list(tqdm(
                 tf.data.TFRecordDataset(clean_file),
                 total=n_images, desc=f"Loading {subset}",
@@ -984,12 +986,15 @@ class InteractiveCLI:
             sim = MultiBandSimulator(catalog, cfg)
             os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
 
-            for subset, n, seed_start in (("train", ntrain_val, 0),
-                                          ("validate", nvalid_val, ntrain_val)):
-                print(f"\nGenerating {subset} set ({n} images)...")
+            for subset, n in (("train", ntrain_val), ("validate", nvalid_val)):
+                # Entropy-seeded master RNG: fresh fields every invocation.
+                # Master seed is logged for replay.
+                master_seed = int.from_bytes(os.urandom(8), "little")
+                rng = np.random.default_rng(master_seed)
+                print(f"\nGenerating {subset} set ({n} images)  "
+                      f"[master_seed={master_seed}]...")
                 imgs = []
                 for i in tqdm(range(n), desc=subset):
-                    rng = np.random.default_rng(seed_start + i)
                     sky, _ = sim.simulate_field(rng)
                     sky.index = i
                     sky.subset = subset

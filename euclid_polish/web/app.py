@@ -181,10 +181,15 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
     result: Dict[str, Any] = {}
     total_n = n_train + n_valid
     done = 0
-    for subset, n, seed in (("train", n_train, 0), ("validate", n_valid, n_train)):
+    for subset, n in (("train", n_train), ("validate", n_valid)):
+        # Entropy-seeded master RNG so each click of the web button
+        # produces fresh fields. Seed logged for after-the-fact replay.
+        master_seed = int.from_bytes(os.urandom(8), "little")
+        rng = np.random.default_rng(master_seed)
+        print(f"  {subset}: master_seed={master_seed}")
         imgs = []
         for i in range(n):
-            sky, _ = sim.simulate_field(np.random.default_rng(seed + i))
+            sky, _ = sim.simulate_field(rng)
             sky.index = i
             sky.subset = subset
             imgs.append(sky)
@@ -232,7 +237,11 @@ def _job_forward(cap) -> Dict[str, Any]:
             print(f"  ⚠️  no clean_{subset} on disk, skipping")
             continue
         records = list(tf.data.TFRecordDataset(clean))
-        rng = np.random.default_rng(0xEC11D + (1 if subset == "validate" else 0))
+        # Entropy-seeded forward-model RNG — fresh noise/CR/streak draw
+        # every run, with the master seed logged for replay.
+        master_seed = int.from_bytes(os.urandom(8), "little")
+        rng = np.random.default_rng(master_seed)
+        print(f"  forward {subset}: master_seed={master_seed}")
         lr_imgs, hr_imgs = [], []
         for raw in records:
             hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
