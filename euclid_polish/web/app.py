@@ -1743,30 +1743,31 @@ def create_app() -> Flask:
         """Single JSON dict the UI polls every few seconds.
 
         Identifies the currently running job (RUNNING state in squeue,
-        cross-referenced against the local sqlite), then reads the tail
-        of its ``.out`` / ``.err`` / ``training_log.jsonl`` over SSH and
-        returns:
-
-          {
-            "running": True/False,
-            "job":     {jobid, name, elapsed_seconds, time_limit, ...},
-            "stage":   "init"|"generate"|"convolve"|"train"|null,
-            "progress":          {current, total, pct},
-            "latest_metrics":    {step, loss, psnr_stretched, psnr_raw},
-            "latest_validation": {...same as a training_log row},
-            "validations":       [last 200 validation rows],
-            "last_checkpoint":   "✓ Checkpoint saved (PSNR str=...)",
-            "eta_seconds":       float,
-          }
-
-        Empty/absent log files are handled gracefully.
+        cross-referenced against local sqlite), reads the tail of its
+        ``.out`` / ``.err`` / ``training_log.jsonl`` over SSH, and
+        returns a parsed summary. Errors are reported in-band as
+        ``{"ok": False, "error": ...}`` rather than raising — a 5xx
+        here would just look like the dashboard "disconnecting" to
+        the user, when really the SSH is fine and only one log read
+        misbehaved.
         """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
+
+        try:
+            return _build_training_status()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                "ok":    False,
+                "error": f"{type(e).__name__}: {e}",
+            }), 200
+
+    def _build_training_status():
         cfg = fasrc_config.load()
 
-        # 1. Identify the running job. We trust the live squeue over
-        # sqlite — even if a tab reload missed a state transition.
+        # 1. Identify the running job. Trust live squeue > sqlite.
         rc, sq_out, _err = STATE.ssh.run(
             f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=10,
@@ -1793,17 +1794,32 @@ def create_app() -> Flask:
                    or log_path.replace(".out", ".err")
         train_log = f"{cfg.ckpt_dir}/training_log.jsonl"
 
-        # 2. Fetch the relevant log tails in one SSH call.
+        # 2. Fetch the relevant log tails in one SSH call. Wrapped in
+        # ``{ ...; exit 0; }`` so a missing optional file (e.g. the
+        # training_log.jsonl before the first eval) doesn't fail the
+        # whole route. Every section is independently guarded with
+        # ``2>/dev/null`` + ``|| true`` so each tail's own non-zero exit
+        # doesn't poison the chain.
         cmd = (
-            f"echo __OUT__ ; tail -n 500 {shlex.quote(log_path)} 2>/dev/null ; "
-            f"echo __ERR__ ; tail -n 200 {shlex.quote(err_path)} 2>/dev/null ; "
-            f"echo __JSONL__ ; "
-            f"[ -f {shlex.quote(train_log)} ] && "
-            f"  tail -n 200 {shlex.quote(train_log)} 2>/dev/null"
+            f"{{ "
+            f"  echo __OUT__ ; "
+            f"  tail -n 500 {shlex.quote(log_path)} 2>/dev/null || true ; "
+            f"  echo __ERR__ ; "
+            f"  tail -n 200 {shlex.quote(err_path)} 2>/dev/null || true ; "
+            f"  echo __JSONL__ ; "
+            f"  tail -n 200 {shlex.quote(train_log)} 2>/dev/null || true ; "
+            f"}}; exit 0"
         )
         rc, out, _err = STATE.ssh.run(cmd, timeout=15)
+        # rc should always be 0 thanks to ``exit 0``; if it isn't, ssh
+        # itself failed (e.g. socket died). Surface a clear message
+        # instead of a generic 500.
         if rc != 0:
-            return jsonify({"ok": False, "error": "failed to read logs"}), 500
+            return jsonify({
+                "ok":    False,
+                "error": "ssh failed to read remote logs — "
+                         "try refreshing or reconnecting",
+            })
 
         sections = {"__OUT__": "", "__ERR__": "", "__JSONL__": ""}
         current  = None
@@ -1841,14 +1857,19 @@ def create_app() -> Flask:
 
         # 4. Activate the auto-mirror during the train stage and trigger
         # an immediate sync whenever a fresh "Checkpoint saved" line
-        # shows up in the .out tail.
+        # shows up. ``MIRROR.trigger()`` calls rsync synchronously and
+        # can block for minutes on large checkpoint dirs — dispatch on
+        # a daemon thread so the status poll stays snappy.
         if summary["stage"] == "train":
             if not MIRROR.status.enabled:
                 MIRROR.start()
-            if summary["last_checkpoint"] \
-                    and MIRROR.status.last_checkpoint_line != summary["last_checkpoint"]:
-                MIRROR.trigger()
+            if (summary["last_checkpoint"]
+                    and MIRROR.status.last_checkpoint_line
+                        != summary["last_checkpoint"]):
                 MIRROR.status.last_checkpoint_line = summary["last_checkpoint"]
+                import threading as _t
+                _t.Thread(target=MIRROR.trigger, daemon=True,
+                          name="mirror-trigger").start()
 
         return jsonify({
             "ok":       True,

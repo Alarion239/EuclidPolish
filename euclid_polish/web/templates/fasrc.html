@@ -371,10 +371,18 @@ $('settings-form').addEventListener('submit', async (e) => {
 ============================================================ */
 async function refreshTraining() {
   const r = await api('/api/fasrc/training-status');
+  // r.ok is false either because we got a 4xx (not connected) OR
+  // because the route returned 200 with ok:false (recoverable error
+  // like a slow remote tail). Don't flicker the UI off in the second
+  // case — leave whatever panel is showing visible and surface the
+  // error in the bar label.
   if (!r.ok) {
-    // 400 = not connected; render minimal info and bail
-    $('submit-panel').style.display = 'none';
-    $('run-panel').style.display    = 'none';
+    const bar = $('run-bar-label');
+    if (bar) bar.textContent = 'status: ' + (r.data?.error || 'request failed');
+    if (r.status === 400) {
+      $('submit-panel').style.display = 'none';
+      $('run-panel').style.display    = 'none';
+    }
     return;
   }
   if (r.data.running) {
