@@ -111,8 +111,9 @@
           <progress id="run-bar" max="100" value="0"></progress>
           <span id="run-bar-label" class="bar-label">awaiting first step…</span>
         </div>
-        <div style="margin-top:8px;">
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
           <button id="btn-run-cancel" type="button" class="danger">Cancel job</button>
+          <span id="cancel-msg" class="muted" style="font-size:12px;"></span>
         </div>
       </section>
 
@@ -666,13 +667,36 @@ $('btn-extend').onclick = async () => {
 };
 
 $('btn-run-cancel').onclick = async () => {
+  const msg = $('cancel-msg');
   const jid = $('run-jobid').textContent.trim();
-  if (!jid || jid === '—') return;
+  console.log('[fasrc] cancel clicked; jobid =', JSON.stringify(jid));
+  if (!jid || jid === '—' || !/^\d+$/.test(jid)) {
+    msg.textContent = `no valid job id to cancel (got "${jid}")`;
+    return;
+  }
   if (!confirm(`Cancel job ${jid}?`)) return;
-  await api('/api/fasrc/cancel', {
-    method: 'POST', body: new URLSearchParams({ jobid: jid }),
-  });
-  setTimeout(refreshTraining, 600);
+  msg.textContent = `cancelling ${jid}…`;
+  const btn = $('btn-run-cancel');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/fasrc/cancel', {
+      method: 'POST', body: new URLSearchParams({ jobid: jid }),
+    });
+    let data = {};
+    try { data = await r.json(); } catch {}
+    console.log('[fasrc] cancel response:', r.status, data);
+    if (data.ok) {
+      msg.textContent = `cancel sent (scancel ${jid}) — refreshing…`;
+      setTimeout(refreshTraining, 800);
+    } else {
+      msg.textContent = `cancel failed: ${data.error || ('HTTP ' + r.status)}`;
+    }
+  } catch (err) {
+    console.error('[fasrc] cancel exception:', err);
+    msg.textContent = `cancel failed: ${err}`;
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 /* ============================================================
