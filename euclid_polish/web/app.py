@@ -2568,10 +2568,26 @@ def create_app() -> Flask:
 
     @app.route("/api/fasrc/mirror/trigger", methods=["POST"])
     def api_fasrc_mirror_trigger():
+        """One-shot rsync from remote ckpt dir → local mirror.
+
+        Used by the Training tab's "Sync now" button AND the Logs
+        tab's "Pull checkpoints" button. ``MIRROR.trigger`` runs
+        synchronously, so the caller learns the final ``last_rc`` /
+        ``last_error`` straight from the response without polling.
+        """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         MIRROR.trigger()
-        return jsonify({"ok": True})
+        s = MIRROR.status
+        return jsonify({
+            "ok":          (s.last_rc == 0),
+            "last_rc":     s.last_rc,
+            "last_error":  s.last_error,
+            "last_stdout": s.last_stdout,
+            "remote_dir":  s.remote_dir,
+            "local_dir":   s.local_dir,
+            "last_run_at": s.last_run_at,
+        })
 
     # ---- per-stage timings (CSV from run_pipeline.py's StageTimer) -------
 

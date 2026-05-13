@@ -403,16 +403,20 @@
                     border:1px solid #e2e5ea; border-radius:3px;">
       </div>
 
-      <!-- Download the remote ckpt dir as a tarball. Useful once a
-           training job finishes so the user can run inference locally
-           against the final weights. -->
+      <!-- Pull the remote ckpt dir into the local mirror via rsync.
+           Same machinery as the auto-mirror's "Sync now" button — runs
+           rsync once and copies new/updated files into the configured
+           local ckpt dir so inference can use them right away. -->
       <div style="margin-top:12px; border-top:1px solid #e2e5ea;
            padding-top:10px;">
-        <button id="btn-ckpt-download" type="button">
-          ⬇ Download checkpoints (.tar)
+        <button id="btn-ckpt-pull" type="button">
+          ⬇ Pull checkpoints to local
         </button>
-        <span id="ckpt-download-msg" class="muted"
+        <span id="ckpt-pull-msg" class="muted"
               style="margin-left:8px; font-size:12px;"></span>
+        <pre id="ckpt-pull-out" class="job-log"
+             style="display:none; max-height:200px; margin-top:8px;
+                    font-size:11px;"></pre>
       </div>
     </section>
   </section>
@@ -1130,15 +1134,39 @@ $('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer();
 $('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
 $('logs-lines').onchange    = () => { if (LOGS_STATE.selected) openLogViewer(); };
 
-// Browser-initiated tar download of the remote ckpt dir. We just point
-// <a> at the streaming endpoint; the browser handles the rest.
-$('btn-ckpt-download').onclick = () => {
-  const msg = $('ckpt-download-msg');
-  msg.textContent = 'starting download (can take a few seconds for large bundles)…';
-  // ``window.location`` triggers the download and the Content-Disposition
-  // header on the response makes the browser save-as instead of navigating.
-  window.location.href = '/api/fasrc/runs/ckpt-bundle.tar?_t=' + Date.now();
-  setTimeout(() => { msg.textContent = ''; }, 6000);
+// Rsync pull from the remote ckpt dir to the configured local mirror.
+// Uses the auto-mirror's "trigger" endpoint, so the same rsync flags
+// (--delete-after etc.) apply. Synchronous on the server — the JSON
+// response carries the final status.
+$('btn-ckpt-pull').onclick = async () => {
+  const msg = $('ckpt-pull-msg');
+  const out = $('ckpt-pull-out');
+  const btn = $('btn-ckpt-pull');
+  msg.textContent = 'rsync running…';
+  out.style.display = 'none';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/fasrc/mirror/trigger', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      msg.textContent =
+        `✓ pulled to ${d.local_dir || '(local mirror)'}`;
+      if (d.last_stdout && d.last_stdout.trim()) {
+        out.style.display = 'block';
+        out.textContent = d.last_stdout;
+      }
+    } else {
+      msg.textContent = `failed: ${d.error || d.last_error || 'unknown'}`;
+      if (d.last_stdout) {
+        out.style.display = 'block';
+        out.textContent = d.last_stdout;
+      }
+    }
+  } catch (err) {
+    msg.textContent = `request failed: ${err}`;
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 /* ============================================================
