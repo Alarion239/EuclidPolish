@@ -107,6 +107,12 @@
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
     <label>Residual blocks
       <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <label style="display:flex; align-items:center; gap:6px;"
+           title="Show each of the four LR bands (VIS, Y_E, J_E, H_E) as its own grayscale panel alongside SR, instead of the color composite. Useful for diagnosing per-band artefacts (saturation, NISP persistence, etc.).">
+      <input type="checkbox" name="show_all_bands" value="1"
+             style="margin:0;">
+      <span>Show all 4 bands separately</span>
+    </label>
     <button type="submit">Download &amp; Reconstruct</button>
   </form>
   <div id="recon-euclid-status"></div>

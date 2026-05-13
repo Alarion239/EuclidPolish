@@ -273,6 +273,7 @@ def plot_reconstruction(
     lr_cube: Optional[np.ndarray] = None,
     hr_cube: Optional[np.ndarray] = None,
     asinh_scale: float | None = None,
+    show_all_bands: bool = False,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -307,21 +308,63 @@ def plot_reconstruction(
                    else float(Config.STRETCH_SCALE_E)
 
     if hr_data is None:
-        # 2 × 2 layout when HR is unknown (real-Euclid inference flow).
-        # LR panels render in colour when we have the full 4-band cube;
-        # SR stays grayscale because the model emits only VIS.
+        # Real-Euclid inference flow: no HR truth available. Two layout
+        # modes:
+        #
+        #   (a) ``show_all_bands=True`` (and a 4-band LR cube is
+        #       supplied) → 2 × 5 grid showing each LR band as its own
+        #       grayscale panel + SR, both linear and asinh. Useful for
+        #       diagnosing per-band issues (saturation, NISP CR
+        #       artefacts, persistence) the colour composite would
+        #       blend together.
+        #
+        #   (b) default → 2 × 2 LR (colour or VIS gray) + SR (gray).
+        nbands = len(Config.LR_INPUT_BAND_NAMES)
+        has_cube = (lr_cube is not None and lr_cube.ndim == 3
+                    and lr_cube.shape[-1] == nbands)
+
+        if show_all_bands and has_cube:
+            vis = BaseVisualizer(rows=2, cols=nbands + 1,
+                                 figsize=(6 * (nbands + 1), 12), vmax=vmax)
+            # Row 1 — linear per-band + SR.
+            for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
+                vis.add_scale_panel(
+                    lr_cube[..., k], stretch="linear",
+                    title_suffix=f"\nDirty (LR · {name})",
+                    cmap="gray",
+                )
+            vis.add_scale_panel(sr_data, stretch="linear",
+                                title_suffix="\nReconstruction (SR)",
+                                cmap="gray")
+            # Row 2 — asinh per-band + SR.
+            for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
+                vis.add_scale_panel(
+                    lr_cube[..., k], stretch="asinh",
+                    asinh_scale=shared_scale,
+                    title_suffix=f"\nDirty (LR · {name})",
+                    cmap="gray",
+                )
+            vis.add_scale_panel(sr_data, stretch="asinh",
+                                asinh_scale=shared_scale,
+                                title_suffix="\nReconstruction (SR)",
+                                cmap="gray")
+            plt.suptitle("Super-Resolution Reconstruction (per-band view)",
+                         fontsize=16)
+            vis.save_figure(output_path)
+            return
+
+        # Default 2 × 2 layout (LR colour composite or VIS gray + SR gray).
         vis = BaseVisualizer(rows=2, cols=2, figsize=(18, 18), vmax=vmax)
-        if lr_cube is not None and lr_cube.ndim == 3 \
-                and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES):
+        if has_cube:
             vis.add_rgb_scale_panel(lr_cube, stretch="linear",
                                     title_suffix="\nDirty (LR)")
         else:
             vis.add_scale_panel(lr_data, stretch="linear",
                                 title_suffix="\nDirty (LR)")
         vis.add_scale_panel(sr_data, stretch="linear",
-                            title_suffix="\nReconstruction (SR)")
-        if lr_cube is not None and lr_cube.ndim == 3 \
-                and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES):
+                            title_suffix="\nReconstruction (SR)",
+                            cmap="gray")
+        if has_cube:
             vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
                                     asinh_scale=shared_scale,
                                     title_suffix="\nDirty (LR)")
@@ -330,7 +373,8 @@ def plot_reconstruction(
                                 asinh_scale=shared_scale,
                                 title_suffix="\nDirty (LR)")
         vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
-                            title_suffix="\nReconstruction (SR)")
+                            title_suffix="\nReconstruction (SR)",
+                            cmap="gray")
         plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
         vis.save_figure(output_path)
         return

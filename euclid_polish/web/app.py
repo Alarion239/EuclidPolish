@@ -593,6 +593,7 @@ def _job_reconstruct_euclid_cutout(
     num_res_blocks: int,
     cutout_size_vis_pixels: int,
     asinh_scale: Optional[float] = None,
+    show_all_bands: bool = False,
 ) -> Dict[str, Any]:
     """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
 
@@ -682,7 +683,8 @@ def _job_reconstruct_euclid_cutout(
     out_path = os.path.join(out_dir, f"euclid_{tag}.png")
     plot_reconstruction(lr_vis, sr_data, hr_data=None,
                         output_path=out_path, lr_cube=lr_cube,
-                        asinh_scale=asinh_scale)
+                        asinh_scale=asinh_scale,
+                        show_all_bands=show_all_bands)
     cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
              len(Config.LR_INPUT_BAND_NAMES) + 1, "saved PNG")
     print(f"  ✓ {out_path}")
@@ -1435,10 +1437,16 @@ def create_app() -> Flask:
         if not (32 <= size <= 4096):
             return jsonify({"error": f"cutout_size={size} out of range [32, 4096]"}), 400
         asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
+        # HTML checkbox: present in form data → ``"on"`` (or whatever
+        # ``value=`` was set to); absent if unchecked. Parse truthy.
+        show_all = request.form.get("show_all_bands", "").lower() in (
+            "1", "on", "true", "yes",
+        )
         job_id = REGISTRY.spawn(
             label=f"infer Euclid cutout @ ({ra:.4f}, {dec:+.4f})",
             target=lambda cap: _job_reconstruct_euclid_cutout(
-                cap, ra, dec, ckpt_dir, nrb, size, asinh_scale=asinh,
+                cap, ra, dec, ckpt_dir, nrb, size,
+                asinh_scale=asinh, show_all_bands=show_all,
             ),
         )
         return jsonify({"job_id": job_id})
