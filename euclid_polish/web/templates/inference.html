@@ -79,6 +79,9 @@
     </label>
     <label>Number of images
       <input type="number" name="n_images" value="{{ default_n_images }}" min="1" max="32"></label>
+    <label>asinh scale (e⁻)
+      <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
+             title="Brightness knee for the asinh panels. Smaller = brighter faint sources; larger = compresses bright sources more. 1000 e⁻ matches the training default."></label>
     <button type="submit">Reconstruct</button>
   </form>
   <div id="recon-status"></div>
@@ -96,6 +99,10 @@
       <input type="text" name="dec" value="64.8873" size="12" required></label>
     <label>Cutout size (VIS px)
       <input type="number" name="cutout_size" value="512" min="64" max="2048"></label>
+    <label title="Brightness knee for the asinh panels. For real Euclid cutouts the source-to-sky ratio differs from the simulator's; try 10-100 e⁻ to bring up faint extended emission, or 10000+ to compress bright stars.">
+      asinh scale (e⁻)
+      <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
+             style="width:90px;"></label>
     <label>Checkpoint dir
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
     <label>Residual blocks

@@ -272,6 +272,7 @@ def plot_reconstruction(
     vmax: float | None = None,
     lr_cube: Optional[np.ndarray] = None,
     hr_cube: Optional[np.ndarray] = None,
+    asinh_scale: float | None = None,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -296,7 +297,14 @@ def plot_reconstruction(
     the color row stays empty as a deliberate "SR has no color info"
     visual cue.
     """
-    shared_scale = float(Config.STRETCH_SCALE_E)
+    # Asinh-stretch knee used in every "asinh" panel of this plot. The
+    # caller can override per-run from the UI (especially useful on
+    # real Euclid cutouts where the source-to-sky brightness ratio is
+    # different from the simulator's). ``None`` → fall back to the
+    # training scale ``Config.STRETCH_SCALE_E`` so default behaviour is
+    # unchanged for everyone who doesn't pass the parameter.
+    shared_scale = float(asinh_scale) if asinh_scale and asinh_scale > 0 \
+                   else float(Config.STRETCH_SCALE_E)
 
     if hr_data is None:
         # 2 × 2 layout when HR is unknown (real-Euclid inference flow).

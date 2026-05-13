@@ -497,7 +497,8 @@ def _job_plot_training_log(cap, checkpoint_dir: str) -> Dict[str, Any]:
 
 
 def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
-                     subset: str, n_images: int) -> Dict[str, Any]:
+                     subset: str, n_images: int,
+                     asinh_scale: Optional[float] = None) -> Dict[str, Any]:
     """Run inference on N random LR records; render side-by-side PNGs."""
     import tensorflow as tf
     from euclid_polish.sky.tfrecord import (
@@ -576,7 +577,8 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
         plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
                             output_path=out,
                             lr_cube=lr_cube_for_color,
-                            hr_cube=hr_cube_for_color)
+                            hr_cube=hr_cube_for_color,
+                            asinh_scale=asinh_scale)
         out_paths.append(out)
         cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
         print(f"  ✓ {out}")
@@ -590,6 +592,7 @@ def _job_reconstruct_euclid_cutout(
     checkpoint_dir: str,
     num_res_blocks: int,
     cutout_size_vis_pixels: int,
+    asinh_scale: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
 
@@ -678,7 +681,8 @@ def _job_reconstruct_euclid_cutout(
     tag = f"ra{ra:.4f}_dec{dec:+.4f}".replace("+", "p").replace("-", "m")
     out_path = os.path.join(out_dir, f"euclid_{tag}.png")
     plot_reconstruction(lr_vis, sr_data, hr_data=None,
-                        output_path=out_path, lr_cube=lr_cube)
+                        output_path=out_path, lr_cube=lr_cube,
+                        asinh_scale=asinh_scale)
     cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
              len(Config.LR_INPUT_BAND_NAMES) + 1, "saved PNG")
     print(f"  ✓ {out_path}")
@@ -1386,15 +1390,31 @@ def create_app() -> Flask:
             default_n_images=4,
         )
 
+    def _parse_asinh_scale(raw: str) -> Optional[float]:
+        """Form parser for the asinh-scale knob. Empty string / 0 / bad
+        input → None, which makes plot_reconstruction fall back to
+        Config.STRETCH_SCALE_E (1000 e⁻, the training default)."""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        try:
+            val = float(raw)
+        except ValueError:
+            return None
+        return val if val > 0 else None
+
     @app.route("/inference/reconstruct", methods=["POST"])
     def inference_reconstruct():
         ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
         nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
         subset = request.form.get("subset", "validate")
         n = int(request.form.get("n_images", 4))
+        asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
         job_id = REGISTRY.spawn(
             label=f"reconstruct {n} {subset} images",
-            target=lambda cap: _job_reconstruct(cap, ckpt_dir, nrb, subset, n),
+            target=lambda cap: _job_reconstruct(
+                cap, ckpt_dir, nrb, subset, n, asinh_scale=asinh,
+            ),
         )
         return jsonify({"job_id": job_id})
 
@@ -1414,10 +1434,11 @@ def create_app() -> Flask:
         size = int(request.form.get("cutout_size", 512))
         if not (32 <= size <= 4096):
             return jsonify({"error": f"cutout_size={size} out of range [32, 4096]"}), 400
+        asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
         job_id = REGISTRY.spawn(
             label=f"infer Euclid cutout @ ({ra:.4f}, {dec:+.4f})",
             target=lambda cap: _job_reconstruct_euclid_cutout(
-                cap, ra, dec, ckpt_dir, nrb, size,
+                cap, ra, dec, ckpt_dir, nrb, size, asinh_scale=asinh,
             ),
         )
         return jsonify({"job_id": job_id})
