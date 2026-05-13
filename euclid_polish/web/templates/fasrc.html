@@ -700,22 +700,33 @@ document.querySelectorAll('.job-form').forEach(form => {
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const out = form.querySelector('.job-out');
+    // .job-out is a sibling <pre> inside the same card, not a child of
+    // the form — scope the lookup to the card.
+    const card = form.closest('.card') || form.parentElement;
+    const out = card.querySelector('.job-out');
+    if (!out) {
+      console.error('job-out element not found for form', form);
+      return;
+    }
     out.style.display = 'block';
     out.textContent = 'submitting…';
-    const fd = new FormData(form);
-    fd.set('preset', form.dataset.preset);
-    const r = await fetch('/api/fasrc/submit', {
-      method: 'POST', body: new URLSearchParams(fd),
-    });
-    const data = await r.json();
-    if (data.ok) {
-      out.textContent =
-        `submitted: SLURM job ${data.jobid}\n` +
-        JSON.stringify(data.params, null, 2);
-      setTimeout(refreshTraining, 1200);
-    } else {
-      out.textContent = `error: ${data.error || 'unknown'}`;
+    try {
+      const fd = new FormData(form);
+      fd.set('preset', form.dataset.preset);
+      const r = await fetch('/api/fasrc/submit', {
+        method: 'POST', body: new URLSearchParams(fd),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        out.textContent =
+          `submitted: SLURM job ${data.jobid}\n` +
+          JSON.stringify(data.params, null, 2);
+        setTimeout(refreshTraining, 1200);
+      } else {
+        out.textContent = `error: ${data.error || 'unknown'}`;
+      }
+    } catch (err) {
+      out.textContent = `request failed: ${err}`;
     }
   });
 });
