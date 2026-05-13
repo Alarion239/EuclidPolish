@@ -77,6 +77,29 @@ def load() -> FasrcConfig:
 
 
 def save(cfg: FasrcConfig) -> None:
+    # Refuse to persist obvious smoke-test breadcrumbs into the real
+    # ``~/.euclid_polish/fasrc.json`` — temp dirs under ``/tmp`` /
+    # ``/var/folders`` are not valid FASRC paths and once they leak in,
+    # every subsequent sbatch fails with ``mkdir: cannot create
+    # directory '/var/folders'`` because that path doesn't exist on the
+    # remote. The guard only fires when CONFIG_PATH itself is the real
+    # home-dir file, so integration tests that monkeypatch CONFIG_PATH
+    # to point at a tmp config keep working.
+    real_config = os.path.expanduser("~/.euclid_polish/fasrc.json")
+    if os.path.abspath(CONFIG_PATH) == real_config:
+        for field, value in (("repo_path", cfg.repo_path),
+                             ("data_dir", cfg.data_dir),
+                             ("ckpt_dir", cfg.ckpt_dir),
+                             ("conda_env_path", cfg.conda_env_path)):
+            if not value:
+                continue
+            if value.startswith(("/tmp/", "/var/folders/",
+                                 "/private/var/folders/")):
+                raise ValueError(
+                    f"refusing to persist FasrcConfig.{field}={value!r} "
+                    "into the real ~/.euclid_polish/fasrc.json: looks "
+                    "like a smoke-test tmp dir. Use monkeypatch in tests."
+                )
     os.makedirs(CONFIG_DIR, exist_ok=True)
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w") as fp:
