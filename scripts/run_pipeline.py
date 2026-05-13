@@ -164,9 +164,10 @@ def step_convolve(args: argparse.Namespace) -> None:
         _log(f"  {subset}: forward-modelling {len(records)} fields")
         t0 = time.perf_counter()
         for i, raw in enumerate(tqdm(records, desc=f"  {subset}", unit="img")):
-            # Note: clean_{subset} stores the *4-channel* HR field (the
-            # simulator output), and we replace clean_ on disk with the
-            # 1-channel VIS-only HR target the network actually consumes.
+            # clean_{subset} stores the 4-channel HR clean field (kept
+            # untouched for inspection). The 1-channel VIS HR target the
+            # network consumes is written to a separate ``hr_{subset}``
+            # file so all four bands of the clean record stay available.
             hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
             lr, hr = fwd.process(hr_4ch, rng=rng)
             lr.index = i
@@ -176,14 +177,15 @@ def step_convolve(args: argparse.Namespace) -> None:
             lr_imgs.append(lr)
             hr_imgs.append(hr)
 
-        # Overwrite clean_{subset} with the 1-ch VIS HR target; write
-        # dirty_{subset} as the 4-ch LR input.
-        write_multiband_skyimages(hr_imgs, f"clean_{subset}",
+        # clean_{subset} is NOT rewritten — leaves the 4-band record
+        # intact for inspection. dirty_{subset} = 4-ch LR input;
+        # hr_{subset} = 1-ch VIS HR target used by the loader.
+        write_multiband_skyimages(hr_imgs, f"hr_{subset}",
                                   records_dir=args.records_dir)
         write_multiband_skyimages(lr_imgs, f"dirty_{subset}",
                                   records_dir=args.records_dir)
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
-             f"→ clean+dirty {subset}")
+             f"→ kept clean + wrote hr + dirty {subset}")
 
 
 # ---------------------------------------------------------------------------

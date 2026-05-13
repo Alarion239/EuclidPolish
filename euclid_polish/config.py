@@ -105,32 +105,37 @@ class BandConfig:
 class Config:
     """Configuration constants for EuclidPolish."""
 
-    # Directory and file constants
-    DATA_DIR = "./data"
-    DEFAULT_COSMOS_CATALOG_DIR = "./data/COSMOS"           # historical alias kept for path-rewriting tools
-    COSMOS2025_DIR = "./data/COSMOS2025"
-    COSMOS2025_CATALOG_PATH = "./data/COSMOS2025/cosmos2025.fits"
+    # Single data root: all subdirectories (cutouts, PSFs, TFRecords,
+    # visualizations) live under this prefix. Override with the
+    # ``EUCLID_POLISH_DATA_DIR`` env var so SLURM jobs can point at
+    # netscratch without touching code. Default keeps the historical
+    # ``./data`` behavior for local checkouts.
+    DATA_DIR = os.environ.get("EUCLID_POLISH_DATA_DIR", "./data")
+
+    DEFAULT_COSMOS_CATALOG_DIR = os.path.join(DATA_DIR, "COSMOS")           # historical alias kept for path-rewriting tools
+    COSMOS2025_DIR             = os.path.join(DATA_DIR, "COSMOS2025")
+    COSMOS2025_CATALOG_PATH    = os.path.join(DATA_DIR, "COSMOS2025/cosmos2025.fits")
     COSMOS2025_HDU_PHOTOMETRY = 1       # PHOTOMETRY HOTCOLD AND SE++
     COSMOS2025_HDU_LEPHARE    = 2       # LEPHARE photo-z + physical params
     COSMOS2025_HDU_BD         = 6       # B+D bulge+disk decomposition
-    DEFAULT_OUTPUT_DIR = "./data/euclid_stars"
-    CLEAN_DATA_DIR = "./data/clean_data"
-    DIRTY_DATA_DIR = "./data/dirty_data"
-    EUCLID_PSF_DIR = "./data/euclid_psf"
-    EUCLID_NISP_CUTOUTS_DIR = "./data/euclid_nisp_stars"   # NISP stamps for ePSF
+    DEFAULT_OUTPUT_DIR        = os.path.join(DATA_DIR, "euclid_stars")
+    CLEAN_DATA_DIR            = os.path.join(DATA_DIR, "clean_data")
+    DIRTY_DATA_DIR            = os.path.join(DATA_DIR, "dirty_data")
+    EUCLID_PSF_DIR            = os.path.join(DATA_DIR, "euclid_psf")
+    EUCLID_NISP_CUTOUTS_DIR   = os.path.join(DATA_DIR, "euclid_nisp_stars")   # NISP stamps for ePSF
     CATALOG_FILE = "stars.json"
     CUTOUTS_SUBDIR = "cutouts"
 
     # Visualization output
-    VIS_DIR              = "./data/vis"
-    VIS_CUTOUTS_DIR      = "./data/vis/cutouts"
-    VIS_PSF_DIR          = "./data/vis/psf"
-    VIS_CLEAN_DIR        = "./data/vis/clean"
-    VIS_DIRTY_DIR        = "./data/vis/dirty"
-    VIS_STAR_POSITIONS   = "./data/vis/star_positions.png"
+    VIS_DIR              = os.path.join(DATA_DIR, "vis")
+    VIS_CUTOUTS_DIR      = os.path.join(DATA_DIR, "vis/cutouts")
+    VIS_PSF_DIR          = os.path.join(DATA_DIR, "vis/psf")
+    VIS_CLEAN_DIR        = os.path.join(DATA_DIR, "vis/clean")
+    VIS_DIRTY_DIR        = os.path.join(DATA_DIR, "vis/dirty")
+    VIS_STAR_POSITIONS   = os.path.join(DATA_DIR, "vis/star_positions.png")
 
     # TFRecord storage
-    RECORDS_DIR          = "./data/images/records"
+    RECORDS_DIR          = os.path.join(DATA_DIR, "images/records")
 
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 512
@@ -415,11 +420,13 @@ class Config:
     DEFAULT_EVALUATE_EVERY       = 1000
     DEFAULT_VALIDATE_IMAGES      = 100
     DEFAULT_NUM_RES_BLOCKS       = 32
-    DEFAULT_CHECKPOINT_DIR       = "./ckpt/wdsr"
+    DEFAULT_CHECKPOINT_DIR       = os.environ.get(
+        "EUCLID_POLISH_CKPT_DIR", "./ckpt/wdsr",
+    )
     DEFAULT_HR_CROP_SIZE         = 96
 
     # Reconstruction output
-    VIS_RECONSTRUCTION_DIR       = "./data/vis/reconstruction"
+    VIS_RECONSTRUCTION_DIR       = os.path.join(DATA_DIR, "vis/reconstruction")
 
     # PSF extraction defaults
     DEFAULT_PSF_SIZE = 255
@@ -486,7 +493,7 @@ class Config:
     # ``(H, W, C)`` tensors with explicit channel metadata. Schema is
     # versioned so a reader can check it got what it expected.
 
-    RECORDS_DIR_V2          = "./data/images/records_v2"
+    RECORDS_DIR_V2          = os.path.join(DATA_DIR, "images/records_v2")
     TFRECORD_SCHEMA_VERSION = 2
 
     # ---------------------------------------------------------------------
@@ -537,7 +544,7 @@ class Config:
     # The shared ``stars.json`` catalog tracks per-(band, size) validity so
     # the same star id refers to the same sky position across bands.
 
-    STAR_CUTOUTS_ROOT = "./data/euclid_stars/cutouts"
+    STAR_CUTOUTS_ROOT = os.path.join(DATA_DIR, "euclid_stars/cutouts")
 
     @classmethod
     def get_band(cls, name: str) -> "BandConfig":

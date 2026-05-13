@@ -8,16 +8,17 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 # -----------------------------------------------------------------------------
-# Train-only variant of the FASRC pipeline. Skips field generation and
-# convolution — assumes ``data/images/records/{clean,dirty}_{train,validate}.tfrecord``
-# already exist from a prior `fasrc_train.sh` run (typically 6400 train +
-# 1600 validate at 512² HR / 256² LR).
+# Train-only variant: skips generate + forward, assumes the TFRecords
+# already exist under ``$EUCLID_POLISH_DATA_DIR/images/records_v2/``:
+#   clean_{train,validate}.tfrecord  — 4-band HR clean (inspection)
+#   dirty_{train,validate}.tfrecord  — 4-band LR dirty (model input)
+#   hr_{train,validate}.tfrecord     — 1-band VIS HR (training target)
 #
 # Submit from the project root:
 #     sbatch scripts/fasrc_train_only.sh
 #
-# Memory: dropped to 32G — no COSMOS catalog in RAM, no convolution buffers.
-# CPUs:   8 — sufficient for tf.data pipeline (parsing + asinh + augmentation).
+# Memory: 32G — no COSMOS catalog in RAM, no convolution buffers.
+# CPUs:   8  — sufficient for tf.data pipeline parallelism.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -35,6 +36,15 @@ echo "GPUs:"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv 2>/dev/null || true
 echo "============================================================"
 
+# -----------------------------------------------------------------------------
+# Data + checkpoint locations (must match the prior fasrc_train.sh run)
+# -----------------------------------------------------------------------------
+export EUCLID_POLISH_DATA_DIR=/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/data
+export EUCLID_POLISH_CKPT_DIR=/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/ckpt/wdsr
+mkdir -p "$EUCLID_POLISH_CKPT_DIR"
+echo "Data root:     $EUCLID_POLISH_DATA_DIR"
+echo "Checkpoints:   $EUCLID_POLISH_CKPT_DIR"
+
 module purge
 module load python
 module load cuda
@@ -51,24 +61,25 @@ if [ -z "${CONDA_SHLVL:-}" ]; then
   fi
 fi
 
-mamba activate /n/holylabs/lconnor_lab/Lab/abelotserkovtsev
+mamba activate /n/holylabs/lconnor_lab/Lab/abelotserkovtsev/conda-env
 
 echo "Python:    $(which python)"
 echo "Python v:  $(python -V 2>&1)"
 echo "CUDA dev:  ${CUDA_VISIBLE_DEVICES:-unset}"
 
-# Sanity-check that the tfrecords from a prior generate+convolve run exist.
-REC=data/images/records
+# Sanity-check that the tfrecords from a prior generate+forward run exist.
+REC="$EUCLID_POLISH_DATA_DIR/images/records_v2"
 for f in clean_train.tfrecord clean_validate.tfrecord \
-         dirty_train.tfrecord dirty_validate.tfrecord ; do
+         dirty_train.tfrecord dirty_validate.tfrecord \
+         hr_train.tfrecord    hr_validate.tfrecord ; do
   if [ ! -f "$REC/$f" ]; then
     echo "MISSING: $REC/$f"
-    echo "Run scripts/fasrc_train.sh once first to generate the dataset."
+    echo "Run scripts/fasrc_train.sh once first to generate + forward the dataset."
     exit 2
   fi
 done
 echo "Existing tfrecords:"
-ls -lh "$REC"/{clean,dirty}_{train,validate}.tfrecord
+ls -lh "$REC"/{clean,dirty,hr}_{train,validate}.tfrecord
 echo "============================================================"
 
 python -u scripts/run_pipeline.py \
