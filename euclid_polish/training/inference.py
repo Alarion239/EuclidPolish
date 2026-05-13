@@ -247,6 +247,23 @@ def _residual_metrics(residual_stretched: np.ndarray,
     }
 
 
+def _safe_lupton_rgb(cube: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """Build a Lupton RGB from a 4-band cube, swallowing any rendering
+    failure so the rest of the plot still renders. Returns None if the
+    cube is missing or doesn't have all four bands."""
+    if cube is None or cube.ndim != 3 or cube.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
+        return None
+    from euclid_polish.visualization.color import lupton_rgb
+    try:
+        return lupton_rgb(
+            cube, band_names=Config.LR_INPUT_BAND_NAMES,
+            scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
+        )
+    except Exception as e:    # pragma: no cover — color is best-effort
+        print(f"  color composite skipped: {type(e).__name__}: {e}")
+        return None
+
+
 def plot_reconstruction(
     lr_data: np.ndarray,
     sr_data: np.ndarray,
@@ -254,46 +271,35 @@ def plot_reconstruction(
     output_path: str = "reconstruction.png",
     vmax: float | None = None,
     lr_cube: Optional[np.ndarray] = None,
+    hr_cube: Optional[np.ndarray] = None,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
 
-    Layout when HR is provided — 3 rows × 5 cols:
+    Layout when HR is provided — 3 rows × 5 cols (4 rows when colour
+    composites are added):
 
-        Row 1 (raw / linear):
-            LR raw | SR raw | HR raw | residual raw | rel-err raw
-        Row 2 (asinh):
-            LR asinh | SR asinh | HR asinh | residual asinh | rel-err asinh
-        Row 3 (stats):
-            LR stats | SR stats | HR stats | asinh-residual stats | PSNR stats
+        Row 0 (color, optional):    LR color | (blank) | HR color | ...
+        Row 1 (raw / linear):       LR raw | SR raw | HR raw | residual raw | rel-err raw
+        Row 2 (asinh):              LR asinh | SR asinh | HR asinh | residual asinh | rel-err asinh
+        Row 3 (stats):              LR stats | SR stats | HR stats | asinh-residual | PSNR
 
     All asinh panels share ``Config.STRETCH_SCALE_E`` (the network's
     training scale), so brightness is directly comparable to the loss.
 
-    When HR is missing, falls back to a 2 × 2 LR/SR layout (raw + asinh).
+    When HR is missing, falls back to a 2 × 3 LR/SR layout (raw + asinh
+    + optional LR color).
 
-    ``lr_cube``: optional ``(H, W, 4)`` multi-band LR. When supplied, a
-    color composite of the four bands is rendered in a corner / extra
-    panel using ``visualization.color.lupton_rgb`` (solar-balanced) so
-    the viewer can see what color context the model received. SR / HR
-    can't be colorized (the model emits VIS only), so they stay
-    grayscale.
+    Color composites: pass ``lr_cube`` and/or ``hr_cube`` to render a
+    Lupton RGB (solar-balanced) of the dirty LR and clean HR inputs.
+    SR is *not* colorized — the model emits only VIS — so its slot in
+    the color row stays empty as a deliberate "SR has no color info"
+    visual cue.
     """
     shared_scale = float(Config.STRETCH_SCALE_E)
 
-    # 4-band Lupton RGB of the LR input, when available.
-    lr_rgb = None
-    if (lr_cube is not None and lr_cube.ndim == 3
-            and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES)):
-        from euclid_polish.visualization.color import lupton_rgb
-        try:
-            lr_rgb = lupton_rgb(
-                lr_cube, band_names=Config.LR_INPUT_BAND_NAMES,
-                scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
-            )
-        except Exception as e:    # pragma: no cover — color is best-effort
-            print(f"  color composite skipped: {type(e).__name__}: {e}")
-            lr_rgb = None
+    lr_rgb = _safe_lupton_rgb(lr_cube)
+    hr_rgb = _safe_lupton_rgb(hr_cube)
 
     if hr_data is None:
         # 2 × 3 layout when HR is unknown (real-Euclid inference flow):
@@ -322,7 +328,28 @@ def plot_reconstruction(
     floor_e            = _noise_floor_lr_std_e()
     floor_str          = float(np.arcsinh(floor_e / shared_scale))
 
-    vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
+    # If we have at least one color cube, add an extra row dedicated to
+    # color composites. SR is intentionally left blank in this row — the
+    # model only emits VIS, so it has no color information of its own.
+    has_color_row = (lr_rgb is not None) or (hr_rgb is not None)
+    rows = 4 if has_color_row else 3
+    vis = BaseVisualizer(rows=rows, cols=5,
+                         figsize=(45, 6 * rows), vmax=vmax)
+
+    if has_color_row:
+        # Row 0: LR color | (SR blank) | HR color | (blank) | (blank).
+        if lr_rgb is not None:
+            vis.add_rgb_panel(lr_rgb, title_suffix="\nDirty (LR), 4-band solar")
+        else:
+            vis._next_panel += 1   # skip the LR cell
+        # SR slot is deliberately blank — the model emits VIS only.
+        vis._next_panel += 1
+        if hr_rgb is not None:
+            vis.add_rgb_panel(hr_rgb, title_suffix="\nTrue Sky (HR), 4-band solar")
+        else:
+            vis._next_panel += 1
+        # Fill remaining two cells in the row.
+        vis._next_panel += 2
 
     # ---- Row 1: linear (raw electrons) ----
     vis.add_scale_panel(lr_data, stretch="linear", title_suffix="\nDirty (LR)")

@@ -550,17 +550,24 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
                              else None)
         lr_data, sr_data = reconstruct(model, lr_img.data)
         hr_data = None
+        hr_cube_for_color = None
         if lr_img.index in hr_by_idx:
             raw = hr_by_idx[lr_img.index].data
             # plot_reconstruction expects a 2-D VIS HR. Slice channel 0
-            # when the record carries the legacy 4-channel cube.
+            # when the record carries the legacy 4-channel cube. Keep
+            # the full cube around for the HR color composite when
+            # all four bands are present.
             if raw.ndim == 3 and raw.shape[-1] >= 1:
                 hr_data = raw[..., 0]
+                if raw.shape[-1] == Config.NUM_LR_CHANNELS:
+                    hr_cube_for_color = raw
             elif raw.ndim == 2:
                 hr_data = raw
         out = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.png")
         plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
-                            output_path=out, lr_cube=lr_cube_for_color)
+                            output_path=out,
+                            lr_cube=lr_cube_for_color,
+                            hr_cube=hr_cube_for_color)
         out_paths.append(out)
         cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
         print(f"  ✓ {out}")
@@ -909,20 +916,22 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
 
 def _render_sky_record_png(subset: str, kind: str, band: str,
                            index: int) -> bytes:
-    """Render one image from the multi-band TFRecords with asinh stretch.
+    """Render one image from the multi-band TFRecords.
 
     ``subset`` ∈ {"train", "validate"},
     ``kind`` ∈ {"clean", "dirty", "hr"}
       • ``clean`` → 4-band HR clean record
       • ``dirty`` → 4-band LR dirty record (PSF + noise + artifacts)
       • ``hr``    → 1-band VIS HR target (the network's training output)
-    ``band`` ∈ one of ``Config.LR_INPUT_BAND_NAMES``; ignored for ``hr``
-      (always VIS) but accepted so the toolbar JS can pass any value.
+    ``band``:
+      * one of ``Config.LR_INPUT_BAND_NAMES`` → grayscale asinh of that band
+      * ``"color"`` → 4-band Lupton RGB (solar-balanced). Requires the
+        record to carry all four bands — clean/dirty only. For the
+        VIS-only ``hr`` record, ``color`` falls back to VIS grayscale.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import tensorflow as tf
     from euclid_polish.sky.tfrecord import (
         read_multiband_skyimages, tfrecord_path,
     )
@@ -931,7 +940,7 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         abort(400)
     if kind not in ("clean", "dirty", "hr"):
         abort(400)
-    if band not in Config.LR_INPUT_BAND_NAMES:
+    if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
         abort(400)
     name = f"{kind}_{subset}"
     path = tfrecord_path(Config.RECORDS_DIR_V2, name)
@@ -944,12 +953,38 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         abort(404)
     img = records[min(index, len(records) - 1)]
     data = img.data
-    # HR records have shape (H, W, 1) (VIS only). LR + clean (4-ch) have 4 channels.
-    if data.shape[-1] == 1:
+
+    if band == "color" and data.shape[-1] >= len(Config.LR_INPUT_BAND_NAMES):
+        # 4-band Lupton RGB. Solar-balanced so sun-like stars render
+        # neutral white and color is informative about the source SED.
+        from euclid_polish.visualization.color import lupton_rgb
+        rgb = lupton_rgb(
+            data, band_names=Config.LR_INPUT_BAND_NAMES,
+            scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
+        )
+        fig, ax = plt.subplots(figsize=(6.5, 6.5))
+        ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
+                  interpolation="nearest")
+        ax.set_title(
+            f"{kind} {subset} · color (4-band, solar) · idx {img.index}  "
+            f"({data.shape[0]}×{data.shape[1]} @ "
+            f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
+        )
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+    # Grayscale single-band rendering. HR records carry shape (H, W, 1)
+    # (VIS only), so any band selection falls back to channel 0.
+    if data.shape[-1] == 1 or band == "color":
         plane = data[..., 0]
         band_name = "VIS"
     else:
-        k = list(Config.LR_INPUT_BAND_NAMES).index(band) if band != "HR" else 0
+        k = list(Config.LR_INPUT_BAND_NAMES).index(band)
         plane = data[..., k]
         band_name = band
     bcfg = Config.get_band(band_name)
