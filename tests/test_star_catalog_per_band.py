@@ -1,8 +1,7 @@
-"""Tests for the per-band StarCatalog flag schema."""
+"""Tests for the per-band StarCatalog flag schema and CSV round-trip."""
 
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
@@ -70,47 +69,20 @@ def test_valid_sizes_per_band():
 
 
 # ---------------------------------------------------------------------------
-# Back-compat: legacy band-less {size: bool} mapping is auto-promoted to VIS
-# ---------------------------------------------------------------------------
-
-def test_legacy_bandless_valid_reads_as_vis():
-    legacy = {"valid": {"512": True, "256": True}}
-    # Legacy entries were always VIS.
-    assert StarCatalog.is_valid(legacy, 512, band="VIS") is True
-    assert StarCatalog.is_valid(legacy, 256, band="VIS") is True
-    # No information about NISP bands → False.
-    assert StarCatalog.is_valid(legacy, 512, band="Y_E") is False
-
-
-def test_legacy_bool_valid_reads_as_vis_only():
-    legacy = {"valid": True}
-    assert StarCatalog.is_valid(legacy, band="VIS") is True
-    assert StarCatalog.is_valid(legacy, band="Y_E") is False
-
-
-def test_writing_into_legacy_bandless_promotes_format():
-    legacy = {"valid": {"256": True}}
-    StarCatalog.set_valid(legacy, 256, band="J_E")
-    # After the write, format is nested band → size.
-    assert isinstance(legacy["valid"], dict)
-    inner = next(iter(legacy["valid"].values()))
-    assert isinstance(inner, dict)
-    # The VIS entries from the legacy mapping must still be valid.
-    assert StarCatalog.is_valid(legacy, 256, band="VIS") is True
-    assert StarCatalog.is_valid(legacy, 256, band="J_E") is True
-
-
-# ---------------------------------------------------------------------------
-# Round-trip through stars.json
+# CSV round-trip
 # ---------------------------------------------------------------------------
 
 def test_save_load_roundtrip_preserves_per_band_flags(tmp_path):
     cat = StarCatalog(str(tmp_path))
-    star = {"id": 0, "ra": 12.3, "dec": 45.6}
+    star = {"id": 0, "ra": 12.3, "dec": 45.6, "magnitude": 21.4}
     StarCatalog.set_valid(star, 512, band="VIS")
     StarCatalog.set_valid(star, 512, band="Y_E")
     StarCatalog.set_corrupted(star, 256, band="H_E")
     cat.save({"stars": [star], "next_id": 1})
+
+    # CSV on disk, not JSON.
+    assert cat.catalog_path.endswith(".csv")
+    assert os.path.isfile(cat.catalog_path)
 
     loaded = cat.load()
     s2 = loaded["stars"][0]
@@ -118,6 +90,40 @@ def test_save_load_roundtrip_preserves_per_band_flags(tmp_path):
     assert StarCatalog.is_valid(s2, 512, band="Y_E")
     assert not StarCatalog.is_valid(s2, 256, band="H_E")
     assert StarCatalog.is_corrupted(s2, 256, band="H_E")
+
+
+def test_csv_columns_use_kind_band_size_naming(tmp_path):
+    import pandas as pd
+    cat = StarCatalog(str(tmp_path))
+    star = {"id": 0, "ra": 1.0, "dec": 2.0, "magnitude": 20.0}
+    StarCatalog.set_valid(star, 256, band="VIS")
+    StarCatalog.set_corrupted(star, 512, band="J_E")
+    StarCatalog.set_download_failed(star, 128, band="H_E")
+    cat.save({"stars": [star]})
+
+    df = pd.read_csv(cat.catalog_path)
+    assert set(df.columns) >= {"id", "ra", "dec", "magnitude",
+                               "valid:VIS:256",
+                               "corrupted:J_E:512",
+                               "download_failed:H_E:128"}
+
+
+def test_load_recomputes_next_id_from_data(tmp_path):
+    cat = StarCatalog(str(tmp_path))
+    cat.save({"stars": [
+        {"id": 5, "ra": 1.0, "dec": 2.0, "magnitude": 22.0},
+        {"id": 9, "ra": 3.0, "dec": 4.0, "magnitude": 23.0},
+    ]})
+    # next_id is derived from the data — one past the largest id present.
+    assert cat.load()["next_id"] == 10
+
+
+def test_empty_catalog_round_trips(tmp_path):
+    cat = StarCatalog(str(tmp_path))
+    cat.save({"stars": []})
+    loaded = cat.load()
+    assert loaded["stars"] == []
+    assert loaded["next_id"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +202,12 @@ def test_cutout_dir_for_band_includes_band_name(band_name):
 
 def test_summary_includes_per_band_breakdown(tmp_path):
     cat = StarCatalog(str(tmp_path))
-    stars = [{"id": i, "ra": 1.0, "dec": 1.0} for i in range(3)]
+    stars = [{"id": i, "ra": 1.0, "dec": 1.0, "magnitude": 21.0 + i}
+             for i in range(3)]
     StarCatalog.set_valid(stars[0], 512, band="VIS")
     StarCatalog.set_valid(stars[1], 512, band="VIS")
     StarCatalog.set_valid(stars[1], 512, band="Y_E")
-    cat.save({"stars": stars, "next_id": 3})
+    cat.save({"stars": stars})
 
     summary = cat.get_summary()
     assert summary["total"] == 3

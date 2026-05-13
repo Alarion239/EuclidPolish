@@ -645,7 +645,7 @@ class InteractiveCLI:
             if len(results['corrupted']) > 10:
                 print(f"  ... and {len(results['corrupted']) - 10} more")
 
-        # Update catalog if stars.json exists
+        # Update catalog if stars.csv exists
         catalog = StarCatalog(output_dir)
         if catalog.exists():
             catalog_data = catalog.load()

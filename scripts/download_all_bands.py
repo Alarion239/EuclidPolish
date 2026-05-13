@@ -5,7 +5,7 @@ Multi-band wrapper around :class:`EuclidCutoutDownloader`. Picks one
 ``cutout_size_vis_pixels`` value, converts it to each band's native
 pixel count via :meth:`BandConfig.cutout_size_for_arcsec`, and runs the
 downloader once per band. Each band's catalog flags are tracked
-independently under the shared ``stars.json``.
+independently under the shared ``stars.csv``.
 
 Usage:
     python scripts/download_all_bands.py

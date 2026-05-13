@@ -123,7 +123,7 @@ class Config:
     DIRTY_DATA_DIR            = os.path.join(DATA_DIR, "dirty_data")
     EUCLID_PSF_DIR            = os.path.join(DATA_DIR, "euclid_psf")
     EUCLID_NISP_CUTOUTS_DIR   = os.path.join(DATA_DIR, "euclid_nisp_stars")   # NISP stamps for ePSF
-    CATALOG_FILE = "stars.json"
+    CATALOG_FILE = "stars.csv"
     CUTOUTS_SUBDIR = "cutouts"
 
     # Visualization output
@@ -541,7 +541,7 @@ class Config:
     #         J_E/  star_XXXX_SSS.fits
     #         H_E/  star_XXXX_SSS.fits
     #
-    # The shared ``stars.json`` catalog tracks per-(band, size) validity so
+    # The shared ``stars.csv`` catalog tracks per-(band, size) validity so
     # the same star id refers to the same sky position across bands.
 
     STAR_CUTOUTS_ROOT = os.path.join(DATA_DIR, "euclid_stars/cutouts")

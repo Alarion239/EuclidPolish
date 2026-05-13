@@ -8,12 +8,12 @@ attempt and inflated the catalog file.
 
 This script:
 
-  1. Picks ``--keep`` random stars from the current ``stars.json``.
+  1. Picks ``--keep`` random stars from the current ``stars.csv``.
   2. Resets each kept star's ``valid`` / ``corrupted`` / ``download_failed``
      flags to empty (no cutouts on disk yet).
   3. Deletes every file under ``data/euclid_stars/cutouts/`` so the disk
      matches the new catalog state.
-  4. Writes the trimmed catalog back to ``stars.json`` (preserving each
+  4. Writes the trimmed catalog back to ``stars.csv`` (preserving each
      star's original id, ra, dec, magnitude).
 
 Run with ``--dry-run`` to see what would change.
@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import sys
@@ -39,12 +38,13 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.catalog import StarCatalog
 
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--output-dir", default=Config.DEFAULT_OUTPUT_DIR,
-                    help="Star catalog root (contains stars.json + cutouts/)")
+                    help="Star catalog root (contains stars.csv + cutouts/)")
     ap.add_argument("--keep", type=int, default=200,
                     help="Number of stars to keep after the random sample")
     ap.add_argument("--seed", type=int, default=0,
@@ -56,26 +56,22 @@ def parse_args() -> argparse.Namespace:
 
 def _reset_flags(star: dict) -> dict:
     """Return a new dict with every download-state flag wiped."""
-    clean = {
-        k: v for k, v in star.items()
-        if k not in ("valid", "corrupted", "download_failed")
-    }
-    return clean
+    return {k: v for k, v in star.items()
+            if k not in ("valid", "corrupted", "download_failed")}
 
 
 def main() -> int:
     args = parse_args()
-    cat_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    cat = StarCatalog(args.output_dir)
     cutouts_dir = os.path.join(args.output_dir, Config.CUTOUTS_SUBDIR)
 
-    if not os.path.isfile(cat_path):
-        print(f"✗ no catalog at {cat_path}")
+    if not cat.exists():
+        print(f"✗ no catalog at {cat.catalog_path}")
         return 1
 
-    with open(cat_path, "r") as fh:
-        catalog = json.load(fh)
-    stars = catalog.get("stars", [])
-    print(f"loaded {len(stars)} stars from {cat_path}")
+    catalog = cat.load()
+    stars = catalog["stars"]
+    print(f"loaded {len(stars)} stars from {cat.catalog_path}")
 
     keep = min(args.keep, len(stars))
     rng = np.random.default_rng(args.seed)
@@ -101,16 +97,13 @@ def main() -> int:
             if os.path.isdir(full):
                 shutil.rmtree(full)
             else:
-                # Any stray flat files (legacy layout).
                 os.remove(full)
         print(f"  ✓ wiped {cutouts_dir}/*")
 
-    # Save the trimmed catalog. Keep ``next_id`` so future queries don't
-    # collide with the original ids.
-    catalog["stars"] = kept
-    with open(cat_path, "w") as fh:
-        json.dump(catalog, fh, indent=2)
-    print(f"  ✓ wrote {len(kept)} stars to {cat_path}")
+    # Persist the trimmed catalog. ``next_id`` is recomputed from the IDs
+    # we kept, which is fine — the ones we dropped are gone for good.
+    cat.save({"stars": kept})
+    print(f"  ✓ wrote {len(kept)} stars to {cat.catalog_path}")
     return 0
 
 

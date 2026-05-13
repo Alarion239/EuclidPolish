@@ -135,7 +135,7 @@ def _write_cutout_set(
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: a stars.json + per-band cutout subdirs under one tmp_path root
+# Fixtures: a stars.csv + per-band cutout subdirs under one tmp_path root
 # ---------------------------------------------------------------------------
 
 CUTOUT_SIZE_VIS = 65   # 65 VIS px = 6.5" — small enough for a fast test
@@ -143,7 +143,7 @@ CUTOUT_SIZE_VIS = 65   # 65 VIS px = 6.5" — small enough for a fast test
 
 @pytest.fixture
 def stars_root(tmp_path: Path) -> Path:
-    """A tmp_path/euclid_stars with per-band cutout subdirs + a stars.json."""
+    """A tmp_path/euclid_stars with per-band cutout subdirs + a stars.csv."""
     root = tmp_path / "euclid_stars"
     cutouts_root = root / "cutouts"
     cutouts_root.mkdir(parents=True)
