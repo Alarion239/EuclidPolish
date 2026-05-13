@@ -542,6 +542,12 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     out_paths = []
     for k, i in enumerate(chosen):
         lr_img = lr_records[i]
+        # Keep the full 4-band LR cube for the color composite — the
+        # 2-D ``lr_data`` returned by reconstruct() is VIS-only.
+        lr_cube_for_color = (lr_img.data
+                             if lr_img.data.ndim == 3
+                                and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
+                             else None)
         lr_data, sr_data = reconstruct(model, lr_img.data)
         hr_data = None
         if lr_img.index in hr_by_idx:
@@ -553,7 +559,8 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
             elif raw.ndim == 2:
                 hr_data = raw
         out = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.png")
-        plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=out)
+        plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
+                            output_path=out, lr_cube=lr_cube_for_color)
         out_paths.append(out)
         cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
         print(f"  ✓ {out}")
@@ -654,7 +661,8 @@ def _job_reconstruct_euclid_cutout(
     os.makedirs(out_dir, exist_ok=True)
     tag = f"ra{ra:.4f}_dec{dec:+.4f}".replace("+", "p").replace("-", "m")
     out_path = os.path.join(out_dir, f"euclid_{tag}.png")
-    plot_reconstruction(lr_vis, sr_data, hr_data=None, output_path=out_path)
+    plot_reconstruction(lr_vis, sr_data, hr_data=None,
+                        output_path=out_path, lr_cube=lr_cube)
     cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
              len(Config.LR_INPUT_BAND_NAMES) + 1, "saved PNG")
     print(f"  ✓ {out_path}")

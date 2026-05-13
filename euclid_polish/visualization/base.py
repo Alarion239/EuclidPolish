@@ -188,6 +188,29 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label=cbar_label)
 
+    def add_rgb_panel(
+        self,
+        rgb: np.ndarray,
+        title_suffix: str = "",
+    ) -> None:
+        """Display a pre-rendered ``(H, W, 3)`` RGB image in ``[0, 1]``.
+
+        Use this for color composites coming out of
+        :func:`euclid_polish.visualization.color.lupton_rgb` — the
+        stretch / calibration is the caller's responsibility, so this
+        method just shows what it's given.
+        """
+        if rgb.ndim != 3 or rgb.shape[-1] != 3:
+            raise ValueError(
+                f"rgb must be (H, W, 3); got shape {rgb.shape}"
+            )
+        ax = self._fig.add_subplot(self._next_gs_position())
+        ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
+                  interpolation="nearest")
+        ax.set_title(f"color composite{title_suffix}", fontsize=12)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+
     def add_diverging_panel(
         self,
         data: np.ndarray,

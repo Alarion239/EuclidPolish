@@ -253,6 +253,7 @@ def plot_reconstruction(
     hr_data: Optional[np.ndarray] = None,
     output_path: str = "reconstruction.png",
     vmax: float | None = None,
+    lr_cube: Optional[np.ndarray] = None,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -270,17 +271,44 @@ def plot_reconstruction(
     training scale), so brightness is directly comparable to the loss.
 
     When HR is missing, falls back to a 2 × 2 LR/SR layout (raw + asinh).
+
+    ``lr_cube``: optional ``(H, W, 4)`` multi-band LR. When supplied, a
+    color composite of the four bands is rendered in a corner / extra
+    panel using ``visualization.color.lupton_rgb`` (solar-balanced) so
+    the viewer can see what color context the model received. SR / HR
+    can't be colorized (the model emits VIS only), so they stay
+    grayscale.
     """
     shared_scale = float(Config.STRETCH_SCALE_E)
 
+    # 4-band Lupton RGB of the LR input, when available.
+    lr_rgb = None
+    if (lr_cube is not None and lr_cube.ndim == 3
+            and lr_cube.shape[-1] == len(Config.LR_INPUT_BAND_NAMES)):
+        from euclid_polish.visualization.color import lupton_rgb
+        try:
+            lr_rgb = lupton_rgb(
+                lr_cube, band_names=Config.LR_INPUT_BAND_NAMES,
+                scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
+            )
+        except Exception as e:    # pragma: no cover — color is best-effort
+            print(f"  color composite skipped: {type(e).__name__}: {e}")
+            lr_rgb = None
+
     if hr_data is None:
-        vis = BaseVisualizer(rows=2, cols=2, figsize=(22, 18), vmax=vmax)
+        # 2 × 3 layout when HR is unknown (real-Euclid inference flow):
+        # row 1 = LR raw / SR raw / color LR ; row 2 = LR asinh / SR asinh / (blank).
+        cols = 3 if lr_rgb is not None else 2
+        vis = BaseVisualizer(rows=2, cols=cols, figsize=(8 * cols, 16), vmax=vmax)
         vis.add_scale_panel(lr_data, stretch="linear", title_suffix="\nDirty (LR)")
         vis.add_scale_panel(sr_data, stretch="linear", title_suffix="\nReconstruction (SR)")
+        if lr_rgb is not None:
+            vis.add_rgb_panel(lr_rgb, title_suffix="\nLR (4-band, solar-balanced)")
         vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR)")
         vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nReconstruction (SR)")
+        # blank cell in the third column on row 2 is left empty if rgb exists.
         plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
         vis.save_figure(output_path)
         return
