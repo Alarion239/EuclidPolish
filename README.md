@@ -115,29 +115,32 @@ hr_target = hr_4ch[..., VIS] only (1 channel)
 
 ## 3. Noise model
 
-**Code:** `euclid_polish/sky/psf_convolution.py:_apply_vis_noise()`
+**Code:** `euclid_polish/sky/multiband_forward.py:_apply_band_noise()`,
+`euclid_polish/sky/artifacts.py` (detector-artifact injection).
 
 Per LR pixel, given the noise-free signal `s` (electrons of the source over the stack):
 
 ```
 λ        = max(s + sky + dark, 0)
 observed = Poisson(λ) − (sky + dark)              # sky/dark-subtracted
+artifacts = CR hits + hot pixels + masked-trail streaks   # see §3.3
 read     = N(0, σ_read · sqrt(N_exp))             # uncorrelated reads
-output   = observed + read                        # float32, can be negative
+output   = observed + artifacts + read            # float32, can be negative
 ```
 
-This corresponds to the standard CCD noise budget — Poisson photon noise on the *total* incident charge plus uncorrelated Gaussian read noise scaled by the number of independent reads ([Janesick 2007, *Photon Transfer*](https://spie.org/Publications/Book/725073)). Sky and dark are added before the Poisson draw so their shot noise is correctly captured, then subtracted afterwards so the network's input represents the source signal alone.
+This corresponds to the standard CCD noise budget — Poisson photon noise on the *total* incident charge plus uncorrelated Gaussian read noise scaled by the number of independent reads ([Janesick 2007, *Photon Transfer*](https://spie.org/Publications/Book/725073)). Sky and dark are added before the Poisson draw so their shot noise is correctly captured, then subtracted afterwards so the network's input represents the source signal alone. Detector artifacts are injected between the Poisson draw and the read-noise draw — that ordering matches the physical readout chain (charge integrates on-chip → ramp is read out → read noise added).
 
 ### 3.1 Constants (Cropper+ 2014, MSSL VIS-PP, Q1 docs)
 
 | Symbol | Value | Source |
 |---|---|---|
-| `EXPOSURE_TIME_S` | 565 s | Cropper+ 2014, Table 4 |
-| `N_EXPOSURES` | 4 (Wide Survey dithers) | Euclid Collaboration: Scaramella+ 2022 |
-| `READ_NOISE_E` | 4.5 e⁻ RMS / exposure | Cropper+ 2014, §4.2 |
+| `EXPOSURE_TIME_S` | 565 s | Cropper+ 2014, Table 4 (Q1 paper Romelli+ 2025 quotes 566 s nominal for science frames; we use 565 s) |
+| `N_EXPOSURES` | 4 (Wide Survey dithers) | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), Euclid Wide Survey reference observing sequence |
+| `READ_NOISE_E` | 4.5 e⁻ RMS / exposure | Cropper+ 2014, §4.2 ("internal noise … less than 4.4 electrons in all channels") |
 | `DARK_E_PER_S_PER_PIX` | 0.001 e⁻/s/pix | MSSL VIS-PP characterisation |
 | `GAIN_E_PER_ADU` | 3.1 (documentation only) | Cropper+ 2014 |
-| `SKY_MAG_AB_ARCSEC2` | 22.35 mag/arcsec² | Euclid Collaboration: Scaramella+ 2022 |
+| `SKY_MAG_AB_ARCSEC2` | 22.35 mag/arcsec² | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), §3.4 |
+| MAGZERO (Q1 VIS stacks) | 24.57 mag (ADU s⁻¹) | [Romelli+ 2025](https://arxiv.org/abs/2503.15305), §photometric calibration; verified against the `MAGZERO` keyword in our delivered FITS cutouts (24.60) |
 
 ### 3.2 LR noise floor
 
@@ -152,6 +155,26 @@ For a blank-sky pixel (`s = 0`):
 ```
 
 This σ_floor ≈ 22 e⁻ is the natural calibration scale for the rest of the pipeline. Any source flux of order 22 e⁻ per LR pixel is at S/N ≈ 1; this is why we clipped the COSMOS catalog's faint-end magnitude — galaxies with `mag_auto > ~26` produce sub-electron peaks and contribute only structured shot noise.
+
+We cross-checked this against real Q1 VIS cutouts (`data/euclid_stars/cutouts/VIS/star_*_512.fits`): sigma-clipped background RMS is ≈ 0.0025 ADU s⁻¹ in 512² stamps, which converts to ≈ 17 e⁻ RMS over the 2260 s stack via the VIS gain (3.1 e⁻/ADU) and integration. Same order of magnitude as our model's 22 e⁻ — close enough that the dominant residual ~20% discrepancy is likely from non-uniform sky subtraction in MER rather than a parameter error.
+
+### 3.3 Detector artifacts
+
+**Code:** `euclid_polish/sky/artifacts.py` — `inject_cosmic_rays`, `inject_hot_pixels`, `inject_streaks`, all dispatched by `inject_artifacts` and gated by `MultiBandForwardConfig.add_artifacts`.
+
+| Artifact | Per-frame rate | Amplitude | Source |
+|---|---|---|---|
+| Cosmic rays | `CR_RATE_PER_S_PER_CM2 = 5 hits/cm²/s` (raw L2 GCR rate) × `cr_rate_factor` (per-band post-rejection factor: 0.02 for VIS, 1.0 for NISP). The Q1 MER pipeline ([Romelli+ 2025](https://arxiv.org/abs/2503.15305)) reports ~1.6% of pixels flagged as CR per single-frame VIS image; cross-dither median rejection reduces survivors in the stack to ~0.1%. | Track length `Exp(mean=3 px)` clipped to [1, 25] px; charge per hit `Exp(scale=1500 e⁻)`. | Holmes+ 1989/2012 SREM; Q1 paper. |
+| Hot pixels | `HOT_PIXEL_FRACTION = 0.001` (per-frame, randomised in training to avoid memorising a fixed mask) | Charge `Exp(mean=10⁴ e⁻)`. | Cropper+ 2014, MSSL CCD273 characterisation. |
+| Long faint streaks | `STREAK_RATE_PER_KPIX2 = 4.0` streaks per (1000×1000)-LR-pixel area (≈ 1 streak per 512² VIS cutout on average). | Length `Exp(mean=250 px)` clipped to [40, 2000] px; width uniform in [1, 3] px (Gaussian cross-section); amplitude `Uniform(0.3, 0.8) · σ_floor` with random sign. | New (this commit). Calibrated against visual inspection of real Q1 VIS cutouts: ~30–60% of stamps show at least one such feature. |
+
+#### Why a separate "streaks" channel?
+
+Roughly 30–60% of Q1 VIS cutouts contain a long, narrow, very faint oblique feature spanning much of the frame — clearly visible only at tight (≲ ±1.5 σ) background stretches. They do **not** look like bright cosmic-ray trails: the contrast against the background is much less than ~1 σ, and the features are visually smoother than the surrounding noise. The most plausible origin is the MER pipeline masking a CR trail, satellite/asteroid trail, or NISP persistence streak and **interpolating** across the masked pixels; the interpolated values carry the local mean but suppress the local shot noise, so the masked stripe stands out as a smooth ridge under tight clipping.
+
+Pure Poisson + read-noise + bright-CR injection does not reproduce this regime — its CR amplitudes are 100s–1000s of electrons (bright dots, not faint streaks), and even the longest-track oblique CRs we generate are aggressively suppressed by `cr_rate_factor = 0.02` for VIS. So we add a separate channel of sub-σ additive ridges with random orientation in `[0, π)`, length/width drawn from the distributions in the table above, and amplitude scaled to the band's `σ_floor`. The per-pixel deposition is normalised so the spine ridge peaks at exactly `amp_sigma · σ_floor` regardless of the streak's orientation (see the dominant-axis stepping in `inject_streaks`).
+
+Visual comparison: rendering a synthetic blank-sky 512² VIS LR frame with this artifact set produces streaks that match the real Q1 features in length, width, and contrast — invisible at normal stretches, just discernible at ±1.5 σ. See `tests/test_artifacts.py::test_inject_streak_*` for the per-amplitude / per-orientation invariants.
 
 ---
 
@@ -236,6 +259,8 @@ pytest tests/ -q
 - **Euclid VIS instrument:** Cropper et al., [*VIS: the visible imager for Euclid*](https://arxiv.org/abs/1608.08603), SPIE 2014. — exposure time, read noise, gain.
 - **Euclid mission overview:** Euclid Collaboration: Mellier et al., [*Euclid I. Overview of the Euclid mission*](https://arxiv.org/abs/2405.13491), 2024.
 - **Euclid Wide Survey (sky background, dither pattern):** Euclid Collaboration: Scaramella et al., [*Euclid preparation. I. The Euclid Wide Survey*](https://arxiv.org/abs/2108.01201), 2022.
+- **Euclid Q1 MER pipeline (CR-flag fraction, MAGZERO, masking/interpolation):** Euclid Collaboration: Romelli et al., [*Euclid Quick Data Release (Q1): From images to multiwavelength catalogues — the Euclid MERge Processing Function*](https://arxiv.org/abs/2503.15305), 2025.
+- **Euclid Q1 release overview:** Euclid Collaboration, [*Euclid Quick Data Release (Q1)*](https://arxiv.org/abs/2503.15303), 2025.
 - **COSMOS parametric catalog:** Mandelbaum, Rowe, Armstrong & Leauthaud, [*Great3 Challenge Handbook*](https://arxiv.org/abs/1308.5379), 2014. Catalog FITS distributed with GalSim.
 - **AB magnitude system:** Oke & Gunn, [*Secondary standard stars for absolute spectrophotometry*](https://ui.adsabs.harvard.edu/abs/1983ApJ...266..713O), ApJ 1983.
 - **CCD noise model:** Janesick, [*Photon Transfer*](https://spie.org/Publications/Book/725073), SPIE Press, 2007.

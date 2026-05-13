@@ -145,8 +145,9 @@ class MultiBandForward:
         """Per-band Poisson + (optional) artifacts + read noise.
 
         Order matches the physical readout chain: photons + sky + dark
-        accumulate → cosmic rays / hot pixels deposit charge → ramp is
-        read with Gaussian read noise → sky-subtracted on the ground.
+        accumulate → cosmic rays / hot pixels / interpolation residuals
+        deposit charge → ramp is read with Gaussian read noise →
+        sky-subtracted on the ground.
         """
         from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
 
@@ -158,11 +159,21 @@ class MultiBandForward:
         lam = np.clip(signal_e.astype(np.float64) + sky_e + dark_e, 0.0, None)
         observed = rng.poisson(lam).astype(np.float64) - (sky_e + dark_e)
 
-        # Detector artifacts (cosmic rays, hot pixels) — inject before
-        # read noise since they're charge accumulated on the detector.
+        # Detector artifacts (CR, hot pixels, masked-trail streaks) —
+        # inject before read noise since these all represent charge
+        # accumulated on the detector or interpolation residuals applied
+        # in the pre-readout pipeline. Streaks scale with the blank-sky
+        # noise σ_floor² = sky + dark + N_exp · σ_read² so the same
+        # ArtifactConfig produces visually consistent streaks across
+        # bands with very different absolute noise levels.
         if self.config.add_artifacts:
             acfg = self.config.artifact_config or ArtifactConfig()
-            observed = inject_artifacts(observed, band, rng, acfg).astype(np.float64)
+            sigma_floor_e = float(np.sqrt(
+                sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
+            ))
+            observed = inject_artifacts(
+                observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
+            ).astype(np.float64)
 
         read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
         read = rng.normal(0.0, read_sigma, size=signal_e.shape)

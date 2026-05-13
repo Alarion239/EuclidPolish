@@ -472,12 +472,17 @@ class Config:
     LENS_SOURCE_OFFSET_FRAC = 0.7       # source impact parameter in units of θ_E
 
     # ---------------------------------------------------------------------
-    # Detector artifacts (cosmic rays + hot pixels)
+    # Detector artifacts (cosmic rays + hot pixels + masked-trail streaks)
     # ---------------------------------------------------------------------
     # CR rate at Euclid's L2 orbit, integrated across the full GCR
     # spectrum (Holmes+ 1989 / 2012 SREM calibration; Euclid mission noise
-    # budget): ~5 hits/cm²/s. Median deposited charge per hit ~ 1500 e⁻
-    # for a normal-incidence MIP traversing a 100 µm depleted layer.
+    # budget): ~5 hits/cm²/s. The Q1 MER pipeline paper (Romelli+ 2025,
+    # arXiv:2503.15305) reports that ~1.6% of pixels in a single VIS frame
+    # are flagged as CR-affected; cross-dither median rejection across the
+    # 4 ROS dithers cuts the *coincident* hits down to ~0.1% — the figure
+    # we want to reproduce in the simulated stack. Median deposited charge
+    # per surviving hit ~ 1500 e⁻ for a normal-incidence MIP traversing
+    # the 100 µm depleted layer.
     CR_RATE_PER_S_PER_CM2  = 5.0
     CR_CHARGE_MEDIAN_E     = 1500.0     # exponential-distribution scale
     # Hot-pixel fraction: ~0.1% of the detector pixels exhibit anomalous
@@ -485,6 +490,36 @@ class Config:
     # large positive offset (effective additional well filling).
     HOT_PIXEL_FRACTION     = 1.0e-3
     HOT_PIXEL_CHARGE_MEAN_E = 10000.0
+
+    # ---------------------------------------------------------------------
+    # Long faint "interpolation-residual" streaks
+    # ---------------------------------------------------------------------
+    # Real Euclid VIS cutouts very often (~30-50% in the Q1 release) show
+    # a long, narrow, very faint oblique feature spanning much of the
+    # frame. They do not look like bright CR trails — instead they look
+    # smooth and noise-suppressed, consistent with MER masking a
+    # cosmic-ray trail, satellite/asteroid trail, or persistence streak
+    # and interpolating across the masked pixels. The interpolated values
+    # have ~zero residual brightness but the *local noise variance* is
+    # reduced, leaving a smooth ridge visible against the otherwise noisy
+    # background.
+    #
+    # We model these as a small Poisson number of additive features per
+    # frame, with sub-sigma amplitude so they are invisible at normal
+    # stretches and only emerge under tight clipping — matching what we
+    # actually see in the cutouts.
+    STREAK_RATE_PER_KPIX2     = 4.0     # streaks per (1000×1000) LR-pixel area
+    STREAK_LENGTH_MEAN_PIX    = 250.0   # exponentially distributed
+    STREAK_LENGTH_MIN_PIX     = 40
+    STREAK_LENGTH_MAX_PIX     = 2000
+    STREAK_WIDTH_PIX_MIN      = 1
+    STREAK_WIDTH_PIX_MAX      = 3
+    # Per-streak amplitude in units of local noise σ. Drawn uniform from
+    # [min, max]; sign random (some interpolations over-shoot, some
+    # under-shoot). 0.3-0.8 σ keeps the streak well below 1σ — invisible
+    # in normal stretches, just discernible under tight clipping.
+    STREAK_AMP_SIGMA_MIN      = 0.3
+    STREAK_AMP_SIGMA_MAX      = 0.8
 
     # ---------------------------------------------------------------------
     # Multi-band TFRecord storage

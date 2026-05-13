@@ -1,19 +1,26 @@
-"""Detector artifact injection: cosmic rays + hot pixels.
+"""Detector artifact injection: cosmic rays + hot pixels + masked-trail streaks.
 
 Real Euclid LR exposures contain features that pure Poisson + read-noise
-does not reproduce. The two most-impactful ones for VIS/NISP wide-survey
-imaging are:
+does not reproduce. The three classes we model here:
 
 * **Cosmic rays** — galactic-cosmic-ray (GCR) muons and protons hit the
   detector at ~5 hits/cm²/s at L2. Each hit deposits charge in one or a
   few neighbouring pixels (full track geometry is approximated here as
-  short oriented streaks of length 1–4 native pixels).
+  short oriented streaks of length 1–4 native pixels). Most are removed
+  by the MER cross-dither median; we model the post-rejection survivors.
 * **Hot pixels** — ~0.1% of detector pixels show anomalously high dark
   current and effectively saturate over a typical exposure.
+* **Long faint streaks** — the MER pipeline (Q1 paper, Romelli+ 2025
+  arXiv:2503.15305) masks pixels affected by long oblique CR trails,
+  satellite/asteroid trails, and NISP persistence, then interpolates
+  across the mask. The interpolated values are smooth (no shot noise),
+  so the masked stripe appears as a sub-σ but visually distinct ridge
+  in the final image. Roughly 30–50% of VIS Q1 cutouts show at least
+  one such streak.
 
-Both are injected *after* the Poisson shot-noise stage but *before* read
-noise — that matches the physical readout order (charge integrates →
-pixels are read → read noise added).
+All three are injected *after* the Poisson shot-noise stage but *before*
+read noise — that matches the physical readout order (charge integrates
+→ pixels are read → read noise added).
 
 Rates are quoted per native detector pixel (12 µm VIS, 18 µm NISP). The
 caller passes the band so we scale to the correct pixel area.
@@ -53,6 +60,17 @@ class ArtifactConfig:
     hot_pixel_fraction:     float = Config.HOT_PIXEL_FRACTION
     hot_pixel_charge_mean_e: float = Config.HOT_PIXEL_CHARGE_MEAN_E
 
+    # Long faint masked-trail streaks (see module docstring).
+    add_streaks:               bool  = True
+    streak_rate_per_kpix2:     float = Config.STREAK_RATE_PER_KPIX2
+    streak_length_mean_pix:    float = Config.STREAK_LENGTH_MEAN_PIX
+    streak_length_min_pix:     int   = Config.STREAK_LENGTH_MIN_PIX
+    streak_length_max_pix:     int   = Config.STREAK_LENGTH_MAX_PIX
+    streak_width_pix_min:      int   = Config.STREAK_WIDTH_PIX_MIN
+    streak_width_pix_max:      int   = Config.STREAK_WIDTH_PIX_MAX
+    streak_amp_sigma_min:      float = Config.STREAK_AMP_SIGMA_MIN
+    streak_amp_sigma_max:      float = Config.STREAK_AMP_SIGMA_MAX
+
     def __post_init__(self) -> None:
         if self.cr_rate_per_s_per_cm2 < 0:
             raise ValueError("cr_rate_per_s_per_cm2 must be ≥ 0")
@@ -66,6 +84,16 @@ class ArtifactConfig:
             raise ValueError("hot_pixel_charge_mean_e must be > 0")
         if self.cr_max_track_length < 1:
             raise ValueError("cr_max_track_length must be ≥ 1")
+        if self.streak_rate_per_kpix2 < 0:
+            raise ValueError("streak_rate_per_kpix2 must be ≥ 0")
+        if not (1 <= self.streak_length_min_pix <= self.streak_length_max_pix):
+            raise ValueError("require 1 ≤ streak_length_min_pix ≤ streak_length_max_pix")
+        if self.streak_length_mean_pix < self.streak_length_min_pix:
+            raise ValueError("streak_length_mean_pix must be ≥ streak_length_min_pix")
+        if not (1 <= self.streak_width_pix_min <= self.streak_width_pix_max):
+            raise ValueError("require 1 ≤ streak_width_pix_min ≤ streak_width_pix_max")
+        if not (0.0 <= self.streak_amp_sigma_min <= self.streak_amp_sigma_max):
+            raise ValueError("require 0 ≤ streak_amp_sigma_min ≤ streak_amp_sigma_max")
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +221,116 @@ def inject_hot_pixels(
 
 
 # ---------------------------------------------------------------------------
+# Long faint masked-trail streaks
+# ---------------------------------------------------------------------------
+
+def expected_streak_count(
+    image_shape: tuple[int, int],
+    cfg: ArtifactConfig,
+) -> float:
+    """Mean number of streaks per frame for this image area.
+
+    ``streak_rate_per_kpix2`` is normalised to a (1000×1000)-pixel area so
+    the same setting applies regardless of the actual LR frame size.
+    """
+    if not cfg.add_streaks or cfg.streak_rate_per_kpix2 == 0:
+        return 0.0
+    H, W = image_shape
+    return cfg.streak_rate_per_kpix2 * (H * W) / 1.0e6
+
+
+def inject_streaks(
+    image_e: np.ndarray,
+    rng: np.random.Generator,
+    cfg: ArtifactConfig,
+    local_sigma_e: float,
+) -> np.ndarray:
+    """Add long faint additive ridges that mimic MER-masked trail interpolation.
+
+    Each streak has:
+      - random midpoint anywhere in the frame
+      - random orientation in [0, π) (no preferred direction — these come
+        from cosmic rays, satellites, asteroids, persistence — all unrelated
+        to the readout axis)
+      - exponentially distributed length, clamped to [min, max]
+      - integer width drawn uniform on [w_min, w_max]
+      - signed amplitude ``A`` drawn from
+        ``Uniform([sigma_min, sigma_max]) · sign · local_sigma_e``
+      - Gaussian cross-section across the spine (full width ≈ width_pix)
+
+    ``local_sigma_e`` is the per-pixel noise RMS at this point in the
+    pipeline (sky + dark + read shot noise quadrature). The caller computes
+    it once per band; this function does not re-derive it from the image
+    because the image at this stage is sky/dark-subtracted and a per-pixel
+    estimate would be biased by sources.
+
+    The amplitude is intentionally sub-σ (typically 0.3–0.8 σ) — the
+    streaks are invisible at normal stretches and only emerge under tight
+    background clipping, matching what we see in the real Q1 cutouts.
+    """
+    if not cfg.add_streaks or local_sigma_e <= 0:
+        return image_e
+    H, W = image_e.shape
+    mean_n = expected_streak_count((H, W), cfg)
+    if mean_n <= 0:
+        return image_e
+    n_streaks = int(rng.poisson(mean_n))
+    if n_streaks == 0:
+        return image_e
+
+    out = image_e.astype(np.float64, copy=True)
+    for _ in range(n_streaks):
+        # Geometry: midpoint anywhere, angle anywhere, length exponential.
+        cy = rng.uniform(0.0, H)
+        cx = rng.uniform(0.0, W)
+        theta = rng.uniform(0.0, np.pi)
+        raw_len = rng.exponential(scale=cfg.streak_length_mean_pix)
+        L = float(np.clip(raw_len,
+                          cfg.streak_length_min_pix,
+                          cfg.streak_length_max_pix))
+        width = int(rng.integers(cfg.streak_width_pix_min,
+                                 cfg.streak_width_pix_max + 1))
+        # Amplitude: uniform in [min, max] σ, sign ±1.
+        amp_sigma = rng.uniform(cfg.streak_amp_sigma_min, cfg.streak_amp_sigma_max)
+        sign = 1.0 if rng.random() < 0.5 else -1.0
+        peak_e = sign * amp_sigma * local_sigma_e
+
+        # Walk the spine in one-pixel-per-step increments along the
+        # dominant axis. This avoids the diagonal-walk double-counting
+        # bug where consecutive sub-pixel steps land in the same integer
+        # cell (a 45° spine traversed with cos/sin steps revisits every
+        # other cell). Stepping ``1/max(|dx|,|dy|)`` along the spine
+        # yields ~one new integer pixel per step regardless of angle.
+        dx = np.cos(theta)
+        dy = np.sin(theta)
+        n_unit = max(abs(dx), abs(dy), 1e-9)
+        n_steps = int(np.ceil(L * n_unit))
+        step_scale = 1.0 / n_unit
+        sigma_cross = max(width / 2.355, 0.6)   # FWHM ≈ width
+        half_cross = max(1, int(np.ceil(3.0 * sigma_cross)))
+        px, py = -dy, dx
+        for k in range(n_steps):
+            t = (k - n_steps / 2.0) * step_scale
+            yc = cy + t * dy
+            xc = cx + t * dx
+            # Within one spine step, deposit at most once per integer
+            # pixel; otherwise a narrow Gaussian cross-section (sigma_cross
+            # < 1) puts all j-offsets into the same int cell and we get
+            # a stacked deposition that exceeds peak_e.
+            seen: set[tuple[int, int]] = set()
+            for j in range(-half_cross, half_cross + 1):
+                yi = int(round(yc + j * py))
+                xi = int(round(xc + j * px))
+                if (yi, xi) in seen:
+                    continue
+                seen.add((yi, xi))
+                if 0 <= xi < W and 0 <= yi < H:
+                    w = np.exp(-0.5 * (j / sigma_cross) ** 2)
+                    out[yi, xi] += peak_e * w
+    return out.astype(image_e.dtype, copy=False)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -201,9 +339,17 @@ def inject_artifacts(
     band: BandConfig,
     rng: np.random.Generator,
     cfg: Optional[ArtifactConfig] = None,
+    local_sigma_e: float = 0.0,
 ) -> np.ndarray:
-    """Apply the full artifact stack (CR + hot pixels) to one band frame."""
+    """Apply the full artifact stack (CR + hot pixels + streaks) to one band frame.
+
+    ``local_sigma_e`` is the per-pixel noise RMS for the current band's
+    LR grid (Poisson sky + dark + read quadrature); needed by
+    :func:`inject_streaks` to calibrate its sub-σ amplitude. Pass 0.0 to
+    disable streaks even if ``cfg.add_streaks`` is True.
+    """
     cfg = cfg or ArtifactConfig()
     out = inject_cosmic_rays(image_e, band, rng, cfg)
     out = inject_hot_pixels(out, rng, cfg)
+    out = inject_streaks(out, rng, cfg, local_sigma_e)
     return out
