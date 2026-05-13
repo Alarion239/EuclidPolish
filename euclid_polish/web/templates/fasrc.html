@@ -214,7 +214,23 @@
     gap: 16px;
     margin-top: 16px;
   }
-  .fasrc-grid > .card { margin-bottom: 0; }
+  /* ``min-width: 0`` lets a grid item shrink narrower than its content
+     would otherwise force — without it, long unbreakable paths inside
+     <code> pin the column wider than 1fr and blow out of the card. */
+  .fasrc-grid > .card { margin-bottom: 0; min-width: 0; overflow-x: hidden; }
+  .fasrc-grid .card table { width: 100%; table-layout: auto; }
+  .fasrc-grid .card td,
+  .fasrc-grid .card th {
+    overflow-wrap: anywhere;     /* break inside long words / paths   */
+    word-break: break-word;       /* fallback for older WebKit         */
+  }
+  .fasrc-grid .card td code,
+  .fasrc-grid .card .hint code,
+  .fasrc-grid .card p code,
+  .fasrc-grid .card dd code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   #live-log { height: 360px; }
   .queue-state-RUNNING  { color: #14600c; font-weight: 600; }
   .queue-state-PENDING  { color: #6c5500; }

@@ -1465,17 +1465,22 @@ def create_app() -> Flask:
         # directory (common on a fresh netscratch dir) doesn't sink the
         # whole listing. The trailing ``exit 0`` keeps the SSH call
         # green even if every section is empty.
+        # ``du -shL`` dereferences symlinks: COSMOS2025 / euclid_psf are
+        # typically symlinks into <repo>/data on holylabs, and the naked
+        # ``du`` reports the link itself (~60 B, rounds to 0). ``-L``
+        # follows the link and reports the contents. ``find -L`` mirrors
+        # that semantic for the tfrecord / checkpoint sweeps below.
         cmd = (
             f"{{ "
             f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
-            f"    du -sh {shlex.quote(cfg.data_dir)}/* 2>/dev/null | sort -k2 ; "
+            f"    du -shL {shlex.quote(cfg.data_dir)}/* 2>/dev/null | sort -k2 ; "
             f"  echo '---' ; "
             f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
-            f"    find {shlex.quote(cfg.data_dir)} -maxdepth 3 -type f "
+            f"    find -L {shlex.quote(cfg.data_dir)} -maxdepth 3 -type f "
             f"      -name '*.tfrecord' -printf '%p\\t%s\\n' 2>/dev/null ; "
             f"  echo '---' ; "
             f"  [ -d {shlex.quote(cfg.ckpt_dir)} ] && "
-            f"    find {shlex.quote(cfg.ckpt_dir)} -maxdepth 2 -type f "
+            f"    find -L {shlex.quote(cfg.ckpt_dir)} -maxdepth 2 -type f "
             f"      -printf '%p\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null ; "
             f"}}; exit 0"
         )
