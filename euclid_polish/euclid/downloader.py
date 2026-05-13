@@ -29,13 +29,80 @@ SIZE_TOLERANCE_PIXELS = 10  # Tolerance for cutout size matching (pixels)
 
 @dataclass
 class DownloadConfig:
-    """Configuration for cutout downloading."""
+    """Configuration for cutout downloading (one band at a time).
+
+    Driven by a :class:`euclid_polish.config.BandConfig`. The ``band``
+    attribute selects:
+
+      * which catalog flag slot to write (``valid``/``corrupted``/``failed``
+        all become per-band)
+      * which on-disk subdirectory to use (``cutouts/<band_name>/``)
+      * which Euclid archive instrument + filter to query
+      * which pixel scale to use for the cutout-radius calculation.
+
+    Pass a :class:`BandConfig` directly via :meth:`for_band` for a fully
+    populated config; the bare init exists for back-compat tests.
+    """
     cutout_size: int = Config.DEFAULT_CUTOUT_SIZE
     cutout_radius: float = 0.2  # arcmin
     position_tolerance: float = POSITION_TOLERANCE_ARCSEC
     size_tolerance: int = SIZE_TOLERANCE_PIXELS
     environment: str = "PDR"
     max_workers: int = 8  # parallel cutout HTTPS fetches
+    band: str = "VIS"
+    instrument: str = "VIS"
+    filter_name: Optional[str] = None
+    pixel_scale_arcsec: float = Config.VIS_PIXEL_SCALE_ARCSEC
+
+    @classmethod
+    def for_band(
+        cls,
+        band_name: str,
+        *,
+        cutout_size_vis_pixels: Optional[int] = None,
+        cutout_size: Optional[int] = None,
+        **overrides,
+    ) -> "DownloadConfig":
+        """Build a download config from a band name.
+
+        Cutout size can be specified two ways:
+
+        * ``cutout_size_vis_pixels`` (preferred): the *reference* size in
+          VIS pixels at 0.10″/pix. Each band's native cutout size is
+          derived so every band covers the same angular field. Example:
+          ``cutout_size_vis_pixels=512`` → 51.2″ on a side → VIS
+          fetches 512 px, NISP fetches ~171 px.
+        * ``cutout_size``: explicit native pixel count for this band
+          (bypasses the conversion; useful when the user wants
+          band-by-band control).
+
+        Pulls instrument / filter / native pixel scale from the band's
+        :class:`BandConfig`; remaining knobs (max_workers etc.) default
+        unless overridden.
+        """
+        b = Config.get_band(band_name)
+
+        if cutout_size is not None and cutout_size_vis_pixels is not None:
+            raise ValueError(
+                "Pass either cutout_size or cutout_size_vis_pixels, not both."
+            )
+        if cutout_size_vis_pixels is not None:
+            arcsec_side = (
+                int(cutout_size_vis_pixels)
+                * Config.BAND_VIS.pixel_scale_lr_arcsec
+            )
+            cutout_size = b.cutout_size_for_arcsec(arcsec_side)
+
+        defaults = dict(
+            band=b.name,
+            instrument=b.archive_instrument,
+            filter_name=b.archive_filter or None,
+            pixel_scale_arcsec=b.pixel_scale_lr_arcsec,
+        )
+        if cutout_size is not None:
+            defaults["cutout_size"] = int(cutout_size)
+        defaults.update(overrides)
+        return cls(**defaults)
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
@@ -47,6 +114,12 @@ class DownloadConfig:
             return False, "Position tolerance must be positive"
         if self.max_workers <= 0:
             return False, "max_workers must be positive"
+        if self.instrument not in ("VIS", "NISP"):
+            return False, f"instrument must be VIS or NISP, got {self.instrument!r}"
+        if self.instrument == "NISP" and not self.filter_name:
+            return False, "NISP downloads require a filter_name (e.g. 'NIR_Y')"
+        if self.pixel_scale_arcsec <= 0:
+            return False, "pixel_scale_arcsec must be positive"
         return True, None
 
 
@@ -82,8 +155,13 @@ class EuclidCutoutDownloader:
         self.catalog = catalog
         self.config = config or DownloadConfig()
         self.validator = validator or FitsValidator()
-        self.cutout_dir = os.path.join(catalog.output_dir, Config.CUTOUTS_SUBDIR)
+        # Per-band subdirectory: ``data/euclid_stars/cutouts/<band>/``.
+        self.cutout_dir = Config.cutout_dir_for_band(
+            self.config.band,
+            root=os.path.join(catalog.output_dir, Config.CUTOUTS_SUBDIR),
+        )
         os.makedirs(self.cutout_dir, exist_ok=True)
+        self.band = self.config.band
 
     def get_existing_cutouts(
         self,
@@ -165,10 +243,18 @@ class EuclidCutoutDownloader:
         if not stars:
             return {}
 
+        # Build the WHERE clause from instrument + optional filter.
+        where_parts = [f"instrument_name = '{self.config.instrument}'"]
+        if self.config.filter_name:
+            # The mosaic_product table exposes the band/filter via a
+            # ``filter_name`` column. We keep the ADQL parameterisable so
+            # callers can supply either Euclid's archive id (``NIR_Y``) or
+            # the project-level band id (``Y_E``).
+            where_parts.append(f"filter_name = '{self.config.filter_name}'")
         query = (
             "SELECT file_path, file_name, tile_index, ra, dec "
             "FROM sedm.mosaic_product "
-            "WHERE instrument_name = 'VIS'"
+            f"WHERE {' AND '.join(where_parts)}"
         )
         try:
             job = Euclid.launch_job_async(query)
@@ -240,7 +326,7 @@ class EuclidCutoutDownloader:
         try:
             Euclid.get_cutout(
                 file_path=mosaic['file_path'],
-                instrument='VIS',
+                instrument=self.config.instrument,
                 id=mosaic['tile_index'],
                 coordinate=coord,
                 radius=cutout_radius_arcmin * u.arcmin,
@@ -297,21 +383,21 @@ class EuclidCutoutDownloader:
         # Scan existing FITS files (size-aware)
         existing_fits, corrupted_disk_files = self.get_existing_cutouts()
 
-        # Handle corrupted files on disk — flag corruption per-size, not whole-star
+        # Handle corrupted files on disk — flag corruption per-(band, size).
         if corrupted_disk_files:
             stars_by_id = {s['id']: s for s in stars}
             for star_id, size, filepath in corrupted_disk_files:
                 star = stars_by_id.get(star_id)
                 if star is not None and size is not None:
-                    StarCatalog.set_corrupted(star, size)
+                    StarCatalog.set_corrupted(star, size, band=self.band)
                 try:
                     os.remove(filepath)
                 except Exception:
                     pass
             self.catalog.save(catalog)
 
-        # Cutout radius for the requested size
-        pixel_scale_arcmin = Config.VIS_PIXEL_SCALE_ARCSEC / 60.0
+        # Cutout radius for the requested size, in the instrument's native scale.
+        pixel_scale_arcmin = self.config.pixel_scale_arcsec / 60.0
         cutout_radius_arcmin = (cutout_size / 2.0) * pixel_scale_arcmin
 
         # Walk every existing file (all sizes) and reconcile catalog validity.
@@ -327,37 +413,42 @@ class EuclidCutoutDownloader:
                     fits_ra, fits_dec, matching_star['ra'], matching_star['dec']
                 ):
                     continue
-                if not StarCatalog.is_valid(matching_star, fits_size):
-                    StarCatalog.set_valid(matching_star, fits_size)
+                if not StarCatalog.is_valid(matching_star, fits_size, band=self.band):
+                    StarCatalog.set_valid(matching_star, fits_size, band=self.band)
                 if abs(fits_size - cutout_size) <= self.config.size_tolerance:
                     matched_stars.add(star_id)
 
-        # Pending = not corrupted/failed at the requested size
+        # Pending = not corrupted/failed at the requested (band, size).
         pending_stars = [
             s for s in stars
-            if not StarCatalog.is_corrupted(s, cutout_size)
-            and not StarCatalog.is_download_failed(s, cutout_size)
+            if not StarCatalog.is_corrupted(s, cutout_size, band=self.band)
+            and not StarCatalog.is_download_failed(s, cutout_size, band=self.band)
         ]
         if star_ids is not None:
             pending_stars = [s for s in pending_stars if s['id'] in star_ids]
 
-        # Stars needing download = pending and not already valid at this size
+        # Stars needing download = pending and not already valid at (band, size).
         stars_needing_download = [
             s for s in pending_stars
             if s['id'] not in matched_stars
-            or not StarCatalog.is_valid(s, cutout_size)
+            or not StarCatalog.is_valid(s, cutout_size, band=self.band)
         ]
 
         self.catalog.save(catalog)
 
         if not stars_needing_download:
-            valid_count = len([s for s in stars if StarCatalog.is_valid(s, cutout_size)])
-            corrupted_count = len([s for s in stars if StarCatalog.is_corrupted(s, cutout_size)])
+            valid_count = len([
+                s for s in stars if StarCatalog.is_valid(s, cutout_size, band=self.band)
+            ])
+            corrupted_count = len([
+                s for s in stars if StarCatalog.is_corrupted(s, cutout_size, band=self.band)
+            ])
             return {
                 'downloaded': 0,
                 'valid': valid_count,
                 'corrupted': corrupted_count,
                 'cutout_size': cutout_size,
+                'band': self.band,
             }
 
         # Resolve every star → VIS mosaic tile in ONE ADQL query (vs. one
@@ -411,24 +502,33 @@ class EuclidCutoutDownloader:
                     if not ok:
                         corrupted_star_ids.append(star_id)
 
-        # Update catalog — per-size flags
+        # Update catalog — per-(band, size) flags.
         new_valid_ids = [
             s['id'] for s in stars_with_mosaics if s['id'] not in corrupted_star_ids
         ]
         for star in catalog['stars']:
             if star['id'] in new_valid_ids:
-                StarCatalog.set_valid(star, cutout_size)
+                StarCatalog.set_valid(star, cutout_size, band=self.band)
             if star['id'] in corrupted_star_ids:
-                StarCatalog.set_corrupted(star, cutout_size)
+                StarCatalog.set_corrupted(star, cutout_size, band=self.band)
             if star['id'] in unmatched_ids:
-                StarCatalog.set_download_failed(star, cutout_size)
+                StarCatalog.set_download_failed(star, cutout_size, band=self.band)
 
         self.catalog.save(catalog)
 
-        # Final status — size-specific
-        final_valid = len([s for s in catalog['stars'] if StarCatalog.is_valid(s, cutout_size)])
-        final_corrupted = len([s for s in catalog['stars'] if StarCatalog.is_corrupted(s, cutout_size)])
-        final_failed = len([s for s in catalog['stars'] if StarCatalog.is_download_failed(s, cutout_size)])
+        # Final status — (band, size)-specific.
+        final_valid = len([
+            s for s in catalog['stars']
+            if StarCatalog.is_valid(s, cutout_size, band=self.band)
+        ])
+        final_corrupted = len([
+            s for s in catalog['stars']
+            if StarCatalog.is_corrupted(s, cutout_size, band=self.band)
+        ])
+        final_failed = len([
+            s for s in catalog['stars']
+            if StarCatalog.is_download_failed(s, cutout_size, band=self.band)
+        ])
 
         return {
             'downloaded': len(new_valid_ids),
@@ -438,4 +538,5 @@ class EuclidCutoutDownloader:
             'corrupted_ids': corrupted_star_ids,
             'unmatched_ids': sorted(unmatched_ids),
             'cutout_size': cutout_size,
+            'band': self.band,
         }

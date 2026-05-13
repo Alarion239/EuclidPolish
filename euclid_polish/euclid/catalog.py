@@ -72,124 +72,184 @@ class StarCatalog:
         """Check if the catalog file exists."""
         return os.path.exists(self.catalog_path)
 
+    # ------------------------------------------------------------------
+    # Per-(band, size) status flags
+    # ------------------------------------------------------------------
+    #
+    # The on-disk format is a doubly-nested mapping
+    #     ``star["valid"] = { band_name: { str(size): bool } }``
+    # for each of ``valid`` / ``corrupted`` / ``download_failed``. Older
+    # catalog files using the band-less shape
+    #     ``star["valid"] = { str(size): bool }``
+    # are auto-promoted: every existing entry is treated as VIS, since
+    # that was the only band the band-less downloader produced.
+
+    DEFAULT_BAND = "VIS"
+
     @staticmethod
-    def is_valid(star: dict, size: int | None = None) -> bool:
+    def _read_flag(star: dict, kind: str, band: str, size: int | None) -> bool:
+        """Generic getter for any of valid/corrupted/download_failed.
+
+        Handles legacy formats transparently. ``size is None`` returns
+        True when *any* size for ``band`` is set.
         """
-        Check whether a star has a valid cutout.
+        raw = star.get(kind, False)
+        if isinstance(raw, bool):
+            # Bare bool — applies to default band (VIS) and unknown size.
+            return bool(raw) if band == StarCatalog.DEFAULT_BAND else False
+        if not isinstance(raw, dict) or not raw:
+            return False
+        # Detect nesting depth: band → size → bool vs size → bool.
+        sample_value = next(iter(raw.values()))
+        if isinstance(sample_value, dict):
+            band_slot = raw.get(band, {})
+        else:
+            # Band-less: treat the whole mapping as the default band.
+            band_slot = raw if band == StarCatalog.DEFAULT_BAND else {}
+        if not isinstance(band_slot, dict):
+            return False
+        if size is None:
+            return any(band_slot.values())
+        return bool(band_slot.get(str(size), False))
 
-        Parameters
-        ----------
-        star : dict
-            Star entry from the catalog.
-        size : int or None
-            Cutout size to check.  If None, returns True when *any* size is valid.
+    @staticmethod
+    def _write_flag(star: dict, kind: str, band: str, size: int, value: bool) -> None:
+        """Generic setter that always writes the nested band→size structure.
 
-        Returns
-        -------
-        bool
+        Auto-promotes a band-less mapping to the new nested format under
+        the default band (VIS) before writing the new entry.
         """
-        v = star.get('valid', False)
-        if isinstance(v, dict):
-            if size is not None:
-                return v.get(str(size), False)
-            return any(v.values())
-        # Legacy bool format
-        return bool(v)
+        raw = star.get(kind, {})
+        if isinstance(raw, bool):
+            # Promote bare bool: it was treated as default-band/unknown-size,
+            # which is the same as "no info" once we move to per-(band, size)
+            # tracking.
+            raw = {}
+        if isinstance(raw, dict) and raw:
+            sample_value = next(iter(raw.values()))
+            if not isinstance(sample_value, dict):
+                # Band-less mapping → promote to {default_band: raw}.
+                raw = {StarCatalog.DEFAULT_BAND: dict(raw)}
+        band_slot = raw.get(band, {})
+        if not isinstance(band_slot, dict):
+            band_slot = {}
+        if value:
+            band_slot[str(size)] = True
+        else:
+            band_slot.pop(str(size), None)
+        if band_slot:
+            raw[band] = band_slot
+        else:
+            raw.pop(band, None)
+        if raw:
+            star[kind] = raw
+        else:
+            star.pop(kind, None)
 
     @staticmethod
-    def set_valid(star: dict, size: int) -> None:
-        """Mark a star as valid for a given cutout size, clearing any per-size
-        corruption flag at the same size (a successful re-download supersedes
-        a prior corruption record)."""
-        v = star.get('valid', {})
-        if not isinstance(v, dict):
-            v = {}
-        v[str(size)] = True
-        star['valid'] = v
-        c = star.get('corrupted')
-        if isinstance(c, dict):
-            c.pop(str(size), None)
-            if not c:
-                star.pop('corrupted', None)
+    def is_valid(star: dict, size: int | None = None,
+                 band: str = "VIS") -> bool:
+        """Return True if ``star`` has a valid cutout for ``(band, size)``.
 
-    @staticmethod
-    def valid_sizes(star: dict) -> list[int]:
-        """Return the list of cutout sizes for which this star is valid."""
-        v = star.get('valid', False)
-        if isinstance(v, dict):
-            return [int(k) for k, ok in v.items() if ok]
-        if v:
-            return []  # legacy bool — size unknown
-        return []
-
-    @staticmethod
-    def is_corrupted(star: dict, size: int | None = None) -> bool:
+        ``size=None`` → True when *any* size in ``band`` is valid.
         """
-        Check whether a star's cutout is flagged corrupted.
-
-        Legacy bool ``corrupted=True`` applies to every size (the size at which
-        corruption originally occurred is unrecoverable from a bare bool).
-        """
-        c = star.get('corrupted', False)
-        if isinstance(c, dict):
-            if size is not None:
-                return c.get(str(size), False)
-            return any(c.values())
-        return bool(c)
+        return StarCatalog._read_flag(star, "valid", band, size)
 
     @staticmethod
-    def set_corrupted(star: dict, size: int) -> None:
-        """Mark a star's cutout as corrupted at the given size, clearing any
-        validity flag at the same size."""
-        c = star.get('corrupted', {})
-        if not isinstance(c, dict):
-            c = {}
-        c[str(size)] = True
-        star['corrupted'] = c
-        v = star.get('valid')
-        if isinstance(v, dict):
-            v.pop(str(size), None)
+    def set_valid(star: dict, size: int, band: str = "VIS") -> None:
+        """Mark a star valid for ``(band, size)`` and clear any matching
+        corruption flag (a successful re-download supersedes prior failure)."""
+        StarCatalog._write_flag(star, "valid", band, size, True)
+        StarCatalog._write_flag(star, "corrupted", band, size, False)
 
     @staticmethod
-    def is_download_failed(star: dict, size: int | None = None) -> bool:
-        """Check whether download was flagged as failed at the given size."""
-        f = star.get('download_failed', False)
-        if isinstance(f, dict):
-            if size is not None:
-                return f.get(str(size), False)
-            return any(f.values())
-        return bool(f)
+    def is_corrupted(star: dict, size: int | None = None,
+                     band: str = "VIS") -> bool:
+        return StarCatalog._read_flag(star, "corrupted", band, size)
 
     @staticmethod
-    def set_download_failed(star: dict, size: int) -> None:
-        """Mark a star as having a failed download at the given size."""
-        f = star.get('download_failed', {})
-        if not isinstance(f, dict):
-            f = {}
-        f[str(size)] = True
-        star['download_failed'] = f
+    def set_corrupted(star: dict, size: int, band: str = "VIS") -> None:
+        """Mark a star's ``(band, size)`` cutout as corrupted and clear any
+        matching validity flag."""
+        StarCatalog._write_flag(star, "corrupted", band, size, True)
+        StarCatalog._write_flag(star, "valid", band, size, False)
+
+    @staticmethod
+    def is_download_failed(star: dict, size: int | None = None,
+                           band: str = "VIS") -> bool:
+        return StarCatalog._read_flag(star, "download_failed", band, size)
+
+    @staticmethod
+    def set_download_failed(star: dict, size: int, band: str = "VIS") -> None:
+        StarCatalog._write_flag(star, "download_failed", band, size, True)
+
+    @staticmethod
+    def valid_sizes(star: dict, band: str = "VIS") -> list[int]:
+        """Return the list of cutout sizes for which ``star`` is valid in ``band``."""
+        raw = star.get("valid", False)
+        if isinstance(raw, bool):
+            return []
+        if not isinstance(raw, dict) or not raw:
+            return []
+        sample_value = next(iter(raw.values()))
+        band_slot = (raw.get(band, {}) if isinstance(sample_value, dict)
+                     else (raw if band == StarCatalog.DEFAULT_BAND else {}))
+        if not isinstance(band_slot, dict):
+            return []
+        return [int(k) for k, ok in band_slot.items() if ok]
+
+    @staticmethod
+    def valid_bands(star: dict, size: int | None = None) -> list[str]:
+        """Return the list of bands for which ``star`` has a valid cutout.
+
+        ``size=None`` requires only that *some* size is valid; pass a
+        specific size to require that size."""
+        raw = star.get("valid", False)
+        if isinstance(raw, bool):
+            return [StarCatalog.DEFAULT_BAND] if raw else []
+        if not isinstance(raw, dict) or not raw:
+            return []
+        sample_value = next(iter(raw.values()))
+        if not isinstance(sample_value, dict):
+            # Band-less → default band only.
+            return [StarCatalog.DEFAULT_BAND] if any(raw.values()) else []
+        out = []
+        for band_name, sizes in raw.items():
+            if not isinstance(sizes, dict):
+                continue
+            if size is None:
+                if any(sizes.values()):
+                    out.append(band_name)
+            elif sizes.get(str(size), False):
+                out.append(band_name)
+        return out
+
+    def _has_any_flag(self, star: dict, kind: str) -> bool:
+        """True if ``star`` carries ``kind`` for any (band, size)."""
+        raw = star.get(kind, False)
+        if isinstance(raw, bool):
+            return bool(raw)
+        if not isinstance(raw, dict) or not raw:
+            return False
+        sample = next(iter(raw.values()))
+        if isinstance(sample, dict):
+            return any(any(sizes.values()) for sizes in raw.values()
+                       if isinstance(sizes, dict))
+        return any(raw.values())
 
     def get_stars_by_status(self) -> dict:
-        """
-        Categorize stars by their status.
-
-        Returns:
-        --------
-        dict
-            Dictionary with keys: 'valid', 'corrupted', 'failed', 'pending'
-            Each containing a list of stars.
-        """
+        """Categorize stars by ``any-(band, size)`` status."""
         catalog = self.load()
         stars = catalog.get('stars', [])
-
         return {
-            'valid': [s for s in stars if self.is_valid(s)],
-            'corrupted': [s for s in stars if s.get('corrupted', False)],
-            'failed': [s for s in stars if s.get('download_failed', False)],
-            'pending': [s for s in stars if not self.is_valid(s)
-                       and not s.get('corrupted', False)
-                       and not s.get('download_failed', False)],
-            'all': stars,
+            'valid':     [s for s in stars if self._has_any_flag(s, 'valid')],
+            'corrupted': [s for s in stars if self._has_any_flag(s, 'corrupted')],
+            'failed':    [s for s in stars if self._has_any_flag(s, 'download_failed')],
+            'pending':   [s for s in stars
+                          if not self._has_any_flag(s, 'valid')
+                          and not self._has_any_flag(s, 'corrupted')
+                          and not self._has_any_flag(s, 'download_failed')],
+            'all':       stars,
         }
 
     def get_star_by_id(self, star_id: int) -> Optional[dict]:
@@ -224,12 +284,13 @@ class StarCatalog:
         catalog = self.load()
         stars = catalog.get('stars', [])
 
-        valid     = [s for s in stars if self.is_valid(s)]
-        corrupted = [s for s in stars if s.get('corrupted', False)]
-        failed    = [s for s in stars if s.get('download_failed', False)]
-        pending   = [s for s in stars if not self.is_valid(s)
-                     and not s.get('corrupted', False)
-                     and not s.get('download_failed', False)]
+        valid     = [s for s in stars if self._has_any_flag(s, 'valid')]
+        corrupted = [s for s in stars if self._has_any_flag(s, 'corrupted')]
+        failed    = [s for s in stars if self._has_any_flag(s, 'download_failed')]
+        pending   = [s for s in stars
+                     if not self._has_any_flag(s, 'valid')
+                     and not self._has_any_flag(s, 'corrupted')
+                     and not self._has_any_flag(s, 'download_failed')]
 
         summary = {
             'total':    len(stars),
@@ -239,6 +300,13 @@ class StarCatalog:
             'pending':  len(pending),
             'next_id':  catalog.get('next_id', 0),
         }
+        # Per-band breakdown — most useful when a star has cutouts in some
+        # bands but not others.
+        from euclid_polish.config import Config as _Cfg
+        per_band = {}
+        for b in _Cfg.BANDS:
+            per_band[b.name] = sum(1 for s in stars if self.is_valid(s, band=b.name))
+        summary['valid_by_band'] = per_band
 
         mags = [s['magnitude'] for s in stars if s.get('magnitude') is not None]
         if mags:
@@ -274,9 +342,11 @@ class StarCatalog:
         return False
 
     def _query_bright_stars(self, ra: float, dec: float, radius: float,
-                            magnitude_limit: float, num_stars: Optional[int] = None) -> List[Dict[str, Any]]:
+                            magnitude_limit: float,
+                            num_stars: Optional[int] = None,
+                            magnitude_min: Optional[float] = None) -> List[Dict[str, Any]]:
         """
-        Query the Euclid catalog for bright stars in a region.
+        Query the Euclid catalog for stars in a region within a magnitude window.
 
         Parameters:
         -----------
@@ -287,9 +357,12 @@ class StarCatalog:
         radius : float
             Search radius (degrees).
         magnitude_limit : float
-            Magnitude limit (brighter = smaller values).
+            Faint-end cutoff (mag < magnitude_limit).
         num_stars : int, optional
             Maximum number of stars to return.
+        magnitude_min : float, optional
+            Bright-end cutoff (mag > magnitude_min). Drops bright stars
+            that would saturate the detector.
 
         Returns:
         --------
@@ -352,9 +425,11 @@ class StarCatalog:
                 # Add magnitude column
                 results_valid.add_column(np.array(magnitudes), name='vis_magnitude')
 
-                # Filter by magnitude limit
-                bright_mask = results_valid['vis_magnitude'] < magnitude_limit
-                bright_stars = results_valid[bright_mask]
+                # Filter by magnitude window: faint-end cap + optional bright-end floor
+                window_mask = results_valid['vis_magnitude'] < magnitude_limit
+                if magnitude_min is not None:
+                    window_mask &= results_valid['vis_magnitude'] > magnitude_min
+                bright_stars = results_valid[window_mask]
 
                 if len(bright_stars) == 0:
                     return []
@@ -383,9 +458,10 @@ class StarCatalog:
             return []
 
     def query_euclid_catalog(self, ra: float, dec: float, radius: float,
-                            magnitude_limit: float, num_stars: Optional[int] = None) -> Dict[str, Any]:
+                            magnitude_limit: float, num_stars: Optional[int] = None,
+                            magnitude_min: Optional[float] = None) -> Dict[str, Any]:
         """
-        Query Euclid catalog for bright stars and add to this catalog.
+        Query Euclid catalog for stars in a magnitude window and add to catalog.
 
         Parameters:
         -----------
@@ -396,15 +472,24 @@ class StarCatalog:
         radius : float
             Search radius (degrees).
         magnitude_limit : float
-            Magnitude limit for bright stars (fainter = more stars).
+            Faint-end cutoff (mag < magnitude_limit). Anything dimmer is dropped.
         num_stars : int, optional
             Maximum number of stars to add.
+        magnitude_min : float, optional
+            Bright-end cutoff (mag > magnitude_min). Anything brighter is
+            dropped — use this to exclude stars that saturate on NISP.
 
         Returns:
         --------
         dict
             Summary of changes with keys: 'added', 'skipped', 'total', 'next_id'.
         """
+        if (magnitude_min is not None
+                and magnitude_min >= magnitude_limit):
+            raise ValueError(
+                f"magnitude_min ({magnitude_min}) must be < "
+                f"magnitude_limit ({magnitude_limit}) — the window would be empty."
+            )
         catalog = self.load()
         existing_stars = catalog['stars']
         next_id = catalog['next_id']
@@ -436,6 +521,7 @@ class StarCatalog:
             radius=radius,
             magnitude_limit=magnitude_limit,
             num_stars=num_to_add,
+            magnitude_min=magnitude_min,
         )
 
         if not new_stars:
@@ -491,6 +577,7 @@ class StarCatalog:
         dec: Optional[float] = None,
         radius: Optional[float] = None,
         magnitude_limit: Optional[float] = None,
+        magnitude_min: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Query the Euclid archive for the brightest ``num_stars`` stars, sorted
@@ -508,8 +595,13 @@ class StarCatalog:
             Optional cone (degrees) to restrict the search. All three must be
             provided together; omit all to search the full mer_catalogue.
         magnitude_limit : float, optional
-            Faint-end magnitude cutoff; converted server-side to a flux lower
-            bound using ``Config.DEFAULT_VIS_ZEROPOINT``.
+            Faint-end cutoff (mag < magnitude_limit). Drops dim stars;
+            converted server-side to a flux LOWER bound via
+            ``Config.DEFAULT_VIS_ZEROPOINT``.
+        magnitude_min : float, optional
+            Bright-end cutoff (mag > magnitude_min). Drops bright stars
+            that saturate the detector (especially useful for NISP);
+            converted server-side to a flux UPPER bound.
 
         Returns
         -------
@@ -518,6 +610,12 @@ class StarCatalog:
         """
         if num_stars <= 0:
             raise ValueError("num_stars must be positive")
+        if (magnitude_min is not None and magnitude_limit is not None
+                and magnitude_min >= magnitude_limit):
+            raise ValueError(
+                f"magnitude_min ({magnitude_min}) must be < "
+                f"magnitude_limit ({magnitude_limit}) — the window would be empty."
+            )
 
         cone_given = [v is not None for v in (ra, dec, radius)]
         if any(cone_given) and not all(cone_given):
@@ -530,6 +628,9 @@ class StarCatalog:
         if magnitude_limit is not None:
             flux_min = 10 ** ((Config.DEFAULT_VIS_ZEROPOINT - magnitude_limit) / 2.5)
             where_clauses.append(f"flux_vis_1fwhm_aper > {flux_min}")
+        if magnitude_min is not None:
+            flux_max = 10 ** ((Config.DEFAULT_VIS_ZEROPOINT - magnitude_min) / 2.5)
+            where_clauses.append(f"flux_vis_1fwhm_aper < {flux_max}")
         if all(cone_given):
             where_clauses.append(
                 f"CONTAINS(POINT('ICRS', right_ascension, declination), "

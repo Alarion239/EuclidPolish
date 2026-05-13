@@ -1,0 +1,171 @@
+{% extends "base_split.html" %}
+{% block title %}Catalog · EuclidPolish{% endblock %}
+{% block heading %}Star catalog{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">View</span>
+  <a class="chip" data-group="view" data-value="positions">sky positions</a>
+  <a class="chip" data-group="view" data-value="magnitudes">magnitude histogram</a>
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  <img id="viz-img" alt="catalog view">
+  <div class="placeholder">No <code>stars.json</code> on disk yet — use a query
+    on the right to seed the catalog.</div>
+</div>
+
+{% if status.present %}
+<section class="card">
+  <h3>Summary</h3>
+  <p class="hint">Catalog: <code>{{ status.path }}</code></p>
+  <dl class="kv">
+    <dt>Total stars</dt>      <dd>{{ status.summary.total }}</dd>
+    <dt>Valid (any band)</dt> <dd>{{ status.summary.valid }}</dd>
+    <dt>Pending</dt>          <dd>{{ status.summary.pending }}</dd>
+    <dt>Corrupted</dt>        <dd>{{ status.summary.corrupted }}</dd>
+    <dt>Failed</dt>           <dd>{{ status.summary.failed }}</dd>
+    {% if status.summary.mag_min is defined %}
+      <dt>Magnitude range</dt>
+        <dd>{{ '%.2f'|format(status.summary.mag_min) }} —
+            {{ '%.2f'|format(status.summary.mag_max) }}</dd>
+    {% endif %}
+  </dl>
+</section>
+
+<section class="card">
+  <h3>Per-band validity</h3>
+  <table>
+    <tr><th>Band</th><th>Native scale</th><th>Archive id</th>
+        <th>Valid stars</th><th>Cutouts on disk</th></tr>
+    {% for b in bands %}
+      <tr>
+        <td><code>{{ b.name }}</code></td>
+        <td>{{ '%.2f'|format(b.pixel_scale_lr_arcsec) }}"</td>
+        <td><code>{{ b.archive_instrument }}{% if b.archive_filter %}/{{ b.archive_filter }}{% endif %}</code></td>
+        <td>{{ status.summary.valid_by_band[b.name] }}</td>
+        <td>
+          {% set found = (cutout_layout.bands | selectattr('name', 'eq', b.name) | list) %}
+          {% if found %}{{ found[0].count }}{% else %}0{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Authentication</h3>
+  {% if authenticated %}
+    <p>Logged in as <code>{{ current_user or 'authenticated user' }}</code>.</p>
+    <button id="logout-btn" class="secondary">Logout</button>
+  {% else %}
+    <p class="hint">Anonymous queries work for public catalogs.</p>
+    <form id="login-form" action="/auth/login">
+      <label>Username <input type="text" name="username" required></label>
+      <label>Password <input type="password" name="password" required></label>
+      <button type="submit">Login</button>
+    </form>
+  {% endif %}
+  <div id="auth-status"></div>
+</section>
+
+<section class="card">
+  <h3>Query: brightest N</h3>
+  <p class="hint">Sorts <code>mer_catalogue</code> by VIS flux server-side.
+     Set <em>min mag</em> ≈ 15 to skip stars that saturate the NISP detector.</p>
+  <form id="brightest-form" action="/catalog/query-brightest">
+    <label>Number of stars
+      <input type="number" name="num_stars" value="200" min="1" max="100000"></label>
+    <label>Min magnitude <span class="muted">(brighter rejected)</span>
+      <input type="number" step="0.1" name="magnitude_min"   placeholder="e.g. 15"></label>
+    <label>Max magnitude <span class="muted">(dimmer rejected)</span>
+      <input type="number" step="0.1" name="magnitude_limit" placeholder="e.g. 21"></label>
+    <label>Output dir
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <button type="submit">Run query</button>
+  </form>
+  <div id="brightest-status"></div>
+</section>
+
+<section class="card">
+  <h3>Query: region (cone)</h3>
+  <form id="region-form" action="/catalog/query-region">
+    <label>RA  <input type="number" step="0.01" name="ra"      value="270" required></label>
+    <label>Dec <input type="number" step="0.01" name="dec"    value="66"  required></label>
+    <label>Radius (°) <input type="number" step="0.05" name="radius" value="1" required></label>
+    <label>Min magnitude <input type="number" step="0.1" name="magnitude_min" placeholder="e.g. 15"></label>
+    <label>Max magnitude <input type="number" step="0.1" name="magnitude_limit" value="20" required></label>
+    <label>Output dir
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <button type="submit">Run query</button>
+  </form>
+  <div id="region-status"></div>
+</section>
+
+<section class="card">
+  <h3>Integrity check</h3>
+  <p class="hint">Tally valid / corrupted FITS counts per band.</p>
+  <form id="integrity-form" action="/catalog/integrity">
+    <label>Output dir
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <button type="submit">Check</button>
+  </form>
+  <div id="integrity-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  buildUrl:  (sel) => `/view/catalog?view=${sel.view}`,
+  initial:   { view: "positions" },
+});
+
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip[data-group]");
+  if (!chip) return;
+  e.preventDefault();
+  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+});
+
+function bindRun(formId, statusId) {
+  const f = document.getElementById(formId);
+  if (!f) return;
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(f, document.getElementById(statusId), {
+      onDone: () => { polishUI.viz.refresh(); setTimeout(() => location.reload(), 1800); },
+    });
+  });
+}
+bindRun("brightest-form",  "brightest-status");
+bindRun("region-form",     "region-status");
+bindRun("integrity-form",  "integrity-status");
+
+const lf = document.getElementById("login-form");
+if (lf) {
+  lf.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await fetch("/auth/login", { method: "POST", body: new FormData(lf) });
+    const d = await r.json();
+    document.getElementById("auth-status").innerHTML = d.ok
+      ? "<p>✓ Logged in.</p>" : `<p>✗ ${d.error || "failed"}</p>`;
+    if (d.ok) setTimeout(() => location.reload(), 800);
+  });
+}
+const lo = document.getElementById("logout-btn");
+if (lo) {
+  lo.addEventListener("click", async () => {
+    await fetch("/auth/logout", { method: "POST" });
+    location.reload();
+  });
+}
+</script>
+{% endblock %}

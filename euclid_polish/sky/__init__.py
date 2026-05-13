@@ -1,35 +1,74 @@
 """
-Sky Generation module for EuclidPolish.
+Multi-band sky simulation + forward model.
 
-This module provides classes for generating clean and dirty sky images,
-including PSF convolution and downsampling operations.
+Public API:
+
+* :class:`MultiBandSimulator` — generate 4-channel clean HR fields
+  (galaxies + stars + strong lenses) using the COSMOS2025 catalog and
+  the project's custom Sersic renderer.
+* :class:`MultiBandForward` — per-band PSF convolution + noise +
+  NISP→VIS-LR resample, returning paired (LR 4-channel, HR-VIS 1-channel).
+* :class:`MultiBandSkyImage` — typed container for ``(H, W, C)`` records.
+* :class:`Cosmos2025Catalog` — galaxy catalog reader (mandatory).
+* :class:`LensPopulation` — Collett 2015 lens population sampler.
 """
 
-# Types are pure dataclasses — import eagerly with no heavy deps.
-from euclid_polish.sky.types import SkyImage
+from euclid_polish.sky.multiband_generator import (
+    MultiBandSimulator,
+    MultiBandGeneratorConfig,
+)
+from euclid_polish.sky.multiband_forward import (
+    MultiBandForward,
+    MultiBandForwardConfig,
+)
+from euclid_polish.sky.cosmos2025 import (
+    CosmosCatalog,
+    Cosmos2025Catalog,
+    open_cosmos2025,
+    GalaxyParams,
+)
+from euclid_polish.sky.lens_population import (
+    LensParams,
+    LensPopulation,
+    einstein_radius_sis,
+    render_lens_to_canvas,
+    render_lens_to_multiband_canvas,
+)
+from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.sky.profiles import (
+    add_sersic_to_bands,
+    compute_sersic_stamp,
+    draw_bulge_disk,
+    draw_sersic,
+    evaluate_sersic_at_coords,
+    sersic_b_n,
+    sersic_amp_from_flux,
+)
+from euclid_polish.sky.resample import upsample, lanczos3_upsample, cubic_upsample
 
-# PSFConvolution is lightweight (numpy + scipy only) — import eagerly.
-from euclid_polish.sky.psf_convolution import PSFConvolution
-
-# CleanSkyGenerator / CleanGalaxySimulator depend on galsim and tensorflow,
-# which are slow to import.  They are loaded lazily on first access so that
-# importing this package (e.g. to get PSFConvolution) doesn't stall startup.
 __all__ = [
-    "SkyImage",
-    "CleanSkyGenerator",
-    "CleanGalaxySimulator",
-    "PSFConvolution",
+    "MultiBandSimulator",
+    "MultiBandGeneratorConfig",
+    "MultiBandForward",
+    "MultiBandForwardConfig",
+    "MultiBandSkyImage",
+    "CosmosCatalog",
+    "Cosmos2025Catalog",
+    "open_cosmos2025",
+    "GalaxyParams",
+    "LensParams",
+    "LensPopulation",
+    "einstein_radius_sis",
+    "render_lens_to_canvas",
+    "render_lens_to_multiband_canvas",
+    "add_sersic_to_bands",
+    "compute_sersic_stamp",
+    "draw_bulge_disk",
+    "draw_sersic",
+    "evaluate_sersic_at_coords",
+    "sersic_b_n",
+    "sersic_amp_from_flux",
+    "upsample",
+    "lanczos3_upsample",
+    "cubic_upsample",
 ]
-
-
-def __getattr__(name: str):
-    if name in ("CleanSkyGenerator", "CleanGalaxySimulator"):
-        from euclid_polish.sky.clean_generator import (
-            CleanSkyGenerator,
-            CleanGalaxySimulator,
-        )
-        # Cache in module globals so subsequent accesses are instant.
-        globals()["CleanSkyGenerator"] = CleanSkyGenerator
-        globals()["CleanGalaxySimulator"] = CleanGalaxySimulator
-        return globals()[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

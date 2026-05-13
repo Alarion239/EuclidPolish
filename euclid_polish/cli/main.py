@@ -18,7 +18,7 @@ from astropy.io import fits
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
-from questionary import select, confirm
+from questionary import select, confirm, checkbox
 
 
 from euclid_polish.config import Config
@@ -32,17 +32,29 @@ from euclid_polish.euclid import (
     FitsValidator,
     auth,
 )
-from euclid_polish.sky import CleanSkyGenerator
-from euclid_polish.sky.clean_generator import GeneratorConfig
-from euclid_polish.sky.psf_convolution import PSFConvolution, ConvolutionConfig
-from euclid_polish.sky.types import SkyImage
+from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.sky.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.multiband_generator import (
+    MultiBandGeneratorConfig, MultiBandSimulator,
+)
+from euclid_polish.sky.multiband_forward import (
+    MultiBandForward, MultiBandForwardConfig,
+)
 from euclid_polish.euclid.types import PSF
-from euclid_polish.training import Trainer, EuclidDataset
+from euclid_polish.euclid.psf_library import (
+    load_all_band_psfs, psf_inventory, psf_path_for_band,
+)
+from euclid_polish.training import Trainer
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
-from euclid_polish.sky.tfrecord import read_tfrecord, read_skyimages, write_skyimages, tfrecord_path
+from euclid_polish.sky.tfrecord import (
+    tfrecord_path,
+    write_multiband_skyimages,
+    read_multiband_skyimages,
+)
 
 
 class InteractiveCLI:
@@ -116,7 +128,8 @@ class InteractiveCLI:
                 {"name": "🔍 Query bright stars catalog (region)", "value": "query"},
                 {"name": "🌟 Query brightest N stars", "value": "query_brightest"},
                 {"name": "⬇️  Download cutouts", "value": "download"},
-                {"name": "✨ Extract PSF", "value": "extract_psf"},
+                {"name": "✨ Extract PSF (per band)", "value": "extract_psf"},
+                {"name": "📂 Show per-band PSF inventory", "value": "psf_inventory"},
                 {"name": "✔️  Check cutouts integrity", "value": "check"},
             ]
             if auth.is_authenticated():
@@ -141,12 +154,25 @@ class InteractiveCLI:
                 self._download_cutouts()
             elif choice == "extract_psf":
                 self._extract_psf()
+            elif choice == "psf_inventory":
+                self._show_psf_inventory()
             elif choice == "check":
                 self._check_integrity()
             elif choice == "login":
                 self._login_euclid()
             elif choice == "logout":
                 self._logout_euclid()
+
+    def _show_psf_inventory(self):
+        """Display which bands have empirical ePSF files on disk."""
+        psf_dir = input(
+            f"PSF directory (default {Config.EUCLID_PSF_DIR}): "
+        ).strip() or Config.EUCLID_PSF_DIR
+        inv = psf_inventory(psf_dir=psf_dir)
+        DisplayFormatter.print_header(f"PSF inventory @ {psf_dir}")
+        for name, path in inv.items():
+            tag = "✓ empirical" if path else "✗ Gaussian fallback"
+            print(f"  {name:5s}  {tag}  {path or ''}")
 
     def _show_catalog_info(self):
         """Show star catalog information."""
@@ -202,6 +228,9 @@ class InteractiveCLI:
         dec = input("Enter Dec (degrees, -90 to 90, default 66): ").strip() or "66"
         radius = input("Enter radius (degrees, default 1): ").strip() or "1"
         magnitude = input("Enter magnitude limit (default 20): ").strip() or "20"
+        magnitude_min_raw = input(
+            "Bright-end cutoff — min magnitude (Enter to skip; e.g. 15 to drop saturating stars): "
+        ).strip()
 
         # Validate inputs
         ra_valid = ValidationResult.validate_ra(ra)
@@ -229,9 +258,19 @@ class InteractiveCLI:
         dec_val = float(dec)
         radius_val = float(radius)
         mag_val = float(magnitude)
+        mag_min_val = None
+        if magnitude_min_raw:
+            mmv = ValidationResult.validate_positive_number(magnitude_min_raw, "Min magnitude")
+            if mmv is not True:
+                print(f"\n✗ {mmv}")
+                return
+            mag_min_val = float(magnitude_min_raw)
 
         if confirm("\nQuery Euclid catalog with these parameters?", default=True).ask():
-            print(f"\nQuerying RA={ra_val:.1f}°, Dec={dec_val:.1f}°, radius={radius_val}°, mag<{mag_val}...")
+            window = f"mag<{mag_val}"
+            if mag_min_val is not None:
+                window = f"{mag_min_val} < mag < {mag_val}"
+            print(f"\nQuerying RA={ra_val:.1f}°, Dec={dec_val:.1f}°, radius={radius_val}°, {window}...")
 
             try:
                 catalog = StarCatalog(output_dir)
@@ -240,6 +279,7 @@ class InteractiveCLI:
                     dec=dec_val,
                     radius=radius_val,
                     magnitude_limit=mag_val,
+                    magnitude_min=mag_min_val,
                 )
 
                 print(f"\n{result['message']}")
@@ -259,7 +299,7 @@ class InteractiveCLI:
                 traceback.print_exc()
 
     def _download_cutouts(self):
-        """Download Euclid cutouts."""
+        """Download Euclid cutouts for one or more bands."""
         output_dir = select(
             "Select output directory:",
             choices=[
@@ -279,31 +319,44 @@ class InteractiveCLI:
                 self._query_catalog()
             return
 
-        cutout_size_input = input(f"Enter cutout size in pixels (default {Config.DEFAULT_CUTOUT_SIZE}): ").strip()
-        cutout_size = int(cutout_size_input) if cutout_size_input else Config.DEFAULT_CUTOUT_SIZE
-
-        # Per-size breakdown — every status field is size-specific
-        catalog_data = catalog.load()
-        stars = catalog_data.get('stars', [])
-        total = len(stars)
-        valid_for_size = sum(1 for s in stars if StarCatalog.is_valid(s, cutout_size))
-        corrupted_for_size = sum(1 for s in stars if StarCatalog.is_corrupted(s, cutout_size))
-        failed_for_size = sum(1 for s in stars if StarCatalog.is_download_failed(s, cutout_size))
-        pending_for_size = total - valid_for_size - corrupted_for_size - failed_for_size
-
-        print(f"\n📊 Catalog contains {total} stars (size {cutout_size}):")
-        print(f"  Valid: {valid_for_size}")
-        print(f"  Corrupted: {corrupted_for_size}")
-        print(f"  Failed: {failed_for_size}")
-        print(f"  Pending: {pending_for_size}")
-
-        if pending_for_size <= 0:
-            print(f"\n✓ Nothing to download — all stars are accounted for at size {cutout_size}")
+        # --- Band selection (multi-select; default = all 4) ---
+        band_options = [
+            {"name": f"{b.name}  ({b.archive_instrument}"
+                      + (f"/{b.archive_filter}" if b.archive_filter else "")
+                      + f", {b.pixel_scale_lr_arcsec}\"/pix)",
+             "value": b.name,
+             "checked": True}
+            for b in Config.BANDS
+        ]
+        selected_bands = checkbox(
+            "Select bands to download (space to toggle, enter to confirm):",
+            choices=band_options,
+        ).ask()
+        if not selected_bands:
+            print("\n(no bands selected — aborting)")
             return
+
+        # Size is requested as *VIS pixels* (0.10"/pix), so it maps to a
+        # fixed angular field for every band. Each band's native pixel
+        # count is derived internally — NISP fetches fewer pixels than
+        # VIS to cover the same patch of sky.
+        cutout_size_input = input(
+            f"Enter cutout size in VIS pixels (0.10\"/pix; "
+            f"default {Config.DEFAULT_CUTOUT_SIZE}): "
+        ).strip()
+        cutout_size_vis = int(cutout_size_input) if cutout_size_input else Config.DEFAULT_CUTOUT_SIZE
+        arcsec_side = cutout_size_vis * Config.BAND_VIS.pixel_scale_lr_arcsec
+        per_band_native = {
+            name: Config.get_band(name).cutout_size_for_arcsec(arcsec_side)
+            for name in selected_bands
+        }
+        print(f"  → angular field side = {arcsec_side:.2f}\"")
+        print(f"  → native pixel counts: " + ", ".join(
+            f"{name}={n}" for name, n in per_band_native.items()))
 
         default_workers = DownloadConfig.max_workers
         workers_input = input(
-            f"Parallel workers (default {default_workers}, ESA fair-use ~8): "
+            f"Parallel workers per band (default {default_workers}, ESA fair-use ~8): "
         ).strip()
         try:
             max_workers = int(workers_input) if workers_input else default_workers
@@ -311,58 +364,110 @@ class InteractiveCLI:
             print(f"  ⚠️  Invalid workers value, using default ({default_workers})")
             max_workers = default_workers
 
-        config = DownloadConfig(
-            cutout_size=cutout_size,
-            max_workers=max_workers,
-        )
+        # --- Pre-flight summary: pending per (band, native_size) ---
+        catalog_data = catalog.load()
+        stars = catalog_data.get('stars', [])
+        total = len(stars)
+        print(f"\n📊 Catalog: {total} stars  |  field = {arcsec_side:.2f}\" "
+              f"(= {cutout_size_vis} VIS px)")
+        any_pending = False
+        for band_name in selected_bands:
+            native_size = per_band_native[band_name]
+            v = sum(1 for s in stars if StarCatalog.is_valid(s, native_size, band=band_name))
+            c = sum(1 for s in stars if StarCatalog.is_corrupted(s, native_size, band=band_name))
+            f = sum(1 for s in stars if StarCatalog.is_download_failed(s, native_size, band=band_name))
+            p = total - v - c - f
+            mark = "—" if p <= 0 else f"{p} to fetch"
+            print(f"  {band_name:5s}  native_size={native_size:4d}  "
+                  f"valid={v:5d}  corrupted={c:3d}  failed={f:3d}  pending={mark}")
+            if p > 0:
+                any_pending = True
 
-        downloader = EuclidCutoutDownloader(catalog, config)
+        if not any_pending:
+            print(f"\n✓ Nothing to download — every selected band has all stars accounted for "
+                  f"at this field size")
+            return
 
         if not confirm(
-            f"\nDownload cutouts for up to {pending_for_size} stars (size {cutout_size}, {max_workers} parallel)?",
+            f"\nDownload cutouts for selected bands ({', '.join(selected_bands)}, "
+            f"{arcsec_side:.2f}\" field, {max_workers} parallel/band)?",
             default=True,
         ).ask():
             return
 
-        # Download
+        # --- Loop over bands; one downloader instance per band ---
         try:
-            print("\nDownloading...")
-            result = downloader.download(show_progress=True)
+            band_results = {}
+            for band_name in selected_bands:
+                native_size = per_band_native[band_name]
+                print(f"\n=== {band_name}  (native_size = {native_size}) ===")
+                cfg = DownloadConfig.for_band(
+                    band_name,
+                    cutout_size_vis_pixels=cutout_size_vis,
+                    max_workers=max_workers,
+                )
+                downloader = EuclidCutoutDownloader(catalog, cfg)
+                result = downloader.download(show_progress=True)
+                band_results[band_name] = result
+                print(f"  → downloaded {result['downloaded']}, "
+                      f"valid={result['valid']}, corrupted={result['corrupted']}, "
+                      f"failed={result.get('failed', 0)}")
 
-            print(f"\n✓ Download completed (size {result.get('cutout_size', cutout_size)}):")
-            print(f"  Downloaded: {result['downloaded']}")
-            print(f"  Valid: {result['valid']}")
-            print(f"  Corrupted: {result['corrupted']}")
-            if result.get('failed'):
-                print(f"  Failed (no tile): {result['failed']}")
+            # Summary
+            print(f"\n✓ Multi-band download complete ({arcsec_side:.2f}\" field):")
+            for band_name, r in band_results.items():
+                print(f"  {band_name:5s}  size={per_band_native[band_name]:4d}  "
+                      f"+{r['downloaded']:4d}  "
+                      f"(valid={r['valid']}, corrupted={r['corrupted']}, "
+                      f"failed={r.get('failed', 0)})")
 
-            if result.get('corrupted_ids'):
-                print(f"\n⚠️  Corrupted star IDs: {result['corrupted_ids']}")
-            if result.get('unmatched_ids'):
-                print(f"\n⚠️  Unmatched star IDs (no VIS tile): {result['unmatched_ids']}")
+            # Report bands with failures
+            for band_name, r in band_results.items():
+                if r.get('corrupted_ids'):
+                    print(f"\n⚠️  {band_name}: corrupted star ids = {r['corrupted_ids']}")
+                if r.get('unmatched_ids'):
+                    print(f"⚠️  {band_name}: no tile coverage for ids = {r['unmatched_ids']}")
 
         except Exception as e:
             print(f"\n✗ Download failed: {e}")
             traceback.print_exc()
 
     def _extract_psf(self):
-        """Extract PSF from cutouts."""
-        output_dir = select(
-            "Select output directory:",
+        """Extract PSF from cutouts for a chosen band (VIS / Y_E / J_E / H_E)."""
+        # Choose band first — drives default cutout dir + output filename.
+        band_choices = [
+            {"name": f"VIS  (0.10\"/pix, FWHM≈{Config.BAND_VIS.psf_fwhm_arcsec}\")",  "value": "VIS"},
+            {"name": f"Y_E  (0.30\"/pix, FWHM≈{Config.BAND_Y_E.psf_fwhm_arcsec}\")",  "value": "Y_E"},
+            {"name": f"J_E  (0.30\"/pix, FWHM≈{Config.BAND_J_E.psf_fwhm_arcsec}\")",  "value": "J_E"},
+            {"name": f"H_E  (0.30\"/pix, FWHM≈{Config.BAND_H_E.psf_fwhm_arcsec}\")",  "value": "H_E"},
+        ]
+        band_name = select("Select band:", choices=band_choices).ask()
+        if band_name is None:
+            return
+        band = Config.get_band(band_name)
+
+        # New layout: data/euclid_stars/cutouts/<band>/. Falls back to the
+        # legacy flat VIS layout if no per-band subdir exists yet.
+        default_cutout_dir = Config.cutout_dir_for_band(band_name)
+        if not os.path.isdir(default_cutout_dir) and band_name == "VIS":
+            legacy = os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts")
+            if os.path.isdir(legacy):
+                default_cutout_dir = legacy
+
+        cutout_dir_choice = select(
+            "Select cutout source directory:",
             choices=[
-                {"name": "./data/euclid_stars (default)", "value": "./data/euclid_stars"},
+                {"name": f"{default_cutout_dir} (default for {band_name})",
+                 "value": default_cutout_dir},
                 {"name": "Custom path...", "value": "custom"},
             ]
         ).ask()
-
-        if output_dir == "custom":
-            output_dir = input("Enter path: ").strip()
-
-        cutout_dir = f"{output_dir}/cutouts"
+        cutout_dir = (input("Enter path: ").strip()
+                      if cutout_dir_choice == "custom" else cutout_dir_choice)
         psf_dir = select(
             "Select PSF output directory:",
             choices=[
-                {"name": "./data/euclid_psf (default)", "value": "./data/euclid_psf"},
+                {"name": f"{Config.EUCLID_PSF_DIR} (default)", "value": Config.EUCLID_PSF_DIR},
                 {"name": "Custom path...", "value": "custom"},
             ]
         ).ask()
@@ -409,13 +514,34 @@ class InteractiveCLI:
         else:
             psf_size = default_psf_size
 
-        # Configure PSF extractor
+        # Optional explicit output size (in oversampled pixels). Even values
+        # are bumped to odd — e.g. user types 1024 → output PSF is 1023×1023.
+        output_size_input = input(
+            "Output PSF size in oversampled pixels "
+            "(blank = photutils default, e.g. 1024 → 1023 odd): "
+        ).strip()
+        output_size: int | None
+        if output_size_input:
+            try:
+                output_size = int(output_size_input)
+                if output_size <= 0:
+                    print(f"\n✗ Output size must be positive, got {output_size}")
+                    return
+            except ValueError:
+                print("\n✗ Invalid output size: must be an integer")
+                return
+        else:
+            output_size = None
+
         config = PSFExtractionConfig(
             psf_size=psf_size,
+            output_size=output_size,
+            oversampling=band.epsf_oversampling,
             progress_bar=True,
         )
-
         extractor = PSFExtractor(config)
+        print(f"  oversampling = {config.oversampling}  →  ePSF pixel "
+              f"scale = {band.epsf_pixel_scale_arcsec:.4f}\"/pix")
 
         # Get cutout files filtered to the requested size
         all_files = extractor.get_cutout_files(cutout_dir, cutout_size=cutout_size)
@@ -439,25 +565,28 @@ class InteractiveCLI:
         if not confirm(f"\nExtract PSF from {len(selected_files)} cutouts?", default=True).ask():
             return
 
-        # Extract PSF
+        # Extract PSF — pixel scale and output filename are band-specific.
         try:
             epsf, fitted_stars = extractor.build_epsf(selected_files)
-            epsf_pixel_scale = Config.VIS_PIXEL_SCALE_ARCSEC / config.oversampling
+            # Saved ePSF lives at 0.05"/pix for every band via the
+            # band-specific oversampling factor set above.
+            epsf_pixel_scale = band.epsf_pixel_scale_arcsec
             psf = extractor.to_psf(epsf_pixel_scale)
-            fits_path = psf.save(psf_dir)
+            fits_path = psf.save(psf_dir, filename=band.psf_fits_filename)
 
-            print(f"\n✓ PSF extraction completed!")
+            print(f"\n✓ PSF extraction completed for band {band_name}!")
             print(f"  FITS file: {fits_path}")
 
-            # Show summary
             summary = extractor.get_summary()
             print(f"\nPSF Summary:")
             print(f"  Shape: {summary['shape']}")
+            print(f"  Pixel scale: {epsf_pixel_scale:.4f} arcsec/pix")
             print(f"  Oversampling: {summary['oversampling']}")
             print(f"  Data type: {summary['data_type']}")
 
         except Exception as e:
             print(f"\n✗ PSF extraction failed: {e}")
+            traceback.print_exc()
 
     def _check_integrity(self):
         """Check cutouts integrity."""
@@ -644,6 +773,19 @@ class InteractiveCLI:
                 return
             mag_val = float(mag)
 
+        use_mag_min = confirm(
+            "Apply bright-end magnitude cutoff (skip saturating stars)?",
+            default=False,
+        ).ask()
+        mag_min_val = None
+        if use_mag_min:
+            mag_min = input("Min magnitude (brighter than this rejected, e.g. 15): ").strip()
+            check = ValidationResult.validate_positive_number(mag_min, "Min magnitude")
+            if check is not True:
+                DisplayFormatter.print_error(check)
+                return
+            mag_min_val = float(mag_min)
+
         if not auth.is_authenticated():
             print("\n⚠️  Not logged in: async job results are still fetched now, but")
             print("    the job record is garbage-collected after 72h on the server.")
@@ -661,6 +803,7 @@ class InteractiveCLI:
                 dec=dec_val,
                 radius=radius_val,
                 magnitude_limit=mag_val,
+                magnitude_min=mag_min_val,
             )
             print(f"\n{result['message']}")
             if result.get('skipped', 0) > 0:
@@ -692,24 +835,37 @@ class InteractiveCLI:
                 self._convolve_hr_to_lr()
 
     def _convolve_hr_to_lr(self):
-        """Convolve HR images to LR (dirty sky)."""
-        default_psf = os.path.join(Config.EUCLID_PSF_DIR, Config.DEFAULT_PSF_FITS_FILENAME)
-        psf_path = input(f"PSF file path (default {default_psf}): ").strip() or default_psf
+        """Apply the multi-band forward model: HR 4-channel → LR 4-channel + HR-VIS target."""
+        psf_dir = input(
+            f"PSF directory (default {Config.EUCLID_PSF_DIR}): "
+        ).strip() or Config.EUCLID_PSF_DIR
 
-        if not os.path.exists(psf_path):
-            print(f"\n✗ PSF file not found: {psf_path}")
+        # Show PSF inventory so the user knows which bands use empirical vs Gaussian.
+        inv = psf_inventory(psf_dir=psf_dir)
+        print("\nPSF inventory:")
+        for name, path in inv.items():
+            status = f"empirical ({path})" if path else "Gaussian fallback"
+            print(f"  {name}: {status}")
+
+        require_emp_raw = input(
+            "Require empirical PSF for every band? (y/n, default n): "
+        ).strip().lower() or "n"
+        require_empirical = require_emp_raw.startswith("y")
+
+        try:
+            psfs = load_all_band_psfs(
+                psf_dir=psf_dir,
+                require_empirical=require_empirical,
+                target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            )
+        except FileNotFoundError as e:
+            print(f"\n✗ {e}")
             return
 
-        # Load PSF with metadata
-        print(f"\nLoading PSF from {psf_path}...")
-        psf_kernel = PSF.from_fits(psf_path)
-
-        print(f"  PSF shape: {psf_kernel.shape}, pixel_scale: {psf_kernel.pixel_scale} arcsec/pix")
-
-        # Discover which subsets have clean TFRecords
+        # Discover which subsets have v2 clean TFRecords.
         subsets_to_run = []
         for subset in ("train", "validate"):
-            clean_path = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
+            clean_path = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
             if os.path.exists(clean_path):
                 n_images = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
                 subsets_to_run.append((subset, clean_path, n_images))
@@ -717,91 +873,75 @@ class InteractiveCLI:
                 print(f"  ⚠️  Skipping {subset}: {clean_path} not found")
 
         if not subsets_to_run:
-            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No clean v2 TFRecords found in {Config.RECORDS_DIR_V2}")
             return
 
-        print(f"\nSource: {Config.RECORDS_DIR}")
-        print(
-            f"  Noise: Euclid VIS — Poisson(signal+sky+dark) + Gaussian read "
-            f"({Config.N_EXPOSURES}×{Config.EXPOSURE_TIME_S:.0f}s, "
-            f"σ_read={Config.READ_NOISE_E}e⁻, sky={Config.SKY_MAG_AB_ARCSEC2:.2f}mag/arcsec²)"
-        )
-        print(f"  Output: raw float32 electrons (model applies tanh internally)")
-        print(f"  Rebin factor: {Config.DEFAULT_REBIN_FACTOR}x")
+        print(f"\nSource: {Config.RECORDS_DIR_V2}")
         for subset, _, n_images in subsets_to_run:
-            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord  ({n_images} images)")
+            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
+        print(f"  Noise: per-band Poisson + Gaussian read for VIS / Y_E / J_E / H_E")
+        print(f"  NISP→VIS-LR resample: {Config.NISP_RESAMPLE_KERNEL}")
+        print(f"  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS,) @ 0.05\"/pix")
 
-        if not confirm(f"\nConvolve {total} images (train+validate) to dirty LR?", default=True).ask():
+        if not confirm(f"\nRun forward model on {total} images?", default=True).ask():
             return
 
-        convolver = PSFConvolution(ConvolutionConfig(
-            rebin_factor=Config.DEFAULT_REBIN_FACTOR,
-            add_noise=Config.DEFAULT_ADD_NOISE,
-        ))
-
-        all_viz_pairs = []
+        forward = MultiBandForward(
+            psfs_by_band=psfs,
+            config=MultiBandForwardConfig(add_noise=True),
+        )
 
         for subset, clean_file, n_images in subsets_to_run:
-            dirty_path = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
-
-            # Read all clean records first so the writer doesn't race the reader.
-            clean_records = list(tqdm(
+            rng = np.random.default_rng(
+                0xEC11D + (1 if subset == "validate" else 0)
+            )
+            records = list(tqdm(
                 tf.data.TFRecordDataset(clean_file),
                 total=n_images, desc=f"Loading {subset}",
             ))
-
-            dirty_writer = tf.io.TFRecordWriter(dirty_path)
+            lr_imgs, hr_imgs = [], []
             n_ok = n_err = 0
-            viz_pairs = []
 
-            try:
-                for raw_record in tqdm(clean_records, desc=f"Convolving {subset}"):
-                    try:
-                        hr_image = SkyImage.from_tfrecord(raw_record)
+            for raw in tqdm(records, desc=f"Forward {subset}", unit="img"):
+                try:
+                    hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                    lr, hr = forward.process(hr_4ch, rng=rng)
+                    lr_imgs.append(lr)
+                    hr_imgs.append(hr)
+                    n_ok += 1
+                except Exception as e:
+                    n_err += 1
+                    tqdm.write(f"  ✗ Skipping record (error: {e})")
 
-                        lr, hr = convolver.process_hr_to_lr(hr_image, psf_kernel)
-
-                        dirty_writer.write(lr.to_tfrecord())
-
-                        if len(viz_pairs) < 10:
-                            viz_pairs.append((hr.data, lr.data, hr_image.index or n_ok))
-                        n_ok += 1
-
-                    except Exception as e:
-                        n_err += 1
-                        tqdm.write(f"  ✗ Skipping record (error: {e})")
-            finally:
-                dirty_writer.close()
-
-            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped")
-            print(f"    Output: dirty_{subset}.tfrecord (raw float32 electrons)")
-            all_viz_pairs.append((subset, viz_pairs))
-
-        all_pairs = [pair for _, pairs in all_viz_pairs for pair in pairs]
-        if all_pairs:
-            if confirm("\nVisualize sample HR/LR pairs?", default=True).ask():
-                chosen = np.random.default_rng(42).permutation(len(all_pairs))[:5]
-                os.makedirs(Config.VIS_DIRTY_DIR, exist_ok=True)
-                for i in chosen:
-                    hr_data, lr_data, index = all_pairs[i]
-                    draw_clean_dirty_pair(hr_data, lr_data,
-                                          os.path.join(Config.VIS_DIRTY_DIR, f'pair_{index:05d}.png'),
-                                          index=index)
-                print(f"  ✓ {len(chosen)} pair plots → {Config.VIS_DIRTY_DIR}")
+            # Overwrite clean_{subset} with the 1-channel VIS HR target the
+            # network consumes (the 4-channel HR is an intermediate product).
+            write_multiband_skyimages(
+                hr_imgs, f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2,
+            )
+            write_multiband_skyimages(
+                lr_imgs, f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2,
+            )
+            print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → "
+                  f"clean_{subset}.tfrecord (HR-VIS) + dirty_{subset}.tfrecord (LR 4-ch)")
 
     def _generate_clean_data(self):
-        """Generate clean sky data."""
-        catalog_path = input(f"Enter path to COSMOS catalog (default {Config.DEFAULT_COSMOS_CATALOG_DIR}): ").strip() or Config.DEFAULT_COSMOS_CATALOG_DIR
-
-        if not os.path.exists(catalog_path):
-            print(f"\n✗ Catalog not found: {catalog_path}")
+        """Generate 4-band clean HR sky data using the COSMOS2025 catalog."""
+        catalog_path = input(
+            f"COSMOS2025 catalog FITS (default {Config.COSMOS2025_CATALOG_PATH}): "
+        ).strip() or Config.COSMOS2025_CATALOG_PATH
+        if not os.path.isfile(catalog_path):
+            print(f"\n✗ COSMOS2025 catalog not found at {catalog_path}. "
+                  f"The pipeline requires the real Shuntov+ 2025 master catalog.")
             return
 
         ntrain     = input(f"Number of training images (default {Config.DEFAULT_NIMAGES}): ").strip() or str(Config.DEFAULT_NIMAGES)
         nvalid     = input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip() or str(Config.DEFAULT_NIMAGES // 5)
-        pixel_scale = input(f"Pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip() or str(Config.DEFAULT_PIXEL_SCALE)
-        image_size  = input(f"Image size in pixels (default {Config.DEFAULT_IMAGE_SIZE}): ").strip() or str(Config.DEFAULT_IMAGE_SIZE)
+        pixel_scale = input(f"HR pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip() or str(Config.DEFAULT_PIXEL_SCALE)
+        image_size  = input(
+            f"HR image side in pixels (prefer a multiple of 6 to avoid edge trim; "
+            f"default 252): "
+        ).strip() or "252"
 
         try:
             ntrain_val      = int(ntrain)
@@ -812,54 +952,54 @@ class InteractiveCLI:
             print("\n✗ Invalid input: values must be numbers")
             return
 
-        print(f"\nConfiguration:")
-        print(f"  COSMOS catalog:    {catalog_path}")
+        if image_size_val % 6 != 0:
+            trimmed = (image_size_val // 6) * 6
+            lost = image_size_val - trimmed
+            print(f"\nNote: image-size {image_size_val} is not divisible by 6. "
+                  f"The forward model will use HR={trimmed}² (drops {lost} "
+                  f"pixel{'s' if lost != 1 else ''} on each axis at the trailing "
+                  f"edge); nearest no-trim sizes are {trimmed} or {trimmed + 6}.")
+
+        print(f"\nConfiguration (multi-band, v2 schema):")
+        print(f"  Catalog:           {catalog_path}")
         print(f"  Training images:   {ntrain_val}")
         print(f"  Validation images: {nvalid_val}")
-        print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix")
-        print(f"  Image size:        {image_size_val} x {image_size_val}")
-        print(f"  Output (TFRecord): {Config.RECORDS_DIR}/")
+        print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix (HR)")
+        print(f"  Image size:        {image_size_val} x {image_size_val} (4 channels)")
+        print(f"  Output (TFRecord): {Config.RECORDS_DIR_V2}/")
         print(f"    clean_train.tfrecord")
         print(f"    clean_validate.tfrecord")
 
-        if not confirm("\nGenerate clean sky data?", default=True).ask():
+        if not confirm("\nGenerate clean multi-band sky data?", default=True).ask():
             return
 
         try:
-            catalog, catalog_file, catalog_dir = CleanSkyGenerator.resolve_cosmos_catalog(catalog_path)
-            print(f"\nCOSMOS catalog loaded: {catalog.nobjects} objects")
+            catalog = open_cosmos2025(path=catalog_path)
+            print(f"\nCatalog: {type(catalog).__name__} — {len(catalog)} galaxies usable")
 
-            config = GeneratorConfig(
+            cfg = MultiBandGeneratorConfig(
                 image_size=image_size_val,
                 pixel_scale=pixel_scale_val,
             )
-            generator = CleanSkyGenerator(config)
+            sim = MultiBandSimulator(catalog, cfg)
+            os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
 
-            print("\nGenerating training set...")
-            images_train, _ = generator.generate(
-                catalog=catalog,
-                subset='train',
-                nimages=ntrain_val,
-                nstart=0,
-            )
+            for subset, n, seed_start in (("train", ntrain_val, 0),
+                                          ("validate", nvalid_val, ntrain_val)):
+                print(f"\nGenerating {subset} set ({n} images)...")
+                imgs = []
+                for i in tqdm(range(n), desc=subset):
+                    rng = np.random.default_rng(seed_start + i)
+                    sky, _ = sim.simulate_field(rng)
+                    sky.index = i
+                    sky.subset = subset
+                    imgs.append(sky)
+                path = write_multiband_skyimages(
+                    imgs, f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2,
+                )
+                print(f"  ✓ {path}")
 
-            print("\nGenerating validation set...")
-            images_valid, _ = generator.generate(
-                catalog=catalog,
-                subset='validate',
-                nimages=nvalid_val,
-                nstart=ntrain_val,  # different seeds from training
-            )
-
-            # Store raw float32 electron counts (over the stacked integration).
-            # The model applies tanh internally; no on-disk normalization.
-            write_skyimages(images_train, 'clean_train')
-            print(f"  ✓ clean_train.tfrecord → {Config.RECORDS_DIR}")
-
-            write_skyimages(images_valid, 'clean_validate')
-            print(f"  ✓ clean_validate.tfrecord → {Config.RECORDS_DIR}")
-
-            print("\n✓ Clean data generation completed!")
+            print("\n✓ Multi-band clean data generation completed!")
 
         except Exception as e:
             print(f"\n✗ Generation failed: {e}")
@@ -895,7 +1035,7 @@ class InteractiveCLI:
                 self._plot_training_log()
 
     def _train_model(self):
-        """Train WDSR model."""
+        """Train WDSR model on multi-band (4-channel LR → 1-channel VIS HR) data."""
         scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
         num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
         checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
@@ -913,18 +1053,18 @@ class InteractiveCLI:
             print("\n✗ Invalid input: all values must be integers")
             return
 
-        # Check that training TFRecords exist
-        clean_train = tfrecord_path(Config.RECORDS_DIR, "clean_train")
-        dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
+        records_dir = Config.RECORDS_DIR_V2
+        clean_train = tfrecord_path(records_dir, "clean_train")
+        dirty_train = tfrecord_path(records_dir, "dirty_train")
 
         if not os.path.exists(clean_train) or not os.path.exists(dirty_train):
-            print(f"\n✗ Training data not found in {Config.RECORDS_DIR}")
-            print("  Run clean sky generation and HR→LR convolution first.")
+            print(f"\n✗ Training data not found in {records_dir}")
+            print("  Run multi-band clean sky generation and HR→LR forward first.")
             return
 
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        dirty_valid = tfrecord_path(records_dir, "dirty_validate")
         if not os.path.exists(dirty_valid):
-            print(f"\n⚠️  No validation data in {Config.RECORDS_DIR} — will train without validation")
+            print(f"\n⚠️  No validation data in {records_dir} — will train without validation")
 
         print(f"\nConfiguration:")
         print(f"  Scale: {scale_val}x")
@@ -932,14 +1072,22 @@ class InteractiveCLI:
         print(f"  Training steps: {steps_val}")
         print(f"  Batch size: {batch_size_val}")
         print(f"  Evaluate every: {evaluate_every_val} steps")
-        print(f"  Records: {Config.RECORDS_DIR}")
+        print(f"  Records: {records_dir}")
         print(f"  Checkpoint directory: {checkpoint_dir}")
+        print(f"  Input channels: {Config.NUM_LR_CHANNELS} "
+              f"({', '.join(Config.LR_INPUT_BAND_NAMES)})")
+        print(f"  Output channels: {Config.NUM_HR_CHANNELS} ({Config.HR_TARGET_BAND_NAME})")
 
         if confirm("\nStart training?", default=True).ask():
             print("\n⚠️  Training will run until interrupted (Ctrl+C) or completion")
 
             try:
-                model = wdsr(scale=scale_val, num_res_blocks=num_res_blocks_val, nchan=1)
+                model = wdsr(
+                    scale=scale_val,
+                    num_res_blocks=num_res_blocks_val,
+                    nchan_in=Config.NUM_LR_CHANNELS,
+                    nchan_out=Config.NUM_HR_CHANNELS,
+                )
 
                 learning_rate = PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4])
                 trainer = Trainer(
@@ -949,17 +1097,13 @@ class InteractiveCLI:
                     checkpoint_dir=checkpoint_dir,
                 )
 
-                train_loader = EuclidDataset(
-                    scale=scale_val,
-                    subset='train',
+                train_loader = MultiBandEuclidDataset(
+                    scale=scale_val, subset='train', records_dir=records_dir,
+                )
+                valid_loader = MultiBandEuclidDataset(
+                    scale=scale_val, subset='validate', records_dir=records_dir,
                 )
 
-                valid_loader = EuclidDataset(
-                    scale=scale_val,
-                    subset='validate',
-                )
-
-                # Create datasets
                 train_ds = train_loader.dataset(batch_size=batch_size_val, random_transform=True)
                 valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
@@ -1008,19 +1152,26 @@ class InteractiveCLI:
             print(f"\n✗ No checkpoints found in {checkpoint_dir}")
             return
 
-        # Check that validation TFRecords exist
-        dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
+        # Check that validation TFRecords exist (v2 multi-band)
+        records_dir = Config.RECORDS_DIR_V2
+        dirty_valid = tfrecord_path(records_dir, "dirty_validate")
         if not os.path.exists(dirty_valid):
-            print(f"\n✗ No validation data found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No validation data found in {records_dir}")
             return
 
         try:
             from euclid_polish.training.inference import load_model_from_checkpoint
 
             print(f"\nLoading model from {checkpoint_dir}...")
-            model = load_model_from_checkpoint(checkpoint_dir, scale_val, num_res_blocks_val)
+            model = load_model_from_checkpoint(
+                checkpoint_dir, scale_val, num_res_blocks_val,
+                nchan_in=Config.NUM_LR_CHANNELS,
+                nchan_out=Config.NUM_HR_CHANNELS,
+            )
 
-            valid_loader = EuclidDataset(scale=scale_val, subset='validate')
+            valid_loader = MultiBandEuclidDataset(
+                scale=scale_val, subset='validate', records_dir=records_dir,
+            )
             valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
             print("Evaluating on validation set...")
@@ -1080,7 +1231,8 @@ class InteractiveCLI:
             print("  ⚠️  Invalid window, using 0")
             smooth_window = 0
 
-        output_path = os.path.join(checkpoint_dir, "training_log.png")
+        os.makedirs(Config.VIS_DIR, exist_ok=True)
+        output_path = os.path.join(Config.VIS_DIR, "training_log.png")
         try:
             n, last_step = plot_training_log(log_path, output_path, smooth_window=smooth_window)
             print(f"\n✓ Plotted {n} evaluations (last step: {last_step})")
@@ -1117,7 +1269,7 @@ class InteractiveCLI:
             except ValueError:
                 print("\n✗ Invalid number")
                 return
-            images = read_skyimages(tfr_path, num_images=9999)
+            images = read_multiband_skyimages(tfr_path, num_images=9999)
             if not images:
                 print(f"\n✗ No images found in {tfr_path}")
                 return
@@ -1130,7 +1282,7 @@ class InteractiveCLI:
             clean_file = tfr_path.replace("dirty_", "clean_")
             chosen_hr = [None] * num_reconstruct
             if os.path.exists(clean_file):
-                clean_images = read_skyimages(clean_file, num_images=9999)
+                clean_images = read_multiband_skyimages(clean_file, num_images=9999)
                 clean_by_idx = {img.index: img for img in clean_images}
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
@@ -1177,14 +1329,21 @@ class InteractiveCLI:
                     print(f"\n✗ No checkpoints found in {ckpt_dir}")
                     return
                 print(f"\nLoading model from checkpoint {ckpt_dir}...")
-                model = load_model_from_checkpoint(ckpt_dir, scale_val, num_res_blocks_val)
+                model = load_model_from_checkpoint(
+                    ckpt_dir, scale_val, num_res_blocks_val,
+                    nchan_in=Config.NUM_LR_CHANNELS,
+                    nchan_out=Config.NUM_HR_CHANNELS,
+                )
             else:
                 weights_path = input("Path to .h5 weights file: ").strip()
                 if not weights_path or not os.path.exists(weights_path):
                     print(f"\n✗ Weights file not found: {weights_path}")
                     return
                 print(f"\nLoading model from {weights_path}...")
-                model = load_model_from_weights(weights_path, scale_val, num_res_blocks_val)
+                model = load_model_from_weights(
+                    weights_path, scale_val, num_res_blocks_val,
+                    nchan=Config.NUM_LR_CHANNELS,
+                )
 
             os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
             vmax = self._ask_vmax()
@@ -1504,7 +1663,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in clean_files:
-                    all_images.extend(read_skyimages(path, num_images=9999))
+                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1518,7 +1677,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in dirty_files:
-                    all_images.extend(read_skyimages(path, num_images=9999))
+                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1533,17 +1692,18 @@ class InteractiveCLI:
                 n_drawn = 0
 
                 # Collect matched pairs per subset to avoid index-space collisions.
-                all_pairs: list[tuple[SkyImage, SkyImage]] = []
+                # Multi-band v2 records: HR is 1-channel (VIS), LR is 4-channel.
+                all_pairs: list[tuple[MultiBandSkyImage, MultiBandSkyImage]] = []
                 for subset in ("train", "validate"):
-                    clean_sub = tfrecord_path(Config.RECORDS_DIR, f"clean_{subset}")
-                    dirty_sub = tfrecord_path(Config.RECORDS_DIR, f"dirty_{subset}")
+                    clean_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
+                    dirty_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
                     if not os.path.exists(clean_sub) or not os.path.exists(dirty_sub):
                         continue
                     dirty_by_index = {
                         img.index: img
-                        for img in read_skyimages(dirty_sub, num_images=9999)
+                        for img in read_multiband_skyimages(dirty_sub, num_images=9999)
                     }
-                    for hr in read_skyimages(clean_sub, num_images=9999):
+                    for hr in read_multiband_skyimages(clean_sub, num_images=9999):
                         lr = dirty_by_index.get(hr.index)
                         if lr is not None:
                             all_pairs.append((hr, lr))
@@ -1557,7 +1717,11 @@ class InteractiveCLI:
                 for i in chosen:
                     hr, lr = all_pairs[i]
                     path = os.path.join(vis_dir, f'pair_{hr.index:04d}.png')
-                    draw_clean_dirty_pair(hr.data, lr.data, path, index=hr.index, vmax=vmax)
+                    # Multi-band: visualise VIS channel of both for a fair side-by-side
+                    # comparison; the renderer expects 2-D arrays.
+                    hr2d = hr.data[..., 0]
+                    lr2d = lr.data[..., 0]
+                    draw_clean_dirty_pair(hr2d, lr2d, path, index=hr.index, vmax=vmax)
                     n_drawn += 1
                 print(f"\n✓ {n_drawn} pair plots → {vis_dir}")
 

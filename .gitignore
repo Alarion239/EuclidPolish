@@ -13,6 +13,10 @@ monopsfs*
 __pycache__/
 *.py[cod]
 .DS_Store
+.idea/
+
+# Reference papers / PDFs — keep in a separate docs share, not source control
+*.pdf
 
 # Data: only data/euclid_psf/ is tracked; everything else is generated/local.
 data/*

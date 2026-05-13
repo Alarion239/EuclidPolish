@@ -1,12 +1,11 @@
 """
 Model Training module for EuclidPolish.
 
-This module provides classes for training super-resolution models,
-including WDSR architecture, data loaders, and training utilities.
+Multi-band training pipeline (4-channel LR input, 1-channel VIS HR target).
 """
 
 from euclid_polish.training.trainer import Trainer
-from euclid_polish.training.data import EuclidDataset
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.inference import (
     reconstruct,
@@ -17,7 +16,7 @@ from euclid_polish.training.inference import (
 
 __all__ = [
     "Trainer",
-    "EuclidDataset",
+    "MultiBandEuclidDataset",
     "wdsr",
     "reconstruct",
     "plot_reconstruction",

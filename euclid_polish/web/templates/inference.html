@@ -1,0 +1,97 @@
+{% extends "base_split.html" %}
+{% block title %}Inference · EuclidPolish{% endblock %}
+{% block heading %}Inference{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Recent reconstructions</span>
+  <span class="muted">{{ recon_pngs | length }} PNGs in
+    <code>data/vis/reconstruction/</code></span>
+</div>
+{% endblock %}
+
+{% block viz %}
+{% if recon_pngs %}
+<div class="gallery">
+  {% for p in recon_pngs[:24] %}
+    <a class="thumb"
+       href="{{ url_for('serve_vis', relpath=p.rel) }}"
+       target="_blank">
+      <img loading="lazy"
+           src="{{ url_for('serve_vis', relpath=p.rel) }}"
+           alt="{{ p.name }}">
+      <span class="thumb-label">{{ p.name }}</span>
+    </a>
+  {% endfor %}
+</div>
+{% if recon_pngs|length > 24 %}
+  <p class="hint">+ {{ recon_pngs | length - 24 }} more not shown.</p>
+{% endif %}
+{% else %}
+<div class="viz-area">
+  <div class="placeholder">No reconstructions yet — run inference on the right.
+    Output PNGs land in <code>data/vis/reconstruction/</code>.</div>
+</div>
+{% endif %}
+
+<section class="card">
+  <h3>Checkpoints</h3>
+  {% if checkpoints.files %}
+    <ul>
+      {% for f in checkpoints.files[:6] %}
+        <li><code>{{ f.name }}</code> · {{ f.size_mb }} MB</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">no checkpoints — train first.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Records</h3>
+  {% if tfrecords.files %}
+    <ul>
+      {% for f in tfrecords.files %}
+        <li><code>{{ f.name }}</code> · {{ f.size_mb }} MB</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">no records — generate + forward first.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Reconstruct</h3>
+  <p class="hint">Loads the latest checkpoint, picks N random LR records,
+     runs WDSR, saves LR / SR / HR side-by-side PNGs.</p>
+  <form id="recon-form" action="/inference/reconstruct">
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <label>Residual blocks
+      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <label>Subset
+      <select name="subset">
+        <option value="validate">validate</option>
+        <option value="train">train</option>
+      </select>
+    </label>
+    <label>Number of images
+      <input type="number" name="n_images" value="{{ default_n_images }}" min="1" max="32"></label>
+    <button type="submit">Reconstruct</button>
+  </form>
+  <div id="recon-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("recon-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("recon-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+</script>
+{% endblock %}

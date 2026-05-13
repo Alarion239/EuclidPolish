@@ -158,62 +158,113 @@ def draw_clean_dirty_pair(
     vis.save_figure(output_path)
 
 
+def _star_arrays(stars: list[dict]):
+    """Decompose the catalog into numpy arrays for the two plots below."""
+    import numpy as np
+    ra   = np.array([s['ra']        for s in stars], dtype=np.float64)
+    dec  = np.array([s['dec']       for s in stars], dtype=np.float64)
+    mag  = np.array([s['magnitude'] for s in stars], dtype=np.float64)
+    corr = np.array([bool(s.get('corrupted', False)) for s in stars])
+    return ra, dec, mag, corr
+
+
+def plot_star_positions(stars: list[dict], fig=None):
+    """Render the catalog's sky positions on an Aitoff projection.
+
+    If all stars cluster in a small region (≲ 10° in RA or Dec) we add
+    a tangent-plane zoom panel on the right; otherwise the Aitoff
+    full-sky view is the whole figure.
+
+    Returns the populated matplotlib figure (caller saves / displays).
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    ra, dec, mag, corr = _star_arrays(stars)
+    if ra.size == 0:
+        if fig is None:
+            fig = plt.figure(figsize=(10, 5))
+        ax = fig.add_subplot(111)
+        ax.text(0.5, 0.5, "no stars in catalog",
+                ha="center", va="center", color="#888")
+        ax.set_axis_off()
+        return fig
+
+    # Build SkyCoord once and reuse its wrapped values for Aitoff.
+    coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+    ra_rad  = coords.ra.wrap_at(180 * u.deg).radian
+    dec_rad = coords.dec.radian
+    # Visual sizing — brighter stars (lower mag) → larger dots, capped.
+    # Range floored so even faint stars are visible against the sky grid.
+    sizes = np.clip((21.0 - mag) ** 2 * 2.0, 10.0, 80.0)
+
+    # Decide whether to show a zoom panel: yes if the cluster is small.
+    ra_span  = float(ra.max()  - ra.min())
+    dec_span = float(dec.max() - dec.min())
+    show_zoom = (ra_span < 10.0 and dec_span < 10.0 and len(stars) > 1)
+
+    if fig is None:
+        fig = plt.figure(figsize=(14, 6) if show_zoom else (11, 6))
+    if show_zoom:
+        ax_sky  = fig.add_subplot(1, 2, 1, projection="aitoff")
+        ax_zoom = fig.add_subplot(1, 2, 2)
+    else:
+        ax_sky  = fig.add_subplot(1, 1, 1, projection="aitoff")
+        ax_zoom = None
+
+    # ---- Full-sky Aitoff scatter ----
+    valid = ~corr
+    sc = ax_sky.scatter(
+        ra_rad[valid], dec_rad[valid], s=sizes[valid], c=mag[valid],
+        cmap="YlOrRd_r", alpha=0.8, edgecolors="none",
+        label=f"valid ({int(valid.sum())})",
+    )
+    if corr.any():
+        ax_sky.scatter(
+            ra_rad[corr], dec_rad[corr], s=sizes[corr] * 1.5,
+            c="red", marker="x", linewidths=1.5,
+            label=f"corrupted ({int(corr.sum())})",
+        )
+    cbar = fig.colorbar(sc, ax=ax_sky, shrink=0.65, pad=0.04, label="VIS magnitude (AB)")
+    ax_sky.set_title(f"Sky positions — {len(stars)} stars (Aitoff)", pad=22)
+    ax_sky.grid(True, color="#888", alpha=0.3)
+    # X-axis tick labels: convert -π..π → 0..360° in standard astronomy convention
+    # (RA increases to the LEFT on the sky → matplotlib's Aitoff already
+    # mirrors longitude so leftward ticks go up in numeric value if we use
+    # wrap_at(180°); leave matplotlib's default labelling for clarity).
+    ax_sky.legend(loc="lower left", fontsize=9)
+
+    # ---- Optional tangent-plane zoom on the cluster ----
+    if ax_zoom is not None:
+        ax_zoom.scatter(
+            ra[valid], dec[valid], s=sizes[valid], c=mag[valid],
+            cmap="YlOrRd_r", alpha=0.8, edgecolors="none",
+        )
+        if corr.any():
+            ax_zoom.scatter(
+                ra[corr], dec[corr], s=sizes[corr] * 1.5, c="red",
+                marker="x", linewidths=1.5,
+            )
+        ax_zoom.invert_xaxis()                      # RA increases leftward
+        ax_zoom.set_xlabel("RA  [deg]")
+        ax_zoom.set_ylabel("Dec  [deg]")
+        ax_zoom.set_aspect("equal", adjustable="datalim")
+        ax_zoom.grid(True, alpha=0.3)
+        ax_zoom.set_title(f"Zoom — ΔRA≈{ra_span:.2f}°  ΔDec≈{dec_span:.2f}°")
+
+    fig.tight_layout()
+    return fig
+
+
 def draw_star_positions(
     stars: list[dict],
     output_path: str,
 ) -> None:
-    """RA/Dec scatter of catalog stars (unchanged)."""
-    ra = [s['ra'] for s in stars]
-    dec = [s['dec'] for s in stars]
-    mag = [s['magnitude'] for s in stars]
-    corrupted = [s.get('corrupted', False) for s in stars]
-
-    sizes = [(21 - m) ** 2 * 2 for m in mag]
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-
-    valid_ra = [r for r, c in zip(ra, corrupted) if not c]
-    valid_dec = [d for d, c in zip(dec, corrupted) if not c]
-    valid_sizes = [sz for sz, c in zip(sizes, corrupted) if not c]
-    valid_mag = [m for m, c in zip(mag, corrupted) if not c]
-    n_valid = len(valid_ra)
-
-    sc = ax.scatter(
-        valid_ra, valid_dec, s=valid_sizes, c=valid_mag,
-        cmap='YlOrRd_r', alpha=0.7, edgecolors='none',
-        label=f'Valid ({n_valid})',
-    )
-
-    corr_ra = [r for r, c in zip(ra, corrupted) if c]
-    corr_dec = [d for d, c in zip(dec, corrupted) if c]
-    corr_sizes = [sz for sz, c in zip(sizes, corrupted) if c]
-    n_corrupted = len(corr_ra)
-    if corr_ra:
-        ax.scatter(
-            corr_ra, corr_dec, s=[sz * 1.5 for sz in corr_sizes],
-            c='red', marker='x', linewidths=1.5,
-            label=f'Corrupted ({n_corrupted})',
-        )
-
-    cbar = plt.colorbar(sc, ax=ax, label='Magnitude')
-    ax.set_xlabel('RA (degrees)')
-    ax.set_ylabel('Dec (degrees)')
-    ax.set_title(f'Euclid Star Positions ({len(stars)} stars)')
-    ax.invert_xaxis()
-
-    ax.set_facecolor('#0a0a2a')
-    fig.patch.set_facecolor('#1a1a3a')
-    for item in [cbar.ax.yaxis.label, ax.xaxis.label, ax.yaxis.label, ax.title]:
-        item.set_color('white')
-    for tick_ax in [cbar.ax, ax]:
-        tick_ax.tick_params(colors='white')
-    for spine in ax.spines.values():
-        spine.set_color('white')
-    ax.legend(
-        loc='upper left', facecolor='#2a2a4a',
-        edgecolor='white', labelcolor='white',
-    )
-
+    """Save :func:`plot_star_positions` to ``output_path``."""
+    import matplotlib.pyplot as plt
+    fig = plot_star_positions(stars)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=150, facecolor=fig.get_facecolor(), bbox_inches='tight')
+    fig.savefig(output_path, dpi=130, bbox_inches="tight")
     plt.close(fig)

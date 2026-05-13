@@ -1,0 +1,107 @@
+{% extends "base_split.html" %}
+{% block title %}PSFs · EuclidPolish{% endblock %}
+{% block heading %}PSFs{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Band</span>
+  <a class="chip" data-group="band" data-value="all">all</a>
+  {% for b in bands %}
+    <a class="chip" data-group="band" data-value="{{ b.name }}">{{ b.name }}</a>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  <img id="viz-img" alt="PSF panel">
+  <div class="placeholder">No PSFs to display.</div>
+</div>
+
+<section class="card">
+  <h3>Inventory</h3>
+  <table>
+    <tr>
+      <th>Band</th><th>FWHM (")</th><th>Oversampling</th>
+      <th>ePSF px scale</th><th>Status</th><th>Saved kernel</th>
+    </tr>
+    {% for b in status.bands %}
+      <tr>
+        <td><code>{{ b.name }}</code></td>
+        <td>{{ '%.2f'|format(b.fwhm) }}</td>
+        <td>{{ b.oversampling }}×</td>
+        <td>{{ '%.4f'|format(b.epsf_pixel_scale) }}"</td>
+        <td>
+          {% if b.empirical %}
+            <span class="badge badge-done">empirical</span>
+          {% else %}
+            <span class="badge badge-running">Gaussian fallback</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if b.empirical %}
+            <code>{{ b.shape[0] }}×{{ b.shape[1] }}</code>
+            @ {{ '%.4f'|format(b.pixel_scale) }}"/pix
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Extract empirical ePSF</h3>
+  <p class="hint">Runs photutils' <code>EPSFBuilder</code> on local star
+     cutouts. Bright clipped-core stars are rejected automatically.</p>
+  <form id="extract-form" action="/psfs/extract">
+    <label>Band
+      <select name="band">
+        {% for b in bands %}
+          <option value="{{ b.name }}">{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Number of stars
+      <input type="number" name="num_stars" value="{{ default_num_stars }}" min="10" max="5000"></label>
+    <label>Cutout size (native px)
+      <input type="number" name="cutout_size" value="512" min="32" max="2048"></label>
+    <label>Output PSF size (oversampled px)
+      <input type="number" name="output_size" value="{{ default_output_size }}" min="0" max="4096"></label>
+    <label>Cutouts root
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <label>PSF output dir
+      <input type="text" name="psf_dir" value="./data/euclid_psf" size="22"></label>
+    <button type="submit">Extract PSF</button>
+  </form>
+  <div id="extract-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  buildUrl:  (sel) => `/view/psfs?band=${encodeURIComponent(sel.band)}`,
+  initial:   { band: "all" },
+});
+// Toolbar lives in a separate container; wire its clicks manually.
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip[data-group]");
+  if (!chip) return;
+  e.preventDefault();
+  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+});
+
+document.getElementById("extract-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("extract-status"), {
+    onDone: () => { polishUI.viz.refresh(); setTimeout(() => location.reload(), 2500); },
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,145 @@
+{% extends "base_split.html" %}
+{% block title %}Cutouts · EuclidPolish{% endblock %}
+{% block heading %}Cutouts{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Band</span>
+  <a class="chip active" id="band-all" data-group="band" data-value="all">all</a>
+  {% for b in bands %}
+    <a class="chip" data-group="band" data-value="{{ b.name }}">{{ b.name }}</a>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block viz %}
+{% if not catalog.present %}
+<section class="card">
+  <p class="hint">No star catalog yet — visit
+    <a href="{{ url_for('catalog_page') }}">Catalog</a> and run a query first.</p>
+</section>
+{% else %}
+
+<section class="card">
+  <h3>Current state</h3>
+  <p class="hint">Each band's cutouts live under
+     <code>{{ cutout_layout.root }}/&lt;band&gt;/</code>.</p>
+  <table>
+    <tr><th>Band</th><th>Native scale</th><th>Valid (catalog)</th>
+        <th>Files on disk</th><th>Browse</th></tr>
+    {% for b in bands %}
+      {% set found = (cutout_layout.bands | selectattr('name', 'eq', b.name) | list) %}
+      {% set count = (found[0].count if found else 0) %}
+      <tr>
+        <td><code>{{ b.name }}</code></td>
+        <td>{{ '%.2f'|format(b.pixel_scale_lr_arcsec) }}"</td>
+        <td>{{ catalog.summary.valid_by_band[b.name] }}</td>
+        <td>{{ count }}</td>
+        <td>
+          {% if count > 0 %}
+            <a href="{{ url_for('cutouts_gallery', band_name=b.name) }}">gallery →</a>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+
+{% set has_any = (cutout_layout.bands | selectattr('count', 'gt', 0) | list) %}
+{% if has_any %}
+<section class="card">
+  <h3>Preview</h3>
+  <p class="hint">Live-rendered thumbnails from each band's <code>cutouts/</code>
+     directory with the per-band asinh stretch. Click for full-resolution PNG;
+     "gallery →" opens the paginated view.</p>
+  {% for entry in cutout_layout.bands %}
+    {% if entry.count > 0 %}
+      <div class="band-preview" data-band="{{ entry.name }}">
+        <h4 style="margin: 14px 0 6px;">
+          <a href="{{ url_for('cutouts_gallery', band_name=entry.name) }}">{{ entry.name }}</a>
+          <span class="muted">({{ entry.count }} files)</span>
+        </h4>
+        <div class="gallery" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
+          {% for fname in entry.preview %}
+            <a class="thumb"
+               href="{{ url_for('cutout_image', band_name=entry.name, filename=fname) }}"
+               target="_blank">
+              <img loading="lazy"
+                   src="{{ url_for('cutout_image', band_name=entry.name, filename=fname, size=140) }}"
+                   alt="{{ fname }}">
+              <span class="thumb-label">{{ fname }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block actions %}
+{% if catalog.present %}
+<section class="card">
+  <h3>Download cutouts</h3>
+  <p class="hint">Pick the bands and one cutout size in VIS pixels at
+     0.10"/pix; each band fetches its own native pixel count for the
+     same angular field.</p>
+  <form id="download-form" action="/cutouts/download">
+    <label>Bands</label>
+    <div class="checkbox-grid">
+      {% for b in bands %}
+        <label>
+          <input type="checkbox" name="bands" value="{{ b.name }}" checked>
+          {{ b.name }}
+        </label>
+      {% endfor %}
+    </div>
+    <label>Cutout size (VIS px)
+      <input type="number" name="cutout_size_vis_pixels"
+             value="{{ default_vis_pixels }}" min="32" max="4096"></label>
+    <label>Parallel workers
+      <input type="number" name="max_workers" value="8" min="1" max="16"></label>
+    <label>Output dir
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <button type="submit">Start download</button>
+  </form>
+  <div id="download-status"></div>
+</section>
+{% else %}
+<section class="card">
+  <p class="hint">Run a catalog query first.</p>
+  <a class="chip" href="{{ url_for('catalog_page') }}">⭐ Open catalog</a>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Band-filter toolbar: shows / hides per-band preview groups in the centre pane.
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip[data-group='band']");
+  if (!chip) return;
+  e.preventDefault();
+  document.querySelectorAll(".chip[data-group='band']").forEach(c =>
+    c.classList.toggle("active", c === chip));
+  const want = chip.dataset.value;
+  document.querySelectorAll(".band-preview").forEach(el => {
+    el.style.display = (want === "all" || el.dataset.band === want) ? "" : "none";
+  });
+});
+
+const f = document.getElementById("download-form");
+if (f) {
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(f, document.getElementById("download-status"), {
+      onDone: () => setTimeout(() => location.reload(), 2000),
+    });
+  });
+}
+</script>
+{% endblock %}

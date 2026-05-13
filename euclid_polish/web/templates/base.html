@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}EuclidPolish{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <nav class="sidebar">
+      <h1 class="brand">EuclidPolish</h1>
+      <p class="brand-sub">localhost UI</p>
+      <ul class="nav-list">
+        <li><a href="{{ url_for('index') }}">📊 Dashboard</a></li>
+        <li><a href="{{ url_for('catalog_page') }}">⭐ Catalog</a></li>
+        <li><a href="{{ url_for('cutouts_page') }}">⬇️ Cutouts</a></li>
+        <li><a href="{{ url_for('psfs_page') }}">✨ PSFs</a></li>
+        <li><a href="{{ url_for('sky_page') }}">🌌 Sky data</a></li>
+        <li><a href="{{ url_for('training_page') }}">🧠 Training</a></li>
+        <li><a href="{{ url_for('inference_page') }}">🔬 Inference</a></li>
+        <li><a href="{{ url_for('visualization_page') }}">🖼️ Visualization</a></li>
+      </ul>
+      <hr>
+      <h3>Live jobs</h3>
+      <div id="jobs-list" class="jobs">(loading…)</div>
+    </nav>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- ============================================================
+       Universal job-progress helpers used by every page's forms.
+       Pages call ``polishUI.run(formEl, statusEl)`` which posts the
+       form, gets back a job_id, then polls /api/jobs/<id> every 500ms
+       and renders a progress bar + log tail into ``statusEl``.
+       ============================================================ -->
+  <script>
+  window.polishUI = (function() {
+    function renderJob(j) {
+      const p = j.progress || {};
+      const pct = p.total > 0 ? p.pct : null;
+      const barHtml = pct === null
+        ? `<div class="bar-indeterminate"></div>`
+        : `<progress max="100" value="${pct}"></progress>
+           <span class="bar-label">${p.label || ''} ${p.current}/${p.total} (${pct.toFixed(1)}%)</span>`;
+      const statusClass = `status-${j.status}`;
+      return `
+        <div class="job-status ${statusClass}">
+          <div class="job-status-head">
+            <span class="badge badge-${j.status}">${j.status}</span>
+            <span class="job-label">${j.label}</span>
+            <span class="muted">${j.duration.toFixed(1)}s</span>
+          </div>
+          <div class="job-bar">${barHtml}</div>
+          ${j.error ? `<pre class="job-error">${escapeHtml(j.error)}</pre>` : ''}
+          <details ${j.status === 'running' ? '' : 'open'}>
+            <summary>log${j.log_truncated ? ' (truncated; tail only)' : ''}</summary>
+            <pre class="job-log">${escapeHtml(j.log || '(no output yet)')}</pre>
+          </details>
+        </div>`;
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    async function poll(jobId, statusEl, onDone) {
+      let interval = 500;
+      while (true) {
+        try {
+          const r = await fetch('/api/jobs/' + jobId);
+          if (!r.ok) { statusEl.innerHTML = '<div class="muted">job not found</div>'; return; }
+          const j = await r.json();
+          statusEl.innerHTML = renderJob(j);
+          if (j.status !== 'running') { if (onDone) onDone(j); return; }
+        } catch (e) { /* network blip; retry */ }
+        await new Promise(r => setTimeout(r, interval));
+        if (interval < 2000) interval = Math.min(2000, interval * 1.4);
+      }
+    }
+
+    async function run(form, statusEl, options) {
+      const body = new FormData(form);
+      const url  = form.getAttribute('action') || form.getAttribute('data-endpoint');
+      const r = await fetch(url, { method: 'POST', body });
+      if (!r.ok) {
+        statusEl.innerHTML = `<div class="muted">error: ${r.status}</div>`;
+        return;
+      }
+      const data = await r.json();
+      if (data.error) {
+        statusEl.innerHTML = `<div class="muted">error: ${escapeHtml(data.error)}</div>`;
+        return;
+      }
+      if (data.job_id) {
+        poll(data.job_id, statusEl, options && options.onDone);
+      } else {
+        statusEl.innerHTML = `<pre class="job-log">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+      }
+    }
+
+    return { run, poll, renderJob, escapeHtml };
+  })();
+
+  /* ============================================================
+     polishUI.viz — toolbar + center-pane visualization driver.
+
+     Pages that show server-rendered PNGs in the center call:
+       polishUI.viz.bind({
+         imgId:    "viz-img",       // <img> in the center pane
+         toolbarId:"viz-toolbar",   // <div> with .chip[data-key="..."] children
+         buildUrl: (sel) => `/view/psfs?band=${sel.band}`,
+         initial:  { band: "all" },
+       });
+
+     Chip clicks update the selector and re-load the image (cache-busted).
+     Pages call ``polishUI.viz.refresh()`` after a job completes to
+     reload the same image with a fresh cache buster.
+  ============================================================ */
+  window.polishUI.viz = (function() {
+    let state = { sel: {}, buildUrl: null, imgEl: null };
+
+    function loadImage() {
+      if (!state.buildUrl || !state.imgEl) return;
+      const url = state.buildUrl(state.sel) + (state.buildUrl(state.sel).includes('?') ? '&' : '?') + '_t=' + Date.now();
+      state.imgEl.parentElement.classList.add('viz-loading');
+      const tmp = new Image();
+      tmp.onload = () => {
+        state.imgEl.src = url;
+        state.imgEl.style.display = 'block';
+        const ph = state.imgEl.parentElement.querySelector('.placeholder');
+        if (ph) ph.style.display = 'none';
+        state.imgEl.parentElement.classList.remove('viz-loading');
+      };
+      tmp.onerror = () => {
+        state.imgEl.style.display = 'none';
+        const ph = state.imgEl.parentElement.querySelector('.placeholder');
+        if (ph) ph.style.display = 'block';
+        state.imgEl.parentElement.classList.remove('viz-loading');
+      };
+      tmp.src = url;
+    }
+
+    function setSel(key, value) {
+      state.sel[key] = value;
+      // Update visual active state on any chips with matching data-group=key.
+      document.querySelectorAll(`[data-group="${key}"]`).forEach(el => {
+        el.classList.toggle('active', el.dataset.value === String(value));
+      });
+      loadImage();
+    }
+
+    function bind({ imgId, toolbarId, buildUrl, initial }) {
+      state.imgEl    = document.getElementById(imgId);
+      state.buildUrl = buildUrl;
+      state.sel      = Object.assign({}, initial || {});
+      const tb = toolbarId && document.getElementById(toolbarId);
+      if (tb) {
+        tb.addEventListener('click', (e) => {
+          const chip = e.target.closest('.chip[data-group]');
+          if (!chip) return;
+          e.preventDefault();
+          setSel(chip.dataset.group, chip.dataset.value);
+        });
+      }
+      // Mark initial active chips.
+      Object.entries(state.sel).forEach(([k, v]) => {
+        document.querySelectorAll(`[data-group="${k}"]`).forEach(el => {
+          el.classList.toggle('active', el.dataset.value === String(v));
+        });
+      });
+      loadImage();
+    }
+
+    function refresh() { loadImage(); }
+    function get(key)  { return state.sel[key]; }
+    function set(key, v) { setSel(key, v); }
+
+    return { bind, refresh, get, set };
+  })();
+
+  // Sidebar live job ticker — short summary of every job, newest first.
+  async function refreshJobs() {
+    try {
+      const res = await fetch('/api/jobs');
+      const list = await res.json();
+      const html = list.length === 0
+        ? '<p class="muted">no jobs yet</p>'
+        : list.slice(0, 8).map(j => {
+            const p = j.progress || {};
+            const pctText = p.total > 0 ? ` · ${p.pct.toFixed(0)}%` : '';
+            return `
+              <div class="job job-${j.status}">
+                <div class="job-label">${polishUI.escapeHtml(j.label)}</div>
+                <div class="job-meta">${j.status} · ${j.duration.toFixed(1)}s${pctText}</div>
+              </div>`;
+          }).join('');
+      document.getElementById('jobs-list').innerHTML = html;
+    } catch (e) { /* offline; ignore */ }
+  }
+  refreshJobs();
+  setInterval(refreshJobs, 1500);
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

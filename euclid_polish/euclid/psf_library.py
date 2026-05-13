@@ -1,0 +1,235 @@
+"""
+Per-band PSF loading and management.
+
+The PSF extraction pipeline (:mod:`euclid_polish.euclid.psf_extractor`) is
+band-agnostic — it takes a directory of star cutouts and produces an
+empirical ePSF as a single normalised FITS file. To support the multi-band
+forward model we just need a thin wrapper that, given a band name, returns
+the appropriate PSF:
+
+  1. If an empirical ePSF file exists at the configured per-band path,
+     load it and (optionally) resample it onto the HR grid.
+  2. Otherwise return a Gaussian fallback at the band's nominal FWHM.
+
+Two CLI flows fit the same scheme — the user calls
+
+    polish extract-psf --band Y_E --cutout-dir data/euclid_nisp_stars/Y
+
+and the resulting FITS goes to ``data/euclid_psf/euclid_psf_Y.fits`` (the
+path is computed from :attr:`BandConfig.psf_fits_filename`).
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from typing import Dict, Optional
+
+import numpy as np
+from scipy.ndimage import zoom
+
+from euclid_polish.config import BandConfig, Config
+from euclid_polish.euclid.types import PSF
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def psf_path_for_band(band: BandConfig, psf_dir: str = Config.EUCLID_PSF_DIR) -> str:
+    """Return the canonical file path for ``band``'s empirical ePSF FITS."""
+    return os.path.join(psf_dir, band.psf_fits_filename)
+
+
+# ---------------------------------------------------------------------------
+# Per-band kernel sizing (single source of truth)
+# ---------------------------------------------------------------------------
+
+def psf_half_pixels_for_band(
+    band: BandConfig, pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+) -> int:
+    """Half-side of ``band``'s PSF kernel in pixels at ``pixel_scale``.
+
+    Driven by :attr:`Config.PSF_HALF_SUPPORT_FWHM_FACTOR`:
+        half = max(PSF_MIN_HALF_PIXELS,
+                   ceil(factor × fwhm / pixel_scale))
+
+    The full kernel side is ``2 × half + 1`` (always odd, so the centre
+    pixel sits on the centroid).
+    """
+    if pixel_scale <= 0:
+        raise ValueError(f"pixel_scale must be positive, got {pixel_scale}")
+    factor = float(Config.PSF_HALF_SUPPORT_FWHM_FACTOR)
+    half = int(math.ceil(factor * band.psf_fwhm_arcsec / pixel_scale))
+    return max(int(Config.PSF_MIN_HALF_PIXELS), half)
+
+
+def psf_side_pixels_for_band(
+    band: BandConfig, pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+) -> int:
+    """Full odd kernel side ``2 × half + 1`` for ``band`` at ``pixel_scale``."""
+    return 2 * psf_half_pixels_for_band(band, pixel_scale) + 1
+
+
+def _centre_crop(arr: np.ndarray, side: int) -> np.ndarray:
+    """Return a centred ``(side, side)`` sub-array of ``arr``.
+
+    If the input is smaller than ``side`` along an axis, that axis is
+    returned unchanged (no zero-padding — we'd rather under-crop than
+    fabricate data).
+    """
+    h, w = arr.shape
+    if h <= side and w <= side:
+        return arr
+    new_h = min(h, side)
+    new_w = min(w, side)
+    i0 = (h - new_h) // 2
+    j0 = (w - new_w) // 2
+    return arr[i0 : i0 + new_h, j0 : j0 + new_w]
+
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
+def _resample_psf_to_pixel_scale(psf: PSF, target_pixel_scale: float) -> PSF:
+    """Resample a PSF kernel onto a new pixel grid.
+
+    Uses a cubic spline (``scipy.ndimage.zoom(order=3)``) rather than the
+    Lanczos-3 we use for sky-image resampling. Reason: Lanczos has negative
+    side-lobes that ring on the sharp PSF wings, producing small negative
+    pixel values that subsequently shrink under the ``data/data.sum()``
+    renormalisation. Cubic spline is monotone-preserving in practice for
+    PSF-shaped (broadly Gaussian) kernels and gives a cleaner kernel.
+
+    The resampled kernel is renormalised to sum=1 after zoom to fix any
+    numerical drift introduced by the interpolator.
+    """
+    if abs(psf.pixel_scale - target_pixel_scale) < 1e-6:
+        return psf
+    factor = psf.pixel_scale / target_pixel_scale
+    data = zoom(psf.data, zoom=factor, order=3, mode="nearest")
+    # Renormalise so sum = 1 (the convolution invariant we rely on downstream).
+    s = data.sum()
+    if s != 0:
+        data = data / s
+    return PSF(
+        data=data.astype(np.float32),
+        pixel_scale=target_pixel_scale,
+        fwhm_arcsec=psf.fwhm_arcsec,
+        oversampling=psf.oversampling,
+    )
+
+
+def make_gaussian_psf(
+    fwhm_arcsec: float, pixel_scale: float, *, size: Optional[int] = None,
+) -> PSF:
+    """Build a normalised Gaussian :class:`PSF` stamp at ``pixel_scale``.
+
+    ``size`` (full odd side in pixels) is auto-derived from
+    :attr:`Config.PSF_HALF_SUPPORT_FWHM_FACTOR` when omitted, so the
+    kernel side scales with the band FWHM rather than being clipped to a
+    fixed 65×65. Pass ``size`` explicitly only for tests / fixed-size
+    fixtures.
+    """
+    if size is None:
+        factor = float(Config.PSF_HALF_SUPPORT_FWHM_FACTOR)
+        half = max(int(Config.PSF_MIN_HALF_PIXELS),
+                   int(math.ceil(factor * fwhm_arcsec / pixel_scale)))
+        size = 2 * half + 1
+    elif size % 2 == 0:
+        size += 1
+    sigma_pix = fwhm_arcsec / pixel_scale / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    half = size // 2
+    yy, xx = np.indices((size, size), dtype=np.float64) - half
+    g = np.exp(-(xx * xx + yy * yy) / (2.0 * sigma_pix * sigma_pix))
+    g /= g.sum()
+    return PSF(
+        data=g.astype(np.float32),
+        pixel_scale=pixel_scale,
+        fwhm_arcsec=fwhm_arcsec,
+        oversampling=1,
+    )
+
+
+# Backward-compatible private alias for callers that imported the underscore
+# name during development. New code should call ``make_gaussian_psf``.
+_gaussian_psf = make_gaussian_psf
+
+
+def load_band_psf(
+    band: BandConfig,
+    *,
+    target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+    psf_dir: str = Config.EUCLID_PSF_DIR,
+    require_empirical: bool = False,
+) -> PSF:
+    """Return the best available PSF for ``band`` at ``target_pixel_scale``.
+
+    Resolution order:
+
+      1. ``psf_dir / band.psf_fits_filename`` exists → load it, normalise,
+         resample to ``target_pixel_scale`` if needed.
+      2. Otherwise, build a Gaussian PSF at ``band.psf_fwhm_arcsec``.
+
+    With ``require_empirical=True`` the second branch raises instead of
+    falling back — useful for production runs where we don't want the
+    network silently trained on Gaussian NISP PSFs.
+    """
+    path = psf_path_for_band(band, psf_dir)
+    if os.path.isfile(path):
+        # Use whatever size was produced at extraction time — the extractor
+        # is the single source of truth for empirical-PSF dimensions.
+        psf = PSF.from_fits(path)
+        return _resample_psf_to_pixel_scale(psf, target_pixel_scale)
+
+    if require_empirical:
+        raise FileNotFoundError(
+            f"No empirical PSF for band {band.name} at {path}. "
+            "Run `polish extract-psf --band ... --cutout-dir ...` or pass "
+            "require_empirical=False to allow a Gaussian fallback."
+        )
+    # Gaussian fallback: size auto-derived from FWHM (the band's
+    # ``psf_fwhm_arcsec`` × ``PSF_HALF_SUPPORT_FWHM_FACTOR``).
+    target_side = psf_side_pixels_for_band(band, target_pixel_scale)
+    return make_gaussian_psf(band.psf_fwhm_arcsec, target_pixel_scale,
+                             size=target_side)
+
+
+def load_all_band_psfs(
+    *,
+    target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+    psf_dir: str = Config.EUCLID_PSF_DIR,
+    require_empirical: bool = False,
+) -> Dict[str, PSF]:
+    """Load PSFs for every band in :attr:`Config.BANDS`.
+
+    Returned dict is keyed by band name (``'VIS'`` etc.) and is ready to
+    pass to :class:`euclid_polish.sky.multiband_forward.MultiBandForward`.
+    """
+    return {
+        band.name: load_band_psf(
+            band,
+            target_pixel_scale=target_pixel_scale,
+            psf_dir=psf_dir,
+            require_empirical=require_empirical,
+        )
+        for band in Config.BANDS
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inventory (for the CLI to report which bands have empirical PSFs)
+# ---------------------------------------------------------------------------
+
+def psf_inventory(psf_dir: str = Config.EUCLID_PSF_DIR) -> Dict[str, Optional[str]]:
+    """Report which bands currently have an empirical PSF on disk.
+
+    Returns ``{band_name: path or None}``. ``None`` means a Gaussian
+    fallback would be used. Useful for CLI introspection.
+    """
+    out: Dict[str, Optional[str]] = {}
+    for band in Config.BANDS:
+        path = psf_path_for_band(band, psf_dir)
+        out[band.name] = path if os.path.isfile(path) else None
+    return out

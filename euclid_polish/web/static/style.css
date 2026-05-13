@@ -1,0 +1,297 @@
+/* Minimal styling for the EuclidPolish localhost UI. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #1a1a1a;
+  background: #f6f6f8;
+}
+
+code, pre {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+a { color: #2a5db0; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.muted { color: #888; font-size: 13px; }
+.tag {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 11px; font-weight: 600; margin-left: 4px;
+}
+.tag-ok   { background: #d9efd6; color: #14600c; }
+.tag-warn { background: #fff3c4; color: #826200; }
+
+.wrap {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #1c2230;
+  color: #cdd1da;
+  padding: 24px 18px;
+  min-height: 100vh;
+}
+.sidebar .brand { color: #fff; margin: 0; font-size: 19px; }
+.sidebar .brand-sub { color: #6e7588; margin: 0 0 18px; font-size: 12px; }
+.sidebar ul { list-style: none; padding: 0; margin: 0 0 24px; }
+.sidebar li a {
+  display: block; padding: 7px 0; color: #cdd1da;
+  border-bottom: 1px solid #2a3144;
+}
+.sidebar li a:hover { color: #fff; text-decoration: none; }
+.sidebar h3 { color: #fff; font-size: 13px; margin: 18px 0 8px; }
+.sidebar hr { border: 0; border-top: 1px solid #2a3144; margin: 18px 0; }
+
+.jobs .job {
+  background: #252b3c; padding: 6px 8px; border-radius: 4px;
+  margin-bottom: 6px; font-size: 12px;
+}
+.jobs .job-label { color: #fff; font-weight: 500; }
+.jobs .job-meta { color: #9aa1b3; font-size: 11px; }
+.jobs .job-link { color: #6aa6ff; font-size: 11px; }
+.jobs .job-running .job-meta::before  { content: "● "; color: #ffaa00; }
+.jobs .job-done    .job-meta::before  { content: "✓ "; color: #6ed27f; }
+.jobs .job-failed  .job-meta::before  { content: "✗ "; color: #ff6c6c; }
+
+.content { padding: 28px 36px; }
+.content h2 { margin-top: 0; }
+
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.card {
+  background: #fff; border: 1px solid #e2e5ea; border-radius: 6px;
+  padding: 16px 18px; margin-bottom: 18px;
+}
+.card h3 { margin: 0 0 8px; font-size: 15px; }
+.card pre { background: #f3f5f8; padding: 8px 10px; border-radius: 4px;
+            max-height: 220px; overflow: auto; white-space: pre-wrap; }
+.card form label { display: block; margin: 6px 0; font-size: 13px; }
+.card form input[type=number] { width: 100px; margin-left: 6px; }
+.card form button {
+  background: #2a5db0; color: #fff; border: 0; padding: 6px 14px;
+  border-radius: 4px; cursor: pointer; font-weight: 500;
+}
+.card form button:hover { background: #1f4a96; }
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+table th, table td { border-bottom: 1px solid #e2e5ea; padding: 6px 8px;
+                     text-align: left; }
+table th { background: #f3f5f8; font-weight: 600; }
+
+ul.psf-list { list-style: none; padding: 0; margin: 0; }
+ul.psf-list li { padding: 4px 0; border-bottom: 1px solid #f0f0f4; }
+ul.psf-list li:last-child { border-bottom: 0; }
+
+.gallery {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.thumb {
+  display: block; background: #fff; border: 1px solid #e2e5ea;
+  border-radius: 4px; padding: 8px; text-decoration: none; color: inherit;
+}
+.thumb:hover { border-color: #2a5db0; }
+.thumb img { display: block; width: 100%; height: auto; border-radius: 3px; }
+.thumb-label { display: block; font-size: 12px; margin-top: 6px;
+               word-break: break-all; }
+
+button {
+  background: #2a5db0; color: #fff; border: 0; padding: 6px 14px;
+  border-radius: 4px; cursor: pointer; font-weight: 500;
+}
+button:hover { background: #1f4a96; }
+button:disabled { background: #aaa; cursor: not-allowed; }
+button.danger { background: #b03a3a; }
+button.danger:hover { background: #8c2f2f; }
+button.secondary { background: #6c757d; }
+button.secondary:hover { background: #565e64; }
+
+/* === Job status, progress bars, badges === */
+.job-status {
+  background: #f8fafd; border: 1px solid #d8dee8; border-radius: 5px;
+  padding: 12px; margin-top: 12px;
+}
+.job-status-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.job-status-head .job-label { font-weight: 600; }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 9px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+}
+.badge-running { background: #fdedb1; color: #6c5500; }
+.badge-done    { background: #cde6cf; color: #14600c; }
+.badge-failed  { background: #ffd0d0; color: #761515; }
+
+.job-bar { margin: 8px 0; }
+.job-bar progress {
+  width: 100%; height: 12px; -webkit-appearance: none; appearance: none;
+}
+.job-bar progress::-webkit-progress-bar { background: #eaeef3; border-radius: 4px; }
+.job-bar progress::-webkit-progress-value { background: #2a5db0; border-radius: 4px; }
+.job-bar progress::-moz-progress-bar { background: #2a5db0; border-radius: 4px; }
+.bar-label { display: block; font-size: 12px; color: #555; margin-top: 4px; }
+.bar-indeterminate {
+  height: 12px; border-radius: 4px;
+  background: linear-gradient(90deg, #eaeef3 0%, #2a5db0 30%, #eaeef3 60%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.job-log {
+  background: #1c2230; color: #cdd1da; padding: 10px 12px;
+  border-radius: 4px; max-height: 240px; overflow: auto;
+  font-size: 12px; white-space: pre-wrap; word-break: break-word;
+}
+.job-error {
+  background: #fff0f0; color: #6e1212; padding: 8px 10px;
+  border-radius: 4px; font-size: 12px; margin: 6px 0;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* === Toolbar / form groups === */
+.form-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.form-row label { display: flex; flex-direction: column; font-size: 12px;
+                  color: #555; gap: 3px; }
+.form-row input, .form-row select {
+  padding: 5px 8px; border: 1px solid #cdd2db; border-radius: 3px;
+  font-size: 13px;
+}
+.form-row .checkbox-grid {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+}
+.form-row .checkbox-grid label {
+  flex-direction: row; align-items: center; gap: 4px; padding: 3px 8px;
+  border: 1px solid #cdd2db; border-radius: 14px; font-size: 12px;
+  cursor: pointer;
+}
+.form-row .checkbox-grid input { margin: 0; }
+
+.hint { font-size: 12px; color: #666; margin: 4px 0 8px; }
+.tag-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.tag-row a {
+  display: inline-block; padding: 6px 12px; background: #eef2f9;
+  border: 1px solid #d6dde8; border-radius: 18px; font-size: 13px;
+  color: #2a3a55; text-decoration: none;
+}
+.tag-row a:hover { background: #dfe6f3; border-color: #2a5db0; text-decoration: none; }
+
+.kv {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px;
+  font-size: 13px;
+}
+.kv dt { color: #555; }
+.kv dd { margin: 0; font-family: "JetBrains Mono", Menlo, monospace; }
+
+.nav-list { padding-left: 0; }
+
+/* =============================================================
+   Three-column page layout: sidebar (left, in base.html) | viz | actions.
+   Pages with actions extend base_split.html; the .content wrap is
+   already set up by base.html, so .three-col only manages the inner
+   split between center + right.
+============================================================= */
+.three-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 24px;
+  align-items: start;
+}
+.three-col .viz-pane { min-width: 0; }
+.three-col .actions-pane {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.three-col .actions-pane .card { margin-bottom: 14px; }
+.three-col .actions-pane .card h3 { font-size: 14px; }
+.three-col .actions-pane .card form input,
+.three-col .actions-pane .card form select { font-size: 12px; }
+
+@media (max-width: 1100px) {
+  .three-col { grid-template-columns: 1fr; }
+  .three-col .actions-pane { position: static; max-height: none; }
+}
+
+.viz-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.viz-header h2 { margin: 0; font-size: 22px; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.toolbar-group { display: flex; align-items: center; gap: 4px; }
+.toolbar-group + .toolbar-group {
+  border-left: 1px solid #d8dee8; padding-left: 8px; margin-left: 2px;
+}
+.toolbar-label {
+  font-size: 11px; color: #555; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+.chip {
+  display: inline-block; padding: 4px 10px; font-size: 12px;
+  background: #eef2f9; border: 1px solid #d6dde8; border-radius: 14px;
+  color: #2a3a55; cursor: pointer; user-select: none;
+  text-decoration: none;
+}
+.chip:hover { background: #dfe6f3; border-color: #2a5db0; text-decoration: none; }
+.chip.active {
+  background: #2a5db0; color: #fff; border-color: #1f4a96;
+}
+
+.viz-area {
+  background: #fff; border: 1px solid #e2e5ea; border-radius: 6px;
+  padding: 14px; min-height: 200px;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column;
+}
+.viz-area img {
+  display: block; max-width: 100%; height: auto;
+  border-radius: 4px;
+}
+.viz-area .placeholder {
+  color: #888; font-size: 13px; text-align: center;
+  padding: 60px 20px;
+}
+.viz-loading {
+  position: relative; min-height: 240px;
+}
+.viz-loading::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(42, 93, 176, 0.08), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 4px;
+}
+
+.viz-meta {
+  font-size: 12px; color: #555; margin-top: 8px;
+  font-family: "JetBrains Mono", Menlo, monospace;
+}
+

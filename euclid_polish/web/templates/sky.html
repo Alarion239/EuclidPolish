@@ -1,0 +1,139 @@
+{% extends "base_split.html" %}
+{% block title %}Sky · EuclidPolish{% endblock %}
+{% block heading %}Sky data{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Type</span>
+  <a class="chip" data-group="kind" data-value="clean">clean (4-band)</a>
+  <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
+  <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
+  <span class="toolbar-label">Subset</span>
+  <a class="chip" data-group="subset" data-value="train">train</a>
+  <a class="chip" data-group="subset" data-value="validate">validate</a>
+  <span class="toolbar-label">Band</span>
+  {% for n in ('VIS', 'Y_E', 'J_E', 'H_E') %}
+    <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
+  {% endfor %}
+  <span class="toolbar-label">Index</span>
+  <button class="chip" id="idx-prev">‹</button>
+  <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
+  <button class="chip" id="idx-next">›</button>
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  <img id="viz-img" alt="sky record sample">
+  <div class="placeholder">No records on disk yet — generate sky data first.</div>
+</div>
+
+<section class="card">
+  <h3>Records on disk</h3>
+  <p class="hint"><code>{{ tfrecords.dir }}</code></p>
+  {% if tfrecords.files %}
+    <table>
+      <tr><th>File</th><th>Size</th></tr>
+      {% for f in tfrecords.files %}
+        <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">empty — run step 1 first.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>1 · Generate clean HR fields</h3>
+  <form id="generate-form" action="/sky/generate">
+    <label>HR image size (px)
+      <input type="number" name="image_size" value="{{ default_image_size }}" min="60" max="2048"></label>
+    <label>Training images
+      <input type="number" name="n_train" value="{{ default_n_train }}" min="1" max="20000"></label>
+    <label>Validation images
+      <input type="number" name="n_valid" value="{{ default_n_valid }}" min="1" max="5000"></label>
+    <label>Lens density (/arcmin²)
+      <input type="number" name="lens_density" value="{{ default_lens_density }}" step="0.5" min="0"></label>
+    <button type="submit">Generate</button>
+  </form>
+  <div id="generate-status"></div>
+</section>
+
+<section class="card">
+  <h3>2 · Forward model (HR → LR)</h3>
+  <p class="hint">Convolves each HR scene with its band's PSF (empirical
+     or Gaussian fallback) and adds per-band Poisson + read noise.
+     Requires step 1's output.</p>
+  <form id="forward-form" action="/sky/forward">
+    <button type="submit">Run forward model</button>
+  </form>
+  <div id="forward-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let totals = { clean_train: 0, clean_validate: 0, dirty_train: 0, dirty_validate: 0 };
+let curIdx = 0;
+
+function maxIdx() {
+  const k = polishUI.viz.get("kind");
+  const s = polishUI.viz.get("subset");
+  return Math.max(0, (totals[`${k}_${s}`] || 0) - 1);
+}
+function clampIdx(i) {
+  const m = maxIdx();
+  return Math.max(0, Math.min(i, m));
+}
+function setIdx(i) {
+  curIdx = clampIdx(i);
+  document.getElementById("idx-display").textContent = `${curIdx} / ${maxIdx()}`;
+  polishUI.viz.set("i", curIdx);
+}
+
+async function refreshTotals() {
+  try {
+    const r = await fetch("/api/sky/totals");
+    totals = await r.json();
+    setIdx(curIdx);   // re-clamp + re-render label
+  } catch (e) {}
+}
+
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  buildUrl:  (sel) => `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`,
+  initial:   { kind: "clean", subset: "train", band: "VIS", i: 0 },
+});
+
+// Wire the toolbar chips (kind / subset / band)
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip[data-group]");
+  if (!chip) return;
+  e.preventDefault();
+  if (chip.dataset.group === "i") return;   // index display; not a switcher
+  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+  setIdx(curIdx);  // ensures index display updates (max may change with kind/subset)
+});
+
+document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
+document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
+
+document.getElementById("generate-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("generate-status"), {
+    onDone: () => { refreshTotals().then(() => polishUI.viz.refresh()); },
+  });
+});
+document.getElementById("forward-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("forward-status"), {
+    onDone: () => { refreshTotals().then(() => polishUI.viz.refresh()); },
+  });
+});
+
+refreshTotals();
+</script>
+{% endblock %}

@@ -12,7 +12,7 @@ from tqdm import tqdm
 import glob as _glob
 
 from euclid_polish.config import Config
-from euclid_polish.sky.types import SkyImage
+from euclid_polish.sky.types import MultiBandSkyImage
 
 
 # ---------------------------------------------------------------------------
@@ -29,101 +29,35 @@ def tfrecord_path(records_dir: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Parsers
+# Multi-band I/O (schema v2)
 # ---------------------------------------------------------------------------
 
-def parse_tfrecord_example(raw_record: bytes) -> tuple[np.ndarray, int, int, int]:
-    """
-    Eager parser — returns numpy values. Not safe inside tf.data.map().
+def parse_record_graph_v2(raw_record: tf.Tensor, num_channels: int) -> tf.Tensor:
+    """Graph-mode v2 parser — safe inside ``tf.data.map``.
 
-    Returns
-    -------
-    image : ndarray, float32, shape (H, W)
-    index : int
-    height : int
-    width : int
+    Returns a float32 tensor of shape ``[H, W, num_channels]``. The caller
+    must pre-commit to ``num_channels`` (1 for HR-VIS, 4 for LR multi-band)
+    so the output shape is statically known to downstream graph ops.
     """
-    img = SkyImage.from_tfrecord(raw_record)
-    return img.data, img.index or 0, *img.shape
-
-
-def parse_record_graph(raw_record: tf.Tensor) -> tf.Tensor:
-    """
-    Graph-mode parser — safe inside tf.data.map().
-
-    Returns a float32 tensor of shape [H, W, 1].
-    """
-    ex = tf.io.parse_single_example(raw_record, SkyImage._TFRECORD_FEATURES)
+    ex = tf.io.parse_single_example(raw_record, MultiBandSkyImage._TFRECORD_FEATURES)
     pixels = tf.io.decode_raw(ex['image'], tf.float32)
     h = tf.cast(ex['height'], tf.int32)
     w = tf.cast(ex['width'],  tf.int32)
-    return tf.reshape(pixels, [h, w, 1])
+    # Static check against the provided num_channels — graph aborts on mismatch.
+    c = tf.cast(ex['channels'], tf.int32)
+    tf.debugging.assert_equal(
+        c, tf.constant(int(num_channels), dtype=tf.int32),
+        message="Channel count in TFRecord does not match expected num_channels.",
+    )
+    return tf.reshape(pixels, [h, w, num_channels])
 
 
-# ---------------------------------------------------------------------------
-# Convenience reader (eager, for visualization / inspection)
-# ---------------------------------------------------------------------------
-
-def read_tfrecord(
-    tfrecord_path_or_glob: str,
-    num_images: int = 5,
-    mode: str = 'first',
-    indices: list[int] | None = None,
-    seed: int = 42,
-) -> list[tuple[np.ndarray, int, int, int]]:
-    """
-    Read images from a TFRecord file (or glob pattern) and return numpy arrays.
-
-    Parameters
-    ----------
-    tfrecord_path_or_glob : str
-        Path to a TFRecord file or a glob pattern.
-    num_images : int
-        Number of images to return when mode is 'first' or 'random'.
-    mode : str
-        'first' or 'random'. Ignored when indices is provided.
-    indices : list of int, optional
-        Specific positional indices (0-based) to select.
-    seed : int
-        Random seed for reproducibility when mode='random'.
-
-    Returns
-    -------
-    list of (image, index, height, width)
-    """
-    paths = sorted(_glob.glob(tfrecord_path_or_glob)) or [tfrecord_path_or_glob]
-    dataset = tf.data.TFRecordDataset(paths)
-    all_images = [
-        parse_tfrecord_example(raw)
-        for raw in tqdm(dataset, desc="Reading TFRecord")
-    ]
-
-    if indices is not None:
-        valid = [i for i in indices if 0 <= i < len(all_images)]
-        if len(valid) < len(indices):
-            print(f"Warning: ignoring out-of-range indices {set(indices) - set(valid)}")
-        return [all_images[i] for i in valid]
-
-    n = min(num_images, len(all_images))
-    if mode == 'first':
-        return all_images[:n]
-    if mode == 'random':
-        np.random.seed(seed)
-        chosen = np.random.choice(len(all_images), n, replace=False)
-        return [all_images[i] for i in chosen]
-    raise ValueError(f"mode must be 'first' or 'random', got {mode!r}")
-
-
-# ---------------------------------------------------------------------------
-# Batch I/O with SkyImage
-# ---------------------------------------------------------------------------
-
-def write_skyimages(
-    images: list[SkyImage],
+def write_multiband_skyimages(
+    images: list[MultiBandSkyImage],
     name: str,
-    records_dir: str = Config.RECORDS_DIR,
+    records_dir: str = Config.RECORDS_DIR_V2,
 ) -> str:
-    """Write SkyImage objects to a single TFRecord file.
+    """Write MultiBandSkyImage objects to a single v2 TFRecord file.
 
     Returns the path to the written file.
     """
@@ -138,18 +72,18 @@ def write_skyimages(
     return path
 
 
-def read_skyimages(
+def read_multiband_skyimages(
     tfrecord_path_or_glob: str,
     num_images: int = 5,
     mode: str = 'first',
-) -> list[SkyImage]:
-    """Read TFRecords and return SkyImage objects.
-
-    pixel_scale and is_clean are read from the stored records.
-    """
+) -> list[MultiBandSkyImage]:
+    """Read v2 TFRecords and return MultiBandSkyImage objects."""
     paths = sorted(_glob.glob(tfrecord_path_or_glob)) or [tfrecord_path_or_glob]
     dataset = tf.data.TFRecordDataset(paths)
-    all_images = [SkyImage.from_tfrecord(raw) for raw in tqdm(dataset, desc="Reading TFRecord")]
+    all_images = [
+        MultiBandSkyImage.from_tfrecord(raw)
+        for raw in tqdm(dataset, desc="Reading TFRecord")
+    ]
 
     n = min(num_images, len(all_images))
     if mode == 'first':

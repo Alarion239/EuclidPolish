@@ -1,0 +1,24 @@
+{# Three-column page layout: [ sidebar | center viz | right actions ].
+   Pages that need actions panel + center visualization extend this.
+   Override:
+     - title    : page <title>
+     - heading  : H2 at the top of the center pane
+     - toolbar  : selector-strip above the visualizations (band picker, etc.)
+     - viz      : main visualization area in the centre
+     - actions  : right-hand actions / forms panel
+#}
+{% extends "base.html" %}
+{% block content %}
+  <div class="three-col">
+    <section class="viz-pane">
+      <div class="viz-header">
+        <h2>{% block heading %}{% endblock %}</h2>
+        {% block toolbar %}{% endblock %}
+      </div>
+      {% block viz %}{% endblock %}
+    </section>
+    <aside class="actions-pane">
+      {% block actions %}{% endblock %}
+    </aside>
+  </div>
+{% endblock %}

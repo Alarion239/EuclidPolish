@@ -21,7 +21,18 @@ from euclid_polish.euclid.types import PSF
 
 @dataclass
 class PSFExtractionConfig:
-    """Configuration for PSF extraction."""
+    """Configuration for PSF extraction.
+
+    ``psf_size``      controls the *input* cutout extracted from each star
+                      stamp (native pixels, must be odd).
+    ``output_size``   controls the *output* PSF shape (in oversampled
+                      pixels). ``None`` → photutils' default for the
+                      ``oversampling`` setting (typically
+                      ``psf_size × oversampling + 1``). When set, the
+                      output PSF is exactly ``output_size × output_size``
+                      (any even value is silently bumped down to the
+                      nearest odd, e.g. ``1024 → 1023``).
+    """
     psf_size: int = Config.DEFAULT_PSF_SIZE
     fwhm: float = Config.DEFAULT_PSF_FWHM
     threshold: float = Config.DEFAULT_PSF_THRESHOLD
@@ -29,6 +40,13 @@ class PSFExtractionConfig:
     accuracy: float = Config.DEFAULT_PSF_ACCURACY
     progress_bar: bool = True
     oversampling: int = Config.DEFAULT_REBIN_FACTOR
+    output_size: Optional[int] = None
+    # Saturation rejection: Euclid MER zeros out detector pixels that
+    # exceed well capacity. A star is rejected if its central
+    # ``saturation_core_size × saturation_core_size`` region (centred on
+    # the star) contains any non-positive or NaN pixels. Set
+    # ``saturation_core_size = 0`` to disable.
+    saturation_core_size: int = 7
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """Validate configuration."""
@@ -42,7 +60,16 @@ class PSFExtractionConfig:
             return False, "Max iterations must be positive"
         if self.accuracy <= 0:
             return False, "Accuracy must be positive"
+        if self.output_size is not None and self.output_size <= 0:
+            return False, "output_size must be positive when set"
         return True, None
+
+    @property
+    def effective_output_size(self) -> Optional[int]:
+        """Force-odd the output_size (1024 → 1023). ``None`` if unset."""
+        if self.output_size is None:
+            return None
+        return self.output_size if self.output_size % 2 == 1 else self.output_size - 1
 
 
 class PSFExtractor:
@@ -68,6 +95,10 @@ class PSFExtractor:
         self.config = config or PSFExtractionConfig()
         self.epsf: Optional[EPSFModel] = None
         self.fitted_stars = None
+        # Per-run rejection counts populated by extract_psf_stars_from_files.
+        self.n_rejected_saturated: int = 0
+        self.n_rejected_edge:      int = 0
+        self.n_rejected_load:      int = 0
 
     def get_cutout_files(
         self,
@@ -179,21 +210,33 @@ class PSFExtractor:
         """
         Extract a PSF star from a cutout image.
 
-        Assumes the star is centered in the image.
+        Assumes the star is centered in the image. Stars whose central
+        ``saturation_core_size × saturation_core_size`` region contains
+        any non-positive or NaN pixels are rejected — those are clipped
+        saturated cores from the Euclid MER pipeline. The rejection
+        leaves the bright wings intact and only avoids using stars where
+        the very peak is unreliable.
 
-        Parameters:
-        -----------
-        image_data : numpy.ndarray
-            Image data.
-
-        Returns:
-        --------
-        EPSFStar or None
-            Extracted PSF star, or None if extraction failed.
+        Returns ``None`` for any rejection (saturation, edge, etc.).
+        Note: ``self.n_rejected_*`` counters are NOT updated here — they
+        are only kept consistent inside
+        :meth:`extract_psf_stars_from_files`, which catalogs the cause.
         """
         psf_size = self.config.psf_size
         ny, nx = image_data.shape
         center_y, center_x = ny // 2, nx // 2
+
+        # ---- Saturation check: bright NISP stars have zero/NaN central cores
+        #      from the MER pipeline clipping pixels above well capacity.
+        sat_n = int(self.config.saturation_core_size)
+        if sat_n >= 1:
+            sh = sat_n // 2
+            core = image_data[
+                max(0, center_y - sh): center_y + sh + 1,
+                max(0, center_x - sh): center_x + sh + 1,
+            ]
+            if core.size == 0 or (~np.isfinite(core)).any() or (core <= 0).any():
+                return None
 
         # Extract a centered cutout
         half_size = psf_size // 2
@@ -234,16 +277,13 @@ class PSFExtractor:
         """
         Extract PSF stars from multiple cutout files.
 
-        Parameters:
-        -----------
-        cutout_files : list of tuple
-            List of (index, filepath) tuples.
-
-        Returns:
-        --------
-        list of EPSFStar
-            Extracted PSF stars.
+        Updates ``self.n_rejected_*`` counters with the cause of every
+        rejection (load failure / edge crop / saturation). Saturation
+        rejection in particular catches MER-clipped bright NISP cores.
         """
+        self.n_rejected_load = 0
+        self.n_rejected_edge = 0
+        self.n_rejected_saturated = 0
         all_epsf_stars = []
 
         iterator = tqdm(
@@ -252,20 +292,53 @@ class PSFExtractor:
             disable=not self.config.progress_bar
         )
 
+        sat_n = int(self.config.saturation_core_size)
+
+        def _is_saturated_core(image_data: np.ndarray) -> bool:
+            if sat_n < 1:
+                return False
+            ny, nx = image_data.shape
+            cy, cx = ny // 2, nx // 2
+            sh = sat_n // 2
+            core = image_data[max(0, cy - sh): cy + sh + 1,
+                              max(0, cx - sh): cx + sh + 1]
+            if core.size == 0:
+                return True
+            return bool((~np.isfinite(core)).any() or (core <= 0).any())
+
         for index, filepath in iterator:
             try:
                 image_data = self.load_cutout(filepath)
                 if image_data is None:
+                    self.n_rejected_load += 1
                     print(f"  Warning: Could not load {filepath}")
                     continue
 
+                # Pre-check saturation so we can attribute the rejection.
+                if _is_saturated_core(image_data):
+                    self.n_rejected_saturated += 1
+                    continue
+
                 epsf_star = self.extract_psf_star_from_cutout(image_data)
-                if epsf_star is not None:
-                    all_epsf_stars.append(epsf_star)
+                if epsf_star is None:
+                    # Wasn't saturated (checked above) → edge crop failure.
+                    self.n_rejected_edge += 1
+                    continue
+
+                all_epsf_stars.append(epsf_star)
 
             except Exception as e:
+                self.n_rejected_load += 1
                 print(f"  Warning: Error processing {filepath}: {e}")
                 continue
+
+        if self.n_rejected_saturated:
+            print(f"  rejected {self.n_rejected_saturated} stars with clipped "
+                  f"({sat_n}×{sat_n}) saturated cores")
+        if self.n_rejected_edge:
+            print(f"  rejected {self.n_rejected_edge} stars (edge crop failure)")
+        if self.n_rejected_load:
+            print(f"  rejected {self.n_rejected_load} stars (FITS load error)")
 
         return all_epsf_stars
 
@@ -298,13 +371,19 @@ class PSFExtractor:
         epsf_stars = EPSFStars(all_epsf_stars)
 
         print("Building effective PSF...")
-        epsf_builder = EPSFBuilder(
+        builder_kwargs = dict(
             oversampling=self.config.oversampling,
             maxiters=self.config.max_iters,
             progress_bar=self.config.progress_bar,
             center_accuracy=self.config.accuracy,
             smoothing_kernel=None,
         )
+        out_side = self.config.effective_output_size
+        if out_side is not None:
+            # Photutils accepts ``shape=(H, W)`` in *oversampled* pixels.
+            builder_kwargs["shape"] = (out_side, out_side)
+            print(f"  requesting output PSF shape {out_side}×{out_side}")
+        epsf_builder = EPSFBuilder(**builder_kwargs)
 
         epsf, fitted_stars = epsf_builder(epsf_stars)
 

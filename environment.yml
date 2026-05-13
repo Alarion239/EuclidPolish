@@ -13,8 +13,12 @@ dependencies:
   - astropy
   - scikit-image
   - tf-keras
-  - galsim
   - tqdm
   - astroquery
   - photutils
   - questionary
+  - pytest
+  - flask
+  - pip
+  - pip:
+      - lenstronomy

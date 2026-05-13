@@ -1,0 +1,89 @@
+{% extends "base_split.html" %}
+{% block title %}Visualization · EuclidPolish{% endblock %}
+{% block heading %}Visualization gallery{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">All PNGs under</span>
+  <code>data/vis/</code>
+  <span class="muted">({{ pngs | length }} files)</span>
+</div>
+{% endblock %}
+
+{% block viz %}
+{% if pngs %}
+<div class="gallery">
+  {% for p in pngs[:60] %}
+    <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}" target="_blank">
+      <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
+      <span class="thumb-label">{{ p.rel }}</span>
+      <span class="muted">{{ p.size_kb }} KB</span>
+    </a>
+  {% endfor %}
+</div>
+{% if pngs | length > 60 %}
+  <p class="hint">+ {{ pngs | length - 60 }} more not shown.</p>
+{% endif %}
+{% else %}
+<div class="viz-area">
+  <div class="placeholder">No PNGs yet. Use the actions on the right to generate some.</div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Quick lens demo</h3>
+  <p class="hint">Generates one 510² 4-band HR field with N lenses,
+     runs forward, renders HR clean + LR dirty 2×2 panels.</p>
+  <form id="demo-form" action="/visualization/demo">
+    <label>Lenses to force <input type="number" name="n_lenses" value="3" min="0" max="10"></label>
+    <button type="submit">Generate demo</button>
+  </form>
+  <div id="demo-status"></div>
+</section>
+
+<section class="card">
+  <h3>Star positions</h3>
+  <form id="stars-form" action="/visualization/star-positions">
+    <label>Output dir
+      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
+    <button type="submit">Plot positions</button>
+  </form>
+  <div id="stars-status"></div>
+</section>
+
+<section class="card">
+  <h3>Render PSF panel</h3>
+  <form id="psf-form" action="/psfs/visualize">
+    <label>Band
+      <select name="band">
+        <option value="">all bands</option>
+        {% for name in ['VIS', 'Y_E', 'J_E', 'H_E'] %}
+          <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Render</button>
+  </form>
+  <div id="psf-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function bindRun(formId, statusId) {
+  const f = document.getElementById(formId);
+  if (!f) return;
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(f, document.getElementById(statusId), {
+      onDone: () => setTimeout(() => location.reload(), 1500),
+    });
+  });
+}
+bindRun("demo-form",  "demo-status");
+bindRun("stars-form", "stars-status");
+bindRun("psf-form",   "psf-status");
+</script>
+{% endblock %}

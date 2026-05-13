@@ -1,0 +1,112 @@
+{% extends "base_split.html" %}
+{% block title %}Training · EuclidPolish{% endblock %}
+{% block heading %}Training{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">View</span>
+  <a class="chip active" data-group="view" data-value="log">training log</a>
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  <img id="viz-img" alt="training log">
+  <div class="placeholder">No <code>training_log.jsonl</code> yet — train a model first.</div>
+</div>
+
+<section class="card">
+  <h3>Checkpoints on disk</h3>
+  <p class="hint"><code>{{ checkpoints.dir }}</code></p>
+  {% if checkpoints.files %}
+    <table>
+      <tr><th>File</th><th>Size</th></tr>
+      {% for f in checkpoints.files %}
+        <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">empty — train first.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Records available</h3>
+  {% if tfrecords.files %}
+    <ul>
+      {% for f in tfrecords.files %}
+        <li><code>{{ f.name }}</code> · {{ f.size_mb }} MB</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">no records — generate + forward first.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Train</h3>
+  <form id="train-form" action="/training/train">
+    <label>Steps
+      <input type="number" name="steps" value="{{ default_steps }}" min="100" max="2000000"></label>
+    <label>Batch size
+      <input type="number" name="batch_size" value="{{ default_batch }}" min="1" max="256"></label>
+    <label>Residual blocks
+      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}" min="1" max="64"></label>
+    <label>Evaluate every
+      <input type="number" name="evaluate_every" value="{{ default_eval_every }}" min="1" max="50000"></label>
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <button type="submit">Start training</button>
+  </form>
+  <div id="train-status"></div>
+</section>
+
+<section class="card">
+  <h3>Evaluate</h3>
+  <form id="eval-form" action="/training/evaluate">
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <label>Residual blocks
+      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <button type="submit">Evaluate</button>
+  </form>
+  <div id="eval-status"></div>
+</section>
+
+<section class="card">
+  <h3>Plot training log</h3>
+  <form id="plot-form" action="/training/plot-log">
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <button type="submit">Plot log</button>
+  </form>
+  <div id="plot-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  buildUrl:  (sel) => `/view/training-log?checkpoint_dir=./ckpt/wdsr`,
+  initial:   { view: "log" },
+});
+
+function bindRun(formId, statusId) {
+  const f = document.getElementById(formId);
+  if (!f) return;
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(f, document.getElementById(statusId), {
+      onDone: () => polishUI.viz.refresh(),
+    });
+  });
+}
+bindRun("train-form", "train-status");
+bindRun("eval-form",  "eval-status");
+bindRun("plot-form",  "plot-status");
+</script>
+{% endblock %}

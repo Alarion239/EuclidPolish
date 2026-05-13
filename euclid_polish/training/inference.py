@@ -22,30 +22,26 @@ def load_model_from_checkpoint(
     checkpoint_dir: str,
     scale: int,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-    nchan: int = 1,
+    nchan: int = None,           # back-compat alias for nchan_in
+    nchan_in: int = None,
+    nchan_out: int = None,
 ):
+    """Build a WDSR model and restore weights from a TF checkpoint directory.
+
+    For the multi-band pipeline pass ``nchan_in=4, nchan_out=1``. The
+    single-channel signature ``nchan=1`` is still accepted.
     """
-    Build a WDSR model and restore weights from a TF checkpoint directory.
+    if nchan is not None and nchan_in is None:
+        nchan_in = nchan
+    if nchan_in is None:
+        nchan_in = 1
+    if nchan_out is None:
+        nchan_out = nchan_in
 
-    Parameters
-    ----------
-    checkpoint_dir : str
-        Directory managed by tf.train.CheckpointManager.
-    scale : int
-        Super-resolution scale factor.
-    num_res_blocks : int
-        Number of residual blocks.
-    nchan : int
-        Number of image channels.
-
-    Returns
-    -------
-    tf.keras.Model
-    """
-    from euclid_polish.training.trainer import Trainer
-    from tf_keras.losses import MeanAbsoluteError
-
-    model = wdsr(scale=scale, num_res_blocks=num_res_blocks, nchan=nchan)
+    model = wdsr(
+        scale=scale, num_res_blocks=num_res_blocks,
+        nchan_in=nchan_in, nchan_out=nchan_out,
+    )
     checkpoint = tf.train.Checkpoint(model=model)
     latest = tf.train.latest_checkpoint(checkpoint_dir)
     if latest is None:
