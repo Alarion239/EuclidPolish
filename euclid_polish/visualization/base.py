@@ -134,6 +134,7 @@ class BaseVisualizer:
         asinh_scale: float | None = None,
         colorbar_label: str = "Electrons",
         log_scale: bool | None = None,    # legacy — prefer ``stretch``
+        cmap: str = "viridis",
     ) -> None:
         """Add an intensity panel.
 
@@ -148,6 +149,11 @@ class BaseVisualizer:
             image's MAD (median absolute deviation).
         log_scale : bool, optional
             Deprecated. ``True`` is equivalent to ``stretch="log10"``.
+        cmap : str
+            Matplotlib colormap. Default ``"viridis"``; pass ``"gray"`` or
+            ``"gray_r"`` to render a panel as true grayscale (used for the
+            VIS-only SR cells in the reconstruction plot, since the model
+            has no multi-band information to colour with).
         """
         if log_scale is not None:
             stretch = "log10" if log_scale else stretch
@@ -160,7 +166,7 @@ class BaseVisualizer:
             vmin, vmax = _percentile_bounds(display)
             title = f"log10{title_suffix}"
             cbar_label = f"log10({colorbar_label})"
-            im = ax.imshow(display, cmap="viridis", origin="lower",
+            im = ax.imshow(display, cmap=cmap, origin="lower",
                            interpolation="nearest", vmin=vmin, vmax=vmax)
         elif stretch == "asinh":
             scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
@@ -168,7 +174,7 @@ class BaseVisualizer:
             vmin, vmax = _percentile_bounds(display)
             title = f"asinh (scale={scale:.3g}){title_suffix}"
             cbar_label = f"asinh({colorbar_label} / {scale:.3g})"
-            im = ax.imshow(display, cmap="viridis", origin="lower",
+            im = ax.imshow(display, cmap=cmap, origin="lower",
                            interpolation="nearest", vmin=vmin, vmax=vmax)
         elif stretch == "linear":
             if self.vmin is None or self.vmax is None:
@@ -178,7 +184,7 @@ class BaseVisualizer:
             title = f"linear [p1, p99.5]{title_suffix}" if self.vmax is None \
                 else f"linear [{vmin:.3g}, {vmax:.3g}]{title_suffix}"
             cbar_label = colorbar_label
-            im = ax.imshow(data, cmap="viridis", origin="lower",
+            im = ax.imshow(data, cmap=cmap, origin="lower",
                            interpolation="nearest", vmin=vmin, vmax=vmax)
         else:
             raise ValueError(f"Unknown stretch: {stretch!r}")

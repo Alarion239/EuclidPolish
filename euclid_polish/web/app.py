@@ -516,24 +516,25 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     )
 
     lr_path = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
-    # ``hr_<subset>`` is the 1-channel VIS target the trainer fit
-    # against; ``clean_<subset>`` is the 4-channel HR cube (kept for
-    # inspection only). Prefer the 1-channel record so the residual
-    # plot's ``hr_data - sr_data`` shapes match; fall back to slicing
-    # channel 0 out of the clean record on older datasets that don't
-    # carry a separate ``hr_<subset>`` file.
+    # ``hr_<subset>``    : 1-channel VIS target the trainer fit against,
+    #                     used as ``hr_data`` for the residual + PSNR
+    #                     panels (needs to match SR's single channel).
+    # ``clean_<subset>`` : 4-channel HR cube kept for inspection. We
+    #                     always read it (when present) so the HR color
+    #                     panel pulls from the *clean* sky, not from
+    #                     the 1-channel target. Falls back to channel 0
+    #                     of clean when ``hr_<subset>`` is absent.
     hr_path     = tfrecord_path(Config.RECORDS_DIR_V2, f"hr_{subset}")
     clean_path  = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
     if not os.path.exists(lr_path):
         raise FileNotFoundError(f"no records in {Config.RECORDS_DIR_V2}")
-    lr_records = read_multiband_skyimages(lr_path, num_images=10_000)
-    if os.path.exists(hr_path):
-        hr_records = read_multiband_skyimages(hr_path, num_images=10_000)
-    elif os.path.exists(clean_path):
-        hr_records = read_multiband_skyimages(clean_path, num_images=10_000)
-    else:
-        hr_records = []
-    hr_by_idx = {h.index: h for h in hr_records}
+    lr_records   = read_multiband_skyimages(lr_path, num_images=10_000)
+    hr_records   = (read_multiband_skyimages(hr_path, num_images=10_000)
+                    if os.path.exists(hr_path) else [])
+    clean_records = (read_multiband_skyimages(clean_path, num_images=10_000)
+                     if os.path.exists(clean_path) else [])
+    hr_by_idx    = {h.index: h for h in hr_records}
+    clean_by_idx = {c.index: c for c in clean_records}
     n = min(n_images, len(lr_records))
     rng = np.random.default_rng()
     chosen = rng.choice(len(lr_records), size=n, replace=False)
@@ -549,20 +550,28 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
                                 and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
                              else None)
         lr_data, sr_data = reconstruct(model, lr_img.data)
-        hr_data = None
+
+        # HR color is taken from the CLEAN record (4-band, noise-free)
+        # — never from the 1-channel hr_<subset>. The latter is only
+        # used for the residual / PSNR math.
         hr_cube_for_color = None
+        if lr_img.index in clean_by_idx:
+            raw = clean_by_idx[lr_img.index].data
+            if raw.ndim == 3 and raw.shape[-1] == Config.NUM_LR_CHANNELS:
+                hr_cube_for_color = raw
+
+        # HR truth for residual / PSNR — single channel VIS.
+        hr_data = None
         if lr_img.index in hr_by_idx:
             raw = hr_by_idx[lr_img.index].data
-            # plot_reconstruction expects a 2-D VIS HR. Slice channel 0
-            # when the record carries the legacy 4-channel cube. Keep
-            # the full cube around for the HR color composite when
-            # all four bands are present.
             if raw.ndim == 3 and raw.shape[-1] >= 1:
                 hr_data = raw[..., 0]
-                if raw.shape[-1] == Config.NUM_LR_CHANNELS:
-                    hr_cube_for_color = raw
             elif raw.ndim == 2:
                 hr_data = raw
+        elif hr_cube_for_color is not None:
+            # Fall back to channel 0 of the clean record when no
+            # dedicated hr_<subset> file is present.
+            hr_data = hr_cube_for_color[..., 0]
         out = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.png")
         plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
                             output_path=out,

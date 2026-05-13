@@ -355,7 +355,8 @@ def plot_reconstruction(
         vis.add_scale_panel(lr_data, stretch="linear",
                             title_suffix="\nDirty (LR)")
     vis.add_scale_panel(sr_data, stretch="linear",
-                        title_suffix="\nReconstruction (SR)")
+                        title_suffix="\nReconstruction (SR)",
+                        cmap="gray")
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="linear",
                                 title_suffix="\nTrue Sky (HR)")
@@ -377,7 +378,8 @@ def plot_reconstruction(
         vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR)")
     vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
-                        title_suffix="\nReconstruction (SR)")
+                        title_suffix="\nReconstruction (SR)",
+                        cmap="gray")
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
                                 asinh_scale=shared_scale,
