@@ -306,7 +306,10 @@ def build_sbatch_script(*, label: str, params: Dict[str, Any],
 def parse_squeue(text: str) -> List[Dict[str, str]]:
     """Parse our fixed-format ``squeue`` output.
 
-    We invoke squeue with ``--format``; this just splits on tabs.
+    We invoke squeue with ``--format`` and a pipe separator. The literal
+    ``\\t`` in modern SLURM's format string is NOT expanded — it shows up
+    as the two characters ``\t`` in the output, which silently broke the
+    earlier tab-based split. Pipes are passed through literally.
     """
     rows: List[Dict[str, str]] = []
     keys = ["jobid", "name", "state", "time", "time_limit",
@@ -315,11 +318,40 @@ def parse_squeue(text: str) -> List[Dict[str, str]]:
         line = line.strip()
         if not line or line.startswith("JOBID"):
             continue
-        parts = line.split("\t")
+        # Tolerate both pipe and tab separation so old runs of the helper
+        # (or anyone pasting squeue output directly) still parse.
+        if "|" in line:
+            parts = line.split("|")
+        elif "\t" in line:
+            parts = line.split("\t")
+        else:
+            parts = line.split()
         if len(parts) < len(keys):
             parts += [""] * (len(keys) - len(parts))
         rows.append(dict(zip(keys, parts[: len(keys)])))
     return rows
 
 
-SQUEUE_FMT = "%i\\t%j\\t%T\\t%M\\t%l\\t%D\\t%R\\t%S"
+SQUEUE_FMT = "%i|%j|%T|%M|%l|%D|%R|%S"
+
+
+def parse_slurm_time(t: Optional[str]) -> float:
+    """SLURM ``d-hh:mm:ss`` / ``hh:mm:ss`` / ``mm:ss`` → seconds.
+
+    Returns 0.0 on anything we can't parse rather than raising — the
+    elapsed field can be blank for pending jobs.
+    """
+    if not t:
+        return 0.0
+    s = 0.0
+    if "-" in t:
+        days, t = t.split("-", 1)
+        try:
+            s += int(days) * 86400
+        except ValueError:
+            return 0.0
+    parts = [int(x) for x in t.split(":") if x.isdigit()]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    s += parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return s

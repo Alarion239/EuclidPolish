@@ -217,8 +217,8 @@ def test_queue_endpoint_parses_fake_squeue_output(fake_remote, client):
     bin_dir = fake_remote["bin_dir"]
     (bin_dir / "squeue").write_text(textwrap.dedent("""\
         #!/usr/bin/env bash
-        printf '1001\teuclid-a\tRUNNING\t00:30:00\t12:00:00\t1\tNone\t2026-05-12T12:00:00\n'
-        printf '1002\teuclid-b\tPENDING\t0:00\t12:00:00\t1\tResources\tN/A\n'
+        printf '1001|euclid-a|RUNNING|00:30:00|12:00:00|1|None|2026-05-12T12:00:00\n'
+        printf '1002|euclid-b|PENDING|0:00|12:00:00|1|Resources|N/A\n'
     """))
     os.chmod(bin_dir / "squeue", 0o755)
     r = client.get("/api/fasrc/queue")
@@ -227,6 +227,108 @@ def test_queue_endpoint_parses_fake_squeue_output(fake_remote, client):
     assert len(data["rows"]) == 2
     assert data["rows"][0]["state"] == "RUNNING"
     assert data["rows"][1]["jobid"] == "1002"
+
+
+def test_training_status_running_returns_parsed_summary(fake_remote, client):
+    """Plant a fake squeue + log files, then assert the route returns the
+    parsed stage / progress / metrics dict the UI expects."""
+    bin_dir = fake_remote["bin_dir"]
+    # Squeue: one RUNNING job. The jobid matches what we'll plant in sqlite.
+    (bin_dir / "squeue").write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        printf '88888|euclid-test|RUNNING|00:10:00|12:00:00|1|holygpu1|2026-05-13T01:00:00\n'
+    """))
+    os.chmod(bin_dir / "squeue", 0o755)
+
+    # Plant the .out / .err / training_log.jsonl in the locations the
+    # route will look for them based on what's stored in sqlite.
+    cfg = fake_remote["cfg"]
+    log_dir = Path(cfg.repo_path) / "logs" / "jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_path = log_dir / "euclid-test.out"
+    err_path = log_dir / "euclid-test.err"
+    fake_remote["db"].insert(
+        "88888", label="test run", params={"steps": 400_000},
+        script_path=str(log_dir / "euclid-test.sh"),
+        log_path=str(out_path), err_path=str(err_path),
+    )
+    out_path.write_text(textwrap.dedent("""\
+        [...] STEP 1: Generate clean 4-band HR fields ...
+        [...] STEP 2: HR → LR ...
+        [...] STEP 3: Train WDSR (400000 steps, batch 16, eval every 1000)
+        [t] Step 12000/400000: loss = 4.21, PSNR(str/raw) = 22.314/19.872 dB, |g| 0.3/1.4 (3.51s)
+          ✓ Checkpoint saved (PSNR str=22.314)
+    """))
+    err_path.write_text("Training:   3% 12000/400000 [12:00<5:30:14, 10.0step/s]\n")
+
+    ckpt_dir = Path(cfg.ckpt_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    (ckpt_dir / "training_log.jsonl").write_text(
+        '{"step": 11000, "loss": 4.3, "psnr_stretched": 22.1, "psnr_raw": 19.7, "duration_s": 3.5, "wall_time": 0}\n'
+        '{"step": 12000, "loss": 4.21, "psnr_stretched": 22.314, "psnr_raw": 19.872, "duration_s": 3.5, "wall_time": 0}\n'
+    )
+
+    r = client.get("/api/fasrc/training-status")
+    assert r.status_code == 200, r.get_json()
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["running"] is True
+    assert data["job"]["jobid"]  == "88888"
+    assert data["job"]["label"]  == "test run"
+    assert data["stage"] == "train"
+    assert data["progress"]["current"] == 12000
+    assert data["progress"]["total"]   == 400000
+    assert data["latest_metrics"]["psnr_stretched"] == 22.314
+    assert "Checkpoint saved" in data["last_checkpoint"]
+    assert data["latest_validation"]["step"] == 12000
+    assert data["eta_seconds"] is not None
+
+
+def test_training_status_returns_running_false_when_queue_empty(fake_remote, client):
+    bin_dir = fake_remote["bin_dir"]
+    (bin_dir / "squeue").write_text("#!/usr/bin/env bash\nexit 0\n")
+    os.chmod(bin_dir / "squeue", 0o755)
+    r = client.get("/api/fasrc/training-status")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["running"] is False
+
+
+def test_git_pull_flags_env_update_when_environment_yml_changed(fake_remote, client):
+    """When the pull's diff includes ``environment.yml``, the response
+    sets ``env_update_needed: True`` so the UI auto-runs mamba env update."""
+    cfg = fake_remote["cfg"]
+    # Fake `git` that pretends to pull successfully and lists one file.
+    (fake_remote["bin_dir"] / "git").write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        case "$*" in
+          'pull --ff-only') echo 'Already up to date.' ;;
+          'diff --name-only ORIG_HEAD..HEAD') echo environment.yml ;;
+        esac
+    """))
+    os.chmod(fake_remote["bin_dir"] / "git", 0o755)
+
+    r = client.post("/api/fasrc/git-pull")
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["env_update_needed"] is True
+    assert "environment.yml" in data["changed_files"]
+
+
+def test_git_pull_does_not_flag_env_update_for_unrelated_changes(fake_remote, client):
+    (fake_remote["bin_dir"] / "git").write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        case "$*" in
+          'pull --ff-only') echo 'Updating abc..def' ;;
+          'diff --name-only ORIG_HEAD..HEAD') echo README.md ;;
+        esac
+    """))
+    os.chmod(fake_remote["bin_dir"] / "git", 0o755)
+    r = client.post("/api/fasrc/git-pull")
+    data = r.get_json()
+    assert data["env_update_needed"] is False
+    assert data["changed_files"] == ["README.md"]
 
 
 # ---------------------------------------------------------------------------

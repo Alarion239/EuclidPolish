@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import glob
 import io
+import json
 import os
 import re
 import shlex
@@ -24,7 +25,9 @@ from euclid_polish.euclid.psf_library import (
     load_all_band_psfs, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.euclid.types import PSF
-from euclid_polish.web import fasrc_config, fasrc_jobs, git_ops
+from euclid_polish.web import (
+    fasrc_config, fasrc_jobs, fasrc_log_parser, git_ops,
+)
 from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import (
@@ -1446,15 +1449,43 @@ def create_app() -> Flask:
 
     @app.route("/api/fasrc/git-pull", methods=["POST"])
     def api_fasrc_git_pull():
+        """``git pull`` + auto-update conda env when ``environment.yml`` moved.
+
+        Returns ``env_update_needed: True`` whenever the pull's diff
+        touches ``environment.yml``; the UI then kicks off the
+        ``/api/fasrc/env-update`` SSE stream automatically so the user
+        doesn't have to remember.
+        """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
+        # Run ``git pull`` and ask in the same shell what just moved.
+        # ``ORIG_HEAD..HEAD`` is everything fetched; if the pull was a
+        # no-op the second command emits an empty list.
         rc, out, err = STATE.ssh.run(
-            f"cd {cfg.repo_path} && git pull --ff-only", timeout=60,
+            f"cd {shlex.quote(cfg.repo_path)} && "
+            f"git pull --ff-only && "
+            f"echo '__CHANGED__' && "
+            f"git diff --name-only ORIG_HEAD..HEAD 2>/dev/null || true",
+            timeout=60,
         )
-        return jsonify({"ok": rc == 0,
-                        "stdout": (out + err).strip(),
-                        "error":  "" if rc == 0 else (err.strip() or out.strip())})
+        out_text = (out + err).strip()
+        changed_files: list[str] = []
+        if "__CHANGED__" in out:
+            head, _, tail = out.partition("__CHANGED__")
+            out_text = head.strip()
+            changed_files = [line for line in tail.splitlines() if line.strip()]
+        env_update_needed = any(
+            f.endswith("environment.yml") for f in changed_files
+        )
+        return jsonify({
+            "ok":                rc == 0,
+            "stdout":            out_text,
+            "changed_files":     changed_files,
+            "env_update_needed": env_update_needed,
+            "error":             "" if rc == 0 else
+                                  (err.strip() or out.strip()),
+        })
 
     @app.route("/api/fasrc/data-listing")
     def api_fasrc_data_listing():
@@ -1596,19 +1627,7 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "rows": rows})
 
-    def _parse_slurm_time(t: str | None) -> float:
-        """SLURM 'd-hh:mm:ss' / 'hh:mm:ss' / 'mm:ss' → seconds."""
-        if not t:
-            return 0.0
-        s = 0.0
-        if "-" in t:
-            d, t = t.split("-", 1)
-            s += int(d) * 86400
-        parts = [int(x) for x in t.split(":") if x.isdigit()]
-        while len(parts) < 3:
-            parts.insert(0, 0)
-        s += parts[0] * 3600 + parts[1] * 60 + parts[2]
-        return s
+    _parse_slurm_time = fasrc_jobs.parse_slurm_time
 
     # ---- submission -------------------------------------------------------
 
@@ -1716,6 +1735,149 @@ def create_app() -> Flask:
                 if r["state"] in ("RUNNING", "PENDING") else None
             )
         return jsonify({"jobs": rows})
+
+    # ---- parsed live status (.out + .err + training_log.jsonl) -----------
+
+    @app.route("/api/fasrc/training-status")
+    def api_fasrc_training_status():
+        """Single JSON dict the UI polls every few seconds.
+
+        Identifies the currently running job (RUNNING state in squeue,
+        cross-referenced against the local sqlite), then reads the tail
+        of its ``.out`` / ``.err`` / ``training_log.jsonl`` over SSH and
+        returns:
+
+          {
+            "running": True/False,
+            "job":     {jobid, name, elapsed_seconds, time_limit, ...},
+            "stage":   "init"|"generate"|"convolve"|"train"|null,
+            "progress":          {current, total, pct},
+            "latest_metrics":    {step, loss, psnr_stretched, psnr_raw},
+            "latest_validation": {...same as a training_log row},
+            "validations":       [last 200 validation rows],
+            "last_checkpoint":   "✓ Checkpoint saved (PSNR str=...)",
+            "eta_seconds":       float,
+          }
+
+        Empty/absent log files are handled gracefully.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+
+        # 1. Identify the running job. We trust the live squeue over
+        # sqlite — even if a tab reload missed a state transition.
+        rc, sq_out, _err = STATE.ssh.run(
+            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            timeout=10,
+        )
+        running_rows = []
+        if rc == 0:
+            for row in fasrc_jobs.parse_squeue(sq_out):
+                if row.get("state") == "RUNNING":
+                    running_rows.append(row)
+        if not running_rows:
+            return jsonify({"ok": True, "running": False,
+                            "queue_rows": fasrc_jobs.parse_squeue(sq_out)
+                                          if rc == 0 else []})
+
+        # Prefer a row whose jobid matches one we submitted from this UI.
+        known_ids = {r["jobid"] for r in fasrc_jobs.DB.list_recent(20)}
+        live = next((r for r in running_rows if r["jobid"] in known_ids),
+                    running_rows[0])
+        jobid  = live["jobid"]
+        stored = fasrc_jobs.DB.get(jobid)
+        log_path = (stored or {}).get("log_path") \
+                   or f"{cfg.repo_path}/logs/jobs/{live['name']}.out"
+        err_path = (stored or {}).get("err_path") \
+                   or log_path.replace(".out", ".err")
+        train_log = f"{cfg.ckpt_dir}/training_log.jsonl"
+
+        # 2. Fetch the relevant log tails in one SSH call.
+        cmd = (
+            f"echo __OUT__ ; tail -n 500 {shlex.quote(log_path)} 2>/dev/null ; "
+            f"echo __ERR__ ; tail -n 200 {shlex.quote(err_path)} 2>/dev/null ; "
+            f"echo __JSONL__ ; "
+            f"[ -f {shlex.quote(train_log)} ] && "
+            f"  tail -n 200 {shlex.quote(train_log)} 2>/dev/null"
+        )
+        rc, out, _err = STATE.ssh.run(cmd, timeout=15)
+        if rc != 0:
+            return jsonify({"ok": False, "error": "failed to read logs"}), 500
+
+        sections = {"__OUT__": "", "__ERR__": "", "__JSONL__": ""}
+        current  = None
+        for line in out.splitlines():
+            if line in sections:
+                current = line
+                continue
+            if current:
+                sections[current] += line + "\n"
+
+        elapsed_s = fasrc_jobs.parse_slurm_time(live.get("time"))
+
+        history_spt = fasrc_jobs.secs_per_step_history()
+        summary = fasrc_log_parser.summarise(
+            out_text=sections["__OUT__"],
+            err_text=sections["__ERR__"],
+            jsonl_text=sections["__JSONL__"],
+            elapsed_seconds=elapsed_s,
+            history_secs_per_step=history_spt,
+        )
+
+        # 3. Side-effect: keep sqlite up to date so /api/fasrc/jobs is
+        # accurate for the recent-submissions panel.
+        if summary["progress"]:
+            fasrc_jobs.DB.update_progress(
+                jobid,
+                summary["progress"]["current"],
+                summary["progress"]["total"],
+            )
+        if stored and stored["started_at"] is None:
+            fasrc_jobs.DB.update_state(
+                jobid, state="RUNNING",
+                started_at=time.time() - elapsed_s,
+            )
+
+        # 4. Activate the auto-mirror during the train stage and trigger
+        # an immediate sync whenever a fresh "Checkpoint saved" line
+        # shows up in the .out tail.
+        if summary["stage"] == "train":
+            if not MIRROR.status.enabled:
+                MIRROR.start()
+            if summary["last_checkpoint"] \
+                    and MIRROR.status.last_checkpoint_line != summary["last_checkpoint"]:
+                MIRROR.trigger()
+                MIRROR.status.last_checkpoint_line = summary["last_checkpoint"]
+
+        return jsonify({
+            "ok":       True,
+            "running":  True,
+            "job": {
+                "jobid":           jobid,
+                "name":            live.get("name", ""),
+                "state":           live.get("state", ""),
+                "elapsed_seconds": elapsed_s,
+                "elapsed":         live.get("time", ""),
+                "time_limit":      live.get("time_limit", ""),
+                "node":            live.get("reason", ""),
+                "start_time":      live.get("start_time", ""),
+                "log_path":        log_path,
+                "err_path":        err_path,
+                "label":           (stored or {}).get("label", ""),
+                "params":          json.loads((stored or {}).get("params_json") or "null"),
+            },
+            "stage":             summary["stage"],
+            "stage_index":       summary["stage_index"],
+            "pipeline_done":     summary["pipeline_done"],
+            "progress":          summary["progress"],
+            "latest_metrics":    summary["latest_metrics"],
+            "last_checkpoint":   summary["last_checkpoint"],
+            "validations":       summary["validations"],
+            "latest_validation": summary["latest_validation"],
+            "eta_seconds":       summary["eta_seconds"],
+            "queue_rows":        running_rows,
+        })
 
     # ---- live log stream (SSE) -------------------------------------------
 

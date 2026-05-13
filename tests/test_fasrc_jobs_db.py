@@ -90,13 +90,42 @@ def test_parse_progress_rejects_step_above_total():
     assert fasrc_jobs.parse_progress("counter 9999/100") is None
 
 
-def test_parse_squeue_handles_tab_separated_fixed_format():
+def test_parse_squeue_pipe_separated():
+    """Current format uses ``|`` because modern SLURM doesn't expand
+    ``\\t`` inside ``--format`` strings."""
     text = (
-        "1001\teuclid-1\tRUNNING\t01:23:45\t12:00:00\t1\tNone\t2026-05-12T12:00:00\n"
-        "1002\teuclid-2\tPENDING\t0:00\t12:00:00\t1\tResources\tN/A\n"
+        "1001|euclid-1|RUNNING|01:23:45|12:00:00|1|None|2026-05-12T12:00:00\n"
+        "1002|euclid-2|PENDING|0:00|12:00:00|1|Resources|N/A\n"
     )
     rows = fasrc_jobs.parse_squeue(text)
     assert len(rows) == 2
     assert rows[0]["jobid"] == "1001"
     assert rows[0]["state"] == "RUNNING"
     assert rows[1]["reason"] == "Resources"
+
+
+def test_parse_squeue_still_handles_tab_separated_paste():
+    """Tab-separated input still parses — handy if someone pastes the
+    output of an older squeue call."""
+    text = "1001\teuclid-1\tRUNNING\t01:23:45\t12:00:00\t1\tNone\t2026-05-12T12:00:00\n"
+    rows = fasrc_jobs.parse_squeue(text)
+    assert rows[0]["jobid"] == "1001"
+    assert rows[0]["state"] == "RUNNING"
+
+
+def test_squeue_fmt_uses_pipes():
+    """The format string we hand to ``squeue --format`` must use ``|``
+    so the bug we just fixed doesn't regress."""
+    assert "|" in fasrc_jobs.SQUEUE_FMT
+    assert "\\t" not in fasrc_jobs.SQUEUE_FMT
+
+
+def test_parse_slurm_time_handles_all_three_formats():
+    p = fasrc_jobs.parse_slurm_time
+    assert p("0:30")        == 30.0
+    assert p("1:23")        == 83.0
+    assert p("01:23:45")    == 3600 + 23*60 + 45
+    assert p("2-00:00:00")  == 2 * 86400
+    assert p(None)          == 0.0
+    assert p("")            == 0.0
+    assert p("garbage")     == 0.0

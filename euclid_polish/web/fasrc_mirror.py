@@ -27,6 +27,10 @@ class MirrorStatus:
     last_stdout: str = ""
     remote_dir:  str = ""
     local_dir:   str = ""
+    # Deduplicate checkpoint-save triggers: the status-poller writes the
+    # most recent "Checkpoint saved" log line here so the same line
+    # doesn't fire a fresh rsync on every poll.
+    last_checkpoint_line: str = ""
 
 
 class Mirror:

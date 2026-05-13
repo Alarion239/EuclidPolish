@@ -2,31 +2,32 @@
 {% block title %}FASRC · EuclidPolish{% endblock %}
 
 {% block content %}
-<h2>FASRC <span id="conn-badge" class="badge badge-failed">disconnected</span></h2>
+<h2>FASRC
+  <span id="conn-badge" class="badge badge-failed">disconnected</span>
+  <button id="btn-disconnect" type="button" class="secondary"
+          style="float:right; display:none;">Disconnect</button>
+</h2>
 
 <!-- ============================================================
-     Connection panel — Bitwarden unlock → SSH ControlMaster.
-     Collapses to a one-line status once connected.
+     Connection card (visible only when SSH is not connected).
 ============================================================ -->
 <section class="card" id="conn-card">
-  <h3>Connection</h3>
-  <div class="form-row" id="conn-form-row">
+  <h3>Connect to FASRC</h3>
+  <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
+       border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
+       margin-bottom:8px; font-size:13px;">
+    <strong>Bitwarden CLI not installed.</strong>
+    Install with <code>brew install bitwarden-cli</code> (macOS),
+    <code>npm install -g @bitwarden/cli</code>, or see
+    <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
+  </div>
+  <div class="form-row">
     <label>BW master password
       <input type="password" id="master-pw" autocomplete="off" size="22">
     </label>
     <button id="btn-unlock"  type="button">1. Unlock Bitwarden</button>
     <button id="btn-connect" type="button" disabled>2. Connect to FASRC</button>
-    <button id="btn-disconnect" type="button" class="secondary" disabled>Disconnect</button>
-    <button id="btn-lock"       type="button" class="secondary">Lock vault</button>
-  </div>
-  <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
-       border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
-       margin-top:8px; font-size:13px;">
-    <strong>Bitwarden CLI not installed.</strong>
-    Install with <code>brew install bitwarden-cli</code> (macOS),
-    <code>npm install -g @bitwarden/cli</code>, or see
-    <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
-    Restart this app once it's on your PATH.
+    <button id="btn-lock"    type="button" class="secondary">Lock vault</button>
   </div>
   <div id="conn-msg" class="muted" style="margin-top:8px;"></div>
   <details style="margin-top:8px;">
@@ -54,306 +55,240 @@
 </section>
 
 <!-- ============================================================
-     Two-column dashboard once connected.
+     Tab bar — visible only when connected.
 ============================================================ -->
-<div class="fasrc-grid">
+<div id="tabs" style="display:none;">
+  <nav class="toolbar" style="margin-top:6px;">
+    <a class="chip active" data-tab="training">🧠 Training</a>
+    <a class="chip"        data-tab="git">🌿 Git</a>
+    <a class="chip"        data-tab="storage">📁 Storage</a>
+  </nav>
 
-  <!-- LEFT: Repo + data + queue --------------------------------------------->
-  <section class="card">
-    <h3>Repo on FASRC <span id="repo-state-tag" class="tag tag-ok" style="display:none;"></span></h3>
-    <dl class="kv">
-      <dt>Path</dt>     <dd><code>{{ cfg.repo_path }}</code></dd>
-      <dt>Branch</dt>   <dd id="r-branch"><span class="muted">—</span></dd>
-      <dt>Sync</dt>     <dd id="r-sync"><span class="muted">—</span></dd>
-      <dt>Last commit</dt><dd id="r-last"><span class="muted">—</span></dd>
-    </dl>
-    <button id="btn-remote-refresh" class="secondary" type="button">Refresh</button>
-    <button id="btn-remote-pull"    type="button">git pull</button>
-    <pre id="remote-pull-out" class="job-log" style="display:none; margin-top:8px;"></pre>
-  </section>
+  <!-- =======================================================
+       TAB · Training (dual-mode: form OR running-job panel)
+       ======================================================= -->
+  <section class="tab-panel" data-tab="training">
 
-  <section class="card">
-    <h3>Data on netscratch
-      <button id="btn-data-refresh" type="button" class="secondary"
-              style="float:right;">↻ Refresh</button>
-    </h3>
-    <p class="hint"><code>{{ cfg.data_dir }}</code></p>
-    <div id="data-listing"><span class="muted">connect to view…</span></div>
-    <div style="border-top:1px solid #e2e5ea; margin-top:12px; padding-top:10px;">
-      <button id="btn-bootstrap" type="button">Sync from holylabs</button>
-      <span class="hint" style="margin-left:8px;">
-        Re-creates symlinks under <code>{{ cfg.data_dir }}</code> pointing at
-        <code>{{ cfg.repo_path }}/data/{euclid_psf,COSMOS2025}</code>.
-        Run this after a netscratch purge, after committing new PSFs,
-        or after Globus uploads a fresh COSMOS catalog.
-      </span>
-      <pre id="bootstrap-out" class="job-log"
-           style="display:none; max-height:240px; margin-top:8px;"></pre>
+    <!-- Mode A: a job is running. Hidden until /training-status confirms. -->
+    <div id="run-panel" style="display:none;">
+      <section class="card">
+        <h3>Job running
+          <span id="run-state" class="tag tag-warn"
+                style="float:right;">RUNNING</span></h3>
+        <dl class="kv">
+          <dt>Job id</dt>      <dd><code id="run-jobid">—</code></dd>
+          <dt>Label</dt>       <dd id="run-label">—</dd>
+          <dt>Node</dt>        <dd><code id="run-node">—</code></dd>
+          <dt>Elapsed</dt>     <dd id="run-elapsed">—</dd>
+          <dt>Limit</dt>       <dd id="run-limit">—</dd>
+          <dt>Stage</dt>       <dd id="run-stage">—</dd>
+          <dt>ETA</dt>         <dd id="run-eta">—</dd>
+        </dl>
+        <div class="job-bar" style="margin-top:8px;">
+          <progress id="run-bar" max="100" value="0"></progress>
+          <span id="run-bar-label" class="bar-label">awaiting first step…</span>
+        </div>
+        <div style="margin-top:8px;">
+          <button id="btn-run-cancel" type="button" class="danger">Cancel job</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Latest training metrics</h3>
+        <dl class="kv">
+          <dt>Step</dt>             <dd id="m-step">—</dd>
+          <dt>Loss</dt>             <dd id="m-loss">—</dd>
+          <dt>PSNR (stretched)</dt> <dd id="m-psnr-str">—</dd>
+          <dt>PSNR (raw)</dt>       <dd id="m-psnr-raw">—</dd>
+          <dt>Last checkpoint</dt>  <dd id="m-ckpt" class="muted">none yet</dd>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h3>Validation history
+          <span class="muted" style="font-weight:normal; font-size:12px;">
+            (from <code>training_log.jsonl</code>, live)</span></h3>
+        <div id="val-table"><p class="muted">no validation rows yet</p></div>
+      </section>
+
+      <section class="card">
+        <h3>Checkpoint auto-mirror
+          <span id="mirror-tag" class="tag tag-warn" style="float:right;">off</span>
+        </h3>
+        <p class="hint">Activates automatically once the job enters the
+          <code>train</code> stage. Syncs whenever the trainer logs a
+          <code>Checkpoint saved</code> line.</p>
+        <dl class="kv">
+          <dt>Local</dt>  <dd><code id="mirror-local">—</code></dd>
+          <dt>Remote</dt> <dd><code id="mirror-remote">—</code></dd>
+          <dt>Last sync</dt> <dd id="mirror-last" class="muted">never</dd>
+        </dl>
+        <div class="form-row" style="margin-top:6px;">
+          <button id="btn-mirror-trigger" type="button" class="secondary">Sync now</button>
+          <button id="btn-mirror-stop"    type="button" class="secondary">Stop</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Mode B: no job. Submission form. -->
+    <div id="submit-panel" style="display:none;">
+      <section class="card">
+        <h3>Submit training job</h3>
+        <p class="hint">No SLURM job is running for you right now.
+          Fill in the parameters and submit — the dashboard will switch
+          to the live-status view automatically.</p>
+        <form id="submit-form" class="form-row">
+          <label>Label
+            <input name="label" placeholder="optional summary" size="30"></label>
+          <label>GPUs
+            <input name="n_gpus" type="number" min="1" max="8" value="{{ cfg.n_gpus }}" style="width:60px;"></label>
+          <label>CPUs
+            <input name="n_cpus" type="number" min="1" max="48" value="{{ cfg.n_cpus }}" style="width:60px;"></label>
+          <label>Memory
+            <input name="memory" value="{{ cfg.memory }}" style="width:70px;"></label>
+          <label>Time
+            <input name="time_limit" value="{{ cfg.time_limit }}" style="width:90px;" title="HH:MM:SS or D-HH:MM:SS"></label>
+          <label>Partition
+            <input name="partition" value="{{ cfg.partition }}" style="width:70px;"></label>
+
+          <label>Train
+            <input name="n_train" type="number" min="1" value="{{ cfg.n_train }}" style="width:80px;"></label>
+          <label>Valid
+            <input name="n_valid" type="number" min="1" value="{{ cfg.n_valid }}" style="width:80px;"></label>
+          <label>Image size
+            <input name="image_size" type="number" min="6" step="6" value="{{ cfg.image_size }}" style="width:80px;"></label>
+          <label>Batch
+            <input name="batch_size" type="number" min="1" value="{{ cfg.batch_size }}" style="width:60px;"></label>
+          <label>Steps
+            <input name="steps" type="number" min="100" value="{{ cfg.steps }}" style="width:100px;"></label>
+
+          <label style="flex:1; min-width:240px;">Extra <code>run_pipeline.py</code> flags
+            <input name="extra_flags" placeholder="e.g. --skip-generate" style="width:100%;"></label>
+
+          <div style="flex-basis:100%; display:flex; gap:10px; align-items:center;">
+            <button type="submit">Submit job</button>
+            <span id="submit-eta" class="muted"></span>
+          </div>
+        </form>
+        <pre id="submit-out" class="job-log" style="display:none; margin-top:10px;"></pre>
+      </section>
+
+      <section class="card">
+        <h3>Recent submissions</h3>
+        <div id="recent-jobs"><span class="muted">none yet</span></div>
+      </section>
     </div>
   </section>
 
-  <section class="card">
-    <h3>Checkpoints on netscratch
-      <button id="btn-ckpt-refresh" type="button" class="secondary"
-              style="float:right;">↻ Refresh</button>
-    </h3>
-    <p class="hint"><code>{{ cfg.ckpt_dir }}</code></p>
-    <div id="ckpt-listing"><span class="muted">connect to view…</span></div>
-  </section>
+  <!-- =======================================================
+       TAB · Git (status, fetch, pull — auto env-update on yml)
+       ======================================================= -->
+  <section class="tab-panel" data-tab="git" style="display:none;">
+    <section class="card">
+      <h3>Repo on FASRC <span id="repo-state-tag" class="tag tag-ok"
+                              style="display:none; float:right;"></span></h3>
+      <dl class="kv">
+        <dt>Path</dt>     <dd><code>{{ cfg.repo_path }}</code></dd>
+        <dt>Branch</dt>   <dd id="r-branch"><span class="muted">—</span></dd>
+        <dt>Sync</dt>     <dd id="r-sync"><span class="muted">—</span></dd>
+        <dt>Last commit</dt><dd id="r-last"><span class="muted">—</span></dd>
+      </dl>
+      <button id="btn-remote-refresh" class="secondary" type="button">↻ Refresh</button>
+      <button id="btn-remote-fetch"   class="secondary" type="button">Fetch</button>
+      <button id="btn-remote-pull"    type="button">git pull</button>
+      <pre id="remote-pull-out" class="job-log" style="display:none; margin-top:8px;"></pre>
+    </section>
 
-  <section class="card">
-    <h3>SLURM queue
-      <button id="btn-queue-refresh" type="button" class="secondary" style="float:right;">↻</button>
-    </h3>
-    <div id="queue-table"><span class="muted">connect to view…</span></div>
-  </section>
-
-  <!-- RIGHT: Submission + live log + mirror -------------------------------->
-  <section class="card">
-    <h3>Submit training job</h3>
-    <form id="submit-form" class="form-row">
-      <label>Label
-        <input name="label" placeholder="optional summary" size="30"></label>
-      <label>GPUs
-        <input name="n_gpus" type="number" min="1" max="8" value="{{ cfg.n_gpus }}" style="width:60px;"></label>
-      <label>CPUs
-        <input name="n_cpus" type="number" min="1" max="48" value="{{ cfg.n_cpus }}" style="width:60px;"></label>
-      <label>Memory
-        <input name="memory" value="{{ cfg.memory }}" style="width:70px;"></label>
-      <label>Time
-        <input name="time_limit" value="{{ cfg.time_limit }}" style="width:90px;" title="HH:MM:SS or D-HH:MM:SS"></label>
-      <label>Partition
-        <input name="partition" value="{{ cfg.partition }}" style="width:70px;"></label>
-
-      <label>Train
-        <input name="n_train" type="number" min="1" value="{{ cfg.n_train }}" style="width:80px;"></label>
-      <label>Valid
-        <input name="n_valid" type="number" min="1" value="{{ cfg.n_valid }}" style="width:80px;"></label>
-      <label>Image size
-        <input name="image_size" type="number" min="6" step="6" value="{{ cfg.image_size }}" style="width:80px;"></label>
-      <label>Batch
-        <input name="batch_size" type="number" min="1" value="{{ cfg.batch_size }}" style="width:60px;"></label>
-      <label>Steps
-        <input name="steps" type="number" min="100" value="{{ cfg.steps }}" style="width:100px;"></label>
-
-      <label style="flex:1; min-width:240px;">Extra <code>run_pipeline.py</code> flags
-        <input name="extra_flags" placeholder="e.g. --skip-generate" style="width:100%;"></label>
-
-      <div style="flex-basis:100%; display:flex; gap:10px; align-items:center;">
-        <button type="submit">Submit job</button>
-        <span id="submit-eta" class="muted"></span>
-      </div>
-    </form>
-    <pre id="submit-out" class="job-log" style="display:none; margin-top:10px;"></pre>
-  </section>
-
-  <section class="card">
-    <h3>Live log
-      <span id="live-jobid" class="muted" style="font-weight:normal; margin-left:6px;"></span>
-    </h3>
-    <div class="form-row" style="margin-bottom:8px;">
-      <label>Stream
-        <select id="live-which">
-          <option value="out" selected>stdout</option>
-          <option value="err">stderr</option>
-        </select></label>
-      <button id="btn-stop-stream" type="button" class="secondary">Stop</button>
-    </div>
-    <div class="job-bar"><progress id="live-bar" max="100" value="0"></progress>
-      <span id="live-bar-label" class="bar-label">awaiting first progress line…</span>
-    </div>
-    <pre id="live-log" class="job-log" style="max-height:380px;"></pre>
-  </section>
-
-  <section class="card">
-    <h3>Checkpoint auto-mirror
-      <span id="mirror-tag" class="tag tag-warn">off</span></h3>
-    <div class="form-row">
-      <label>Period (s)
-        <input id="mirror-period" type="number" min="15" max="3600" value="60" style="width:80px;"></label>
-      <button id="btn-mirror-start"   type="button">Start</button>
-      <button id="btn-mirror-stop"    type="button" class="secondary">Stop</button>
-      <button id="btn-mirror-trigger" type="button" class="secondary">Sync now</button>
-    </div>
-    <dl class="kv" style="margin-top:6px;">
-      <dt>Local</dt>  <dd id="mirror-local"><code>—</code></dd>
-      <dt>Remote</dt> <dd id="mirror-remote"><code>—</code></dd>
-      <dt>Last</dt>   <dd id="mirror-last"><span class="muted">never</span></dd>
-    </dl>
-    <pre id="mirror-out" class="job-log" style="display:none;"></pre>
-  </section>
-
-  <section class="card">
-    <h3>Conda environment on FASRC</h3>
-    <p class="hint">
-      Pulls fresh packages from <code>environment.yml</code> into
-      <code>{{ cfg.conda_env_path }}</code>. Runs
-      <code>module load python</code> first, then
-      <code>yes | mamba env update</code> (auto-confirm).
-    </p>
-    <div class="form-row">
-      <button id="btn-env-update" type="button">Update environment</button>
+    <section class="card">
+      <h3>Conda environment
+        <span id="env-update-tag" class="muted" style="float:right; font-weight:normal; font-size:12px;"></span>
+      </h3>
+      <p class="hint">Updates automatically when <code>environment.yml</code>
+        moves on git pull. The button below re-runs the update on demand
+        (<code>module load python &amp;&amp; yes | mamba env update</code>).</p>
+      <p><code>{{ cfg.conda_env_path }}</code></p>
+      <button id="btn-env-update" type="button">Update environment now</button>
       <button id="btn-env-stop"   type="button" class="secondary">Stop tail</button>
-      <span id="env-update-status" class="muted"></span>
-    </div>
-    <pre id="env-update-log" class="job-log"
-         style="display:none; max-height:340px; margin-top:10px;"></pre>
+      <pre id="env-update-log" class="job-log"
+           style="display:none; max-height:340px; margin-top:10px;"></pre>
+    </section>
   </section>
 
-  <section class="card" style="grid-column: 1 / -1;">
-    <h3>Recent submissions</h3>
-    <div id="recent-jobs"><span class="muted">connect to view…</span></div>
-  </section>
+  <!-- =======================================================
+       TAB · Storage (data + checkpoints)
+       ======================================================= -->
+  <section class="tab-panel" data-tab="storage" style="display:none;">
+    <section class="card">
+      <h3>Data on netscratch
+        <button id="btn-data-refresh" type="button" class="secondary"
+                style="float:right;">↻ Refresh</button>
+      </h3>
+      <p class="hint"><code>{{ cfg.data_dir }}</code></p>
+      <div id="data-listing"><span class="muted">loading…</span></div>
+      <div style="border-top:1px solid #e2e5ea; margin-top:12px; padding-top:10px;">
+        <button id="btn-bootstrap" type="button">Sync from holylabs</button>
+        <span class="hint" style="margin-left:8px;">
+          Re-creates symlinks under <code>{{ cfg.data_dir }}</code> pointing at
+          <code>{{ cfg.repo_path }}/data/{euclid_psf,COSMOS2025}</code>.
+        </span>
+        <pre id="bootstrap-out" class="job-log"
+             style="display:none; max-height:240px; margin-top:8px;"></pre>
+      </div>
+    </section>
 
+    <section class="card">
+      <h3>Checkpoints on netscratch
+        <button id="btn-ckpt-refresh" type="button" class="secondary"
+                style="float:right;">↻ Refresh</button>
+      </h3>
+      <p class="hint"><code>{{ cfg.ckpt_dir }}</code></p>
+      <div id="ckpt-listing"><span class="muted">loading…</span></div>
+    </section>
+  </section>
 </div>
 
 <style>
-  .fasrc-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-    gap: 16px;
-    margin-top: 16px;
+  .tab-panel { margin-top: 16px; }
+  .tab-panel .card { margin-bottom: 14px; min-width: 0; overflow-x: hidden; }
+  .tab-panel .card table { width: 100%; table-layout: auto; }
+  .tab-panel .card td, .tab-panel .card th {
+    overflow-wrap: anywhere; word-break: break-word;
   }
-  /* ``min-width: 0`` lets a grid item shrink narrower than its content
-     would otherwise force — without it, long unbreakable paths inside
-     <code> pin the column wider than 1fr and blow out of the card. */
-  .fasrc-grid > .card { margin-bottom: 0; min-width: 0; overflow-x: hidden; }
-  .fasrc-grid .card table { width: 100%; table-layout: auto; }
-  .fasrc-grid .card td,
-  .fasrc-grid .card th {
-    overflow-wrap: anywhere;     /* break inside long words / paths   */
-    word-break: break-word;       /* fallback for older WebKit         */
+  .tab-panel .card code, .tab-panel .card .hint code,
+  .tab-panel .card p code, .tab-panel .card dd code {
+    overflow-wrap: anywhere; word-break: break-word;
   }
-  .fasrc-grid .card td code,
-  .fasrc-grid .card .hint code,
-  .fasrc-grid .card p code,
-  .fasrc-grid .card dd code {
-    overflow-wrap: anywhere;
-    word-break: break-word;
+  .toolbar .chip[data-tab] { padding: 6px 14px; font-size: 13px; }
+  .stage-pill {
+    display:inline-block; padding:2px 8px; border-radius:10px;
+    font-size:11px; font-weight:600; text-transform:uppercase;
   }
-  #live-log { height: 360px; }
-  .queue-state-RUNNING  { color: #14600c; font-weight: 600; }
-  .queue-state-PENDING  { color: #6c5500; }
-  .queue-state-COMPLETING { color: #14600c; }
-  .queue-state-CANCELLED { color: #761515; }
-  .queue-state-FAILED   { color: #761515; }
+  .stage-init     { background:#eef2f9; color:#2a3a55; }
+  .stage-generate { background:#fff3c4; color:#826200; }
+  .stage-convolve { background:#fce5b8; color:#825a00; }
+  .stage-train    { background:#cde6cf; color:#14600c; }
+  .stage-done     { background:#d9efd6; color:#14600c; }
+  .val-row + .val-row { border-top: 1px solid #e2e5ea; }
+  .delta-good { color: #14600c; }
+  .delta-bad  { color: #761515; }
 </style>
 {% endblock %}
 
 {% block scripts %}
 <script>
-/* ============================================================
-   Connection + Bitwarden
-============================================================ */
 const $ = (id) => document.getElementById(id);
 const escapeHtml = polishUI.escapeHtml;
-
 async function api(url, opts) {
   const r = await fetch(url, opts || {});
   let data; try { data = await r.json(); } catch { data = {}; }
   return { ok: r.ok && data.ok !== false, data, status: r.status };
 }
-
-async function refreshConnState() {
-  const { data } = await api('/api/fasrc/status');
-  const conn = data.ssh_connected;
-  const badge = $('conn-badge');
-  badge.textContent = conn ? 'connected' : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
-  badge.className = 'badge ' + (conn ? 'badge-done'
-                              : data.bw_unlocked ? 'badge-running' : 'badge-failed');
-  // Surface the bw-missing notice + disable unlock if `bw` isn't on PATH.
-  $('bw-missing').style.display = data.bw_installed ? 'none' : 'block';
-  $('btn-unlock').disabled     = !data.bw_installed || data.bw_unlocked;
-  $('btn-connect').disabled    = !data.bw_unlocked || conn;
-  $('btn-disconnect').disabled = !conn;
-  if (conn) {
-    refreshAll();
-  }
+function fmtSecs(s) {
+  if (s == null || isNaN(s)) return '—';
+  if (s < 60)   return s.toFixed(0) + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + Math.round(s%60) + 's';
+  return Math.floor(s/3600) + 'h ' + Math.round((s%3600)/60) + 'm';
 }
-
-$('btn-unlock').onclick = async () => {
-  const pw = $('master-pw').value;
-  if (!pw) { $('conn-msg').textContent = 'enter master password'; return; }
-  $('conn-msg').textContent = 'unlocking…';
-  const { ok, data } = await api('/api/fasrc/unlock', {
-    method: 'POST',
-    body: new URLSearchParams({ master_password: pw }),
-  });
-  $('master-pw').value = '';
-  $('conn-msg').textContent = ok ? 'vault unlocked' : ('unlock failed: ' + (data.error || ''));
-  refreshConnState();
-};
-
-$('btn-connect').onclick = async () => {
-  $('conn-msg').textContent = 'connecting (may take a few seconds for the TOTP push)…';
-  const { ok, data } = await api('/api/fasrc/connect', { method: 'POST' });
-  $('conn-msg').textContent = ok ? 'connected' : ('connect failed: ' + (data.error || ''));
-  refreshConnState();
-};
-
-$('btn-disconnect').onclick = async () => {
-  await api('/api/fasrc/disconnect', { method: 'POST' });
-  $('conn-msg').textContent = 'disconnected';
-  refreshConnState();
-};
-
-$('btn-lock').onclick = async () => {
-  await api('/api/fasrc/lock', { method: 'POST' });
-  refreshConnState();
-};
-
-$('settings-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = new FormData(e.target);
-  const r = await fetch('/api/fasrc/config', {
-    method: 'POST',
-    body: new URLSearchParams(form),
-  });
-  $('conn-msg').textContent = r.ok ? 'settings saved' : 'save failed';
-});
-
-/* ============================================================
-   Remote git + data listings
-============================================================ */
-async function refreshRemoteGit() {
-  const { ok, data } = await api('/api/fasrc/git-status');
-  if (!ok) return;
-  $('r-branch').innerHTML = `<code>${escapeHtml(data.branch || '?')}</code>`;
-  const tag = (data.ahead || data.behind) ? 'tag-warn' : 'tag-ok';
-  $('r-sync').innerHTML = `<span class="tag ${tag}">↑ ${data.ahead} &nbsp; ↓ ${data.behind}</span>`;
-  if (data.last && data.last.hash) {
-    $('r-last').innerHTML = `<code>${escapeHtml(data.last.hash)}</code> — ${escapeHtml(data.last.subject)} <span class="muted">(${escapeHtml(data.last.relative)})</span>`;
-  }
-  const t = $('repo-state-tag');
-  if (data.behind > 0) {
-    t.className = 'tag tag-warn'; t.textContent = `${data.behind} behind`; t.style.display = 'inline-block';
-  } else {
-    t.className = 'tag tag-ok'; t.textContent = 'up to date'; t.style.display = 'inline-block';
-  }
-}
-
-$('btn-remote-refresh').onclick = refreshRemoteGit;
-$('btn-data-refresh').onclick   = refreshListings;
-$('btn-ckpt-refresh').onclick   = refreshListings;
-
-$('btn-bootstrap').onclick = async () => {
-  const pre = $('bootstrap-out');
-  pre.style.display = 'block';
-  pre.textContent   = 'running…';
-  const r = await fetch('/api/fasrc/bootstrap-data', { method: 'POST' });
-  const data = await r.json();
-  pre.textContent = (data.output || '') + (data.error ? '\n\n[error] ' + data.error : '');
-  if (data.ok) refreshListings();
-};
-
-$('btn-remote-pull').onclick = async () => {
-  $('remote-pull-out').style.display = 'block';
-  $('remote-pull-out').textContent = 'pulling…';
-  const { ok, data } = await api('/api/fasrc/git-pull', { method: 'POST' });
-  $('remote-pull-out').textContent = data.stdout || data.error || (ok ? 'pulled' : 'failed');
-  refreshRemoteGit();
-};
-
 function humanSize(b) {
   if (!b) return '0';
   const u = ['B','K','M','G','T']; let i = 0;
@@ -361,6 +296,345 @@ function humanSize(b) {
   return b.toFixed(b < 10 && i > 0 ? 1 : 0) + u[i];
 }
 
+/* ============================================================
+   Tab switching
+============================================================ */
+document.querySelectorAll('.chip[data-tab]').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const tab = chip.dataset.tab;
+    document.querySelectorAll('.chip[data-tab]').forEach(c =>
+      c.classList.toggle('active', c.dataset.tab === tab));
+    document.querySelectorAll('.tab-panel').forEach(p =>
+      p.style.display = (p.dataset.tab === tab) ? 'block' : 'none');
+    if (tab === 'training') refreshTraining();
+    if (tab === 'git')      refreshRemoteGit();
+    if (tab === 'storage')  refreshListings();
+  });
+});
+
+/* ============================================================
+   Connection + Bitwarden
+============================================================ */
+async function refreshConnState() {
+  const { data } = await api('/api/fasrc/status');
+  const conn = data.ssh_connected;
+  const badge = $('conn-badge');
+  badge.textContent = conn ? 'connected' : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
+  badge.className = 'badge ' + (conn ? 'badge-done'
+                              : data.bw_unlocked ? 'badge-running' : 'badge-failed');
+  $('bw-missing').style.display = data.bw_installed ? 'none' : 'block';
+  $('btn-unlock').disabled  = !data.bw_installed || data.bw_unlocked;
+  $('btn-connect').disabled = !data.bw_unlocked || conn;
+
+  // Toggle between the connection card and the tabbed dashboard.
+  $('conn-card').style.display    = conn ? 'none' : 'block';
+  $('tabs').style.display         = conn ? 'block' : 'none';
+  $('btn-disconnect').style.display = conn ? 'inline-block' : 'none';
+
+  if (conn) refreshTraining();   // landing tab
+}
+
+$('btn-unlock').onclick = async () => {
+  const pw = $('master-pw').value;
+  if (!pw) { $('conn-msg').textContent = 'enter master password'; return; }
+  $('conn-msg').textContent = 'unlocking…';
+  const { ok, data } = await api('/api/fasrc/unlock', {
+    method: 'POST', body: new URLSearchParams({ master_password: pw }),
+  });
+  $('master-pw').value = '';
+  $('conn-msg').textContent = ok ? 'vault unlocked' : ('unlock failed: ' + (data.error || ''));
+  refreshConnState();
+};
+$('btn-connect').onclick = async () => {
+  $('conn-msg').textContent = 'connecting…';
+  const { ok, data } = await api('/api/fasrc/connect', { method: 'POST' });
+  $('conn-msg').textContent = ok ? 'connected' : ('connect failed: ' + (data.error || ''));
+  refreshConnState();
+};
+$('btn-disconnect').onclick = async () => {
+  await api('/api/fasrc/disconnect', { method: 'POST' });
+  refreshConnState();
+};
+$('btn-lock').onclick = async () => {
+  await api('/api/fasrc/lock', { method: 'POST' });
+  refreshConnState();
+};
+$('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch('/api/fasrc/config', { method: 'POST', body: new URLSearchParams(fd) });
+  $('conn-msg').textContent = r.ok ? 'settings saved' : 'save failed';
+});
+
+/* ============================================================
+   Training tab: dual-mode (submit form ↔ live-status)
+============================================================ */
+async function refreshTraining() {
+  const r = await api('/api/fasrc/training-status');
+  if (!r.ok) {
+    // 400 = not connected; render minimal info and bail
+    $('submit-panel').style.display = 'none';
+    $('run-panel').style.display    = 'none';
+    return;
+  }
+  if (r.data.running) {
+    renderRunning(r.data);
+    $('submit-panel').style.display = 'none';
+    $('run-panel').style.display    = 'block';
+  } else {
+    $('run-panel').style.display    = 'none';
+    $('submit-panel').style.display = 'block';
+    refreshRecent();
+    refreshEta();
+  }
+}
+
+function renderRunning(s) {
+  const j = s.job || {};
+  $('run-state').textContent = j.state || 'RUNNING';
+  $('run-jobid').textContent = j.jobid || '—';
+  $('run-label').textContent = j.label || '(unlabeled)';
+  $('run-node').textContent  = j.node || '?';
+  $('run-elapsed').textContent = j.elapsed || fmtSecs(j.elapsed_seconds);
+  $('run-limit').textContent   = j.time_limit || '?';
+
+  const stage = s.stage || 'unknown';
+  $('run-stage').innerHTML = `<span class="stage-pill stage-${escapeHtml(stage)}">${escapeHtml(stage)}</span>`;
+  $('run-eta').textContent = s.eta_seconds ? fmtSecs(s.eta_seconds) : '—';
+
+  const bar = $('run-bar'), barLbl = $('run-bar-label');
+  if (s.progress && s.progress.total) {
+    bar.max = s.progress.total;
+    bar.value = s.progress.current;
+    barLbl.textContent = `step ${s.progress.current.toLocaleString()} / ${s.progress.total.toLocaleString()} (${s.progress.pct.toFixed(2)}%)`;
+  } else if (stage === 'init' || stage === 'generate' || stage === 'convolve') {
+    bar.removeAttribute('value');     // indeterminate look
+    barLbl.textContent = `stage: ${stage} — no per-step counter yet`;
+  } else {
+    bar.value = 0;
+    barLbl.textContent = 'awaiting first step…';
+  }
+
+  const m = s.latest_metrics || {};
+  $('m-step').textContent     = m.step ? m.step.toLocaleString() : '—';
+  $('m-loss').textContent     = m.loss      != null ? m.loss.toFixed(4)     : '—';
+  $('m-psnr-str').textContent = m.psnr_stretched != null ? m.psnr_stretched.toFixed(3) + ' dB' : '—';
+  $('m-psnr-raw').textContent = m.psnr_raw       != null ? m.psnr_raw.toFixed(3)       + ' dB' : '—';
+  $('m-ckpt').textContent     = s.last_checkpoint || 'none yet';
+  $('m-ckpt').className       = s.last_checkpoint ? '' : 'muted';
+
+  renderValidationTable(s.validations || []);
+  refreshMirror();   // pull mirror status (auto-managed by the backend)
+}
+
+function renderValidationTable(rows) {
+  if (!rows.length) {
+    $('val-table').innerHTML = '<p class="muted">no validation rows yet</p>';
+    return;
+  }
+  const lastN = rows.slice(-25);
+  let html = '<table><tr><th>Step</th><th>Loss</th><th>PSNR str</th>'
+           + '<th>PSNR raw</th><th>Δ PSNR</th><th>Wall (s)</th></tr>';
+  let prev = null;
+  for (const r of lastN) {
+    const delta = prev != null ? (r.psnr_stretched - prev) : null;
+    const dHtml = delta == null ? '' :
+      `<span class="${delta >= 0 ? 'delta-good' : 'delta-bad'}">${delta >= 0 ? '+' : ''}${delta.toFixed(3)}</span>`;
+    html += `<tr class="val-row">
+      <td><code>${r.step.toLocaleString()}</code></td>
+      <td>${r.loss.toFixed(4)}</td>
+      <td>${r.psnr_stretched.toFixed(3)}</td>
+      <td>${r.psnr_raw.toFixed(3)}</td>
+      <td>${dHtml}</td>
+      <td class="muted">${r.duration_s ? r.duration_s.toFixed(1) : ''}</td>
+    </tr>`;
+    prev = r.psnr_stretched;
+  }
+  html += '</table>';
+  if (rows.length > lastN.length) {
+    html += `<p class="muted" style="font-size:11px;margin:6px 0 0;">
+              showing last ${lastN.length} of ${rows.length} validation events</p>`;
+  }
+  $('val-table').innerHTML = html;
+}
+
+$('btn-run-cancel').onclick = async () => {
+  const jid = $('run-jobid').textContent.trim();
+  if (!jid || jid === '—') return;
+  if (!confirm(`Cancel job ${jid}?`)) return;
+  await api('/api/fasrc/cancel', {
+    method: 'POST', body: new URLSearchParams({ jobid: jid }),
+  });
+  setTimeout(refreshTraining, 600);
+};
+
+/* ============================================================
+   Submission form + ETA
+============================================================ */
+async function refreshEta() {
+  const f = $('submit-form');
+  if (!f) return;
+  const steps = f.steps.value;
+  const { data } = await api(`/api/fasrc/eta?steps=${steps}`);
+  const spt = data.secs_per_step, eta = data.eta_seconds;
+  $('submit-eta').textContent = spt
+    ? `(history: ${data.history_n} runs · ${spt.toFixed(3)} s/step · est. ${fmtSecs(eta)})`
+    : '(no history yet — first run will calibrate)';
+}
+
+$('submit-form').addEventListener('input', (e) => {
+  if (e.target.name === 'steps') refreshEta();
+});
+$('submit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('submit-out').style.display = 'block';
+  $('submit-out').textContent = 'submitting…';
+  const fd = new FormData(e.target);
+  const r = await fetch('/api/fasrc/submit', { method: 'POST', body: new URLSearchParams(fd) });
+  const data = await r.json();
+  if (data.ok) {
+    $('submit-out').textContent = `submitted: SLURM job ${data.jobid}\n${JSON.stringify(data.params, null, 2)}`;
+    setTimeout(refreshTraining, 1200);
+  } else {
+    $('submit-out').textContent = `error: ${data.error || 'unknown'}`;
+  }
+});
+
+async function refreshRecent() {
+  const { ok, data } = await api('/api/fasrc/jobs');
+  if (!ok || !data.jobs || data.jobs.length === 0) {
+    $('recent-jobs').innerHTML = '<p class="muted">no jobs submitted from this UI yet</p>';
+    return;
+  }
+  let html = '<table><tr><th>Job</th><th>State</th><th>Steps</th>'
+           + '<th>Submitted</th><th>Runtime</th><th></th></tr>';
+  for (const j of data.jobs.slice(0, 15)) {
+    let params = {}; try { params = JSON.parse(j.params_json || '{}'); } catch {}
+    const submitted = new Date(j.submitted_at * 1000).toLocaleString();
+    const runtime = (j.started_at && j.ended_at)
+      ? fmtSecs(j.ended_at - j.started_at)
+      : (j.started_at ? fmtSecs(Date.now()/1000 - j.started_at) + '…' : '');
+    html += `<tr>
+      <td><code>${escapeHtml(j.jobid)}</code></td>
+      <td>${escapeHtml(j.state)}</td>
+      <td>${j.progress_step||0}/${j.progress_total||params.steps||'?'}</td>
+      <td>${escapeHtml(submitted)}</td>
+      <td>${escapeHtml(runtime)}</td>
+      <td><button class="secondary" onclick="showStages('${j.jobid}')">Stages</button></td>
+    </tr>
+    <tr><td colspan="6" id="stages-${escapeHtml(j.jobid)}" style="padding:0;"></td></tr>`;
+  }
+  html += '</table>';
+  $('recent-jobs').innerHTML = html;
+}
+
+async function showStages(jobid) {
+  const slot = document.getElementById('stages-' + jobid);
+  if (!slot) return;
+  if (slot.dataset.shown === '1') {
+    slot.innerHTML = ''; slot.dataset.shown = '0'; return;
+  }
+  slot.innerHTML = '<em class="muted" style="padding:6px 8px;display:block;">loading stages…</em>';
+  const r = await fetch(`/api/fasrc/stages/${jobid}`);
+  const data = await r.json();
+  if (!data.ok || !data.rows || data.rows.length === 0) {
+    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">no stages CSV yet at <code>${escapeHtml((data && data.path)||'?')}</code></em>`;
+    slot.dataset.shown = '1'; return;
+  }
+  const total = data.rows.reduce((a, r) => a + r.duration_seconds, 0) || 1;
+  let inner = '<div style="padding:6px 8px;background:#f3f5f8;"><table><tr>'
+           + '<th>Stage</th><th>Type</th><th>Duration</th><th>Share</th></tr>';
+  for (const r of data.rows) {
+    const share = (r.duration_seconds / total * 100).toFixed(1) + '%';
+    const kind  = r.params_dependent
+                ? '<span class="tag tag-warn">scales</span>'
+                : '<span class="tag tag-ok">fixed</span>';
+    inner += `<tr><td><code>${escapeHtml(r.stage)}</code></td><td>${kind}</td>
+              <td>${escapeHtml(fmtSecs(r.duration_seconds))}</td><td>${share}</td></tr>`;
+  }
+  inner += '</table></div>';
+  slot.innerHTML = inner;
+  slot.dataset.shown = '1';
+}
+
+/* ============================================================
+   Git tab
+============================================================ */
+async function refreshRemoteGit() {
+  const r = await api('/api/fasrc/git-status');
+  if (!r.ok) return;
+  const d = r.data;
+  $('r-branch').innerHTML = `<code>${escapeHtml(d.branch || '?')}</code>`;
+  const tag = (d.ahead || d.behind) ? 'tag-warn' : 'tag-ok';
+  $('r-sync').innerHTML = `<span class="tag ${tag}">↑ ${d.ahead} &nbsp; ↓ ${d.behind}</span>`;
+  if (d.last && d.last.hash) {
+    $('r-last').innerHTML = `<code>${escapeHtml(d.last.hash)}</code> — ${escapeHtml(d.last.subject)} <span class="muted">(${escapeHtml(d.last.relative)})</span>`;
+  }
+  const t = $('repo-state-tag');
+  if (d.behind > 0) { t.className = 'tag tag-warn'; t.textContent = `${d.behind} behind`; }
+  else              { t.className = 'tag tag-ok';   t.textContent = 'up to date'; }
+  t.style.display = 'inline-block';
+}
+$('btn-remote-refresh').onclick = refreshRemoteGit;
+$('btn-remote-fetch').onclick = async () => {
+  $('remote-pull-out').style.display = 'block';
+  $('remote-pull-out').textContent = 'fetching…';
+  const r = await fetch('/api/fasrc/git-status');
+  const d = (await r.json());
+  $('remote-pull-out').textContent = `branch=${d.branch}  ahead=${d.ahead}  behind=${d.behind}`;
+  refreshRemoteGit();
+};
+$('btn-remote-pull').onclick = async () => {
+  $('remote-pull-out').style.display = 'block';
+  $('remote-pull-out').textContent = 'pulling…';
+  const r = await api('/api/fasrc/git-pull', { method: 'POST' });
+  const d = r.data;
+  $('remote-pull-out').textContent = d.stdout || d.error || (r.ok ? 'pulled' : 'failed');
+  refreshRemoteGit();
+  // ── auto env-update when environment.yml moved ──
+  if (d.env_update_needed) {
+    $('env-update-tag').textContent = 'environment.yml changed — updating…';
+    startEnvUpdateStream();
+  }
+};
+
+/* ============================================================
+   Env update SSE
+============================================================ */
+let envSSE = null;
+function startEnvUpdateStream() {
+  if (envSSE) envSSE.close();
+  const pre = $('env-update-log');
+  pre.style.display = 'block';
+  pre.textContent = '';
+  envSSE = new EventSource('/api/fasrc/env-update');
+  envSSE.onmessage = (e) => {
+    pre.textContent += e.data + '\n';
+    pre.scrollTop = pre.scrollHeight;
+  };
+  envSSE.addEventListener('done', () => {
+    envSSE.close(); envSSE = null;
+    $('env-update-tag').textContent = '✓ environment update finished';
+    pre.textContent += '\n[finished]\n';
+  });
+  envSSE.addEventListener('error', () => {
+    if (envSSE) { envSSE.close(); envSSE = null; }
+    $('env-update-tag').textContent = 'stream ended';
+  });
+}
+$('btn-env-update').onclick = () => {
+  if (!confirm("Run `module load python && yes | mamba env update` on FASRC?\n\nThis re-solves and downloads any package changes from environment.yml.")) return;
+  $('env-update-tag').textContent = 'running…';
+  startEnvUpdateStream();
+};
+$('btn-env-stop').onclick = () => {
+  if (envSSE) { envSSE.close(); envSSE = null; }
+  $('env-update-tag').textContent = 'stopped';
+};
+
+/* ============================================================
+   Storage tab
+============================================================ */
 async function refreshListings() {
   const { ok, data } = await api('/api/fasrc/data-listing');
   if (!ok) {
@@ -369,8 +643,6 @@ async function refreshListings() {
     $('ckpt-listing').innerHTML = `<p class="muted">listing failed: ${escapeHtml(err)}</p>`;
     return;
   }
-
-  // ── data dir summary + tfrecord table ────────────────────────────────────
   const hasDu  = (data.du || []).length > 0;
   const hasTfr = (data.tfrecords || []).length > 0;
   let html = '';
@@ -392,7 +664,6 @@ async function refreshListings() {
   }
   $('data-listing').innerHTML = html;
 
-  // ── checkpoints table ────────────────────────────────────────────────────
   let chtml;
   if (data.checkpoints && data.checkpoints.length) {
     chtml = '<table><tr><th>Modified</th><th>Size</th><th>Path</th></tr>';
@@ -404,298 +675,57 @@ async function refreshListings() {
   }
   $('ckpt-listing').innerHTML = chtml;
 }
-
-/* ============================================================
-   Queue
-============================================================ */
-function fmtETA(secs) {
-  if (!secs || secs < 0) return '';
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-
-async function refreshQueue() {
-  const { ok, data } = await api('/api/fasrc/queue');
-  if (!ok) { $('queue-table').innerHTML = `<span class="muted">${escapeHtml(data.error||'?')}</span>`; return; }
-  if (!data.rows || data.rows.length === 0) {
-    $('queue-table').innerHTML = '<p class="muted">no jobs in queue</p>';
-  } else {
-    let html = '<table><tr><th>Job</th><th>Name</th><th>State</th><th>Elapsed</th><th>Limit</th><th>Reason / start</th><th></th></tr>';
-    for (const r of data.rows) {
-      html += `<tr>
-        <td><code>${escapeHtml(r.jobid)}</code></td>
-        <td>${escapeHtml(r.name)}</td>
-        <td class="queue-state-${escapeHtml(r.state)}">${escapeHtml(r.state)}</td>
-        <td>${escapeHtml(r.time)}</td>
-        <td>${escapeHtml(r.time_limit)}</td>
-        <td>${escapeHtml(r.reason)} ${escapeHtml(r.start_time||'')}</td>
-        <td>
-          <button class="secondary" onclick="streamJob('${r.jobid}')">Tail</button>
-          <button class="danger" onclick="cancelJob('${r.jobid}')">Cancel</button>
-        </td>
-      </tr>`;
-    }
-    html += '</table>';
-    $('queue-table').innerHTML = html;
-  }
-  refreshRecent();
-}
-$('btn-queue-refresh').onclick = refreshQueue;
-
-async function cancelJob(jid) {
-  if (!confirm(`Cancel job ${jid}?`)) return;
-  await api('/api/fasrc/cancel', {
-    method: 'POST', body: new URLSearchParams({ jobid: jid }),
-  });
-  refreshQueue();
-}
-
-/* ============================================================
-   Submission + ETA preview
-============================================================ */
-async function refreshEta() {
-  const steps = $('submit-form').steps.value;
-  const { data } = await api(`/api/fasrc/eta?steps=${steps}`);
-  const spt = data.secs_per_step, eta = data.eta_seconds;
-  $('submit-eta').textContent = spt
-    ? `(history: ${data.history_n} runs · ${spt.toFixed(3)} s/step · est. ${fmtETA(eta)})`
-    : '(no history yet — first run will calibrate)';
-}
-$('submit-form').steps.addEventListener('input', refreshEta);
-
-$('submit-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  $('submit-out').style.display = 'block';
-  $('submit-out').textContent = 'submitting…';
-  const fd = new FormData(e.target);
-  const r = await fetch('/api/fasrc/submit', {
-    method: 'POST', body: new URLSearchParams(fd),
-  });
+$('btn-data-refresh').onclick = refreshListings;
+$('btn-ckpt-refresh').onclick = refreshListings;
+$('btn-bootstrap').onclick = async () => {
+  const pre = $('bootstrap-out');
+  pre.style.display = 'block';
+  pre.textContent = 'running…';
+  const r = await fetch('/api/fasrc/bootstrap-data', { method: 'POST' });
   const data = await r.json();
-  if (data.ok) {
-    $('submit-out').textContent = `submitted: SLURM job ${data.jobid}\n${JSON.stringify(data.params, null, 2)}`;
-    setTimeout(() => streamJob(data.jobid), 800);
-  } else {
-    $('submit-out').textContent = `error: ${data.error || 'unknown'}`;
-  }
-  refreshQueue();
-});
-
-/* ============================================================
-   Live log stream (EventSource SSE)
-============================================================ */
-let liveSSE = null;
-function streamJob(jobid) {
-  if (liveSSE) liveSSE.close();
-  const which = $('live-which').value;
-  $('live-jobid').textContent = `· job ${jobid} · ${which}`;
-  $('live-log').textContent = '';
-  $('live-bar').value = 0;
-  $('live-bar-label').textContent = 'awaiting first progress line…';
-  liveSSE = new EventSource(`/api/fasrc/log/${jobid}?which=${which}`);
-  liveSSE.onmessage = (e) => {
-    const pre = $('live-log');
-    pre.textContent += e.data + '\n';
-    pre.scrollTop = pre.scrollHeight;
-    // Same regex the backend uses — lets the bar update before sqlite catches up.
-    const m = e.data.match(/(\d{1,8})\s*\/\s*(\d{1,8})/);
-    if (m) {
-      const step = +m[1], total = +m[2];
-      if (total >= 50 && step <= total) {
-        $('live-bar').max = total;
-        $('live-bar').value = step;
-        $('live-bar-label').textContent = `step ${step}/${total} (${(step*100/total).toFixed(1)}%)`;
-      }
-    }
-  };
-  liveSSE.addEventListener('error', (e) => {
-    if (e.target.readyState === EventSource.CLOSED) return;
-    $('live-log').textContent += '[stream error]\n';
-  });
-}
-$('btn-stop-stream').onclick = () => {
-  if (liveSSE) liveSSE.close();
-  liveSSE = null;
-  $('live-jobid').textContent += ' (stopped)';
+  pre.textContent = (data.output || '') + (data.error ? '\n\n[error] ' + data.error : '');
+  if (data.ok) refreshListings();
 };
 
 /* ============================================================
-   Recent jobs
-============================================================ */
-async function refreshRecent() {
-  const { ok, data } = await api('/api/fasrc/jobs');
-  if (!ok) return;
-  if (!data.jobs || data.jobs.length === 0) {
-    $('recent-jobs').innerHTML = '<p class="muted">no jobs submitted from this UI yet</p>';
-    return;
-  }
-  let html = '<table><tr><th>Job</th><th>State</th><th>Steps</th><th>Submitted</th><th>Runtime</th><th>ETA</th><th></th></tr>';
-  for (const j of data.jobs) {
-    let params = {}; try { params = JSON.parse(j.params_json || '{}'); } catch {}
-    const submitted = new Date(j.submitted_at * 1000).toLocaleString();
-    const runtime = (j.started_at && j.ended_at)
-      ? fmtETA(j.ended_at - j.started_at)
-      : (j.started_at ? fmtETA(Date.now()/1000 - j.started_at) + '…' : '');
-    html += `<tr>
-      <td><code>${escapeHtml(j.jobid)}</code></td>
-      <td class="queue-state-${escapeHtml(j.state)}">${escapeHtml(j.state)}</td>
-      <td>${j.progress_step||0}/${j.progress_total||params.steps||'?'}</td>
-      <td>${escapeHtml(submitted)}</td>
-      <td>${escapeHtml(runtime)}</td>
-      <td>${j.eta_seconds ? escapeHtml(fmtETA(j.eta_seconds)) : ''}</td>
-      <td>
-        <button class="secondary" onclick="streamJob('${j.jobid}')">Tail</button>
-        <button class="secondary" onclick="showStages('${j.jobid}')">Stages</button>
-      </td>
-    </tr>
-    <tr><td colspan="7" id="stages-${escapeHtml(j.jobid)}" style="padding:0;"></td></tr>`;
-  }
-  html += '</table>';
-  $('recent-jobs').innerHTML = html;
-}
-
-function fmtSecs(s) {
-  if (!s && s !== 0) return '';
-  if (s < 60)   return s.toFixed(1) + 's';
-  if (s < 3600) return Math.floor(s/60) + 'm ' + Math.round(s%60) + 's';
-  return Math.floor(s/3600) + 'h ' + Math.round((s%3600)/60) + 'm';
-}
-
-async function showStages(jobid) {
-  const slot = document.getElementById('stages-' + jobid);
-  if (!slot) return;
-  if (slot.dataset.shown === '1') {
-    slot.innerHTML = ''; slot.dataset.shown = '0'; return;
-  }
-  slot.innerHTML = '<em class="muted" style="padding:6px 8px;display:block;">loading stages…</em>';
-  const r = await fetch(`/api/fasrc/stages/${jobid}`);
-  const data = await r.json();
-  if (!data.ok) {
-    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">error: ${escapeHtml(data.error||'?')}</em>`;
-    return;
-  }
-  if (!data.rows || data.rows.length === 0) {
-    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">no stages CSV at <code>${escapeHtml(data.path||'?')}</code> yet — job may still be in 'init'.</em>`;
-    slot.dataset.shown = '1';
-    return;
-  }
-  const total = data.rows.reduce((acc, r) => acc + r.duration_seconds, 0) || 1;
-  let inner = '<div style="padding:6px 8px;background:#f3f5f8;">'
-            + '<table style="width:100%;"><tr>'
-            + '<th>Stage</th><th>Type</th><th>Duration</th><th>Share</th><th>Params at run</th></tr>';
-  for (const r of data.rows) {
-    const share = (r.duration_seconds / total * 100).toFixed(1) + '%';
-    const kind  = r.params_dependent
-                ? '<span class="tag tag-warn">scales</span>'
-                : '<span class="tag tag-ok">fixed</span>';
-    const pblob = r.params_dependent
-      ? `ntrain=${r.n_train} nvalid=${r.n_valid} img=${r.image_size} batch=${r.batch_size} steps=${r.steps}`
-      : '';
-    inner += `<tr>
-      <td><code>${escapeHtml(r.stage)}</code></td>
-      <td>${kind}</td>
-      <td>${escapeHtml(fmtSecs(r.duration_seconds))}</td>
-      <td>${share}</td>
-      <td class="muted">${escapeHtml(pblob)}</td>
-    </tr>`;
-  }
-  inner += '</table>'
-        +  `<p class="muted" style="margin:6px 0 0;font-size:11px;">total: ${escapeHtml(fmtSecs(total))} · <code>${escapeHtml(data.path)}</code></p>`
-        +  '</div>';
-  slot.innerHTML = inner;
-  slot.dataset.shown = '1';
-}
-
-/* ============================================================
-   Mirror
+   Mirror (status only; backend auto-manages enable/trigger)
 ============================================================ */
 async function refreshMirror() {
   const { data } = await api('/api/fasrc/mirror/status');
   $('mirror-tag').textContent = data.enabled ? 'on' : 'off';
   $('mirror-tag').className   = 'tag ' + (data.enabled ? 'tag-ok' : 'tag-warn');
-  $('mirror-local').innerHTML  = `<code>${escapeHtml(data.local_dir||'—')}</code>`;
-  $('mirror-remote').innerHTML = `<code>${escapeHtml(data.remote_dir||'—')}</code>`;
+  $('mirror-local').textContent  = data.local_dir  || '—';
+  $('mirror-remote').textContent = data.remote_dir || '—';
   if (data.last_run_at) {
     const when = new Date(data.last_run_at * 1000).toLocaleTimeString();
     const note = data.last_error ? ` · ${escapeHtml(data.last_error.slice(0,80))}` : '';
     $('mirror-last').innerHTML = `${when} (rc=${data.last_rc})${note}`;
-  }
-  if (data.last_stdout) {
-    $('mirror-out').style.display = 'block';
-    $('mirror-out').textContent = data.last_stdout;
+    $('mirror-last').className = '';
   }
 }
-$('btn-mirror-start').onclick = async () => {
-  await api('/api/fasrc/mirror/start', {
-    method: 'POST',
-    body: new URLSearchParams({ period: $('mirror-period').value }),
-  });
+$('btn-mirror-trigger').onclick = async () => {
+  await api('/api/fasrc/mirror/trigger', { method: 'POST' });
   refreshMirror();
 };
 $('btn-mirror-stop').onclick = async () => {
   await api('/api/fasrc/mirror/stop', { method: 'POST' });
   refreshMirror();
 };
-$('btn-mirror-trigger').onclick = async () => {
-  await api('/api/fasrc/mirror/trigger', { method: 'POST' });
-  refreshMirror();
-};
 
 /* ============================================================
-   Conda env update (SSE)
+   Periodic poll
 ============================================================ */
-let envSSE = null;
-$('btn-env-update').onclick = () => {
-  if (!confirm(
-    "Run `module load python && yes | mamba env update` on FASRC?\n\n" +
-    "This re-solves and downloads any package changes from environment.yml. " +
-    "Typically 30s – 5min depending on the diff."
-  )) return;
-  if (envSSE) envSSE.close();
-  const pre = $('env-update-log');
-  pre.style.display = 'block';
-  pre.textContent = '';
-  $('env-update-status').textContent = 'running…';
-  envSSE = new EventSource('/api/fasrc/env-update');
-  envSSE.onmessage = (e) => {
-    pre.textContent += e.data + '\n';
-    pre.scrollTop = pre.scrollHeight;
-  };
-  envSSE.addEventListener('done', () => {
-    envSSE.close(); envSSE = null;
-    $('env-update-status').textContent = '✓ finished';
-    pre.textContent += '\n[finished]\n';
-    pre.scrollTop = pre.scrollHeight;
-  });
-  envSSE.addEventListener('error', (e) => {
-    pre.textContent += '[stream closed]\n';
-    $('env-update-status').textContent = 'stream ended';
-    if (envSSE) { envSSE.close(); envSSE = null; }
-  });
-};
-$('btn-env-stop').onclick = () => {
-  if (envSSE) { envSSE.close(); envSSE = null; }
-  $('env-update-status').textContent = 'stopped';
-};
-
-/* ============================================================
-   Periodic refresh — only when connected.
-============================================================ */
-async function refreshAll() {
-  await Promise.all([refreshRemoteGit(), refreshListings(), refreshQueue(), refreshMirror()]);
-}
-
 refreshConnState();
-refreshEta();
-setInterval(refreshConnState, 5000);
-setInterval(async () => {
-  const { data } = await api('/api/fasrc/status');
-  if (data.ssh_connected) refreshQueue();
-}, 8000);
-setInterval(async () => {
-  const { data } = await api('/api/fasrc/status');
-  if (data.ssh_connected) refreshMirror();
-}, 12000);
+setInterval(refreshConnState, 6000);
+// Active tab's data gets refreshed on a faster cadence so the running
+// job's progress updates without the user clicking anything.
+setInterval(() => {
+  const activeTab = document.querySelector('.chip.active[data-tab]')?.dataset.tab;
+  if (!activeTab) return;
+  if (activeTab === 'training') refreshTraining();
+  if (activeTab === 'storage')  refreshListings();
+  // git tab is manual-refresh: pulls and fetches are expensive enough
+  // that auto-polling them isn't worth it.
+}, 5000);
 </script>
 {% endblock %}
