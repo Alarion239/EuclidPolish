@@ -540,3 +540,98 @@ class EuclidCutoutDownloader:
             'cutout_size': cutout_size,
             'band': self.band,
         }
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc single-position cutout helper (used by the inference UI)
+# ---------------------------------------------------------------------------
+
+def fetch_cutout_at(
+    ra: float,
+    dec: float,
+    band_name: str,
+    output_file: str,
+    cutout_size_vis_pixels: int = 512,
+) -> Tuple[bool, Optional[str]]:
+    """Fetch a single Euclid cutout at one (ra, dec) for one band.
+
+    Unlike :class:`EuclidCutoutDownloader`, this bypasses the on-disk star
+    catalog — it is meant for ad-hoc inference where the caller just wants
+    the four-band cube at a given sky position.
+
+    Parameters
+    ----------
+    ra, dec : float
+        ICRS coordinates in degrees.
+    band_name : str
+        One of ``"VIS" / "Y_E" / "J_E" / "H_E"``.
+    output_file : str
+        Where to write the FITS. Parent dir must exist.
+    cutout_size_vis_pixels : int
+        Reference cutout size in VIS pixels at 0.10″/pix. Each band's
+        native cutout count is derived so every band covers the same
+        angular field (~51.2″ for the default 512 px).
+
+    Returns
+    -------
+    (ok, error_message) :
+        ``ok=True`` on success (file exists and is non-empty);
+        ``ok=False`` with an explanation otherwise. Failures are reported
+        without raising so the caller can surface them via its own
+        progress / log channels.
+    """
+    cfg = DownloadConfig.for_band(
+        band_name, cutout_size_vis_pixels=cutout_size_vis_pixels,
+    )
+    ok, err = cfg.validate()
+    if not ok:
+        return False, err
+
+    arcsec_side = cfg.cutout_size * cfg.pixel_scale_arcsec
+    cutout_radius_arcmin = (arcsec_side / 2.0) / 60.0
+
+    where = [f"instrument_name = '{cfg.instrument}'"]
+    if cfg.filter_name:
+        where.append(f"filter_name = '{cfg.filter_name}'")
+    query = (
+        "SELECT file_path, file_name, tile_index, ra, dec "
+        "FROM sedm.mosaic_product "
+        f"WHERE {' AND '.join(where)}"
+    )
+    try:
+        mosaics = Euclid.launch_job_async(query).get_results()
+    except Exception as e:
+        return False, f"mosaic lookup failed: {type(e).__name__}: {e}"
+    if mosaics is None or len(mosaics) == 0:
+        return False, "no mosaic tiles matched the band query"
+
+    star_coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame="icrs")
+    tile_coords = SkyCoord(
+        ra=np.asarray(mosaics["ra"]) * u.degree,
+        dec=np.asarray(mosaics["dec"]) * u.degree,
+        frame="icrs",
+    )
+    idx, sep, _ = star_coord.match_to_catalog_sky(tile_coords)
+    if sep > 0.5 * u.degree:
+        return False, (
+            f"closest {band_name} tile is {sep[0].to_value(u.degree):.2f}° away "
+            f"— position likely outside Euclid Q1 coverage"
+        )
+
+    m = mosaics[int(idx)]
+    file_path = f"{m['file_path']}/{m['file_name']}"
+    try:
+        Euclid.get_cutout(
+            file_path=file_path,
+            instrument=cfg.instrument,
+            id=int(m["tile_index"]),
+            coordinate=star_coord,
+            radius=cutout_radius_arcmin * u.arcmin,
+            output_file=output_file,
+        )
+    except Exception as e:
+        return False, f"get_cutout failed: {type(e).__name__}: {e}"
+
+    if not (os.path.exists(output_file) and os.path.getsize(output_file) > 0):
+        return False, "downloaded file is empty"
+    return True, None

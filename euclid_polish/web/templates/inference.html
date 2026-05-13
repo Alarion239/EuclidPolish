@@ -63,7 +63,7 @@
 
 {% block actions %}
 <section class="card">
-  <h3>Reconstruct</h3>
+  <h3>Reconstruct (synthetic TFRecords)</h3>
   <p class="hint">Loads the latest checkpoint, picks N random LR records,
      runs WDSR, saves LR / SR / HR side-by-side PNGs.</p>
   <form id="recon-form" action="/inference/reconstruct">
@@ -83,6 +83,27 @@
   </form>
   <div id="recon-status"></div>
 </section>
+
+<section class="card">
+  <h3>Reconstruct (real Euclid cutout)</h3>
+  <p class="hint">Downloads VIS + Y_E + J_E + H_E cutouts at your (RA, Dec)
+     from the Euclid archive, runs WDSR, saves the LR-VIS vs SR comparison.
+     No HR target — only LR and SR panels.</p>
+  <form id="recon-euclid-form" action="/inference/reconstruct-euclid">
+    <label>RA (deg)
+      <input type="text" name="ra" value="267.4229" size="12" required></label>
+    <label>Dec (deg)
+      <input type="text" name="dec" value="64.8873" size="12" required></label>
+    <label>Cutout size (VIS px)
+      <input type="number" name="cutout_size" value="512" min="64" max="2048"></label>
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <label>Residual blocks
+      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <button type="submit">Download &amp; Reconstruct</button>
+  </form>
+  <div id="recon-euclid-status"></div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -90,6 +111,12 @@
 document.getElementById("recon-form").addEventListener("submit", (e) => {
   e.preventDefault();
   polishUI.run(e.target, document.getElementById("recon-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+document.getElementById("recon-euclid-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("recon-euclid-status"), {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });

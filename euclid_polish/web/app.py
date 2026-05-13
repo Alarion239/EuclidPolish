@@ -515,6 +515,113 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
 
 
+def _job_reconstruct_euclid_cutout(
+    cap,
+    ra: float,
+    dec: float,
+    checkpoint_dir: str,
+    num_res_blocks: int,
+    cutout_size_vis_pixels: int,
+) -> Dict[str, Any]:
+    """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
+
+    Unlike ``_job_reconstruct`` (which iterates over synthetic TFRecords),
+    this fetches a real cutout at ``(ra, dec)`` for every band, converts
+    each from the archive's ADU s⁻¹ units to electrons-over-the-stack (so
+    the model sees the same scale it was trained on), stacks the four
+    bands into ``(H, W, 4)``, and runs the model. The HR target is
+    unknown for real data, so the output plot is LR/SR-only.
+    """
+    import tempfile
+    import tensorflow as tf
+    from astropy.io import fits
+    from euclid_polish.euclid.downloader import fetch_cutout_at
+    from euclid_polish.training.inference import (
+        load_model_from_checkpoint, reconstruct, plot_reconstruction,
+    )
+
+    if not tf.train.latest_checkpoint(checkpoint_dir):
+        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
+    scale = Config.DEFAULT_REBIN_FACTOR
+    model = load_model_from_checkpoint(
+        checkpoint_dir, scale, num_res_blocks,
+        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+    )
+
+    # Fetch each band into a temp dir; per-band MAGZERO from each header
+    # drives the per-band ADU/s → electrons conversion so the model sees
+    # the same calibration scale the simulator uses.
+    bands_data: Dict[str, np.ndarray] = {}
+    bands_info: Dict[str, Dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="euclid_infer_") as tmpdir:
+        for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
+            cap.tick(k, len(Config.LR_INPUT_BAND_NAMES) + 1,
+                     f"downloading {band_name} cutout")
+            band = Config.get_band(band_name)
+            outf = os.path.join(tmpdir, f"{band_name}.fits")
+            ok, err = fetch_cutout_at(
+                ra=ra, dec=dec, band_name=band_name, output_file=outf,
+                cutout_size_vis_pixels=cutout_size_vis_pixels,
+            )
+            if not ok:
+                raise RuntimeError(f"{band_name}: {err}")
+            with fits.open(outf) as hdul:
+                arr = hdul[0].data.astype(np.float32)
+                header = hdul[0].header
+            magzero = float(header.get("MAGZERO",
+                                       band.sim_zeropoint_e))
+            # m_AB = MAGZERO - 2.5·log10(F_archive)  (archive units = ADU/s)
+            # m_AB = ZP_stack_e - 2.5·log10(F_e_over_stack)
+            #  ⇒ F_e = F_archive · 10^((ZP_stack_e − MAGZERO)/2.5)
+            adu_to_e = 10 ** ((band.sim_zeropoint_e - magzero) / 2.5)
+            data_e = (arr * adu_to_e).astype(np.float32)
+            bands_data[band_name] = data_e
+            bands_info[band_name] = {
+                "shape":      data_e.shape,
+                "magzero":    magzero,
+                "adu_to_e":   adu_to_e,
+                "pix_mean":   float(np.mean(data_e)),
+                "pix_std":    float(np.std(data_e)),
+            }
+            print(f"  {band_name}: shape={data_e.shape}, MAGZERO={magzero:.3f}, "
+                  f"ADU/s→e⁻ factor={adu_to_e:.1f}")
+
+    # All four cutouts must land on the same VIS-LR grid (the MER mosaic
+    # pipeline delivers every band at 0.10″/pix). Anything else is a bug
+    # in the archive query we should not silently paper over.
+    shapes = {n: bands_data[n].shape for n in Config.LR_INPUT_BAND_NAMES}
+    base_shape = shapes["VIS"]
+    if any(s != base_shape for s in shapes.values()):
+        raise RuntimeError(
+            f"per-band shapes disagree: {shapes}; expected all bands at "
+            "the same VIS LR grid (0.10″/pix)."
+        )
+
+    lr_cube = np.stack(
+        [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
+    )   # (H, W, 4)
+    cap.tick(len(Config.LR_INPUT_BAND_NAMES),
+             len(Config.LR_INPUT_BAND_NAMES) + 1, "running model")
+    _, sr_data = reconstruct(model, lr_cube)
+    lr_vis = lr_cube[..., 0]
+
+    out_dir = Config.VIS_RECONSTRUCTION_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    tag = f"ra{ra:.4f}_dec{dec:+.4f}".replace("+", "p").replace("-", "m")
+    out_path = os.path.join(out_dir, f"euclid_{tag}.png")
+    plot_reconstruction(lr_vis, sr_data, hr_data=None, output_path=out_path)
+    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
+             len(Config.LR_INPUT_BAND_NAMES) + 1, "saved PNG")
+    print(f"  ✓ {out_path}")
+    return {
+        "output_path":  out_path,
+        "ra":           ra,
+        "dec":          dec,
+        "cutout_size":  cutout_size_vis_pixels,
+        "bands":        bands_info,
+    }
+
+
 def _job_viz_star_positions(cap, output_dir: str) -> Dict[str, Any]:
     from euclid_polish.visualization.methods import draw_star_positions
     cat = StarCatalog(output_dir)
@@ -1185,6 +1292,30 @@ def create_app() -> Flask:
         job_id = REGISTRY.spawn(
             label=f"reconstruct {n} {subset} images",
             target=lambda cap: _job_reconstruct(cap, ckpt_dir, nrb, subset, n),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/inference/reconstruct-euclid", methods=["POST"])
+    def inference_reconstruct_euclid():
+        try:
+            ra  = float(request.form["ra"])
+            dec = float(request.form["dec"])
+        except (KeyError, ValueError):
+            return jsonify({"error": "ra and dec must be valid floats (degrees)"}), 400
+        if not (0.0 <= ra < 360.0):
+            return jsonify({"error": f"ra={ra} out of range [0, 360)"}), 400
+        if not (-90.0 <= dec <= 90.0):
+            return jsonify({"error": f"dec={dec} out of range [-90, 90]"}), 400
+        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
+        nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
+        size = int(request.form.get("cutout_size", 512))
+        if not (32 <= size <= 4096):
+            return jsonify({"error": f"cutout_size={size} out of range [32, 4096]"}), 400
+        job_id = REGISTRY.spawn(
+            label=f"infer Euclid cutout @ ({ra:.4f}, {dec:+.4f})",
+            target=lambda cap: _job_reconstruct_euclid_cutout(
+                cap, ra, dec, ckpt_dir, nrb, size,
+            ),
         )
         return jsonify({"job_id": job_id})
 

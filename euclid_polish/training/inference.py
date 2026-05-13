@@ -120,22 +120,43 @@ def reconstruct(
     else:
         lr_data = np.asarray(lr_input, dtype=np.float32)
 
-    if lr_data.ndim == 3 and lr_data.shape[-1] == 1:
-        lr_data = lr_data[..., 0]
+    # Normalize input to a (H, W, C) tensor for the model. Three shapes
+    # we accept:
+    #   2D (H, W)           — single-channel image
+    #   3D (H, W, 1)        — single-channel with an explicit channel axis
+    #   3D (H, W, C)        — multi-band cube (e.g. C=4 for VIS+Y_E+J_E+H_E)
+    if lr_data.ndim == 2:
+        lr_for_model = lr_data[:, :, None]              # → (H, W, 1)
+    elif lr_data.ndim == 3:
+        lr_for_model = lr_data                          # already (H, W, C)
+    else:
+        raise ValueError(
+            f"reconstruct(): expected 2D or 3D input, got shape {lr_data.shape}"
+        )
 
     scale_e = float(Config.STRETCH_SCALE_E)
 
     # Stretch → model → unstretch. ``clip(±20)`` is a defensive guard against
     # an untrained / pathological model output: ``sinh(20) ≈ 2.4×10⁸``, well
     # above any realistic source, but finite in float32 (sinh overflows at ~89).
-    lr_stretched = np.arcsinh(lr_data / scale_e).astype(np.float32)
-    lr_3d = tf.constant(lr_stretched[:, :, None])
-    sr_stretched = resolve_single(model, lr_3d).numpy().astype(np.float32)
+    lr_stretched = np.arcsinh(lr_for_model / scale_e).astype(np.float32)
+    sr_stretched = resolve_single(model, tf.constant(lr_stretched)).numpy().astype(np.float32)
     sr_stretched = np.clip(sr_stretched, -20.0, 20.0)
     sr_data = (np.sinh(sr_stretched.astype(np.float64)) * scale_e).astype(np.float32)
-    sr_data = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
+    # SR is always single-channel per the model spec (nchan_out=1); squeeze
+    # the channel axis for the 2-D visualizers downstream.
+    if sr_data.ndim == 3 and sr_data.shape[-1] == 1:
+        sr_data = sr_data[..., 0]
+    # LR returned for display: if the caller passed a multi-channel cube,
+    # show only the VIS channel (band 0) — that's what the HR target is.
+    if lr_data.ndim == 3 and lr_data.shape[-1] > 1:
+        lr_display = lr_data[..., 0]
+    elif lr_data.ndim == 3 and lr_data.shape[-1] == 1:
+        lr_display = lr_data[..., 0]
+    else:
+        lr_display = lr_data
 
-    return lr_data, sr_data
+    return lr_display, sr_data
 
 
 def _image_stats(data: np.ndarray) -> dict:
