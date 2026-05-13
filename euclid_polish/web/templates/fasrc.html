@@ -694,18 +694,25 @@ async function refreshTrainEta() {
     : '(no history yet — first run will calibrate)';
 }
 
-document.querySelectorAll('.job-form').forEach(form => {
+const __JOB_FORMS = document.querySelectorAll('.job-form');
+console.log('[fasrc] binding job-form handlers — found', __JOB_FORMS.length,
+            'forms (presets:',
+            Array.from(__JOB_FORMS).map(f => f.dataset.preset).join(', '), ')');
+__JOB_FORMS.forEach(form => {
   form.addEventListener('input', (e) => {
     if (e.target.name === 'steps') refreshTrainEta();
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    console.log('[fasrc] submit clicked for preset', form.dataset.preset);
     // .job-out is a sibling <pre> inside the same card, not a child of
     // the form — scope the lookup to the card.
     const card = form.closest('.card') || form.parentElement;
-    const out = card.querySelector('.job-out');
+    const out = card ? card.querySelector('.job-out') : null;
     if (!out) {
-      console.error('job-out element not found for form', form);
+      alert('UI bug: could not find a .job-out element for preset '
+            + form.dataset.preset);
+      console.error('job-out element not found', { form, card });
       return;
     }
     out.style.display = 'block';
@@ -717,6 +724,7 @@ document.querySelectorAll('.job-form').forEach(form => {
         method: 'POST', body: new URLSearchParams(fd),
       });
       const data = await r.json();
+      console.log('[fasrc] /api/fasrc/submit response:', r.status, data);
       if (data.ok) {
         out.textContent =
           `submitted: SLURM job ${data.jobid}\n` +
@@ -726,6 +734,7 @@ document.querySelectorAll('.job-form').forEach(form => {
         out.textContent = `error: ${data.error || 'unknown'}`;
       }
     } catch (err) {
+      console.error('[fasrc] submit failed:', err);
       out.textContent = `request failed: ${err}`;
     }
   });
