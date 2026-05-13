@@ -274,6 +274,8 @@ def plot_reconstruction(
     hr_cube: Optional[np.ndarray] = None,
     asinh_scale: float | None = None,
     show_all_bands: bool = False,
+    predicted_dirty: Optional[np.ndarray] = None,
+    residual: Optional[np.ndarray] = None,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -353,8 +355,16 @@ def plot_reconstruction(
             vis.save_figure(output_path)
             return
 
-        # Default 2 × 2 layout (LR colour composite or VIS gray + SR gray).
-        vis = BaseVisualizer(rows=2, cols=2, figsize=(18, 18), vmax=vmax)
+        # Default 2 × {2, 3, or 4} layout (LR colour composite or VIS
+        # gray + SR gray; optional predicted-dirty + residual when the
+        # caller supplied the forward-modelled SR).
+        has_predicted = predicted_dirty is not None
+        has_residual  = residual is not None
+        cols = 2 + int(has_predicted) + int(has_residual)
+        vis = BaseVisualizer(rows=2, cols=cols, figsize=(9 * cols, 18),
+                             vmax=vmax)
+
+        # Row 1 — linear.
         if has_cube:
             vis.add_rgb_scale_panel(lr_cube, stretch="linear",
                                     title_suffix="\nDirty (LR)")
@@ -364,6 +374,20 @@ def plot_reconstruction(
         vis.add_scale_panel(sr_data, stretch="linear",
                             title_suffix="\nReconstruction (SR)",
                             cmap="gray")
+        if has_predicted:
+            vis.add_scale_panel(
+                predicted_dirty, stretch="linear",
+                title_suffix="\nVIS PSF ⨂ SR + 2× rebin\n(predicted LR)",
+                cmap="gray",
+            )
+        if has_residual:
+            vis.add_diverging_panel(
+                residual, stretch="linear",
+                title_suffix="\nResidual = Dirty − Predicted",
+                colorbar_label="LR e⁻",
+            )
+
+        # Row 2 — asinh (loss-aligned stretch).
         if has_cube:
             vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
                                     asinh_scale=shared_scale,
@@ -375,6 +399,17 @@ def plot_reconstruction(
         vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nReconstruction (SR)",
                             cmap="gray")
+        if has_predicted:
+            vis.add_scale_panel(
+                predicted_dirty, stretch="asinh", asinh_scale=shared_scale,
+                title_suffix="\nVIS PSF ⨂ SR + 2× rebin\n(predicted LR)",
+                cmap="gray",
+            )
+        if has_residual:
+            vis.add_diverging_panel(
+                residual, stretch="asinh", asinh_scale=shared_scale,
+                title_suffix="\nResidual = Dirty − Predicted",
+            )
         plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
         vis.save_figure(output_path)
         return

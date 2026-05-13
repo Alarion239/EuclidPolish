@@ -700,13 +700,50 @@ def _job_reconstruct_euclid_cutout(
         [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
     )   # (H, W, 4)
     cap.tick(len(Config.LR_INPUT_BAND_NAMES),
-             len(Config.LR_INPUT_BAND_NAMES) + 2, "running model")
+             len(Config.LR_INPUT_BAND_NAMES) + 3, "running model")
     _, sr_data = reconstruct(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
-    # Save the SR result next to the cached LR cutouts so the user can
-    # reload it as FITS for downstream analysis. Header carries the
-    # provenance (input RA/Dec, cutout size, ckpt dir, asinh_scale).
+    # ────────────────────────────────────────────────────────────────
+    # Self-consistency check: forward-model the SR and compare to the
+    # observed dirty LR. If the network is doing its job, applying the
+    # VIS forward chain (fftconvolve with empirical ePSF + 2× sum-rebin)
+    # to SR should produce something close to the actual dirty LR; the
+    # residual flags pixel-level over- or under-reconstruction.
+    # ────────────────────────────────────────────────────────────────
+    from scipy import signal as scipy_signal
+    from euclid_polish.euclid.psf_library import load_all_band_psfs
+    from euclid_polish.sky.multiband_forward import MultiBandForward
+
+    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
+             len(Config.LR_INPUT_BAND_NAMES) + 3,
+             "forward-modelling SR for residual")
+    try:
+        psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+        vis_psf = psfs[Config.BAND_VIS.name]
+        sr_hr = scipy_signal.fftconvolve(
+            sr_data, vis_psf.data, mode="same",
+        ).astype(np.float32)
+        rebin_factor = int(round(
+            Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
+        ))
+        predicted_dirty = MultiBandForward.sum_rebin(sr_hr, rebin_factor)
+        # ``sum_rebin`` may trim a row/col if HR isn't divisible by the
+        # rebin factor — match the LR shape by cropping to the smaller.
+        h = min(predicted_dirty.shape[0], lr_vis.shape[0])
+        w = min(predicted_dirty.shape[1], lr_vis.shape[1])
+        predicted_dirty = predicted_dirty[:h, :w].astype(np.float32)
+        lr_vis_aligned  = lr_vis[:h, :w].astype(np.float32)
+        residual = (lr_vis_aligned - predicted_dirty).astype(np.float32)
+        print(f"  ✓ residual stats: mean={residual.mean():.3g}, "
+              f"std={residual.std():.3g}, "
+              f"|max|={np.abs(residual).max():.3g}")
+    except Exception as e:
+        print(f"  residual computation skipped: {type(e).__name__}: {e}")
+        predicted_dirty = None
+        residual = None
+
+    # Save SR, predicted-dirty, and residual as FITS in the cache dir.
     sr_fits_path = os.path.join(cache_dir, "SR.fits")
     sr_hdu = fits.PrimaryHDU(sr_data.astype(np.float32))
     sr_hdu.header["OBJECT"]   = "Euclid SR (WDSR VIS)"
@@ -720,15 +757,28 @@ def _job_reconstruct_euclid_cutout(
     sr_hdu.writeto(sr_fits_path, overwrite=True)
     print(f"  ✓ saved SR  → {sr_fits_path}")
 
+    if predicted_dirty is not None and residual is not None:
+        pd_path = os.path.join(cache_dir, "SR_forward.fits")
+        ph = fits.PrimaryHDU(predicted_dirty)
+        ph.header["OBJECT"] = "VIS-PSF ⨂ SR + 2× rebin (predicted LR)"
+        ph.writeto(pd_path, overwrite=True)
+        res_path = os.path.join(cache_dir, "residual.fits")
+        rh = fits.PrimaryHDU(residual)
+        rh.header["OBJECT"] = "Dirty(VIS) − VIS-PSF ⨂ SR + 2× rebin"
+        rh.writeto(res_path, overwrite=True)
+        print(f"  ✓ saved SR_forward + residual → {cache_dir}")
+
     out_dir = Config.VIS_RECONSTRUCTION_DIR
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"euclid_{tag}.png")
     plot_reconstruction(lr_vis, sr_data, hr_data=None,
                         output_path=out_path, lr_cube=lr_cube,
                         asinh_scale=asinh_scale,
-                        show_all_bands=show_all_bands)
-    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 2,
-             len(Config.LR_INPUT_BAND_NAMES) + 2, "saved PNG")
+                        show_all_bands=show_all_bands,
+                        predicted_dirty=predicted_dirty,
+                        residual=residual)
+    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 3,
+             len(Config.LR_INPUT_BAND_NAMES) + 3, "saved PNG")
     print(f"  ✓ {out_path}")
     return {
         "output_path":  out_path,
@@ -738,6 +788,7 @@ def _job_reconstruct_euclid_cutout(
         "dec":          dec,
         "cutout_size":  cutout_size_vis_pixels,
         "bands":        bands_info,
+        "residual_std": float(residual.std()) if residual is not None else None,
     }
 
 
@@ -1450,7 +1501,7 @@ def create_app() -> Flask:
                     continue
                 files = []
                 for name in ("VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
-                             "SR.fits"):
+                             "SR.fits", "SR_forward.fits", "residual.fits"):
                     f = os.path.join(d, name)
                     if os.path.isfile(f):
                         rel = os.path.relpath(f, Config.EUCLID_INFERENCE_DIR)
