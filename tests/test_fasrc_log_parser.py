@@ -127,6 +127,40 @@ def test_training_log_skips_malformed_lines():
     assert len(rows) == 2
 
 
+def test_training_log_csv_format_parsed():
+    """Trainer now writes CSV; parser must auto-detect it from the header."""
+    csv_text = textwrap.dedent("""\
+        step,wall_time,loss,psnr_stretched,psnr_raw,gnorm_avg,gnorm_max,clip_norm,duration_s
+        1000,1700000000.0,4.2,22.0,19.5,1.1,2.2,5.0,3.4
+        2000,1700000100.0,3.6,23.1,20.2,1.0,2.1,5.0,3.5
+        3000,1700000200.0,3.1,24.0,20.9,0.9,2.0,5.0,3.6
+    """)
+    rows = fasrc_log_parser.parse_training_log(csv_text)
+    assert [r["step"] for r in rows] == [1000, 2000, 3000]
+    assert abs(rows[1]["psnr_stretched"] - 23.1) < 1e-6
+    assert abs(rows[-1]["loss"] - 3.1) < 1e-6
+
+
+def test_training_log_csv_with_partial_columns():
+    """Future-proofing: a CSV missing optional columns still parses."""
+    csv_text = "step,wall_time,loss,psnr_stretched,psnr_raw\n1,0,1.0,10.0,9.0\n"
+    rows = fasrc_log_parser.parse_training_log(csv_text)
+    assert len(rows) == 1
+    assert rows[0]["step"] == 1
+    assert rows[0]["psnr_stretched"] == 10.0
+    # Missing optional columns default to 0.0.
+    assert rows[0]["duration_s"] == 0.0
+
+
+def test_training_log_csv_header_anchor_excludes_garbage():
+    """A file that doesn't start with ``step,`` is read as legacy JSONL,
+    so a misnamed first row can't be misparsed as a CSV header."""
+    garbage = "garbage\n{\"step\": 1, \"loss\": 1.0, \"psnr_stretched\": 10.0, \"psnr_raw\": 9.0, \"duration_s\": 0, \"wall_time\": 0}\n"
+    rows = fasrc_log_parser.parse_training_log(garbage)
+    assert len(rows) == 1
+    assert rows[0]["step"] == 1
+
+
 # ---------------------------------------------------------------------------
 # ETA estimation
 # ---------------------------------------------------------------------------

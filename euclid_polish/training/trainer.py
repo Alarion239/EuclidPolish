@@ -3,7 +3,7 @@ Trainer module for WDSR super-resolution models.
 
 This module provides the Trainer class for training WDSR models.
 """
-import json
+import csv
 import os
 import time
 
@@ -18,7 +18,16 @@ from tqdm import tqdm
 from euclid_polish.config import Config
 from euclid_polish.training.models.common import evaluate
 
-TRAINING_LOG_FILENAME = "training_log.jsonl"
+# Append-only CSV — one row per evaluate_every batch — readable by Excel,
+# pandas, the FASRC dashboard, and the in-tree plot_training_log helper
+# without any custom parser. Validation history persists in real time so
+# a job killed mid-training still leaves a usable log behind.
+TRAINING_LOG_FILENAME = "training_log.csv"
+TRAINING_LOG_COLUMNS  = (
+    "step", "wall_time", "loss",
+    "psnr_stretched", "psnr_raw",
+    "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
+)
 
 # Gradient clipping by global L2 norm — see ``Config.GRAD_CLIP_NORM``.
 # Direction-preserving; has no effect when natural gradient norm < clip
@@ -164,20 +173,27 @@ class Trainer:
                     f"({duration:.2f}s)"
                 )
 
-                # Persist for later plotting. Append-only so multiple training
-                # sessions accumulate into one log.
-                with open(log_path, "a") as fh:
-                    fh.write(json.dumps({
-                        "step":           int(step),
-                        "loss":           float(loss_value.numpy()),
-                        "psnr_stretched": psnr_str,
-                        "psnr_raw":       psnr_raw,
-                        "gnorm_avg":      float(gnorm_avg.numpy()),
-                        "gnorm_max":      float(gnorm_peak),
-                        "clip_norm":      float(GRAD_CLIP_NORM),
-                        "duration_s":     float(duration),
-                        "wall_time":      time.time(),
-                    }) + "\n")
+                # Persist for later plotting. Append-only CSV so each row
+                # is durable the moment ``evaluate_every`` fires — a job
+                # OOM-killed mid-training still leaves a complete log.
+                row = {
+                    "step":           int(step),
+                    "wall_time":      time.time(),
+                    "loss":           float(loss_value.numpy()),
+                    "psnr_stretched": psnr_str,
+                    "psnr_raw":       psnr_raw,
+                    "gnorm_avg":      float(gnorm_avg.numpy()),
+                    "gnorm_max":      float(gnorm_peak),
+                    "clip_norm":      float(GRAD_CLIP_NORM),
+                    "duration_s":     float(duration),
+                }
+                write_header = (not os.path.exists(log_path)
+                                or os.path.getsize(log_path) == 0)
+                with open(log_path, "a", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
+                    if write_header:
+                        w.writeheader()
+                    w.writerow(row)
 
                 # save-best on PSNR_stretched (loss-aligned).
                 if save_best_only and metrics["psnr_stretched"] <= ckpt.psnr:

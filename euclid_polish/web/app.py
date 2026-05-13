@@ -461,12 +461,25 @@ def _job_evaluate(cap, checkpoint_dir: str, num_res_blocks: int) -> Dict[str, An
     return out
 
 
+def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
+    """Pick the current ``training_log.csv`` or fall back to legacy
+    ``training_log.jsonl`` so logs from runs before the CSV switch still
+    plot. Returns the path that exists, or None if neither does."""
+    for name in ("training_log.csv", "training_log.jsonl"):
+        p = os.path.join(checkpoint_dir, name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _job_plot_training_log(cap, checkpoint_dir: str) -> Dict[str, Any]:
     """Render the training-log PNG (loss + PSNR vs step)."""
     from euclid_polish.training.log_plot import plot_training_log
-    log_path = os.path.join(checkpoint_dir, "training_log.jsonl")
-    if not os.path.exists(log_path):
-        raise FileNotFoundError(f"no training_log.jsonl in {checkpoint_dir}")
+    log_path = _resolve_training_log(checkpoint_dir)
+    if log_path is None:
+        raise FileNotFoundError(
+            f"no training_log.csv or .jsonl in {checkpoint_dir}"
+        )
     out_path = os.path.join(Config.VIS_DIR, "training_log.png")
     os.makedirs(Config.VIS_DIR, exist_ok=True)
     plot_training_log(log_path, out_path)
@@ -494,12 +507,23 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     )
 
     lr_path = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
-    hr_path = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
+    # ``hr_<subset>`` is the 1-channel VIS target the trainer fit
+    # against; ``clean_<subset>`` is the 4-channel HR cube (kept for
+    # inspection only). Prefer the 1-channel record so the residual
+    # plot's ``hr_data - sr_data`` shapes match; fall back to slicing
+    # channel 0 out of the clean record on older datasets that don't
+    # carry a separate ``hr_<subset>`` file.
+    hr_path     = tfrecord_path(Config.RECORDS_DIR_V2, f"hr_{subset}")
+    clean_path  = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
     if not os.path.exists(lr_path):
         raise FileNotFoundError(f"no records in {Config.RECORDS_DIR_V2}")
     lr_records = read_multiband_skyimages(lr_path, num_images=10_000)
-    hr_records = (read_multiband_skyimages(hr_path, num_images=10_000)
-                  if os.path.exists(hr_path) else [])
+    if os.path.exists(hr_path):
+        hr_records = read_multiband_skyimages(hr_path, num_images=10_000)
+    elif os.path.exists(clean_path):
+        hr_records = read_multiband_skyimages(clean_path, num_images=10_000)
+    else:
+        hr_records = []
     hr_by_idx = {h.index: h for h in hr_records}
     n = min(n_images, len(lr_records))
     rng = np.random.default_rng()
@@ -510,7 +534,15 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     for k, i in enumerate(chosen):
         lr_img = lr_records[i]
         lr_data, sr_data = reconstruct(model, lr_img.data)
-        hr_data = hr_by_idx[lr_img.index].data if lr_img.index in hr_by_idx else None
+        hr_data = None
+        if lr_img.index in hr_by_idx:
+            raw = hr_by_idx[lr_img.index].data
+            # plot_reconstruction expects a 2-D VIS HR. Slice channel 0
+            # when the record carries the legacy 4-channel cube.
+            if raw.ndim == 3 and raw.shape[-1] >= 1:
+                hr_data = raw[..., 0]
+            elif raw.ndim == 2:
+                hr_data = raw
         out = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.png")
         plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=out)
         out_paths.append(out)
@@ -1376,9 +1408,9 @@ def create_app() -> Flask:
     @app.route("/view/training-log")
     def view_training_log():
         ckpt = request.args.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
-        log_path = os.path.join(ckpt, "training_log.jsonl")
+        log_path = _resolve_training_log(ckpt)
         out_png  = os.path.join(Config.VIS_DIR, "training_log.png")
-        if not os.path.exists(log_path):
+        if log_path is None:
             abort(404)
         # Render if missing or stale.
         if (not os.path.exists(out_png)
@@ -2157,14 +2189,19 @@ def create_app() -> Flask:
                    or f"{cfg.repo_path}/logs/jobs/{live['name']}.out"
         err_path = (stored or {}).get("err_path") \
                    or log_path.replace(".out", ".err")
-        train_log = f"{cfg.ckpt_dir}/training_log.jsonl"
+        # Trainer writes ``training_log.csv``; pre-CSV runs left
+        # ``training_log.jsonl`` — try the new name first and fall back
+        # so partially-mirrored ckpt dirs still light up the dashboard.
+        train_log_csv   = f"{cfg.ckpt_dir}/training_log.csv"
+        train_log_jsonl = f"{cfg.ckpt_dir}/training_log.jsonl"
 
         # 2. Fetch the relevant log tails in one SSH call. Wrapped in
         # ``{ ...; exit 0; }`` so a missing optional file (e.g. the
-        # training_log.jsonl before the first eval) doesn't fail the
-        # whole route. Every section is independently guarded with
-        # ``2>/dev/null`` + ``|| true`` so each tail's own non-zero exit
-        # doesn't poison the chain.
+        # training log before the first eval) doesn't fail the whole
+        # route. Every section is independently guarded with
+        # ``2>/dev/null`` + ``|| true``. The training-log block first
+        # tries the CSV, then the legacy JSONL — the parser auto-detects
+        # the format from the leading character.
         cmd = (
             f"{{ "
             f"  echo __OUT__ ; "
@@ -2172,7 +2209,17 @@ def create_app() -> Flask:
             f"  echo __ERR__ ; "
             f"  tail -n 200 {shlex.quote(err_path)} 2>/dev/null || true ; "
             f"  echo __JSONL__ ; "
-            f"  tail -n 200 {shlex.quote(train_log)} 2>/dev/null || true ; "
+            # For the CSV path, the header is line 1 — we MUST keep it for
+            # csv.DictReader. ``head -n 1 + tail -n 200`` covers files of
+            # any size and the awk dedupes the duplicate when the file is
+            # shorter than 200 rows (header would otherwise appear twice).
+            f"  if [ -f {shlex.quote(train_log_csv)} ]; then "
+            f"    {{ head -n 1 {shlex.quote(train_log_csv)} ; "
+            f"       tail -n 200 {shlex.quote(train_log_csv)} ; }} 2>/dev/null "
+            f"    | awk '!seen[$0]++' || true ; "
+            f"  elif [ -f {shlex.quote(train_log_jsonl)} ]; then "
+            f"    tail -n 200 {shlex.quote(train_log_jsonl)} 2>/dev/null || true ; "
+            f"  fi ; "
             f"}}; exit 0"
         )
         rc, out, _err = STATE.ssh.run(cmd, timeout=15)

@@ -1,5 +1,6 @@
-"""Visualize the training-time JSONL log written by ``Trainer.train``."""
+"""Visualize the training-time validation log written by ``Trainer.train``."""
 
+import csv
 import json
 import os
 from typing import List, Tuple
@@ -10,17 +11,59 @@ import numpy as np
 from euclid_polish.training.trainer import TRAINING_LOG_FILENAME
 
 
+_NUMERIC_LOG_COLS = {
+    "step", "wall_time", "loss",
+    "psnr_stretched", "psnr_raw",
+    "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
+}
+
+
 def read_training_log(log_path: str) -> List[dict]:
-    """Read a JSONL training log and return the list of records."""
+    """Read the trainer's validation-history log and return records as dicts.
+
+    Auto-detects:
+      * the current CSV format (header row + N rows of numeric values), and
+      * the legacy ``training_log.jsonl`` format (one JSON object per line)
+        so logs from runs prior to the CSV switch still plot.
+    """
     if not os.path.exists(log_path):
         raise FileNotFoundError(f"Training log not found: {log_path}")
-    records = []
     with open(log_path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
+        first_meaningful = ""
+        for ln in fh:
+            if ln.strip():
+                first_meaningful = ln
+                break
+        fh.seek(0)
+        if first_meaningful.startswith("step,"):
+            reader = csv.DictReader(fh)
+            records = []
+            for raw in reader:
+                rec = {}
+                for k, v in raw.items():
+                    if v is None or v == "":
+                        continue
+                    if k in _NUMERIC_LOG_COLS:
+                        try:
+                            rec[k] = float(v)
+                            if k == "step":
+                                rec[k] = int(rec[k])
+                        except (TypeError, ValueError):
+                            rec[k] = v
+                    else:
+                        rec[k] = v
+                records.append(rec)
+        else:
+            # Legacy JSONL — one JSON object per line; skip malformed.
+            records = []
+            for ln in fh:
+                ln = ln.strip()
+                if not ln or not ln.startswith("{"):
+                    continue
+                try:
+                    records.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue
     if not records:
         raise ValueError(f"Training log is empty: {log_path}")
     return records

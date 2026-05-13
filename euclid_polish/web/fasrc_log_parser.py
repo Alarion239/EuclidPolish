@@ -1,4 +1,4 @@
-"""Parse SLURM ``.out`` / ``.err`` / ``training_log.jsonl`` into a
+"""Parse SLURM ``.out`` / ``.err`` / ``training_log.csv`` into a
 single structured summary for the FASRC dashboard.
 
 The pipeline driver and trainer emit a few load-bearing markers; this
@@ -15,14 +15,19 @@ stays trivial:
   * ``.err``: tqdm's progress line. Format varies a bit by tqdm version
     but always contains ``current/total`` near the front.
 
-  * ``training_log.jsonl``: one JSON object per validation event, with
-    keys ``step``, ``loss``, ``psnr_stretched``, ``psnr_raw``, etc.
+  * ``training_log.csv``: header row + one CSV row per validation event,
+    with columns ``step,wall_time,loss,psnr_stretched,psnr_raw,
+    gnorm_avg,gnorm_max,clip_norm,duration_s``. We also still accept the
+    legacy JSONL format (one JSON object per line) so logs from before
+    the CSV switch keep rendering.
 
 Outputs a compact dict the JSON layer can return verbatim.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -113,27 +118,58 @@ def parse_stderr_progress(text: str) -> Optional[Dict[str, int]]:
     return last
 
 
-def parse_training_log(text: str, *, max_records: int = 200) -> List[Dict[str, Any]]:
-    """Parse the trainer's append-only JSONL into a list of validation rows."""
-    out: List[Dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a validation row into the keys the UI consumes."""
+    def _f(key: str, default: float = 0.0) -> float:
+        v = rec.get(key)
+        if v is None or v == "":
+            return default
         try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict):
-            continue
-        out.append({
-            "step":           int(rec.get("step", 0)),
-            "loss":           float(rec.get("loss", 0.0)),
-            "psnr_stretched": float(rec.get("psnr_stretched", 0.0)),
-            "psnr_raw":       float(rec.get("psnr_raw", 0.0)),
-            "duration_s":     float(rec.get("duration_s", 0.0)),
-            "wall_time":      float(rec.get("wall_time", 0.0)),
-        })
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+    return {
+        "step":           int(_f("step")),
+        "loss":           _f("loss"),
+        "psnr_stretched": _f("psnr_stretched"),
+        "psnr_raw":       _f("psnr_raw"),
+        "duration_s":     _f("duration_s"),
+        "wall_time":      _f("wall_time"),
+    }
+
+
+def parse_training_log(text: str, *, max_records: int = 200) -> List[Dict[str, Any]]:
+    """Parse the trainer's append-only validation log.
+
+    Auto-detects CSV (current format) vs JSONL (legacy). The CSV reader
+    starts at the header row (``step,wall_time,...``); the JSONL reader
+    falls back when the file begins with ``{``. Each row is normalised
+    into the same dict shape the dashboard expects.
+    """
+    out: List[Dict[str, Any]] = []
+    if not text:
+        return out
+    # Anchor format detection on the trainer's CSV header (``step,`` is
+    # always the first column). Anything else is treated as JSONL and
+    # malformed lines are skipped.
+    first_meaningful = next(
+        (ln for ln in text.splitlines() if ln.strip()), "",
+    )
+    if first_meaningful.startswith("step,"):
+        reader = csv.DictReader(io.StringIO(text))
+        for rec in reader:
+            out.append(_coerce_validation_row(rec))
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(_coerce_validation_row(rec))
     if len(out) > max_records:
         out = out[-max_records:]
     return out
