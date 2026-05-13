@@ -8,11 +8,13 @@ import glob
 import io
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from flask import (
-    Flask, abort, jsonify, render_template, request, send_file, url_for,
+    Flask, Response, abort, jsonify, render_template, request, send_file,
+    stream_with_context, url_for,
 )
 
 from euclid_polish.config import BandConfig, Config
@@ -21,7 +23,12 @@ from euclid_polish.euclid.psf_library import (
     load_all_band_psfs, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.euclid.types import PSF
+from euclid_polish.web import fasrc_config, fasrc_jobs, git_ops
+from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.remote import (
+    BitwardenError, RemoteState, SSHConfig, SSHError, SSHSession, STATE,
+)
 
 
 # Regex guard for cutout filenames: alphanumerics, underscores, dashes, dots.
@@ -1276,6 +1283,459 @@ def create_app() -> Flask:
             "tfrecords":   _tfrecords_status(),
             "checkpoints": _checkpoints_status(),
         })
+
+    # =========================================================================
+    # Git tab — local commit / push / pull, no remote auth needed.
+    # =========================================================================
+
+    @app.route("/git")
+    def git_page():
+        return render_template(
+            "git.html",
+            status=git_ops.status(),
+            log_entries=git_ops.log(15),
+        )
+
+    @app.route("/api/git/status")
+    def api_git_status():
+        return jsonify({"status": git_ops.status(),
+                        "log": git_ops.log(15)})
+
+    @app.route("/api/git/diff")
+    def api_git_diff():
+        staged = request.args.get("staged", "0") in ("1", "true", "yes")
+        return jsonify({"diff": git_ops.diff(staged=staged)})
+
+    @app.route("/git/commit", methods=["POST"])
+    def git_commit():
+        msg = request.form.get("message", "").strip()
+        out = git_ops.commit(msg)
+        code = 200 if out.get("ok") else 400
+        return jsonify(out), code
+
+    @app.route("/git/push", methods=["POST"])
+    def git_push():
+        out = git_ops.push()
+        code = 200 if out.get("ok") else 400
+        return jsonify(out), code
+
+    @app.route("/git/pull", methods=["POST"])
+    def git_pull():
+        out = git_ops.pull()
+        code = 200 if out.get("ok") else 400
+        return jsonify(out), code
+
+    @app.route("/git/fetch", methods=["POST"])
+    def git_fetch():
+        out = git_ops.fetch()
+        code = 200 if out.get("ok") else 400
+        return jsonify(out), code
+
+    # =========================================================================
+    # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
+    # live log streaming, checkpoint auto-mirror.
+    # =========================================================================
+
+    @app.route("/fasrc")
+    def fasrc_page():
+        cfg = fasrc_config.load()
+        return render_template(
+            "fasrc.html",
+            cfg=cfg,
+            state=STATE.public_status(),
+            recent=fasrc_jobs.DB.list_recent(20),
+        )
+
+    # ---- config -----------------------------------------------------------
+
+    @app.route("/api/fasrc/config", methods=["GET", "POST"])
+    def api_fasrc_config():
+        if request.method == "POST":
+            patch = {k: v for k, v in request.form.items()}
+            cfg = fasrc_config.update(patch)
+        else:
+            cfg = fasrc_config.load()
+        return jsonify(cfg.to_dict())
+
+    # ---- auth -------------------------------------------------------------
+
+    @app.route("/api/fasrc/status")
+    def api_fasrc_status():
+        return jsonify(STATE.public_status())
+
+    @app.route("/api/fasrc/unlock", methods=["POST"])
+    def api_fasrc_unlock():
+        master = request.form.get("master_password", "")
+        try:
+            STATE.bw.unlock(master)
+        except BitwardenError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "status": STATE.public_status()})
+
+    @app.route("/api/fasrc/lock", methods=["POST"])
+    def api_fasrc_lock():
+        STATE.bw.lock()
+        return jsonify({"ok": True, "status": STATE.public_status()})
+
+    @app.route("/api/fasrc/connect", methods=["POST"])
+    def api_fasrc_connect():
+        cfg = fasrc_config.load()
+        if not cfg.ssh_user:
+            return jsonify({"ok": False,
+                            "error": "set ssh_user in Settings first"}), 400
+        if not STATE.bw.unlocked:
+            return jsonify({"ok": False,
+                            "error": "unlock Bitwarden first"}), 400
+        try:
+            pwd  = STATE.bw.get_password(cfg.bw_item)
+            totp = STATE.bw.get_totp(cfg.bw_item)
+        except BitwardenError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        STATE.ssh = SSHSession(SSHConfig(
+            user=cfg.ssh_user, host=cfg.ssh_host,
+            socket=cfg.control_socket,
+            control_persist=cfg.control_persist,
+        ))
+        try:
+            STATE.ssh.connect(pwd, totp)
+        except SSHError as e:
+            STATE.ssh = None
+            return jsonify({"ok": False, "error": str(e)}), 400
+        STATE.connected_at = time.time()
+        return jsonify({"ok": True, "status": STATE.public_status()})
+
+    @app.route("/api/fasrc/disconnect", methods=["POST"])
+    def api_fasrc_disconnect():
+        if STATE.ssh:
+            STATE.ssh.disconnect()
+        STATE.ssh = None
+        STATE.connected_at = None
+        MIRROR.stop()
+        return jsonify({"ok": True, "status": STATE.public_status()})
+
+    # ---- remote info ------------------------------------------------------
+
+    @app.route("/api/fasrc/git-status")
+    def api_fasrc_git_status():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        repo = cfg.repo_path
+        cmds = (
+            f"cd {repo} && "
+            f"git rev-parse --abbrev-ref HEAD && "
+            f"git fetch --quiet && "
+            f"git rev-list --left-right --count HEAD...@{{u}} 2>/dev/null && "
+            f"git log -1 --pretty=format:'%h%x09%s%x09%cr'"
+        )
+        rc, out, err = STATE.ssh.run(cmds, timeout=30)
+        if rc != 0:
+            return jsonify({"ok": False, "error": err.strip() or out.strip()}), 500
+        lines = out.strip().splitlines()
+        branch  = lines[0] if len(lines) > 0 else ""
+        counts  = (lines[1].split() if len(lines) > 1 else ["0", "0"])
+        ahead   = int(counts[0]) if counts and counts[0].isdigit() else 0
+        behind  = int(counts[1]) if len(counts) > 1 and counts[1].isdigit() else 0
+        last    = lines[2].split("\t", 2) if len(lines) > 2 else []
+        last_commit = ({"hash": last[0], "subject": last[1], "relative": last[2]}
+                       if len(last) == 3 else {})
+        return jsonify({"ok": True, "repo": repo, "branch": branch,
+                        "ahead": ahead, "behind": behind,
+                        "last": last_commit})
+
+    @app.route("/api/fasrc/git-pull", methods=["POST"])
+    def api_fasrc_git_pull():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        rc, out, err = STATE.ssh.run(
+            f"cd {cfg.repo_path} && git pull --ff-only", timeout=60,
+        )
+        return jsonify({"ok": rc == 0,
+                        "stdout": (out + err).strip(),
+                        "error":  "" if rc == 0 else (err.strip() or out.strip())})
+
+    @app.route("/api/fasrc/data-listing")
+    def api_fasrc_data_listing():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        # Maxdepth-2 for speed; show size in human-readable form.
+        cmd = (
+            f"if [ -d {cfg.data_dir} ]; then "
+            f"  du -sh {cfg.data_dir}/* 2>/dev/null | sort -k2; "
+            f"  echo '---'; "
+            f"  find {cfg.data_dir} -maxdepth 3 -type f -name '*.tfrecord' "
+            f"    -printf '%p\\t%s\\n' 2>/dev/null; "
+            f"  echo '---'; "
+            f"  find {cfg.ckpt_dir} -maxdepth 2 -type f "
+            f"    -printf '%p\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null; "
+            f"else echo 'MISSING'; fi"
+        )
+        rc, out, _err = STATE.ssh.run(cmd, timeout=30)
+        if rc != 0:
+            return jsonify({"ok": False, "error": "remote du/find failed"}), 500
+        sections = out.split("---")
+        du_lines     = (sections[0].splitlines() if len(sections) > 0 else [])
+        tfr_lines    = (sections[1].splitlines() if len(sections) > 1 else [])
+        ckpt_lines   = (sections[2].splitlines() if len(sections) > 2 else [])
+
+        def _split(line: str, n: int) -> list[str]:
+            parts = line.split("\t" if "\t" in line else None, n - 1)
+            return parts + [""] * (n - len(parts))
+
+        return jsonify({
+            "ok": True,
+            "data_dir": cfg.data_dir,
+            "ckpt_dir": cfg.ckpt_dir,
+            "du": [line.split(None, 1) for line in du_lines if line.strip()],
+            "tfrecords": [
+                {"path": p, "size": int(s) if s.isdigit() else 0}
+                for line in tfr_lines if line.strip()
+                for p, s in [_split(line, 2)[:2]]
+            ],
+            "checkpoints": [
+                {"path": p, "size": int(s) if s.isdigit() else 0, "mtime": m}
+                for line in ckpt_lines if line.strip()
+                for p, s, m in [_split(line, 3)[:3]]
+            ],
+        })
+
+    @app.route("/api/fasrc/queue")
+    def api_fasrc_queue():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        rc, out, err = STATE.ssh.run(
+            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            timeout=15,
+        )
+        if rc != 0:
+            return jsonify({"ok": False, "error": err.strip()}), 500
+        rows = fasrc_jobs.parse_squeue(out)
+
+        # Reconcile sqlite state with the live queue: any tracked job that
+        # has fallen off squeue is finished (sacct would be more precise
+        # but is slow on the login node — last_seen + ended_at is enough).
+        live_ids = {r["jobid"] for r in rows}
+        for stored in fasrc_jobs.DB.list_recent(50):
+            if stored["state"] in ("COMPLETED", "FAILED", "CANCELLED",
+                                   "TIMEOUT", "DONE"):
+                continue
+            if stored["jobid"] not in live_ids and stored["started_at"]:
+                fasrc_jobs.DB.update_state(
+                    stored["jobid"], state="DONE",
+                    ended_at=time.time(),
+                )
+        # Push live state for jobs that ARE running.
+        for r in rows:
+            if r.get("state") == "RUNNING":
+                fasrc_jobs.DB.update_state(
+                    r["jobid"], state="RUNNING",
+                    started_at=time.time() - _parse_slurm_time(r.get("time")),
+                )
+            else:
+                fasrc_jobs.DB.update_state(r["jobid"], state=r.get("state", "?"))
+
+        return jsonify({"ok": True, "rows": rows})
+
+    def _parse_slurm_time(t: str | None) -> float:
+        """SLURM 'd-hh:mm:ss' / 'hh:mm:ss' / 'mm:ss' → seconds."""
+        if not t:
+            return 0.0
+        s = 0.0
+        if "-" in t:
+            d, t = t.split("-", 1)
+            s += int(d) * 86400
+        parts = [int(x) for x in t.split(":") if x.isdigit()]
+        while len(parts) < 3:
+            parts.insert(0, 0)
+        s += parts[0] * 3600 + parts[1] * 60 + parts[2]
+        return s
+
+    # ---- submission -------------------------------------------------------
+
+    @app.route("/api/fasrc/eta")
+    def api_fasrc_eta():
+        try:
+            steps = int(request.args.get("steps", 0))
+        except ValueError:
+            steps = 0
+        spt = fasrc_jobs.secs_per_step_history()
+        return jsonify({
+            "secs_per_step": spt,
+            "history_n":     len(fasrc_jobs.DB.list_completed(8)),
+            "eta_seconds":   fasrc_jobs.eta_for_submission(steps),
+        })
+
+    @app.route("/api/fasrc/submit", methods=["POST"])
+    def api_fasrc_submit():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        f = request.form
+        try:
+            params = {
+                "partition":  f.get("partition",  cfg.partition),
+                "n_gpus":     int(f.get("n_gpus",     cfg.n_gpus)),
+                "n_cpus":     int(f.get("n_cpus",     cfg.n_cpus)),
+                "memory":          f.get("memory",     cfg.memory),
+                "time_limit":      f.get("time_limit", cfg.time_limit),
+                "n_train":    int(f.get("n_train",    cfg.n_train)),
+                "n_valid":    int(f.get("n_valid",    cfg.n_valid)),
+                "image_size": int(f.get("image_size", cfg.image_size)),
+                "batch_size": int(f.get("batch_size", cfg.batch_size)),
+                "steps":      int(f.get("steps",      cfg.steps)),
+                "extra_flags":     f.get("extra_flags", "").strip(),
+            }
+        except (TypeError, ValueError) as e:
+            return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
+
+        label = f.get("label", "").strip() or (
+            f"train {params['steps']} steps on {params['n_train']}+"
+            f"{params['n_valid']} fields"
+        )
+        built = fasrc_jobs.build_sbatch_script(
+            label=label, params=params, cfg=cfg,
+        )
+        # Drop the script into the repo's logs/jobs dir on FASRC.
+        remote_script = f"{cfg.repo_path}/{built['script']}"
+        write_cmd = (
+            f"mkdir -p {cfg.repo_path}/{os.path.dirname(built['script'])} && "
+            f"cat > {remote_script} <<'__EUCLID_POLISH_EOF__'\n"
+            f"{built['body']}"
+            f"__EUCLID_POLISH_EOF__\n"
+            f"chmod +x {remote_script}"
+        )
+        rc, _out, err = STATE.ssh.run(write_cmd, timeout=20)
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": f"failed to write script: {err.strip()}"}), 500
+
+        rc, out, err = STATE.ssh.run(
+            f"cd {cfg.repo_path} && sbatch {built['script']}", timeout=20,
+        )
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": f"sbatch failed: {err.strip()}"}), 500
+        # sbatch output: "Submitted batch job 12345"
+        m = re.search(r"Submitted batch job (\d+)", out)
+        if not m:
+            return jsonify({"ok": False,
+                            "error": f"unparseable sbatch output: {out}"}), 500
+        slurm_id = m.group(1)
+        fasrc_jobs.DB.insert(
+            slurm_id,
+            label=label,
+            params=params,
+            script_path=remote_script,
+            log_path=f"{cfg.repo_path}/{built['out']}",
+            err_path=f"{cfg.repo_path}/{built['err']}",
+        )
+        return jsonify({"ok": True, "jobid": slurm_id,
+                        "label": label, "params": params,
+                        "log_path":   f"{cfg.repo_path}/{built['out']}"})
+
+    @app.route("/api/fasrc/cancel", methods=["POST"])
+    def api_fasrc_cancel():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        jid = request.form.get("jobid", "").strip()
+        if not jid.isdigit():
+            return jsonify({"ok": False, "error": "bad job id"}), 400
+        rc, _, err = STATE.ssh.run(f"scancel {jid}", timeout=10)
+        if rc != 0:
+            return jsonify({"ok": False, "error": err.strip()}), 500
+        fasrc_jobs.DB.update_state(jid, state="CANCELLED",
+                                   ended_at=time.time())
+        return jsonify({"ok": True})
+
+    @app.route("/api/fasrc/jobs")
+    def api_fasrc_jobs_list():
+        rows = fasrc_jobs.DB.list_recent(30)
+        for r in rows:
+            r["eta_seconds"] = (
+                fasrc_jobs.eta_for_running(r)
+                if r["state"] in ("RUNNING", "PENDING") else None
+            )
+        return jsonify({"jobs": rows})
+
+    # ---- live log stream (SSE) -------------------------------------------
+
+    @app.route("/api/fasrc/log/<jobid>")
+    def api_fasrc_log_stream(jobid: str):
+        if not jobid.isdigit():
+            abort(400)
+        row = fasrc_jobs.DB.get(jobid)
+        if not row:
+            abort(404)
+        log_path = row["log_path"]
+        # Stream both files in case the user wants stderr (`?which=err`).
+        which = request.args.get("which", "out")
+        if which == "err":
+            log_path = row["err_path"]
+
+        def _gen():
+            if not STATE.ssh or not STATE.ssh.is_connected():
+                yield "event: error\ndata: not connected\n\n"
+                return
+            # tail with retry — file may not exist until SLURM starts the job.
+            cmd = (f"tail -F -n 200 {log_path} 2>/dev/null || "
+                   f"(while [ ! -f {log_path} ]; do sleep 2; done && "
+                   f" tail -F -n 200 {log_path})")
+            try:
+                for line in STATE.ssh.stream(cmd):
+                    prog = fasrc_jobs.parse_progress(line)
+                    if prog:
+                        fasrc_jobs.DB.update_progress(jobid, prog[0], prog[1])
+                    # SSE framing: one event per line, multiline data uses
+                    # repeated ``data:`` lines.
+                    safe = line.replace("\r", "")
+                    yield f"data: {safe}\n\n"
+            except SSHError as e:
+                yield f"event: error\ndata: {e}\n\n"
+        return Response(stream_with_context(_gen()),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
+
+    # ---- checkpoint auto-mirror -------------------------------------------
+
+    @app.route("/api/fasrc/mirror/status")
+    def api_fasrc_mirror_status():
+        s = MIRROR.status
+        return jsonify({
+            "enabled":     s.enabled,
+            "last_run_at": s.last_run_at,
+            "last_rc":     s.last_rc,
+            "last_error":  s.last_error,
+            "last_stdout": s.last_stdout,
+            "remote_dir":  s.remote_dir,
+            "local_dir":   s.local_dir,
+            "period_seconds": MIRROR.period,
+        })
+
+    @app.route("/api/fasrc/mirror/start", methods=["POST"])
+    def api_fasrc_mirror_start():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        try:
+            MIRROR.period = max(15, int(request.form.get("period", 60)))
+        except ValueError:
+            pass
+        MIRROR.start()
+        return jsonify({"ok": True, "status": api_fasrc_mirror_status().json})
+
+    @app.route("/api/fasrc/mirror/stop", methods=["POST"])
+    def api_fasrc_mirror_stop():
+        MIRROR.stop()
+        return jsonify({"ok": True})
+
+    @app.route("/api/fasrc/mirror/trigger", methods=["POST"])
+    def api_fasrc_mirror_trigger():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        MIRROR.trigger()
+        return jsonify({"ok": True})
 
     return app
 

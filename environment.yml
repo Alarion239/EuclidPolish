@@ -19,6 +19,7 @@ dependencies:
   - questionary
   - pytest
   - flask
+  - pexpect
   - pip
   - pip:
       - lenstronomy

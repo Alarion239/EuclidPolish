@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Git · EuclidPolish{% endblock %}
+
+{% block content %}
+<h2>Git</h2>
+
+{% if not status.in_repo %}
+<div class="card">
+  <h3>Not a git repository</h3>
+  <p class="muted">Run <code>git init</code> in <code>{{ status.root or '.' }}</code> first.</p>
+</div>
+{% else %}
+
+<div class="grid">
+  <section class="card" id="git-status-card">
+    <h3>Working tree</h3>
+    <dl class="kv">
+      <dt>Repo</dt>     <dd><code>{{ status.root }}</code></dd>
+      <dt>Branch</dt>   <dd id="git-branch"><code>{{ status.branch }}</code></dd>
+      <dt>Upstream</dt> <dd id="git-upstream">
+        <code>{{ status.upstream or '(none)' }}</code>
+      </dd>
+      <dt>Sync</dt>     <dd id="git-sync">
+        <span class="tag tag-{{ 'warn' if status.ahead or status.behind else 'ok' }}">
+          ↑ {{ status.ahead }} &nbsp; ↓ {{ status.behind }}
+        </span>
+      </dd>
+      <dt>Last commit</dt><dd id="git-last">
+        {% if status.last %}
+          <code>{{ status.last.hash }}</code> — {{ status.last.subject }}
+          <span class="muted">({{ status.last.relative }})</span>
+        {% else %}<span class="muted">none</span>{% endif %}
+      </dd>
+    </dl>
+    <div style="margin-top:10px;">
+      <button id="btn-fetch" type="button" class="secondary">Fetch</button>
+      <button id="btn-pull"  type="button" class="secondary">Pull (ff-only)</button>
+      <button id="btn-refresh" type="button" class="secondary">Refresh</button>
+    </div>
+    <div id="status-msg" class="muted" style="margin-top:8px;"></div>
+  </section>
+
+  <section class="card">
+    <h3>Modified files
+      {% if status.files %}<span class="tag tag-warn">{{ status.files|length }} dirty</span>{% endif %}
+    </h3>
+    {% if status.files %}
+    <table id="dirty-table">
+      <tr><th>Status</th><th>Path</th></tr>
+      {% for f in status.files %}
+        <tr><td><code>{{ f.xy }}</code></td><td><code>{{ f.path }}</code></td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+      <p class="muted">working tree clean</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h3>Commit</h3>
+  <form id="commit-form" onsubmit="event.preventDefault(); doCommit();">
+    <label style="display:block; margin: 6px 0;">
+      Message
+      <input type="text" id="commit-msg" placeholder="What changed and why"
+             style="width:100%; padding:6px; border:1px solid #cdd2db; border-radius:3px;">
+    </label>
+    <button type="submit">Stage all + commit</button>
+    <button id="btn-push" type="button" style="margin-left:6px;">Push</button>
+  </form>
+  <pre id="commit-out" class="job-log" style="margin-top:10px; display:none;"></pre>
+</section>
+
+<section class="card">
+  <h3>Unstaged diff</h3>
+  <details>
+    <summary>show diff</summary>
+    <pre id="diff-pre" class="job-log" style="max-height:400px;">(click to load)</pre>
+  </details>
+</section>
+
+<section class="card">
+  <h3>Recent commits</h3>
+  <table>
+    <tr><th>Hash</th><th>Author</th><th>Subject</th><th>When</th></tr>
+    {% for c in log_entries %}
+      <tr>
+        <td><code>{{ c.hash }}</code></td>
+        <td>{{ c.author }}</td>
+        <td>{{ c.subject }}</td>
+        <td class="muted">{{ c.relative }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function postJson(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    body: new URLSearchParams(body || {}),
+  });
+  let data; try { data = await r.json(); } catch { data = {}; }
+  return { ok: r.ok && data.ok !== false, data };
+}
+
+function show(id, text, isErr) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.textContent = text;
+  el.style.color = isErr ? '#b03a3a' : '';
+}
+
+async function refreshStatus() {
+  const r = await fetch('/api/git/status');
+  if (!r.ok) return;
+  const { status, log } = await r.json();
+  document.getElementById('git-branch').innerHTML =
+    `<code>${polishUI.escapeHtml(status.branch || '?')}</code>`;
+  document.getElementById('git-upstream').innerHTML =
+    `<code>${polishUI.escapeHtml(status.upstream || '(none)')}</code>`;
+  const cls = (status.ahead || status.behind) ? 'tag-warn' : 'tag-ok';
+  document.getElementById('git-sync').innerHTML =
+    `<span class="tag ${cls}">↑ ${status.ahead} &nbsp; ↓ ${status.behind}</span>`;
+  if (status.last) {
+    document.getElementById('git-last').innerHTML =
+      `<code>${polishUI.escapeHtml(status.last.hash)}</code> — ${polishUI.escapeHtml(status.last.subject)} <span class="muted">(${polishUI.escapeHtml(status.last.relative)})</span>`;
+  }
+}
+
+document.getElementById('btn-refresh').onclick = refreshStatus;
+
+document.getElementById('btn-fetch').onclick = async () => {
+  show('status-msg', 'fetching…');
+  const { ok, data } = await postJson('/git/fetch');
+  show('status-msg', data.stdout || data.error || (ok ? 'fetched' : 'failed'), !ok);
+  refreshStatus();
+};
+
+document.getElementById('btn-pull').onclick = async () => {
+  show('status-msg', 'pulling…');
+  const { ok, data } = await postJson('/git/pull');
+  show('status-msg', data.stdout || data.error || (ok ? 'pulled' : 'failed'), !ok);
+  refreshStatus();
+};
+
+document.getElementById('btn-push').onclick = async () => {
+  show('commit-out', 'pushing…');
+  const { ok, data } = await postJson('/git/push');
+  show('commit-out', data.stdout || data.error || (ok ? 'pushed' : 'failed'), !ok);
+  refreshStatus();
+};
+
+async function doCommit() {
+  const msg = document.getElementById('commit-msg').value.trim();
+  if (!msg) { show('commit-out', 'message required', true); return; }
+  show('commit-out', 'committing…');
+  const { ok, data } = await postJson('/git/commit', { message: msg });
+  show('commit-out', data.stdout || data.error || (ok ? 'committed' : 'failed'), !ok);
+  if (ok) document.getElementById('commit-msg').value = '';
+  setTimeout(() => location.reload(), 600);
+}
+
+// Lazy-load diff when the details element is opened.
+document.querySelector('details').addEventListener('toggle', async (e) => {
+  if (!e.target.open) return;
+  const pre = document.getElementById('diff-pre');
+  pre.textContent = 'loading…';
+  const r = await fetch('/api/git/diff');
+  const { diff } = await r.json();
+  pre.textContent = diff || '(no unstaged changes)';
+}, { once: true });
+</script>
+{% endblock %}
