@@ -14,14 +14,22 @@
 {% if recon_pngs %}
 <div class="gallery">
   {% for p in recon_pngs[:24] %}
-    <a class="thumb"
-       href="{{ url_for('serve_vis', relpath=p.rel) }}"
-       target="_blank">
-      <img loading="lazy"
-           src="{{ url_for('serve_vis', relpath=p.rel) }}"
-           alt="{{ p.name }}">
-      <span class="thumb-label">{{ p.name }}</span>
-    </a>
+    <div class="thumb-wrap">
+      <a class="thumb"
+         href="{{ url_for('serve_vis', relpath=p.rel) }}"
+         target="_blank">
+        <img loading="lazy"
+             src="{{ url_for('serve_vis', relpath=p.rel) }}"
+             alt="{{ p.name }}">
+        <span class="thumb-label">{{ p.name }}</span>
+      </a>
+      {% if p.fits_rel %}
+        <a class="thumb-fits"
+           href="{{ url_for('serve_vis', relpath=p.fits_rel) }}"
+           download
+           title="Download SR plane as FITS">⬇ FITS</a>
+      {% endif %}
+    </div>
   {% endfor %}
 </div>
 {% if recon_pngs|length > 24 %}
@@ -32,6 +40,47 @@
   <div class="placeholder">No reconstructions yet — run inference on the right.
     Output PNGs land in <code>data/vis/reconstruction/</code>.</div>
 </div>
+{% endif %}
+
+{% if euclid_runs %}
+<section class="card">
+  <h3>Real Euclid cutouts <span class="muted" style="font-size:12px;
+      font-weight:normal;">(stored under
+      <code>data/euclid_inference/cutouts/</code>)</span></h3>
+  <p class="hint">Each (RA, Dec, size) keeps its four LR band FITS plus
+    the super-resolved <code>SR.fits</code>. Click any link to download.</p>
+  <table style="width:100%; font-size:12px;">
+    <tr><th style="text-align:left;">Position / size</th>
+        <th style="text-align:left;">Files</th></tr>
+    {% for run in euclid_runs[:30] %}
+      <tr style="border-top:1px solid #e2e5ea;">
+        <td style="vertical-align:top; padding:4px 8px 4px 0;
+                   white-space:nowrap;"><code>{{ run.tag }}</code></td>
+        <td style="vertical-align:top; padding:4px 0;">
+          {% for f in run.files %}
+            <a href="{{ url_for('serve_inference_files', relpath=f.rel) }}"
+               download
+               style="margin-right:10px;
+                      {{ 'font-weight:600;' if f.name == 'SR.fits' else '' }}">
+              ⬇ {{ f.name }}
+              <span class="muted">({{ f.size_kb }}KB)</span>
+            </a>
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+<style>
+  .thumb-wrap { position: relative; display: inline-block; }
+  .thumb-fits {
+    position: absolute; top: 6px; right: 6px;
+    background: rgba(20, 20, 20, 0.85); color: #fff;
+    padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; text-decoration: none;
+  }
+  .thumb-fits:hover { background: rgba(80, 80, 200, 0.95); }
+</style>
 {% endif %}
 
 <section class="card">

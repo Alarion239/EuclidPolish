@@ -579,6 +579,18 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
                             lr_cube=lr_cube_for_color,
                             hr_cube=hr_cube_for_color,
                             asinh_scale=asinh_scale)
+        # Persist the SR plane as FITS alongside the PNG, with
+        # provenance keywords so it stays useful for downstream analysis.
+        from astropy.io import fits as _fits
+        sr_fits = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.fits")
+        hdu = _fits.PrimaryHDU(sr_data.astype(np.float32))
+        hdu.header["OBJECT"] = "EuclidPolish SR (VIS)"
+        hdu.header["SUBSET"] = (subset, "TFRecord subset")
+        hdu.header["IDX"]    = (int(lr_img.index), "record index in subset")
+        hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "Checkpoint dir")
+        hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
+                                "asinh stretch knee used for the plot")
+        hdu.writeto(sr_fits, overwrite=True)
         out_paths.append(out)
         cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
         print(f"  ✓ {out}")
@@ -1400,7 +1412,8 @@ def create_app() -> Flask:
     # ---------------- Inference page ----------------
     @app.route("/inference")
     def inference_page():
-        # Most-recent reconstruction PNGs (newest first).
+        # Most-recent reconstruction PNGs (newest first). Each thumbnail
+        # links to its sidecar SR.fits when one exists on disk.
         recon_pngs: list[Dict[str, Any]] = []
         rdir = Config.VIS_RECONSTRUCTION_DIR
         if os.path.isdir(rdir):
@@ -1413,13 +1426,54 @@ def create_app() -> Flask:
                 except OSError:
                     continue
                 rel = os.path.relpath(full, Config.VIS_DIR)
-                recon_pngs.append({"rel": rel, "name": fname, "mtime": mtime})
+                # Synthetic path saves PNG + same-stem FITS in this dir.
+                fits_rel = None
+                stem = os.path.splitext(fname)[0]
+                fits_local = os.path.join(rdir, f"{stem}.fits")
+                if os.path.isfile(fits_local):
+                    fits_rel = os.path.relpath(fits_local, Config.VIS_DIR)
+                recon_pngs.append({
+                    "rel": rel, "name": fname, "mtime": mtime,
+                    "fits_rel": fits_rel,
+                })
             recon_pngs.sort(key=lambda d: d["mtime"], reverse=True)
+
+        # Persistent Euclid inference cutouts: one entry per cache dir.
+        # Each entry exposes the four LR FITS + the SR FITS as download
+        # links so the user can re-load them in their own tools.
+        euclid_runs: list[Dict[str, Any]] = []
+        eroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
+        if os.path.isdir(eroot):
+            for tag in os.listdir(eroot):
+                d = os.path.join(eroot, tag)
+                if not os.path.isdir(d):
+                    continue
+                files = []
+                for name in ("VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
+                             "SR.fits"):
+                    f = os.path.join(d, name)
+                    if os.path.isfile(f):
+                        rel = os.path.relpath(f, Config.EUCLID_INFERENCE_DIR)
+                        files.append({
+                            "name":     name,
+                            "rel":      rel,
+                            "size_kb":  int(os.path.getsize(f) / 1024),
+                        })
+                if files:
+                    euclid_runs.append({
+                        "tag":   tag,
+                        "files": files,
+                        "mtime": max(os.path.getmtime(os.path.join(d, f["name"]))
+                                     for f in files),
+                    })
+            euclid_runs.sort(key=lambda d: d["mtime"], reverse=True)
+
         return render_template(
             "inference.html",
             checkpoints=_checkpoints_status(),
             tfrecords=_tfrecords_status(),
             recon_pngs=recon_pngs,
+            euclid_runs=euclid_runs,
             default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
             default_n_images=4,
         )
@@ -1570,6 +1624,29 @@ def create_app() -> Flask:
         if not os.path.isfile(full):
             abort(404)
         return send_file(full, mimetype="image/png")
+
+    @app.route("/inference-files/<path:relpath>")
+    def serve_inference_files(relpath: str):
+        """Serve FITS / PNG files from data/euclid_inference/.
+
+        Used by the inference UI to download the persisted cutouts and
+        SR result. Path is jailed to ``Config.EUCLID_INFERENCE_DIR`` to
+        prevent traversal — anything resolving outside that tree 403s.
+        """
+        root = os.path.realpath(Config.EUCLID_INFERENCE_DIR)
+        full = os.path.realpath(os.path.join(root, relpath))
+        if not full.startswith(root + os.sep):
+            abort(403)
+        if not os.path.isfile(full):
+            abort(404)
+        # FITS gets the application/fits MIME so browsers prompt to
+        # save instead of trying to render it as text.
+        mt = ("application/fits" if full.lower().endswith(".fits")
+              else "application/octet-stream")
+        return send_file(
+            full, mimetype=mt, as_attachment=True,
+            download_name=os.path.basename(full),
+        )
 
     # ---------------- Job tracker API ----------------
     @app.route("/api/jobs")
