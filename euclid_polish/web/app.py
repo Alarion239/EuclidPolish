@@ -1921,6 +1921,162 @@ def create_app() -> Flask:
             )
         return jsonify({"jobs": rows})
 
+    # ---- past-runs browser (Logs tab) ---------------------------------------
+    #
+    # Combines two sources so the user sees every run that left a log on
+    # FASRC, regardless of how it was submitted:
+    #   (1) ``JobDB`` — every job submitted from this UI, with its SLURM
+    #       jobid, label, state, and timestamps.
+    #   (2) Remote ``find <repo>/logs/jobs -name '*.out' -o -name '*.err'``
+    #       — picks up jobs submitted directly via sbatch from the CLI,
+    #       which the DB has no record of.
+    # Rows are de-duplicated by base name (the ``euclid-YYYYMMDD-HHMMSS``
+    # prefix that pairs an ``.out`` with its ``.err``); UI-submitted jobs
+    # therefore get their full DB metadata, CLI-submitted jobs just get
+    # the file timestamps + sizes.
+
+    @app.route("/api/fasrc/runs")
+    def api_fasrc_runs():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        log_dir = f"{cfg.repo_path}/{cfg.logs_subdir}/jobs"
+
+        # 1. Scan remote for every .out / .err — one cheap SSH call.
+        # ``stat -c '%Y\t%s\t%n'`` works on GNU coreutils (FASRC); falls
+        # through with empty output if the dir doesn't exist yet.
+        cmd = (
+            f"{{ [ -d {shlex.quote(log_dir)} ] && "
+            f"find {shlex.quote(log_dir)} -maxdepth 2 -type f "
+            f"\\( -name '*.out' -o -name '*.err' \\) "
+            f"-printf '%T@\\t%s\\t%p\\n' 2>/dev/null "
+            f"| sort -rn -k1,1 | head -240 ; }}; exit 0"
+        )
+        rc, out, _err = STATE.ssh.run(cmd, timeout=15)
+        files: Dict[str, Dict[str, Any]] = {}     # keyed by base name
+        if rc == 0:
+            for line in out.splitlines():
+                parts = line.split("\t")
+                if len(parts) != 3:
+                    continue
+                try:
+                    mtime = float(parts[0])
+                    size  = int(parts[1])
+                except ValueError:
+                    continue
+                full = parts[2]
+                base = os.path.basename(full)
+                if base.endswith(".out"):
+                    stem, kind = base[:-4], "out"
+                elif base.endswith(".err"):
+                    stem, kind = base[:-4], "err"
+                else:
+                    continue
+                rec = files.setdefault(stem, {"name": stem, "mtime": 0.0})
+                rec[f"{kind}_path"] = full
+                rec[f"{kind}_size"] = size
+                rec["mtime"] = max(rec["mtime"], mtime)
+
+        # 2. Overlay JobDB rows (gives us jobid + state + label + params).
+        db_by_name: Dict[str, Dict[str, Any]] = {}
+        for row in fasrc_jobs.DB.list_recent(120):
+            lp = row.get("log_path") or ""
+            base = os.path.basename(lp)
+            stem = base[:-4] if base.endswith(".out") else base
+            if stem:
+                db_by_name[stem] = row
+
+        runs: List[Dict[str, Any]] = []
+        for stem, rec in files.items():
+            db_row = db_by_name.get(stem) or {}
+            try:
+                params = json.loads(db_row.get("params_json") or "{}")
+            except (TypeError, ValueError):
+                params = {}
+            runs.append({
+                "name":         stem,
+                "jobid":        db_row.get("jobid"),
+                "label":        db_row.get("label"),
+                "state":        db_row.get("state"),
+                "submitted_at": db_row.get("submitted_at") or rec["mtime"],
+                "started_at":   db_row.get("started_at"),
+                "ended_at":     db_row.get("ended_at"),
+                "out_path":     rec.get("out_path"),
+                "err_path":     rec.get("err_path"),
+                "out_size":     rec.get("out_size", 0),
+                "err_size":     rec.get("err_size", 0),
+                "mtime":        rec["mtime"],
+                "params":       params,
+            })
+
+        # Also surface DB-known jobs whose log files have been deleted
+        # (so the user can still see the row even if the .out is gone).
+        for stem, row in db_by_name.items():
+            if stem in files:
+                continue
+            try:
+                params = json.loads(row.get("params_json") or "{}")
+            except (TypeError, ValueError):
+                params = {}
+            runs.append({
+                "name":         stem,
+                "jobid":        row.get("jobid"),
+                "label":        row.get("label"),
+                "state":        row.get("state"),
+                "submitted_at": row.get("submitted_at") or 0.0,
+                "started_at":   row.get("started_at"),
+                "ended_at":     row.get("ended_at"),
+                "out_path":     row.get("log_path"),
+                "err_path":     row.get("err_path"),
+                "out_size":     0,
+                "err_size":     0,
+                "mtime":        row.get("submitted_at") or 0.0,
+                "missing":      True,
+                "params":       params,
+            })
+        runs.sort(key=lambda r: r["mtime"], reverse=True)
+        return jsonify({"ok": True, "log_dir": log_dir, "runs": runs[:100]})
+
+    @app.route("/api/fasrc/runs/log")
+    def api_fasrc_runs_log():
+        """Tail of one log file on FASRC.
+
+        Path is supplied by the client (echoed back from ``/api/fasrc/runs``).
+        We verify it falls under the configured logs dir and ends in
+        ``.out`` / ``.err`` before reading — a stronger guarantee than
+        relying on the URL not containing ``..``.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        path = (request.args.get("path") or "").strip()
+        try:
+            lines = int(request.args.get("lines", 1000))
+        except ValueError:
+            lines = 1000
+        lines = max(50, min(lines, 10_000))
+        if not path:
+            return jsonify({"ok": False, "error": "missing path"}), 400
+        if not (path.endswith(".out") or path.endswith(".err")):
+            return jsonify({"ok": False, "error": "path must end in .out or .err"}), 400
+        cfg = fasrc_config.load()
+        log_root = f"{cfg.repo_path}/{cfg.logs_subdir}/"
+        if not path.startswith(log_root):
+            return jsonify({"ok": False, "error": f"path must live under {log_root}"}), 400
+        # Defensive: reject any sneaky path components.
+        if ".." in path.split("/"):
+            return jsonify({"ok": False, "error": "bad path"}), 400
+
+        cmd = (
+            f"{{ [ -f {shlex.quote(path)} ] && "
+            f"  tail -n {lines} {shlex.quote(path)} 2>/dev/null || true ; "
+            f"}}; exit 0"
+        )
+        rc, out, _err = STATE.ssh.run(cmd, timeout=20)
+        if rc != 0:
+            return jsonify({"ok": False, "error": "ssh tail failed"}), 500
+        return jsonify({"ok": True, "path": path, "lines": lines,
+                        "content": out})
+
     # ---- parsed live status (.out + .err + training_log.jsonl) -----------
 
     @app.route("/api/fasrc/training-status")

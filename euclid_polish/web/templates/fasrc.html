@@ -72,6 +72,7 @@
     <a class="chip active" data-tab="training">🧠 Training</a>
     <a class="chip"        data-tab="git">🌿 Git</a>
     <a class="chip"        data-tab="storage">📁 Storage</a>
+    <a class="chip"        data-tab="logs">📜 Logs</a>
   </nav>
 
   <!-- =======================================================
@@ -267,6 +268,49 @@
       <div id="ckpt-listing"><span class="muted">loading…</span></div>
     </section>
   </section>
+
+  <!-- =======================================================
+       TAB · Logs (every .out / .err under repo/logs/jobs)
+       ======================================================= -->
+  <section class="tab-panel" data-tab="logs" style="display:none;">
+    <section class="card">
+      <h3>Past runs
+        <button id="btn-logs-refresh" type="button" class="secondary"
+                style="float:right;">↻ Refresh</button>
+      </h3>
+      <p class="hint">Every job that has left a <code>.out</code> /
+        <code>.err</code> under <code id="logs-dir">…</code>.
+        Newest first. Click a row to view its logs.</p>
+      <div id="logs-list"><span class="muted">loading…</span></div>
+    </section>
+
+    <section class="card" id="logs-viewer" style="display:none;">
+      <h3>
+        <span id="logs-viewer-name"><code>—</code></span>
+        <span id="logs-viewer-jobid" class="muted" style="font-size:12px;"></span>
+        <span style="float:right;">
+          <button id="btn-show-out" type="button" class="secondary"
+                  style="padding:2px 10px;">.out</button>
+          <button id="btn-show-err" type="button" class="secondary"
+                  style="padding:2px 10px;">.err</button>
+          <button id="btn-logs-close" type="button" class="secondary"
+                  style="padding:2px 10px; margin-left:6px;">close</button>
+        </span>
+      </h3>
+      <p class="hint">
+        Tail of last <select id="logs-lines" style="margin:0 4px;">
+          <option value="500">500</option>
+          <option value="1000" selected>1000</option>
+          <option value="2000">2000</option>
+          <option value="5000">5000</option>
+        </select> lines.
+        <span id="logs-viewer-path" class="muted"
+              style="margin-left:6px; word-break:break-all;"></span>
+      </p>
+      <pre id="logs-viewer-content" class="job-log"
+           style="max-height:540px;">(loading…)</pre>
+    </section>
+  </section>
 </div>
 
 <style>
@@ -355,6 +399,7 @@ document.querySelectorAll('.chip[data-tab]').forEach(chip => {
     if (tab === 'training') refreshTraining();
     if (tab === 'git')      refreshRemoteGit();
     if (tab === 'storage')  refreshListings();
+    if (tab === 'logs')     refreshLogs();
   });
 });
 
@@ -769,6 +814,124 @@ $('btn-bootstrap').onclick = async () => {
   pre.textContent = (data.output || '') + (data.error ? '\n\n[error] ' + data.error : '');
   if (data.ok) refreshListings();
 };
+
+/* ============================================================
+   Logs tab — listing + viewer (.out / .err)
+============================================================ */
+const LOGS_STATE = { selected: null, which: 'out' };
+
+function fmtTimeAgo(epoch) {
+  if (!epoch) return '—';
+  const d = Date.now()/1000 - epoch;
+  if (d < 60)   return Math.round(d) + 's ago';
+  if (d < 3600) return Math.floor(d/60) + 'm ago';
+  if (d < 86400) return Math.floor(d/3600) + 'h ago';
+  return Math.floor(d/86400) + 'd ago';
+}
+function fmtDate(epoch) {
+  if (!epoch) return '—';
+  return new Date(epoch*1000).toLocaleString();
+}
+
+async function refreshLogs() {
+  const { ok, data } = await api('/api/fasrc/runs');
+  if (data && data.log_dir) $('logs-dir').textContent = data.log_dir;
+  if (!ok) {
+    const err = (data && data.error) ? data.error : 'request failed';
+    $('logs-list').innerHTML = `<p class="muted">${escapeHtml(err)}</p>`;
+    return;
+  }
+  const runs = data.runs || [];
+  if (runs.length === 0) {
+    $('logs-list').innerHTML = '<p class="muted">no runs found</p>';
+    return;
+  }
+  // Build the table. Each row carries its out_path / err_path / name in
+  // data-* attributes so the click handler doesn't need a lookup.
+  let html = '<table style="font-size:12px;">'
+           + '<tr><th>Submitted</th><th>Name</th><th>Job&nbsp;ID</th>'
+           +     '<th>State</th><th>Label</th>'
+           +     '<th style="text-align:right;">.out</th>'
+           +     '<th style="text-align:right;">.err</th></tr>';
+  for (const r of runs) {
+    const stateClass =
+      (r.state === 'RUNNING') ? 'badge-running' :
+      (r.state === 'PENDING') ? 'badge-pending' :
+      (r.state === 'COMPLETED' || r.state === 'DONE') ? 'badge-done' :
+      (r.state === 'FAILED' || r.state === 'TIMEOUT' || r.state === 'CANCELLED')
+        ? 'badge-failed' : 'badge-muted';
+    const stateText = r.state || '—';
+    const labelText = r.label || '';
+    const jobid = r.jobid || '';
+    const outAttr = r.out_path ? ` data-out="${escapeHtml(r.out_path)}"` : '';
+    const errAttr = r.err_path ? ` data-err="${escapeHtml(r.err_path)}"` : '';
+    const missing = r.missing ? ' (files gone)' : '';
+    html += `<tr class="log-row" style="cursor:pointer;"`
+         +    ` data-name="${escapeHtml(r.name)}"`
+         +    ` data-jobid="${escapeHtml(jobid)}"`
+         +    `${outAttr}${errAttr}>`
+         +    `<td title="${escapeHtml(fmtDate(r.submitted_at))}">${escapeHtml(fmtTimeAgo(r.submitted_at))}</td>`
+         +    `<td><code>${escapeHtml(r.name)}</code>${escapeHtml(missing)}</td>`
+         +    `<td><code>${escapeHtml(jobid)}</code></td>`
+         +    `<td><span class="badge ${stateClass}">${escapeHtml(stateText)}</span></td>`
+         +    `<td>${escapeHtml(labelText)}</td>`
+         +    `<td style="text-align:right;">${humanSize(r.out_size||0)}</td>`
+         +    `<td style="text-align:right;">${humanSize(r.err_size||0)}</td>`
+         + `</tr>`;
+  }
+  html += '</table>';
+  $('logs-list').innerHTML = html;
+
+  // Wire row clicks: open the viewer with this run's .out by default.
+  document.querySelectorAll('#logs-list .log-row').forEach(tr => {
+    tr.addEventListener('click', () => {
+      LOGS_STATE.selected = {
+        name:  tr.dataset.name,
+        jobid: tr.dataset.jobid,
+        out:   tr.dataset.out || null,
+        err:   tr.dataset.err || null,
+      };
+      LOGS_STATE.which = LOGS_STATE.selected.out ? 'out' : 'err';
+      openLogViewer();
+    });
+  });
+}
+
+async function openLogViewer() {
+  const sel = LOGS_STATE.selected;
+  if (!sel) return;
+  $('logs-viewer').style.display = 'block';
+  $('logs-viewer-name').innerHTML = `<code>${escapeHtml(sel.name)}</code>`;
+  $('logs-viewer-jobid').textContent = sel.jobid ? `(job ${sel.jobid})` : '';
+  const path = LOGS_STATE.which === 'err' ? sel.err : sel.out;
+  $('logs-viewer-path').textContent = path || '(no file)';
+  // Visual toggle on the .out / .err buttons.
+  $('btn-show-out').classList.toggle('active', LOGS_STATE.which === 'out');
+  $('btn-show-err').classList.toggle('active', LOGS_STATE.which === 'err');
+  $('btn-show-out').disabled = !sel.out;
+  $('btn-show-err').disabled = !sel.err;
+  if (!path) {
+    $('logs-viewer-content').textContent = '(no ' + LOGS_STATE.which + ' file)';
+    return;
+  }
+  const lines = parseInt($('logs-lines').value, 10) || 1000;
+  $('logs-viewer-content').textContent = 'loading…';
+  const url = '/api/fasrc/runs/log?path=' + encodeURIComponent(path)
+            + '&lines=' + lines;
+  const { ok, data } = await api(url);
+  if (!ok) {
+    $('logs-viewer-content').textContent =
+      'failed: ' + ((data && data.error) || 'unknown');
+    return;
+  }
+  $('logs-viewer-content').textContent = data.content || '(empty)';
+}
+
+$('btn-logs-refresh').onclick = refreshLogs;
+$('btn-show-out').onclick   = () => { LOGS_STATE.which = 'out'; openLogViewer(); };
+$('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer(); };
+$('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
+$('logs-lines').onchange    = () => { if (LOGS_STATE.selected) openLogViewer(); };
 
 /* ============================================================
    Mirror (status only; backend auto-manages enable/trigger)
