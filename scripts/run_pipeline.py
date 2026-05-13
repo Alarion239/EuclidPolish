@@ -49,6 +49,7 @@ from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training import Trainer
 from euclid_polish.training.models.wdsr import wdsr
+from euclid_polish.training.stage_timer import StageTimer
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
+    ap.add_argument("--stages-csv", default="",
+                    help="Path to per-stage timings CSV. "
+                         "Default: <records-dir>/stages_${SLURM_JOB_ID}.csv "
+                         "(or stages_local.csv outside SLURM).")
     return ap.parse_args()
 
 
@@ -234,27 +239,58 @@ def step_train(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    # ``t_script_start`` brackets the "init" stage — everything that
+    # happened between Python booting up and the first real stage
+    # starting (module imports, dataset loaders ready, etc).
+    t_script_start = time.time()
+    t0_perf = time.perf_counter()
     args = parse_args()
-    t0 = time.perf_counter()
     print(f"Pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  args = {vars(args)}")
 
+    # Per-stage timings CSV — default sits next to the SLURM .out file
+    # via ``$EUCLID_POLISH_DATA_DIR/images/records_v2/stages_<jobid>.csv``
+    # so the FASRC dashboard can fetch it back without knowing the
+    # exact records-dir layout.
+    slurm_jobid = os.environ.get("SLURM_JOB_ID", "local")
+    stages_path = args.stages_csv or os.path.join(
+        args.records_dir, f"stages_{slurm_jobid}.csv",
+    )
+    timer = StageTimer(
+        csv_path=stages_path,
+        jobid=slurm_jobid,
+        params=dict(
+            n_train=args.ntrain, n_valid=args.nvalid,
+            image_size=args.image_size, batch_size=args.batch_size,
+            steps=args.steps,
+        ),
+    )
+    print(f"  stage timings → {stages_path}")
+
+    # ``init`` is everything from ``t_script_start`` up to the first
+    # stage. Mark it now so it's persisted even if a later stage fails.
+    timer.mark("init", params_dependent=False,
+               started_at=t_script_start, ended_at=time.time())
+
     if not args.skip_generate:
-        step_generate(args)
+        with timer.stage("generate", params_dependent=True):
+            step_generate(args)
     else:
         print("STEP 1 skipped (--skip-generate)")
 
     if not args.skip_convolve:
-        step_convolve(args)
+        with timer.stage("convolve", params_dependent=True):
+            step_convolve(args)
     else:
         print("STEP 2 skipped (--skip-convolve)")
 
     if not args.skip_train:
-        step_train(args)
+        with timer.stage("train", params_dependent=True):
+            step_train(args)
     else:
         print("STEP 3 skipped (--skip-train)")
 
-    dt = time.perf_counter() - t0
+    dt = time.perf_counter() - t0_perf
     print(f"\nDone in {dt/60:.1f} min")
     return 0
 

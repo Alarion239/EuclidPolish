@@ -1790,6 +1790,55 @@ def create_app() -> Flask:
         MIRROR.trigger()
         return jsonify({"ok": True})
 
+    # ---- per-stage timings (CSV from run_pipeline.py's StageTimer) -------
+
+    @app.route("/api/fasrc/stages/<jobid>")
+    def api_fasrc_stages(jobid: str):
+        """Parse the remote ``stages_<jobid>.csv`` into JSON rows so the
+        UI can render the per-stage breakdown. The CSV lives next to the
+        TFRecords on netscratch (see ``run_pipeline.py``'s ``--stages-csv``
+        default)."""
+        if not jobid.isdigit() and jobid != "local":
+            abort(400)
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        path = f"{cfg.data_dir}/images/records_v2/stages_{jobid}.csv"
+        rc, out, err = STATE.ssh.run(
+            f"if [ -f {shlex.quote(path)} ]; then "
+            f"  cat {shlex.quote(path)}; "
+            f"else "
+            f"  echo MISSING; "
+            f"fi", timeout=10,
+        )
+        if rc != 0:
+            return jsonify({"ok": False, "error": err.strip()}), 500
+        if out.strip() == "MISSING":
+            return jsonify({"ok": True, "path": path, "rows": []})
+
+        import csv
+        import io as _io
+        reader = csv.DictReader(_io.StringIO(out))
+        rows = []
+        for r in reader:
+            try:
+                rows.append({
+                    "stage":             r.get("stage", ""),
+                    "started_at":        float(r.get("started_at",  "0") or 0),
+                    "ended_at":          float(r.get("ended_at",    "0") or 0),
+                    "duration_seconds":  float(r.get("duration_seconds", "0") or 0),
+                    "params_dependent":  bool(int(r.get("params_dependent", "0") or 0)),
+                    "n_train":           r.get("n_train", ""),
+                    "n_valid":           r.get("n_valid", ""),
+                    "image_size":        r.get("image_size", ""),
+                    "batch_size":        r.get("batch_size", ""),
+                    "steps":             r.get("steps", ""),
+                })
+            except (ValueError, TypeError):
+                # Skip malformed rows (e.g. a partial write captured mid-flight).
+                continue
+        return jsonify({"ok": True, "path": path, "rows": rows})
+
     # ---- conda env update -------------------------------------------------
 
     def _build_env_update_cmd(cfg) -> str:

@@ -328,6 +328,50 @@ def test_data_listing_picks_up_tfrecord_files(fake_remote, client):
     assert any(p.endswith("clean_train.tfrecord") for p in paths)
 
 
+def test_stages_endpoint_returns_csv_rows_for_finished_job(fake_remote, client):
+    """``/api/fasrc/stages/<jobid>`` reads the remote stages CSV that
+    ``run_pipeline.py``'s StageTimer writes, and returns one JSON row
+    per stage with parsed durations and the params at run time."""
+    cfg = fake_remote["cfg"]
+    rec_dir = Path(cfg.data_dir) / "images" / "records_v2"
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    (rec_dir / "stages_12345.csv").write_text(textwrap.dedent("""\
+        jobid,stage,started_at,ended_at,duration_seconds,params_dependent,n_train,n_valid,image_size,batch_size,steps
+        12345,init,1000000.000,1000012.500,12.500,0,6400,200,510,16,400000
+        12345,generate,1000012.500,1001000.000,987.500,1,6400,200,510,16,400000
+        12345,convolve,1001000.000,1001400.000,400.000,1,6400,200,510,16,400000
+        12345,train,1001400.000,1100000.000,98600.000,1,6400,200,510,16,400000
+    """))
+    r = client.get("/api/fasrc/stages/12345")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    rows = data["rows"]
+    assert [r["stage"] for r in rows] == ["init", "generate", "convolve", "train"]
+    assert rows[0]["params_dependent"] is False
+    assert rows[1]["params_dependent"] is True
+    assert rows[3]["duration_seconds"] == 98600.0
+    assert rows[1]["n_train"] == "6400"
+
+
+def test_stages_endpoint_returns_empty_when_csv_missing(fake_remote, client):
+    """A job that hasn't reached the first stage marker yet doesn't have
+    a stages CSV on disk. The endpoint should still succeed with an
+    empty row list so the UI can render a 'pending' state."""
+    r = client.get("/api/fasrc/stages/99999")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["rows"] == []
+    assert "stages_99999.csv" in data["path"]
+
+
+def test_stages_endpoint_rejects_disconnected(client, monkeypatch):
+    monkeypatch.setattr(STATE, "ssh", None)
+    r = client.get("/api/fasrc/stages/12345")
+    assert r.status_code == 400
+
+
 def test_bootstrap_data_creates_symlinks(fake_remote, client):
     """`ln -sfn` from the durable copy under ``<repo>/data/`` into the
     working ``data_dir`` on netscratch. Both sources exist in this test

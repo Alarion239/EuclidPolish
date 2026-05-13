@@ -528,11 +528,67 @@ async function refreshRecent() {
       <td>${escapeHtml(submitted)}</td>
       <td>${escapeHtml(runtime)}</td>
       <td>${j.eta_seconds ? escapeHtml(fmtETA(j.eta_seconds)) : ''}</td>
-      <td><button class="secondary" onclick="streamJob('${j.jobid}')">Tail</button></td>
-    </tr>`;
+      <td>
+        <button class="secondary" onclick="streamJob('${j.jobid}')">Tail</button>
+        <button class="secondary" onclick="showStages('${j.jobid}')">Stages</button>
+      </td>
+    </tr>
+    <tr><td colspan="7" id="stages-${escapeHtml(j.jobid)}" style="padding:0;"></td></tr>`;
   }
   html += '</table>';
   $('recent-jobs').innerHTML = html;
+}
+
+function fmtSecs(s) {
+  if (!s && s !== 0) return '';
+  if (s < 60)   return s.toFixed(1) + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + Math.round(s%60) + 's';
+  return Math.floor(s/3600) + 'h ' + Math.round((s%3600)/60) + 'm';
+}
+
+async function showStages(jobid) {
+  const slot = document.getElementById('stages-' + jobid);
+  if (!slot) return;
+  if (slot.dataset.shown === '1') {
+    slot.innerHTML = ''; slot.dataset.shown = '0'; return;
+  }
+  slot.innerHTML = '<em class="muted" style="padding:6px 8px;display:block;">loading stages…</em>';
+  const r = await fetch(`/api/fasrc/stages/${jobid}`);
+  const data = await r.json();
+  if (!data.ok) {
+    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">error: ${escapeHtml(data.error||'?')}</em>`;
+    return;
+  }
+  if (!data.rows || data.rows.length === 0) {
+    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">no stages CSV at <code>${escapeHtml(data.path||'?')}</code> yet — job may still be in 'init'.</em>`;
+    slot.dataset.shown = '1';
+    return;
+  }
+  const total = data.rows.reduce((acc, r) => acc + r.duration_seconds, 0) || 1;
+  let inner = '<div style="padding:6px 8px;background:#f3f5f8;">'
+            + '<table style="width:100%;"><tr>'
+            + '<th>Stage</th><th>Type</th><th>Duration</th><th>Share</th><th>Params at run</th></tr>';
+  for (const r of data.rows) {
+    const share = (r.duration_seconds / total * 100).toFixed(1) + '%';
+    const kind  = r.params_dependent
+                ? '<span class="tag tag-warn">scales</span>'
+                : '<span class="tag tag-ok">fixed</span>';
+    const pblob = r.params_dependent
+      ? `ntrain=${r.n_train} nvalid=${r.n_valid} img=${r.image_size} batch=${r.batch_size} steps=${r.steps}`
+      : '';
+    inner += `<tr>
+      <td><code>${escapeHtml(r.stage)}</code></td>
+      <td>${kind}</td>
+      <td>${escapeHtml(fmtSecs(r.duration_seconds))}</td>
+      <td>${share}</td>
+      <td class="muted">${escapeHtml(pblob)}</td>
+    </tr>`;
+  }
+  inner += '</table>'
+        +  `<p class="muted" style="margin:6px 0 0;font-size:11px;">total: ${escapeHtml(fmtSecs(total))} · <code>${escapeHtml(data.path)}</code></p>`
+        +  '</div>';
+  slot.innerHTML = inner;
+  slot.dataset.shown = '1';
 }
 
 /* ============================================================
