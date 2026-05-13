@@ -9,49 +9,59 @@
 </h2>
 
 <!-- ============================================================
-     Connection card (visible only when SSH is not connected).
+     Connection card — single tile, vertically centered on the page
+     when disconnected. One button: Login & Connect.
 ============================================================ -->
 <section class="card" id="conn-card">
-  <h3>Connect to FASRC</h3>
-  <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
-       border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
-       margin-bottom:8px; font-size:13px;">
-    <strong>Bitwarden CLI not installed.</strong>
-    Install with <code>brew install bitwarden-cli</code> (macOS),
-    <code>npm install -g @bitwarden/cli</code>, or see
-    <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
-  </div>
-  <div class="form-row">
-    <label>BW master password
-      <input type="password" id="master-pw" autocomplete="off" size="22">
-    </label>
-    <button id="btn-unlock"  type="button">1. Unlock Bitwarden</button>
-    <button id="btn-connect" type="button" disabled>2. Connect to FASRC</button>
-    <button id="btn-lock"    type="button" class="secondary">Lock vault</button>
-  </div>
-  <div id="conn-msg" class="muted" style="margin-top:8px;"></div>
-  <details style="margin-top:8px;">
-    <summary><span style="font-size:13px;">Settings</span></summary>
-    <form id="settings-form" class="form-row" style="margin-top:8px;">
-      <label>SSH user
-        <input name="ssh_user" value="{{ cfg.ssh_user }}" size="14"></label>
-      <label>SSH host
-        <input name="ssh_host" value="{{ cfg.ssh_host }}" size="22"></label>
-      <label>BW item name
-        <input name="bw_item" value="{{ cfg.bw_item }}" size="12"></label>
-      <label>Repo path
-        <input name="repo_path" value="{{ cfg.repo_path }}" size="40"></label>
-      <label>Conda env
-        <input name="conda_env_path" value="{{ cfg.conda_env_path }}" size="40"></label>
-      <label>Data dir
-        <input name="data_dir" value="{{ cfg.data_dir }}" size="40"></label>
-      <label>Ckpt dir
-        <input name="ckpt_dir" value="{{ cfg.ckpt_dir }}" size="40"></label>
-      <label>Local mirror dir
-        <input name="local_ckpt_mirror" value="{{ cfg.local_ckpt_mirror }}" size="40" placeholder="blank → ./ckpt/wdsr"></label>
-      <button type="submit">Save settings</button>
+  <div class="conn-inner">
+    <h3>Sign in to FASRC</h3>
+    <p class="muted" style="margin:0 0 14px;">
+      One step: enter your Bitwarden master password.<br>
+      We'll fetch the FASRC password + TOTP, then open the SSH ControlMaster.
+    </p>
+
+    <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
+         border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
+         margin-bottom:12px; font-size:13px; text-align:left;">
+      <strong>Bitwarden CLI not installed.</strong>
+      Install with <code>brew install bitwarden-cli</code> (macOS),
+      <code>npm install -g @bitwarden/cli</code>, or see
+      <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
+    </div>
+
+    <form id="conn-form" autocomplete="off">
+      <input type="password" id="master-pw" class="conn-input"
+             placeholder="Bitwarden master password" autocomplete="current-password">
+      <button id="btn-login" type="submit" class="conn-button">
+        Login &amp; Connect
+      </button>
     </form>
-  </details>
+
+    <div id="conn-msg" class="muted" style="margin-top:10px; min-height:18px;"></div>
+
+    <details style="margin-top:14px; text-align:left;">
+      <summary class="muted" style="cursor:pointer; font-size:13px;">Settings</summary>
+      <form id="settings-form" class="form-row" style="margin-top:8px;">
+        <label>SSH user
+          <input name="ssh_user" value="{{ cfg.ssh_user }}" size="14"></label>
+        <label>SSH host
+          <input name="ssh_host" value="{{ cfg.ssh_host }}" size="22"></label>
+        <label>BW item name
+          <input name="bw_item" value="{{ cfg.bw_item }}" size="12"></label>
+        <label>Repo path
+          <input name="repo_path" value="{{ cfg.repo_path }}" size="40"></label>
+        <label>Conda env
+          <input name="conda_env_path" value="{{ cfg.conda_env_path }}" size="40"></label>
+        <label>Data dir
+          <input name="data_dir" value="{{ cfg.data_dir }}" size="40"></label>
+        <label>Ckpt dir
+          <input name="ckpt_dir" value="{{ cfg.ckpt_dir }}" size="40"></label>
+        <label>Local mirror dir
+          <input name="local_ckpt_mirror" value="{{ cfg.local_ckpt_mirror }}" size="40" placeholder="blank → ./ckpt/wdsr"></label>
+        <button type="submit">Save settings</button>
+      </form>
+    </details>
+  </div>
 </section>
 
 <!-- ============================================================
@@ -248,6 +258,30 @@
 </div>
 
 <style>
+  /* === Login tile, centered on the page ================================ */
+  #conn-card {
+    max-width: 460px;
+    margin: 14vh auto 0;            /* push down to roughly the middle  */
+    padding: 28px 30px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+  }
+  #conn-card .conn-inner { text-align: center; }
+  #conn-card h3 { margin: 0 0 6px; font-size: 18px; }
+  #conn-card .conn-input {
+    width: 100%; padding: 10px 12px;
+    border: 1px solid #cdd2db; border-radius: 4px;
+    font-size: 14px; box-sizing: border-box;
+  }
+  #conn-card .conn-input:focus {
+    outline: none; border-color: #2a5db0;
+    box-shadow: 0 0 0 3px rgba(42, 93, 176, 0.18);
+  }
+  #conn-card .conn-button {
+    width: 100%; margin-top: 10px;
+    padding: 10px 14px; font-size: 14px; font-weight: 600;
+  }
+  #conn-card details summary::-webkit-details-marker { color: #888; }
+
   .tab-panel { margin-top: 16px; }
   .tab-panel .card { margin-bottom: 14px; min-width: 0; overflow-x: hidden; }
   .tab-panel .card table { width: 100%; table-layout: auto; }
@@ -319,44 +353,55 @@ async function refreshConnState() {
   const { data } = await api('/api/fasrc/status');
   const conn = data.ssh_connected;
   const badge = $('conn-badge');
-  badge.textContent = conn ? 'connected' : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
+  badge.textContent = conn ? 'connected'
+                    : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
   badge.className = 'badge ' + (conn ? 'badge-done'
                               : data.bw_unlocked ? 'badge-running' : 'badge-failed');
   $('bw-missing').style.display = data.bw_installed ? 'none' : 'block';
-  $('btn-unlock').disabled  = !data.bw_installed || data.bw_unlocked;
-  $('btn-connect').disabled = !data.bw_unlocked || conn;
+  $('btn-login').disabled = !data.bw_installed;
 
-  // Toggle between the connection card and the tabbed dashboard.
-  $('conn-card').style.display    = conn ? 'none' : 'block';
-  $('tabs').style.display         = conn ? 'block' : 'none';
+  // Toggle between the centered login tile and the tabbed dashboard.
+  $('conn-card').style.display      = conn ? 'none' : 'block';
+  $('tabs').style.display           = conn ? 'block' : 'none';
   $('btn-disconnect').style.display = conn ? 'inline-block' : 'none';
 
   if (conn) refreshTraining();   // landing tab
 }
 
-$('btn-unlock').onclick = async () => {
+/* One-button login: BW unlock → fetch creds → SSH ControlMaster.
+   Each phase is awaited so the user sees the precise step that failed
+   instead of a generic "didn't work". */
+$('conn-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
   const pw = $('master-pw').value;
   if (!pw) { $('conn-msg').textContent = 'enter master password'; return; }
-  $('conn-msg').textContent = 'unlocking…';
-  const { ok, data } = await api('/api/fasrc/unlock', {
+  $('btn-login').disabled = true;
+
+  $('conn-msg').textContent = 'unlocking vault…';
+  const u = await api('/api/fasrc/unlock', {
     method: 'POST', body: new URLSearchParams({ master_password: pw }),
   });
   $('master-pw').value = '';
-  $('conn-msg').textContent = ok ? 'vault unlocked' : ('unlock failed: ' + (data.error || ''));
+  if (!u.ok) {
+    $('conn-msg').textContent = 'unlock failed: ' + (u.data.error || '?');
+    $('btn-login').disabled = false;
+    return;
+  }
+
+  $('conn-msg').textContent = 'connecting via SSH (Bitwarden TOTP)…';
+  const c = await api('/api/fasrc/connect', { method: 'POST' });
+  if (!c.ok) {
+    $('conn-msg').textContent = 'connect failed: ' + (c.data.error || '?');
+    $('btn-login').disabled = false;
+    return;
+  }
+  $('conn-msg').textContent = '✓ connected';
   refreshConnState();
-};
-$('btn-connect').onclick = async () => {
-  $('conn-msg').textContent = 'connecting…';
-  const { ok, data } = await api('/api/fasrc/connect', { method: 'POST' });
-  $('conn-msg').textContent = ok ? 'connected' : ('connect failed: ' + (data.error || ''));
-  refreshConnState();
-};
+});
+
 $('btn-disconnect').onclick = async () => {
   await api('/api/fasrc/disconnect', { method: 'POST' });
-  refreshConnState();
-};
-$('btn-lock').onclick = async () => {
-  await api('/api/fasrc/lock', { method: 'POST' });
+  await api('/api/fasrc/lock',       { method: 'POST' });
   refreshConnState();
 };
 $('settings-form').addEventListener('submit', async (e) => {
