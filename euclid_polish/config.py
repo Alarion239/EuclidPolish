@@ -427,6 +427,13 @@ class Config:
 
     # Reconstruction output
     VIS_RECONSTRUCTION_DIR       = os.path.join(DATA_DIR, "vis/reconstruction")
+    # Persistent storage for cutouts downloaded by the real-Euclid
+    # inference flow (``_job_reconstruct_euclid_cutout``). Each
+    # (ra, dec, size) gets its own sub-directory containing the four
+    # band FITS files + the super-resolved VIS FITS. Files persist
+    # across runs so the user can revisit / re-render a position
+    # without re-downloading.
+    EUCLID_INFERENCE_DIR         = os.path.join(DATA_DIR, "euclid_inference")
 
     # PSF extraction defaults
     DEFAULT_PSF_SIZE = 255

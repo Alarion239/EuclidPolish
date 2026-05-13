@@ -601,10 +601,14 @@ def _job_reconstruct_euclid_cutout(
     this fetches a real cutout at ``(ra, dec)`` for every band, converts
     each from the archive's ADU s⁻¹ units to electrons-over-the-stack (so
     the model sees the same scale it was trained on), stacks the four
-    bands into ``(H, W, 4)``, and runs the model. The HR target is
-    unknown for real data, so the output plot is LR/SR-only.
+    bands into ``(H, W, 4)``, and runs the model.
+
+    The downloaded FITS files (one per band) plus the super-resolved
+    VIS output are persisted under
+    ``Config.EUCLID_INFERENCE_DIR/<tag>/`` so the user can revisit a
+    position later without re-downloading. Each call re-uses cached
+    files when the size + position + header MAGZERO match.
     """
-    import tempfile
     import tensorflow as tf
     from astropy.io import fits
     from euclid_polish.euclid.downloader import fetch_cutout_at
@@ -620,43 +624,54 @@ def _job_reconstruct_euclid_cutout(
         nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
     )
 
-    # Fetch each band into a temp dir; per-band MAGZERO from each header
-    # drives the per-band ADU/s → electrons conversion so the model sees
-    # the same calibration scale the simulator uses.
+    # Persistent per-position cutout cache. One directory per
+    # (ra, dec, size) tuple. ``+`` / ``-`` in the dec value would
+    # confuse some shells, so encode as ``p`` / ``m``.
+    tag = (f"ra{ra:.4f}_dec{dec:+.4f}_sz{int(cutout_size_vis_pixels)}"
+           .replace("+", "p").replace("-", "m"))
+    cache_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts", tag)
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Fetch each band; per-band MAGZERO from each header drives the
+    # per-band ADU/s → electrons conversion so the model sees the same
+    # calibration scale the simulator uses.
     bands_data: Dict[str, np.ndarray] = {}
     bands_info: Dict[str, Dict[str, Any]] = {}
-    with tempfile.TemporaryDirectory(prefix="euclid_infer_") as tmpdir:
-        for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
-            cap.tick(k, len(Config.LR_INPUT_BAND_NAMES) + 1,
-                     f"downloading {band_name} cutout")
-            band = Config.get_band(band_name)
-            outf = os.path.join(tmpdir, f"{band_name}.fits")
+    for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
+        cap.tick(k, len(Config.LR_INPUT_BAND_NAMES) + 2,
+                 f"downloading {band_name} cutout")
+        band = Config.get_band(band_name)
+        outf = os.path.join(cache_dir, f"{band_name}.fits")
+        if os.path.exists(outf) and os.path.getsize(outf) > 0:
+            print(f"  {band_name}: cached → {outf}")
+        else:
             ok, err = fetch_cutout_at(
                 ra=ra, dec=dec, band_name=band_name, output_file=outf,
                 cutout_size_vis_pixels=cutout_size_vis_pixels,
             )
             if not ok:
                 raise RuntimeError(f"{band_name}: {err}")
-            with fits.open(outf) as hdul:
-                arr = hdul[0].data.astype(np.float32)
-                header = hdul[0].header
-            magzero = float(header.get("MAGZERO",
-                                       band.sim_zeropoint_e))
-            # m_AB = MAGZERO - 2.5·log10(F_archive)  (archive units = ADU/s)
-            # m_AB = ZP_stack_e - 2.5·log10(F_e_over_stack)
-            #  ⇒ F_e = F_archive · 10^((ZP_stack_e − MAGZERO)/2.5)
-            adu_to_e = 10 ** ((band.sim_zeropoint_e - magzero) / 2.5)
-            data_e = (arr * adu_to_e).astype(np.float32)
-            bands_data[band_name] = data_e
-            bands_info[band_name] = {
-                "shape":      data_e.shape,
-                "magzero":    magzero,
-                "adu_to_e":   adu_to_e,
-                "pix_mean":   float(np.mean(data_e)),
-                "pix_std":    float(np.std(data_e)),
-            }
-            print(f"  {band_name}: shape={data_e.shape}, MAGZERO={magzero:.3f}, "
-                  f"ADU/s→e⁻ factor={adu_to_e:.1f}")
+        with fits.open(outf) as hdul:
+            arr = hdul[0].data.astype(np.float32)
+            header = hdul[0].header
+        magzero = float(header.get("MAGZERO",
+                                   band.sim_zeropoint_e))
+        # m_AB = MAGZERO - 2.5·log10(F_archive)  (archive units = ADU/s)
+        # m_AB = ZP_stack_e - 2.5·log10(F_e_over_stack)
+        #  ⇒ F_e = F_archive · 10^((ZP_stack_e − MAGZERO)/2.5)
+        adu_to_e = 10 ** ((band.sim_zeropoint_e - magzero) / 2.5)
+        data_e = (arr * adu_to_e).astype(np.float32)
+        bands_data[band_name] = data_e
+        bands_info[band_name] = {
+            "shape":      data_e.shape,
+            "magzero":    magzero,
+            "adu_to_e":   adu_to_e,
+            "pix_mean":   float(np.mean(data_e)),
+            "pix_std":    float(np.std(data_e)),
+            "fits_path":  outf,
+        }
+        print(f"  {band_name}: shape={data_e.shape}, MAGZERO={magzero:.3f}, "
+              f"ADU/s→e⁻ factor={adu_to_e:.1f}")
 
     # All four cutouts must land on the same VIS-LR grid (the MER mosaic
     # pipeline delivers every band at 0.10″/pix). Anything else is a bug
@@ -673,23 +688,40 @@ def _job_reconstruct_euclid_cutout(
         [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
     )   # (H, W, 4)
     cap.tick(len(Config.LR_INPUT_BAND_NAMES),
-             len(Config.LR_INPUT_BAND_NAMES) + 1, "running model")
+             len(Config.LR_INPUT_BAND_NAMES) + 2, "running model")
     _, sr_data = reconstruct(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
+    # Save the SR result next to the cached LR cutouts so the user can
+    # reload it as FITS for downstream analysis. Header carries the
+    # provenance (input RA/Dec, cutout size, ckpt dir, asinh_scale).
+    sr_fits_path = os.path.join(cache_dir, "SR.fits")
+    sr_hdu = fits.PrimaryHDU(sr_data.astype(np.float32))
+    sr_hdu.header["OBJECT"]   = "Euclid SR (WDSR VIS)"
+    sr_hdu.header["RA"]       = (float(ra),  "Input RA (deg)")
+    sr_hdu.header["DEC"]      = (float(dec), "Input Dec (deg)")
+    sr_hdu.header["CSIZE"]    = (int(cutout_size_vis_pixels),
+                                 "Input VIS cutout size (px)")
+    sr_hdu.header["CKPT"]     = (str(checkpoint_dir)[:60], "Checkpoint dir")
+    sr_hdu.header["ASINH"]    = (float(asinh_scale or Config.STRETCH_SCALE_E),
+                                 "asinh stretch knee used for plot")
+    sr_hdu.writeto(sr_fits_path, overwrite=True)
+    print(f"  ✓ saved SR  → {sr_fits_path}")
+
     out_dir = Config.VIS_RECONSTRUCTION_DIR
     os.makedirs(out_dir, exist_ok=True)
-    tag = f"ra{ra:.4f}_dec{dec:+.4f}".replace("+", "p").replace("-", "m")
     out_path = os.path.join(out_dir, f"euclid_{tag}.png")
     plot_reconstruction(lr_vis, sr_data, hr_data=None,
                         output_path=out_path, lr_cube=lr_cube,
                         asinh_scale=asinh_scale,
                         show_all_bands=show_all_bands)
-    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
-             len(Config.LR_INPUT_BAND_NAMES) + 1, "saved PNG")
+    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 2,
+             len(Config.LR_INPUT_BAND_NAMES) + 2, "saved PNG")
     print(f"  ✓ {out_path}")
     return {
         "output_path":  out_path,
+        "cache_dir":    cache_dir,
+        "sr_fits_path": sr_fits_path,
         "ra":           ra,
         "dec":          dec,
         "cutout_size":  cutout_size_vis_pixels,
