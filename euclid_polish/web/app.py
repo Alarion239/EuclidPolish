@@ -4,6 +4,15 @@ Flask app factory + routes for the EuclidPolish web UI.
 
 from __future__ import annotations
 
+# Force the non-interactive matplotlib backend BEFORE anything that
+# imports matplotlib gets a chance to lock in macOS's GUI backend. The
+# job registry spawns worker threads for inference / plotting; macOS's
+# default backend only works from the main thread and would otherwise
+# crash with "Cannot create a GUI FigureManager outside the main thread"
+# whenever a job called ``plt.figure``.
+import matplotlib  # noqa: E402  (must precede any other matplotlib user)
+matplotlib.use("Agg")
+
 import glob
 import io
 import json
