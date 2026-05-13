@@ -4,6 +4,7 @@ TFRecord I/O utilities for EuclidPolish sky images.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import numpy as np
@@ -59,6 +60,11 @@ def write_multiband_skyimages(
 ) -> str:
     """Write MultiBandSkyImage objects to a single v2 TFRecord file.
 
+    Materialises the whole list in RAM. For large datasets where each
+    image is several MB, prefer :func:`open_multiband_writer` and stream
+    one image at a time — accumulating 6400 510² × 4-channel float32
+    fields here costs ~26 GB.
+
     Returns the path to the written file.
     """
     os.makedirs(records_dir, exist_ok=True)
@@ -70,6 +76,61 @@ def write_multiband_skyimages(
     finally:
         writer.close()
     return path
+
+
+class _MultiBandStreamingWriter:
+    """Streaming-write side of :func:`open_multiband_writer`.
+
+    Wraps a :class:`tf.io.TFRecordWriter` with an auto-incrementing index
+    so callers don't have to remember which image they're on.
+    """
+
+    def __init__(self, writer: tf.io.TFRecordWriter, path: str) -> None:
+        self._writer = writer
+        self._path = path
+        self._count = 0
+
+    def write(self, img: MultiBandSkyImage, index: int | None = None) -> None:
+        if index is None:
+            index = self._count
+        self._writer.write(img.to_tfrecord(index=index))
+        self._count += 1
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+
+@contextlib.contextmanager
+def open_multiband_writer(
+    name: str,
+    records_dir: str = Config.RECORDS_DIR_V2,
+):
+    """Context manager for streaming MultiBandSkyImage writes.
+
+    Use this when the producer of images is itself a loop and you don't
+    want to hold the full set in RAM. Each ``.write(img)`` call
+    serialises that one image to disk immediately::
+
+        with open_multiband_writer("clean_train", records_dir) as w:
+            for i in range(n):
+                sky, _ = sim.simulate_field(rng)
+                w.write(sky, index=i)
+
+    Memory now scales with the size of *one* image, not the count.
+    """
+    os.makedirs(records_dir, exist_ok=True)
+    path = tfrecord_path(records_dir, name)
+    writer = tf.io.TFRecordWriter(path)
+    handle = _MultiBandStreamingWriter(writer, path)
+    try:
+        yield handle
+    finally:
+        writer.close()
 
 
 def read_multiband_skyimages(

@@ -51,9 +51,10 @@ from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
 from euclid_polish.sky.tfrecord import (
+    open_multiband_writer,
+    read_multiband_skyimages,
     tfrecord_path,
     write_multiband_skyimages,
-    read_multiband_skyimages,
 )
 
 
@@ -898,32 +899,26 @@ class InteractiveCLI:
             master_seed = int.from_bytes(os.urandom(8), "little")
             rng = np.random.default_rng(master_seed)
             print(f"  forward {subset}: master_seed={master_seed}")
-            records = list(tqdm(
-                tf.data.TFRecordDataset(clean_file),
-                total=n_images, desc=f"Loading {subset}",
-            ))
-            lr_imgs, hr_imgs = [], []
             n_ok = n_err = 0
 
-            for raw in tqdm(records, desc=f"Forward {subset}", unit="img"):
-                try:
-                    hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
-                    lr, hr = forward.process(hr_4ch, rng=rng)
-                    lr_imgs.append(lr)
-                    hr_imgs.append(hr)
-                    n_ok += 1
-                except Exception as e:
-                    n_err += 1
-                    tqdm.write(f"  ✗ Skipping record (error: {e})")
-
-            # Overwrite clean_{subset} with the 1-channel VIS HR target the
-            # network consumes (the 4-channel HR is an intermediate product).
-            write_multiband_skyimages(
-                hr_imgs, f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2,
-            )
-            write_multiband_skyimages(
-                lr_imgs, f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2,
-            )
+            # Stream LR + HR pairs directly to disk so memory scales with
+            # one image (≈5 MB) instead of the whole set (~13 GB at 6400).
+            with open_multiband_writer(
+                    f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as hr_w, \
+                 open_multiband_writer(
+                    f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2) as lr_w:
+                for raw in tqdm(tf.data.TFRecordDataset(clean_file),
+                                total=n_images, desc=f"Forward {subset}",
+                                unit="img"):
+                    try:
+                        hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                        lr, hr = forward.process(hr_4ch, rng=rng)
+                        hr_w.write(hr, index=n_ok)
+                        lr_w.write(lr, index=n_ok)
+                        n_ok += 1
+                    except Exception as e:
+                        n_err += 1
+                        tqdm.write(f"  ✗ Skipping record (error: {e})")
             print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → "
                   f"clean_{subset}.tfrecord (HR-VIS) + dirty_{subset}.tfrecord (LR 4-ch)")
 
@@ -993,15 +988,16 @@ class InteractiveCLI:
                 rng = np.random.default_rng(master_seed)
                 print(f"\nGenerating {subset} set ({n} images)  "
                       f"[master_seed={master_seed}]...")
-                imgs = []
-                for i in tqdm(range(n), desc=subset):
-                    sky, _ = sim.simulate_field(rng)
-                    sky.index = i
-                    sky.subset = subset
-                    imgs.append(sky)
-                path = write_multiband_skyimages(
-                    imgs, f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2,
-                )
+                # Stream so memory bounded to ~one image (otherwise 6400
+                # 510² × 4-channel fields cost ~26 GB).
+                with open_multiband_writer(
+                        f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as w:
+                    for i in tqdm(range(n), desc=subset):
+                        sky, _ = sim.simulate_field(rng)
+                        sky.index = i
+                        sky.subset = subset
+                        w.write(sky, index=i)
+                    path = w.path
                 print(f"  ✓ {path}")
 
             print("\n✓ Multi-band clean data generation completed!")

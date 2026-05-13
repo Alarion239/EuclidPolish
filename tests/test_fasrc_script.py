@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from euclid_polish.web.fasrc_config import FasrcConfig
-from euclid_polish.web.fasrc_jobs import build_sbatch_script
+from euclid_polish.web.fasrc_jobs import PRESETS, build_sbatch_script, resolve_preset
 
 
 def _params(**overrides):
@@ -129,3 +129,72 @@ def test_bad_numeric_fields_raise(bad):
             label="x", cfg=FasrcConfig(),
             params=_params(n_gpus=bad),
         )
+
+
+# ---------------------------------------------------------------------------
+# Presets (gen_convolve / convolve_only / train_only / custom)
+# ---------------------------------------------------------------------------
+
+def test_preset_names_are_stable():
+    """The UI dropdown hard-codes these four keys."""
+    assert set(PRESETS) == {"gen_convolve", "convolve_only",
+                            "train_only", "custom"}
+
+
+def test_resolve_preset_unknown_falls_back_to_custom():
+    assert resolve_preset("nonexistent") is PRESETS["custom"]
+
+
+def test_cpu_only_preset_omits_gres():
+    """Some SLURM configs reject ``--gres=gpu:0``; CPU-only presets must
+    drop the --gres line entirely."""
+    cfg = FasrcConfig()
+    built = build_sbatch_script(
+        label="cpu", cfg=cfg,
+        params=_params(n_gpus=0, partition="shared",
+                       extra_flags="--skip-train"),
+    )
+    body = built["body"]
+    assert "--gres" not in body, body
+    assert "--cpus-per-task=" in body
+    assert "--skip-train" in body
+
+
+def test_gpu_preset_keeps_gres_line():
+    cfg = FasrcConfig()
+    built = build_sbatch_script(
+        label="gpu", cfg=cfg, params=_params(n_gpus=1, partition="gpu"),
+    )
+    assert "#SBATCH --gres=gpu:1" in built["body"]
+
+
+def test_gen_convolve_preset_resources_are_sensible():
+    """The default ``gen_convolve`` resources need to fit a 510² × 4-ch
+    × 6400 image set: ≥48 G memory once everything is streamed, and
+    several CPUs for fftconvolve / Sersic-rendering."""
+    p = PRESETS["gen_convolve"]
+    assert p["n_gpus"] == 0
+    assert p["n_cpus"] >= 8
+    # parse "64G" → 64
+    mem_g = int(p["memory"].rstrip("G"))
+    assert mem_g >= 32
+    assert "--skip-train" in p["skip_flags"]
+    assert "--skip-convolve" not in p["skip_flags"]
+    assert "--skip-generate" not in p["skip_flags"]
+
+
+def test_convolve_only_preset_skips_generate_and_train():
+    p = PRESETS["convolve_only"]
+    assert "--skip-generate" in p["skip_flags"]
+    assert "--skip-train" in p["skip_flags"]
+    assert "--skip-convolve" not in p["skip_flags"]
+    assert p["n_gpus"] == 0
+
+
+def test_train_only_preset_skips_generate_and_convolve():
+    p = PRESETS["train_only"]
+    assert "--skip-generate" in p["skip_flags"]
+    assert "--skip-convolve" in p["skip_flags"]
+    assert "--skip-train" not in p["skip_flags"]
+    assert p["n_gpus"] >= 1
+    assert p["needs_train_knobs"] is True

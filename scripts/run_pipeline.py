@@ -43,7 +43,7 @@ from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
 from euclid_polish.sky.tfrecord import (
-    tfrecord_path, write_multiband_skyimages,
+    open_multiband_writer, tfrecord_path, write_multiband_skyimages,
 )
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
@@ -128,15 +128,18 @@ def step_generate(args: argparse.Namespace) -> None:
         rng = np.random.default_rng(master_seed)
         _log(f"  {subset}: generating {n} images  (master_seed={master_seed})")
         t0 = time.perf_counter()
-        imgs = []
-        for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
-            sky, _ = sim.simulate_field(rng)
-            sky.index = i
-            sky.subset = subset
-            imgs.append(sky)
-        path = write_multiband_skyimages(imgs, f"clean_{subset}",
-                                         records_dir=args.records_dir)
-        _log(f"  {subset}: done — {len(imgs)} → {path}  "
+        # Stream each image to disk as it's generated — accumulating
+        # 6400 510² × 4-channel float32 fields would cost ~26 GB of RSS
+        # and OOM-kill on the FASRC default --mem=32G.
+        with open_multiband_writer(f"clean_{subset}",
+                                   records_dir=args.records_dir) as w:
+            for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
+                sky, _ = sim.simulate_field(rng)
+                sky.index = i
+                sky.subset = subset
+                w.write(sky, index=i)
+            path, count = w.path, w.count
+        _log(f"  {subset}: done — {count} → {path}  "
              f"({time.perf_counter() - t0:.1f} s)")
 
 
@@ -165,37 +168,35 @@ def step_convolve(args: argparse.Namespace) -> None:
             _log(f"⚠️  {clean_path} not found, skipping {subset}")
             continue
 
-        records = list(tf.data.TFRecordDataset(clean_path))
+        # Stream records from the clean TFRecord (do NOT materialise the
+        # whole list — same OOM hazard as step_generate at 6400 images).
+        clean_ds = tf.data.TFRecordDataset(clean_path)
+        # Total count for the tqdm bar — re-iterating once costs ~ms.
+        n_total = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
         # Entropy-seeded forward-model RNG — different noise / artifact
         # realisation every run. Master seed is logged for replay.
         master_seed = int.from_bytes(os.urandom(8), "little")
         rng = np.random.default_rng(master_seed)
-        lr_imgs, hr_imgs = [], []
 
-        _log(f"  {subset}: forward-modelling {len(records)} fields  "
+        _log(f"  {subset}: forward-modelling {n_total} fields  "
              f"(master_seed={master_seed})")
         t0 = time.perf_counter()
-        for i, raw in enumerate(tqdm(records, desc=f"  {subset}", unit="img")):
-            # clean_{subset} stores the 4-channel HR clean field (kept
-            # untouched for inspection). The 1-channel VIS HR target the
-            # network consumes is written to a separate ``hr_{subset}``
-            # file so all four bands of the clean record stay available.
-            hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
-            lr, hr = fwd.process(hr_4ch, rng=rng)
-            lr.index = i
-            hr.index = i
-            lr.subset = subset
-            hr.subset = subset
-            lr_imgs.append(lr)
-            hr_imgs.append(hr)
-
-        # clean_{subset} is NOT rewritten — leaves the 4-band record
-        # intact for inspection. dirty_{subset} = 4-ch LR input;
-        # hr_{subset} = 1-ch VIS HR target used by the loader.
-        write_multiband_skyimages(hr_imgs, f"hr_{subset}",
-                                  records_dir=args.records_dir)
-        write_multiband_skyimages(lr_imgs, f"dirty_{subset}",
-                                  records_dir=args.records_dir)
+        # Two streaming writers (one for hr_, one for dirty_); clean_ is
+        # NOT rewritten — the 4-band record is kept for inspection.
+        with open_multiband_writer(f"hr_{subset}",
+                                   records_dir=args.records_dir) as hr_w, \
+             open_multiband_writer(f"dirty_{subset}",
+                                   records_dir=args.records_dir) as lr_w:
+            for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
+                                         unit="img", total=n_total)):
+                hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                lr, hr = fwd.process(hr_4ch, rng=rng)
+                lr.index = i
+                hr.index = i
+                lr.subset = subset
+                hr.subset = subset
+                hr_w.write(hr, index=i)
+                lr_w.write(lr, index=i)
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ kept clean + wrote hr + dirty {subset}")
 

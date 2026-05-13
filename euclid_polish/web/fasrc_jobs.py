@@ -211,6 +211,60 @@ def parse_progress(line: str) -> Optional[tuple[int, int]]:
 # sbatch template
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Submission presets
+# ---------------------------------------------------------------------------
+#
+# The UI lets the user pick one of these instead of hand-tuning every
+# resource knob. The CPU-only presets skip --gres=gpu entirely (some
+# SLURM configs reject ``gpu:0``) and append the right ``--skip-*`` flag
+# so they only run the stages they need. Resource defaults are tuned
+# from the OOM that hit the user at 510² × 4-channel × 6400 images.
+
+PRESETS: Dict[str, Dict[str, Any]] = {
+    "gen_convolve": {
+        "label":          "Generate + convolve (CPU)",
+        "partition":      "shared",
+        "n_gpus":         0,
+        "n_cpus":         16,
+        "memory":         "64G",
+        "time_limit":     "6:00:00",
+        "skip_flags":     "--skip-train",
+        "needs_train_knobs": False,
+    },
+    "convolve_only": {
+        "label":          "Convolve existing clean → dirty (CPU)",
+        "partition":      "shared",
+        "n_gpus":         0,
+        "n_cpus":         8,
+        "memory":         "32G",
+        "time_limit":     "2:00:00",
+        "skip_flags":     "--skip-generate --skip-train",
+        "needs_train_knobs": False,
+    },
+    "train_only": {
+        "label":          "Train (GPU)",
+        "partition":      "gpu",
+        "n_gpus":         1,
+        "n_cpus":         4,
+        "memory":         "32G",
+        "time_limit":     "24:00:00",
+        "skip_flags":     "--skip-generate --skip-convolve",
+        "needs_train_knobs": True,
+    },
+    "custom": {
+        "label":          "Custom (use form values, no auto --skip-* flags)",
+        "skip_flags":     "",
+        "needs_train_knobs": True,
+    },
+}
+
+
+def resolve_preset(name: str) -> Dict[str, Any]:
+    """Return the preset dict for ``name`` (falls back to ``custom``)."""
+    return PRESETS.get(name) or PRESETS["custom"]
+
+
 def build_sbatch_script(*, label: str, params: Dict[str, Any],
                         cfg: fasrc_config.FasrcConfig,
                         relative_log_dir: str = "logs/jobs") -> Dict[str, str]:
@@ -231,12 +285,17 @@ def build_sbatch_script(*, label: str, params: Dict[str, Any],
     extra = (p.get("extra_flags") or "").strip()
     safe_label = label.replace("\n", " ").replace("'", "")[:200]
 
+    # Omit --gres entirely when the user asked for 0 GPUs. SLURM configs
+    # vary on whether ``--gres=gpu:0`` is accepted; the safe form is no
+    # --gres line at all.
+    n_gpus = int(p['n_gpus'])
+    gres_line = f"#SBATCH --gres=gpu:{n_gpus}\n        " if n_gpus > 0 else ""
+
     body = textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={shlex.quote(job_name)}
         #SBATCH --partition={shlex.quote(p['partition'])}
-        #SBATCH --gres=gpu:{int(p['n_gpus'])}
-        #SBATCH --cpus-per-task={int(p['n_cpus'])}
+        {gres_line}#SBATCH --cpus-per-task={int(p['n_cpus'])}
         #SBATCH --mem={p['memory']}
         #SBATCH --time={p['time_limit']}
         #SBATCH --output={out_rel}

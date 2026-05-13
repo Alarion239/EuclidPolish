@@ -165,7 +165,7 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
     from euclid_polish.sky.multiband_generator import (
         MultiBandGeneratorConfig, MultiBandSimulator,
     )
-    from euclid_polish.sky.tfrecord import write_multiband_skyimages
+    from euclid_polish.sky.tfrecord import open_multiband_writer
 
     print(f"Generating clean fields: image_size={image_size}, n_train={n_train}, "
           f"n_valid={n_valid}, lens_density={lens_density}")
@@ -187,18 +187,20 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
         master_seed = int.from_bytes(os.urandom(8), "little")
         rng = np.random.default_rng(master_seed)
         print(f"  {subset}: master_seed={master_seed}")
-        imgs = []
-        for i in range(n):
-            sky, _ = sim.simulate_field(rng)
-            sky.index = i
-            sky.subset = subset
-            imgs.append(sky)
-            done += 1
-            cap.tick(done, total_n, f"generating {subset} {i+1}/{n}")
-        path = write_multiband_skyimages(imgs, f"clean_{subset}",
-                                         records_dir=Config.RECORDS_DIR_V2)
+        # Stream each image to disk to bound RSS — accumulating a list
+        # of 6400 510² × 4-channel fields would cost ~26 GB.
+        with open_multiband_writer(f"clean_{subset}",
+                                   records_dir=Config.RECORDS_DIR_V2) as w:
+            for i in range(n):
+                sky, _ = sim.simulate_field(rng)
+                sky.index = i
+                sky.subset = subset
+                w.write(sky, index=i)
+                done += 1
+                cap.tick(done, total_n, f"generating {subset} {i+1}/{n}")
+            path, count = w.path, w.count
         print(f"  ✓ {path}")
-        result[subset] = {"path": path, "count": len(imgs)}
+        result[subset] = {"path": path, "count": count}
     return result
 
 
@@ -210,7 +212,7 @@ def _job_forward(cap) -> Dict[str, Any]:
         MultiBandForward, MultiBandForwardConfig,
     )
     from euclid_polish.sky.tfrecord import (
-        tfrecord_path, write_multiband_skyimages,
+        open_multiband_writer, tfrecord_path,
     )
     from euclid_polish.sky.types import MultiBandSkyImage
 
@@ -236,27 +238,29 @@ def _job_forward(cap) -> Dict[str, Any]:
         if not os.path.exists(clean):
             print(f"  ⚠️  no clean_{subset} on disk, skipping")
             continue
-        records = list(tf.data.TFRecordDataset(clean))
         # Entropy-seeded forward-model RNG — fresh noise/CR/streak draw
         # every run, with the master seed logged for replay.
         master_seed = int.from_bytes(os.urandom(8), "little")
         rng = np.random.default_rng(master_seed)
         print(f"  forward {subset}: master_seed={master_seed}")
-        lr_imgs, hr_imgs = [], []
-        for raw in records:
-            hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
-            lr, hr = fwd.process(hr_4ch, rng=rng)
-            lr_imgs.append(lr); hr_imgs.append(hr)
-            done += 1
-            cap.tick(done, grand_total, f"forward-model {subset}")
-        # Do NOT overwrite clean_{subset}: that 4-band file is the
-        # inspection-friendly clean record. The 1-channel VIS HR target
-        # used by training is written to a separate ``hr_{subset}`` file.
-        write_multiband_skyimages(hr_imgs, f"hr_{subset}",
-                                  records_dir=Config.RECORDS_DIR_V2)
-        write_multiband_skyimages(lr_imgs, f"dirty_{subset}",
-                                  records_dir=Config.RECORDS_DIR_V2)
-        result[subset] = {"n": len(records)}
+        # Stream LR + HR pairs to disk — at 6400 fields the in-memory
+        # list approach was costing ~13 GB and risking another OOM after
+        # the generator's fix.
+        n = totals.get(subset, 0)
+        with open_multiband_writer(f"hr_{subset}",
+                                   records_dir=Config.RECORDS_DIR_V2) as hr_w, \
+             open_multiband_writer(f"dirty_{subset}",
+                                   records_dir=Config.RECORDS_DIR_V2) as lr_w:
+            for i, raw in enumerate(tf.data.TFRecordDataset(clean)):
+                hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                lr, hr = fwd.process(hr_4ch, rng=rng)
+                lr.index = i; hr.index = i
+                lr.subset = subset; hr.subset = subset
+                hr_w.write(hr, index=i)
+                lr_w.write(lr, index=i)
+                done += 1
+                cap.tick(done, grand_total, f"forward-model {subset}")
+        result[subset] = {"n": n}
         print(f"  ✓ {subset}: kept clean ({len(hr_imgs)} 4-band) + "
               f"wrote hr ({len(hr_imgs)} 1-band VIS target) + "
               f"dirty ({len(lr_imgs)} LR-4ch)")
@@ -1771,6 +1775,14 @@ def create_app() -> Flask:
 
     # ---- submission -------------------------------------------------------
 
+    @app.route("/api/fasrc/presets")
+    def api_fasrc_presets():
+        """Return the submission preset table so the JS form can render
+        the dropdown and auto-fill resource fields when a preset changes."""
+        # Stripping the python-only ``skip_flags`` / ``needs_train_knobs``
+        # would lose data the UI uses — leave them in.
+        return jsonify({"presets": fasrc_jobs.PRESETS})
+
     @app.route("/api/fasrc/eta")
     def api_fasrc_eta():
         try:
@@ -1790,6 +1802,8 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
         f = request.form
+        preset_name = f.get("preset", "custom")
+        preset = fasrc_jobs.resolve_preset(preset_name)
         try:
             params = {
                 "partition":  f.get("partition",  cfg.partition),
@@ -1807,8 +1821,18 @@ def create_app() -> Flask:
         except (TypeError, ValueError) as e:
             return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
 
+        # Preset → append the right --skip-* flags so the user can't
+        # accidentally request a CPU-only "convolve" job that then tries
+        # to train (or vice-versa). The free-form ``extra_flags`` field
+        # is preserved so users can still pass one-off args.
+        skip = (preset.get("skip_flags") or "").strip()
+        if skip:
+            params["extra_flags"] = (params["extra_flags"] + " " + skip).strip()
+        params["preset"] = preset_name
+
         label = f.get("label", "").strip() or (
-            f"train {params['steps']} steps on {params['n_train']}+"
+            f"{preset.get('label', preset_name)}: "
+            f"{params['steps']} steps on {params['n_train']}+"
             f"{params['n_valid']} fields"
         )
         built = fasrc_jobs.build_sbatch_script(

@@ -156,15 +156,24 @@
     <!-- Mode B: no job. Submission form. -->
     <div id="submit-panel" style="display:none;">
       <section class="card">
-        <h3>Submit training job</h3>
+        <h3>Submit job</h3>
         <p class="hint">No SLURM job is running for you right now.
-          Fill in the parameters and submit — the dashboard will switch
-          to the live-status view automatically.</p>
+          Pick a preset (gen+convolve and convolve-only are CPU-only; training is GPU)
+          then submit — the dashboard will switch to the live-status view automatically.</p>
         <form id="submit-form" class="form-row">
+          <label style="flex-basis:100%;">Preset
+            <select name="preset" id="preset-select" style="width:100%; padding:6px;">
+              <option value="gen_convolve" selected>Generate clean + convolve to dirty (CPU)</option>
+              <option value="convolve_only">Convolve existing clean → dirty (CPU)</option>
+              <option value="train_only">Train (GPU)</option>
+              <option value="custom">Custom — use form fields as-is, no auto --skip-* flags</option>
+            </select>
+          </label>
+
           <label>Label
             <input name="label" placeholder="optional summary" size="30"></label>
           <label>GPUs
-            <input name="n_gpus" type="number" min="1" max="8" value="{{ cfg.n_gpus }}" style="width:60px;"></label>
+            <input name="n_gpus" type="number" min="0" max="8" value="{{ cfg.n_gpus }}" style="width:60px;"></label>
           <label>CPUs
             <input name="n_cpus" type="number" min="1" max="48" value="{{ cfg.n_cpus }}" style="width:60px;"></label>
           <label>Memory
@@ -172,7 +181,7 @@
           <label>Time
             <input name="time_limit" value="{{ cfg.time_limit }}" style="width:90px;" title="HH:MM:SS or D-HH:MM:SS"></label>
           <label>Partition
-            <input name="partition" value="{{ cfg.partition }}" style="width:70px;"></label>
+            <input name="partition" value="{{ cfg.partition }}" style="width:80px;"></label>
 
           <label>Train
             <input name="n_train" type="number" min="1" value="{{ cfg.n_train }}" style="width:80px;"></label>
@@ -186,11 +195,12 @@
             <input name="steps" type="number" min="100" value="{{ cfg.steps }}" style="width:100px;"></label>
 
           <label style="flex:1; min-width:240px;">Extra <code>run_pipeline.py</code> flags
-            <input name="extra_flags" placeholder="e.g. --skip-generate" style="width:100%;"></label>
+            <input name="extra_flags" placeholder="e.g. --num-res-blocks 16" style="width:100%;"></label>
 
           <div style="flex-basis:100%; display:flex; gap:10px; align-items:center;">
             <button type="submit">Submit job</button>
             <span id="submit-eta" class="muted"></span>
+            <span id="preset-hint" class="muted" style="font-size:12px;"></span>
           </div>
         </form>
         <pre id="submit-out" class="job-log" style="display:none; margin-top:10px;"></pre>
@@ -613,6 +623,55 @@ async function refreshEta() {
 $('submit-form').addEventListener('input', (e) => {
   if (e.target.name === 'steps') refreshEta();
 });
+
+/* ---------- Preset auto-fill --------------------------------------------
+   Picking a preset writes its resource defaults into the form fields so
+   the user can still tweak them before submitting. Each preset corresponds
+   to one ``run_pipeline.py`` mode (--skip-* flags are applied server-side
+   by ``api_fasrc_submit``).
+------------------------------------------------------------------------- */
+let PRESET_CACHE = null;
+async function loadPresets() {
+  try {
+    const r = await fetch('/api/fasrc/presets');
+    const d = await r.json();
+    PRESET_CACHE = d.presets || null;
+  } catch { PRESET_CACHE = null; }
+}
+function applyPreset(name) {
+  if (!PRESET_CACHE) return;
+  const p = PRESET_CACHE[name] || {};
+  const f = $('submit-form');
+  const set = (field, val) => {
+    if (val == null) return;
+    const el = f.elements[field];
+    if (el) el.value = val;
+  };
+  set('partition',  p.partition);
+  set('n_gpus',     p.n_gpus);
+  set('n_cpus',     p.n_cpus);
+  set('memory',     p.memory);
+  set('time_limit', p.time_limit);
+  // Visual hint about which stages will run.
+  const hints = {
+    gen_convolve:  'will run STEP 1 (generate) + STEP 2 (convolve); STEP 3 (train) skipped',
+    convolve_only: 'will run STEP 2 (convolve) only; STEP 1 + STEP 3 skipped',
+    train_only:    'will run STEP 3 (train) only; STEP 1 + STEP 2 skipped',
+    custom:        'no auto --skip-* flags — extra_flags applied verbatim',
+  };
+  $('preset-hint').textContent = hints[name] || '';
+  // Training-only knobs (steps / batch / image-size) stay editable in
+  // every preset — they're cheap to override and convolve-only ignores
+  // them anyway. Just dim them when the preset doesn't need them.
+  const needsTrain = !!p.needs_train_knobs;
+  ['n_train','n_valid','image_size','batch_size','steps'].forEach(name => {
+    const el = f.elements[name];
+    if (el) el.style.opacity = needsTrain || name === 'n_train' || name === 'n_valid' ? '1' : '0.55';
+  });
+}
+$('preset-select').addEventListener('change', (e) => applyPreset(e.target.value));
+loadPresets().then(() => applyPreset($('preset-select').value));
+
 $('submit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('submit-out').style.display = 'block';
