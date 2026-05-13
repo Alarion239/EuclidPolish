@@ -2115,6 +2115,114 @@ def create_app() -> Flask:
         runs.sort(key=lambda r: r["mtime"], reverse=True)
         return jsonify({"ok": True, "log_dir": log_dir, "runs": runs[:100]})
 
+    @app.route("/api/fasrc/runs/ckpt-bundle.tar")
+    def api_fasrc_runs_ckpt_bundle():
+        """Stream a tar of the FASRC ckpt dir so the user can download
+        the trained model after a job completes.
+
+        We tar on the remote (one ssh + tar pipeline) and pipe bytes
+        back through the ControlMaster — no temp file involved. Bundle
+        size is bounded by ``max_to_keep=3`` in the trainer, so usually
+        a few × 7 MB plus the training_log.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        ckpt_dir = cfg.ckpt_dir
+        # Defensive: refuse if cfg.ckpt_dir points anywhere weird.
+        if not ckpt_dir or ".." in ckpt_dir.split("/"):
+            return jsonify({"ok": False, "error": "invalid ckpt_dir"}), 400
+        parent = os.path.dirname(ckpt_dir.rstrip("/")) or "/"
+        leaf   = os.path.basename(ckpt_dir.rstrip("/"))
+        # ``tar -C parent leaf`` makes the tarball self-contained: it
+        # unpacks into ``leaf/`` regardless of where the user extracts
+        # it. ``--ignore-failed-read`` keeps going if a single ckpt file
+        # is being rewritten while we tar.
+        cmd = (
+            f"tar -C {shlex.quote(parent)} -cf - "
+            f"  --ignore-failed-read {shlex.quote(leaf)} 2>/dev/null"
+        )
+        rc, out, err = STATE.ssh.run(cmd, timeout=300, binary=True)
+        if rc != 0 or not out:
+            return jsonify({
+                "ok": False,
+                "error": f"tar failed: {err[:200] if err else 'no output'}",
+            }), 500
+        filename = f"{leaf}.tar"
+        return Response(
+            out, mimetype="application/x-tar",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length":      str(len(out)),
+            },
+        )
+
+    @app.route("/api/fasrc/runs/training-plot.png")
+    def api_fasrc_runs_training_plot():
+        """PNG of the validation log restricted to one run's wall-time window.
+
+        The trainer writes ``training_log.csv`` (append-only across all
+        sessions sharing the same ckpt dir). We fetch the file over SSH,
+        filter rows by ``[started_at, ended_at]``, render with
+        :func:`plot_training_records`, and return the bytes.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        try:
+            started_at = float(request.args.get("started_at", "0"))
+            ended_at   = float(request.args.get("ended_at",   "0"))
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad started_at/ended_at"}), 400
+        if ended_at <= 0:
+            ended_at = time.time() + 1.0   # ongoing run — include up to now
+        if started_at <= 0:
+            return jsonify({"ok": False, "error": "missing started_at"}), 400
+
+        cfg = fasrc_config.load()
+        csv_path   = f"{cfg.ckpt_dir}/training_log.csv"
+        jsonl_path = f"{cfg.ckpt_dir}/training_log.jsonl"
+
+        # Fetch whichever log file exists. Cap to 50k lines (~20 MB) so
+        # the SSH payload stays bounded for very long training histories.
+        cmd = (
+            f"{{ "
+            f"  if [ -f {shlex.quote(csv_path)} ]; then "
+            f"    head -n 50000 {shlex.quote(csv_path)} ; "
+            f"  elif [ -f {shlex.quote(jsonl_path)} ]; then "
+            f"    head -n 50000 {shlex.quote(jsonl_path)} ; "
+            f"  fi ; "
+            f"}}; exit 0"
+        )
+        rc, text, _err = STATE.ssh.run(cmd, timeout=30)
+        if rc != 0 or not text.strip():
+            return jsonify({"ok": False,
+                            "error": "training log not found on remote"}), 404
+
+        # Parse + filter by wall-time window.
+        all_rows = fasrc_log_parser.parse_training_log(
+            text, max_records=10_000_000,
+        )
+        rows = [r for r in all_rows
+                if started_at <= r.get("wall_time", 0.0) <= ended_at]
+        if not rows:
+            return jsonify({"ok": False,
+                            "error": f"no training-log rows in window "
+                                     f"[{started_at:.0f}, {ended_at:.0f}]"}), 404
+
+        # Render in-memory.
+        import io as _io
+        from euclid_polish.training.log_plot import plot_training_records
+        tmp_png = os.path.join(Config.VIS_DIR, "tmp_training_plot.png")
+        os.makedirs(Config.VIS_DIR, exist_ok=True)
+        plot_training_records(
+            rows, tmp_png,
+            title_suffix=f"\n(this run only: {len(rows)} evals)",
+        )
+        with open(tmp_png, "rb") as fh:
+            data = fh.read()
+        return Response(data, mimetype="image/png",
+                        headers={"Cache-Control": "no-cache"})
+
     @app.route("/api/fasrc/runs/log")
     def api_fasrc_runs_log():
         """Tail of one log file on FASRC.

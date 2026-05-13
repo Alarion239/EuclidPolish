@@ -389,6 +389,31 @@
       </p>
       <pre id="logs-viewer-content" class="job-log"
            style="max-height:540px;">(loading…)</pre>
+
+      <!-- Per-run validation-history plot (loss + PSNR vs step). Only
+           shown when the selected run has a wall-time window we can
+           filter the trainer's append-only training_log.csv with. -->
+      <div id="logs-train-plot-wrap" style="margin-top:14px;
+           border-top:1px solid #e2e5ea; padding-top:12px; display:none;">
+        <strong style="font-size:13px;">Validation log (this run)</strong>
+        <span class="muted" id="logs-train-plot-msg"
+              style="font-size:11px; margin-left:8px;"></span>
+        <img id="logs-train-plot" alt="training log plot"
+             style="display:none; max-width:100%; margin-top:8px;
+                    border:1px solid #e2e5ea; border-radius:3px;">
+      </div>
+
+      <!-- Download the remote ckpt dir as a tarball. Useful once a
+           training job finishes so the user can run inference locally
+           against the final weights. -->
+      <div style="margin-top:12px; border-top:1px solid #e2e5ea;
+           padding-top:10px;">
+        <button id="btn-ckpt-download" type="button">
+          ⬇ Download checkpoints (.tar)
+        </button>
+        <span id="ckpt-download-msg" class="muted"
+              style="margin-left:8px; font-size:12px;"></span>
+      </div>
     </section>
   </section>
 </div>
@@ -1003,9 +1028,13 @@ async function refreshLogs() {
     const outAttr = r.out_path ? ` data-out="${escapeHtml(r.out_path)}"` : '';
     const errAttr = r.err_path ? ` data-err="${escapeHtml(r.err_path)}"` : '';
     const missing = r.missing ? ' (files gone)' : '';
+    const startedAt = r.started_at || r.submitted_at || 0;
+    const endedAt   = r.ended_at   || 0;
     html += `<tr class="log-row" style="cursor:pointer;"`
          +    ` data-name="${escapeHtml(r.name)}"`
          +    ` data-jobid="${escapeHtml(jobid)}"`
+         +    ` data-started-at="${startedAt}"`
+         +    ` data-ended-at="${endedAt}"`
          +    `${outAttr}${errAttr}>`
          +    `<td title="${escapeHtml(fmtDate(r.submitted_at))}">${escapeHtml(fmtTimeAgo(r.submitted_at))}</td>`
          +    `<td><code>${escapeHtml(r.name)}</code>${escapeHtml(missing)}</td>`
@@ -1023,15 +1052,46 @@ async function refreshLogs() {
   document.querySelectorAll('#logs-list .log-row').forEach(tr => {
     tr.addEventListener('click', () => {
       LOGS_STATE.selected = {
-        name:  tr.dataset.name,
-        jobid: tr.dataset.jobid,
-        out:   tr.dataset.out || null,
-        err:   tr.dataset.err || null,
+        name:       tr.dataset.name,
+        jobid:      tr.dataset.jobid,
+        out:        tr.dataset.out || null,
+        err:        tr.dataset.err || null,
+        started_at: parseFloat(tr.dataset.startedAt) || 0,
+        ended_at:   parseFloat(tr.dataset.endedAt)   || 0,
       };
       LOGS_STATE.which = LOGS_STATE.selected.out ? 'out' : 'err';
       openLogViewer();
+      refreshRunTrainingPlot();
     });
   });
+}
+
+async function refreshRunTrainingPlot() {
+  const sel = LOGS_STATE.selected;
+  if (!sel || !sel.started_at) {
+    $('logs-train-plot-wrap').style.display = 'none';
+    return;
+  }
+  $('logs-train-plot-wrap').style.display = 'block';
+  $('logs-train-plot-msg').textContent = 'loading…';
+  $('logs-train-plot').style.display = 'none';
+  // ended_at = 0 means the run is still active; the endpoint treats
+  // that as "use now() as the upper bound".
+  const url = '/api/fasrc/runs/training-plot.png'
+            + '?started_at=' + encodeURIComponent(sel.started_at)
+            + '&ended_at='   + encodeURIComponent(sel.ended_at || 0)
+            + '&_t=' + Date.now();   // cache buster
+  const img = $('logs-train-plot');
+  img.onload  = () => {
+    img.style.display = 'block';
+    $('logs-train-plot-msg').textContent = '';
+  };
+  img.onerror = () => {
+    img.style.display = 'none';
+    $('logs-train-plot-msg').textContent =
+      'no validation rows in this run\'s wall-time window (yet)';
+  };
+  img.src = url;
 }
 
 async function openLogViewer() {
@@ -1069,6 +1129,17 @@ $('btn-show-out').onclick   = () => { LOGS_STATE.which = 'out'; openLogViewer();
 $('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer(); };
 $('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
 $('logs-lines').onchange    = () => { if (LOGS_STATE.selected) openLogViewer(); };
+
+// Browser-initiated tar download of the remote ckpt dir. We just point
+// <a> at the streaming endpoint; the browser handles the rest.
+$('btn-ckpt-download').onclick = () => {
+  const msg = $('ckpt-download-msg');
+  msg.textContent = 'starting download (can take a few seconds for large bundles)…';
+  // ``window.location`` triggers the download and the Content-Disposition
+  // header on the response makes the browser save-as instead of navigating.
+  window.location.href = '/api/fasrc/runs/ckpt-bundle.tar?_t=' + Date.now();
+  setTimeout(() => { msg.textContent = ''; }, 6000);
+};
 
 /* ============================================================
    Mirror (status only; backend auto-manages enable/trigger)

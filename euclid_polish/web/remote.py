@@ -35,7 +35,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -369,11 +369,17 @@ class SSHSession:
 
     # ----------------------------- exec -----------------------------------
 
-    def run(self, cmd: str, timeout: int = 60) -> Tuple[int, str, str]:
+    def run(self, cmd: str, timeout: int = 60,
+            binary: bool = False) -> Tuple[int, Any, str]:
         """Run a one-shot command via the multiplexed connection.
 
         Returns (returncode, stdout, stderr). Caller decides how to handle
         non-zero rc — we never raise on shell failure.
+
+        ``binary=True`` returns stdout as raw bytes (no UTF-8 decode) for
+        callers that need to ferry binary blobs (tarballs, etc.) over
+        the multiplexed link. stderr is always decoded as UTF-8 since
+        SLURM / SSH error messages are text.
         """
         if not self.is_connected():
             raise SSHError("not connected")
@@ -382,8 +388,8 @@ class SSHSession:
                 ["ssh", "-S", self.cfg.socket, self.cfg.target, cmd],
                 capture_output=True, timeout=timeout,
             )
-        return (r.returncode,
-                r.stdout.decode("utf-8", errors="replace"),
+        stdout = r.stdout if binary else r.stdout.decode("utf-8", errors="replace")
+        return (r.returncode, stdout,
                 r.stderr.decode("utf-8", errors="replace"))
 
     def run_check(self, cmd: str, timeout: int = 60) -> str:

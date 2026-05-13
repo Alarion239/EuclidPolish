@@ -69,32 +69,17 @@ def read_training_log(log_path: str) -> List[dict]:
     return records
 
 
-def plot_training_log(
-    log_path: str,
+def plot_training_records(
+    records: List[dict],
     output_path: str,
     smooth_window: int = 0,
+    title_suffix: str = "",
 ) -> Tuple[int, int]:
-    """Plot loss + PSNR (and gradient norm if logged) vs step.
-
-    Layout:
-      - Top: loss (left axis, log scale) + PSNR stretched/raw (right axis).
-      - Bottom (only if log contains ``gnorm_avg``): gradient-norm trace
-        with the configured ``clip_norm`` shown as a horizontal reference.
-
-    Parameters
-    ----------
-    log_path : str
-        Path to the JSONL log (typically ``<ckpt_dir>/training_log.jsonl``).
-    output_path : str
-        Where to save the PNG.
-    smooth_window : int, optional
-        If > 1, overlay a moving-average curve on top of the raw loss / PSNR.
-
-    Returns
-    -------
-    (n_records, last_step) : tuple of ints
-    """
-    records = read_training_log(log_path)
+    """Same plot as :func:`plot_training_log`, but from a pre-loaded list
+    of records. Used by the FASRC dashboard which fetches the log over
+    SSH and filters by wall-time window."""
+    if not records:
+        raise ValueError("plot_training_records: records is empty")
     steps  = np.array([r["step"]  for r in records])
     losses = np.array([r["loss"]  for r in records])
     psnr_str = np.array([r["psnr_stretched"] for r in records])
@@ -164,8 +149,8 @@ def plot_training_log(
         ax_loss.set_xlabel("Step")
 
     fig.suptitle(
-        f"Training log — {len(records)} evaluations, last step {int(steps[-1])}\n"
-        f"({log_path})",
+        f"Training log — {len(records)} evaluations, last step {int(steps[-1])}"
+        f"{title_suffix}",
         fontsize=11,
     )
     fig.tight_layout()
@@ -173,6 +158,23 @@ def plot_training_log(
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return len(records), int(steps[-1])
+
+
+def plot_training_log(
+    log_path: str,
+    output_path: str,
+    smooth_window: int = 0,
+) -> Tuple[int, int]:
+    """Read the trainer's validation log (CSV or legacy JSONL) and plot.
+
+    Thin wrapper around :func:`plot_training_records` that reads the
+    file first; kept for back-compat with existing callers.
+    """
+    records = read_training_log(log_path)
+    return plot_training_records(
+        records, output_path, smooth_window=smooth_window,
+        title_suffix=f"\n({log_path})",
+    )
 
 
 def default_log_path(checkpoint_dir: str) -> str:
