@@ -19,6 +19,15 @@
     <button id="btn-disconnect" type="button" class="secondary" disabled>Disconnect</button>
     <button id="btn-lock"       type="button" class="secondary">Lock vault</button>
   </div>
+  <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
+       border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
+       margin-top:8px; font-size:13px;">
+    <strong>Bitwarden CLI not installed.</strong>
+    Install with <code>brew install bitwarden-cli</code> (macOS),
+    <code>npm install -g @bitwarden/cli</code>, or see
+    <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
+    Restart this app once it's on your PATH.
+  </div>
   <div id="conn-msg" class="muted" style="margin-top:8px;"></div>
   <details style="margin-top:8px;">
     <summary><span style="font-size:13px;">Settings</span></summary>
@@ -64,13 +73,30 @@
   </section>
 
   <section class="card">
-    <h3>Data on netscratch</h3>
+    <h3>Data on netscratch
+      <button id="btn-data-refresh" type="button" class="secondary"
+              style="float:right;">↻ Refresh</button>
+    </h3>
     <p class="hint"><code>{{ cfg.data_dir }}</code></p>
     <div id="data-listing"><span class="muted">connect to view…</span></div>
+    <div style="border-top:1px solid #e2e5ea; margin-top:12px; padding-top:10px;">
+      <button id="btn-bootstrap" type="button">Sync from holylabs</button>
+      <span class="hint" style="margin-left:8px;">
+        Re-creates symlinks under <code>{{ cfg.data_dir }}</code> pointing at
+        <code>{{ cfg.repo_path }}/data/{euclid_psf,COSMOS2025}</code>.
+        Run this after a netscratch purge, after committing new PSFs,
+        or after Globus uploads a fresh COSMOS catalog.
+      </span>
+      <pre id="bootstrap-out" class="job-log"
+           style="display:none; max-height:240px; margin-top:8px;"></pre>
+    </div>
   </section>
 
   <section class="card">
-    <h3>Checkpoints on netscratch</h3>
+    <h3>Checkpoints on netscratch
+      <button id="btn-ckpt-refresh" type="button" class="secondary"
+              style="float:right;">↻ Refresh</button>
+    </h3>
     <p class="hint"><code>{{ cfg.ckpt_dir }}</code></p>
     <div id="ckpt-listing"><span class="muted">connect to view…</span></div>
   </section>
@@ -157,6 +183,23 @@
     <pre id="mirror-out" class="job-log" style="display:none;"></pre>
   </section>
 
+  <section class="card">
+    <h3>Conda environment on FASRC</h3>
+    <p class="hint">
+      Pulls fresh packages from <code>environment.yml</code> into
+      <code>{{ cfg.conda_env_path }}</code>. Runs
+      <code>module load python</code> first, then
+      <code>yes | mamba env update</code> (auto-confirm).
+    </p>
+    <div class="form-row">
+      <button id="btn-env-update" type="button">Update environment</button>
+      <button id="btn-env-stop"   type="button" class="secondary">Stop tail</button>
+      <span id="env-update-status" class="muted"></span>
+    </div>
+    <pre id="env-update-log" class="job-log"
+         style="display:none; max-height:340px; margin-top:10px;"></pre>
+  </section>
+
   <section class="card" style="grid-column: 1 / -1;">
     <h3>Recent submissions</h3>
     <div id="recent-jobs"><span class="muted">connect to view…</span></div>
@@ -202,9 +245,11 @@ async function refreshConnState() {
   badge.textContent = conn ? 'connected' : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
   badge.className = 'badge ' + (conn ? 'badge-done'
                               : data.bw_unlocked ? 'badge-running' : 'badge-failed');
+  // Surface the bw-missing notice + disable unlock if `bw` isn't on PATH.
+  $('bw-missing').style.display = data.bw_installed ? 'none' : 'block';
+  $('btn-unlock').disabled     = !data.bw_installed || data.bw_unlocked;
   $('btn-connect').disabled    = !data.bw_unlocked || conn;
   $('btn-disconnect').disabled = !conn;
-  $('btn-unlock').disabled     = data.bw_unlocked;
   if (conn) {
     refreshAll();
   }
@@ -272,6 +317,18 @@ async function refreshRemoteGit() {
 }
 
 $('btn-remote-refresh').onclick = refreshRemoteGit;
+$('btn-data-refresh').onclick   = refreshListings;
+$('btn-ckpt-refresh').onclick   = refreshListings;
+
+$('btn-bootstrap').onclick = async () => {
+  const pre = $('bootstrap-out');
+  pre.style.display = 'block';
+  pre.textContent   = 'running…';
+  const r = await fetch('/api/fasrc/bootstrap-data', { method: 'POST' });
+  const data = await r.json();
+  pre.textContent = (data.output || '') + (data.error ? '\n\n[error] ' + data.error : '');
+  if (data.ok) refreshListings();
+};
 
 $('btn-remote-pull').onclick = async () => {
   $('remote-pull-out').style.display = 'block';
@@ -290,26 +347,45 @@ function humanSize(b) {
 
 async function refreshListings() {
   const { ok, data } = await api('/api/fasrc/data-listing');
-  if (!ok) return;
-  // du roll-up
-  let html = '<table><tr><th>Size</th><th>Path</th></tr>';
-  for (const row of data.du || []) {
-    html += `<tr><td>${escapeHtml(row[0]||'')}</td><td><code>${escapeHtml(row[1]||'')}</code></td></tr>`;
+  if (!ok) {
+    const err = (data && data.error) ? data.error : 'request failed';
+    $('data-listing').innerHTML = `<p class="muted">listing failed: ${escapeHtml(err)}</p>`;
+    $('ckpt-listing').innerHTML = `<p class="muted">listing failed: ${escapeHtml(err)}</p>`;
+    return;
   }
-  html += '</table>';
-  if (data.tfrecords && data.tfrecords.length) {
-    html += '<h4 style="margin:10px 0 4px; font-size:13px;">TFRecords</h4><table><tr><th>Size</th><th>Path</th></tr>';
-    for (const r of data.tfrecords) html += `<tr><td>${humanSize(r.size)}</td><td><code>${escapeHtml(r.path)}</code></td></tr>`;
+
+  // ── data dir summary + tfrecord table ────────────────────────────────────
+  const hasDu  = (data.du || []).length > 0;
+  const hasTfr = (data.tfrecords || []).length > 0;
+  let html = '';
+  if (hasDu) {
+    html += '<table><tr><th>Size</th><th>Path</th></tr>';
+    for (const row of data.du)
+      html += `<tr><td>${escapeHtml(row[0]||'')}</td><td><code>${escapeHtml(row[1]||'')}</code></td></tr>`;
     html += '</table>';
+  }
+  if (hasTfr) {
+    html += '<h4 style="margin:10px 0 4px; font-size:13px;">TFRecords</h4>'
+         +  '<table><tr><th>Size</th><th>Path</th></tr>';
+    for (const r of data.tfrecords)
+      html += `<tr><td>${humanSize(r.size)}</td><td><code>${escapeHtml(r.path)}</code></td></tr>`;
+    html += '</table>';
+  }
+  if (!hasDu && !hasTfr) {
+    html = `<p class="muted">no data yet — <code>${escapeHtml(data.data_dir||'')}</code> is empty or doesn't exist.</p>`;
   }
   $('data-listing').innerHTML = html;
 
+  // ── checkpoints table ────────────────────────────────────────────────────
   let chtml;
   if (data.checkpoints && data.checkpoints.length) {
     chtml = '<table><tr><th>Modified</th><th>Size</th><th>Path</th></tr>';
-    for (const r of data.checkpoints) chtml += `<tr><td>${escapeHtml(r.mtime)}</td><td>${humanSize(r.size)}</td><td><code>${escapeHtml(r.path)}</code></td></tr>`;
+    for (const r of data.checkpoints)
+      chtml += `<tr><td>${escapeHtml(r.mtime)}</td><td>${humanSize(r.size)}</td><td><code>${escapeHtml(r.path)}</code></td></tr>`;
     chtml += '</table>';
-  } else { chtml = '<p class="muted">no checkpoints yet</p>'; }
+  } else {
+    chtml = `<p class="muted">no checkpoints yet in <code>${escapeHtml(data.ckpt_dir||'')}</code></p>`;
+  }
   $('ckpt-listing').innerHTML = chtml;
 }
 
@@ -492,6 +568,43 @@ $('btn-mirror-stop').onclick = async () => {
 $('btn-mirror-trigger').onclick = async () => {
   await api('/api/fasrc/mirror/trigger', { method: 'POST' });
   refreshMirror();
+};
+
+/* ============================================================
+   Conda env update (SSE)
+============================================================ */
+let envSSE = null;
+$('btn-env-update').onclick = () => {
+  if (!confirm(
+    "Run `module load python && yes | mamba env update` on FASRC?\n\n" +
+    "This re-solves and downloads any package changes from environment.yml. " +
+    "Typically 30s – 5min depending on the diff."
+  )) return;
+  if (envSSE) envSSE.close();
+  const pre = $('env-update-log');
+  pre.style.display = 'block';
+  pre.textContent = '';
+  $('env-update-status').textContent = 'running…';
+  envSSE = new EventSource('/api/fasrc/env-update');
+  envSSE.onmessage = (e) => {
+    pre.textContent += e.data + '\n';
+    pre.scrollTop = pre.scrollHeight;
+  };
+  envSSE.addEventListener('done', () => {
+    envSSE.close(); envSSE = null;
+    $('env-update-status').textContent = '✓ finished';
+    pre.textContent += '\n[finished]\n';
+    pre.scrollTop = pre.scrollHeight;
+  });
+  envSSE.addEventListener('error', (e) => {
+    pre.textContent += '[stream closed]\n';
+    $('env-update-status').textContent = 'stream ended';
+    if (envSSE) { envSSE.close(); envSSE = null; }
+  });
+};
+$('btn-env-stop').onclick = () => {
+  if (envSSE) { envSSE.close(); envSSE = null; }
+  $('env-update-status').textContent = 'stopped';
 };
 
 /* ============================================================

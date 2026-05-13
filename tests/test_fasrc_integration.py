@@ -328,6 +328,110 @@ def test_data_listing_picks_up_tfrecord_files(fake_remote, client):
     assert any(p.endswith("clean_train.tfrecord") for p in paths)
 
 
+def test_bootstrap_data_creates_symlinks(fake_remote, client):
+    """`ln -sfn` from the durable copy under ``<repo>/data/`` into the
+    working ``data_dir`` on netscratch. Both sources exist in this test
+    so the route should succeed and the two expected symlinks should
+    appear under data_dir."""
+    cfg = fake_remote["cfg"]
+    repo_data = Path(cfg.repo_path) / "data"
+    repo_psf = repo_data / "euclid_psf"
+    repo_cosmos = repo_data / "COSMOS2025"
+    repo_psf.mkdir(parents=True, exist_ok=True)
+    repo_cosmos.mkdir(parents=True, exist_ok=True)
+    (repo_psf / "psf_VIS.fits").write_bytes(b"x")
+    (repo_cosmos / "cosmos2025.fits").write_bytes(b"y" * 64)
+
+    r = client.post("/api/fasrc/bootstrap-data")
+    assert r.status_code == 200, r.get_json()
+    data = r.get_json()
+    assert data["ok"] is True
+    out = data["output"]
+    assert "linked: euclid_psf -> "  in out
+    assert "linked: COSMOS2025 -> "  in out
+
+    data_root = Path(cfg.data_dir)
+    assert (data_root / "euclid_psf").is_symlink()
+    assert (data_root / "COSMOS2025").is_symlink()
+    assert os.readlink(str(data_root / "euclid_psf"))  == str(repo_psf)
+    assert os.readlink(str(data_root / "COSMOS2025")) == str(repo_cosmos)
+
+
+def test_bootstrap_data_reports_missing_sources(fake_remote, client):
+    """If the COSMOS dir hasn't been uploaded yet, surface a clear note
+    rather than failing — the user just hasn't run Globus yet."""
+    cfg = fake_remote["cfg"]
+    repo_psf = Path(cfg.repo_path) / "data" / "euclid_psf"
+    repo_psf.mkdir(parents=True, exist_ok=True)
+    # Do NOT create the COSMOS dir.
+
+    r = client.post("/api/fasrc/bootstrap-data")
+    assert r.status_code == 200
+    out = r.get_json()["output"]
+    assert "linked: euclid_psf -> "  in out
+    assert "MISSING source: "         in out
+    assert "/data/COSMOS2025" in out
+
+
+def test_bootstrap_data_refuses_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(STATE, "ssh", None)
+    r = client.post("/api/fasrc/bootstrap-data")
+    assert r.status_code == 400
+
+
+def test_env_update_streams_lines_and_terminates(fake_remote, client):
+    """SSE env-update routes the `module load python + mamba env update`
+    pipeline through the active SSH session. We stand in fake `module` /
+    `mamba` shims that print recognisable lines, then assert the stream
+    delivered them in order and closed with a ``done`` event."""
+    bin_dir = fake_remote["bin_dir"]
+    (bin_dir / "module").write_text(
+        "#!/usr/bin/env bash\necho \"module $*\"\n"
+    )
+    (bin_dir / "mamba").write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        echo "mamba argv: $*"
+        # Read+echo stdin so we can verify `yes |` is feeding it.
+        head -3 || true
+        echo "Proceed ([y]/n)? y"
+        echo "Updated 0 packages."
+    """))
+    for shim in ("module", "mamba"):
+        os.chmod(bin_dir / shim, 0o755)
+    # Need a placeholder environment.yml inside the fake repo so the
+    # `-f environment.yml` reference resolves under our local cwd.
+    (fake_remote["repo"] / "environment.yml").write_text(
+        "name: EuclidPolishEnv\nchannels:\n  - conda-forge\n"
+        "dependencies:\n  - python=3.12\n",
+    )
+
+    r = client.get("/api/fasrc/env-update", buffered=False)
+    assert r.status_code == 200
+    chunks = []
+    deadline = time.time() + 5
+    for chunk in r.response:
+        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        if any("done" in c for c in chunks) or time.time() > deadline:
+            break
+    r.close()
+    combined = "".join(chunks)
+    # Header lines from the route generator.
+    assert "$ module load python" in combined
+    # Output captured from the fake `module` and `mamba` shims.
+    assert "module load python" in combined
+    assert "mamba argv:" in combined
+    assert "Updated 0 packages" in combined
+    # And the route emitted the ``done`` event so the client can close.
+    assert "event: done" in combined
+
+
+def test_env_update_refuses_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(STATE, "ssh", None)
+    r = client.get("/api/fasrc/env-update")
+    assert r.status_code == 400
+    assert "not connected" in r.get_data(as_text=True)
+
+
 def test_cancel_endpoint_marks_job_cancelled(fake_remote, client):
     # Plant a fake scancel and a queued job.
     bin_dir = fake_remote["bin_dir"]

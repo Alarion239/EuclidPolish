@@ -8,6 +8,7 @@ import glob
 import io
 import os
 import re
+import shlex
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1460,21 +1461,28 @@ def create_app() -> Flask:
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
-        # Maxdepth-2 for speed; show size in human-readable form.
+        # Each section is guarded with `[ -d path ] &&` so a missing
+        # directory (common on a fresh netscratch dir) doesn't sink the
+        # whole listing. The trailing ``exit 0`` keeps the SSH call
+        # green even if every section is empty.
         cmd = (
-            f"if [ -d {cfg.data_dir} ]; then "
-            f"  du -sh {cfg.data_dir}/* 2>/dev/null | sort -k2; "
-            f"  echo '---'; "
-            f"  find {cfg.data_dir} -maxdepth 3 -type f -name '*.tfrecord' "
-            f"    -printf '%p\\t%s\\n' 2>/dev/null; "
-            f"  echo '---'; "
-            f"  find {cfg.ckpt_dir} -maxdepth 2 -type f "
-            f"    -printf '%p\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null; "
-            f"else echo 'MISSING'; fi"
+            f"{{ "
+            f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
+            f"    du -sh {shlex.quote(cfg.data_dir)}/* 2>/dev/null | sort -k2 ; "
+            f"  echo '---' ; "
+            f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
+            f"    find {shlex.quote(cfg.data_dir)} -maxdepth 3 -type f "
+            f"      -name '*.tfrecord' -printf '%p\\t%s\\n' 2>/dev/null ; "
+            f"  echo '---' ; "
+            f"  [ -d {shlex.quote(cfg.ckpt_dir)} ] && "
+            f"    find {shlex.quote(cfg.ckpt_dir)} -maxdepth 2 -type f "
+            f"      -printf '%p\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null ; "
+            f"}}; exit 0"
         )
-        rc, out, _err = STATE.ssh.run(cmd, timeout=30)
+        rc, out, err = STATE.ssh.run(cmd, timeout=30)
         if rc != 0:
-            return jsonify({"ok": False, "error": "remote du/find failed"}), 500
+            return jsonify({"ok": False,
+                            "error": f"remote du/find failed: {err.strip()}"}), 500
         sections = out.split("---")
         du_lines     = (sections[0].splitlines() if len(sections) > 0 else [])
         tfr_lines    = (sections[1].splitlines() if len(sections) > 1 else [])
@@ -1499,6 +1507,51 @@ def create_app() -> Flask:
                 for line in ckpt_lines if line.strip()
                 for p, s, m in [_split(line, 3)[:3]]
             ],
+        })
+
+    @app.route("/api/fasrc/bootstrap-data", methods=["POST"])
+    def api_fasrc_bootstrap_data():
+        """Re-create the symlinks that point ``data_dir`` at the durable
+        copy of the same data under ``{repo_path}/data/`` on holylabs.
+        Idempotent: re-runnable after a netscratch purge, after committing
+        new PSFs, or after Globus uploads a fresh COSMOS catalog —
+        without manual cleanup.
+
+        Targets (source → link name under ``data_dir``):
+          - ``{repo_path}/data/euclid_psf``  → ``euclid_psf``   (ships via git)
+          - ``{repo_path}/data/COSMOS2025``  → ``COSMOS2025``   (Globus-uploaded)
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        repo_data = f"{cfg.repo_path}/data"
+        targets = [
+            ("euclid_psf", f"{repo_data}/euclid_psf"),
+            ("COSMOS2025", f"{repo_data}/COSMOS2025"),
+        ]
+        link_cmds = []
+        for name, src in targets:
+            link_cmds.append(
+                f"if [ -e {shlex.quote(src)} ]; then "
+                f"  ln -sfn {shlex.quote(src)} {shlex.quote(name)} "
+                f"    && echo 'linked: {name} -> {src}' "
+                f"    || echo 'FAILED: ln -sfn {src} {name}'; "
+                f"else "
+                f"  echo 'MISSING source: {src} — upload via Globus first'; "
+                f"fi"
+            )
+        cmd = (
+            f"mkdir -p {shlex.quote(cfg.data_dir)} && "
+            f"cd {shlex.quote(cfg.data_dir)} && {{ "
+            + " ; ".join(link_cmds)
+            + "; echo '---'; ls -l . | head -40; "
+            + "}"
+        )
+        rc, out, err = STATE.ssh.run(cmd, timeout=20)
+        return jsonify({
+            "ok":     rc == 0,
+            "output": out.strip(),
+            "error":  err.strip() if rc != 0 else "",
         })
 
     @app.route("/api/fasrc/queue")
@@ -1736,6 +1789,54 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": "not connected"}), 400
         MIRROR.trigger()
         return jsonify({"ok": True})
+
+    # ---- conda env update -------------------------------------------------
+
+    def _build_env_update_cmd(cfg) -> str:
+        """`module load python` + `yes | mamba env update -p … -f environment.yml`.
+
+        FASRC uses lmod, which is exposed as the ``module`` shell function
+        once ``/etc/profile.d/lmod.sh`` is sourced — non-interactive SSH
+        bash doesn't pull that automatically, so we do it ourselves.
+        The ``yes |`` keeps mamba 2.x's "Proceed ([y]/n)?" prompt from
+        stalling the stream.
+        """
+        return (
+            "set -o pipefail; "
+            "[ -f /etc/profile.d/lmod.sh ] && source /etc/profile.d/lmod.sh; "
+            f"cd {shlex.quote(cfg.repo_path)} && "
+            "module purge 2>/dev/null || true; "
+            "module load python && "
+            "echo '--- mamba: '$(which mamba) && "
+            f"yes | mamba env update -p {shlex.quote(cfg.conda_env_path)} "
+            "-f environment.yml 2>&1"
+        )
+
+    @app.route("/api/fasrc/env-update")
+    def api_fasrc_env_update():
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return Response(
+                "event: error\ndata: not connected\n\n",
+                mimetype="text/event-stream", status=400,
+            )
+        cfg = fasrc_config.load()
+        cmd = _build_env_update_cmd(cfg)
+
+        def _gen():
+            yield f"data: $ remote: cd {cfg.repo_path}\n\n"
+            yield f"data: $ module load python\n\n"
+            yield (f"data: $ yes | mamba env update -p "
+                   f"{cfg.conda_env_path} -f environment.yml\n\n")
+            try:
+                for line in STATE.ssh.stream(cmd):
+                    yield f"data: {line.replace(chr(13), '')}\n\n"
+                yield "event: done\ndata: complete\n\n"
+            except SSHError as e:
+                yield f"event: error\ndata: {e}\n\n"
+        return Response(stream_with_context(_gen()),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
 
     return app
 

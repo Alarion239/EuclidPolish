@@ -88,10 +88,20 @@ class BitwardenClient:
         """Authenticate with the master password; cache the session token."""
         if not master_password:
             raise BitwardenError("master password required")
-        proc = subprocess.run(
-            [self.bw_path, "unlock", master_password, "--raw"],
-            capture_output=True, timeout=20,
-        )
+        if not self.is_installed():
+            raise BitwardenError(
+                "Bitwarden CLI (`bw`) is not installed. "
+                "Install with `brew install bitwarden-cli` on macOS, "
+                "`npm install -g @bitwarden/cli` elsewhere, or see "
+                "https://bitwarden.com/help/cli/"
+            )
+        try:
+            proc = subprocess.run(
+                [self.bw_path, "unlock", master_password, "--raw"],
+                capture_output=True, timeout=20,
+            )
+        except FileNotFoundError as e:
+            raise BitwardenError(f"`bw` not found in PATH: {e}") from e
         if proc.returncode != 0:
             raise BitwardenError(
                 proc.stderr.decode(errors="replace").strip()
@@ -218,10 +228,17 @@ class SSHSession:
     # ----------------------------- connect --------------------------------
 
     def connect(self, password: str, totp: str, timeout: int = 30) -> None:
-        """Open the ControlMaster session with FASRC OpenAuth credentials.
+        """Open the ControlMaster session, handling any prompt order.
 
-        FASRC expects ``password,verification_code`` joined with a comma at
-        the password prompt; this is the documented OpenAuth flow.
+        FASRC offers two flavours of interactive auth:
+
+          * Password + 2FA: prompts ``Password:`` then ``VerificationCode:``.
+          * SSH key + 2FA:  no password prompt, only ``VerificationCode:``.
+
+        The two prompts also have inconsistent spacing in real life — the
+        live FASRC banner is ``VerificationCode:`` (no space). The loop
+        below recognises either order and sends the *right* secret to
+        the *right* prompt instead of a combined ``password,totp`` string.
         """
         if self.is_connected():
             return
@@ -255,29 +272,49 @@ class SSHSession:
         child = pexpect.spawn(
             args[0], args=args[1:], timeout=timeout, encoding="utf-8",
         )
+
+        pat_password = r"(?i)password\s*:"
+        # Match ``VerificationCode:`` / ``Verification Code:`` / ``OTP:`` /
+        # ``Two-factor code:`` / etc. — spacing varies between sshd versions.
+        pat_verify   = (r"(?i)(verification\s*code|verification|two[- ]?factor"
+                        r"|one[- ]?time|otp|duo passcode)\s*:")
+        pat_ok       = r"__EUCLID_POLISH_CONNECTED__"
+        pat_denied   = r"(?i)(permission denied|authentication failed|"
+        pat_denied  += r"access denied|access denied,)"
+
+        sent_password = False
+        sent_totp     = False
         try:
-            idx = child.expect([
-                r"(?i)password:",
-                r"(?i)verification code:",
-                r"__EUCLID_POLISH_CONNECTED__",
-                pexpect.EOF,
-            ])
-            if idx in (0, 1):
-                child.sendline(f"{password},{totp}")
-                idx2 = child.expect([
-                    r"__EUCLID_POLISH_CONNECTED__",
-                    r"(?i)permission denied",
+            for _ in range(6):                    # ≤ 2 prompts in any order; cap loops anyway
+                idx = child.expect([
+                    pat_password,
+                    pat_verify,
+                    pat_ok,
+                    pat_denied,
                     pexpect.EOF,
                 ], timeout=timeout)
-                if idx2 != 0:
-                    raise SSHError(
-                        "FASRC refused the password/TOTP — "
-                        + (child.before or "").strip()
-                    )
-            elif idx == 3:  # EOF before any prompt
-                raise SSHError("ssh closed before the password prompt: "
-                               + (child.before or "").strip())
-            # idx == 2: connected via SSH key already.
+                if idx == 0:
+                    if sent_password:
+                        raise SSHError("FASRC re-prompted for password — likely wrong")
+                    child.sendline(password)
+                    sent_password = True
+                elif idx == 1:
+                    if sent_totp:
+                        raise SSHError("FASRC re-prompted for verification code — "
+                                       "likely wrong or expired (TOTP cycles every 30s)")
+                    child.sendline(totp)
+                    sent_totp = True
+                elif idx == 2:                    # __EUCLID_POLISH_CONNECTED__ seen
+                    break
+                elif idx == 3:
+                    raise SSHError("FASRC refused credentials — "
+                                   + (child.before or "").strip())
+                elif idx == 4:                    # EOF
+                    raise SSHError("ssh closed unexpectedly: "
+                                   + (child.before or "").strip())
+            else:
+                raise SSHError("auth handshake didn't converge")
+
             child.expect(pexpect.EOF, timeout=timeout)
         finally:
             try:
