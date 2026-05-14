@@ -355,9 +355,13 @@ def plot_reconstruction(
             vis.save_figure(output_path)
             return
 
-        # Default 2 × {2, 3, or 4} layout (LR colour composite or VIS
-        # gray + SR gray; optional predicted-dirty + residual when the
-        # caller supplied the forward-modelled SR).
+        # Default 2 × {2, 3, or 4} layout. Dirty LR is always rendered
+        # in VIS-only grayscale: a 4-band colour composite is
+        # dominated by the much-noisier NISP channels and visually
+        # underplays the VIS plane that the model actually targets.
+        # SR is grayscale (model is VIS-only). Optional predicted-
+        # dirty + residual when the caller supplied the forward-
+        # modelled SR.
         has_predicted = predicted_dirty is not None
         has_residual  = residual is not None
         cols = 2 + int(has_predicted) + int(has_residual)
@@ -365,12 +369,9 @@ def plot_reconstruction(
                              vmax=vmax)
 
         # Row 1 — linear.
-        if has_cube:
-            vis.add_rgb_scale_panel(lr_cube, stretch="linear",
-                                    title_suffix="\nDirty (LR)")
-        else:
-            vis.add_scale_panel(lr_data, stretch="linear",
-                                title_suffix="\nDirty (LR)")
+        vis.add_scale_panel(lr_data, stretch="linear",
+                            title_suffix="\nDirty (LR, VIS)",
+                            cmap="gray")
         vis.add_scale_panel(sr_data, stretch="linear",
                             title_suffix="\nReconstruction (SR)",
                             cmap="gray")
@@ -388,14 +389,10 @@ def plot_reconstruction(
             )
 
         # Row 2 — asinh (loss-aligned stretch).
-        if has_cube:
-            vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
-                                    asinh_scale=shared_scale,
-                                    title_suffix="\nDirty (LR)")
-        else:
-            vis.add_scale_panel(lr_data, stretch="asinh",
-                                asinh_scale=shared_scale,
-                                title_suffix="\nDirty (LR)")
+        vis.add_scale_panel(lr_data, stretch="asinh",
+                            asinh_scale=shared_scale,
+                            title_suffix="\nDirty (LR, VIS)",
+                            cmap="gray")
         vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nReconstruction (SR)",
                             cmap="gray")
@@ -429,18 +426,19 @@ def plot_reconstruction(
     vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
 
     nbands = len(Config.LR_INPUT_BAND_NAMES)
-    lr_color = (lr_cube is not None and lr_cube.ndim == 3
-                and lr_cube.shape[-1] == nbands)
+    # LR (dirty) is always rendered VIS-only grayscale. NISP channels
+    # are much noisier than VIS and a 4-band colour composite makes
+    # the dirty image look worse than what the model actually sees —
+    # the user wants to inspect the VIS channel the network targets.
+    # HR (clean truth) keeps the 4-band colour composite since it's
+    # noise-free and the colour informs galaxy-SED interpretation.
     hr_color = (hr_cube is not None and hr_cube.ndim == 3
                 and hr_cube.shape[-1] == nbands)
 
     # ---- Row 1: linear (raw electrons) ----
-    if lr_color:
-        vis.add_rgb_scale_panel(lr_cube, stretch="linear",
-                                title_suffix="\nDirty (LR)")
-    else:
-        vis.add_scale_panel(lr_data, stretch="linear",
-                            title_suffix="\nDirty (LR)")
+    vis.add_scale_panel(lr_data, stretch="linear",
+                        title_suffix="\nDirty (LR, VIS)",
+                        cmap="gray")
     vis.add_scale_panel(sr_data, stretch="linear",
                         title_suffix="\nReconstruction (SR)",
                         cmap="gray")
@@ -457,13 +455,9 @@ def plot_reconstruction(
                                  title_suffix="\nraw e⁻")
 
     # ---- Row 2: asinh (loss-aligned) ----
-    if lr_color:
-        vis.add_rgb_scale_panel(lr_cube, stretch="asinh",
-                                asinh_scale=shared_scale,
-                                title_suffix="\nDirty (LR)")
-    else:
-        vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
-                            title_suffix="\nDirty (LR)")
+    vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
+                        title_suffix="\nDirty (LR, VIS)",
+                        cmap="gray")
     vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
                         title_suffix="\nReconstruction (SR)",
                         cmap="gray")
