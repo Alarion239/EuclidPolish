@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ file.basename }} · Inspect{% endblock %}
+{% block content %}
+<h2>🔬 FITS inspector</h2>
+<p class="hint">
+  Header view + download link for any FITS file in the project data tree.
+  Linked from every image card across the UI so you can confirm exactly
+  what pixel array sits behind a thumbnail and pull it into astropy /
+  ds9 / topcat without re-tracing the pipeline.
+</p>
+
+<div class="grid">
+  <section class="card">
+    <h3>File</h3>
+    <dl class="kv">
+      <dt>Name</dt>     <dd><code>{{ file.basename }}</code></dd>
+      <dt>Size</dt>     <dd>{{ file.size_kb }} KB</dd>
+      <dt>Path</dt>     <dd><code>{{ rel }}</code></dd>
+      <dt>HDUs</dt>     <dd>{{ hdus | length }}</dd>
+    </dl>
+    <p style="margin-top: 12px;">
+      <a class="chip" href="{{ url_for('inspect_fits_download', fits=rel) }}"
+         download>⬇ Download FITS</a>
+    </p>
+  </section>
+
+  <section class="card">
+    <h3>Preview</h3>
+    <p class="hint">Asinh-stretched PNG of the first 2-D image HDU. Band
+      stretch knee picked by filename match where possible.</p>
+    <img src="{{ url_for('inspect_fits_preview', fits=rel, size=480) }}"
+         alt="preview of {{ file.basename }}"
+         style="max-width: 100%; height: auto; display: block;
+                border: 1px solid #2a3144; background: #1a1f2c;">
+  </section>
+</div>
+
+{% for hdu in hdus %}
+<section class="card">
+  <h3>HDU {{ hdu.hdu_index }} · <code>{{ hdu.name }}</code>
+    <span class="muted" style="font-weight:normal; font-size:12px;">
+      {{ hdu.kind }}
+      {%- if hdu.shape %} · shape={{ hdu.shape }} · dtype={{ hdu.dtype }}{% endif %}
+    </span>
+  </h3>
+  {% if hdu.cards %}
+    <table class="fits-header"
+           style="width:100%; font-size:12px; font-family:monospace;
+                  border-collapse:collapse;">
+      <thead>
+        <tr style="text-align:left; border-bottom:1px solid #2a3144;">
+          <th style="padding:4px 8px; width:22%;">Key</th>
+          <th style="padding:4px 8px; width:38%;">Value</th>
+          <th style="padding:4px 8px;">Comment</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key, value, comment in hdu.cards %}
+          <tr style="border-bottom:1px solid #1a1f2c;">
+            <td style="padding:2px 8px;"><code>{{ key }}</code></td>
+            <td style="padding:2px 8px;"><code>{{ value }}</code></td>
+            <td style="padding:2px 8px;" class="muted">{{ comment }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">(no header cards)</p>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="card">
+  <h3>Allowed data roots</h3>
+  <p class="hint">The inspector only serves FITS files that resolve
+    inside one of these directories:</p>
+  <ul class="psf-list">
+    {% for r in allowed_roots %}
+      <li><code>{{ r }}</code></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

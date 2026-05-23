@@ -62,6 +62,26 @@
   </section>
 
   <section class="card">
+    <h3>🔭 HST templates</h3>
+    <p class="hint"><code>{{ hst.root }}</code></p>
+    {% if hst.n_templates > 0 %}
+      <dl class="kv">
+        <dt>Templates</dt> <dd>{{ hst.n_templates }}</dd>
+        <dt>On disk</dt>   <dd>{{ hst.size_mb }} MB</dd>
+      </dl>
+      {% if hst.sample_ids %}
+        <p class="hint">Sample COSMOS ids:
+          {% for cid in hst.sample_ids[:5] %}<code>{{ cid }}</code>{% if not loop.last %} {% endif %}{% endfor %}
+        </p>
+      {% endif %}
+    {% else %}
+      <p class="muted">no templates yet — populate the library to use real
+         galaxy morphologies in synthetic training data.</p>
+    {% endif %}
+    <p><a href="{{ url_for('hst_templates_page') }}">→ open HST templates</a></p>
+  </section>
+
+  <section class="card">
     <h3>🧠 Checkpoints</h3>
     <p class="hint">{{ checkpoints.dir }}</p>
     {% if checkpoints.files %}
@@ -85,6 +105,7 @@
   <div class="tag-row">
     <a href="{{ url_for('catalog_page') }}#brightest-form">⭐ Query brightest stars</a>
     <a href="{{ url_for('cutouts_page') }}">⬇️ Download per-band cutouts</a>
+    <a href="{{ url_for('hst_templates_page') }}#download-form">🔭 Bootstrap HST templates</a>
     <a href="{{ url_for('psfs_page') }}#extract-form">✨ Extract PSF</a>
     <a href="{{ url_for('sky_page') }}">🌌 Generate sky data</a>
     <a href="{{ url_for('training_page') }}#train-form">🧠 Train WDSR</a>

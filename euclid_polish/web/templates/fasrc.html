@@ -14,40 +14,27 @@
 ============================================================ -->
 <section class="card" id="conn-card">
   <div class="conn-inner">
-    <h3>Sign in to FASRC</h3>
+    <h3>Connect to FASRC</h3>
     <p class="muted" style="margin:0 0 14px;">
-      One step: enter your Bitwarden master password.<br>
-      We'll fetch the FASRC password + TOTP, then open the SSH ControlMaster.
+      Public-key SSH only. If <code>ssh {{ cfg.ssh_user or '&lt;user&gt;' }}@{{ cfg.ssh_host }}</code>
+      works from your terminal without prompting, this button will too.
     </p>
 
-    <div id="bw-missing" style="display:none; background:#fff0f0; color:#761515;
-         border:1px solid #ffd0d0; border-radius:4px; padding:8px 10px;
-         margin-bottom:12px; font-size:13px; text-align:left;">
-      <strong>Bitwarden CLI not installed.</strong>
-      Install with <code>brew install bitwarden-cli</code> (macOS),
-      <code>npm install -g @bitwarden/cli</code>, or see
-      <a href="https://bitwarden.com/help/cli/" target="_blank">bitwarden.com/help/cli</a>.
-    </div>
-
     <form id="conn-form" autocomplete="off">
-      <input type="password" id="master-pw" class="conn-input"
-             placeholder="Bitwarden master password" autocomplete="current-password">
       <button id="btn-login" type="submit" class="conn-button">
-        Login &amp; Connect
+        Connect
       </button>
     </form>
 
     <div id="conn-msg" class="muted" style="margin-top:10px; min-height:18px;"></div>
 
-    <details style="margin-top:14px; text-align:left;">
+    <details id="settings-block" style="margin-top:14px; text-align:left;">
       <summary class="muted" style="cursor:pointer; font-size:13px;">Settings</summary>
       <form id="settings-form" class="form-row" style="margin-top:8px;">
         <label>SSH user
           <input name="ssh_user" value="{{ cfg.ssh_user }}" size="14"></label>
         <label>SSH host
           <input name="ssh_host" value="{{ cfg.ssh_host }}" size="22"></label>
-        <label>BW item name
-          <input name="bw_item" value="{{ cfg.bw_item }}" size="12"></label>
         <label>Repo path
           <input name="repo_path" value="{{ cfg.repo_path }}" size="40"></label>
         <label>Conda env
@@ -58,8 +45,16 @@
           <input name="ckpt_dir" value="{{ cfg.ckpt_dir }}" size="40"></label>
         <label>Local mirror dir
           <input name="local_ckpt_mirror" value="{{ cfg.local_ckpt_mirror }}" size="40" placeholder="blank → ./ckpt/wdsr"></label>
-        <button type="submit">Save settings</button>
+        <div style="flex-basis:100%; margin-top:4px;">
+          <button type="submit">Save settings</button>
+        </div>
       </form>
+      <p class="muted" style="margin-top:10px; font-size:12px;">
+        First-time setup: install your public key on FASRC with
+        <code>ssh-copy-id {{ cfg.ssh_user or '&lt;user&gt;' }}@{{ cfg.ssh_host }}</code>
+        (one-time, enter password + Duo). Generate a key first with
+        <code>ssh-keygen -t ed25519</code> if you don't have one.
+      </p>
     </details>
   </div>
 </section>
@@ -518,13 +513,10 @@ document.querySelectorAll('.chip[data-tab]').forEach(chip => {
 async function refreshConnState() {
   const { data } = await api('/api/fasrc/status');
   const conn = data.ssh_connected;
+
   const badge = $('conn-badge');
-  badge.textContent = conn ? 'connected'
-                    : (data.bw_unlocked ? 'vault unlocked' : 'disconnected');
-  badge.className = 'badge ' + (conn ? 'badge-done'
-                              : data.bw_unlocked ? 'badge-running' : 'badge-failed');
-  $('bw-missing').style.display = data.bw_installed ? 'none' : 'block';
-  $('btn-login').disabled = !data.bw_installed;
+  badge.textContent = conn ? 'connected' : 'disconnected';
+  badge.className = 'badge ' + (conn ? 'badge-done' : 'badge-failed');
 
   // Toggle between the centered login tile and the tabbed dashboard.
   $('conn-card').style.display      = conn ? 'none' : 'block';
@@ -534,27 +526,10 @@ async function refreshConnState() {
   if (conn) refreshTraining();   // landing tab
 }
 
-/* One-button login: BW unlock → fetch creds → SSH ControlMaster.
-   Each phase is awaited so the user sees the precise step that failed
-   instead of a generic "didn't work". */
 $('conn-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const pw = $('master-pw').value;
-  if (!pw) { $('conn-msg').textContent = 'enter master password'; return; }
   $('btn-login').disabled = true;
-
-  $('conn-msg').textContent = 'unlocking vault…';
-  const u = await api('/api/fasrc/unlock', {
-    method: 'POST', body: new URLSearchParams({ master_password: pw }),
-  });
-  $('master-pw').value = '';
-  if (!u.ok) {
-    $('conn-msg').textContent = 'unlock failed: ' + (u.data.error || '?');
-    $('btn-login').disabled = false;
-    return;
-  }
-
-  $('conn-msg').textContent = 'connecting via SSH (Bitwarden TOTP)…';
+  $('conn-msg').textContent = 'opening SSH ControlMaster…';
   const c = await api('/api/fasrc/connect', { method: 'POST' });
   if (!c.ok) {
     $('conn-msg').textContent = 'connect failed: ' + (c.data.error || '?');
@@ -567,13 +542,14 @@ $('conn-form').addEventListener('submit', async (e) => {
 
 $('btn-disconnect').onclick = async () => {
   await api('/api/fasrc/disconnect', { method: 'POST' });
-  await api('/api/fasrc/lock',       { method: 'POST' });
   refreshConnState();
 };
 $('settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
-  const r = await fetch('/api/fasrc/config', { method: 'POST', body: new URLSearchParams(fd) });
+  const r = await fetch('/api/fasrc/config', {
+    method: 'POST', body: new URLSearchParams(fd),
+  });
   $('conn-msg').textContent = r.ok ? 'settings saved' : 'save failed';
 });
 

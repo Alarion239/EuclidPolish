@@ -1,0 +1,207 @@
+{% extends "base_split.html" %}
+{% block title %}HST templates · EuclidPolish{% endblock %}
+{% block heading %}HST templates{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Library</span>
+  <span class="chip active">{{ hst.n_templates }} on disk</span>
+  <span class="chip">{{ hst.size_mb }} MB</span>
+  <span class="toolbar-label">Preview</span>
+  <a class="chip active" data-group="view" data-value="gallery">gallery</a>
+  <a class="chip"         data-group="view" data-value="renderer">renderer view</a>
+</div>
+{% endblock %}
+
+{% block viz %}
+{% if not cosmos_catalog_present %}
+<section class="card">
+  <p class="hint">⚠️  COSMOS2025 catalog not found at
+    <code>{{ cosmos_catalog_path }}</code>. The template downloader uses
+    it to select candidate galaxies.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h3>Library</h3>
+  <p class="hint"><code>{{ hst.root }}</code></p>
+  {% if hst.n_templates == 0 %}
+    <p class="muted">empty — populate via the "Download templates" form to
+      enable real-morphology rendering in the sky generator.</p>
+  {% else %}
+    <p class="hint">
+      {{ hst.n_templates }} templates,
+      {{ hst.size_mb }} MB on disk.
+      {% if hst.sample_ids %}
+        Sample COSMOS ids:
+        {% for cid in hst.sample_ids[:8] %}<code>{{ cid }}</code>{% if not loop.last %} {% endif %}{% endfor %}
+      {% endif %}
+    </p>
+    <div id="gallery-pane" class="band-preview">
+      <div id="hst-gallery" class="gallery"
+           style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
+        <p class="muted">loading…</p>
+      </div>
+      <div id="hst-pager" style="margin-top: 12px; display:flex; gap:8px; align-items:center;">
+        <button class="chip" id="hst-prev">‹ prev</button>
+        <span class="chip active" id="hst-page-label">page 1</span>
+        <button class="chip" id="hst-next">next ›</button>
+      </div>
+    </div>
+    <div id="renderer-pane" class="band-preview" style="display:none;">
+      <p class="hint">Inspect one template's <b>renderer view</b> —
+        what the simulator actually composites at the chosen rescale
+        factor. Pick a COSMOS id from the gallery and tweak the slider.</p>
+      <form id="renderer-form" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <label>COSMOS id
+          <input type="number" id="renderer-cid" name="cosmos_id"
+                 value="{{ hst.sample_ids[0] if hst.sample_ids else '' }}" min="1"></label>
+        <label>Rescale ×
+          <input type="number" id="renderer-rescale" name="rescale"
+                 value="{{ '%.1f'|format(default_rescale) }}"
+                 step="0.5" min="1" max="12"></label>
+        <button type="submit">Render</button>
+      </form>
+      <div style="margin-top:12px;">
+        <img id="renderer-img" alt="renderer preview" style="max-width:100%; display:block;">
+      </div>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card" id="download-form-card">
+  <h3>Download templates</h3>
+  <p class="hint">Pulls bright (mag &lt; max), extended (disk Re &gt; min)
+    COSMOS galaxies via MAST HAPcut. ~10–20% of positions miss HAP
+    coverage and are skipped; the rest go straight into the library.</p>
+  <form id="download-form" action="/hst-templates/download">
+    <label>Number of templates
+      <input type="number" name="n" value="{{ default_n }}" min="1" max="5000"></label>
+    <label>Cutout size (HST native px ≈ 0.04")
+      <input type="number" name="size" value="{{ default_size }}" min="64" max="1024"></label>
+    <label>Max VIS magnitude
+      <input type="number" name="max_mag" value="{{ default_max_mag }}" step="0.5" min="14" max="28"></label>
+    <label>Min disk Re (arcsec)
+      <input type="number" name="min_disk_re" value="{{ default_min_disk_re }}" step="0.05" min="0.05" max="5"></label>
+    <label>Parallel workers
+      <input type="number" name="workers" value="{{ default_workers }}" min="1" max="16"></label>
+    <button type="submit" {% if not cosmos_catalog_present %}disabled{% endif %}>
+      Start download
+    </button>
+  </form>
+  <div id="download-status"></div>
+</section>
+
+<section class="card">
+  <h3>Rebuild index</h3>
+  <p class="hint">Re-scans the templates directory and rebuilds the CSV
+    index. Use after a manual copy / rsync.</p>
+  <form id="rebuild-form" action="/hst-templates/rebuild-index">
+    <button type="submit">Rebuild index</button>
+  </form>
+  <div id="rebuild-status"></div>
+</section>
+
+<section class="card">
+  <h3>Use in sky generation</h3>
+  <p class="hint">Once the library is populated, go to
+    <a href="{{ url_for('sky_page') }}">🌌 Sky data</a> and set the
+    <b>HST template fraction</b> field on the generate form.</p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PER_PAGE = 24;
+let curPage = 0, totalItems = {{ hst.n_templates }};
+
+function setView(name) {
+  document.getElementById("gallery-pane").style.display  = name === "gallery"  ? "" : "none";
+  document.getElementById("renderer-pane").style.display = name === "renderer" ? "" : "none";
+  document.querySelectorAll('[data-group="view"]').forEach(el =>
+    el.classList.toggle("active", el.dataset.value === name));
+}
+
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest('.chip[data-group="view"]');
+  if (!chip) return;
+  e.preventDefault();
+  setView(chip.dataset.value);
+});
+
+async function loadPage(page) {
+  const grid = document.getElementById("hst-gallery");
+  if (!grid) return;
+  grid.innerHTML = '<p class="muted">loading…</p>';
+  try {
+    const offset = page * PER_PAGE;
+    const r = await fetch(`/api/hst-templates/list?offset=${offset}&limit=${PER_PAGE}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    totalItems = j.total;
+    const n_pages = Math.max(1, Math.ceil(j.total / PER_PAGE));
+    if (j.items.length === 0) {
+      grid.innerHTML = '<p class="muted">no templates on this page</p>';
+    } else {
+      grid.innerHTML = j.items.map(it => `
+        <a class="thumb"
+           href="/inspect?fits=${encodeURIComponent(it.fits_path)}"
+           target="_blank"
+           title="ra=${it.ra_deg.toFixed(5)} dec=${it.dec_deg.toFixed(5)} ${it.size_pix}px — inspect FITS">
+          <img loading="lazy"
+               src="/hst-template-image/${it.cosmos_id}?size=140"
+               alt="cosmos ${it.cosmos_id}">
+          <span class="thumb-label">${it.cosmos_id}</span>
+        </a>
+      `).join("");
+    }
+    document.getElementById("hst-page-label").textContent =
+      `page ${page + 1} / ${n_pages} · ${j.total} total`;
+  } catch (e) {
+    grid.innerHTML = `<p class="muted">error: ${e.message}</p>`;
+  }
+}
+
+const prev = document.getElementById("hst-prev");
+const next = document.getElementById("hst-next");
+if (prev) prev.addEventListener("click", () => {
+  if (curPage > 0) { curPage -= 1; loadPage(curPage); }
+});
+if (next) next.addEventListener("click", () => {
+  const max = Math.max(0, Math.ceil(totalItems / PER_PAGE) - 1);
+  if (curPage < max) { curPage += 1; loadPage(curPage); }
+});
+
+const rf = document.getElementById("renderer-form");
+if (rf) {
+  rf.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const cid = parseInt(document.getElementById("renderer-cid").value, 10);
+    const rs  = parseFloat(document.getElementById("renderer-rescale").value);
+    if (!cid || isNaN(rs)) return;
+    document.getElementById("renderer-img").src =
+      `/view/hst-template?cosmos_id=${cid}&rescale=${rs}&_t=${Date.now()}`;
+  });
+}
+
+const df = document.getElementById("download-form");
+if (df) df.addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(df, document.getElementById("download-status"), {
+    onDone: () => setTimeout(() => location.reload(), 2000),
+  });
+});
+const rb = document.getElementById("rebuild-form");
+if (rb) rb.addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(rb, document.getElementById("rebuild-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+
+// Initial gallery render.
+if (document.getElementById("hst-gallery")) loadPage(0);
+</script>
+{% endblock %}

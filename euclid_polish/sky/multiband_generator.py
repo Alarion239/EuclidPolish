@@ -28,6 +28,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.sky.cosmos2025 import CosmosCatalog
+from euclid_polish.sky.hst_templates import HSTTemplateRenderer
 from euclid_polish.sky.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas,
 )
@@ -41,12 +42,21 @@ from euclid_polish.sky.types import MultiBandSkyImage
 
 @dataclass
 class MultiBandGeneratorConfig:
-    """Field-level config for the multi-band simulator."""
+    """Field-level config for the multi-band simulator.
+
+    ``hst_template_fraction`` selects what fraction of each field's
+    galaxies are rendered from real HST/ACS templates instead of the
+    COSMOS B+D Sersic decomposition. 0.0 keeps the original Sersic-only
+    behaviour (backward compatible); 0.5 mixes templates and Sersics at
+    a 1:1 rate. Requires an ``hst_template_renderer`` to be passed to
+    :class:`MultiBandSimulator` when ``> 0``.
+    """
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
     gal_density_arcmin2:      float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
+    hst_template_fraction:    float = Config.HST_TEMPLATE_FRACTION
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -56,6 +66,8 @@ class MultiBandGeneratorConfig:
         if min(self.gal_density_arcmin2, self.star_density_arcmin2,
                self.lens_density_arcmin2) < 0:
             return False, "densities must be non-negative"
+        if not (0.0 <= self.hst_template_fraction <= 1.0):
+            return False, "hst_template_fraction must be in [0, 1]"
         return True, None
 
 
@@ -117,6 +129,7 @@ class MultiBandSimulator:
         config: Optional[MultiBandGeneratorConfig] = None,
         *,
         lens_population: Optional[LensPopulation] = None,
+        hst_template_renderer: Optional[HSTTemplateRenderer] = None,
     ):
         self.catalog = catalog
         self.config  = config or MultiBandGeneratorConfig()
@@ -124,6 +137,15 @@ class MultiBandSimulator:
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
         self.lens_population = lens_population or LensPopulation(catalog)
+        # Optional real-morphology renderer. Must be supplied iff the
+        # config asks for a non-zero template fraction — fail loudly
+        # rather than silently dropping to the Sersic path.
+        self.hst_template_renderer = hst_template_renderer
+        if self.config.hst_template_fraction > 0 and hst_template_renderer is None:
+            raise ValueError(
+                f"hst_template_fraction={self.config.hst_template_fraction} "
+                f"> 0 but no hst_template_renderer was provided."
+            )
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -140,9 +162,29 @@ class MultiBandSimulator:
     ) -> dict:
         g = self.catalog.sample_galaxy(rng)
         x_pix, y_pix = self._random_pix(rng)
-        # Render each Sersic component once (geometry is band-independent),
-        # then broadcast-scale into every channel by the per-band flux.
-        # This is the hot-path optimisation: cuts Sersic evaluations by
+        # Choose render path: HST template (real morphology) vs B+D Sersic.
+        # The same per-band catalog fluxes drive both paths so photometry
+        # is invariant to the routing decision.
+        use_template = (
+            self.hst_template_renderer is not None
+            and self.config.hst_template_fraction > 0.0
+            and rng.random() < self.config.hst_template_fraction
+        )
+        if use_template:
+            return self._add_galaxy_from_template(
+                canvas_4ch, g, x_pix, y_pix, rng,
+            )
+        return self._add_galaxy_from_sersic(canvas_4ch, g, x_pix, y_pix)
+
+    def _add_galaxy_from_sersic(
+        self,
+        canvas_4ch: np.ndarray,
+        g,                           # GalaxyParams (avoid circular import)
+        x_pix: float, y_pix: float,
+    ) -> dict:
+        """Original Sersic B+D render path. Geometry band-independent."""
+        # Render each Sersic component once, then broadcast-scale into every
+        # channel by the per-band flux. This cuts Sersic evaluations by
         # NUM_LR_CHANNELS = 4× without changing the result.
         add_sersic_to_bands(
             canvas_4ch, flux_per_band=g.bulge_flux_e, n=4.0,
@@ -158,6 +200,7 @@ class MultiBandSimulator:
         )
         return {
             "type": "galaxy",
+            "render": "sersic",
             "catalog_id": g.catalog_id,
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
@@ -165,6 +208,44 @@ class MultiBandSimulator:
             "bulge_re_arcsec": float(g.bulge_r_e_arcsec),
             "disk_re_arcsec":  float(g.disk_r_e_arcsec),
             "flux_e_per_band": list(map(float, [g.total_flux_e(k) for k in range(4)])),
+        }
+
+    def _add_galaxy_from_template(
+        self,
+        canvas_4ch: np.ndarray,
+        g,
+        x_pix: float, y_pix: float,
+        rng: np.random.Generator,
+    ) -> dict:
+        """HST-template render path. Falls back to Sersic on blank patches.
+
+        The per-band flux comes from the COSMOS catalog (bulge + disk
+        components summed), so a template-rendered galaxy is photometrically
+        equivalent to a Sersic-rendered one for the same catalog row.
+        """
+        total_flux_per_band = np.array(
+            [g.total_flux_e(k) for k in range(Config.NUM_LR_CHANNELS)],
+            dtype=np.float32,
+        )
+        info = self.hst_template_renderer.deposit_into_canvas(
+            canvas_4ch,
+            flux_per_band=total_flux_per_band,
+            x_pix=x_pix, y_pix=y_pix, rng=rng,
+        )
+        if info is None:
+            # Template was blank / fully clipped — fall back to Sersic so
+            # the field still gets a galaxy at this position.
+            return self._add_galaxy_from_sersic(canvas_4ch, g, x_pix, y_pix)
+        return {
+            "type": "galaxy",
+            "render": "hst_template",
+            "catalog_id": g.catalog_id,
+            "template_cosmos_id": int(info["cosmos_id"]),
+            "rescale_factor":     float(info["rescale_factor"]),
+            "x_pix": float(x_pix),
+            "y_pix": float(y_pix),
+            "z_phot": float(g.z_phot),
+            "flux_e_per_band": list(map(float, total_flux_per_band)),
         }
 
     def _add_star(

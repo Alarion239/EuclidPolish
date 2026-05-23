@@ -45,6 +45,10 @@ from euclid_polish.sky.profiles import (
     sersic_amp_from_flux,
 )
 from euclid_polish.sky.resample import upsample, lanczos3_upsample, cubic_upsample
+from euclid_polish.sky.hst_templates import (
+    HSTTemplateRenderer,
+    HSTTemplateRenderConfig,
+)
 
 __all__ = [
     "MultiBandSimulator",
@@ -71,4 +75,6 @@ __all__ = [
     "upsample",
     "lanczos3_upsample",
     "cubic_upsample",
+    "HSTTemplateRenderer",
+    "HSTTemplateRenderConfig",
 ]

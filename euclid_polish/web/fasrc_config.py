@@ -23,14 +23,12 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "fasrc.json")
 @dataclass
 class FasrcConfig:
     # ── SSH ────────────────────────────────────────────────────────────────
+    # Authentication is public-key only. Install your key once with
+    # ``ssh-copy-id <user>@login.rc.fas.harvard.edu`` from any terminal.
     ssh_user:           str = ""
     ssh_host:           str = "login.rc.fas.harvard.edu"
     control_socket:     str = "/tmp/euclid-polish-fasrc.sock"
     control_persist:    str = "8h"
-
-    # ── Bitwarden item name ────────────────────────────────────────────────
-    # The vault entry that stores FASRC password + TOTP (OpenAuth).
-    bw_item:            str = "FASRC"
 
     # ── Remote paths ───────────────────────────────────────────────────────
     repo_path:          str = "/n/holylabs/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish"

@@ -64,8 +64,9 @@
         <div class="gallery" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
           {% for fname in entry.preview %}
             <a class="thumb"
-               href="{{ url_for('cutout_image', band_name=entry.name, filename=fname) }}"
-               target="_blank">
+               href="{{ url_for('inspect_fits_page', fits='data/euclid_stars/cutouts/' ~ entry.name ~ '/' ~ fname) }}"
+               target="_blank"
+               title="Inspect FITS header + download">
               <img loading="lazy"
                    src="{{ url_for('cutout_image', band_name=entry.name, filename=fname, size=140) }}"
                    alt="{{ fname }}">

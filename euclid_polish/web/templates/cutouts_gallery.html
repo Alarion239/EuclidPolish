@@ -6,8 +6,8 @@
   Live-rendered from FITS with the per-band asinh stretch (scale =
   {{ '%.0f'|format(band.asinh_stretch_scale_e) }} e⁻). Each thumbnail is
   clipped at the 1.0 / 99.7 percentiles after stretch. Bright pixels show
-  as dark on the inverted gray scale. Click a thumbnail for the full-resolution
-  PNG.
+  as dark on the inverted gray scale. Click a thumbnail to open the FITS
+  inspector (header + download link).
 </p>
 
 <section class="card">
@@ -38,7 +38,10 @@
 {% if files %}
 <div class="gallery">
   {% for fname in files %}
-    <a class="thumb" href="{{ url_for('cutout_image', band_name=band.name, filename=fname, output_dir=output_dir) }}" target="_blank">
+    <a class="thumb"
+       href="{{ url_for('inspect_fits_page', fits='data/euclid_stars/cutouts/' ~ band.name ~ '/' ~ fname) }}"
+       target="_blank"
+       title="Inspect FITS header + download">
       <img loading="lazy"
            src="{{ url_for('cutout_image', band_name=band.name, filename=fname, output_dir=output_dir, size=220) }}"
            alt="{{ fname }}">

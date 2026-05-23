@@ -24,8 +24,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from flask import (
-    Flask, Response, abort, jsonify, render_template, request, send_file,
-    stream_with_context, url_for,
+    Flask, Response, abort, jsonify, redirect, render_template, request,
+    send_file, stream_with_context, url_for,
 )
 
 from euclid_polish.config import BandConfig, Config
@@ -40,7 +40,7 @@ from euclid_polish.web import (
 from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import (
-    BitwardenError, RemoteState, SSHConfig, SSHError, SSHSession, STATE,
+    RemoteState, SSHConfig, SSHError, SSHSession, STATE,
 )
 
 
@@ -111,6 +111,42 @@ def _checkpoints_status() -> Dict[str, Any]:
     return out
 
 
+def _hst_status() -> Dict[str, Any]:
+    """Snapshot of the HST template library: counts, root, sample ids.
+
+    Reads only the index CSV — never touches the FITS files — so it's
+    cheap enough to call on every page render.
+    """
+    from euclid_polish.hst.catalog import HSTTemplateLibrary
+    root = Config.HST_TEMPLATES_DIR
+    out = {
+        "root":        root,
+        "n_templates": 0,
+        "size_mb":     0.0,
+        "sample_ids":  [],
+        "csv_present": False,
+    }
+    if not os.path.isdir(root):
+        return out
+    lib = HSTTemplateLibrary(root=root)
+    out["n_templates"] = len(lib)
+    out["csv_present"] = os.path.exists(lib.catalog_path)
+    out["sample_ids"]  = lib.cutout_ids()[:10]
+    # Cheap aggregate over FITS files; skip the CSV.
+    total_bytes = 0
+    try:
+        for name in os.listdir(root):
+            if name.startswith("tpl_") and name.endswith(".fits"):
+                try:
+                    total_bytes += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    out["size_mb"] = round(total_bytes / 1e6, 1)
+    return out
+
+
 def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
                           preview_n: int = 8) -> Dict[str, Any]:
     """Count cutout FITS files per band under ``output_dir/cutouts/<band>/``.
@@ -139,7 +175,13 @@ def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
 
 
 def _list_vis_pngs() -> list[Dict[str, Any]]:
-    """Recent PNGs under data/vis/, newest first."""
+    """Recent PNGs under data/vis/, newest first.
+
+    Each entry includes ``inspect_fits`` — a project-relative path to a
+    same-stem ``.fits`` sibling if one exists. The visualization gallery
+    uses this to route the thumbnail click to ``/inspect`` instead of
+    just popping the raw PNG.
+    """
     pngs: list[Dict[str, Any]] = []
     if not os.path.isdir(Config.VIS_DIR):
         return pngs
@@ -154,10 +196,18 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
             except OSError:
                 continue
             rel = os.path.relpath(full, Config.VIS_DIR)
+            inspect_fits = None
+            stem = os.path.splitext(full)[0]
+            for ext in (".fits", ".fit"):
+                cand = stem + ext
+                if os.path.isfile(cand):
+                    inspect_fits = _safe_relpath(os.path.realpath(cand))
+                    break
             pngs.append({
-                "rel":     rel,
-                "mtime":   mtime,
-                "size_kb": round(size_kb, 1),
+                "rel":          rel,
+                "mtime":        mtime,
+                "size_kb":      round(size_kb, 1),
+                "inspect_fits": inspect_fits,
             })
     pngs.sort(key=lambda d: d["mtime"], reverse=True)
     return pngs
@@ -168,8 +218,15 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
-                  lens_density: float) -> Dict[str, Any]:
-    """Run the multi-band clean-field generator with live progress."""
+                  lens_density: float,
+                  hst_template_fraction: float = 0.0) -> Dict[str, Any]:
+    """Run the multi-band clean-field generator with live progress.
+
+    When ``hst_template_fraction > 0``, a fraction of galaxies are
+    rendered from the on-disk HST template library
+    (:class:`HSTTemplateLibrary`) instead of the Sersic B+D
+    decomposition. Falls back to Sersic if the library is empty.
+    """
     from euclid_polish.sky.cosmos2025 import open_cosmos2025
     from euclid_polish.sky.multiband_generator import (
         MultiBandGeneratorConfig, MultiBandSimulator,
@@ -177,15 +234,35 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
     from euclid_polish.sky.tfrecord import open_multiband_writer
 
     print(f"Generating clean fields: image_size={image_size}, n_train={n_train}, "
-          f"n_valid={n_valid}, lens_density={lens_density}")
+          f"n_valid={n_valid}, lens_density={lens_density}, "
+          f"hst_template_fraction={hst_template_fraction}")
     catalog = open_cosmos2025()
     print(f"Catalog: {type(catalog).__name__} ({len(catalog)} galaxies)")
+
+    # Optional HST template renderer — degrade gracefully to Sersic if the
+    # caller asked for templates but the library is empty.
+    renderer = None
+    effective_fraction = float(hst_template_fraction)
+    if effective_fraction > 0:
+        from euclid_polish.hst.catalog import HSTTemplateLibrary
+        from euclid_polish.sky.hst_templates import HSTTemplateRenderer
+        lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+        if len(lib) == 0:
+            print(f"  ⚠️  hst_template_fraction={effective_fraction} but the "
+                  f"library at {lib.root} is empty — falling back to Sersic.")
+            effective_fraction = 0.0
+        else:
+            renderer = HSTTemplateRenderer(lib)
+            print(f"  HST templates: {len(lib)} on disk, fraction="
+                  f"{effective_fraction:.2f}")
+
     cfg = MultiBandGeneratorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=lens_density,
+        hst_template_fraction=effective_fraction,
     )
-    sim = MultiBandSimulator(catalog, cfg)
+    sim = MultiBandSimulator(catalog, cfg, hst_template_renderer=renderer)
     os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
     result: Dict[str, Any] = {}
     total_n = n_train + n_valid
@@ -270,9 +347,8 @@ def _job_forward(cap) -> Dict[str, Any]:
                 done += 1
                 cap.tick(done, grand_total, f"forward-model {subset}")
         result[subset] = {"n": n}
-        print(f"  ✓ {subset}: kept clean ({len(hr_imgs)} 4-band) + "
-              f"wrote hr ({len(hr_imgs)} 1-band VIS target) + "
-              f"dirty ({len(lr_imgs)} LR-4ch)")
+        print(f"  ✓ {subset}: wrote {hr_w.count} hr_{subset} + "
+              f"{lr_w.count} dirty_{subset} records")
     return result
 
 
@@ -581,16 +657,29 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
                             asinh_scale=asinh_scale)
         # Persist the SR plane as FITS alongside the PNG, with
         # provenance keywords so it stays useful for downstream analysis.
+        # Also persist LR (VIS-channel) and HR truth as sidecars so the
+        # inspector can show each panel's raw pixels — not just the PNG
+        # composite.
         from astropy.io import fits as _fits
-        sr_fits = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.fits")
-        hdu = _fits.PrimaryHDU(sr_data.astype(np.float32))
-        hdu.header["OBJECT"] = "EuclidPolish SR (VIS)"
-        hdu.header["SUBSET"] = (subset, "TFRecord subset")
-        hdu.header["IDX"]    = (int(lr_img.index), "record index in subset")
-        hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "Checkpoint dir")
-        hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
-                                "asinh stretch knee used for the plot")
-        hdu.writeto(sr_fits, overwrite=True)
+
+        def _write_panel_fits(stem: str, data2d: np.ndarray, label: str) -> None:
+            if data2d is None:
+                return
+            arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
+            hdu = _fits.PrimaryHDU(arr)
+            hdu.header["OBJECT"] = (f"EuclidPolish {label} (VIS)", "panel label")
+            hdu.header["SUBSET"] = (subset, "TFRecord subset")
+            hdu.header["IDX"]    = (int(lr_img.index), "record index in subset")
+            hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "Checkpoint dir")
+            hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
+                                    "asinh stretch knee used for the plot")
+            hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
+            hdu.writeto(os.path.join(out_dir, stem + ".fits"), overwrite=True)
+
+        stem = f"reconstruct_idx{lr_img.index:04d}"
+        _write_panel_fits(stem,            sr_data, "SR")
+        _write_panel_fits(stem + "_lr",    lr_data, "LR")
+        _write_panel_fits(stem + "_hr",    hr_data, "HR")
         out_paths.append(out)
         cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
         print(f"  ✓ {out}")
@@ -897,6 +986,37 @@ def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
                           "demo_hr.png", lens_px_scale=0.05)
     lr_path = _save_panel(lr.data,  "LR dirty 255² (0.10\"/pix, +Poisson+read)",
                           "demo_lr.png", lens_px_scale=0.10)
+
+    # Also persist the underlying 4-band cubes as FITS so each panel's
+    # raw pixels are inspectable via the universal /inspect view. One
+    # FITS per (kind, band) — matches the per-band slicing the rest of
+    # the UI uses for sky records.
+    from astropy.io import fits as _fits
+    def _save_cube_per_band(data_4ch, kind: str, px_scale_arcsec: float) -> None:
+        for k, band_name in enumerate(bands):
+            plane = np.ascontiguousarray(
+                np.asarray(data_4ch[..., k], dtype=np.float32),
+            )
+            hdu = _fits.PrimaryHDU(plane)
+            hdu.header["OBJECT"] = (f"EuclidPolish demo {kind} {band_name}",
+                                    "panel label")
+            hdu.header["KIND"]   = (kind, "hr | lr")
+            hdu.header["BAND"]   = (band_name, "band name")
+            hdu.header["NLENS"]  = (int(meta["n_lenses"]),
+                                     "number of injected lenses")
+            hdu.header["NGAL"]   = (int(meta["n_galaxies"]),
+                                     "number of galaxies in the field")
+            hdu.header["BUNIT"]  = ("e-", "electrons (raw)")
+            hdu.header["CDELT1"] = (-px_scale_arcsec / 3600.0,
+                                     "pixel scale (degrees)")
+            hdu.header["CDELT2"] = ( px_scale_arcsec / 3600.0,
+                                     "pixel scale (degrees)")
+            out = os.path.join(out_dir, f"demo_{kind}_{band_name}.fits")
+            hdu.writeto(out, overwrite=True)
+            print(f"  ✓ wrote {out}")
+    _save_cube_per_band(sky.data, "hr", 0.05)
+    _save_cube_per_band(lr.data,  "lr", 0.10)
+
     return {"hr": hr_path, "lr": lr_path,
             "n_lenses": meta["n_lenses"], "n_galaxies": meta["n_galaxies"]}
 
@@ -984,6 +1104,402 @@ def _list_band_cutouts(band_name: str, output_dir: str) -> List[str]:
         f for f in os.listdir(band_dir)
         if f.lower().endswith(".fits") and _CUTOUT_FNAME_RE.match(f)
     )
+
+
+# ---------------------------------------------------------------------------
+# Sky-record FITS export. The sky generator writes TFRecords (not FITS),
+# so the inspector route needs an on-demand exporter that slices out one
+# (subset, kind, band, index) and writes a real FITS file.
+# ---------------------------------------------------------------------------
+
+def _export_sky_record_fits(
+    subset: str, kind: str, band: str, index: int,
+) -> str:
+    """Materialise one sky record as a single-band FITS file.
+
+    Caches the result under ``data/vis/sky_fits/`` so repeat clicks on
+    the same record don't re-read the TFRecord. Returns the absolute
+    path to the saved file.
+    """
+    from astropy.io import fits
+    from euclid_polish.sky.tfrecord import (
+        read_multiband_skyimages, tfrecord_path,
+    )
+
+    if subset not in ("train", "validate"):
+        abort(400)
+    if kind not in ("clean", "dirty", "hr"):
+        abort(400)
+    band_names = list(Config.LR_INPUT_BAND_NAMES)
+    if kind == "hr":
+        if band != "VIS":
+            abort(400)
+        band_idx = 0
+    else:
+        if band not in band_names:
+            abort(400)
+        band_idx = band_names.index(band)
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        abort(400)
+    if idx < 0:
+        abort(400)
+
+    name = f"{kind}_{subset}"
+    src_path = tfrecord_path(Config.RECORDS_DIR_V2, name)
+    if not os.path.exists(src_path):
+        abort(404)
+
+    out_dir = os.path.realpath(os.path.join(Config.VIS_DIR, "sky_fits"))
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{kind}_{subset}_{band}_{idx:04d}.fits")
+    if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+        return out_path
+
+    # Stream just enough records to reach ``idx`` — TFRecords don't have
+    # random access so we read sequentially. Cheap for typical idx ≤ ~50.
+    records = read_multiband_skyimages(src_path, num_images=idx + 1)
+    if not records or idx >= len(records):
+        abort(404)
+    record = records[idx]
+    data = record.data
+    if data.ndim == 2:
+        plane = data
+    elif data.ndim == 3:
+        if band_idx >= data.shape[-1]:
+            abort(404)
+        plane = data[..., band_idx]
+    else:
+        abort(415)
+
+    hdu = fits.PrimaryHDU(np.ascontiguousarray(plane, dtype=np.float32))
+    hdu.header["OBJECT"] = (f"EuclidPolish {kind} {band}", "kind + band")
+    hdu.header["SUBSET"] = (subset, "TFRecord subset")
+    hdu.header["IDX"]    = (idx, "record index within subset")
+    hdu.header["BAND"]   = (band, "band name (VIS, Y_E, J_E, H_E)")
+    hdu.header["KIND"]   = (kind, "clean | dirty | hr")
+    hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
+    if kind == "clean":
+        hdu.header["CDELT1"] = (-Config.DEFAULT_PIXEL_SCALE / 3600.0,
+                                 "HR pixel scale (degrees)")
+        hdu.header["CDELT2"] = ( Config.DEFAULT_PIXEL_SCALE / 3600.0,
+                                 "HR pixel scale (degrees)")
+    elif kind == "dirty":
+        hdu.header["CDELT1"] = (-Config.VIS_PIXEL_SCALE_ARCSEC / 3600.0,
+                                 "LR pixel scale (degrees)")
+        hdu.header["CDELT2"] = ( Config.VIS_PIXEL_SCALE_ARCSEC / 3600.0,
+                                 "LR pixel scale (degrees)")
+    hdu.writeto(out_path, overwrite=True)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Universal FITS inspector — header view + download for any FITS in our
+# data tree. Every page that shows an image card links its thumbnails
+# through ``/inspect?fits=<path>``; this is the only place that exposes
+# raw FITS files to the browser, so the safety check lives here.
+# ---------------------------------------------------------------------------
+
+def _inspectable_roots() -> List[str]:
+    """Real paths under which a user may request any FITS file via /inspect.
+
+    Anything outside this set is rejected with HTTP 403 — this prevents a
+    crafted ``?fits=../../../etc/passwd`` from escaping the data tree.
+    All roots are normalised via :func:`os.path.realpath` so symlinks
+    can't bypass the check either.
+    """
+    roots = [
+        Config.DEFAULT_OUTPUT_DIR,        # Euclid star cutouts
+        Config.EUCLID_PSF_DIR,             # band PSFs
+        Config.HST_TEMPLATES_DIR,          # HST template library
+        Config.EUCLID_INFERENCE_DIR,       # real-Euclid inference outputs
+        Config.VIS_DIR,                     # reconstruction PNG/FITS, demos, sky_fits
+        Config.RECORDS_DIR_V2,              # TFRecords (not FITS) — kept for completeness
+    ]
+    out = []
+    for p in roots:
+        if not p:
+            continue
+        try:
+            out.append(os.path.realpath(p))
+        except OSError:
+            pass
+    return out
+
+
+def _resolve_inspectable_fits(raw_path: str) -> str:
+    """Validate ``raw_path`` and return its real absolute path.
+
+    Aborts the request with the appropriate HTTP error:
+
+    * 400 — empty / non-FITS extension
+    * 403 — resolves outside the allowed roots
+    * 404 — does not exist on disk
+    """
+    if not raw_path:
+        abort(400)
+    p = raw_path if os.path.isabs(raw_path) else os.path.normpath(
+        os.path.join(os.getcwd(), raw_path)
+    )
+    real = os.path.realpath(p)
+    if not real.lower().endswith((".fits", ".fit", ".fits.gz")):
+        abort(400)
+    if not os.path.isfile(real):
+        abort(404)
+    for root in _inspectable_roots():
+        if real == root or real.startswith(root + os.sep):
+            return real
+    abort(403)
+
+
+def _read_fits_header_rows(path: str) -> List[Dict[str, Any]]:
+    """Return one row per HDU with its header laid out for the table view.
+
+    Each row: ``{hdu_index, name, kind, shape, dtype, cards: [(key, value, comment), ...]}``.
+    """
+    from astropy.io import fits
+    rows: List[Dict[str, Any]] = []
+    with fits.open(path, memmap=False) as hdul:
+        for i, hdu in enumerate(hdul):
+            cards: List[Tuple[str, str, str]] = []
+            for card in hdu.header.cards:
+                key  = str(card.keyword)
+                val  = str(card.value)
+                # Trim long string values — full text is visible in the
+                # downloaded FITS, the UI just needs an at-a-glance view.
+                if len(val) > 80:
+                    val = val[:77] + "…"
+                cmt  = str(card.comment)
+                cards.append((key, val, cmt))
+            shape = getattr(hdu.data, "shape", None) if hdu.is_image else None
+            dtype = getattr(hdu.data, "dtype", None) if hdu.is_image else None
+            rows.append({
+                "hdu_index": i,
+                "name":      hdu.name or f"HDU{i}",
+                "kind":      type(hdu).__name__,
+                "shape":     list(shape) if shape is not None else None,
+                "dtype":     str(dtype) if dtype is not None else None,
+                "cards":     cards,
+            })
+    return rows
+
+
+def _fits_file_info(path: str) -> Dict[str, Any]:
+    """Lightweight ``ls``-style metadata for the inspector header card."""
+    st = os.stat(path)
+    return {
+        "abspath":  path,
+        "basename": os.path.basename(path),
+        "size_kb":  round(st.st_size / 1024, 1),
+        "mtime":    st.st_mtime,
+    }
+
+
+def _safe_relpath(real_abs: str) -> str:
+    """Return the project-rooted relative form of an absolute path.
+
+    Used to build ``?fits=`` query strings that work regardless of the
+    server's CWD. Falls back to the absolute path on failure.
+    """
+    try:
+        rel = os.path.relpath(real_abs, os.getcwd())
+        return rel if not rel.startswith("..") else real_abs
+    except ValueError:
+        return real_abs
+
+
+# ---------------------------------------------------------------------------
+# HST template jobs + rendering
+# ---------------------------------------------------------------------------
+
+def _job_hst_download(
+    cap, n: int, size: int, max_mag: float, min_disk_re: float, workers: int,
+) -> Dict[str, Any]:
+    """Bulk-download HST/ACS F814W cutouts for the COSMOS template library.
+
+    Mirrors the logic of ``scripts/download_hst_templates.py`` so it can
+    be driven from the web UI with live progress. Selects bright,
+    extended COSMOS galaxies, downloads cutouts through MAST HAPcut,
+    persists them into :class:`HSTTemplateLibrary`.
+    """
+    from euclid_polish.hst.catalog import HSTTemplateLibrary
+    from euclid_polish.hst.downloader import (
+        HSTCutoutDownloader, HSTDownloadConfig,
+    )
+    from euclid_polish.hst.types import HSTCutoutMetadata
+    from euclid_polish.sky.cosmos2025 import open_cosmos2025
+    from scripts.download_hst_templates import select_template_galaxies
+
+    print(f"HST templates: target N={n}, size={size}px, max_mag={max_mag}, "
+          f"min_disk_re={min_disk_re}\", workers={workers}")
+
+    cap.tick(0, 3, "loading COSMOS catalog")
+    catalog = open_cosmos2025()
+    print(f"  catalog: {len(catalog):,} galaxies after quality cuts")
+
+    cap.tick(1, 3, "selecting template candidates")
+    rng = np.random.default_rng()
+    positions = select_template_galaxies(
+        catalog,
+        n_target=n,
+        max_mag=max_mag,
+        min_disk_re_arcsec=min_disk_re,
+        rng=rng,
+    )
+    print(f"  selected {len(positions)} candidate positions")
+
+    cap.tick(2, 3, f"downloading {len(positions)} cutouts (HAPcut)")
+    dl = HSTCutoutDownloader(
+        HSTDownloadConfig(
+            output_dir=Config.HST_TEMPLATES_DIR,
+            size_pix=size,
+            max_workers=workers,
+        ),
+    )
+    summary = dl.download_many(positions, show_progress=False)
+
+    # Index whatever landed on disk.
+    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+    pos_by_id = {cid: (ra, dec) for (cid, ra, dec) in positions}
+    new = 0
+    for cid, (ra, dec) in pos_by_id.items():
+        if dl.already_have(cid) and lib.get(cid, size) is None:
+            meta = HSTCutoutMetadata(
+                cosmos_id          = cid,
+                ra_deg             = ra,
+                dec_deg            = dec,
+                size_pix           = size,
+                pixel_scale_arcsec = Config.HST_NATIVE_PIXEL_SCALE_ARCSEC,
+                filename           = os.path.basename(dl.cutout_path(cid)),
+            )
+            lib.add(meta, save=False)
+            new += 1
+    lib.save()
+    cap.tick(3, 3, "done")
+    print(f"  downloaded={summary['downloaded']} skipped={summary['skipped']} "
+          f"failed={summary['failed']} indexed_new={new}")
+    return {
+        "downloaded": summary["downloaded"],
+        "skipped":    summary["skipped"],
+        "failed":     summary["failed"],
+        "indexed_new": new,
+        "library_total": len(lib),
+        "library_root":  lib.root,
+    }
+
+
+def _job_hst_rebuild_index(cap) -> Dict[str, Any]:
+    """Rescan the templates directory and rebuild the CSV index.
+
+    Useful after a manual file copy or when the index gets out of sync
+    with the on-disk FITS files.
+    """
+    from euclid_polish.hst.catalog import HSTTemplateLibrary
+    cap.tick(0, 1, "scanning templates directory")
+    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+    n = lib.rebuild_from_disk()
+    cap.tick(1, 1, "done")
+    print(f"  re-indexed {n} templates at {lib.root}")
+    return {"library_total": n, "library_root": lib.root}
+
+
+def _hst_template_fits_path(cosmos_id: int) -> str:
+    """Return the on-disk FITS path for a template by cosmos_id.
+
+    Aborts the request with 404 if the template is not in the library;
+    400 if the id is not a positive integer. Path-traversal-safe by
+    construction — filenames are formatted from a validated int.
+    """
+    from euclid_polish.hst.catalog import HSTTemplateLibrary
+    try:
+        cid = int(cosmos_id)
+    except (TypeError, ValueError):
+        abort(400)
+    if cid <= 0:
+        abort(400)
+    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+    meta = lib.get(cid)
+    if meta is None:
+        abort(404)
+    path = lib.cutout_path(meta)
+    if not os.path.isfile(path):
+        abort(404)
+    return path
+
+
+def _render_hst_template_png(cosmos_id: int, size: Optional[int]) -> bytes:
+    """Single asinh-stretched PNG of the template at ``cosmos_id``.
+
+    Re-uses :func:`_render_fits_to_png` so the stretch matches Euclid
+    cutout previews (asinh on the VIS band scale). HST cutouts are in
+    electrons/s while Euclid cutouts are in electrons over the stack;
+    the percentile clip absorbs the unit difference for display.
+    """
+    path = _hst_template_fits_path(cosmos_id)
+    return _render_fits_to_png(path, Config.BAND_VIS, size=size)
+
+
+def _render_hst_template_preview_png(
+    cosmos_id: int, rescale: float, panel_size: int = 320,
+) -> bytes:
+    """Side-by-side PNG: raw HST cutout vs. rescaled+normalized rendering.
+
+    The right panel is what :class:`HSTTemplateRenderer` actually feeds
+    into the simulator canvas at the chosen rescale factor. Useful for
+    debugging "what does the renderer see?"
+    """
+    import matplotlib.pyplot as plt
+    from euclid_polish.hst.catalog import HSTTemplateLibrary
+    from euclid_polish.sky.hst_templates import (
+        _annulus_median, _normalise_to_unit_flux, _rescale_2d,
+    )
+
+    path = _hst_template_fits_path(cosmos_id)
+    lib  = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+    meta = lib.get(int(cosmos_id))
+    raw  = lib.load_image(meta)
+
+    bg   = _annulus_median(raw, Config.HST_BACKGROUND_ANNULUS_PIX)
+    rescaled = _rescale_2d(raw - bg, factor=float(rescale), order=3)
+    normed   = _normalise_to_unit_flux(rescaled)
+    if normed is None:
+        normed = np.zeros((1, 1), dtype=np.float32)
+
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+    # Raw HST: asinh on a small scale that matches typical e/s units.
+    raw_stretched = np.arcsinh(raw / 1.0)
+    lo, hi = np.percentile(raw_stretched, [1.0, 99.7])
+    if hi <= lo:
+        hi = lo + 1.0
+    axes[0].imshow(raw_stretched, cmap="gray_r", origin="lower",
+                   vmin=lo, vmax=hi)
+    axes[0].set_title(
+        f"HST F814W raw — {raw.shape[1]}×{raw.shape[0]} @ "
+        f"{Config.HST_NATIVE_PIXEL_SCALE_ARCSEC:.2f}\"",
+        fontsize=10,
+    )
+    axes[0].set_xticks([]); axes[0].set_yticks([])
+
+    n_stretched = np.arcsinh(normed * 1e4)
+    lo, hi = np.percentile(n_stretched, [1.0, 99.7])
+    if hi <= lo:
+        hi = lo + 1.0
+    axes[1].imshow(n_stretched, cmap="gray_r", origin="lower",
+                   vmin=lo, vmax=hi)
+    axes[1].set_title(
+        f"Renderer view — rescale={float(rescale):.1f}× → "
+        f"{normed.shape[1]}×{normed.shape[0]}",
+        fontsize=10,
+    )
+    axes[1].set_xticks([]); axes[1].set_yticks([])
+
+    fig.suptitle(f"COSMOS id {int(cosmos_id)}", fontsize=11)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1702,7 @@ def create_app() -> Flask:
             psfs=_psf_status(),
             tfrecords=_tfrecords_status(),
             checkpoints=_checkpoints_status(),
+            hst=_hst_status(),
         )
 
     # ---------------- Catalog page ----------------
@@ -1341,6 +1858,129 @@ def create_app() -> Flask:
         return send_file(io.BytesIO(png), mimetype="image/png",
                          max_age=3600)
 
+    # ---------------- HST templates page ----------------
+    @app.route("/hst-templates")
+    def hst_templates_page():
+        # Read-only library snapshot for the page template — actions live
+        # in the right rail forms and post to the routes below.
+        return render_template(
+            "hst_templates.html",
+            hst=_hst_status(),
+            cosmos_catalog_present=os.path.isfile(
+                Config.COSMOS2025_CATALOG_PATH
+            ),
+            cosmos_catalog_path=Config.COSMOS2025_CATALOG_PATH,
+            default_n=200,
+            default_size=Config.HST_DEFAULT_CUTOUT_PIX,
+            default_max_mag=22.0,
+            default_min_disk_re=0.30,
+            default_workers=4,
+            default_rescale=(Config.HST_RESCALE_FACTOR_MIN
+                             + Config.HST_RESCALE_FACTOR_MAX) / 2.0,
+        )
+
+    @app.route("/api/hst-templates/status")
+    def hst_templates_status():
+        return jsonify(_hst_status())
+
+    @app.route("/api/hst-templates/list")
+    def hst_templates_list():
+        from euclid_polish.hst.catalog import HSTTemplateLibrary
+        try:
+            offset = max(0, int(request.args.get("offset", 0)))
+            limit  = max(1, min(200, int(request.args.get("limit", 24))))
+        except ValueError:
+            abort(400)
+        lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
+        # Stable ordering by cosmos_id so paging is deterministic.
+        entries = sorted(lib, key=lambda m: (m.cosmos_id, m.size_pix))
+        total = len(entries)
+        sl = entries[offset:offset + limit]
+        return jsonify({
+            "total":  total,
+            "offset": offset,
+            "limit":  limit,
+            "items": [
+                {
+                    "cosmos_id":          m.cosmos_id,
+                    "ra_deg":             m.ra_deg,
+                    "dec_deg":            m.dec_deg,
+                    "size_pix":           m.size_pix,
+                    "pixel_scale_arcsec": m.pixel_scale_arcsec,
+                    "filter_name":        m.filter_name,
+                    # Relative FITS path the inspector can resolve.
+                    "fits_path":          _safe_relpath(
+                        os.path.realpath(os.path.join(
+                            Config.HST_TEMPLATES_DIR, m.filename,
+                        ))
+                    ),
+                }
+                for m in sl
+            ],
+        })
+
+    @app.route("/hst-template-image/<int:cosmos_id>")
+    def hst_template_image(cosmos_id: int):
+        try:
+            size = int(request.args.get("size", 0)) or None
+        except ValueError:
+            size = None
+        if size is not None and (size < 16 or size > 2048):
+            abort(400)
+        png = _render_hst_template_png(cosmos_id, size=size)
+        return send_file(io.BytesIO(png), mimetype="image/png",
+                         max_age=3600)
+
+    @app.route("/view/hst-template")
+    def view_hst_template():
+        try:
+            cosmos_id = int(request.args.get("cosmos_id", "0"))
+            rescale   = float(request.args.get("rescale", "4.0"))
+        except ValueError:
+            abort(400)
+        if cosmos_id <= 0:
+            abort(400)
+        if not (Config.HST_RESCALE_FACTOR_MIN * 0.5
+                <= rescale
+                <= Config.HST_RESCALE_FACTOR_MAX * 2.0):
+            abort(400)
+        png = _render_hst_template_preview_png(cosmos_id, rescale)
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    @app.route("/hst-templates/download", methods=["POST"])
+    def hst_templates_download():
+        try:
+            n           = int(request.form.get("n", 200))
+            size        = int(request.form.get("size",
+                                                Config.HST_DEFAULT_CUTOUT_PIX))
+            max_mag     = float(request.form.get("max_mag", 22.0))
+            min_disk_re = float(request.form.get("min_disk_re", 0.30))
+            workers     = int(request.form.get("workers", 4))
+        except ValueError:
+            return jsonify({"error": "invalid form field"}), 400
+        if n <= 0 or n > 50_000:
+            return jsonify({"error": "n out of range"}), 400
+        if size < 32 or size > 2048:
+            return jsonify({"error": "size out of range"}), 400
+        if workers < 1 or workers > 16:
+            return jsonify({"error": "workers out of range"}), 400
+        job_id = REGISTRY.spawn(
+            label=f"HST templates: download {n} @ {size} px",
+            target=lambda cap: _job_hst_download(
+                cap, n=n, size=size, max_mag=max_mag,
+                min_disk_re=min_disk_re, workers=workers,
+            ),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/hst-templates/rebuild-index", methods=["POST"])
+    def hst_templates_rebuild_index():
+        job_id = REGISTRY.spawn(
+            label="HST templates: rebuild index from disk",
+            target=lambda cap: _job_hst_rebuild_index(cap),
+        )
+        return jsonify({"job_id": job_id})
+
     # ---------------- PSFs page ----------------
     @app.route("/psfs")
     def psfs_page():
@@ -1385,10 +2025,12 @@ def create_app() -> Flask:
     def sky_page():
         return render_template("sky.html",
                                tfrecords=_tfrecords_status(),
+                               hst=_hst_status(),
                                default_image_size=510,
                                default_n_train=20,
                                default_n_valid=4,
-                               default_lens_density=Config.LENS_DENSITY_ARCMIN2)
+                               default_lens_density=Config.LENS_DENSITY_ARCMIN2,
+                               default_hst_fraction=Config.HST_TEMPLATE_FRACTION)
 
     @app.route("/sky/generate", methods=["POST"])
     def sky_generate():
@@ -1397,10 +2039,20 @@ def create_app() -> Flask:
         image_size = int(request.form.get("image_size", 510))
         lens_density = float(request.form.get("lens_density",
                                               Config.LENS_DENSITY_ARCMIN2))
+        try:
+            hst_fraction = float(request.form.get("hst_template_fraction",
+                                                  Config.HST_TEMPLATE_FRACTION))
+        except ValueError:
+            hst_fraction = Config.HST_TEMPLATE_FRACTION
+        hst_fraction = max(0.0, min(1.0, hst_fraction))
+        tag = f"generate {n_train}+{n_valid} @ {image_size}²"
+        if hst_fraction > 0:
+            tag += f" · HST {hst_fraction:.0%}"
         job_id = REGISTRY.spawn(
-            label=f"generate {n_train}+{n_valid} @ {image_size}²",
+            label=tag,
             target=lambda cap: _job_generate(
                 cap, image_size, n_train, n_valid, lens_density,
+                hst_template_fraction=hst_fraction,
             ),
         )
         return jsonify({"job_id": job_id})
@@ -1664,6 +2316,31 @@ def create_app() -> Flask:
             "hr_validate":    _record_count("hr_validate"),
         })
 
+    @app.route("/sky/fits")
+    def sky_fits():
+        """Export one sky-record band+index as FITS and return the file."""
+        path = _export_sky_record_fits(
+            subset=request.args.get("subset", ""),
+            kind=request.args.get("kind", ""),
+            band=request.args.get("band", ""),
+            index=request.args.get("i", "0"),
+        )
+        return send_file(path, as_attachment=True,
+                         download_name=os.path.basename(path),
+                         mimetype="application/fits")
+
+    @app.route("/sky/inspect")
+    def sky_inspect():
+        """Export the requested record then redirect into the inspector."""
+        path = _export_sky_record_fits(
+            subset=request.args.get("subset", ""),
+            kind=request.args.get("kind", ""),
+            band=request.args.get("band", ""),
+            index=request.args.get("i", "0"),
+        )
+        return redirect(url_for("inspect_fits_page",
+                                fits=_safe_relpath(path)))
+
     # ---------------- Static PNG server (data/vis/) ----------------
     @app.route("/vis/<path:relpath>")
     def serve_vis(relpath: str):
@@ -1719,6 +2396,60 @@ def create_app() -> Flask:
             "tfrecords":   _tfrecords_status(),
             "checkpoints": _checkpoints_status(),
         })
+
+    # =========================================================================
+    # Universal FITS inspector — every image card across the UI links here.
+    # =========================================================================
+
+    @app.route("/inspect")
+    def inspect_fits_page():
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        info = _fits_file_info(path)
+        rows = _read_fits_header_rows(path)
+        # Project-relative path is what shows in the UI + what the
+        # download/preview routes echo back (so refresh from a bookmark
+        # keeps working as long as the file is still at that location).
+        rel = _safe_relpath(path)
+        return render_template(
+            "inspect_fits.html",
+            file=info,
+            hdus=rows,
+            rel=rel,
+            # Roots are displayed so the user can confirm which data
+            # subtree the file came from (useful when triaging mismatched
+            # outputs from multiple runs).
+            allowed_roots=_inspectable_roots(),
+        )
+
+    @app.route("/inspect/download")
+    def inspect_fits_download():
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        return send_file(
+            path, as_attachment=True,
+            download_name=os.path.basename(path),
+            mimetype="application/fits",
+        )
+
+    @app.route("/inspect/preview.png")
+    def inspect_fits_preview():
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        try:
+            size = int(request.args.get("size", 512))
+        except ValueError:
+            size = 512
+        if size < 16 or size > 2048:
+            abort(400)
+        # Stretch knee is band-dependent — try to infer the band from
+        # filename hints (e.g. ``..._VIS.fits``, ``Y_E.fits``), otherwise
+        # fall back to the VIS knee which works for most ACS/Euclid data.
+        band = Config.BAND_VIS
+        fname_upper = os.path.basename(path).upper()
+        for b in Config.BANDS:
+            if b.name.upper() in fname_upper:
+                band = b
+                break
+        png = _render_fits_to_png(path, band, size=size)
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
 
     # =========================================================================
     # Git tab — local commit / push / pull, no remote auth needed.
@@ -1804,41 +2535,19 @@ def create_app() -> Flask:
     def api_fasrc_status():
         return jsonify(STATE.public_status())
 
-    @app.route("/api/fasrc/unlock", methods=["POST"])
-    def api_fasrc_unlock():
-        master = request.form.get("master_password", "")
-        try:
-            STATE.bw.unlock(master)
-        except BitwardenError as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
-        return jsonify({"ok": True, "status": STATE.public_status()})
-
-    @app.route("/api/fasrc/lock", methods=["POST"])
-    def api_fasrc_lock():
-        STATE.bw.lock()
-        return jsonify({"ok": True, "status": STATE.public_status()})
-
     @app.route("/api/fasrc/connect", methods=["POST"])
     def api_fasrc_connect():
         cfg = fasrc_config.load()
         if not cfg.ssh_user:
             return jsonify({"ok": False,
                             "error": "set ssh_user in Settings first"}), 400
-        if not STATE.bw.unlocked:
-            return jsonify({"ok": False,
-                            "error": "unlock Bitwarden first"}), 400
-        try:
-            pwd  = STATE.bw.get_password(cfg.bw_item)
-            totp = STATE.bw.get_totp(cfg.bw_item)
-        except BitwardenError as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
         STATE.ssh = SSHSession(SSHConfig(
             user=cfg.ssh_user, host=cfg.ssh_host,
             socket=cfg.control_socket,
             control_persist=cfg.control_persist,
         ))
         try:
-            STATE.ssh.connect(pwd, totp)
+            STATE.ssh.connect()
         except SSHError as e:
             STATE.ssh = None
             return jsonify({"ok": False, "error": str(e)}), 400

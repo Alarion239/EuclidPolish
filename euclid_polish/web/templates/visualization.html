@@ -12,13 +12,29 @@
 
 {% block viz %}
 {% if pngs %}
+<p class="hint">PNGs are matplotlib composites; clicking a thumbnail opens
+   the underlying FITS in the inspector when one exists (e.g. demo lens
+   per-band FITS, reconstruction SR.fits). If no sidecar FITS is found
+   (training-log plot, RGB color composites), the click opens the raw
+   PNG instead.</p>
 <div class="gallery">
   {% for p in pngs[:60] %}
-    <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}" target="_blank">
-      <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
-      <span class="thumb-label">{{ p.rel }}</span>
-      <span class="muted">{{ p.size_kb }} KB</span>
-    </a>
+    {% if p.inspect_fits %}
+      <a class="thumb"
+         href="{{ url_for('inspect_fits_page', fits=p.inspect_fits) }}"
+         target="_blank"
+         title="Inspect sidecar FITS">
+        <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
+        <span class="thumb-label">{{ p.rel }}</span>
+        <span class="muted">{{ p.size_kb }} KB · 🔬 FITS</span>
+      </a>
+    {% else %}
+      <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}" target="_blank">
+        <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
+        <span class="thumb-label">{{ p.rel }}</span>
+        <span class="muted">{{ p.size_kb }} KB</span>
+      </a>
+    {% endif %}
   {% endfor %}
 </div>
 {% if pngs | length > 60 %}

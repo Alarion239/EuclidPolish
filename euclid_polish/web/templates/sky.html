@@ -29,6 +29,14 @@
   <img id="viz-img" alt="sky record sample">
   <div class="placeholder">No records on disk yet — generate sky data first.</div>
 </div>
+<p class="hint" style="margin-top: 8px;">
+  <a id="inspect-link" href="#" target="_blank">
+    🔬 Inspect this image as FITS (header + download)
+  </a>
+  <span class="muted" id="inspect-disabled" style="display:none;">
+    — color view has no single-band FITS; pick a band first
+  </span>
+</p>
 
 <section class="card">
   <h3>Records on disk</h3>
@@ -58,6 +66,23 @@
       <input type="number" name="n_valid" value="{{ default_n_valid }}" min="1" max="5000"></label>
     <label>Lens density (/arcmin²)
       <input type="number" name="lens_density" value="{{ default_lens_density }}" step="0.5" min="0"></label>
+    <label>HST template fraction
+      <input type="number" name="hst_template_fraction"
+             value="{{ '%.2f'|format(default_hst_fraction) }}"
+             step="0.05" min="0" max="1"
+             {% if hst.n_templates == 0 %}disabled
+                title="library empty — populate via 🔭 HST templates"{% endif %}>
+    </label>
+    <p class="hint" style="margin: 4px 0 8px;">
+      {% if hst.n_templates == 0 %}
+        Library empty —
+        <a href="{{ url_for('hst_templates_page') }}">populate it</a>
+        to enable real-morphology galaxies.
+      {% else %}
+        {{ hst.n_templates }} HST templates available.
+        Fraction = 0 → original Sersic only; 1.0 → all real morphology.
+      {% endif %}
+    </p>
     <button type="submit">Generate</button>
   </form>
   <div id="generate-status"></div>
@@ -103,12 +128,34 @@ async function refreshTotals() {
   } catch (e) {}
 }
 
+function updateInspectLink() {
+  const subset = polishUI.viz.get("subset");
+  const kind   = polishUI.viz.get("kind");
+  const band   = polishUI.viz.get("band");
+  const i      = polishUI.viz.get("i");
+  const link   = document.getElementById("inspect-link");
+  const note   = document.getElementById("inspect-disabled");
+  if (!link) return;
+  // Color view is a composite — no single-band FITS for it.
+  const inspectable = band !== "color";
+  link.style.display = inspectable ? "" : "none";
+  note.style.display = inspectable ? "none" : "";
+  if (inspectable) {
+    link.href = `/sky/inspect?subset=${subset}&kind=${kind}&band=${band}&i=${i}`;
+  }
+}
+
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
-  buildUrl:  (sel) => `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`,
+  buildUrl:  (sel) => {
+    // Side-effect: keep the inspect link in sync with the viewer state.
+    setTimeout(updateInspectLink, 0);
+    return `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`;
+  },
   initial:   { kind: "clean", subset: "train", band: "VIS", i: 0 },
 });
+updateInspectLink();
 
 // Wire the toolbar chips (kind / subset / band)
 document.querySelector(".toolbar").addEventListener("click", (e) => {

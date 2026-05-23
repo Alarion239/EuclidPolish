@@ -1,34 +1,27 @@
-"""Bitwarden + SSH plumbing for the FASRC tab.
+"""SSH ControlMaster plumbing for the FASRC tab.
 
-Two cooperating pieces:
+Single responsibility: open an SSH ControlMaster socket to the FASRC
+login node using public-key authentication, then reuse the multiplexed
+socket for every subsequent command (``run`` / ``stream`` / ``rsync``).
 
-  * :class:`BitwardenClient` wraps the ``bw`` CLI. ``unlock(master)`` returns
-    a ``BW_SESSION`` token that is then passed back to subsequent ``bw get``
-    calls. The token lives only in this process's memory.
+There is no interactive auth, no password, no OTP, no Bitwarden. If
+your key isn't installed on FASRC the connect will fail with whatever
+``ssh`` says (usually ``Permission denied (publickey).``); install your
+key once with:
 
-  * :class:`SSHSession` owns the SSH ControlMaster socket. The first
-    ``connect()`` does a one-shot ``pexpect`` login that sends
-    ``password,totp`` at the password prompt and starts the multiplexed
-    socket; every later ``run`` / ``stream`` / ``rsync`` reuses the
-    socket and needs no credentials.
+    ssh-copy-id <user>@login.rc.fas.harvard.edu
 
-The flow is therefore:
+…and the next ``Connect`` will succeed without ceremony. From outside
+Harvard's network FASRC may still ask for a 2FA verification code —
+in that case ``ssh`` will prompt on its own terminal; running the
+Flask app from a terminal lets you type the code into stdin.
 
-    bw  = BitwardenClient(); bw.unlock(master_password)
-    ssh = SSHSession(...)
-    pwd  = bw.get_password(item="FASRC")
-    totp = bw.get_totp   (item="FASRC")
-    ssh.connect(password=pwd, totp=totp)
-    # All credentials are forgotten here — only the socket remains.
-    ssh.run("squeue -u $USER")
-
-The ``RemoteState`` singleton ties both together so Flask routes can
-share one connection across requests.
+The ``RemoteState`` singleton holds one ``SSHSession`` shared across
+Flask requests.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import subprocess
@@ -36,144 +29,6 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Iterator, List, Optional, Tuple
-
-
-# ---------------------------------------------------------------------------
-# Bitwarden
-# ---------------------------------------------------------------------------
-
-class BitwardenError(RuntimeError):
-    pass
-
-
-class BitwardenClient:
-    """Stateless wrapper around the ``bw`` CLI.
-
-    Holds a single in-memory session token. Caller is responsible for
-    calling :meth:`lock` to discard it. Does not touch the disk.
-    """
-
-    def __init__(self, bw_path: str = "bw") -> None:
-        self.bw_path = bw_path
-        # Per-instance cache for is_installed() so multiple clients (and
-        # tests) don't see each other's cached state.
-        self._installed_cache: Optional[bool] = None
-        self._session: Optional[str] = None
-
-    # ----------------------------- public ---------------------------------
-
-    @property
-    def unlocked(self) -> bool:
-        return self._session is not None
-
-    # ``bw --version`` is a 50–200 ms subprocess. It's called on every
-    # page render via STATE.public_status — that's a noticeable fraction
-    # of the page-load latency. The result is monotone for a given
-    # ``bw_path`` (once installed, always installed during this process)
-    # so we cache it per instance for the lifetime of the client.
-    def is_installed(self) -> bool:
-        if self._installed_cache is not None:
-            return self._installed_cache
-        try:
-            subprocess.run([self.bw_path, "--version"],
-                           check=True, capture_output=True, timeout=5)
-            ok = True
-        except (FileNotFoundError, subprocess.CalledProcessError,
-                subprocess.TimeoutExpired):
-            ok = False
-        self._installed_cache = ok
-        return ok
-
-    def status(self) -> dict:
-        """Returns the parsed JSON from ``bw status`` (no session needed)."""
-        try:
-            out = subprocess.run([self.bw_path, "status"],
-                                 check=True, capture_output=True, timeout=10)
-        except subprocess.CalledProcessError as e:
-            raise BitwardenError(e.stderr.decode(errors="replace")) from e
-        try:
-            return json.loads(out.stdout.decode())
-        except json.JSONDecodeError:
-            return {"raw": out.stdout.decode(errors="replace")}
-
-    def unlock(self, master_password: str) -> None:
-        """Authenticate with the master password; cache the session token."""
-        if not master_password:
-            raise BitwardenError("master password required")
-        if not self.is_installed():
-            raise BitwardenError(
-                "Bitwarden CLI (`bw`) is not installed. "
-                "Install with `brew install bitwarden-cli` on macOS, "
-                "`npm install -g @bitwarden/cli` elsewhere, or see "
-                "https://bitwarden.com/help/cli/"
-            )
-        try:
-            proc = subprocess.run(
-                [self.bw_path, "unlock", master_password, "--raw"],
-                capture_output=True, timeout=20,
-            )
-        except FileNotFoundError as e:
-            raise BitwardenError(f"`bw` not found in PATH: {e}") from e
-        if proc.returncode != 0:
-            raise BitwardenError(
-                proc.stderr.decode(errors="replace").strip()
-                or "unlock failed"
-            )
-        token = proc.stdout.decode().strip()
-        if not token:
-            raise BitwardenError("bw unlock returned empty session")
-        self._session = token
-
-    def lock(self) -> None:
-        if self._session is None:
-            return
-        try:
-            subprocess.run([self.bw_path, "lock"], check=False,
-                           capture_output=True, timeout=5,
-                           env=self._env())
-        finally:
-            self._session = None
-
-    def get_password(self, item: str) -> str:
-        return self._get("password", item)
-
-    def get_username(self, item: str) -> str:
-        return self._get("username", item)
-
-    def get_totp(self, item: str) -> str:
-        return self._get("totp", item)
-
-    def sync(self) -> None:
-        """Refresh local vault state. Skip silently if the network is unreachable."""
-        try:
-            subprocess.run([self.bw_path, "sync"], check=False,
-                           capture_output=True, timeout=15,
-                           env=self._env())
-        except subprocess.TimeoutExpired:
-            pass
-
-    # ---------------------------- internal --------------------------------
-
-    def _env(self) -> dict:
-        env = os.environ.copy()
-        if self._session:
-            env["BW_SESSION"] = self._session
-        return env
-
-    def _get(self, field: str, item: str) -> str:
-        if not self.unlocked:
-            raise BitwardenError("vault is locked — call unlock() first")
-        proc = subprocess.run(
-            [self.bw_path, "get", field, item],
-            capture_output=True, timeout=15, env=self._env(),
-        )
-        if proc.returncode != 0:
-            raise BitwardenError(
-                f"bw get {field} {item}: "
-                + (proc.stderr.decode(errors="replace").strip()
-                   or "unknown error")
-            )
-        return proc.stdout.decode().strip()
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +52,8 @@ class SSHError(RuntimeError):
 
 
 class SSHSession:
-    """Owns the ControlMaster socket — first connect authenticates with
-    ``password,totp`` via pexpect; subsequent calls go through the
+    """Owns the ControlMaster socket. Uses public-key auth — first
+    ``connect()`` opens the socket, every later call goes through the
     multiplexed channel with no auth at all.
     """
 
@@ -266,30 +121,27 @@ class SSHSession:
 
     # ----------------------------- connect --------------------------------
 
-    def connect(self, password: str, totp: str, timeout: int = 30) -> None:
-        """Open the ControlMaster session, handling any prompt order.
+    def connect(self, timeout: int = 30) -> None:
+        """Open the ControlMaster session via public-key auth.
 
-        FASRC offers two flavours of interactive auth:
+        Uses ``ssh -M -f -N``: ``-f`` forks to the background only
+        *after* authentication completes, and ``-N`` says "no remote
+        command, I just want the master open". The combination means
+        the foreground ssh exits 0 exactly when the socket is ready —
+        no race with ControlPersist trying to fork after a quick
+        remote command, which is why ``ssh -M ... target true`` used
+        to return "success" before the socket existed.
 
-          * Password + 2FA: prompts ``Password:`` then ``VerificationCode:``.
-          * SSH key + 2FA:  no password prompt, only ``VerificationCode:``.
-
-        The two prompts also have inconsistent spacing in real life — the
-        live FASRC banner is ``VerificationCode:`` (no space). The loop
-        below recognises either order and sends the *right* secret to
-        the *right* prompt instead of a combined ``password,totp`` string.
+        ``BatchMode=yes`` makes ssh fail fast (no prompts) instead of
+        hanging if the key isn't installed — the caller gets a clean
+        error and we never wait on a stdin that isn't there. From
+        outside Harvard's network FASRC may still demand a 2FA prompt
+        even with a valid key, and BatchMode=yes will refuse it; in
+        that case do the connect once from a Harvard-network session
+        (or VPN) so ControlPersist holds the master open.
         """
         if self.is_connected():
             return
-        # Defer pexpect import so the rest of the web app still works on
-        # machines where it isn't installed yet.
-        try:
-            import pexpect
-        except ImportError as e:
-            raise SSHError(
-                "pexpect is required for interactive SSH auth — "
-                "install it with `pip install pexpect` or `mamba install pexpect`"
-            ) from e
 
         # Make sure no stale socket is lying around from a prior crash.
         if os.path.exists(self.cfg.socket):
@@ -301,67 +153,34 @@ class SSHSession:
         args = [
             "ssh",
             "-M", "-S", self.cfg.socket,
+            "-f", "-N",
             "-o", f"ControlPersist={self.cfg.control_persist}",
-            "-o", "BatchMode=no",
-            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new",
             self.cfg.target,
-            "echo __EUCLID_POLISH_CONNECTED__",
         ]
-        child = pexpect.spawn(
-            args[0], args=args[1:], timeout=timeout, encoding="utf-8",
-        )
-
-        pat_password = r"(?i)password\s*:"
-        # Match ``VerificationCode:`` / ``Verification Code:`` / ``OTP:`` /
-        # ``Two-factor code:`` / etc. — spacing varies between sshd versions.
-        pat_verify   = (r"(?i)(verification\s*code|verification|two[- ]?factor"
-                        r"|one[- ]?time|otp|duo passcode)\s*:")
-        pat_ok       = r"__EUCLID_POLISH_CONNECTED__"
-        pat_denied   = r"(?i)(permission denied|authentication failed|"
-        pat_denied  += r"access denied|access denied,)"
-
-        sent_password = False
-        sent_totp     = False
         try:
-            for _ in range(6):                    # ≤ 2 prompts in any order; cap loops anyway
-                idx = child.expect([
-                    pat_password,
-                    pat_verify,
-                    pat_ok,
-                    pat_denied,
-                    pexpect.EOF,
-                ], timeout=timeout)
-                if idx == 0:
-                    if sent_password:
-                        raise SSHError("FASRC re-prompted for password — likely wrong")
-                    child.sendline(password)
-                    sent_password = True
-                elif idx == 1:
-                    if sent_totp:
-                        raise SSHError("FASRC re-prompted for verification code — "
-                                       "likely wrong or expired (TOTP cycles every 30s)")
-                    child.sendline(totp)
-                    sent_totp = True
-                elif idx == 2:                    # __EUCLID_POLISH_CONNECTED__ seen
-                    break
-                elif idx == 3:
-                    raise SSHError("FASRC refused credentials — "
-                                   + (child.before or "").strip())
-                elif idx == 4:                    # EOF
-                    raise SSHError("ssh closed unexpectedly: "
-                                   + (child.before or "").strip())
-            else:
-                raise SSHError("auth handshake didn't converge")
+            r = subprocess.run(args, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            raise SSHError(
+                f"ssh to {self.cfg.target} timed out after {timeout} s"
+            ) from e
+        if r.returncode != 0:
+            err = (r.stderr.decode("utf-8", errors="replace").strip()
+                   or r.stdout.decode("utf-8", errors="replace").strip()
+                   or f"ssh exit {r.returncode}")
+            # By far the most common failure here is "key not installed
+            # on FASRC". Surface the actual ssh message but also hint
+            # at the one-shot fix the user can run from any terminal.
+            raise SSHError(
+                f"{err}\n\nIf this says 'Permission denied (publickey)', "
+                f"install your key on FASRC with:\n"
+                f"    ssh-copy-id {self.cfg.target}"
+            )
 
-            child.expect(pexpect.EOF, timeout=timeout)
-        finally:
-            try:
-                child.close(force=True)
-            except Exception:
-                pass
-
-        # Sanity-check: did ControlMaster actually persist?
+        # Sanity-check: did ControlMaster actually persist? With -f -N
+        # the socket should exist by the time ssh returns 0; if it
+        # doesn't, ControlPersist or a stale socket cleanup raced us.
         if not self.is_connected():
             raise SSHError(
                 "ssh appeared to succeed but the ControlMaster socket is gone"
@@ -453,18 +272,15 @@ class SSHSession:
 # ---------------------------------------------------------------------------
 
 class RemoteState:
-    """Singleton: one BW client + one SSH session, shared across Flask requests."""
+    """Singleton: one SSH session, shared across Flask requests."""
 
     def __init__(self) -> None:
-        self.bw: BitwardenClient = BitwardenClient()
         self.ssh: Optional[SSHSession] = None
         self.connected_at: Optional[float] = None
 
     def public_status(self) -> dict:
         ssh_ok = bool(self.ssh and self.ssh.is_connected())
         return {
-            "bw_installed":   self.bw.is_installed(),
-            "bw_unlocked":    self.bw.unlocked,
             "ssh_connected":  ssh_ok,
             "connected_at":   self.connected_at if ssh_ok else None,
             "socket":         self.ssh.cfg.socket if self.ssh else None,

@@ -42,6 +42,11 @@
           {% if b.empirical %}
             <code>{{ b.shape[0] }}×{{ b.shape[1] }}</code>
             @ {{ '%.4f'|format(b.pixel_scale) }}"/pix
+            <br>
+            <a href="{{ url_for('inspect_fits_page', fits=b.path) }}"
+               target="_blank"
+               style="font-size: 11px;"
+               title="Inspect FITS header + download">🔬 inspect</a>
           {% else %}
             <span class="muted">—</span>
           {% endif %}

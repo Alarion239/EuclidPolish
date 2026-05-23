@@ -81,7 +81,6 @@ def fake_remote(tmp_path, monkeypatch):
     monkeypatch.setattr(fasrc_config, "CONFIG_DIR",  str(tmp_path))
     cfg = fasrc_config.FasrcConfig(
         ssh_user="tester", ssh_host="localhost",
-        bw_item="FASRC",
         repo_path=str(repo),
         conda_env_path=str(remote_root / "conda-env"),
         data_dir=str(data_dir),
