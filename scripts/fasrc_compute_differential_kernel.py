@@ -45,19 +45,21 @@ def parse_args() -> argparse.Namespace:
                         "default 1e-2 is calibrated for empirical PSFs "
                         "(measured ePSFs have noise that 1e-3 would "
                         "amplify ~1000× through 1/Ĥ at high frequencies).")
-    p.add_argument("--common-side", type=int, default=255,
+    p.add_argument("--common-side", type=int, default=511,
                    help="Force both PSFs to N×N (odd) after resampling and "
                         "before the FFT. The previous behaviour (pick "
                         "max of the two native sizes) zero-pads the "
                         "smaller PSF, creating a sharp content→zero "
                         "discontinuity whose FFT is a sinc-like ringing "
-                        "that leaks back into Â. 255 (≈12.8″ at 0.05″/px) "
-                        "comfortably contains the Euclid 6-spike pattern "
-                        "and the full HST PSF; bump to 511 if your spikes "
-                        "extend further. The script prints the % of flux "
-                        "retained after the crop so you can spot the "
-                        "case where it's eating real signal (<99% is a "
-                        "red flag — widen --common-side).")
+                        "that leaks back into Â. 511 (≈25.6″ at 0.05″/px) "
+                        "covers essentially all of a 513² HST F814W ePSF "
+                        "and the full Euclid VIS 6-spike pattern (spike "
+                        "tips reach ~17″ from centre at most), without "
+                        "the wasted zero canvas of a 1023² grid. The "
+                        "script prints the % of flux retained after the "
+                        "crop so you can spot the case where it's eating "
+                        "real signal (<99% is a red flag — widen "
+                        "--common-side).")
     p.add_argument("--hst-psf", default=HST_PSF_PATH,
                    help="Path to HST F814W ePSF FITS.")
     p.add_argument("--output", default=DIFF_KERNEL_PATH,
