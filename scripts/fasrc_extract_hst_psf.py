@@ -35,10 +35,34 @@ PSF_FILE_NAME    = "F814W.fits"
 # (~260 KB each) and useful for spot-checking which sources fed the
 # ePSF — same role the Euclid star cutouts play for the VIS PSF.
 STARS_DIR_NAME   = "hst_stars"
-# ACS/WFC native scale; COSMOS HLSP is drizzled to 0.03"/pix.
-HLSP_PIX_SCALE_ARCSEC = 0.03
-EPSF_OVERSAMPLING     = 2          # → saved at 0.015"/pix
-PSF_HALF_SIDE_PIX     = 127        # final ePSF side = 2 × half + 1 = 255
+# COSMOS HLSP can ship at either 30 mas or 50 mas. Rather than hardcode
+# one, we read PIXSCALE from each tile's WCS header (see
+# ``_pixel_scale_from_header``) and use that throughout. The default
+# below is only a last-ditch fallback if the header has neither CDELT
+# nor CD matrix entries.
+FALLBACK_PIX_SCALE_ARCSEC = 0.05
+EPSF_OVERSAMPLING     = 1          # no oversampling — keep PSF at native
+                                    # tile scale so downstream code doesn't
+                                    # have to resample (the differential
+                                    # kernel script also lives on this grid).
+PSF_HALF_SIDE_PIX     = 255        # final ePSF side = 2 × half + 1 = 511.
+                                    # At 0.05"/pix that's a ~25.5" cut, plenty
+                                    # of room for HST diffraction wings.
+
+
+def _pixel_scale_from_header(header) -> float:
+    """Read pixel scale (arcsec/pix) from a FITS WCS header.
+
+    Tries CDELT first, then the CD matrix. Falls back to
+    :data:`FALLBACK_PIX_SCALE_ARCSEC` only if neither is present.
+    """
+    if "CDELT1" in header:
+        return abs(float(header["CDELT1"])) * 3600.0
+    if "CD1_1" in header:
+        cd11 = float(header["CD1_1"])
+        cd12 = float(header.get("CD1_2", 0.0))
+        return float(np.sqrt(cd11 ** 2 + cd12 ** 2)) * 3600.0
+    return FALLBACK_PIX_SCALE_ARCSEC
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,14 +83,20 @@ def parse_args() -> argparse.Namespace:
 
 def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
                         sigma: float = 5.0) -> "Table":
-    """Detect bright unsaturated point sources in one tile."""
+    """Detect bright unsaturated point sources in one tile.
+
+    Returns an astropy Table with at least ``x`` and ``y`` columns
+    (renamed from DAOStarFinder's ``xcentroid``/``ycentroid``) so
+    :func:`photutils.psf.extract_stars` accepts it directly. See
+    :func:`_extract_stamps_from_tile` for the call site.
+    """
     from astropy.stats import sigma_clipped_stats
     from photutils.detection import DAOStarFinder
 
     mean, median, std = sigma_clipped_stats(data, sigma=3.0)
     # Threshold: 50× sigma — point-source-bright but not saturated.
     finder = DAOStarFinder(
-        threshold=50 * std, fwhm=4.0,    # ~4 px FWHM at 0.03"/pix → 0.12"
+        threshold=50 * std, fwhm=4.0,    # ~4 px FWHM at 0.05"/pix → 0.20"
         sharplo=0.4, sharphi=0.8,         # rejects extended / cosmic-ray
         roundlo=-0.4, roundhi=0.4,
     )
@@ -84,7 +114,37 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
         for r in sources
     ]
     sources = sources[keep]
-    return sources[:max_n] if max_n < len(sources) else sources
+    if max_n < len(sources):
+        sources = sources[:max_n]
+    # extract_stars wants ``x`` and ``y``, not ``xcentroid``/``ycentroid``.
+    # Without this rename it raises a misleading "When inputting multiple
+    # catalogs, each one must have a 'x' and 'y' column" error — internally
+    # it always wraps a single catalog in a list before checking columns.
+    sources["x"] = sources["xcentroid"]
+    sources["y"] = sources["ycentroid"]
+    return sources
+
+
+def _extract_stamps_from_tile(
+    data: np.ndarray, sources: "Table", *, half_side: int = PSF_HALF_SIDE_PIX,
+) -> list:
+    """Pull ``2·half_side+1``-pixel stamps for each source in ``sources``.
+
+    Thin wrapper around :func:`photutils.psf.extract_stars` so the
+    column-rename invariant from :func:`_find_stars_in_tile` is enforced
+    at the public boundary (and is testable in isolation without needing
+    a real HST tile + DAOStarFinder).
+    """
+    from astropy.nddata import NDData
+    from photutils.psf import extract_stars
+    if "x" not in sources.colnames or "y" not in sources.colnames:
+        raise ValueError(
+            "extract_stars requires 'x' and 'y' columns on the sources "
+            "table — _find_stars_in_tile renames from xcentroid/ycentroid; "
+            "did a caller supply a different table?"
+        )
+    nd = NDData(data=data)
+    return list(extract_stars(nd, sources, size=2 * half_side + 1))
 
 
 def main() -> int:
@@ -121,12 +181,11 @@ def main() -> int:
     # ---- collect stars across tiles until we hit the target count ----
     print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
     from astropy.io import fits
-    from astropy.nddata import NDData
-    from photutils.psf import extract_stars
 
     star_stamps: list = []
     stars_per_tile = max(1, args.n_stars // max(len(tiles), 1) * 2)
     tiles_used: list = []
+    pix_scale_observed: float = FALLBACK_PIX_SCALE_ARCSEC
 
     for tile_idx, tname in enumerate(tiles):
         if len(star_stamps) >= args.n_stars:
@@ -140,6 +199,12 @@ def main() -> int:
             if sci is None:
                 continue
             data = np.asarray(sci.data, dtype=np.float32)
+            # Trust the first tile's WCS for pixel scale. All COSMOS HLSP
+            # tiles in one product release share the same drizzle scale.
+            if tile_idx == 0:
+                pix_scale_observed = _pixel_scale_from_header(sci.header)
+                print(f"      WCS pixel scale (this run) = "
+                      f"{pix_scale_observed:.4f}\"/pix")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sources = _find_stars_in_tile(data, max_n=stars_per_tile)
@@ -147,10 +212,12 @@ def main() -> int:
             print(f"        (no stars passed quality cuts)")
             continue
         print(f"        + {len(sources)} stars")
-        nd = NDData(data=data)
-        stamps = extract_stars(
-            nd, sources, size=2 * PSF_HALF_SIDE_PIX + 1,
-        )
+        try:
+            stamps = _extract_stamps_from_tile(data, sources)
+        except Exception as e:
+            print(f"        warn: extract_stars failed on this tile: "
+                  f"{type(e).__name__}: {e}")
+            continue
         star_stamps.extend(stamps)
         tiles_used.append(tname)
 
@@ -180,7 +247,7 @@ def main() -> int:
                          "extracted for ePSF construction")
         h["FILTER"]   = ("F814W", "HST filter")
         h["INSTRUME"] = ("ACS/WFC", "HST instrument")
-        h["PIXSCALE"] = (HLSP_PIX_SCALE_ARCSEC, "native HLSP pixel scale (arcsec)")
+        h["PIXSCALE"] = (pix_scale_observed, "native HLSP pixel scale (arcsec)")
         h["STARIDX"]  = (i, "0-based index in this run")
         h["NTILESRC"] = (len(tiles_used), "tiles contributing to this run")
         h["BUNIT"]    = ("electrons / s", "ACS/WFC drizzled units")
@@ -204,6 +271,7 @@ def main() -> int:
     psf_arr = np.asarray(epsf.data, dtype=np.float32)
     psf_arr = psf_arr / float(psf_arr.sum())   # unit flux
 
+    psf_pix_scale = pix_scale_observed / EPSF_OVERSAMPLING
     out_path = os.path.join(out_dir, PSF_FILE_NAME)
     hdu = fits.PrimaryHDU(psf_arr)
     h = hdu.header
@@ -213,13 +281,13 @@ def main() -> int:
     h["NSTARS"]   = (n_used, "stars used in EPSFBuilder")
     h["NTILES"]   = (len(tiles_used), "HLSP tiles contributing stars")
     h["OVERSAMP"] = (EPSF_OVERSAMPLING, "oversampling factor relative to HLSP grid")
-    h["PIXSCALE"] = (HLSP_PIX_SCALE_ARCSEC / EPSF_OVERSAMPLING,
-                     "arcsec / oversampled pixel")
+    h["PIXSCALE"] = (psf_pix_scale, "arcsec / pixel")
+    h["TILESCAL"] = (pix_scale_observed, "source tile pixel scale (arcsec)")
     h["BUNIT"]    = ("", "unit flux (sums to 1)")
     hdu.writeto(out_path, overwrite=True)
     print(f"  wrote ePSF → {out_path}")
     print(f"    shape    = {psf_arr.shape}")
-    print(f"    pix scale = {HLSP_PIX_SCALE_ARCSEC / EPSF_OVERSAMPLING:.4f}\"/pix")
+    print(f"    pix scale = {psf_pix_scale:.4f}\"/pix  (tile {pix_scale_observed:.4f}\"/pix, oversample ×{EPSF_OVERSAMPLING})")
     print(f"    flux sum  = {psf_arr.sum():.6f}  (should be 1.0)")
 
     runtime = time.time() - t0

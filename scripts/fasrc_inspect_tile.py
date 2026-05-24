@@ -38,7 +38,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--path", required=True,
                    help="Absolute path to the FITS tile on FASRC.")
-    p.add_argument("--mode", choices=("header", "cutout"), required=True)
+    p.add_argument("--mode", choices=("header", "cutout"), required=True,
+                   help="header: dump primary+ext FITS headers as JSON. "
+                        "cutout: PNG bytes to stdout + cutout-stats JSON to stderr.")
     p.add_argument("--size", type=int, default=256,
                    help="Cutout side in pixels (cutout mode only).")
     p.add_argument("--cx", type=int, default=-1,
@@ -85,9 +87,18 @@ def _dump_header_json(path: str) -> int:
 def _dump_cutout_png(
     path: str, size: int, cx: int, cy: int, seed: int,
 ) -> int:
-    """Stream PNG bytes for a small random / specified-centre cutout."""
+    """Stream PNG bytes for a small random / specified-centre cutout.
+
+    Stretch: ``asinh((x - median) / max(σ, ε))`` with sigma-clipped
+    ``(median, σ)`` from the cutout itself. This is robust to bright
+    sources (a single saturated star doesn't pull the noise estimate
+    upward) and produces consistent contrast across cutouts of very
+    different scenes (sky-only patches vs. bright-galaxy patches).
+    Percentile clip at [0.5, 99.5] then linearly maps to 8-bit gray.
+    """
     import numpy as np
     from astropy.io import fits
+    from astropy.stats import sigma_clipped_stats
 
     with fits.open(path, memmap=True) as hdul:
         sci = next(
@@ -118,20 +129,33 @@ def _dump_cutout_png(
         # The slice load is what's cheap thanks to memmap.
         cutout = np.asarray(sci.data[y0:y1, x0:x1], dtype=np.float32)
 
-    # Asinh stretch w/ percentile clip — the same convention the rest of
-    # the UI uses (see _render_fits_to_png in app.py).
+    # NaN/inf scrub.
     finite = np.isfinite(cutout)
     if not finite.any():
         cutout = np.zeros_like(cutout)
     else:
         cutout = np.where(finite, cutout, np.nanmedian(cutout[finite]))
-    stretched = np.arcsinh(cutout / 1.0)    # HST units are e/s → small scale
-    lo, hi = np.percentile(stretched, [1.0, 99.7])
-    if hi <= lo:
-        hi = lo + 1.0
-    norm = np.clip((stretched - lo) / (hi - lo), 0.0, 1.0)
-    img8 = (255 * (1.0 - norm)).astype(np.uint8)   # gray_r style
-    img8 = np.flipud(img8)                          # FITS origin → PIL origin
+
+    # Sigma-clipped (median, std) → robust to bright outliers.
+    mean, median, std = sigma_clipped_stats(cutout, sigma=3.0, maxiters=3)
+    # If the cutout is essentially empty (zero-padded edge of the HLSP
+    # mosaic where no exposures land), std ≈ 0 → render a flat gray
+    # with a label-in-stderr so the UI can tell the user what happened.
+    is_blank = float(std) < 1e-8
+
+    if is_blank:
+        img8 = np.full(cutout.shape, 128, dtype=np.uint8)
+    else:
+        # Asinh in noise-σ units, centred on the local sky → uniform
+        # contrast regardless of absolute pixel values per tile.
+        eps = max(float(std), 1e-8)
+        stretched = np.arcsinh((cutout - float(median)) / eps)
+        lo, hi = np.percentile(stretched, [0.5, 99.5])
+        if hi <= lo:
+            hi = lo + 1.0
+        norm = np.clip((stretched - lo) / (hi - lo), 0.0, 1.0)
+        img8 = (255 * (1.0 - norm)).astype(np.uint8)   # gray_r style
+    img8 = np.flipud(img8)                              # FITS → PIL origin
 
     from PIL import Image
     pil = Image.fromarray(img8, mode="L")
@@ -139,14 +163,21 @@ def _dump_cutout_png(
     pil.save(buf, format="PNG", optimize=True)
     sys.stdout.buffer.write(buf.getvalue())
     sys.stdout.buffer.flush()
-    # Emit a small JSON sidecar to stderr so the caller can log which
-    # centre was actually used (helpful for "give me the same cutout
-    # again" later).
+    # JSON sidecar to stderr — useful for diagnosing "why does this
+    # cutout look like a blank gradient?" Includes the per-cutout stats
+    # so the user can tell if they're looking at sky vs a bright source.
     sys.stderr.write(json.dumps({
         "cx": int(cx), "cy": int(cy),
         "x0": int(x0), "y0": int(y0),
         "size": int(size),
         "tile_shape": [int(H), int(W)],
+        "stats": {
+            "median": float(median),
+            "std":    float(std),
+            "min":    float(cutout.min()),
+            "max":    float(cutout.max()),
+            "blank":  bool(is_blank),
+        },
     }) + "\n")
     return 0
 

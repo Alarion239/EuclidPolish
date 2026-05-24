@@ -2229,7 +2229,15 @@ def create_app() -> Flask:
 
     @app.route("/fasrc/tile/cutout.png")
     def fasrc_tile_cutout_png():
-        """Stream a single random PNG cutout from a remote tile."""
+        """Stream a single random PNG cutout from a remote tile.
+
+        The remote script emits the PNG to stdout and a JSON sidecar
+        (centre, sigma-clipped stats, blank flag) to stderr. We surface
+        the stats via an ``X-Cutout-Stats`` response header so the page
+        JS can display "median, σ, is-blank" next to the image — handy
+        for diagnosing "why does this cutout look like a gradient?"
+        cases (usually a bright star or empty tile-edge region).
+        """
         from euclid_polish.web.fasrc_fetcher import (
             is_allowed_remote_path, run_remote_python,
         )
@@ -2251,10 +2259,15 @@ def create_app() -> Flask:
         )
         if rc != 0 or not out_bytes:
             return jsonify({"ok": False,
-                            "error": err.strip() or "empty cutout"}), 502
-        return send_file(
+                            "error": (err if isinstance(err, str) else err.decode(errors="replace")).strip() or "empty cutout"}), 502
+        resp = send_file(
             io.BytesIO(out_bytes), mimetype="image/png", max_age=0,
         )
+        # err contains the JSON sidecar; pass it through as a header so
+        # the page JS can render it without a second SSH round-trip.
+        if isinstance(err, str) and err.strip():
+            resp.headers["X-Cutout-Stats"] = err.strip().splitlines()[-1]
+        return resp
 
     # ---------------- PSFs page ----------------
     @app.route("/psfs")

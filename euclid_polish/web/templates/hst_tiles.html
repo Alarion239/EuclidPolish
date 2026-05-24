@@ -127,29 +127,43 @@ async function loadHeader(remotePath) {
   }
 }
 
-function loadCutout(remotePath, {seed = -1} = {}) {
+async function loadCutout(remotePath, {seed = -1} = {}) {
   const img    = document.getElementById('tile-cutout-img');
   const status = document.getElementById('tile-cutout-status');
   const size   = parseInt(document.getElementById('tile-cutout-size').value, 10) || 256;
   status.textContent = 'rendering cutout on FASRC…';
-  // The browser caches by URL; bump a nonce so each click triggers a
-  // fresh request. The seed is the "random key" — passing -1 server-side
-  // means "pick something new."
+  // Bump a nonce so the browser doesn't cache.
   const nonce = Date.now();
   const url = `/fasrc/tile/cutout.png?path=${encodeURIComponent(remotePath)}`
             + `&size=${size}&seed=${seed}&_t=${nonce}`;
-  // We can't easily extract the centre coords from the PNG itself; we'd
-  // need a second endpoint. For now the centre is "random — see browser
-  // network tab for the seed."
-  const tmp = new Image();
-  tmp.onload  = () => {
-    img.src = url;
-    status.textContent = `loaded at ${img.naturalWidth}×${img.naturalHeight}, seed=${seed}`;
-  };
-  tmp.onerror = () => {
-    status.textContent = 'cutout fetch failed — check Logs tab for SSH error';
-  };
-  tmp.src = url;
+  // Fetch via XHR so we can read the X-Cutout-Stats header.
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      status.textContent = `cutout fetch failed (HTTP ${r.status})`;
+      return;
+    }
+    const blob = await r.blob();
+    img.src = URL.createObjectURL(blob);
+    // Parse the stats sidecar.
+    const statsRaw = r.headers.get('X-Cutout-Stats');
+    let statsLine = `loaded ${size}×${size} cutout`;
+    if (statsRaw) {
+      try {
+        const s = JSON.parse(statsRaw);
+        const m = s.stats || {};
+        const meds = m.median != null ? m.median.toExponential(2) : '?';
+        const stds = m.std    != null ? m.std.toExponential(2)    : '?';
+        const blank = m.blank ? '⚠ BLANK (zero-padded tile edge)' : '';
+        statsLine = `centre=(${s.cx}, ${s.cy})  · median=${meds}  σ=${stds}  · `
+                  + `range=[${m.min?.toExponential(2)}, ${m.max?.toExponential(2)}]`
+                  + (blank ? ` ${blank}` : '');
+      } catch (e) { /* ignore parse errors */ }
+    }
+    status.textContent = statsLine;
+  } catch (err) {
+    status.textContent = `cutout fetch failed — ${err}`;
+  }
 }
 
 function selectTile(chip) {
