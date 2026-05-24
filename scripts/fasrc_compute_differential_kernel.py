@@ -60,6 +60,13 @@ def parse_args() -> argparse.Namespace:
                         "--no-bg-subtract to disable. Only affects this "
                         "script — the on-disk PSF FITS files are never "
                         "modified.")
+    p.add_argument("--border-pixels", type=int, default=10,
+                   help="Zero out the first/last N rows AND columns of "
+                        "each PSF after bg-subtract and before the FFT. "
+                        "Cleans up resampling/edge artefacts that show up "
+                        "as high-frequency content in Â. 0 disables. "
+                        "Renormalises to sum=1 after masking so the "
+                        "kernel's DC gain stays at 1.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be done and exit.")
     return p.parse_args()
@@ -89,6 +96,37 @@ def _bg_subtract_and_clip(psf: np.ndarray) -> np.ndarray:
     if s > 0:
         cleaned = cleaned / s
     return cleaned
+
+
+def _zero_borders(psf: np.ndarray, *, border_pixels: int) -> np.ndarray:
+    """Zero the first/last ``border_pixels`` rows and columns of ``psf``.
+
+    Edge artefacts from PSF extraction + spline resampling can otherwise
+    leak into Ĥ as high-frequency ringing that the Wiener inverse then
+    amplifies in Â. A flat mask is the cheapest fix; if it ever clips
+    a real wing pixel (it shouldn't — the PSF support is well inside
+    the stamp), the printed flux-lost number will flag it.
+
+    ``border_pixels=0`` is a no-op. Returns a unit-flux-renormalised
+    array; raises if the mask would consume the whole stamp.
+    """
+    if border_pixels <= 0:
+        return psf
+    H, W = psf.shape
+    if border_pixels * 2 >= min(H, W):
+        raise ValueError(
+            f"border_pixels={border_pixels} too large for PSF shape "
+            f"{psf.shape} — would zero the entire stamp"
+        )
+    out = psf.astype(np.float64, copy=True)
+    out[:border_pixels, :]  = 0
+    out[-border_pixels:, :] = 0
+    out[:, :border_pixels]  = 0
+    out[:, -border_pixels:] = 0
+    s = out.sum()
+    if s > 0:
+        out = out / s
+    return out
 
 
 def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
@@ -197,6 +235,27 @@ def main() -> int:
         h_hr = _bg_subtract_and_clip(h_hr)
         print(f"      bg-subtract : E median={e_bg:+.3e}  "
               f"H median={h_bg:+.3e} → subtracted, negatives clipped, "
+              f"renormalised")
+
+    if args.border_pixels > 0:
+        # Flux still inside the border *after* bg-subtract: anything
+        # non-trivial here means the PSF support extends into the mask
+        # region and we're clipping real wing pixels. <0.1 % is safe.
+        b = args.border_pixels
+        e_border_flux = float(e_hr[:b, :].sum() + e_hr[-b:, :].sum()
+                              + e_hr[:, :b].sum() + e_hr[:, -b:].sum()
+                              # corners counted twice above — subtract them.
+                              - e_hr[:b, :b].sum() - e_hr[:b, -b:].sum()
+                              - e_hr[-b:, :b].sum() - e_hr[-b:, -b:].sum())
+        h_border_flux = float(h_hr[:b, :].sum() + h_hr[-b:, :].sum()
+                              + h_hr[:, :b].sum() + h_hr[:, -b:].sum()
+                              - h_hr[:b, :b].sum() - h_hr[:b, -b:].sum()
+                              - h_hr[-b:, :b].sum() - h_hr[-b:, -b:].sum())
+        e_hr = _zero_borders(e_hr, border_pixels=b)
+        h_hr = _zero_borders(h_hr, border_pixels=b)
+        print(f"      border-zero : {b} px each side → "
+              f"E flux discarded={e_border_flux*100:.3f}%, "
+              f"H flux discarded={h_border_flux*100:.3f}%, "
               f"renormalised")
 
     print(f"[3/3] solving A_hat = E_hat · conj(H_hat) / (|H_hat|² + reg²) ...")

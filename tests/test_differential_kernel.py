@@ -141,6 +141,19 @@ class TestNoisePropagation:
         assert float(filtered.var()) < 0.5 * float(noise.var())
 
 
+def _load_script_module():
+    """Import the differential-kernel script as a module so we can
+    unit-test its helpers without going through the CLI."""
+    import importlib.util, os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "scripts",
+                        "fasrc_compute_differential_kernel.py")
+    spec = importlib.util.spec_from_file_location("_fdk", path)
+    mod  = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class TestBgSubtract:
     """The script-level ``--bg-subtract`` cleanup that runs right
     before the FFT. Lives in ``scripts/fasrc_compute_differential_kernel``
@@ -148,17 +161,7 @@ class TestBgSubtract:
     only caller while still being unit-testable."""
 
     def _load_helper(self):
-        # Late import so test collection doesn't depend on the script being
-        # importable as a module from the start (it's in ``scripts/`` which
-        # isn't on the default package path for the test runner).
-        import importlib.util, os, sys
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        path = os.path.join(root, "scripts",
-                            "fasrc_compute_differential_kernel.py")
-        spec = importlib.util.spec_from_file_location("_fdk", path)
-        mod  = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod._bg_subtract_and_clip
+        return _load_script_module()._bg_subtract_and_clip
 
     def test_subtracts_bg_offset_from_psf_pixels(self):
         """Plain offset on a clean Gaussian: after cleanup, the PSF
@@ -206,6 +209,59 @@ class TestBgSubtract:
         cleaned = bg_subtract(psf)
         # argmax in flat indexing; both should be the centre pixel.
         assert np.argmax(cleaned) == np.argmax(psf)
+
+
+class TestZeroBorders:
+    """The script-level ``--border-pixels`` cleanup that zeros the
+    outer N rows/cols of each PSF before the FFT. Same loader pattern
+    as TestBgSubtract — the helper lives in the script."""
+
+    def _load_helper(self):
+        return _load_script_module()._zero_borders
+
+    def test_zero_returns_input_unchanged(self):
+        """``border_pixels=0`` short-circuits — no copy, no renorm."""
+        zb = self._load_helper()
+        psf = _gauss2d(31, 4.0)
+        out = zb(psf, border_pixels=0)
+        # Identity — same object, since the helper bails early.
+        assert out is psf
+
+    def test_zeros_correct_pixels_and_only_those(self):
+        zb = self._load_helper()
+        psf = _gauss2d(31, 4.0)
+        out = zb(psf, border_pixels=3)
+        # All four borders are zero.
+        assert np.all(out[:3, :]  == 0)
+        assert np.all(out[-3:, :] == 0)
+        assert np.all(out[:, :3]  == 0)
+        assert np.all(out[:, -3:] == 0)
+        # Interior is non-zero (Gaussian core sits in the middle).
+        assert np.any(out[3:-3, 3:-3] > 0)
+
+    def test_renormalises_to_unit_flux(self):
+        """Renormalisation is essential — without it the kernel's DC
+        gain drifts whenever we clip any non-trivial border flux."""
+        zb = self._load_helper()
+        psf = _gauss2d(31, 4.0)
+        out = zb(psf, border_pixels=5)
+        assert out.sum() == pytest.approx(1.0, abs=1e-6)
+
+    def test_raises_when_border_consumes_whole_stamp(self):
+        """Guard against silent zero-array output if the caller passes
+        an absurd width — easier to spot at config time than after."""
+        zb = self._load_helper()
+        psf = _gauss2d(21, 4.0)
+        with pytest.raises(ValueError, match="too large"):
+            zb(psf, border_pixels=11)        # 2*11 == 22 >= 21
+
+    def test_preserves_centroid(self):
+        """Symmetric mask → centroid unchanged. Important because the
+        FFT phase reference is the centre pixel."""
+        zb = self._load_helper()
+        psf = _gauss2d(31, 4.0)
+        out = zb(psf, border_pixels=5)
+        assert np.argmax(out) == np.argmax(psf)
 
 
 class TestSaveLoadProvenance:
