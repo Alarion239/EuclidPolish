@@ -55,14 +55,25 @@ from scipy import signal as scipy_signal
 # ---------------------------------------------------------------------------
 
 def _pad_to(arr: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
-    """Zero-pad ``arr`` to ``shape``, centring the input."""
+    """Zero-pad ``arr`` to ``shape``, placing the input's centre pixel
+    at the target array's ``shape // 2`` index in each axis.
+
+    The naive formula ``(target - source) // 2`` agrees with this for
+    (even, even) and (odd, odd) but is **off by one** for (even target,
+    odd source) — which is exactly our hot case (pad an odd-N input
+    PSF into an even-N (power-of-2) FFT grid). The off-by-one matters
+    because ``ifftshift`` uses ``shape // 2`` as the centre convention;
+    a wrong pad introduces a 1-pixel shift that the FFT then turns
+    into a linear phase term, and the resulting kernel comes out
+    centred 1 pixel off the geometric centre.
+    """
     H, W = arr.shape
     sH, sW = shape
     if sH < H or sW < W:
         raise ValueError(f"target shape {shape} smaller than input {arr.shape}")
     out = np.zeros(shape, dtype=arr.dtype)
-    i0 = (sH - H) // 2
-    j0 = (sW - W) // 2
+    i0 = sH // 2 - H // 2
+    j0 = sW // 2 - W // 2
     out[i0:i0 + H, j0:j0 + W] = arr
     return out
 
@@ -136,8 +147,13 @@ def compute_differential_kernel(
 
     # Crop back to the input size — the wings of A live mostly inside
     # this support for reasonable regularisation.
-    i0 = (H_pad - H_in) // 2
-    j0 = (W_pad - W_in) // 2
+    #
+    # Same centring convention as _pad_to: ``shape // 2`` is the centre
+    # in both source and destination. Using ``(H_pad - H_in) // 2``
+    # silently shifts A by 1 pixel for (even pad, odd in), which then
+    # shows up as a dipole at the dead centre of ``A ⊛ H − E``.
+    i0 = H_pad // 2 - H_in // 2
+    j0 = W_pad // 2 - W_in // 2
     a = a_pad[i0:i0 + H_in, j0:j0 + W_in]
     return a.astype(np.float32)
 

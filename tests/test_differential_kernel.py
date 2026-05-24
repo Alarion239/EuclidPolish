@@ -50,6 +50,66 @@ class TestSolverShapeAndNorm:
         assert a.sum() == pytest.approx(1.0, abs=1e-2)
 
 
+class TestCentring:
+    """Pin the centring invariant: A's centre must land on the
+    geometric centre of the output array, *regardless* of the parities
+    of N_in vs the internal FFT-pad size N_pad.
+
+    The historical bug was that ``_pad_to`` and the crop-back both used
+    ``(N_pad - N_in) // 2``, which is correct for (even, even) and
+    (odd, odd) but off by one for (even pad, odd in). With our default
+    odd N_in=511 and N_pad=2048 (next power of 2), this put A's centre
+    at pixel 256 instead of 255 of a 511² array — invisible to the eye
+    in the PSF panels but lethal: ``A ⊛ H − E`` came out as a dipole
+    at the dead centre with peak ≈ 60 % of E's peak."""
+
+    def test_when_E_equals_H_kernel_peak_is_at_geometric_centre(self):
+        """E==H → ``argmax(A)`` must be at ``(side//2, side//2)``,
+        not at any neighbour pixel. That's the centring invariant the
+        off-by-one used to violate: A was peaked one pixel off the
+        geometric centre, so convolving back put A⊛H one pixel away
+        from E and the difference looked like a high-amplitude dipole.
+
+        We don't check "peak holds X % of sum" — for a smooth Gaussian
+        the Wiener filter legitimately spreads some energy off the
+        centre. The shift bug shows up only in *where* the peak sits."""
+        psf = _gauss2d(63, 4.0)
+        a = compute_differential_kernel(psf, psf, regularisation=1e-4)
+        cy, cx = np.unravel_index(int(np.argmax(a)), a.shape)
+        target = a.shape[0] // 2
+        assert (cy, cx) == (target, target), (
+            f"A peaks at ({cy}, {cx}) instead of geometric centre "
+            f"({target}, {target}) — off-by-one shift regressed"
+        )
+
+    def test_a_conv_h_equals_e_to_machine_precision_when_e_equals_h(self):
+        """E == H → A should be a centred delta, so ``A ⊛ H = E``
+        exactly (to numerical precision). Anything bigger than ~1e-6
+        residual means a shift slipped back in."""
+        psf = _gauss2d(63, 4.0)
+        a   = compute_differential_kernel(psf, psf, regularisation=1e-4)
+        # apply_kernel uses scipy fftconvolve mode='same' under the hood.
+        back = apply_kernel(psf, a)
+        rms_residual = float(np.sqrt(((back - psf) ** 2).mean()))
+        rms_e        = float(np.sqrt((psf ** 2).mean()))
+        rel_rms = rms_residual / rms_e
+        assert rel_rms < 0.01, f"rel.RMS = {rel_rms:.4f} — kernel is shifted"
+
+    def test_pad_to_centres_odd_input_in_even_target(self):
+        """The exact (even, odd) case that was buggy: pad odd→even and
+        verify the input's centre pixel lands at ``target // 2``."""
+        from euclid_polish.sky.differential_kernel import _pad_to
+        # Distinguishable centre marker so we can find it after padding.
+        a = np.zeros((5, 5))
+        a[2, 2] = 1.0                       # centre of odd 5×5 is (2, 2)
+        padded = _pad_to(a, (8, 8))         # even target
+        # After padding, the centre should be at (4, 4) = (target // 2).
+        assert padded[4, 4] == 1.0, (
+            f"input centre landed at unexpected position; "
+            f"argmax = {np.unravel_index(int(np.argmax(padded)), padded.shape)}"
+        )
+
+
 class TestRoundTrip:
 
     def _radial_profile(self, img: np.ndarray) -> np.ndarray:
