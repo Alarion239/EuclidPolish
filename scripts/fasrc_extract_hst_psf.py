@@ -260,14 +260,18 @@ def main() -> int:
 
     # ---- build the ePSF ----
     print(f"[3/3] running EPSFBuilder (oversampling = {EPSF_OVERSAMPLING}) ...")
-    from photutils.psf import EPSFBuilder
+    from photutils.psf import EPSFBuilder, EPSFStars
     builder = EPSFBuilder(
         oversampling=EPSF_OVERSAMPLING,
         maxiters=10,
         smoothing_kernel="quartic",
         progress_bar=False,
     )
-    epsf, _fitted_stars = builder(star_stamps)
+    # ``_extract_stamps_from_tile`` returns a plain list so we can ``extend``
+    # / slice it across multiple tiles. ``EPSFBuilder`` needs the proper
+    # ``EPSFStars`` container though (it reads ``stars.n_stars``); wrap
+    # right before the call so we get the best of both.
+    epsf, _fitted_stars = builder(EPSFStars(star_stamps))
     psf_arr = np.asarray(epsf.data, dtype=np.float32)
     psf_arr = psf_arr / float(psf_arr.sum())   # unit flux
 
