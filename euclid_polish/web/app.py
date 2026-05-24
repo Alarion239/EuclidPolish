@@ -2262,9 +2262,18 @@ def create_app() -> Flask:
             linear_width=asinh_scale, vmin=0.0,
             vmax=max(peak_e, peak_a_h),
         )
-        # Symmetric linear range for the residual so positive and
-        # negative excursions read the same.
+        # Residual stretch: symmetric asinh around 0 with a divergent
+        # colormap. AsinhNorm is sign-preserving, so the same stretch
+        # behaviour applies in both halves. Use 1 % of max|res| as the
+        # linear-width so faint structure shows up but the deepest
+        # excursions don't saturate the colormap.
         r_lim = float(np.max(np.abs(residual)))
+        if r_lim <= 0:
+            r_lim = 1.0     # avoid /0 in AsinhNorm
+        res_norm = AsinhNorm(
+            linear_width=max(r_lim * 0.01, 1e-12),
+            vmin=-r_lim, vmax=+r_lim,
+        )
 
         fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), dpi=110)
         axes[0].imshow(e,        cmap="gray_r", norm=psf_norm, origin="lower")
@@ -2273,9 +2282,8 @@ def create_app() -> Flask:
         axes[1].imshow(a_conv_h, cmap="gray_r", norm=psf_norm, origin="lower")
         axes[1].set_title(f"A ⊛ H (kernel result)\npeak={peak_a_h:.3e}, "
                           f"flux={flux_a_h:.4f}", fontsize=10)
-        axes[2].imshow(residual, cmap="RdBu_r", vmin=-r_lim, vmax=r_lim,
-                       origin="lower")
-        axes[2].set_title(f"A⊛H − E\nmax|res|={r_lim:.3e}, "
+        axes[2].imshow(residual, cmap="RdBu_r", norm=res_norm, origin="lower")
+        axes[2].set_title(f"A⊛H − E (asinh)\nmax|res|={r_lim:.3e}, "
                           f"RMS/RMS(E)={rel_rms:.3f}", fontsize=10)
         for ax in axes:
             ax.set_xticks([]); ax.set_yticks([])
