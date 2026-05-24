@@ -91,12 +91,48 @@
      list above. After a rebuild on FASRC, hit <strong>↻ Sync from FASRC</strong>
      in the toolbar to pull the fresh files in (the page caches them for
      5 min otherwise).</p>
+  <button id="btn-validate" type="button"
+          title="Convolve the local kernel with the local HST PSF and compare to the local Euclid PSF. Fully offline — no FASRC round-trip.">
+    🔬 Validate: render A⊛H vs E
+  </button>
+  <span id="validate-msg" class="muted" style="font-size:12px; margin-left:6px;"></span>
+  <div id="validate-wrap" style="display:none; margin-top:10px;">
+    <img id="validate-img" alt="A⊛H vs E vs residual"
+         style="max-width: 100%; height: auto; display: block;
+                border: 1px solid #e2e5ea; border-radius: 3px;">
+  </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
 <script>
 (() => {
+  // ── Validate kernel button ────────────────────────────────────────
+  const vbtn = document.getElementById('btn-validate');
+  const vmsg = document.getElementById('validate-msg');
+  const vwrap = document.getElementById('validate-wrap');
+  const vimg  = document.getElementById('validate-img');
+  if (vbtn) {
+    vbtn.addEventListener('click', () => {
+      vbtn.disabled = true;
+      vmsg.textContent = 'computing A⊛H locally…';
+      vwrap.style.display = 'block';
+      // Cache-bust so a fresh sync's kernel actually renders.
+      const url = '/hst-psf/validate.png?_t=' + Date.now();
+      vimg.onload = () => {
+        vmsg.textContent = '';
+        vbtn.disabled = false;
+      };
+      vimg.onerror = () => {
+        vmsg.textContent =
+          'failed — check that all three FITS are present (sync first if not)';
+        vbtn.disabled = false;
+      };
+      vimg.src = url;
+    });
+  }
+
+  // ── Sync from FASRC button ────────────────────────────────────────
   const btn = document.getElementById('btn-sync');
   const msg = document.getElementById('sync-msg');
   if (!btn) return;

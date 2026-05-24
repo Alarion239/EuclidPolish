@@ -2163,6 +2163,137 @@ def create_app() -> Flask:
         max_age = 0 if force else 600
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=max_age)
 
+    @app.route("/hst-psf/validate.png")
+    def hst_psf_validate_png():
+        """Sanity-check the differential kernel: render ``E`` vs ``A⊛H``
+        vs residual side-by-side.
+
+        Loads three FITS files entirely from the *local* state — no
+        FASRC round-trip:
+
+          * ``A``: rsync'd diff kernel in the fetcher's cache.
+          * ``H``: rsync'd HST F814W ePSF, same cache.
+          * ``E``: Euclid VIS empirical PSF in ``data/euclid_psf/``.
+
+        Runs the exact same preprocessing the kernel script does
+        (resample, common-side crop, bg-subtract, border-zero,
+        renormalise) on H and E so the comparison is honest — A was
+        solved against *those* cleaned arrays, not the raw FITS. Then
+        ``A ⊛ H_cleaned`` is computed via fftconvolve and rendered
+        alongside ``E_cleaned`` and their residual.
+        """
+        import importlib.util
+        from astropy.io import fits
+        from scipy.signal import fftconvolve
+        from euclid_polish.web.fasrc_fetcher import _local_path_for
+
+        # 1. Resolve local file paths.
+        cfg = fasrc_config.load()
+        hst_path = _local_path_for(f"{cfg.data_dir}/hst_psf/F814W.fits")
+        krn_path = _local_path_for(f"{cfg.data_dir}/hst_psf/diff_kernel_VIS.fits")
+        euc_path = os.path.join(Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits")
+        for p in (hst_path, krn_path, euc_path):
+            if not os.path.isfile(p):
+                abort(404, description=f"missing FITS: {p}")
+
+        # 2. Load script helpers via importlib so we apply the SAME
+        # preprocessing the kernel solver did. (The script isn't on
+        # the import path; cheap to load once per request.)
+        repo_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))
+        repo_root = os.path.dirname(repo_root)        # …/EuclidPolish
+        script = os.path.join(repo_root, "scripts",
+                              "fasrc_compute_differential_kernel.py")
+        spec = importlib.util.spec_from_file_location("_fdk", script)
+        fdk  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fdk)
+
+        # 3. Load FITS arrays + pixel scales.
+        def _read(path):
+            with fits.open(path, memmap=False) as hdul:
+                return (np.asarray(hdul[0].data, dtype=np.float64),
+                        float(hdul[0].header.get("PIXSCALE", 0.05)))
+        hst_raw, hst_scale = _read(hst_path)
+        euc_raw, euc_scale = _read(euc_path)
+        krn,     _         = _read(krn_path)
+
+        # 4. Mirror the script's pipeline: resample → common-side crop
+        # → renormalise → bg-subtract → border-zero. Use the script's
+        # current defaults (same constants the on-disk kernel was built
+        # against) — these are the right "should equal E" arrays.
+        common_side  = 511
+        border_pixels = 10
+        e = fdk._resample_to_hr_grid(euc_raw, euc_scale)
+        h = fdk._resample_to_hr_grid(hst_raw, hst_scale)
+        e = fdk._centre_crop_to(e, common_side)
+        h = fdk._centre_crop_to(h, common_side)
+        e = e / e.sum(); h = h / h.sum()
+        e = fdk._bg_subtract_and_clip(e)
+        h = fdk._bg_subtract_and_clip(h)
+        e = fdk._zero_borders(e, border_pixels=border_pixels)
+        h = fdk._zero_borders(h, border_pixels=border_pixels)
+
+        # 5. Apply A to H and centre-crop back to the common side
+        # (fftconvolve with mode="same" already gives us the right size
+        # when both inputs match; if A is smaller than h, scipy pads).
+        a_conv_h = fftconvolve(h, krn, mode="same")
+
+        # 6. Scalar diagnostics so the user can read off the numbers
+        # instead of squinting at the pictures.
+        peak_e        = float(e.max())
+        peak_a_h      = float(a_conv_h.max())
+        flux_e        = float(e.sum())
+        flux_a_h      = float(a_conv_h.sum())
+        residual      = a_conv_h - e
+        rms_residual  = float(np.sqrt((residual ** 2).mean()))
+        rms_e         = float(np.sqrt((e ** 2).mean()))
+        rel_rms       = rms_residual / rms_e if rms_e > 0 else float("nan")
+
+        # 7. Render the 3-panel figure.
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import AsinhNorm
+
+        # Shared asinh stretch for the two PSF panels — the linear scale
+        # value is what controls how aggressively faint structure is
+        # boosted. Pick something that brings out the spikes without
+        # saturating the core; 1 % of the peak is a sensible default.
+        asinh_scale = max(peak_e, peak_a_h) * 0.01
+        psf_norm = AsinhNorm(
+            linear_width=asinh_scale, vmin=0.0,
+            vmax=max(peak_e, peak_a_h),
+        )
+        # Symmetric linear range for the residual so positive and
+        # negative excursions read the same.
+        r_lim = float(np.max(np.abs(residual)))
+
+        fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), dpi=110)
+        axes[0].imshow(e,        cmap="gray_r", norm=psf_norm, origin="lower")
+        axes[0].set_title(f"E (target Euclid)\npeak={peak_e:.3e}, "
+                          f"flux={flux_e:.4f}", fontsize=10)
+        axes[1].imshow(a_conv_h, cmap="gray_r", norm=psf_norm, origin="lower")
+        axes[1].set_title(f"A ⊛ H (kernel result)\npeak={peak_a_h:.3e}, "
+                          f"flux={flux_a_h:.4f}", fontsize=10)
+        axes[2].imshow(residual, cmap="RdBu_r", vmin=-r_lim, vmax=r_lim,
+                       origin="lower")
+        axes[2].set_title(f"A⊛H − E\nmax|res|={r_lim:.3e}, "
+                          f"RMS/RMS(E)={rel_rms:.3f}", fontsize=10)
+        for ax in axes:
+            ax.set_xticks([]); ax.set_yticks([])
+
+        peak_ratio = peak_a_h / peak_e if peak_e > 0 else float("nan")
+        fig.suptitle(
+            f"Kernel sanity check — common_side={common_side}  "
+            f"peak(A⊛H)/peak(E)={peak_ratio:.3f}  "
+            f"flux(A⊛H)={flux_a_h:.4f}  rel.RMS residual={rel_rms:.3f}",
+            fontsize=10, y=1.02,
+        )
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.2)
+        plt.close(fig)
+        return send_file(io.BytesIO(buf.getvalue()),
+                         mimetype="image/png", max_age=0)
+
     @app.route("/api/hst-psf/sync", methods=["POST"])
     def api_hst_psf_sync():
         """Re-rsync the HST PSF + differential kernel from FASRC.
