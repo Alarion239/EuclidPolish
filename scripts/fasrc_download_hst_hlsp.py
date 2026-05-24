@@ -37,6 +37,43 @@ HLSP_DIR_NAME = "hst_hlsp"
 TARGET_NAME   = "COSMOS"
 FILTER        = "F814W"
 OBS_COLLECTION = "HLSP"
+# MAST's ``download_products`` writes into ``<download_dir>/mastDownload/HLSP/<obs_id>/<file>``.
+# We always want the flat layout ``<download_dir>/<file>`` so the rest of
+# the pipeline doesn't have to know about the scratch subtree.
+MAST_SCRATCH_SUBDIR = "mastDownload"
+
+
+def _flatten_mast_download_dir(out_dir: str) -> int:
+    """Move every FITS from ``out_dir/mastDownload/.../*.fits`` into ``out_dir/``.
+
+    Idempotent + crash-safe: re-run after a previous job got killed
+    mid-flatten and any orphaned nested tiles will be promoted to the
+    flat layout. Returns the number of files relocated.
+    """
+    scratch = os.path.join(out_dir, MAST_SCRATCH_SUBDIR)
+    if not os.path.isdir(scratch):
+        return 0
+    moved = 0
+    for dirpath, _dirs, files in os.walk(scratch):
+        for fname in files:
+            if not fname.lower().endswith(".fits"):
+                continue
+            src = os.path.join(dirpath, fname)
+            dst = os.path.join(out_dir, fname)
+            try:
+                if os.path.isfile(dst) and os.path.getsize(dst) > 0:
+                    # Already flat — drop the duplicate from scratch so
+                    # the rmtree below doesn't have anything left.
+                    os.remove(src)
+                else:
+                    os.replace(src, dst)
+                moved += 1
+            except OSError as e:
+                print(f"  failed to move {src} → {dst}: {e}")
+    # Wipe the scratch tree (empty subdirs + any non-FITS leftovers).
+    import shutil
+    shutil.rmtree(scratch, ignore_errors=True)
+    return moved
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +85,11 @@ def parse_args() -> argparse.Namespace:
                    help="Override the default $DATA_DIR/hst_hlsp/ location.")
     p.add_argument("--dry-run", action="store_true",
                    help="List the tiles that would be downloaded and exit.")
+    p.add_argument("--flatten-only", action="store_true",
+                   help="Skip MAST entirely — just promote any FITS files "
+                        "stranded in mastDownload/HLSP/<id>/ up to the flat "
+                        "layout, then delete the scratch tree. Use after a "
+                        "previous download was killed mid-flatten.")
     return p.parse_args()
 
 
@@ -65,6 +107,24 @@ def main() -> int:
     print()
 
     t0 = time.time()
+
+    # [0/3] Repair half-flattened state from any previous run that died
+    # mid-flatten (sbatch wall-time hit, OOM, etc.). This is the fix for
+    # the "some tiles end up under mastDownload/HLSP/<id>/, others sit
+    # directly in hst_hlsp/" inconsistency.
+    recovered = _flatten_mast_download_dir(out_dir)
+    if recovered > 0:
+        print(f"[0/3] recovered {recovered} tile(s) from previous "
+              f"mastDownload/ scratch dir")
+    else:
+        print(f"[0/3] no nested files to flatten ({out_dir}/mastDownload/ is "
+              "empty or absent)")
+
+    if args.flatten_only:
+        print()
+        print(f"RUNTIME_SECONDS={time.time() - t0:.1f}")
+        print(f"N_FILES_FLATTENED={recovered}")
+        return 0
 
     print("[1/3] querying MAST HLSP catalog ...")
     from astroquery.mast import Observations
@@ -118,28 +178,18 @@ def main() -> int:
     print("[3/3] downloading (this can take a while) ...")
     if pending:
         from astropy.table import Table
-        manifest = Observations.download_products(
-            Table(rows=pending), download_dir=out_dir,
-            cache=True, mrp_only=False,
-        )
-        # MAST writes under mastDownload/HLSP/<id>/<file>. Flatten to out_dir.
-        if manifest is not None:
-            for r in manifest:
-                src = str(r["Local Path"])
-                if not os.path.isfile(src):
-                    continue
-                dst = os.path.join(out_dir, os.path.basename(src))
-                if os.path.abspath(src) == os.path.abspath(dst):
-                    continue
-                try:
-                    os.replace(src, dst)
-                except OSError as e:
-                    print(f"  failed to move {src} → {dst}: {e}")
-        # Clean up the mastDownload scratch.
-        scratch = os.path.join(out_dir, "mastDownload")
-        if os.path.isdir(scratch):
-            import shutil
-            shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            Observations.download_products(
+                Table(rows=pending), download_dir=out_dir,
+                cache=True, mrp_only=False,
+            )
+        finally:
+            # Always flatten — even if download_products raised partway
+            # through, anything it managed to write is rescued into the
+            # flat layout. This keeps the on-disk state consistent across
+            # crashes.
+            moved = _flatten_mast_download_dir(out_dir)
+            print(f"  flattened {moved} file(s) into {out_dir}/")
 
     # Sanity audit: list final on-disk tiles.
     final = sorted(
