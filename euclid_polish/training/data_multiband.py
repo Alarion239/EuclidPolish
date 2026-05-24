@@ -90,11 +90,24 @@ class MultiBandEuclidDataset:
 
     Parameters
     ----------
-    subset        : ``'train'`` or ``'validate'``.
-    records_dir   : directory containing ``clean_{subset}.tfrecord`` etc.
-    scale         : super-resolution factor (HR pixel scale / LR pixel scale).
-                    For our pipeline this is 2 (0.05″ HR / 0.10″ LR).
-    hr_patch_size : HR crop size during training (96 by default).
+    subset
+        ``'train'`` or ``'validate'``.
+    records_dir
+        Directory containing ``clean_{subset}.tfrecord`` etc.
+    scale
+        Super-resolution factor (HR pixel scale / LR pixel scale).
+        For our pipeline this is 2 (0.05″ HR / 0.10″ LR).
+    hr_patch_size
+        HR crop size during training (96 by default).
+    hst_records_dir
+        Optional secondary records dir containing HST-derived pairs
+        produced by ``scripts/fasrc_generate_hst_tfrecords.py``. When
+        set together with ``hst_fraction > 0``, batches are sampled
+        from both sources with the given mixture weight.
+    hst_fraction
+        Fraction of training examples drawn from the HST records
+        (0 → identical to single-source behaviour, 1 → only HST).
+        Has no effect when ``hst_records_dir`` is None.
     """
 
     def __init__(
@@ -103,30 +116,64 @@ class MultiBandEuclidDataset:
         records_dir: str = Config.RECORDS_DIR_V2,
         scale: int = Config.DEFAULT_REBIN_FACTOR,
         hr_patch_size: int = Config.DEFAULT_HR_CROP_SIZE,
+        hst_records_dir: Optional[str] = None,
+        hst_fraction: float = 0.0,
     ):
         if subset not in ("train", "validate"):
             raise ValueError("subset must be 'train' or 'validate'")
+        if not (0.0 <= hst_fraction <= 1.0):
+            raise ValueError(f"hst_fraction must be in [0, 1], got {hst_fraction}")
         self.scale         = int(scale)
         self.hr_patch_size = int(hr_patch_size)
-        # HR target: 1-channel VIS written by the forward step. Falls
-        # back to the older ``clean_{subset}`` name when the forward
-        # output is the 1-band overwrite from the previous schema.
+        self.subset        = subset
+        self.hst_fraction  = float(hst_fraction)
+
+        self.clean_file, self.dirty_file = self._resolve_pair(
+            records_dir, subset,
+        )
+
+        # Secondary HST source: optional. When the directory exists and
+        # ``hst_fraction > 0``, ``dataset()`` interleaves the two streams.
+        self.hst_clean_file: Optional[str] = None
+        self.hst_dirty_file: Optional[str] = None
+        if hst_records_dir is not None and self.hst_fraction > 0:
+            try:
+                self.hst_clean_file, self.hst_dirty_file = self._resolve_pair(
+                    hst_records_dir, subset,
+                )
+            except FileNotFoundError:
+                # Fall back to single-source cleanly — better to keep
+                # training than to abort with a missing-records error.
+                self.hst_clean_file = None
+                self.hst_dirty_file = None
+
+    @staticmethod
+    def _resolve_pair(records_dir: str, subset: str) -> tuple[str, str]:
+        """Return ``(hr_file, dirty_file)`` for one records dir / subset."""
+        import os as _os
         hr_candidate = tfrecord_path(records_dir, f"hr_{subset}")
         legacy_clean = tfrecord_path(records_dir, f"clean_{subset}")
-        import os as _os
+        dirty        = tfrecord_path(records_dir, f"dirty_{subset}")
         if _os.path.exists(hr_candidate):
-            self.clean_file = hr_candidate
+            hr_file = hr_candidate
+        elif _os.path.exists(legacy_clean):
+            hr_file = legacy_clean
         else:
-            self.clean_file = legacy_clean   # 1-band clean (old layout) or 4-band (new generate-only)
-        self.dirty_file    = tfrecord_path(records_dir, f"dirty_{subset}")
+            raise FileNotFoundError(
+                f"No HR/clean TFRecord found in {records_dir} for {subset}"
+            )
+        if not _os.path.exists(dirty):
+            raise FileNotFoundError(f"No dirty TFRecord found at {dirty}")
+        return hr_file, dirty
 
-    def dataset(
-        self,
-        batch_size: int = Config.DEFAULT_BATCH_SIZE,
-        random_transform: bool = True,
-        repeat_count: Optional[int] = None,
+    # ------------------------------------------------------------------ #
+
+    def _build_single_source(
+        self, dirty_file: str, clean_file: str,
+        *, random_transform: bool, repeat_count: Optional[int],
+        cache: bool,
     ) -> tf.data.Dataset:
-        """Build the (lr_4ch, hr_1ch) ``tf.data.Dataset``."""
+        """One (dirty, clean) → (lr, hr) tf.data pipeline, pre-batch."""
         n_lr = Config.NUM_LR_CHANNELS
         n_hr = Config.NUM_HR_CHANNELS
 
@@ -136,14 +183,15 @@ class MultiBandEuclidDataset:
         def _parse_hr(raw):
             return asinh_stretch_hr(parse_record_graph_v2(raw, n_hr))
 
-        dirty_ds = tf.data.TFRecordDataset(self.dirty_file).map(
+        dirty_ds = tf.data.TFRecordDataset(dirty_file).map(
             _parse_lr, num_parallel_calls=AUTOTUNE,
         )
-        clean_ds = tf.data.TFRecordDataset(self.clean_file).map(
+        clean_ds = tf.data.TFRecordDataset(clean_file).map(
             _parse_hr, num_parallel_calls=AUTOTUNE,
         )
         ds = tf.data.Dataset.zip((dirty_ds, clean_ds))
-        ds = ds.cache()
+        if cache:
+            ds = ds.cache()
 
         if random_transform:
             hr_patch = self.hr_patch_size
@@ -153,9 +201,44 @@ class MultiBandEuclidDataset:
                 lambda lr, hr: _augment_multiband(lr, hr, hr_patch, scale),
                 num_parallel_calls=AUTOTUNE,
             )
+        return ds.repeat(repeat_count)
 
-        ds = ds.repeat(repeat_count)
-        return ds.batch(batch_size).prefetch(AUTOTUNE)
+    def dataset(
+        self,
+        batch_size: int = Config.DEFAULT_BATCH_SIZE,
+        random_transform: bool = True,
+        repeat_count: Optional[int] = None,
+    ) -> tf.data.Dataset:
+        """Build the (lr_4ch, hr_1ch) ``tf.data.Dataset``.
+
+        When an HST source is configured, samples are drawn from the two
+        underlying streams via :func:`tf.data.Dataset.sample_from_datasets`
+        with weights ``[1 - hst_fraction, hst_fraction]``. Both streams
+        are independently augmented + repeated; this matches the
+        per-example sampling semantics that "10 % of batches come from
+        HST" implies.
+        """
+        primary = self._build_single_source(
+            self.dirty_file, self.clean_file,
+            random_transform=random_transform, repeat_count=repeat_count,
+            cache=True,
+        )
+        if (self.hst_clean_file is None
+            or self.hst_dirty_file is None
+            or self.hst_fraction <= 0):
+            return primary.batch(batch_size).prefetch(AUTOTUNE)
+
+        secondary = self._build_single_source(
+            self.hst_dirty_file, self.hst_clean_file,
+            random_transform=random_transform, repeat_count=repeat_count,
+            cache=True,
+        )
+        mixed = tf.data.Dataset.sample_from_datasets(
+            [primary, secondary],
+            weights=[1.0 - self.hst_fraction, self.hst_fraction],
+            stop_on_empty_dataset=False,
+        )
+        return mixed.batch(batch_size).prefetch(AUTOTUNE)
 
 
 def _augment_multiband(

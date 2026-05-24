@@ -65,6 +65,7 @@
 <div id="tabs" style="display:none;">
   <nav class="toolbar" style="margin-top:6px;">
     <a class="chip active" data-tab="training">🧠 Training</a>
+    <a class="chip"        data-tab="hst">🔭 HST pipeline</a>
     <a class="chip"        data-tab="git">🌿 Git</a>
     <a class="chip"        data-tab="storage">📁 Storage</a>
     <a class="chip"        data-tab="logs">📜 Logs</a>
@@ -275,6 +276,26 @@
         <h3>Recent submissions</h3>
         <div id="recent-jobs"><span class="muted">none yet</span></div>
       </section>
+    </div>
+  </section>
+
+  <!-- =======================================================
+       TAB · HST pipeline (5 SLURM jobs for the HST-mix workflow)
+       ======================================================= -->
+  <section class="tab-panel" data-tab="hst" style="display:none;">
+    <section class="card">
+      <h3>🔭 HST → Euclid pipeline</h3>
+      <p class="hint">
+        Five SLURM jobs that build paired (HST clean, Euclid-forward dirty)
+        TFRecords from COSMOS HLSP F814W and train SR with a configurable
+        HST sample fraction. Each job submits as its own sbatch on FASRC
+        with separately tunable CPU/GPU/memory/wall time.
+      </p>
+      <p class="hint" id="hst-artifact-line">loading on-disk artifact status…</p>
+    </section>
+
+    <div id="hst-steps-area">
+      <p class="muted">loading pipeline steps…</p>
     </div>
   </section>
 
@@ -508,7 +529,7 @@ document.querySelectorAll('.chip[data-tab]').forEach(chip => {
 });
 
 /* ============================================================
-   Connection + Bitwarden
+   Connection
 ============================================================ */
 async function refreshConnState() {
   const { data } = await api('/api/fasrc/status');
@@ -524,33 +545,53 @@ async function refreshConnState() {
   $('btn-disconnect').style.display = conn ? 'inline-block' : 'none';
 
   if (conn) refreshTraining();   // landing tab
+  return conn;
 }
 
-$('conn-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
+/* One-shot connect attempt. On failure, optionally open the Settings
+   drawer so the user can fix ssh_user / ssh_host without an extra
+   click. Returns true on success. Idempotent — the backend's connect
+   route early-returns if the ControlMaster is already up. */
+async function tryConnect({ openSettingsOnFail = false } = {}) {
   $('btn-login').disabled = true;
   $('conn-msg').textContent = 'opening SSH ControlMaster…';
   const c = await api('/api/fasrc/connect', { method: 'POST' });
+  $('btn-login').disabled = false;
   if (!c.ok) {
     $('conn-msg').textContent = 'connect failed: ' + (c.data.error || '?');
-    $('btn-login').disabled = false;
-    return;
+    if (openSettingsOnFail) $('settings-block').open = true;
+    await refreshConnState();
+    return false;
   }
   $('conn-msg').textContent = '✓ connected';
-  refreshConnState();
+  await refreshConnState();
+  return true;
+}
+
+$('conn-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  // Manual click → if it fails, open Settings so the user can fix and retry.
+  tryConnect({ openSettingsOnFail: true });
 });
 
 $('btn-disconnect').onclick = async () => {
   await api('/api/fasrc/disconnect', { method: 'POST' });
   refreshConnState();
 };
+
 $('settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const r = await fetch('/api/fasrc/config', {
     method: 'POST', body: new URLSearchParams(fd),
   });
-  $('conn-msg').textContent = r.ok ? 'settings saved' : 'save failed';
+  if (!r.ok) {
+    $('conn-msg').textContent = 'save failed';
+    return;
+  }
+  // Save succeeded → try connecting immediately with the new config.
+  $('conn-msg').textContent = 'settings saved — connecting…';
+  tryConnect({ openSettingsOnFail: true });
 });
 
 /* ============================================================
@@ -1000,7 +1041,8 @@ async function refreshLogs() {
       (r.state === 'RUNNING') ? 'badge-running' :
       (r.state === 'PENDING') ? 'badge-pending' :
       (r.state === 'COMPLETED' || r.state === 'DONE') ? 'badge-done' :
-      (r.state === 'FAILED' || r.state === 'TIMEOUT' || r.state === 'CANCELLED')
+      (r.state === 'FAILED' || r.state === 'TIMEOUT' ||
+       r.state === 'CANCELLED' || r.state === 'UNKNOWN')
         ? 'badge-failed' : 'badge-muted';
     const stateText = r.state || '—';
     const labelText = r.label || '';
@@ -1171,9 +1213,22 @@ $('btn-mirror-stop').onclick = async () => {
 };
 
 /* ============================================================
-   Periodic poll
+   Initial load + periodic poll
+
+   On first render: if already connected (e.g. ControlPersist is still
+   holding a previous session open), drop straight into the dashboard.
+   Otherwise auto-try connect once — success goes to the dashboard,
+   failure opens the Settings drawer so the user can fix ssh_user /
+   ssh_host and resave (the save handler will re-try the connect for
+   them). The 6 s status poll only refreshes the badge; it never
+   initiates another connect.
 ============================================================ */
-refreshConnState();
+(async () => {
+  const alreadyConnected = await refreshConnState();
+  if (!alreadyConnected) {
+    await tryConnect({ openSettingsOnFail: true });
+  }
+})();
 setInterval(refreshConnState, 6000);
 // Active tab's data gets refreshed on a faster cadence so the running
 // job's progress updates without the user clicking anything.
@@ -1182,8 +1237,240 @@ setInterval(() => {
   if (!activeTab) return;
   if (activeTab === 'training') refreshTraining();
   if (activeTab === 'storage')  refreshListings();
+  if (activeTab === 'hst')      refreshHst();
   // git tab is manual-refresh: pulls and fetches are expensive enough
   // that auto-polling them isn't worth it.
 }, 5000);
+
+/* ============================================================
+   HST pipeline tab
+   ------------------------------------------------------------
+   Renders five cards (one per pipeline step) into #hst-steps-area
+   based on /api/fasrc/hst/status. Each card has its own form with
+   step-specific knobs + the SLURM allocation fields. Submitting
+   POSTs to /api/fasrc/hst/<step_id>/submit and shows the returned
+   job id inline.
+============================================================ */
+
+function fmtRuntime(s) {
+  if (s == null) return '—';
+  if (s < 60)    return `${s.toFixed(0)} s`;
+  if (s < 3600)  return `${(s / 60).toFixed(1)} min`;
+  return `${(s / 3600).toFixed(2)} h`;
+}
+
+function _stepSpecificFields(step) {
+  // The per-step "what does THIS job take as input" knobs.
+  // Resource (cpu/gpu/mem/time) fields are rendered separately.
+  switch (step.step_id) {
+    case 'download':
+      return `
+        <label>Number of HLSP tiles
+          <input type="number" name="n_tiles" value="25" min="1" max="81"></label>`;
+    case 'extract_psf':
+      return `
+        <label>Target N stars
+          <input type="number" name="n_stars" value="200" min="20" max="5000"></label>`;
+    case 'kernel':
+      return `
+        <label>Wiener regularisation
+          <input type="number" name="regularisation" value="0.001" step="any" min="0"></label>`;
+    case 'tfrecords':
+      return `
+        <label>Training pairs
+          <input type="number" name="n_train" value="6400" min="1" max="100000"></label>
+        <label>Validation pairs
+          <input type="number" name="n_valid" value="200" min="1" max="10000"></label>
+        <label>HR image size
+          <input type="number" name="image_size" value="510" min="60" max="2048"></label>`;
+    case 'train':
+      return `
+        <label>Training steps
+          <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
+        <label>Batch size
+          <input type="number" name="batch_size" value="16" min="1" max="64"></label>
+        <label>HST fraction
+          <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"
+                 title="0 → only synthetic. 1 → only HST-derived."></label>`;
+    default:
+      return '';
+  }
+}
+
+function _resourceFields(step) {
+  const d = step.defaults;
+  // CPU count is hidden when the step locks it (single-threaded jobs).
+  // The submit route enforces it on the server too, so this is UI sugar.
+  const cpuField = (step.fixed_cpus != null)
+    ? `<span class="muted" title="this step is single-threaded; allocation is locked">CPUs: <b>${step.fixed_cpus}</b> (locked)</span>`
+    : `<label>CPUs
+        <input type="number" name="n_cpus" value="${d.n_cpus}" min="1" max="64"></label>`;
+  return `
+    <label>Partition
+      <input type="text" name="partition" value="${d.partition}" size="8"></label>
+    ${cpuField}
+    <label>GPUs
+      <input type="number" name="n_gpus" value="${d.n_gpus}" min="0" max="8"
+             ${step.needs_gpu ? '' : 'title="this step does not need a GPU"'}></label>
+    <label>Memory
+      <input type="text" name="memory" value="${d.memory}" size="6"></label>
+    <label>Wall time
+      <input type="text" name="time_limit" value="${d.time_limit}" size="9"
+             title="HH:MM:SS or D-HH:MM:SS"></label>`;
+}
+
+function _stepCard(step, artifactStatus) {
+  // Map step id → which artifact existence this step PRODUCES.
+  const produces = {
+    download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
+    tfrecords: 'records', train: 'ckpt',
+  }[step.step_id];
+  const status = artifactStatus[produces];
+  let statusBadge = '';
+  if (status === true) statusBadge = '<span class="badge badge-done">✓ output present</span>';
+  else if (status === false) statusBadge = '<span class="badge badge-running">○ output missing</span>';
+
+  const med = step.median_runtime_s;
+  const medLine = med != null
+    ? `<span class="muted">median runtime: ${fmtRuntime(med)} (last 5)</span>`
+    : `<span class="muted">no runtime history yet</span>`;
+
+  return `
+  <section class="card">
+    <h3>${polishUI.escapeHtml(step.label)} ${statusBadge}</h3>
+    <p class="hint">${polishUI.escapeHtml(step.description)}</p>
+    <p class="hint">${medLine}</p>
+
+    <form data-step-id="${step.step_id}" class="hst-step-form">
+      <div class="form-row" style="flex-wrap:wrap; gap:12px;">
+        ${_stepSpecificFields(step)}
+      </div>
+      <hr style="margin:8px 0; opacity:0.3;">
+      <div class="form-row" style="flex-wrap:wrap; gap:12px;">
+        ${_resourceFields(step)}
+      </div>
+      <button type="submit" style="margin-top:8px;">Submit ${polishUI.escapeHtml(step.step_id)}</button>
+    </form>
+    <div class="hst-step-status" data-step-id="${step.step_id}"></div>
+  </section>`;
+}
+
+// Track which steps have already been rendered so we only build the
+// cards (and thus reset their form values) ONCE per page load. Subsequent
+// polls only update read-only status decorations — never touch form inputs.
+let _HST_RENDERED = false;
+
+function _renderHstArea(j) {
+  const area = document.getElementById('hst-steps-area');
+  if (!area) return;
+  area.innerHTML = j.steps.map(s => _stepCard(s, j.artifacts || {})).join('');
+  // Wire submit handlers on every form (once per render).
+  area.querySelectorAll('.hst-step-form').forEach(f => {
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const stepId = f.dataset.stepId;
+      const statusEl = area.querySelector(
+        `.hst-step-status[data-step-id="${stepId}"]`,
+      );
+      statusEl.innerHTML = '<span class="muted">submitting…</span>';
+      const body = new FormData(f);
+      try {
+        const resp = await fetch(`/api/fasrc/hst/${stepId}/submit`, {
+          method: 'POST', body,
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          statusEl.innerHTML = `<span class="badge badge-done">submitted</span>
+            SLURM job <code>${data.jobid}</code> — see Logs tab for output.`;
+          // Light refresh — artifact badges may flip from ✗ to ✓ once the
+          // job finishes; do NOT re-render the cards (would wipe inputs).
+          setTimeout(refreshHst, 1500);
+        } else {
+          statusEl.innerHTML = `<span class="badge badge-failed">failed</span>
+            <code>${polishUI.escapeHtml(data.error || 'unknown')}</code>`;
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<span class="badge badge-failed">network error</span>
+          <code>${polishUI.escapeHtml(String(err))}</code>`;
+      }
+    });
+  });
+  _HST_RENDERED = true;
+}
+
+function _updateHstStatusOnly(j) {
+  // Refresh only the artifact badges + runtime hints on existing cards.
+  // Form input values are never touched.
+  const artifacts = j.artifacts || {};
+  const produces = {
+    download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
+    tfrecords: 'records', train: 'ckpt',
+  };
+  for (const step of j.steps) {
+    const card = document.querySelector(
+      `.hst-step-form[data-step-id="${step.step_id}"]`,
+    )?.closest('.card');
+    if (!card) continue;
+    const heading = card.querySelector('h3');
+    if (heading) {
+      const status = artifacts[produces[step.step_id]];
+      let badge = '';
+      if (status === true)  badge = ' <span class="badge badge-done">✓ output present</span>';
+      else if (status === false) badge = ' <span class="badge badge-running">○ output missing</span>';
+      // Replace just the badge span without rebuilding the whole heading.
+      const existing = heading.querySelector('.badge');
+      if (existing) existing.remove();
+      if (badge) heading.insertAdjacentHTML('beforeend', badge);
+    }
+    // Update the "median runtime" hint if it exists.
+    const hints = card.querySelectorAll('.hint');
+    if (hints.length >= 2) {
+      const med = step.median_runtime_s;
+      hints[1].innerHTML = med != null
+        ? `<span class="muted">median runtime: ${fmtRuntime(med)} (last 5)</span>`
+        : `<span class="muted">no runtime history yet</span>`;
+    }
+  }
+}
+
+async function refreshHst() {
+  let r;
+  try { r = await fetch('/api/fasrc/hst/status'); }
+  catch (e) { return; }
+  if (!r.ok) return;
+  const j = await r.json();
+  const area = document.getElementById('hst-steps-area');
+  if (!area) return;
+  if (!j.ssh_connected) {
+    area.innerHTML = `<p class="muted">connect via SSH first (top of the page)
+      to see live artifact status and submit jobs.</p>`;
+    _HST_RENDERED = false;   // force a fresh render once we reconnect
+    return;
+  }
+  const artifactLine = document.getElementById('hst-artifact-line');
+  if (artifactLine) {
+    const a = j.artifacts;
+    artifactLine.innerHTML =
+      `On FASRC at <code>${polishUI.escapeHtml(j.remote_paths.data_dir)}</code>: ` +
+      `tiles ${a.tiles ? '✓' : '✗'} · ` +
+      `HST PSF ${a.psf ? '✓' : '✗'} · ` +
+      `kernel ${a.kernel ? '✓' : '✗'} · ` +
+      `HST records ${a.records ? '✓' : '✗'} · ` +
+      `checkpoint ${a.ckpt ? '✓' : '✗'}`;
+  }
+  // First time: build the cards. Subsequent polls: status-only refresh
+  // that DOES NOT touch form input values. This is what fixes the
+  // "wall time keeps reverting to default" bug.
+  if (!_HST_RENDERED) {
+    _renderHstArea(j);
+  } else {
+    _updateHstStatusOnly(j);
+  }
+}
+
+// Refresh once on initial click of the HST tab.
+document.querySelector('[data-tab="hst"]')?.addEventListener('click', () => {
+  refreshHst();
+});
 </script>
 {% endblock %}

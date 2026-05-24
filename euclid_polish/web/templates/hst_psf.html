@@ -1,0 +1,88 @@
+{% extends "base_split.html" %}
+{% block title %}HST PSF · EuclidPolish{% endblock %}
+{% block heading %}HST PSF (FASRC){% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Source</span>
+  <span class="chip active">FASRC · <code>{{ remote_dir }}</code></span>
+  <span class="toolbar-label">Filter</span>
+  <span class="chip active">F814W</span>
+  <span class="muted">single-band — HST coverage in our pipeline is F814W only</span>
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  {% if list_ok and files %}
+    <img id="viz-img" src="{{ url_for('hst_psf_preview_png') }}"
+         alt="HST F814W ePSF"
+         style="max-width: 100%; height: auto; display: block;">
+  {% else %}
+    <div class="placeholder">
+      {% if not list_ok %}
+        Could not list <code>{{ remote_dir }}</code> on FASRC:
+        <code>{{ list_err or 'unknown error' }}</code>
+      {% else %}
+        No HST PSF on FASRC yet. Use the FASRC tab → HST pipeline → "2. Extract HST F814W ePSF" to build one.
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<section class="card">
+  <h3>Files on FASRC</h3>
+  <p class="hint"><code>{{ remote_dir }}</code></p>
+  {% if files %}
+    <table>
+      <tr><th>File</th><th>Size</th><th></th></tr>
+      {% for f in files %}
+        <tr>
+          <td><code>{{ f.name }}</code></td>
+          <td>{{ f.size_mb }} MB</td>
+          <td>
+            <a href="{{ url_for('fasrc_file_inspect', remote_path=f.remote_path) }}"
+               target="_blank"
+               title="rsync from FASRC + inspect headers + download">
+              🔬 inspect
+            </a>
+            &nbsp;·&nbsp;
+            <a href="{{ url_for('fasrc_file_download', remote_path=f.remote_path) }}"
+               download
+               title="rsync from FASRC + download">⬇ download</a>
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+    <p class="hint" style="margin-top: 8px;">
+      Files are rsync'd from FASRC into <code>data/_fasrc_cache/</code>
+      on first click; subsequent inspections within 5 min serve from cache.
+      Per-file size cap: 50 MB
+      (<a href="https://docs.rc.fas.harvard.edu/kb/transferring-data-on-the-cluster/"
+          target="_blank">FASRC transfer guidelines</a> — use Globus for bigger transfers).
+    </p>
+  {% else %}
+    <p class="muted">Directory empty or unreachable.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Build / re-extract</h3>
+  <p class="hint">PSF construction itself is a SLURM job. Submit it from the
+     FASRC tab's "HST pipeline" section (step 2 — Extract HST F814W ePSF).
+     It scans the COSMOS HLSP tiles for bright unsaturated stars and runs
+     <code>photutils.EPSFBuilder</code>; the resulting <code>F814W.fits</code>
+     appears here.</p>
+  <p><a class="chip" href="{{ url_for('fasrc_page') }}">→ FASRC pipeline tab</a></p>
+</section>
+
+<section class="card">
+  <h3>Differential kernel A = E / H</h3>
+  <p class="hint">After both PSFs (Euclid VIS + HST F814W) exist on FASRC,
+     submit step 3 of the HST pipeline to compute the differential kernel.
+     The output (<code>diff_kernel_VIS.fits</code>) shows up in the file
+     list above.</p>
+</section>
+{% endblock %}

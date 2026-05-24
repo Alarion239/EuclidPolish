@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>FASRC connection required · EuclidPolish</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    body { display:flex; align-items:center; justify-content:center;
+           min-height:100vh; background:#1a1f2c; }
+    .err-card {
+      max-width: 520px; padding: 28px 36px;
+      background:#22293a; border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      color: #d8dde9; font-family: -apple-system, sans-serif;
+    }
+    .err-card h1 { margin-top:0; font-size: 22px; }
+    .err-card pre {
+      background:#11141e; padding: 10px 14px; border-radius: 4px;
+      font-size: 12px; overflow-x: auto; white-space: pre-wrap;
+    }
+    .err-card label { display:block; margin: 10px 0 4px; }
+    .err-card input[type="text"] {
+      width: 100%; padding: 6px 10px; background:#11141e;
+      color:#d8dde9; border:1px solid #2a3144; border-radius: 4px;
+      font-family: monospace;
+    }
+    .err-card button {
+      margin-top: 16px; padding: 8px 18px;
+      background:#3a82e6; color:white; border:none; border-radius: 4px;
+      cursor: pointer; font-size: 14px;
+    }
+    .err-card button:hover { background:#2666c5; }
+    .muted-h { color:#7a8194; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="err-card">
+    <h1>🔌 FASRC connection required</h1>
+    <p>The app needs an active SSH connection to FASRC before showing
+       the UI. Auto-connect on launch failed:</p>
+    <pre>{{ error }}</pre>
+
+    <form method="POST" action="{{ url_for('connection_error_page') }}">
+      <label>SSH user
+        <input type="text" name="ssh_user" value="{{ cfg.ssh_user }}"
+               placeholder="your FASRC username" autofocus></label>
+      <label>SSH host
+        <input type="text" name="ssh_host" value="{{ cfg.ssh_host }}"></label>
+      <label>Control socket
+        <input type="text" name="control_socket" value="{{ cfg.control_socket }}"></label>
+
+      <button type="submit">Save settings &amp; retry connect</button>
+    </form>
+
+    <p class="muted-h">
+      Authentication is public-key only. If this is your first time on
+      this machine, run
+      <code>ssh-copy-id {{ cfg.ssh_user or '&lt;user&gt;' }}@{{ cfg.ssh_host }}</code>
+      from a regular terminal, then come back here and click <i>Save &amp;
+      retry</i>.
+    </p>
+    <p class="muted-h">
+      Settings persist to <code>~/.euclid_polish/fasrc.json</code>.
+    </p>
+  </div>
+</body>
+</html>

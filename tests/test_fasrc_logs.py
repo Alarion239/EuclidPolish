@@ -69,7 +69,9 @@ def _find_response(rows: List[Tuple[float, int, str]]) -> str:
 
 def test_runs_returns_empty_when_log_dir_missing(client, tmp_repo, monkeypatch):
     """If FASRC has no logs/jobs yet, the route still returns ok with an empty list."""
-    web_app.STATE.ssh = StubSSH([(0, "", "")])
+    # /api/fasrc/runs now does TWO ssh calls: squeue first (for state
+    # reconciliation), then find. Both empty here.
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, "", "")])
     r = client.get("/api/fasrc/runs")
     assert r.status_code == 200
     body = r.get_json()
@@ -86,7 +88,9 @@ def test_runs_lists_from_find_alone(client, tmp_repo, monkeypatch):
         (1700000500.0, 99999, f"{log_dir}/euclid-20260202-150000.out"),
         (1700000500.0,   100, f"{log_dir}/euclid-20260202-150000.err"),
     ]
-    web_app.STATE.ssh = StubSSH([(0, _find_response(rows), "")])
+    # 1st response: empty squeue (reconcile no-ops). 2nd: find output.
+    web_app.STATE.ssh = StubSSH([(0, "", ""),
+                                  (0, _find_response(rows), "")])
     r = client.get("/api/fasrc/runs")
     body = r.get_json()
     assert body["ok"] is True
@@ -114,7 +118,8 @@ def test_runs_overlays_db_metadata(client, tmp_repo, monkeypatch):
         (1700000500.0, 99999, f"{log_dir}/euclid-20260202-150000.out"),
         (1700000500.0,   100, f"{log_dir}/euclid-20260202-150000.err"),
     ]
-    web_app.STATE.ssh = StubSSH([(0, _find_response(rows), "")])
+    web_app.STATE.ssh = StubSSH([(0, "", ""),
+                                  (0, _find_response(rows), "")])
     r = client.get("/api/fasrc/runs")
     runs = r.get_json()["runs"]
     assert len(runs) == 1
@@ -134,7 +139,7 @@ def test_runs_shows_db_jobs_with_missing_files(client, tmp_repo):
               err_path=f"{log_dir}/euclid-purged.err")
     db.update_state("777", state="FAILED",
                     started_at=time.time() - 200, ended_at=time.time() - 100)
-    web_app.STATE.ssh = StubSSH([(0, "", "")])
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, "", "")])
     r = client.get("/api/fasrc/runs")
     runs = r.get_json()["runs"]
     assert len(runs) == 1

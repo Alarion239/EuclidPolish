@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}FASRC fetch failed{% endblock %}
+{% block content %}
+<h2>🔌 FASRC file fetch failed</h2>
+
+<section class="card">
+  <h3>What happened</h3>
+  <p class="hint">Tried to pull <code>{{ remote }}</code> from FASRC, but:</p>
+  <pre class="job-error">{{ error }}</pre>
+</section>
+
+<section class="card">
+  <h3>Possible causes</h3>
+  <ul>
+    <li><b>Not connected</b> — re-establish SSH from the FASRC tab.</li>
+    <li><b>Path outside allowed roots</b> — the fetcher only serves files
+        under your configured <code>data_dir</code>, <code>ckpt_dir</code>,
+        or <code>repo_path/logs</code>.</li>
+    <li><b>Too large</b> — files over 50 MB are refused to keep the
+        login-node rsync footprint small. Use Globus or a compute-node
+        batch script for large transfers.</li>
+    <li><b>Missing on remote</b> — the upstream sbatch job may not have
+        produced this file yet. Check the Logs tab for its run output.</li>
+  </ul>
+  <p><a href="{{ url_for('fasrc_page') }}">← back to FASRC</a></p>
+</section>
+{% endblock %}

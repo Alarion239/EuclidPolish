@@ -35,6 +35,64 @@ def test_roundtrip_insert_update_get(db):
     assert abs(row["started_at"] - t0) < 1.0
 
 
+def test_reconcile_marks_finished_runs_done(db):
+    """A job we'd seen running (started_at set) that has fallen off
+    squeue should flip to DONE and pick up an ended_at."""
+    db.insert("100", label="t", params={},
+              script_path=".", log_path=".", err_path=".")
+    db.update_state("100", state="RUNNING",
+                    started_at=time.time() - 120)
+    # Squeue is empty → the row is no longer in the live queue.
+    changes = fasrc_jobs.reconcile_with_squeue([], db=db)
+    assert changes == {"100": "DONE"}
+    row = db.get("100")
+    assert row["state"] == "DONE"
+    assert row["ended_at"] is not None
+
+
+def test_reconcile_marks_never_started_jobs_unknown(db):
+    """A job that was inserted PENDING and disappeared from squeue
+    without ever being seen as RUNNING (no started_at) is the failure
+    mode the user hit: we don't know what happened, so flag UNKNOWN
+    instead of leaving the row PENDING forever."""
+    db.insert("200", label="lost", params={},
+              script_path=".", log_path=".", err_path=".")
+    # Still PENDING, no started_at, not in squeue.
+    changes = fasrc_jobs.reconcile_with_squeue([], db=db)
+    assert changes == {"200": "UNKNOWN"}
+    row = db.get("200")
+    assert row["state"] == "UNKNOWN"
+    assert row["ended_at"] is not None
+
+
+def test_reconcile_leaves_terminal_rows_alone(db):
+    """Once a row is in any TERMINAL_STATES bucket — DONE, FAILED,
+    CANCELLED, TIMEOUT, COMPLETED, UNKNOWN — we don't touch it again
+    even if a stale squeue snapshot still has the jobid. Belt-and-
+    braces against accidental state churn."""
+    db.insert("300", label="done", params={},
+              script_path=".", log_path=".", err_path=".")
+    db.update_state("300", state="COMPLETED", ended_at=time.time() - 10)
+    changes = fasrc_jobs.reconcile_with_squeue([], db=db)
+    assert "300" not in changes
+    assert db.get("300")["state"] == "COMPLETED"
+
+
+def test_reconcile_promotes_pending_to_running_when_in_squeue(db):
+    """The other direction: squeue says RUNNING but our DB still
+    thinks the job is PENDING — flip it to RUNNING and record
+    started_at so the next reconciliation (if it disappears) marks
+    DONE instead of UNKNOWN."""
+    db.insert("400", label="up", params={},
+              script_path=".", log_path=".", err_path=".")
+    squeue_rows = [{"jobid": "400", "state": "RUNNING", "time": "0:30"}]
+    changes = fasrc_jobs.reconcile_with_squeue(squeue_rows, db=db)
+    assert changes == {"400": "RUNNING"}
+    row = db.get("400")
+    assert row["state"] == "RUNNING"
+    assert row["started_at"] is not None
+
+
 def test_list_recent_orders_newest_first(db):
     for i in range(5):
         db.insert(f"job{i}", label=f"L{i}", params={"steps": 100 * i},

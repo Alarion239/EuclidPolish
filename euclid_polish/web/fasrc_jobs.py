@@ -48,9 +48,30 @@ CREATE TABLE IF NOT EXISTS fasrc_jobs (
     ended_at        REAL,
     progress_step   INTEGER DEFAULT 0,
     progress_total  INTEGER DEFAULT 0,
-    last_seen       REAL
+    last_seen       REAL,
+    runtime_seconds REAL,
+    step_id         TEXT
 );
 """
+
+
+def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
+    """Add new columns to an existing DB without losing data.
+
+    Runs every time :class:`JobDB` is constructed. Sqlite's ``ALTER
+    TABLE ADD COLUMN`` is non-failing if we wrap it — pre-existing
+    column raises ``OperationalError`` which we swallow.
+    """
+    for col_def in (
+        "runtime_seconds REAL",
+        "step_id TEXT",
+    ):
+        col_name = col_def.split()[0]
+        try:
+            conn.execute(f"ALTER TABLE fasrc_jobs ADD COLUMN {col_def}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +84,7 @@ class JobDB:
         self.path = path
         with self._conn() as c:
             c.executescript(SCHEMA)
+            _ensure_schema_columns(c)
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10)
@@ -105,6 +127,20 @@ class JobDB:
             c.execute("UPDATE fasrc_jobs SET progress_step = ?, "
                       "progress_total = ?, last_seen = ? WHERE jobid = ?",
                       (int(step), int(total), time.time(), jobid))
+
+    def update_runtime(self, jobid: str, runtime_seconds: float) -> None:
+        """Record the script-reported wall time from a ``RUNTIME_SECONDS=...`` line."""
+        with self._conn() as c:
+            c.execute("UPDATE fasrc_jobs SET runtime_seconds = ?, "
+                      "last_seen = ? WHERE jobid = ?",
+                      (float(runtime_seconds), time.time(), jobid))
+
+    def set_step_id(self, jobid: str, step_id: str) -> None:
+        """Tag a job with its HST-pipeline step id (for per-step history)."""
+        with self._conn() as c:
+            c.execute("UPDATE fasrc_jobs SET step_id = ?, last_seen = ? "
+                      "WHERE jobid = ?",
+                      (str(step_id), time.time(), jobid))
 
     def get(self, jobid: str) -> Optional[Dict[str, Any]]:
         with self._conn() as c:
@@ -194,6 +230,12 @@ def eta_for_running(row: Dict[str, Any]) -> Optional[float]:
 #  ``step/total`` pair and ignore the rest. Falls through if absent.
 _TQDM_PROGRESS_RE = re.compile(r"(\d{1,8})\s*/\s*(\d{1,8})")
 
+#  HST pipeline scripts emit a final ``RUNTIME_SECONDS=12345.6`` line — this
+#  lets the UI store actual wall time without having to compute from
+#  started_at/ended_at (which can be wrong if SLURM was queued).
+_RUNTIME_RE = re.compile(r"RUNTIME_SECONDS=([\d.]+)")
+_STEP_ID_RE = re.compile(r"STEP_ID=([A-Za-z0-9_\-]+)")
+
 
 def parse_progress(line: str) -> Optional[tuple[int, int]]:
     """Pull (step, total) out of a single log line, or None."""
@@ -205,6 +247,51 @@ def parse_progress(line: str) -> Optional[tuple[int, int]]:
     if total < 50 or step > total:
         return None
     return step, total
+
+
+def parse_runtime_seconds(text: str) -> Optional[float]:
+    """Extract the last ``RUNTIME_SECONDS=...`` line from ``text`` (None if absent)."""
+    last: Optional[float] = None
+    for m in _RUNTIME_RE.finditer(text or ""):
+        try:
+            last = float(m.group(1))
+        except ValueError:
+            continue
+    return last
+
+
+def parse_step_id(text: str) -> Optional[str]:
+    """Extract the last ``STEP_ID=...`` line — set by HST-pipeline sbatch banners."""
+    last: Optional[str] = None
+    for m in _STEP_ID_RE.finditer(text or ""):
+        last = m.group(1)
+    return last
+
+
+def runtime_history_for_step(step_id: str, *, limit: int = 5) -> List[float]:
+    """Return the last ``limit`` completed runtimes for a given HST step.
+
+    Used by the UI to render "last runtime: ~3 min" hints next to each
+    pipeline step's submit button. Returns newest-first; empty if no
+    history yet.
+    """
+    with DB._conn() as c:
+        rows = c.execute(
+            "SELECT runtime_seconds FROM fasrc_jobs "
+            "WHERE step_id = ? AND runtime_seconds IS NOT NULL "
+            "  AND runtime_seconds > 0 "
+            "ORDER BY submitted_at DESC LIMIT ?",
+            (str(step_id), int(limit)),
+        ).fetchall()
+    return [float(r["runtime_seconds"]) for r in rows]
+
+
+def median_runtime_for_step(step_id: str) -> Optional[float]:
+    """Median of the last few runtimes for ``step_id``; None if no data."""
+    hist = runtime_history_for_step(step_id, limit=5)
+    if not hist:
+        return None
+    return statistics.median(hist)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +479,81 @@ def parse_squeue(text: str) -> List[Dict[str, str]]:
 
 
 SQUEUE_FMT = "%i|%j|%T|%M|%l|%D|%R|%S"
+
+
+# Terminal states — once a row reaches any of these we stop reconciling
+# it against squeue. ``UNKNOWN`` is here too: it means "this job was
+# tracked but disappeared from squeue without ever showing started_at",
+# so we treat it as a failure mode and leave it alone.
+TERMINAL_STATES = frozenset({
+    "COMPLETED", "DONE", "FAILED", "CANCELLED", "TIMEOUT", "UNKNOWN",
+})
+
+
+def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
+                          *, db: Optional["JobDB"] = None,
+                          recent_limit: int = 50) -> Dict[str, str]:
+    """Cross-check the JobDB against a live ``squeue`` snapshot.
+
+    For every non-terminal DB row:
+
+      * if its jobid IS in ``squeue_rows`` → set the DB state to whatever
+        squeue says it is (RUNNING / PENDING / FAILED / …);
+      * if its jobid is NOT in ``squeue_rows`` and the row has a
+        ``started_at`` → the job ran and has since finished, mark
+        ``DONE`` with ``ended_at = now``;
+      * if its jobid is NOT in ``squeue_rows`` and ``started_at`` is
+        missing → we never saw it start *and* it isn't queued anywhere
+        we can ask about, so mark ``UNKNOWN``. That's the failure mode
+        the user complained about — DB said RUNNING but squeue had
+        never heard of the job.
+
+    Returns a dict ``{jobid: new_state}`` for every row whose state we
+    changed, which the caller can use to log/debug.
+
+    ``db`` defaults to the module-level :data:`DB` singleton; tests
+    pass an isolated JobDB.
+    """
+    target_db = db if db is not None else DB
+    live_state: Dict[str, str] = {r["jobid"]: r.get("state", "?")
+                                  for r in squeue_rows}
+    changes: Dict[str, str] = {}
+
+    for stored in target_db.list_recent(recent_limit):
+        jobid = stored["jobid"]
+        cur   = stored.get("state") or ""
+        if cur in TERMINAL_STATES:
+            continue
+        if jobid in live_state:
+            live = live_state[jobid]
+            if live == "RUNNING":
+                target_db.update_state(
+                    jobid, state="RUNNING",
+                    started_at=time.time() - parse_slurm_time(
+                        next((r.get("time") for r in squeue_rows
+                              if r["jobid"] == jobid), "")
+                    ),
+                )
+            else:
+                target_db.update_state(jobid, state=live)
+            if live != cur:
+                changes[jobid] = live
+            continue
+
+        # jobid is not in live squeue → finalise it.
+        if stored.get("started_at"):
+            target_db.update_state(jobid, state="DONE",
+                                   ended_at=time.time())
+            changes[jobid] = "DONE"
+        else:
+            # Never seen running, and squeue doesn't know about it now —
+            # we have no information, treat as a failure so the user
+            # sees the row instead of it lingering as RUNNING forever.
+            target_db.update_state(jobid, state="UNKNOWN",
+                                   ended_at=time.time())
+            changes[jobid] = "UNKNOWN"
+
+    return changes
 
 
 def parse_slurm_time(t: Optional[str]) -> float:

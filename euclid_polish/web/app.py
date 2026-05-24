@@ -1209,6 +1209,7 @@ def _inspectable_roots() -> List[str]:
     All roots are normalised via :func:`os.path.realpath` so symlinks
     can't bypass the check either.
     """
+    from euclid_polish.web.fasrc_fetcher import CACHE_DIR as _FASRC_CACHE_DIR
     roots = [
         Config.DEFAULT_OUTPUT_DIR,        # Euclid star cutouts
         Config.EUCLID_PSF_DIR,             # band PSFs
@@ -1216,6 +1217,7 @@ def _inspectable_roots() -> List[str]:
         Config.EUCLID_INFERENCE_DIR,       # real-Euclid inference outputs
         Config.VIS_DIR,                     # reconstruction PNG/FITS, demos, sky_fits
         Config.RECORDS_DIR_V2,              # TFRecords (not FITS) — kept for completeness
+        _FASRC_CACHE_DIR,                  # rsync'd-from-FASRC FITS files
     ]
     out = []
     for p in roots:
@@ -1685,6 +1687,29 @@ def _record_count(name: str) -> int:
 # App factory + routes
 # ---------------------------------------------------------------------------
 
+def _try_startup_ssh_connect() -> Optional[str]:
+    """Attempt one SSH connect during app startup. Return None on success.
+
+    Stores the active session on :data:`STATE`. Failures are returned as
+    a short error string for the connection-error page to display.
+    """
+    cfg = fasrc_config.load()
+    if not cfg.ssh_user:
+        return "ssh_user is unset — open Settings and configure it"
+    try:
+        STATE.ssh = SSHSession(SSHConfig(
+            user=cfg.ssh_user, host=cfg.ssh_host,
+            socket=cfg.control_socket,
+            control_persist=cfg.control_persist,
+        ))
+        STATE.ssh.connect()
+    except (SSHError, Exception) as e:
+        STATE.ssh = None
+        return f"{type(e).__name__}: {e}"
+    STATE.connected_at = time.time()
+    return None
+
+
 def create_app() -> Flask:
     here = os.path.dirname(os.path.abspath(__file__))
     app = Flask(
@@ -1692,6 +1717,73 @@ def create_app() -> Flask:
         template_folder=os.path.join(here, "templates"),
         static_folder=os.path.join(here, "static"),
     )
+
+    # ---------------------------------------------------------------- #
+    # Auto-connect to FASRC on launch. If we can't connect, every
+    # non-connection-related page redirects to /connection-error where
+    # the user can edit ssh_user / ssh_host and retry. We deliberately
+    # store the last error message so the error page can show *why*.
+    # ---------------------------------------------------------------- #
+    app.config["FASRC_STARTUP_ERROR"] = _try_startup_ssh_connect()
+
+    # Paths that remain reachable even when SSH is down — the settings
+    # form, the retry endpoint, static assets, and the connection-error
+    # page itself. Everything else gets gated below.
+    _ALWAYS_REACHABLE_PREFIXES = (
+        "/connection-error",
+        "/api/fasrc/",            # connect/settings/login/etc.
+        "/static/",
+        "/api/status",
+    )
+
+    @app.before_request
+    def _enforce_ssh_gate():
+        # Quickest possible check first.
+        if STATE.ssh is not None and STATE.ssh.is_connected():
+            return None
+        if request.path == "/connection-error":
+            return None
+        if any(request.path.startswith(p) for p in _ALWAYS_REACHABLE_PREFIXES):
+            return None
+        # All other paths: redirect to the error page so the user can
+        # fix settings + retry without poking through the UI for it.
+        return redirect(url_for("connection_error_page"))
+
+    @app.route("/connection-error", methods=["GET", "POST"])
+    def connection_error_page():
+        """Settings-edit + retry-connect page shown when SSH is down."""
+        if request.method == "POST":
+            # User edited settings; persist + retry.
+            patch = {
+                "ssh_user":     request.form.get("ssh_user", "").strip(),
+                "ssh_host":     request.form.get("ssh_host", "").strip(),
+                "control_socket": request.form.get("control_socket", "").strip(),
+            }
+            patch = {k: v for k, v in patch.items() if v}
+            if patch:
+                fasrc_config.update(patch)
+            err = _try_startup_ssh_connect()
+            app.config["FASRC_STARTUP_ERROR"] = err
+            if err is None:
+                # Connected — bounce to the dashboard.
+                return redirect(url_for("index"))
+            # Fall through to re-render the page with the new error.
+
+        cfg_loaded = fasrc_config.load()
+        return render_template(
+            "connection_error.html",
+            error=app.config.get("FASRC_STARTUP_ERROR") or "not connected",
+            cfg=cfg_loaded,
+        )
+
+    @app.route("/api/connection/retry", methods=["POST"])
+    def api_connection_retry():
+        """POST-only retry hook so the existing /fasrc tab can also trigger reconnect."""
+        err = _try_startup_ssh_connect()
+        app.config["FASRC_STARTUP_ERROR"] = err
+        if err is None:
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": err}), 502
 
     # ---------------- Dashboard ----------------
     @app.route("/")
@@ -1980,6 +2072,111 @@ def create_app() -> Flask:
             target=lambda cap: _job_hst_rebuild_index(cap),
         )
         return jsonify({"job_id": job_id})
+
+    # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
+    @app.route("/hst-psf")
+    def hst_psf_page():
+        from euclid_polish.web.fasrc_fetcher import list_remote_dir
+        cfg_loaded = fasrc_config.load()
+        psf_remote_path = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
+        kernel_remote_path = f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits"
+        # Cheap directory listing — one find round-trip.
+        ok, entries, list_err = list_remote_dir(
+            f"{cfg_loaded.data_dir}/hst_psf",
+            glob_pattern="*.fits",
+        )
+        files: List[Dict[str, Any]] = []
+        for e in (entries or []):
+            files.append({
+                "name":         e["name"],
+                "size_mb":      round(e["size"] / (1024 * 1024), 2),
+                "mtime":        e["mtime"],
+                "remote_path":  f"{cfg_loaded.data_dir}/hst_psf/{e['name']}",
+            })
+        files.sort(key=lambda d: d["name"])
+        return render_template(
+            "hst_psf.html",
+            files=files,
+            list_ok=ok,
+            list_err=list_err,
+            psf_remote_path=psf_remote_path,
+            kernel_remote_path=kernel_remote_path,
+            remote_dir=f"{cfg_loaded.data_dir}/hst_psf",
+        )
+
+    # ---------------- HST cutouts (per-star gallery on FASRC) -------------
+    @app.route("/hst-cutouts")
+    def hst_cutouts_page():
+        from euclid_polish.web.fasrc_fetcher import list_remote_dir
+        cfg_loaded = fasrc_config.load()
+        # Use the existing pagination knob from cutouts.html for symmetry.
+        try:
+            page = max(1, int(request.args.get("page", 1)))
+        except ValueError:
+            page = 1
+        per_page = 60
+        ok, entries, list_err = list_remote_dir(
+            f"{cfg_loaded.data_dir}/hst_stars",
+            glob_pattern="star_*.fits",
+            max_entries=2000,
+        )
+        # Newest tile run is the most interesting; sort by mtime desc.
+        entries = sorted(entries or [], key=lambda e: -float(e["mtime"]))
+        total = len(entries)
+        n_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, n_pages)
+        start = (page - 1) * per_page
+        end   = start + per_page
+        page_items = []
+        for e in entries[start:end]:
+            page_items.append({
+                "name":         e["name"],
+                "size_kb":      round(e["size"] / 1024, 1),
+                "remote_path":  f"{cfg_loaded.data_dir}/hst_stars/{e['name']}",
+            })
+        return render_template(
+            "hst_cutouts.html",
+            files=page_items,
+            total=total, page=page, n_pages=n_pages,
+            list_ok=ok, list_err=list_err,
+            remote_dir=f"{cfg_loaded.data_dir}/hst_stars",
+        )
+
+    @app.route("/hst-psf/preview.png")
+    def hst_psf_preview_png():
+        """Pull the F814W PSF + render an asinh PNG for the page header."""
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        cfg_loaded = fasrc_config.load()
+        remote = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
+        result = fetch_one_file(remote)
+        if not result.ok:
+            abort(404)
+        png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=320)
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=600)
+
+    @app.route("/hst-cutouts/preview.png")
+    def hst_cutout_preview_png():
+        """Pull one HST star cutout + render a thumbnail PNG.
+
+        Same pattern as /cutout-image but the source FITS lives on FASRC,
+        not locally. Respects the fetcher's 50 MB cap (star stamps are
+        ~260 KB so this is never a concern for this endpoint).
+        """
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        remote = request.args.get("remote_path", "").strip()
+        if not remote:
+            abort(400)
+        try:
+            size = int(request.args.get("size", 140))
+        except ValueError:
+            size = 140
+        if size < 16 or size > 1024:
+            abort(400)
+        result = fetch_one_file(remote)
+        if not result.ok:
+            abort(404)
+        png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=size)
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
 
     # ---------------- PSFs page ----------------
     @app.route("/psfs")
@@ -2430,6 +2627,44 @@ def create_app() -> Flask:
             mimetype="application/fits",
         )
 
+    @app.route("/fasrc/file/inspect")
+    def fasrc_file_inspect():
+        """Fetch one file from FASRC (cached) then redirect to /inspect.
+
+        Query param: ``remote_path=<absolute path on FASRC>``. Subject
+        to all the safeguards in :mod:`euclid_polish.web.fasrc_fetcher`
+        (size cap, allowed roots, cache TTL).
+        """
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        remote = request.args.get("remote_path", "").strip()
+        if not remote:
+            abort(400)
+        result = fetch_one_file(remote)
+        if not result.ok:
+            return render_template(
+                "fasrc_fetch_error.html", remote=remote, error=result.error,
+            ), 502
+        # Hand off to the existing inspector with the local cache path.
+        return redirect(url_for(
+            "inspect_fits_page",
+            fits=_safe_relpath(result.local_path),
+        ))
+
+    @app.route("/fasrc/file/download")
+    def fasrc_file_download():
+        """Fetch one file from FASRC (cached) and send it back directly."""
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        remote = request.args.get("remote_path", "").strip()
+        if not remote:
+            abort(400)
+        result = fetch_one_file(remote)
+        if not result.ok:
+            return jsonify({"ok": False, "error": result.error}), 502
+        return send_file(
+            result.local_path, as_attachment=True,
+            download_name=os.path.basename(remote),
+        )
+
     @app.route("/inspect/preview.png")
     def inspect_fits_preview():
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
@@ -2747,30 +2982,11 @@ def create_app() -> Flask:
         if rc != 0:
             return jsonify({"ok": False, "error": err.strip()}), 500
         rows = fasrc_jobs.parse_squeue(out)
-
-        # Reconcile sqlite state with the live queue: any tracked job that
-        # has fallen off squeue is finished (sacct would be more precise
-        # but is slow on the login node — last_seen + ended_at is enough).
-        live_ids = {r["jobid"] for r in rows}
-        for stored in fasrc_jobs.DB.list_recent(50):
-            if stored["state"] in ("COMPLETED", "FAILED", "CANCELLED",
-                                   "TIMEOUT", "DONE"):
-                continue
-            if stored["jobid"] not in live_ids and stored["started_at"]:
-                fasrc_jobs.DB.update_state(
-                    stored["jobid"], state="DONE",
-                    ended_at=time.time(),
-                )
-        # Push live state for jobs that ARE running.
-        for r in rows:
-            if r.get("state") == "RUNNING":
-                fasrc_jobs.DB.update_state(
-                    r["jobid"], state="RUNNING",
-                    started_at=time.time() - _parse_slurm_time(r.get("time")),
-                )
-            else:
-                fasrc_jobs.DB.update_state(r["jobid"], state=r.get("state", "?"))
-
+        # Single source of truth for "is this job still alive?": rows
+        # not present in squeue get marked DONE (if we'd seen them run)
+        # or UNKNOWN (if we never did — the user can then look at .err
+        # to figure out what happened, instead of seeing RUNNING forever).
+        fasrc_jobs.reconcile_with_squeue(rows)
         return jsonify({"ok": True, "rows": rows})
 
     _parse_slurm_time = fasrc_jobs.parse_slurm_time
@@ -2878,6 +3094,177 @@ def create_app() -> Flask:
                         "label": label, "params": params,
                         "log_path":   f"{cfg.repo_path}/{built['out']}"})
 
+    # =========================================================================
+    # HST pipeline (FASRC submissions for the 5-step HST → Euclid workflow)
+    # =========================================================================
+
+    @app.route("/api/fasrc/hst/status")
+    def api_fasrc_hst_status():
+        """Per-step: name, defaults, last-runtime median, on-disk status.
+
+        Uses ``STATE.ssh`` to ``test`` for each artifact's existence; if
+        SSH isn't connected we return only the static defaults so the UI
+        can still render its forms.
+        """
+        from euclid_polish.web.fasrc_pipeline import REGISTRY
+        from euclid_polish.web import fasrc_jobs
+        cfg_loaded = fasrc_config.load()
+        ssh_ok = bool(STATE.ssh and STATE.ssh.is_connected())
+
+        steps_payload = []
+        for step in REGISTRY.all():
+            median = fasrc_jobs.median_runtime_for_step(step.step_id)
+            history = fasrc_jobs.runtime_history_for_step(
+                step.step_id, limit=5,
+            )
+            steps_payload.append({
+                "step_id":     step.step_id,
+                "label":       step.label,
+                "description": step.description,
+                "needs_gpu":   step.needs_gpu,
+                "fixed_cpus":  step.fixed_cpus,
+                "defaults":    step.defaults.to_dict(),
+                "median_runtime_s":   median,
+                "runtime_history_s":  history,
+            })
+
+        # Cheap probes for "does this artifact exist on FASRC?" — single
+        # ``test -e`` per check, batched in one SSH round-trip.
+        artifacts = {"tiles": None, "psf": None, "kernel": None,
+                     "records": None, "ckpt": None}
+        if ssh_ok:
+            paths = {
+                "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
+                "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
+                "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+                "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
+                "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
+            }
+            probe = " && ".join(
+                f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
+                for k, p in paths.items()
+            )
+            try:
+                rc, out, _err = STATE.ssh.run(probe, timeout=10)
+                if rc == 0:
+                    for line in out.splitlines():
+                        line = line.strip()
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            if k in artifacts:
+                                artifacts[k] = (v == "1")
+            except Exception:
+                pass
+
+        return jsonify({
+            "ssh_connected": ssh_ok,
+            "steps":         steps_payload,
+            "artifacts":     artifacts,
+            "remote_paths": {
+                "data_dir":    cfg_loaded.data_dir,
+                "ckpt_dir":    cfg_loaded.ckpt_dir,
+                "logs_dir":    f"logs/hst_pipeline",
+            },
+        })
+
+    @app.route("/api/fasrc/hst/<step_id>/submit", methods=["POST"])
+    def api_fasrc_hst_submit(step_id: str):
+        """Generic submission for any HST-pipeline step."""
+        from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
+        from euclid_polish.web import fasrc_jobs
+
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        try:
+            step = REGISTRY.get(step_id)
+        except KeyError:
+            return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
+
+        cfg_loaded = fasrc_config.load()
+        form = request.form.to_dict()
+
+        try:
+            resources = StepResources.from_form(form, step.defaults)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+
+        # If the step locks the CPU count, force it regardless of what
+        # the form sent. Prevents the user from over-allocating cores
+        # for a single-threaded job.
+        if step.fixed_cpus is not None:
+            resources.n_cpus = int(step.fixed_cpus)
+
+        # All form values are passed as ``params``; the step picks out
+        # what it needs (e.g. ``n_tiles``, ``hst_fraction``).
+        label = (form.get("label", "").strip()
+                 or f"HST pipeline · {step.label}")
+        built = step.build_sbatch_body(
+            params=form,
+            resources=resources,
+            cfg=cfg_loaded,
+            label=label,
+        )
+
+        # Write the script to the repo's log dir on FASRC, then sbatch it.
+        # Same control-flow as the existing /api/fasrc/submit route.
+        remote_script = f"{cfg_loaded.repo_path}/{built['script']}"
+        write_cmd = (
+            f"mkdir -p {cfg_loaded.repo_path}/{os.path.dirname(built['script'])} && "
+            f"cat > {remote_script} <<'__EUCLID_POLISH_EOF__'\n"
+            f"{built['body']}"
+            f"__EUCLID_POLISH_EOF__\n"
+            f"chmod +x {remote_script}"
+        )
+        rc, _out, err = STATE.ssh.run(write_cmd, timeout=20)
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": f"failed to write script: {err.strip()}"}), 500
+
+        rc, out, err = STATE.ssh.run(
+            f"cd {cfg_loaded.repo_path} && sbatch {built['script']}",
+            timeout=20,
+        )
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": f"sbatch failed: {err.strip()}"}), 500
+        m = re.search(r"Submitted batch job (\d+)", out)
+        if not m:
+            return jsonify({"ok": False,
+                            "error": f"unparseable sbatch output: {out}"}), 500
+
+        slurm_id = m.group(1)
+        # Record in DB; tag with step_id so the runtime-history queries
+        # filter to just this kind of job.
+        params_for_db = dict(form)
+        params_for_db.update(resources.to_dict())
+        params_for_db["step_id"] = step_id
+        fasrc_jobs.DB.insert(
+            slurm_id,
+            label=label,
+            params=params_for_db,
+            script_path=remote_script,
+            log_path=f"{cfg_loaded.repo_path}/{built['out']}",
+            err_path=f"{cfg_loaded.repo_path}/{built['err']}",
+        )
+        fasrc_jobs.DB.set_step_id(slurm_id, step_id)
+        return jsonify({
+            "ok":       True,
+            "jobid":    slurm_id,
+            "step_id":  step_id,
+            "label":    label,
+            "log_path": f"{cfg_loaded.repo_path}/{built['out']}",
+            "params":   params_for_db,
+        })
+
+    @app.route("/api/fasrc/hst/runtime-history/<step_id>")
+    def api_fasrc_hst_runtime_history(step_id: str):
+        from euclid_polish.web import fasrc_jobs
+        return jsonify({
+            "step_id":  step_id,
+            "history":  fasrc_jobs.runtime_history_for_step(step_id, limit=10),
+            "median":   fasrc_jobs.median_runtime_for_step(step_id),
+        })
+
     @app.route("/api/fasrc/extend-time", methods=["POST"])
     def api_fasrc_extend_time():
         """Add wall time to a running job via ``scontrol update job=…
@@ -2967,6 +3354,19 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
         log_dir = f"{cfg.repo_path}/{cfg.logs_subdir}/jobs"
+
+        # 0. Reconcile DB state against the live queue *before* we read
+        # rows out of sqlite. Without this, any job that finished
+        # while the Logs tab wasn't open shows up as RUNNING forever,
+        # and jobs that disappeared from squeue before ever starting
+        # (sbatch rejected, queue purged, etc.) stay PENDING. One
+        # extra cheap squeue call per Logs-tab load is well worth it.
+        rc_q, out_q, _err_q = STATE.ssh.run(
+            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            timeout=15,
+        )
+        if rc_q == 0:
+            fasrc_jobs.reconcile_with_squeue(fasrc_jobs.parse_squeue(out_q))
 
         # 1. Scan remote for every .out / .err — one cheap SSH call.
         # ``stat -c '%Y\t%s\t%n'`` works on GNU coreutils (FASRC); falls
