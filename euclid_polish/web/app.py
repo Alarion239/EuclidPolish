@@ -2178,6 +2178,84 @@ def create_app() -> Flask:
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=size)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
 
+    # ---------------- HST tiles inspector (header + random cutout) -------
+    @app.route("/hst-tiles")
+    def hst_tiles_page():
+        from euclid_polish.web.fasrc_fetcher import list_remote_dir
+        cfg_loaded = fasrc_config.load()
+        remote_dir = f"{cfg_loaded.data_dir}/hst_hlsp"
+        ok, entries, list_err = list_remote_dir(
+            remote_dir, glob_pattern="hlsp_cosmos_*.fits", max_entries=200,
+        )
+        tiles = []
+        for e in (entries or []):
+            tiles.append({
+                "name":        e["name"],
+                "size_gb":     round(e["size"] / 1e9, 2),
+                "mtime":       e["mtime"],
+                "remote_path": f"{remote_dir}/{e['name']}",
+            })
+        tiles.sort(key=lambda t: t["name"])
+        return render_template(
+            "hst_tiles.html",
+            tiles=tiles, list_ok=ok, list_err=list_err,
+            remote_dir=remote_dir,
+        )
+
+    @app.route("/fasrc/tile/header")
+    def fasrc_tile_header():
+        """JSON: full FITS header of one tile (no big transfer)."""
+        from euclid_polish.web.fasrc_fetcher import (
+            is_allowed_remote_path, run_remote_python,
+        )
+        path = request.args.get("path", "").strip()
+        if not path or not is_allowed_remote_path(path):
+            abort(400)
+        rc, out, err = run_remote_python(
+            "scripts/fasrc_inspect_tile.py",
+            ["--path", path, "--mode", "header"],
+            binary=False, timeout=20,
+        )
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": err.strip() or out[:500]}), 502
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError as e:
+            return jsonify({"ok": False,
+                            "error": f"bad header JSON: {e}"}), 502
+        payload["ok"] = True
+        return jsonify(payload)
+
+    @app.route("/fasrc/tile/cutout.png")
+    def fasrc_tile_cutout_png():
+        """Stream a single random PNG cutout from a remote tile."""
+        from euclid_polish.web.fasrc_fetcher import (
+            is_allowed_remote_path, run_remote_python,
+        )
+        path = request.args.get("path", "").strip()
+        if not path or not is_allowed_remote_path(path):
+            abort(400)
+        try:
+            size = int(request.args.get("size", 256))
+            seed = int(request.args.get("seed", -1))
+        except ValueError:
+            abort(400)
+        if size < 32 or size > 1024:
+            abort(400)
+        rc, out_bytes, err = run_remote_python(
+            "scripts/fasrc_inspect_tile.py",
+            ["--path", path, "--mode", "cutout",
+             "--size", str(size), "--seed", str(seed)],
+            binary=True, timeout=30,
+        )
+        if rc != 0 or not out_bytes:
+            return jsonify({"ok": False,
+                            "error": err.strip() or "empty cutout"}), 502
+        return send_file(
+            io.BytesIO(out_bytes), mimetype="image/png", max_age=0,
+        )
+
     # ---------------- PSFs page ----------------
     @app.route("/psfs")
     def psfs_page():

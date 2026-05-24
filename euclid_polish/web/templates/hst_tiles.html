@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}HST tiles · EuclidPolish{% endblock %}
+{% block content %}
+<h2>🔭 HST tiles (FASRC)</h2>
+<p class="hint">
+  Inspect downloaded COSMOS HLSP tiles on FASRC without rsync'ing the
+  ~1.9 GB files locally. The header is fetched as JSON over SSH and a
+  random small cutout is rendered remotely (memmap on the FITS, so the
+  full tile is never materialised). Each "Refresh cutout" click picks a
+  new random centre.
+</p>
+<p class="hint">
+  Directory: <code>{{ remote_dir }}</code>
+</p>
+
+{% if not list_ok %}
+<section class="card">
+  <h3>Could not list tiles</h3>
+  <pre class="job-error">{{ list_err or 'unknown error' }}</pre>
+</section>
+{% elif tiles | length == 0 %}
+<section class="card">
+  <p class="muted">No HLSP tiles on FASRC yet. Run the FASRC tab → HST pipeline →
+     step 1 to populate this directory.</p>
+</section>
+{% else %}
+
+<section class="card">
+  <h3>Tiles</h3>
+  <p class="hint">{{ tiles | length }} tiles · click a tab to inspect.</p>
+  <div id="tile-tabs" class="toolbar" style="flex-wrap: wrap; gap: 6px;">
+    {% for t in tiles %}
+      <a class="chip{% if loop.first %} active{% endif %}"
+         data-tile-path="{{ t.remote_path }}"
+         data-tile-name="{{ t.name }}"
+         title="{{ t.size_gb }} GB">
+        {{ t.name.split('_')[3] if '_' in t.name else t.name }}
+      </a>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h3>Cutout</h3>
+    <p class="hint">
+      Selected tile: <code id="tile-current-name">{{ tiles[0].name }}</code>
+      <br>
+      <span class="muted" id="tile-current-meta">centre / shape will appear after first render</span>
+    </p>
+    <p style="margin: 8px 0;">
+      <label>Size (px)
+        <input type="number" id="tile-cutout-size" value="256" min="32" max="1024"
+               style="width: 70px;">
+      </label>
+      <button id="btn-tile-refresh" style="margin-left: 8px;">🎲 Refresh cutout</button>
+    </p>
+    <div style="margin-top: 12px; text-align: center;
+                background: #11141e; padding: 8px; border-radius: 4px;">
+      <img id="tile-cutout-img" alt="random cutout"
+           style="max-width: 100%; image-rendering: pixelated;
+                  background: #11141e;">
+      <div class="muted" id="tile-cutout-status" style="margin-top: 6px; min-height: 14px;">
+        loading…
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>FITS header</h3>
+    <p class="hint">First image HDU. Long string values are truncated to 200 chars.</p>
+    <div id="tile-header-pane" style="max-height: 520px; overflow-y: auto;
+                                       background: #11141e; padding: 8px;
+                                       border-radius: 4px; font-family: monospace;
+                                       font-size: 11px;">
+      <p class="muted">loading…</p>
+    </div>
+  </section>
+</div>
+
+<script>
+let _TILE_CURRENT = null;
+
+function _renderHeader(payload) {
+  const pane = document.getElementById('tile-header-pane');
+  if (!payload || !payload.ok) {
+    pane.innerHTML = `<p class="muted">header fetch failed: ${
+      polishUI.escapeHtml((payload && payload.error) || 'unknown')
+    }</p>`;
+    return;
+  }
+  // Show every HDU's header, primary first.
+  let html = '';
+  for (const hdu of payload.hdus || []) {
+    html += `<div style="margin-bottom: 14px;">`;
+    html += `<div style="color:#aab; padding: 4px 6px; background: #1d2535;
+                         margin-bottom: 4px; border-radius: 3px;">
+               <b>HDU ${hdu.index} · ${polishUI.escapeHtml(hdu.name)}</b>
+               <span style="color:#7a8194; font-weight: normal;">
+                 ${polishUI.escapeHtml(hdu.kind)}
+                 ${hdu.shape ? '· shape=' + JSON.stringify(hdu.shape) : ''}
+                 ${hdu.dtype ? '· dtype=' + polishUI.escapeHtml(hdu.dtype) : ''}
+               </span>
+             </div>`;
+    html += `<table style="width:100%; border-collapse: collapse;">`;
+    for (const [k, v, c] of hdu.cards) {
+      html += `<tr style="border-bottom: 1px solid #1a1f2c;">
+                 <td style="padding: 1px 6px; color: #dbe; width: 25%;">${polishUI.escapeHtml(k)}</td>
+                 <td style="padding: 1px 6px; color: #ace; width: 40%;">${polishUI.escapeHtml(v)}</td>
+                 <td style="padding: 1px 6px; color: #7a8194;">${polishUI.escapeHtml(c)}</td>
+               </tr>`;
+    }
+    html += `</table></div>`;
+  }
+  pane.innerHTML = html || '<p class="muted">(no headers)</p>';
+}
+
+async function loadHeader(remotePath) {
+  const pane = document.getElementById('tile-header-pane');
+  pane.innerHTML = '<p class="muted">loading header from FASRC…</p>';
+  try {
+    const r = await fetch('/fasrc/tile/header?path=' + encodeURIComponent(remotePath));
+    const j = await r.json();
+    _renderHeader(j);
+  } catch (e) {
+    pane.innerHTML = `<p class="muted">request failed: ${polishUI.escapeHtml(String(e))}</p>`;
+  }
+}
+
+function loadCutout(remotePath, {seed = -1} = {}) {
+  const img    = document.getElementById('tile-cutout-img');
+  const status = document.getElementById('tile-cutout-status');
+  const size   = parseInt(document.getElementById('tile-cutout-size').value, 10) || 256;
+  status.textContent = 'rendering cutout on FASRC…';
+  // The browser caches by URL; bump a nonce so each click triggers a
+  // fresh request. The seed is the "random key" — passing -1 server-side
+  // means "pick something new."
+  const nonce = Date.now();
+  const url = `/fasrc/tile/cutout.png?path=${encodeURIComponent(remotePath)}`
+            + `&size=${size}&seed=${seed}&_t=${nonce}`;
+  // We can't easily extract the centre coords from the PNG itself; we'd
+  // need a second endpoint. For now the centre is "random — see browser
+  // network tab for the seed."
+  const tmp = new Image();
+  tmp.onload  = () => {
+    img.src = url;
+    status.textContent = `loaded at ${img.naturalWidth}×${img.naturalHeight}, seed=${seed}`;
+  };
+  tmp.onerror = () => {
+    status.textContent = 'cutout fetch failed — check Logs tab for SSH error';
+  };
+  tmp.src = url;
+}
+
+function selectTile(chip) {
+  document.querySelectorAll('#tile-tabs .chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  _TILE_CURRENT = chip.dataset.tilePath;
+  document.getElementById('tile-current-name').textContent = chip.dataset.tileName;
+  loadHeader(_TILE_CURRENT);
+  loadCutout(_TILE_CURRENT, {seed: -1});
+}
+
+document.querySelectorAll('#tile-tabs .chip').forEach(c => {
+  c.addEventListener('click', (e) => { e.preventDefault(); selectTile(c); });
+});
+document.getElementById('btn-tile-refresh').addEventListener('click', () => {
+  if (_TILE_CURRENT) loadCutout(_TILE_CURRENT, {seed: -1});
+});
+
+// Auto-select the first tile on page load.
+const _first = document.querySelector('#tile-tabs .chip');
+if (_first) selectTile(_first);
+</script>
+{% endif %}
+{% endblock %}

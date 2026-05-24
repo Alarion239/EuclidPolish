@@ -180,3 +180,47 @@ class TestRoutesRegistered:
         assert "/hst-cutouts" in urls
         assert "/hst-psf/preview.png" in urls
         assert "/hst-cutouts/preview.png" in urls
+        assert "/hst-tiles" in urls
+        assert "/fasrc/tile/header" in urls
+        assert "/fasrc/tile/cutout.png" in urls
+
+
+# ---------------------------------------------------------------------------
+# Tile inspector — path safety + input validation
+# ---------------------------------------------------------------------------
+
+class TestTileInspectorRoutes:
+
+    @pytest.fixture
+    def client(self):
+        from euclid_polish.web.app import create_app
+        return create_app().test_client()
+
+    def test_header_rejects_path_outside_roots(self, client):
+        r = client.get("/fasrc/tile/header?path=/etc/passwd")
+        assert r.status_code == 400
+
+    def test_header_rejects_empty_path(self, client):
+        r = client.get("/fasrc/tile/header")
+        assert r.status_code == 400
+
+    def test_cutout_rejects_oversized_request(self, client):
+        cfg = fasrc_config.load()
+        legit_path = f"{cfg.data_dir}/hst_hlsp/foo.fits"
+        r = client.get(f"/fasrc/tile/cutout.png?path={legit_path}&size=99999")
+        assert r.status_code == 400
+
+    def test_cutout_rejects_undersized_request(self, client):
+        cfg = fasrc_config.load()
+        legit_path = f"{cfg.data_dir}/hst_hlsp/foo.fits"
+        r = client.get(f"/fasrc/tile/cutout.png?path={legit_path}&size=1")
+        assert r.status_code == 400
+
+    def test_cutout_rejects_path_outside_roots(self, client):
+        r = client.get("/fasrc/tile/cutout.png?path=/etc/passwd&size=256")
+        assert r.status_code == 400
+
+    def test_page_renders_with_no_tiles_on_disk(self, client):
+        # Even when zero tiles exist on FASRC the page should render.
+        r = client.get("/hst-tiles")
+        assert r.status_code == 200

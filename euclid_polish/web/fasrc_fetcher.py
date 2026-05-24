@@ -336,6 +336,39 @@ def fetch_one_file(
 
 
 # ---------------------------------------------------------------------------
+# Remote Python invocation — for the tile inspector
+# ---------------------------------------------------------------------------
+
+def run_remote_python(
+    script_rel_path: str, args: List[str], *,
+    binary: bool = False, timeout: int = 30,
+) -> Tuple[int, object, str]:
+    """Run a project script on FASRC via the existing SSH ControlMaster.
+
+    Returns ``(rc, stdout, stderr)`` — stdout is bytes when ``binary=True``.
+    The command activates the configured conda env so astropy/numpy/PIL
+    are available, then invokes the script with its argv tail.
+
+    Used by the HST tile inspector to call ``scripts/fasrc_inspect_tile.py``
+    on a login node without rsync'ing the multi-GB tile back to local.
+    """
+    from euclid_polish.web.remote import STATE
+    if STATE.ssh is None or not STATE.ssh.is_connected():
+        return 1, (b"" if binary else ""), "ssh not connected"
+    cfg = fasrc_config.load()
+    py = f"{cfg.conda_env_path.rstrip('/')}/bin/python"
+    script = f"{cfg.repo_path.rstrip('/')}/{script_rel_path.lstrip('/')}"
+    cmd = (
+        f"{shlex.quote(py)} {shlex.quote(script)} "
+        + " ".join(shlex.quote(a) for a in args)
+    )
+    try:
+        return STATE.ssh.run(cmd, timeout=timeout, binary=binary)
+    except Exception as e:
+        return 1, (b"" if binary else ""), f"{type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Remote directory listing (cheap — single SSH round-trip)
 # ---------------------------------------------------------------------------
 
