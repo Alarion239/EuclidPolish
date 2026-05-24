@@ -52,9 +52,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hlsp-dir",   default=HLSP_DIR)
     p.add_argument("--kernel",     default=KERNEL_PATH)
     p.add_argument("--output-dir", default=OUT_DIR)
+    p.add_argument("--n-workers", type=int, default=_default_n_workers(),
+                   help="Process pool size for parallel cutout + forward "
+                        "modelling. 0 disables the pool (single-process "
+                        "fallback, useful for debugging). Default reads "
+                        "SLURM_CPUS_PER_TASK if set, else os.cpu_count().")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
+
+
+def _default_n_workers() -> int:
+    """How many worker processes to spawn by default.
+
+    Honour SLURM's allocation when running as a job; fall back to the
+    machine's cpu_count() for local runs. Cap at 1 if neither is set.
+    """
+    env = os.environ.get("SLURM_CPUS_PER_TASK", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return max(1, os.cpu_count() or 1)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +159,7 @@ def _make_pair(
     For each band: A ⊛ HR → sum-rebin ×2 → Poisson + read + sky + dark.
     """
     from scipy import signal as scipy_signal
-    from euclid_polish.sky.multiband_forward import _apply_band_noise
+    from euclid_polish.sky.multiband_forward import apply_band_noise
 
     H, W, C = hr_cutout_4ch.shape
     assert H % 2 == 0 and W % 2 == 0
@@ -157,9 +174,115 @@ def _make_pair(
         )
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
         rebinned = convolved.reshape(H // 2, 2, W // 2, 2).sum(axis=(1, 3))
-        # Apply per-band Euclid noise (Poisson + read, optional artifacts).
-        lr_cube[..., k] = _apply_band_noise(rebinned, band, rng)
+        # Apply per-band Euclid noise (Poisson + read; artifacts off for
+        # synthetic HST templates — adding them is a knob we can flip
+        # later if the trained model overfits to the smoother dirty path).
+        lr_cube[..., k] = apply_band_noise(rebinned, band, rng,
+                                           add_artifacts=False)
     return lr_cube
+
+
+# ---------------------------------------------------------------------------
+# Per-galaxy worker — top-level so ProcessPoolExecutor can pickle it
+# ---------------------------------------------------------------------------
+
+# Module globals populated by ``_init_worker`` once per process. None
+# before init; checking them in ``_process_one_galaxy`` is what catches
+# a missing ``initializer=`` in the pool setup.
+_WORKER_KERNEL:     Optional[np.ndarray] = None
+_WORKER_IMAGE_SIZE: int                  = 0
+
+
+def _init_worker(kernel_path: str, image_size: int) -> None:
+    """Called once per worker process at pool startup.
+
+    Loads the differential kernel into a module-level global so each
+    worker pays the I/O + parse cost exactly once — not per-galaxy.
+    Pickling the kernel through every task argument would be ~1 MB per
+    submission × 6400 galaxies = 6 GB of pickle churn for nothing.
+    """
+    global _WORKER_KERNEL, _WORKER_IMAGE_SIZE
+    from euclid_polish.sky.differential_kernel import DifferentialKernel
+    _WORKER_KERNEL     = DifferentialKernel.from_fits(kernel_path).data
+    _WORKER_IMAGE_SIZE = int(image_size)
+
+
+def _process_one_galaxy(
+    task: Tuple[int, float, float,
+                Tuple[float, float, float, float], str, int, int],
+) -> Optional[Tuple[int, np.ndarray, np.ndarray]]:
+    """Cut + resample + forward-model one galaxy.
+
+    Pure function — no shared state beyond the module globals set by
+    ``_init_worker``. The kernel is the only non-trivial state and is
+    immutable across calls. The RNG is seeded per task so two workers
+    processing the same catalog_idx would produce identical output.
+
+    Returns ``(catalog_idx, hr_cube, lr_cube)`` on success, ``None``
+    when the galaxy can't be cut (off-tile, malformed FITS, cutout
+    smaller than the target HR size, or flat HST stamp).
+    """
+    catalog_idx, ra, dec, fluxes, tile_path, hlsp_side_pix, seed = task
+    if _WORKER_KERNEL is None:
+        # If we ever forget the initializer, fail loudly rather than
+        # silently using None and crashing deep in the FFT.
+        raise RuntimeError(
+            "_process_one_galaxy called without _init_worker — "
+            "pass initializer=_init_worker to the pool."
+        )
+
+    from astropy.io import fits
+    from astropy.nddata import Cutout2D
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs import WCS
+    import astropy.units as u
+
+    try:
+        with fits.open(tile_path, memmap=True) as hdul:
+            sci = next(
+                (e for e in hdul if e.is_image and e.data is not None),
+                None,
+            )
+            if sci is None:
+                return None
+            wcs = WCS(sci.header)
+            cutout = Cutout2D(
+                sci.data,
+                SkyCoord(ra * u.deg, dec * u.deg),
+                size=(hlsp_side_pix, hlsp_side_pix),
+                wcs=wcs, mode="strict",
+            )
+    except Exception:
+        return None
+
+    hr_resampled = _resample_hlsp_to_hr(
+        np.asarray(cutout.data, dtype=np.float32),
+    )
+    Hh, Wh = hr_resampled.shape
+    H_hr = _WORKER_IMAGE_SIZE
+    if Hh < H_hr or Wh < H_hr:
+        return None
+    i0 = (Hh - H_hr) // 2
+    j0 = (Wh - H_hr) // 2
+    hr_clean = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
+
+    annulus = np.concatenate([
+        hr_clean[:8, :].ravel(),    hr_clean[-8:, :].ravel(),
+        hr_clean[8:-8, :8].ravel(), hr_clean[8:-8, -8:].ravel(),
+    ])
+    finite = np.isfinite(annulus)
+    bg = float(np.median(annulus[finite])) if finite.any() else 0.0
+    hr_clean = np.maximum(hr_clean - bg, 0.0)
+
+    hr_cube = _broadcast_hst_to_4bands(hr_clean, fluxes)
+    if hr_cube is None:
+        return None
+
+    # Per-task RNG so noise is reproducible across runs at the same seed
+    # but independent across galaxies in a single run.
+    rng = np.random.default_rng(int(seed))
+    lr_cube = _make_pair(hr_cube, diff_kernel=_WORKER_KERNEL, rng=rng)
+    return catalog_idx, hr_cube, lr_cube
 
 
 def _broadcast_hst_to_4bands(
@@ -247,13 +370,78 @@ def main() -> int:
     from euclid_polish.sky.tfrecord import open_multiband_writer
     from euclid_polish.sky.types import MultiBandSkyImage
 
-    print(f"[4/4] streaming pairs to {args.output_dir} ...")
+    n_workers = max(0, int(args.n_workers))
+    print(f"[4/4] streaming pairs to {args.output_dir} "
+          f"(pool size = {n_workers}) ...")
     pairs_written = 0
     pairs_skipped = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
-    # Open both clean + dirty writers per subset.
     summary = {"subsets": {}}
+    catalog_iter = iter(catalog_indices)
+    base_seed = int(rng.integers(0, 2**31))
+
+    def _next_task() -> Optional[Tuple]:
+        """Pull the next candidate galaxy off the shuffled catalog,
+        skipping ones whose RA/Dec doesn't land on any HLSP tile.
+
+        Tile lookup runs in the *main* process because the index is
+        ~MB-scale shared state; cheaper than re-loading it per worker.
+        Returns the task tuple ready for ``_process_one_galaxy`` or
+        ``None`` if the catalog is exhausted.
+        """
+        nonlocal pairs_skipped
+        for i in catalog_iter:
+            ra  = float(catalog.ra_deg[i])
+            dec = float(catalog.dec_deg[i])
+            tile_path = tiles.find_tile(ra, dec)
+            if tile_path is None:
+                pairs_skipped += 1
+                continue
+            fluxes = tuple(
+                float(catalog.bulge_flux_e[i, k]
+                      + catalog.disk_flux_e[i, k])
+                for k in range(Config.NUM_LR_CHANNELS)
+            )
+            seed = (base_seed * 1_000_003 + int(i)) & 0x7FFFFFFF
+            return (int(i), ra, dec, fluxes, tile_path, hlsp_side_pix, seed)
+        return None
+
+    def _write_result(result, subset_writers, subset_done):
+        """Wrap one worker result as MultiBandSkyImages and write."""
+        catalog_idx, hr_cube, lr_cube = result
+        cw, dw, hw = subset_writers
+        try:
+            cosmos_id = int(catalog.catalog_id[catalog_idx])
+        except (IndexError, TypeError, ValueError):
+            cosmos_id = catalog_idx
+        meta = {"source": "hst_hlsp", "cosmos_id": cosmos_id}
+        clean_img = MultiBandSkyImage(
+            data=hr_cube, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+            band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
+            metadata=meta,
+        )
+        dirty_img = MultiBandSkyImage(
+            data=lr_cube,
+            pixel_scale_arcsec=Config.VIS_PIXEL_SCALE_ARCSEC,
+            band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False,
+            metadata=meta,
+        )
+        hr_vis_only = MultiBandSkyImage(
+            data=hr_cube[..., :1].copy(),
+            pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+            band_names=("VIS",), is_clean=True,
+            metadata=meta,
+        )
+        cw.write(clean_img,   index=subset_done)
+        dw.write(dirty_img,   index=subset_done)
+        hw.write(hr_vis_only, index=subset_done)
+
+    if n_workers == 0:
+        # Single-process fallback — useful for debugging / profiling.
+        # Calls _init_worker in-process so the worker fn sees the kernel.
+        _init_worker(args.kernel, H_hr)
+
     for subset, target_n in pairs_per_subset.items():
         sub_done = 0
         with open_multiband_writer(
@@ -263,94 +451,84 @@ def main() -> int:
         ) as dw, open_multiband_writer(
             f"hr_{subset}", records_dir=args.output_dir,
         ) as hw:
-            for i in catalog_indices:
-                if sub_done >= target_n:
-                    break
-                ra  = float(catalog.ra_deg[i])
-                dec = float(catalog.dec_deg[i])
-                tile_path = tiles.find_tile(ra, dec)
-                if tile_path is None:
-                    pairs_skipped += 1
-                    continue
-                try:
-                    with fits.open(tile_path, memmap=True) as hdul:
-                        sci = next(
-                            (e for e in hdul
-                             if e.is_image and e.data is not None),
-                            None,
+            writers = (cw, dw, hw)
+
+            if n_workers == 0:
+                # No pool — sequential same as before, but routed
+                # through the same _process_one_galaxy helper so the
+                # two code paths can't diverge.
+                while sub_done < target_n:
+                    task = _next_task()
+                    if task is None:
+                        break
+                    result = _process_one_galaxy(task)
+                    if result is None:
+                        pairs_skipped += 1
+                        continue
+                    _write_result(result, writers, sub_done)
+                    sub_done += 1
+                    pairs_written += 1
+                    if sub_done % 50 == 0:
+                        print(f"      {subset}: {sub_done}/{target_n} written")
+            else:
+                # ProcessPoolExecutor: keep ~2*n_workers in flight so
+                # workers stay busy while one finishes + the main
+                # process writes. Pool initialiser loads the kernel
+                # once per process.
+                from concurrent.futures import (
+                    FIRST_COMPLETED, ProcessPoolExecutor, wait,
+                )
+
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    initializer=_init_worker,
+                    initargs=(args.kernel, H_hr),
+                ) as pool:
+                    in_flight: set = set()
+                    target_in_flight = max(n_workers * 2, 4)
+
+                    # Prime the pool with the first batch.
+                    while len(in_flight) < target_in_flight:
+                        task = _next_task()
+                        if task is None:
+                            break
+                        in_flight.add(pool.submit(_process_one_galaxy, task))
+
+                    while in_flight and sub_done < target_n:
+                        done, in_flight = wait(
+                            in_flight, return_when=FIRST_COMPLETED,
                         )
-                        if sci is None:
-                            pairs_skipped += 1
-                            continue
-                        wcs = WCS(sci.header)
-                        cutout = Cutout2D(
-                            sci.data, SkyCoord(ra * u.deg, dec * u.deg),
-                            size=(hlsp_side_pix, hlsp_side_pix),
-                            wcs=wcs, mode="strict",
-                        )
-                except Exception as e:
-                    print(f"      cutout failed @ ({ra:.4f}, {dec:.4f}): "
-                          f"{type(e).__name__}: {e}")
-                    pairs_skipped += 1
-                    continue
+                        for fut in done:
+                            try:
+                                result = fut.result()
+                            except Exception as e:
+                                print(f"      worker exception: "
+                                      f"{type(e).__name__}: {e}")
+                                pairs_skipped += 1
+                                result = None
+                            if result is None:
+                                pairs_skipped += 1
+                            else:
+                                _write_result(result, writers, sub_done)
+                                sub_done += 1
+                                pairs_written += 1
+                                if sub_done % 50 == 0:
+                                    print(f"      {subset}: {sub_done}/"
+                                          f"{target_n} written")
+                            if sub_done >= target_n:
+                                break
+                            # Replenish so the pool stays warm.
+                            task = _next_task()
+                            if task is not None:
+                                in_flight.add(
+                                    pool.submit(_process_one_galaxy, task)
+                                )
 
-                # Resample HLSP 0.03″ → HR 0.05″, then centre-crop to target.
-                hr_resampled = _resample_hlsp_to_hr(
-                    np.asarray(cutout.data, dtype=np.float32),
-                )
-                Hh, Wh = hr_resampled.shape
-                if Hh < H_hr or Wh < H_hr:
-                    pairs_skipped += 1
-                    continue
-                i0 = (Hh - H_hr) // 2
-                j0 = (Wh - H_hr) // 2
-                hr_clean = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
-                # Background subtract: median outer-annulus.
-                annulus = np.concatenate([
-                    hr_clean[:8, :].ravel(),  hr_clean[-8:, :].ravel(),
-                    hr_clean[8:-8, :8].ravel(), hr_clean[8:-8, -8:].ravel(),
-                ])
-                bg = float(np.median(annulus[np.isfinite(annulus)]))
-                hr_clean = np.maximum(hr_clean - bg, 0.0)
-                # Broadcast to 4 bands with per-galaxy electron flux.
-                fluxes = tuple(
-                    float(catalog.bulge_flux_e[i, k]
-                          + catalog.disk_flux_e[i, k])
-                    for k in range(Config.NUM_LR_CHANNELS)
-                )
-                hr_cube = _broadcast_hst_to_4bands(hr_clean, fluxes)
-                if hr_cube is None:
-                    pairs_skipped += 1
-                    continue
-
-                # Forward-model to LR.
-                lr_cube = _make_pair(hr_cube, diff_kernel=dk.data, rng=rng)
-
-                # Wrap as MultiBandSkyImage and write.
-                clean_img = MultiBandSkyImage(
-                    data=hr_cube, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
-                    band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
-                    metadata={"source": "hst_hlsp", "cosmos_id": int(catalog.catalog_id[i])},
-                )
-                dirty_img = MultiBandSkyImage(
-                    data=lr_cube,
-                    pixel_scale_arcsec=Config.VIS_PIXEL_SCALE_ARCSEC,
-                    band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False,
-                    metadata={"source": "hst_hlsp", "cosmos_id": int(catalog.catalog_id[i])},
-                )
-                hr_vis_only = MultiBandSkyImage(
-                    data=hr_cube[..., :1].copy(),
-                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
-                    band_names=("VIS",), is_clean=True,
-                    metadata={"source": "hst_hlsp", "cosmos_id": int(catalog.catalog_id[i])},
-                )
-                cw.write(clean_img, index=sub_done)
-                dw.write(dirty_img, index=sub_done)
-                hw.write(hr_vis_only, index=sub_done)
-                sub_done += 1
-                pairs_written += 1
-                if sub_done % 50 == 0:
-                    print(f"      {subset}: {sub_done}/{target_n} written")
+                    # Cancel any over-submitted tasks once we have
+                    # enough successes — saves a few seconds on a
+                    # large run.
+                    for fut in in_flight:
+                        fut.cancel()
 
         summary["subsets"][subset] = {
             "written": sub_done,

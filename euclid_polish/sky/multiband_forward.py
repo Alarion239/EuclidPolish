@@ -91,6 +91,52 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 # Forward model
 # ---------------------------------------------------------------------------
 
+def apply_band_noise(
+    signal_e: np.ndarray,
+    band: BandConfig,
+    rng: np.random.Generator,
+    *,
+    add_artifacts: bool = False,
+    artifact_config: Optional["ArtifactConfig"] = None,
+) -> np.ndarray:
+    """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
+
+    Module-level so non-class callers (e.g. the HST-template TFRecord
+    generator at ``scripts/fasrc_generate_hst_tfrecords.py``) can use
+    the exact same noise model without having to instantiate a full
+    :class:`MultiBandForward`. The method on the class is a thin
+    wrapper that just reads ``add_artifacts`` + ``artifact_config``
+    off the instance config and delegates here.
+
+    Order matches the physical readout chain: photons + sky + dark
+    accumulate → cosmic rays / hot pixels / interpolation residuals
+    deposit charge → ramp is read with Gaussian read noise →
+    sky-subtracted on the ground.
+    """
+    from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
+
+    t_total = band.t_total_s
+    pixel_area = band.pixel_scale_lr_arcsec ** 2
+    sky_e  = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
+    dark_e = band.dark_e_per_s_per_pix * t_total
+
+    lam = np.clip(signal_e.astype(np.float64) + sky_e + dark_e, 0.0, None)
+    observed = rng.poisson(lam).astype(np.float64) - (sky_e + dark_e)
+
+    if add_artifacts:
+        acfg = artifact_config or ArtifactConfig()
+        sigma_floor_e = float(np.sqrt(
+            sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
+        ))
+        observed = inject_artifacts(
+            observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
+        ).astype(np.float64)
+
+    read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
+    read = rng.normal(0.0, read_sigma, size=signal_e.shape)
+    return (observed + read).astype(np.float32)
+
+
 class MultiBandForward:
     """Apply per-band PSF + noise + (NISP→VIS-LR resample) to a 4-band HR field."""
 
@@ -142,42 +188,15 @@ class MultiBandForward:
         band: BandConfig,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Per-band Poisson + (optional) artifacts + read noise.
-
-        Order matches the physical readout chain: photons + sky + dark
-        accumulate → cosmic rays / hot pixels / interpolation residuals
-        deposit charge → ramp is read with Gaussian read noise →
-        sky-subtracted on the ground.
-        """
-        from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
-
-        t_total = band.t_total_s
-        pixel_area = band.pixel_scale_lr_arcsec ** 2
-        sky_e  = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
-        dark_e = band.dark_e_per_s_per_pix * t_total
-
-        lam = np.clip(signal_e.astype(np.float64) + sky_e + dark_e, 0.0, None)
-        observed = rng.poisson(lam).astype(np.float64) - (sky_e + dark_e)
-
-        # Detector artifacts (CR, hot pixels, masked-trail streaks) —
-        # inject before read noise since these all represent charge
-        # accumulated on the detector or interpolation residuals applied
-        # in the pre-readout pipeline. Streaks scale with the blank-sky
-        # noise σ_floor² = sky + dark + N_exp · σ_read² so the same
-        # ArtifactConfig produces visually consistent streaks across
-        # bands with very different absolute noise levels.
-        if self.config.add_artifacts:
-            acfg = self.config.artifact_config or ArtifactConfig()
-            sigma_floor_e = float(np.sqrt(
-                sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
-            ))
-            observed = inject_artifacts(
-                observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
-            ).astype(np.float64)
-
-        read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
-        read = rng.normal(0.0, read_sigma, size=signal_e.shape)
-        return (observed + read).astype(np.float32)
+        """Method wrapper that pulls add_artifacts + artifact_config off
+        ``self.config`` and delegates to the module-level
+        :func:`apply_band_noise`. Kept as a method for back-compat with
+        the existing pipeline; new callers should use the function."""
+        return apply_band_noise(
+            signal_e, band, rng,
+            add_artifacts=self.config.add_artifacts,
+            artifact_config=self.config.artifact_config,
+        )
 
     # ------------------------------------------------------------------ #
     @property
