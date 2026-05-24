@@ -108,7 +108,11 @@ def main() -> int:
         print("       Run scripts/fasrc_extract_hst_psf.py first.")
         return 1
 
-    euclid_psf_path = psf_path_for_band("VIS")
+    # ``psf_path_for_band`` keys off a ``BandConfig`` (it reads
+    # ``.psf_fits_filename``), not a string — passing "VIS" gave the
+    # cryptic ``AttributeError: 'str' object has no attribute
+    # 'psf_fits_filename'`` because the wrong type was indexed into.
+    euclid_psf_path = psf_path_for_band(Config.BAND_VIS)
     if not euclid_psf_path or not os.path.isfile(euclid_psf_path):
         print(f"ERROR: Euclid VIS PSF not found at {euclid_psf_path}")
         return 1
