@@ -46,9 +46,49 @@ def parse_args() -> argparse.Namespace:
                    help="Path to HST F814W ePSF FITS.")
     p.add_argument("--output", default=DIFF_KERNEL_PATH,
                    help="Where to write the differential kernel FITS.")
+    p.add_argument("--bg-subtract", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Median-subtract + positivity floor on both PSFs "
+                        "right before the FFT. The median of a star-stamp "
+                        "ePSF where the PSF support is ~1/9 of the stamp "
+                        "area is the background level — subtracting it "
+                        "removes the additive bg offset and clipping "
+                        "negatives kills the negative half of bg noise, "
+                        "which would otherwise leak into Â through 1/Ĥ at "
+                        "high frequencies. Re-normalises to sum=1 so the "
+                        "DC gain of the kernel stays at 1. Use "
+                        "--no-bg-subtract to disable. Only affects this "
+                        "script — the on-disk PSF FITS files are never "
+                        "modified.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be done and exit.")
     return p.parse_args()
+
+
+def _bg_subtract_and_clip(psf: np.ndarray) -> np.ndarray:
+    """Median-subtract + positivity floor; renormalise to unit flux.
+
+    Two things this is *not*:
+
+    * Not a hard threshold-and-keep. We subtract the median first so PSF
+      pixels lose the additive bg offset (otherwise the core ends up
+      slightly over-weighted relative to the wings after renormalising).
+    * Not a "smooth out the wings" operation. Only the *negative* tail
+      of background noise is touched — positive wing pixels above the
+      median pass through unchanged, so genuine low-amplitude PSF
+      structure isn't clipped.
+
+    Assumes the PSF's bright support occupies a small fraction of the
+    stamp area (so the median tracks the per-pixel background). That's
+    true for empirical star stamps after extraction; verify visually
+    before turning this on for an unusual stamp size.
+    """
+    bg = float(np.median(psf))
+    cleaned = np.maximum(psf - bg, 0.0).astype(np.float64)
+    s = cleaned.sum()
+    if s > 0:
+        cleaned = cleaned / s
+    return cleaned
 
 
 def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
@@ -149,6 +189,15 @@ def main() -> int:
     # Re-normalise after cropping (small flux losses at the edges).
     e_hr /= e_hr.sum(); h_hr /= h_hr.sum()
     print(f"      common grid : {e_hr.shape}, both unit-flux normalised")
+
+    if args.bg_subtract:
+        e_bg = float(np.median(e_hr))
+        h_bg = float(np.median(h_hr))
+        e_hr = _bg_subtract_and_clip(e_hr)
+        h_hr = _bg_subtract_and_clip(h_hr)
+        print(f"      bg-subtract : E median={e_bg:+.3e}  "
+              f"H median={h_bg:+.3e} → subtracted, negatives clipped, "
+              f"renormalised")
 
     print(f"[3/3] solving A_hat = E_hat · conj(H_hat) / (|H_hat|² + reg²) ...")
     a = compute_differential_kernel(

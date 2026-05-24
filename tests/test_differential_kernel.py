@@ -141,6 +141,73 @@ class TestNoisePropagation:
         assert float(filtered.var()) < 0.5 * float(noise.var())
 
 
+class TestBgSubtract:
+    """The script-level ``--bg-subtract`` cleanup that runs right
+    before the FFT. Lives in ``scripts/fasrc_compute_differential_kernel``
+    so we import it directly here — keeps the cleanup logic next to its
+    only caller while still being unit-testable."""
+
+    def _load_helper(self):
+        # Late import so test collection doesn't depend on the script being
+        # importable as a module from the start (it's in ``scripts/`` which
+        # isn't on the default package path for the test runner).
+        import importlib.util, os, sys
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "scripts",
+                            "fasrc_compute_differential_kernel.py")
+        spec = importlib.util.spec_from_file_location("_fdk", path)
+        mod  = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod._bg_subtract_and_clip
+
+    def test_subtracts_bg_offset_from_psf_pixels(self):
+        """Plain offset on a clean Gaussian: after cleanup, the PSF
+        wings should sit at zero, not at the original bg level."""
+        bg_subtract = self._load_helper()
+        psf = _gauss2d(31, 4.0) + 0.01      # additive 0.01 background
+        cleaned = bg_subtract(psf)
+        # No pixel should be negative (positivity floor).
+        assert cleaned.min() >= 0.0
+        # The wings (far from centre) should be at zero now — the bg
+        # offset has been removed, not just clipped under.
+        corner = cleaned[:5, :5]
+        assert corner.max() < 1e-6
+        # And the kernel is still unit flux.
+        assert cleaned.sum() == pytest.approx(1.0, abs=1e-6)
+
+    def test_kills_negative_half_of_bg_noise(self):
+        """Noisy bg: negative excursions go to 0; positive stay."""
+        rng = np.random.default_rng(42)
+        bg_subtract = self._load_helper()
+        psf = _gauss2d(63, 5.0)
+        # Inject white-noise background at 1 % of peak.
+        psf = psf + rng.normal(0, 0.01 * psf.max(), size=psf.shape)
+        cleaned = bg_subtract(psf)
+        assert cleaned.min() >= 0.0
+        # At least 30 % of pixels should be exactly zero (the previously-
+        # negative half of bg noise + the lowest of the positive half
+        # that fell below the median).
+        zero_frac = float((cleaned == 0).mean())
+        assert zero_frac > 0.30
+
+    def test_renormalises_to_unit_flux(self):
+        """DC gain of the kernel relies on both PSFs summing to 1."""
+        bg_subtract = self._load_helper()
+        psf = _gauss2d(31, 4.0) + 0.02     # bg high enough to clip a lot
+        cleaned = bg_subtract(psf)
+        assert cleaned.sum() == pytest.approx(1.0, abs=1e-6)
+
+    def test_preserves_peak_position(self):
+        """Cleanup must not move the PSF centroid — the FFT phase
+        reference is the centre pixel, a shift would silently introduce
+        a linear phase term in Â."""
+        bg_subtract = self._load_helper()
+        psf = _gauss2d(31, 4.0) + 0.005
+        cleaned = bg_subtract(psf)
+        # argmax in flat indexing; both should be the centre pixel.
+        assert np.argmax(cleaned) == np.argmax(psf)
+
+
 class TestSaveLoadProvenance:
 
     def test_round_trip_through_fits(self, tmp_path):
