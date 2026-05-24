@@ -57,6 +57,18 @@ def parse_args() -> argparse.Namespace:
                         "modelling. 0 disables the pool (single-process "
                         "fallback, useful for debugging). Default reads "
                         "SLURM_CPUS_PER_TASK if set, else os.cpu_count().")
+    p.add_argument("--max-mag", type=float, default=24.0,
+                   help="Brightest-only catalog cut on the COSMOS2025 "
+                        "total VIS magnitude (bulge+disk). Default 24.0 "
+                        "sits inside Euclid's single-stack 5σ "
+                        "point-source depth (~24.5 in VIS) so generated "
+                        "pairs are visually obvious in the dirty image "
+                        "— faint sources below the noise floor make "
+                        "training data the model can't actually learn "
+                        "from. Bump to 25 if you specifically want to "
+                        "include detection-threshold galaxies; lower "
+                        "(22, 21) to focus on bright, well-resolved "
+                        "morphology only.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -344,9 +356,10 @@ def main() -> int:
     from euclid_polish.sky.cosmos2025 import open_cosmos2025
     from euclid_polish.sky.differential_kernel import DifferentialKernel
     dk = DifferentialKernel.from_fits(args.kernel)
-    catalog = open_cosmos2025()
+    catalog = open_cosmos2025(max_mag=args.max_mag)
     print(f"      kernel shape = {dk.data.shape} DC gain = {dk.dc_gain:.4f}")
-    print(f"      {len(catalog):,} catalog galaxies after quality cuts")
+    print(f"      {len(catalog):,} catalog galaxies after quality cuts "
+          f"(VIS mag ≤ {args.max_mag})")
 
     if args.dry_run:
         print("\nDRY RUN — would synthesise "

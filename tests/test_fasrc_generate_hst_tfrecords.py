@@ -337,6 +337,119 @@ class TestRngDeterminism:
 # Pool integration — end-to-end small parallel run
 # ---------------------------------------------------------------------------
 
+class TestPhotometryChain:
+    """End-to-end photometric consistency: catalog electron count
+    flows through unit-flux template → 4-band broadcast → convolve
+    → sum-rebin → noise, and the LR total electrons match the input
+    within the noise budget. If anyone ever rescales per-band flux
+    or breaks the unit-flux normalisation, these tests catch it
+    before users have to wonder why "noise dominates everything"."""
+
+    def test_hr_cube_preserves_catalog_flux_per_band(self, tmp_path):
+        """The unit-flux template scaled by per-band catalog flux
+        must sum to exactly that flux in each band. This is what
+        ``_broadcast_hst_to_4bands`` is supposed to do — the test
+        catches any silent rescaling regression."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=400, blob_flux=1000.0,
+        )
+        mod._init_worker(krn, image_size=64)
+
+        flux_per_band = (50_000.0, 10_000.0, 15_000.0, 12_000.0)
+        task = (0, 150.1, 2.3, flux_per_band, tile, 200, 42)
+        _, hr_cube, _ = mod._process_one_galaxy(task)
+
+        for k, expected in enumerate(flux_per_band):
+            hr_sum = float(hr_cube[..., k].sum())
+            assert hr_sum == pytest.approx(expected, rel=1e-3), (
+                f"band {k}: HR sum {hr_sum:.1f} e ≠ catalog flux "
+                f"{expected:.1f} e — broadcast lost or added flux"
+            )
+
+    def test_lr_cube_total_flux_matches_within_noise(self, tmp_path):
+        """LR (dirty) total flux ≈ catalog flux per band, within the
+        Poisson + read noise budget on the integrated sum.
+
+        ``apply_band_noise`` is zero-mean by construction: it adds
+        ``Poisson(signal+sky+dark) - (sky+dark)`` + Gaussian(0, σ_read),
+        so ``E[sum(LR)] = sum(signal)``. The standard deviation on
+        the integrated sum is ``sqrt(N_pix) × σ_per_pixel``. We allow
+        5σ tolerance to be robust across random seeds + a small (<1%)
+        edge-flux-leakage allowance from the convolution.
+        """
+        from euclid_polish.config import Config
+
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        # Bright + well-centred so convolution edge losses are minimal.
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=600, blob_flux=1000.0, blob_sigma_pix=8.0,
+        )
+        mod._init_worker(krn, image_size=128)
+
+        flux_per_band = (200_000.0, 80_000.0, 100_000.0, 90_000.0)
+        task = (0, 150.1, 2.3, flux_per_band, tile, 300, 42)
+        _, _, lr_cube = mod._process_one_galaxy(task)
+
+        n_pix = lr_cube.shape[0] * lr_cube.shape[1]
+        for k, expected in enumerate(flux_per_band):
+            band = Config.get_band(Config.LR_INPUT_BAND_NAMES[k])
+            sky_e  = (band.sky_e_per_s_per_arcsec2
+                      * band.pixel_scale_lr_arcsec ** 2
+                      * band.t_total_s)
+            dark_e = band.dark_e_per_s_per_pix * band.t_total_s
+            sigma_per_px = np.sqrt(
+                sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
+                + expected / n_pix         # Poisson term on signal
+            )
+            sigma_on_sum = np.sqrt(n_pix) * sigma_per_px
+
+            lr_sum = float(lr_cube[..., k].sum())
+            tol = 5 * sigma_on_sum + 0.02 * expected
+            assert abs(lr_sum - expected) < tol, (
+                f"band {Config.LR_INPUT_BAND_NAMES[k]}: LR sum "
+                f"{lr_sum:.0f} e vs expected {expected:.0f} e, "
+                f"diff {lr_sum - expected:+.0f} > {tol:.0f} tol"
+            )
+
+    def test_brighter_catalog_flux_gives_brighter_lr(self, tmp_path):
+        """Monotonicity: a 10x brighter catalog magnitude must give
+        a 10x brighter LR per-pixel peak (within noise). Pins the
+        photometric *sign* of the chain — a unit flip or absolute-
+        value bug somewhere would break this even when totals match."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=400, blob_flux=1000.0,
+        )
+        mod._init_worker(krn, image_size=64)
+        seed = 12345
+
+        dim   = (5_000.0,  5_000.0,  5_000.0,  5_000.0)
+        bright = (50_000.0, 50_000.0, 50_000.0, 50_000.0)
+
+        _, _, lr_dim    = mod._process_one_galaxy(
+            (0, 150.1, 2.3, dim,    tile, 200, seed))
+        _, _, lr_bright = mod._process_one_galaxy(
+            (0, 150.1, 2.3, bright, tile, 200, seed))
+
+        # Same seed → same noise realisation. Difference is purely the
+        # 10x signal scaling. Compare *peaks* (most-significant pixel)
+        # because noise dominates the LR sum at the dim end.
+        for k in range(4):
+            peak_dim    = float(lr_dim[..., k].max())
+            peak_bright = float(lr_bright[..., k].max())
+            ratio = peak_bright / peak_dim if peak_dim > 0 else 0
+            # Ratio should be near 10 modulo noise contributions; allow
+            # a wide band because the dim peak is shot-noise-influenced.
+            assert 5 < ratio < 20, (
+                f"band {k}: peak ratio {ratio:.2f} for 10x flux "
+                "scaling is wildly off — sign or unit issue?"
+            )
+
+
 class TestPoolIntegration:
     """ProcessPoolExecutor with the real initialiser + worker. Catches
     pickling regressions and any subtle "module globals don't survive

@@ -412,8 +412,15 @@ def test_view_hst_pair_invalid_band_400(client):
     assert r.status_code == 400
 
 
-def test_view_hst_pair_404_when_not_synced(client):
-    """No local cache file → ``_render_sky_record_png`` aborts 404."""
+def test_view_hst_pair_404_when_not_synced(client, tmp_path, monkeypatch):
+    """No local cache file → ``_render_sky_record_png`` aborts 404.
+
+    Re-point the FASRC cache dir at an empty tmp dir so this test
+    isn't tripped by whatever happens to be cached on the developer's
+    machine (which is exactly what regressed the first time I wrote
+    this — my own ``data/_fasrc_cache/`` had real validate files)."""
+    from euclid_polish.web import fasrc_fetcher as ff
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
     r = client.get("/view/hst-pair?subset=validate&kind=clean&band=VIS&i=0")
     assert r.status_code == 404
 
