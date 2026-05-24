@@ -76,9 +76,75 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default=None,
                    help="Where to write the ePSF FITS. Defaults to "
                         "$DATA_DIR/hst_psf/.")
+    p.add_argument("--reuse-stars", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="If $DATA_DIR/hst_stars/ already contains per-star "
+                        "FITS stamps of the right size from a prior run, "
+                        "feed them straight into EPSFBuilder instead of "
+                        "re-scanning every HLSP tile with DAOStarFinder + "
+                        "extract_stars. The bottleneck on FASRC is the tile "
+                        "I/O (HLSP tiles are ~500 MB each); reusing skips "
+                        "it entirely when only the ePSF needs rebuilding "
+                        "(e.g. trying a different EPSFBuilder setting). "
+                        "Use --no-reuse-stars to force a full recut.")
     p.add_argument("--dry-run", action="store_true",
                    help="Report what would be done and exit.")
     return p.parse_args()
+
+
+def _load_cached_star_stamps(
+    stars_dir: str, *, half_side: int = PSF_HALF_SIDE_PIX,
+) -> tuple:
+    """Load per-star FITS stamps from a previous run, as ``EPSFStar`` objects.
+
+    Returns ``(stamps, pix_scale, n_tiles_src)``. ``stamps`` is empty if
+    ``stars_dir`` is missing, has no files matching the
+    ``star_NNNN_{side}.fits`` naming, or every candidate has the wrong
+    shape. ``pix_scale`` and ``n_tiles_src`` come from the first stamp's
+    header (``PIXSCALE``, ``NTILESRC``) so the downstream ePSF FITS keeps
+    the same provenance fields it would have had from a fresh extract.
+
+    Only stamps whose side matches ``2*half_side + 1`` are kept — mixing
+    sides would silently corrupt EPSFBuilder (it assumes a single grid).
+    The ``cutout_center`` is set to the geometric centre; EPSFBuilder
+    iteratively refines centroids, so this is a good-enough starting
+    guess and matches what ``extract_stars`` would produce.
+    """
+    from astropy.io import fits
+    from photutils.psf import EPSFStar
+
+    if not os.path.isdir(stars_dir):
+        return [], FALLBACK_PIX_SCALE_ARCSEC, 0
+
+    expected_side = 2 * half_side + 1
+    suffix = f"_{expected_side}.fits"
+    files = sorted(
+        f for f in os.listdir(stars_dir)
+        if f.startswith("star_") and f.endswith(suffix)
+    )
+    if not files:
+        return [], FALLBACK_PIX_SCALE_ARCSEC, 0
+
+    stamps: list = []
+    pix_scale: float | None = None
+    n_tiles_src: int = 0
+    for fname in files:
+        fpath = os.path.join(stars_dir, fname)
+        try:
+            with fits.open(fpath, memmap=False) as hdul:
+                arr = np.asarray(hdul[0].data, dtype=np.float32)
+                h = hdul[0].header
+                if pix_scale is None:
+                    pix_scale  = float(h.get("PIXSCALE", FALLBACK_PIX_SCALE_ARCSEC))
+                    n_tiles_src = int(h.get("NTILESRC", 0))
+        except Exception:
+            continue
+        if arr.shape != (expected_side, expected_side):
+            continue
+        side = arr.shape[0]
+        stamps.append(EPSFStar(data=arr, cutout_center=(side / 2.0, side / 2.0)))
+
+    return stamps, (pix_scale if pix_scale is not None else FALLBACK_PIX_SCALE_ARCSEC), n_tiles_src
 
 
 def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
@@ -163,103 +229,151 @@ def main() -> int:
 
     t0 = time.time()
 
-    tiles = sorted(
-        f for f in os.listdir(in_dir) if f.endswith(".fits")
-        and f.startswith("hlsp_cosmos_hst_acs-wfc_mosaic")
-    ) if os.path.isdir(in_dir) else []
-    print(f"[1/3] {len(tiles)} HLSP tiles found")
-    if not tiles:
-        print(f"ERROR: no HLSP tiles in {in_dir} — run the download step first.")
-        return 1
-
-    if args.dry_run:
-        print(f"\nDRY RUN — would scan {len(tiles)} tiles for ~{args.n_stars} stars")
-        runtime = time.time() - t0
-        print(f"\nRUNTIME_SECONDS={runtime:.1f}")
-        return 0
-
-    # ---- collect stars across tiles until we hit the target count ----
-    print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
-    from astropy.io import fits
-
+    stars_dir = os.path.join(Config.DATA_DIR, STARS_DIR_NAME)
     star_stamps: list = []
-    stars_per_tile = max(1, args.n_stars // max(len(tiles), 1) * 2)
     tiles_used: list = []
     pix_scale_observed: float = FALLBACK_PIX_SCALE_ARCSEC
+    used_cache = False
 
-    for tile_idx, tname in enumerate(tiles):
-        if len(star_stamps) >= args.n_stars:
-            break
-        tpath = os.path.join(in_dir, tname)
-        print(f"      tile {tile_idx + 1}/{len(tiles)}: {tname}")
-        with fits.open(tpath, memmap=True) as hdul:
-            sci = next(
-                (e for e in hdul if e.is_image and e.data is not None), None,
-            )
-            if sci is None:
-                continue
-            data = np.asarray(sci.data, dtype=np.float32)
-            # Trust the first tile's WCS for pixel scale. All COSMOS HLSP
-            # tiles in one product release share the same drizzle scale.
-            if tile_idx == 0:
-                pix_scale_observed = _pixel_scale_from_header(sci.header)
-                print(f"      WCS pixel scale (this run) = "
-                      f"{pix_scale_observed:.4f}\"/pix")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            sources = _find_stars_in_tile(data, max_n=stars_per_tile)
-        if sources is None or len(sources) == 0:
-            print(f"        (no stars passed quality cuts)")
-            continue
-        print(f"        + {len(sources)} stars")
-        try:
-            stamps = _extract_stamps_from_tile(data, sources)
-        except Exception as e:
-            print(f"        warn: extract_stars failed on this tile: "
-                  f"{type(e).__name__}: {e}")
-            continue
-        star_stamps.extend(stamps)
-        tiles_used.append(tname)
-
-    n_used = min(len(star_stamps), args.n_stars)
-    if n_used == 0:
-        print("ERROR: 0 usable stars across all tiles")
-        return 1
-    star_stamps = star_stamps[:n_used]
-    print(f"      collected {n_used} stars from {len(tiles_used)} tiles")
-
-    # ---- save each used star as a FITS so the UI can browse them ----
-    stars_dir = os.path.join(Config.DATA_DIR, STARS_DIR_NAME)
-    os.makedirs(stars_dir, exist_ok=True)
-    saved = 0
-    for i, st in enumerate(star_stamps):
-        try:
-            stamp_arr = np.asarray(st.data, dtype=np.float32)
-        except Exception:
-            continue
-        side = stamp_arr.shape[0]
-        out_path = os.path.join(
-            stars_dir, f"star_{i:04d}_{side}.fits",
+    # ---- fast path: feed EPSFBuilder from a previous run's stamps ----
+    # The expensive part of this script is the per-tile DAOStarFinder +
+    # extract_stars pass (HLSP tiles are large, I/O-bound). If a prior
+    # run already wrote per-star FITS into $DATA_DIR/hst_stars/ we can
+    # skip straight to the ePSF build. ``--no-reuse-stars`` forces the
+    # full tile scan (use it when you want to refresh the cached stamp
+    # set with new HLSP tiles or new selection cuts).
+    if args.reuse_stars:
+        cached, cached_scale, cached_n_tiles = _load_cached_star_stamps(
+            stars_dir, half_side=PSF_HALF_SIDE_PIX,
         )
-        hdu = fits.PrimaryHDU(stamp_arr)
-        h = hdu.header
-        h["OBJECT"]   = ("HST F814W star stamp",
-                         "extracted for ePSF construction")
-        h["FILTER"]   = ("F814W", "HST filter")
-        h["INSTRUME"] = ("ACS/WFC", "HST instrument")
-        h["PIXSCALE"] = (pix_scale_observed, "native HLSP pixel scale (arcsec)")
-        h["STARIDX"]  = (i, "0-based index in this run")
-        h["NTILESRC"] = (len(tiles_used), "tiles contributing to this run")
-        h["BUNIT"]    = ("electrons / s", "ACS/WFC drizzled units")
-        try:
-            hdu.writeto(out_path, overwrite=True)
-            saved += 1
-        except Exception as e:
-            print(f"        warn: failed to save {out_path}: {e}")
-    print(f"      saved {saved} star stamps → {stars_dir}/")
+        if cached:
+            n_use = min(len(cached), args.n_stars)
+            star_stamps        = cached[:n_use]
+            pix_scale_observed = cached_scale
+            # The output ePSF FITS records the contributing tile count
+            # (NTILES). We don't have the original tile *names* in the
+            # cache — only the count, preserved in the per-star FITS
+            # NTILESRC header — so we materialise a placeholder list of
+            # the right length so ``len(tiles_used)`` keeps working
+            # downstream.
+            tiles_used  = [None] * cached_n_tiles
+            used_cache  = True
+            print(f"[1/2] reusing {len(cached)} cached star stamps from "
+                  f"{stars_dir}/  (target n_stars={args.n_stars} → "
+                  f"using {n_use})")
+            print(f"      pix scale (from cache header)  = "
+                  f"{pix_scale_observed:.4f}\"/pix")
+            print(f"      tile count (from cache header) = "
+                  f"{cached_n_tiles}")
+            if args.dry_run:
+                print(f"\nDRY RUN — would skip tile scan and rebuild ePSF "
+                      f"from {n_use} cached stamps")
+                runtime = time.time() - t0
+                print(f"\nRUNTIME_SECONDS={runtime:.1f}")
+                return 0
+
+    # ---- slow path: re-scan HLSP tiles ----
+    if not used_cache:
+        tiles = sorted(
+            f for f in os.listdir(in_dir) if f.endswith(".fits")
+            and f.startswith("hlsp_cosmos_hst_acs-wfc_mosaic")
+        ) if os.path.isdir(in_dir) else []
+        print(f"[1/3] {len(tiles)} HLSP tiles found")
+        if not tiles:
+            print(f"ERROR: no HLSP tiles in {in_dir} — run the download step first.")
+            return 1
+
+        if args.dry_run:
+            print(f"\nDRY RUN — would scan {len(tiles)} tiles for "
+                  f"~{args.n_stars} stars")
+            runtime = time.time() - t0
+            print(f"\nRUNTIME_SECONDS={runtime:.1f}")
+            return 0
+
+        # ---- collect stars across tiles until we hit the target count ----
+        print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
+        from astropy.io import fits
+
+        stars_per_tile = max(1, args.n_stars // max(len(tiles), 1) * 2)
+
+        for tile_idx, tname in enumerate(tiles):
+            if len(star_stamps) >= args.n_stars:
+                break
+            tpath = os.path.join(in_dir, tname)
+            print(f"      tile {tile_idx + 1}/{len(tiles)}: {tname}")
+            with fits.open(tpath, memmap=True) as hdul:
+                sci = next(
+                    (e for e in hdul if e.is_image and e.data is not None), None,
+                )
+                if sci is None:
+                    continue
+                data = np.asarray(sci.data, dtype=np.float32)
+                # Trust the first tile's WCS for pixel scale. All COSMOS HLSP
+                # tiles in one product release share the same drizzle scale.
+                if tile_idx == 0:
+                    pix_scale_observed = _pixel_scale_from_header(sci.header)
+                    print(f"      WCS pixel scale (this run) = "
+                          f"{pix_scale_observed:.4f}\"/pix")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sources = _find_stars_in_tile(data, max_n=stars_per_tile)
+            if sources is None or len(sources) == 0:
+                print(f"        (no stars passed quality cuts)")
+                continue
+            print(f"        + {len(sources)} stars")
+            try:
+                stamps = _extract_stamps_from_tile(data, sources)
+            except Exception as e:
+                print(f"        warn: extract_stars failed on this tile: "
+                      f"{type(e).__name__}: {e}")
+                continue
+            star_stamps.extend(stamps)
+            tiles_used.append(tname)
+
+        star_stamps = star_stamps[:args.n_stars]
+        if not star_stamps:
+            print("ERROR: 0 usable stars across all tiles")
+            return 1
+        print(f"      collected {len(star_stamps)} stars from "
+              f"{len(tiles_used)} tiles")
+
+        # ---- save each used star as a FITS so the UI can browse them ----
+        os.makedirs(stars_dir, exist_ok=True)
+        saved = 0
+        for i, st in enumerate(star_stamps):
+            try:
+                stamp_arr = np.asarray(st.data, dtype=np.float32)
+            except Exception:
+                continue
+            side = stamp_arr.shape[0]
+            out_path = os.path.join(
+                stars_dir, f"star_{i:04d}_{side}.fits",
+            )
+            hdu = fits.PrimaryHDU(stamp_arr)
+            h = hdu.header
+            h["OBJECT"]   = ("HST F814W star stamp",
+                             "extracted for ePSF construction")
+            h["FILTER"]   = ("F814W", "HST filter")
+            h["INSTRUME"] = ("ACS/WFC", "HST instrument")
+            h["PIXSCALE"] = (pix_scale_observed, "native HLSP pixel scale (arcsec)")
+            h["STARIDX"]  = (i, "0-based index in this run")
+            h["NTILESRC"] = (len(tiles_used), "tiles contributing to this run")
+            h["BUNIT"]    = ("electrons / s", "ACS/WFC drizzled units")
+            try:
+                hdu.writeto(out_path, overwrite=True)
+                saved += 1
+            except Exception as e:
+                print(f"        warn: failed to save {out_path}: {e}")
+        print(f"      saved {saved} star stamps → {stars_dir}/")
 
     # ---- build the ePSF ----
-    print(f"[3/3] running EPSFBuilder (oversampling = {EPSF_OVERSAMPLING}) ...")
+    n_used = len(star_stamps)
+    step_label = "[2/2]" if used_cache else "[3/3]"
+    print(f"{step_label} running EPSFBuilder (oversampling = {EPSF_OVERSAMPLING}) ...")
+    # ``fits`` is needed below for writing the ePSF; the slow path imports
+    # it inside its branch, so reimport here for the cache path. (Top-level
+    # imports stay light to keep the dry-run snappy.)
+    from astropy.io import fits
     from photutils.psf import EPSFBuilder, EPSFStars
     builder = EPSFBuilder(
         oversampling=EPSF_OVERSAMPLING,

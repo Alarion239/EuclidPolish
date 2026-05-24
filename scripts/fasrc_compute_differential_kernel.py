@@ -80,11 +80,17 @@ def parse_args() -> argparse.Namespace:
                         "modified.")
     p.add_argument("--border-pixels", type=int, default=10,
                    help="Zero out the first/last N rows AND columns of "
-                        "each PSF after bg-subtract and before the FFT. "
-                        "Cleans up resampling/edge artefacts that show up "
-                        "as high-frequency content in Â. 0 disables. "
-                        "Renormalises to sum=1 after masking so the "
-                        "kernel's DC gain stays at 1.")
+                        "each PSF after bg-subtract and before the FFT, "
+                        "AND of the output kernel A after the FFT inverse. "
+                        "On the inputs this cleans resampling/edge "
+                        "artefacts that would otherwise inject high-freq "
+                        "content into Â. On the output it suppresses the "
+                        "1-2 px bright border that the Wiener inverse "
+                        "leaves behind when reg is tiny (the noise floor "
+                        "of Ĥ near Nyquist collects at the array edges "
+                        "after `ifftshift`). 0 disables. Both inputs and "
+                        "output are renormalised to sum=1 after masking "
+                        "so the kernel's DC gain stays at 1.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be done and exit.")
     return p.parse_args()
@@ -302,6 +308,26 @@ def main() -> int:
     )
     print(f"      kernel shape = {a.shape}")
     print(f"      DC gain      = {a.sum():.4f}  (should be ~1)")
+
+    if args.border_pixels > 0:
+        # Mirror the input-side border-zero on the output kernel itself.
+        # The Wiener inverse amplifies Ĥ's noise floor where |Ĥ| is small;
+        # at low (or zero) regularisation that noise is concentrated at
+        # high spatial frequencies, which `ifftshift` + central crop park
+        # at the array borders as a bright 1-2 px rim. A's real support
+        # is centred — same assumption as the input PSFs — so zeroing the
+        # outer ``--border-pixels`` rows/cols and renormalising to sum=1
+        # removes the artefact without touching the in-band response.
+        b = args.border_pixels
+        a64 = a.astype(np.float64, copy=False)
+        a_border_flux = float(a64[:b, :].sum() + a64[-b:, :].sum()
+                              + a64[:, :b].sum() + a64[:, -b:].sum()
+                              - a64[:b, :b].sum() - a64[:b, -b:].sum()
+                              - a64[-b:, :b].sum() - a64[-b:, -b:].sum())
+        a = _zero_borders(a64, border_pixels=b).astype(np.float32)
+        print(f"      kernel border-zero : {b} px each side → "
+              f"flux discarded={a_border_flux*100:.4f}% (renormalised)")
+        print(f"      DC gain (post-mask) = {a.sum():.4f}")
 
     dk = DifferentialKernel(
         data=a,

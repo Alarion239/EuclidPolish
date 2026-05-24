@@ -157,3 +157,116 @@ class TestExtractStarsColumnNames:
         data = _make_synth_tile(side=self._TILE_SIDE, n_stars=1, seed=0)
         with pytest.raises(ValueError, match="x.*y.*columns"):
             script_module._extract_stamps_from_tile(data, sources)
+
+
+# ---------------------------------------------------------------------------
+# Cache fast path — reuse per-star FITS from a prior run instead of re-scanning
+# ---------------------------------------------------------------------------
+
+def _write_synth_star_fits(
+    path: str, *, side: int, pix_scale: float = 0.05, n_tiles_src: int = 7,
+    star_idx: int = 0,
+) -> None:
+    """Write a synthetic star FITS matching the layout the script saves.
+
+    Mirrors the header keys the slow path writes (PIXSCALE, NTILESRC,
+    STARIDX) so the cache loader has the same provenance to read back.
+    """
+    rng = np.random.default_rng(seed=star_idx)
+    sigma = 4.0 / 2.355
+    yy, xx = np.mgrid[:side, :side]
+    cy = cx = (side - 1) / 2.0
+    data = (5.0 * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2)
+                          / (2.0 * sigma ** 2))).astype(np.float32)
+    data += rng.normal(0.0, 0.001, size=(side, side)).astype(np.float32)
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["FILTER"]   = "F814W"
+    h["INSTRUME"] = "ACS/WFC"
+    h["PIXSCALE"] = pix_scale
+    h["STARIDX"]  = star_idx
+    h["NTILESRC"] = n_tiles_src
+    hdu.writeto(path, overwrite=True)
+
+
+class TestCachedStarLoader:
+    """``_load_cached_star_stamps`` is the cache fast path for ePSF rebuilds.
+
+    On FASRC the per-tile DAOStarFinder + extract_stars pass is what
+    actually takes hours; loading cached stamps reduces a full re-extract
+    to a few seconds of EPSFBuilder. These tests pin the loader's
+    behaviour on the three states the production directory can be in:
+    missing, populated, and partially corrupted."""
+
+    _HALF_SIDE = 50              # → 101² stamps, tiny but exercises the
+                                  # suffix-matching logic that filters on
+                                  # ``_{full_side}.fits``
+    _FULL_SIDE = 2 * _HALF_SIDE + 1
+
+    def test_missing_dir_returns_empty(self, script_module, tmp_path):
+        stamps, scale, n = script_module._load_cached_star_stamps(
+            str(tmp_path / "does_not_exist"), half_side=self._HALF_SIDE,
+        )
+        assert stamps == []
+        assert scale == script_module.FALLBACK_PIX_SCALE_ARCSEC
+        assert n == 0
+
+    def test_empty_dir_returns_empty(self, script_module, tmp_path):
+        stamps, scale, n = script_module._load_cached_star_stamps(
+            str(tmp_path), half_side=self._HALF_SIDE,
+        )
+        assert stamps == []
+        assert scale == script_module.FALLBACK_PIX_SCALE_ARCSEC
+        assert n == 0
+
+    def test_loads_compatible_stamps_with_metadata(self, script_module, tmp_path):
+        """Happy path: writes a few stamps then reads them back as EPSFStars.
+
+        The pix-scale and n_tiles fields come from the first stamp's
+        header; both must round-trip exactly so the ePSF FITS we write
+        downstream keeps the right PIXSCALE / NTILES provenance.
+        """
+        for i in range(3):
+            _write_synth_star_fits(
+                str(tmp_path / f"star_{i:04d}_{self._FULL_SIDE}.fits"),
+                side=self._FULL_SIDE, pix_scale=0.03, n_tiles_src=5,
+                star_idx=i,
+            )
+        stamps, scale, n = script_module._load_cached_star_stamps(
+            str(tmp_path), half_side=self._HALF_SIDE,
+        )
+        assert len(stamps) == 3
+        assert scale == pytest.approx(0.03, abs=1e-9)
+        assert n == 5
+        # Each stamp must arrive as an EPSFStar of the right shape so
+        # EPSFBuilder can consume it without further wrapping.
+        from photutils.psf import EPSFStar
+        for s in stamps:
+            assert isinstance(s, EPSFStar)
+            assert s.data.shape == (self._FULL_SIDE, self._FULL_SIDE)
+
+    def test_skips_wrong_size_stamps(self, script_module, tmp_path):
+        """A stale cache mixing sides must not poison the ePSF.
+
+        Loader filters on the ``_{full_side}.fits`` suffix in the
+        filename — anything else is silently ignored. Mixing sides would
+        otherwise mean EPSFBuilder sees a shape mismatch mid-iteration.
+        """
+        # Correct size — should be picked up.
+        _write_synth_star_fits(
+            str(tmp_path / f"star_0000_{self._FULL_SIDE}.fits"),
+            side=self._FULL_SIDE, star_idx=0,
+        )
+        # Different naming convention from an older script version —
+        # written as a sibling file the loader must skip.
+        _write_synth_star_fits(
+            str(tmp_path / "star_0001_77.fits"),
+            side=77, star_idx=1,
+        )
+        # Junk that happens to start with "star_" but isn't a stamp.
+        (tmp_path / "star_notes.txt").write_text("ignore me")
+        stamps, scale, n = script_module._load_cached_star_stamps(
+            str(tmp_path), half_side=self._HALF_SIDE,
+        )
+        assert len(stamps) == 1
+        assert stamps[0].data.shape == (self._FULL_SIDE, self._FULL_SIDE)
