@@ -241,11 +241,17 @@ def fetch_one_file(
     *,
     max_bytes: int = MAX_PULL_BYTES,
     cache_ttl: int = CACHE_TTL_SECONDS,
+    force: bool = False,
 ) -> FetchResult:
     """Pull one file from FASRC into the local cache.
 
     Returns a :class:`FetchResult` — never raises. Idempotent for the
     same ``remote_path`` within ``cache_ttl``.
+
+    ``force=True`` bypasses the TTL cache entirely and always re-rsyncs.
+    Use this for explicit "Sync now" buttons — rsync itself is still
+    incremental at the byte level, so a no-op sync of an unchanged file
+    is cheap.
 
     The function intentionally does no batching or background sync —
     every call corresponds to a user-initiated action (click on a
@@ -257,8 +263,8 @@ def fetch_one_file(
                            error=f"path not under allowed FASRC roots: {remote_path}")
 
     local = _local_path_for(remote_path)
-    # 1. Serve from cache if fresh and present.
-    if os.path.isfile(local):
+    # 1. Serve from cache if fresh and present — skipped when force=True.
+    if not force and os.path.isfile(local):
         try:
             age = time.time() - os.path.getmtime(local)
             size = os.path.getsize(local)
@@ -289,8 +295,8 @@ def fetch_one_file(
     lock = _lock_for(remote_path)
     with lock:
         # Re-check after acquiring the lock in case another thread
-        # finished the pull while we were waiting.
-        if os.path.isfile(local):
+        # finished the pull while we were waiting — skipped on force.
+        if not force and os.path.isfile(local):
             try:
                 age = time.time() - os.path.getmtime(local)
             except OSError:

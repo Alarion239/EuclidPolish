@@ -90,6 +90,59 @@ class TestFetcherRejectsBadInputs:
 # Cache eviction
 # ---------------------------------------------------------------------------
 
+class TestForceBypassesCache:
+    """``fetch_one_file(..., force=True)`` skips the TTL cache and
+    always re-rsyncs. Powers the "Sync from FASRC" button so a kernel
+    you rebuilt 30 s ago shows up without waiting for the 5-min TTL."""
+
+    def test_force_bypasses_fresh_cache(self, tmp_path, monkeypatch):
+        from euclid_polish.web import fasrc_fetcher as ff
+        # Point the cache at tmp_path and the safety check at "always ok".
+        monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
+
+        # Plant a fresh "cached" file so the no-force path would short-circuit.
+        remote = "/n/netscratch/foo/kernel.fits"
+        local = ff._local_path_for(remote)
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "wb") as fh:
+            fh.write(b"old cached content")
+        # mtime = now() so age << TTL — without force, this would short-circuit.
+
+        calls = {"rsync": 0, "size": 0}
+
+        # Fake SSHSession that records calls and produces a "new" file when
+        # rsync runs. Subclassing isn't needed — duck typing via STATE.ssh.
+        class _FakeSSH:
+            def rsync_pull(self_inner, remote_path, local_dir, **kw):
+                calls["rsync"] += 1
+                # Simulate rsync writing the new contents into local_dir.
+                dest = os.path.join(local_dir, os.path.basename(remote_path))
+                with open(dest, "wb") as fh:
+                    fh.write(b"new content")
+                return 0, "", ""
+
+        # Patch the size probe + the SSH session.
+        monkeypatch.setattr(
+            ff, "_remote_size_bytes",
+            lambda p: (True, 11, None),
+        )
+        from euclid_polish.web import remote as remote_module
+        monkeypatch.setattr(remote_module.STATE, "ssh", _FakeSSH())
+
+        # Sanity: without force, we get the cached blob and never rsync.
+        r1 = ff.fetch_one_file(remote)
+        assert r1.ok and r1.from_cache is True
+        assert calls["rsync"] == 0
+
+        # With force, we rsync even though the cached file is brand new.
+        r2 = ff.fetch_one_file(remote, force=True)
+        assert r2.ok and r2.from_cache is False
+        assert calls["rsync"] == 1
+        with open(local, "rb") as fh:
+            assert fh.read() == b"new content"
+
+
 class TestCacheEviction:
 
     def test_cache_size_reads_existing_files(self, tmp_path, monkeypatch):

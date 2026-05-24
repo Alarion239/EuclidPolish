@@ -9,6 +9,11 @@
   <span class="toolbar-label">Filter</span>
   <span class="chip active">F814W</span>
   <span class="muted">single-band — HST coverage in our pipeline is F814W only</span>
+  <button id="btn-sync" type="button" class="secondary" style="margin-left:auto;"
+          title="Re-rsync F814W.fits + diff_kernel_VIS.fits from FASRC, bypassing the 5-min cache. Use after rebuilding either on FASRC.">
+    ↻ Sync from FASRC
+  </button>
+  <span id="sync-msg" class="muted" style="font-size:12px;"></span>
 </div>
 {% endblock %}
 
@@ -83,6 +88,51 @@
   <p class="hint">After both PSFs (Euclid VIS + HST F814W) exist on FASRC,
      submit step 3 of the HST pipeline to compute the differential kernel.
      The output (<code>diff_kernel_VIS.fits</code>) shows up in the file
-     list above.</p>
+     list above. After a rebuild on FASRC, hit <strong>↻ Sync from FASRC</strong>
+     in the toolbar to pull the fresh files in (the page caches them for
+     5 min otherwise).</p>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const btn = document.getElementById('btn-sync');
+  const msg = document.getElementById('sync-msg');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    msg.textContent = 'rsync…';
+    try {
+      const r = await fetch('/api/hst-psf/sync', { method: 'POST' });
+      const data = await r.json();
+      if (!data.ok) {
+        // Report whichever file failed — both shouldn't fail unless the
+        // SSH session is down or the files aren't on FASRC yet.
+        const errs = Object.entries(data.files || {})
+          .filter(([, v]) => !v.ok)
+          .map(([k, v]) => `${k}: ${v.error || 'failed'}`)
+          .join('; ');
+        msg.textContent = 'sync failed: ' + (errs || 'unknown error');
+        return;
+      }
+      // Cache-bust the preview img so the freshly-rendered PNG paints.
+      const img = document.getElementById('viz-img');
+      if (img) {
+        const u = new URL(img.src, location.origin);
+        u.searchParams.set('force', '1');
+        u.searchParams.set('_t', Date.now());
+        img.src = u.toString();
+      }
+      // Reload the rest of the page so the file table picks up new mtime/size.
+      msg.textContent = '✓ synced, reloading…';
+      setTimeout(() => location.reload(), 400);
+    } catch (e) {
+      msg.textContent = 'sync failed: ' + e;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
 {% endblock %}

@@ -2144,15 +2144,59 @@ def create_app() -> Flask:
 
     @app.route("/hst-psf/preview.png")
     def hst_psf_preview_png():
-        """Pull the F814W PSF + render an asinh PNG for the page header."""
+        """Pull the F814W PSF + render an asinh PNG for the page header.
+
+        The ``?force=1`` query arg bypasses the rsync cache — used by
+        the Sync button after the user has rebuilt the PSF on FASRC.
+        """
         from euclid_polish.web.fasrc_fetcher import fetch_one_file
         cfg_loaded = fasrc_config.load()
         remote = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
-        result = fetch_one_file(remote)
+        force = request.args.get("force") in ("1", "true", "True")
+        result = fetch_one_file(remote, force=force)
         if not result.ok:
             abort(404)
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=320)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=600)
+        # When forced, also disable HTTP-level caching so the browser
+        # actually paints the freshly-rendered PNG instead of the one
+        # the proxy/UA stored 5 min ago.
+        max_age = 0 if force else 600
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=max_age)
+
+    @app.route("/api/hst-psf/sync", methods=["POST"])
+    def api_hst_psf_sync():
+        """Re-rsync the HST PSF + differential kernel from FASRC.
+
+        Bypasses the fetcher's 5-minute cache (``force=True``) so a kernel
+        you just rebuilt on FASRC shows up in the local view without
+        waiting. Reports per-file status so the UI can tell the user
+        which ones updated and which (if any) failed.
+        """
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        cfg_loaded = fasrc_config.load()
+        targets = {
+            "psf":    f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
+            "kernel": f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+        }
+        results: Dict[str, Dict[str, Any]] = {}
+        any_ok = False
+        for key, remote in targets.items():
+            r = fetch_one_file(remote, force=True)
+            entry: Dict[str, Any] = {
+                "remote_path": remote,
+                "ok":          r.ok,
+                "size_bytes":  r.size_bytes,
+            }
+            if r.ok and r.local_path:
+                try:
+                    entry["local_mtime"] = os.path.getmtime(r.local_path)
+                except OSError:
+                    entry["local_mtime"] = None
+                any_ok = True
+            else:
+                entry["error"] = r.error
+            results[key] = entry
+        return jsonify({"ok": any_ok, "files": results})
 
     @app.route("/hst-cutouts/preview.png")
     def hst_cutout_preview_png():
