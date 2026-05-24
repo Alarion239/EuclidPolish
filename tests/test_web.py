@@ -382,6 +382,173 @@ def test_api_sky_totals_returns_json(client):
     assert set(body.keys()) >= {"clean_train", "clean_validate", "dirty_train", "dirty_validate"}
 
 
+# ---------------------------------------------------------------------------
+# /hst-pairs (HST Catalog) — same viewer as /sky over FASRC-cached records
+# ---------------------------------------------------------------------------
+
+def test_hst_pairs_page_renders(client):
+    r = client.get("/hst-pairs")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "HST Catalog" in body
+    assert "Sync from FASRC" in body
+    # Toolbar bands match /sky's set so the same chip layout works.
+    for n in ("VIS", "Y_E", "J_E", "H_E", "color"):
+        assert n in body
+
+
+def test_view_hst_pair_invalid_subset_400(client):
+    r = client.get("/view/hst-pair?subset=foo&kind=clean&band=VIS&i=0")
+    assert r.status_code == 400
+
+
+def test_view_hst_pair_invalid_kind_400(client):
+    r = client.get("/view/hst-pair?subset=validate&kind=foo&band=VIS&i=0")
+    assert r.status_code == 400
+
+
+def test_view_hst_pair_invalid_band_400(client):
+    r = client.get("/view/hst-pair?subset=validate&kind=clean&band=BOGUS&i=0")
+    assert r.status_code == 400
+
+
+def test_view_hst_pair_404_when_not_synced(client):
+    """No local cache file → ``_render_sky_record_png`` aborts 404."""
+    r = client.get("/view/hst-pair?subset=validate&kind=clean&band=VIS&i=0")
+    assert r.status_code == 404
+
+
+def test_api_hst_pairs_totals_returns_json_with_all_six_files(client):
+    r = client.get("/api/hst-pairs/totals")
+    assert r.status_code == 200
+    body = r.get_json()
+    # Even when the cache is empty, every key must be present so the JS
+    # can build its index labels deterministically. Counts can be 0.
+    assert set(body.keys()) == {
+        "clean_train", "clean_validate",
+        "dirty_train", "dirty_validate",
+        "hr_train",    "hr_validate",
+    }
+    for v in body.values():
+        assert isinstance(v, int)
+        assert v >= 0
+
+
+def test_api_hst_pairs_status_lists_cache_dir(client):
+    r = client.get("/api/hst-pairs/status")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert "dir" in body and "files" in body
+    # The dir must live under the local FASRC cache, never some arbitrary
+    # path — that's the contract the sync route depends on too.
+    assert "_fasrc_cache" in body["dir"]
+
+
+def test_api_hst_pairs_sync_defaults_to_validate_only(client, monkeypatch):
+    """No ``include_train`` form arg → only the three validate files
+    are requested. This guards the "don't accidentally pull 25 GB"
+    invariant — if a refactor flips the default, this test catches it."""
+    requested: list = []
+
+    class _R:
+        ok = True
+        local_path = "/tmp/nope"      # never actually opened in this test
+        size_bytes = 0
+        from_cache = False
+        error = None
+
+    def _fake_fetch(remote_path, *, force=False, max_bytes=None, **_):
+        requested.append((remote_path, force, max_bytes))
+        return _R()
+
+    monkeypatch.setattr(
+        "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
+    )
+    r = client.post("/api/hst-pairs/sync")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["include_train"] is False
+    requested_names = {p.rsplit("/", 1)[-1] for (p, _, _) in requested}
+    assert requested_names == {
+        "clean_validate.tfrecord",
+        "dirty_validate.tfrecord",
+        "hr_validate.tfrecord",
+    }
+    # Every fetch must be force=True (the user explicitly clicked Sync)
+    # and over the default 50 MB cap (these files are big).
+    for (_path, force, max_bytes) in requested:
+        assert force is True
+        assert max_bytes is not None and max_bytes > 50 * 1024 * 1024
+
+
+def test_api_hst_pairs_sync_include_train_pulls_six_files(client, monkeypatch):
+    """``include_train=true`` adds the three train files on top."""
+    requested: list = []
+
+    class _R:
+        ok = True
+        local_path = "/tmp/nope"
+        size_bytes = 0
+        from_cache = False
+        error = None
+
+    def _fake_fetch(remote_path, *, force=False, max_bytes=None, **_):
+        requested.append(remote_path)
+        return _R()
+
+    monkeypatch.setattr(
+        "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
+    )
+    r = client.post("/api/hst-pairs/sync",
+                    data={"include_train": "true"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["include_train"] is True
+    names = {p.rsplit("/", 1)[-1] for p in requested}
+    assert names == {
+        "clean_validate.tfrecord", "dirty_validate.tfrecord",
+        "hr_validate.tfrecord",    "clean_train.tfrecord",
+        "dirty_train.tfrecord",    "hr_train.tfrecord",
+    }
+
+
+def test_api_hst_pairs_sync_surfaces_fetch_errors_per_file(client, monkeypatch):
+    """If one file fails, the response still lists it (ok=False, error
+    set) so the UI can show partial-success status."""
+    class _OK:
+        ok = True
+        local_path = "/tmp/ok"
+        size_bytes = 100
+        from_cache = False
+        error = None
+
+    class _BAD:
+        ok = False
+        local_path = None
+        size_bytes = None
+        from_cache = False
+        error = "rsync exit 23"
+
+    def _fake_fetch(remote_path, *, force=False, max_bytes=None, **_):
+        # First request "fails", rest succeed.
+        if remote_path.endswith("clean_validate.tfrecord"):
+            return _BAD()
+        return _OK()
+
+    monkeypatch.setattr(
+        "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
+    )
+    r = client.post("/api/hst-pairs/sync")
+    assert r.status_code == 200
+    data = r.get_json()
+    # Overall ok=True as long as ANY file succeeded — partial success
+    # is the common case (e.g. train file present, validate not yet).
+    assert data["ok"] is True
+    assert data["files"]["clean_validate"]["ok"] is False
+    assert data["files"]["clean_validate"]["error"] == "rsync exit 23"
+    assert data["files"]["dirty_validate"]["ok"] is True
+
+
 def test_view_training_log_404_when_missing(client):
     r = client.get("/view/training-log?checkpoint_dir=/tmp/nope_dir")
     assert r.status_code == 404

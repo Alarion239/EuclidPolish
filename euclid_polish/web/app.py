@@ -85,11 +85,18 @@ def _psf_status() -> Dict[str, Any]:
     return {"bands": bands}
 
 
-def _tfrecords_status() -> Dict[str, Any]:
-    out = {"dir": Config.RECORDS_DIR_V2, "files": []}
-    if os.path.isdir(Config.RECORDS_DIR_V2):
-        for fname in sorted(os.listdir(Config.RECORDS_DIR_V2)):
-            full = os.path.join(Config.RECORDS_DIR_V2, fname)
+def _tfrecords_status(records_dir: Optional[str] = None) -> Dict[str, Any]:
+    """List on-disk TFRecord files under ``records_dir``.
+
+    Defaults to ``Config.RECORDS_DIR_V2`` (the locally-generated sky
+    records) so existing callers stay unchanged. The HST Catalog
+    passes its own dir to reuse this for the FASRC-cached records.
+    """
+    d = records_dir or Config.RECORDS_DIR_V2
+    out = {"dir": d, "files": []}
+    if os.path.isdir(d):
+        for fname in sorted(os.listdir(d)):
+            full = os.path.join(d, fname)
             if not os.path.isfile(full):
                 continue
             try:
@@ -1543,8 +1550,15 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
 
 
 def _render_sky_record_png(subset: str, kind: str, band: str,
-                           index: int) -> bytes:
+                           index: int,
+                           records_dir: Optional[str] = None) -> bytes:
     """Render one image from the multi-band TFRecords.
+
+    ``records_dir`` defaults to ``Config.RECORDS_DIR_V2`` (the locally-
+    generated sky records). The HST Catalog passes its own dir so it
+    can reuse the exact same renderer against the FASRC-cached HST
+    TFRecords — they use the same MultiBandSkyImage schema, so the
+    only thing that changes is where the file lives.
 
     ``subset`` ∈ {"train", "validate"},
     ``kind`` ∈ {"clean", "dirty", "hr"}
@@ -1571,7 +1585,7 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
         abort(400)
     name = f"{kind}_{subset}"
-    path = tfrecord_path(Config.RECORDS_DIR_V2, name)
+    path = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(path):
         abort(404)
     # Stream just enough records to reach ``index``.
@@ -1673,11 +1687,14 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     return buf.getvalue()
 
 
-def _record_count(name: str) -> int:
-    """Total records in a multi-band tfrecord (0 if absent)."""
+def _record_count(name: str, records_dir: Optional[str] = None) -> int:
+    """Total records in a multi-band tfrecord (0 if absent).
+
+    ``records_dir`` defaults to ``Config.RECORDS_DIR_V2``; the HST
+    Catalog passes its own dir so this helper works for both."""
     import tensorflow as tf
     from euclid_polish.sky.tfrecord import tfrecord_path
-    p = tfrecord_path(Config.RECORDS_DIR_V2, name)
+    p = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(p):
         return 0
     return sum(1 for _ in tf.data.TFRecordDataset(p))
@@ -2786,6 +2803,117 @@ def create_app() -> Flask:
             "hr_train":       _record_count("hr_train"),
             "hr_validate":    _record_count("hr_validate"),
         })
+
+    # =========================================================================
+    # HST Catalog — same viewer as /sky but pointed at the FASRC-cached HST
+    # TFRecord pairs that scripts/fasrc_generate_hst_tfrecords.py wrote.
+    # =========================================================================
+
+    def _hst_pairs_remote_dir() -> str:
+        cfg = fasrc_config.load()
+        return f"{cfg.data_dir}/images/records_v2_hst"
+
+    def _hst_pairs_local_dir() -> str:
+        """Local cache dir mirroring the remote HST records dir.
+
+        Uses the same convention as :func:`fasrc_fetcher._local_path_for`
+        so the page reads exactly what ``fetch_one_file`` writes — no
+        chance of pointing at the wrong directory."""
+        from euclid_polish.web.fasrc_fetcher import _local_path_for
+        any_path = f"{_hst_pairs_remote_dir()}/clean_validate.tfrecord"
+        return os.path.dirname(_local_path_for(any_path))
+
+    @app.route("/hst-pairs")
+    def hst_pairs_page():
+        local_dir = _hst_pairs_local_dir()
+        return render_template(
+            "hst_pairs.html",
+            tfrecords=_tfrecords_status(local_dir),
+            local_dir=local_dir,
+            remote_dir=_hst_pairs_remote_dir(),
+            # Validation set is small (~80 MB per file × 3 files); train
+            # set is multi-GB. Default the index nav to validate so the
+            # page works the moment the user clicks Sync.
+            default_subset="validate",
+        )
+
+    @app.route("/view/hst-pair")
+    def view_hst_pair():
+        subset = request.args.get("subset", "validate")
+        kind   = request.args.get("kind",   "clean")
+        band   = request.args.get("band",   "VIS")
+        try:
+            idx = int(request.args.get("i", 0))
+        except ValueError:
+            idx = 0
+        png = _render_sky_record_png(
+            subset, kind, band, idx,
+            records_dir=_hst_pairs_local_dir(),
+        )
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    @app.route("/api/hst-pairs/totals")
+    def api_hst_pairs_totals():
+        local = _hst_pairs_local_dir()
+        return jsonify({
+            name: _record_count(name, records_dir=local)
+            for name in ("clean_train", "clean_validate",
+                         "dirty_train", "dirty_validate",
+                         "hr_train",    "hr_validate")
+        })
+
+    @app.route("/api/hst-pairs/status")
+    def api_hst_pairs_status():
+        return jsonify(_tfrecords_status(_hst_pairs_local_dir()))
+
+    @app.route("/api/hst-pairs/sync", methods=["POST"])
+    def api_hst_pairs_sync():
+        """Rsync HST TFRecord files from FASRC into the local cache.
+
+        Form arg ``include_train`` (default false) controls whether the
+        large train-split files are pulled. Validation files (~80 MB
+        each, 3 files) are always included since they're small enough
+        that "sync to view" makes sense; train can be many GB.
+
+        Lifts the fetcher's default 50 MB cap to 5 GB per file because
+        TFRecord files are intentionally large and the user explicitly
+        asked for this transfer.
+        """
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        remote_dir = _hst_pairs_remote_dir()
+        include_train = (request.values.get("include_train", "false")
+                         .lower() in ("1", "true", "yes", "on"))
+        targets: Dict[str, str] = {}
+        for kind in ("clean", "dirty", "hr"):
+            targets[f"{kind}_validate"] = (
+                f"{remote_dir}/{kind}_validate.tfrecord"
+            )
+            if include_train:
+                targets[f"{kind}_train"] = (
+                    f"{remote_dir}/{kind}_train.tfrecord"
+                )
+
+        max_bytes = 5 * 1024 * 1024 * 1024
+        results: Dict[str, Dict[str, Any]] = {}
+        any_ok = False
+        for key, remote in targets.items():
+            r = fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            entry: Dict[str, Any] = {
+                "remote_path": remote,
+                "ok":          r.ok,
+                "size_bytes":  r.size_bytes,
+            }
+            if r.ok and r.local_path:
+                try:
+                    entry["local_mtime"] = os.path.getmtime(r.local_path)
+                except OSError:
+                    entry["local_mtime"] = None
+                any_ok = True
+            else:
+                entry["error"] = r.error
+            results[key] = entry
+        return jsonify({"ok": any_ok, "files": results,
+                        "include_train": include_train})
 
     @app.route("/sky/fits")
     def sky_fits():

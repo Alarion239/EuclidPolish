@@ -1,0 +1,210 @@
+{% extends "base_split.html" %}
+{% block title %}HST Catalog · EuclidPolish{% endblock %}
+{% block heading %}HST Catalog (FASRC){% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Type</span>
+  <a class="chip" data-group="kind" data-value="clean">clean (4-band HR)</a>
+  <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
+  <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
+  <span class="toolbar-label">Subset</span>
+  <a class="chip" data-group="subset" data-value="train">train</a>
+  <a class="chip" data-group="subset" data-value="validate">validate</a>
+  <span class="toolbar-label">Band</span>
+  {% for n in ('VIS', 'Y_E', 'J_E', 'H_E') %}
+    <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
+  {% endfor %}
+  <a class="chip" data-group="band" data-value="color"
+     title="4-band Lupton RGB (solar-balanced; clean/dirty only)">🎨 color</a>
+  <span class="toolbar-label">Index</span>
+  <button class="chip" id="idx-prev">‹</button>
+  <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
+  <button class="chip" id="idx-next">›</button>
+</div>
+{% endblock %}
+
+{% block viz %}
+<div class="viz-area">
+  <img id="viz-img" alt="HST → Euclid pair sample">
+  <div class="placeholder">
+    No HST records cached locally yet — click <strong>↻ Sync from FASRC</strong>
+    in the right panel to pull the validate split (~240 MB).
+  </div>
+</div>
+
+<section class="card">
+  <h3>Cached records on disk</h3>
+  <p class="hint"><code>{{ local_dir }}</code></p>
+  <p class="hint" style="margin-top:0;">
+    Mirrored from FASRC: <code>{{ remote_dir }}</code>
+  </p>
+  {% if tfrecords.files %}
+    <table>
+      <tr><th>File</th><th>Size</th></tr>
+      {% for f in tfrecords.files %}
+        <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">empty — Sync first.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Sync from FASRC</h3>
+  <p class="hint">Generates live on FASRC via step 4 of the HST pipeline.
+     Validate split is small (~240 MB across 3 files); train split is
+     multi-GB (skip unless you really want to scrub all 6400 pairs locally).</p>
+  <form id="sync-form">
+    <label style="display:flex; align-items:center; gap:6px; margin: 6px 0 10px;">
+      <input type="checkbox" id="sync-include-train" name="include_train"
+             value="true">
+      Also pull <strong>train</strong> split (slow — several GB)
+    </label>
+    <button type="submit" id="btn-sync">↻ Sync from FASRC</button>
+    <span id="sync-msg" class="muted"
+          style="margin-left:6px; font-size:12px;"></span>
+  </form>
+  <pre id="sync-out" class="job-log"
+       style="display:none; max-height:240px; margin-top:10px;
+              font-size:11px;"></pre>
+</section>
+
+<section class="card">
+  <h3>Record counts</h3>
+  <p class="hint">Live from the local cache; refreshes after each sync.</p>
+  <table id="totals-table">
+    <tr><th>File</th><th style="text-align:right;">N pairs</th></tr>
+    <tr><td><code>clean_validate</code></td><td id="t-clean_validate" style="text-align:right;">—</td></tr>
+    <tr><td><code>dirty_validate</code></td><td id="t-dirty_validate" style="text-align:right;">—</td></tr>
+    <tr><td><code>hr_validate</code></td>   <td id="t-hr_validate"    style="text-align:right;">—</td></tr>
+    <tr><td><code>clean_train</code></td>   <td id="t-clean_train"    style="text-align:right;">—</td></tr>
+    <tr><td><code>dirty_train</code></td>   <td id="t-dirty_train"    style="text-align:right;">—</td></tr>
+    <tr><td><code>hr_train</code></td>      <td id="t-hr_train"       style="text-align:right;">—</td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h3>How this differs from <code>/sky</code></h3>
+  <p class="hint">Same MultiBandSkyImage schema, same renderer — the
+     records here come from cutouts of real HST F814W tiles convolved
+     with the differential kernel <code>A</code> to forward-model into
+     Euclid LR. <code>/sky</code> shows the synthetic Sérsic+lens
+     generator's output; this page shows what the network sees when
+     trained on real morphology.</p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let totals = {
+  clean_train: 0, clean_validate: 0,
+  dirty_train: 0, dirty_validate: 0,
+  hr_train: 0,    hr_validate: 0,
+};
+let curIdx = 0;
+
+function maxIdx() {
+  const k = polishUI.viz.get("kind");
+  const s = polishUI.viz.get("subset");
+  return Math.max(0, (totals[`${k}_${s}`] || 0) - 1);
+}
+function clampIdx(i) {
+  const m = maxIdx();
+  return Math.max(0, Math.min(i, m));
+}
+function setIdx(i) {
+  curIdx = clampIdx(i);
+  document.getElementById("idx-display").textContent =
+    `${curIdx} / ${maxIdx()}`;
+  polishUI.viz.set("i", curIdx);
+}
+
+async function refreshTotals() {
+  try {
+    const r = await fetch("/api/hst-pairs/totals");
+    totals = await r.json();
+    for (const key of Object.keys(totals)) {
+      const el = document.getElementById(`t-${key}`);
+      if (el) el.textContent = (totals[key] || 0).toLocaleString();
+    }
+    setIdx(curIdx);
+  } catch (e) {}
+}
+
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  // Same renderer as /sky, just at a different URL.
+  buildUrl:  (sel) =>
+    `/view/hst-pair?subset=${sel.subset}&kind=${sel.kind}` +
+    `&band=${sel.band}&i=${sel.i}`,
+  // Default to validate because that's what the Sync button pulls by
+  // default — train is a separate (slow) opt-in.
+  initial:   { kind: "clean", subset: "{{ default_subset }}",
+               band: "VIS", i: 0 },
+});
+
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip[data-group]");
+  if (!chip) return;
+  e.preventDefault();
+  if (chip.dataset.group === "i") return;
+  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+  setIdx(curIdx);
+});
+document.getElementById("idx-prev").addEventListener("click",
+  () => setIdx(curIdx - 1));
+document.getElementById("idx-next").addEventListener("click",
+  () => setIdx(curIdx + 1));
+
+document.getElementById("sync-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("btn-sync");
+  const msg = document.getElementById("sync-msg");
+  const out = document.getElementById("sync-out");
+  const includeTrain = document.getElementById("sync-include-train").checked;
+  btn.disabled = true;
+  msg.textContent = includeTrain
+    ? "rsync (validate + train — this may take a while)…"
+    : "rsync (validate)…";
+  out.style.display = "none";
+  try {
+    const body = new URLSearchParams();
+    if (includeTrain) body.set("include_train", "true");
+    const r = await fetch("/api/hst-pairs/sync",
+                          { method: "POST", body });
+    const data = await r.json();
+    if (data.ok) {
+      const lines = [];
+      for (const [key, info] of Object.entries(data.files || {})) {
+        const status = info.ok ? "✓" : "✗";
+        const size_mb = info.size_bytes
+          ? (info.size_bytes / 1e6).toFixed(1) + " MB" : "—";
+        const err = info.ok ? "" : `  (${info.error || "failed"})`;
+        lines.push(`${status} ${key.padEnd(16)} ${size_mb}${err}`);
+      }
+      out.textContent = lines.join("\n");
+      out.style.display = "block";
+      msg.textContent = "✓ sync complete";
+      // Refresh totals + force the viz to repaint against the new data.
+      await refreshTotals();
+      polishUI.viz.refresh();
+    } else {
+      msg.textContent = "sync failed";
+      out.textContent = JSON.stringify(data, null, 2);
+      out.style.display = "block";
+    }
+  } catch (err) {
+    msg.textContent = "request failed: " + err;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+refreshTotals();
+</script>
+{% endblock %}
