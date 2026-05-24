@@ -264,6 +264,54 @@ class TestZeroBorders:
         assert np.argmax(out) == np.argmax(psf)
 
 
+class TestCommonSideCrop:
+    """``--common-side`` is the headline fix for the noisy-kernel bug
+    where one PSF (1023²) got zero-padded around a much smaller one
+    (~154²). The previous max()-based grid choice put a sharp
+    content→zero boundary into the FFT, whose sinc-like ringing
+    dominated Â. Now both PSFs get cropped/padded to a sensible
+    common grid before the FFT — verify the helper that does the
+    cropping actually preserves flux when the input fits and trims
+    only the outer regions when it doesn't."""
+
+    def test_centre_crop_preserves_flux_when_target_is_larger(self):
+        """Pad case: smaller-than-target PSF gets zero-padded — every
+        bit of flux survives."""
+        mod = _load_script_module()
+        psf = _gauss2d(51, 5.0)
+        out = mod._centre_crop_to(psf, 101)
+        assert out.shape == (101, 101)
+        assert out.sum() == pytest.approx(psf.sum(), abs=1e-9)
+        # The Gaussian core sits at the centre of the padded array.
+        assert np.argmax(out) == np.argmax(_gauss2d(101, 5.0))
+
+    def test_centre_crop_trims_outer_when_target_is_smaller(self):
+        """Crop case: larger-than-target PSF is sliced down — for a
+        Gaussian narrow enough to fit, almost all flux survives."""
+        mod = _load_script_module()
+        psf = _gauss2d(101, 5.0)         # σ ≈ 2.1 px — well inside 21²
+        out = mod._centre_crop_to(psf, 21)
+        assert out.shape == (21, 21)
+        # >99 % of a Gaussian with σ=2.1 fits in a centred 21×21 window.
+        assert out.sum() / psf.sum() > 0.99
+
+    def test_centre_crop_centroid_preserved(self):
+        """The FFT phase reference is the centre pixel — a crop that
+        shifts the peak by even one pixel would silently introduce a
+        linear phase term in Ĥ. Test both pad-larger and trim-smaller."""
+        mod = _load_script_module()
+        for src_side, tgt_side in [(31, 71), (71, 31)]:
+            psf = _gauss2d(src_side, 4.0)
+            out = mod._centre_crop_to(psf, tgt_side)
+            # argmax in linear-indexed form; for a centred Gaussian on
+            # an odd-sided grid, the centre pixel is (side//2, side//2).
+            ay, ax = np.unravel_index(int(np.argmax(out)), out.shape)
+            assert (ay, ax) == (tgt_side // 2, tgt_side // 2), (
+                f"crop {src_side}→{tgt_side} moved the peak to "
+                f"({ay},{ax}) instead of centre"
+            )
+
+
 class TestSaveLoadProvenance:
 
     def test_round_trip_through_fits(self, tmp_path):

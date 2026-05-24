@@ -39,9 +39,25 @@ DIFF_KERNEL_PATH = os.path.join(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--regularisation", type=float, default=1e-3,
+    p.add_argument("--regularisation", type=float, default=1e-2,
                    help="Wiener regulariser as a fraction of max|H_hat|. "
-                        "Larger → smoother kernel, more low-pass.")
+                        "Larger → smoother kernel, more low-pass. The "
+                        "default 1e-2 is calibrated for empirical PSFs "
+                        "(measured ePSFs have noise that 1e-3 would "
+                        "amplify ~1000× through 1/Ĥ at high frequencies).")
+    p.add_argument("--common-side", type=int, default=255,
+                   help="Force both PSFs to N×N (odd) after resampling and "
+                        "before the FFT. The previous behaviour (pick "
+                        "max of the two native sizes) zero-pads the "
+                        "smaller PSF, creating a sharp content→zero "
+                        "discontinuity whose FFT is a sinc-like ringing "
+                        "that leaks back into Â. 255 (≈12.8″ at 0.05″/px) "
+                        "comfortably contains the Euclid 6-spike pattern "
+                        "and the full HST PSF; bump to 511 if your spikes "
+                        "extend further. The script prints the % of flux "
+                        "retained after the crop so you can spot the "
+                        "case where it's eating real signal (<99% is a "
+                        "red flag — widen --common-side).")
     p.add_argument("--hst-psf", default=HST_PSF_PATH,
                    help="Path to HST F814W ePSF FITS.")
     p.add_argument("--output", default=DIFF_KERNEL_PATH,
@@ -221,12 +237,32 @@ def main() -> int:
           f"({Config.DEFAULT_PIXEL_SCALE:.3f}\"/pix) ...")
     e_hr = _resample_to_hr_grid(euclid_data, euclid_scale)
     h_hr = _resample_to_hr_grid(hst_data,    hst_scale)
-    side = max(e_hr.shape[0], h_hr.shape[0]) | 1     # force odd
+    print(f"      resampled : E {e_hr.shape}  H {h_hr.shape}")
+
+    # Force a common, sensible grid. Picking max() of the two native
+    # sizes (the previous behaviour) zero-pads the smaller PSF, which
+    # creates a sharp content→zero boundary whose FFT is sinc-like
+    # ringing — that ringing then dominates Â at high frequencies.
+    # --common-side keeps both PSFs on a grid that fits their actual
+    # support without dumping huge amounts of synthetic "zero data"
+    # into the FFT.
+    side = args.common_side | 1                       # force odd
+    e_flux_before = float(e_hr.sum())
+    h_flux_before = float(h_hr.sum())
     e_hr = _centre_crop_to(e_hr, side)
     h_hr = _centre_crop_to(h_hr, side)
+    e_retained = float(e_hr.sum()) / e_flux_before if e_flux_before > 0 else 0.0
+    h_retained = float(h_hr.sum()) / h_flux_before if h_flux_before > 0 else 0.0
     # Re-normalise after cropping (small flux losses at the edges).
     e_hr /= e_hr.sum(); h_hr /= h_hr.sum()
     print(f"      common grid : {e_hr.shape}, both unit-flux normalised")
+    print(f"      flux retained after crop : "
+          f"E {e_retained*100:.3f}%  H {h_retained*100:.3f}%")
+    if e_retained < 0.99 or h_retained < 0.99:
+        print(f"      WARNING: >1% of PSF flux was outside the "
+              f"--common-side={args.common_side} crop. The spikes "
+              f"probably extend further than the crop — bump "
+              f"--common-side to 511 (or higher) and re-run.")
 
     if args.bg_subtract:
         e_bg = float(np.median(e_hr))
