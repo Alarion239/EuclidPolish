@@ -1302,7 +1302,25 @@ C=13 → 4850 (under 5k); C=14 → 5601 (over budget)."></label>
         <label>Inner layers
           <input type="number" name="n_inner_layers" value="3" min="1" max="6"
                  title="Additional Conv(C→C) layers between the first and last.
-Adds 9·C²+C params each. 3 → 5 conv total → 11px receptive field."></label>`;
+Adds 9·C²+C params each. 3 → 5 conv total → 11px receptive field."></label>
+        <label>Star-injection fraction
+          <input type="number" name="star_injection_fraction" value="0.2" step="0.05" min="0" max="1"
+                 title="Per-example probability of replacing the real pair with a synthetic
+star field. Each star = scaled PSF placed at a random pixel: input gets
+PSF_HST stamps, target gets PSF_Euclid stamps at the SAME positions
++ amplitudes. Stars are the load-bearing diagnostic for A_θ — the model's
+correctness is literally A_θ(PSF_HST) ≈ PSF_Euclid, and the synthetic
+clean-scene generator is galaxy-dominated. 0 disables."></label>
+        <label>Max stars/image
+          <input type="number" name="max_stars_per_image" value="8" min="1" max="64"
+                 title="Upper bound on stars per injected synthetic field. Each draws
+Uniform[1, max]; amplitudes in [10, 1000] electrons."></label>
+        <label>Linear-combo fraction
+          <input type="number" name="linear_combo_fraction" value="0.3" step="0.05" min="0" max="1"
+                 title="Per-example probability of emitting α·pair_A + β·pair_B
+instead of pair_A, with α ∈ [0.3, 1.5], β ∈ [-0.5, 0.5]. Convolution
+is linear so the combined pair is a valid (input, target) of the same
+operator. 0 disables."></label>`;
     case 'tfrecords':
       return `
         <label>Training pairs

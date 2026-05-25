@@ -366,13 +366,19 @@ class TransitionTrainStep(FASRCPipelineStep):
         learning_rate  = float(params.get("learning_rate", 2e-3))
         channels       = int(params.get("channels", 12))
         n_inner_layers = int(params.get("n_inner_layers", 3))
+        star_frac      = float(params.get("star_injection_fraction", 0.2))
+        max_stars      = int(params.get("max_stars_per_image", 8))
+        lin_combo_frac = float(params.get("linear_combo_fraction", 0.3))
         return [
             "scripts/fasrc_train_transition_model.py",
-            "--steps",          str(steps),
-            "--batch-size",     str(batch_size),
-            "--learning-rate",  f"{learning_rate:g}",
-            "--channels",       str(channels),
-            "--n-inner-layers", str(n_inner_layers),
+            "--steps",                    str(steps),
+            "--batch-size",               str(batch_size),
+            "--learning-rate",            f"{learning_rate:g}",
+            "--channels",                 str(channels),
+            "--n-inner-layers",           str(n_inner_layers),
+            "--star-injection-fraction",  f"{star_frac:g}",
+            "--max-stars-per-image",      str(max_stars),
+            "--linear-combo-fraction",    f"{lin_combo_frac:g}",
         ]
 
 

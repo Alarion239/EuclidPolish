@@ -88,6 +88,33 @@ class TestRegistry:
         assert "--n-inner-layers" in argv and "2" in argv
         assert "--learning-rate" in argv
 
+    def test_train_transition_step_includes_augmentation_flags(self):
+        """Star-injection + linear-combo fractions and max-stars must
+        reach the script's argv, otherwise the augmentations silently
+        default to off."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({
+            "star_injection_fraction": 0.25,
+            "max_stars_per_image": 12,
+            "linear_combo_fraction": 0.4,
+        })
+        assert "--star-injection-fraction" in argv
+        assert "0.25" in argv
+        assert "--max-stars-per-image" in argv
+        assert "12" in argv
+        assert "--linear-combo-fraction" in argv
+        assert "0.4" in argv
+
+    def test_train_transition_step_defaults_match_script(self):
+        """When the form omits the augmentation knobs, the step should
+        emit defaults that match the script's argparse defaults."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({})
+        # The script's argparse defaults are 0.2 / 8 / 0.3.
+        assert "0.2" in argv
+        assert "8" in argv
+        assert "0.3" in argv
+
     def test_train_transition_does_not_require_gpu(self):
         # The model is tiny; CPU is the default.
         step = REGISTRY.get("train_transition")

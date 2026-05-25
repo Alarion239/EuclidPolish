@@ -77,6 +77,38 @@ def parse_args() -> argparse.Namespace:
                         "discourages large updates.")
     p.add_argument("--seed", type=int, default=42,
                    help="RNG seed for shuffling + initialiser.")
+    p.add_argument("--star-injection-fraction", type=float, default=0.2,
+                   help="Fraction of training examples replaced by "
+                        "synthetic star-field pairs (sum of PSF stamps at "
+                        "random positions/amplitudes — input uses PSF_HST, "
+                        "target uses PSF_Euclid). The synthetic clean-scene "
+                        "generator is galaxy-dominated; stars are the "
+                        "single most important sample for ``A_θ`` (its "
+                        "core diagnostic is A_θ(PSF_HST) ≈ PSF_Euclid), so "
+                        "we inject them explicitly. 0 disables.")
+    p.add_argument("--max-stars-per-image", type=int, default=8,
+                   help="Upper bound on stars per injected synthetic field. "
+                        "Each field draws ``Uniform[1, max]`` stars; "
+                        "amplitudes are uniform in [10, 1000] electrons.")
+    p.add_argument("--linear-combo-fraction", type=float, default=0.3,
+                   help="Per-example probability of emitting a linear "
+                        "combination ``α·pair_A + β·pair_B`` instead of "
+                        "the raw pair. The pair stays valid because "
+                        "convolution is linear. ``α ~ U[0.3, 1.5]``, "
+                        "``β ~ U[-0.5, 0.5]``. 0 disables.")
+    p.add_argument("--add-psf-pair-to-validation",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="Prepend a single (PSF_HST, PSF_Euclid) pair "
+                        "to the validation set — both PSFs centred in "
+                        "the validate-shard canvas. The pair is the "
+                        "literal PSF identity case A_θ(PSF_HST) ≈ "
+                        "PSF_Euclid that the model must satisfy. With "
+                        "this on, the reported val_L1 is bounded below "
+                        "by the error on that one case, so a model that "
+                        "passes synthetic-galaxy validation but flunks "
+                        "point sources can't slip past unnoticed. "
+                        "Pass --no-add-psf-pair-to-validation to "
+                        "disable.")
     p.add_argument("--dry-run", action="store_true",
                    help="Build model + dataset, print sizes, then exit.")
     return p.parse_args()
@@ -86,8 +118,39 @@ def parse_args() -> argparse.Namespace:
 # Pair TFRecord dataset (input, target) → tf.data
 # ---------------------------------------------------------------------------
 
+def _probe_image_size(pairs_dir: str, subset: str = "train") -> int:
+    """Spatial side length of the on-disk pair shards.
+
+    Augmentations (star injection in particular) need to know the
+    image grid the pair generator wrote, otherwise the synthetic-star
+    stream would emit shape-mismatched tensors. Probe by reading one
+    record. Assumes square.
+    """
+    from euclid_polish.sky.tfrecord import (
+        read_multiband_skyimages, tfrecord_path,
+    )
+    path = tfrecord_path(pairs_dir, f"input_{subset}")
+    records = read_multiband_skyimages(path, num_images=1)
+    if not records:
+        raise RuntimeError(f"could not probe image size: {path} is empty")
+    H, W, _ = records[0].data.shape
+    if H != W:
+        raise RuntimeError(
+            f"non-square pair shape {records[0].data.shape}; "
+            "the augmentation pipeline assumes square fields"
+        )
+    return int(H)
+
+
 def _make_pair_dataset(
     pairs_dir: str, subset: str, *, batch_size: int, seed: int, shuffle: bool,
+    *,
+    star_injection_fraction: float = 0.0,
+    max_stars_per_image: int = 8,
+    linear_combo_fraction: float = 0.0,
+    psf_hst: Optional[np.ndarray] = None,
+    psf_euclid: Optional[np.ndarray] = None,
+    add_psf_pair_to_validation: bool = False,
 ):
     """Build a tf.data.Dataset of ``(input, target)`` batches.
 
@@ -95,6 +158,19 @@ def _make_pair_dataset(
     two streams are zipped — same trick the multi-band loader uses for
     ``(clean, dirty)`` pairs. The pairs are written in matched order by
     the generator script, so zipping preserves correspondence.
+
+    Optional training-time augmentations (typically only enabled on the
+    train split):
+
+    * ``star_injection_fraction > 0`` — mix in synthetic star fields
+      from :func:`build_star_pair_dataset` via ``sample_from_datasets``.
+      Requires both PSFs to be passed in.
+    * ``linear_combo_fraction > 0`` — apply the linear-combination
+      augmentation from :func:`apply_linear_combo_augmentation`.
+
+    Both fractions are independent: stars are mixed in *first*, then
+    the combination augmentation operates on the joint distribution
+    (so a "linear combination of two stars" is a valid output).
     """
     import tensorflow as tf
     from euclid_polish.sky.tfrecord import parse_record_graph_v2, tfrecord_path
@@ -123,6 +199,62 @@ def _make_pair_dataset(
         ds = ds.shuffle(buffer_size=512, seed=seed,
                         reshuffle_each_iteration=True)
     ds = ds.repeat() if subset == "train" else ds
+
+    # ── Validation: prepend the literal PSF identity pair ──
+    # This makes val_L1 explicitly include the model's behavior on the
+    # most important diagnostic sample (clean centred point source →
+    # clean centred point source through the broader PSF). Train split
+    # gets the same effect via random star injection, so prepend only
+    # here.
+    if (subset == "validate"
+            and add_psf_pair_to_validation
+            and psf_hst is not None
+            and psf_euclid is not None):
+        from euclid_polish.training.transition_augmentations import (
+            make_psf_identity_pair,
+        )
+        image_size = _probe_image_size(pairs_dir, subset)
+        psf_inp, psf_tgt = make_psf_identity_pair(
+            psf_hst, psf_euclid, image_size=image_size,
+        )
+        psf_pair_ds = tf.data.Dataset.from_tensors(
+            (tf.constant(psf_inp, dtype=tf.float32),
+             tf.constant(psf_tgt, dtype=tf.float32)),
+        )
+        ds = psf_pair_ds.concatenate(ds)
+
+    # ── Star injection (real pairs + synthetic stars at sample_from_datasets) ──
+    if star_injection_fraction > 0.0:
+        if psf_hst is None or psf_euclid is None:
+            raise ValueError(
+                "star_injection_fraction > 0 requires both psf_hst and "
+                "psf_euclid; pass them in to _make_pair_dataset."
+            )
+        from euclid_polish.training.transition_augmentations import (
+            build_star_pair_dataset,
+        )
+        image_size = _probe_image_size(pairs_dir, subset)
+        star_ds = build_star_pair_dataset(
+            psf_hst, psf_euclid,
+            image_size=image_size,
+            n_stars_min=1, n_stars_max=max_stars_per_image,
+            seed=seed + 7919,        # decorrelate from pair-stream shuffle
+        )
+        f = float(star_injection_fraction)
+        ds = tf.data.Dataset.sample_from_datasets(
+            [ds, star_ds], weights=[1.0 - f, f], seed=seed,
+        )
+
+    # ── Linear-combination augmentation (operates on the joint stream) ──
+    if linear_combo_fraction > 0.0:
+        from euclid_polish.training.transition_augmentations import (
+            apply_linear_combo_augmentation,
+        )
+        ds = apply_linear_combo_augmentation(
+            ds, fraction=linear_combo_fraction,
+            seed=seed + 31337,
+        )
+
     ds = ds.batch(batch_size, drop_remainder=(subset == "train"))
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
@@ -178,6 +310,10 @@ def main() -> int:
     print(f"  LR          = {args.learning_rate:g}")
     print(f"  validate_every = {args.validate_every}")
     print(f"  weight_decay   = {args.weight_decay:g}")
+    print(f"  star_injection_fraction = {args.star_injection_fraction:g} "
+          f"(max {args.max_stars_per_image} stars/field)")
+    print(f"  linear_combo_fraction   = {args.linear_combo_fraction:g}")
+    print(f"  add PSF pair to val     = {args.add_psf_pair_to_validation}")
     print()
 
     t0 = time.time()
@@ -215,13 +351,22 @@ def main() -> int:
     print(f"      PSFs loaded (HR grid, {psf_side}² each)")
 
     print("[3/4] building datasets ...")
+    # Train split: augmentations on. Validation split stays raw so the
+    # reported val_L1 measures the model's behavior on the real (HR
+    # synthetic) distribution, not the augmented one.
     train_ds = _make_pair_dataset(
         args.pairs_dir, "train", batch_size=args.batch_size,
         seed=args.seed, shuffle=True,
+        star_injection_fraction=float(args.star_injection_fraction),
+        max_stars_per_image=int(args.max_stars_per_image),
+        linear_combo_fraction=float(args.linear_combo_fraction),
+        psf_hst=psf_hst, psf_euclid=psf_euclid,
     )
     valid_ds = _make_pair_dataset(
         args.pairs_dir, "validate", batch_size=args.batch_size,
         seed=args.seed, shuffle=False,
+        psf_hst=psf_hst, psf_euclid=psf_euclid,
+        add_psf_pair_to_validation=bool(args.add_psf_pair_to_validation),
     )
     if args.dry_run:
         # Pull one batch to verify shapes.
@@ -308,6 +453,10 @@ def main() -> int:
         "batch_size":     int(args.batch_size),
         "learning_rate":  float(args.learning_rate),
         "weight_decay":   float(args.weight_decay),
+        "star_injection_fraction": float(args.star_injection_fraction),
+        "max_stars_per_image":     int(args.max_stars_per_image),
+        "linear_combo_fraction":   float(args.linear_combo_fraction),
+        "add_psf_pair_to_validation": bool(args.add_psf_pair_to_validation),
         "psf_id_err_init":  float(psf_err_init),
         "psf_id_err_final": float(psf_err_final),
         "elapsed_s":      round(time.time() - t0, 1),

@@ -122,13 +122,25 @@ def test_transition_pairs_status_api(client):
     assert "records_transition" in j["dir"]
 
 
-def test_transition_pair_view_404s_when_no_records(client):
-    """The render route should 404 (not 500) when the requested shard
-    doesn't exist locally — exercises the abort path in
-    ``_render_transition_pair_png``."""
-    r = client.get("/view/transition-pair?subset=validate&kind=input&i=0")
-    # No local cache + no synthetic data — must be 404, not 500.
+def test_transition_pair_view_404s_on_invalid_input(client):
+    """The render route should 404 (not 500) for an out-of-range index,
+    regardless of whether the cache happens to contain real shards from
+    a prior FASRC sync. Use an absurd index that no plausible shard
+    contains."""
+    r = client.get("/view/transition-pair?subset=validate&kind=input&i=99999999")
     assert r.status_code in (404, 400)
+
+
+def test_transition_pair_view_rejects_bad_kind(client):
+    """Unknown ``kind`` values must be rejected with 4xx, not crash
+    the renderer."""
+    r = client.get("/view/transition-pair?subset=validate&kind=garbage&i=0")
+    assert r.status_code in (400, 404)
+
+
+def test_transition_pair_view_rejects_bad_subset(client):
+    r = client.get("/view/transition-pair?subset=garbage&kind=input&i=0")
+    assert r.status_code in (400, 404)
 
 
 def test_inference_page_renders(client):
