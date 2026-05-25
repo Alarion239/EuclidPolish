@@ -1,16 +1,29 @@
 #!/usr/bin/env python
 """Generate clean (HST) + dirty (Euclid-forward) TFRecord pairs.
 
-For each selected COSMOS2025 galaxy:
+For each selected COSMOS2025 sky position (the catalog only picks the
+RA/Dec; per-source catalog fluxes are not used here):
 
-  1. Cut an HR-grid-sized HST cutout from the local HLSP tile that
-     contains it (``Cutout2D`` + WCS).
-  2. Background-subtract, broadcast to 4 bands using the COSMOS catalog
-     per-band fluxes (HR_target has HST F814W morphology in every
-     channel, but each channel gets its own electron normalisation).
-  3. Apply the pre-computed differential kernel A to get the Euclid-PSF
+  1. Cut an HR-grid-sized HST F814W cutout from the local HLSP tile that
+     contains it (``Cutout2D`` + WCS). HLSP delivers sky-subtracted
+     mosaics in e⁻/s, so we use those pixel values as-is — no extra
+     bg-subtract, no clip-to-zero. A 25″ chunk of sky contains many
+     visible sources and HST already gives each of them its real
+     F814W photometry; we want to preserve all of them.
+  2. Resample 0.03″ HLSP → 0.05″ HR with an area correction that
+     preserves total flux through the zoom (scipy's cubic-spline zoom
+     interpolates surface brightness; we multiply by the per-pixel-area
+     ratio so the integrated flux is also conserved).
+  3. Convert HST F814W rate → Euclid VIS electrons via the AB-zeropoint
+     ratio and the VIS stack integration time:
+        VIS_HR_e = rate × 10^(-0.4·(ZP_VIS - ZP_HST)) × t_total_VIS
+     NISP HR channels are painted as ``VIS_HR_e × typical_ratio[band]``
+     using a catalog-derived median ``e_band / e_VIS`` — a per-pixel
+     global colour. Per-source colours are lost but the absolute scale
+     is correct for noise statistics.
+  4. Apply the pre-computed differential kernel A to get the Euclid-PSF
      view, sum-rebin to LR scale (0.10″/pix), add per-band Euclid noise.
-  4. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
+  5. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
      TFRecord layout — same schema the synthetic generator uses.
 
 Output records land under ``$DATA_DIR/images/records_v2_hst/`` so the
@@ -297,21 +310,15 @@ def _process_one_galaxy(
     j0 = (Wh - H_hr) // 2
     hr_clean_rate = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
 
-    # Sky-offset removal via outer-annulus median. We **do not** clip
-    # negatives anymore — clipping rectifies the residual sky noise
-    # (E[max(noise, 0)] ≈ 0.4σ per pixel) which, when summed across a
-    # 510² cube, completely dominated the old catalog-flux normalisation
-    # and left every source 100× dimmer than it should be. With the new
-    # HST-native chain there's no sum-normalisation, so symmetric noise
-    # averages to zero across the cube and only the real galaxy +
-    # residual HST shot noise survive to the forward step.
-    annulus = np.concatenate([
-        hr_clean_rate[:8, :].ravel(),    hr_clean_rate[-8:, :].ravel(),
-        hr_clean_rate[8:-8, :8].ravel(), hr_clean_rate[8:-8, -8:].ravel(),
-    ])
-    finite = np.isfinite(annulus)
-    bg = float(np.median(annulus[finite])) if finite.any() else 0.0
-    hr_clean_rate = hr_clean_rate - bg
+    # No sky-offset subtraction here. HLSP COSMOS F814W mosaics are
+    # already sky-subtracted by HAP, so the cutout median is ≈ 0 by
+    # design. A multi-source 25″ chunk also has real galaxies leaking
+    # into any outer annulus we'd use as a "sky" reference, so the
+    # local-median estimate is biased upward and subtracting it
+    # uniformly down-shifts every real source. Finally, the Euclid
+    # forward model already does its own symmetric sky add/subtract
+    # in ``apply_band_noise`` — pre-subtracting on the HST side is
+    # redundant.
 
     hr_cube = _hst_to_euclid_hr_cube(hr_clean_rate, _WORKER_TYPICAL_RATIOS)
     if hr_cube is None:
