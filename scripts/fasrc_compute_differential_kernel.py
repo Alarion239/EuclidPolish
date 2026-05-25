@@ -123,30 +123,41 @@ def _bg_subtract_and_clip(psf: np.ndarray) -> np.ndarray:
 
 
 def _zero_borders(psf: np.ndarray, *, border_pixels: int) -> np.ndarray:
-    """Zero the first/last ``border_pixels`` rows and columns of ``psf``.
+    """Smoothly taper the outer ``border_pixels`` rows and columns of
+    ``psf`` to zero with a cosine (Hann) ramp.
 
-    Edge artefacts from PSF extraction + spline resampling can otherwise
-    leak into Ĥ as high-frequency ringing that the Wiener inverse then
-    amplifies in Â. A flat mask is the cheapest fix; if it ever clips
-    a real wing pixel (it shouldn't — the PSF support is well inside
-    the stamp), the printed flux-lost number will flag it.
+    A *hard* zero step at row ``border_pixels`` — the original v1 of
+    this helper — is itself a sharp discontinuity. Its 2-D Fourier
+    transform spreads as a sinc along the perpendicular axis, which
+    after the Wiener inverse manifests as bright horizontal +
+    vertical rays through the centre of ``A`` (and through ``A⊛H``).
+    A cosine ramp from 0 at the very edge to 1 at the inner edge of
+    the border region kills the discontinuity (and therefore the
+    rays) while still suppressing whatever ePSF noise lives near the
+    boundary, which was the original motivation.
+
+    Geometry: pixel ``i`` in ``[0, border)`` is multiplied by
+    ``0.5·(1 − cos(π·i/border))``. So pixel 0 is 0 (full attenuation)
+    and pixel ``border`` is 1 (untouched). Same on the trailing edge.
+    Interior pixels (between the two border strips) pass through.
 
     ``border_pixels=0`` is a no-op. Returns a unit-flux-renormalised
-    array; raises if the mask would consume the whole stamp.
+    array; raises if the taper would consume the whole stamp.
     """
     if border_pixels <= 0:
         return psf
     H, W = psf.shape
-    if border_pixels * 2 >= min(H, W):
+    b = int(border_pixels)
+    if b * 2 >= min(H, W):
         raise ValueError(
-            f"border_pixels={border_pixels} too large for PSF shape "
-            f"{psf.shape} — would zero the entire stamp"
+            f"border_pixels={b} too large for PSF shape "
+            f"{psf.shape} — taper would consume the whole stamp"
         )
-    out = psf.astype(np.float64, copy=True)
-    out[:border_pixels, :]  = 0
-    out[-border_pixels:, :] = 0
-    out[:, :border_pixels]  = 0
-    out[:, -border_pixels:] = 0
+    # Per-axis 1-D weight: cosine ramp on each side, 1 in the middle.
+    ramp = 0.5 * (1.0 - np.cos(np.pi * np.arange(b) / b))
+    wy = np.ones(H, dtype=np.float64); wy[:b] = ramp; wy[-b:] = ramp[::-1]
+    wx = np.ones(W, dtype=np.float64); wx[:b] = ramp; wx[-b:] = ramp[::-1]
+    out = psf.astype(np.float64, copy=False) * (wy[:, None] * wx[None, :])
     s = out.sum()
     if s > 0:
         out = out / s

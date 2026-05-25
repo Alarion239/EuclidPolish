@@ -293,9 +293,15 @@ class TestBgSubtract:
 
 
 class TestZeroBorders:
-    """The script-level ``--border-pixels`` cleanup that zeros the
-    outer N rows/cols of each PSF before the FFT. Same loader pattern
-    as TestBgSubtract — the helper lives in the script."""
+    """The script-level ``--border-pixels`` cleanup. As of the
+    cosine-taper change, this is a Hann-style ramp, not a hard zero:
+    pixel 0 (the very edge) is multiplied by 0, the next pixels follow
+    a half-cosine up to 1 at the inner boundary of the border region,
+    and the interior is untouched. A hard zero is itself a sharp
+    discontinuity whose FFT spreads as a sinc along the perpendicular
+    axis; the smooth taper kills that without changing the high-level
+    contract (outer pixels suppressed → less ePSF-noise leakage into Ĥ).
+    """
 
     def _load_helper(self):
         return _load_script_module()._zero_borders
@@ -308,17 +314,36 @@ class TestZeroBorders:
         # Identity — same object, since the helper bails early.
         assert out is psf
 
-    def test_zeros_correct_pixels_and_only_those(self):
+    def test_outermost_pixel_is_zero_and_interior_is_untouched(self):
+        """Boundary pixel hits the 0 end of the cosine ramp; interior
+        (everything past the taper width) is rescaled by the unit-flux
+        renormalisation but otherwise preserved in shape."""
         zb = self._load_helper()
         psf = _gauss2d(31, 4.0)
         out = zb(psf, border_pixels=3)
-        # All four borders are zero.
-        assert np.all(out[:3, :]  == 0)
-        assert np.all(out[-3:, :] == 0)
-        assert np.all(out[:, :3]  == 0)
-        assert np.all(out[:, -3:] == 0)
-        # Interior is non-zero (Gaussian core sits in the middle).
-        assert np.any(out[3:-3, 3:-3] > 0)
+        # Outermost row/col exactly zero (ramp starts at 0).
+        assert np.all(out[0, :]   == 0)
+        assert np.all(out[-1, :]  == 0)
+        assert np.all(out[:, 0]   == 0)
+        assert np.all(out[:, -1]  == 0)
+        # Interior block (well past the 3-px border) carries non-zero
+        # Gaussian content.
+        assert np.any(out[5:-5, 5:-5] > 0)
+
+    def test_taper_is_monotone_increasing_through_border(self):
+        """Along a single column inside the border strip, the cosine
+        ramp must be monotone non-decreasing from edge to interior —
+        catches sign or order regressions in the ramp construction."""
+        zb = self._load_helper()
+        psf = np.ones((31, 31), dtype=np.float64)
+        out = zb(psf, border_pixels=5)
+        # Top column, rows 0..4: ramp from 0 to ~1, monotone up.
+        col_top = out[:5, 15]
+        assert all(col_top[i] <= col_top[i + 1] for i in range(4))
+        # Pixel 0 is exactly zero (cosine ramp start).
+        assert col_top[0] == 0
+        # Pixel 5 (first interior row) is strictly larger than pixel 4.
+        assert out[5, 15] > col_top[-1]
 
     def test_renormalises_to_unit_flux(self):
         """Renormalisation is essential — without it the kernel's DC
@@ -479,6 +504,37 @@ class TestRecenterToGeometric:
         target = (a.shape[0] - 1) / 2.0
         assert cy_out == pytest.approx(target, abs=5e-3)
         assert cx_out == pytest.approx(target, abs=5e-3)
+
+    def test_recenter_does_not_wrap_around_borders(self):
+        """Earlier the recenter used FFT phase-ramp shift, which is
+        periodic at the array edges: a tiny amount of flux at the
+        right edge wrapped to the left edge, manifesting as bright
+        ringing on each border of A⊛H (border/interior amplitude
+        ratio ~30× in the convolved output). The current
+        scipy.ndimage spline shift uses zero-extrapolation, so any
+        offset that pushes the PSF past an edge falls off rather than
+        wrapping to the opposite side. This pins that property.
+        """
+        # PSF with a single bright pixel right at the right edge —
+        # the worst case for an FFT shift to expose wraparound.
+        side = 31
+        a = np.zeros((side, side), dtype=np.float64)
+        a[side // 2, side - 1] = 1.0    # last column, middle row
+        # Re-centring would shift the bright pixel toward the centre
+        # by ~(side-1)/2 - (side-1) = -(side-1)/2 columns. With a
+        # spatial shift (cval=0) the left edge stays empty; with a
+        # Fourier shift the bright pixel wraps to the opposite (right)
+        # edge as a phase-ramp echo.
+        out = _recenter_to_geometric(a)
+        # Right edge — should NOT have a wrapped echo of the bright pixel.
+        right_edge_max = float(np.abs(out[:, -1]).max())
+        # Centre column — should be near 1 (the bright pixel landed here).
+        centre_col_max = float(np.abs(out[:, side // 2]).max())
+        assert right_edge_max < 0.05 * centre_col_max, (
+            f"recenter wrapped flux to the opposite edge: "
+            f"right_edge_max={right_edge_max:.3e} vs "
+            f"centre_col_max={centre_col_max:.3e}"
+        )
 
 
 class TestNoCheckerboardArtefact:

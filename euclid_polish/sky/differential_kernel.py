@@ -80,10 +80,24 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     negative wings of an ePSF biasing the moment. For typical empirical
     PSFs the positive half carries essentially all the flux anyway.
 
+    The shift itself uses :func:`scipy.ndimage.shift` (cubic spline,
+    ``mode='constant'`` so out-of-bounds pixels are zero-extrapolated).
+    Earlier versions used :func:`_fourier_shift`, which is exact for
+    band-limited inputs but **periodic at the array boundary**: a tiny
+    amount of flux at one edge wraps around to the opposite edge,
+    which after the Wiener inverse showed up as bright ringing along
+    each border centred on the central row/column (border / interior
+    amplitude ratio ~30× in the convolved result). The spatial-spline
+    shift has a small interpolation error (~10 % bump in rel.RMS for
+    sub-pixel offsets) but no wraparound — strictly the better trade
+    for an empirical-PSF deconvolution workflow.
+
     No-ops when the centroid is already at the geometric centre to
-    within 1e-3 of a pixel (cheap guard against introducing FFT
-    round-off when there's nothing to fix).
+    within 1e-3 of a pixel (cheap guard against introducing
+    interpolation round-off when there's nothing to fix).
     """
+    from scipy.ndimage import shift as _ndshift
+
     pos = np.maximum(arr, 0.0)
     total = float(pos.sum())
     if not np.isfinite(total) or total <= 0:
@@ -97,7 +111,11 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     dx = target_x - cx
     if abs(dy) < 1e-3 and abs(dx) < 1e-3:
         return arr
-    return _fourier_shift(arr.astype(np.float64), dy, dx).astype(arr.dtype)
+    shifted = _ndshift(
+        arr.astype(np.float64), shift=(dy, dx),
+        order=3, mode="constant", cval=0.0,
+    )
+    return shifted.astype(arr.dtype)
 
 
 def _pad_to(arr: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
