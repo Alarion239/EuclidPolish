@@ -9,17 +9,37 @@ import pytest
 
 from euclid_polish.sky.differential_kernel import (
     DifferentialKernel,
+    _fourier_shift,
+    _recenter_to_geometric,
     apply_kernel,
     compute_differential_kernel,
 )
 
 
-def _gauss2d(side: int, fwhm_pix: float) -> np.ndarray:
+def _gauss2d(side: int, fwhm_pix: float,
+             cy: float | None = None, cx: float | None = None) -> np.ndarray:
+    """``side``×``side`` unit-flux Gaussian. Default centred at the
+    geometric centre; pass ``cy``/``cx`` for a deliberately offset peak."""
     sigma = fwhm_pix / (2.0 * np.sqrt(2.0 * np.log(2.0)))
     y, x = np.mgrid[:side, :side]
-    cy = cx = (side - 1) / 2.0
+    if cy is None:
+        cy = (side - 1) / 2.0
+    if cx is None:
+        cx = (side - 1) / 2.0
     g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * sigma ** 2))
     return (g / g.sum()).astype(np.float64)
+
+
+def _centroid(arr: np.ndarray) -> tuple:
+    """Flux-weighted centroid of the positive part — same convention
+    as ``_recenter_to_geometric``."""
+    pos = np.maximum(arr, 0.0)
+    yy, xx = np.indices(arr.shape)
+    total = float(pos.sum())
+    return (
+        float((yy * pos).sum() / total),
+        float((xx * pos).sum() / total),
+    )
 
 
 class TestSolverShapeAndNorm:
@@ -402,3 +422,107 @@ class TestSaveLoadProvenance:
             regularisation=1e-3,
         )
         assert dk.dc_gain == pytest.approx(1.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Sub-pixel re-centering — fixes the checkerboard artefact
+# ---------------------------------------------------------------------------
+
+class TestFourierShift:
+    """``_fourier_shift`` is a sinc-quality sub-pixel translator. Pin
+    the invariants so a future refactor (e.g. switching to
+    scipy.ndimage.shift) can't silently change the photometry."""
+
+    def test_preserves_total_flux(self):
+        a = _gauss2d(63, 6.0)
+        shifted = _fourier_shift(a, dy=0.4, dx=-0.3)
+        assert float(shifted.sum()) == pytest.approx(float(a.sum()), rel=1e-6)
+
+    def test_shifts_centroid_by_requested_amount(self):
+        a = _gauss2d(63, 6.0)
+        cy0, cx0 = _centroid(a)
+        shifted = _fourier_shift(a, dy=0.4, dx=-0.3)
+        cy1, cx1 = _centroid(shifted)
+        assert (cy1 - cy0) == pytest.approx(0.4, abs=1e-3)
+        assert (cx1 - cx0) == pytest.approx(-0.3, abs=1e-3)
+
+    def test_integer_shift_is_lossless(self):
+        """A whole-pixel shift should match a numpy roll exactly
+        (modulo float round-off)."""
+        a = _gauss2d(63, 6.0)
+        shifted = _fourier_shift(a, dy=2.0, dx=-3.0)
+        rolled = np.roll(np.roll(a, 2, axis=0), -3, axis=1)
+        np.testing.assert_allclose(shifted, rolled, atol=1e-9)
+
+
+class TestRecenterToGeometric:
+
+    def test_no_op_when_already_centred(self):
+        """Sub-pixel guard: don't introduce FFT round-off when there's
+        nothing to fix."""
+        a = _gauss2d(63, 6.0)                  # centroid at (31, 31)
+        out = _recenter_to_geometric(a)
+        # Same array object (the early-return path).
+        assert out is a
+
+    def test_corrects_half_pixel_offset(self):
+        """The HST ePSF in production sits ~0.75 px off-centre; this
+        test pins the recentering against an offset of similar magnitude."""
+        # Deliberately offset Gaussian: centroid at (31+0.7, 31+0.5).
+        a = _gauss2d(63, 6.0, cy=31.7, cx=31.5)
+        cy, cx = _centroid(a)
+        assert (cy - 31) == pytest.approx(0.7, abs=1e-3)
+        assert (cx - 31) == pytest.approx(0.5, abs=1e-3)
+        # After recentering, centroid sits at the geometric centre.
+        out = _recenter_to_geometric(a)
+        cy_out, cx_out = _centroid(out)
+        target = (a.shape[0] - 1) / 2.0
+        assert cy_out == pytest.approx(target, abs=5e-3)
+        assert cx_out == pytest.approx(target, abs=5e-3)
+
+
+class TestNoCheckerboardArtefact:
+    """The differential-kernel solver must produce a smooth kernel even
+    when inputs have sub-pixel centroid mismatch — that's the case the
+    production HST ePSF (centroid 0.75 px off geometric centre) hits
+    every time, and was making the on-disk kernel a ±0.7 checkerboard."""
+
+    @staticmethod
+    def _checkerboard_projection(arr: np.ndarray) -> float:
+        """Projection of arr onto the ``(-1)^(i+j)`` Nyquist basis.
+
+        ~0 for a smooth kernel; |proj| approaches 1 for a pure
+        checkerboard. The production-bug kernel scored 0.11 over its
+        central 60² window; a healthy kernel scores < 0.02.
+        """
+        H, W = arr.shape
+        cy, cx = H // 2, W // 2
+        r = 30
+        crop = arr[cy - r: cy + r, cx - r: cx + r]
+        ii, jj = np.indices(crop.shape)
+        chk = (-1.0) ** (ii + jj)
+        denom = float(np.abs(crop).sum())
+        if denom == 0:
+            return 0.0
+        return float((crop * chk).sum() / denom)
+
+    def test_offset_inputs_produce_smooth_kernel(self):
+        """E and H both shifted off-centre by ~0.5 px in *different*
+        directions — the recentering should bring both back so the
+        solved A is smooth, not a checkerboard."""
+        e = _gauss2d(127, 8.0, cy=63 + 0.3, cx=63 - 0.4)
+        h = _gauss2d(127, 4.0, cy=63 - 0.5, cx=63 + 0.2)
+        a = compute_differential_kernel(e, h, regularisation=1e-3)
+        proj = self._checkerboard_projection(a)
+        assert abs(proj) < 0.02, (
+            f"kernel still checkerboards (proj={proj:+.3f}) — "
+            "recentering not effective"
+        )
+
+    def test_recenter_true_keeps_unit_dc_gain(self):
+        """Recentering must not break the photometric DC-gain invariant
+        — `A.sum() ≈ 1` for unit-flux inputs, regardless of offset."""
+        e = _gauss2d(127, 8.0, cy=63 + 0.3, cx=63 - 0.4)
+        h = _gauss2d(127, 4.0, cy=63 - 0.5, cx=63 + 0.2)
+        a = compute_differential_kernel(e, h, regularisation=1e-3)
+        assert float(a.sum()) == pytest.approx(1.0, abs=1e-2)

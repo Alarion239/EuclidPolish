@@ -54,6 +54,52 @@ from scipy import signal as scipy_signal
 # Pure-numpy core
 # ---------------------------------------------------------------------------
 
+def _fourier_shift(arr: np.ndarray, dy: float, dx: float) -> np.ndarray:
+    """Shift a 2-D array by sub-pixel ``(dy, dx)`` via an FFT phase ramp.
+
+    Sinc-interpolation for band-limited inputs, exact to round-off.
+    Total flux is preserved exactly (a phase ramp doesn't touch the DC
+    component). Wraparound at the boundaries is irrelevant in our use
+    case — PSFs are centred and decay to ~0 well before the edges.
+    """
+    H, W = arr.shape
+    ky = np.fft.fftfreq(H)
+    kx = np.fft.fftfreq(W)
+    phase = np.exp(
+        -2j * np.pi * (ky[:, None] * dy + kx[None, :] * dx)
+    )
+    return np.fft.ifft2(np.fft.fft2(arr) * phase).real
+
+
+def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
+    """Sub-pixel-shift ``arr`` so its flux centroid lands on the
+    geometric centre ``((H-1)/2, (W-1)/2)``.
+
+    The centroid is computed on the *positive* part of the array
+    (``max(arr, 0)``) to avoid the Wiener-deconvolution-style
+    negative wings of an ePSF biasing the moment. For typical empirical
+    PSFs the positive half carries essentially all the flux anyway.
+
+    No-ops when the centroid is already at the geometric centre to
+    within 1e-3 of a pixel (cheap guard against introducing FFT
+    round-off when there's nothing to fix).
+    """
+    pos = np.maximum(arr, 0.0)
+    total = float(pos.sum())
+    if not np.isfinite(total) or total <= 0:
+        return arr     # degenerate — leave it alone
+    yy, xx = np.indices(arr.shape)
+    cy = float((yy * pos).sum() / total)
+    cx = float((xx * pos).sum() / total)
+    target_y = (arr.shape[0] - 1) / 2.0
+    target_x = (arr.shape[1] - 1) / 2.0
+    dy = target_y - cy
+    dx = target_x - cx
+    if abs(dy) < 1e-3 and abs(dx) < 1e-3:
+        return arr
+    return _fourier_shift(arr.astype(np.float64), dy, dx).astype(arr.dtype)
+
+
 def _pad_to(arr: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
     """Zero-pad ``arr`` to ``shape``, placing the input's centre pixel
     at the target array's ``shape // 2`` index in each axis.
@@ -84,6 +130,7 @@ def compute_differential_kernel(
     *,
     regularisation: float = 1e-3,
     target_shape: Tuple[int, int] | None = None,
+    recenter: bool = True,
 ) -> np.ndarray:
     """Solve ``A ⊛ H ≈ E`` and return ``A`` on the same grid as the inputs.
 
@@ -107,6 +154,17 @@ def compute_differential_kernel(
         Optional ``(H, W)`` to zero-pad both PSFs to before the FFT — use
         a larger grid to reduce FFT boundary artefacts. Defaults to the
         nearest power of two ≥ 2× the input side.
+    recenter
+        When True (default), sub-pixel-shift each input PSF so its flux
+        centroid lands on the geometric centre via a Fourier phase ramp.
+        Sub-pixel centroid mismatch between ``E`` and ``H`` (e.g. the
+        HST ePSF whose centroid sits at (256.6, 256.7) on a 513² grid
+        with geometric centre (256, 256)) puts a ~half-pixel phase
+        ramp on ``Ê/Ĥ``; ``exp(iπk/N) = ±1`` at Nyquist, so the spatial-
+        domain ``A`` comes out as a pixel-by-pixel checkerboard of
+        ±values. The recentering is exact (FFT shift preserves total
+        flux to round-off) and disables itself when the centroid is
+        already inside 1e-3 px of the geometric centre.
 
     Returns
     -------
@@ -125,6 +183,12 @@ def compute_differential_kernel(
         raise ValueError(f"PSFs must be 2-D, got {psf_euclid.ndim}-D")
     H_in, W_in = psf_euclid.shape
 
+    e_in = psf_euclid.astype(np.float64)
+    h_in = psf_hubble.astype(np.float64)
+    if recenter:
+        e_in = _recenter_to_geometric(e_in)
+        h_in = _recenter_to_geometric(h_in)
+
     # Pad for FFT — larger grid means less wraparound contamination of the
     # kernel's outer wings. Round up to the next power of 2 ≥ 2× the input.
     if target_shape is None:
@@ -132,8 +196,8 @@ def compute_differential_kernel(
         target_shape = (side, side)
     H_pad, W_pad = target_shape
 
-    e_pad = _pad_to(psf_euclid.astype(np.float64), target_shape)
-    h_pad = _pad_to(psf_hubble.astype(np.float64), target_shape)
+    e_pad = _pad_to(e_in, target_shape)
+    h_pad = _pad_to(h_in, target_shape)
 
     # ifftshift moves the PSF centre to (0, 0) so the FFT phase reference
     # is the kernel centre rather than the array corner — keeps Â real.
