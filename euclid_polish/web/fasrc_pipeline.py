@@ -345,14 +345,16 @@ class TransitionPairsStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        n_train  = int(params.get("n_train", 4000))
-        n_valid  = int(params.get("n_valid", 400))
-        crop_size = int(params.get("crop_size", 256))
+        n_train      = int(params.get("n_train", 4000))
+        n_valid      = int(params.get("n_valid", 400))
+        crop_size    = int(params.get("crop_size", 256))
+        rebin_factor = int(params.get("rebin_factor", 2))
         return [
             "scripts/fasrc_generate_transition_pairs.py",
-            "--n-train",   str(n_train),
-            "--n-valid",   str(n_valid),
-            "--crop-size", str(crop_size),
+            "--n-train",      str(n_train),
+            "--n-valid",      str(n_valid),
+            "--crop-size",    str(crop_size),
+            "--rebin-factor", str(rebin_factor),
         ]
 
 
@@ -386,6 +388,7 @@ class TransitionTrainStep(FASRCPipelineStep):
         star_frac      = float(params.get("star_injection_fraction", 0.2))
         max_stars      = int(params.get("max_stars_per_image", 8))
         lin_combo_frac = float(params.get("linear_combo_fraction", 0.3))
+        rebin_factor   = int(params.get("rebin_factor", 2))
         return [
             "scripts/fasrc_train_transition_model.py",
             "--steps",                    str(steps),
@@ -396,6 +399,7 @@ class TransitionTrainStep(FASRCPipelineStep):
             "--star-injection-fraction",  f"{star_frac:g}",
             "--max-stars-per-image",      str(max_stars),
             "--linear-combo-fraction",    f"{lin_combo_frac:g}",
+            "--rebin-factor",             str(rebin_factor),
         ]
 
 

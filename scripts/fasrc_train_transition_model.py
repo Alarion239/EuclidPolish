@@ -77,6 +77,13 @@ def parse_args() -> argparse.Namespace:
                         "discourages large updates.")
     p.add_argument("--seed", type=int, default=42,
                    help="RNG seed for shuffling + initialiser.")
+    p.add_argument("--rebin-factor", type=int, default=2,
+                   help="Spatial sum-rebin applied to ``A_θ(input)`` "
+                        "before comparing to target. Must match the "
+                        "rebin used at pair-generation time (which "
+                        "wrote the LR target). Default 2 matches "
+                        "Euclid HR→LR. Set to 1 only if you generated "
+                        "pairs with --rebin-factor=1 (legacy mode).")
     p.add_argument("--star-injection-fraction", type=float, default=0.2,
                    help="Fraction of training examples replaced by "
                         "synthetic star-field pairs (sum of PSF stamps at "
@@ -144,6 +151,7 @@ def _probe_image_size(pairs_dir: str, subset: str = "train") -> int:
 
 def _make_pair_dataset(
     pairs_dir: str, subset: str, *, batch_size: int, seed: int, shuffle: bool,
+    rebin_factor: int = 2,
     star_injection_fraction: float = 0.0,
     max_stars_per_image: int = 8,
     linear_combo_fraction: float = 0.0,
@@ -214,7 +222,8 @@ def _make_pair_dataset(
         )
         image_size = _probe_image_size(pairs_dir, subset)
         psf_inp, psf_tgt = make_psf_identity_pair(
-            psf_hst, psf_euclid, image_size=image_size,
+            psf_hst, psf_euclid,
+            image_size=image_size, rebin_factor=int(rebin_factor),
         )
         psf_pair_ds = tf.data.Dataset.from_tensors(
             (tf.constant(psf_inp, dtype=tf.float32),
@@ -236,6 +245,7 @@ def _make_pair_dataset(
         star_ds = build_star_pair_dataset(
             psf_hst, psf_euclid,
             image_size=image_size,
+            rebin_factor=int(rebin_factor),
             n_stars_min=1, n_stars_max=max_stars_per_image,
             seed=seed + 7919,        # decorrelate from pair-stream shuffle
         )
@@ -265,25 +275,49 @@ def _make_pair_dataset(
 
 def _psf_identity_residual(
     model, psf_hst_on_hr: np.ndarray, psf_euclid_on_hr: np.ndarray,
+    *, rebin_factor: int = 2,
 ) -> float:
-    """``‖A_θ(PSF_HST) − PSF_Euclid‖₁`` / ``‖PSF_Euclid‖₁``.
+    """``‖sum_rebin(A_θ(PSF_HST)) − sum_rebin(PSF_Euclid)‖₁`` /
+    ``‖sum_rebin(PSF_Euclid)‖₁``.
 
-    The cleanest single-number sanity check that A_θ has learned the
-    transition. If A_θ is doing its job, applying it to the HST PSF
-    itself should produce something close to the Euclid PSF. We compute
-    this on the same HR-grid PSFs the training-pair generator
-    convolved with.
+    Comparison happens in **LR space** because that's what the trainer
+    optimises (loss compares ``sum_rebin(A_θ(input))`` to the LR
+    target). Reporting the diagnostic at HR would give a misleading
+    "this is bad" signal even when the trained model is perfectly
+    correct at the LR scale the downstream pipeline cares about.
 
-    Returns a relative L1 (= mean absolute error scaled by PSF L1 norm).
-    Empirically the analytic Wiener inverse hits ~0.02 here; a well-
-    trained A_θ should be in the same ballpark or better.
+    Both PSF inputs must be on the HR grid with side divisible by
+    ``rebin_factor``. The model is fed the HST PSF at HR, its output
+    is sum-rebinned, then compared to the (also sum-rebinned) Euclid
+    PSF.
+
+    Returns a relative L1 (mean absolute error scaled by the PSF's
+    L1 norm). Empirically the analytic Wiener inverse hits ~0.02 in
+    HR space; the LR-space version of the same metric tends to be a
+    bit smaller because the rebin averages away high-frequency
+    residuals.
     """
-    import tensorflow as tf
-    # Reshape to a single-sample batch with channel axis.
+    from euclid_polish.training.transition_augmentations import sum_rebin_2d
+    # Pad-or-crop the HR PSFs to a side divisible by rebin_factor.
+    H = psf_hst_on_hr.shape[0]
+    if H % rebin_factor != 0:
+        # Centre-crop the HR PSF so sum-rebin is well-defined. The
+        # PSF wings beyond this crop carry << 1% flux for the support
+        # sizes we use.
+        new_H = (H // rebin_factor) * rebin_factor
+        cy = (H - new_H) // 2
+        psf_hst_on_hr    = psf_hst_on_hr[cy:cy + new_H, cy:cy + new_H]
+        psf_euclid_on_hr = psf_euclid_on_hr[cy:cy + new_H, cy:cy + new_H]
+
+    # Reshape to single-sample batch with channel axis.
     x = psf_hst_on_hr[np.newaxis, ..., np.newaxis].astype(np.float32)
-    y_pred = model(x, training=False).numpy()[0, :, :, 0]
-    err = float(np.abs(y_pred - psf_euclid_on_hr).sum())
-    norm = float(np.abs(psf_euclid_on_hr).sum()) + 1e-12
+    y_pred_hr = model(x, training=False).numpy()[0, :, :, 0]
+    y_pred_lr = sum_rebin_2d(y_pred_hr, int(rebin_factor))
+    y_true_lr = sum_rebin_2d(
+        psf_euclid_on_hr.astype(np.float32), int(rebin_factor),
+    )
+    err = float(np.abs(y_pred_lr - y_true_lr).sum())
+    norm = float(np.abs(y_true_lr).sum()) + 1e-12
     return err / norm
 
 
@@ -312,6 +346,8 @@ def main() -> int:
     print(f"  star_injection_fraction = {args.star_injection_fraction:g} "
           f"(max {args.max_stars_per_image} stars/field)")
     print(f"  linear_combo_fraction   = {args.linear_combo_fraction:g}")
+    print(f"  rebin_factor            = {args.rebin_factor} "
+          f"(loss = ||sum_rebin(A_θ(HR)) − target_LR||)")
     print(f"  add PSF pair to val     = {args.add_psf_pair_to_validation}")
     print()
 
@@ -356,6 +392,7 @@ def main() -> int:
     train_ds = _make_pair_dataset(
         args.pairs_dir, "train", batch_size=args.batch_size,
         seed=args.seed, shuffle=True,
+        rebin_factor=int(args.rebin_factor),
         star_injection_fraction=float(args.star_injection_fraction),
         max_stars_per_image=int(args.max_stars_per_image),
         linear_combo_fraction=float(args.linear_combo_fraction),
@@ -364,6 +401,7 @@ def main() -> int:
     valid_ds = _make_pair_dataset(
         args.pairs_dir, "validate", batch_size=args.batch_size,
         seed=args.seed, shuffle=False,
+        rebin_factor=int(args.rebin_factor),
         psf_hst=psf_hst, psf_euclid=psf_euclid,
         add_psf_pair_to_validation=bool(args.add_psf_pair_to_validation),
     )
@@ -379,12 +417,32 @@ def main() -> int:
     optimiser = tf.keras.optimizers.Adam(args.learning_rate)
     loss_fn   = tf.keras.losses.MeanAbsoluteError()
     wd        = float(args.weight_decay)
+    rebin     = int(args.rebin_factor)
+
+    def _sum_rebin_tf(x):
+        """Photometric sum-rebin via avg-pool × area. Matches the numpy
+        ``sum_rebin_2d`` used at pair-generation + augmentation time."""
+        if rebin == 1:
+            return x
+        return tf.nn.avg_pool2d(
+            x, ksize=rebin, strides=rebin, padding="VALID",
+        ) * (rebin ** 2)
 
     @tf.function
     def train_step(inp, tgt):
+        """L1 loss in LR space.
+
+        Model produces HR output (same shape as input). The loss
+        sum-rebins that HR output to LR and compares against the LR
+        ``tgt``. This matches the downstream pipeline:
+        ``HST_HR → A_θ → HR → sum_rebin → LR``. The model only has to
+        be correct at LR — high-frequency spike-mismatch residuals
+        between HST and Euclid PSFs get averaged away by the rebin.
+        """
         with tf.GradientTape() as tape:
-            pred = model(inp, training=True)
-            loss = loss_fn(tgt, pred)
+            pred_hr = model(inp, training=True)
+            pred_lr = _sum_rebin_tf(pred_hr)
+            loss = loss_fn(tgt, pred_lr)
             if wd > 0:
                 l2 = tf.add_n([
                     tf.nn.l2_loss(v) for v in model.trainable_variables
@@ -397,8 +455,9 @@ def main() -> int:
 
     @tf.function
     def eval_step(inp, tgt):
-        pred = model(inp, training=False)
-        return loss_fn(tgt, pred)
+        pred_hr = model(inp, training=False)
+        pred_lr = _sum_rebin_tf(pred_hr)
+        return loss_fn(tgt, pred_lr)
 
     print(f"[4/4] training for {args.steps:,} steps ...")
     step = 0
@@ -406,9 +465,13 @@ def main() -> int:
     log: list[dict] = []
 
     # Initial PSF probe (before any training — should be ~1 because
-    # residual init → A_θ(x) ≈ x, so A_θ(PSF_HST) ≈ PSF_HST).
-    psf_err_init = _psf_identity_residual(model, psf_hst, psf_euclid)
-    print(f"      PSF identity residual @ step 0: {psf_err_init:.4f}")
+    # residual init → A_θ(x) ≈ x, so A_θ(PSF_HST) ≈ PSF_HST and the
+    # LR-space comparison still reflects the PSF-shape difference).
+    psf_err_init = _psf_identity_residual(
+        model, psf_hst, psf_euclid, rebin_factor=rebin,
+    )
+    print(f"      PSF identity residual @ step 0: {psf_err_init:.4f} "
+          f"(LR-space, rebin={rebin})")
 
     while step < args.steps:
         inp_b, tgt_b = next(train_iter)
@@ -421,7 +484,9 @@ def main() -> int:
             for inp_b, tgt_b in valid_ds:
                 val_losses.append(float(eval_step(inp_b, tgt_b).numpy()))
             val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
-            psf_err  = _psf_identity_residual(model, psf_hst, psf_euclid)
+            psf_err  = _psf_identity_residual(
+                model, psf_hst, psf_euclid, rebin_factor=rebin,
+            )
             elapsed  = time.time() - t0
             print(f"      step {step:6d}/{args.steps} "
                   f"train_L1={float(loss_v.numpy()):.4e} "
@@ -442,7 +507,9 @@ def main() -> int:
     print(f"  wrote weights → {args.output}")
 
     # Save summary sidecar.
-    psf_err_final = _psf_identity_residual(model, psf_hst, psf_euclid)
+    psf_err_final = _psf_identity_residual(
+        model, psf_hst, psf_euclid, rebin_factor=rebin,
+    )
     summary = {
         "model_path":     args.output,
         "params":         int(n_params),
@@ -455,6 +522,7 @@ def main() -> int:
         "star_injection_fraction": float(args.star_injection_fraction),
         "max_stars_per_image":     int(args.max_stars_per_image),
         "linear_combo_fraction":   float(args.linear_combo_fraction),
+        "rebin_factor":            int(args.rebin_factor),
         "add_psf_pair_to_validation": bool(args.add_psf_pair_to_validation),
         "psf_id_err_init":  float(psf_err_init),
         "psf_id_err_final": float(psf_err_final),

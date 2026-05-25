@@ -1413,10 +1413,29 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     if kind == "residual":
         inp = _load(f"input_{subset}")
         tgt = _load(f"target_{subset}")
-        # Both records are single-channel VIS on the same HR grid.
-        plane = tgt.data[..., 0] - inp.data[..., 0]
+        # Input is HR (e.g. 256²), target is LR (e.g. 128² at rebin=2).
+        # Sum-rebin the input down to the target's grid before
+        # subtracting — this matches the loss the trainer optimises
+        # (``loss = ||sum_rebin(A_θ(input)) - target||``). The residual
+        # shown here is exactly the per-pixel target the model has to
+        # learn to predict.
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        inp_plane = inp.data[..., 0]
+        tgt_plane = tgt.data[..., 0]
+        if inp_plane.shape != tgt_plane.shape:
+            Hi, Wi = inp_plane.shape
+            Ht, Wt = tgt_plane.shape
+            if Hi % Ht != 0 or Wi % Wt != 0 or (Hi // Ht) != (Wi // Wt):
+                abort(500)   # non-integer rebin between sides
+            inp_plane = sum_rebin_2d(inp_plane, Hi // Ht)
+        plane = tgt_plane - inp_plane
         img_for_meta = tgt
-        title_suffix = f"target − input (mean={plane.mean():.3g}, max|·|={np.abs(plane).max():.3g})"
+        title_suffix = (
+            f"target − sum_rebin(input) (LR space; "
+            f"mean={plane.mean():.3g}, max|·|={np.abs(plane).max():.3g})"
+        )
         cmap = "RdBu_r"
         # Symmetric range around zero for divergent rendering.
         a = float(np.abs(plane).max())
@@ -1624,7 +1643,24 @@ def _try_startup_ssh_connect() -> Optional[str]:
 
     Stores the active session on :data:`STATE`. Failures are returned as
     a short error string for the connection-error page to display.
+
+    Honours the ``EUCLID_POLISH_DISABLE_AUTO_SSH=1`` env var as a hard
+    kill-switch — when set, this function is a no-op (returns a
+    diagnostic string but never opens a socket or touches ``STATE.ssh``).
+    This is **load-bearing for tests**: pytest imports ``create_app``
+    which used to silently dial out to the user's real FASRC via their
+    ControlMaster socket, blowing past any ``STATE.ssh = stub``
+    monkeypatch the test had installed and submitting real SLURM jobs
+    through every test that posted to a submit endpoint. The env var
+    lets the test harness disable the auto-connect entirely so the
+    stub stays in effect.
     """
+    import os as _os
+    if _os.environ.get("EUCLID_POLISH_DISABLE_AUTO_SSH", "").strip() in (
+        "1", "true", "yes", "on",
+    ):
+        return ("auto-connect disabled by "
+                "EUCLID_POLISH_DISABLE_AUTO_SSH env var (test mode)")
     cfg = fasrc_config.load()
     if not cfg.ssh_user:
         return "ssh_user is unset — open Settings and configure it"
@@ -3564,17 +3600,104 @@ def create_app() -> Flask:
             },
         })
 
+    # ─────────────────────────────────────────────────────────────────
+    # HST submit "arm" mechanism — load-bearing defence in depth.
+    #
+    # The user has hit accidental/automatic FASRC submissions repeatedly:
+    # browser autofill, cached JS tabs, Enter-key default, drive-by
+    # form submission on page refresh. The confirm=yes dialog catches
+    # 99% of them but not all — extensions, programmatic fetch(),
+    # ancient browser tabs, etc. can still POST with confirm=yes if
+    # they have the JS.
+    #
+    # This mechanism makes the submit endpoint **default-disabled**.
+    # A POST to /submit is rejected unless the form carries a valid
+    # `arm_nonce` AND that nonce is single-use AND has not expired.
+    # The only way to obtain a valid nonce is to POST to /api/fasrc/hst/arm
+    # (which itself requires confirm=yes). So every submit requires the
+    # user to:
+    #   1. Click "Arm next submit" → confirm dialog → server mints nonce.
+    #   2. Within 60 s, click "Submit" → frontend includes nonce in form.
+    #   3. Server consumes the nonce (single-use). Next submit needs a
+    #      fresh arm.
+    #
+    # Drive-by submissions can't get past step 1 because the user has
+    # to click Arm AND click OK on its confirmation dialog. The nonce
+    # is held in JS memory only — refreshing the page wipes it.
+    _hst_arm_state = {
+        "nonce":        "",   # current nonce, or "" if disarmed
+        "armed_until":  0.0,  # unix ts of expiry
+        "consumed":     True, # True once a submit has used the nonce
+    }
+    _HST_ARM_WINDOW_SECS = 60.0   # how long a nonce stays valid
+
+    def _hst_arm_is_active() -> bool:
+        s = _hst_arm_state
+        return bool(
+            s["nonce"]
+            and not s["consumed"]
+            and time.time() < s["armed_until"]
+        )
+
+    @app.route("/api/fasrc/hst/arm", methods=["POST"])
+    def api_fasrc_hst_arm():
+        """Mint a one-time nonce that unlocks ONE HST submit.
+
+        Requires ``confirm=yes`` in the form payload (same dialog
+        mechanism as the submit endpoint itself — the frontend shows
+        ``window.confirm`` before POSTing to /arm). Returns the
+        nonce + expiry; frontend stores both in memory and includes
+        the nonce as ``arm_nonce`` on the next submit POST. The nonce
+        is consumed on first successful submit and expires after
+        ``_HST_ARM_WINDOW_SECS`` seconds either way.
+
+        Re-arming overwrites the previous nonce (so a user who clicks
+        Arm twice without submitting just resets the timer)."""
+        if request.form.get("confirm", "").lower() not in ("yes", "true", "1"):
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "missing confirm=yes — the frontend dialog must "
+                    "be shown before any arm request reaches the server."
+                ),
+            }), 400
+        import secrets
+        nonce = secrets.token_urlsafe(24)
+        _hst_arm_state["nonce"]       = nonce
+        _hst_arm_state["armed_until"] = time.time() + _HST_ARM_WINDOW_SECS
+        _hst_arm_state["consumed"]    = False
+        return jsonify({
+            "ok":           True,
+            "nonce":        nonce,
+            "expires_in_s": _HST_ARM_WINDOW_SECS,
+            "expires_at":   _hst_arm_state["armed_until"],
+        })
+
+    @app.route("/api/fasrc/hst/arm-status")
+    def api_fasrc_hst_arm_status():
+        """Whether arm is active and how many seconds remain."""
+        s = _hst_arm_state
+        remaining = max(0.0, s["armed_until"] - time.time())
+        return jsonify({
+            "armed":               _hst_arm_is_active(),
+            "expires_in_s":        remaining,
+            "window_secs":         _HST_ARM_WINDOW_SECS,
+        })
+
     @app.route("/api/fasrc/hst/<step_id>/submit", methods=["POST"])
     def api_fasrc_hst_submit(step_id: str):
         """Generic submission for any HST-pipeline step.
 
-        Requires an explicit ``confirm=yes`` token in the form payload —
-        the JS submit handler sets this via ``window.confirm()`` so the
-        user has to deliberately click OK on a dialog showing the full
-        parameter set before any SLURM job is created. A request that
-        omits the token (e.g. a stray ``fetch()`` from cached JS, or a
-        programmatic POST from somewhere else) is rejected with 400.
-        """
+        Three defences, all required, in order of evaluation:
+
+        1. ``confirm=yes`` token — proves the frontend dialog was
+           shown (catches stale-JS tabs that don't have the dialog).
+        2. Valid ``arm_nonce`` — proves the user clicked "Arm" within
+           the last 60 s. Nonce is single-use; consumed on success.
+        3. SSH connected (sanity check before the work starts).
+
+        Any failure returns 400 and DOES NOT touch the SSH session,
+        so no sbatch call, no script write, nothing reaches FASRC."""
         from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
         from euclid_polish.web import fasrc_jobs
 
@@ -3588,12 +3711,7 @@ def create_app() -> Flask:
         cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()
 
-        # Server-side guard: refuse if the explicit confirmation token
-        # isn't present. The frontend dialog sets ``confirm=yes`` only
-        # after the user clicks OK; any submission lacking it must
-        # either come from a stale browser tab without the new JS, or
-        # from a programmatic POST — neither of which we want to honour
-        # silently.
+        # Defence 1 — confirm=yes from the frontend dialog.
         if form.get("confirm", "").lower() not in ("yes", "true", "1"):
             return jsonify({
                 "ok": False,
@@ -3605,6 +3723,30 @@ def create_app() -> Flask:
                     "submissions.)"
                 ),
             }), 400
+
+        # Defence 2 — single-use arm nonce.
+        supplied_nonce = form.get("arm_nonce", "").strip()
+        if not _hst_arm_is_active() or supplied_nonce != _hst_arm_state["nonce"]:
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "submissions are DISABLED. Click 'Arm next submit' at "
+                    "the top of the HST area — that gives you a 60-second "
+                    "window to submit ONE job. Each submit requires a fresh "
+                    "arm. This is the load-bearing defence against "
+                    "drive-by submissions from cached browser tabs or "
+                    "auto-running JS."
+                ),
+                "armed":         _hst_arm_is_active(),
+                "armed_remaining_s": max(
+                    0.0,
+                    _hst_arm_state["armed_until"] - time.time(),
+                ),
+            }), 400
+
+        # Consume the nonce immediately — even if the rest of the
+        # submit fails, the nonce is spent. User has to re-arm to retry.
+        _hst_arm_state["consumed"] = True
 
         try:
             resources = StepResources.from_form(form, step.defaults)

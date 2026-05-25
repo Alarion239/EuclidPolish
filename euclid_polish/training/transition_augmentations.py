@@ -33,6 +33,44 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Photometric sum-rebin (matches the downstream Euclid forward chain)
+# ---------------------------------------------------------------------------
+
+def sum_rebin_2d(arr: np.ndarray, factor: int) -> np.ndarray:
+    """Sum-rebin a 2-D or 3-D array by ``factor`` in the two leading axes.
+
+    Each output pixel is the **sum** of a ``factor × factor`` block of
+    inputs — the photometric convention (preserves total flux / total
+    electrons), matching ``MultiBandForward.sum_rebin`` and the
+    ``EuclidVISForwardOp`` TF layer.
+
+    Both spatial dims must be divisible by ``factor``. Channel axis (if
+    present) passes through unchanged.
+
+    Why this lives here: the trainer compares ``sum_rebin(A_θ(HR))``
+    against an LR target, so the pair-generation + augmentation paths
+    must produce LR targets via the *same* rebin convention the trainer
+    uses. One implementation, everyone uses it.
+    """
+    if factor < 1:
+        raise ValueError(f"factor must be ≥ 1, got {factor}")
+    if factor == 1:
+        return arr.copy()
+    if arr.ndim not in (2, 3):
+        raise ValueError(f"expected 2-D or 3-D, got shape {arr.shape}")
+    H, W = arr.shape[:2]
+    if H % factor != 0 or W % factor != 0:
+        raise ValueError(
+            f"spatial dims {(H, W)} not divisible by factor={factor}"
+        )
+    Hn, Wn = H // factor, W // factor
+    if arr.ndim == 2:
+        return arr.reshape(Hn, factor, Wn, factor).sum(axis=(1, 3))
+    C = arr.shape[2]
+    return arr.reshape(Hn, factor, Wn, factor, C).sum(axis=(1, 3))
+
+
+# ---------------------------------------------------------------------------
 # Star field synthesis (numpy core — used by both eager and graph-mode paths)
 # ---------------------------------------------------------------------------
 
@@ -42,43 +80,50 @@ def make_star_field(
     *,
     image_size: int,
     n_stars: int,
+    rebin_factor: int = 2,
     amp_min: float = 10.0,
     amp_max: float = 1000.0,
     rng: Optional[np.random.Generator] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Make one ``(input, target)`` star-field pair on the HR grid.
+    """Make one ``(input_HR, target_LR)`` star-field pair.
 
     Strategy: build a delta-image at random pixel positions with random
-    amplitudes, then convolve once with each PSF. Because convolution
-    is linear, this is mathematically equivalent to placing PSF stamps
-    at each star's position and summing — but cheaper (one FFT per
-    PSF, not one per star) and edge-clean (``fftconvolve(mode='same')``
-    handles stars near the boundary correctly).
+    amplitudes, convolve once with each PSF (cheap — one FFT per PSF,
+    not one per star), then sum-rebin the Euclid side to the LR grid
+    so the target matches what downstream consumers see after the
+    ``A_θ → sum_rebin`` chain. Convolution and sum-rebin are both
+    linear, so the same delta-image driving both sides keeps the
+    (input, target) pair self-consistent with the image-formation
+    contract.
 
     Parameters
     ----------
     psf_hst, psf_euclid
         2-D float arrays on the same HR grid, each normalised to
-        sum=1. The two convolutions must use *identical* delta-image
-        positions and amplitudes so the resulting (input, target) pair
-        is consistent with the linear-image-formation contract.
+        sum=1. Identical delta-image positions and amplitudes feed
+        both convolutions so the pair is consistent.
     image_size
-        Side length of the square output (HR pixels).
+        Side length of the input (HR pixels). Must be divisible by
+        ``rebin_factor``.
     n_stars
-        Number of point sources to inject. Each gets a random position
-        and a random amplitude in ``[amp_min, amp_max]``.
+        Number of point sources. Each gets a random position and a
+        uniform amplitude in ``[amp_min, amp_max]``.
+    rebin_factor
+        Factor by which the Euclid-blurred target is sum-rebinned
+        before being emitted. Default 2 (matches Euclid HR→LR).
+        ``rebin_factor=1`` disables the rebin (legacy HR-target mode).
     amp_min, amp_max
         Bounds of the per-star uniform amplitude draw (linear
         electrons; matches the unit space of saved pair shards).
     rng
-        Optional ``np.random.Generator``. A fresh one is created when
-        omitted — pass an explicit ``rng`` for reproducible tests.
+        Optional ``np.random.Generator``. Fresh one created if None.
 
     Returns
     -------
     (input_image, target_image)
-        Each ``(image_size, image_size, 1)`` float32 — the trailing
-        channel axis matches the schema ``A_θ`` expects.
+        ``input_image`` is ``(image_size, image_size, 1)`` float32 at
+        HR scale. ``target_image`` is ``(image_size//rebin_factor,
+        image_size//rebin_factor, 1)`` float32 at LR scale.
     """
     from scipy import signal as scipy_signal
 
@@ -92,6 +137,13 @@ def make_star_field(
         raise ValueError(f"image_size must be ≥ 8, got {image_size}")
     if n_stars < 0:
         raise ValueError(f"n_stars must be ≥ 0, got {n_stars}")
+    if rebin_factor < 1:
+        raise ValueError(f"rebin_factor must be ≥ 1, got {rebin_factor}")
+    if image_size % rebin_factor != 0:
+        raise ValueError(
+            f"image_size={image_size} must be divisible by "
+            f"rebin_factor={rebin_factor}"
+        )
 
     deltas = np.zeros((image_size, image_size), dtype=np.float64)
     for _ in range(int(n_stars)):
@@ -100,13 +152,14 @@ def make_star_field(
         amp = float(rng.uniform(amp_min, amp_max))
         deltas[cy, cx] += amp
 
-    inp = scipy_signal.fftconvolve(
+    inp_hr = scipy_signal.fftconvolve(
         deltas, psf_hst.astype(np.float64), mode="same",
     ).astype(np.float32)
-    tgt = scipy_signal.fftconvolve(
+    tgt_hr = scipy_signal.fftconvolve(
         deltas, psf_euclid.astype(np.float64), mode="same",
     ).astype(np.float32)
-    return inp[..., np.newaxis], tgt[..., np.newaxis]
+    tgt_lr = sum_rebin_2d(tgt_hr, rebin_factor)
+    return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
 
 
 # ---------------------------------------------------------------------------
@@ -118,17 +171,21 @@ def build_star_pair_dataset(
     psf_euclid: np.ndarray,
     *,
     image_size: int,
+    rebin_factor: int = 2,
     n_stars_min: int = 1,
     n_stars_max: int = 8,
     seed: Optional[int] = None,
 ):
-    """An infinite tf.data.Dataset of ``(input, target)`` star pairs.
+    """An infinite tf.data.Dataset of ``(input_HR, target_LR)`` star pairs.
 
     Yields a fresh random field per draw; no two batches are identical.
     The underlying numpy generator is wrapped in
     ``tf.data.Dataset.from_generator`` so the TF graph sees standard
     tensors. ``prefetch(AUTOTUNE)`` keeps the producer ahead of the
     trainer.
+
+    ``rebin_factor`` controls how much the target is sum-rebinned
+    (default 2 matches Euclid HR→LR). Input stays at HR.
     """
     import tensorflow as tf
 
@@ -137,8 +194,14 @@ def build_star_pair_dataset(
             f"n_stars_max ({n_stars_max}) must be ≥ n_stars_min "
             f"({n_stars_min})"
         )
+    if image_size % rebin_factor != 0:
+        raise ValueError(
+            f"image_size={image_size} must be divisible by "
+            f"rebin_factor={rebin_factor}"
+        )
 
     rng = np.random.default_rng(seed)
+    target_side = image_size // int(rebin_factor)
 
     def _gen():
         # Local rng for thread safety — tf.data may spawn workers.
@@ -148,12 +211,13 @@ def build_star_pair_dataset(
             yield make_star_field(
                 psf_hst, psf_euclid,
                 image_size=image_size, n_stars=n_stars,
+                rebin_factor=int(rebin_factor),
                 rng=local_rng,
             )
 
     sig = (
         tf.TensorSpec(shape=(image_size, image_size, 1), dtype=tf.float32),
-        tf.TensorSpec(shape=(image_size, image_size, 1), dtype=tf.float32),
+        tf.TensorSpec(shape=(target_side, target_side, 1), dtype=tf.float32),
     )
     return tf.data.Dataset.from_generator(_gen, output_signature=sig)
 
@@ -202,30 +266,39 @@ def make_psf_identity_pair(
     psf_euclid: np.ndarray,
     *,
     image_size: int,
+    rebin_factor: int = 2,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """The literal "PSF identity" pair, sized for the validation canvas.
 
-    Returns ``(input, target)`` where ``input`` is the HST PSF and
-    ``target`` is the Euclid PSF, both centred in an
-    ``image_size × image_size`` canvas. This is the **single most
-    important validation sample**: the model's correctness as a PSF
-    transition operator literally reduces to
-    ``A_θ(PSF_HST) ≈ PSF_Euclid``. Including it in the validation
-    set means the reported ``val_L1`` metric is bounded below by the
-    error on this case — there's no way for the model to "trick" the
-    metric by overfitting to the synthetic galaxy distribution while
+    Returns ``(input_HR, target_LR)`` where ``input_HR`` is the HST PSF
+    centred in an ``image_size × image_size`` canvas, and ``target_LR``
+    is the Euclid PSF centred in the same HR canvas then sum-rebinned
+    by ``rebin_factor`` to LR. This is the **single most important
+    validation sample**: the model's correctness as a PSF transition
+    operator literally reduces to
+    ``sum_rebin(A_θ(PSF_HST)) ≈ sum_rebin(PSF_Euclid)``. Including it
+    in the validation set means the reported ``val_L1`` is bounded
+    below by the error on this case — there's no way for the model to
+    "trick" the metric by overfitting to the galaxy distribution while
     failing on point sources.
 
-    Output shape is ``(image_size, image_size, 1)`` to match the
-    on-disk TFRecord schema and ``A_θ``'s input layout.
+    Output shapes:
+      * ``input``:  ``(image_size, image_size, 1)``
+      * ``target``: ``(image_size//rebin_factor, image_size//rebin_factor, 1)``
     """
     if psf_hst.shape != psf_euclid.shape:
         raise ValueError(
             f"PSFs must share shape; got {psf_hst.shape} vs {psf_euclid.shape}"
         )
-    inp = embed_in_canvas(psf_hst,    image_size).astype(np.float32)
-    tgt = embed_in_canvas(psf_euclid, image_size).astype(np.float32)
-    return inp[..., np.newaxis], tgt[..., np.newaxis]
+    if image_size % rebin_factor != 0:
+        raise ValueError(
+            f"image_size={image_size} must be divisible by "
+            f"rebin_factor={rebin_factor}"
+        )
+    inp_hr = embed_in_canvas(psf_hst,    image_size).astype(np.float32)
+    tgt_hr = embed_in_canvas(psf_euclid, image_size).astype(np.float32)
+    tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
+    return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
 
 
 # ---------------------------------------------------------------------------

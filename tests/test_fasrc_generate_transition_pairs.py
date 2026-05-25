@@ -95,31 +95,65 @@ class TestCropToOddSquare:
 
 class TestConvolvePair:
 
-    def test_shapes_match_input(self):
+    def test_input_at_hr_target_at_lr_default_rebin(self):
+        """Default rebin_factor=2: input keeps scene's shape; target
+        is sum-rebinned to half the side per axis."""
         mod = _load_script()
         scene = np.zeros((64, 64), dtype=np.float32)
-        scene[32, 32] = 100.0   # single point source
+        scene[32, 32] = 100.0
         psf = np.ones((9, 9), dtype=np.float32) / 81.0
         inp, tgt = mod._convolve_pair(scene, psf, psf)
+        assert inp.shape == (64, 64)
+        assert tgt.shape == (32, 32)    # rebin_factor=2
+
+    def test_shapes_match_with_rebin_one(self):
+        """rebin_factor=1 keeps target at HR (legacy mode)."""
+        mod = _load_script()
+        scene = np.zeros((64, 64), dtype=np.float32)
+        scene[32, 32] = 100.0
+        psf = np.ones((9, 9), dtype=np.float32) / 81.0
+        inp, tgt = mod._convolve_pair(scene, psf, psf, rebin_factor=1)
         assert inp.shape == scene.shape
         assert tgt.shape == scene.shape
 
-    def test_flux_conserved_when_psfs_sum_to_unity(self):
+    def test_flux_conserved_through_rebin(self):
+        """Both convolutions preserve total flux (unit-flux PSFs), and
+        sum-rebin is photometric, so input.sum() ≈ target.sum() ≈
+        scene.sum()."""
         mod = _load_script()
         scene = np.zeros((64, 64), dtype=np.float32)
-        # Multi-source so total flux is non-trivial.
         scene[16, 16] = 50.0
         scene[48, 48] = 70.0
-        # Two distinct PSFs, both unit-flux.
         psf_hst = np.ones((5, 5), dtype=np.float32) / 25.0
         psf_eu  = np.zeros((9, 9), dtype=np.float32)
         psf_eu[4, 4] = 1.0
         psf_eu /= psf_eu.sum()
         inp, tgt = mod._convolve_pair(scene, psf_hst, psf_eu)
-        # Both convolutions must preserve total flux exactly (within
-        # FFT round-off + boundary handling for fftconvolve mode='same').
         np.testing.assert_allclose(inp.sum(), scene.sum(), rtol=1e-4)
         np.testing.assert_allclose(tgt.sum(), scene.sum(), rtol=1e-4)
+
+    def test_target_matches_explicit_sum_rebin(self):
+        """``target == sum_rebin(scene ⊛ PSF_Euclid, rebin)`` — the
+        helper must not rearrange terms."""
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        from scipy import signal as scipy_signal
+        mod = _load_script()
+        scene = np.zeros((64, 64), dtype=np.float32)
+        scene[24:28, 24:28] = 10.0    # extended source
+        psf_hst = np.ones((5, 5), dtype=np.float32) / 25.0
+        psf_eu  = np.zeros((9, 9), dtype=np.float32)
+        psf_eu[4, 4] = 1.0
+        psf_eu /= psf_eu.sum()
+        inp, tgt = mod._convolve_pair(scene, psf_hst, psf_eu, rebin_factor=2)
+        expected_tgt = sum_rebin_2d(
+            scipy_signal.fftconvolve(
+                scene, psf_eu, mode="same",
+            ).astype(np.float32),
+            2,
+        )
+        np.testing.assert_allclose(tgt, expected_tgt, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

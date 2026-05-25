@@ -45,13 +45,17 @@ class TestParameterBudget:
         assert total_parameter_count(m) > 5_000
 
     def test_param_formula_matches_analytic(self):
-        """27·C² + 22·C + 1 should match the actual param count exactly."""
+        """27·C² + 18·C should match the actual param count exactly.
+
+        Formula assumes ``use_bias=False`` on every Conv2D (load-bearing
+        for scale invariance — see the model module's __init__ doc).
+        """
         from euclid_polish.training.transition_model import (
             HSTtoEuclidTransition, total_parameter_count,
         )
         for C in (4, 8, 12, 13):
             m = HSTtoEuclidTransition(channels=C, n_inner_layers=3)
-            expected = 27 * C * C + 22 * C + 1
+            expected = 27 * C * C + 18 * C
             assert total_parameter_count(m) == expected, (
                 f"param count mismatch at C={C}: "
                 f"got {total_parameter_count(m)}, expected {expected}"
@@ -158,6 +162,107 @@ class TestSaveLoadRoundtrip:
         y1 = m1(x).numpy()
         y2 = m2(x).numpy()
         np.testing.assert_allclose(y1, y2, atol=1e-6)
+
+
+class TestScaleInvariance:
+    """A PSF transition operator MUST be scale-invariant on positive
+    inputs: ``A_θ(α·x) = α·A_θ(x)`` for any α ≥ 0. Convolution is
+    linear, and the training objective ``clean ⊛ PSF_HST → clean ⊛
+    PSF_Euclid`` is homogeneous in the scene amplitude.
+
+    REGRESSION — an earlier version of the model had biases on every
+    Conv2D layer. SGD drove the biases away from zero to fit the
+    electron-scale training distribution; the model then failed
+    catastrophically on small-amplitude inputs like the PSF identity
+    probe (``PSF_id_err`` exploded from 0.35 to 1300+ within 500
+    training steps). Removing biases makes the network purely linear
+    on positive inputs (ReLU is identity there) and restores
+    scale invariance by construction.
+    """
+
+    def test_homogeneous_in_input_at_init(self):
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        tf.random.set_seed(0)
+        m = HSTtoEuclidTransition()
+        # Positive input — clean⊛PSF is always ≥ 0 in real training.
+        x = tf.random.uniform((1, 32, 32, 1), minval=0.0, maxval=1.0,
+                              dtype=tf.float32, seed=1)
+        y1 = m(x).numpy()
+        y2 = m(1000.0 * x).numpy()
+        # Doubling the input should double the output (within float32 noise).
+        np.testing.assert_allclose(
+            y2, 1000.0 * y1, rtol=1e-4, atol=1e-4,
+            err_msg=(
+                "Scale invariance broken: A_θ(α·x) ≠ α·A_θ(x). "
+                "Check that all Conv2D layers have use_bias=False."
+            ),
+        )
+
+    def test_homogeneous_after_synthetic_training_step(self):
+        """Even after a fake training step that pushes weights away
+        from init, scale invariance must hold. (With biases, this is
+        precisely when invariance breaks.)"""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        tf.random.set_seed(0)
+        m = HSTtoEuclidTransition()
+
+        # One synthetic gradient step with electron-scale "data".
+        optimiser = tf.keras.optimizers.Adam(0.01)
+        loss_fn   = tf.keras.losses.MeanAbsoluteError()
+        x_train = tf.random.uniform((4, 16, 16, 1), minval=10.0, maxval=1000.0,
+                                    dtype=tf.float32, seed=2)
+        y_train = tf.random.uniform((4, 16, 16, 1), minval=10.0, maxval=1000.0,
+                                    dtype=tf.float32, seed=3)
+        for _ in range(5):
+            with tf.GradientTape() as tape:
+                pred = m(x_train, training=True)
+                loss = loss_fn(y_train, pred)
+            grads = tape.gradient(loss, m.trainable_variables)
+            optimiser.apply_gradients(zip(grads, m.trainable_variables))
+
+        # Now probe scale invariance on a much smaller-amplitude input
+        # (the PSF probe is 10⁻⁴-scale, here we use 10⁻³ for cleaner
+        # float32 arithmetic but the principle is the same).
+        x_probe = tf.random.uniform((1, 16, 16, 1), minval=0.0, maxval=0.001,
+                                    dtype=tf.float32, seed=4)
+        alpha = 1e6
+        y_small = m(x_probe).numpy()
+        y_big   = m(alpha * x_probe).numpy()
+        # Relative test: y_big / y_small ≈ alpha everywhere y_small ≠ 0.
+        mask = np.abs(y_small) > 1e-9
+        ratio = y_big[mask] / y_small[mask]
+        # Ratio should be ~alpha for every active pixel, regardless of
+        # how SGD has updated the weights.
+        np.testing.assert_allclose(
+            ratio, alpha, rtol=1e-3,
+            err_msg=(
+                "Scale invariance broken after a few training steps. "
+                "If this fails, a bias term has crept back into the "
+                "model — check use_bias=False on every Conv2D."
+            ),
+        )
+
+    def test_no_bias_variables(self):
+        """Direct structural assertion: there should be ZERO bias
+        variables in the model. A future edit that adds biases (even
+        with use_bias unspecified, since the Keras default is True)
+        gets caught here."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        m = HSTtoEuclidTransition()
+        _ = m(tf.zeros((1, 8, 8, 1), dtype=tf.float32))  # build
+        bias_vars = [v for v in m.trainable_variables
+                     if "bias" in v.name.lower()]
+        assert bias_vars == [], (
+            f"unexpected bias variables found: {[v.name for v in bias_vars]}. "
+            "Biases break scale invariance — keep use_bias=False on all "
+            "Conv2D layers."
+        )
 
 
 class TestReceptiveField:

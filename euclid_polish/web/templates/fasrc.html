@@ -294,6 +294,28 @@
       <p class="hint" id="hst-artifact-line">loading on-disk artifact status…</p>
     </section>
 
+    <!-- ─── Arm banner: load-bearing kill-switch for HST submissions. ─── -->
+    <section class="card" id="hst-arm-banner"
+             style="border: 2px solid #d33; background: #fee;">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span id="hst-arm-status" style="font-weight:600; min-width:280px;">
+          🔒 Submissions DISABLED
+        </span>
+        <button id="btn-hst-arm" type="button"
+                style="background:#d33; color:#fff; padding:6px 14px;
+                       border:none; border-radius:3px; cursor:pointer;
+                       font-weight:600;">
+          🔓 Arm next submit (60 s)
+        </button>
+        <span class="muted" style="font-size:12px;">
+          Click → confirm → you have 60 s to submit ONE job. After that
+          submit (or after 60 s), submissions are automatically
+          re-disabled. Server rejects any submit POST that doesn't
+          carry a freshly minted arm nonce.
+        </span>
+      </div>
+    </section>
+
     <div id="hst-steps-area">
       <p class="muted">loading pipeline steps…</p>
     </div>
@@ -1303,13 +1325,21 @@ function _stepSpecificFields(step) {
         <label>Training pairs
           <input type="number" name="n_train" value="4000" min="100" max="50000"
                  title="Capped by clean_train.tfrecord size; pairs are emitted in
-order. Each pair is two ~256² float32 images (~1 MB total)."></label>
+order. Each pair is one HR input (~256² × float32) and one LR target
+(~128² × float32 at rebin=2)."></label>
         <label>Validation pairs
           <input type="number" name="n_valid" value="400" min="20" max="5000"></label>
         <label>Crop size (HR px)
           <input type="number" name="crop_size" value="256" step="2" min="64" max="512"
                  title="Centre-crop each clean scene to this size before
-convolving. Must be even."></label>`;
+convolving. Must be divisible by rebin_factor."></label>
+        <label>Rebin factor
+          <input type="number" name="rebin_factor" value="2" min="1" max="8"
+                 title="Sum-rebin applied to the Euclid-blurred target before
+writing to disk. Default 2 matches Euclid HR→LR (0.05\"/pix → 0.10\"/pix).
+The trainer compares sum_rebin(A_θ(input)) against this LR target, so the
+model only has to be correct at LR — high-freq spike-mismatch residuals
+get averaged away."></label>`;
     case 'train_transition':
       return `
         <label>Training steps
@@ -1343,7 +1373,11 @@ Uniform[1, max]; amplitudes in [10, 1000] electrons."></label>
                  title="Per-example probability of emitting α·pair_A + β·pair_B
 instead of pair_A, with α ∈ [0.3, 1.5], β ∈ [-0.5, 0.5]. Convolution
 is linear so the combined pair is a valid (input, target) of the same
-operator. 0 disables."></label>`;
+operator. 0 disables."></label>
+        <label>Rebin factor
+          <input type="number" name="rebin_factor" value="2" min="1" max="8"
+                 title="Must match the rebin used when the pair shards were
+generated (step 3a). Loss = ||sum_rebin(A_θ(input), rebin) - target||."></label>`;
     case 'tfrecords':
       return `
         <label>Training pairs
@@ -1475,6 +1509,71 @@ function _stepCard(step, artifactStatus) {
 // polls only update read-only status decorations — never touch form inputs.
 let _HST_RENDERED = false;
 
+// ─── HST submit arm state — held in-memory only, never persisted. ───
+// A page refresh wipes this, requiring the user to re-arm.
+// `consumed` flips to true the moment a submit POST goes out so the
+// banner reflects "disarmed" immediately.
+const HST_ARM = {
+  nonce:     '',
+  expiresAt: 0,
+  consumed:  true,
+};
+
+function renderArmBanner() {
+  const statusEl = document.getElementById('hst-arm-status');
+  const btnEl    = document.getElementById('btn-hst-arm');
+  if (!statusEl || !btnEl) return;
+  const remaining = Math.max(0, HST_ARM.expiresAt - Date.now());
+  const armed = HST_ARM.nonce && !HST_ARM.consumed && remaining > 0;
+  if (armed) {
+    statusEl.innerHTML =
+      `✅ ARMED — ${Math.ceil(remaining / 1000)} s remaining (1 submit allowed)`;
+    statusEl.style.color = '#080';
+    btnEl.textContent    = '↻ Re-arm (resets 60 s timer)';
+    btnEl.style.background = '#080';
+  } else {
+    statusEl.innerHTML = '🔒 Submissions DISABLED';
+    statusEl.style.color = '#d33';
+    btnEl.textContent    = '🔓 Arm next submit (60 s)';
+    btnEl.style.background = '#d33';
+  }
+}
+
+// Tick the banner every second so the countdown updates live.
+setInterval(renderArmBanner, 1000);
+
+document.getElementById('btn-hst-arm')?.addEventListener('click',
+  async () => {
+    const ok = window.confirm(
+      'Arm HST submissions for the next 60 seconds?\n\n' +
+      'This unlocks exactly ONE submission via the cards below. ' +
+      'The window auto-closes after 60 s OR after one submit (whichever ' +
+      'comes first).\n\n' +
+      'Click OK to arm, Cancel to keep submissions disabled.'
+    );
+    if (!ok) return;
+    try {
+      const body = new URLSearchParams({ confirm: 'yes' });
+      const r = await fetch('/api/fasrc/hst/arm', {
+        method: 'POST', body,
+      });
+      const data = await r.json();
+      if (data.ok) {
+        HST_ARM.nonce     = data.nonce;
+        HST_ARM.expiresAt = Date.now() + (data.expires_in_s * 1000);
+        HST_ARM.consumed  = false;
+        renderArmBanner();
+      } else {
+        alert('arm failed: ' + (data.error || 'unknown'));
+      }
+    } catch (e) {
+      alert('arm request failed: ' + e);
+    }
+  }
+);
+
+renderArmBanner();
+
 function _forceFormDefaults(area) {
   // Chrome (and Safari) ignore autocomplete="off" on type=number inputs
   // and aggressively replace the explicit value="..." attribute with
@@ -1581,6 +1680,24 @@ function _renderHstArea(j) {
       // programmatic POST from anywhere else (cached JS, devtools, a
       // browser extension) can't sneak a SLURM job through.
       body.set('confirm', 'yes');
+
+      // ── Final defence: include the one-time arm nonce. ────────────────
+      // The server rejects /submit unless arm_nonce matches a freshly
+      // minted nonce that has not yet been consumed and has not expired
+      // (60 s window). The nonce is held in JS memory only; refreshing
+      // the page wipes it. Drive-by/auto-submits that don't go through
+      // the Arm flow first will 400 at the server.
+      if (!HST_ARM.nonce || HST_ARM.consumed || Date.now() > HST_ARM.expiresAt) {
+        statusEl.innerHTML =
+          '<span class="badge badge-failed">not armed</span> ' +
+          'click 🔓 Arm next submit at the top of the HST area first.';
+        return;
+      }
+      body.set('arm_nonce', HST_ARM.nonce);
+      // Mark consumed on the JS side too so the UI shows "disarmed"
+      // immediately even before the server response comes back.
+      HST_ARM.consumed = true;
+      renderArmBanner();
 
       statusEl.innerHTML = '<span class="muted">submitting…</span>';
       try {

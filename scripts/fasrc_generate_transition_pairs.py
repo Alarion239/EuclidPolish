@@ -67,7 +67,18 @@ def parse_args() -> argparse.Namespace:
                         "records are ~512² but 256² is plenty for "
                         "training a per-pixel PSF transition and keeps "
                         "per-pair memory + the TFRecord size manageable. "
-                        "Must be even.")
+                        "Must be divisible by --rebin-factor.")
+    p.add_argument("--rebin-factor", type=int, default=2,
+                   help="Sum-rebin factor applied to the Euclid-blurred "
+                        "target before writing it to disk. Default 2 "
+                        "matches the Euclid HR→LR pixel-scale ratio "
+                        "(0.05\"/pix → 0.10\"/pix). The trainer "
+                        "compares ``sum_rebin(A_θ(input))`` (at LR) "
+                        "against this LR target, so the model only has "
+                        "to be correct at LR — high-frequency residuals "
+                        "from the spike-geometry mismatch between HST "
+                        "and Euclid PSFs get averaged away by the "
+                        "rebin. Input stays at HR.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -213,18 +224,34 @@ def _convolve_pair(
     scene: np.ndarray,
     psf_hst: np.ndarray,
     psf_euclid: np.ndarray,
+    *,
+    rebin_factor: int = 2,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Produce ``(scene ⊛ PSF_HST, scene ⊛ PSF_Euclid)``.
+    """Produce ``(scene ⊛ PSF_HST at HR, sum_rebin(scene ⊛ PSF_Euclid))``.
 
-    Uses ``scipy.signal.fftconvolve(mode='same')`` — the convolution
-    convention the rest of the pipeline uses (and the analytic-kernel
-    forward in ``fasrc_generate_hst_tfrecords.py``). Both outputs have
-    the same shape as ``scene``.
+    The input side is left at HR (same shape as ``scene``). The
+    target side is convolved with the Euclid PSF then sum-rebinned by
+    ``rebin_factor`` so it matches what downstream consumers see after
+    the ``A_θ → sum_rebin`` chain. Both convolutions use
+    ``scipy.signal.fftconvolve(mode='same')`` — the same convention
+    as the analytic-kernel forward in
+    ``fasrc_generate_hst_tfrecords.py``.
+
+    Returns ``(input, target)`` where
+    ``input.shape == scene.shape`` and
+    ``target.shape == (H//rebin_factor, W//rebin_factor)``.
     """
     from scipy import signal as scipy_signal
-    inp = scipy_signal.fftconvolve(scene, psf_hst,    mode="same").astype(np.float32)
-    tgt = scipy_signal.fftconvolve(scene, psf_euclid, mode="same").astype(np.float32)
-    return inp, tgt
+    from euclid_polish.training.transition_augmentations import sum_rebin_2d
+
+    inp_hr = scipy_signal.fftconvolve(
+        scene, psf_hst, mode="same",
+    ).astype(np.float32)
+    tgt_hr = scipy_signal.fftconvolve(
+        scene, psf_euclid, mode="same",
+    ).astype(np.float32)
+    tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
+    return inp_hr, tgt_lr
 
 
 # ---------------------------------------------------------------------------
@@ -237,20 +264,30 @@ def main() -> int:
 
     print("=" * 64)
     print(f"  Transition-model training-pair generation")
-    print(f"  (input = clean ⊛ PSF_HST, target = clean ⊛ PSF_Euclid)")
+    print(f"  (input = clean ⊛ PSF_HST, target = sum_rebin(clean ⊛ PSF_Euclid))")
     print("=" * 64)
     print(f"  synthetic records = {args.synthetic_records_dir}")
     print(f"  HST PSF           = {args.hst_psf}")
     print(f"  output            = {args.output_dir}")
     print(f"  n_train / n_valid = {args.n_train} / {args.n_valid}")
-    print(f"  crop_size         = {args.crop_size} (HR pixels)")
+    print(f"  crop_size (HR)    = {args.crop_size} px")
+    print(f"  rebin_factor      = {args.rebin_factor} "
+          f"(target side = {int(args.crop_size) // int(args.rebin_factor)} LR px)")
     print(f"  dry run           = {args.dry_run}")
     print()
 
     t0 = time.time()
     crop = int(args.crop_size)
-    if crop % 2 != 0 or crop < 8:
-        print(f"ERROR: --crop-size must be even and ≥ 8, got {crop}")
+    rebin = int(args.rebin_factor)
+    if crop < 8:
+        print(f"ERROR: --crop-size must be ≥ 8, got {crop}")
+        return 1
+    if rebin < 1:
+        print(f"ERROR: --rebin-factor must be ≥ 1, got {rebin}")
+        return 1
+    if crop % rebin != 0:
+        print(f"ERROR: --crop-size ({crop}) must be divisible by "
+              f"--rebin-factor ({rebin})")
         return 1
 
     if not os.path.isfile(args.hst_psf):
@@ -296,16 +333,20 @@ def main() -> int:
             for idx, scene in _stream_clean_vis_scenes(
                 args.synthetic_records_dir, subset, target_n, crop=crop,
             ):
-                inp, tgt = _convolve_pair(scene, psf_hst, psf_euclid)
-                meta = {"source": "synthetic_psf_transition"}
+                inp, tgt = _convolve_pair(
+                    scene, psf_hst, psf_euclid, rebin_factor=rebin,
+                )
+                meta = {"source": "synthetic_psf_transition",
+                        "rebin_factor": rebin}
                 inp_img = MultiBandSkyImage(
                     data=inp[..., np.newaxis],
                     pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                     band_names=("VIS",), is_clean=True, metadata=meta,
                 )
+                # Target lives on the LR grid (HR scale × rebin_factor).
                 tgt_img = MultiBandSkyImage(
                     data=tgt[..., np.newaxis],
-                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE * rebin,
                     band_names=("VIS",), is_clean=True, metadata=meta,
                 )
                 iw.write(inp_img, index=sub_done)
@@ -321,6 +362,7 @@ def main() -> int:
     summary["pairs_written"] = pairs_written
     summary["elapsed_s"]     = round(runtime, 1)
     summary["crop_size"]     = crop
+    summary["rebin_factor"]  = rebin
     with open(os.path.join(args.output_dir, "generation_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print()

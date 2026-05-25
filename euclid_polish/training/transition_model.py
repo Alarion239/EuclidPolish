@@ -27,12 +27,15 @@ Plain stack of 3×3 convolutions with ReLU, residual wrap:
     A_θ(x) = x + f(x)
     where f = Conv3×3·1→C → ReLU → Conv3×3·C→C → ReLU → ⋯ → Conv3×3·C→1
 
-For ``C=12`` and 5 layers the param count is::
+For ``C=12`` and 5 layers the param count is (no biases — see
+``use_bias=False`` rationale in ``__init__``)::
 
-    (3·3·1·C + C) + 3·(3·3·C·C + C) + (3·3·C·1 + 1)
-    = 10C + 27C² + 3C + 9C + 1
-    = 27C² + 22C + 1
-    = 4153  (for C=12)
+    (3·3·1·C) + 3·(3·3·C·C) + (3·3·C·1)
+    = 9C + 27C² + 9C
+    = 27C² + 18C
+    = 4104  (for C=12)
+    = 4797  (for C=13)
+    = 5544  (for C=14 — exceeds 5k budget)
 
 Residual structure means at init ``A_θ(x) = x`` (since ``f`` weights
 are sampled from N(0, small)). Training pushes ``f`` to learn the
@@ -136,30 +139,53 @@ class HSTtoEuclidTransition(tf.keras.Model):
         # correction" framing the residual gives us.
         init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
 
+        # ── ``use_bias=False`` is load-bearing for scale invariance. ──
+        #
+        # A PSF transition operator MUST satisfy ``A_θ(α·x) = α·A_θ(x)``
+        # for any scalar α ≥ 0: convolution is linear, and the training
+        # objective ``clean ⊛ PSF_HST → clean ⊛ PSF_Euclid`` is
+        # homogeneous in the scene amplitude. The synthetic clean scenes
+        # live at electron scale (~100–1000s of e⁻ per pixel); the
+        # PSF-identity diagnostic feeds a unit-flux PSF (peak ~10⁻⁴).
+        # If we let the Conv2D layers learn biases, SGD drives them
+        # away from zero to fit the electron-scale training distribution
+        # — biases then dominate the response on small-scale inputs
+        # like the PSF, and ``A_θ(PSF_HST)`` comes out at electron scale
+        # (10³× larger than ``PSF_Euclid``). Empirically: ``PSF_id_err``
+        # explodes from 0.35 (at init, A_θ ≈ identity) to 1300+ within
+        # 500 training steps while ``val_L1`` stays small — the model
+        # is fitting the data distribution at the cost of the
+        # operator-theoretic correctness we care about.
+        #
+        # Without biases, the conv stack is *purely linear* (ReLU is
+        # the identity on positive inputs, and clean⊛PSF ≥ 0 always).
+        # ``A_θ(α·x) = α·A_θ(x)`` holds by construction — the PSF
+        # identity probe is then bounded by the training L1 loss
+        # itself, not by some unrelated bias drift.
+        common_kwargs = dict(
+            padding="same",
+            kernel_initializer=init,
+            use_bias=False,
+        )
         self._first = tf.keras.layers.Conv2D(
             filters=self._channels, kernel_size=self._kernel_size,
-            padding="same", activation="relu",
-            kernel_initializer=init, bias_initializer="zeros",
-            name="conv_in",
+            activation="relu", name="conv_in", **common_kwargs,
         )
         self._inner = [
             tf.keras.layers.Conv2D(
                 filters=self._channels, kernel_size=self._kernel_size,
-                padding="same", activation="relu",
-                kernel_initializer=init, bias_initializer="zeros",
-                name=f"conv_inner_{i}",
+                activation="relu", name=f"conv_inner_{i}",
+                **common_kwargs,
             )
             for i in range(self._n_inner_layers)
         ]
-        # Final layer: no activation. Bias zeros + small weight init
-        # means the residual ``f(x)`` starts ~0, so ``A_θ(x) ≈ x`` at
-        # initialisation — a sensible inductive prior because the two
-        # PSFs differ mainly in the wings, not the core.
+        # Final layer: no activation. Same use_bias=False — the residual
+        # ``f(x)`` is then a pure linear function of x (positive-input
+        # regime), so ``A_θ(x) = x + f(x)`` stays homogeneous: doubling
+        # the input doubles the output.
         self._last = tf.keras.layers.Conv2D(
             filters=1, kernel_size=self._kernel_size,
-            padding="same", activation=None,
-            kernel_initializer=init, bias_initializer="zeros",
-            name="conv_out",
+            activation=None, name="conv_out", **common_kwargs,
         )
 
     @property

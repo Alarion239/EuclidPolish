@@ -36,7 +36,9 @@ def psfs():
 
 class TestMakeStarField:
 
-    def test_shape_and_dtype(self, psfs):
+    def test_shape_and_dtype_default_rebin(self, psfs):
+        """At default rebin_factor=2, input is HR and target is LR
+        (half the side per axis)."""
         from euclid_polish.training.transition_augmentations import (
             make_star_field,
         )
@@ -47,75 +49,112 @@ class TestMakeStarField:
             rng=np.random.default_rng(0),
         )
         assert inp.shape == (128, 128, 1)
-        assert tgt.shape == (128, 128, 1)
+        assert tgt.shape == (64, 64, 1)    # 128 / rebin_factor=2 = 64
         assert inp.dtype == np.float32
         assert tgt.dtype == np.float32
 
-    def test_flux_conserved_by_unit_psf(self, psfs):
-        """Sum of input ≈ sum of star amplitudes (PSF sums to 1).
-
-        Edge-effect tolerance: stars near the boundary lose ~1-2 σ of
-        flux off the array. With sigma ≤ 4 px and a 128² grid, stars
-        more than 10 px from any edge are essentially fully captured.
-        Use a generous-but-finite tolerance.
-        """
+    def test_shape_with_rebin_one_keeps_target_at_hr(self, psfs):
+        """rebin_factor=1 is the legacy mode (target stays at HR).
+        Verify both sides have the same shape in that case."""
         from euclid_polish.training.transition_augmentations import (
             make_star_field,
         )
         psf_h, psf_e = psfs
-        # Stars centred in the safe interior so edge clipping is
-        # negligible. We replicate the math of make_star_field with a
-        # known seed so we can assert flux to a tight tolerance.
+        inp, tgt = make_star_field(
+            psf_h, psf_e,
+            image_size=64, n_stars=2, rebin_factor=1,
+            rng=np.random.default_rng(0),
+        )
+        assert inp.shape == (64, 64, 1)
+        assert tgt.shape == (64, 64, 1)
+
+    def test_flux_conserved_by_unit_psf(self, psfs):
+        """Sum of input ≈ sum of target (both pass through unit-flux
+        PSFs, and sum-rebin is photometric so it preserves total
+        flux). Edge effects: stars near the boundary lose ~1-2σ of
+        flux off the array — with sigma ≤ 4 px and 128² grid the
+        loss is well under 5%. Sum-rebin doesn't change this — it
+        bins what's already in the array."""
+        from euclid_polish.training.transition_augmentations import (
+            make_star_field,
+        )
+        psf_h, psf_e = psfs
         rng = np.random.default_rng(0)
         inp, tgt = make_star_field(
             psf_h, psf_e,
             image_size=128, n_stars=3, amp_min=100.0, amp_max=300.0,
             rng=rng,
         )
-        # PSFs sum to 1, so total flux ≈ sum of amplitudes. With 3
-        # stars at amp ∈ [100, 300], total ≥ 300. Allow 5% loss to
-        # edge effects (worst case at sigma=4).
         assert inp.sum() > 200.0
         assert tgt.sum() > 200.0
-        # The two channels should carry nearly the same total flux —
-        # they came from the same delta image and unit-flux PSFs.
+        # Both sides carry essentially the same total flux: sum-rebin
+        # preserves it exactly, and the two unit-flux PSFs preserve it
+        # modulo edge clipping.
         rel_diff = abs(inp.sum() - tgt.sum()) / max(inp.sum(), tgt.sum())
         assert rel_diff < 0.10, (
-            f"input and target totals should match (unit-flux PSFs); "
-            f"got input={inp.sum():.2f} vs target={tgt.sum():.2f}"
+            f"input and target totals should match within ~10% (unit-flux "
+            f"PSFs + photometric rebin); got input={inp.sum():.2f} vs "
+            f"target={tgt.sum():.2f}"
         )
 
-    def test_input_and_target_differ_when_psfs_differ(self, psfs):
-        """If the two PSFs are different, the (input, target) pair
-        must be different too — otherwise stars contribute nothing to
-        the training signal."""
+    def test_target_is_sum_rebin_of_target_at_hr(self, psfs):
+        """Direct invariant: target_LR == sum_rebin(scene ⊛ PSF_Euclid).
+
+        Construct a single-star scene by hand and verify the target
+        side of make_star_field equals the explicit sum-rebin of the
+        convolved scene.
+        """
         from euclid_polish.training.transition_augmentations import (
-            make_star_field,
+            make_star_field, sum_rebin_2d,
         )
+        from scipy import signal as scipy_signal
         psf_h, psf_e = psfs
-        inp, tgt = make_star_field(
-            psf_h, psf_e,
-            image_size=128, n_stars=4,
-            rng=np.random.default_rng(123),
-        )
-        diff = np.abs(inp - tgt).max()
-        assert diff > 0.1, (
-            f"input and target must differ when PSFs differ; max|diff|={diff}"
-        )
 
-    def test_input_and_target_match_when_psfs_match(self, psfs):
-        """Sanity-check the linearity machinery — same PSF on both sides
-        must yield identical input and target."""
+        # Deterministic single-star delta: known position + amplitude.
+        rng = np.random.default_rng(2024)
+        inp, tgt = make_star_field(
+            psf_h, psf_e, image_size=64, n_stars=1,
+            amp_min=200.0, amp_max=200.0,        # fix amp
+            rebin_factor=2, rng=rng,
+        )
+        # Reverse-engineer the delta image from input: deconvolve isn't
+        # easy here, so instead recompute by constructing the same
+        # field with the same RNG sequence the helper uses internally.
+        rng2 = np.random.default_rng(2024)
+        deltas = np.zeros((64, 64), dtype=np.float64)
+        # _gen does: cy, cx = integers(0, image_size); amp = uniform(amp_min, amp_max)
+        cy = int(rng2.integers(0, 64))
+        cx = int(rng2.integers(0, 64))
+        amp = float(rng2.uniform(200.0, 200.0))
+        deltas[cy, cx] = amp
+        tgt_hr_expected = scipy_signal.fftconvolve(
+            deltas, psf_e.astype(np.float64), mode="same",
+        ).astype(np.float32)
+        tgt_lr_expected = sum_rebin_2d(tgt_hr_expected, 2)[..., np.newaxis]
+        np.testing.assert_allclose(tgt, tgt_lr_expected, atol=1e-5)
+
+    def test_input_and_target_match_when_psfs_match_with_rebin(self, psfs):
+        """When both PSFs are equal AND rebin_factor=1, input == target.
+
+        With rebin_factor=2 they're equal only up to the rebin
+        operation, so we compare ``sum_rebin(input)`` to ``target``."""
         from euclid_polish.training.transition_augmentations import (
-            make_star_field,
+            make_star_field, sum_rebin_2d,
         )
         psf_h, _ = psfs
-        inp, tgt = make_star_field(
-            psf_h, psf_h,
-            image_size=128, n_stars=3,
+        # rebin=1: literal equality.
+        inp1, tgt1 = make_star_field(
+            psf_h, psf_h, image_size=64, n_stars=3, rebin_factor=1,
             rng=np.random.default_rng(7),
         )
-        np.testing.assert_allclose(inp, tgt, atol=1e-6)
+        np.testing.assert_allclose(inp1, tgt1, atol=1e-6)
+        # rebin=2: equality after rebin of input.
+        inp2, tgt2 = make_star_field(
+            psf_h, psf_h, image_size=64, n_stars=3, rebin_factor=2,
+            rng=np.random.default_rng(7),
+        )
+        inp2_lr = sum_rebin_2d(inp2[..., 0], 2)[..., np.newaxis]
+        np.testing.assert_allclose(tgt2, inp2_lr, atol=1e-6)
 
     def test_zero_stars_yields_zero_field(self, psfs):
         from euclid_polish.training.transition_augmentations import (
@@ -155,6 +194,70 @@ class TestMakeStarField:
         with pytest.raises(ValueError, match="share shape"):
             make_star_field(a, b, image_size=64, n_stars=1)
 
+    def test_image_size_must_be_divisible_by_rebin(self, psfs):
+        from euclid_polish.training.transition_augmentations import (
+            make_star_field,
+        )
+        psf_h, psf_e = psfs
+        with pytest.raises(ValueError, match="divisible by"):
+            make_star_field(psf_h, psf_e, image_size=65, n_stars=1,
+                            rebin_factor=2)
+
+
+class TestSumRebin2d:
+    """Unit tests for the photometric sum-rebin helper."""
+
+    def test_sums_inside_block(self):
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        a = np.array([[1, 2, 3, 4],
+                      [5, 6, 7, 8],
+                      [9, 10, 11, 12],
+                      [13, 14, 15, 16]], dtype=np.float32)
+        out = sum_rebin_2d(a, 2)
+        # Top-left 2×2 sums to 1+2+5+6=14; etc.
+        expected = np.array([[14, 22],
+                             [46, 54]], dtype=np.float32)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_factor_1_is_copy(self):
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        a = np.arange(16, dtype=np.float32).reshape(4, 4)
+        out = sum_rebin_2d(a, 1)
+        np.testing.assert_array_equal(out, a)
+        # Must be a copy, not the same buffer.
+        out[0, 0] = -1
+        assert a[0, 0] == 0
+
+    def test_rejects_non_divisible(self):
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        with pytest.raises(ValueError, match="not divisible"):
+            sum_rebin_2d(np.zeros((5, 4), dtype=np.float32), 2)
+
+    def test_handles_channel_axis(self):
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        a = np.ones((4, 4, 3), dtype=np.float32)
+        out = sum_rebin_2d(a, 2)
+        assert out.shape == (2, 2, 3)
+        np.testing.assert_array_equal(out, 4.0 * np.ones((2, 2, 3)))
+
+    def test_preserves_total_flux(self):
+        """Photometric invariant: sum_rebin preserves the total."""
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d,
+        )
+        rng = np.random.default_rng(0)
+        a = rng.uniform(0, 100, size=(8, 8)).astype(np.float32)
+        out = sum_rebin_2d(a, 4)
+        np.testing.assert_allclose(out.sum(), a.sum(), rtol=1e-5)
+
 
 # ---------------------------------------------------------------------------
 # build_star_pair_dataset — tf.data producer
@@ -162,7 +265,8 @@ class TestMakeStarField:
 
 class TestStarPairDataset:
 
-    def test_emits_correct_shapes(self, psfs):
+    def test_emits_correct_shapes_with_rebin(self, psfs):
+        """Default rebin_factor=2 → target side = image_size / 2."""
         from euclid_polish.training.transition_augmentations import (
             build_star_pair_dataset,
         )
@@ -172,6 +276,20 @@ class TestStarPairDataset:
             n_stars_min=1, n_stars_max=4, seed=1,
         )
         for inp, tgt in ds.take(3):
+            assert tuple(inp.shape) == (64, 64, 1)
+            assert tuple(tgt.shape) == (32, 32, 1)   # rebin_factor=2 default
+
+    def test_emits_correct_shapes_with_rebin_one(self, psfs):
+        """rebin_factor=1 keeps target at HR (legacy mode)."""
+        from euclid_polish.training.transition_augmentations import (
+            build_star_pair_dataset,
+        )
+        psf_h, psf_e = psfs
+        ds = build_star_pair_dataset(
+            psf_h, psf_e, image_size=64, rebin_factor=1,
+            n_stars_min=1, n_stars_max=4, seed=1,
+        )
+        for inp, tgt in ds.take(2):
             assert tuple(inp.shape) == (64, 64, 1)
             assert tuple(tgt.shape) == (64, 64, 1)
 
@@ -277,22 +395,35 @@ class TestEmbedInCanvas:
 
 class TestMakePsfIdentityPair:
 
-    def test_shape_and_dtype(self, psfs):
+    def test_shape_and_dtype_default_rebin(self, psfs):
+        """input HR (64²), target LR (32² at rebin=2)."""
         from euclid_polish.training.transition_augmentations import (
             make_psf_identity_pair,
         )
         psf_h, psf_e = psfs
         inp, tgt = make_psf_identity_pair(psf_h, psf_e, image_size=64)
         assert inp.shape == (64, 64, 1)
-        assert tgt.shape == (64, 64, 1)
+        assert tgt.shape == (32, 32, 1)
         assert inp.dtype == np.float32
 
-    def test_input_is_hst_target_is_euclid(self, psfs):
-        """The pair must be ordered (input=HST, target=Euclid).
-        Otherwise the model would have to learn to invert the
-        transition direction, which is the wrong thing."""
+    def test_shape_with_rebin_one(self, psfs):
+        """Legacy mode: input and target both HR."""
         from euclid_polish.training.transition_augmentations import (
-            embed_in_canvas, make_psf_identity_pair,
+            make_psf_identity_pair,
+        )
+        psf_h, psf_e = psfs
+        inp, tgt = make_psf_identity_pair(
+            psf_h, psf_e, image_size=64, rebin_factor=1,
+        )
+        assert inp.shape == (64, 64, 1)
+        assert tgt.shape == (64, 64, 1)
+
+    def test_input_is_hst_target_is_rebinned_euclid(self, psfs):
+        """The pair must be ordered (input=HST_HR, target=rebin(Euclid)).
+        Otherwise the model would have to learn to invert the transition
+        direction, which is the wrong thing."""
+        from euclid_polish.training.transition_augmentations import (
+            embed_in_canvas, make_psf_identity_pair, sum_rebin_2d,
         )
         psf_h, psf_e = psfs
         inp, tgt = make_psf_identity_pair(psf_h, psf_e, image_size=64)
@@ -300,12 +431,14 @@ class TestMakePsfIdentityPair:
             inp[..., 0], embed_in_canvas(psf_h, 64),
         )
         np.testing.assert_array_equal(
-            tgt[..., 0], embed_in_canvas(psf_e, 64),
+            tgt[..., 0],
+            sum_rebin_2d(embed_in_canvas(psf_e, 64), 2),
         )
 
     def test_unit_flux_preserved(self, psfs):
         """Both PSFs sum to 1 by construction; embedding in a larger
-        canvas can only zero-pad, so the sums must still be ~1."""
+        canvas zero-pads, and sum-rebin is photometric — so the totals
+        must still be ~1."""
         from euclid_polish.training.transition_augmentations import (
             make_psf_identity_pair,
         )
