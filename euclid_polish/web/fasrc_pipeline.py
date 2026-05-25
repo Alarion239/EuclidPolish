@@ -154,8 +154,25 @@ class FASRCPipelineStep(ABC):
         cmd_line = " \\\n              ".join(shlex.quote(a) for a in argv)
 
         n_gpus = int(resources.n_gpus)
+        # IMPORTANT — the trailing 12 spaces are required.
+        #
+        # The template below uses ``textwrap.dedent`` with a 12-space
+        # baseline; ``gres_line`` is inlined on the same template line
+        # as the next ``#SBATCH`` directive. If we wrote just
+        # ``"#SBATCH --gres=...\n"`` here, the newline would break out
+        # of the f-string's indentation: the line *after* the gres
+        # directive would land at column 0 (no leading whitespace),
+        # which makes ``textwrap.dedent`` find a common prefix of ""
+        # and strip nothing. The result is a script whose first line
+        # ``#!/bin/bash`` retains 12 leading spaces and is rejected by
+        # sbatch with "first line must start with #!".
+        #
+        # Padding the newline with 12 spaces re-aligns the next line
+        # back onto the template's indent so dedent finds a uniform
+        # common prefix again. CPU jobs (gres_line="") have always
+        # worked; this bug only fired for n_gpus > 0.
         gres_line = (
-            f"#SBATCH --gres=gpu:{n_gpus}\n" if n_gpus > 0 else ""
+            f"#SBATCH --gres=gpu:{n_gpus}\n            " if n_gpus > 0 else ""
         )
         safe_label = label.replace("\n", " ").replace("'", "")[:200]
 

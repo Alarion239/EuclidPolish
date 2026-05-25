@@ -3378,6 +3378,18 @@ def create_app() -> Flask:
     def api_fasrc_submit():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
+        # Server-side explicit-confirmation guard — same as the
+        # HST-pipeline submit route. Any POST without ``confirm=yes``
+        # in the form is rejected, no matter where it came from.
+        if request.form.get("confirm", "").lower() not in ("yes", "true", "1"):
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "missing explicit confirmation token. Refresh the page "
+                    "and click Submit again — the new flow shows a dialog "
+                    "with the full payload before any FASRC submit."
+                ),
+            }), 400
         cfg = fasrc_config.load()
         f = request.form
         preset_name = f.get("preset", "custom")
@@ -3554,7 +3566,15 @@ def create_app() -> Flask:
 
     @app.route("/api/fasrc/hst/<step_id>/submit", methods=["POST"])
     def api_fasrc_hst_submit(step_id: str):
-        """Generic submission for any HST-pipeline step."""
+        """Generic submission for any HST-pipeline step.
+
+        Requires an explicit ``confirm=yes`` token in the form payload —
+        the JS submit handler sets this via ``window.confirm()`` so the
+        user has to deliberately click OK on a dialog showing the full
+        parameter set before any SLURM job is created. A request that
+        omits the token (e.g. a stray ``fetch()`` from cached JS, or a
+        programmatic POST from somewhere else) is rejected with 400.
+        """
         from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
         from euclid_polish.web import fasrc_jobs
 
@@ -3567,6 +3587,24 @@ def create_app() -> Flask:
 
         cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()
+
+        # Server-side guard: refuse if the explicit confirmation token
+        # isn't present. The frontend dialog sets ``confirm=yes`` only
+        # after the user clicks OK; any submission lacking it must
+        # either come from a stale browser tab without the new JS, or
+        # from a programmatic POST — neither of which we want to honour
+        # silently.
+        if form.get("confirm", "").lower() not in ("yes", "true", "1"):
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "missing explicit confirmation token. Refresh the page "
+                    "and click Submit again — the new flow shows a dialog "
+                    "with the full payload before any FASRC submit. "
+                    "(Server-side defence against accidental + autofilled "
+                    "submissions.)"
+                ),
+            }), 400
 
         try:
             resources = StepResources.from_form(form, step.defaults)

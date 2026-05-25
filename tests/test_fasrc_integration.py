@@ -128,6 +128,7 @@ def client(fake_remote):
 
 def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     r = client.post("/api/fasrc/submit", data={
+        "confirm": "yes",
         "label": "integration",
         "n_gpus": 2, "n_cpus": 16, "memory": "64G", "time_limit": "06:00:00",
         "n_train": 100, "n_valid": 5, "image_size": 60, "batch_size": 4,
@@ -163,6 +164,7 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
 
 def test_submit_invokes_sbatch_with_the_built_script(fake_remote, client):
     r = client.post("/api/fasrc/submit", data={
+        "confirm": "yes",
         "label": "y",
         "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
         "n_train": 6400, "n_valid": 200, "image_size": 510, "batch_size": 16,
@@ -178,6 +180,7 @@ def test_submit_invokes_sbatch_with_the_built_script(fake_remote, client):
 
 def test_submit_records_job_in_sqlite(fake_remote, client):
     client.post("/api/fasrc/submit", data={
+        "confirm": "yes",
         "label": "remember me",
         "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
         "n_train": 6400, "n_valid": 200, "image_size": 510, "batch_size": 16,
@@ -337,6 +340,7 @@ def test_git_pull_does_not_flag_env_update_for_unrelated_changes(fake_remote, cl
 def test_log_stream_emits_lines_and_updates_progress(fake_remote, client):
     # First submit a job so the db knows about it + the log path.
     r = client.post("/api/fasrc/submit", data={
+        "confirm": "yes",
         "label": "stream test",
         "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
         "n_train": 10, "n_valid": 2, "image_size": 12, "batch_size": 2,

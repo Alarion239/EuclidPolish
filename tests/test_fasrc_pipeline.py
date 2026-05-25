@@ -205,6 +205,41 @@ class TestSbatchRendering:
         assert "--gres=gpu:1" in out["body"]
         assert "--partition=gpu" in out["body"]
 
+    def test_gpu_step_first_line_is_valid_shebang(self, cfg):
+        """REGRESSION: a previous version of build_sbatch_body inlined
+        the gres directive with an embedded ``\\n`` inside the
+        textwrap.dedent template. For n_gpus > 0 this broke the indent
+        accounting and left the script with 12 leading spaces before
+        ``#!/bin/bash``, which sbatch correctly rejected with "first
+        line must start with #!".
+
+        Any GPU configuration must produce a body that LITERALLY
+        starts with ``#!/bin/bash\\n``. No leading whitespace, no
+        empty line, no BOM."""
+        for step_id in ("train", "train_transition"):
+            step = REGISTRY.get(step_id)
+            # Force n_gpus to a non-zero value even if the default is 0,
+            # so the test exercises the gres branch regardless of step
+            # defaults shifting in future.
+            resources = step.defaults
+            from dataclasses import replace
+            resources_gpu = replace(resources, n_gpus=1, partition="gpu")
+            out = step.build_sbatch_body(
+                params={}, resources=resources_gpu, cfg=cfg,
+                label=f"gpu shebang test {step_id}",
+            )
+            body = out["body"]
+            assert body.startswith("#!/bin/bash\n"), (
+                f"step {step_id!r} GPU body does not start with a "
+                f"valid shebang. First 40 bytes (repr): "
+                f"{body[:40]!r}"
+            )
+            assert "--gres=gpu:1" in body
+            # And no SBATCH line should accidentally end up on the
+            # same line as the gres directive due to a missing newline.
+            assert "#SBATCH --gres=gpu:1\n" in body or \
+                   "#SBATCH --gres=gpu:1\n#SBATCH" in body
+
     def test_cpu_step_omits_gres_line(self, cfg):
         # gpu:0 is silently rejected by some SLURM configs.
         step = REGISTRY.get("kernel")
@@ -213,6 +248,25 @@ class TestSbatchRendering:
             resources=step.defaults, cfg=cfg, label="x",
         )
         assert "--gres=" not in out["body"]
+
+    def test_all_steps_first_line_is_valid_shebang(self, cfg):
+        """Every registered step must produce a body that begins with
+        ``#!/bin/bash``. Sanity guard against future edits to the
+        template that would break the dedent invariant."""
+        from dataclasses import replace
+        for step in REGISTRY.all():
+            for n_gpus in (0, 1, 2):
+                resources = replace(step.defaults, n_gpus=n_gpus)
+                out = step.build_sbatch_body(
+                    params={}, resources=resources, cfg=cfg,
+                    label=f"shebang test {step.step_id} n_gpus={n_gpus}",
+                )
+                body = out["body"]
+                first_line = body.split("\n", 1)[0]
+                assert first_line == "#!/bin/bash", (
+                    f"step {step.step_id!r} (n_gpus={n_gpus}) first "
+                    f"line is {first_line!r}, not '#!/bin/bash'"
+                )
 
     def test_fixed_cpus_renders_in_header(self, cfg):
         """extract_psf must always emit --cpus-per-task=1, no matter what."""
@@ -385,6 +439,7 @@ class TestFixedCpusEnforcement:
         r = client.post(
             "/api/fasrc/hst/extract_psf/submit",
             data={
+                "confirm": "yes",
                 "n_cpus": "16",     # user tries to over-allocate
                 "n_stars": "200",
                 "memory": "8G",
@@ -406,6 +461,7 @@ class TestFixedCpusEnforcement:
         r = client.post(
             "/api/fasrc/hst/tfrecords/submit",
             data={
+                "confirm": "yes",
                 "n_cpus": "20",
                 "n_train": "100",
                 "n_valid": "10",
@@ -420,3 +476,55 @@ class TestFixedCpusEnforcement:
         assert j["ok"]
         # tfrecords has no fixed_cpus → user's 20 should be honoured.
         assert j["params"]["n_cpus"] == 20
+
+    def test_submit_rejected_without_confirm_token(self, monkeypatch):
+        """The server-side confirmation guard must refuse any POST that
+        lacks ``confirm=yes`` — no SLURM script gets written, no sbatch
+        gets called, no job ID is returned. This is the load-bearing
+        defence against accidental/autofilled submissions.
+
+        Without it, a stray ``fetch()`` from cached JS, a browser
+        extension, or a programmatic POST could submit jobs to FASRC
+        without the user ever seeing the confirmation dialog.
+        """
+        from euclid_polish.web.app import create_app
+        stub = self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        r = client.post(
+            "/api/fasrc/hst/tfrecords/submit",
+            data={
+                # Intentionally NO "confirm" field.
+                "n_cpus": "20",
+                "n_train": "100",
+                "n_valid": "10",
+                "image_size": "256",
+                "memory": "64G",
+                "time_limit": "1:00:00",
+                "partition": "shared",
+            },
+        )
+        j = r.get_json()
+        assert r.status_code == 400
+        assert not j["ok"]
+        assert "confirm" in j["error"].lower()
+        # The stub SSH must not have been touched — no sbatch invocation
+        # of any kind, no mkdir, nothing. This is the strongest possible
+        # assertion that the guard short-circuited before doing any work.
+        assert stub.calls == []
+
+    def test_submit_rejected_with_invalid_confirm_value(self, monkeypatch):
+        """Token values other than 'yes' / 'true' / '1' (case-insensitive)
+        must also be rejected, so a typo or stray default can't sneak
+        a submission through."""
+        from euclid_polish.web.app import create_app
+        stub = self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        for bad in ("no", "false", "", "0", "maybe", "ok", "y"):
+            r = client.post(
+                "/api/fasrc/hst/extract_psf/submit",
+                data={"confirm": bad, "n_stars": "10"},
+            )
+            assert r.status_code == 400, f"value {bad!r} should be rejected"
+        assert stub.calls == []

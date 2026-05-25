@@ -785,11 +785,34 @@ __JOB_FORMS.forEach(form => {
       console.error('job-out element not found', { form, card });
       return;
     }
+
+    // ── Explicit confirmation before any SLURM submit goes to FASRC. ─────
+    // Same defence as the HST-pipeline form below: every submission
+    // must be a deliberate read-then-click flow with the full payload
+    // visible.
+    const fd = new FormData(form);
+    fd.set('preset', form.dataset.preset);
+    const summary = [];
+    for (const [k, v] of fd.entries()) {
+      if (v == null || v === '') continue;
+      summary.push(`  ${k} = ${v}`);
+    }
+    const msg =
+      `Submit a SLURM training job to FASRC?\n\n` +
+      `Preset: ${form.dataset.preset}\n\n` +
+      `Parameters:\n${summary.join('\n')}\n\n` +
+      `This will run on FASRC and consume real GPU resources. ` +
+      `Click OK to proceed, Cancel to abort.`;
+    if (!window.confirm(msg)) {
+      out.textContent = 'cancelled by user';
+      return;
+    }
+    // Explicit confirmation token — server rejects POSTs that lack it.
+    fd.set('confirm', 'yes');
+
     out.style.display = 'block';
     out.textContent = 'submitting…';
     try {
-      const fd = new FormData(form);
-      fd.set('preset', form.dataset.preset);
       const r = await fetch('/api/fasrc/submit', {
         method: 'POST', body: new URLSearchParams(fd),
       });
@@ -1432,7 +1455,8 @@ function _stepCard(step, artifactStatus) {
     <p class="hint">${polishUI.escapeHtml(step.description)}</p>
     <p class="hint">${medLine}</p>
 
-    <form data-step-id="${step.step_id}" class="hst-step-form">
+    <form data-step-id="${step.step_id}" class="hst-step-form"
+          autocomplete="off">
       <div class="form-row" style="flex-wrap:wrap; gap:12px;">
         ${_stepSpecificFields(step)}
       </div>
@@ -1451,10 +1475,52 @@ function _stepCard(step, artifactStatus) {
 // polls only update read-only status decorations — never touch form inputs.
 let _HST_RENDERED = false;
 
+function _forceFormDefaults(area) {
+  // Chrome (and Safari) ignore autocomplete="off" on type=number inputs
+  // and aggressively replace the explicit value="..." attribute with
+  // whatever the user most recently submitted under the same field
+  // name — even across distinct forms. That bit us hard: small test
+  // values entered into the transition_pairs step (n_train=100) bled
+  // into the tfrecords step's n_train and got submitted as a real
+  // SLURM job with horrible limits.
+  //
+  // The defence: after rendering, walk every input and force its
+  // .value to its HTML value attribute (the developer-intended
+  // default). This runs AFTER the browser's autofill phase, so it
+  // wins.
+  area.querySelectorAll('input[type="number"], input[type="text"]')
+    .forEach(el => {
+      const explicit = el.getAttribute('value');
+      if (explicit != null && explicit !== '') {
+        el.value = explicit;
+      }
+    });
+}
+
 function _renderHstArea(j) {
   const area = document.getElementById('hst-steps-area');
   if (!area) return;
   area.innerHTML = j.steps.map(s => _stepCard(s, j.artifacts || {})).join('');
+  _forceFormDefaults(area);
+
+  // ── Defence #2: Enter-key in any input must NOT submit the form. ─────
+  // HTML default is "press Enter in a number/text field → click the
+  // form's first submit button". Combined with browser autofill silently
+  // poisoning the value attributes (see _forceFormDefaults above), this
+  // makes it scarily easy to accidentally submit a real SLURM job to
+  // FASRC with stale parameters just by typing a number and pressing
+  // Enter to commit it.
+  //
+  // The user must reach the Submit button via mouse click only.
+  area.querySelectorAll('.hst-step-form input').forEach(el => {
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    });
+  });
+
   // Wire submit handlers on every form (once per render).
   area.querySelectorAll('.hst-step-form').forEach(f => {
     f.addEventListener('submit', async (e) => {
@@ -1463,8 +1529,39 @@ function _renderHstArea(j) {
       const statusEl = area.querySelector(
         `.hst-step-status[data-step-id="${stepId}"]`,
       );
-      statusEl.innerHTML = '<span class="muted">submitting…</span>';
+
+      // ── Defence #3: Explicit confirmation dialog before any SLURM submit. ─
+      // The user requested this explicitly: "You shall never submit
+      // jobs to FASRC without my explicit command." A blocking
+      // ``confirm()`` makes every submission a deliberate click → read
+      // → click flow. The dialog shows the FULL payload so the user
+      // can spot stale autofilled values before they reach FASRC.
       const body = new FormData(f);
+      const summary = [];
+      for (const [k, v] of body.entries()) {
+        // Skip the empty-string defaults from text inputs that the
+        // user left blank — they get replaced by the step's defaults
+        // server-side.
+        if (v == null || v === '') continue;
+        summary.push(`  ${k} = ${v}`);
+      }
+      const msg =
+        `Submit a SLURM job to FASRC?\n\n` +
+        `Step: ${stepId}\n\n` +
+        `Parameters:\n${summary.join('\n') || '  (no overrides — using step defaults)'}\n\n` +
+        `This will run on FASRC and consume real cluster resources. ` +
+        `Click OK to proceed, Cancel to abort.`;
+      if (!window.confirm(msg)) {
+        statusEl.innerHTML = '<span class="muted">cancelled by user</span>';
+        return;
+      }
+      // Set the explicit confirmation token AFTER the user clicked OK.
+      // The server-side guard rejects any POST that lacks this — so a
+      // programmatic POST from anywhere else (cached JS, devtools, a
+      // browser extension) can't sneak a SLURM job through.
+      body.set('confirm', 'yes');
+
+      statusEl.innerHTML = '<span class="muted">submitting…</span>';
       try {
         const resp = await fetch(`/api/fasrc/hst/${stepId}/submit`, {
           method: 'POST', body,
