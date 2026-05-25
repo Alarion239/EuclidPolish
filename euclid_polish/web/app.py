@@ -3605,9 +3605,25 @@ def create_app() -> Flask:
             })
 
         # Cheap probes for "does this artifact exist on FASRC?" — single
-        # ``test -e`` per check, batched in one SSH round-trip.
-        artifacts = {"tiles": None, "psf": None, "kernel": None,
-                     "records": None, "ckpt": None}
+        # ``test -e`` per check, batched in one SSH round-trip. Keep
+        # this list in sync with the ``produces`` map in fasrc.html
+        # (the JS side maps each step_id to one of these keys).
+        artifacts = {
+            "tiles": None, "psf": None, "kernel": None,
+            "records": None, "ckpt": None,
+            # Round-trip pipeline artifacts (Chunk C3 + web wiring):
+            #   euclid_sky      — sky-position catalog written by the
+            #                     sky-download step (cutouts arrive in
+            #                     subdirs whose names depend on the
+            #                     requested size; gate on the catalog
+            #                     instead, which exists as soon as the
+            #                     position generation has run).
+            #   roundtrip_records — LR-only TFRecord produced by the
+            #                     stack/chop step. Single-file probe so
+            #                     the UI can flip ✓ as soon as the
+            #                     first shard lands.
+            "euclid_sky": None, "roundtrip_records": None,
+        }
         if ssh_ok:
             paths = {
                 "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
@@ -3615,6 +3631,10 @@ def create_app() -> Flask:
                 "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
                 "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
+                "euclid_sky":
+                    f"{cfg_loaded.data_dir}/euclid_sky/stars.csv",
+                "roundtrip_records":
+                    f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
             }
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"

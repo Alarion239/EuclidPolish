@@ -599,3 +599,52 @@ def test_serve_vis_returns_existing_png(client, tmp_path):
 def test_serve_vis_unknown_file_404(client):
     r = client.get("/vis/does_not_exist.png")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# FASRC HST-pipeline status API — round-trip wiring
+# ---------------------------------------------------------------------------
+#
+# /api/fasrc/hst/status returns the registered pipeline steps + an
+# artifact-existence dict. After the round-trip feature landed there
+# should be two new steps and two new artifact keys; these tests pin
+# the wiring on the *server* side so the UI's JS dispatch (form fields
+# + status badges) can rely on them being there.
+
+def test_hst_status_exposes_roundtrip_steps_and_artifacts(client):
+    r = client.get("/api/fasrc/hst/status")
+    assert r.status_code == 200
+    body = r.get_json()
+
+    # Steps registry: round-trip steps must appear alongside the
+    # original HST pipeline so the UI auto-renders cards for them.
+    step_ids = {s["step_id"] for s in body["steps"]}
+    assert "euclid_sky_download"          in step_ids
+    assert "euclid_roundtrip_tfrecords"   in step_ids
+
+    # Artifact keys must appear in the dict regardless of SSH state
+    # (when disconnected they're None — meaning "unknown"; when SSH
+    # is up the probe returns True/False per actual existence). The
+    # JS side keys off these names; missing names would silently
+    # break the badge rendering for the new steps.
+    artifacts = body["artifacts"]
+    assert "euclid_sky"         in artifacts
+    assert "roundtrip_records"  in artifacts
+    # Values must be None or bool — never raw strings / ints — so the
+    # JS ``=== true`` / ``=== false`` checks behave predictably.
+    for k in ("euclid_sky", "roundtrip_records"):
+        v = artifacts[k]
+        assert v is None or isinstance(v, bool), (
+            f"artifacts[{k!r}] = {v!r} (type {type(v).__name__}) — "
+            "must be None or bool"
+        )
+
+
+def test_hst_status_keeps_pre_existing_artifact_keys(client):
+    """Backward-compat: the original 5 keys must still be present so
+    nothing on the JS side that depends on ``artifacts.tiles`` / etc.
+    silently breaks."""
+    r = client.get("/api/fasrc/hst/status")
+    artifacts = r.get_json()["artifacts"]
+    for key in ("tiles", "psf", "kernel", "records", "ckpt"):
+        assert key in artifacts, f"original artifact key '{key}' missing"

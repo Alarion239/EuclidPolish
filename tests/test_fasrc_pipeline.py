@@ -55,9 +55,14 @@ class TestStepResources:
 
 class TestRegistry:
 
-    def test_all_five_steps_present(self):
+    def test_all_steps_present(self):
+        """Registry must include the original 5 steps plus the two new
+        round-trip steps (sky download + LR-only TFRecord build)."""
         ids = {s.step_id for s in REGISTRY.all()}
-        assert ids == {"download", "extract_psf", "kernel", "tfrecords", "train"}
+        assert ids == {
+            "download", "extract_psf", "kernel", "tfrecords", "train",
+            "euclid_sky_download", "euclid_roundtrip_tfrecords",
+        }
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
@@ -186,6 +191,61 @@ class TestSbatchRendering:
         )
         assert "EUCLID_POLISH_DATA_DIR" in out["body"]
         assert shlex.quote(cfg.data_dir) in out["body"]
+
+    def test_train_step_omits_roundtrip_flag_when_zero(self, cfg):
+        """Backward-compat invariant: ``roundtrip_fraction=0`` must
+        produce the same argv it did before the round-trip feature
+        existed — so re-submitting a pre-round-trip job stays
+        byte-equivalent and doesn't accidentally enable the round-trip
+        loss with no records on disk."""
+        step = REGISTRY.get("train")
+        out = step.build_sbatch_body(
+            params={"steps": 100, "batch_size": 8, "hst_fraction": 0.1},
+            resources=step.defaults, cfg=cfg, label="x",
+        )
+        assert "--roundtrip-fraction" not in out["body"], (
+            "default rt=0 must not emit the flag — preserves "
+            "pre-round-trip command line"
+        )
+
+    def test_train_step_emits_roundtrip_flag_when_positive(self, cfg):
+        step = REGISTRY.get("train")
+        out = step.build_sbatch_body(
+            params={
+                "steps": 100, "batch_size": 8,
+                "hst_fraction": 0.2, "roundtrip_fraction": 0.2,
+            },
+            resources=step.defaults, cfg=cfg, label="x",
+        )
+        body = out["body"]
+        assert "--hst-fraction" in body
+        assert "0.2" in body
+        assert "--roundtrip-fraction" in body
+
+    def test_euclid_sky_download_step_args(self, cfg):
+        step = REGISTRY.get("euclid_sky_download")
+        out = step.build_sbatch_body(
+            params={"n_positions": 50, "vis_pixels": 256},
+            resources=step.defaults, cfg=cfg, label="x",
+        )
+        body = out["body"]
+        assert "scripts/fasrc_download_euclid_sky_cutouts.py" in body
+        assert "--n-positions" in body and "50" in body
+        assert "--vis-pixels" in body and "256" in body
+        assert "--ra-centre"  in body
+        assert "--dec-centre" in body
+
+    def test_euclid_roundtrip_tfrecords_step_args(self, cfg):
+        step = REGISTRY.get("euclid_roundtrip_tfrecords")
+        out = step.build_sbatch_body(
+            params={"vis_pixels": 512, "stamp_size": 64, "valid_fraction": 0.15},
+            resources=step.defaults, cfg=cfg, label="x",
+        )
+        body = out["body"]
+        assert "scripts/fasrc_generate_euclid_roundtrip_tfrecords.py" in body
+        assert "--vis-pixels" in body and "512" in body
+        assert "--stamp-size" in body and "64" in body
+        assert "--valid-fraction" in body and "0.15" in body
 
     def test_command_args_shell_quoted(self, cfg):
         """Even pathological params shouldn't break sbatch."""

@@ -1291,7 +1291,45 @@ function _stepSpecificFields(step) {
           <input type="number" name="batch_size" value="16" min="1" max="64"></label>
         <label>HST fraction
           <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"
-                 title="0 → only synthetic. 1 → only HST-derived."></label>`;
+                 title="0 → only synthetic. 1 → only HST-derived."></label>
+        <label>Round-trip fraction
+          <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"
+                 title="Self-supervised loss on real Euclid LR cutouts:
+|asinh(Conv(M(lr))/k) - lr_vis|. Requires the round-trip TFRecords
+(step 5b) and the VIS PSF FITS on FASRC. HST + round-trip fractions
+must sum to ≤ 1; remainder is synthetic. Default 0 keeps the original
+pre-round-trip behaviour."></label>`;
+    case 'euclid_sky_download':
+      return `
+        <label>N positions
+          <input type="number" name="n_positions" value="200" min="1" max="5000"
+                 title="Random (RA, Dec) inside a disk on the Euclid coverage map.
+Positions outside coverage are silently dropped at the mosaic-lookup step,
+so over-sample by ~2× the count you want fully-multi-band."></label>
+        <label>VIS pixels
+          <input type="number" name="vis_pixels" value="512" min="64" max="2048"
+                 title="Cutout side at 0.10\"/pix. 512 px = 51.2\". Each big cutout
+gets chopped by step 5b into many smaller training stamps."></label>
+        <label>RA centre (°)
+          <input type="number" name="ra_centre" value="270" step="any" min="0" max="360"></label>
+        <label>Dec centre (°)
+          <input type="number" name="dec_centre" value="66" step="any" min="-90" max="90"></label>
+        <label>Disk radius (°)
+          <input type="number" name="radius_deg" value="2" step="any" min="0.1" max="20"></label>`;
+    case 'euclid_roundtrip_tfrecords':
+      return `
+        <label>VIS pixels
+          <input type="number" name="vis_pixels" value="512" min="64" max="2048"
+                 title="Must match what was downloaded in step 5a — used to locate
+the per-band FITS files on disk."></label>
+        <label>Stamp size
+          <input type="number" name="stamp_size" value="128" min="32" max="512"
+                 title="LR side (0.10\"/pix) of each training stamp chopped out of
+a large cutout. Each large cutout yields (vis_pixels / stamp_size)² stamps."></label>
+        <label>Validate fraction
+          <input type="number" name="valid_fraction" value="0.1" step="0.05" min="0" max="0.5"
+                 title="Split at the position level so stamps from one
+large cutout don't leak across train/validate."></label>`;
     default:
       return '';
   }
@@ -1321,9 +1359,14 @@ function _resourceFields(step) {
 
 function _stepCard(step, artifactStatus) {
   // Map step id → which artifact existence this step PRODUCES.
+  // Keep in sync with the matching `produces` map in
+  // _updateHstStatusOnly below AND with `artifacts` in
+  // api_fasrc_hst_status (app.py).
   const produces = {
     download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
     tfrecords: 'records', train: 'ckpt',
+    euclid_sky_download: 'euclid_sky',
+    euclid_roundtrip_tfrecords: 'roundtrip_records',
   }[step.step_id];
   const status = artifactStatus[produces];
   let statusBadge = '';
@@ -1405,6 +1448,10 @@ function _updateHstStatusOnly(j) {
   const produces = {
     download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
     tfrecords: 'records', train: 'ckpt',
+    // Round-trip pipeline (keep in sync with the `artifacts` dict in
+    // api_fasrc_hst_status):
+    euclid_sky_download: 'euclid_sky',
+    euclid_roundtrip_tfrecords: 'roundtrip_records',
   };
   for (const step of j.steps) {
     const card = document.querySelector(

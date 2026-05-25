@@ -1,7 +1,27 @@
 """
 Trainer module for WDSR super-resolution models.
 
-This module provides the Trainer class for training WDSR models.
+This module provides the Trainer class for training WDSR models. It
+supports two batch formats:
+
+  * 2-tuple ``(lr, hr)`` — the pre-existing supervised path. Used by
+    ``scripts/run_pipeline.py``, ``cli/main.py``, the web inference
+    helpers, etc. Loss = ``MeanAbsoluteError(sr, hr)``.
+  * 3-tuple ``(lr, hr, source)`` — emitted when the dataset is built
+    with ``with_source_tag=True``. ``source`` is a per-example int32
+    tensor; the trainer routes the loss per element:
+
+      - ``SOURCE_SYNTHETIC`` / ``SOURCE_HST``: supervised L1
+        (``|sr - hr|`` in asinh space, as before).
+      - ``SOURCE_ROUNDTRIP``: self-supervised reconstruction
+        ``|asinh(Conv(inverse_asinh(sr)) / k) - lr_vis|`` — the
+        synthetic forward op (PSF + 2× sum-rebin, deterministic, no
+        noise) takes the model's HR prediction back down to LR and
+        compares against the input LR's VIS channel.
+
+The split is per *example*, not per batch: a single batch can carry a
+mix of supervised + round-trip examples, and gradients are computed in
+one tape pass.
 """
 import csv
 import os
@@ -16,6 +36,9 @@ from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
 
 from euclid_polish.config import Config
+from euclid_polish.training.data_multiband import (
+    SOURCE_ROUNDTRIP, asinh_stretch_hr, inverse_asinh_stretch_hr,
+)
 from euclid_polish.training.models.common import evaluate
 
 # Append-only CSV — one row per evaluate_every batch — readable by Excel,
@@ -44,23 +67,47 @@ class Trainer:
         loss=MeanAbsoluteError(),
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
         checkpoint_dir='./ckpt/wdsr',
+        forward_op=None,
+        roundtrip_loss_weight: float = 1.0,
     ):
         """
         Initialize the trainer.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         model : tf.keras.Model
             WDSR model to train.
         loss : tf.keras.losses.Loss
-            Loss function to use.
+            Loss function for supervised batches (synthetic + HST).
         learning_rate : tf.keras.optimizers.schedules.LearningRateSchedule
             Learning rate schedule.
         checkpoint_dir : str
             Directory for saving checkpoints.
+        forward_op : tf.keras.layers.Layer, optional
+            Differentiable Euclid VIS forward op (PSF + 2× sum-rebin)
+            used for round-trip examples. ``None`` (default) disables
+            the round-trip path even if source tags arrive — in that
+            case round-trip examples fall through to the supervised
+            L1, which compares ``sr`` against the dummy zeros ``hr``;
+            this is rarely what you want, so configure the forward op
+            whenever ``roundtrip_fraction > 0`` on the dataset.
+        roundtrip_loss_weight : float
+            Multiplier on the per-example round-trip loss before
+            averaging with the supervised loss. Default 1.0 makes the
+            two losses contribute equally per example (so a 60/20/20
+            synthetic/HST/round-trip mix produces an 80/20 supervised/
+            round-trip gradient contribution by batch). Bump above 1 to
+            up-weight the round-trip path; set to 0 to disable while
+            keeping the round-trip dataset wired (useful for ablations).
         """
         self.now = None
         self.loss = loss
+        self.forward_op = forward_op
+        self.roundtrip_loss_weight = float(roundtrip_loss_weight)
+        # Cache the SOURCE_ROUNDTRIP constant on the trainer so the
+        # @tf.function below doesn't capture a Python int that'd force
+        # a retrace if its value ever changed.
+        self._source_roundtrip = tf.constant(SOURCE_ROUNDTRIP, dtype=tf.int32)
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -134,10 +181,22 @@ class Trainer:
 
         self.now = time.perf_counter()
 
-        for lr, hr in pbar:
+        for batch in pbar:
             ckpt.step.assign_add(1)
             step = ckpt.step.numpy()
-            loss, gnorm = self.train_step(lr, hr)
+            # Backward-compatible dispatch: 2-tuple → supervised-only
+            # (pre-round-trip behaviour, used by run_pipeline.py /
+            # cli/main.py / the web inference helpers); 3-tuple →
+            # mixed source-aware path used by the round-trip trainer.
+            # tf.function specialises on signature, so each branch
+            # compiles independently and the Python-level switch is
+            # free per batch.
+            if isinstance(batch, tuple) and len(batch) == 3:
+                lr, hr, source = batch
+                loss, gnorm = self.train_step_mixed(lr, hr, source)
+            else:
+                lr, hr = batch
+                loss, gnorm = self.train_step(lr, hr)
             loss_mean(loss)
             gnorm_mean(gnorm)
             gnorm_max.assign(tf.maximum(gnorm_max, gnorm))
@@ -214,7 +273,7 @@ class Trainer:
     @tf.function
     def train_step(self, lr, hr):
         """
-        Perform one training step.
+        Perform one supervised training step (pre-round-trip API).
 
         Returns
         -------
@@ -228,6 +287,76 @@ class Trainer:
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)
+
+        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
+        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
+        self.checkpoint.optimizer.apply_gradients(
+            zip(gradients, self.checkpoint.model.trainable_variables)
+        )
+
+        return loss_value, gnorm
+
+    @tf.function
+    def train_step_mixed(self, lr, hr, source):
+        """
+        Source-aware training step for heterogeneous batches.
+
+        Per element of the batch, the loss is chosen from the source tag:
+
+          * ``source ≠ SOURCE_ROUNDTRIP`` → supervised
+            ``|sr - hr|`` (asinh space, ``hr`` is real ground truth).
+          * ``source == SOURCE_ROUNDTRIP`` → round-trip
+            ``|asinh(Conv(inverse_asinh(sr)) / k) - lr_vis|`` (asinh
+            space, ``hr`` is dummy zeros and never enters the loss).
+
+        The two per-example loss vectors are masked + summed, then
+        normalised by the batch size to keep the scalar loss
+        independent of the source mix. ``forward_op`` MUST be set when
+        any round-trip examples can arrive — otherwise the round-trip
+        path silently degrades to comparing ``sr`` against the dummy
+        zeros, which would push the model toward outputting zeros for
+        round-trip-tagged batches.
+
+        Returns
+        -------
+        loss_value, gnorm : tf.Tensor
+            Same semantics as :meth:`train_step`.
+        """
+        with tf.GradientTape() as tape:
+            sr = self.checkpoint.model(lr, training=True)
+
+            # Supervised L1 per example over (H, W, C) → shape [B].
+            # ``reduce_mean`` over the spatial+channel axes keeps the
+            # per-pixel scale comparable to the round-trip term below.
+            sup_per_example = tf.reduce_mean(tf.abs(sr - hr), axis=[1, 2, 3])
+
+            if self.forward_op is None:
+                # No forward op installed — fall back to supervised for
+                # *all* examples (dummy HR poisons the round-trip ones,
+                # but the trainer can't compute the round-trip loss
+                # without the op). Caller should configure the op
+                # whenever the dataset is built with roundtrip_fraction>0.
+                per_example = sup_per_example
+            else:
+                # Round-trip loss in asinh space (matches the supervised
+                # loss space so the per-example magnitudes are
+                # comparable). The VIS asinh knee on both sides
+                # cancels the stretch's scale dependence.
+                sr_linear        = inverse_asinh_stretch_hr(sr)
+                lr_recon_linear  = self.forward_op(sr_linear)
+                lr_recon_stretch = asinh_stretch_hr(lr_recon_linear)
+                lr_vis           = lr[..., 0:1]
+                rt_per_example   = tf.reduce_mean(
+                    tf.abs(lr_recon_stretch - lr_vis), axis=[1, 2, 3],
+                )
+                is_rt = tf.equal(source, self._source_roundtrip)
+                per_example = tf.where(
+                    is_rt,
+                    self.roundtrip_loss_weight * rt_per_example,
+                    sup_per_example,
+                )
+
+            loss_value = tf.reduce_mean(per_example)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)

@@ -336,14 +336,92 @@ class HSTTFRecordStep(FASRCPipelineStep):
         ]
 
 
+class EuclidSkyDownloadStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="euclid_sky_download",
+            label="5a. Download real Euclid sky cutouts (round-trip)",
+            description=(
+                "Generate N random sky positions inside a 2° disk on "
+                "the Euclid coverage map and pull large 4-band cutouts "
+                "(VIS + NISP Y/J/H) from the Euclid archive. Cutouts "
+                "land in $DATA_DIR/euclid_sky/cutouts/<band>/. Out-of-"
+                "coverage positions silently drop out at the mosaic "
+                "lookup step. This step is the prerequisite for the "
+                "round-trip self-supervised training path."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=8, n_gpus=0,
+                memory="16G", time_limit="3:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        n_positions = int(params.get("n_positions", 200))
+        vis_pixels  = int(params.get("vis_pixels", 512))
+        ra_centre   = float(params.get("ra_centre", 270.0))
+        dec_centre  = float(params.get("dec_centre", 66.0))
+        radius_deg  = float(params.get("radius_deg", 2.0))
+        return [
+            "scripts/fasrc_download_euclid_sky_cutouts.py",
+            "--n-positions", str(n_positions),
+            "--vis-pixels",  str(vis_pixels),
+            "--ra-centre",   f"{ra_centre:g}",
+            "--dec-centre",  f"{dec_centre:g}",
+            "--radius-deg",  f"{radius_deg:g}",
+        ]
+
+
+class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="euclid_roundtrip_tfrecords",
+            label="5b. Stack + chop Euclid sky cutouts into round-trip TFRecords",
+            description=(
+                "Read per-band cutouts from 5a, stack into 4-channel "
+                "(VIS + Y/J/H) cubes on the shared 0.10\"/pix archive "
+                "grid, chop into smaller training stamps, and write "
+                "LR-only ``dirty_{train,validate}.tfrecord`` under "
+                "$DATA_DIR/images/records_v2_euclid_roundtrip/. "
+                "Per-band pixel values are multiplied by their "
+                "``t_total_s`` to convert archive e⁻/s units to the "
+                "total electrons the synthetic/HST records use."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="1:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        vis_pixels = int(params.get("vis_pixels", 512))
+        stamp_size = int(params.get("stamp_size", 128))
+        valid_fraction = float(params.get("valid_fraction", 0.1))
+        return [
+            "scripts/fasrc_generate_euclid_roundtrip_tfrecords.py",
+            "--vis-pixels", str(vis_pixels),
+            "--stamp-size", str(stamp_size),
+            "--valid-fraction", f"{valid_fraction:g}",
+        ]
+
+
 class HSTTrainStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
             step_id="train",
-            label="5. Train WDSR with HST mix",
+            label="6. Train WDSR with HST + round-trip mix",
             description=(
-                "Train the WDSR model on a mix of synthetic + HST-derived "
-                "TFRecords. ``hst_fraction`` controls the per-batch sampling."
+                "Train the WDSR model on a mix of synthetic + "
+                "HST-derived + (optional) real-Euclid round-trip "
+                "TFRecords. ``hst_fraction`` and ``roundtrip_fraction`` "
+                "control per-batch sampling; their sum must be ≤ 1. "
+                "When ``roundtrip_fraction > 0`` the trainer adds a "
+                "self-supervised loss "
+                "``|asinh(Conv(M(lr))/k) - lr_vis|`` for round-trip "
+                "examples, using the VIS PSF FITS as a TF-graph "
+                "forward op (PSF + 2× sum-rebin, deterministic)."
             ),
             defaults=StepResources(
                 partition="gpu", n_cpus=4, n_gpus=1,
@@ -353,15 +431,21 @@ class HSTTrainStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        steps        = int(params.get("steps", 400_000))
-        batch_size   = int(params.get("batch_size", 16))
-        hst_fraction = float(params.get("hst_fraction", 0.1))
-        return [
+        steps               = int(params.get("steps", 400_000))
+        batch_size          = int(params.get("batch_size", 16))
+        hst_fraction        = float(params.get("hst_fraction", 0.1))
+        roundtrip_fraction  = float(params.get("roundtrip_fraction", 0.0))
+        cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
             "--batch-size", str(batch_size),
             "--hst-fraction", f"{hst_fraction:g}",
         ]
+        # Only emit the round-trip flag when non-default so existing
+        # SLURM submissions stay byte-identical until the user opts in.
+        if roundtrip_fraction > 0:
+            cmd += ["--roundtrip-fraction", f"{roundtrip_fraction:g}"]
+        return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +457,8 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTPSFExtractStep,
     DifferentialKernelStep,
     HSTTFRecordStep,
+    EuclidSkyDownloadStep,
+    EuclidRoundtripTFRecordStep,
     HSTTrainStep,
 )
 
