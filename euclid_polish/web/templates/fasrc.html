@@ -1275,6 +1275,34 @@ function _stepSpecificFields(step) {
       return `
         <label>Wiener regularisation
           <input type="number" name="regularisation" value="0.001" step="any" min="0"></label>`;
+    case 'transition_pairs':
+      return `
+        <label>Training pairs
+          <input type="number" name="n_train" value="4000" min="100" max="50000"
+                 title="Capped by clean_train.tfrecord size; pairs are emitted in
+order. Each pair is two ~256² float32 images (~1 MB total)."></label>
+        <label>Validation pairs
+          <input type="number" name="n_valid" value="400" min="20" max="5000"></label>
+        <label>Crop size (HR px)
+          <input type="number" name="crop_size" value="256" step="2" min="64" max="512"
+                 title="Centre-crop each clean scene to this size before
+convolving. Must be even."></label>`;
+    case 'train_transition':
+      return `
+        <label>Training steps
+          <input type="number" name="steps" value="20000" min="1000" max="200000"></label>
+        <label>Batch size
+          <input type="number" name="batch_size" value="8" min="1" max="64"></label>
+        <label>Learning rate
+          <input type="number" name="learning_rate" value="0.002" step="any" min="1e-6" max="0.1"></label>
+        <label>Hidden channels (C)
+          <input type="number" name="channels" value="12" min="4" max="13"
+                 title="Param count = 27·C² + 22·C + 1. C=12 → 4153 (under 5k);
+C=13 → 4850 (under 5k); C=14 → 5601 (over budget)."></label>
+        <label>Inner layers
+          <input type="number" name="n_inner_layers" value="3" min="1" max="6"
+                 title="Additional Conv(C→C) layers between the first and last.
+Adds 9·C²+C params each. 3 → 5 conv total → 11px receptive field."></label>`;
     case 'tfrecords':
       return `
         <label>Training pairs
@@ -1364,6 +1392,8 @@ function _stepCard(step, artifactStatus) {
   // api_fasrc_hst_status (app.py).
   const produces = {
     download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
+    transition_pairs: 'transition_pairs',
+    train_transition: 'transition_model',
     tfrecords: 'records', train: 'ckpt',
     euclid_sky_download: 'euclid_sky',
     euclid_roundtrip_tfrecords: 'roundtrip_records',
@@ -1447,6 +1477,8 @@ function _updateHstStatusOnly(j) {
   const artifacts = j.artifacts || {};
   const produces = {
     download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
+    transition_pairs: 'transition_pairs',
+    train_transition: 'transition_model',
     tfrecords: 'records', train: 'ckpt',
     // Round-trip pipeline (keep in sync with the `artifacts` dict in
     // api_fasrc_hst_status):
@@ -1502,6 +1534,8 @@ async function refreshHst() {
       `tiles ${a.tiles ? '✓' : '✗'} · ` +
       `HST PSF ${a.psf ? '✓' : '✗'} · ` +
       `kernel ${a.kernel ? '✓' : '✗'} · ` +
+      `transition pairs ${a.transition_pairs ? '✓' : '✗'} · ` +
+      `transition model ${a.transition_model ? '✓' : '✗'} · ` +
       `HST records ${a.records ? '✓' : '✗'} · ` +
       `checkpoint ${a.ckpt ? '✓' : '✗'}`;
   }

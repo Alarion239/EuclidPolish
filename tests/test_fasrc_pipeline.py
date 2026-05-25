@@ -56,13 +56,43 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the original 5 steps plus the two new
-        round-trip steps (sky download + LR-only TFRecord build)."""
+        """Registry must include the original 5 steps, the two round-trip
+        steps (sky download + LR-only TFRecord build), and the two
+        transition-model steps (training-pair generation + CNN training)."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
+            "transition_pairs", "train_transition",
         }
+
+    def test_transition_pairs_step_emits_correct_argv(self):
+        step = REGISTRY.get("transition_pairs")
+        argv = step.build_command({
+            "n_train": 2000, "n_valid": 300, "crop_size": 128,
+        })
+        assert "scripts/fasrc_generate_transition_pairs.py" in argv
+        assert "--n-train" in argv and "2000" in argv
+        assert "--n-valid" in argv and "300" in argv
+        assert "--crop-size" in argv and "128" in argv
+
+    def test_train_transition_step_emits_correct_argv(self):
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({
+            "steps": 5000, "batch_size": 4, "learning_rate": 1e-3,
+            "channels": 10, "n_inner_layers": 2,
+        })
+        assert "scripts/fasrc_train_transition_model.py" in argv
+        assert "--steps" in argv and "5000" in argv
+        assert "--channels" in argv and "10" in argv
+        assert "--n-inner-layers" in argv and "2" in argv
+        assert "--learning-rate" in argv
+
+    def test_train_transition_does_not_require_gpu(self):
+        # The model is tiny; CPU is the default.
+        step = REGISTRY.get("train_transition")
+        assert step.needs_gpu is False
+        assert step.defaults.n_gpus == 0
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)

@@ -1369,6 +1369,87 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
     return buf.getvalue()
 
 
+def _render_transition_pair_png(subset: str, kind: str, index: int,
+                                records_dir: str) -> bytes:
+    """Render one transition-model training sample.
+
+    The pair-generation script writes ``input_{subset}.tfrecord``
+    (clean ⊛ PSF_HST) and ``target_{subset}.tfrecord`` (clean ⊛
+    PSF_Euclid) — both single-channel VIS, both ``is_clean=True``.
+
+    ``kind`` ∈ {"input", "target", "residual"}:
+      * ``input``   — the HST-PSF-blurred scene (A_θ's input).
+      * ``target``  — the Euclid-PSF-blurred scene (A_θ's target).
+      * ``residual``— ``target - input`` (what the residual branch of
+        A_θ has to learn). Rendered with a divergent colormap centred
+        on zero so positive/negative regions read at a glance.
+
+    The asinh stretch knee on the linear single-frame panels comes
+    from ``Config.BAND_VIS`` so the visual scale matches the rest of
+    the UI; the residual is shown linearly (the differences are small
+    and the divergent colormap is what matters).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from euclid_polish.sky.tfrecord import (
+        read_multiband_skyimages, tfrecord_path,
+    )
+
+    if subset not in ("train", "validate"):
+        abort(400)
+    if kind not in ("input", "target", "residual"):
+        abort(400)
+
+    def _load(name: str):
+        path = tfrecord_path(records_dir, name)
+        if not os.path.exists(path):
+            abort(404)
+        records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+        if not records or index >= len(records):
+            abort(404)
+        return records[min(index, len(records) - 1)]
+
+    if kind == "residual":
+        inp = _load(f"input_{subset}")
+        tgt = _load(f"target_{subset}")
+        # Both records are single-channel VIS on the same HR grid.
+        plane = tgt.data[..., 0] - inp.data[..., 0]
+        img_for_meta = tgt
+        title_suffix = f"target − input (mean={plane.mean():.3g}, max|·|={np.abs(plane).max():.3g})"
+        cmap = "RdBu_r"
+        # Symmetric range around zero for divergent rendering.
+        a = float(np.abs(plane).max())
+        lo, hi = (-a, a) if a > 0 else (-1.0, 1.0)
+        stretched = plane
+    else:
+        record = _load(f"{kind}_{subset}")
+        plane = record.data[..., 0]
+        img_for_meta = record
+        title_suffix = kind
+        stretched = np.arcsinh(plane / float(Config.BAND_VIS.asinh_stretch_scale_e))
+        lo, hi = np.percentile(stretched, [1.0, 99.7])
+        if hi <= lo:
+            hi = lo + 1.0
+        cmap = "gray_r"
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi)
+    ax.set_title(
+        f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
+        f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
+        f"{img_for_meta.pixel_scale_arcsec:.3f}\"/pix)",
+        fontsize=10,
+    )
+    ax.set_xticks([]); ax.set_yticks([])
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _render_sky_record_png(subset: str, kind: str, band: str,
                            index: int,
                            records_dir: Optional[str] = None) -> bytes:
@@ -2685,6 +2766,109 @@ def create_app() -> Flask:
         return jsonify({"ok": any_ok, "files": results,
                         "include_train": include_train})
 
+    # =========================================================================
+    # Transition pairs — viewer for the (clean ⊛ PSF_HST, clean ⊛ PSF_Euclid)
+    # training data the transition-model CNN A_θ learns from.
+    # =========================================================================
+
+    def _transition_pairs_remote_dir() -> str:
+        cfg = fasrc_config.load()
+        return f"{cfg.data_dir}/images/records_transition"
+
+    def _transition_pairs_local_dir() -> str:
+        """Local cache dir for FASRC-pulled transition-pair shards.
+
+        Mirrors the convention used by ``_hst_pairs_local_dir`` so the
+        same fetcher writes here.
+        """
+        from euclid_polish.web.fasrc_fetcher import _local_path_for
+        any_path = f"{_transition_pairs_remote_dir()}/input_validate.tfrecord"
+        return os.path.dirname(_local_path_for(any_path))
+
+    @app.route("/transition-pairs")
+    def transition_pairs_page():
+        local_dir = _transition_pairs_local_dir()
+        return render_template(
+            "transition_pairs.html",
+            tfrecords=_tfrecords_status(local_dir),
+            local_dir=local_dir,
+            remote_dir=_transition_pairs_remote_dir(),
+            # Validate split is the small one (~25 MB per file at default
+            # crop=256, n_valid=400); default the nav to it so the page
+            # works the moment Sync completes.
+            default_subset="validate",
+        )
+
+    @app.route("/view/transition-pair")
+    def view_transition_pair():
+        subset = request.args.get("subset", "validate")
+        kind   = request.args.get("kind",   "input")
+        try:
+            idx = int(request.args.get("i", 0))
+        except ValueError:
+            idx = 0
+        png = _render_transition_pair_png(
+            subset, kind, idx,
+            records_dir=_transition_pairs_local_dir(),
+        )
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    @app.route("/api/transition-pairs/totals")
+    def api_transition_pairs_totals():
+        local = _transition_pairs_local_dir()
+        return jsonify({
+            name: _record_count(name, records_dir=local)
+            for name in ("input_train", "input_validate",
+                         "target_train", "target_validate")
+        })
+
+    @app.route("/api/transition-pairs/status")
+    def api_transition_pairs_status():
+        return jsonify(_tfrecords_status(_transition_pairs_local_dir()))
+
+    @app.route("/api/transition-pairs/sync", methods=["POST"])
+    def api_transition_pairs_sync():
+        """Rsync transition-pair TFRecord files from FASRC into the local cache.
+
+        Form arg ``include_train`` (default false) controls whether the
+        larger train-split files are pulled. Validation files are small
+        (~25 MB each, 2 files) so they're always synced.
+        """
+        from euclid_polish.web.fasrc_fetcher import fetch_one_file
+        remote_dir = _transition_pairs_remote_dir()
+        include_train = (request.values.get("include_train", "false")
+                         .lower() in ("1", "true", "yes", "on"))
+        targets: Dict[str, str] = {}
+        for side in ("input", "target"):
+            targets[f"{side}_validate"] = (
+                f"{remote_dir}/{side}_validate.tfrecord"
+            )
+            if include_train:
+                targets[f"{side}_train"] = (
+                    f"{remote_dir}/{side}_train.tfrecord"
+                )
+        max_bytes = 5 * 1024 * 1024 * 1024
+        results: Dict[str, Dict[str, Any]] = {}
+        any_ok = False
+        for key, remote in targets.items():
+            r = fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            entry: Dict[str, Any] = {
+                "remote_path": remote,
+                "ok":          r.ok,
+                "size_bytes":  r.size_bytes,
+            }
+            if r.ok and r.local_path:
+                try:
+                    entry["local_mtime"] = os.path.getmtime(r.local_path)
+                except OSError:
+                    entry["local_mtime"] = None
+                any_ok = True
+            else:
+                entry["error"] = r.error
+            results[key] = entry
+        return jsonify({"ok": any_ok, "files": results,
+                        "include_train": include_train})
+
     @app.route("/sky/fits")
     def sky_fits():
         """Export one sky-record band+index as FITS and return the file."""
@@ -3310,6 +3494,7 @@ def create_app() -> Flask:
         # (the JS side maps each step_id to one of these keys).
         artifacts = {
             "tiles": None, "psf": None, "kernel": None,
+            "transition_pairs": None, "transition_model": None,
             "records": None, "ckpt": None,
             # Round-trip pipeline artifacts (Chunk C3 + web wiring):
             #   euclid_sky      — sky-position catalog written by the
@@ -3329,6 +3514,10 @@ def create_app() -> Flask:
                 "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
                 "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
                 "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+                "transition_pairs":
+                    f"{cfg_loaded.data_dir}/images/records_transition/input_train.tfrecord",
+                "transition_model":
+                    f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
                 "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
                 "euclid_sky":

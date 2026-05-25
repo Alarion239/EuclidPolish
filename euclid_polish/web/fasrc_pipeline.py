@@ -307,15 +307,86 @@ class DifferentialKernelStep(FASRCPipelineStep):
         ]
 
 
+class TransitionPairsStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="transition_pairs",
+            label="3a. Generate transition-model training pairs",
+            description=(
+                "Take the synthetic clean HR scenes (from "
+                "scripts/run_pipeline.py) and convolve each with "
+                "PSF_HST and PSF_Euclid to produce (input, target) "
+                "pairs for the A_θ CNN. No noise on either side — "
+                "this is a pure PSF-transition training set. Output: "
+                "$DATA_DIR/images/records_transition/{input,target}_*.tfrecord."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="0:20:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        n_train  = int(params.get("n_train", 4000))
+        n_valid  = int(params.get("n_valid", 400))
+        crop_size = int(params.get("crop_size", 256))
+        return [
+            "scripts/fasrc_generate_transition_pairs.py",
+            "--n-train",   str(n_train),
+            "--n-valid",   str(n_valid),
+            "--crop-size", str(crop_size),
+        ]
+
+
+class TransitionTrainStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="train_transition",
+            label="3b. Train transition model A_θ (≤5k params)",
+            description=(
+                "Train the tiny PSF-transition CNN on the pairs from "
+                "step 3a. Replaces the analytic Wiener differential "
+                "kernel (step 3) — when "
+                "$DATA_DIR/hst_psf/transition_model.weights.h5 exists, "
+                "scripts/fasrc_generate_hst_tfrecords.py uses it "
+                "instead of diff_kernel_VIS.fits. GPU optional; on "
+                "CPU the small model still trains in O(10 min)."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="0:30:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        steps          = int(params.get("steps", 20_000))
+        batch_size     = int(params.get("batch_size", 8))
+        learning_rate  = float(params.get("learning_rate", 2e-3))
+        channels       = int(params.get("channels", 12))
+        n_inner_layers = int(params.get("n_inner_layers", 3))
+        return [
+            "scripts/fasrc_train_transition_model.py",
+            "--steps",          str(steps),
+            "--batch-size",     str(batch_size),
+            "--learning-rate",  f"{learning_rate:g}",
+            "--channels",       str(channels),
+            "--n-inner-layers", str(n_inner_layers),
+        ]
+
+
 class HSTTFRecordStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
             step_id="tfrecords",
             label="4. Generate HST → Euclid TFRecord pairs",
             description=(
-                "Cut HST targets from HLSP tiles, apply A and Euclid "
-                "noise model to synthesise paired clean (HST) + dirty "
-                "(Euclid-equivalent) TFRecords."
+                "Cut HST targets from HLSP tiles, apply the HST→Euclid "
+                "transition (trained CNN A_θ when present, otherwise "
+                "the analytic kernel A) and Euclid noise model to "
+                "synthesise paired clean (HST) + dirty (Euclid-"
+                "equivalent) TFRecords."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
@@ -456,6 +527,8 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTDownloadStep,
     HSTPSFExtractStep,
     DifferentialKernelStep,
+    TransitionPairsStep,
+    TransitionTrainStep,
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
     EuclidRoundtripTFRecordStep,

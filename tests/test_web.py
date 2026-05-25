@@ -88,6 +88,49 @@ def test_training_page_renders(client):
     assert "Plot training log" in body
 
 
+def test_transition_pairs_page_renders(client):
+    r = client.get("/transition-pairs")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Toolbar pills for the three view modes.
+    assert "input (HST)" in body
+    assert "target (Euclid)" in body
+    assert "residual" in body
+    # Should mention what the page is for.
+    assert "PSF_HST" in body
+    assert "PSF_Euclid" in body
+
+
+def test_transition_pairs_totals_api(client):
+    """Totals API returns one entry per shard name, all None when the
+    cache directory is empty (which it is in a fresh test env)."""
+    r = client.get("/api/transition-pairs/totals")
+    assert r.status_code == 200
+    j = r.get_json()
+    for name in ("input_train", "input_validate",
+                 "target_train", "target_validate"):
+        assert name in j
+
+
+def test_transition_pairs_status_api(client):
+    r = client.get("/api/transition-pairs/status")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert "files" in j
+    assert "dir" in j
+    # Path mirrors the documented FASRC cache location.
+    assert "records_transition" in j["dir"]
+
+
+def test_transition_pair_view_404s_when_no_records(client):
+    """The render route should 404 (not 500) when the requested shard
+    doesn't exist locally — exercises the abort path in
+    ``_render_transition_pair_png``."""
+    r = client.get("/view/transition-pair?subset=validate&kind=input&i=0")
+    # No local cache + no synthetic data — must be 404, not 500.
+    assert r.status_code in (404, 400)
+
+
 def test_inference_page_renders(client):
     r = client.get("/inference")
     assert r.status_code == 200

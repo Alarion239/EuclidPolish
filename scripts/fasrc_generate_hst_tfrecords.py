@@ -51,6 +51,9 @@ from euclid_polish.config import Config
 
 HLSP_DIR     = os.path.join(Config.DATA_DIR, "hst_hlsp")
 KERNEL_PATH  = os.path.join(Config.DATA_DIR, "hst_psf", "diff_kernel_VIS.fits")
+TRANSITION_MODEL_PATH = os.path.join(
+    Config.DATA_DIR, "hst_psf", "transition_model.weights.h5",
+)
 OUT_DIR      = os.path.join(Config.DATA_DIR, "images", "records_v2_hst")
 
 
@@ -63,7 +66,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--image-size", type=int, default=510,
                    help="HR cutout side in HR pixels (0.05\"/pix).")
     p.add_argument("--hlsp-dir",   default=HLSP_DIR)
-    p.add_argument("--kernel",     default=KERNEL_PATH)
+    p.add_argument("--kernel",     default=KERNEL_PATH,
+                   help="Analytic Wiener differential kernel FITS. "
+                        "Used only when --transition-model is not provided "
+                        "(or its weights file is missing). Kept as a "
+                        "fallback so the old pipeline still works.")
+    p.add_argument("--transition-model", default=TRANSITION_MODEL_PATH,
+                   help="Trained CNN transition model "
+                        "(``transition_model.weights.h5``). When present, "
+                        "replaces the analytic kernel as the HST→Euclid "
+                        "PSF transition. Train via "
+                        "scripts/fasrc_train_transition_model.py. Pass "
+                        "an empty string or non-existent path to force "
+                        "the analytic-kernel fallback.")
+    p.add_argument("--transition-channels", type=int, default=12,
+                   help="Hidden channel width C of the transition model. "
+                        "Must match the value used at training time.")
+    p.add_argument("--transition-inner-layers", type=int, default=3,
+                   help="Number of inner Conv(C→C) layers. Must match "
+                        "the value used at training time.")
     p.add_argument("--output-dir", default=OUT_DIR)
     p.add_argument("--n-workers", type=int, default=_default_n_workers(),
                    help="Process pool size for parallel cutout + forward "
@@ -185,17 +206,57 @@ def _resample_hlsp_to_hr(hlsp_cutout: np.ndarray,
     return (out * np.float32(area_correction)).astype(np.float32)
 
 
+def _apply_transition(
+    hr_band: np.ndarray,
+    *,
+    transition_model,
+    diff_kernel: Optional[np.ndarray],
+) -> np.ndarray:
+    """Map an HR band image from HST-PSF space to Euclid-PSF space.
+
+    Picks the trained CNN (``transition_model``) when available;
+    otherwise falls back to FFT-convolution with the analytic
+    differential kernel ``diff_kernel``. Exactly one of the two must
+    be non-None.
+
+    Returns an array of the same shape as ``hr_band`` (no resampling
+    here — sum-rebin is applied separately downstream).
+    """
+    if transition_model is not None:
+        from euclid_polish.training.transition_model import (
+            apply_transition_numpy,
+        )
+        return apply_transition_numpy(transition_model, hr_band)
+    if diff_kernel is None:
+        raise RuntimeError(
+            "neither transition_model nor diff_kernel is set — "
+            "_init_worker must populate one of them"
+        )
+    from scipy import signal as scipy_signal
+    return scipy_signal.fftconvolve(hr_band, diff_kernel, mode="same")
+
+
 def _make_pair(
     hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean
     *,
-    diff_kernel: np.ndarray,
+    transition_model,
+    diff_kernel: Optional[np.ndarray],
     rng: np.random.Generator,
 ) -> np.ndarray:
     """Forward-model the HR cube to a 4-band LR cube at 0.10″/pix.
 
-    For each band: A ⊛ HR → sum-rebin ×2 → Poisson + read + sky + dark.
+    For each band: (transition or A ⊛ ·) → sum-rebin ×2
+    → Poisson + read + sky + dark.
+
+    The transition step is what makes the chain photometrically
+    Euclid-equivalent while accounting for the HST-baked-in PSF:
+
+      * trained CNN (``transition_model`` ≠ None): preferred path,
+        well-behaved on stars/galaxies + free of the Wiener inverse's
+        checkerboard / ring artefacts.
+      * analytic Wiener kernel (``diff_kernel`` ≠ None): fallback
+        when the CNN weights file isn't available yet.
     """
-    from scipy import signal as scipy_signal
     from euclid_polish.sky.multiband_forward import apply_band_noise
 
     H, W, C = hr_cutout_4ch.shape
@@ -203,11 +264,10 @@ def _make_pair(
     lr_cube = np.zeros((H // 2, W // 2, C), dtype=np.float32)
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
-        # Convolve with the differential kernel (A) instead of the
-        # Euclid PSF, so the chain is photometrically Euclid-equivalent
-        # while accounting for the HST-baked-in PSF.
-        convolved = scipy_signal.fftconvolve(
-            hr_cutout_4ch[..., k], diff_kernel, mode="same",
+        convolved = _apply_transition(
+            hr_cutout_4ch[..., k],
+            transition_model=transition_model,
+            diff_kernel=diff_kernel,
         )
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
         rebinned = convolved.reshape(H // 2, 2, W // 2, 2).sum(axis=(1, 3))
@@ -226,26 +286,63 @@ def _make_pair(
 # Module globals populated by ``_init_worker`` once per process. None
 # before init; checking them in ``_process_one_galaxy`` is what catches
 # a missing ``initializer=`` in the pool setup.
-_WORKER_KERNEL:          Optional[np.ndarray] = None
-_WORKER_IMAGE_SIZE:      int                  = 0
-_WORKER_TYPICAL_RATIOS:  Optional[np.ndarray] = None
+_WORKER_KERNEL:           Optional[np.ndarray] = None
+_WORKER_TRANSITION_MODEL                       = None    # tf.keras.Model | None
+_WORKER_IMAGE_SIZE:       int                  = 0
+_WORKER_TYPICAL_RATIOS:   Optional[np.ndarray] = None
 
 
-def _init_worker(kernel_path: str, image_size: int,
-                 typical_band_ratios: np.ndarray) -> None:
+def _init_worker(
+    kernel_path: str,
+    transition_model_path: Optional[str],
+    transition_channels: int,
+    transition_inner_layers: int,
+    image_size: int,
+    typical_band_ratios: np.ndarray,
+) -> None:
     """Called once per worker process at pool startup.
 
-    Loads the differential kernel and pins the per-band electron ratios
-    into module-level globals so each worker pays the I/O + parse cost
-    exactly once — not per-galaxy. Pickling the kernel through every
-    task argument would be ~1 MB per submission × 6400 galaxies = 6 GB
-    of pickle churn for nothing.
+    Loads the HST→Euclid transition operator and pins the per-band
+    electron ratios into module-level globals so each worker pays the
+    I/O + parse cost exactly once — not per-galaxy. Pickling the
+    kernel/model through every task argument would be ~1 MB per
+    submission × 6400 galaxies = 6 GB of pickle churn for nothing.
+
+    Selection rules:
+
+    * If ``transition_model_path`` is provided and the weights file
+      exists, the trained CNN is loaded and is the operator the worker
+      uses. The analytic kernel is left as ``None``.
+    * Otherwise the analytic Wiener kernel is loaded from
+      ``kernel_path``. This is the legacy path; we keep it so workflows
+      that haven't run the CNN-training step yet still produce
+      TFRecords.
     """
-    global _WORKER_KERNEL, _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
-    from euclid_polish.sky.differential_kernel import DifferentialKernel
-    _WORKER_KERNEL         = DifferentialKernel.from_fits(kernel_path).data
+    global _WORKER_KERNEL, _WORKER_TRANSITION_MODEL
+    global _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
     _WORKER_IMAGE_SIZE     = int(image_size)
     _WORKER_TYPICAL_RATIOS = np.asarray(typical_band_ratios, dtype=np.float32)
+
+    use_cnn = (
+        transition_model_path
+        and os.path.isfile(transition_model_path)
+    )
+    if use_cnn:
+        # Lazy TF import keeps the analytic-kernel-only path TF-free.
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, load_model_weights,
+        )
+        model = HSTtoEuclidTransition(
+            channels=int(transition_channels),
+            n_inner_layers=int(transition_inner_layers),
+        )
+        load_model_weights(model, transition_model_path)
+        _WORKER_TRANSITION_MODEL = model
+        _WORKER_KERNEL = None
+    else:
+        from euclid_polish.sky.differential_kernel import DifferentialKernel
+        _WORKER_KERNEL           = DifferentialKernel.from_fits(kernel_path).data
+        _WORKER_TRANSITION_MODEL = None
 
 
 def _process_one_galaxy(
@@ -267,7 +364,9 @@ def _process_one_galaxy(
     smaller than the target HR size, or HST data all-NaN).
     """
     catalog_idx, ra, dec, tile_path, hlsp_side_pix, seed = task
-    if _WORKER_KERNEL is None or _WORKER_TYPICAL_RATIOS is None:
+    if _WORKER_TYPICAL_RATIOS is None or (
+        _WORKER_KERNEL is None and _WORKER_TRANSITION_MODEL is None
+    ):
         # If we ever forget the initializer, fail loudly rather than
         # silently using None and crashing deep in the FFT.
         raise RuntimeError(
@@ -327,7 +426,12 @@ def _process_one_galaxy(
     # Per-task RNG so noise is reproducible across runs at the same seed
     # but independent across galaxies in a single run.
     rng = np.random.default_rng(int(seed))
-    lr_cube = _make_pair(hr_cube, diff_kernel=_WORKER_KERNEL, rng=rng)
+    lr_cube = _make_pair(
+        hr_cube,
+        transition_model=_WORKER_TRANSITION_MODEL,
+        diff_kernel=_WORKER_KERNEL,
+        rng=rng,
+    )
     return catalog_idx, hr_cube, lr_cube
 
 
@@ -387,16 +491,23 @@ def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
+    use_cnn = bool(
+        args.transition_model and os.path.isfile(args.transition_model)
+    )
+
     print("=" * 64)
     print(f"  HST → Euclid TFRecord pair generation")
     print("=" * 64)
-    print(f"  HLSP dir     = {args.hlsp_dir}")
-    print(f"  kernel       = {args.kernel}")
-    print(f"  output       = {args.output_dir}")
-    print(f"  n_train      = {args.n_train}")
-    print(f"  n_valid      = {args.n_valid}")
-    print(f"  image_size   = {args.image_size} (HR pixels)")
-    print(f"  dry run      = {args.dry_run}")
+    print(f"  HLSP dir         = {args.hlsp_dir}")
+    print(f"  transition model = {args.transition_model} "
+          f"{'(found)' if use_cnn else '(missing — falling back to kernel)'}")
+    if not use_cnn:
+        print(f"  fallback kernel  = {args.kernel}")
+    print(f"  output           = {args.output_dir}")
+    print(f"  n_train          = {args.n_train}")
+    print(f"  n_valid          = {args.n_valid}")
+    print(f"  image_size       = {args.image_size} (HR pixels)")
+    print(f"  dry run          = {args.dry_run}")
     print()
 
     t0 = time.time()
@@ -416,16 +527,24 @@ def main() -> int:
     tiles = HLSPTileIndex(args.hlsp_dir)
     print(f"      {len(tiles.entries)} tiles indexed")
 
-    print(f"[2/4] loading differential kernel + COSMOS catalog ...")
-    if not os.path.isfile(args.kernel):
-        print(f"ERROR: differential kernel not found at {args.kernel}")
-        print("       Run scripts/fasrc_compute_differential_kernel.py first.")
+    print(f"[2/4] loading transition operator + COSMOS catalog ...")
+    if not use_cnn and not os.path.isfile(args.kernel):
+        print(f"ERROR: neither transition model ({args.transition_model}) "
+              f"nor analytic kernel ({args.kernel}) exists. Run either "
+              "scripts/fasrc_train_transition_model.py or "
+              "scripts/fasrc_compute_differential_kernel.py first.")
         return 1
     from euclid_polish.sky.cosmos2025 import open_cosmos2025
-    from euclid_polish.sky.differential_kernel import DifferentialKernel
-    dk = DifferentialKernel.from_fits(args.kernel)
+    if use_cnn:
+        print(f"      using trained CNN transition model "
+              f"(channels={args.transition_channels}, "
+              f"inner_layers={args.transition_inner_layers})")
+    else:
+        from euclid_polish.sky.differential_kernel import DifferentialKernel
+        dk = DifferentialKernel.from_fits(args.kernel)
+        print(f"      analytic kernel shape = {dk.data.shape} "
+              f"DC gain = {dk.dc_gain:.4f}")
     catalog = open_cosmos2025(max_mag=args.max_mag)
-    print(f"      kernel shape = {dk.data.shape} DC gain = {dk.dc_gain:.4f}")
     print(f"      {len(catalog):,} catalog galaxies after quality cuts "
           f"(VIS mag ≤ {args.max_mag})")
     # Catalog-derived "typical galaxy" colours per NISP band — used to
@@ -526,10 +645,22 @@ def main() -> int:
         dw.write(dirty_img,   index=subset_done)
         hw.write(hr_vis_only, index=subset_done)
 
+    transition_model_path_arg = (
+        args.transition_model if use_cnn else ""
+    )
+    init_args = (
+        args.kernel,
+        transition_model_path_arg,
+        int(args.transition_channels),
+        int(args.transition_inner_layers),
+        H_hr,
+        typical_band_ratios,
+    )
+
     if n_workers == 0:
         # Single-process fallback — useful for debugging / profiling.
         # Calls _init_worker in-process so the worker fn sees the kernel.
-        _init_worker(args.kernel, H_hr, typical_band_ratios)
+        _init_worker(*init_args)
 
     for subset, target_n in pairs_per_subset.items():
         sub_done = 0
@@ -571,7 +702,7 @@ def main() -> int:
                 with ProcessPoolExecutor(
                     max_workers=n_workers,
                     initializer=_init_worker,
-                    initargs=(args.kernel, H_hr, typical_band_ratios),
+                    initargs=init_args,
                 ) as pool:
                     in_flight: set = set()
                     target_in_flight = max(n_workers * 2, 4)

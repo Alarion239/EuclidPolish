@@ -1,0 +1,334 @@
+#!/usr/bin/env python
+"""Generate (HST-PSF-blurred, Euclid-PSF-blurred) training pairs.
+
+Reads the synthetic clean HR records produced by the standard
+``scripts/run_pipeline.py`` (or its FASRC sky-data step) and convolves
+each scene with both PSFs:
+
+    input  = clean_VIS ⊛ PSF_HST_on_HR    (no noise)
+    target = clean_VIS ⊛ PSF_Euclid_on_HR (no noise)
+
+Both PSFs are resampled onto the project HR grid
+(``Config.DEFAULT_PIXEL_SCALE`` = 0.05″/pix) using the same flux-
+preserving zoom + centroid-recenter machinery the analytic kernel
+script uses, so the two PSFs differ only in physics, not in any
+preprocessing convention.
+
+Output: TFRecord pairs under
+``$DATA_DIR/images/records_transition/{input,target}_{train,validate}.tfrecord``
+in the same ``MultiBandSkyImage`` schema the rest of the pipeline
+uses (single-channel "VIS" band, ``is_clean=True`` — these are
+deterministic PSF-blurred scenes, not noisy LR observations).
+
+This step is the prerequisite for training ``A_θ`` via
+``scripts/fasrc_train_transition_model.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from typing import Optional, Tuple
+
+import numpy as np
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from euclid_polish.config import Config
+
+
+SYNTHETIC_RECORDS_DIR = Config.RECORDS_DIR_V2
+HST_PSF_PATH = os.path.join(Config.DATA_DIR, "hst_psf", "F814W.fits")
+OUT_DIR      = os.path.join(Config.DATA_DIR, "images", "records_transition")
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--synthetic-records-dir", default=SYNTHETIC_RECORDS_DIR,
+                   help="Source clean-HR records (synthetic pipeline output).")
+    p.add_argument("--hst-psf", default=HST_PSF_PATH,
+                   help="HST F814W ePSF FITS (extracted by step 2 on FASRC).")
+    p.add_argument("--output-dir", default=OUT_DIR,
+                   help="Where to write the transition-pair TFRecords.")
+    p.add_argument("--n-train", type=int, default=4000,
+                   help="Training pairs to emit. Capped by the available "
+                        "clean_train records on disk.")
+    p.add_argument("--n-valid", type=int, default=400,
+                   help="Validation pairs to emit. Capped by available "
+                        "clean_validate records.")
+    p.add_argument("--crop-size", type=int, default=256,
+                   help="Centre-crop each clean scene to (crop_size,"
+                        " crop_size) before convolving. The synthetic "
+                        "records are ~512² but 256² is plenty for "
+                        "training a per-pixel PSF transition and keeps "
+                        "per-pair memory + the TFRecord size manageable. "
+                        "Must be even.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Plan only — no FITS reads, no TFRecord writes.")
+    return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# PSF resampling — reuses the analytic-kernel script's helpers verbatim so
+# the two pipelines produce comparable PSFs on the HR grid.
+# ---------------------------------------------------------------------------
+
+def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
+    """Resample a PSF onto ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
+
+    Mirrors ``scripts/fasrc_compute_differential_kernel._resample_to_hr_grid``
+    bit-for-bit. We don't import that helper directly so this script can
+    run standalone (the analytic-kernel script lives next door and could
+    move). Re-normalises to unit flux because ``scipy.ndimage.zoom``
+    interpolates surface brightness, not integrated flux.
+    """
+    from scipy.ndimage import zoom
+    target_scale = Config.DEFAULT_PIXEL_SCALE   # 0.05″
+    if abs(src_scale - target_scale) < 1e-6:
+        out = np.asarray(psf_data, dtype=np.float64)
+    else:
+        factor = src_scale / target_scale            # < 1 if src is finer
+        out = zoom(psf_data.astype(np.float64), zoom=factor,
+                   order=3, mode="constant", grid_mode=False)
+    s = float(out.sum())
+    if s > 0:
+        out = out / s
+    return out
+
+
+def _crop_to_odd_square(psf: np.ndarray, side: int) -> np.ndarray:
+    """Centre-crop ``psf`` to an odd ``(side, side)`` window, zero-padding
+    if the input is smaller.
+
+    The PSFs we feed into ``scipy.signal.fftconvolve`` need to be smaller
+    than the HR scene (FFT memory grows as (H+K-1)²). Crop to ~10×FWHM
+    on each side; this keeps essentially all the flux but caps the
+    kernel at a few hundred pixels.
+    """
+    if side % 2 == 0:
+        raise ValueError(f"side must be odd, got {side}")
+    H, W = psf.shape
+    if H < side or W < side:
+        # Pad up to side — symmetric so the centre stays put.
+        pad_h = max(0, (side - H + 1) // 2)
+        pad_w = max(0, (side - W + 1) // 2)
+        psf = np.pad(psf, ((pad_h, pad_h), (pad_w, pad_w)), mode="constant")
+        H, W = psf.shape
+    i0 = (H - side) // 2
+    j0 = (W - side) // 2
+    out = psf[i0:i0 + side, j0:j0 + side]
+    s = float(out.sum())
+    if s > 0:
+        out = out / s
+    return out
+
+
+def _load_hst_psf_on_hr(path: str, target_side: int) -> np.ndarray:
+    """Load HST F814W ePSF, resample to HR grid, centre-crop to ``target_side``."""
+    from astropy.io import fits
+    with fits.open(path, memmap=False) as hdul:
+        data  = np.asarray(hdul[0].data, dtype=np.float64)
+        scale = float(hdul[0].header.get("PIXSCALE", 0.015))
+    hr = _resample_to_hr_grid(data, scale)
+    return _crop_to_odd_square(hr, target_side).astype(np.float32)
+
+
+def _load_euclid_vis_psf_on_hr(target_side: int) -> np.ndarray:
+    """Load the Euclid VIS empirical PSF on the HR grid."""
+    from euclid_polish.euclid.psf_library import psf_path_for_band
+    from euclid_polish.euclid.types import PSF
+    path = psf_path_for_band(Config.BAND_VIS)
+    p = PSF.from_fits(path)
+    hr = _resample_to_hr_grid(np.asarray(p.data, dtype=np.float64), p.pixel_scale)
+    return _crop_to_odd_square(hr, target_side).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic-scene reader
+# ---------------------------------------------------------------------------
+
+def _stream_clean_vis_scenes(
+    records_dir: str, subset: str, n_max: int, *, crop: int,
+):
+    """Yield up to ``n_max`` clean-HR VIS scenes from the synthetic records.
+
+    The synthetic ``clean_{subset}.tfrecord`` contains 4-channel HR
+    fields (one per LR band) at 0.05″/pix. Only channel 0 (VIS) is used
+    for transition-model training — both PSFs we resample are VIS-band
+    PSFs, and the network operates per-channel anyway.
+
+    Yields ``(idx, scene)`` with ``scene`` shape ``(crop, crop)`` float32
+    in linear electron units. Scenes are centre-cropped to ``crop``;
+    smaller-than-``crop`` source records are skipped (warnings printed).
+    """
+    import tensorflow as tf
+    from euclid_polish.sky.tfrecord import tfrecord_path
+    from euclid_polish.sky.types import MultiBandSkyImage
+
+    path = tfrecord_path(records_dir, f"clean_{subset}")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"clean_{subset}.tfrecord not found at {path}. "
+            "Run scripts/run_pipeline.py (or the FASRC sky-data step) first."
+        )
+    ds = tf.data.TFRecordDataset([path])
+    yielded = 0
+    skipped_small = 0
+    for raw in ds:
+        if yielded >= n_max:
+            break
+        try:
+            img = MultiBandSkyImage.from_tfrecord(raw)
+        except Exception:
+            continue
+        data = np.asarray(img.data, dtype=np.float32)
+        if data.ndim != 3:
+            continue
+        H, W, C = data.shape
+        if H < crop or W < crop:
+            skipped_small += 1
+            continue
+        # VIS is always channel 0 in the project's band ordering.
+        scene = data[:, :, 0]
+        i0 = (H - crop) // 2
+        j0 = (W - crop) // 2
+        yield img.index if img.index is not None else yielded, \
+              scene[i0:i0 + crop, j0:j0 + crop]
+        yielded += 1
+    if skipped_small:
+        print(f"      skipped {skipped_small} scenes smaller than "
+              f"crop {crop}² in clean_{subset}.tfrecord")
+
+
+# ---------------------------------------------------------------------------
+# Pair synthesis
+# ---------------------------------------------------------------------------
+
+def _convolve_pair(
+    scene: np.ndarray,
+    psf_hst: np.ndarray,
+    psf_euclid: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Produce ``(scene ⊛ PSF_HST, scene ⊛ PSF_Euclid)``.
+
+    Uses ``scipy.signal.fftconvolve(mode='same')`` — the convolution
+    convention the rest of the pipeline uses (and the analytic-kernel
+    forward in ``fasrc_generate_hst_tfrecords.py``). Both outputs have
+    the same shape as ``scene``.
+    """
+    from scipy import signal as scipy_signal
+    inp = scipy_signal.fftconvolve(scene, psf_hst,    mode="same").astype(np.float32)
+    tgt = scipy_signal.fftconvolve(scene, psf_euclid, mode="same").astype(np.float32)
+    return inp, tgt
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    args = parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print("=" * 64)
+    print(f"  Transition-model training-pair generation")
+    print(f"  (input = clean ⊛ PSF_HST, target = clean ⊛ PSF_Euclid)")
+    print("=" * 64)
+    print(f"  synthetic records = {args.synthetic_records_dir}")
+    print(f"  HST PSF           = {args.hst_psf}")
+    print(f"  output            = {args.output_dir}")
+    print(f"  n_train / n_valid = {args.n_train} / {args.n_valid}")
+    print(f"  crop_size         = {args.crop_size} (HR pixels)")
+    print(f"  dry run           = {args.dry_run}")
+    print()
+
+    t0 = time.time()
+    crop = int(args.crop_size)
+    if crop % 2 != 0 or crop < 8:
+        print(f"ERROR: --crop-size must be even and ≥ 8, got {crop}")
+        return 1
+
+    if not os.path.isfile(args.hst_psf):
+        print(f"ERROR: HST PSF not found at {args.hst_psf}")
+        print("       Run scripts/fasrc_extract_hst_psf.py first.")
+        return 1
+
+    print("[1/3] resampling both PSFs onto the HR grid ...")
+    # PSF support: cap at ~21″ across (≈ 421 px at 0.05″/pix, +1 to be
+    # odd). This covers Euclid VIS 6-spike + HST F814W F-shape well
+    # while staying tractable for FFT convolution against 256² scenes.
+    psf_side = 421
+    psf_hst    = _load_hst_psf_on_hr(args.hst_psf, psf_side)
+    psf_euclid = _load_euclid_vis_psf_on_hr(psf_side)
+    print(f"      HST PSF on HR    : shape={psf_hst.shape}    sum={psf_hst.sum():.4f}")
+    print(f"      Euclid PSF on HR : shape={psf_euclid.shape} sum={psf_euclid.sum():.4f}")
+
+    if args.dry_run:
+        print("\nDRY RUN — would emit "
+              f"{args.n_train + args.n_valid} pairs at {crop}² HR.")
+        runtime = time.time() - t0
+        print(f"\nRUNTIME_SECONDS={runtime:.1f}")
+        return 0
+
+    print(f"[2/3] streaming clean scenes from "
+          f"{args.synthetic_records_dir} ...")
+
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+
+    summary = {"subsets": {}}
+    pairs_written = 0
+    pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
+
+    print(f"[3/3] writing pairs to {args.output_dir} ...")
+    for subset, target_n in pairs_per_subset.items():
+        sub_done = 0
+        with open_multiband_writer(
+            f"input_{subset}", records_dir=args.output_dir,
+        ) as iw, open_multiband_writer(
+            f"target_{subset}", records_dir=args.output_dir,
+        ) as tw:
+            for idx, scene in _stream_clean_vis_scenes(
+                args.synthetic_records_dir, subset, target_n, crop=crop,
+            ):
+                inp, tgt = _convolve_pair(scene, psf_hst, psf_euclid)
+                meta = {"source": "synthetic_psf_transition"}
+                inp_img = MultiBandSkyImage(
+                    data=inp[..., np.newaxis],
+                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                    band_names=("VIS",), is_clean=True, metadata=meta,
+                )
+                tgt_img = MultiBandSkyImage(
+                    data=tgt[..., np.newaxis],
+                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                    band_names=("VIS",), is_clean=True, metadata=meta,
+                )
+                iw.write(inp_img, index=sub_done)
+                tw.write(tgt_img, index=sub_done)
+                sub_done += 1
+                pairs_written += 1
+                if sub_done % 200 == 0:
+                    print(f"      {subset}: {sub_done}/{target_n} written")
+        summary["subsets"][subset] = {"written": sub_done, "target": target_n}
+        print(f"      ✓ {subset}: {sub_done} pairs written")
+
+    runtime = time.time() - t0
+    summary["pairs_written"] = pairs_written
+    summary["elapsed_s"]     = round(runtime, 1)
+    summary["crop_size"]     = crop
+    with open(os.path.join(args.output_dir, "generation_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    print()
+    print(f"  wrote {pairs_written} pairs total")
+    print(f"\nRUNTIME_SECONDS={runtime:.1f}")
+    print(f"PAIRS_WRITTEN={pairs_written}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

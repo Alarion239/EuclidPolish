@@ -110,10 +110,12 @@ def reset_worker_globals():
     shared module instance behaves like a fresh import."""
     import fasrc_generate_hst_tfrecords as mod
     mod._WORKER_KERNEL = None
+    mod._WORKER_TRANSITION_MODEL = None
     mod._WORKER_IMAGE_SIZE = 0
     mod._WORKER_TYPICAL_RATIOS = None
     yield
     mod._WORKER_KERNEL = None
+    mod._WORKER_TRANSITION_MODEL = None
     mod._WORKER_IMAGE_SIZE = 0
     mod._WORKER_TYPICAL_RATIOS = None
 
@@ -122,6 +124,22 @@ def reset_worker_globals():
 # bands take order-of-magnitude typical values. Real value at runtime
 # comes from the catalog; for tests any plausible vector works.
 DEFAULT_TEST_RATIOS = np.array([1.0, 0.20, 0.30, 0.25], dtype=np.float32)
+
+
+def _init_worker_with_kernel(mod, kernel_path: str, image_size: int):
+    """Wrapper around ``_init_worker`` that uses the analytic-kernel
+    fallback path (no transition model). Tests that don't care about
+    the CNN path go through this helper to keep the call signature
+    short.
+    """
+    mod._init_worker(
+        kernel_path,
+        "",        # no transition model
+        12,        # transition_channels (ignored when path is "")
+        3,         # transition_inner_layers (ignored when path is "")
+        image_size,
+        DEFAULT_TEST_RATIOS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +189,7 @@ class TestInitWorker:
         assert mod._WORKER_KERNEL is None      # fresh module
         assert mod._WORKER_IMAGE_SIZE == 0
         assert mod._WORKER_TYPICAL_RATIOS is None
-        mod._init_worker(krn, image_size=128,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=128)
         assert mod._WORKER_KERNEL is not None
         assert mod._WORKER_KERNEL.shape == (63, 63)
         assert mod._WORKER_IMAGE_SIZE == 128
@@ -186,10 +203,8 @@ class TestInitWorker:
         globals with whatever was passed."""
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
-        mod._init_worker(krn, image_size=128,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
+        _init_worker_with_kernel(mod, krn, image_size=128)
         assert mod._WORKER_IMAGE_SIZE == 128
 
     def test_process_without_init_raises(self):
@@ -212,8 +227,7 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
 
         task = (
             7,             # catalog_idx (only used to label the result)
@@ -238,8 +252,7 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, tile, 200, 1)
         catalog_idx, hr, lr = mod._process_one_galaxy(task)
         assert np.isfinite(hr).all()
@@ -251,8 +264,7 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, tile, 200, 1)
         _, hr, _ = mod._process_one_galaxy(task)
         # Sum over bands → 2D map of total flux.
@@ -273,8 +285,7 @@ class TestProcessOneGalaxyFailureModes:
         tile = _make_synthetic_tile(
             tmp_path, side_pix=200, ra_centre=150.0, dec_centre=2.0,
         )
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         # 10 deg off — way outside the tile footprint.
         task = (0, 160.0, 12.0, tile, 200, 42)
         assert mod._process_one_galaxy(task) is None
@@ -282,8 +293,7 @@ class TestProcessOneGalaxyFailureModes:
     def test_missing_file_returns_none(self, tmp_path):
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3,
                 str(tmp_path / "does-not-exist.fits"), 200, 42)
         assert mod._process_one_galaxy(task) is None
@@ -296,8 +306,7 @@ class TestProcessOneGalaxyFailureModes:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=200)
         # Demand a huge HR side that the tiny HLSP cutout can't fill.
-        mod._init_worker(krn, image_size=2000,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=2000)
         task = (0, 150.1, 2.3, tile, 50, 42)
         assert mod._process_one_galaxy(task) is None
 
@@ -321,8 +330,7 @@ class TestProcessOneGalaxyFailureModes:
 
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, path, 200, 42)
         assert mod._process_one_galaxy(task) is None
 
@@ -341,8 +349,7 @@ class TestRngDeterminism:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         task_a = (0, 150.1, 2.3, tile, 200, 12345)
         task_b = (0, 150.1, 2.3, tile, 200, 12345)
         _, hr_a, lr_a = mod._process_one_galaxy(task_a)
@@ -354,8 +361,7 @@ class TestRngDeterminism:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=64)
         t1 = (0, 150.1, 2.3, tile, 200, 12345)
         t2 = (0, 150.1, 2.3, tile, 200, 99999)
         _, hr1, lr1 = mod._process_one_galaxy(t1)
@@ -521,8 +527,7 @@ class TestHstNativePhotometry:
         tile = str(tmp_path / "two_source.fits")
         fits.PrimaryHDU(data, header=w.to_header()).writeto(tile, overwrite=True)
 
-        mod._init_worker(krn, image_size=128,
-                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        _init_worker_with_kernel(mod, krn, image_size=128)
         task = (0, 150.1, 2.3, tile, 300, 42)
         result = mod._process_one_galaxy(task)
         assert result is not None
@@ -555,8 +560,9 @@ class TestHstNativePhotometry:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         ratios = np.array([1.0, 0.15, 0.25, 0.20], dtype=np.float32)
-        mod._init_worker(krn, image_size=64,
-                         typical_band_ratios=ratios)
+        mod._init_worker(
+            krn, "", 12, 3, 64, ratios,
+        )
         task = (0, 150.1, 2.3, tile, 200, 1)
         _, hr, _ = mod._process_one_galaxy(task)
 
@@ -595,7 +601,7 @@ class TestPoolIntegration:
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, 64, DEFAULT_TEST_RATIOS),
+            initargs=(krn, "", 12, 3, 64, DEFAULT_TEST_RATIOS),
         ) as pool:
             results = list(pool.map(mod._process_one_galaxy, tasks))
 
@@ -631,7 +637,7 @@ class TestPoolIntegration:
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, 32, DEFAULT_TEST_RATIOS),
+            initargs=(krn, "", 12, 3, 32, DEFAULT_TEST_RATIOS),
         ) as pool:
             results = list(pool.map(
                 mod._process_one_galaxy, ok_tasks + bad_tasks,
@@ -640,3 +646,76 @@ class TestPoolIntegration:
         failures  = [r for r in results if r is None]
         assert len(successes) == 3
         assert len(failures)  == 2
+
+
+# ---------------------------------------------------------------------------
+# Transition-model selection (CNN ↔ analytic kernel fallback)
+# ---------------------------------------------------------------------------
+
+class TestTransitionModelSelection:
+    """``_init_worker`` picks the trained CNN over the analytic kernel
+    when both are available, and falls back when the CNN file is
+    missing. We exercise both branches without needing a fully-trained
+    CNN — a freshly-instantiated, never-saved-to-disk model is enough
+    to verify the dispatching logic.
+    """
+
+    def _save_untrained_cnn(self, tmp_path) -> str:
+        """Write a fresh transition-model weights file to disk.
+
+        At init the model is ~identity (residual init); good enough for
+        a pipeline-wiring test, since we only assert which branch ran,
+        not the photometric correctness of the output.
+        """
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, save_model_weights,
+        )
+        model = HSTtoEuclidTransition()
+        path = str(tmp_path / "transition_model.weights.h5")
+        save_model_weights(model, path)
+        return path
+
+    def test_init_worker_loads_cnn_when_available(self, tmp_path):
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        cnn = self._save_untrained_cnn(tmp_path)
+        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
+        # CNN branch: transition model populated, kernel left as None.
+        assert mod._WORKER_TRANSITION_MODEL is not None
+        assert mod._WORKER_KERNEL is None
+
+    def test_init_worker_falls_back_to_kernel_when_cnn_missing(self, tmp_path):
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        missing_cnn = str(tmp_path / "does_not_exist.weights.h5")
+        mod._init_worker(krn, missing_cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
+        # Kernel branch: analytic kernel populated, CNN left as None.
+        assert mod._WORKER_KERNEL is not None
+        assert mod._WORKER_TRANSITION_MODEL is None
+
+    def test_init_worker_falls_back_when_cnn_path_blank(self, tmp_path):
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        mod._init_worker(krn, "", 12, 3, 64, DEFAULT_TEST_RATIOS)
+        assert mod._WORKER_KERNEL is not None
+        assert mod._WORKER_TRANSITION_MODEL is None
+
+    def test_process_galaxy_with_cnn_branch(self, tmp_path):
+        """End-to-end through the CNN branch: just-built A_θ ≈ identity,
+        so the LR cube should be finite + correctly-shaped (we don't
+        assert on numeric closeness to the kernel branch — that's a
+        training-quality test, not a wiring test)."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        cnn = self._save_untrained_cnn(tmp_path)
+        tile = _make_synthetic_tile(tmp_path, side_pix=400)
+        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
+
+        task = (0, 150.1, 2.3, tile, 200, 42)
+        result = mod._process_one_galaxy(task)
+        assert result is not None
+        catalog_idx, hr_cube, lr_cube = result
+        assert hr_cube.shape == (64, 64, 4)
+        assert lr_cube.shape == (32, 32, 4)
+        assert np.isfinite(hr_cube).all()
+        assert np.isfinite(lr_cube).all()
