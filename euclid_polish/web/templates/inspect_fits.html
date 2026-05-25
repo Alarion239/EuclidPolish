@@ -26,8 +26,11 @@
 
   <section class="card">
     <h3>Preview</h3>
-    <p class="hint">Asinh-stretched PNG of the first 2-D image HDU. Band
-      stretch knee picked by filename match where possible.</p>
+    <p class="hint">PNG of the first 2-D image HDU. Contrast window
+      spans the file&rsquo;s own min&ndash;max, with an aggressive asinh
+      stretch on top so PSFs, differential kernels, residuals and
+      sky cutouts all render their full dynamic range without
+      assuming a band-specific calibration.</p>
     <img src="{{ url_for('inspect_fits_preview', fits=rel, size=480) }}"
          alt="preview of {{ file.basename }}"
          style="max-width: 100%; height: auto; display: block;

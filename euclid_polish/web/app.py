@@ -1056,6 +1056,70 @@ def _resolve_cutout_path(band_name: str, filename: str,
     return full
 
 
+def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
+    """Render any 2-D FITS image to PNG with a data-adaptive stretch.
+
+    The band-aware :func:`_render_fits_to_png` hardcodes an asinh knee
+    (``band.asinh_stretch_scale_e``, ~1000 e⁻ by default) tuned for
+    Euclid sky cutouts. That stretch is meaningless for files outside
+    that domain — a unit-flux PSF sums to 1 over 511² pixels (values
+    ~10⁻⁶–10⁻²), a differential kernel can have signed wings, dark
+    frames hover near zero. Applying the cutout knee to those leaves
+    `arcsinh(x / 1000) ≈ x / 1000` with a near-empty histogram, then
+    the 1.0/99.7-percentile clip stretches numerical noise instead of
+    real structure — what looked "weird" on /inspect for the diff
+    kernel was exactly this mismatch.
+
+    The /inspect route can't know what kind of file it's showing, so
+    use ``MinMaxInterval + AsinhStretch(a=0.01)`` from
+    astropy.visualization. MinMax keeps the full data range in view
+    (a kernel's central peak sits 5 decades above the typical pixel —
+    anything that trims outliers, like ZScale or a percentile clip,
+    pushes the peak into saturation and the centre renders as a
+    checkerboard instead of a smooth blob). The aggressive asinh knee
+    (``a=0.01`` = transition at 1 % of the normalised range) compresses
+    that dynamic range so the faint wings and the bright core are
+    visible in the same frame.
+    """
+    from astropy.io import fits
+    from astropy.visualization import (
+        AsinhStretch, ImageNormalize, MinMaxInterval,
+    )
+    from PIL import Image
+
+    with fits.open(fits_path, memmap=False) as hdul:
+        data = None
+        for hdu in hdul:
+            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
+                data = np.asarray(hdu.data, dtype=np.float64)
+                break
+    if data is None:
+        abort(415)
+
+    finite = np.isfinite(data)
+    if not finite.any():
+        data = np.zeros_like(data)
+    else:
+        data = np.where(finite, data, np.nanmedian(data[finite]))
+
+    # ``clip=True`` guarantees the output stays in [0, 1] even when the
+    # underlying stretch would push values outside (signed residuals
+    # near the edges of the data range).
+    norm = ImageNormalize(
+        data, interval=MinMaxInterval(), stretch=AsinhStretch(a=0.01),
+        clip=True,
+    )
+    normed = np.asarray(norm(data), dtype=np.float64)
+    img8 = (255 * (1.0 - normed)).astype(np.uint8)   # gray_r: bright → dark
+    img8 = np.flipud(img8)                            # FITS lower-origin → PIL
+    pil = Image.fromarray(img8, mode="L")
+    if size and size != pil.size[0]:
+        pil = pil.resize((int(size), int(size)), Image.NEAREST)
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def _render_fits_to_png(fits_path: str, band: BandConfig,
                         size: Optional[int] = None) -> bytes:
     """Load a cutout FITS, apply per-band asinh stretch, return PNG bytes.
@@ -1063,6 +1127,12 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
     - Asinh scale comes from ``band.asinh_stretch_scale_e``.
     - vmin/vmax clip at the 1.0 / 99.7 percentiles of the stretched image.
     - Optional ``size`` resamples (nearest-neighbour) to a square thumbnail.
+
+    Use this only for files whose pixel scale you know (Euclid sky
+    cutouts, per-band thumbnails). For the universal /inspect view —
+    where the file could be anything — use
+    :func:`_render_fits_to_png_adaptive` instead, which derives the
+    contrast window from the data and doesn't assume cutout units.
     """
     from astropy.io import fits
     from PIL import Image
@@ -3076,17 +3146,21 @@ def create_app() -> Flask:
             size = 512
         if size < 16 or size > 2048:
             abort(400)
-        # Stretch knee is band-dependent — try to infer the band from
-        # filename hints (e.g. ``..._VIS.fits``, ``Y_E.fits``), otherwise
-        # fall back to the VIS knee which works for most ACS/Euclid data.
-        band = Config.BAND_VIS
-        fname_upper = os.path.basename(path).upper()
-        for b in Config.BANDS:
-            if b.name.upper() in fname_upper:
-                band = b
-                break
-        png = _render_fits_to_png(path, band, size=size)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
+        # /inspect is universal — could be a sky cutout, a PSF, a diff
+        # kernel, a residual map, anything in the allowed roots. The
+        # band-aware renderer assumes Euclid cutout units (~1000 e⁻ asinh
+        # knee) and silently misrenders everything else; use the
+        # data-adaptive ZScale + Asinh renderer instead.
+        png = _render_fits_to_png_adaptive(path, size=size)
+        # /inspect is interactive debugging — when the underlying FITS
+        # gets regenerated (e.g. you re-run the differential-kernel
+        # script with different params), the preview must reflect the
+        # new file on the next page load. A long ``max_age`` here means
+        # the browser shows the stale render for an hour, which is the
+        # opposite of what an inspector is for.
+        resp = send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        return resp
 
     # =========================================================================
     # Git tab — local commit / push / pull, no remote auth needed.
