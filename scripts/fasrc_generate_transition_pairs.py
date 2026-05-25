@@ -318,6 +318,48 @@ def main() -> int:
     from euclid_polish.sky.tfrecord import open_multiband_writer
     from euclid_polish.sky.types import MultiBandSkyImage
 
+    # ── Pre-flight: probe one synthetic scene and verify it can be
+    # cropped to the requested size. If not, fail immediately BEFORE
+    # opening any output writers (which would leave behind empty
+    # 0-byte TFRecord files that then crash the trainer downstream).
+    # Cheap — reads exactly one record from clean_train.tfrecord.
+    print(f"      pre-flight: probing scene size in clean_train.tfrecord ...")
+    from euclid_polish.sky.tfrecord import (
+        read_multiband_skyimages, tfrecord_path as _tp,
+    )
+    src_path = _tp(args.synthetic_records_dir, "clean_train")
+    if not os.path.isfile(src_path):
+        print(f"ERROR: synthetic clean_train.tfrecord not found at "
+              f"{src_path}. Generate synthetic data first "
+              f"(scripts/run_pipeline.py or the FASRC sky-data step).")
+        return 1
+    src_records = read_multiband_skyimages(src_path, num_images=1)
+    if not src_records:
+        print(f"ERROR: synthetic clean_train.tfrecord at {src_path} "
+              f"has no records.")
+        return 1
+    src_H, src_W, _ = src_records[0].data.shape
+    print(f"      synthetic scenes are {src_H}×{src_W}")
+    if src_H < crop or src_W < crop:
+        # Round suggestion down to a multiple of rebin so it's
+        # immediately usable in --crop-size.
+        suggest = (min(src_H, src_W) // rebin) * rebin
+        print()
+        print("=" * 64)
+        print("ERROR: --crop-size larger than synthetic scenes.")
+        print("=" * 64)
+        print(f"  Requested:    --crop-size {crop}")
+        print(f"  Source scenes: {src_H}×{src_W} pixels")
+        print()
+        print(f"  Every scene would be skipped, the output shards would be")
+        print(f"  0 bytes, and the trainer would crash on the empty files.")
+        print()
+        print(f"  Re-run with --crop-size {suggest} (or smaller).")
+        print(f"  If you want a larger crop, regenerate synthetic data with")
+        print(f"  a bigger --image-size first.")
+        print()
+        return 2
+
     summary = {"subsets": {}}
     pairs_written = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
@@ -369,6 +411,29 @@ def main() -> int:
     print(f"  wrote {pairs_written} pairs total")
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
     print(f"PAIRS_WRITTEN={pairs_written}")
+
+    # Hard fail when zero pairs were written. Returning 0 here would
+    # leave behind a 0-record TFRecord that crashes the downstream
+    # trainer with the much-less-useful "input_train.tfrecord is empty".
+    # The most common cause is --crop-size larger than the synthetic
+    # scene side (Config.DEFAULT_IMAGE_SIZE = 256), so spell that out.
+    if pairs_written == 0:
+        print()
+        print("=" * 64)
+        print("ERROR: 0 pairs written.")
+        print("=" * 64)
+        from euclid_polish.config import Config
+        print(f"  Most likely cause: --crop-size ({crop}) is LARGER than the")
+        print(f"  synthetic clean-scene side in {args.synthetic_records_dir}/")
+        print(f"  clean_*.tfrecord. Default synthetic image size is")
+        print(f"  Config.DEFAULT_IMAGE_SIZE = {Config.DEFAULT_IMAGE_SIZE} px.")
+        print()
+        print(f"  Re-run with --crop-size {Config.DEFAULT_IMAGE_SIZE} (or smaller).")
+        print(f"  If you want larger crops, regenerate your synthetic data with")
+        print(f"  a bigger --image-size first.")
+        print()
+        return 2
+
     return 0
 
 

@@ -222,3 +222,95 @@ class TestStreamCleanVisScenes:
             list(mod._stream_clean_vis_scenes(
                 str(tmp_path), "validate", n_max=1, crop=32,
             ))
+
+
+# ---------------------------------------------------------------------------
+# main() pre-flight regression — refuses to write empty shards
+# ---------------------------------------------------------------------------
+
+class TestPreflightFailsLoudly:
+    """REGRESSION — the pair-gen script used to silently write 0 pairs
+    when ``--crop-size`` was larger than the synthetic scene side. The
+    empty 0-byte TFRecord files then crashed the trainer downstream
+    with an opaque ``input_train.tfrecord is empty`` error.
+
+    main() now performs a one-record pre-flight probe on
+    clean_train.tfrecord BEFORE opening any output writers. If the
+    crop is too big, it prints a clear diagnostic and exits with code
+    2 — no empty files left behind, no SLURM time wasted on the
+    downstream training job that would crash on them.
+    """
+
+    def _write_minimal_clean_record(self, tmp_path, name, n_scenes, side):
+        from euclid_polish.config import Config
+        from euclid_polish.sky.tfrecord import open_multiband_writer
+        from euclid_polish.sky.types import MultiBandSkyImage
+        rng = np.random.default_rng(0)
+        with open_multiband_writer(name, records_dir=str(tmp_path)) as w:
+            for i in range(n_scenes):
+                data = rng.uniform(0, 100, size=(side, side, 4)).astype(np.float32)
+                img = MultiBandSkyImage(
+                    data=data,
+                    pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                    band_names=Config.LR_INPUT_BAND_NAMES,
+                    is_clean=True,
+                )
+                w.write(img, index=i)
+
+    def test_main_refuses_oversized_crop(self, tmp_path, monkeypatch):
+        """If --crop-size > scene side, main() must return non-zero AND
+        leave the output dir empty (no 0-byte shards behind)."""
+        mod = _load_script()
+        # Seed a synthetic clean_train of 64×64 scenes.
+        synth_dir = tmp_path / "synth"
+        synth_dir.mkdir()
+        self._write_minimal_clean_record(
+            synth_dir, "clean_train", n_scenes=3, side=64,
+        )
+        # Fake HST + Euclid PSF FITS so the PSF-loading branch passes.
+        import os as _os
+        from astropy.io import fits
+        hst_psf_path = tmp_path / "F814W.fits"
+        # Small Gaussian as a stand-in.
+        y, x = np.mgrid[:31, :31]
+        cy = cx = 15
+        g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 3.0 ** 2))
+        g = (g / g.sum()).astype(np.float32)
+        hdu = fits.PrimaryHDU(g)
+        hdu.header["PIXSCALE"] = 0.03
+        hdu.header["FILTER"]   = "F814W"
+        hdu.writeto(str(hst_psf_path), overwrite=True)
+        # Stand-in for euclid_psf_VIS.fits at the Config-derived path.
+        from euclid_polish.config import Config
+        _os.makedirs(Config.EUCLID_PSF_DIR, exist_ok=True)
+        euclid_psf_path = _os.path.join(
+            Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits",
+        )
+        g2 = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 5.0 ** 2))
+        g2 = (g2 / g2.sum()).astype(np.float32)
+        hdu2 = fits.PrimaryHDU(g2)
+        hdu2.header["PXSCALE"] = 0.05
+        hdu2.writeto(euclid_psf_path, overwrite=True)
+
+        out_dir = tmp_path / "out"
+        # Invoke main with argv: crop=128 (> source 64), rebin=2.
+        argv = [
+            "fasrc_generate_transition_pairs.py",
+            "--synthetic-records-dir", str(synth_dir),
+            "--hst-psf",       str(hst_psf_path),
+            "--output-dir",    str(out_dir),
+            "--n-train",       "3",
+            "--n-valid",       "1",
+            "--crop-size",     "128",
+            "--rebin-factor",  "2",
+        ]
+        monkeypatch.setattr("sys.argv", argv)
+        rc = mod.main()
+        assert rc != 0, "main() must return non-zero when crop > scene"
+        # No output TFRecord shards left behind.
+        if out_dir.exists():
+            stragglers = sorted(out_dir.glob("*.tfrecord"))
+            assert stragglers == [], (
+                f"main() must not leave empty TFRecords on failure; "
+                f"found: {stragglers}"
+            )

@@ -132,14 +132,42 @@ def _probe_image_size(pairs_dir: str, subset: str = "train") -> int:
     image grid the pair generator wrote, otherwise the synthetic-star
     stream would emit shape-mismatched tensors. Probe by reading one
     record. Assumes square.
+
+    The most common failure here is "shard exists but has zero
+    records" — symptom of step 3a (pair generation) being run with
+    a ``--crop-size`` larger than the synthetic-scene side
+    (``Config.DEFAULT_IMAGE_SIZE`` = 256 by default), which skips
+    every scene and emits an empty file. Spell that out in the error
+    so the user doesn't have to dig through the pair-gen log to find
+    the actual cause.
     """
     from euclid_polish.sky.tfrecord import (
         read_multiband_skyimages, tfrecord_path,
     )
     path = tfrecord_path(pairs_dir, f"input_{subset}")
+    if not os.path.exists(path):
+        raise RuntimeError(
+            f"transition pair shard not found: {path}\n"
+            f"Run step 3a (generate transition-model training pairs) first."
+        )
+    if os.path.getsize(path) == 0:
+        raise RuntimeError(
+            f"transition pair shard is 0 bytes: {path}\n"
+            f"The pair-generation job (step 3a) likely failed silently — "
+            f"check its log."
+        )
     records = read_multiband_skyimages(path, num_images=1)
     if not records:
-        raise RuntimeError(f"could not probe image size: {path} is empty")
+        raise RuntimeError(
+            f"transition pair shard has no records: {path}\n"
+            f"\n"
+            f"Most likely cause: step 3a was run with --crop-size larger "
+            f"than the synthetic scene side. Default synthetic image_size "
+            f"is 256 px (Config.DEFAULT_IMAGE_SIZE). Look for "
+            f"'skipped N scenes smaller than crop' lines in the step 3a "
+            f"log — if N == total scenes, re-run step 3a with a smaller "
+            f"crop_size (try 256 or 128).\n"
+        )
     H, W, _ = records[0].data.shape
     if H != W:
         raise RuntimeError(
