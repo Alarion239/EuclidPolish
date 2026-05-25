@@ -129,7 +129,18 @@ async function refreshTotals() {
     totals = await r.json();
     for (const key of Object.keys(totals)) {
       const el = document.getElementById(`t-${key}`);
-      if (el) el.textContent = (totals[key] || 0).toLocaleString();
+      if (!el) continue;
+      const v = totals[key];
+      // null = backend caught a DataLossError (truncated shard from
+      // an interrupted sync); render distinctly from genuine 0 so the
+      // user knows the shard is bad, not just empty.
+      if (v === null || v === undefined) {
+        el.textContent = "—";
+        el.title = "shard present but corrupt — re-sync or delete it";
+      } else {
+        el.textContent = v.toLocaleString();
+        el.title = "";
+      }
     }
     setIdx(curIdx);
   } catch (e) {}

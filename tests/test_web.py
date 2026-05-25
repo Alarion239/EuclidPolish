@@ -429,16 +429,42 @@ def test_api_hst_pairs_totals_returns_json_with_all_six_files(client):
     r = client.get("/api/hst-pairs/totals")
     assert r.status_code == 200
     body = r.get_json()
-    # Even when the cache is empty, every key must be present so the JS
-    # can build its index labels deterministically. Counts can be 0.
+    # Every key must be present even when the cache is empty so the JS
+    # can build its index labels deterministically. Per key:
+    #   0    — file absent / empty (renders as "0")
+    #   int  — full record count
+    #   None — file present but partially corrupt (truncated rsync,
+    #          DataLossError on read). Renders as "—" in the UI.
+    # Refusing to accept None here would mean a single bad shard
+    # 500-s the whole endpoint and the UI shows 0/0 across the board.
     assert set(body.keys()) == {
         "clean_train", "clean_validate",
         "dirty_train", "dirty_validate",
         "hr_train",    "hr_validate",
     }
     for v in body.values():
-        assert isinstance(v, int)
-        assert v >= 0
+        assert v is None or (isinstance(v, int) and v >= 0)
+
+
+def test_record_count_handles_truncated_tfrecord(tmp_path):
+    """A truncated tfrecord (interrupted rsync, bad header etc.) must
+    not 500 the totals endpoint — return None so callers render "—".
+
+    This is the regression for the bug where one bad ``clean_train``
+    shard on disk poisoned the entire /hst-pairs viewer: the API
+    raised ``DataLossError``, the response 500'd, and every count
+    (including the valid validate files) silently became 0 in the UI.
+    """
+    from euclid_polish.web.app import _record_count
+
+    # ``_record_count(name)`` reads ``<dir>/<name>.tfrecord``; write a
+    # garbage-bytes shard at that exact path so TF rejects the header.
+    bad = tmp_path / "garbage.tfrecord"
+    bad.write_bytes(b"\x00" * 1024 + b"not a real record" + b"\xff" * 1024)
+    assert _record_count("garbage", records_dir=str(tmp_path)) is None
+
+    # An absent file is distinct from a bad one — returns 0, not None.
+    assert _record_count("does_not_exist", records_dir=str(tmp_path)) == 0
 
 
 def test_api_hst_pairs_status_lists_cache_dir(client):

@@ -1507,17 +1507,31 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     return buf.getvalue()
 
 
-def _record_count(name: str, records_dir: Optional[str] = None) -> int:
-    """Total records in a multi-band tfrecord (0 if absent).
+def _record_count(name: str, records_dir: Optional[str] = None) -> Optional[int]:
+    """Records in a multi-band tfrecord.
 
-    ``records_dir`` defaults to ``Config.RECORDS_DIR_V2``; the HST
-    Catalog passes its own dir so this helper works for both."""
+    Returns:
+      * ``0``    — file does not exist
+      * ``int``  — full record count
+      * ``None`` — file present but partially corrupt (e.g. ``DataLossError``
+        from a truncated rsync). Returning ``None`` instead of raising
+        keeps callers like ``/api/hst-pairs/totals`` from 500-ing the
+        whole response when one shard is bad.
+    """
     import tensorflow as tf
     from euclid_polish.sky.tfrecord import tfrecord_path
     p = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(p):
         return 0
-    return sum(1 for _ in tf.data.TFRecordDataset(p))
+    try:
+        return sum(1 for _ in tf.data.TFRecordDataset(p))
+    except tf.errors.DataLossError:
+        # Truncated / partially-synced shard. Caller renders as "—".
+        return None
+    except Exception:
+        # Any other read failure (permissions, corrupt header, etc.)
+        # — treat the same way so the page stays usable.
+        return None
 
 
 # ---------------------------------------------------------------------------
