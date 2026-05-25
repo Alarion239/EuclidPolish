@@ -1945,9 +1945,10 @@ def create_app() -> Flask:
         krn,     _         = _read(krn_path)
 
         # 4. Mirror the script's pipeline: resample → common-side crop
-        # → renormalise → bg-subtract → border-zero. Use the script's
-        # current defaults (same constants the on-disk kernel was built
-        # against) — these are the right "should equal E" arrays.
+        # → renormalise → bg-subtract → border-zero → sub-pixel
+        # recenter. Use the script's current defaults (same constants
+        # the on-disk kernel was built against) — these are the right
+        # "should equal E" arrays.
         common_side  = 511
         border_pixels = 10
         e = fdk._resample_to_hr_grid(euc_raw, euc_scale)
@@ -1959,6 +1960,20 @@ def create_app() -> Flask:
         h = fdk._bg_subtract_and_clip(h)
         e = fdk._zero_borders(e, border_pixels=border_pixels)
         h = fdk._zero_borders(h, border_pixels=border_pixels)
+        # Mirror the solver's recentering step. The HST ePSF centroid
+        # sits ~0.7 px off the geometric centre; the solver's
+        # ``recenter=True`` (default) Fourier-shifts both inputs onto
+        # the geometric centre before computing ``A``. Without this
+        # matching step in validate, the un-recentered ``H`` from disk
+        # gets convolved with an ``A`` that was solved against
+        # recentered ``H``, leaving a ~0.7 px shift between ``A⊛H`` and
+        # ``E`` — visually a bright crux + missing diffraction spikes,
+        # numerically rel.RMS ≈ 0.25 vs the ~0.08 of an honest test.
+        from euclid_polish.sky.differential_kernel import (
+            _recenter_to_geometric,
+        )
+        e = _recenter_to_geometric(e)
+        h = _recenter_to_geometric(h)
 
         # 5. Apply A to H and centre-crop back to the common side
         # (fftconvolve with mode="same" already gives us the right size
