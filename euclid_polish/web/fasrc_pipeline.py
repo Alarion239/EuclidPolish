@@ -241,7 +241,7 @@ class HSTDownloadStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=2, n_gpus=0,
-                memory="16G", time_limit="4:00:00",
+                memory="16G", time_limit="1:00:00",
             ),
             needs_gpu=False,
         )
@@ -269,7 +269,7 @@ class HSTPSFExtractStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
-                memory="8G", time_limit="2:00:00",
+                memory="8G", time_limit="0:10:00",
             ),
             needs_gpu=False,
             fixed_cpus=1,
@@ -294,7 +294,7 @@ class DifferentialKernelStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
-                memory="4G", time_limit="0:30:00",
+                memory="4G", time_limit="0:05:00",
             ),
             needs_gpu=False,
         )
@@ -319,7 +319,7 @@ class HSTTFRecordStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
-                memory="64G", time_limit="6:00:00",
+                memory="64G", time_limit="0:10:00",
             ),
             needs_gpu=False,
         )
@@ -352,7 +352,7 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
-                memory="16G", time_limit="3:00:00",
+                memory="16G", time_limit="0:20:00",
             ),
             needs_gpu=False,
         )
@@ -390,7 +390,7 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="1:00:00",
+                memory="16G", time_limit="0:20:00",
             ),
             needs_gpu=False,
         )
