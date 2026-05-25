@@ -95,7 +95,17 @@
           title="Convolve the local kernel with the local HST PSF and compare to the local Euclid PSF. Fully offline — no FASRC round-trip.">
     🔬 Validate: render A⊛H vs E
   </button>
+  <button id="btn-save-aconvh" type="button"
+          title="Compute A⊛H from the same chain validate uses, save it as a FITS in the HST-PSF cache directory, and surface inspect + download links.">
+    💾 Save A⊛H as FITS
+  </button>
   <span id="validate-msg" class="muted" style="font-size:12px; margin-left:6px;"></span>
+  <div id="aconvh-links" style="display:none; margin-top:6px; font-size:13px;">
+    <a id="link-aconvh-inspect" target="_blank">🔍 Open in inspector</a>
+    &nbsp;·&nbsp;
+    <a id="link-aconvh-download" download>⬇ Download FITS</a>
+    &nbsp;<span id="aconvh-meta" class="muted" style="font-size:11px;"></span>
+  </div>
   <div id="validate-wrap" style="display:none; margin-top:10px;">
     <img id="validate-img" alt="A⊛H vs E vs residual"
          style="max-width: 100%; height: auto; display: block;
@@ -129,6 +139,45 @@
         vbtn.disabled = false;
       };
       vimg.src = url;
+    });
+  }
+
+  // ── Save A⊛H as FITS button ───────────────────────────────────────
+  // Runs the same offline preprocessing chain validate uses, writes
+  // the convolved array to a sibling FITS in the HST-PSF cache, and
+  // surfaces inspect + download links. Saved path lives under the
+  // FASRC cache (already an _inspectable_root), so /inspect accepts
+  // it without any whitelist tweak.
+  const sbtn   = document.getElementById('btn-save-aconvh');
+  const slinks = document.getElementById('aconvh-links');
+  const smeta  = document.getElementById('aconvh-meta');
+  const sinsp  = document.getElementById('link-aconvh-inspect');
+  const sdown  = document.getElementById('link-aconvh-download');
+  if (sbtn) {
+    sbtn.addEventListener('click', async () => {
+      sbtn.disabled = true;
+      vmsg.textContent = 'computing + saving A⊛H FITS…';
+      try {
+        const r = await fetch('/api/hst-psf/save-a-conv-h',
+                              { method: 'POST' });
+        const j = await r.json();
+        if (j.ok) {
+          const rel = encodeURIComponent(j.rel_path);
+          sinsp.href = '/inspect?fits=' + rel;
+          sdown.href = '/inspect/download?fits=' + rel;
+          slinks.style.display = 'block';
+          smeta.textContent =
+            `${j.shape[0]}×${j.shape[1]}, peak=${j.peak.toExponential(2)}` +
+            `, sum=${j.sum.toFixed(4)}, ${(j.size_bytes/1024).toFixed(0)} KB`;
+          vmsg.textContent = '';
+        } else {
+          vmsg.textContent = 'failed: ' + (j.error || 'unknown');
+        }
+      } catch (e) {
+        vmsg.textContent = 'failed: ' + String(e);
+      } finally {
+        sbtn.disabled = false;
+      }
     });
   }
 

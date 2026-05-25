@@ -1890,28 +1890,22 @@ def create_app() -> Flask:
         max_age = 0 if force else 600
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=max_age)
 
-    @app.route("/hst-psf/validate.png")
-    def hst_psf_validate_png():
-        """Sanity-check the differential kernel: render ``E`` vs ``A⊛H``
-        vs residual side-by-side.
+    def _compute_validate_arrays():
+        """Shared preprocessing for ``/hst-psf/validate.png`` and the
+        ``A⊛H``-save endpoint.
 
-        Loads three FITS files entirely from the *local* state — no
-        FASRC round-trip:
+        Returns ``(e, h, krn, a_conv_h, paths)`` where ``paths`` is a
+        dict of the source FITS files used (for provenance headers).
 
-          * ``A``: rsync'd diff kernel in the fetcher's cache.
-          * ``H``: rsync'd HST F814W ePSF, same cache.
-          * ``E``: Euclid VIS empirical PSF in ``data/euclid_psf/``.
-
-        Runs the exact same preprocessing the kernel script does
-        (resample, common-side crop, bg-subtract, border-zero,
-        renormalise) on H and E so the comparison is honest — A was
-        solved against *those* cleaned arrays, not the raw FITS. Then
-        ``A ⊛ H_cleaned`` is computed via fftconvolve and rendered
-        alongside ``E_cleaned`` and their residual.
+        Aborts the request with 404 if any of the three on-disk files
+        is missing — callers don't need to re-check.
         """
         import importlib.util
         from astropy.io import fits
         from scipy.signal import fftconvolve
+        from euclid_polish.sky.differential_kernel import (
+            _recenter_to_geometric,
+        )
         from euclid_polish.web.fasrc_fetcher import _local_path_for
 
         # 1. Resolve local file paths.
@@ -1946,9 +1940,12 @@ def create_app() -> Flask:
 
         # 4. Mirror the script's pipeline: resample → common-side crop
         # → renormalise → bg-subtract → border-zero → sub-pixel
-        # recenter. Use the script's current defaults (same constants
-        # the on-disk kernel was built against) — these are the right
-        # "should equal E" arrays.
+        # recenter. Same constants the on-disk kernel was built against
+        # — these are the right "should equal E" arrays. Recentering at
+        # the end matches what the solver does internally; skipping it
+        # leaves A⊛H shifted by the HST ePSF's ~0.7-px centroid offset,
+        # which shows up as a bright crux + missing diffraction spikes
+        # in the residual and bumps rel.RMS from ~0.08 to ~0.25.
         common_side  = 511
         border_pixels = 10
         e = fdk._resample_to_hr_grid(euc_raw, euc_scale)
@@ -1960,25 +1957,35 @@ def create_app() -> Flask:
         h = fdk._bg_subtract_and_clip(h)
         e = fdk._zero_borders(e, border_pixels=border_pixels)
         h = fdk._zero_borders(h, border_pixels=border_pixels)
-        # Mirror the solver's recentering step. The HST ePSF centroid
-        # sits ~0.7 px off the geometric centre; the solver's
-        # ``recenter=True`` (default) Fourier-shifts both inputs onto
-        # the geometric centre before computing ``A``. Without this
-        # matching step in validate, the un-recentered ``H`` from disk
-        # gets convolved with an ``A`` that was solved against
-        # recentered ``H``, leaving a ~0.7 px shift between ``A⊛H`` and
-        # ``E`` — visually a bright crux + missing diffraction spikes,
-        # numerically rel.RMS ≈ 0.25 vs the ~0.08 of an honest test.
-        from euclid_polish.sky.differential_kernel import (
-            _recenter_to_geometric,
-        )
         e = _recenter_to_geometric(e)
         h = _recenter_to_geometric(h)
 
-        # 5. Apply A to H and centre-crop back to the common side
-        # (fftconvolve with mode="same" already gives us the right size
-        # when both inputs match; if A is smaller than h, scipy pads).
+        # 5. Apply A to H (mode='same' gives back the input shape).
         a_conv_h = fftconvolve(h, krn, mode="same")
+
+        return e, h, krn, a_conv_h, {
+            "hst": hst_path, "kernel": krn_path, "euclid": euc_path,
+        }
+
+    @app.route("/hst-psf/validate.png")
+    def hst_psf_validate_png():
+        """Sanity-check the differential kernel: render ``E`` vs ``A⊛H``
+        vs residual side-by-side.
+
+        Loads three FITS files entirely from the *local* state — no
+        FASRC round-trip:
+
+          * ``A``: rsync'd diff kernel in the fetcher's cache.
+          * ``H``: rsync'd HST F814W ePSF, same cache.
+          * ``E``: Euclid VIS empirical PSF in ``data/euclid_psf/``.
+
+        Runs the exact same preprocessing the kernel solver did
+        (resample, common-side crop, bg-subtract, border-zero,
+        renormalise, sub-pixel recenter) on H and E so the comparison
+        is honest. Then ``A ⊛ H_cleaned`` is computed via fftconvolve
+        and rendered alongside ``E_cleaned`` and their residual.
+        """
+        e, h, krn, a_conv_h, _ = _compute_validate_arrays()
 
         # 6. Scalar diagnostics so the user can read off the numbers
         # instead of squinting at the pictures.
@@ -2032,8 +2039,7 @@ def create_app() -> Flask:
 
         peak_ratio = peak_a_h / peak_e if peak_e > 0 else float("nan")
         fig.suptitle(
-            f"Kernel sanity check — common_side={common_side}  "
-            f"peak(A⊛H)/peak(E)={peak_ratio:.3f}  "
+            f"Kernel sanity check — peak(A⊛H)/peak(E)={peak_ratio:.3f}  "
             f"flux(A⊛H)={flux_a_h:.4f}  rel.RMS residual={rel_rms:.3f}",
             fontsize=10, y=1.02,
         )
@@ -2043,6 +2049,59 @@ def create_app() -> Flask:
         plt.close(fig)
         return send_file(io.BytesIO(buf.getvalue()),
                          mimetype="image/png", max_age=0)
+
+    @app.route("/api/hst-psf/save-a-conv-h", methods=["POST"])
+    def api_hst_psf_save_a_conv_h():
+        """Compute A⊛H via the same chain validate.png uses and save it
+        to a sibling FITS in the HST-PSF cache directory.
+
+        Returns JSON with the inspect-relative path so the UI can build
+        ``/inspect?fits=…`` and ``/inspect/download?fits=…`` links —
+        bytewise inspection without re-uploading or saving by hand.
+
+        Side-effect (intentional): the saved file lives under the FASRC
+        cache, which is in ``_inspectable_roots`` already, so the
+        inspector accepts it without further whitelist tweaks.
+        """
+        from astropy.io import fits as _fits
+        from euclid_polish.web.fasrc_fetcher import _local_path_for
+
+        _, _, _, a_conv_h, paths = _compute_validate_arrays()
+
+        cfg = fasrc_config.load()
+        out_path = _local_path_for(
+            f"{cfg.data_dir}/hst_psf/a_conv_h_validate.fits"
+        )
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+        hdu = _fits.PrimaryHDU(
+            np.ascontiguousarray(a_conv_h, dtype=np.float32),
+        )
+        h = hdu.header
+        h["OBJECT"]   = ("A conv H (validation)",
+                         "kernel applied to HST F814W ePSF")
+        h["EUCLBAND"] = ("VIS", "Euclid band the kernel maps INTO")
+        h["HSTFILT"]  = ("F814W", "HST filter the kernel maps FROM")
+        h["PIXSCALE"] = (Config.DEFAULT_PIXEL_SCALE, "arcsec / pix")
+        h["BUNIT"]    = ("", "dimensionless (sums to ~1)")
+        h["COMMENT"]  = "Generated by /api/hst-psf/save-a-conv-h"
+        h["SRC_HST"]  = (os.path.basename(paths["hst"]),
+                         "source HST ePSF FITS")
+        h["SRC_KRN"]  = (os.path.basename(paths["kernel"]),
+                         "source differential kernel FITS")
+        h["SRC_EUC"]  = (os.path.basename(paths["euclid"]),
+                         "source Euclid VIS PSF FITS")
+        hdu.writeto(out_path, overwrite=True)
+
+        rel = _safe_relpath(os.path.realpath(out_path))
+        return jsonify({
+            "ok":          True,
+            "rel_path":    rel,
+            "size_bytes":  int(os.path.getsize(out_path)),
+            "shape":       list(a_conv_h.shape),
+            "peak":        float(a_conv_h.max()),
+            "sum":         float(a_conv_h.sum()),
+        })
 
     @app.route("/api/hst-psf/sync", methods=["POST"])
     def api_hst_psf_sync():
