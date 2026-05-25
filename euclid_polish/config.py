@@ -588,50 +588,6 @@ class Config:
 
     STAR_CUTOUTS_ROOT = os.path.join(DATA_DIR, "euclid_stars/cutouts")
 
-    # ---------------------------------------------------------------------
-    # HST template library (real-morphology HR galaxy templates)
-    # ---------------------------------------------------------------------
-    #
-    # Real HST/ACS F814W cutouts of COSMOS-field galaxies, used as HR
-    # templates in the synthetic generator to broaden morphology coverage
-    # (spirals, irregulars, AGN hosts) beyond the smooth Sersic B+D
-    # decompositions. Each cutout is downsampled by a random factor before
-    # compositing — this both effectively erases HST's PSF (compressed to
-    # sub-pixel at the new scale) and reduces HST noise per pixel by the
-    # same factor. Photometry is renormalised to unit total flux and
-    # multiplied by the catalog's per-band electron count, so the templates
-    # play the same photometric role as Sersic profiles.
-    HST_TEMPLATES_DIR          = os.path.join(DATA_DIR, "hst_templates")
-    HST_TEMPLATE_CATALOG_FILE  = "templates_catalog.csv"
-    # Native HST/ACS drizzled pixel scale of HAPcut deliveries (arcsec/pix).
-    # ACS WFC drizzled to 0.04" in HAP products; we resample to whatever
-    # rescale factor is chosen at render time.
-    HST_NATIVE_PIXEL_SCALE_ARCSEC = 0.04
-    # Default downloaded cutout size (HST native pixels). 256 × 0.04" ≈ 10.2"
-    # — enough to contain most COSMOS galaxies (typical Re < 1") with room
-    # for background estimation in the outer annulus.
-    HST_DEFAULT_CUTOUT_PIX     = 256
-    # Filename pattern for cached cutouts under HST_TEMPLATES_DIR.
-    # Two slots: COSMOS catalog id (int) and native pixel size (int).
-    HST_CUTOUT_FILENAME_FMT    = "tpl_{cosmos_id:08d}_{size:04d}.fits"
-    # Random rescale factor (linear downsample) applied at render time.
-    # Each render draws f ~ Uniform[MIN, MAX]; the template is shrunk by f
-    # in both axes (so flux ÷ f² per pixel after normalisation). With these
-    # defaults the residual HST PSF (FWHM 0.10") shrinks to 0.025–0.013"
-    # at the new effective scale — sub-pixel at 0.05" HR.
-    HST_RESCALE_FACTOR_MIN     = 2.0
-    HST_RESCALE_FACTOR_MAX     = 6.0
-    # Fraction of generator galaxies drawn from HST templates instead of
-    # the COSMOS Sersic B+D decomposition. 0 → original (Sersic only)
-    # behaviour; 0.5 → half the galaxies use real morphology. Backward
-    # compatibility: defaulted to 0 so unchanged callers behave identically.
-    HST_TEMPLATE_FRACTION      = 0.0
-    # Background-subtraction strategy: median over a 5-px-wide outer annulus
-    # of the template (after rescaling). Robust enough for typical HST
-    # cutouts where the galaxy is well-centered; if your templates are
-    # mosaiced with bright neighbours, mask them first.
-    HST_BACKGROUND_ANNULUS_PIX = 5
-
     @classmethod
     def get_band(cls, name: str) -> "BandConfig":
         """Return the ``BandConfig`` instance for a band name (e.g. 'VIS')."""

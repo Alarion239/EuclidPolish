@@ -118,42 +118,6 @@ def _checkpoints_status() -> Dict[str, Any]:
     return out
 
 
-def _hst_status() -> Dict[str, Any]:
-    """Snapshot of the HST template library: counts, root, sample ids.
-
-    Reads only the index CSV — never touches the FITS files — so it's
-    cheap enough to call on every page render.
-    """
-    from euclid_polish.hst.catalog import HSTTemplateLibrary
-    root = Config.HST_TEMPLATES_DIR
-    out = {
-        "root":        root,
-        "n_templates": 0,
-        "size_mb":     0.0,
-        "sample_ids":  [],
-        "csv_present": False,
-    }
-    if not os.path.isdir(root):
-        return out
-    lib = HSTTemplateLibrary(root=root)
-    out["n_templates"] = len(lib)
-    out["csv_present"] = os.path.exists(lib.catalog_path)
-    out["sample_ids"]  = lib.cutout_ids()[:10]
-    # Cheap aggregate over FITS files; skip the CSV.
-    total_bytes = 0
-    try:
-        for name in os.listdir(root):
-            if name.startswith("tpl_") and name.endswith(".fits"):
-                try:
-                    total_bytes += os.path.getsize(os.path.join(root, name))
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    out["size_mb"] = round(total_bytes / 1e6, 1)
-    return out
-
-
 def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
                           preview_n: int = 8) -> Dict[str, Any]:
     """Count cutout FITS files per band under ``output_dir/cutouts/<band>/``.
@@ -225,14 +189,13 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
-                  lens_density: float,
-                  hst_template_fraction: float = 0.0) -> Dict[str, Any]:
+                  lens_density: float) -> Dict[str, Any]:
     """Run the multi-band clean-field generator with live progress.
 
-    When ``hst_template_fraction > 0``, a fraction of galaxies are
-    rendered from the on-disk HST template library
-    (:class:`HSTTemplateLibrary`) instead of the Sersic B+D
-    decomposition. Falls back to Sersic if the library is empty.
+    Fully synthetic — galaxies render via the Sersic B+D decomposition
+    from the COSMOS catalog. (HST-morphology data is a separate stream,
+    forward-modelled offline by ``scripts/fasrc_generate_hst_tfrecords.py``
+    and mixed in at the dataloader.)
     """
     from euclid_polish.sky.cosmos2025 import open_cosmos2025
     from euclid_polish.sky.multiband_generator import (
@@ -241,35 +204,16 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
     from euclid_polish.sky.tfrecord import open_multiband_writer
 
     print(f"Generating clean fields: image_size={image_size}, n_train={n_train}, "
-          f"n_valid={n_valid}, lens_density={lens_density}, "
-          f"hst_template_fraction={hst_template_fraction}")
+          f"n_valid={n_valid}, lens_density={lens_density}")
     catalog = open_cosmos2025()
     print(f"Catalog: {type(catalog).__name__} ({len(catalog)} galaxies)")
-
-    # Optional HST template renderer — degrade gracefully to Sersic if the
-    # caller asked for templates but the library is empty.
-    renderer = None
-    effective_fraction = float(hst_template_fraction)
-    if effective_fraction > 0:
-        from euclid_polish.hst.catalog import HSTTemplateLibrary
-        from euclid_polish.sky.hst_templates import HSTTemplateRenderer
-        lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-        if len(lib) == 0:
-            print(f"  ⚠️  hst_template_fraction={effective_fraction} but the "
-                  f"library at {lib.root} is empty — falling back to Sersic.")
-            effective_fraction = 0.0
-        else:
-            renderer = HSTTemplateRenderer(lib)
-            print(f"  HST templates: {len(lib)} on disk, fraction="
-                  f"{effective_fraction:.2f}")
 
     cfg = MultiBandGeneratorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=lens_density,
-        hst_template_fraction=effective_fraction,
     )
-    sim = MultiBandSimulator(catalog, cfg, hst_template_renderer=renderer)
+    sim = MultiBandSimulator(catalog, cfg)
     os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
     result: Dict[str, Any] = {}
     total_n = n_train + n_valid
@@ -1290,7 +1234,6 @@ def _inspectable_roots() -> List[str]:
     roots = [
         Config.DEFAULT_OUTPUT_DIR,        # Euclid star cutouts
         Config.EUCLID_PSF_DIR,             # band PSFs
-        Config.HST_TEMPLATES_DIR,          # HST template library
         Config.EUCLID_INFERENCE_DIR,       # real-Euclid inference outputs
         Config.VIS_DIR,                     # reconstruction PNG/FITS, demos, sky_fits
         Config.RECORDS_DIR_V2,              # TFRecords (not FITS) — kept for completeness
@@ -1386,199 +1329,6 @@ def _safe_relpath(real_abs: str) -> str:
         return rel if not rel.startswith("..") else real_abs
     except ValueError:
         return real_abs
-
-
-# ---------------------------------------------------------------------------
-# HST template jobs + rendering
-# ---------------------------------------------------------------------------
-
-def _job_hst_download(
-    cap, n: int, size: int, max_mag: float, min_disk_re: float, workers: int,
-) -> Dict[str, Any]:
-    """Bulk-download HST/ACS F814W cutouts for the COSMOS template library.
-
-    Mirrors the logic of ``scripts/download_hst_templates.py`` so it can
-    be driven from the web UI with live progress. Selects bright,
-    extended COSMOS galaxies, downloads cutouts through MAST HAPcut,
-    persists them into :class:`HSTTemplateLibrary`.
-    """
-    from euclid_polish.hst.catalog import HSTTemplateLibrary
-    from euclid_polish.hst.downloader import (
-        HSTCutoutDownloader, HSTDownloadConfig,
-    )
-    from euclid_polish.hst.types import HSTCutoutMetadata
-    from euclid_polish.sky.cosmos2025 import open_cosmos2025
-    from scripts.download_hst_templates import select_template_galaxies
-
-    print(f"HST templates: target N={n}, size={size}px, max_mag={max_mag}, "
-          f"min_disk_re={min_disk_re}\", workers={workers}")
-
-    cap.tick(0, 3, "loading COSMOS catalog")
-    catalog = open_cosmos2025()
-    print(f"  catalog: {len(catalog):,} galaxies after quality cuts")
-
-    cap.tick(1, 3, "selecting template candidates")
-    rng = np.random.default_rng()
-    positions = select_template_galaxies(
-        catalog,
-        n_target=n,
-        max_mag=max_mag,
-        min_disk_re_arcsec=min_disk_re,
-        rng=rng,
-    )
-    print(f"  selected {len(positions)} candidate positions")
-
-    cap.tick(2, 3, f"downloading {len(positions)} cutouts (HAPcut)")
-    dl = HSTCutoutDownloader(
-        HSTDownloadConfig(
-            output_dir=Config.HST_TEMPLATES_DIR,
-            size_pix=size,
-            max_workers=workers,
-        ),
-    )
-    summary = dl.download_many(positions, show_progress=False)
-
-    # Index whatever landed on disk.
-    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-    pos_by_id = {cid: (ra, dec) for (cid, ra, dec) in positions}
-    new = 0
-    for cid, (ra, dec) in pos_by_id.items():
-        if dl.already_have(cid) and lib.get(cid, size) is None:
-            meta = HSTCutoutMetadata(
-                cosmos_id          = cid,
-                ra_deg             = ra,
-                dec_deg            = dec,
-                size_pix           = size,
-                pixel_scale_arcsec = Config.HST_NATIVE_PIXEL_SCALE_ARCSEC,
-                filename           = os.path.basename(dl.cutout_path(cid)),
-            )
-            lib.add(meta, save=False)
-            new += 1
-    lib.save()
-    cap.tick(3, 3, "done")
-    print(f"  downloaded={summary['downloaded']} skipped={summary['skipped']} "
-          f"failed={summary['failed']} indexed_new={new}")
-    return {
-        "downloaded": summary["downloaded"],
-        "skipped":    summary["skipped"],
-        "failed":     summary["failed"],
-        "indexed_new": new,
-        "library_total": len(lib),
-        "library_root":  lib.root,
-    }
-
-
-def _job_hst_rebuild_index(cap) -> Dict[str, Any]:
-    """Rescan the templates directory and rebuild the CSV index.
-
-    Useful after a manual file copy or when the index gets out of sync
-    with the on-disk FITS files.
-    """
-    from euclid_polish.hst.catalog import HSTTemplateLibrary
-    cap.tick(0, 1, "scanning templates directory")
-    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-    n = lib.rebuild_from_disk()
-    cap.tick(1, 1, "done")
-    print(f"  re-indexed {n} templates at {lib.root}")
-    return {"library_total": n, "library_root": lib.root}
-
-
-def _hst_template_fits_path(cosmos_id: int) -> str:
-    """Return the on-disk FITS path for a template by cosmos_id.
-
-    Aborts the request with 404 if the template is not in the library;
-    400 if the id is not a positive integer. Path-traversal-safe by
-    construction — filenames are formatted from a validated int.
-    """
-    from euclid_polish.hst.catalog import HSTTemplateLibrary
-    try:
-        cid = int(cosmos_id)
-    except (TypeError, ValueError):
-        abort(400)
-    if cid <= 0:
-        abort(400)
-    lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-    meta = lib.get(cid)
-    if meta is None:
-        abort(404)
-    path = lib.cutout_path(meta)
-    if not os.path.isfile(path):
-        abort(404)
-    return path
-
-
-def _render_hst_template_png(cosmos_id: int, size: Optional[int]) -> bytes:
-    """Single asinh-stretched PNG of the template at ``cosmos_id``.
-
-    Re-uses :func:`_render_fits_to_png` so the stretch matches Euclid
-    cutout previews (asinh on the VIS band scale). HST cutouts are in
-    electrons/s while Euclid cutouts are in electrons over the stack;
-    the percentile clip absorbs the unit difference for display.
-    """
-    path = _hst_template_fits_path(cosmos_id)
-    return _render_fits_to_png(path, Config.BAND_VIS, size=size)
-
-
-def _render_hst_template_preview_png(
-    cosmos_id: int, rescale: float, panel_size: int = 320,
-) -> bytes:
-    """Side-by-side PNG: raw HST cutout vs. rescaled+normalized rendering.
-
-    The right panel is what :class:`HSTTemplateRenderer` actually feeds
-    into the simulator canvas at the chosen rescale factor. Useful for
-    debugging "what does the renderer see?"
-    """
-    import matplotlib.pyplot as plt
-    from euclid_polish.hst.catalog import HSTTemplateLibrary
-    from euclid_polish.sky.hst_templates import (
-        _annulus_median, _normalise_to_unit_flux, _rescale_2d,
-    )
-
-    path = _hst_template_fits_path(cosmos_id)
-    lib  = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-    meta = lib.get(int(cosmos_id))
-    raw  = lib.load_image(meta)
-
-    bg   = _annulus_median(raw, Config.HST_BACKGROUND_ANNULUS_PIX)
-    rescaled = _rescale_2d(raw - bg, factor=float(rescale), order=3)
-    normed   = _normalise_to_unit_flux(rescaled)
-    if normed is None:
-        normed = np.zeros((1, 1), dtype=np.float32)
-
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    # Raw HST: asinh on a small scale that matches typical e/s units.
-    raw_stretched = np.arcsinh(raw / 1.0)
-    lo, hi = np.percentile(raw_stretched, [1.0, 99.7])
-    if hi <= lo:
-        hi = lo + 1.0
-    axes[0].imshow(raw_stretched, cmap="gray_r", origin="lower",
-                   vmin=lo, vmax=hi)
-    axes[0].set_title(
-        f"HST F814W raw — {raw.shape[1]}×{raw.shape[0]} @ "
-        f"{Config.HST_NATIVE_PIXEL_SCALE_ARCSEC:.2f}\"",
-        fontsize=10,
-    )
-    axes[0].set_xticks([]); axes[0].set_yticks([])
-
-    n_stretched = np.arcsinh(normed * 1e4)
-    lo, hi = np.percentile(n_stretched, [1.0, 99.7])
-    if hi <= lo:
-        hi = lo + 1.0
-    axes[1].imshow(n_stretched, cmap="gray_r", origin="lower",
-                   vmin=lo, vmax=hi)
-    axes[1].set_title(
-        f"Renderer view — rescale={float(rescale):.1f}× → "
-        f"{normed.shape[1]}×{normed.shape[0]}",
-        fontsize=10,
-    )
-    axes[1].set_xticks([]); axes[1].set_yticks([])
-
-    fig.suptitle(f"COSMOS id {int(cosmos_id)}", fontsize=11)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
-    plt.close(fig)
-    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -1881,7 +1631,6 @@ def create_app() -> Flask:
             psfs=_psf_status(),
             tfrecords=_tfrecords_status(),
             checkpoints=_checkpoints_status(),
-            hst=_hst_status(),
         )
 
     # ---------------- Catalog page ----------------
@@ -2036,129 +1785,6 @@ def create_app() -> Flask:
         png = _render_fits_to_png(fits_path, band, size=size)
         return send_file(io.BytesIO(png), mimetype="image/png",
                          max_age=3600)
-
-    # ---------------- HST templates page ----------------
-    @app.route("/hst-templates")
-    def hst_templates_page():
-        # Read-only library snapshot for the page template — actions live
-        # in the right rail forms and post to the routes below.
-        return render_template(
-            "hst_templates.html",
-            hst=_hst_status(),
-            cosmos_catalog_present=os.path.isfile(
-                Config.COSMOS2025_CATALOG_PATH
-            ),
-            cosmos_catalog_path=Config.COSMOS2025_CATALOG_PATH,
-            default_n=200,
-            default_size=Config.HST_DEFAULT_CUTOUT_PIX,
-            default_max_mag=22.0,
-            default_min_disk_re=0.30,
-            default_workers=4,
-            default_rescale=(Config.HST_RESCALE_FACTOR_MIN
-                             + Config.HST_RESCALE_FACTOR_MAX) / 2.0,
-        )
-
-    @app.route("/api/hst-templates/status")
-    def hst_templates_status():
-        return jsonify(_hst_status())
-
-    @app.route("/api/hst-templates/list")
-    def hst_templates_list():
-        from euclid_polish.hst.catalog import HSTTemplateLibrary
-        try:
-            offset = max(0, int(request.args.get("offset", 0)))
-            limit  = max(1, min(200, int(request.args.get("limit", 24))))
-        except ValueError:
-            abort(400)
-        lib = HSTTemplateLibrary(root=Config.HST_TEMPLATES_DIR)
-        # Stable ordering by cosmos_id so paging is deterministic.
-        entries = sorted(lib, key=lambda m: (m.cosmos_id, m.size_pix))
-        total = len(entries)
-        sl = entries[offset:offset + limit]
-        return jsonify({
-            "total":  total,
-            "offset": offset,
-            "limit":  limit,
-            "items": [
-                {
-                    "cosmos_id":          m.cosmos_id,
-                    "ra_deg":             m.ra_deg,
-                    "dec_deg":            m.dec_deg,
-                    "size_pix":           m.size_pix,
-                    "pixel_scale_arcsec": m.pixel_scale_arcsec,
-                    "filter_name":        m.filter_name,
-                    # Relative FITS path the inspector can resolve.
-                    "fits_path":          _safe_relpath(
-                        os.path.realpath(os.path.join(
-                            Config.HST_TEMPLATES_DIR, m.filename,
-                        ))
-                    ),
-                }
-                for m in sl
-            ],
-        })
-
-    @app.route("/hst-template-image/<int:cosmos_id>")
-    def hst_template_image(cosmos_id: int):
-        try:
-            size = int(request.args.get("size", 0)) or None
-        except ValueError:
-            size = None
-        if size is not None and (size < 16 or size > 2048):
-            abort(400)
-        png = _render_hst_template_png(cosmos_id, size=size)
-        return send_file(io.BytesIO(png), mimetype="image/png",
-                         max_age=3600)
-
-    @app.route("/view/hst-template")
-    def view_hst_template():
-        try:
-            cosmos_id = int(request.args.get("cosmos_id", "0"))
-            rescale   = float(request.args.get("rescale", "4.0"))
-        except ValueError:
-            abort(400)
-        if cosmos_id <= 0:
-            abort(400)
-        if not (Config.HST_RESCALE_FACTOR_MIN * 0.5
-                <= rescale
-                <= Config.HST_RESCALE_FACTOR_MAX * 2.0):
-            abort(400)
-        png = _render_hst_template_preview_png(cosmos_id, rescale)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/hst-templates/download", methods=["POST"])
-    def hst_templates_download():
-        try:
-            n           = int(request.form.get("n", 200))
-            size        = int(request.form.get("size",
-                                                Config.HST_DEFAULT_CUTOUT_PIX))
-            max_mag     = float(request.form.get("max_mag", 22.0))
-            min_disk_re = float(request.form.get("min_disk_re", 0.30))
-            workers     = int(request.form.get("workers", 4))
-        except ValueError:
-            return jsonify({"error": "invalid form field"}), 400
-        if n <= 0 or n > 50_000:
-            return jsonify({"error": "n out of range"}), 400
-        if size < 32 or size > 2048:
-            return jsonify({"error": "size out of range"}), 400
-        if workers < 1 or workers > 16:
-            return jsonify({"error": "workers out of range"}), 400
-        job_id = REGISTRY.spawn(
-            label=f"HST templates: download {n} @ {size} px",
-            target=lambda cap: _job_hst_download(
-                cap, n=n, size=size, max_mag=max_mag,
-                min_disk_re=min_disk_re, workers=workers,
-            ),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/hst-templates/rebuild-index", methods=["POST"])
-    def hst_templates_rebuild_index():
-        job_id = REGISTRY.spawn(
-            label="HST templates: rebuild index from disk",
-            target=lambda cap: _job_hst_rebuild_index(cap),
-        )
-        return jsonify({"job_id": job_id})
 
     # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
     @app.route("/hst-psf")
@@ -2583,12 +2209,10 @@ def create_app() -> Flask:
     def sky_page():
         return render_template("sky.html",
                                tfrecords=_tfrecords_status(),
-                               hst=_hst_status(),
                                default_image_size=510,
                                default_n_train=20,
                                default_n_valid=4,
-                               default_lens_density=Config.LENS_DENSITY_ARCMIN2,
-                               default_hst_fraction=Config.HST_TEMPLATE_FRACTION)
+                               default_lens_density=Config.LENS_DENSITY_ARCMIN2)
 
     @app.route("/sky/generate", methods=["POST"])
     def sky_generate():
@@ -2597,20 +2221,11 @@ def create_app() -> Flask:
         image_size = int(request.form.get("image_size", 510))
         lens_density = float(request.form.get("lens_density",
                                               Config.LENS_DENSITY_ARCMIN2))
-        try:
-            hst_fraction = float(request.form.get("hst_template_fraction",
-                                                  Config.HST_TEMPLATE_FRACTION))
-        except ValueError:
-            hst_fraction = Config.HST_TEMPLATE_FRACTION
-        hst_fraction = max(0.0, min(1.0, hst_fraction))
         tag = f"generate {n_train}+{n_valid} @ {image_size}²"
-        if hst_fraction > 0:
-            tag += f" · HST {hst_fraction:.0%}"
         job_id = REGISTRY.spawn(
             label=tag,
             target=lambda cap: _job_generate(
                 cap, image_size, n_train, n_valid, lens_density,
-                hst_template_fraction=hst_fraction,
             ),
         )
         return jsonify({"job_id": job_id})

@@ -101,7 +101,7 @@ def apply_band_noise(
 ) -> np.ndarray:
     """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
 
-    Module-level so non-class callers (e.g. the HST-template TFRecord
+    Module-level so non-class callers (e.g. the HST→Euclid TFRecord
     generator at ``scripts/fasrc_generate_hst_tfrecords.py``) can use
     the exact same noise model without having to instantiate a full
     :class:`MultiBandForward`. The method on the class is a thin

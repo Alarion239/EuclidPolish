@@ -187,8 +187,9 @@ class TestNoisePropagation:
     def test_noise_variance_reduces(self):
         """Applying A (a low-pass) to white noise should reduce variance.
 
-        This is the operational claim we lean on for the HST-template
-        path: A(sH) has lower per-pixel variance than sH itself.
+        This is the operational claim we lean on for the HST→Euclid
+        path (scripts/fasrc_generate_hst_tfrecords.py): A(sH) has lower
+        per-pixel variance than sH itself.
         """
         rng = np.random.default_rng(0)
         e = _gauss2d(63, 6.0)
