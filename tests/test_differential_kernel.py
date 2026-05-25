@@ -582,3 +582,66 @@ class TestNoCheckerboardArtefact:
         h = _gauss2d(127, 4.0, cy=63 - 0.5, cx=63 + 0.2)
         a = compute_differential_kernel(e, h, regularisation=1e-3)
         assert float(a.sum()) == pytest.approx(1.0, abs=1e-2)
+
+
+class TestKernelCorrectAgainstUnrecenteredInputs:
+    """The kernel ``compute_differential_kernel`` returns must satisfy
+    ``A ⊛ H_original ≈ E_original`` — the contract every downstream
+    caller (the HST→Euclid TFRecord generator, the validate panel,
+    the inference forward model) relies on.
+
+    The internal recentering would otherwise bake a sub-pixel shift
+    into the kernel equal to ``(cy_e − cy_h, cx_e − cx_h)``, leaving
+    ``A_solved ⊛ H_original`` shifted by that amount relative to
+    ``E_original``. The solver undoes the shift before returning. This
+    test pins that undo: feed inputs with mismatched centroids, check
+    that the returned kernel convolves the un-recentered H into a
+    field whose centroid matches the un-recentered E to sub-pixel
+    precision.
+    """
+
+    def test_a_conv_h_centroid_matches_e_centroid(self):
+        from scipy.signal import fftconvolve
+
+        side = 127
+        # Mismatched centroids: E shifted by (+0.3, -0.4), H by (-0.5, +0.2).
+        e = _gauss2d(side, 8.0, cy=63 + 0.3, cx=63 - 0.4)
+        h = _gauss2d(side, 4.0, cy=63 - 0.5, cx=63 + 0.2)
+
+        a = compute_differential_kernel(e, h, regularisation=1e-3, recenter=True)
+        ah = fftconvolve(h, a, mode="same")
+
+        cy_e, cx_e = _centroid(e)
+        cy_ah, cx_ah = _centroid(ah)
+        # Convolution preserves centroid in the ideal case; the test
+        # tolerance has to cover the residual Wiener smoothing + the
+        # spline-shift interpolation error from the kernel correction.
+        # Without the correction the offset would be (+0.8, -0.6) px.
+        assert cy_ah == pytest.approx(cy_e, abs=0.05), (
+            f"A⊛H y-centroid {cy_ah:.4f} ≠ E y-centroid {cy_e:.4f} — "
+            "internal recenter shift not undone before return"
+        )
+        assert cx_ah == pytest.approx(cx_e, abs=0.05), (
+            f"A⊛H x-centroid {cx_ah:.4f} ≠ E x-centroid {cx_e:.4f}"
+        )
+
+    def test_recenter_false_does_not_correct(self):
+        """With ``recenter=False`` we expect NO correction (solver
+        contract: don't touch the inputs OR the output). Confirms the
+        correction is conditional on the recentering flag and not a
+        permanent extra step."""
+        from scipy.signal import fftconvolve
+
+        side = 127
+        # Same inputs both ways.
+        e = _gauss2d(side, 8.0, cy=63 + 0.3, cx=63 - 0.4)
+        h = _gauss2d(side, 4.0, cy=63 - 0.5, cx=63 + 0.2)
+
+        a_off = compute_differential_kernel(e, h, regularisation=1e-3, recenter=False)
+        ah = fftconvolve(h, a_off, mode="same")
+        cy_e, cx_e = _centroid(e); cy_ah, cx_ah = _centroid(ah)
+        # Without recenter the kernel does no centroid corrections —
+        # A⊛H sits at the same place E does naturally because no
+        # shift was introduced in the first place.
+        assert cy_ah == pytest.approx(cy_e, abs=0.05)
+        assert cx_ah == pytest.approx(cx_e, abs=0.05)

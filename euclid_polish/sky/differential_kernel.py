@@ -71,6 +71,26 @@ def _fourier_shift(arr: np.ndarray, dy: float, dx: float) -> np.ndarray:
     return np.fft.ifft2(np.fft.fft2(arr) * phase).real
 
 
+def _positive_centroid(arr: np.ndarray) -> Tuple[float, float]:
+    """Flux-weighted centroid of the positive part of ``arr``.
+
+    Same convention as :func:`_recenter_to_geometric` — pinned in one
+    helper so callers that need the centroid AND the recentered array
+    don't compute it twice through subtly different formulae.
+    """
+    pos = np.maximum(arr, 0.0)
+    total = float(pos.sum())
+    if not np.isfinite(total) or total <= 0:
+        # Degenerate input — return the geometric centre so any
+        # caller computing "shift the centroid to target" sees 0 shift.
+        return (arr.shape[0] - 1) / 2.0, (arr.shape[1] - 1) / 2.0
+    yy, xx = np.indices(arr.shape)
+    return (
+        float((yy * pos).sum() / total),
+        float((xx * pos).sum() / total),
+    )
+
+
 def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     """Sub-pixel-shift ``arr`` so its flux centroid lands on the
     geometric centre ``((H-1)/2, (W-1)/2)``.
@@ -173,16 +193,26 @@ def compute_differential_kernel(
         a larger grid to reduce FFT boundary artefacts. Defaults to the
         nearest power of two ≥ 2× the input side.
     recenter
-        When True (default), sub-pixel-shift each input PSF so its flux
-        centroid lands on the geometric centre via a Fourier phase ramp.
-        Sub-pixel centroid mismatch between ``E`` and ``H`` (e.g. the
-        HST ePSF whose centroid sits at (256.6, 256.7) on a 513² grid
-        with geometric centre (256, 256)) puts a ~half-pixel phase
-        ramp on ``Ê/Ĥ``; ``exp(iπk/N) = ±1`` at Nyquist, so the spatial-
-        domain ``A`` comes out as a pixel-by-pixel checkerboard of
-        ±values. The recentering is exact (FFT shift preserves total
-        flux to round-off) and disables itself when the centroid is
-        already inside 1e-3 px of the geometric centre.
+        When True (default), sub-pixel-shift each input PSF so its
+        flux centroid lands on the geometric centre, then **undo the
+        net shift on the output kernel** so the returned ``A`` is
+        physically correct against the *original* un-recentered E and
+        H — that's what downstream callers convolve real cutouts with.
+
+        Why the dance: a centroid mismatch between E and H puts a
+        sub-pixel phase ramp on ``Ê/Ĥ``; at Nyquist this is ``≈±1``
+        and the spatial-domain ``A`` comes out as a pixel-by-pixel
+        checkerboard. Recentering both inputs onto the geometric
+        centre kills the phase ramp at the cost of baking a *shift*
+        into ``A_solved`` equal to ``(dy_e − dy_h, dx_e − dx_h)``.
+        We then apply the inverse spatial shift (scipy spline,
+        mode='constant', no wraparound) to ``A_solved`` so the final
+        kernel satisfies ``A ⊛ H_original ≈ E_original`` — the
+        contract any downstream forward model relies on.
+
+        Disables itself when the centroids of both inputs already sit
+        inside 1e-3 px of the geometric centre (no recentering, no
+        correction needed).
 
     Returns
     -------
@@ -204,6 +234,11 @@ def compute_differential_kernel(
     e_in = psf_euclid.astype(np.float64)
     h_in = psf_hubble.astype(np.float64)
     if recenter:
+        # Capture centroids of the originals so we can undo the net
+        # shift on the kernel below. Same flux-weighted positive
+        # centroid `_recenter_to_geometric` uses.
+        cy_e, cx_e = _positive_centroid(e_in)
+        cy_h, cx_h = _positive_centroid(h_in)
         e_in = _recenter_to_geometric(e_in)
         h_in = _recenter_to_geometric(h_in)
 
@@ -237,6 +272,22 @@ def compute_differential_kernel(
     i0 = H_pad // 2 - H_in // 2
     j0 = W_pad // 2 - W_in // 2
     a = a_pad[i0:i0 + H_in, j0:j0 + W_in]
+
+    if recenter:
+        # Undo the (cy_e − cy_h, cx_e − cx_h) shift the recentering
+        # baked into A. Without this the returned kernel satisfies
+        # ``A ⊛ H_recentered = E_recentered`` but downstream code
+        # convolves real cutouts with the *original* H — making the
+        # forward-modelled "Euclid-like" LR sub-pixel-shifted from
+        # what real Euclid actually observes. See the docstring's
+        # `recenter` section for the derivation.
+        from scipy.ndimage import shift as _ndshift
+        a = _ndshift(
+            a.astype(np.float64),
+            shift=(cy_e - cy_h, cx_e - cx_h),
+            order=3, mode="constant", cval=0.0,
+        )
+
     return a.astype(np.float32)
 
 

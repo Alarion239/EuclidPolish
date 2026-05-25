@@ -1903,9 +1903,6 @@ def create_app() -> Flask:
         import importlib.util
         from astropy.io import fits
         from scipy.signal import fftconvolve
-        from euclid_polish.sky.differential_kernel import (
-            _recenter_to_geometric,
-        )
         from euclid_polish.web.fasrc_fetcher import _local_path_for
 
         # 1. Resolve local file paths.
@@ -1939,13 +1936,15 @@ def create_app() -> Flask:
         krn,     _         = _read(krn_path)
 
         # 4. Mirror the script's pipeline: resample → common-side crop
-        # → renormalise → bg-subtract → border-zero → sub-pixel
-        # recenter. Same constants the on-disk kernel was built against
-        # — these are the right "should equal E" arrays. Recentering at
-        # the end matches what the solver does internally; skipping it
-        # leaves A⊛H shifted by the HST ePSF's ~0.7-px centroid offset,
-        # which shows up as a bright crux + missing diffraction spikes
-        # in the residual and bumps rel.RMS from ~0.08 to ~0.25.
+        # → renormalise → bg-subtract → border-zero. We **do not**
+        # recenter here: ``compute_differential_kernel`` does its own
+        # internal recentering AND undoes the net shift on the kernel,
+        # so the saved A satisfies ``A ⊛ H_unrecentered = E_unrecentered``
+        # — the contract every downstream caller relies on
+        # (fasrc_generate_hst_tfrecords applies A to raw HST cutouts).
+        # Validate against the same un-recentered arrays the kernel was
+        # designed to work with; if rel.RMS comes out high, the kernel
+        # IS bad (not just being tested against the wrong thing).
         common_side  = 511
         border_pixels = 10
         e = fdk._resample_to_hr_grid(euc_raw, euc_scale)
@@ -1957,8 +1956,6 @@ def create_app() -> Flask:
         h = fdk._bg_subtract_and_clip(h)
         e = fdk._zero_borders(e, border_pixels=border_pixels)
         h = fdk._zero_borders(h, border_pixels=border_pixels)
-        e = _recenter_to_geometric(e)
-        h = _recenter_to_geometric(h)
 
         # 5. Apply A to H (mode='same' gives back the input shape).
         a_conv_h = fftconvolve(h, krn, mode="same")
