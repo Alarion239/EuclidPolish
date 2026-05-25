@@ -16,6 +16,66 @@ def test_run_pipeline_script_imports():
     import scripts.run_pipeline  # noqa: F401
 
 
+def test_fasrc_train_transition_model_script_imports():
+    """REGRESSION — a syntax error in the new training script would
+    only fire when SLURM actually executed it, wasting a real job
+    allocation. Importing it from a unit test gives an immediate
+    SyntaxError if anything is malformed."""
+    import importlib.util
+    import os
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "fasrc_train_transition_model.py",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "fasrc_train_transition_model_under_test", path,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Spot-check that the central function is callable (signature-only,
+    # not invoked — invocation would need pair shards on disk).
+    assert callable(mod._make_pair_dataset)
+    assert callable(mod._probe_image_size)
+    assert callable(mod._psf_identity_residual)
+
+
+def test_fasrc_generate_transition_pairs_script_imports():
+    """Same regression guard for the pair-generation script."""
+    import importlib.util
+    import os
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "fasrc_generate_transition_pairs.py",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "fasrc_generate_transition_pairs_under_test", path,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert callable(mod._convolve_pair)
+    assert callable(mod._load_hst_psf_on_hr)
+
+
+def test_fasrc_generate_hst_tfrecords_script_imports():
+    """Same guard for the consumer script that loads A_θ or the analytic kernel."""
+    import importlib.util
+    import os
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "fasrc_generate_hst_tfrecords.py",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "fasrc_generate_hst_tfrecords_under_test", path,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert callable(mod._init_worker)
+    assert callable(mod._apply_transition)
+
+
 def test_cli_class_constructs():
     """InteractiveCLI class is well-formed and instantiates."""
     from euclid_polish.cli.main import InteractiveCLI

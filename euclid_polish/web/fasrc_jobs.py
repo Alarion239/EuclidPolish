@@ -184,15 +184,31 @@ def _params_of(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def secs_per_step_history(n: int = 8) -> Optional[float]:
-    """Median wall-second-per-training-step across the last ``n`` finished jobs."""
+    """Median wall-second-per-training-step across the last ``n`` finished jobs.
+
+    ``steps`` can arrive as a string because submit forms write everything
+    as text into ``params_json``; ``runtime`` is built from floats but
+    either timestamp can be ``None``. Coerce both to numbers up front and
+    skip rows where the coercion fails — silently dropping a bad row is
+    better than 500-ing the training-status endpoint (which would freeze
+    the live job ticker on every page in the UI).
+    """
     samples = []
     for row in DB.list_completed(limit=n):
         params = _params_of(row)
-        steps = params.get("steps") or row.get("progress_total") or 0
-        runtime = (row.get("ended_at") or 0) - (row.get("started_at") or 0)
+        steps_raw = params.get("steps") or row.get("progress_total") or 0
+        try:
+            steps = float(steps_raw)
+        except (TypeError, ValueError):
+            continue
+        try:
+            runtime = float((row.get("ended_at") or 0)
+                            - (row.get("started_at") or 0))
+        except (TypeError, ValueError):
+            continue
         if runtime <= 0 or steps <= 0:
             continue
-        samples.append(runtime / float(steps))
+        samples.append(runtime / steps)
     if not samples:
         return None
     return statistics.median(samples)

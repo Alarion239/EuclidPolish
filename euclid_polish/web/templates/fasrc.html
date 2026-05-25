@@ -1545,11 +1545,32 @@ function _renderHstArea(j) {
         if (v == null || v === '') continue;
         summary.push(`  ${k} = ${v}`);
       }
+
+      // Catch the obvious partition/GPU mismatch BEFORE sbatch sees it.
+      // The "shared" partition on FASRC has no GPUs; requesting n_gpus>0
+      // there fails with the unhelpful "Requested node configuration is
+      // not available". Spell it out in the dialog so the user can
+      // cancel and fix the field instead of round-tripping via SLURM.
+      const n_gpus_val   = parseInt(body.get('n_gpus') ?? '0', 10);
+      const partition_val = (body.get('partition') ?? '').trim();
+      const cpuOnlyPartitions = ['shared', 'serial_requeue', 'test'];
+      let warning = '';
+      if (n_gpus_val > 0 && cpuOnlyPartitions.includes(partition_val)) {
+        warning =
+          `\n⚠️  WARNING: you asked for ${n_gpus_val} GPU(s) on the ` +
+          `"${partition_val}" partition, which is CPU-only on FASRC. ` +
+          `sbatch will reject this with "Requested node configuration ` +
+          `is not available".\n` +
+          `Change Partition to "gpu" (or "gpu_test" for short jobs) ` +
+          `before submitting.\n`;
+      }
+
       const msg =
         `Submit a SLURM job to FASRC?\n\n` +
         `Step: ${stepId}\n\n` +
-        `Parameters:\n${summary.join('\n') || '  (no overrides — using step defaults)'}\n\n` +
-        `This will run on FASRC and consume real cluster resources. ` +
+        `Parameters:\n${summary.join('\n') || '  (no overrides — using step defaults)'}\n` +
+        warning +
+        `\nThis will run on FASRC and consume real cluster resources. ` +
         `Click OK to proceed, Cancel to abort.`;
       if (!window.confirm(msg)) {
         statusEl.innerHTML = '<span class="muted">cancelled by user</span>';

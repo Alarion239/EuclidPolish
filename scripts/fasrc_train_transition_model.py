@@ -144,7 +144,6 @@ def _probe_image_size(pairs_dir: str, subset: str = "train") -> int:
 
 def _make_pair_dataset(
     pairs_dir: str, subset: str, *, batch_size: int, seed: int, shuffle: bool,
-    *,
     star_injection_fraction: float = 0.0,
     max_stars_per_image: int = 8,
     linear_combo_fraction: float = 0.0,

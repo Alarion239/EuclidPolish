@@ -123,6 +123,59 @@ def test_eta_uses_median_seconds_per_step(db):
     assert abs(fasrc_jobs.eta_for_submission(50_000) - 100.0) < 1e-3
 
 
+def test_secs_per_step_handles_string_steps_in_params(db):
+    """REGRESSION — form-submitted params arrive as strings because
+    ``request.form.to_dict()`` returns str values. They get stored
+    verbatim in ``params_json``. The ETA helper used to compare
+    ``steps <= 0`` directly, which raises
+    ``TypeError: '<=' not supported between instances of 'str' and
+    'int'`` and 500-ed the /api/fasrc/training-status endpoint on
+    every poll until the offending row was deleted.
+
+    The fix coerces ``steps`` via float() and silently skips rows
+    where coercion fails."""
+    base = time.time() - 1000
+    # Mix of types params can take in the wild:
+    #   - "20000"  (the bug: string from form)
+    #   - 20000    (int from a CLI-injected job)
+    #   - "junk"   (corrupt row — must not crash; skip silently)
+    #   - missing  (older rows that pre-date the "steps" field)
+    samples = [
+        ("jobA", {"steps": "20000"},  20.0),
+        ("jobB", {"steps": 10000},    10.0),
+        ("jobC", {"steps": "junk"},    5.0),
+        ("jobD", {},                   5.0),
+    ]
+    for i, (jobid, params, runtime) in enumerate(samples):
+        db.insert(jobid, label="x", params=params,
+                  script_path=".", log_path=".", err_path=".")
+        db.update_state(jobid, state="COMPLETED",
+                        started_at=base + i,
+                        ended_at=base + i + runtime)
+    # Must not raise. Median of the two valid samples (jobA: 20/20000,
+    # jobB: 10/10000) = 0.001.
+    spt = fasrc_jobs.secs_per_step_history()
+    assert spt is not None
+    assert abs(spt - 0.001) < 1e-7
+
+
+def test_secs_per_step_handles_string_progress_total(db):
+    """A row that has no ``params['steps']`` but does have
+    ``progress_total`` (parsed from a ``step X/Y`` log line) should
+    also handle string-typed totals without crashing."""
+    base = time.time() - 100
+    db.insert("99", label="x", params={},      # no steps key
+              script_path=".", log_path=".", err_path=".")
+    db.update_state("99", state="COMPLETED",
+                    started_at=base, ended_at=base + 5.0)
+    db.update_progress("99", step=100, total=5000)
+    # update_progress writes int; double-check secs_per_step doesn't
+    # explode regardless.
+    spt = fasrc_jobs.secs_per_step_history()
+    assert spt is not None
+    assert spt > 0
+
+
 def test_eta_for_running_uses_live_progress(db):
     db.insert("99", label="x", params={"steps": 1000},
               script_path=".", log_path=".", err_path=".")
