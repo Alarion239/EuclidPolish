@@ -257,6 +257,79 @@ class TestPreflightFailsLoudly:
                 )
                 w.write(img, index=i)
 
+    def test_main_succeeds_end_to_end(self, tmp_path, monkeypatch):
+        """REGRESSION — the success path of main() must complete
+        without UnboundLocalError or any other Python-level bug.
+
+        We just hit a real-world ``UnboundLocalError: cannot access
+        local variable 'Config'`` because a stray
+        ``from euclid_polish.config import Config`` inside an
+        error-only branch made ``Config`` function-local everywhere
+        in main() via Python's static-scope rule. The pre-flight and
+        all other tests in this class exercise the FAILURE paths;
+        none actually ran main() to the successful completion of
+        the writer loop. This test does — with tiny inputs so it
+        finishes in seconds — and would have caught that bug before
+        the failing job hit SLURM."""
+        mod = _load_script()
+        # Source clean shards: scenes large enough to satisfy a small crop.
+        synth_dir = tmp_path / "synth"
+        synth_dir.mkdir()
+        self._write_minimal_clean_record(
+            synth_dir, "clean_train", n_scenes=3, side=64,
+        )
+        self._write_minimal_clean_record(
+            synth_dir, "clean_validate", n_scenes=1, side=64,
+        )
+
+        # Fake HST + Euclid PSF FITS so the PSF-loading branch passes.
+        import os as _os
+        from astropy.io import fits
+        hst_psf_path = tmp_path / "F814W.fits"
+        y, x = np.mgrid[:31, :31]
+        cy = cx = 15
+        g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 3.0 ** 2))
+        g = (g / g.sum()).astype(np.float32)
+        hdu = fits.PrimaryHDU(g)
+        hdu.header["PIXSCALE"] = 0.03
+        hdu.header["FILTER"]   = "F814W"
+        hdu.writeto(str(hst_psf_path), overwrite=True)
+        from euclid_polish.config import Config
+        _os.makedirs(Config.EUCLID_PSF_DIR, exist_ok=True)
+        euclid_psf_path = _os.path.join(
+            Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits",
+        )
+        g2 = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 5.0 ** 2))
+        g2 = (g2 / g2.sum()).astype(np.float32)
+        hdu2 = fits.PrimaryHDU(g2)
+        hdu2.header["PXSCALE"] = 0.05
+        hdu2.writeto(euclid_psf_path, overwrite=True)
+
+        out_dir = tmp_path / "out"
+        argv = [
+            "fasrc_generate_transition_pairs.py",
+            "--synthetic-records-dir", str(synth_dir),
+            "--hst-psf",       str(hst_psf_path),
+            "--output-dir",    str(out_dir),
+            "--n-train",       "3",
+            "--n-valid",       "1",
+            "--crop-size",     "32",     # fits inside 64² scenes
+            "--rebin-factor",  "2",
+        ]
+        monkeypatch.setattr("sys.argv", argv)
+        rc = mod.main()
+        # 0 == success. Any non-zero would mean the failure-branch was
+        # taken (UnboundLocalError, missing files, etc.).
+        assert rc == 0, f"main() returned {rc} on the happy path"
+
+        # Sanity-check the on-disk artifacts: 4 non-empty TFRecords,
+        # JSON summary present.
+        assert (out_dir / "input_train.tfrecord").stat().st_size > 0
+        assert (out_dir / "target_train.tfrecord").stat().st_size > 0
+        assert (out_dir / "input_validate.tfrecord").stat().st_size > 0
+        assert (out_dir / "target_validate.tfrecord").stat().st_size > 0
+        assert (out_dir / "generation_summary.json").exists()
+
     def test_main_refuses_oversized_crop(self, tmp_path, monkeypatch):
         """If --crop-size > scene side, main() must return non-zero AND
         leave the output dir empty (no 0-byte shards behind)."""

@@ -30,6 +30,8 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import numpy as np
+import tensorflow as tf
+from scipy import signal as scipy_signal
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +127,6 @@ def make_star_field(
         HR scale. ``target_image`` is ``(image_size//rebin_factor,
         image_size//rebin_factor, 1)`` float32 at LR scale.
     """
-    from scipy import signal as scipy_signal
 
     if rng is None:
         rng = np.random.default_rng()
@@ -187,8 +188,6 @@ def build_star_pair_dataset(
     ``rebin_factor`` controls how much the target is sum-rebinned
     (default 2 matches Euclid HR→LR). Input stays at HR.
     """
-    import tensorflow as tf
-
     if n_stars_max < n_stars_min:
         raise ValueError(
             f"n_stars_max ({n_stars_max}) must be ≥ n_stars_min "
@@ -351,8 +350,6 @@ def apply_linear_combo_augmentation(
         flips. Picking a different seed than the source's shuffle seed
         keeps the two streams uncorrelated.
     """
-    import tensorflow as tf
-
     if not (0.0 <= fraction <= 1.0):
         raise ValueError(f"fraction must be in [0, 1], got {fraction}")
     if fraction <= 0.0:

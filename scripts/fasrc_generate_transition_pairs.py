@@ -34,12 +34,23 @@ import time
 from typing import Optional, Tuple
 
 import numpy as np
+import tensorflow as tf
+from astropy.io import fits
+from scipy import signal as scipy_signal
+from scipy.ndimage import zoom
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.psf_library import psf_path_for_band
+from euclid_polish.euclid.types import PSF
+from euclid_polish.sky.tfrecord import (
+    open_multiband_writer, read_multiband_skyimages, tfrecord_path,
+)
+from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.training.transition_augmentations import sum_rebin_2d
 
 
 SYNTHETIC_RECORDS_DIR = Config.RECORDS_DIR_V2
@@ -98,7 +109,6 @@ def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
     move). Re-normalises to unit flux because ``scipy.ndimage.zoom``
     interpolates surface brightness, not integrated flux.
     """
-    from scipy.ndimage import zoom
     target_scale = Config.DEFAULT_PIXEL_SCALE   # 0.05″
     if abs(src_scale - target_scale) < 1e-6:
         out = np.asarray(psf_data, dtype=np.float64)
@@ -141,7 +151,6 @@ def _crop_to_odd_square(psf: np.ndarray, side: int) -> np.ndarray:
 
 def _load_hst_psf_on_hr(path: str, target_side: int) -> np.ndarray:
     """Load HST F814W ePSF, resample to HR grid, centre-crop to ``target_side``."""
-    from astropy.io import fits
     with fits.open(path, memmap=False) as hdul:
         data  = np.asarray(hdul[0].data, dtype=np.float64)
         scale = float(hdul[0].header.get("PIXSCALE", 0.015))
@@ -151,8 +160,6 @@ def _load_hst_psf_on_hr(path: str, target_side: int) -> np.ndarray:
 
 def _load_euclid_vis_psf_on_hr(target_side: int) -> np.ndarray:
     """Load the Euclid VIS empirical PSF on the HR grid."""
-    from euclid_polish.euclid.psf_library import psf_path_for_band
-    from euclid_polish.euclid.types import PSF
     path = psf_path_for_band(Config.BAND_VIS)
     p = PSF.from_fits(path)
     hr = _resample_to_hr_grid(np.asarray(p.data, dtype=np.float64), p.pixel_scale)
@@ -177,10 +184,6 @@ def _stream_clean_vis_scenes(
     in linear electron units. Scenes are centre-cropped to ``crop``;
     smaller-than-``crop`` source records are skipped (warnings printed).
     """
-    import tensorflow as tf
-    from euclid_polish.sky.tfrecord import tfrecord_path
-    from euclid_polish.sky.types import MultiBandSkyImage
-
     path = tfrecord_path(records_dir, f"clean_{subset}")
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -241,9 +244,6 @@ def _convolve_pair(
     ``input.shape == scene.shape`` and
     ``target.shape == (H//rebin_factor, W//rebin_factor)``.
     """
-    from scipy import signal as scipy_signal
-    from euclid_polish.training.transition_augmentations import sum_rebin_2d
-
     inp_hr = scipy_signal.fftconvolve(
         scene, psf_hst, mode="same",
     ).astype(np.float32)
@@ -315,19 +315,13 @@ def main() -> int:
     print(f"[2/3] streaming clean scenes from "
           f"{args.synthetic_records_dir} ...")
 
-    from euclid_polish.sky.tfrecord import open_multiband_writer
-    from euclid_polish.sky.types import MultiBandSkyImage
-
     # ── Pre-flight: probe one synthetic scene and verify it can be
     # cropped to the requested size. If not, fail immediately BEFORE
     # opening any output writers (which would leave behind empty
     # 0-byte TFRecord files that then crash the trainer downstream).
     # Cheap — reads exactly one record from clean_train.tfrecord.
     print(f"      pre-flight: probing scene size in clean_train.tfrecord ...")
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path as _tp,
-    )
-    src_path = _tp(args.synthetic_records_dir, "clean_train")
+    src_path = tfrecord_path(args.synthetic_records_dir, "clean_train")
     if not os.path.isfile(src_path):
         print(f"ERROR: synthetic clean_train.tfrecord not found at "
               f"{src_path}. Generate synthetic data first "
@@ -422,7 +416,12 @@ def main() -> int:
         print("=" * 64)
         print("ERROR: 0 pairs written.")
         print("=" * 64)
-        from euclid_polish.config import Config
+        # ``Config`` is already imported at module scope (line ~42).
+        # Re-importing it here as a local would have made it function-
+        # local everywhere in main() via Python's "any binding makes the
+        # name local for the whole function" rule, breaking the earlier
+        # `Config.DEFAULT_PIXEL_SCALE` references in the writer loop
+        # with ``UnboundLocalError``.
         print(f"  Most likely cause: --crop-size ({crop}) is LARGER than the")
         print(f"  synthetic clean-scene side in {args.synthetic_records_dir}/")
         print(f"  clean_*.tfrecord. Default synthetic image size is")

@@ -26,12 +26,26 @@ import time
 from typing import Optional, Tuple
 
 import numpy as np
+import tensorflow as tf
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.sky.tfrecord import (
+    parse_record_graph_v2, read_multiband_skyimages, tfrecord_path,
+)
+from euclid_polish.training.transition_augmentations import (
+    apply_linear_combo_augmentation, build_star_pair_dataset,
+    make_psf_identity_pair, sum_rebin_2d,
+)
+from euclid_polish.training.transition_model import (
+    HSTtoEuclidTransition, save_model_weights, total_parameter_count,
+)
+from scripts.fasrc_generate_transition_pairs import (
+    _load_euclid_vis_psf_on_hr, _load_hst_psf_on_hr,
+)
 
 
 PAIRS_DIR     = os.path.join(Config.DATA_DIR, "images", "records_transition")
@@ -141,9 +155,6 @@ def _probe_image_size(pairs_dir: str, subset: str = "train") -> int:
     so the user doesn't have to dig through the pair-gen log to find
     the actual cause.
     """
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
     path = tfrecord_path(pairs_dir, f"input_{subset}")
     if not os.path.exists(path):
         raise RuntimeError(
@@ -207,9 +218,6 @@ def _make_pair_dataset(
     the combination augmentation operates on the joint distribution
     (so a "linear combination of two stars" is a valid output).
     """
-    import tensorflow as tf
-    from euclid_polish.sky.tfrecord import parse_record_graph_v2, tfrecord_path
-
     inp_path = tfrecord_path(pairs_dir, f"input_{subset}")
     tgt_path = tfrecord_path(pairs_dir, f"target_{subset}")
     for p in (inp_path, tgt_path):
@@ -245,9 +253,6 @@ def _make_pair_dataset(
             and add_psf_pair_to_validation
             and psf_hst is not None
             and psf_euclid is not None):
-        from euclid_polish.training.transition_augmentations import (
-            make_psf_identity_pair,
-        )
         image_size = _probe_image_size(pairs_dir, subset)
         psf_inp, psf_tgt = make_psf_identity_pair(
             psf_hst, psf_euclid,
@@ -266,9 +271,6 @@ def _make_pair_dataset(
                 "star_injection_fraction > 0 requires both psf_hst and "
                 "psf_euclid; pass them in to _make_pair_dataset."
             )
-        from euclid_polish.training.transition_augmentations import (
-            build_star_pair_dataset,
-        )
         image_size = _probe_image_size(pairs_dir, subset)
         star_ds = build_star_pair_dataset(
             psf_hst, psf_euclid,
@@ -284,9 +286,6 @@ def _make_pair_dataset(
 
     # ── Linear-combination augmentation (operates on the joint stream) ──
     if linear_combo_fraction > 0.0:
-        from euclid_polish.training.transition_augmentations import (
-            apply_linear_combo_augmentation,
-        )
         ds = apply_linear_combo_augmentation(
             ds, fraction=linear_combo_fraction,
             seed=seed + 31337,
@@ -325,7 +324,6 @@ def _psf_identity_residual(
     bit smaller because the rebin averages away high-frequency
     residuals.
     """
-    from euclid_polish.training.transition_augmentations import sum_rebin_2d
     # Pad-or-crop the HR PSFs to a side divisible by rebin_factor.
     H = psf_hst_on_hr.shape[0]
     if H % rebin_factor != 0:
@@ -356,9 +354,6 @@ def _psf_identity_residual(
 def main() -> int:
     args = parse_args()
 
-    # tf import is gated behind argparse so --dry-run prints fast.
-    import tensorflow as tf
-
     print("=" * 64)
     print(f"  Train transition model A_θ (HST PSF → Euclid PSF)")
     print("=" * 64)
@@ -383,10 +378,6 @@ def main() -> int:
     tf.random.set_seed(args.seed)
     np.random.seed(args.seed)
 
-    from euclid_polish.training.transition_model import (
-        HSTtoEuclidTransition, save_model_weights, total_parameter_count,
-    )
-
     print("[1/4] building model ...")
     model = HSTtoEuclidTransition(
         channels=args.channels,
@@ -404,10 +395,8 @@ def main() -> int:
 
     print("[2/4] loading PSFs for diagnostic ...")
     # Reuse the resampler used by the pair generator so the probe is
-    # bit-equivalent to the training data.
-    from scripts.fasrc_generate_transition_pairs import (
-        _load_hst_psf_on_hr, _load_euclid_vis_psf_on_hr,
-    )
+    # bit-equivalent to the training data. (Both helpers imported at
+    # module scope.)
     psf_side = 421       # same as in fasrc_generate_transition_pairs.py
     psf_hst    = _load_hst_psf_on_hr(args.hst_psf, psf_side)
     psf_euclid = _load_euclid_vis_psf_on_hr(psf_side)
