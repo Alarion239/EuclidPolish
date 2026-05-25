@@ -111,9 +111,17 @@ def reset_worker_globals():
     import fasrc_generate_hst_tfrecords as mod
     mod._WORKER_KERNEL = None
     mod._WORKER_IMAGE_SIZE = 0
+    mod._WORKER_TYPICAL_RATIOS = None
     yield
     mod._WORKER_KERNEL = None
     mod._WORKER_IMAGE_SIZE = 0
+    mod._WORKER_TYPICAL_RATIOS = None
+
+
+# Default per-band ratios for tests — VIS=1.0 by construction, NISP
+# bands take order-of-magnitude typical values. Real value at runtime
+# comes from the catalog; for tests any plausible vector works.
+DEFAULT_TEST_RATIOS = np.array([1.0, 0.20, 0.30, 0.25], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -153,18 +161,24 @@ class TestDefaultWorkerCount:
 
 class TestInitWorker:
     """The pool calls ``_init_worker`` once per worker process to load
-    the kernel into a module global. Per-task pickling of the kernel
-    would otherwise be ~1 MB × 6400 tasks of pointless serialisation."""
+    the kernel + typical per-band ratios into module globals. Per-task
+    pickling of these would otherwise be ~1 MB × 6400 tasks of pointless
+    serialisation."""
 
     def test_populates_module_globals(self, tmp_path):
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         assert mod._WORKER_KERNEL is None      # fresh module
         assert mod._WORKER_IMAGE_SIZE == 0
-        mod._init_worker(krn, image_size=128)
+        assert mod._WORKER_TYPICAL_RATIOS is None
+        mod._init_worker(krn, image_size=128,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
         assert mod._WORKER_KERNEL is not None
         assert mod._WORKER_KERNEL.shape == (63, 63)
         assert mod._WORKER_IMAGE_SIZE == 128
+        np.testing.assert_array_equal(
+            mod._WORKER_TYPICAL_RATIOS, DEFAULT_TEST_RATIOS,
+        )
 
     def test_is_idempotent(self, tmp_path):
         """Calling twice — e.g. during local debugging — must not blow
@@ -172,8 +186,10 @@ class TestInitWorker:
         globals with whatever was passed."""
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, image_size=64)
-        mod._init_worker(krn, image_size=128)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        mod._init_worker(krn, image_size=128,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
         assert mod._WORKER_IMAGE_SIZE == 128
 
     def test_process_without_init_raises(self):
@@ -181,8 +197,7 @@ class TestInitWorker:
         function fails loudly with a clear message instead of silently
         crashing on a None deref in the FFT."""
         mod = _load_script()
-        task = (0, 150.1, 2.3, (1.0, 1.0, 1.0, 1.0),
-                "/nope.fits", 64, 42)
+        task = (0, 150.1, 2.3, "/nope.fits", 64, 42)
         with pytest.raises(RuntimeError, match="_init_worker"):
             mod._process_one_galaxy(task)
 
@@ -197,15 +212,15 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
 
         task = (
-            7,                           # catalog_idx
-            150.1, 2.3,                  # ra, dec (= tile centre)
-            (100.0, 80.0, 60.0, 50.0),   # per-band fluxes (electrons)
+            7,             # catalog_idx (only used to label the result)
+            150.1, 2.3,    # ra, dec (= tile centre)
             tile,
-            200,                         # hlsp_side_pix
-            42,                          # seed
+            200,           # hlsp_side_pix
+            42,            # seed
         )
         result = mod._process_one_galaxy(task)
         assert result is not None
@@ -223,8 +238,9 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64)
-        task = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 1)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3, tile, 200, 1)
         catalog_idx, hr, lr = mod._process_one_galaxy(task)
         assert np.isfinite(hr).all()
         assert np.isfinite(lr).all()
@@ -235,8 +251,9 @@ class TestProcessOneGalaxyHappyPath:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64)
-        task = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 1)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3, tile, 200, 1)
         _, hr, _ = mod._process_one_galaxy(task)
         # Sum over bands → 2D map of total flux.
         flat = hr.sum(axis=-1)
@@ -256,16 +273,18 @@ class TestProcessOneGalaxyFailureModes:
         tile = _make_synthetic_tile(
             tmp_path, side_pix=200, ra_centre=150.0, dec_centre=2.0,
         )
-        mod._init_worker(krn, image_size=64)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
         # 10 deg off — way outside the tile footprint.
-        task = (0, 160.0, 12.0, (1.0, 1.0, 1.0, 1.0), tile, 200, 42)
+        task = (0, 160.0, 12.0, tile, 200, 42)
         assert mod._process_one_galaxy(task) is None
 
     def test_missing_file_returns_none(self, tmp_path):
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, image_size=64)
-        task = (0, 150.1, 2.3, (1.0, 1.0, 1.0, 1.0),
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3,
                 str(tmp_path / "does-not-exist.fits"), 200, 42)
         assert mod._process_one_galaxy(task) is None
 
@@ -277,22 +296,34 @@ class TestProcessOneGalaxyFailureModes:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=200)
         # Demand a huge HR side that the tiny HLSP cutout can't fill.
-        mod._init_worker(krn, image_size=2000)
-        task = (0, 150.1, 2.3, (1.0, 1.0, 1.0, 1.0), tile, 50, 42)
+        mod._init_worker(krn, image_size=2000,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3, tile, 50, 42)
         assert mod._process_one_galaxy(task) is None
 
-    def test_zero_flux_template_returns_none(self, tmp_path):
-        """``_broadcast_hst_to_4bands`` refuses to scale a flat HST
-        stamp (sum ≤ 0). The worker should propagate the None."""
+    def test_all_nan_cutout_returns_none(self, tmp_path):
+        """A degenerate cutout where every pixel is NaN can't be turned
+        into a usable HR cube — propagate the None instead of writing a
+        TFRecord full of NaNs that'd poison training."""
+        from astropy.io import fits
+        from astropy.wcs import WCS
+
+        # Build a NaN-filled HLSP-shaped tile.
+        side = 400
+        w = WCS(naxis=2)
+        w.wcs.crpix = [side / 2 + 0.5, side / 2 + 0.5]
+        w.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
+        w.wcs.crval = [150.1, 2.3]
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        data = np.full((side, side), np.nan, dtype=np.float32)
+        path = str(tmp_path / "nan_tile.fits")
+        fits.PrimaryHDU(data, header=w.to_header()).writeto(path, overwrite=True)
+
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        # Blob with zero flux → after bg-subtract, hr_clean is 0 every-
-        # where and _broadcast_hst_to_4bands returns None.
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=400, blob_flux=0.0,
-        )
-        mod._init_worker(krn, image_size=64)
-        task = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 42)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3, path, 200, 42)
         assert mod._process_one_galaxy(task) is None
 
 
@@ -310,9 +341,10 @@ class TestRngDeterminism:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64)
-        task_a = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 12345)
-        task_b = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 12345)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task_a = (0, 150.1, 2.3, tile, 200, 12345)
+        task_b = (0, 150.1, 2.3, tile, 200, 12345)
         _, hr_a, lr_a = mod._process_one_galaxy(task_a)
         _, hr_b, lr_b = mod._process_one_galaxy(task_b)
         np.testing.assert_array_equal(hr_a, hr_b)
@@ -322,9 +354,10 @@ class TestRngDeterminism:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, image_size=64)
-        t1 = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 12345)
-        t2 = (0, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 99999)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        t1 = (0, 150.1, 2.3, tile, 200, 12345)
+        t2 = (0, 150.1, 2.3, tile, 200, 99999)
         _, hr1, lr1 = mod._process_one_galaxy(t1)
         _, hr2, lr2 = mod._process_one_galaxy(t2)
         # HR is deterministic (no noise) — should be identical.
@@ -337,116 +370,207 @@ class TestRngDeterminism:
 # Pool integration — end-to-end small parallel run
 # ---------------------------------------------------------------------------
 
-class TestPhotometryChain:
-    """End-to-end photometric consistency: catalog electron count
-    flows through unit-flux template → 4-band broadcast → convolve
-    → sum-rebin → noise, and the LR total electrons match the input
-    within the noise budget. If anyone ever rescales per-band flux
-    or breaks the unit-flux normalisation, these tests catch it
-    before users have to wonder why "noise dominates everything"."""
+class TestHstNativePhotometry:
+    """The HST→Euclid chain preserves HST's native photometry — every
+    source in the cutout keeps its real Euclid magnitude, no
+    catalog-flux normalisation.
 
-    def test_hr_cube_preserves_catalog_flux_per_band(self, tmp_path):
-        """The unit-flux template scaled by per-band catalog flux
-        must sum to exactly that flux in each band. This is what
-        ``_broadcast_hst_to_4bands`` is supposed to do — the test
-        catches any silent rescaling regression."""
+    These tests pin the three properties that broke under the old
+    chain (``_broadcast_hst_to_4bands``):
+
+      1. The HLSP→HR resample preserves *total flux*, not just per-pixel
+         surface brightness (the area-correction multiplier).
+      2. A single source's pixel value scales correctly into Euclid VIS
+         electrons via the ZP and stack-time formula.
+      3. **Multi-source brightness ratios are preserved** — a cutout
+         with two galaxies of brightness ratio ``r`` produces an HR/LR
+         with the same ratio, regardless of how much sky surrounds them.
+         The old chain allocated one catalog row's electron budget
+         across the whole cube; that collapsed any multi-source signal.
+    """
+
+    def test_resample_preserves_total_flux(self, tmp_path):
+        """``_resample_hlsp_to_hr`` integrates over the larger HR pixel
+        instead of just interpolating surface brightness.
+
+        Without the area-correction multiplier, zooming down 0.03″ →
+        0.05″ would drop ~36 % of the input flux on the floor (scipy's
+        cubic-spline zoom returns the *interpolated value*, not the
+        integral over the new pixel area). The new chain fixes that.
+        """
         mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=400, blob_flux=1000.0,
-        )
-        mod._init_worker(krn, image_size=64)
+        # Constant input — every pixel = 1.0 e⁻/s. With area correction
+        # the output per-pixel value should be (HR_area / HLSP_area) =
+        # (0.05/0.03)² ≈ 2.78. Total flux integrated over the (smaller)
+        # output grid then equals total flux of the (larger) input grid.
+        side = 100
+        hlsp = np.ones((side, side), dtype=np.float32)
+        hr = mod._resample_hlsp_to_hr(hlsp, hlsp_scale=0.03, hr_scale=0.05)
 
-        flux_per_band = (50_000.0, 10_000.0, 15_000.0, 12_000.0)
-        task = (0, 150.1, 2.3, flux_per_band, tile, 200, 42)
-        _, hr_cube, _ = mod._process_one_galaxy(task)
+        # Per-pixel value ≈ 2.78 in the interior.
+        b = 5
+        assert np.allclose(hr[b:-b, b:-b], (0.05 / 0.03) ** 2, atol=1e-3)
 
-        for k, expected in enumerate(flux_per_band):
-            hr_sum = float(hr_cube[..., k].sum())
-            assert hr_sum == pytest.approx(expected, rel=1e-3), (
-                f"band {k}: HR sum {hr_sum:.1f} e ≠ catalog flux "
-                f"{expected:.1f} e — broadcast lost or added flux"
-            )
+        # Total flux ratio: the output has (100 * 0.6)² ≈ 60² pixels,
+        # each holding 2.78 ≈ (1/0.6)². So total ≈ 60² × 2.78 ≈ 10000.
+        # Input total = 100² = 10000.
+        # (Match within edge-effect loss from the zoom near the borders.)
+        input_total  = float(hlsp.sum())
+        output_total = float(hr.sum())
+        assert output_total == pytest.approx(input_total, rel=0.05)
 
-    def test_lr_cube_total_flux_matches_within_noise(self, tmp_path):
-        """LR (dirty) total flux ≈ catalog flux per band, within the
-        Poisson + read noise budget on the integrated sum.
+    def test_hst_to_euclid_hr_cube_vis_scaling(self, tmp_path):
+        """A constant HST rate maps to Euclid VIS electrons via the
+        documented ``rate_ratio × t_total`` formula.
 
-        ``apply_band_noise`` is zero-mean by construction: it adds
-        ``Poisson(signal+sky+dark) - (sky+dark)`` + Gaussian(0, σ_read),
-        so ``E[sum(LR)] = sum(signal)``. The standard deviation on
-        the integrated sum is ``sqrt(N_pix) × σ_per_pixel``. We allow
-        5σ tolerance to be robust across random seeds + a small (<1%)
-        edge-flux-leakage allowance from the convolution.
+        Pins the literal photometric constant so a future config tweak
+        (different ZP, different stack time) is caught immediately.
         """
         from euclid_polish.config import Config
 
         mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        # Bright + well-centred so convolution edge losses are minimal.
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=600, blob_flux=1000.0, blob_sigma_pix=8.0,
+        # Per-HR-pixel rate (e⁻/s after area correction).
+        rate_per_hr_pix = np.full((8, 8), 1.0, dtype=np.float32)
+        ratios = np.array([1.0, 0.1, 0.2, 0.15], dtype=np.float32)
+        cube = mod._hst_to_euclid_hr_cube(rate_per_hr_pix, ratios)
+
+        vis = Config.BAND_VIS
+        rate_ratio = 10.0 ** (
+            -0.4 * (Config.HST_ACS_F814W_AB_ZP_E_PER_S
+                    - vis.zeropoint_ab_e_per_s)
         )
-        mod._init_worker(krn, image_size=128)
+        expected_vis = 1.0 * rate_ratio * vis.t_total_s
+        assert cube[..., 0] == pytest.approx(expected_vis, rel=1e-5)
 
-        flux_per_band = (200_000.0, 80_000.0, 100_000.0, 90_000.0)
-        task = (0, 150.1, 2.3, flux_per_band, tile, 300, 42)
-        _, _, lr_cube = mod._process_one_galaxy(task)
-
-        n_pix = lr_cube.shape[0] * lr_cube.shape[1]
-        for k, expected in enumerate(flux_per_band):
-            band = Config.get_band(Config.LR_INPUT_BAND_NAMES[k])
-            sky_e  = (band.sky_e_per_s_per_arcsec2
-                      * band.pixel_scale_lr_arcsec ** 2
-                      * band.t_total_s)
-            dark_e = band.dark_e_per_s_per_pix * band.t_total_s
-            sigma_per_px = np.sqrt(
-                sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
-                + expected / n_pix         # Poisson term on signal
-            )
-            sigma_on_sum = np.sqrt(n_pix) * sigma_per_px
-
-            lr_sum = float(lr_cube[..., k].sum())
-            tol = 5 * sigma_on_sum + 0.02 * expected
-            assert abs(lr_sum - expected) < tol, (
-                f"band {Config.LR_INPUT_BAND_NAMES[k]}: LR sum "
-                f"{lr_sum:.0f} e vs expected {expected:.0f} e, "
-                f"diff {lr_sum - expected:+.0f} > {tol:.0f} tol"
+        # NISP bands = VIS × ratio (per pixel).
+        for k in (1, 2, 3):
+            assert cube[..., k] == pytest.approx(
+                expected_vis * ratios[k], rel=1e-5,
             )
 
-    def test_brighter_catalog_flux_gives_brighter_lr(self, tmp_path):
-        """Monotonicity: a 10x brighter catalog magnitude must give
-        a 10x brighter LR per-pixel peak (within noise). Pins the
-        photometric *sign* of the chain — a unit flip or absolute-
-        value bug somewhere would break this even when totals match."""
+    def test_hst_to_euclid_hr_cube_handles_signed_residual(self):
+        """Symmetric residual noise (positive + negative pixels) must
+        pass through cleanly — the new chain explicitly drops the
+        old ``clip(..., 0)`` so noise averages to zero over the cube.
+        Negative pixels are allowed in the HR cube; the forward model's
+        Poisson step clips them at zero internally before the draw.
+        """
+        mod = _load_script()
+        # Mostly-positive with some negative residual.
+        rate = np.array([[1.0, -0.2], [-0.3, 0.5]], dtype=np.float32)
+        cube = mod._hst_to_euclid_hr_cube(
+            rate, np.array([1.0, 0.2, 0.3, 0.25], dtype=np.float32),
+        )
+        # Negative input pixel ⇒ negative output pixel (no clipping).
+        assert cube[0, 1, 0] < 0
+        assert cube[1, 0, 0] < 0
+
+    def test_hst_to_euclid_hr_cube_rejects_bad_ratios(self):
+        mod = _load_script()
+        rate = np.ones((4, 4), dtype=np.float32)
+        with pytest.raises(ValueError, match="typical_band_ratios"):
+            mod._hst_to_euclid_hr_cube(rate, np.array([1.0, 0.2]))
+
+    def test_hst_to_euclid_hr_cube_returns_none_on_all_nan(self):
+        mod = _load_script()
+        rate = np.full((4, 4), np.nan, dtype=np.float32)
+        out = mod._hst_to_euclid_hr_cube(
+            rate, np.array([1.0, 0.2, 0.3, 0.25], dtype=np.float32),
+        )
+        assert out is None
+
+    def test_multi_source_brightness_ratio_preserved(self, tmp_path):
+        """The whole point of switching to HST-native photometry.
+
+        A cutout with TWO sources of known brightness ratio ``r`` (here
+        4:1) must produce an HR cube where the per-source peaks still
+        sit in that ratio — regardless of how much sky surrounds them.
+
+        The OLD chain (``_broadcast_hst_to_4bands``) normalised the
+        whole cube to unit total flux then multiplied by *one* catalog
+        row's electron budget, collapsing any multi-source signal: each
+        source ended up with roughly its FRACTION of catalog flux, with
+        absolute scale dictated by sky residual rather than its real
+        HST photometry. This test would have failed on the old chain.
+        """
+        from astropy.io import fits
+        from astropy.wcs import WCS
+
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=400, blob_flux=1000.0,
+
+        # Build a synthetic HLSP-style tile with TWO Gaussian sources of
+        # known peak ratio 4:1.
+        side = 400
+        sigma = 6.0
+        yy, xx = np.mgrid[:side, :side]
+        # Source A: peak 400 at (150, 150). Source B: peak 100 at (250, 250).
+        ga = 400.0 * np.exp(
+            -((xx - 150) ** 2 + (yy - 150) ** 2) / (2.0 * sigma ** 2)
         )
-        mod._init_worker(krn, image_size=64)
-        seed = 12345
+        gb = 100.0 * np.exp(
+            -((xx - 250) ** 2 + (yy - 250) ** 2) / (2.0 * sigma ** 2)
+        )
+        data = (ga + gb).astype(np.float32)
 
-        dim   = (5_000.0,  5_000.0,  5_000.0,  5_000.0)
-        bright = (50_000.0, 50_000.0, 50_000.0, 50_000.0)
+        w = WCS(naxis=2)
+        w.wcs.crpix = [side / 2 + 0.5, side / 2 + 0.5]
+        w.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
+        w.wcs.crval = [150.1, 2.3]
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        tile = str(tmp_path / "two_source.fits")
+        fits.PrimaryHDU(data, header=w.to_header()).writeto(tile, overwrite=True)
 
-        _, _, lr_dim    = mod._process_one_galaxy(
-            (0, 150.1, 2.3, dim,    tile, 200, seed))
-        _, _, lr_bright = mod._process_one_galaxy(
-            (0, 150.1, 2.3, bright, tile, 200, seed))
+        mod._init_worker(krn, image_size=128,
+                         typical_band_ratios=DEFAULT_TEST_RATIOS)
+        task = (0, 150.1, 2.3, tile, 300, 42)
+        result = mod._process_one_galaxy(task)
+        assert result is not None
+        _, hr, _ = result
 
-        # Same seed → same noise realisation. Difference is purely the
-        # 10x signal scaling. Compare *peaks* (most-significant pixel)
-        # because noise dominates the LR sum at the dim end.
-        for k in range(4):
-            peak_dim    = float(lr_dim[..., k].max())
-            peak_bright = float(lr_bright[..., k].max())
-            ratio = peak_bright / peak_dim if peak_dim > 0 else 0
-            # Ratio should be near 10 modulo noise contributions; allow
-            # a wide band because the dim peak is shot-noise-influenced.
-            assert 5 < ratio < 20, (
-                f"band {k}: peak ratio {ratio:.2f} for 10x flux "
-                "scaling is wildly off — sign or unit issue?"
+        # VIS channel; sources sit at HR positions roughly (60, 60) and
+        # (100, 100) after the 0.03→0.05 resample + central crop. Find
+        # them by argmax in two halves of the image.
+        vis = hr[..., 0]
+        upper_left  = vis[:64, :64]
+        lower_right = vis[64:, 64:]
+        peak_a = float(upper_left.max())
+        peak_b = float(lower_right.max())
+        ratio  = peak_a / peak_b if peak_b > 0 else 0
+        # Expect 4.0 to within a few % — small slack for the
+        # interpolation rounding + symmetric residual noise. Old
+        # chain would have produced a ratio determined by the cube
+        # SUM (a tiny number), not the per-source peaks.
+        assert 3.5 < ratio < 4.5, (
+            f"multi-source brightness ratio collapsed: peaks "
+            f"A={peak_a:.1f}, B={peak_b:.1f}, ratio={ratio:.2f} "
+            "(expected ~4.0)"
+        )
+
+    def test_nisp_channels_use_typical_ratios(self, tmp_path):
+        """NISP[k] = VIS × typical_band_ratios[k] per pixel; verify
+        the global colour scale is the only difference between VIS
+        and each NISP channel in the HR cube."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        tile = _make_synthetic_tile(tmp_path, side_pix=400)
+        ratios = np.array([1.0, 0.15, 0.25, 0.20], dtype=np.float32)
+        mod._init_worker(krn, image_size=64,
+                         typical_band_ratios=ratios)
+        task = (0, 150.1, 2.3, tile, 200, 1)
+        _, hr, _ = mod._process_one_galaxy(task)
+
+        vis = hr[..., 0]
+        for k in (1, 2, 3):
+            band_hr = hr[..., k]
+            # Per-pixel ratio should equal the global scale exactly,
+            # everywhere VIS is non-zero (mostly the centre).
+            mask = np.abs(vis) > 0.1 * np.abs(vis).max()
+            np.testing.assert_allclose(
+                band_hr[mask] / vis[mask],
+                ratios[k],
+                rtol=1e-5,
+                err_msg=f"NISP[{k}] / VIS != typical_band_ratios[{k}]",
             )
 
 
@@ -464,14 +588,14 @@ class TestPoolIntegration:
 
         n_tasks = 6
         tasks = [
-            (i, 150.1, 2.3, (100.0, 80.0, 60.0, 50.0), tile, 200, 1000 + i)
+            (i, 150.1, 2.3, tile, 200, 1000 + i)
             for i in range(n_tasks)
         ]
 
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, 64),
+            initargs=(krn, 64, DEFAULT_TEST_RATIOS),
         ) as pool:
             results = list(pool.map(mod._process_one_galaxy, tasks))
 
@@ -497,17 +621,17 @@ class TestPoolIntegration:
         )
 
         ok_tasks = [
-            (i, 150.0, 2.0, (100.0, 80.0, 60.0, 50.0), tile, 100, i)
+            (i, 150.0, 2.0, tile, 100, i)
             for i in range(3)
         ]
         bad_tasks = [
-            (i + 100, 160.0, 12.0, (1.0, 1.0, 1.0, 1.0), tile, 100, i)
+            (i + 100, 160.0, 12.0, tile, 100, i)
             for i in range(2)
         ]
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, 32),
+            initargs=(krn, 32, DEFAULT_TEST_RATIOS),
         ) as pool:
             results = list(pool.map(
                 mod._process_one_galaxy, ok_tasks + bad_tasks,

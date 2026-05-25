@@ -149,15 +149,27 @@ def _hr_pixel_side_arcsec() -> float:
 
 
 def _resample_hlsp_to_hr(hlsp_cutout: np.ndarray,
-                         hlsp_scale: float = 0.03,
+                         hlsp_scale: float = None,
                          hr_scale: float = None) -> np.ndarray:
-    """Resample 0.03″ HLSP cutout onto the 0.05″ HR grid."""
+    """Resample 0.03″ HLSP cutout onto the 0.05″ HR grid (flux-conserving).
+
+    ``scipy.ndimage.zoom`` interpolates per-pixel values: a zoomed-down
+    output pixel ≈ the underlying input value at that location, NOT
+    the integral over the larger HR pixel area. So zoom alone preserves
+    surface brightness but loses ~36 % of total flux on a 0.03″ → 0.05″
+    downsample. We multiply by ``(HR_pixel_area / HLSP_pixel_area)``
+    afterwards so each output value is the rate integrated over the HR
+    pixel — matching the units the downstream forward model expects.
+    """
     from scipy.ndimage import zoom
+    hlsp_scale = (hlsp_scale if hlsp_scale is not None
+                  else Config.HST_HLSP_PIXEL_SCALE_ARCSEC)
     hr_scale = hr_scale or _hr_pixel_side_arcsec()
     factor = hlsp_scale / hr_scale   # 0.6 → output is smaller
     out = zoom(hlsp_cutout.astype(np.float32),
                zoom=factor, order=3, mode="constant")
-    return out
+    area_correction = (hr_scale / hlsp_scale) ** 2    # ≈ 2.78
+    return (out * np.float32(area_correction)).astype(np.float32)
 
 
 def _make_pair(
@@ -201,41 +213,48 @@ def _make_pair(
 # Module globals populated by ``_init_worker`` once per process. None
 # before init; checking them in ``_process_one_galaxy`` is what catches
 # a missing ``initializer=`` in the pool setup.
-_WORKER_KERNEL:     Optional[np.ndarray] = None
-_WORKER_IMAGE_SIZE: int                  = 0
+_WORKER_KERNEL:          Optional[np.ndarray] = None
+_WORKER_IMAGE_SIZE:      int                  = 0
+_WORKER_TYPICAL_RATIOS:  Optional[np.ndarray] = None
 
 
-def _init_worker(kernel_path: str, image_size: int) -> None:
+def _init_worker(kernel_path: str, image_size: int,
+                 typical_band_ratios: np.ndarray) -> None:
     """Called once per worker process at pool startup.
 
-    Loads the differential kernel into a module-level global so each
-    worker pays the I/O + parse cost exactly once — not per-galaxy.
-    Pickling the kernel through every task argument would be ~1 MB per
-    submission × 6400 galaxies = 6 GB of pickle churn for nothing.
+    Loads the differential kernel and pins the per-band electron ratios
+    into module-level globals so each worker pays the I/O + parse cost
+    exactly once — not per-galaxy. Pickling the kernel through every
+    task argument would be ~1 MB per submission × 6400 galaxies = 6 GB
+    of pickle churn for nothing.
     """
-    global _WORKER_KERNEL, _WORKER_IMAGE_SIZE
+    global _WORKER_KERNEL, _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
     from euclid_polish.sky.differential_kernel import DifferentialKernel
-    _WORKER_KERNEL     = DifferentialKernel.from_fits(kernel_path).data
-    _WORKER_IMAGE_SIZE = int(image_size)
+    _WORKER_KERNEL         = DifferentialKernel.from_fits(kernel_path).data
+    _WORKER_IMAGE_SIZE     = int(image_size)
+    _WORKER_TYPICAL_RATIOS = np.asarray(typical_band_ratios, dtype=np.float32)
 
 
 def _process_one_galaxy(
-    task: Tuple[int, float, float,
-                Tuple[float, float, float, float], str, int, int],
+    task: Tuple[int, float, float, str, int, int],
 ) -> Optional[Tuple[int, np.ndarray, np.ndarray]]:
-    """Cut + resample + forward-model one galaxy.
+    """Cut + resample + forward-model one HST chunk of sky.
 
     Pure function — no shared state beyond the module globals set by
     ``_init_worker``. The kernel is the only non-trivial state and is
     immutable across calls. The RNG is seeded per task so two workers
     processing the same catalog_idx would produce identical output.
 
+    Note: ``catalog_idx`` only selects *which RA/Dec to centre on* —
+    its per-band catalog fluxes are no longer used. The HST cutout's
+    own photometry sets the brightness of every source in the field.
+
     Returns ``(catalog_idx, hr_cube, lr_cube)`` on success, ``None``
-    when the galaxy can't be cut (off-tile, malformed FITS, cutout
-    smaller than the target HR size, or flat HST stamp).
+    when the chunk can't be cut (off-tile, malformed FITS, cutout
+    smaller than the target HR size, or HST data all-NaN).
     """
-    catalog_idx, ra, dec, fluxes, tile_path, hlsp_side_pix, seed = task
-    if _WORKER_KERNEL is None:
+    catalog_idx, ra, dec, tile_path, hlsp_side_pix, seed = task
+    if _WORKER_KERNEL is None or _WORKER_TYPICAL_RATIOS is None:
         # If we ever forget the initializer, fail loudly rather than
         # silently using None and crashing deep in the FFT.
         raise RuntimeError(
@@ -276,17 +295,25 @@ def _process_one_galaxy(
         return None
     i0 = (Hh - H_hr) // 2
     j0 = (Wh - H_hr) // 2
-    hr_clean = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
+    hr_clean_rate = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
 
+    # Sky-offset removal via outer-annulus median. We **do not** clip
+    # negatives anymore — clipping rectifies the residual sky noise
+    # (E[max(noise, 0)] ≈ 0.4σ per pixel) which, when summed across a
+    # 510² cube, completely dominated the old catalog-flux normalisation
+    # and left every source 100× dimmer than it should be. With the new
+    # HST-native chain there's no sum-normalisation, so symmetric noise
+    # averages to zero across the cube and only the real galaxy +
+    # residual HST shot noise survive to the forward step.
     annulus = np.concatenate([
-        hr_clean[:8, :].ravel(),    hr_clean[-8:, :].ravel(),
-        hr_clean[8:-8, :8].ravel(), hr_clean[8:-8, -8:].ravel(),
+        hr_clean_rate[:8, :].ravel(),    hr_clean_rate[-8:, :].ravel(),
+        hr_clean_rate[8:-8, :8].ravel(), hr_clean_rate[8:-8, -8:].ravel(),
     ])
     finite = np.isfinite(annulus)
     bg = float(np.median(annulus[finite])) if finite.any() else 0.0
-    hr_clean = np.maximum(hr_clean - bg, 0.0)
+    hr_clean_rate = hr_clean_rate - bg
 
-    hr_cube = _broadcast_hst_to_4bands(hr_clean, fluxes)
+    hr_cube = _hst_to_euclid_hr_cube(hr_clean_rate, _WORKER_TYPICAL_RATIOS)
     if hr_cube is None:
         return None
 
@@ -297,22 +324,56 @@ def _process_one_galaxy(
     return catalog_idx, hr_cube, lr_cube
 
 
-def _broadcast_hst_to_4bands(
-    hst_2d: np.ndarray,
-    flux_per_band_e: Tuple[float, float, float, float],
-) -> np.ndarray:
-    """Scale a unit-flux 2D template into a (H, W, 4) per-band cube.
+def _hst_to_euclid_hr_cube(
+    hst_rate_per_hr_pix: np.ndarray,
+    typical_band_ratios: np.ndarray,
+) -> Optional[np.ndarray]:
+    """HST F814W rate → 4-band Euclid HR cube (total electrons per HR pixel).
 
-    Same photometric contract as the existing
-    :func:`add_sersic_to_bands` path: morphology is band-independent,
-    each band gets its own total electron count from the catalog.
+    Photometric chain — every source in the cutout keeps its real
+    Euclid-magnitude brightness because we never normalise the cube:
+
+    * **VIS**: ``hst_rate × rate_ratio_VIS/HST × t_total_VIS``.
+      The rate ratio compensates for the slight sensitivity difference
+      between HST F814W (ZP ≈ 25.94 e⁻/s) and Euclid VIS (ZP = 25.50);
+      at the same AB magnitude Euclid VIS gives ~0.67× the HST rate.
+      Multiplying by VIS stack time (2260 s) converts rate → total
+      electrons over the Euclid stack.
+    * **NISP[k]**: ``VIS_HR × typical_band_ratios[k]``. The catalog-
+      derived median ratio of ``e_band / e_VIS`` per source already
+      bundles colour, ZP, and integration-time differences into one
+      number per band — so each NISP channel is the VIS HR scaled by
+      a global "typical galaxy" colour. Per-source colours are lost
+      (every star and galaxy in the cube share the same colour) but
+      the absolute scale is correct, which is what matters for noise
+      statistics during training.
+
+    The catalog's ``total_flux_e`` for the central galaxy is **not used
+    here** — the old chain multiplied the (unit-normalised) cube by one
+    galaxy's catalog flux, allocating a single source's electron budget
+    across every visible source in the cutout. Real HST cutouts contain
+    many galaxies; that's the whole point.
     """
-    s = float(hst_2d.sum())
-    if not np.isfinite(s) or s <= 0:
+    if not np.isfinite(hst_rate_per_hr_pix).any():
         return None
-    unit = (hst_2d / s).astype(np.float32)
-    flux = np.asarray(flux_per_band_e, dtype=np.float32)
-    return unit[:, :, None] * flux[None, None, :]
+
+    vis = Config.BAND_VIS
+    rate_ratio_vis_hst = 10.0 ** (
+        -0.4 * (Config.HST_ACS_F814W_AB_ZP_E_PER_S - vis.zeropoint_ab_e_per_s)
+    )
+    vis_hr_e_total = (
+        hst_rate_per_hr_pix.astype(np.float32)
+        * np.float32(rate_ratio_vis_hst * vis.t_total_s)
+    )
+
+    ratios = np.asarray(typical_band_ratios, dtype=np.float32)
+    if ratios.shape != (Config.NUM_LR_CHANNELS,):
+        raise ValueError(
+            f"typical_band_ratios shape {ratios.shape} != "
+            f"({Config.NUM_LR_CHANNELS},)"
+        )
+    # Broadcast: (H, W) × (4,) → (H, W, 4) without an explicit loop.
+    return (vis_hr_e_total[:, :, None] * ratios[None, None, :]).astype(np.float32)
 
 
 def main() -> int:
@@ -360,6 +421,17 @@ def main() -> int:
     print(f"      kernel shape = {dk.data.shape} DC gain = {dk.dc_gain:.4f}")
     print(f"      {len(catalog):,} catalog galaxies after quality cuts "
           f"(VIS mag ≤ {args.max_mag})")
+    # Catalog-derived "typical galaxy" colours per NISP band — used to
+    # paint NISP HR channels from the single-band HST cutout (which
+    # only carries F814W ≈ VIS morphology). One scale factor per band,
+    # applied per-pixel; per-source colours are lost but the absolute
+    # NISP brightness is correct on average.
+    typical_band_ratios = catalog.typical_band_electron_ratios()
+    print(f"      typical e_band / e_VIS (median over catalog): "
+          + ", ".join(
+              f"{name}={typical_band_ratios[k]:.3g}"
+              for k, name in enumerate(Config.LR_INPUT_BAND_NAMES)
+          ))
 
     if args.dry_run:
         print("\nDRY RUN — would synthesise "
@@ -395,13 +467,15 @@ def main() -> int:
     base_seed = int(rng.integers(0, 2**31))
 
     def _next_task() -> Optional[Tuple]:
-        """Pull the next candidate galaxy off the shuffled catalog,
-        skipping ones whose RA/Dec doesn't land on any HLSP tile.
+        """Pull the next candidate sky chunk off the shuffled catalog,
+        skipping centres whose RA/Dec doesn't land on any HLSP tile.
 
         Tile lookup runs in the *main* process because the index is
         ~MB-scale shared state; cheaper than re-loading it per worker.
-        Returns the task tuple ready for ``_process_one_galaxy`` or
-        ``None`` if the catalog is exhausted.
+        The catalog only selects the centre RA/Dec — its per-band
+        catalog fluxes are no longer used (HST's native photometry is
+        what scales the cube). Returns the task tuple ready for
+        ``_process_one_galaxy`` or ``None`` if the catalog is exhausted.
         """
         nonlocal pairs_skipped
         for i in catalog_iter:
@@ -411,13 +485,8 @@ def main() -> int:
             if tile_path is None:
                 pairs_skipped += 1
                 continue
-            fluxes = tuple(
-                float(catalog.bulge_flux_e[i, k]
-                      + catalog.disk_flux_e[i, k])
-                for k in range(Config.NUM_LR_CHANNELS)
-            )
             seed = (base_seed * 1_000_003 + int(i)) & 0x7FFFFFFF
-            return (int(i), ra, dec, fluxes, tile_path, hlsp_side_pix, seed)
+            return (int(i), ra, dec, tile_path, hlsp_side_pix, seed)
         return None
 
     def _write_result(result, subset_writers, subset_done):
@@ -453,7 +522,7 @@ def main() -> int:
     if n_workers == 0:
         # Single-process fallback — useful for debugging / profiling.
         # Calls _init_worker in-process so the worker fn sees the kernel.
-        _init_worker(args.kernel, H_hr)
+        _init_worker(args.kernel, H_hr, typical_band_ratios)
 
     for subset, target_n in pairs_per_subset.items():
         sub_done = 0
@@ -495,7 +564,7 @@ def main() -> int:
                 with ProcessPoolExecutor(
                     max_workers=n_workers,
                     initializer=_init_worker,
-                    initargs=(args.kernel, H_hr),
+                    initargs=(args.kernel, H_hr, typical_band_ratios),
                 ) as pool:
                     in_flight: set = set()
                     target_in_flight = max(n_workers * 2, 4)

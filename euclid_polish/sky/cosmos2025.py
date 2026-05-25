@@ -81,7 +81,18 @@ class GalaxyParams:
 # ---------------------------------------------------------------------------
 
 class CosmosCatalog(ABC):
-    """Sampling interface used by the multi-band scene generator."""
+    """Sampling interface used by the multi-band scene generator.
+
+    Concrete subclasses must expose ``bulge_flux_e`` and ``disk_flux_e``
+    as ``(N, NUM_LR_CHANNELS)`` float arrays so the shared
+    :meth:`typical_band_electron_ratios` accessor works on both the
+    real :class:`Cosmos2025Catalog` and any synthetic stand-in.
+    """
+
+    # Concrete subclasses populate these — declared here only so type
+    # checkers don't trip over ``self.bulge_flux_e`` in the base method.
+    bulge_flux_e: np.ndarray
+    disk_flux_e:  np.ndarray
 
     @abstractmethod
     def __len__(self) -> int:
@@ -90,6 +101,37 @@ class CosmosCatalog(ABC):
     @abstractmethod
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         """Return parameters for one randomly drawn foreground galaxy."""
+
+    def typical_band_electron_ratios(self) -> np.ndarray:
+        """Median per-source ``e_band / e_VIS`` after the catalog's
+        quality cuts.
+
+        Returns a length-:attr:`Config.NUM_LR_CHANNELS` float32 array.
+        Entry 0 (VIS) is exactly 1.0 by construction; NISP entries
+        express the "typical galaxy" Euclid-stack electron count in
+        that band as a fraction of its VIS electron count.
+
+        Used by the HST-derived TFRecord generator
+        (:mod:`scripts.fasrc_generate_hst_tfrecords`) to paint NISP HR
+        channels from the single-band HST F814W cutout: each pixel's
+        NISP brightness is ``VIS_pixel × typical_ratio[band]``. That's
+        a per-pixel global colour — every source in the cutout treated
+        as a typical-colour galaxy — wrong per-source but the right
+        order of magnitude for the noise statistics the network sees.
+        """
+        total_e = np.asarray(self.bulge_flux_e + self.disk_flux_e,
+                             dtype=np.float64)             # (N, 4)
+        # Per-source ratio; guard against the rare ``e_VIS = 0`` edge
+        # case (shouldn't happen post-filter but cheap to be robust).
+        vis = total_e[:, 0:1]
+        safe_vis = np.where(vis > 0, vis, np.nan)
+        per_source_ratio = total_e / safe_vis              # (N, 4)
+        finite_rows = np.isfinite(per_source_ratio).all(axis=1)
+        # Median is robust to the heavy-tailed flux distribution; mean
+        # would be dragged up by a handful of unusually red sources.
+        med = np.nanmedian(per_source_ratio[finite_rows], axis=0)
+        med[0] = 1.0       # snap VIS-vs-itself to exactly 1
+        return med.astype(np.float32)
 
     @abstractmethod
     def sample_lens_galaxy(

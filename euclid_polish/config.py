@@ -588,6 +588,31 @@ class Config:
 
     STAR_CUTOUTS_ROOT = os.path.join(DATA_DIR, "euclid_stars/cutouts")
 
+    # ---------------------------------------------------------------------
+    # HST F814W → Euclid VIS photometric chain
+    # ---------------------------------------------------------------------
+    # The HST→Euclid TFRecord generator preserves HST's native photometry
+    # instead of normalising and re-scaling against a single catalog row
+    # — a 25″ × 25″ HLSP cutout typically contains many sources, and the
+    # old "unit-flux × catalog_flux" path silently allocated a single
+    # galaxy's electron budget across all of them, leaving every source
+    # 10–100× dimmer than its real Euclid magnitude. We multiply the
+    # HST cutout by ``HST→VIS_rate_ratio × t_total_VIS × area_correction``
+    # instead; every source ends up at its physical brightness automatically.
+    #
+    # The two constants below feed that chain:
+    #   - HLSP COSMOS F814W mosaics are calibrated such that pixel values
+    #     are electrons/second; the AB zeropoint is ~25.94 (standard
+    #     HAP/HLSP ACS/WFC F814W ZP, e⁻/s units). See
+    #     https://archive.stsci.edu/hlsp/cosmos for the data products spec.
+    HST_ACS_F814W_AB_ZP_E_PER_S   = 25.94
+    #   - HLSP delivers F814W mosaics drizzled to 0.03″/pixel. Used in
+    #     the resample step to compute the area correction
+    #     (HR_pixel_area / HST_pixel_area) = (0.05/0.03)² ≈ 2.78 that
+    #     compensates for interpolation-based zoom (preserves surface
+    #     brightness, not per-pixel integrated flux).
+    HST_HLSP_PIXEL_SCALE_ARCSEC   = 0.03
+
     @classmethod
     def get_band(cls, name: str) -> "BandConfig":
         """Return the ``BandConfig`` instance for a band name (e.g. 'VIS')."""

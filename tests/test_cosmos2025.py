@@ -84,6 +84,32 @@ def test_tiny_total_flux_matches_components(cat: TinyCosmosCatalog):
         )
 
 
+def test_typical_band_electron_ratios(cat: TinyCosmosCatalog):
+    """``typical_band_electron_ratios`` returns a length-4 vector with
+    VIS exactly 1.0 and NISP entries in a sensible range.
+
+    Used by the HST→Euclid TFRecord generator to scale a single-band
+    HST cutout into all four NISP channels via a per-pixel global
+    colour. A regression here would silently shift NISP brightness
+    by orders of magnitude in HST-derived training data.
+    """
+    ratios = cat.typical_band_electron_ratios()
+    assert ratios.shape == (Config.NUM_LR_CHANNELS,)
+    assert ratios.dtype == np.float32
+    # VIS / VIS is exactly 1 by construction.
+    assert ratios[0] == pytest.approx(1.0)
+    # NISP/VIS ratios should be positive (no sign flip) and finite,
+    # and within a few orders of magnitude of VIS (typical Euclid
+    # galaxy colours give per-band stack electron counts inside ~0.01
+    # to ~10× VIS even at the catalog tails).
+    for k in (1, 2, 3):
+        assert np.isfinite(ratios[k])
+        assert ratios[k] > 0
+        assert 0.001 < ratios[k] < 10.0, (
+            f"band {k}: ratio {ratios[k]:.4g} outside plausible range"
+        )
+
+
 def test_tiny_reproducible_with_same_seed():
     a = TinyCosmosCatalog(n_galaxies=100, seed=7)
     b = TinyCosmosCatalog(n_galaxies=100, seed=7)
