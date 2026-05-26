@@ -2254,9 +2254,20 @@ def create_app() -> Flask:
         cfg = fasrc_config.load()
         hst_path     = _local_path_for(f"{cfg.data_dir}/hst_psf/F814W.fits")
         euc_path     = os.path.join(Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits")
-        weights_path = _local_path_for(
+        # Prefer the best-val_L1 checkpoint when available; fall back
+        # to the latest (= weights-on-shutdown / weights-at-end).
+        best_weights_path = _local_path_for(
+            f"{cfg.data_dir}/hst_psf/transition_model.best.weights.h5",
+        )
+        latest_weights_path = _local_path_for(
             f"{cfg.data_dir}/hst_psf/transition_model.weights.h5",
         )
+        if os.path.isfile(best_weights_path):
+            weights_path = best_weights_path
+            weights_tag  = "best"
+        else:
+            weights_path = latest_weights_path
+            weights_tag  = "latest"
         summary_path = _local_path_for(
             f"{cfg.data_dir}/hst_psf/transition_model_summary.json",
         )
@@ -2422,7 +2433,7 @@ def create_app() -> Flask:
             if baseline_kernel is not None else "baseline=identity"
         )
         fig.suptitle(
-            f"A_θ inspector  —  K={kernel_size}, "
+            f"A_θ inspector  —  ckpt={weights_tag}, K={kernel_size}, "
             f"n_inner_layers={n_inner_layers}, C={channels}, "
             f"RF={model.receptive_field} px, rebin={rebin_factor}, "
             f"{baseline_tag}  "
@@ -2454,6 +2465,8 @@ def create_app() -> Flask:
             "psf":              f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
             "kernel":           f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
             "transition_model": f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
+            "transition_model_best":
+                f"{cfg_loaded.data_dir}/hst_psf/transition_model.best.weights.h5",
             "transition_summary":
                 f"{cfg_loaded.data_dir}/hst_psf/transition_model_summary.json",
         }

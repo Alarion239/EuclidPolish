@@ -38,15 +38,32 @@ import json
 import os
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import astropy.units as u
+from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.nddata import Cutout2D
+from astropy.wcs import WCS
+from scipy import signal as scipy_signal
+from scipy.ndimage import zoom
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.sky.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.differential_kernel import DifferentialKernel
+from euclid_polish.sky.multiband_forward import apply_band_noise
+from euclid_polish.sky.tfrecord import open_multiband_writer
+from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.training.transition_model import (
+    HSTtoEuclidTransition,
+    apply_transition_numpy,
+    load_model_weights,
+)
 
 
 HLSP_DIR     = os.path.join(Config.DATA_DIR, "hst_hlsp")
@@ -132,8 +149,6 @@ class HLSPTileIndex:
     """
 
     def __init__(self, hlsp_dir: str):
-        from astropy.io import fits
-        from astropy.wcs import WCS
         self.entries: List[Dict] = []
         for fname in sorted(os.listdir(hlsp_dir)):
             if not (fname.endswith(".fits")
@@ -195,7 +210,6 @@ def _resample_hlsp_to_hr(hlsp_cutout: np.ndarray,
     afterwards so each output value is the rate integrated over the HR
     pixel — matching the units the downstream forward model expects.
     """
-    from scipy.ndimage import zoom
     hlsp_scale = (hlsp_scale if hlsp_scale is not None
                   else Config.HST_HLSP_PIXEL_SCALE_ARCSEC)
     hr_scale = hr_scale or _hr_pixel_side_arcsec()
@@ -223,16 +237,12 @@ def _apply_transition(
     here — sum-rebin is applied separately downstream).
     """
     if transition_model is not None:
-        from euclid_polish.training.transition_model import (
-            apply_transition_numpy,
-        )
         return apply_transition_numpy(transition_model, hr_band)
     if diff_kernel is None:
         raise RuntimeError(
             "neither transition_model nor diff_kernel is set — "
             "_init_worker must populate one of them"
         )
-    from scipy import signal as scipy_signal
     return scipy_signal.fftconvolve(hr_band, diff_kernel, mode="same")
 
 
@@ -257,7 +267,6 @@ def _make_pair(
       * analytic Wiener kernel (``diff_kernel`` ≠ None): fallback
         when the CNN weights file isn't available yet.
     """
-    from euclid_polish.sky.multiband_forward import apply_band_noise
 
     H, W, C = hr_cutout_4ch.shape
     assert H % 2 == 0 and W % 2 == 0
@@ -292,6 +301,36 @@ _WORKER_IMAGE_SIZE:       int                  = 0
 _WORKER_TYPICAL_RATIOS:   Optional[np.ndarray] = None
 
 
+def _load_summary_for_weights(weights_path: str) -> Dict[str, Any]:
+    """Read the ``transition_model_summary.json`` next to a weights file.
+
+    The summary records the exact hyperparameters used at training time
+    (channels, n_inner_layers, kernel_size, baseline kernel path, etc.).
+    Without it, the worker has to guess — and guessing wrong means
+    Keras' ``load_weights`` fails with ``"expected N variables, got M"``
+    because the reconstructed model has different shape than what's in
+    the file.
+
+    Returns an empty dict if the summary doesn't exist (legacy models
+    pre-summary). Caller must fall back to CLI defaults in that case.
+    """
+    summary_path = weights_path[:-len(".weights.h5")] + "_summary.json" \
+        if weights_path.endswith(".weights.h5") else weights_path + ".summary.json"
+    if not os.path.isfile(summary_path):
+        # Also try the legacy name produced by the training script.
+        dirpath = os.path.dirname(weights_path)
+        alt = os.path.join(dirpath, "transition_model_summary.json")
+        if os.path.isfile(alt):
+            summary_path = alt
+        else:
+            return {}
+    try:
+        with open(summary_path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _init_worker(
     kernel_path: str,
     transition_model_path: Optional[str],
@@ -312,7 +351,13 @@ def _init_worker(
 
     * If ``transition_model_path`` is provided and the weights file
       exists, the trained CNN is loaded and is the operator the worker
-      uses. The analytic kernel is left as ``None``.
+      uses. **Hyperparameters come from the
+      ``transition_model_summary.json`` sidecar** when present (only
+      the CLI fallbacks ``transition_channels`` /
+      ``transition_inner_layers`` are used if the summary is missing).
+      The summary also tells us whether the model has an analytic
+      baseline pinned as a non-trainable layer; if so we load the
+      same baseline FITS so the layer shapes match the saved weights.
     * Otherwise the analytic Wiener kernel is loaded from
       ``kernel_path``. This is the legacy path; we keep it so workflows
       that haven't run the CNN-training step yet still produce
@@ -328,19 +373,54 @@ def _init_worker(
         and os.path.isfile(transition_model_path)
     )
     if use_cnn:
-        # Lazy TF import keeps the analytic-kernel-only path TF-free.
-        from euclid_polish.training.transition_model import (
-            HSTtoEuclidTransition, load_model_weights,
-        )
+        # Read training-time hyperparameters from the summary sidecar
+        # so the model is reconstructed with the right shape.
+        summary = _load_summary_for_weights(transition_model_path)
+        channels       = int(summary.get("channels",       transition_channels))
+        n_inner_layers = int(summary.get("n_inner_layers", transition_inner_layers))
+        kernel_size    = int(summary.get("kernel_size",    3))
+        baseline_path  = str(summary.get("analytic_baseline_kernel", ""))
+        baseline_crop  = int(summary.get("baseline_crop",  0))
+
+        # Load + crop the analytic baseline kernel if the model used one.
+        # Resolve it relative to the diff-kernel FITS path if the saved
+        # path is a FASRC-style absolute path that doesn't exist locally.
+        baseline_kernel = None
+        if baseline_path:
+            candidates = [baseline_path, kernel_path]
+            for cand in candidates:
+                if cand and os.path.isfile(cand):
+                    with fits.open(cand) as hdul:
+                        full = np.asarray(hdul[0].data, dtype=np.float32)
+                    if baseline_crop > 0 and baseline_crop < full.shape[0]:
+                        side = baseline_crop | 1
+                        i0 = (full.shape[0] - side) // 2
+                        baseline_kernel = full[i0:i0 + side, i0:i0 + side]
+                    else:
+                        baseline_kernel = full
+                    break
+            if baseline_kernel is None:
+                # Summary says baseline was used but we can't find the
+                # kernel file — fail loudly. Loading without the baseline
+                # would give the "expected 0 variables, received 1"
+                # Keras error.
+                raise RuntimeError(
+                    f"transition model summary records "
+                    f"analytic_baseline_kernel={baseline_path!r} but no "
+                    f"matching FITS was found locally. Tried: {candidates}. "
+                    f"Re-sync the kernel or remove the baseline reference."
+                )
+
         model = HSTtoEuclidTransition(
-            channels=int(transition_channels),
-            n_inner_layers=int(transition_inner_layers),
+            channels=channels,
+            n_inner_layers=n_inner_layers,
+            kernel_size=kernel_size,
+            baseline_kernel=baseline_kernel,
         )
         load_model_weights(model, transition_model_path)
         _WORKER_TRANSITION_MODEL = model
         _WORKER_KERNEL = None
     else:
-        from euclid_polish.sky.differential_kernel import DifferentialKernel
         _WORKER_KERNEL           = DifferentialKernel.from_fits(kernel_path).data
         _WORKER_TRANSITION_MODEL = None
 
@@ -374,11 +454,6 @@ def _process_one_galaxy(
             "pass initializer=_init_worker to the pool."
         )
 
-    from astropy.io import fits
-    from astropy.nddata import Cutout2D
-    from astropy.coordinates import SkyCoord
-    from astropy.wcs import WCS
-    import astropy.units as u
 
     try:
         with fits.open(tile_path, memmap=True) as hdul:
@@ -534,13 +609,11 @@ def main() -> int:
               "scripts/fasrc_train_transition_model.py or "
               "scripts/fasrc_compute_differential_kernel.py first.")
         return 1
-    from euclid_polish.sky.cosmos2025 import open_cosmos2025
     if use_cnn:
         print(f"      using trained CNN transition model "
               f"(channels={args.transition_channels}, "
               f"inner_layers={args.transition_inner_layers})")
     else:
-        from euclid_polish.sky.differential_kernel import DifferentialKernel
         dk = DifferentialKernel.from_fits(args.kernel)
         print(f"      analytic kernel shape = {dk.data.shape} "
               f"DC gain = {dk.dc_gain:.4f}")
@@ -573,13 +646,6 @@ def main() -> int:
     rng.shuffle(catalog_indices)
     target_total = args.n_train + args.n_valid
 
-    from astropy.io import fits
-    from astropy.nddata import Cutout2D
-    from astropy.coordinates import SkyCoord
-    import astropy.units as u
-    from astropy.wcs import WCS
-    from euclid_polish.sky.tfrecord import open_multiband_writer
-    from euclid_polish.sky.types import MultiBandSkyImage
 
     n_workers = max(0, int(args.n_workers))
     print(f"[4/4] streaming pairs to {args.output_dir} "

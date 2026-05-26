@@ -565,6 +565,45 @@ def main() -> int:
     train_iter = iter(train_ds)
     log: list[dict] = []
 
+    # ── Checkpoint paths. ──────────────────────────────────────────────
+    # We save twice every validation:
+    #   * ``args.output`` (e.g. ``transition_model.weights.h5``) — the
+    #     LATEST weights. Always overwritten, so if SIGTERM hits at
+    #     wall-time the most recent checkpoint is durable on disk.
+    #   * ``…best.weights.h5`` — the weights with the LOWEST val_L1
+    #     seen so far. Only overwritten when val_L1 improves. This is
+    #     the file you'll usually want at inference time.
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    if args.output.endswith(".weights.h5"):
+        best_path = args.output[:-len(".weights.h5")] + ".best.weights.h5"
+    else:
+        best_path = args.output + ".best"
+    best_val_loss = float("inf")
+    best_step     = -1
+
+    # ── SIGTERM handler — final save on graceful shutdown. ────────────
+    # SLURM sends SIGTERM at wall-time before the hard SIGKILL; we
+    # catch it, save the current weights to ``args.output``, then exit.
+    # The per-validation save above already keeps the disk current, but
+    # catching SIGTERM means we also capture any progress between the
+    # last validation and the signal.
+    import signal as _signal
+    _sigterm_received = {"flag": False}
+
+    def _handle_sigterm(signum, frame):
+        _sigterm_received["flag"] = True
+        try:
+            print(f"\n[SIGTERM caught] saving weights to {args.output} "
+                  f"before exit ...", flush=True)
+            save_model_weights(model, args.output)
+            print(f"[SIGTERM caught] save complete.", flush=True)
+        except Exception as e:
+            print(f"[SIGTERM caught] save FAILED: {e}", flush=True)
+        # Re-raise default behavior so the job actually terminates.
+        raise SystemExit(0)
+
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     # Initial PSF probe (before any training — should be ~1 because
     # residual init → A_θ(x) ≈ x, so A_θ(PSF_HST) ≈ PSF_HST and the
     # LR-space comparison still reflects the PSF-shape difference).
@@ -589,11 +628,31 @@ def main() -> int:
                 model, psf_hst, psf_euclid, rebin_factor=rebin,
             )
             elapsed  = time.time() - t0
+
+            # ── Save latest weights every validation. ─────────────────
+            # Cheap (the model is < 50 KB) and guarantees that any
+            # SIGTERM after this point leaves usable weights on disk.
+            try:
+                save_model_weights(model, args.output)
+            except Exception as e:
+                print(f"      WARN: latest-save failed at step {step}: {e}")
+
+            # ── Save-best on val_L1. ──────────────────────────────────
+            best_tag = ""
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_step     = step
+                try:
+                    save_model_weights(model, best_path)
+                    best_tag = "  [BEST so far → saved]"
+                except Exception as e:
+                    print(f"      WARN: best-save failed at step {step}: {e}")
+
             print(f"      step {step:6d}/{args.steps} "
                   f"train_L1={float(loss_v.numpy()):.4e} "
                   f"val_L1={val_loss:.4e} "
                   f"PSF_id_err={psf_err:.4f} "
-                  f"({elapsed:.1f}s)")
+                  f"({elapsed:.1f}s){best_tag}")
             log.append({
                 "step":       int(step),
                 "train_l1":   float(loss_v.numpy()),
@@ -602,10 +661,13 @@ def main() -> int:
                 "elapsed_s":  elapsed,
             })
 
-    # Save weights.
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    # Final save after the loop (idempotent — overwrites the last
+    # per-validation checkpoint at exactly the same step).
     save_model_weights(model, args.output)
-    print(f"  wrote weights → {args.output}")
+    print(f"  wrote latest weights → {args.output}")
+    if best_step >= 0:
+        print(f"  best weights → {best_path}  "
+              f"(step {best_step}, val_L1 = {best_val_loss:.4e})")
 
     # Save summary sidecar.
     psf_err_final = _psf_identity_residual(
@@ -613,6 +675,9 @@ def main() -> int:
     )
     summary = {
         "model_path":     args.output,
+        "best_model_path": best_path,
+        "best_val_l1":    float(best_val_loss),
+        "best_step":      int(best_step),
         "params":         int(n_params),
         "channels":       int(args.channels),
         "n_inner_layers": int(args.n_inner_layers),

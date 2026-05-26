@@ -643,7 +643,7 @@ async function refreshTraining() {
     $('run-panel').style.display    = 'none';
     $('submit-panel').style.display = 'block';
     refreshRecent();
-    refreshEta();
+    refreshTrainEta();
   }
 }
 
@@ -1381,7 +1381,7 @@ against this."></label>
 set, the model becomes A_θ(x) = (1+f)(A_analytic ⊛ x) — the analytic
 Wiener kernel produces an artifact-laden rough draft and the tiny CNN
 learns to clean it up. Faster + better convergence than identity
-residual. Default '${DATA_DIR}/hst_psf/diff_kernel_VIS.fits' if you
+residual. Default '<DATA_DIR>/hst_psf/diff_kernel_VIS.fits' if you
 just paste that literal string."></label>
         <label>Baseline crop (px)
           <input type="number" name="baseline_crop" value="0" min="0" max="511" step="2"

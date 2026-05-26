@@ -719,3 +719,87 @@ class TestTransitionModelSelection:
         assert lr_cube.shape == (32, 32, 4)
         assert np.isfinite(hr_cube).all()
         assert np.isfinite(lr_cube).all()
+
+    def _save_cnn_with_baseline(self, tmp_path, kernel_fits_path):
+        """Write a transition-model weights file from a model that was
+        constructed with the analytic baseline kernel pinned. Also
+        emits the summary JSON the worker reads to reconstruct the
+        same model shape.
+        """
+        import json as _json
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, save_model_weights,
+        )
+        # Load the same FITS the worker will see at load time.
+        from astropy.io import fits as _fits
+        with _fits.open(kernel_fits_path) as hdul:
+            baseline_kernel = np.asarray(hdul[0].data, dtype=np.float32)
+        model = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+            baseline_kernel=baseline_kernel,
+        )
+        weights_path = str(tmp_path / "transition_model.weights.h5")
+        save_model_weights(model, weights_path)
+        # Drop the summary JSON the worker reads.
+        summary_path = str(tmp_path / "transition_model_summary.json")
+        with open(summary_path, "w") as f:
+            _json.dump({
+                "channels":       4,
+                "n_inner_layers": 1,
+                "kernel_size":    3,
+                "analytic_baseline_kernel": kernel_fits_path,
+                "baseline_crop":  0,
+            }, f)
+        return weights_path
+
+    def test_init_worker_reconstructs_model_with_baseline(self, tmp_path):
+        """REGRESSION — when the trained model was saved with an
+        analytic baseline pinned as a non-trainable layer, the worker
+        MUST reconstruct it with the same baseline before loading the
+        weights. Reading channels/n_inner_layers from the CLI alone
+        gives a model with 0 top-level variables, while the weights
+        file has 1 (the baseline kernel) — Keras then raises
+        ``expected 0 variables, but received 1`` and the whole
+        ProcessPoolExecutor dies.
+
+        Verify that the worker reads the summary JSON, loads the
+        baseline FITS, and instantiates the model with both — so
+        the weights file loads without error.
+        """
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        cnn = self._save_cnn_with_baseline(tmp_path, krn)
+        # Call with CLI defaults that DON'T match the saved
+        # hyperparameters — the worker should ignore the CLI values
+        # in favor of the summary's.
+        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
+        assert mod._WORKER_TRANSITION_MODEL is not None
+        # The reconstructed model must have a baseline kernel.
+        assert mod._WORKER_TRANSITION_MODEL._has_baseline is True
+        assert mod._WORKER_KERNEL is None
+
+    def test_init_worker_fails_loudly_when_baseline_missing(self, tmp_path):
+        """If the summary says a baseline was used but the FITS isn't
+        findable, the worker must raise a clear error rather than
+        silently constructing the wrong-shape model (which would then
+        explode inside ``load_weights`` with the cryptic
+        ``expected 0 variables, received 1``)."""
+        import json as _json
+        import pytest as _pt
+        # Save a model WITH baseline using a real kernel...
+        krn = _make_synthetic_kernel(tmp_path)
+        weights_path = self._save_cnn_with_baseline(tmp_path, krn)
+        # ...then doctor the summary to point at a nonexistent FITS.
+        summary_path = str(tmp_path / "transition_model_summary.json")
+        with open(summary_path) as f:
+            s = _json.load(f)
+        s["analytic_baseline_kernel"] = "/n/nowhere/does_not_exist.fits"
+        with open(summary_path, "w") as f:
+            _json.dump(s, f)
+        # Also remove the matching local kernel so the candidate-search
+        # in _init_worker has nothing to fall back to.
+        missing_krn = str(tmp_path / "missing_kernel.fits")
+        mod = _load_script()
+        with _pt.raises(RuntimeError, match="baseline.*kernel"):
+            mod._init_worker(missing_krn, weights_path, 12, 3, 64,
+                             DEFAULT_TEST_RATIOS)
