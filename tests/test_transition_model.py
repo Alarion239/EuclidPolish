@@ -123,6 +123,42 @@ class TestParameterBudget:
             f"baseline kernel; got {n_no} vs {n_with}"
         )
 
+    def test_build_with_huge_baseline_is_fast(self):
+        """REGRESSION — ``_build_if_needed`` must use a small dummy input
+        regardless of how big the baseline kernel is.
+
+        Previously the helper picked ``side = max(8, baseline_side + 1)``,
+        so a 511² analytic baseline meant a 512² dummy input through the
+        full ``call()`` — which triggers ``tf.nn.conv2d`` with a 511²
+        kernel on CPU (direct convolution, ~50 s/process). A 16-worker
+        pool then spent its entire wall-time budget on parallel build
+        before producing a single cutout (FASRC step 4 stall, May 2026).
+
+        SAME-padding handles ``kernel_size > input_size`` correctly, so
+        an 8² dummy gives the same set of built variables in ~30 ms.
+        Guard rail: building must complete well under 5 s so this can't
+        silently slip back.
+        """
+        import time
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, _build_if_needed,
+        )
+        # 511² baseline — matches the real diff_kernel_VIS.fits size.
+        baseline = np.zeros((511, 511), dtype=np.float32)
+        baseline[255, 255] = 1.0
+        m = HSTtoEuclidTransition(
+            channels=12, n_inner_layers=3, kernel_size=3,
+            baseline_kernel=baseline,
+        )
+        t0 = time.time()
+        _build_if_needed(m)
+        elapsed = time.time() - t0
+        assert elapsed < 5.0, (
+            f"_build_if_needed with a 511² baseline took {elapsed:.1f}s "
+            f"(budget 5.0s). Did the dummy-input sizing rule regress to "
+            f"include the baseline kernel side?"
+        )
+
     def test_baseline_kernel_initial_output_equals_baseline_conv(self):
         """With baseline_kernel set and the residual init ≈ 0, the
         model's output at init must equal ``baseline_kernel ⊛ x``

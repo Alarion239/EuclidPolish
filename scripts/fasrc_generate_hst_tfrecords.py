@@ -33,9 +33,23 @@ trainer can mix them with the existing synthetic records via the
 
 from __future__ import annotations
 
+import os
+
+# Cap per-process thread counts BEFORE numpy/scipy/TF are imported.
+# With a 16-worker pool on 16 SLURM CPUs, the default lets each
+# worker spawn 16 intra-op threads → 256 OS threads contending for
+# 16 cores → all per-cutout work crawls. Pinning to 1 thread per
+# process restores 1:1 worker-to-core mapping. setdefault honours an
+# explicit override from the sbatch script if the caller really wants
+# multi-threaded BLAS.
+os.environ.setdefault("OMP_NUM_THREADS",         "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS",    "1")
+os.environ.setdefault("MKL_NUM_THREADS",         "1")
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS",  "1")
+os.environ.setdefault("TF_NUM_INTEROP_THREADS",  "1")
+
 import argparse
 import json
-import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -424,6 +438,13 @@ def _init_worker(
         _WORKER_KERNEL           = DifferentialKernel.from_fits(kernel_path).data
         _WORKER_TRANSITION_MODEL = None
 
+    # Heartbeat so a future stall in worker init (e.g. another slow
+    # tf.nn.conv2d during build) is visible from the SLURM log instead
+    # of looking identical to a healthy "just hasn't finished cutout #1
+    # yet" state.
+    print(f"      [worker {os.getpid()}] init complete "
+          f"(use_cnn={bool(use_cnn)})", flush=True)
+
 
 def _process_one_galaxy(
     task: Tuple[int, float, float, str, int, int],
@@ -754,8 +775,9 @@ def main() -> int:
                     _write_result(result, writers, sub_done)
                     sub_done += 1
                     pairs_written += 1
-                    if sub_done % 10 == 0:
-                        print(f"      {subset}: {sub_done}/{target_n} written")
+                    if sub_done <= 5 or sub_done % 10 == 0:
+                        print(f"      {subset}: {sub_done}/{target_n} written",
+                              flush=True)
             else:
                 # ProcessPoolExecutor: keep ~2*n_workers in flight so
                 # workers stay busy while one finishes + the main
@@ -798,9 +820,9 @@ def main() -> int:
                                 _write_result(result, writers, sub_done)
                                 sub_done += 1
                                 pairs_written += 1
-                                if sub_done % 10 == 0:
+                                if sub_done <= 5 or sub_done % 10 == 0:
                                     print(f"      {subset}: {sub_done}/"
-                                          f"{target_n} written")
+                                          f"{target_n} written", flush=True)
                             if sub_done >= target_n:
                                 break
                             # Replenish so the pool stays warm.

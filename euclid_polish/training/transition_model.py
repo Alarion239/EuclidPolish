@@ -393,16 +393,21 @@ def load_model_weights(
 def _build_if_needed(model: HSTtoEuclidTransition) -> None:
     """Force Keras to materialise variables.
 
-    Uses a dummy input larger than any baseline kernel so SAME-padding
-    convolutions are well-defined even for big baselines. Centralised
-    here so save/load/count_params all use the same sizing rule.
+    Always uses an 8×8 dummy input — even when the model carries a large
+    baseline kernel. ``tf.nn.conv2d`` with ``padding="SAME"`` zero-pads
+    the input as needed and handles ``kernel_size > input_size`` cleanly,
+    so the smaller dummy gives the same set of built variables.
+
+    **Why this matters**: ``tf.nn.conv2d`` on CPU does *direct*
+    convolution scaling as ``O(H · W · K²)``. With a 511² baseline kernel
+    and a 512² dummy this single build call takes ~50 s/process; with a
+    16-worker pool the parallel build alone exceeds typical wall-time
+    budgets before a single cutout completes (see the FASRC step 4 stall
+    incident). An 8² dummy with the same 511² kernel takes ~30 ms.
     """
     if model.built:
         return
-    side = max(8, getattr(model, "_baseline_kernel_side", 0) + 1)
-    if side % 2:
-        side += 1
-    _ = model(tf.zeros((1, side, side, 1), dtype=tf.float32))
+    _ = model(tf.zeros((1, 8, 8, 1), dtype=tf.float32))
 
 
 # ---------------------------------------------------------------------------
