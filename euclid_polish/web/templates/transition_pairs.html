@@ -15,6 +15,10 @@
      title="input + HLSP-style ε — the Phase-1 denoiser's training input. Use the α/σ_floor sliders below to tune.">noisy HST</a>
   <a class="chip" data-group="kind" data-value="hst_pair"
      title="clean HST ┃ noisy HST side-by-side — the denoiser's full training pair">denoiser pair</a>
+  <a class="chip" data-group="kind" data-value="denoised_hst"
+     title="CNN_1_frozen(noisy_HST) — the denoiser's output. Loads the trained weights from the local FASRC cache.">denoised HST</a>
+  <a class="chip" data-group="kind" data-value="denoiser_strip"
+     title="clean ┃ noisy ┃ denoised — full denoiser inspection with L1-vs-clean numbers">denoiser strip</a>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
   <a class="chip" data-group="subset" data-value="validate">validate</a>
@@ -197,8 +201,10 @@ const NOISE_UI = {
 function _showHideNoiseControls(kind) {
   const el = document.getElementById("noise-controls");
   if (!el) return;
-  el.style.display = (kind === "noisy_hst" || kind === "hst_pair")
-    ? "" : "none";
+  const kindsWithNoise = new Set([
+    "noisy_hst", "hst_pair", "denoised_hst", "denoiser_strip",
+  ]);
+  el.style.display = kindsWithNoise.has(kind) ? "" : "none";
 }
 
 polishUI.viz.bind({
@@ -209,7 +215,10 @@ polishUI.viz.bind({
     // + reshuffle bump so toggling kind doesn't change the noise.
     let u = `/view/transition-pair?subset=${sel.subset}` +
             `&kind=${sel.kind}&i=${sel.i}`;
-    if (sel.kind === "noisy_hst" || sel.kind === "hst_pair") {
+    const kindsWithNoise = new Set([
+      "noisy_hst", "hst_pair", "denoised_hst", "denoiser_strip",
+    ]);
+    if (kindsWithNoise.has(sel.kind)) {
       const seed = (Number(sel.i) || 0) * 1000003
                  + (NOISE_UI.seedBump | 0);
       u += `&alpha=${encodeURIComponent(NOISE_UI.alpha)}` +

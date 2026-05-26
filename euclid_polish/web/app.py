@@ -860,7 +860,8 @@ def _job_viz_psf(cap, band_name: str | None, psf_dir: str) -> Dict[str, Any]:
     for ax, name in zip(axes, bands):
         psf = psfs[name]
         d = np.clip(psf.data, 1e-8, None)
-        ax.imshow(np.log10(d), cmap="viridis", origin="lower")
+        ax.imshow(np.log10(d), cmap="viridis", origin="lower",
+                  interpolation="nearest")
         ax.set_title(f"{name}  shape={psf.data.shape}  "
                      f"@ {psf.pixel_scale:.3f}\"/pix")
         ax.set_xticks([]); ax.set_yticks([])
@@ -916,7 +917,7 @@ def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
             stretched = np.arcsinh(data_4ch[..., k] / scale)
             lo, hi = np.percentile(stretched, [1.0, 99.7])
             ax.imshow(stretched, cmap="gray_r", origin="lower",
-                      vmin=lo, vmax=hi)
+                      vmin=lo, vmax=hi, interpolation="nearest")
             ax.set_title(f"{bands[k]}", fontsize=11)
             ax.set_xticks([]); ax.set_yticks([])
             for (xp, yp), te in zip(lens_positions, lens_theta_E):
@@ -1357,7 +1358,8 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
     for ax, name in zip(axes[0], names):
         p = psfs[name]
         d = np.clip(p.data, 1e-8, None)
-        ax.imshow(np.log10(d), cmap="viridis", origin="lower")
+        ax.imshow(np.log10(d), cmap="viridis", origin="lower",
+                  interpolation="nearest")
         ax.set_title(f"{name}  {p.data.shape[0]}×{p.data.shape[1]}  "
                      f"@ {p.pixel_scale:.3f}\"/pix", fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
@@ -1367,6 +1369,56 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _load_local_denoiser():
+    """Locate + reconstruct the trained HSTDenoiser from local cache.
+
+    Returns ``(denoiser, label)`` on success, ``(None, reason)`` when
+    no usable weights are present. ``label`` is "best" or "latest"
+    so the caller can title the panel accurately. Hyperparameters
+    come from the sidecar JSON; if it's missing we fall back to the
+    architectural defaults the trainer uses.
+    """
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    from euclid_polish.training.transition_model import (
+        HSTDenoiser, load_denoiser_weights,
+    )
+    cfg = fasrc_config.load()
+    best_path = _local_path_for(
+        f"{cfg.data_dir}/hst_psf/hst_denoiser.best.weights.h5",
+    )
+    latest_path = _local_path_for(
+        f"{cfg.data_dir}/hst_psf/hst_denoiser.weights.h5",
+    )
+    if os.path.isfile(best_path):
+        weights_path, tag = best_path, "best"
+    elif os.path.isfile(latest_path):
+        weights_path, tag = latest_path, "latest"
+    else:
+        return None, "hst_denoiser.weights.h5 not in local cache"
+    summary_path = _local_path_for(
+        f"{cfg.data_dir}/hst_psf/hst_denoiser_summary.json",
+    )
+    channels       = 8
+    n_inner_layers = 2
+    kernel_size    = 7
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path) as f:
+                s = json.load(f)
+            channels       = int(s.get("channels",       channels))
+            n_inner_layers = int(s.get("n_inner_layers", n_inner_layers))
+            kernel_size    = int(s.get("kernel_size",    kernel_size))
+        except Exception:
+            pass
+    model = HSTDenoiser(
+        channels=channels,
+        n_inner_layers=n_inner_layers,
+        kernel_size=kernel_size,
+    )
+    load_denoiser_weights(model, weights_path)
+    return model, tag
 
 
 def _render_transition_pair_png(subset: str, kind: str, index: int,
@@ -1382,7 +1434,7 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     PSF_Euclid) — both single-channel VIS, both ``is_clean=True``.
 
     ``kind`` ∈ {"input", "target", "residual", "noisy_hst",
-                "hst_pair"}:
+                "hst_pair", "denoised_hst", "denoiser_strip"}:
 
       * ``input``    — clean HST-PSF-blurred HR scene (A_θ input).
       * ``target``   — Euclid-PSF-blurred LR target (A_θ output).
@@ -1398,6 +1450,12 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
                        on both panels — the easiest way to see how
                        much detail the denoiser is being asked to
                        recover.
+      * ``denoised_hst``  — ``CNN_1_frozen(noisy_hst)`` (single panel).
+                            Requires the trained denoiser weights to
+                            be present in the local FASRC cache.
+      * ``denoiser_strip``— 3 panels: clean ┃ noisy ┃ denoised, shared
+                            clip. The honest "how well is the denoiser
+                            doing?" view.
 
     Noise parameters (``noise_alpha``, ``noise_sigma_floor``,
     ``noise_seed``) are only consulted for the ``noisy_hst`` and
@@ -1418,7 +1476,8 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     if subset not in ("train", "validate"):
         abort(400)
     if kind not in ("input", "target", "residual",
-                    "noisy_hst", "hst_pair"):
+                    "noisy_hst", "hst_pair",
+                    "denoised_hst", "denoiser_strip"):
         abort(400)
 
     def _load(name: str):
@@ -1457,14 +1516,14 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
             hi = lo + 1.0
         fig, axes = plt.subplots(1, 2, figsize=(12, 6.5))
         axes[0].imshow(s_clean, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi)
+                       vmin=lo, vmax=hi, interpolation="nearest")
         axes[0].set_title(
             f"clean HST · idx {inp.index}  "
             f"({clean.shape[0]}×{clean.shape[1]} @ "
             f"{inp.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
         )
         axes[1].imshow(s_noisy, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi)
+                       vmin=lo, vmax=hi, interpolation="nearest")
         axes[1].set_title(
             f"noisy HST · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻",
             fontsize=10,
@@ -1473,6 +1532,114 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
             ax.set_xticks([]); ax.set_yticks([])
         fig.suptitle(
             f"HST denoiser pair · {subset} · idx {index}",
+            fontsize=11, y=1.01,
+        )
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=100, bbox_inches="tight", format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+    # ── Denoiser inspection. Loads the trained CNN_1 from local cache
+    #    and runs it on the noisy input. The strip view also surfaces
+    #    pixel-level metrics so a glance shows "is this actually doing
+    #    its job?".
+    if kind in ("denoised_hst", "denoiser_strip"):
+        from euclid_polish.training.transition_model import (
+            apply_denoiser_numpy,
+        )
+        inp = _load(f"input_{subset}")
+        clean = inp.data[..., 0].astype(np.float32)
+        rng = np.random.default_rng(int(noise_seed))
+        noisy = add_hlsp_noise(
+            clean,
+            alpha=float(noise_alpha),
+            sigma_floor=float(noise_sigma_floor),
+            rng=rng,
+        )
+        denoiser, tag = _load_local_denoiser()
+        if denoiser is None:
+            abort(404, description=(
+                f"denoiser not available: {tag}. Train it (HST "
+                f"pipeline step 3a-bis) and sync the resulting "
+                f"hst_denoiser.weights.h5 + hst_denoiser_summary.json "
+                f"from FASRC into the local cache."
+            ))
+        denoised = apply_denoiser_numpy(denoiser, noisy)
+        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
+        s_clean    = np.arcsinh(clean    / knee)
+        s_noisy    = np.arcsinh(noisy    / knee)
+        s_denoised = np.arcsinh(denoised / knee)
+        # Shared clip across all three panels so visual intensity is
+        # directly comparable (same physical electron count → same
+        # screen grey).
+        lo, hi = np.percentile(
+            np.concatenate(
+                [s_clean.ravel(), s_noisy.ravel(), s_denoised.ravel()]
+            ),
+            [1.0, 99.7],
+        )
+        if hi <= lo:
+            hi = lo + 1.0
+
+        # Quantitative summary: per-pixel L1 against the clean ground
+        # truth, and the "noise removed" fraction
+        # ``1 - ‖denoised−clean‖₁ / ‖noisy−clean‖₁``. Closer to 1 means
+        # the model removed most of the injected noise; near 0 (or
+        # negative) means it didn't help / made things worse.
+        l1_noisy    = float(np.abs(noisy    - clean).mean())
+        l1_denoised = float(np.abs(denoised - clean).mean())
+        if l1_noisy > 0:
+            noise_removed_frac = 1.0 - (l1_denoised / l1_noisy)
+        else:
+            noise_removed_frac = float("nan")
+
+        if kind == "denoised_hst":
+            fig, ax = plt.subplots(figsize=(6.5, 6.5))
+            ax.imshow(s_denoised, cmap="gray_r", origin="lower",
+                      vmin=lo, vmax=hi, interpolation="nearest")
+            ax.set_title(
+                f"denoised HST · {tag} weights · idx {inp.index}  "
+                f"(α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻; "
+                f"L1 vs clean: noisy={l1_noisy:.2f} → "
+                f"denoised={l1_denoised:.2f}, "
+                f"removed {noise_removed_frac*100:.1f}%)",
+                fontsize=9,
+            )
+            ax.set_xticks([]); ax.set_yticks([])
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+            plt.close(fig)
+            buf.seek(0)
+            return buf.getvalue()
+
+        # ── 3-panel strip: clean | noisy | denoised ──
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5.4))
+        axes[0].imshow(s_clean, cmap="gray_r", origin="lower",
+                       vmin=lo, vmax=hi, interpolation="nearest")
+        axes[0].set_title(
+            f"clean (ground truth) · idx {inp.index}", fontsize=10,
+        )
+        axes[1].imshow(s_noisy, cmap="gray_r", origin="lower",
+                       vmin=lo, vmax=hi, interpolation="nearest")
+        axes[1].set_title(
+            f"noisy input · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻\n"
+            f"L1 vs clean = {l1_noisy:.2f} e⁻", fontsize=10,
+        )
+        axes[2].imshow(s_denoised, cmap="gray_r", origin="lower",
+                       vmin=lo, vmax=hi, interpolation="nearest")
+        axes[2].set_title(
+            f"denoised ({tag} weights)\n"
+            f"L1 vs clean = {l1_denoised:.2f} e⁻ "
+            f"({noise_removed_frac*100:+.1f}% noise removed)",
+            fontsize=10,
+        )
+        for ax in axes:
+            ax.set_xticks([]); ax.set_yticks([])
+        fig.suptitle(
+            f"HST denoiser inspection · {subset} · idx {index}",
             fontsize=11, y=1.01,
         )
         fig.tight_layout()
@@ -1510,7 +1677,8 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
         )
         cmap = "gray_r"
         fig, ax = plt.subplots(figsize=(6.5, 6.5))
-        ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi)
+        ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi,
+              interpolation="nearest")
         ax.set_title(
             f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
             f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
@@ -1599,7 +1767,8 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
         cmap = "gray_r"
 
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi)
+    ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi,
+              interpolation="nearest")
     ax.set_title(
         f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
         f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
@@ -1706,7 +1875,8 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     lo, hi = np.percentile(stretched, [1.0, 99.7])
     if hi <= lo: hi = lo + 1.0
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.imshow(stretched, cmap="gray_r", origin="lower", vmin=lo, vmax=hi)
+    ax.imshow(stretched, cmap="gray_r", origin="lower", vmin=lo, vmax=hi,
+              interpolation="nearest")
     ax.set_title(f"{kind} {subset} · {band_name} · idx {img.index}  "
                  f"({data.shape[0]}×{data.shape[1]} @ "
                  f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10)
@@ -1791,7 +1961,8 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
     def _show_grayscale(ax, img, band_name: str, title: str) -> None:
         stretched = _grayscale_plane(img, band_name)
         ax.imshow(stretched, cmap="gray_r", origin="lower",
-                  vmin=shared_lo, vmax=shared_hi)
+                  vmin=shared_lo, vmax=shared_hi,
+                  interpolation="nearest")
         ax.set_title(
             f"{title}  ({img.data.shape[0]}×{img.data.shape[1]} @ "
             f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
@@ -2403,13 +2574,16 @@ def create_app() -> Flask:
         )
 
         fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), dpi=110)
-        axes[0].imshow(e,        cmap="gray_r", norm=psf_norm, origin="lower")
+        axes[0].imshow(e,        cmap="gray_r", norm=psf_norm, origin="lower",
+                       interpolation="nearest")
         axes[0].set_title(f"E (target Euclid)\npeak={peak_e:.3e}, "
                           f"flux={flux_e:.4f}", fontsize=10)
-        axes[1].imshow(a_conv_h, cmap="gray_r", norm=psf_norm, origin="lower")
+        axes[1].imshow(a_conv_h, cmap="gray_r", norm=psf_norm, origin="lower",
+                       interpolation="nearest")
         axes[1].set_title(f"A ⊛ H (kernel result)\npeak={peak_a_h:.3e}, "
                           f"flux={flux_a_h:.4f}", fontsize=10)
-        axes[2].imshow(residual, cmap="RdBu_r", norm=res_norm, origin="lower")
+        axes[2].imshow(residual, cmap="RdBu_r", norm=res_norm, origin="lower",
+                       interpolation="nearest")
         axes[2].set_title(f"A⊛H − E (asinh)\nmax|res|={r_lim:.3e}, "
                           f"RMS/RMS(E)={rel_rms:.3f}", fontsize=10)
         for ax in axes:
@@ -2654,7 +2828,8 @@ def create_app() -> Flask:
                 vmax = max(float(arr.max()), 1e-9)
             scale = max(vmax * 0.01, 1e-12)
             norm = AsinhNorm(linear_width=scale, vmin=0.0, vmax=vmax)
-            ax.imshow(arr, cmap="gray_r", norm=norm, origin="lower")
+            ax.imshow(arr, cmap="gray_r", norm=norm, origin="lower",
+                      interpolation="nearest")
             ax.set_title(title, fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
 
@@ -2666,7 +2841,8 @@ def create_app() -> Flask:
                 linear_width=max(r_lim * 0.01, 1e-12),
                 vmin=-r_lim, vmax=+r_lim,
             )
-            ax.imshow(arr, cmap="RdBu_r", norm=norm, origin="lower")
+            ax.imshow(arr, cmap="RdBu_r", norm=norm, origin="lower",
+                      interpolation="nearest")
             ax.set_title(title, fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
 

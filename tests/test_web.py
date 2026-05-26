@@ -99,6 +99,9 @@ def test_transition_pairs_page_renders(client):
     # And the two new denoiser-pair views.
     assert "noisy HST" in body
     assert "denoiser pair" in body
+    # And the denoiser-output views.
+    assert "denoised HST" in body
+    assert "denoiser strip" in body
     # Noise controls present (hidden by default until a noise kind
     # chip is clicked, but the elements have to be in the DOM).
     assert 'id="noise-alpha"' in body
@@ -198,6 +201,121 @@ def test_transition_pair_view_renders_hst_pair(client, tmp_path,
     )
     assert r.status_code == 200, (
         f"hst_pair render failed: {r.status_code} body={r.data[:200]!r}"
+    )
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_transition_pair_view_404s_on_missing_denoiser_weights(
+        client, tmp_path, monkeypatch):
+    """Without trained denoiser weights in the local cache, the
+    ``denoised_hst`` and ``denoiser_strip`` kinds must 404 with a
+    clear message — not silently render a randomly initialised
+    denoiser's garbage output."""
+    import numpy as np
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-no-denoiser"}
+        ),
+    )
+
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-no-denoiser/images/records_transition"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/input_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+    rng = np.random.default_rng(0)
+    img = MultiBandSkyImage(
+        data=rng.uniform(0, 500, (32, 32, 1)).astype(np.float32),
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    for kind in ("denoised_hst", "denoiser_strip"):
+        r = client.get(
+            f"/view/transition-pair?subset=validate&kind={kind}&i=0"
+        )
+        assert r.status_code == 404, (
+            f"{kind} should 404 when denoiser weights are missing, "
+            f"got {r.status_code}"
+        )
+
+
+def test_transition_pair_view_renders_denoiser_strip(
+        client, tmp_path, monkeypatch):
+    """End-to-end: tiny synthetic denoiser checkpoint + input shard +
+    the matching summary JSON → the strip view returns a real PNG.
+    Demonstrates that the pipeline goes
+    input_shard → noise → load denoiser → forward pass → render. """
+    import json
+    import numpy as np
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.training.transition_model import (
+        HSTDenoiser, save_denoiser_weights,
+    )
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-with-denoiser"}
+        ),
+    )
+
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    # Input shard
+    remote_records = "/tmp/fasrc-with-denoiser/images/records_transition"
+    local_records = os.path.dirname(
+        _local_path_for(f"{remote_records}/input_validate.tfrecord")
+    )
+    os.makedirs(local_records, exist_ok=True)
+    rng = np.random.default_rng(1)
+    img = MultiBandSkyImage(
+        data=rng.uniform(0, 500, (32, 32, 1)).astype(np.float32),
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_records) as w:
+        w.write(img, index=0)
+
+    # Denoiser weights + summary in the local cache.
+    den_weights_remote = "/tmp/fasrc-with-denoiser/hst_psf/hst_denoiser.weights.h5"
+    den_weights_local = _local_path_for(den_weights_remote)
+    os.makedirs(os.path.dirname(den_weights_local), exist_ok=True)
+    m = HSTDenoiser(channels=4, n_inner_layers=1, kernel_size=3)
+    save_denoiser_weights(m, den_weights_local)
+
+    summary_local = _local_path_for(
+        "/tmp/fasrc-with-denoiser/hst_psf/hst_denoiser_summary.json"
+    )
+    with open(summary_local, "w") as f:
+        json.dump({
+            "channels": 4, "n_inner_layers": 1, "kernel_size": 3,
+        }, f)
+
+    r = client.get(
+        "/view/transition-pair?subset=validate&kind=denoiser_strip&i=0"
+        "&alpha=0.8&sigma_floor=12"
+    )
+    assert r.status_code == 200, (
+        f"denoiser_strip render failed: {r.status_code} "
+        f"body={r.data[:200]!r}"
     )
     assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
 

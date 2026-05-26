@@ -191,11 +191,27 @@ def _protect_real_data_dir():
                 violations.append(("modified (cannot restore, > 16MB)", p))
 
     if violations:
-        msg = ["Test run mutated files under Config.DATA_DIR:"]
+        msg = [
+            "",
+            "─" * 72,
+            " conftest session-teardown guard fired",
+            "─" * 72,
+            "",
+            " IMPORTANT: this is NOT a failure of the test pytest blames",
+            " it on. The check runs at SESSION teardown and pytest",
+            " attributes session-fixture teardown errors to whichever",
+            " test happened to run last. The real culprit is whatever",
+            " production code path modified the file(s) listed below.",
+            "",
+            " Files mutated under Config.DATA_DIR during this run:",
+            "",
+        ]
         for kind, p in violations:
-            msg.append(f"  [{kind}] {p}")
+            msg.append(f"   [{kind}] {p}")
         msg.append("")
-        msg.append("Tests must NEVER write to real data paths. Use "
-                   "``tmp_path`` + monkeypatch the path resolver "
-                   "(e.g. psf_path_for_band) instead.")
+        msg.append(" Tests must NEVER write to real data paths. Use")
+        msg.append(" ``tmp_path`` + monkeypatch the path resolver")
+        msg.append(" (e.g. psf_path_for_band, Config.VIS_PSF_DIR)")
+        msg.append(" so the production write lands under tmp_path.")
+        msg.append("─" * 72)
         raise AssertionError("\n".join(msg))
