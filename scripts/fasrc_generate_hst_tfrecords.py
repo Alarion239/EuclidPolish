@@ -754,7 +754,7 @@ def main() -> int:
                     _write_result(result, writers, sub_done)
                     sub_done += 1
                     pairs_written += 1
-                    if sub_done % 50 == 0:
+                    if sub_done % 10 == 0:
                         print(f"      {subset}: {sub_done}/{target_n} written")
             else:
                 # ProcessPoolExecutor: keep ~2*n_workers in flight so
@@ -798,7 +798,7 @@ def main() -> int:
                                 _write_result(result, writers, sub_done)
                                 sub_done += 1
                                 pairs_written += 1
-                                if sub_done % 50 == 0:
+                                if sub_done % 10 == 0:
                                     print(f"      {subset}: {sub_done}/"
                                           f"{target_n} written")
                             if sub_done >= target_n:

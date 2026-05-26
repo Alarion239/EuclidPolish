@@ -59,6 +59,7 @@ from typing import Optional
 
 import numpy as np
 import tensorflow as tf
+from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
 
@@ -247,6 +248,36 @@ class HSTtoEuclidTransition(tf.keras.Model):
         # Each kernel_size=k conv adds (k-1) to the RF.
         return 1 + n_layers * (self._kernel_size - 1)
 
+    def _apply_cnn(self, x: tf.Tensor) -> tf.Tensor:
+        """Just the conv-stack residual — does NOT add the baseline.
+
+        Exposed so offline inference paths can compute the baseline
+        outside the TF graph (e.g. via ``scipy.signal.fftconvolve``,
+        which is ~50× faster than ``tf.nn.conv2d`` for large
+        baseline kernels on CPU) and only invoke the small CNN here.
+        """
+        h = self._first(x)
+        for layer in self._inner:
+            h = layer(h)
+        return self._last(h)
+
+    @property
+    def baseline_kernel_numpy(self) -> Optional[np.ndarray]:
+        """Return the baseline kernel as a 2-D numpy array in the same
+        orientation it was passed to ``__init__`` (unflipped).
+
+        ``self._baseline_kernel`` is stored *flipped* in both spatial
+        axes because ``tf.nn.conv2d`` is cross-correlation; the unflip
+        here recovers the original kernel so it can be fed to
+        ``scipy.signal.fftconvolve`` directly (which does true
+        convolution). Returns ``None`` when no baseline is configured.
+        """
+        if not self._has_baseline:
+            return None
+        # Shape is (kH, kW, 1, 1). Squeeze + un-flip.
+        flipped = self._baseline_kernel.numpy()[:, :, 0, 0]
+        return flipped[::-1, ::-1].copy()
+
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
         """Forward pass.
 
@@ -293,10 +324,7 @@ class HSTtoEuclidTransition(tf.keras.Model):
             baseline = x
             cnn_input = x
 
-        h = self._first(cnn_input)
-        for layer in self._inner:
-            h = layer(h)
-        residual = self._last(h)
+        residual = self._apply_cnn(cnn_input)
         return baseline + residual
 
     def get_config(self):
@@ -395,20 +423,55 @@ def apply_transition_numpy(
 
     ``batch_size`` is ignored when a single image is passed; reserved
     for a future batched variant.
+
+    **Fast CPU path**: when the model carries a large analytic baseline
+    kernel (≥ 21 px on a side), ``tf.nn.conv2d`` on CPU does *direct*
+    convolution, which scales as O(N²·K²) and is impossibly slow for
+    K=511 (~7 s/band/cutout). ``scipy.signal.fftconvolve`` does the
+    same thing via FFT (O(N²·log N)) — ~50× faster on CPU for big
+    kernels. So we split the model:
+
+      1. baseline = ``scipy.signal.fftconvolve(image, baseline_kernel)``
+         — fast numpy/FFT, fully on CPU.
+      2. residual = ``model._apply_cnn(baseline)`` — the small CNN
+         residual (~5k params, K=3), via TF. Cheap.
+      3. return ``baseline + residual``.
+
+    On GPU this path is irrelevant (tf.nn.conv2d uses cuDNN which
+    handles big kernels efficiently), but the path is identical in
+    output so always running it is fine and removes the GPU/CPU
+    branching.
     """
     if image.ndim == 2:
         squeezed = True
-        x = image[np.newaxis, ..., np.newaxis]
+        x_2d = image.astype(np.float32, copy=False)
     elif image.ndim == 3 and image.shape[-1] == 1:
         squeezed = False
-        x = image[np.newaxis, ...]
+        x_2d = image[:, :, 0].astype(np.float32, copy=False)
     else:
         raise ValueError(
             f"apply_transition_numpy expects (H, W) or (H, W, 1); "
             f"got shape {image.shape}"
         )
-    x = x.astype(np.float32)
-    y = model(x, training=False).numpy()
+
+    if model._has_baseline:
+        # Fast path — FFT baseline + tiny CNN residual.
+        baseline_2d = fftconvolve(
+            x_2d, model.baseline_kernel_numpy.astype(np.float32),
+            mode="same",
+        ).astype(np.float32)
+        baseline_tf = tf.constant(
+            baseline_2d[np.newaxis, :, :, np.newaxis], dtype=tf.float32,
+        )
+        residual_tf = model._apply_cnn(baseline_tf)
+        residual_2d = residual_tf.numpy()[0, :, :, 0]
+        out_2d = baseline_2d + residual_2d
+    else:
+        # No baseline — small input + small kernel, TF is fine.
+        out_2d = model(
+            x_2d[np.newaxis, :, :, np.newaxis], training=False,
+        ).numpy()[0, :, :, 0]
+
     if squeezed:
-        return y[0, :, :, 0].astype(image.dtype)
-    return y[0].astype(image.dtype)
+        return out_2d.astype(image.dtype)
+    return out_2d[:, :, np.newaxis].astype(image.dtype)

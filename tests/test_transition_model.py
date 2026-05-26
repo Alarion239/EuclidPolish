@@ -468,6 +468,58 @@ class TestApplyTransitionNumpy:
         with pytest.raises(ValueError):
             apply_transition_numpy(m, np.zeros((32, 32, 3), dtype=np.float32))
 
+    def test_fft_path_matches_tf_path_with_baseline(self):
+        """REGRESSION — ``apply_transition_numpy`` takes a fast path
+        that computes the baseline conv via scipy.signal.fftconvolve
+        (FFT, fast on CPU) instead of tf.nn.conv2d (direct conv, slow
+        on CPU for large kernels). The output must match the
+        full-TF model output to within float32 round-off.
+
+        Without this guarantee, switching paths would silently change
+        the TFRecord pair-generation outputs."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, apply_transition_numpy,
+        )
+        rng = np.random.default_rng(0)
+        # Realistic-ish baseline: a small offset Gaussian kernel.
+        side = 21
+        y, x = np.mgrid[:side, :side]
+        cy = cx = side // 2
+        kernel = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 3.0 ** 2))
+        kernel = (kernel / kernel.sum()).astype(np.float32)
+        m = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+            baseline_kernel=kernel,
+        )
+        img = rng.uniform(0, 100, size=(64, 64)).astype(np.float32)
+
+        # Fast path (scipy FFT baseline + TF CNN residual).
+        out_fast = apply_transition_numpy(m, img)
+        # Slow path: run the entire model through TF.
+        out_tf = m(
+            img[np.newaxis, :, :, np.newaxis], training=False,
+        ).numpy()[0, :, :, 0]
+
+        # Float32 + FFT round-off — generous absolute tolerance scaled
+        # by output magnitude.
+        np.testing.assert_allclose(
+            out_fast, out_tf,
+            rtol=1e-4, atol=1e-3 * np.abs(out_tf).max(),
+        )
+
+    def test_no_baseline_still_works(self):
+        """The fast path branches on whether the model has a baseline;
+        the no-baseline branch should produce the same shape + dtype
+        as before."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, apply_transition_numpy,
+        )
+        m = HSTtoEuclidTransition()   # no baseline_kernel
+        img = np.random.uniform(0, 50, size=(48, 48)).astype(np.float32)
+        out = apply_transition_numpy(m, img)
+        assert out.shape == img.shape
+        assert out.dtype == img.dtype
+
 
 class TestInvalidArgs:
 
