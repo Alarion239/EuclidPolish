@@ -38,6 +38,35 @@ from scipy import signal as scipy_signal
 # Photometric sum-rebin (matches the downstream Euclid forward chain)
 # ---------------------------------------------------------------------------
 
+def ensure_unit_sum(psf: np.ndarray, *, atol: float = 1e-4) -> np.ndarray:
+    """Return ``psf`` rescaled so it integrates to 1, unless it already does.
+
+    The pipeline's PSF loaders should already produce sum=1 kernels — but
+    this is a defensive last step right before convolution. If a future
+    loader change (or a hand-supplied PSF) sneaks an un-normalised
+    kernel into the convolution, the input's amplitude would silently
+    rescale by ``psf.sum()`` and the input/target pair would drift
+    out of the photometric contract.
+
+    Concretely, this catches the case where one PSF FITS file is saved
+    with EPSFBuilder's raw output (sum ≈ 3) and the other with the
+    explicit ``data/data.sum()`` normalisation step (sum = 1). At any
+    fixed display scale the un-normalised PSF *looks* much brighter +
+    wider — even though its actual FWHM matches what's in the header —
+    because every pixel value is ~3× larger. The convolution sees that
+    same factor if we don't strip it here.
+
+    No-op when the kernel is already sum=1 within ``atol``, or when it
+    sums to zero (degenerate — caller's problem to handle).
+    """
+    if psf.size == 0:
+        return psf
+    s = float(psf.sum())
+    if s == 0.0 or abs(s - 1.0) < atol:
+        return psf
+    return (psf / s).astype(psf.dtype, copy=False)
+
+
 def sum_rebin_2d(arr: np.ndarray, factor: int) -> np.ndarray:
     """Sum-rebin a 2-D or 3-D array by ``factor`` in the two leading axes.
 
@@ -153,11 +182,17 @@ def make_star_field(
         amp = float(rng.uniform(amp_min, amp_max))
         deltas[cy, cx] += amp
 
+    # Defensive sum=1 normalisation right before convolution. See
+    # ``ensure_unit_sum`` for the motivation — guards against PSFs that
+    # arrive un-normalised (e.g. raw EPSFBuilder output saved without the
+    # explicit ``data/data.sum()`` step).
+    psf_hst_n    = ensure_unit_sum(psf_hst.astype(np.float64))
+    psf_euclid_n = ensure_unit_sum(psf_euclid.astype(np.float64))
     inp_hr = scipy_signal.fftconvolve(
-        deltas, psf_hst.astype(np.float64), mode="same",
+        deltas, psf_hst_n, mode="same",
     ).astype(np.float32)
     tgt_hr = scipy_signal.fftconvolve(
-        deltas, psf_euclid.astype(np.float64), mode="same",
+        deltas, psf_euclid_n, mode="same",
     ).astype(np.float32)
     tgt_lr = sum_rebin_2d(tgt_hr, rebin_factor)
     return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
@@ -294,8 +329,15 @@ def make_psf_identity_pair(
             f"image_size={image_size} must be divisible by "
             f"rebin_factor={rebin_factor}"
         )
-    inp_hr = embed_in_canvas(psf_hst,    image_size).astype(np.float32)
-    tgt_hr = embed_in_canvas(psf_euclid, image_size).astype(np.float32)
+    # Same defensive sum=1 normalisation as ``make_star_field``: the
+    # identity pair is literally (PSF_HST, sum_rebin(PSF_Euclid)), so
+    # if either PSF arrives with sum ≠ 1 the pair's two sides end up
+    # at different total flux and the trainer's L1 loss develops a
+    # baseline offset that has nothing to do with the model's quality.
+    psf_hst_n    = ensure_unit_sum(psf_hst)
+    psf_euclid_n = ensure_unit_sum(psf_euclid)
+    inp_hr = embed_in_canvas(psf_hst_n,    image_size).astype(np.float32)
+    tgt_hr = embed_in_canvas(psf_euclid_n, image_size).astype(np.float32)
     tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
     return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
 

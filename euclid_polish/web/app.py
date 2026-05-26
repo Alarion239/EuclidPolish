@@ -1068,7 +1068,7 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
                         size: Optional[int] = None) -> bytes:
     """Load a cutout FITS, apply per-band asinh stretch, return PNG bytes.
 
-    - Asinh scale comes from ``band.asinh_stretch_scale_e``.
+    - Asinh stretch knee comes from ``band.asinh_stretch_scale_e``.
     - vmin/vmax clip at the 1.0 / 99.7 percentiles of the stretched image.
     - Optional ``size`` resamples (nearest-neighbour) to a square thumbnail.
 
@@ -1442,14 +1442,45 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
         lo, hi = (-a, a) if a > 0 else (-1.0, 1.0)
         stretched = plane
     else:
+        # SHARED display clip across (input, target) panels.
+        #
+        # REGRESSION — the obvious-looking ``lo, hi = percentile(stretched,
+        # [1, 99.7])`` *per panel* is wrong here, even though it's the
+        # right default for every other single-panel view. Reason:
+        # ``input`` and ``target`` carry the SAME scene through DIFFERENT
+        # PSFs + an asymmetric ``sum_rebin`` on the target side. The
+        # target's per-pixel peak is ~2× the input's (rebin sums a 2×2
+        # block at peak), so an independent 99.7-percentile clip on
+        # each panel gives the target a ~4× wider asinh display range.
+        # The same physical wing intensity that pops out as grey on the
+        # input panel disappears into black on the target panel —
+        # *inverting* the physical truth (Euclid wings are 4-12×
+        # brighter than HST wings at every arcsec radius from 0.1" to
+        # 1.0"). End user perception: "Euclid PSF shrunk to HST size",
+        # even though the pipeline is faithful.
+        #
+        # Fix: compute one shared 99.7-percentile clip on the union of
+        # input + target asinh arrays. Keeps usable contrast (the same
+        # reason every other render uses 99.7-percentile) while making
+        # "mid-grey here" mean the same electron count as "mid-grey
+        # there" — the invariant a faithful side-by-side comparison
+        # actually needs.
         record = _load(f"{kind}_{subset}")
         plane = record.data[..., 0]
-        img_for_meta = record
-        title_suffix = kind
-        stretched = np.arcsinh(plane / float(Config.BAND_VIS.asinh_stretch_scale_e))
-        lo, hi = np.percentile(stretched, [1.0, 99.7])
+        partner_kind = "target" if kind == "input" else "input"
+        partner = _load(f"{partner_kind}_{subset}")
+        partner_plane = partner.data[..., 0]
+        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
+        stretched = np.arcsinh(plane / knee)
+        partner_stretched = np.arcsinh(partner_plane / knee)
+        lo, hi = np.percentile(
+            np.concatenate([stretched.ravel(), partner_stretched.ravel()]),
+            [1.0, 99.7],
+        )
         if hi <= lo:
             hi = lo + 1.0
+        img_for_meta = record
+        title_suffix = kind
         cmap = "gray_r"
 
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
@@ -1579,10 +1610,14 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
 
     Pulls the three TFRecord files at the same ``index`` and renders
     them in a single figure: clean HR (4-band) ┃ dirty LR (4-band) ┃
-    HR-VIS target (1-band). Same asinh stretch + percentile clip as the
-    single-image renderer, but each panel computes its own clip from
-    its own data so the LR panel doesn't get crushed by the HR's wider
-    dynamic range.
+    HR-VIS target (1-band).
+
+    Display range = SHARED 99.7-percentile clip across **all three
+    panels combined**. Sharing the clip across panels means "mid-grey
+    here" corresponds to the same electron count as "mid-grey there",
+    which is the invariant a side-by-side comparison needs. The
+    single-panel kinds (clean / dirty / hr alone) keep the standard
+    per-image clip from :func:`_render_sky_record_png`.
 
     ``band`` ∈ ``Config.LR_INPUT_BAND_NAMES`` ∪ {"color"}. With
     ``band="color"`` the clean + dirty panels use the 4-band Lupton
@@ -1614,23 +1649,36 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
 
     fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.4))
 
-    def _show_grayscale(ax, img, band_name: str, title: str) -> None:
+    # Pre-compute the SHARED 99.7-percentile clip across all three
+    # grayscale panels. Skipped when band="color" because color panels
+    # use the Lupton RGB renderer instead of asinh.
+    def _grayscale_plane(img, band_name: str):
         data = img.data
         if data.shape[-1] == 1:
             plane = data[..., 0]
-            band_name = "VIS"
+            bn = "VIS"
         else:
             k = list(Config.LR_INPUT_BAND_NAMES).index(band_name)
             plane = data[..., k]
-        bcfg = Config.get_band(band_name)
-        stretched = np.arcsinh(plane / float(bcfg.asinh_stretch_scale_e))
-        lo, hi = np.percentile(stretched, [1.0, 99.7])
-        if hi <= lo:
-            hi = lo + 1.0
+            bn = band_name
+        knee = float(Config.get_band(bn).asinh_stretch_scale_e)
+        return np.arcsinh(plane / knee)
+
+    shared_lo, shared_hi = 0.0, 1.0
+    if band != "color":
+        all_stretched = [_grayscale_plane(panels[k], band)
+                         for k in ("clean", "dirty", "hr")]
+        union = np.concatenate([s.ravel() for s in all_stretched])
+        shared_lo, shared_hi = np.percentile(union, [1.0, 99.7])
+        if shared_hi <= shared_lo:
+            shared_hi = shared_lo + 1.0
+
+    def _show_grayscale(ax, img, band_name: str, title: str) -> None:
+        stretched = _grayscale_plane(img, band_name)
         ax.imshow(stretched, cmap="gray_r", origin="lower",
-                  vmin=lo, vmax=hi)
+                  vmin=shared_lo, vmax=shared_hi)
         ax.set_title(
-            f"{title}  ({data.shape[0]}×{data.shape[1]} @ "
+            f"{title}  ({img.data.shape[0]}×{img.data.shape[1]} @ "
             f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
         )
         ax.set_xticks([]); ax.set_yticks([])

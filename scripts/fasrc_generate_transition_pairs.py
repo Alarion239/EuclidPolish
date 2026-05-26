@@ -50,7 +50,9 @@ from euclid_polish.sky.tfrecord import (
     open_multiband_writer, read_multiband_skyimages, tfrecord_path,
 )
 from euclid_polish.sky.types import MultiBandSkyImage
-from euclid_polish.training.transition_augmentations import sum_rebin_2d
+from euclid_polish.training.transition_augmentations import (
+    ensure_unit_sum, sum_rebin_2d,
+)
 
 
 SYNTHETIC_RECORDS_DIR = Config.RECORDS_DIR_V2
@@ -244,11 +246,24 @@ def _convolve_pair(
     ``input.shape == scene.shape`` and
     ``target.shape == (H//rebin_factor, W//rebin_factor)``.
     """
+    # Defensive sum=1 normalisation right before convolution. The
+    # PSF loaders + ``_crop_to_odd_square`` already renormalise, but
+    # the Euclid VIS ePSF FITS on disk is saved un-normalised
+    # (``psf_extractor.to_psf`` wraps EPSFBuilder's raw output with
+    # sum ≈ 3), while the HST ePSF FITS is saved sum=1 by
+    # ``fasrc_extract_hst_psf.py``. If a future change ever skipped
+    # the loader-side normalisation, the un-normalised Euclid PSF
+    # would silently boost the target's amplitude by ~3× without
+    # touching its shape — invisible at training time, catastrophic
+    # for the photometric L1 loss. Doing it here at the convolution
+    # site too makes the invariant locally enforced.
+    psf_hst_n    = ensure_unit_sum(psf_hst)
+    psf_euclid_n = ensure_unit_sum(psf_euclid)
     inp_hr = scipy_signal.fftconvolve(
-        scene, psf_hst, mode="same",
+        scene, psf_hst_n, mode="same",
     ).astype(np.float32)
     tgt_hr = scipy_signal.fftconvolve(
-        scene, psf_euclid, mode="same",
+        scene, psf_euclid_n, mode="same",
     ).astype(np.float32)
     tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
     return inp_hr, tgt_lr

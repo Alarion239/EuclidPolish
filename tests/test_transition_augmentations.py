@@ -9,6 +9,81 @@ tf = pytest.importorskip("tensorflow")
 
 
 # ---------------------------------------------------------------------------
+# ensure_unit_sum — defensive PSF normalisation at the convolution site
+# ---------------------------------------------------------------------------
+
+class TestEnsureUnitSum:
+    """The helper is a no-op for already-normalised inputs and rescales
+    otherwise. The convolution sites call it right before fftconvolve so
+    a PSF FITS saved un-normalised (e.g. raw EPSFBuilder output with
+    sum≈3) can't silently rescale the convolution amplitude."""
+
+    def test_already_unit_sum_passes_through(self):
+        from euclid_polish.training.transition_augmentations import (
+            ensure_unit_sum,
+        )
+        psf = np.zeros((5, 5), dtype=np.float32)
+        psf[2, 2] = 1.0   # sum already = 1
+        out = ensure_unit_sum(psf)
+        assert out is psf, "no-op path should return the same array (no copy)"
+
+    def test_un_normalised_gets_rescaled(self):
+        from euclid_polish.training.transition_augmentations import (
+            ensure_unit_sum,
+        )
+        psf = np.zeros((5, 5), dtype=np.float32)
+        psf[2, 2] = 3.0   # sum = 3, matches the real Euclid VIS FITS case
+        out = ensure_unit_sum(psf)
+        assert abs(float(out.sum()) - 1.0) < 1e-6, (
+            f"expected sum=1 after normalisation, got {out.sum()}"
+        )
+        # Shape preserved.
+        assert out.shape == psf.shape
+        # Dtype preserved (no silent upcast to float64).
+        assert out.dtype == psf.dtype
+
+    def test_zero_sum_is_no_op(self):
+        """Degenerate: dividing by zero would NaN out. Helper must
+        return the original array unchanged in that case so the
+        caller's existing error-handling path triggers."""
+        from euclid_polish.training.transition_augmentations import (
+            ensure_unit_sum,
+        )
+        psf = np.zeros((5, 5), dtype=np.float32)
+        out = ensure_unit_sum(psf)
+        assert np.array_equal(out, psf)
+        assert not np.isnan(out).any()
+
+    def test_convolution_amplitude_unaffected_by_input_normalisation(self):
+        """REGRESSION — the whole point of ``ensure_unit_sum`` is that a
+        scene convolved with an un-normalised PSF should produce the same
+        result as a scene convolved with the same PSF normalised to sum=1.
+        Without the helper, a PSF with sum=3 would silently scale the
+        output by 3 and shift the photometric L1 loss baseline."""
+        from euclid_polish.training.transition_augmentations import (
+            ensure_unit_sum,
+        )
+        from scipy.signal import fftconvolve
+        # Two PSFs with identical shape, different total flux.
+        rng = np.random.default_rng(0)
+        psf_unit = rng.uniform(0.1, 1.0, size=(7, 7)).astype(np.float32)
+        psf_unit /= psf_unit.sum()           # sum = 1
+        psf_inflated = psf_unit * 3.0        # sum = 3, same shape
+        scene = rng.uniform(0, 100, size=(32, 32)).astype(np.float32)
+        out_unit     = fftconvolve(scene, ensure_unit_sum(psf_unit),     mode="same")
+        out_inflated = fftconvolve(scene, ensure_unit_sum(psf_inflated), mode="same")
+        np.testing.assert_allclose(
+            out_unit, out_inflated, atol=1e-4, rtol=1e-4,
+            err_msg=(
+                "ensure_unit_sum should make a sum=3 PSF give the same "
+                "convolution result as the sum=1 version — otherwise the "
+                "Euclid-vs-HST normalisation mismatch propagates into "
+                "training data amplitudes."
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Fixtures: tiny Gaussian PSFs on the HR grid
 # ---------------------------------------------------------------------------
 
