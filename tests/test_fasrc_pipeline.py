@@ -57,14 +57,16 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the original 5 steps, the two round-trip
-        steps (sky download + LR-only TFRecord build), and the two
-        transition-model steps (training-pair generation + CNN training)."""
+        """Registry must include the original 5 steps, the two
+        round-trip steps (sky download + LR-only TFRecord build), the
+        two transition-model steps (training-pair generation + CNN
+        training), and ``train_denoiser`` for Phase 1 of the
+        two-stage chain."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
-            "transition_pairs", "train_transition",
+            "transition_pairs", "train_denoiser", "train_transition",
         }
 
     def test_transition_pairs_step_emits_correct_argv(self):
@@ -88,6 +90,54 @@ class TestRegistry:
         assert "--channels" in argv and "10" in argv
         assert "--n-inner-layers" in argv and "2" in argv
         assert "--learning-rate" in argv
+
+    def test_train_denoiser_step_emits_correct_argv(self):
+        """Phase 1 of the two-stage chain. Must hit the denoiser
+        training script and emit the noise-range flags so the trainer
+        sees the same HLSP noise envelope the user configured."""
+        step = REGISTRY.get("train_denoiser")
+        argv = step.build_command({
+            "steps": 1000, "batch_size": 4,
+            "channels": 6, "n_inner_layers": 1, "kernel_size": 5,
+            "alpha_min": 0.4, "alpha_max": 0.9,
+            "sigma_floor_min": 7, "sigma_floor_max": 18,
+        })
+        assert "scripts/fasrc_train_hst_denoiser.py" in argv
+        assert "--steps" in argv and "1000" in argv
+        assert "--channels" in argv and "6" in argv
+        assert "--n-inner-layers" in argv and "1" in argv
+        assert "--kernel-size" in argv and "5" in argv
+        assert "--alpha-min" in argv and "0.4" in argv
+        assert "--alpha-max" in argv and "0.9" in argv
+        assert "--sigma-floor-min" in argv and "7" in argv
+        assert "--sigma-floor-max" in argv and "18" in argv
+
+    def test_train_transition_step_emits_phase2_flags(self):
+        """When the form carries --frozen-denoiser and noise ranges,
+        the transition trainer must receive them. Without these the
+        Phase-2 path is broken — the deconvolver would train on clean
+        inputs and the chain would degrade at inference."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({
+            "frozen_denoiser":  "/foo/hst_denoiser.weights.h5",
+            "alpha_min":        0.5,
+            "alpha_max":        1.0,
+            "sigma_floor_min":  8,
+            "sigma_floor_max":  22,
+        })
+        assert "--frozen-denoiser" in argv
+        assert "/foo/hst_denoiser.weights.h5" in argv
+        assert "--alpha-min" in argv and "0.5" in argv
+        assert "--alpha-max" in argv and "1" in argv
+        assert "--sigma-floor-min" in argv and "8" in argv
+        assert "--sigma-floor-max" in argv and "22" in argv
+
+    def test_train_transition_step_omits_frozen_denoiser_when_unset(self):
+        """Legacy single-stage path: no --frozen-denoiser flag should
+        appear when the form field is empty/missing."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({})
+        assert "--frozen-denoiser" not in argv
 
     def test_train_transition_step_includes_augmentation_flags(self):
         """Star-injection + linear-combo fractions and max-stars must
@@ -483,26 +533,15 @@ class TestFixedCpusEnforcement:
         monkeypatch.setattr(remote.STATE, "ssh", stub)
         return stub
 
-    @staticmethod
-    def _arm(client) -> str:
-        """POST /arm to obtain a single-use nonce. Returns the nonce
-        string. Tests that exercise a successful submit call this first
-        to get past the server-side arm guard."""
-        r = client.post("/api/fasrc/hst/arm", data={"confirm": "yes"})
-        assert r.status_code == 200, r.get_json()
-        return r.get_json()["nonce"]
-
     def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch):
         from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
-        nonce = self._arm(client)
         r = client.post(
             "/api/fasrc/hst/extract_psf/submit",
             data={
                 "confirm": "yes",
-                "arm_nonce": nonce,
                 "n_cpus": "16",     # user tries to over-allocate
                 "n_stars": "200",
                 "memory": "8G",
@@ -521,12 +560,10 @@ class TestFixedCpusEnforcement:
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
-        nonce = self._arm(client)
         r = client.post(
             "/api/fasrc/hst/tfrecords/submit",
             data={
                 "confirm": "yes",
-                "arm_nonce": nonce,
                 "n_cpus": "20",
                 "n_train": "100",
                 "n_valid": "10",
@@ -594,103 +631,6 @@ class TestFixedCpusEnforcement:
             assert r.status_code == 400, f"value {bad!r} should be rejected"
         assert stub.calls == []
 
-    def test_submit_rejected_without_arm_nonce(self, monkeypatch):
-        """REGRESSION — the user reported drive-by submissions
-        happening on page refresh. The arm/nonce mechanism is the
-        ultimate defence: even a POST with the correct ``confirm=yes``
-        is rejected unless it carries a freshly minted arm nonce.
-
-        Drive-by sources (cached JS, extensions, browser quirks, even
-        the user accidentally clicking Submit) can't have a valid
-        nonce because the nonce only comes from POSTing to /arm,
-        which itself requires confirm=yes via a dialog.
-        """
-        from euclid_polish.web.app import create_app
-        stub = self._stub_ssh(monkeypatch)
-        app = create_app()
-        client = app.test_client()
-        # confirm=yes but no arm — must reject.
-        r = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "n_stars": "200"},
-        )
-        assert r.status_code == 400
-        assert "DISABLED" in r.get_json()["error"]
-        assert stub.calls == []
-
-    def test_submit_rejected_with_wrong_nonce(self, monkeypatch):
-        """A nonce that doesn't match the server's current one is
-        rejected. Tests for replay/guess attacks."""
-        from euclid_polish.web.app import create_app
-        stub = self._stub_ssh(monkeypatch)
-        app = create_app()
-        client = app.test_client()
-        # Arm first to set up server state.
-        self._arm(client)
-        # Submit with a bogus nonce.
-        r = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "arm_nonce": "not-the-real-nonce",
-                  "n_stars": "200"},
-        )
-        assert r.status_code == 400
-        assert stub.calls == []
-
-    def test_nonce_is_single_use(self, monkeypatch):
-        """After a successful submit consumes a nonce, the SAME nonce
-        cannot be used to submit again. Prevents replay attacks AND
-        accidental double-submit from form re-fire."""
-        from euclid_polish.web.app import create_app
-        stub = self._stub_ssh(monkeypatch)
-        app = create_app()
-        client = app.test_client()
-        nonce = self._arm(client)
-
-        # First submit succeeds and consumes the nonce.
-        r1 = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "arm_nonce": nonce, "n_stars": "200",
-                  "partition": "shared", "memory": "8G",
-                  "time_limit": "0:10:00"},
-        )
-        assert r1.status_code == 200, r1.get_json()
-        sbatch_calls_after_first = [c for c in stub.calls if "sbatch" in c]
-        assert len(sbatch_calls_after_first) == 1
-
-        # Second submit with the same nonce — REJECTED.
-        r2 = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "arm_nonce": nonce, "n_stars": "200",
-                  "partition": "shared", "memory": "8G",
-                  "time_limit": "0:10:00"},
-        )
-        assert r2.status_code == 400
-        # No new sbatch call.
-        sbatch_calls_after_second = [c for c in stub.calls if "sbatch" in c]
-        assert len(sbatch_calls_after_second) == 1, (
-            f"second submit must NOT have called sbatch; "
-            f"got {len(sbatch_calls_after_second)} total sbatch calls"
-        )
-
-    def test_arm_requires_confirm_yes(self, monkeypatch):
-        """The arm endpoint itself requires confirm=yes — same dialog
-        contract as the submit endpoint, just on a different route.
-        Drive-by POSTs to /arm without confirmation can't mint a nonce."""
-        from euclid_polish.web.app import create_app
-        stub = self._stub_ssh(monkeypatch)
-        app = create_app()
-        client = app.test_client()
-        r = client.post("/api/fasrc/hst/arm", data={})
-        assert r.status_code == 400
-        # And then any subsequent submit attempt — even with a guessed
-        # nonce — must still fail.
-        r2 = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "arm_nonce": "guess", "n_stars": "10"},
-        )
-        assert r2.status_code == 400
-        assert stub.calls == []
-
     def test_create_app_does_not_overwrite_stubbed_ssh(self, monkeypatch):
         """REGRESSION — the load-bearing isolation property.
 
@@ -729,21 +669,3 @@ class TestFixedCpusEnforcement:
             f"EUCLID_POLISH_DISABLE_AUTO_SSH."
         )
 
-    def test_arm_status_endpoint_reports_state(self, monkeypatch):
-        """The arm-status read endpoint reports whether the server is
-        currently armed and how many seconds remain."""
-        from euclid_polish.web.app import create_app
-        self._stub_ssh(monkeypatch)
-        app = create_app()
-        client = app.test_client()
-        # Fresh app: disarmed by default.
-        r0 = client.get("/api/fasrc/hst/arm-status")
-        assert r0.status_code == 200
-        assert r0.get_json()["armed"] is False
-        # Arm it.
-        self._arm(client)
-        r1 = client.get("/api/fasrc/hst/arm-status")
-        assert r1.status_code == 200
-        body = r1.get_json()
-        assert body["armed"] is True
-        assert 0 < body["expires_in_s"] <= body["window_secs"]

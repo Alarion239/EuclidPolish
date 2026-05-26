@@ -557,6 +557,148 @@ class TestApplyTransitionNumpy:
         assert out.dtype == img.dtype
 
 
+class TestHSTDenoiser:
+    """Phase 1 model — pure denoiser, sits before the analytic kernel.
+
+    Different from :class:`HSTtoEuclidTransition`:
+      * No analytic baseline (residual is on raw input).
+      * Wider default kernel (K=7) for the larger receptive field
+        denoising benefits from.
+      * Higher default param count (~7k) reflecting the different task.
+
+    Same invariants:
+      * Residual init ≈ identity (output ≈ x at random init).
+      * Scale invariance (output(α·x) = α·output(x) for x ≥ 0, since
+        all conv layers have ``use_bias=False``).
+      * Shape-preserving forward pass.
+      * Save/load round-trip is exact.
+    """
+
+    def test_default_receptive_field_is_25(self):
+        from euclid_polish.training.transition_model import HSTDenoiser
+        m = HSTDenoiser()    # defaults: C=8, n_inner=2, K=7
+        # 4 layers, each (K-1)=6 → RF = 4·6 + 1 = 25
+        assert m.receptive_field == 25
+
+    def test_default_param_count(self):
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, total_denoiser_parameter_count,
+        )
+        m = HSTDenoiser()
+        # 2·K²·C + n_inner·K²·C² = 2·49·8 + 2·49·64 = 784 + 6272 = 7056
+        n = total_denoiser_parameter_count(m)
+        assert n == 7056
+
+    def test_param_formula_matches_analytic(self):
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, total_denoiser_parameter_count,
+        )
+        for C, n_inner, K in [(4, 1, 5), (8, 2, 7), (10, 3, 7), (12, 0, 9)]:
+            m = HSTDenoiser(
+                channels=C, n_inner_layers=n_inner, kernel_size=K,
+            )
+            expected = 2 * K * K * C + n_inner * K * K * C * C
+            assert total_denoiser_parameter_count(m) == expected
+
+    def test_identity_at_init_on_clean_input(self):
+        """Random-init residual is N(0, σ_small) per weight, so the
+        residual branch produces ~0 on clean input — output ≈ x."""
+        from euclid_polish.training.transition_model import HSTDenoiser
+        tf.random.set_seed(0)
+        m = HSTDenoiser()
+        x = tf.random.uniform((1, 32, 32, 1), seed=1) * 100.0
+        y = m(x).numpy()
+        rel_err = np.abs(y - x.numpy()).mean() / (np.abs(x.numpy()).mean() + 1e-12)
+        assert rel_err < 0.5, (
+            f"identity init too noisy: rel_err={rel_err:.4f}"
+        )
+
+    def test_zero_input_yields_zero(self):
+        from euclid_polish.training.transition_model import HSTDenoiser
+        m = HSTDenoiser()
+        x = tf.zeros((1, 32, 32, 1), dtype=tf.float32)
+        y = m(x).numpy()
+        assert np.allclose(y, 0.0, atol=1e-5)
+
+    def test_shape_preserved(self):
+        from euclid_polish.training.transition_model import HSTDenoiser
+        m = HSTDenoiser()
+        for H, W in [(32, 32), (48, 64), (128, 128)]:
+            y = m(tf.zeros((2, H, W, 1), dtype=tf.float32))
+            assert tuple(y.shape) == (2, H, W, 1)
+
+    def test_scale_invariance(self):
+        """No biases ⇒ output(α·x) = α·output(x) for x ≥ 0 — same
+        invariant as the deconvolver. Critical so denoising behaves
+        consistently on bright galaxy cores vs faint sky pixels."""
+        from euclid_polish.training.transition_model import HSTDenoiser
+        tf.random.set_seed(0)
+        m = HSTDenoiser()
+        x = tf.random.uniform((1, 32, 32, 1), minval=0.0, maxval=1.0,
+                              dtype=tf.float32, seed=1)
+        y1 = m(x).numpy()
+        y2 = m(1000.0 * x).numpy()
+        np.testing.assert_allclose(
+            y2, 1000.0 * y1, rtol=1e-4, atol=1e-4,
+            err_msg=(
+                "Denoiser must satisfy g(α·x) = α·g(x) for x ≥ 0. "
+                "Check use_bias=False on every Conv2D."
+            ),
+        )
+
+    def test_no_bias_variables(self):
+        from euclid_polish.training.transition_model import HSTDenoiser
+        m = HSTDenoiser()
+        _ = m(tf.zeros((1, 8, 8, 1), dtype=tf.float32))  # build
+        bias_vars = [v for v in m.trainable_variables
+                     if "bias" in v.name.lower()]
+        assert bias_vars == [], (
+            f"unexpected bias variables: {[v.name for v in bias_vars]}. "
+            "Biases break scale invariance — keep use_bias=False."
+        )
+
+    def test_save_load_roundtrip(self, tmp_path):
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, save_denoiser_weights, load_denoiser_weights,
+        )
+        m1 = HSTDenoiser()
+        x = tf.random.uniform((1, 32, 32, 1), seed=2) * 50.0
+        _ = m1(x)
+        path = tmp_path / "denoiser.weights.h5"
+        save_denoiser_weights(m1, str(path))
+        assert os.path.isfile(str(path))
+        m2 = HSTDenoiser()
+        load_denoiser_weights(m2, str(path))
+        np.testing.assert_allclose(m1(x).numpy(), m2(x).numpy(), atol=1e-6)
+
+    def test_rejects_invalid_args(self):
+        from euclid_polish.training.transition_model import HSTDenoiser
+        with pytest.raises(ValueError, match="channels"):
+            HSTDenoiser(channels=0)
+        with pytest.raises(ValueError, match="n_inner_layers"):
+            HSTDenoiser(n_inner_layers=-1)
+        with pytest.raises(ValueError, match="kernel_size"):
+            HSTDenoiser(kernel_size=4)
+
+    def test_apply_denoiser_numpy_2d(self):
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, apply_denoiser_numpy,
+        )
+        m = HSTDenoiser()
+        img = np.zeros((32, 32), dtype=np.float32)
+        out = apply_denoiser_numpy(m, img)
+        assert out.shape == (32, 32)
+        assert out.dtype == img.dtype
+
+    def test_apply_denoiser_numpy_rejects_bad_shape(self):
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, apply_denoiser_numpy,
+        )
+        m = HSTDenoiser()
+        with pytest.raises(ValueError):
+            apply_denoiser_numpy(m, np.zeros((32, 32, 3), dtype=np.float32))
+
+
 class TestInvalidArgs:
 
     def test_negative_channels_rejected(self):

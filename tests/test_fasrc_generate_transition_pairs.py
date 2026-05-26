@@ -257,6 +257,43 @@ class TestPreflightFailsLoudly:
                 )
                 w.write(img, index=i)
 
+    def _write_stub_psfs(self, tmp_path, monkeypatch):
+        """Drop a tiny HST + Euclid PSF FITS pair under ``tmp_path``
+        and redirect the script's Euclid-PSF resolver to read them.
+
+        IMPORTANT — never write to ``Config.EUCLID_PSF_DIR``. That
+        directory holds the real ePSF the live pipeline reads;
+        overwriting it from a unit test trashes hours of user data.
+        Always stage stubs under ``tmp_path`` + monkeypatch the
+        resolver instead.
+        """
+        from astropy.io import fits
+        # HST stub: read directly via --hst-psf, no monkeypatch needed.
+        hst_psf_path = tmp_path / "F814W.fits"
+        y, x = np.mgrid[:31, :31]
+        cy = cx = 15
+        g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 3.0 ** 2))
+        g = (g / g.sum()).astype(np.float32)
+        hdu = fits.PrimaryHDU(g)
+        hdu.header["PIXSCALE"] = 0.03
+        hdu.header["FILTER"]   = "F814W"
+        hdu.writeto(str(hst_psf_path), overwrite=True)
+        # Euclid stub: written under tmp_path, NOT Config.EUCLID_PSF_DIR.
+        # The script reaches the file via ``psf_path_for_band``; we
+        # monkeypatch that to point at our stub.
+        euclid_psf_path = tmp_path / "euclid_psf_VIS.fits"
+        g2 = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 5.0 ** 2))
+        g2 = (g2 / g2.sum()).astype(np.float32)
+        hdu2 = fits.PrimaryHDU(g2)
+        hdu2.header["PXSCALE"] = 0.05
+        hdu2.writeto(str(euclid_psf_path), overwrite=True)
+        import fasrc_generate_transition_pairs as _mod
+        monkeypatch.setattr(
+            _mod, "psf_path_for_band",
+            lambda *_a, **_kw: str(euclid_psf_path),
+        )
+        return hst_psf_path
+
     def test_main_succeeds_end_to_end(self, tmp_path, monkeypatch):
         """REGRESSION — the success path of main() must complete
         without UnboundLocalError or any other Python-level bug.
@@ -281,29 +318,7 @@ class TestPreflightFailsLoudly:
         self._write_minimal_clean_record(
             synth_dir, "clean_validate", n_scenes=1, side=64,
         )
-
-        # Fake HST + Euclid PSF FITS so the PSF-loading branch passes.
-        import os as _os
-        from astropy.io import fits
-        hst_psf_path = tmp_path / "F814W.fits"
-        y, x = np.mgrid[:31, :31]
-        cy = cx = 15
-        g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 3.0 ** 2))
-        g = (g / g.sum()).astype(np.float32)
-        hdu = fits.PrimaryHDU(g)
-        hdu.header["PIXSCALE"] = 0.03
-        hdu.header["FILTER"]   = "F814W"
-        hdu.writeto(str(hst_psf_path), overwrite=True)
-        from euclid_polish.config import Config
-        _os.makedirs(Config.EUCLID_PSF_DIR, exist_ok=True)
-        euclid_psf_path = _os.path.join(
-            Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits",
-        )
-        g2 = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 5.0 ** 2))
-        g2 = (g2 / g2.sum()).astype(np.float32)
-        hdu2 = fits.PrimaryHDU(g2)
-        hdu2.header["PXSCALE"] = 0.05
-        hdu2.writeto(euclid_psf_path, overwrite=True)
+        hst_psf_path = self._write_stub_psfs(tmp_path, monkeypatch)
 
         out_dir = tmp_path / "out"
         argv = [
@@ -340,30 +355,7 @@ class TestPreflightFailsLoudly:
         self._write_minimal_clean_record(
             synth_dir, "clean_train", n_scenes=3, side=64,
         )
-        # Fake HST + Euclid PSF FITS so the PSF-loading branch passes.
-        import os as _os
-        from astropy.io import fits
-        hst_psf_path = tmp_path / "F814W.fits"
-        # Small Gaussian as a stand-in.
-        y, x = np.mgrid[:31, :31]
-        cy = cx = 15
-        g = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 3.0 ** 2))
-        g = (g / g.sum()).astype(np.float32)
-        hdu = fits.PrimaryHDU(g)
-        hdu.header["PIXSCALE"] = 0.03
-        hdu.header["FILTER"]   = "F814W"
-        hdu.writeto(str(hst_psf_path), overwrite=True)
-        # Stand-in for euclid_psf_VIS.fits at the Config-derived path.
-        from euclid_polish.config import Config
-        _os.makedirs(Config.EUCLID_PSF_DIR, exist_ok=True)
-        euclid_psf_path = _os.path.join(
-            Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits",
-        )
-        g2 = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * 5.0 ** 2))
-        g2 = (g2 / g2.sum()).astype(np.float32)
-        hdu2 = fits.PrimaryHDU(g2)
-        hdu2.header["PXSCALE"] = 0.05
-        hdu2.writeto(euclid_psf_path, overwrite=True)
+        hst_psf_path = self._write_stub_psfs(tmp_path, monkeypatch)
 
         out_dir = tmp_path / "out"
         # Invoke main with argv: crop=128 (> source 64), rebin=2.

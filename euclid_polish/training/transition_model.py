@@ -338,6 +338,231 @@ class HSTtoEuclidTransition(tf.keras.Model):
 
 
 # ---------------------------------------------------------------------------
+# Denoiser — Phase 1 of the two-stage chain (CNN_1)
+# ---------------------------------------------------------------------------
+
+DEFAULT_DENOISER_PATH = os.path.join(
+    Config.DATA_DIR, "hst_psf", "hst_denoiser.weights.h5",
+)
+
+
+class HSTDenoiser(tf.keras.Model):
+    """CNN_1 of the two-stage chain — purely a denoiser.
+
+    Sits BEFORE the analytic Wiener kernel in the inference graph:
+
+        noisy HST  →  HSTDenoiser  →  A_analytic  →  HSTtoEuclidTransition  →  output
+
+    Its only job is to take a noisy HLSP-style HR cutout (sky+shot noise
+    on a clean HST-PSF-blurred scene) and produce the clean scene. The
+    downstream analytic kernel + deconvolver model see (approximately)
+    noise-free input, which is what the existing transition model was
+    trained for.
+
+    Architecture rationale
+    ----------------------
+
+    Denoising benefits from a **wider receptive field** than the
+    deconvolver's 11-px window — same-amplitude noise looks distinct
+    from real diffuse structure only when you can see context. Default
+    ``kernel_size=7`` with 4 layers gives ``RF = 4·6 + 1 = 25 px ≈
+    1.25"`` at 0.05"/pix, comfortably wider than the HST PSF core
+    (~3 px FWHM) so the CNN can correlate signal across the PSF
+    footprint instead of through it.
+
+    The architecture is otherwise the same residual / no-bias stack
+    as :class:`HSTtoEuclidTransition`:
+
+        denoised = x + g(x)
+        g = Conv(1→C, K) → ReLU → [Conv(C→C, K) → ReLU]×n_inner → Conv(C→1, K)
+
+    Residual structure means ``g ≈ 0`` at init → ``denoised ≈ x``,
+    same warm-start as the deconvolver model. ``use_bias=False`` on
+    every conv preserves scale invariance ``g(α·x) = α·g(x)`` for
+    α ≥ 0, so the model behaves consistently across the wide electron
+    scale of real HST cutouts (sky pixels at ~tens of electrons,
+    galaxy peaks at ~1000s).
+
+    Parameters
+    ----------
+    channels
+        Hidden channel width ``C``. Default 8.
+    n_inner_layers
+        Inner ``Conv(C→C, K)`` layers between the first and last conv.
+        Default 2 → 4 total layers → 25-px receptive field at K=7.
+    kernel_size
+        Spatial kernel side. Default 7 (the entire point of separating
+        this model from the deconvolver).
+    name
+        Keras model name; default ``"hst_denoiser"``.
+
+    Param count (no biases)
+    -----------------------
+
+        2·K²·C + n_inner·K²·C²
+
+    For defaults (C=8, n_inner=2, K=7): 392 + 6272 + 392 = **7056**.
+    Slightly above the deconvolver's 5k budget — denoising is a
+    different task and benefits from the extra capacity. The
+    architecture's small enough to still train in a few thousand
+    steps on a single GPU.
+
+    Notes
+    -----
+    Deterministic at inference (no dropout, no batchnorm). At
+    training time the input gets a per-image draw of HLSP-style shot
+    + sky noise (see :func:`add_hlsp_noise`) so the model sees a
+    realistic noise distribution.
+    """
+
+    def __init__(
+        self,
+        channels: int = 8,
+        n_inner_layers: int = 2,
+        kernel_size: int = 7,
+        name: str = "hst_denoiser",
+        **kwargs,
+    ) -> None:
+        super().__init__(name=name, **kwargs)
+        if channels < 1:
+            raise ValueError(f"channels must be ≥ 1, got {channels}")
+        if n_inner_layers < 0:
+            raise ValueError(
+                f"n_inner_layers must be ≥ 0, got {n_inner_layers}"
+            )
+        if kernel_size % 2 == 0 or kernel_size < 1:
+            raise ValueError(
+                f"kernel_size must be odd and ≥ 1, got {kernel_size}"
+            )
+        self._channels       = int(channels)
+        self._n_inner_layers = int(n_inner_layers)
+        self._kernel_size    = int(kernel_size)
+
+        init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
+        common_kwargs = dict(
+            padding="same",
+            kernel_initializer=init,
+            use_bias=False,
+        )
+        self._first = tf.keras.layers.Conv2D(
+            filters=self._channels, kernel_size=self._kernel_size,
+            activation="relu", name="den_conv_in", **common_kwargs,
+        )
+        self._inner = [
+            tf.keras.layers.Conv2D(
+                filters=self._channels, kernel_size=self._kernel_size,
+                activation="relu", name=f"den_conv_inner_{i}",
+                **common_kwargs,
+            )
+            for i in range(self._n_inner_layers)
+        ]
+        self._last = tf.keras.layers.Conv2D(
+            filters=1, kernel_size=self._kernel_size,
+            activation=None, name="den_conv_out", **common_kwargs,
+        )
+
+    @property
+    def channels(self) -> int:
+        return self._channels
+
+    @property
+    def receptive_field(self) -> int:
+        n_layers = 1 + self._n_inner_layers + 1
+        return 1 + n_layers * (self._kernel_size - 1)
+
+    def _apply_cnn(self, x: tf.Tensor) -> tf.Tensor:
+        """Pure conv stack — does NOT add the input residual."""
+        h = self._first(x)
+        for layer in self._inner:
+            h = layer(h)
+        return self._last(h)
+
+    def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
+        """Forward pass: ``denoised = x + g(x)``."""
+        return x + self._apply_cnn(x)
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({
+            "channels":       self._channels,
+            "n_inner_layers": self._n_inner_layers,
+            "kernel_size":    self._kernel_size,
+        })
+        return cfg
+
+
+def total_denoiser_parameter_count(model: HSTDenoiser) -> int:
+    """Trainable parameter count of a :class:`HSTDenoiser`, building
+    if needed. Mirrors :func:`total_parameter_count` for the
+    deconvolver model."""
+    _build_denoiser_if_needed(model)
+    return int(sum(int(np.prod(v.shape)) for v in model.trainable_variables))
+
+
+def save_denoiser_weights(
+    model: HSTDenoiser,
+    path: str = DEFAULT_DENOISER_PATH,
+) -> str:
+    """Save denoiser weights. Same format as
+    :func:`save_model_weights`."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _build_denoiser_if_needed(model)
+    model.save_weights(path)
+    return path
+
+
+def load_denoiser_weights(
+    model: HSTDenoiser,
+    path: str = DEFAULT_DENOISER_PATH,
+) -> HSTDenoiser:
+    """Load denoiser weights into a fresh model. Caller must instantiate
+    :class:`HSTDenoiser` with the same hyperparameters used at training
+    time (the loader will raise on shape mismatch)."""
+    _build_denoiser_if_needed(model)
+    model.load_weights(path)
+    return model
+
+
+def _build_denoiser_if_needed(model: HSTDenoiser) -> None:
+    """Materialise denoiser variables. The denoiser has no analytic
+    baseline, so an 8×8 dummy is always fine."""
+    if model.built:
+        return
+    _ = model(tf.zeros((1, 8, 8, 1), dtype=tf.float32))
+
+
+def apply_denoiser_numpy(
+    model: HSTDenoiser,
+    image: np.ndarray,
+) -> np.ndarray:
+    """Run denoiser on a single numpy image, ``(H, W)`` or ``(H, W, 1)``.
+
+    Counterpart to :func:`apply_transition_numpy` for the deconvolver
+    model. There's no large-kernel FFT shortcut here because the
+    denoiser kernels are small (K=7 by default) — direct conv2d on CPU
+    is fine.
+    """
+    if image.ndim == 2:
+        squeezed = True
+        x = image.astype(np.float32, copy=False)
+    elif image.ndim == 3 and image.shape[-1] == 1:
+        squeezed = False
+        x = image[:, :, 0].astype(np.float32, copy=False)
+    else:
+        raise ValueError(
+            f"apply_denoiser_numpy expects (H, W) or (H, W, 1); "
+            f"got shape {image.shape}"
+        )
+    out_tf = model(
+        x[np.newaxis, :, :, np.newaxis], training=False,
+    )
+    out_2d = out_tf.numpy()[0, :, :, 0]
+    if squeezed:
+        return out_2d.astype(image.dtype)
+    return out_2d[:, :, np.newaxis].astype(image.dtype)
+
+
+# ---------------------------------------------------------------------------
 # Helpers — counting params, saving / loading weights
 # ---------------------------------------------------------------------------
 

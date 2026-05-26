@@ -108,8 +108,11 @@ from euclid_polish.sky.multiband_forward import apply_band_noise
 from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.transition_model import (
+    HSTDenoiser,
     HSTtoEuclidTransition,
+    apply_denoiser_numpy,
     apply_transition_numpy,
+    load_denoiser_weights,
     load_model_weights,
 )
 
@@ -273,18 +276,37 @@ def _apply_transition(
     *,
     transition_model,
     diff_kernel: Optional[np.ndarray],
+    denoiser_model = None,
 ) -> np.ndarray:
     """Map an HR band image from HST-PSF space to Euclid-PSF space.
 
-    Picks the trained CNN (``transition_model``) when available;
-    otherwise falls back to FFT-convolution with the analytic
-    differential kernel ``diff_kernel``. Exactly one of the two must
-    be non-None.
+    Three modes, ranked by preference:
 
-    Returns an array of the same shape as ``hr_band`` (no resampling
-    here — sum-rebin is applied separately downstream).
+    1. **Two-stage** (``denoiser_model`` + ``transition_model``):
+       ``denoiser → A_analytic ⊛ · → deconvolver``. The denoiser
+       cleans HST-side noise before the analytic kernel amplifies
+       it; the deconvolver cleans the kernel's own artifacts. The
+       transition model carries the analytic baseline as a frozen
+       conv (Phase-2 trained), so calling
+       :func:`apply_transition_numpy` after the denoiser still runs
+       the full ``baseline + CNN`` graph.
+
+    2. **Single-stage CNN** (``transition_model`` only): the legacy
+       trained model. Used when no denoiser is configured.
+
+    3. **Analytic kernel only** (``diff_kernel``): fallback when no
+       trained model exists yet.
+
+    Returns an array of the same shape as ``hr_band``. No sum-rebin
+    here — that's applied separately downstream.
     """
     if transition_model is not None:
+        if denoiser_model is not None:
+            # Two-stage: denoise → (baseline + CNN_2) inside the
+            # transition model. The denoiser is cheap (small K=7
+            # kernels, no large baseline) so a direct apply is fine.
+            denoised = apply_denoiser_numpy(denoiser_model, hr_band)
+            return apply_transition_numpy(transition_model, denoised)
         return apply_transition_numpy(transition_model, hr_band)
     if diff_kernel is None:
         raise RuntimeError(
@@ -300,6 +322,7 @@ def _make_pair(
     transition_model,
     diff_kernel: Optional[np.ndarray],
     rng: np.random.Generator,
+    denoiser_model = None,
 ) -> np.ndarray:
     """Forward-model the HR cube to a 4-band LR cube at 0.10″/pix.
 
@@ -307,12 +330,15 @@ def _make_pair(
     → Poisson + read + sky + dark.
 
     The transition step is what makes the chain photometrically
-    Euclid-equivalent while accounting for the HST-baked-in PSF:
+    Euclid-equivalent while accounting for the HST-baked-in PSF.
+    Three modes, ranked by preference:
 
-      * trained CNN (``transition_model`` ≠ None): preferred path,
-        well-behaved on stars/galaxies + free of the Wiener inverse's
-        checkerboard / ring artefacts.
-      * analytic Wiener kernel (``diff_kernel`` ≠ None): fallback
+      * **two-stage** (``denoiser_model`` + ``transition_model``):
+        denoiser → analytic kernel → deconvolver. Best when training
+        used a frozen denoiser (Phase 2 of the two-stage flow).
+      * **single-stage CNN** (``transition_model`` only): legacy
+        trained model. Used when no denoiser is configured.
+      * **analytic Wiener kernel** (``diff_kernel`` only): fallback
         when the CNN weights file isn't available yet.
     """
 
@@ -325,6 +351,7 @@ def _make_pair(
             hr_cutout_4ch[..., k],
             transition_model=transition_model,
             diff_kernel=diff_kernel,
+            denoiser_model=denoiser_model,
         )
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
         rebinned = convolved.reshape(H // 2, 2, W // 2, 2).sum(axis=(1, 3))
@@ -345,6 +372,7 @@ def _make_pair(
 # a missing ``initializer=`` in the pool setup.
 _WORKER_KERNEL:           Optional[np.ndarray] = None
 _WORKER_TRANSITION_MODEL                       = None    # tf.keras.Model | None
+_WORKER_DENOISER_MODEL                         = None    # tf.keras.Model | None
 _WORKER_IMAGE_SIZE:       int                  = 0
 _WORKER_TYPICAL_RATIOS:   Optional[np.ndarray] = None
 
@@ -412,9 +440,11 @@ def _init_worker(
       TFRecords.
     """
     global _WORKER_KERNEL, _WORKER_TRANSITION_MODEL
+    global _WORKER_DENOISER_MODEL
     global _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
     _WORKER_IMAGE_SIZE     = int(image_size)
     _WORKER_TYPICAL_RATIOS = np.asarray(typical_band_ratios, dtype=np.float32)
+    _WORKER_DENOISER_MODEL = None
 
     use_cnn = (
         transition_model_path
@@ -468,6 +498,42 @@ def _init_worker(
         load_model_weights(model, transition_model_path)
         _WORKER_TRANSITION_MODEL = model
         _WORKER_KERNEL = None
+
+        # ── Two-stage chain: load the frozen denoiser if Phase-2 was
+        #    used during training. The transition_model_summary.json
+        #    records its weights path + architecture under "denoiser".
+        denoiser_meta = summary.get("denoiser")
+        if denoiser_meta:
+            den_weights_path = denoiser_meta.get("weights_path", "")
+            # Resolve to a locally-existing path: try the recorded
+            # absolute path first (will exist if pipeline runs on the
+            # same machine as training), then a sibling of the
+            # transition model weights (matches our default layout
+            # under $DATA_DIR/hst_psf/).
+            local_den_default = os.path.join(
+                os.path.dirname(transition_model_path),
+                "hst_denoiser.weights.h5",
+            )
+            den_local = None
+            for cand in (den_weights_path, local_den_default):
+                if cand and os.path.isfile(cand):
+                    den_local = cand
+                    break
+            if den_local is None:
+                raise RuntimeError(
+                    f"transition model summary records a denoiser at "
+                    f"{den_weights_path!r}, but no local copy was found. "
+                    f"Re-sync the file or remove the 'denoiser' key "
+                    f"from {transition_model_path[:-len('.weights.h5')]}"
+                    f"_summary.json to fall back to single-stage."
+                )
+            denoiser = HSTDenoiser(
+                channels=int(denoiser_meta.get("channels", 8)),
+                n_inner_layers=int(denoiser_meta.get("n_inner_layers", 2)),
+                kernel_size=int(denoiser_meta.get("kernel_size", 7)),
+            )
+            load_denoiser_weights(denoiser, den_local)
+            _WORKER_DENOISER_MODEL = denoiser
     else:
         _WORKER_KERNEL           = DifferentialKernel.from_fits(kernel_path).data
         _WORKER_TRANSITION_MODEL = None
@@ -476,8 +542,9 @@ def _init_worker(
     # tf.nn.conv2d during build) is visible from the SLURM log instead
     # of looking identical to a healthy "just hasn't finished cutout #1
     # yet" state.
+    two_stage_tag = " + denoiser" if _WORKER_DENOISER_MODEL is not None else ""
     print(f"      [worker {os.getpid()}] init complete "
-          f"(use_cnn={bool(use_cnn)})", flush=True)
+          f"(use_cnn={bool(use_cnn)}{two_stage_tag})", flush=True)
 
 
 def _process_one_galaxy(
@@ -561,6 +628,7 @@ def _process_one_galaxy(
         transition_model=_WORKER_TRANSITION_MODEL,
         diff_kernel=_WORKER_KERNEL,
         rng=rng,
+        denoiser_model=_WORKER_DENOISER_MODEL,
     )
     return catalog_idx, hr_cube, lr_cube
 

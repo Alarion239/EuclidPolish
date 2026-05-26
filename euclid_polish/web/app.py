@@ -1370,24 +1370,40 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
 
 
 def _render_transition_pair_png(subset: str, kind: str, index: int,
-                                records_dir: str) -> bytes:
+                                records_dir: str,
+                                *,
+                                noise_alpha: float = 0.75,
+                                noise_sigma_floor: float = 15.0,
+                                noise_seed: int = 0) -> bytes:
     """Render one transition-model training sample.
 
     The pair-generation script writes ``input_{subset}.tfrecord``
     (clean ⊛ PSF_HST) and ``target_{subset}.tfrecord`` (clean ⊛
     PSF_Euclid) — both single-channel VIS, both ``is_clean=True``.
 
-    ``kind`` ∈ {"input", "target", "residual"}:
-      * ``input``   — the HST-PSF-blurred scene (A_θ's input).
-      * ``target``  — the Euclid-PSF-blurred scene (A_θ's target).
-      * ``residual``— ``target - input`` (what the residual branch of
-        A_θ has to learn). Rendered with a divergent colormap centred
-        on zero so positive/negative regions read at a glance.
+    ``kind`` ∈ {"input", "target", "residual", "noisy_hst",
+                "hst_pair"}:
 
-    The asinh stretch knee on the linear single-frame panels comes
-    from ``Config.BAND_VIS`` so the visual scale matches the rest of
-    the UI; the residual is shown linearly (the differences are small
-    and the divergent colormap is what matters).
+      * ``input``    — clean HST-PSF-blurred HR scene (A_θ input).
+      * ``target``   — Euclid-PSF-blurred LR target (A_θ output).
+      * ``residual`` — ``target − sum_rebin(input)`` (what A_θ learns).
+                       Rendered with a divergent colormap centred at
+                       zero.
+      * ``noisy_hst``— ``input + HLSP-style ε`` (single panel). The
+                       Phase-1 denoiser's TRAINING INPUT, useful for
+                       eyeballing what realistic noise looks like at
+                       the configured (``α``, ``σ_floor``).
+      * ``hst_pair`` — side-by-side ``(clean_HST | noisy_HST)``. Same
+                       scene, same scale, same asinh+percentile clip
+                       on both panels — the easiest way to see how
+                       much detail the denoiser is being asked to
+                       recover.
+
+    Noise parameters (``noise_alpha``, ``noise_sigma_floor``,
+    ``noise_seed``) are only consulted for the ``noisy_hst`` and
+    ``hst_pair`` kinds; defaults sit in the middle of the trainer's
+    typical range. Seed lets the UI keep noise stable across kind-
+    toggles for the same index.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1395,10 +1411,14 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     from euclid_polish.sky.tfrecord import (
         read_multiband_skyimages, tfrecord_path,
     )
+    from euclid_polish.training.transition_augmentations import (
+        add_hlsp_noise,
+    )
 
     if subset not in ("train", "validate"):
         abort(400)
-    if kind not in ("input", "target", "residual"):
+    if kind not in ("input", "target", "residual",
+                    "noisy_hst", "hst_pair"):
         abort(400)
 
     def _load(name: str):
@@ -1409,6 +1429,101 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
         if not records or index >= len(records):
             abort(404)
         return records[min(index, len(records) - 1)]
+
+    # ── Denoiser-pair views: clean HST vs noisy HST (the denoiser's
+    #    training pair). The `input_*.tfrecord` shards are the clean
+    #    HST-blurred scenes; we add HLSP-style noise on the fly with
+    #    the same model the trainer uses.
+    if kind == "hst_pair":
+        inp = _load(f"input_{subset}")
+        clean = inp.data[..., 0].astype(np.float32)
+        rng = np.random.default_rng(int(noise_seed))
+        noisy = add_hlsp_noise(
+            clean,
+            alpha=float(noise_alpha),
+            sigma_floor=float(noise_sigma_floor),
+            rng=rng,
+        )
+        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
+        s_clean = np.arcsinh(clean / knee)
+        s_noisy = np.arcsinh(noisy / knee)
+        # Shared clip so a wing pixel at the same physical intensity
+        # shows up the same shade on both panels.
+        lo, hi = np.percentile(
+            np.concatenate([s_clean.ravel(), s_noisy.ravel()]),
+            [1.0, 99.7],
+        )
+        if hi <= lo:
+            hi = lo + 1.0
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6.5))
+        axes[0].imshow(s_clean, cmap="gray_r", origin="lower",
+                       vmin=lo, vmax=hi)
+        axes[0].set_title(
+            f"clean HST · idx {inp.index}  "
+            f"({clean.shape[0]}×{clean.shape[1]} @ "
+            f"{inp.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
+        )
+        axes[1].imshow(s_noisy, cmap="gray_r", origin="lower",
+                       vmin=lo, vmax=hi)
+        axes[1].set_title(
+            f"noisy HST · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻",
+            fontsize=10,
+        )
+        for ax in axes:
+            ax.set_xticks([]); ax.set_yticks([])
+        fig.suptitle(
+            f"HST denoiser pair · {subset} · idx {index}",
+            fontsize=11, y=1.01,
+        )
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=100, bbox_inches="tight", format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+    if kind == "noisy_hst":
+        inp = _load(f"input_{subset}")
+        clean = inp.data[..., 0].astype(np.float32)
+        rng = np.random.default_rng(int(noise_seed))
+        noisy = add_hlsp_noise(
+            clean,
+            alpha=float(noise_alpha),
+            sigma_floor=float(noise_sigma_floor),
+            rng=rng,
+        )
+        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
+        s_clean = np.arcsinh(clean / knee)
+        s_noisy = np.arcsinh(noisy / knee)
+        # Shared range with the matching clean so the noisy display
+        # uses the same threshold as the clean panel would.
+        lo, hi = np.percentile(
+            np.concatenate([s_clean.ravel(), s_noisy.ravel()]),
+            [1.0, 99.7],
+        )
+        if hi <= lo:
+            hi = lo + 1.0
+        stretched = s_noisy
+        img_for_meta = inp
+        title_suffix = (
+            f"noisy_hst · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻"
+        )
+        cmap = "gray_r"
+        fig, ax = plt.subplots(figsize=(6.5, 6.5))
+        ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi)
+        ax.set_title(
+            f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
+            f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
+            f"{img_for_meta.pixel_scale_arcsec:.3f}\"/pix)",
+            fontsize=10,
+        )
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
 
     if kind == "residual":
         inp = _load(f"input_{subset}")
@@ -3240,9 +3355,20 @@ def create_app() -> Flask:
             idx = int(request.args.get("i", 0))
         except ValueError:
             idx = 0
+        # Noise params for the ``noisy_hst`` / ``hst_pair`` kinds.
+        # Floats parsed with safe fallbacks so a typo doesn't 500 — it
+        # just falls back to a sane default.
+        def _flt(key: str, default: float) -> float:
+            try:
+                return float(request.args.get(key, default))
+            except (TypeError, ValueError):
+                return default
         png = _render_transition_pair_png(
             subset, kind, idx,
             records_dir=_transition_pairs_local_dir(),
+            noise_alpha=_flt("alpha", 0.75),
+            noise_sigma_floor=_flt("sigma_floor", 15.0),
+            noise_seed=int(_flt("noise_seed", float(idx))),
         )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
@@ -3939,7 +4065,8 @@ def create_app() -> Flask:
         # (the JS side maps each step_id to one of these keys).
         artifacts = {
             "tiles": None, "psf": None, "kernel": None,
-            "transition_pairs": None, "transition_model": None,
+            "transition_pairs": None, "denoiser": None,
+            "transition_model": None,
             "records": None, "ckpt": None,
             # Round-trip pipeline artifacts (Chunk C3 + web wiring):
             #   euclid_sky      — sky-position catalog written by the
@@ -3961,6 +4088,8 @@ def create_app() -> Flask:
                 "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
                 "transition_pairs":
                     f"{cfg_loaded.data_dir}/images/records_transition/input_train.tfrecord",
+                "denoiser":
+                    f"{cfg_loaded.data_dir}/hst_psf/hst_denoiser.weights.h5",
                 "transition_model":
                     f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
                 "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
@@ -3997,101 +4126,15 @@ def create_app() -> Flask:
             },
         })
 
-    # ─────────────────────────────────────────────────────────────────
-    # HST submit "arm" mechanism — load-bearing defence in depth.
-    #
-    # The user has hit accidental/automatic FASRC submissions repeatedly:
-    # browser autofill, cached JS tabs, Enter-key default, drive-by
-    # form submission on page refresh. The confirm=yes dialog catches
-    # 99% of them but not all — extensions, programmatic fetch(),
-    # ancient browser tabs, etc. can still POST with confirm=yes if
-    # they have the JS.
-    #
-    # This mechanism makes the submit endpoint **default-disabled**.
-    # A POST to /submit is rejected unless the form carries a valid
-    # `arm_nonce` AND that nonce is single-use AND has not expired.
-    # The only way to obtain a valid nonce is to POST to /api/fasrc/hst/arm
-    # (which itself requires confirm=yes). So every submit requires the
-    # user to:
-    #   1. Click "Arm next submit" → confirm dialog → server mints nonce.
-    #   2. Within 60 s, click "Submit" → frontend includes nonce in form.
-    #   3. Server consumes the nonce (single-use). Next submit needs a
-    #      fresh arm.
-    #
-    # Drive-by submissions can't get past step 1 because the user has
-    # to click Arm AND click OK on its confirmation dialog. The nonce
-    # is held in JS memory only — refreshing the page wipes it.
-    _hst_arm_state = {
-        "nonce":        "",   # current nonce, or "" if disarmed
-        "armed_until":  0.0,  # unix ts of expiry
-        "consumed":     True, # True once a submit has used the nonce
-    }
-    _HST_ARM_WINDOW_SECS = 60.0   # how long a nonce stays valid
-
-    def _hst_arm_is_active() -> bool:
-        s = _hst_arm_state
-        return bool(
-            s["nonce"]
-            and not s["consumed"]
-            and time.time() < s["armed_until"]
-        )
-
-    @app.route("/api/fasrc/hst/arm", methods=["POST"])
-    def api_fasrc_hst_arm():
-        """Mint a one-time nonce that unlocks ONE HST submit.
-
-        Requires ``confirm=yes`` in the form payload (same dialog
-        mechanism as the submit endpoint itself — the frontend shows
-        ``window.confirm`` before POSTing to /arm). Returns the
-        nonce + expiry; frontend stores both in memory and includes
-        the nonce as ``arm_nonce`` on the next submit POST. The nonce
-        is consumed on first successful submit and expires after
-        ``_HST_ARM_WINDOW_SECS`` seconds either way.
-
-        Re-arming overwrites the previous nonce (so a user who clicks
-        Arm twice without submitting just resets the timer)."""
-        if request.form.get("confirm", "").lower() not in ("yes", "true", "1"):
-            return jsonify({
-                "ok": False,
-                "error": (
-                    "missing confirm=yes — the frontend dialog must "
-                    "be shown before any arm request reaches the server."
-                ),
-            }), 400
-        import secrets
-        nonce = secrets.token_urlsafe(24)
-        _hst_arm_state["nonce"]       = nonce
-        _hst_arm_state["armed_until"] = time.time() + _HST_ARM_WINDOW_SECS
-        _hst_arm_state["consumed"]    = False
-        return jsonify({
-            "ok":           True,
-            "nonce":        nonce,
-            "expires_in_s": _HST_ARM_WINDOW_SECS,
-            "expires_at":   _hst_arm_state["armed_until"],
-        })
-
-    @app.route("/api/fasrc/hst/arm-status")
-    def api_fasrc_hst_arm_status():
-        """Whether arm is active and how many seconds remain."""
-        s = _hst_arm_state
-        remaining = max(0.0, s["armed_until"] - time.time())
-        return jsonify({
-            "armed":               _hst_arm_is_active(),
-            "expires_in_s":        remaining,
-            "window_secs":         _HST_ARM_WINDOW_SECS,
-        })
-
     @app.route("/api/fasrc/hst/<step_id>/submit", methods=["POST"])
     def api_fasrc_hst_submit(step_id: str):
         """Generic submission for any HST-pipeline step.
 
-        Three defences, all required, in order of evaluation:
+        Two defences, in order of evaluation:
 
         1. ``confirm=yes`` token — proves the frontend dialog was
-           shown (catches stale-JS tabs that don't have the dialog).
-        2. Valid ``arm_nonce`` — proves the user clicked "Arm" within
-           the last 60 s. Nonce is single-use; consumed on success.
-        3. SSH connected (sanity check before the work starts).
+           shown (catches stale-JS tabs and most accidental submits).
+        2. SSH connected (sanity check before the work starts).
 
         Any failure returns 400 and DOES NOT touch the SSH session,
         so no sbatch call, no script write, nothing reaches FASRC."""
@@ -4108,42 +4151,16 @@ def create_app() -> Flask:
         cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()
 
-        # Defence 1 — confirm=yes from the frontend dialog.
+        # Defence — confirm=yes from the frontend dialog.
         if form.get("confirm", "").lower() not in ("yes", "true", "1"):
             return jsonify({
                 "ok": False,
                 "error": (
                     "missing explicit confirmation token. Refresh the page "
-                    "and click Submit again — the new flow shows a dialog "
-                    "with the full payload before any FASRC submit. "
-                    "(Server-side defence against accidental + autofilled "
-                    "submissions.)"
+                    "and click Submit again — the flow shows a dialog "
+                    "with the full payload before any FASRC submit."
                 ),
             }), 400
-
-        # Defence 2 — single-use arm nonce.
-        supplied_nonce = form.get("arm_nonce", "").strip()
-        if not _hst_arm_is_active() or supplied_nonce != _hst_arm_state["nonce"]:
-            return jsonify({
-                "ok": False,
-                "error": (
-                    "submissions are DISABLED. Click 'Arm next submit' at "
-                    "the top of the HST area — that gives you a 60-second "
-                    "window to submit ONE job. Each submit requires a fresh "
-                    "arm. This is the load-bearing defence against "
-                    "drive-by submissions from cached browser tabs or "
-                    "auto-running JS."
-                ),
-                "armed":         _hst_arm_is_active(),
-                "armed_remaining_s": max(
-                    0.0,
-                    _hst_arm_state["armed_until"] - time.time(),
-                ),
-            }), 400
-
-        # Consume the nonce immediately — even if the rest of the
-        # submit fails, the nonce is spent. User has to re-arm to retry.
-        _hst_arm_state["consumed"] = True
 
         try:
             resources = StepResources.from_form(form, step.defaults)

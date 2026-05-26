@@ -92,13 +92,126 @@ def test_transition_pairs_page_renders(client):
     r = client.get("/transition-pairs")
     assert r.status_code == 200
     body = r.data.decode()
-    # Toolbar pills for the three view modes.
+    # Toolbar pills for the original three view modes.
     assert "input (HST)" in body
     assert "target (Euclid)" in body
     assert "residual" in body
+    # And the two new denoiser-pair views.
+    assert "noisy HST" in body
+    assert "denoiser pair" in body
+    # Noise controls present (hidden by default until a noise kind
+    # chip is clicked, but the elements have to be in the DOM).
+    assert 'id="noise-alpha"' in body
+    assert 'id="noise-sigma-floor"' in body
+    assert 'id="noise-reshuffle"' in body
     # Should mention what the page is for.
     assert "PSF_HST" in body
     assert "PSF_Euclid" in body
+
+
+def test_transition_pair_view_renders_noisy_hst(client, tmp_path,
+                                                   monkeypatch):
+    """End-to-end: write a synthetic input_validate.tfrecord into the
+    transition-pair cache, request the ``noisy_hst`` view, assert a
+    real PNG comes back. The renderer has to add HLSP noise to the
+    clean record and produce a usable image."""
+    import numpy as np
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-data-noisy"}
+        ),
+    )
+
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-data-noisy/images/records_transition"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/input_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+
+    rng = np.random.default_rng(0)
+    data = rng.uniform(0, 500, size=(32, 32, 1)).astype(np.float32)
+    img = MultiBandSkyImage(
+        data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    r = client.get(
+        "/view/transition-pair?subset=validate&kind=noisy_hst"
+        "&i=0&alpha=0.8&sigma_floor=12"
+    )
+    assert r.status_code == 200, (
+        f"noisy_hst render failed: {r.status_code} body={r.data[:200]!r}"
+    )
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_transition_pair_view_renders_hst_pair(client, tmp_path,
+                                               monkeypatch):
+    """Side-by-side clean+noisy. Same fixture pattern as the
+    noisy_hst test, different `kind` query."""
+    import numpy as np
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-data-pair"}
+        ),
+    )
+
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-data-pair/images/records_transition"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/input_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+
+    rng = np.random.default_rng(1)
+    data = rng.uniform(0, 500, size=(32, 32, 1)).astype(np.float32)
+    img = MultiBandSkyImage(
+        data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    r = client.get(
+        "/view/transition-pair?subset=validate&kind=hst_pair&i=0"
+    )
+    assert r.status_code == 200, (
+        f"hst_pair render failed: {r.status_code} body={r.data[:200]!r}"
+    )
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_transition_pair_view_rejects_negative_alpha_gracefully(client):
+    """Malformed noise param shouldn't 500; the route's safe-float
+    fallback should drop into a default. Even with no records cached
+    the response is 404 (no file), never 5xx."""
+    r = client.get(
+        "/view/transition-pair?subset=validate&kind=noisy_hst&i=0"
+        "&alpha=not-a-number"
+    )
+    # Either 404 (no cached shard) or 400/200 — but never 500.
+    assert r.status_code < 500
 
 
 def test_transition_pairs_totals_api(client):
@@ -857,3 +970,21 @@ def test_hst_status_keeps_pre_existing_artifact_keys(client):
     artifacts = r.get_json()["artifacts"]
     for key in ("tiles", "psf", "kernel", "records", "ckpt"):
         assert key in artifacts, f"original artifact key '{key}' missing"
+
+
+def test_hst_status_exposes_denoiser_artifact_key(client):
+    """The two-stage Phase-1 step (``train_denoiser``) and its on-disk
+    artifact (``denoiser``) must be wired into /api/fasrc/hst/status
+    so the UI can render the badge + the per-step form."""
+    r = client.get("/api/fasrc/hst/status")
+    body = r.get_json()
+    step_ids = {s["step_id"] for s in body["steps"]}
+    assert "train_denoiser" in step_ids, (
+        "Phase-1 denoiser-training step is missing from the registry "
+        "→ no UI card will appear for it."
+    )
+    artifacts = body["artifacts"]
+    assert "denoiser" in artifacts
+    assert artifacts["denoiser"] is None or isinstance(
+        artifacts["denoiser"], bool,
+    )

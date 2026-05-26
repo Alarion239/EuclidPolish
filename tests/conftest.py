@@ -75,6 +75,37 @@ class _SessionNullSSH:
 
 
 @_pytest.fixture(autouse=True, scope="function")
+def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
+    """Redirect every ``Config.*`` path that test runs are known to
+    write to → a per-test tmp directory.
+
+    Background: ``_job_viz_psf`` writes ``psf_<band>.png`` to
+    ``Config.VIS_PSF_DIR``; ``_job_viz_star_positions`` writes to
+    ``Config.VIS_STAR_POSITIONS``. Tests like
+    ``test_post_psfs_visualize_returns_job_id`` POST to the endpoint
+    just to check that the HTTP response contains a ``job_id`` — but
+    the background thread the endpoint spawns goes ahead and writes
+    the PNG anyway, overwriting whatever the live pipeline last wrote.
+
+    Forcing these to tmp paths per test means the live ``data/`` tree
+    is never mutated by a unit test even when the production code
+    hardcodes a real-path output. Tests that genuinely need to inspect
+    the produced file should monkeypatch the path back to a known
+    location.
+    """
+    from euclid_polish.config import Config
+    pkg_tmp = tmp_path_factory.mktemp("writable_config_paths")
+    vis_psf_dir = str(pkg_tmp / "vis_psf")
+    os.makedirs(vis_psf_dir, exist_ok=True)
+    monkeypatch.setattr(Config, "VIS_PSF_DIR", vis_psf_dir, raising=False)
+    monkeypatch.setattr(
+        Config, "VIS_STAR_POSITIONS",
+        str(pkg_tmp / "star_positions.png"), raising=False,
+    )
+    yield
+
+
+@_pytest.fixture(autouse=True, scope="function")
 def _safe_default_ssh_state(monkeypatch):
     """Set ``STATE.ssh`` to the no-op stub before each test, unless the
     test installs its own stub via ``monkeypatch.setattr`` (which wins
@@ -91,3 +122,80 @@ def _safe_default_ssh_state(monkeypatch):
     monkeypatch.setattr(remote.STATE, "ssh", _SessionNullSSH())
     monkeypatch.setattr(remote.STATE, "connected_at", 0.0)
     yield
+
+
+# ─── LOAD-BEARING SAFETY: real-data-dir files are immutable during tests ─
+#
+# Background: a unit test that wrote a 31×31 Gaussian stub to
+# ``Config.EUCLID_PSF_DIR/euclid_psf_VIS.fits`` quietly replaced the
+# user's real 1023² Euclid VIS ePSF on every ``pytest`` run. The user
+# only noticed when the live pipeline started producing wrong results.
+#
+# This fixture takes a snapshot (path → SHA-256) of every FITS file
+# under ``Config.DATA_DIR`` at session start, then on session teardown
+# re-checks every snapshot path. If any file's contents changed, it
+# (a) restores the original bytes from the snapshot when possible
+# (kept in memory only for files < 16 MB so we don't blow RAM on big
+# tile mosaics — we'll just fail loudly on those), and (b) raises so
+# the test author sees the violation immediately. Side benefit: the
+# restored bytes mean a failed run doesn't leave the working tree
+# corrupted.
+#
+# A test that *legitimately* needs to write into a real-data path
+# should ``tmp_path`` + monkeypatch the resolver instead. There's no
+# valid reason for a test to mutate ``data/`` in-place.
+@_pytest.fixture(scope="session", autouse=True)
+def _protect_real_data_dir():
+    import hashlib
+    from euclid_polish.config import Config
+
+    DATA_DIR = Config.DATA_DIR
+    INLINE_RESTORE_LIMIT = 16 * 1024 * 1024   # 16 MB
+
+    snapshots: dict = {}
+    if os.path.isdir(DATA_DIR):
+        for root, dirs, files in os.walk(DATA_DIR):
+            # Skip the FASRC rsync cache — it's transient by design.
+            if "_fasrc_cache" in root.split(os.sep):
+                continue
+            for f in files:
+                p = os.path.join(root, f)
+                try:
+                    st = os.stat(p)
+                except FileNotFoundError:
+                    continue
+                with open(p, "rb") as fh:
+                    blob = fh.read()
+                snapshots[p] = {
+                    "sha":  hashlib.sha256(blob).hexdigest(),
+                    "size": st.st_size,
+                    # Keep contents in memory only for small files.
+                    "blob": blob if st.st_size <= INLINE_RESTORE_LIMIT else None,
+                }
+
+    yield
+
+    violations = []
+    for p, snap in snapshots.items():
+        if not os.path.exists(p):
+            violations.append(("deleted", p))
+            continue
+        with open(p, "rb") as fh:
+            cur = fh.read()
+        if hashlib.sha256(cur).hexdigest() != snap["sha"]:
+            if snap["blob"] is not None:
+                with open(p, "wb") as fh:
+                    fh.write(snap["blob"])
+                violations.append(("modified (restored)", p))
+            else:
+                violations.append(("modified (cannot restore, > 16MB)", p))
+
+    if violations:
+        msg = ["Test run mutated files under Config.DATA_DIR:"]
+        for kind, p in violations:
+            msg.append(f"  [{kind}] {p}")
+        msg.append("")
+        msg.append("Tests must NEVER write to real data paths. Use "
+                   "``tmp_path`` + monkeypatch the path resolver "
+                   "(e.g. psf_path_for_band) instead.")
+        raise AssertionError("\n".join(msg))

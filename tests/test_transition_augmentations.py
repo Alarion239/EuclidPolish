@@ -9,6 +9,121 @@ tf = pytest.importorskip("tensorflow")
 
 
 # ---------------------------------------------------------------------------
+# add_hlsp_noise — Phase 1 (denoiser) noise model
+# ---------------------------------------------------------------------------
+
+class TestAddHlspNoise:
+    """The noise helper has to produce the right variance at every
+    pixel intensity AND stay well-defined on sky-subtracted negative
+    pixels — the literal-Poisson path that ``rng.poisson(λ)`` would
+    take fails on the latter."""
+
+    def test_sky_only_matches_sigma_floor(self):
+        """On all-zero input the only noise source should be the
+        sky/read floor; measured σ should match within √(2/N) at
+        large N."""
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        rng = np.random.default_rng(0)
+        clean = np.zeros((512, 512), dtype=np.float32)
+        noisy = add_hlsp_noise(
+            clean, alpha=0.8, sigma_floor=12.0, rng=rng,
+        )
+        measured_sigma = float(noisy.std())
+        # 512² samples → 1-σ uncertainty on the std estimate is ~σ/√(2N)
+        # ≈ 0.013 → 5σ tolerance is ~5%.
+        assert abs(measured_sigma - 12.0) / 12.0 < 0.03, (
+            f"sky-only σ should be {12.0}, got {measured_sigma:.3f}"
+        )
+
+    def test_shot_variance_scales_linearly_with_signal(self):
+        """At zero floor, σ² should equal ``α · signal``. Test on a
+        flat patch at a few signal levels."""
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        alpha = 0.8
+        rng = np.random.default_rng(1)
+        for level in (100.0, 1000.0, 10000.0):
+            clean = np.full((512, 512), level, dtype=np.float32)
+            noisy = add_hlsp_noise(
+                clean, alpha=alpha, sigma_floor=0.0, rng=rng,
+            )
+            measured_var = float(noisy.var())
+            expected_var = alpha * level
+            # 5% tolerance (large-N estimate of variance).
+            assert abs(measured_var - expected_var) / expected_var < 0.05, (
+                f"shot variance at signal={level} should be {expected_var}, "
+                f"got {measured_var:.2f}"
+            )
+
+    def test_negative_pixels_get_only_sky_floor(self):
+        """REGRESSION — sky-subtracted HLSP cutouts have negative
+        pixels near sky. ``max(clean, 0)`` in the shot-variance term
+        means negative pixels contribute zero shot noise; only the
+        sky floor σ applies. Otherwise we'd get a NaN from
+        ``√(α · negative)``."""
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        rng = np.random.default_rng(2)
+        clean = -100.0 * np.ones((512, 512), dtype=np.float32)
+        noisy = add_hlsp_noise(
+            clean, alpha=0.8, sigma_floor=10.0, rng=rng,
+        )
+        assert np.all(np.isfinite(noisy)), (
+            "negative input must not produce NaN/inf — shot-variance "
+            "term should clip to ``max(clean, 0)``"
+        )
+        # Variance should match just the sky floor.
+        measured_sigma = float(noisy.std())
+        assert abs(measured_sigma - 10.0) / 10.0 < 0.05
+
+    def test_rejects_negative_alpha(self):
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        with pytest.raises(ValueError, match="alpha"):
+            add_hlsp_noise(np.zeros((4, 4)), alpha=-0.1, sigma_floor=5.0)
+
+    def test_rejects_negative_sigma_floor(self):
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        with pytest.raises(ValueError, match="sigma_floor"):
+            add_hlsp_noise(np.zeros((4, 4)), alpha=0.5, sigma_floor=-1.0)
+
+    def test_seeded_rng_is_reproducible(self):
+        from euclid_polish.training.transition_augmentations import (
+            add_hlsp_noise,
+        )
+        clean = np.ones((16, 16), dtype=np.float32) * 100.0
+        a = add_hlsp_noise(
+            clean, alpha=0.8, sigma_floor=10.0,
+            rng=np.random.default_rng(42),
+        )
+        b = add_hlsp_noise(
+            clean, alpha=0.8, sigma_floor=10.0,
+            rng=np.random.default_rng(42),
+        )
+        np.testing.assert_array_equal(a, b)
+
+
+class TestSampleHlspNoiseParams:
+
+    def test_samples_within_range(self):
+        from euclid_polish.training.transition_augmentations import (
+            sample_hlsp_noise_params,
+        )
+        rng = np.random.default_rng(0)
+        for _ in range(500):
+            a, s = sample_hlsp_noise_params(rng)
+            assert 0.5 <= a <= 1.0
+            assert 8.0 <= s <= 22.0
+
+
+# ---------------------------------------------------------------------------
 # ensure_unit_sum — defensive PSF normalisation at the convolution site
 # ---------------------------------------------------------------------------
 

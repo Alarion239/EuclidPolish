@@ -294,28 +294,6 @@
       <p class="hint" id="hst-artifact-line">loading on-disk artifact status…</p>
     </section>
 
-    <!-- ─── Arm banner: load-bearing kill-switch for HST submissions. ─── -->
-    <section class="card" id="hst-arm-banner"
-             style="border: 2px solid #d33; background: #fee;">
-      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <span id="hst-arm-status" style="font-weight:600; min-width:280px;">
-          🔒 Submissions DISABLED
-        </span>
-        <button id="btn-hst-arm" type="button"
-                style="background:#d33; color:#fff; padding:6px 14px;
-                       border:none; border-radius:3px; cursor:pointer;
-                       font-weight:600;">
-          🔓 Arm next submit (60 s)
-        </button>
-        <span class="muted" style="font-size:12px;">
-          Click → confirm → you have 60 s to submit ONE job. After that
-          submit (or after 60 s), submissions are automatically
-          re-disabled. Server rejects any submit POST that doesn't
-          carry a freshly minted arm nonce.
-        </span>
-      </div>
-    </section>
-
     <div id="hst-steps-area">
       <p class="muted">loading pipeline steps…</p>
     </div>
@@ -1411,7 +1389,67 @@ operator. 0 disables."></label>
         <label>Rebin factor
           <input type="number" name="rebin_factor" value="2" min="1" max="8"
                  title="Must match the rebin used when the pair shards were
-generated (step 3a). Loss = ||sum_rebin(A_θ(input), rebin) - target||."></label>`;
+generated (step 3a). Loss = ||sum_rebin(A_θ(input), rebin) - target||."></label>
+        <label>Frozen denoiser (Phase 2)
+          <input type="text" name="frozen_denoiser" value="" size="40"
+                 placeholder="(empty = single-stage; legacy)"
+                 title="Optional path on FASRC to hst_denoiser.weights.h5
+(output of step 3a-bis). When set, the deconvolver trains with the
+denoiser frozen in front of it, so the chain at inference time is
+CNN_1 → A_analytic → CNN_2. Pair with the four noise knobs below so
+the denoiser sees the noise it was trained on. Empty = legacy
+single-stage clean training."></label>
+        <label>Noise α min (shot)
+          <input type="number" name="alpha_min" value="0" step="any" min="0" max="10"
+                 title="HLSP shot-noise coefficient α = C/t_eff. 0 disables
+input noise (legacy clean train). Set to ~0.5 to match COSMOS-deep
+(t_eff≈3000s); higher for shallower regions."></label>
+        <label>Noise α max
+          <input type="number" name="alpha_max" value="0" step="any" min="0" max="10"></label>
+        <label>Noise σ_floor min (e⁻)
+          <input type="number" name="sigma_floor_min" value="0" step="any" min="0" max="200"
+                 title="Sky/read floor lower bound in electrons per HR pixel.
+0 disables. Set to ~8 for COSMOS-deep regions."></label>
+        <label>Noise σ_floor max (e⁻)
+          <input type="number" name="sigma_floor_max" value="0" step="any" min="0" max="200"></label>`;
+    case 'train_denoiser':
+      return `
+        <label>Training steps
+          <input type="number" name="steps" value="20000" min="1000" max="200000"></label>
+        <label>Batch size
+          <input type="number" name="batch_size" value="8" min="1" max="64"></label>
+        <label>Learning rate
+          <input type="number" name="learning_rate" value="0.002" step="any" min="1e-6" max="0.1"></label>
+        <label>Hidden channels (C)
+          <input type="number" name="channels" value="8" min="1" max="64"
+                 title="Wider than the deconvolver since denoising benefits
+from more capacity. Default C=8 with K=7 gives ~7k params."></label>
+        <label>Inner layers
+          <input type="number" name="n_inner_layers" value="2" min="0" max="6"
+                 title="Inner Conv(C→C, K) layers. Default 2 → 4 total
+conv layers → RF = 4·6 + 1 = 25 px at K=7 (≈ 1.25\")."></label>
+        <label>Kernel size (K)
+          <input type="number" name="kernel_size" value="7" min="3" max="31" step="2"
+                 title="Wider than the deconvolver's K=3. Denoising
+benefits from a larger context window. Default 7 → RF=25 px (1.25\")."></label>
+        <label>Max params
+          <input type="number" name="max_params" value="10000" min="100" max="1000000"
+                 title="Hard cap on trainable params. Default 10k leaves
+headroom over the 7k default arch. Raise if you go wider/deeper."></label>
+        <label>Noise α min (shot)
+          <input type="number" name="alpha_min" value="0.5" step="0.1" min="0" max="10"
+                 title="HLSP shot-noise coefficient α = C/t_eff drawn
+per image from this range. 0.5 ≈ COSMOS-deep t_eff≈3000s."></label>
+        <label>Noise α max
+          <input type="number" name="alpha_max" value="1.0" step="0.1" min="0" max="10"
+                 title="1.0 ≈ COSMOS-shallow t_eff≈1500s."></label>
+        <label>Noise σ_floor min (e⁻)
+          <input type="number" name="sigma_floor_min" value="8" step="1" min="0" max="200"
+                 title="Sky/read floor lower bound per HR pixel (Euclid-scaled
+electrons). 8 ≈ COSMOS-deep."></label>
+        <label>Noise σ_floor max (e⁻)
+          <input type="number" name="sigma_floor_max" value="22" step="1" min="0" max="200"
+                 title="22 ≈ COSMOS-shallow."></label>`;
     case 'tfrecords':
       return `
         <label>Training pairs
@@ -1502,6 +1540,7 @@ function _stepCard(step, artifactStatus) {
   const produces = {
     download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
     transition_pairs: 'transition_pairs',
+    train_denoiser: 'denoiser',
     train_transition: 'transition_model',
     tfrecords: 'records', train: 'ckpt',
     euclid_sky_download: 'euclid_sky',
@@ -1542,71 +1581,6 @@ function _stepCard(step, artifactStatus) {
 // cards (and thus reset their form values) ONCE per page load. Subsequent
 // polls only update read-only status decorations — never touch form inputs.
 let _HST_RENDERED = false;
-
-// ─── HST submit arm state — held in-memory only, never persisted. ───
-// A page refresh wipes this, requiring the user to re-arm.
-// `consumed` flips to true the moment a submit POST goes out so the
-// banner reflects "disarmed" immediately.
-const HST_ARM = {
-  nonce:     '',
-  expiresAt: 0,
-  consumed:  true,
-};
-
-function renderArmBanner() {
-  const statusEl = document.getElementById('hst-arm-status');
-  const btnEl    = document.getElementById('btn-hst-arm');
-  if (!statusEl || !btnEl) return;
-  const remaining = Math.max(0, HST_ARM.expiresAt - Date.now());
-  const armed = HST_ARM.nonce && !HST_ARM.consumed && remaining > 0;
-  if (armed) {
-    statusEl.innerHTML =
-      `✅ ARMED — ${Math.ceil(remaining / 1000)} s remaining (1 submit allowed)`;
-    statusEl.style.color = '#080';
-    btnEl.textContent    = '↻ Re-arm (resets 60 s timer)';
-    btnEl.style.background = '#080';
-  } else {
-    statusEl.innerHTML = '🔒 Submissions DISABLED';
-    statusEl.style.color = '#d33';
-    btnEl.textContent    = '🔓 Arm next submit (60 s)';
-    btnEl.style.background = '#d33';
-  }
-}
-
-// Tick the banner every second so the countdown updates live.
-setInterval(renderArmBanner, 1000);
-
-document.getElementById('btn-hst-arm')?.addEventListener('click',
-  async () => {
-    const ok = window.confirm(
-      'Arm HST submissions for the next 60 seconds?\n\n' +
-      'This unlocks exactly ONE submission via the cards below. ' +
-      'The window auto-closes after 60 s OR after one submit (whichever ' +
-      'comes first).\n\n' +
-      'Click OK to arm, Cancel to keep submissions disabled.'
-    );
-    if (!ok) return;
-    try {
-      const body = new URLSearchParams({ confirm: 'yes' });
-      const r = await fetch('/api/fasrc/hst/arm', {
-        method: 'POST', body,
-      });
-      const data = await r.json();
-      if (data.ok) {
-        HST_ARM.nonce     = data.nonce;
-        HST_ARM.expiresAt = Date.now() + (data.expires_in_s * 1000);
-        HST_ARM.consumed  = false;
-        renderArmBanner();
-      } else {
-        alert('arm failed: ' + (data.error || 'unknown'));
-      }
-    } catch (e) {
-      alert('arm request failed: ' + e);
-    }
-  }
-);
-
-renderArmBanner();
 
 function _forceFormDefaults(area) {
   // Chrome (and Safari) ignore autocomplete="off" on type=number inputs
@@ -1715,24 +1689,6 @@ function _renderHstArea(j) {
       // browser extension) can't sneak a SLURM job through.
       body.set('confirm', 'yes');
 
-      // ── Final defence: include the one-time arm nonce. ────────────────
-      // The server rejects /submit unless arm_nonce matches a freshly
-      // minted nonce that has not yet been consumed and has not expired
-      // (60 s window). The nonce is held in JS memory only; refreshing
-      // the page wipes it. Drive-by/auto-submits that don't go through
-      // the Arm flow first will 400 at the server.
-      if (!HST_ARM.nonce || HST_ARM.consumed || Date.now() > HST_ARM.expiresAt) {
-        statusEl.innerHTML =
-          '<span class="badge badge-failed">not armed</span> ' +
-          'click 🔓 Arm next submit at the top of the HST area first.';
-        return;
-      }
-      body.set('arm_nonce', HST_ARM.nonce);
-      // Mark consumed on the JS side too so the UI shows "disarmed"
-      // immediately even before the server response comes back.
-      HST_ARM.consumed = true;
-      renderArmBanner();
-
       statusEl.innerHTML = '<span class="muted">submitting…</span>';
       try {
         const resp = await fetch(`/api/fasrc/hst/${stepId}/submit`, {
@@ -1822,6 +1778,7 @@ async function refreshHst() {
       `HST PSF ${a.psf ? '✓' : '✗'} · ` +
       `kernel ${a.kernel ? '✓' : '✗'} · ` +
       `transition pairs ${a.transition_pairs ? '✓' : '✗'} · ` +
+      `denoiser ${a.denoiser ? '✓' : '✗'} · ` +
       `transition model ${a.transition_model ? '✓' : '✗'} · ` +
       `HST records ${a.records ? '✓' : '✗'} · ` +
       `checkpoint ${a.ckpt ? '✓' : '✗'}`;

@@ -217,6 +217,132 @@ class TestInitWorker:
             mod._process_one_galaxy(task)
 
 
+class TestInitWorkerTwoStage:
+    """When the transition model's summary JSON carries a ``denoiser``
+    block, ``_init_worker`` must (a) reconstruct the denoiser with the
+    architecture in the JSON, (b) load its weights, and (c) populate
+    ``_WORKER_DENOISER_MODEL`` so ``_make_pair`` runs the full chain.
+    Missing denoiser file → loud RuntimeError, not silent fallback to
+    single-stage (that would corrupt the LR shards in subtle ways)."""
+
+    def _make_minimal_transition_pair(self, tmp_path, with_denoiser: bool):
+        """Build a tiny transition model + matching summary JSON.
+
+        Returns (transition_weights_path, denoiser_weights_path_or_None,
+        kernel_path). Kernel is a small odd Gaussian, transition model
+        is built without a baseline (keeps the test fast — the baseline
+        load-path is exercised elsewhere).
+        """
+        from astropy.io import fits
+        import json
+        from euclid_polish.training.transition_model import (
+            HSTDenoiser, HSTtoEuclidTransition,
+            save_denoiser_weights, save_model_weights,
+        )
+
+        # Tiny analytic kernel (delta) so the script's fallback path
+        # is also valid if we need it.
+        krn = tmp_path / "diff_kernel.fits"
+        delta = np.zeros((9, 9), dtype=np.float32); delta[4, 4] = 1.0
+        fits.PrimaryHDU(delta).writeto(str(krn), overwrite=True)
+
+        # Tiny transition model (no baseline so the test stays fast).
+        trans_path = tmp_path / "transition.weights.h5"
+        m_trans = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+        )
+        save_model_weights(m_trans, str(trans_path))
+
+        # Matching summary JSON.
+        summary = {
+            "channels":       4,
+            "n_inner_layers": 1,
+            "kernel_size":    3,
+            "analytic_baseline_kernel": "",
+            "baseline_crop":  0,
+        }
+
+        denoiser_path = None
+        if with_denoiser:
+            denoiser_path = tmp_path / "hst_denoiser.weights.h5"
+            m_den = HSTDenoiser(channels=4, n_inner_layers=1, kernel_size=3)
+            save_denoiser_weights(m_den, str(denoiser_path))
+            summary["denoiser"] = {
+                "weights_path":   str(denoiser_path),
+                "channels":       4,
+                "n_inner_layers": 1,
+                "kernel_size":    3,
+            }
+
+        summary_path = (
+            str(trans_path)[:-len(".weights.h5")] + "_summary.json"
+        )
+        with open(summary_path, "w") as f:
+            json.dump(summary, f)
+        return str(trans_path), denoiser_path, str(krn)
+
+    def test_loads_denoiser_when_summary_has_block(self, tmp_path):
+        mod = _load_script()
+        # Make sure stale state from a prior test isn't leaking in.
+        mod._WORKER_DENOISER_MODEL = None
+        trans_path, den_path, krn = self._make_minimal_transition_pair(
+            tmp_path, with_denoiser=True,
+        )
+        mod._init_worker(
+            krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
+        )
+        assert mod._WORKER_TRANSITION_MODEL is not None
+        assert mod._WORKER_DENOISER_MODEL is not None, (
+            "summary contained a 'denoiser' block but worker didn't "
+            "load it — Phase-2 chain is broken"
+        )
+
+    def test_skips_denoiser_when_summary_lacks_block(self, tmp_path):
+        mod = _load_script()
+        mod._WORKER_DENOISER_MODEL = None
+        trans_path, _, krn = self._make_minimal_transition_pair(
+            tmp_path, with_denoiser=False,
+        )
+        mod._init_worker(
+            krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
+        )
+        assert mod._WORKER_TRANSITION_MODEL is not None
+        assert mod._WORKER_DENOISER_MODEL is None, (
+            "summary had no 'denoiser' block — single-stage path "
+            "should leave _WORKER_DENOISER_MODEL = None"
+        )
+
+    def test_missing_denoiser_file_raises(self, tmp_path):
+        """Summary records a denoiser path that doesn't exist locally
+        (the FASRC-style absolute path won't resolve when running
+        elsewhere). The worker must fail loudly rather than silently
+        falling back to single-stage and writing wrong LR shards."""
+        mod = _load_script()
+        mod._WORKER_DENOISER_MODEL = None
+        trans_path, _, krn = self._make_minimal_transition_pair(
+            tmp_path, with_denoiser=False,
+        )
+        # Doctor the summary to point at a non-existent denoiser file.
+        import json
+        summary_path = (
+            trans_path[:-len(".weights.h5")] + "_summary.json"
+        )
+        with open(summary_path) as f:
+            s = json.load(f)
+        s["denoiser"] = {
+            "weights_path":   "/n/nope/hst_denoiser.weights.h5",
+            "channels":       4,
+            "n_inner_layers": 1,
+            "kernel_size":    3,
+        }
+        with open(summary_path, "w") as f:
+            json.dump(s, f)
+        with pytest.raises(RuntimeError, match="denoiser"):
+            mod._init_worker(
+                krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
+            )
+
+
 # ---------------------------------------------------------------------------
 # _process_one_galaxy — happy path + failure modes
 # ---------------------------------------------------------------------------

@@ -11,6 +11,10 @@
      title="clean ⊛ PSF_Euclid — what A_θ has to produce">target (Euclid)</a>
   <a class="chip" data-group="kind" data-value="residual"
      title="target − input — the residual A_θ's CNN branch must learn (divergent colormap)">residual</a>
+  <a class="chip" data-group="kind" data-value="noisy_hst"
+     title="input + HLSP-style ε — the Phase-1 denoiser's training input. Use the α/σ_floor sliders below to tune.">noisy HST</a>
+  <a class="chip" data-group="kind" data-value="hst_pair"
+     title="clean HST ┃ noisy HST side-by-side — the denoiser's full training pair">denoiser pair</a>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
   <a class="chip" data-group="subset" data-value="validate">validate</a>
@@ -18,6 +22,18 @@
   <button class="chip" id="idx-prev">‹</button>
   <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
   <button class="chip" id="idx-next">›</button>
+</div>
+<div class="toolbar" id="noise-controls" style="display:none; margin-top:6px;">
+  <span class="toolbar-label">Noise α</span>
+  <input type="number" id="noise-alpha" value="0.75" step="0.05" min="0" max="5"
+         style="width:70px;"
+         title="HLSP shot-noise coefficient α = C/t_eff. 0.5≈COSMOS-deep, 1.0≈shallow.">
+  <span class="toolbar-label">σ_floor (e⁻)</span>
+  <input type="number" id="noise-sigma-floor" value="15" step="1" min="0" max="200"
+         style="width:70px;"
+         title="Sky/read floor in electrons per HR pixel. ~8–22 typical.">
+  <button class="chip" id="noise-reshuffle"
+          title="Resample the noise realisation without changing α/σ_floor">↻ reshuffle</button>
 </div>
 {% endblock %}
 
@@ -167,12 +183,41 @@ async function refreshTotals() {
   } catch (e) {}
 }
 
+// Noise-control state. Held outside the polishUI.viz selector
+// because the two noise kinds use them but the original three don't.
+const NOISE_UI = {
+  alpha:      0.75,
+  sigmaFloor: 15.0,
+  // The seed lets the renderer reproduce the same noise realisation
+  // across kind toggles for the same index. Incrementing it gives a
+  // fresh realisation under "reshuffle".
+  seedBump:   0,
+};
+
+function _showHideNoiseControls(kind) {
+  const el = document.getElementById("noise-controls");
+  if (!el) return;
+  el.style.display = (kind === "noisy_hst" || kind === "hst_pair")
+    ? "" : "none";
+}
+
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
-  buildUrl:  (sel) =>
-    `/view/transition-pair?subset=${sel.subset}&kind=${sel.kind}` +
-    `&i=${sel.i}`,
+  buildUrl:  (sel) => {
+    // Base URL — `i` is the record index; noise_seed combines index
+    // + reshuffle bump so toggling kind doesn't change the noise.
+    let u = `/view/transition-pair?subset=${sel.subset}` +
+            `&kind=${sel.kind}&i=${sel.i}`;
+    if (sel.kind === "noisy_hst" || sel.kind === "hst_pair") {
+      const seed = (Number(sel.i) || 0) * 1000003
+                 + (NOISE_UI.seedBump | 0);
+      u += `&alpha=${encodeURIComponent(NOISE_UI.alpha)}` +
+           `&sigma_floor=${encodeURIComponent(NOISE_UI.sigmaFloor)}` +
+           `&noise_seed=${seed}`;
+    }
+    return u;
+  },
   initial:   { kind: "input", subset: "{{ default_subset }}", i: 0 },
 });
 
@@ -182,7 +227,32 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   e.preventDefault();
   if (chip.dataset.group === "i") return;
   polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+  if (chip.dataset.group === "kind") {
+    _showHideNoiseControls(chip.dataset.value);
+  }
   setIdx(curIdx);
+});
+
+// Live α / σ_floor inputs → re-render. Mirrors the chip handlers but
+// without changing the polishUI.viz selector itself.
+document.getElementById("noise-alpha")?.addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  if (Number.isFinite(v) && v >= 0) {
+    NOISE_UI.alpha = v;
+    polishUI.viz.refresh();
+  }
+});
+document.getElementById("noise-sigma-floor")?.addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  if (Number.isFinite(v) && v >= 0) {
+    NOISE_UI.sigmaFloor = v;
+    polishUI.viz.refresh();
+  }
+});
+document.getElementById("noise-reshuffle")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  NOISE_UI.seedBump = (NOISE_UI.seedBump + 1) | 0;
+  polishUI.viz.refresh();
 });
 document.getElementById("idx-prev").addEventListener("click",
   () => setIdx(curIdx - 1));

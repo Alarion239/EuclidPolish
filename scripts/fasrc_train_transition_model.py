@@ -38,11 +38,12 @@ from euclid_polish.sky.tfrecord import (
     parse_record_graph_v2, read_multiband_skyimages, tfrecord_path,
 )
 from euclid_polish.training.transition_augmentations import (
-    apply_linear_combo_augmentation, build_star_pair_dataset,
-    make_psf_identity_pair, sum_rebin_2d,
+    add_hlsp_noise, apply_linear_combo_augmentation, build_star_pair_dataset,
+    make_psf_identity_pair, sample_hlsp_noise_params, sum_rebin_2d,
 )
 from euclid_polish.training.transition_model import (
-    HSTtoEuclidTransition, save_model_weights, total_parameter_count,
+    HSTDenoiser, HSTtoEuclidTransition, load_denoiser_weights,
+    save_model_weights, total_parameter_count,
 )
 from scripts.fasrc_generate_transition_pairs import (
     _load_euclid_vis_psf_on_hr, _load_hst_psf_on_hr,
@@ -168,6 +169,40 @@ def parse_args() -> argparse.Namespace:
                         "point sources can't slip past unnoticed. "
                         "Pass --no-add-psf-pair-to-validation to "
                         "disable.")
+    # ── Two-stage chain (optional): freeze a pretrained denoiser before
+    #    the deconvolver. See ``fasrc_train_hst_denoiser.py`` (Phase 1).
+    p.add_argument("--frozen-denoiser", type=str, default="",
+                   help="Optional path to a pretrained ``hst_denoiser."
+                        "weights.h5`` (output of "
+                        "fasrc_train_hst_denoiser.py). When set, the "
+                        "forward pass becomes "
+                        "``CNN_2((1+f)(A_analytic ⊛ CNN_1_frozen(x)))`` "
+                        "— Phase 1 model is loaded, frozen (no "
+                        "gradient updates), and prepended to the "
+                        "deconvolver's forward graph. Pair this with "
+                        "``--input-noise-sigma`` (or the explicit "
+                        "α/σ ranges below) so CNN_1 sees the noise "
+                        "distribution it was trained on.")
+    p.add_argument("--frozen-denoiser-summary", type=str, default="",
+                   help="Path to the denoiser's summary JSON (used to "
+                        "reconstruct architecture). Defaults to the "
+                        "weights path with ``.weights.h5`` replaced by "
+                        "``_summary.json``.")
+    # ── Noise augmentation on the input side ──
+    # The deconvolver in Phase-2 mode needs the frozen denoiser to see
+    # realistic input. Default 0 means no noise (legacy clean-train
+    # behaviour); typical Phase-2 use sets the α/σ ranges to match
+    # what Phase-1 was trained on.
+    p.add_argument("--alpha-min", type=float, default=0.0,
+                   help="HLSP shot-noise α lower bound (set both α and "
+                        "σ_floor ranges to 0 to disable noise — the "
+                        "legacy single-stage default).")
+    p.add_argument("--alpha-max", type=float, default=0.0,
+                   help="HLSP shot-noise α upper bound.")
+    p.add_argument("--sigma-floor-min", type=float, default=0.0,
+                   help="HLSP sky/read floor lower bound (e⁻).")
+    p.add_argument("--sigma-floor-max", type=float, default=0.0,
+                   help="HLSP sky/read floor upper bound (e⁻).")
     p.add_argument("--dry-run", action="store_true",
                    help="Build model + dataset, print sizes, then exit.")
     return p.parse_args()
@@ -477,6 +512,73 @@ def main() -> int:
           f"({model.receptive_field * Config.DEFAULT_PIXEL_SCALE:.3f}\" "
           f"at HR scale)")
 
+    # ── Optional: load frozen Phase-1 denoiser ──
+    frozen_denoiser = None
+    denoiser_summary_meta = None
+    if args.frozen_denoiser:
+        if not os.path.isfile(args.frozen_denoiser):
+            print(f"ERROR: --frozen-denoiser path does not exist: "
+                  f"{args.frozen_denoiser}")
+            return 1
+        # Resolve the summary JSON path (defaults to a sibling of the
+        # weights file).
+        summary_path = args.frozen_denoiser_summary
+        if not summary_path:
+            if args.frozen_denoiser.endswith(".weights.h5"):
+                summary_path = (
+                    args.frozen_denoiser[:-len(".weights.h5")]
+                    + "_summary.json"
+                )
+            else:
+                summary_path = args.frozen_denoiser + ".summary.json"
+        # Try the alternative legacy name too.
+        if not os.path.isfile(summary_path):
+            alt = os.path.join(
+                os.path.dirname(args.frozen_denoiser),
+                "hst_denoiser_summary.json",
+            )
+            if os.path.isfile(alt):
+                summary_path = alt
+        if not os.path.isfile(summary_path):
+            print(f"ERROR: frozen denoiser summary not found at "
+                  f"{summary_path}. Pass --frozen-denoiser-summary "
+                  f"explicitly or re-train with "
+                  f"fasrc_train_hst_denoiser.py to regenerate.")
+            return 1
+        with open(summary_path) as f:
+            den_summary = json.load(f)
+        denoiser_summary_meta = {
+            "weights_path": args.frozen_denoiser,
+            "summary_path": summary_path,
+            "channels":     int(den_summary.get("channels", 8)),
+            "n_inner_layers": int(den_summary.get("n_inner_layers", 2)),
+            "kernel_size":  int(den_summary.get("kernel_size", 7)),
+        }
+        frozen_denoiser = HSTDenoiser(
+            channels=denoiser_summary_meta["channels"],
+            n_inner_layers=denoiser_summary_meta["n_inner_layers"],
+            kernel_size=denoiser_summary_meta["kernel_size"],
+        )
+        load_denoiser_weights(frozen_denoiser, args.frozen_denoiser)
+        frozen_denoiser.trainable = False
+        for layer in frozen_denoiser.layers:
+            layer.trainable = False
+        print(f"      loaded frozen denoiser: "
+              f"channels={denoiser_summary_meta['channels']} "
+              f"n_inner={denoiser_summary_meta['n_inner_layers']} "
+              f"K={denoiser_summary_meta['kernel_size']}")
+        # Sanity: warn if Phase-2 user forgot to set the noise ranges
+        # — without noise the denoiser sees clean input it was never
+        # trained on, and its identity error will leak through.
+        if (args.alpha_max <= 0.0 and args.sigma_floor_max <= 0.0):
+            print("      WARN: --frozen-denoiser set but noise ranges "
+                  "are zero. The denoiser will see clean input, "
+                  "outside its training distribution. Set "
+                  "--alpha-min/--alpha-max and "
+                  "--sigma-floor-min/--sigma-floor-max to match the "
+                  "denoiser's Phase-1 ranges (typically α∈[0.5,1.0], "
+                  "σ_floor∈[8,22]).")
+
     print("[2/4] loading PSFs for diagnostic ...")
     # Reuse the resampler used by the pair generator so the probe is
     # bit-equivalent to the training data. (Both helpers imported at
@@ -519,6 +621,11 @@ def main() -> int:
     loss_fn   = tf.keras.losses.MeanAbsoluteError()
     wd        = float(args.weight_decay)
     rebin     = int(args.rebin_factor)
+    noise_enabled = (args.alpha_max > 0.0 or args.sigma_floor_max > 0.0)
+    alpha_min       = tf.constant(float(args.alpha_min),       dtype=tf.float32)
+    alpha_max       = tf.constant(float(args.alpha_max),       dtype=tf.float32)
+    sigma_floor_min = tf.constant(float(args.sigma_floor_min), dtype=tf.float32)
+    sigma_floor_max = tf.constant(float(args.sigma_floor_max), dtype=tf.float32)
 
     def _sum_rebin_tf(x):
         """Photometric sum-rebin via avg-pool × area. Matches the numpy
@@ -528,6 +635,43 @@ def main() -> int:
         return tf.nn.avg_pool2d(
             x, ksize=rebin, strides=rebin, padding="VALID",
         ) * (rebin ** 2)
+
+    def _apply_noise_and_denoise(inp):
+        """Add HLSP-style shot+sky noise per image, then optionally run
+        through the frozen denoiser.
+
+        Implements the same noise model as
+        :func:`add_hlsp_noise` (Gaussian-approximated shot + sky/read
+        floor) directly in the training graph: each example draws its
+        own ``α`` and ``σ_floor`` so a single epoch covers the full
+        spatial-variation distribution of t_eff and depth across an
+        HLSP tile.
+
+        ``tf.stop_gradient`` after the (frozen) denoiser ensures
+        gradients only flow into the trainable deconvolver, even
+        though the denoiser sits in the forward graph.
+        """
+        if not noise_enabled:
+            return inp
+        # Per-image α and σ_floor, broadcast across spatial+channel dims.
+        B = tf.shape(inp)[0]
+        alpha = tf.random.uniform(
+            (B, 1, 1, 1), minval=alpha_min, maxval=alpha_max,
+            dtype=tf.float32,
+        )
+        sigma_floor = tf.random.uniform(
+            (B, 1, 1, 1), minval=sigma_floor_min, maxval=sigma_floor_max,
+            dtype=tf.float32,
+        )
+        shot_var  = alpha * tf.maximum(inp, 0.0)
+        total_var = shot_var + tf.square(sigma_floor)
+        eps = tf.random.normal(tf.shape(inp), dtype=tf.float32) \
+            * tf.sqrt(total_var)
+        noisy = inp + eps
+        if frozen_denoiser is not None:
+            noisy = frozen_denoiser(noisy, training=False)
+            noisy = tf.stop_gradient(noisy)
+        return noisy
 
     @tf.function
     def train_step(inp, tgt):
@@ -539,9 +683,15 @@ def main() -> int:
         ``HST_HR → A_θ → HR → sum_rebin → LR``. The model only has to
         be correct at LR — high-frequency spike-mismatch residuals
         between HST and Euclid PSFs get averaged away by the rebin.
+
+        Optional Phase-2 mode: ``inp`` gets HLSP-style noise added per
+        image, then passes through the (frozen) Phase-1 denoiser
+        before the deconvolver. Both steps are no-ops when
+        ``--alpha-max`` and ``--sigma-floor-max`` are 0 (legacy path).
         """
+        inp_for_model = _apply_noise_and_denoise(inp)
         with tf.GradientTape() as tape:
-            pred_hr = model(inp, training=True)
+            pred_hr = model(inp_for_model, training=True)
             pred_lr = _sum_rebin_tf(pred_hr)
             loss = loss_fn(tgt, pred_lr)
             if wd > 0:
@@ -556,7 +706,8 @@ def main() -> int:
 
     @tf.function
     def eval_step(inp, tgt):
-        pred_hr = model(inp, training=False)
+        inp_for_model = _apply_noise_and_denoise(inp)
+        pred_hr = model(inp_for_model, training=False)
         pred_lr = _sum_rebin_tf(pred_hr)
         return loss_fn(tgt, pred_lr)
 
@@ -696,6 +847,16 @@ def main() -> int:
         "add_psf_pair_to_validation": bool(args.add_psf_pair_to_validation),
         "psf_id_err_init":  float(psf_err_init),
         "psf_id_err_final": float(psf_err_final),
+        # Two-stage Phase-2 record: present iff this run used a frozen
+        # denoiser. The pipeline worker checks for this key to decide
+        # whether to load the denoiser at inference time.
+        "denoiser":          denoiser_summary_meta,
+        "noise":             {
+            "alpha_min":       float(args.alpha_min),
+            "alpha_max":       float(args.alpha_max),
+            "sigma_floor_min": float(args.sigma_floor_min),
+            "sigma_floor_max": float(args.sigma_floor_max),
+        },
         "elapsed_s":      round(time.time() - t0, 1),
         "log":            log,
     }
