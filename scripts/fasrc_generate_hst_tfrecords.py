@@ -35,6 +35,40 @@ from __future__ import annotations
 
 import os
 
+# Force-hide GPUs BEFORE TF is imported, even if SLURM allocated one.
+#
+# Why this script is CPU-only by design:
+#
+#  * Heavy work = scipy.signal.fftconvolve (FFT, CPU only) over a 511²
+#    baseline kernel × 4 bands per cutout. No GPU path exists.
+#  * The trainable CNN residual is only ~5 k params — its forward
+#    pass takes ~1 ms on CPU; a GPU offers no measurable speedup.
+#  * Parallelism is process-pool-based (fork), and ``fork`` after the
+#    parent has touched CUDA puts every child in an invalid CUDA
+#    state. The first TF call in any worker then aborts with
+#    ``CUDA_ERROR_NOT_INITIALIZED`` and ``ProcessPoolExecutor`` raises
+#    ``BrokenProcessPool``. (SLURM job 15889067, May 2026: 8 child
+#    crashes within seconds of pool startup.)
+#
+# ``setdefault`` would be a no-op when SLURM has already set
+# ``CUDA_VISIBLE_DEVICES`` (which it does on every ``--gres=gpu:N``
+# job), so we use a hard assignment to override SLURM's value. If you
+# explicitly want this script to use a GPU anyway (e.g. you've also
+# disabled the worker pool with ``--n-workers 0``), set the env var
+# back yourself in the sbatch script *after* the Python launch:
+#     CUDA_VISIBLE_DEVICES=$SLURM_JOB_GPUS python fasrc_generate_hst_tfrecords.py ...
+# But note: a GPU does not speed this script up. For *training* the
+# transition model, request and keep a GPU normally — that's a
+# different script (``fasrc_train_transition_model.py``).
+_prev_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+if _prev_cuda:
+    print(f"[fasrc_generate_hst_tfrecords] SLURM set "
+          f"CUDA_VISIBLE_DEVICES={_prev_cuda!r}; overriding to '' because "
+          f"this pipeline is CPU-only by design (FFT + process pool). "
+          f"Submit without --gres=gpu next time to free the device "
+          f"for someone else.", flush=True)
+
 # Cap per-process thread counts BEFORE numpy/scipy/TF are imported.
 # With a 16-worker pool on 16 SLURM CPUs, the default lets each
 # worker spawn 16 intra-op threads → 256 OS threads contending for
