@@ -106,6 +106,57 @@ class TestRegistry:
         assert "--linear-combo-fraction" in argv
         assert "0.4" in argv
 
+    def test_train_transition_step_emits_kernel_size_and_max_params(self):
+        """REGRESSION — the architecture knobs (kernel_size, max_params)
+        must reach the script. Without these, the user has no way to
+        switch from the default tiny 11-px-RF model to e.g. a 2-layer
+        K=21 model from the web form."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({
+            "kernel_size":    21,
+            "n_inner_layers": 0,
+            "channels":       5,
+            "max_params":     5000,
+        })
+        assert "--kernel-size" in argv
+        assert "21" in argv
+        assert "--n-inner-layers" in argv
+        assert "0" in argv
+        assert "--max-params" in argv
+
+    def test_train_transition_step_defaults_kernel_size_and_max_params(self):
+        """Form omitted → defaults match script's argparse defaults
+        (K=3, max=5000)."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({})
+        assert "--kernel-size" in argv
+        assert "3" in argv
+        assert "--max-params" in argv
+        assert "5000" in argv
+
+    def test_train_transition_emits_analytic_baseline_when_provided(self):
+        """When the form supplies an analytic-baseline path, the flag
+        must reach the script. Without it the model defaults to the
+        identity-residual mode, defeating the whole point."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({
+            "analytic_baseline_kernel": "/n/foo/diff_kernel_VIS.fits",
+            "baseline_crop": 31,
+        })
+        assert "--analytic-baseline-kernel" in argv
+        idx = argv.index("--analytic-baseline-kernel")
+        assert argv[idx + 1] == "/n/foo/diff_kernel_VIS.fits"
+        assert "--baseline-crop" in argv
+        assert "31" in argv
+
+    def test_train_transition_omits_baseline_flag_when_blank(self):
+        """Empty baseline path → don't emit ``--analytic-baseline-kernel``
+        at all, so the script's argparse default (empty string → identity
+        residual) wins."""
+        step = REGISTRY.get("train_transition")
+        argv = step.build_command({"analytic_baseline_kernel": ""})
+        assert "--analytic-baseline-kernel" not in argv
+
     def test_train_transition_step_defaults_match_script(self):
         """When the form omits the augmentation knobs, the step should
         emit defaults that match the script's argparse defaults."""

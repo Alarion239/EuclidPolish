@@ -116,6 +116,7 @@ class HSTtoEuclidTransition(tf.keras.Model):
         channels: int = 12,
         n_inner_layers: int = 3,
         kernel_size: int = 3,
+        baseline_kernel: Optional[np.ndarray] = None,
         name: str = "hst_to_euclid_transition",
         **kwargs,
     ) -> None:
@@ -133,6 +134,53 @@ class HSTtoEuclidTransition(tf.keras.Model):
         self._channels       = int(channels)
         self._n_inner_layers = int(n_inner_layers)
         self._kernel_size    = int(kernel_size)
+
+        # ── Optional analytic-baseline residual. ──────────────────────
+        #
+        # When ``baseline_kernel`` is provided, the forward pass becomes
+        # ``A_θ(x) = (baseline_kernel ⊛ x) + f(x)`` instead of
+        # ``A_θ(x) = x + f(x)``. The kernel is pinned as a NON-TRAINABLE
+        # tf.Variable so it serialises with model.save_weights but
+        # doesn't move under SGD. Typical use: pass the
+        # ``diff_kernel_VIS.fits`` (analytic Wiener inverse) — A_θ
+        # then starts at "approximately correct, modulo known Wiener
+        # artifacts" and only has to learn the artifact-correction
+        # residual, which is small + local + well-suited to a tiny CNN.
+        #
+        # Centre-crop the kernel BEFORE constructing the model: tf.nn.
+        # conv2d scales linearly with kernel area and a 511² baseline
+        # makes every forward pass painfully slow. Most of the kernel's
+        # energy is concentrated in the central few pixels; 31-51 px is
+        # usually plenty.
+        self._has_baseline = baseline_kernel is not None
+        if self._has_baseline:
+            if baseline_kernel.ndim != 2:
+                raise ValueError(
+                    f"baseline_kernel must be 2-D, got "
+                    f"{baseline_kernel.shape}"
+                )
+            if (baseline_kernel.shape[0] != baseline_kernel.shape[1]
+                    or baseline_kernel.shape[0] % 2 == 0):
+                raise ValueError(
+                    f"baseline_kernel must be square + odd-sided; got "
+                    f"{baseline_kernel.shape}"
+                )
+            # Flip for tf.nn.conv2d (cross-correlation → true convolution),
+            # matching the scipy.signal.fftconvolve convention used at
+            # pair-gen + analytic-kernel-validation time.
+            k = baseline_kernel[::-1, ::-1].astype(np.float32, copy=True)
+            kernel = k[:, :, np.newaxis, np.newaxis]
+            self._baseline_kernel = self.add_weight(
+                name="baseline_kernel",
+                shape=kernel.shape,
+                initializer=tf.constant_initializer(kernel),
+                trainable=False,
+                dtype=tf.float32,
+            )
+            self._baseline_kernel_side = int(baseline_kernel.shape[0])
+        else:
+            self._baseline_kernel = None
+            self._baseline_kernel_side = 0
 
         # Small init so residual ≈ identity at start. He/Glorot would
         # also work but pushes f away from zero, breaking the "tiny
@@ -214,12 +262,42 @@ class HSTtoEuclidTransition(tf.keras.Model):
         -------
         ``[B, H, W, 1]`` Euclid-PSF-blurred (same shape, same units).
         """
-        h = self._first(x)
+        # Two residual modes:
+        #
+        #   * ``baseline_kernel=None`` (default): the conv stack ``f``
+        #     sees the raw input ``x`` and produces a correction added
+        #     back to ``x``:
+        #         A_θ(x) = x + f(x)
+        #     At init ``f ≈ 0`` so ``A_θ ≈ Identity``. Model learns
+        #     the entire PSF transition from scratch.
+        #
+        #   * ``baseline_kernel`` given (e.g. the analytic Wiener
+        #     differential kernel): first apply the kernel to get a
+        #     "rough draft" of the Euclid-blurred output (which has
+        #     known Wiener artifacts — checkerboard, FFT-boundary
+        #     rings, spike-mismatch residuals), then feed THAT into
+        #     the CNN ``f``. The CNN's job becomes "clean up the
+        #     analytic kernel's artifacts", which it can do well
+        #     because the artifacts are visible in its input.
+        #         baseline = A_analytic ⊛ x
+        #         A_θ(x) = (1 + f)(baseline) = baseline + f(baseline)
+        #     At init ``f ≈ 0`` so ``A_θ(x) ≈ A_analytic ⊛ x`` — the
+        #     model starts at "approximately correct" and only learns
+        #     the correction.
+        if self._has_baseline:
+            baseline = tf.nn.conv2d(
+                x, self._baseline_kernel, strides=1, padding="SAME",
+            )
+            cnn_input = baseline
+        else:
+            baseline = x
+            cnn_input = x
+
+        h = self._first(cnn_input)
         for layer in self._inner:
             h = layer(h)
         residual = self._last(h)
-        # Residual wrap: A_θ(x) = x + f(x). At init f ≈ 0 → A_θ ≈ Identity.
-        return x + residual
+        return baseline + residual
 
     def get_config(self):
         cfg = super().get_config()
@@ -236,16 +314,19 @@ class HSTtoEuclidTransition(tf.keras.Model):
 # ---------------------------------------------------------------------------
 
 def total_parameter_count(model: HSTtoEuclidTransition) -> int:
-    """Total trainable parameter count, building the model if needed.
+    """**Trainable** parameter count, building the model if needed.
 
     Keras lazy-builds variables on first call. We materialise them by
-    feeding a small dummy input the first time so the count is real
-    (otherwise ``model.count_params()`` raises before ``build``).
+    feeding a small dummy input the first time so the count is real.
+
+    Counts only ``trainable_variables`` so the optional non-trainable
+    ``baseline_kernel`` (which can be 31² or larger) doesn't blow the
+    user-facing param budget. ``model.count_params()`` includes both
+    trainable and non-trainable and would falsely report a 31² baseline
+    as 961 params on top of the actual learnable ~5k.
     """
-    if not model.built:
-        # Use a 1×8×8 dummy — only the variable creation matters.
-        _ = model(tf.zeros((1, 8, 8, 1), dtype=tf.float32))
-    return int(model.count_params())
+    _build_if_needed(model)
+    return int(sum(int(np.prod(v.shape)) for v in model.trainable_variables))
 
 
 def save_model_weights(
@@ -260,8 +341,7 @@ def save_model_weights(
     by the caller via :class:`HSTtoEuclidTransition`'s constructor.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not model.built:
-        _ = model(tf.zeros((1, 8, 8, 1), dtype=tf.float32))
+    _build_if_needed(model)
     model.save_weights(path)
     return path
 
@@ -277,10 +357,24 @@ def load_model_weights(
     schema header to cross-check against. The Keras loader will raise
     on shape mismatch, so a wrong width gets caught at load time.
     """
-    if not model.built:
-        _ = model(tf.zeros((1, 8, 8, 1), dtype=tf.float32))
+    _build_if_needed(model)
     model.load_weights(path)
     return model
+
+
+def _build_if_needed(model: HSTtoEuclidTransition) -> None:
+    """Force Keras to materialise variables.
+
+    Uses a dummy input larger than any baseline kernel so SAME-padding
+    convolutions are well-defined even for big baselines. Centralised
+    here so save/load/count_params all use the same sizing rule.
+    """
+    if model.built:
+        return
+    side = max(8, getattr(model, "_baseline_kernel_side", 0) + 1)
+    if side % 2:
+        side += 1
+    _ = model(tf.zeros((1, side, side, 1), dtype=tf.float32))
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,27 @@
                 border: 1px solid #e2e5ea; border-radius: 3px;">
   </div>
 </section>
+
+<section class="card">
+  <h3>Trained transition model A_θ (CNN)</h3>
+  <p class="hint">When the trained <code>transition_model.weights.h5</code> exists
+     in <code>$DATA_DIR/hst_psf/</code> on FASRC, click <strong>↻ Sync from FASRC</strong>
+     to pull it locally, then inspect what the model does on canonical inputs:
+     a centred point source (δ) and the HST PSF. The bottom row compares
+     <code>sum_rebin(A_θ(PSF_HST))</code> to the Euclid PSF (the actual training
+     objective); the PSF-identity error reported in the title is the model's
+     correctness metric.</p>
+  <button id="btn-validate-tm" type="button"
+          title="Load the local A_θ weights, apply to a centred δ and to PSF_HST, render 3×3 panel grid + diagnostics. Fully offline once sync has run.">
+    🧠 Validate trained A_θ on δ + PSF_HST
+  </button>
+  <span id="validate-tm-msg" class="muted" style="font-size:12px; margin-left:6px;"></span>
+  <div id="validate-tm-wrap" style="display:none; margin-top:10px;">
+    <img id="validate-tm-img" alt="A_θ on δ + PSF_HST"
+         style="max-width: 100%; height: auto; display: block;
+                border: 1px solid #e2e5ea; border-radius: 3px;">
+  </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -139,6 +160,31 @@
         vbtn.disabled = false;
       };
       vimg.src = url;
+    });
+  }
+
+  // ── Validate trained transition-model A_θ ─────────────────────────
+  const tmbtn  = document.getElementById('btn-validate-tm');
+  const tmmsg  = document.getElementById('validate-tm-msg');
+  const tmwrap = document.getElementById('validate-tm-wrap');
+  const tmimg  = document.getElementById('validate-tm-img');
+  if (tmbtn) {
+    tmbtn.addEventListener('click', () => {
+      tmbtn.disabled = true;
+      tmmsg.textContent = 'loading A_θ + applying to δ and PSF_HST…';
+      tmwrap.style.display = 'block';
+      const url = '/hst-psf/transition-validate.png?_t=' + Date.now();
+      tmimg.onload = () => {
+        tmmsg.textContent = '';
+        tmbtn.disabled = false;
+      };
+      tmimg.onerror = () => {
+        tmmsg.textContent =
+          'failed — make sure transition_model.weights.h5 has been synced ' +
+          'from FASRC (use ↻ Sync from FASRC in the toolbar).';
+        tmbtn.disabled = false;
+      };
+      tmimg.src = url;
     });
   }
 

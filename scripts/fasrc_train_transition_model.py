@@ -27,6 +27,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
+from astropy.io import fits
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -80,11 +81,48 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--validate-every", type=int, default=500,
                    help="Run validation + log every N steps.")
     p.add_argument("--channels", type=int, default=12,
-                   help="Hidden channel width C. Default 12 → ~4150 "
-                        "params, inside the 5k budget.")
+                   help="Hidden channel width C. With defaults (K=3, "
+                        "n_inner=3): C=12 → 4153 params (under 5k cap).")
     p.add_argument("--n-inner-layers", type=int, default=3,
                    help="Number of inner ``Conv(C→C)`` layers. Default 3 "
-                        "→ 5 total convs, 11px receptive field.")
+                        "→ 5 total convs. Set to 0 for a 2-layer model "
+                        "(``Conv(1→C) → Conv(C→1)``), useful when paired "
+                        "with a large kernel for a big receptive field "
+                        "at low param count.")
+    p.add_argument("--kernel-size", type=int, default=3,
+                   help="Side length of every Conv2D kernel (odd). "
+                        "Default 3 with 5 layers gives RF=11 px. For a "
+                        "bigger receptive field at lower depth, pair "
+                        "K with n_inner_layers=0:\n"
+                        "  K=21, C=5  → RF=41, ~4400 params\n"
+                        "  K=31, C=2  → RF=61, ~3800 params\n"
+                        "  K=41, C=1  → RF=81, ~3400 params\n"
+                        "Param count = 2·K²·C + n_inner·K²·C² (no biases).")
+    p.add_argument("--max-params", type=int, default=5000,
+                   help="Hard upper bound on TRAINABLE parameter count. "
+                        "The non-trainable analytic baseline kernel (if "
+                        "any) does NOT count against this. Default 5000 "
+                        "enforces the tiny-model contract; raise to "
+                        "e.g. 50000 to experiment with wider channels.")
+    p.add_argument("--analytic-baseline-kernel", type=str, default="",
+                   help="Optional path to ``diff_kernel_VIS.fits`` (the "
+                        "analytic Wiener differential kernel). When set, "
+                        "the model becomes A_θ(x) = (1+f)(A_analytic⊛x) "
+                        "— the analytic kernel is applied first, then "
+                        "the CNN ``f`` learns to clean up its known "
+                        "Wiener artifacts (checkerboard, rings, "
+                        "spike-mismatch residuals). At init A_θ ≈ "
+                        "A_analytic so training starts near the right "
+                        "answer. Empty (default) uses the identity "
+                        "baseline A_θ(x) = x + f(x).")
+    p.add_argument("--baseline-crop", type=int, default=0,
+                   help="Optional centre-crop of the analytic baseline "
+                        "kernel before pinning it as a non-trainable "
+                        "conv. Default 0 keeps the full kernel — "
+                        "preferred so no kernel structure is lost. "
+                        "Pass an odd integer < kernel_side to enable "
+                        "cropping (saves per-step compute at the cost "
+                        "of dropping the wings).")
     p.add_argument("--weight-decay", type=float, default=1e-5,
                    help="L2 regularisation strength applied to conv "
                         "weights. Small — the residual structure already "
@@ -372,6 +410,11 @@ def main() -> int:
     print(f"  rebin_factor            = {args.rebin_factor} "
           f"(loss = ||sum_rebin(A_θ(HR)) − target_LR||)")
     print(f"  add PSF pair to val     = {args.add_psf_pair_to_validation}")
+    if args.analytic_baseline_kernel:
+        print(f"  analytic baseline       = {args.analytic_baseline_kernel}")
+        print(f"    crop to side          = {args.baseline_crop}")
+    else:
+        print(f"  analytic baseline       = (none — identity residual)")
     print()
 
     t0 = time.time()
@@ -379,16 +422,57 @@ def main() -> int:
     np.random.seed(args.seed)
 
     print("[1/4] building model ...")
+
+    # Optional analytic-baseline residual: load + centre-crop the
+    # analytic Wiener differential kernel and pass it to the model.
+    # ``f`` then sees the (artifact-laden) analytic kernel output and
+    # learns to clean it up, instead of learning the full transition
+    # from scratch.
+    baseline_kernel = None
+    if args.analytic_baseline_kernel:
+        if not os.path.isfile(args.analytic_baseline_kernel):
+            print(f"ERROR: --analytic-baseline-kernel path does not exist: "
+                  f"{args.analytic_baseline_kernel}")
+            return 1
+        with fits.open(args.analytic_baseline_kernel) as hdul:
+            full = np.asarray(hdul[0].data, dtype=np.float32)
+        if full.ndim != 2 or full.shape[0] != full.shape[1]:
+            print(f"ERROR: baseline kernel must be a 2-D square array; "
+                  f"got shape {full.shape}")
+            return 1
+        crop = int(args.baseline_crop)
+        if crop > 0 and crop < full.shape[0]:
+            side = crop | 1            # force odd
+            i0 = (full.shape[0] - side) // 2
+            baseline_kernel = full[i0:i0 + side, i0:i0 + side]
+            cropped_flux = float(baseline_kernel.sum())
+            full_flux = float(full.sum())
+            print(f"      analytic baseline: {full.shape} → "
+                  f"{baseline_kernel.shape} (centre crop)")
+            print(f"      cropped flux / full flux = "
+                  f"{cropped_flux / max(full_flux, 1e-12):.4f}")
+        else:
+            baseline_kernel = full
+            print(f"      analytic baseline: {full.shape} "
+                  f"(no crop)  sum={float(full.sum()):.4f}")
+
     model = HSTtoEuclidTransition(
         channels=args.channels,
         n_inner_layers=args.n_inner_layers,
+        kernel_size=args.kernel_size,
+        baseline_kernel=baseline_kernel,
     )
     n_params = total_parameter_count(model)
-    print(f"      params = {n_params:,}  (cap = 5,000)")
-    if n_params > 5000:
-        print(f"      ERROR: model exceeds 5k-param budget. "
-              "Reduce --channels or --n-inner-layers.")
+    max_params = int(args.max_params)
+    print(f"      params = {n_params:,}  (cap = {max_params:,})")
+    if n_params > max_params:
+        print(f"      ERROR: model exceeds --max-params={max_params:,} budget. "
+              "Reduce --channels / --n-inner-layers / --kernel-size, "
+              "or raise --max-params if you intentionally want a bigger model.")
         return 1
+    print(f"      kernel_size = {args.kernel_size}, "
+          f"n_inner_layers = {args.n_inner_layers}, "
+          f"channels = {args.channels}")
     print(f"      receptive field = {model.receptive_field} px "
           f"({model.receptive_field * Config.DEFAULT_PIXEL_SCALE:.3f}\" "
           f"at HR scale)")
@@ -532,6 +616,10 @@ def main() -> int:
         "params":         int(n_params),
         "channels":       int(args.channels),
         "n_inner_layers": int(args.n_inner_layers),
+        "kernel_size":    int(args.kernel_size),
+        "max_params":     int(args.max_params),
+        "analytic_baseline_kernel": str(args.analytic_baseline_kernel or ""),
+        "baseline_crop":  int(args.baseline_crop),
         "steps":          int(args.steps),
         "batch_size":     int(args.batch_size),
         "learning_rate":  float(args.learning_rate),

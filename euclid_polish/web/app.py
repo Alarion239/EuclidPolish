@@ -2217,20 +2217,245 @@ def create_app() -> Flask:
             "sum":         float(a_conv_h.sum()),
         })
 
+    @app.route("/hst-psf/transition-validate.png")
+    def hst_psf_transition_validate_png():
+        """Render the trained transition model A_θ on canonical inputs.
+
+        Pulls ``transition_model.weights.h5`` from FASRC (via the
+        fetcher cache) along with the HST PSF + Euclid VIS PSF. Applies
+        A_θ to:
+
+          * A centred unit-amplitude delta (a "point source") on the HR
+            canvas — output should look like A_θ's implicit kernel.
+          * The HST PSF embedded in the HR canvas — output should
+            approximate the Euclid PSF after sum-rebin.
+
+        Sum-rebins each output by ``rebin_factor`` (read from the
+        model's summary JSON; defaults to 2) and shows the LR result
+        alongside the Euclid target + residual.
+
+        Hyperparameters (channels, n_inner_layers) come from the
+        summary JSON so the constructor matches the saved weights.
+        Falls back to defaults (C=12, 3 inner layers) if the summary
+        isn't present.
+        """
+        from euclid_polish.web.fasrc_fetcher import _local_path_for
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, load_model_weights,
+        )
+        from euclid_polish.training.transition_augmentations import (
+            sum_rebin_2d, embed_in_canvas,
+        )
+        from astropy.io import fits
+        from matplotlib.colors import AsinhNorm
+        import matplotlib.pyplot as plt
+        import importlib.util as _ilu
+
+        cfg = fasrc_config.load()
+        hst_path     = _local_path_for(f"{cfg.data_dir}/hst_psf/F814W.fits")
+        euc_path     = os.path.join(Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits")
+        weights_path = _local_path_for(
+            f"{cfg.data_dir}/hst_psf/transition_model.weights.h5",
+        )
+        summary_path = _local_path_for(
+            f"{cfg.data_dir}/hst_psf/transition_model_summary.json",
+        )
+        for p, label in (
+            (hst_path,     "HST PSF FITS — click Sync first"),
+            (euc_path,     "Euclid VIS PSF FITS — generate it via the PSF tab"),
+            (weights_path, "transition model weights — train it on FASRC + Sync"),
+        ):
+            if not os.path.isfile(p):
+                abort(404, description=f"missing: {p} ({label})")
+
+        # Read hyperparameters from the summary JSON when available;
+        # fall back to defaults that match the most common training run.
+        channels       = 12
+        n_inner_layers = 3
+        kernel_size    = 3
+        rebin_factor   = 2
+        baseline_path  = ""
+        baseline_crop  = 0
+        if os.path.isfile(summary_path):
+            try:
+                with open(summary_path) as f:
+                    s = json.load(f)
+                channels       = int(s.get("channels",       channels))
+                n_inner_layers = int(s.get("n_inner_layers", n_inner_layers))
+                kernel_size    = int(s.get("kernel_size",    kernel_size))
+                rebin_factor   = int(s.get("rebin_factor",   rebin_factor))
+                baseline_path  = str(s.get("analytic_baseline_kernel", ""))
+                baseline_crop  = int(s.get("baseline_crop",  baseline_crop))
+            except Exception:
+                pass
+
+        # If the trained model used an analytic baseline, load + crop
+        # the SAME kernel from the local cache. The kernel must be
+        # reconstructed before the model is built so the layer shapes
+        # match the saved weights file.
+        baseline_kernel = None
+        if baseline_path:
+            local_baseline = _local_path_for(
+                f"{cfg.data_dir}/hst_psf/diff_kernel_VIS.fits",
+            )
+            if os.path.isfile(local_baseline):
+                with fits.open(local_baseline) as hdul:
+                    full = np.asarray(hdul[0].data, dtype=np.float32)
+                if baseline_crop > 0 and baseline_crop < full.shape[0]:
+                    side = baseline_crop | 1
+                    i0 = (full.shape[0] - side) // 2
+                    baseline_kernel = full[i0:i0 + side, i0:i0 + side]
+                else:
+                    baseline_kernel = full
+
+        # Load PSFs on the HR grid, using the SAME resampler the
+        # pair generator + training script use (so the PSF we feed A_θ
+        # here is bit-equivalent to what it saw at training time).
+        repo_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))
+        repo_root = os.path.dirname(repo_root)        # …/EuclidPolish
+        script = os.path.join(repo_root, "scripts",
+                              "fasrc_generate_transition_pairs.py")
+        spec = _ilu.spec_from_file_location("_fgtp", script)
+        mod  = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # Pick a canvas size that comfortably holds the Euclid PSF
+        # support, is divisible by rebin_factor, and matches what the
+        # training pre-flight observed (typical 510² scenes → use 256
+        # here for a snappy diagnostic). The model is fully
+        # convolutional, so canvas size is free to choose.
+        canvas = 256
+        if canvas % rebin_factor != 0:
+            canvas = (canvas // rebin_factor) * rebin_factor
+
+        psf_hst    = mod._load_hst_psf_on_hr(hst_path, 421)
+        psf_euclid = mod._load_euclid_vis_psf_on_hr(421)
+        psf_hst_canvas    = embed_in_canvas(psf_hst,    canvas).astype(np.float32)
+        psf_euclid_canvas = embed_in_canvas(psf_euclid, canvas).astype(np.float32)
+
+        # Build the model and load weights.
+        model = HSTtoEuclidTransition(
+            channels=channels, n_inner_layers=n_inner_layers,
+            kernel_size=kernel_size, baseline_kernel=baseline_kernel,
+        )
+        load_model_weights(model, weights_path)
+
+        # Two canonical inputs.
+        delta = np.zeros((canvas, canvas), dtype=np.float32)
+        delta[canvas // 2, canvas // 2] = 1.0
+
+        # Apply A_θ to each via a single batched call.
+        x = np.stack([delta, psf_hst_canvas], axis=0)[..., np.newaxis]
+        y = model(x.astype(np.float32), training=False).numpy()[..., 0]
+        out_delta = y[0]
+        out_hst   = y[1]
+
+        # Sum-rebin to LR for the bottom row + the PSF-identity probe.
+        out_delta_lr = sum_rebin_2d(out_delta, rebin_factor)
+        out_hst_lr   = sum_rebin_2d(out_hst,   rebin_factor)
+        euc_lr       = sum_rebin_2d(psf_euclid_canvas, rebin_factor)
+        residual_lr  = out_hst_lr - euc_lr
+
+        # Scalar diagnostics.
+        psf_id_err = (
+            float(np.abs(residual_lr).sum())
+            / (float(np.abs(euc_lr).sum()) + 1e-12)
+        )
+        peak_ratio_pt = (
+            float(out_delta.max()) / 1.0   # input peak is 1.0
+        )
+        flux_in_hst   = float(psf_hst_canvas.sum())
+        flux_out_hst  = float(out_hst.sum())
+        flux_out_lr   = float(out_hst_lr.sum())
+        flux_target_lr = float(euc_lr.sum())
+
+        # Render 3 × 3 panel grid. Use asinh stretch for the PSF
+        # panels so the wings + spikes show up alongside the core.
+        fig, axes = plt.subplots(3, 3, figsize=(13, 12), dpi=110)
+
+        def _imshow_psf(ax, arr, title, vmax=None):
+            if vmax is None:
+                vmax = max(float(arr.max()), 1e-9)
+            scale = max(vmax * 0.01, 1e-12)
+            norm = AsinhNorm(linear_width=scale, vmin=0.0, vmax=vmax)
+            ax.imshow(arr, cmap="gray_r", norm=norm, origin="lower")
+            ax.set_title(title, fontsize=9)
+            ax.set_xticks([]); ax.set_yticks([])
+
+        def _imshow_residual(ax, arr, title):
+            r_lim = float(np.max(np.abs(arr)))
+            if r_lim <= 0:
+                r_lim = 1.0
+            norm = AsinhNorm(
+                linear_width=max(r_lim * 0.01, 1e-12),
+                vmin=-r_lim, vmax=+r_lim,
+            )
+            ax.imshow(arr, cmap="RdBu_r", norm=norm, origin="lower")
+            ax.set_title(title, fontsize=9)
+            ax.set_xticks([]); ax.set_yticks([])
+
+        # Row 1 — point source path.
+        _imshow_psf(axes[0, 0], delta,         "point source input (HR, δ)")
+        _imshow_psf(axes[0, 1], out_delta,     f"A_θ(δ) [HR]  peak={out_delta.max():.3e}")
+        _imshow_psf(axes[0, 2], out_delta_lr,  f"sum_rebin(A_θ(δ)) [LR]  peak={out_delta_lr.max():.3e}")
+
+        # Row 2 — HST PSF path.
+        _imshow_psf(axes[1, 0], psf_hst_canvas, f"PSF_HST input (HR)  flux={flux_in_hst:.4f}")
+        _imshow_psf(axes[1, 1], out_hst,        f"A_θ(PSF_HST) [HR]  flux={flux_out_hst:.4f}")
+        _imshow_psf(axes[1, 2], out_hst_lr,
+                    f"sum_rebin(A_θ(PSF_HST)) [LR]\n"
+                    f"flux={flux_out_lr:.4f}")
+
+        # Row 3 — target Euclid PSF + residual + |residual|.
+        _imshow_psf(axes[2, 0], euc_lr,
+                    f"target: sum_rebin(PSF_Euclid) [LR]\n"
+                    f"flux={flux_target_lr:.4f}")
+        _imshow_residual(axes[2, 1], residual_lr,
+                         f"sum_rebin(A_θ(PSF_HST)) − target [LR]\n"
+                         f"max|res|={np.abs(residual_lr).max():.3e}")
+        _imshow_psf(axes[2, 2], np.abs(residual_lr),
+                    f"|residual| [LR]")
+
+        baseline_tag = (
+            f"baseline=analytic({baseline_kernel.shape[0]}²)"
+            if baseline_kernel is not None else "baseline=identity"
+        )
+        fig.suptitle(
+            f"A_θ inspector  —  K={kernel_size}, "
+            f"n_inner_layers={n_inner_layers}, C={channels}, "
+            f"RF={model.receptive_field} px, rebin={rebin_factor}, "
+            f"{baseline_tag}  "
+            f"|  PSF identity err = {psf_id_err:.4f}  "
+            f"|  point-source peak = {peak_ratio_pt:.3f}",
+            fontsize=11, y=0.99,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.2)
+        plt.close(fig)
+        return send_file(io.BytesIO(buf.getvalue()),
+                         mimetype="image/png", max_age=0)
+
     @app.route("/api/hst-psf/sync", methods=["POST"])
     def api_hst_psf_sync():
-        """Re-rsync the HST PSF + differential kernel from FASRC.
+        """Re-rsync the HST PSF + differential kernel + trained
+        transition-model weights from FASRC.
 
-        Bypasses the fetcher's 5-minute cache (``force=True``) so a kernel
-        you just rebuilt on FASRC shows up in the local view without
-        waiting. Reports per-file status so the UI can tell the user
-        which ones updated and which (if any) failed.
+        Bypasses the fetcher's 5-minute cache (``force=True``) so a
+        kernel/model you just rebuilt on FASRC shows up locally without
+        waiting. Reports per-file status. Files that don't exist on
+        FASRC (e.g. you haven't trained A_θ yet) are reported as
+        failed individually but don't block the others.
         """
         from euclid_polish.web.fasrc_fetcher import fetch_one_file
         cfg_loaded = fasrc_config.load()
         targets = {
-            "psf":    f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
-            "kernel": f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+            "psf":              f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
+            "kernel":           f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+            "transition_model": f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
+            "transition_summary":
+                f"{cfg_loaded.data_dir}/hst_psf/transition_model_summary.json",
         }
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False

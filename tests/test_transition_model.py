@@ -45,7 +45,9 @@ class TestParameterBudget:
         assert total_parameter_count(m) > 5_000
 
     def test_param_formula_matches_analytic(self):
-        """27·C² + 18·C should match the actual param count exactly.
+        """``2·K²·C + n_inner·K²·C²`` (no biases) should equal the
+        actual trainable-parameter count exactly, for any combination
+        of (channels, n_inner_layers, kernel_size).
 
         Formula assumes ``use_bias=False`` on every Conv2D (load-bearing
         for scale invariance — see the model module's __init__ doc).
@@ -53,12 +55,165 @@ class TestParameterBudget:
         from euclid_polish.training.transition_model import (
             HSTtoEuclidTransition, total_parameter_count,
         )
-        for C in (4, 8, 12, 13):
-            m = HSTtoEuclidTransition(channels=C, n_inner_layers=3)
-            expected = 27 * C * C + 18 * C
+        cases = [
+            # (C, n_inner, K)
+            ( 4, 3, 3),       # tiny
+            ( 8, 3, 3),
+            (12, 3, 3),       # default
+            (13, 3, 3),
+            (12, 0, 3),       # 2-layer mini
+            (12, 0, 11),      # 2-layer K=11
+            ( 5, 0, 21),      # 2-layer K=21 — large RF, ≤ 5k params
+            ( 1, 0, 41),      # 2-layer K=41 single hidden ch
+            ( 8, 1, 11),      # mixed
+        ]
+        for C, n_inner, K in cases:
+            m = HSTtoEuclidTransition(
+                channels=C, n_inner_layers=n_inner, kernel_size=K,
+            )
+            expected = 2 * K * K * C + n_inner * K * K * C * C
             assert total_parameter_count(m) == expected, (
-                f"param count mismatch at C={C}: "
+                f"param count mismatch at C={C}, n_inner={n_inner}, K={K}: "
                 f"got {total_parameter_count(m)}, expected {expected}"
+            )
+
+    def test_2layer_large_kernel_fits_5k_budget(self):
+        """Several large-RF / shallow architectures the user might pick
+        must fit under the default 5k cap. Regression on the table
+        documented in --kernel-size help."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, total_parameter_count,
+        )
+        # All of these were advertised as ≤ 5k in the form tooltip.
+        for C, n_inner, K, label in [
+            (12, 0, 11, "K=11 C=12 n=0 → RF=21"),
+            ( 5, 0, 21, "K=21 C=5  n=0 → RF=41"),
+            ( 2, 0, 31, "K=31 C=2  n=0 → RF=61"),
+            ( 1, 0, 41, "K=41 C=1  n=0 → RF=81"),
+        ]:
+            m = HSTtoEuclidTransition(
+                channels=C, n_inner_layers=n_inner, kernel_size=K,
+            )
+            n = total_parameter_count(m)
+            assert n <= 5000, f"{label} should fit 5k but has {n} params"
+
+    def test_baseline_kernel_not_counted_as_trainable(self):
+        """The non-trainable analytic baseline kernel must NOT count
+        against the trainable-param budget. Without the
+        ``trainable_variables``-only check in total_parameter_count,
+        a 31² baseline would falsely add 961 "params" and bust the cap.
+        """
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, total_parameter_count,
+        )
+        # A 31² delta — stand-in for the analytic kernel shape.
+        baseline = np.zeros((31, 31), dtype=np.float32)
+        baseline[15, 15] = 1.0
+        m_no_baseline = HSTtoEuclidTransition(
+            channels=12, n_inner_layers=3, kernel_size=3,
+        )
+        m_with_baseline = HSTtoEuclidTransition(
+            channels=12, n_inner_layers=3, kernel_size=3,
+            baseline_kernel=baseline,
+        )
+        n_no   = total_parameter_count(m_no_baseline)
+        n_with = total_parameter_count(m_with_baseline)
+        assert n_no == n_with, (
+            f"trainable param count must not change when adding a "
+            f"baseline kernel; got {n_no} vs {n_with}"
+        )
+
+    def test_baseline_kernel_initial_output_equals_baseline_conv(self):
+        """With baseline_kernel set and the residual init ≈ 0, the
+        model's output at init must equal ``baseline_kernel ⊛ x``
+        (to within float32 round-off), NOT just ``x``."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        from scipy.signal import fftconvolve
+        rng = np.random.default_rng(0)
+        # Make a simple non-trivial kernel: 5x5 box averager.
+        baseline = np.ones((5, 5), dtype=np.float32) / 25.0
+        m = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+            baseline_kernel=baseline,
+        )
+        x_np = rng.uniform(0, 100, size=(1, 32, 32, 1)).astype(np.float32)
+        y = m(x_np).numpy()[0, :, :, 0]
+        # Expected: baseline ⊛ x + tiny residual.
+        expected_baseline = fftconvolve(
+            x_np[0, :, :, 0], baseline, mode="same",
+        )
+        # The CNN residual at init is bounded by the small init
+        # weights * stack depth; for our (init stddev=0.01, 3 layers,
+        # 4 channels) the typical residual is well below 1e-1 even on
+        # input scale ~100. So baseline + residual ≈ baseline within ~5%.
+        rel = (np.abs(y - expected_baseline).mean()
+               / (np.abs(expected_baseline).mean() + 1e-12))
+        assert rel < 0.5, (
+            f"with baseline_kernel set, A_θ(x) at init should ≈ "
+            f"baseline ⊛ x. Got rel.err={rel:.3f}"
+        )
+
+    def test_baseline_kernel_rejects_non_square(self):
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        with pytest.raises(ValueError, match="square"):
+            HSTtoEuclidTransition(
+                baseline_kernel=np.zeros((3, 5), dtype=np.float32),
+            )
+
+    def test_baseline_kernel_rejects_even_side(self):
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        with pytest.raises(ValueError, match="odd"):
+            HSTtoEuclidTransition(
+                baseline_kernel=np.zeros((4, 4), dtype=np.float32),
+            )
+
+    def test_baseline_kernel_save_load_roundtrip(self, tmp_path):
+        """A model trained with a baseline kernel must round-trip
+        through save_weights / load_weights without losing the baseline.
+        The trainer-side load path reconstructs the model with the
+        same baseline_kernel argument BEFORE loading the weights."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition, save_model_weights, load_model_weights,
+        )
+        rng = np.random.default_rng(1)
+        baseline = rng.uniform(0, 1, size=(7, 7)).astype(np.float32)
+        baseline /= baseline.sum()
+        m1 = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+            baseline_kernel=baseline,
+        )
+        # Run a forward pass to make the variables real.
+        x = tf.random.uniform((1, 16, 16, 1), seed=4) * 50.0
+        y1 = m1(x).numpy()
+        path = tmp_path / "weights.weights.h5"
+        save_model_weights(m1, str(path))
+
+        m2 = HSTtoEuclidTransition(
+            channels=4, n_inner_layers=1, kernel_size=3,
+            baseline_kernel=baseline,
+        )
+        load_model_weights(m2, str(path))
+        y2 = m2(x).numpy()
+        np.testing.assert_allclose(y1, y2, atol=1e-6)
+
+    def test_2layer_receptive_field(self):
+        """2-layer model (n_inner=0) with kernel K has RF = 2(K−1) + 1."""
+        from euclid_polish.training.transition_model import (
+            HSTtoEuclidTransition,
+        )
+        for K in (3, 5, 11, 21, 41):
+            m = HSTtoEuclidTransition(
+                channels=4, n_inner_layers=0, kernel_size=K,
+            )
+            assert m.receptive_field == 2 * (K - 1) + 1, (
+                f"K={K}: expected RF={2*(K-1)+1}, "
+                f"got {m.receptive_field}"
             )
 
 

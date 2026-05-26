@@ -385,22 +385,34 @@ class TransitionTrainStep(FASRCPipelineStep):
         learning_rate  = float(params.get("learning_rate", 2e-3))
         channels       = int(params.get("channels", 12))
         n_inner_layers = int(params.get("n_inner_layers", 3))
+        kernel_size    = int(params.get("kernel_size", 3))
+        max_params     = int(params.get("max_params", 5000))
         star_frac      = float(params.get("star_injection_fraction", 0.2))
         max_stars      = int(params.get("max_stars_per_image", 8))
         lin_combo_frac = float(params.get("linear_combo_fraction", 0.3))
         rebin_factor   = int(params.get("rebin_factor", 2))
-        return [
+        # Empty string → identity baseline (default); a path → analytic
+        # Wiener kernel pinned as the model's non-trainable baseline.
+        baseline_path  = str(params.get("analytic_baseline_kernel", "")).strip()
+        baseline_crop  = int(params.get("baseline_crop", 0))
+        cmd = [
             "scripts/fasrc_train_transition_model.py",
             "--steps",                    str(steps),
             "--batch-size",               str(batch_size),
             "--learning-rate",            f"{learning_rate:g}",
             "--channels",                 str(channels),
             "--n-inner-layers",           str(n_inner_layers),
+            "--kernel-size",              str(kernel_size),
+            "--max-params",               str(max_params),
             "--star-injection-fraction",  f"{star_frac:g}",
             "--max-stars-per-image",      str(max_stars),
             "--linear-combo-fraction",    f"{lin_combo_frac:g}",
             "--rebin-factor",             str(rebin_factor),
+            "--baseline-crop",            str(baseline_crop),
         ]
+        if baseline_path:
+            cmd += ["--analytic-baseline-kernel", baseline_path]
+        return cmd
 
 
 class HSTTFRecordStep(FASRCPipelineStep):

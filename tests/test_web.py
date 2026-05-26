@@ -143,6 +143,27 @@ def test_transition_pair_view_rejects_bad_subset(client):
     assert r.status_code in (400, 404)
 
 
+def test_transition_model_validate_404s_when_weights_missing(client, tmp_path,
+                                                              monkeypatch):
+    """The transition-model inspector endpoint loads the trained
+    A_θ weights from local FASRC cache. When the weights file hasn't
+    been synced yet, the route should 404 with a clear hint, not 500."""
+    # Point fasrc_config at a tmp dir so the cache resolves to an
+    # empty location and the route's existence check fires.
+    from euclid_polish.web import fasrc_config
+    cfg = fasrc_config.FasrcConfig(
+        ssh_user="x", repo_path=str(tmp_path),
+        data_dir=str(tmp_path / "data"),
+        ckpt_dir=str(tmp_path / "ckpt"),
+    )
+    monkeypatch.setattr(fasrc_config, "load", lambda: cfg)
+    r = client.get("/hst-psf/transition-validate.png")
+    assert r.status_code == 404
+    # Description should mention what's missing (HST PSF, weights,
+    # or Euclid PSF). Body is HTML for abort(404, description=...).
+    assert b"missing" in r.data.lower()
+
+
 def test_inference_page_renders(client):
     r = client.get("/inference")
     assert r.status_code == 200
