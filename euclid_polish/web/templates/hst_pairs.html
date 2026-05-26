@@ -5,6 +5,8 @@
 {% block toolbar %}
 <div class="toolbar">
   <span class="toolbar-label">Type</span>
+  <a class="chip" data-group="kind" data-value="pair"
+     title="side-by-side: clean HR | dirty LR | HR-VIS target">pair (triptych)</a>
   <a class="chip" data-group="kind" data-value="clean">clean (4-band HR)</a>
   <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
   <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
@@ -110,6 +112,16 @@ let curIdx = 0;
 function maxIdx() {
   const k = polishUI.viz.get("kind");
   const s = polishUI.viz.get("subset");
+  // For the triptych view, the cap is the min of all three shard
+  // counts — you can only render an index that exists in clean AND
+  // dirty AND hr (they should all match if step 4 wrote cleanly, but
+  // a truncated shard from an interrupted sync can leave them
+  // unequal).
+  if (k === "pair") {
+    const ns = [totals[`clean_${s}`], totals[`dirty_${s}`], totals[`hr_${s}`]]
+      .map(v => (v == null ? 0 : v));
+    return Math.max(0, Math.min(...ns) - 1);
+  }
   return Math.max(0, (totals[`${k}_${s}`] || 0) - 1);
 }
 function clampIdx(i) {
@@ -155,7 +167,9 @@ polishUI.viz.bind({
     `&band=${sel.band}&i=${sel.i}`,
   // Default to validate because that's what the Sync button pulls by
   // default — train is a separate (slow) opt-in.
-  initial:   { kind: "clean", subset: "{{ default_subset }}",
+  // Default to triptych so the page opens on the most useful view for
+  // "inspect a pair". Single-image kinds are still one click away.
+  initial:   { kind: "pair", subset: "{{ default_subset }}",
                band: "VIS", i: 0 },
 });
 

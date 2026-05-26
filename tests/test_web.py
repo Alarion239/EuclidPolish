@@ -471,6 +471,113 @@ def test_hst_pairs_page_renders(client):
     # Toolbar bands match /sky's set so the same chip layout works.
     for n in ("VIS", "Y_E", "J_E", "H_E", "color"):
         assert n in body
+    # Pair (triptych) view chip — the default landing view.
+    assert "pair (triptych)" in body, (
+        "expected 'pair (triptych)' chip in the Type toolbar — the "
+        "side-by-side clean/dirty/HR view should be available + the "
+        "page's initial selection."
+    )
+
+
+def test_view_hst_pair_pair_kind_404_when_not_synced(
+        client, tmp_path, monkeypatch):
+    """The triptych path reads three shards (clean/dirty/hr); when
+    none are cached, it must 404 — not 500 — same as single-image
+    kinds. Regression on the multi-shard composite path."""
+    from euclid_polish.web import fasrc_fetcher as ff
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    r = client.get("/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0")
+    assert r.status_code == 404
+
+
+def test_view_hst_pair_pair_kind_rejects_bad_band(client):
+    """Invalid band string must still 400 even on the triptych path."""
+    r = client.get("/view/hst-pair?subset=validate&kind=pair&band=BOGUS&i=0")
+    assert r.status_code == 400
+
+
+def test_view_hst_pair_pair_kind_rejects_bad_subset(client):
+    r = client.get("/view/hst-pair?subset=foo&kind=pair&band=VIS&i=0")
+    assert r.status_code == 400
+
+
+def test_view_hst_pair_pair_kind_renders_real_png(
+        client, tmp_path, monkeypatch):
+    """End-to-end: write synthetic clean/dirty/hr shards into a tmp
+    cache dir, request the triptych for idx=0, and assert the response
+    is a real PNG. Catches any composite-layout / matplotlib bug that
+    the 400/404 tests can't see (those bail before the renderer runs).
+    """
+    import numpy as np
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import (
+        open_multiband_writer, tfrecord_path,
+    )
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import remote as web_remote
+    from euclid_polish.web import fasrc_config
+
+    # Point the local cache at tmp_path and the remote at a fixed
+    # absolute path so _hst_pairs_local_dir resolves under tmp_path.
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    # Override the FASRC config's data_dir → we want
+    # _hst_pairs_remote_dir() → "{data_dir}/images/records_v2_hst" to
+    # land somewhere stable, but the renderer only reads the LOCAL
+    # cache (set above). The remote dir just feeds into the cache-path
+    # hash used by ``_local_path_for``.
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-data"}
+        ),
+    )
+
+    # Resolve the local cache dir the same way the app does, then
+    # write three matching synthetic shards into it.
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-data/images/records_v2_hst"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/clean_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+
+    H, W = 32, 32
+    rng = np.random.default_rng(0)
+    for kind, n_bands, scale in [
+        ("clean", len(Config.LR_INPUT_BAND_NAMES), 0.05),  # HR grid
+        ("dirty", len(Config.LR_INPUT_BAND_NAMES), 0.10),  # LR grid
+        ("hr",    1,                               0.05),  # VIS HR
+    ]:
+        data = rng.uniform(0, 100, size=(H, W, n_bands)).astype(np.float32)
+        band_names = (Config.LR_INPUT_BAND_NAMES if n_bands == 4
+                      else ("VIS",))
+        img = MultiBandSkyImage(
+            data=data, pixel_scale_arcsec=scale,
+            band_names=band_names, is_clean=(kind != "dirty"),
+            metadata={"source": "test"},
+        )
+        with open_multiband_writer(
+            f"{kind}_validate", records_dir=local_dir,
+        ) as w:
+            w.write(img, index=0)
+        assert os.path.exists(
+            tfrecord_path(local_dir, f"{kind}_validate")
+        ), f"failed to write {kind}_validate.tfrecord"
+
+    r = client.get(
+        "/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0"
+    )
+    assert r.status_code == 200, (
+        f"triptych endpoint returned {r.status_code}; "
+        f"body={r.data[:200]!r}"
+    )
+    # Real PNG starts with the 8-byte magic header.
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n", (
+        "response is not a PNG — composite renderer probably errored "
+        "and matplotlib returned empty bytes"
+    )
 
 
 def test_view_hst_pair_invalid_subset_400(client):

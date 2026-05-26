@@ -1573,6 +1573,107 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     return buf.getvalue()
 
 
+def _render_sky_record_pair_png(subset: str, band: str, index: int,
+                                records_dir: Optional[str] = None) -> bytes:
+    """Side-by-side triptych for one (clean, dirty, HR) pair.
+
+    Pulls the three TFRecord files at the same ``index`` and renders
+    them in a single figure: clean HR (4-band) ┃ dirty LR (4-band) ┃
+    HR-VIS target (1-band). Same asinh stretch + percentile clip as the
+    single-image renderer, but each panel computes its own clip from
+    its own data so the LR panel doesn't get crushed by the HR's wider
+    dynamic range.
+
+    ``band`` ∈ ``Config.LR_INPUT_BAND_NAMES`` ∪ {"color"}. With
+    ``band="color"`` the clean + dirty panels use the 4-band Lupton
+    RGB; the HR panel always uses VIS grayscale (it's a single-band
+    record).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from euclid_polish.sky.tfrecord import (
+        read_multiband_skyimages, tfrecord_path,
+    )
+
+    if subset not in ("train", "validate"):
+        abort(400)
+    if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
+        abort(400)
+
+    base_dir = records_dir or Config.RECORDS_DIR_V2
+    panels: Dict[str, Any] = {}
+    for kind in ("clean", "dirty", "hr"):
+        path = tfrecord_path(base_dir, f"{kind}_{subset}")
+        if not os.path.exists(path):
+            abort(404)
+        records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+        if not records or index >= len(records):
+            abort(404)
+        panels[kind] = records[min(index, len(records) - 1)]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.4))
+
+    def _show_grayscale(ax, img, band_name: str, title: str) -> None:
+        data = img.data
+        if data.shape[-1] == 1:
+            plane = data[..., 0]
+            band_name = "VIS"
+        else:
+            k = list(Config.LR_INPUT_BAND_NAMES).index(band_name)
+            plane = data[..., k]
+        bcfg = Config.get_band(band_name)
+        stretched = np.arcsinh(plane / float(bcfg.asinh_stretch_scale_e))
+        lo, hi = np.percentile(stretched, [1.0, 99.7])
+        if hi <= lo:
+            hi = lo + 1.0
+        ax.imshow(stretched, cmap="gray_r", origin="lower",
+                  vmin=lo, vmax=hi)
+        ax.set_title(
+            f"{title}  ({data.shape[0]}×{data.shape[1]} @ "
+            f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
+        )
+        ax.set_xticks([]); ax.set_yticks([])
+
+    def _show_color(ax, img, title: str) -> None:
+        from euclid_polish.visualization.color import calibrated_rgb_panel
+        rgb = calibrated_rgb_panel(
+            img.data, band_names=Config.LR_INPUT_BAND_NAMES,
+            scheme="vis_nisp", reference="solar", stretch="asinh",
+            asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
+        )
+        ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
+                  interpolation="nearest")
+        ax.set_title(
+            f"{title}  ({img.data.shape[0]}×{img.data.shape[1]} @ "
+            f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
+        )
+        ax.set_xticks([]); ax.set_yticks([])
+
+    for ax, kind, title in [
+        (axes[0], "clean", f"clean HR · idx {panels['clean'].index}"),
+        (axes[1], "dirty", f"dirty LR · idx {panels['dirty'].index}"),
+        (axes[2], "hr",    f"HR target · idx {panels['hr'].index}"),
+    ]:
+        img = panels[kind]
+        # HR target is VIS-only — never has 4 bands, so always grayscale.
+        if band == "color" and kind != "hr":
+            _show_color(ax, img, title)
+        else:
+            _show_grayscale(ax, img, band, title)
+
+    fig.suptitle(
+        f"HST → Euclid pair · {subset} · idx {index} · band={band}",
+        fontsize=11, y=1.02,
+    )
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=100, bbox_inches="tight", format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     """Render a catalog visualization: positions or magnitude histogram."""
     import matplotlib
@@ -2971,10 +3072,20 @@ def create_app() -> Flask:
             idx = int(request.args.get("i", 0))
         except ValueError:
             idx = 0
-        png = _render_sky_record_png(
-            subset, kind, band, idx,
-            records_dir=_hst_pairs_local_dir(),
-        )
+        # kind="pair" routes to the side-by-side triptych so the user
+        # can compare HR clean / LR dirty / HR target at one index
+        # without chip-toggling. All other kinds use the single-image
+        # renderer for back-compat with bookmarks + direct links.
+        if kind == "pair":
+            png = _render_sky_record_pair_png(
+                subset, band, idx,
+                records_dir=_hst_pairs_local_dir(),
+            )
+        else:
+            png = _render_sky_record_png(
+                subset, kind, band, idx,
+                records_dir=_hst_pairs_local_dir(),
+            )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/api/hst-pairs/totals")
