@@ -320,6 +320,174 @@ def test_transition_pair_view_renders_denoiser_strip(
     assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+def test_transition_pair_fits_download_returns_real_fits(
+        client, tmp_path, monkeypatch):
+    """End-to-end: write a synthetic input_validate.tfrecord, hit
+    ``/view/transition-pair.fits``, parse the returned bytes with
+    astropy and verify the array is the same shape + dtype as the
+    record content. No asinh, no clip — raw linear values."""
+    import io as _io
+    import numpy as np
+    from astropy.io import fits
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-fits-test"}
+        ),
+    )
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-fits-test/images/records_transition"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/input_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+    rng = np.random.default_rng(123)
+    payload = rng.uniform(0, 500, size=(32, 32, 1)).astype(np.float32)
+    img = MultiBandSkyImage(
+        data=payload,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    r = client.get(
+        "/view/transition-pair.fits?subset=validate&kind=input&i=0"
+    )
+    assert r.status_code == 200, (
+        f"FITS endpoint returned {r.status_code}; body={r.data[:200]!r}"
+    )
+    assert r.mimetype == "application/fits"
+    cd = r.headers.get("Content-Disposition", "")
+    assert "transition_input_validate_0.fits" in cd, (
+        f"Content-Disposition should suggest a filename; got {cd!r}"
+    )
+    with fits.open(_io.BytesIO(r.data)) as h:
+        assert len(h) >= 1
+        # PrimaryHDU carries the array.
+        arr = np.asarray(h[0].data, dtype=np.float32)
+        assert arr.shape == (32, 32)
+        # Linear values, not asinh-stretched / clipped.
+        assert arr.min() >= 0 and arr.max() <= 500 + 1e-3
+        # Metadata propagated.
+        hdr = h[0].header
+        assert hdr.get("KIND") == "input"
+        assert hdr.get("SUBSET") == "validate"
+        assert int(hdr.get("INDEX")) == 0
+
+
+def test_transition_pair_fits_hst_pair_kind_has_two_hdus(
+        client, tmp_path, monkeypatch):
+    """``kind=hst_pair`` should return a multi-HDU FITS with both
+    CLEAN and NOISY arrays under their own EXTNAMEs."""
+    import io as _io
+    import numpy as np
+    from astropy.io import fits
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-fits-pair"}
+        ),
+    )
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-fits-pair/images/records_transition"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/input_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+    rng = np.random.default_rng(99)
+    img = MultiBandSkyImage(
+        data=rng.uniform(0, 200, (32, 32, 1)).astype(np.float32),
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=("VIS",), is_clean=True,
+    )
+    with open_multiband_writer("input_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    r = client.get(
+        "/view/transition-pair.fits?subset=validate&kind=hst_pair&i=0"
+        "&alpha=0.8&sigma_floor=10"
+    )
+    assert r.status_code == 200
+    with fits.open(_io.BytesIO(r.data)) as h:
+        extnames = {hdu.header.get("EXTNAME") for hdu in h}
+        assert "CLEAN" in extnames
+        assert "NOISY" in extnames
+        # Noise params recorded.
+        prim = h[0].header
+        assert float(prim.get("ALPHA")) == 0.8
+        assert float(prim.get("SIGFLOOR")) == 10.0
+
+
+def test_hst_pair_fits_download_returns_full_band_cube(
+        client, tmp_path, monkeypatch):
+    """``/view/hst-pair.fits`` must preserve all 4 bands of a
+    multi-band record (not just the displayed one). The band chip
+    on the page is a display-time choice; the FITS download always
+    carries every channel for offline analysis."""
+    import io as _io
+    import numpy as np
+    from astropy.io import fits
+    from euclid_polish.config import Config
+    from euclid_polish.sky.tfrecord import open_multiband_writer
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web import fasrc_fetcher as ff
+    from euclid_polish.web import fasrc_config
+
+    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    cfg = fasrc_config.load()
+    monkeypatch.setattr(
+        fasrc_config, "load",
+        lambda *_a, **_kw: cfg.__class__(
+            **{**cfg.__dict__, "data_dir": "/tmp/fasrc-fits-hst"}
+        ),
+    )
+    from euclid_polish.web.fasrc_fetcher import _local_path_for
+    remote_dir = "/tmp/fasrc-fits-hst/images/records_v2_hst"
+    local_dir = os.path.dirname(
+        _local_path_for(f"{remote_dir}/clean_validate.tfrecord")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+    rng = np.random.default_rng(7)
+    data = rng.uniform(0, 800, size=(32, 32, 4)).astype(np.float32)
+    img = MultiBandSkyImage(
+        data=data,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=Config.LR_INPUT_BAND_NAMES,
+        is_clean=True,
+    )
+    with open_multiband_writer("clean_validate", records_dir=local_dir) as w:
+        w.write(img, index=0)
+
+    r = client.get(
+        "/view/hst-pair.fits?subset=validate&kind=clean&i=0&band=VIS"
+    )
+    assert r.status_code == 200
+    with fits.open(_io.BytesIO(r.data)) as h:
+        arr = np.asarray(h[0].data, dtype=np.float32)
+        # Full 4-band cube, NOT just the VIS slice the band chip would
+        # have displayed.
+        assert arr.shape == (32, 32, 4), (
+            f"FITS download should keep all bands; got shape {arr.shape}"
+        )
+
+
 def test_transition_pair_view_rejects_negative_alpha_gracefully(client):
     """Malformed noise param shouldn't 500; the route's safe-float
     fallback should drop into a default. Even with no records cached

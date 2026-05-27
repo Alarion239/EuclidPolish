@@ -24,6 +24,8 @@ from typing import Literal
 
 import numpy as np
 
+from scipy.ndimage import zoom
+
 
 # ---------------------------------------------------------------------------
 # 1-D kernels
@@ -166,7 +168,6 @@ def cubic_upsample(arr_2d: np.ndarray, factor: int) -> np.ndarray:
         raise ValueError(f"factor must be ≥ 1, got {factor}")
     if factor == 1:
         return arr_2d.copy()
-    from scipy.ndimage import zoom
     return zoom(arr_2d, zoom=factor, order=3, mode="nearest", grid_mode=True)
 
 

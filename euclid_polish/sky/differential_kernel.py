@@ -49,6 +49,8 @@ import numpy as np
 from astropy.io import fits
 from scipy import signal as scipy_signal
 
+from scipy.ndimage import shift as _ndshift
+
 
 # ---------------------------------------------------------------------------
 # Pure-numpy core
@@ -116,7 +118,6 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     within 1e-3 of a pixel (cheap guard against introducing
     interpolation round-off when there's nothing to fix).
     """
-    from scipy.ndimage import shift as _ndshift
 
     pos = np.maximum(arr, 0.0)
     total = float(pos.sum())
@@ -281,7 +282,6 @@ def compute_differential_kernel(
         # forward-modelled "Euclid-like" LR sub-pixel-shifted from
         # what real Euclid actually observes. See the docstring's
         # `recenter` section for the derivation.
-        from scipy.ndimage import shift as _ndshift
         a = _ndshift(
             a.astype(np.float64),
             shift=(cy_e - cy_h, cx_e - cx_h),

@@ -11,6 +11,98 @@ from __future__ import annotations
 # crash with "Cannot create a GUI FigureManager outside the main thread"
 # whenever a job called ``plt.figure``.
 import matplotlib  # noqa: E402  (must precede any other matplotlib user)
+
+from euclid_polish.sky.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.multiband_generator import (
+MultiBandGeneratorConfig, MultiBandSimulator,
+)
+from euclid_polish.sky.tfrecord import open_multiband_writer
+import tensorflow as tf
+from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.sky.multiband_forward import (
+MultiBandForward, MultiBandForwardConfig,
+)
+from euclid_polish.sky.tfrecord import (
+open_multiband_writer, tfrecord_path,
+)
+from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.euclid.downloader import (
+DownloadConfig, EuclidCutoutDownloader,
+)
+from euclid_polish.euclid.psf_extractor import (
+PSFExtractionConfig, PSFExtractor,
+)
+from euclid_polish.euclid.validator import FitsValidator
+from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+from euclid_polish.training import Trainer
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.training.models.wdsr import wdsr
+from euclid_polish.training.inference import load_model_from_checkpoint
+from euclid_polish.training.log_plot import plot_training_log
+from euclid_polish.sky.tfrecord import (
+read_multiband_skyimages, tfrecord_path,
+)
+from euclid_polish.training.inference import (
+load_model_from_checkpoint, reconstruct, plot_reconstruction,
+)
+from astropy.io import fits as _fits
+from astropy.io import fits
+from euclid_polish.euclid.downloader import fetch_cutout_at
+from scipy import signal as scipy_signal
+from euclid_polish.sky.multiband_forward import MultiBandForward
+from euclid_polish.visualization.methods import draw_star_positions
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from astropy.visualization import (
+AsinhStretch, ImageNormalize, MinMaxInterval,
+)
+from PIL import Image
+from euclid_polish.web.fasrc_fetcher import CACHE_DIR as _FASRC_CACHE_DIR
+from euclid_polish.web.fasrc_fetcher import _local_path_for
+from euclid_polish.training.transition_model import (
+HSTDenoiser, load_denoiser_weights,
+)
+from euclid_polish.training.transition_augmentations import (
+add_hlsp_noise, sum_rebin_2d,
+)
+from euclid_polish.training.transition_model import (
+apply_denoiser_numpy,
+)
+from euclid_polish.training.transition_augmentations import (
+add_hlsp_noise,
+)
+from euclid_polish.training.transition_augmentations import (
+sum_rebin_2d,
+)
+from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.visualization.methods import plot_star_positions
+from euclid_polish.sky.tfrecord import tfrecord_path
+import os as _os
+from euclid_polish.euclid import auth
+from euclid_polish.web.fasrc_fetcher import list_remote_dir
+from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+import importlib.util
+from scipy.signal import fftconvolve
+from matplotlib.colors import AsinhNorm
+from euclid_polish.training.transition_model import (
+HSTtoEuclidTransition, load_model_weights,
+)
+from euclid_polish.training.transition_augmentations import (
+sum_rebin_2d, embed_in_canvas,
+)
+import importlib.util as _ilu
+from euclid_polish.web.fasrc_fetcher import (
+is_allowed_remote_path, run_remote_python,
+)
+from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY, StepResources
+from euclid_polish.web.job_status import JobStatusFetcher
+import io as _io
+from euclid_polish.training.log_plot import plot_training_records
+import traceback
+import threading as _t
+import csv
+import argparse
 matplotlib.use("Agg")
 
 import glob
@@ -197,11 +289,6 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
     forward-modelled offline by ``scripts/fasrc_generate_hst_tfrecords.py``
     and mixed in at the dataloader.)
     """
-    from euclid_polish.sky.cosmos2025 import open_cosmos2025
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
-    )
-    from euclid_polish.sky.tfrecord import open_multiband_writer
 
     print(f"Generating clean fields: image_size={image_size}, n_train={n_train}, "
           f"n_valid={n_valid}, lens_density={lens_density}")
@@ -243,15 +330,6 @@ def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
 
 def _job_forward(cap) -> Dict[str, Any]:
     """Apply the multi-band forward model with progress tracking."""
-    import tensorflow as tf
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
-    )
-    from euclid_polish.sky.tfrecord import (
-        open_multiband_writer, tfrecord_path,
-    )
-    from euclid_polish.sky.types import MultiBandSkyImage
 
     psfs = load_all_band_psfs()
     print("Loaded PSFs:")
@@ -341,9 +419,6 @@ def _job_query_region(cap, ra: float, dec: float, radius: float,
 def _job_download_cutouts(cap, bands: list[str], cutout_size_vis_pixels: int,
                           max_workers: int, output_dir: str) -> Dict[str, Any]:
     """Download cutouts for each selected band; tqdm-driven progress bar."""
-    from euclid_polish.euclid.downloader import (
-        DownloadConfig, EuclidCutoutDownloader,
-    )
 
     cat = StarCatalog(output_dir)
     arcsec = cutout_size_vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
@@ -372,9 +447,6 @@ def _job_extract_psf(cap, band_name: str, num_stars: int,
                      cutout_size: int, output_size: int | None,
                      output_dir: str, psf_dir: str) -> Dict[str, Any]:
     """Extract a per-band empirical ePSF from local cutouts."""
-    from euclid_polish.euclid.psf_extractor import (
-        PSFExtractionConfig, PSFExtractor,
-    )
 
     band = Config.get_band(band_name)
     cutout_dir = Config.cutout_dir_for_band(
@@ -409,8 +481,6 @@ def _job_extract_psf(cap, band_name: str, num_stars: int,
 
 def _job_check_integrity(cap, output_dir: str) -> Dict[str, Any]:
     """Scan every cutout under output_dir/cutouts/<band>/ for corruption."""
-    import glob
-    from euclid_polish.euclid.validator import FitsValidator
 
     validator = FitsValidator()
     cutout_root = os.path.join(output_dir, "cutouts")
@@ -447,10 +517,6 @@ def _job_check_integrity(cap, output_dir: str) -> Dict[str, Any]:
 def _job_train(cap, steps: int, batch_size: int, num_res_blocks: int,
                evaluate_every: int, checkpoint_dir: str) -> Dict[str, Any]:
     """Train the WDSR model on the v2 multi-band TFRecords."""
-    from tf_keras.optimizers.schedules import PiecewiseConstantDecay
-    from euclid_polish.training import Trainer
-    from euclid_polish.training.data_multiband import MultiBandEuclidDataset
-    from euclid_polish.training.models.wdsr import wdsr
 
     scale = Config.DEFAULT_REBIN_FACTOR
     print(f"training: steps={steps}, batch={batch_size}, ckpt={checkpoint_dir}")
@@ -474,10 +540,6 @@ def _job_train(cap, steps: int, batch_size: int, num_res_blocks: int,
 
 def _job_evaluate(cap, checkpoint_dir: str, num_res_blocks: int) -> Dict[str, Any]:
     """Run validation PSNRs against the latest checkpoint."""
-    import tensorflow as tf
-    from euclid_polish.training import Trainer
-    from euclid_polish.training.data_multiband import MultiBandEuclidDataset
-    from euclid_polish.training.inference import load_model_from_checkpoint
 
     scale = Config.DEFAULT_REBIN_FACTOR
     print(f"evaluating checkpoints under {checkpoint_dir}")
@@ -510,7 +572,6 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
 
 def _job_plot_training_log(cap, checkpoint_dir: str) -> Dict[str, Any]:
     """Render the training-log PNG (loss + PSNR vs step)."""
-    from euclid_polish.training.log_plot import plot_training_log
     log_path = _resolve_training_log(checkpoint_dir)
     if log_path is None:
         raise FileNotFoundError(
@@ -527,13 +588,6 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
                      subset: str, n_images: int,
                      asinh_scale: Optional[float] = None) -> Dict[str, Any]:
     """Run inference on N random LR records; render side-by-side PNGs."""
-    import tensorflow as tf
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
-    from euclid_polish.training.inference import (
-        load_model_from_checkpoint, reconstruct, plot_reconstruction,
-    )
 
     scale = Config.DEFAULT_REBIN_FACTOR
     if not tf.train.latest_checkpoint(checkpoint_dir):
@@ -611,7 +665,6 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
         # Also persist LR (VIS-channel) and HR truth as sidecars so the
         # inspector can show each panel's raw pixels — not just the PNG
         # composite.
-        from astropy.io import fits as _fits
 
         def _write_panel_fits(stem: str, data2d: np.ndarray, label: str) -> None:
             if data2d is None:
@@ -661,12 +714,6 @@ def _job_reconstruct_euclid_cutout(
     position later without re-downloading. Each call re-uses cached
     files when the size + position + header MAGZERO match.
     """
-    import tensorflow as tf
-    from astropy.io import fits
-    from euclid_polish.euclid.downloader import fetch_cutout_at
-    from euclid_polish.training.inference import (
-        load_model_from_checkpoint, reconstruct, plot_reconstruction,
-    )
 
     if not tf.train.latest_checkpoint(checkpoint_dir):
         raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
@@ -751,9 +798,6 @@ def _job_reconstruct_euclid_cutout(
     # to SR should produce something close to the actual dirty LR; the
     # residual flags pixel-level over- or under-reconstruction.
     # ────────────────────────────────────────────────────────────────
-    from scipy import signal as scipy_signal
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
-    from euclid_polish.sky.multiband_forward import MultiBandForward
 
     cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
              len(Config.LR_INPUT_BAND_NAMES) + 3,
@@ -833,7 +877,6 @@ def _job_reconstruct_euclid_cutout(
 
 
 def _job_viz_star_positions(cap, output_dir: str) -> Dict[str, Any]:
-    from euclid_polish.visualization.methods import draw_star_positions
     cat = StarCatalog(output_dir)
     data = cat.load()
     out = Config.VIS_STAR_POSITIONS
@@ -845,10 +888,7 @@ def _job_viz_star_positions(cap, output_dir: str) -> Dict[str, Any]:
 
 def _job_viz_psf(cap, band_name: str | None, psf_dir: str) -> Dict[str, Any]:
     """Render the four-band PSF inspection panel (or one band)."""
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
 
     psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                               psf_dir=psf_dir)
@@ -877,18 +917,7 @@ def _job_viz_psf(cap, band_name: str | None, psf_dir: str) -> Dict[str, Any]:
 
 def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
     """Quick end-to-end demo: generate one field, run forward, save PNGs."""
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.patches as mpatches
-    import matplotlib.pyplot as plt
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
-    from euclid_polish.sky.cosmos2025 import open_cosmos2025
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
-    )
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
-    )
 
     out_dir = os.path.join(Config.VIS_DIR, "web_demo")
     os.makedirs(out_dir, exist_ok=True)
@@ -943,7 +972,6 @@ def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
     # raw pixels are inspectable via the universal /inspect view. One
     # FITS per (kind, band) — matches the per-band slicing the rest of
     # the UI uses for sky records.
-    from astropy.io import fits as _fits
     def _save_cube_per_band(data_4ch, kind: str, px_scale_arcsec: float) -> None:
         for k, band_name in enumerate(bands):
             plane = np.ascontiguousarray(
@@ -1026,11 +1054,6 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
     that dynamic range so the faint wings and the bright core are
     visible in the same frame.
     """
-    from astropy.io import fits
-    from astropy.visualization import (
-        AsinhStretch, ImageNormalize, MinMaxInterval,
-    )
-    from PIL import Image
 
     with fits.open(fits_path, memmap=False) as hdul:
         data = None
@@ -1079,8 +1102,6 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
     :func:`_render_fits_to_png_adaptive` instead, which derives the
     contrast window from the data and doesn't assume cutout units.
     """
-    from astropy.io import fits
-    from PIL import Image
 
     with fits.open(fits_path, memmap=False) as hdul:
         data = None
@@ -1143,10 +1164,6 @@ def _export_sky_record_fits(
     the same record don't re-read the TFRecord. Returns the absolute
     path to the saved file.
     """
-    from astropy.io import fits
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
 
     if subset not in ("train", "validate"):
         abort(400)
@@ -1231,7 +1248,6 @@ def _inspectable_roots() -> List[str]:
     All roots are normalised via :func:`os.path.realpath` so symlinks
     can't bypass the check either.
     """
-    from euclid_polish.web.fasrc_fetcher import CACHE_DIR as _FASRC_CACHE_DIR
     roots = [
         Config.DEFAULT_OUTPUT_DIR,        # Euclid star cutouts
         Config.EUCLID_PSF_DIR,             # band PSFs
@@ -1281,7 +1297,6 @@ def _read_fits_header_rows(path: str) -> List[Dict[str, Any]]:
 
     Each row: ``{hdu_index, name, kind, shape, dtype, cards: [(key, value, comment), ...]}``.
     """
-    from astropy.io import fits
     rows: List[Dict[str, Any]] = []
     with fits.open(path, memmap=False) as hdul:
         for i, hdu in enumerate(hdul):
@@ -1339,10 +1354,7 @@ def _safe_relpath(real_abs: str) -> str:
 
 def _render_psf_panel_png(band: Optional[str]) -> bytes:
     """Render one band (or all four) on a log-stretch panel as PNG bytes."""
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
 
     psfs = load_all_band_psfs()
     if band and band != "all":
@@ -1371,6 +1383,51 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
     return buf.getvalue()
 
 
+def _arrays_to_fits_bytes(
+    arrays,
+    header_meta=None,
+    primary_name: Optional[str] = None,
+) -> bytes:
+    """Pack a dict of ``{name: array}`` into a multi-HDU FITS file.
+
+    The first array goes into the PrimaryHDU; the rest become
+    ``ImageHDU`` extensions with their dict key as ``EXTNAME``.
+    ``header_meta`` keys are copied into every HDU's header
+    (FITS keywords are uppercased and truncated to 8 chars).
+
+    Used by the "Download FITS" sister endpoints of every renderer
+    so the user can pull the raw linear array even when the view
+    they're looking at is asinh-stretched, percentile-clipped, and
+    colormapped for display.
+    """
+    header_meta = dict(header_meta or {})
+    hdus = []
+    items = list(arrays.items())
+    if not items:
+        raise ValueError("arrays dict is empty")
+    for i, (name, arr) in enumerate(items):
+        arr = np.asarray(arr, dtype=np.float32)
+        if i == 0:
+            hdu = _fits.PrimaryHDU(data=arr)
+        else:
+            hdu = _fits.ImageHDU(data=arr)
+        # EXTNAME on the primary HDU isn't strictly required but lots
+        # of viewers (DS9, ginga) treat it as the human-readable label
+        # so set it consistently.
+        hdu.header["EXTNAME"] = name[:60]
+        for k, v in header_meta.items():
+            key = str(k).upper()[:8]
+            if isinstance(v, (int, float, bool, str)):
+                hdu.header[key] = v
+        if primary_name and i == 0:
+            hdu.header["EXTNAME"] = primary_name[:60]
+        hdus.append(hdu)
+    buf = io.BytesIO()
+    _fits.HDUList(hdus).writeto(buf, overwrite=True)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _load_local_denoiser():
     """Locate + reconstruct the trained HSTDenoiser from local cache.
 
@@ -1380,10 +1437,6 @@ def _load_local_denoiser():
     come from the sidecar JSON; if it's missing we fall back to the
     architectural defaults the trainer uses.
     """
-    from euclid_polish.web.fasrc_fetcher import _local_path_for
-    from euclid_polish.training.transition_model import (
-        HSTDenoiser, load_denoiser_weights,
-    )
     cfg = fasrc_config.load()
     best_path = _local_path_for(
         f"{cfg.data_dir}/hst_psf/hst_denoiser.best.weights.h5",
@@ -1419,6 +1472,125 @@ def _load_local_denoiser():
     )
     load_denoiser_weights(model, weights_path)
     return model, tag
+
+
+def _compute_transition_pair_arrays(
+    subset: str, kind: str, index: int, records_dir: str,
+    *,
+    noise_alpha: float = 0.75,
+    noise_sigma_floor: float = 15.0,
+    noise_seed: int = 0,
+):
+    """Compute the raw linear arrays for one transition-pair view.
+
+    Returns ``(arrays_dict, header_meta_dict)``. Used by the FITS
+    download path; the PNG renderer carries its own copy of this
+    logic so its display-side knobs (asinh stretch knee, percentile
+    clip, colormap) stay close to the imshow calls.
+
+    Per kind:
+      * input         → {"INPUT": (H, W)}            HR clean⊛PSF_HST
+      * target        → {"TARGET": (H/2, W/2)}       LR sum_rebin(clean⊛PSF_Euclid)
+      * residual      → {"RESIDUAL": (H/2, W/2)}     target − sum_rebin(input)
+      * noisy_hst     → {"NOISY": (H, W)}            clean + ε
+      * hst_pair      → {"CLEAN": …, "NOISY": …}     both, same shape
+      * denoised_hst  → {"DENOISED": (H, W)}         CNN_1(clean + ε)
+      * denoiser_strip→ {"CLEAN": …, "NOISY": …,
+                         "DENOISED": …}              all three
+    """
+
+    if subset not in ("train", "validate"):
+        abort(400)
+    if kind not in ("input", "target", "residual",
+                    "noisy_hst", "hst_pair",
+                    "denoised_hst", "denoiser_strip"):
+        abort(400)
+
+    def _load(name: str):
+        path = tfrecord_path(records_dir, name)
+        if not os.path.exists(path):
+            abort(404)
+        records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+        if not records or index >= len(records):
+            abort(404)
+        return records[min(index, len(records) - 1)]
+
+    base_meta = {
+        "KIND":    kind,
+        "SUBSET":  subset,
+        "INDEX":   int(index),
+    }
+
+    if kind in ("input", "target"):
+        rec = _load(f"{kind}_{subset}")
+        plane = rec.data[..., 0].astype(np.float32)
+        meta = {
+            **base_meta,
+            "PXSCALE": float(rec.pixel_scale_arcsec),
+        }
+        return {kind.upper(): plane}, meta
+
+    if kind == "residual":
+        inp = _load(f"input_{subset}")
+        tgt = _load(f"target_{subset}")
+        inp_plane = inp.data[..., 0].astype(np.float32)
+        tgt_plane = tgt.data[..., 0].astype(np.float32)
+        if inp_plane.shape != tgt_plane.shape:
+            Hi, Wi = inp_plane.shape
+            Ht, Wt = tgt_plane.shape
+            if Hi % Ht != 0 or Wi % Wt != 0 or (Hi // Ht) != (Wi // Wt):
+                abort(500)
+            inp_plane = sum_rebin_2d(inp_plane, Hi // Ht)
+        meta = {
+            **base_meta,
+            "PXSCALE": float(tgt.pixel_scale_arcsec),
+        }
+        return {"RESIDUAL": (tgt_plane - inp_plane).astype(np.float32)}, meta
+
+    # Noise-dependent kinds: load clean from input shard, draw fresh noise.
+    inp = _load(f"input_{subset}")
+    clean = inp.data[..., 0].astype(np.float32)
+    rng = np.random.default_rng(int(noise_seed))
+    noisy = add_hlsp_noise(
+        clean, alpha=float(noise_alpha),
+        sigma_floor=float(noise_sigma_floor), rng=rng,
+    )
+    noise_meta = {
+        **base_meta,
+        "PXSCALE": float(inp.pixel_scale_arcsec),
+        "ALPHA":   float(noise_alpha),
+        "SIGFLOOR": float(noise_sigma_floor),
+        "NSEED":   int(noise_seed),
+    }
+
+    if kind == "noisy_hst":
+        return {"NOISY": noisy.astype(np.float32)}, noise_meta
+
+    if kind == "hst_pair":
+        return (
+            {"CLEAN": clean.astype(np.float32),
+             "NOISY": noisy.astype(np.float32)},
+            noise_meta,
+        )
+
+    # Denoiser kinds — need trained weights.
+    denoiser, tag = _load_local_denoiser()
+    if denoiser is None:
+        abort(404, description=(
+            f"denoiser not available: {tag}. Train it (HST pipeline "
+            f"step 3a-bis) and sync the resulting weights file."
+        ))
+    denoised = apply_denoiser_numpy(denoiser, noisy)
+    denoiser_meta = {**noise_meta, "DENWEIGH": tag}
+    if kind == "denoised_hst":
+        return {"DENOISED": denoised.astype(np.float32)}, denoiser_meta
+    # denoiser_strip
+    return (
+        {"CLEAN":    clean.astype(np.float32),
+         "NOISY":    noisy.astype(np.float32),
+         "DENOISED": denoised.astype(np.float32)},
+        denoiser_meta,
+    )
 
 
 def _render_transition_pair_png(subset: str, kind: str, index: int,
@@ -1463,15 +1635,7 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     typical range. Seed lets the UI keep noise stable across kind-
     toggles for the same index.
     """
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
-    from euclid_polish.training.transition_augmentations import (
-        add_hlsp_noise,
-    )
 
     if subset not in ("train", "validate"):
         abort(400)
@@ -1546,9 +1710,6 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
     #    pixel-level metrics so a glance shows "is this actually doing
     #    its job?".
     if kind in ("denoised_hst", "denoiser_strip"):
-        from euclid_polish.training.transition_model import (
-            apply_denoiser_numpy,
-        )
         inp = _load(f"input_{subset}")
         clean = inp.data[..., 0].astype(np.float32)
         rng = np.random.default_rng(int(noise_seed))
@@ -1702,9 +1863,6 @@ def _render_transition_pair_png(subset: str, kind: str, index: int,
         # (``loss = ||sum_rebin(A_θ(input)) - target||``). The residual
         # shown here is exactly the per-pixel target the model has to
         # learn to predict.
-        from euclid_polish.training.transition_augmentations import (
-            sum_rebin_2d,
-        )
         inp_plane = inp.data[..., 0]
         tgt_plane = tgt.data[..., 0]
         if inp_plane.shape != tgt_plane.shape:
@@ -1806,12 +1964,7 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         record to carry all four bands — clean/dirty only. For the
         VIS-only ``hr`` record, ``color`` falls back to VIS grayscale.
     """
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
 
     if subset not in ("train", "validate"):
         abort(400)
@@ -1835,7 +1988,6 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         # 4-band solar-balanced RGB with per-channel [p1, p99.5]
         # normalisation — same dynamic-range convention as the
         # grayscale single-band panels in the rest of the sky tab.
-        from euclid_polish.visualization.color import calibrated_rgb_panel
         # ``clean`` records live on the HR grid (band-independent
         # asinh-stretch knee unspecified) — use the VIS knee as the
         # shared reference, matching how the rest of the UI treats HR.
@@ -1909,12 +2061,7 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
     RGB; the HR panel always uses VIS grayscale (it's a single-band
     record).
     """
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from euclid_polish.sky.tfrecord import (
-        read_multiband_skyimages, tfrecord_path,
-    )
 
     if subset not in ("train", "validate"):
         abort(400)
@@ -1970,7 +2117,6 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
         ax.set_xticks([]); ax.set_yticks([])
 
     def _show_color(ax, img, title: str) -> None:
-        from euclid_polish.visualization.color import calibrated_rgb_panel
         rgb = calibrated_rgb_panel(
             img.data, band_names=Config.LR_INPUT_BAND_NAMES,
             scheme="vis_nisp", reference="solar", stretch="asinh",
@@ -2010,9 +2156,7 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
 
 def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     """Render a catalog visualization: positions or magnitude histogram."""
-    import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     cat = StarCatalog(output_dir)
     if not cat.exists():
@@ -2022,7 +2166,6 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     if not stars:
         abort(404)
     if view == "positions":
-        from euclid_polish.visualization.methods import plot_star_positions
         fig = plot_star_positions(stars)
     elif view == "magnitudes":
         mags = [s.get("magnitude") for s in stars
@@ -2053,8 +2196,6 @@ def _record_count(name: str, records_dir: Optional[str] = None) -> Optional[int]
         keeps callers like ``/api/hst-pairs/totals`` from 500-ing the
         whole response when one shard is bad.
     """
-    import tensorflow as tf
-    from euclid_polish.sky.tfrecord import tfrecord_path
     p = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(p):
         return 0
@@ -2090,7 +2231,6 @@ def _try_startup_ssh_connect() -> Optional[str]:
     lets the test harness disable the auto-connect entirely so the
     stub stays in effect.
     """
-    import os as _os
     if _os.environ.get("EUCLID_POLISH_DISABLE_AUTO_SSH", "").strip() in (
         "1", "true", "yes", "on",
     ):
@@ -2110,6 +2250,14 @@ def _try_startup_ssh_connect() -> Optional[str]:
         STATE.ssh = None
         return f"{type(e).__name__}: {e}"
     STATE.connected_at = time.time()
+    # Same catch-up as in /api/fasrc/connect — jobs that finished
+    # while the server was offline get their state + sacct post-mortem
+    # recorded now. Best-effort; failures here are swallowed so the
+    # auto-connect message stays clean.
+    try:
+        fasrc_jobs.sync_pending_on_connect(STATE.ssh)
+    except Exception:
+        pass
     return None
 
 
@@ -2202,7 +2350,6 @@ def create_app() -> Flask:
     # ---------------- Catalog page ----------------
     @app.route("/catalog")
     def catalog_page():
-        from euclid_polish.euclid import auth
         return render_template(
             "catalog.html",
             status=_catalog_status(),
@@ -2259,7 +2406,6 @@ def create_app() -> Flask:
     # ---------------- Authentication ----------------
     @app.route("/auth/login", methods=["POST"])
     def auth_login():
-        from euclid_polish.euclid import auth
         user = request.form.get("username", "").strip()
         pwd  = request.form.get("password", "").strip()
         if not user or not pwd:
@@ -2272,7 +2418,6 @@ def create_app() -> Flask:
 
     @app.route("/auth/logout", methods=["POST"])
     def auth_logout():
-        from euclid_polish.euclid import auth
         try:
             auth.logout()
         except Exception:
@@ -2355,7 +2500,6 @@ def create_app() -> Flask:
     # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
     @app.route("/hst-psf")
     def hst_psf_page():
-        from euclid_polish.web.fasrc_fetcher import list_remote_dir
         cfg_loaded = fasrc_config.load()
         psf_remote_path = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
         kernel_remote_path = f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits"
@@ -2386,7 +2530,6 @@ def create_app() -> Flask:
     # ---------------- HST cutouts (per-star gallery on FASRC) -------------
     @app.route("/hst-cutouts")
     def hst_cutouts_page():
-        from euclid_polish.web.fasrc_fetcher import list_remote_dir
         cfg_loaded = fasrc_config.load()
         # Use the existing pagination knob from cutouts.html for symmetry.
         try:
@@ -2428,11 +2571,10 @@ def create_app() -> Flask:
         The ``?force=1`` query arg bypasses the rsync cache — used by
         the Sync button after the user has rebuilt the PSF on FASRC.
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         cfg_loaded = fasrc_config.load()
         remote = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
         force = request.args.get("force") in ("1", "true", "True")
-        result = fetch_one_file(remote, force=force)
+        result = _fasrc_fetcher.fetch_one_file(remote, force=force)
         if not result.ok:
             abort(404)
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=320)
@@ -2452,10 +2594,6 @@ def create_app() -> Flask:
         Aborts the request with 404 if any of the three on-disk files
         is missing — callers don't need to re-check.
         """
-        import importlib.util
-        from astropy.io import fits
-        from scipy.signal import fftconvolve
-        from euclid_polish.web.fasrc_fetcher import _local_path_for
 
         # 1. Resolve local file paths.
         cfg = fasrc_config.load()
@@ -2548,8 +2686,6 @@ def create_app() -> Flask:
         rel_rms       = rms_residual / rms_e if rms_e > 0 else float("nan")
 
         # 7. Render the 3-panel figure.
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import AsinhNorm
 
         # Shared asinh stretch for the two PSF panels — the linear scale
         # value is what controls how aggressively faint structure is
@@ -2615,8 +2751,6 @@ def create_app() -> Flask:
         cache, which is in ``_inspectable_roots`` already, so the
         inspector accepts it without further whitelist tweaks.
         """
-        from astropy.io import fits as _fits
-        from euclid_polish.web.fasrc_fetcher import _local_path_for
 
         _, _, _, a_conv_h, paths = _compute_validate_arrays()
 
@@ -2677,17 +2811,6 @@ def create_app() -> Flask:
         Falls back to defaults (C=12, 3 inner layers) if the summary
         isn't present.
         """
-        from euclid_polish.web.fasrc_fetcher import _local_path_for
-        from euclid_polish.training.transition_model import (
-            HSTtoEuclidTransition, load_model_weights,
-        )
-        from euclid_polish.training.transition_augmentations import (
-            sum_rebin_2d, embed_in_canvas,
-        )
-        from astropy.io import fits
-        from matplotlib.colors import AsinhNorm
-        import matplotlib.pyplot as plt
-        import importlib.util as _ilu
 
         cfg = fasrc_config.load()
         hst_path     = _local_path_for(f"{cfg.data_dir}/hst_psf/F814W.fits")
@@ -2899,7 +3022,6 @@ def create_app() -> Flask:
         FASRC (e.g. you haven't trained A_θ yet) are reported as
         failed individually but don't block the others.
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         cfg_loaded = fasrc_config.load()
         targets = {
             "psf":              f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
@@ -2913,7 +3035,7 @@ def create_app() -> Flask:
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
-            r = fetch_one_file(remote, force=True)
+            r = _fasrc_fetcher.fetch_one_file(remote, force=True)
             entry: Dict[str, Any] = {
                 "remote_path": remote,
                 "ok":          r.ok,
@@ -2938,7 +3060,6 @@ def create_app() -> Flask:
         not locally. Respects the fetcher's 50 MB cap (star stamps are
         ~260 KB so this is never a concern for this endpoint).
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         remote = request.args.get("remote_path", "").strip()
         if not remote:
             abort(400)
@@ -2948,7 +3069,7 @@ def create_app() -> Flask:
             size = 140
         if size < 16 or size > 1024:
             abort(400)
-        result = fetch_one_file(remote)
+        result = _fasrc_fetcher.fetch_one_file(remote)
         if not result.ok:
             abort(404)
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=size)
@@ -2957,7 +3078,6 @@ def create_app() -> Flask:
     # ---------------- HST tiles inspector (header + random cutout) -------
     @app.route("/hst-tiles")
     def hst_tiles_page():
-        from euclid_polish.web.fasrc_fetcher import list_remote_dir
         cfg_loaded = fasrc_config.load()
         remote_dir = f"{cfg_loaded.data_dir}/hst_hlsp"
         ok, entries, list_err = list_remote_dir(
@@ -2981,9 +3101,6 @@ def create_app() -> Flask:
     @app.route("/fasrc/tile/header")
     def fasrc_tile_header():
         """JSON: full FITS header of one tile (no big transfer)."""
-        from euclid_polish.web.fasrc_fetcher import (
-            is_allowed_remote_path, run_remote_python,
-        )
         path = request.args.get("path", "").strip()
         if not path or not is_allowed_remote_path(path):
             abort(400)
@@ -3014,9 +3131,6 @@ def create_app() -> Flask:
         for diagnosing "why does this cutout look like a gradient?"
         cases (usually a bright star or empty tile-edge region).
         """
-        from euclid_polish.web.fasrc_fetcher import (
-            is_allowed_remote_path, run_remote_python,
-        )
         path = request.args.get("path", "").strip()
         if not path or not is_allowed_remote_path(path):
             abort(400)
@@ -3353,7 +3467,6 @@ def create_app() -> Flask:
         # Render if missing or stale.
         if (not os.path.exists(out_png)
                 or os.path.getmtime(log_path) > os.path.getmtime(out_png)):
-            from euclid_polish.training.log_plot import plot_training_log
             os.makedirs(Config.VIS_DIR, exist_ok=True)
             plot_training_log(log_path, out_png)
         return send_file(out_png, mimetype="image/png", max_age=0)
@@ -3384,7 +3497,6 @@ def create_app() -> Flask:
         Uses the same convention as :func:`fasrc_fetcher._local_path_for`
         so the page reads exactly what ``fetch_one_file`` writes — no
         chance of pointing at the wrong directory."""
-        from euclid_polish.web.fasrc_fetcher import _local_path_for
         any_path = f"{_hst_pairs_remote_dir()}/clean_validate.tfrecord"
         return os.path.dirname(_local_path_for(any_path))
 
@@ -3400,6 +3512,53 @@ def create_app() -> Flask:
             # set is multi-GB. Default the index nav to validate so the
             # page works the moment the user clicks Sync.
             default_subset="validate",
+        )
+
+    def _compute_hst_pair_arrays(subset, kind, index, records_dir):
+        """Raw-array companion to ``_render_sky_record_png`` /
+        ``_render_sky_record_pair_png``. Returns
+        ``({name: array}, meta_dict)`` for the kind requested.
+
+        For triptych ``kind="pair"`` the 4-band records keep their
+        ``(H, W, C)`` shape so DS9 sees a proper data cube; FITS
+        stores axes in NAXIS3-then-2 ordering so it surveys as
+        "bands × H × W" via image-cube viewers.
+        """
+        if subset not in ("train", "validate"):
+            abort(400)
+        if kind not in ("clean", "dirty", "hr", "pair"):
+            abort(400)
+
+        def _load(name):
+            path = tfrecord_path(records_dir, name)
+            if not os.path.exists(path):
+                abort(404)
+            recs = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+            if not recs or index >= len(recs):
+                abort(404)
+            return recs[min(index, len(recs) - 1)]
+
+        meta_base = {
+            "KIND":   kind,
+            "SUBSET": subset,
+            "INDEX":  int(index),
+        }
+
+        if kind == "pair":
+            rs = {k: _load(f"{k}_{subset}") for k in ("clean", "dirty", "hr")}
+            return (
+                {k.upper(): np.asarray(rs[k].data, dtype=np.float32)
+                 for k in ("clean", "dirty", "hr")},
+                {**meta_base,
+                 "PXSCALEC": float(rs["clean"].pixel_scale_arcsec),
+                 "PXSCALED": float(rs["dirty"].pixel_scale_arcsec),
+                 "PXSCALEH": float(rs["hr"].pixel_scale_arcsec)},
+            )
+
+        rec = _load(f"{kind}_{subset}")
+        return (
+            {kind.upper(): np.asarray(rec.data, dtype=np.float32)},
+            {**meta_base, "PXSCALE": float(rec.pixel_scale_arcsec)},
         )
 
     @app.route("/view/hst-pair")
@@ -3426,6 +3585,33 @@ def create_app() -> Flask:
                 records_dir=_hst_pairs_local_dir(),
             )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    @app.route("/view/hst-pair.fits")
+    def view_hst_pair_fits():
+        """Raw-array FITS companion of ``/view/hst-pair``.
+
+        Returns the linear electron pixel values for the requested
+        kind (single record, or all-three for ``kind=pair``). Bands
+        are preserved as the third axis so DS9's image-cube viewer
+        can step through VIS/Y_E/J_E/H_E. The display-side band chip
+        is ignored — FITS download always carries every band.
+        """
+        subset = request.args.get("subset", "validate")
+        kind   = request.args.get("kind",   "clean")
+        try:
+            idx = int(request.args.get("i", 0))
+        except ValueError:
+            idx = 0
+        arrays, meta = _compute_hst_pair_arrays(
+            subset, kind, idx,
+            records_dir=_hst_pairs_local_dir(),
+        )
+        data = _arrays_to_fits_bytes(arrays, header_meta=meta)
+        fname = f"hst_{kind}_{subset}_{idx}.fits"
+        return send_file(
+            io.BytesIO(data), mimetype="application/fits",
+            as_attachment=True, download_name=fname, max_age=0,
+        )
 
     @app.route("/api/hst-pairs/totals")
     def api_hst_pairs_totals():
@@ -3454,7 +3640,6 @@ def create_app() -> Flask:
         TFRecord files are intentionally large and the user explicitly
         asked for this transfer.
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         remote_dir = _hst_pairs_remote_dir()
         include_train = (request.values.get("include_train", "false")
                          .lower() in ("1", "true", "yes", "on"))
@@ -3472,7 +3657,7 @@ def create_app() -> Flask:
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
-            r = fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
             entry: Dict[str, Any] = {
                 "remote_path": remote,
                 "ok":          r.ok,
@@ -3505,7 +3690,6 @@ def create_app() -> Flask:
         Mirrors the convention used by ``_hst_pairs_local_dir`` so the
         same fetcher writes here.
         """
-        from euclid_polish.web.fasrc_fetcher import _local_path_for
         any_path = f"{_transition_pairs_remote_dir()}/input_validate.tfrecord"
         return os.path.dirname(_local_path_for(any_path))
 
@@ -3548,6 +3732,45 @@ def create_app() -> Flask:
         )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
+    @app.route("/view/transition-pair.fits")
+    def view_transition_pair_fits():
+        """Raw-array FITS download companion of ``/view/transition-pair``.
+
+        Multi-HDU file: each named array from
+        :func:`_compute_transition_pair_arrays` becomes its own HDU.
+        Linear electron values are preserved exactly — no asinh
+        stretch, no percentile clip, no colormap. Open in DS9 to
+        inspect the actual pixel values the trainer / denoiser
+        produced.
+        """
+        subset = request.args.get("subset", "validate")
+        kind   = request.args.get("kind",   "input")
+        try:
+            idx = int(request.args.get("i", 0))
+        except ValueError:
+            idx = 0
+        def _flt(key: str, default: float) -> float:
+            try:
+                return float(request.args.get(key, default))
+            except (TypeError, ValueError):
+                return default
+        arrays, meta = _compute_transition_pair_arrays(
+            subset, kind, idx,
+            records_dir=_transition_pairs_local_dir(),
+            noise_alpha=_flt("alpha", 0.75),
+            noise_sigma_floor=_flt("sigma_floor", 15.0),
+            noise_seed=int(_flt("noise_seed", float(idx))),
+        )
+        data = _arrays_to_fits_bytes(arrays, header_meta=meta)
+        # Filename suggested by the Content-Disposition so the browser
+        # saves it as <kind>_<subset>_<index>.fits instead of just
+        # 'view'. download_name is honoured by send_file.
+        fname = f"transition_{kind}_{subset}_{idx}.fits"
+        return send_file(
+            io.BytesIO(data), mimetype="application/fits",
+            as_attachment=True, download_name=fname, max_age=0,
+        )
+
     @app.route("/api/transition-pairs/totals")
     def api_transition_pairs_totals():
         local = _transition_pairs_local_dir()
@@ -3569,7 +3792,6 @@ def create_app() -> Flask:
         larger train-split files are pulled. Validation files are small
         (~25 MB each, 2 files) so they're always synced.
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         remote_dir = _transition_pairs_remote_dir()
         include_train = (request.values.get("include_train", "false")
                          .lower() in ("1", "true", "yes", "on"))
@@ -3586,7 +3808,7 @@ def create_app() -> Flask:
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
-            r = fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
             entry: Dict[str, Any] = {
                 "remote_path": remote,
                 "ok":          r.ok,
@@ -3726,11 +3948,10 @@ def create_app() -> Flask:
         to all the safeguards in :mod:`euclid_polish.web.fasrc_fetcher`
         (size cap, allowed roots, cache TTL).
         """
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         remote = request.args.get("remote_path", "").strip()
         if not remote:
             abort(400)
-        result = fetch_one_file(remote)
+        result = _fasrc_fetcher.fetch_one_file(remote)
         if not result.ok:
             return render_template(
                 "fasrc_fetch_error.html", remote=remote, error=result.error,
@@ -3744,11 +3965,10 @@ def create_app() -> Flask:
     @app.route("/fasrc/file/download")
     def fasrc_file_download():
         """Fetch one file from FASRC (cached) and send it back directly."""
-        from euclid_polish.web.fasrc_fetcher import fetch_one_file
         remote = request.args.get("remote_path", "").strip()
         if not remote:
             abort(400)
-        result = fetch_one_file(remote)
+        result = _fasrc_fetcher.fetch_one_file(remote)
         if not result.ok:
             return jsonify({"ok": False, "error": result.error}), 502
         return send_file(
@@ -3882,6 +4102,14 @@ def create_app() -> Flask:
             STATE.ssh = None
             return jsonify({"ok": False, "error": str(e)}), 400
         STATE.connected_at = time.time()
+        # Catch up on any jobs that finished while the server was offline:
+        # squeue no longer lists them, so reconcile marks them DONE and
+        # the ssh-passing path fetches their sacct accounting into the
+        # CSV log. Best-effort — failures here must not block connect.
+        try:
+            fasrc_jobs.sync_pending_on_connect(STATE.ssh)
+        except Exception:
+            pass
         return jsonify({"ok": True, "status": STATE.public_status()})
 
     @app.route("/api/fasrc/disconnect", methods=["POST"])
@@ -4081,7 +4309,7 @@ def create_app() -> Flask:
         # not present in squeue get marked DONE (if we'd seen them run)
         # or UNKNOWN (if we never did — the user can then look at .err
         # to figure out what happened, instead of seeing RUNNING forever).
-        fasrc_jobs.reconcile_with_squeue(rows)
+        fasrc_jobs.reconcile_with_squeue(rows, ssh=STATE.ssh)
         return jsonify({"ok": True, "rows": rows})
 
     _parse_slurm_time = fasrc_jobs.parse_slurm_time
@@ -4109,97 +4337,88 @@ def create_app() -> Flask:
             "eta_seconds":   fasrc_jobs.eta_for_submission(steps),
         })
 
+    def _require_confirm(form):
+        """Shared confirm-token guard for the two FASRC submit endpoints.
+
+        Returns ``None`` when the form carries the explicit-confirm
+        token; otherwise returns a ``(flask response, 400)`` tuple the
+        caller can return directly.
+        """
+        if str(form.get("confirm", "")).lower() in ("yes", "true", "1"):
+            return None
+        return jsonify({
+            "ok": False,
+            "error": (
+                "missing explicit confirmation token. Refresh the page "
+                "and click Submit again — the flow shows a dialog with "
+                "the full payload before any FASRC submit."
+            ),
+        }), 400
+
     @app.route("/api/fasrc/submit", methods=["POST"])
     def api_fasrc_submit():
+        """Legacy ``run_pipeline.py`` submission.
+
+        Maps the ``preset`` form field to the matching
+        :class:`FASRCPipelineStep` subclass and submits through the same
+        helper as the HST-pipeline endpoint.
+        """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
-        # Server-side explicit-confirmation guard — same as the
-        # HST-pipeline submit route. Any POST without ``confirm=yes``
-        # in the form is rejected, no matter where it came from.
-        if request.form.get("confirm", "").lower() not in ("yes", "true", "1"):
-            return jsonify({
-                "ok": False,
-                "error": (
-                    "missing explicit confirmation token. Refresh the page "
-                    "and click Submit again — the new flow shows a dialog "
-                    "with the full payload before any FASRC submit."
-                ),
-            }), 400
+        confirm_err = _require_confirm(request.form)
+        if confirm_err is not None:
+            return confirm_err
+
         cfg = fasrc_config.load()
         f = request.form
         preset_name = f.get("preset", "custom")
-        preset = fasrc_jobs.resolve_preset(preset_name)
+        try:
+            step = STEP_REGISTRY.get(preset_name)
+        except KeyError:
+            # Unknown preset names fall back to the catch-all "custom"
+            # so a stale frontend can't 404 the submit.
+            step = STEP_REGISTRY.get("custom")
+            preset_name = "custom"
+
+        # Resources from the form, falling back to the step's defaults
+        # (so the legacy form fields keep working even when fields are
+        # left blank).
+        try:
+            resources = StepResources.from_form(f, step.defaults)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+
+        # Training params — passed through to ``build_command``. We
+        # validate the numerics here so a bad form field 400s instead of
+        # blowing up inside the renderer.
         try:
             params = {
-                "partition":  f.get("partition",  cfg.partition),
-                "n_gpus":     int(f.get("n_gpus",     cfg.n_gpus)),
-                "n_cpus":     int(f.get("n_cpus",     cfg.n_cpus)),
-                "memory":          f.get("memory",     cfg.memory),
-                "time_limit":      f.get("time_limit", cfg.time_limit),
-                "n_train":    int(f.get("n_train",    cfg.n_train)),
-                "n_valid":    int(f.get("n_valid",    cfg.n_valid)),
-                "image_size": int(f.get("image_size", cfg.image_size)),
-                "batch_size": int(f.get("batch_size", cfg.batch_size)),
-                "steps":      int(f.get("steps",      cfg.steps)),
-                "extra_flags":     f.get("extra_flags", "").strip(),
+                "n_train":     int(f.get("n_train",    cfg.n_train)),
+                "n_valid":     int(f.get("n_valid",    cfg.n_valid)),
+                "image_size":  int(f.get("image_size", cfg.image_size)),
+                "batch_size":  int(f.get("batch_size", cfg.batch_size)),
+                "steps":       int(f.get("steps",      cfg.steps)),
+                "extra_flags": f.get("extra_flags", "").strip(),
             }
         except (TypeError, ValueError) as e:
             return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
-
-        # Preset → append the right --skip-* flags so the user can't
-        # accidentally request a CPU-only "convolve" job that then tries
-        # to train (or vice-versa). The free-form ``extra_flags`` field
-        # is preserved so users can still pass one-off args.
-        skip = (preset.get("skip_flags") or "").strip()
-        if skip:
-            params["extra_flags"] = (params["extra_flags"] + " " + skip).strip()
         params["preset"] = preset_name
+        params.update(resources.to_dict())
 
         label = f.get("label", "").strip() or (
-            f"{preset.get('label', preset_name)}: "
-            f"{params['steps']} steps on {params['n_train']}+"
-            f"{params['n_valid']} fields"
+            f"{step.label}: {params['steps']} steps on "
+            f"{params['n_train']}+{params['n_valid']} fields"
         )
-        built = fasrc_jobs.build_sbatch_script(
-            label=label, params=params, cfg=cfg,
+        built = step.build_sbatch_body(
+            params=params, resources=resources, cfg=cfg, label=label,
         )
-        # Drop the script into the repo's logs/jobs dir on FASRC.
-        remote_script = f"{cfg.repo_path}/{built['script']}"
-        write_cmd = (
-            f"mkdir -p {cfg.repo_path}/{os.path.dirname(built['script'])} && "
-            f"cat > {remote_script} <<'__EUCLID_POLISH_EOF__'\n"
-            f"{built['body']}"
-            f"__EUCLID_POLISH_EOF__\n"
-            f"chmod +x {remote_script}"
+        slurm_id, payload = fasrc_jobs.submit_sbatch_script(
+            STATE.ssh, cfg=cfg, built=built, label=label,
+            params=params, step_id=step.step_id,
         )
-        rc, _out, err = STATE.ssh.run(write_cmd, timeout=20)
-        if rc != 0:
-            return jsonify({"ok": False,
-                            "error": f"failed to write script: {err.strip()}"}), 500
-
-        rc, out, err = STATE.ssh.run(
-            f"cd {cfg.repo_path} && sbatch {built['script']}", timeout=20,
-        )
-        if rc != 0:
-            return jsonify({"ok": False,
-                            "error": f"sbatch failed: {err.strip()}"}), 500
-        # sbatch output: "Submitted batch job 12345"
-        m = re.search(r"Submitted batch job (\d+)", out)
-        if not m:
-            return jsonify({"ok": False,
-                            "error": f"unparseable sbatch output: {out}"}), 500
-        slurm_id = m.group(1)
-        fasrc_jobs.DB.insert(
-            slurm_id,
-            label=label,
-            params=params,
-            script_path=remote_script,
-            log_path=f"{cfg.repo_path}/{built['out']}",
-            err_path=f"{cfg.repo_path}/{built['err']}",
-        )
-        return jsonify({"ok": True, "jobid": slurm_id,
-                        "label": label, "params": params,
-                        "log_path":   f"{cfg.repo_path}/{built['out']}"})
+        if slurm_id is None:
+            return jsonify(payload), 500
+        return jsonify(payload)
 
     # =========================================================================
     # HST pipeline (FASRC submissions for the 5-step HST → Euclid workflow)
@@ -4213,13 +4432,11 @@ def create_app() -> Flask:
         SSH isn't connected we return only the static defaults so the UI
         can still render its forms.
         """
-        from euclid_polish.web.fasrc_pipeline import REGISTRY
-        from euclid_polish.web import fasrc_jobs
         cfg_loaded = fasrc_config.load()
         ssh_ok = bool(STATE.ssh and STATE.ssh.is_connected())
 
         steps_payload = []
-        for step in REGISTRY.all():
+        for step in STEP_REGISTRY.all():
             median = fasrc_jobs.median_runtime_for_step(step.step_id)
             history = fasrc_jobs.runtime_history_for_step(
                 step.step_id, limit=5,
@@ -4314,32 +4531,23 @@ def create_app() -> Flask:
 
         Any failure returns 400 and DOES NOT touch the SSH session,
         so no sbatch call, no script write, nothing reaches FASRC."""
-        from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
-        from euclid_polish.web import fasrc_jobs
 
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         try:
-            step = REGISTRY.get(step_id)
+            step = STEP_REGISTRY.get(step_id)
         except KeyError:
             return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
 
         cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()
 
-        # Defence — confirm=yes from the frontend dialog.
-        if form.get("confirm", "").lower() not in ("yes", "true", "1"):
-            return jsonify({
-                "ok": False,
-                "error": (
-                    "missing explicit confirmation token. Refresh the page "
-                    "and click Submit again — the flow shows a dialog "
-                    "with the full payload before any FASRC submit."
-                ),
-            }), 400
+        confirm_err = _require_confirm(form)
+        if confirm_err is not None:
+            return confirm_err
 
         try:
-            resources = StepResources.from_form(form, step.defaults)
+            resources = StepResources.from_form_strict(form)
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
 
@@ -4360,64 +4568,74 @@ def create_app() -> Flask:
             label=label,
         )
 
-        # Write the script to the repo's log dir on FASRC, then sbatch it.
-        # Same control-flow as the existing /api/fasrc/submit route.
-        remote_script = f"{cfg_loaded.repo_path}/{built['script']}"
-        write_cmd = (
-            f"mkdir -p {cfg_loaded.repo_path}/{os.path.dirname(built['script'])} && "
-            f"cat > {remote_script} <<'__EUCLID_POLISH_EOF__'\n"
-            f"{built['body']}"
-            f"__EUCLID_POLISH_EOF__\n"
-            f"chmod +x {remote_script}"
-        )
-        rc, _out, err = STATE.ssh.run(write_cmd, timeout=20)
-        if rc != 0:
-            return jsonify({"ok": False,
-                            "error": f"failed to write script: {err.strip()}"}), 500
-
-        rc, out, err = STATE.ssh.run(
-            f"cd {cfg_loaded.repo_path} && sbatch {built['script']}",
-            timeout=20,
-        )
-        if rc != 0:
-            return jsonify({"ok": False,
-                            "error": f"sbatch failed: {err.strip()}"}), 500
-        m = re.search(r"Submitted batch job (\d+)", out)
-        if not m:
-            return jsonify({"ok": False,
-                            "error": f"unparseable sbatch output: {out}"}), 500
-
-        slurm_id = m.group(1)
-        # Record in DB; tag with step_id so the runtime-history queries
-        # filter to just this kind of job.
         params_for_db = dict(form)
         params_for_db.update(resources.to_dict())
         params_for_db["step_id"] = step_id
-        fasrc_jobs.DB.insert(
-            slurm_id,
-            label=label,
-            params=params_for_db,
-            script_path=remote_script,
-            log_path=f"{cfg_loaded.repo_path}/{built['out']}",
-            err_path=f"{cfg_loaded.repo_path}/{built['err']}",
+        slurm_id, payload = fasrc_jobs.submit_sbatch_script(
+            STATE.ssh, cfg=cfg_loaded, built=built, label=label,
+            params=params_for_db, step_id=step_id,
         )
-        fasrc_jobs.DB.set_step_id(slurm_id, step_id)
-        return jsonify({
-            "ok":       True,
-            "jobid":    slurm_id,
-            "step_id":  step_id,
-            "label":    label,
-            "log_path": f"{cfg_loaded.repo_path}/{built['out']}",
-            "params":   params_for_db,
-        })
+        if slurm_id is None:
+            return jsonify(payload), 500
+        return jsonify(payload)
 
     @app.route("/api/fasrc/hst/runtime-history/<step_id>")
     def api_fasrc_hst_runtime_history(step_id: str):
-        from euclid_polish.web import fasrc_jobs
         return jsonify({
             "step_id":  step_id,
             "history":  fasrc_jobs.runtime_history_for_step(step_id, limit=10),
             "median":   fasrc_jobs.median_runtime_for_step(step_id),
+        })
+
+    @app.route("/api/fasrc/hst/<step_id>/history", methods=["GET", "POST"])
+    def api_fasrc_hst_step_history(step_id: str):
+        """Per-step run history + best-match prefill suggestion.
+
+        Powers the "Previous runs" panel and the resources prefill under
+        each step's form. The client posts the current task-params
+        dict (everything in the form except resource fields and meta
+        keys); we serialise it the same way the submitter does so the
+        latest-match lookup uses string equality on ``params_json``.
+
+        Response shape:
+
+        ```json
+        {
+          "ok":       true,
+          "step_id":  "extract_psf",
+          "history":  [<row>, ...],          # newest first, all states
+          "match":    <row> | null,          # latest exact-match row
+          "task_params_json": "..."          # canonical serialisation
+        }
+        ```
+        """
+        try:
+            STEP_REGISTRY.get(step_id)
+        except KeyError:
+            return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
+
+        # Accept task params via form POST (UI flow) OR query string GET
+        # (curl-friendly debugging). Strip the same meta keys the
+        # submitter strips so the match lookup is symmetric.
+        raw = request.form.to_dict() if request.method == "POST" else request.args.to_dict()
+        task_params = {
+            k: v for k, v in raw.items()
+            if k not in ("partition", "n_cpus", "n_gpus", "memory",
+                         "time_limit", "confirm", "label", "preset")
+        }
+        params_json = json.dumps(
+            task_params, ensure_ascii=False,
+            separators=(",", ":"), sort_keys=True,
+        ) if task_params else ""
+
+        history = fasrc_jobs.JOBLOG.history_for_step(step_id)
+        match   = fasrc_jobs.JOBLOG.latest_match(step_id, params_json)
+        return jsonify({
+            "ok":               True,
+            "step_id":          step_id,
+            "history":          history,
+            "match":            match,
+            "task_params_json": params_json,
         })
 
     @app.route("/api/fasrc/extend-time", methods=["POST"])
@@ -4489,6 +4707,29 @@ def create_app() -> Flask:
             )
         return jsonify({"jobs": rows})
 
+    @app.route("/api/fasrc/jobs/<jobid>/status")
+    def api_fasrc_job_status(jobid: str):
+        """Return the structured status for one job.
+
+        Reads the job's ``.events`` JSONL stream (written on FASRC by
+        :class:`euclid_polish.observability.Reporter`) and folds it into
+        the :class:`JobStatus` shape the ``JobStatusCard`` widget polls
+        for. Returns an empty status (``has_events=False``) when the
+        job is queued / pre-Reporter / disconnected — never 500s on a
+        missing file."""
+        row = fasrc_jobs.DB.get(jobid)
+        if not row:
+            return jsonify({"ok": False, "error": "unknown jobid"}), 404
+        fetcher = JobStatusFetcher(ssh=STATE.ssh)
+        status  = fetcher.fetch(events_path=row.get("events_path"))
+        return jsonify({
+            "ok":          True,
+            "jobid":       jobid,
+            "state":       row.get("state"),
+            "events_path": row.get("events_path"),
+            "status":      status.to_dict(),
+        })
+
     # ---- past-runs browser (Logs tab) ---------------------------------------
     #
     # Combines two sources so the user sees every run that left a log on
@@ -4521,7 +4762,9 @@ def create_app() -> Flask:
             timeout=15,
         )
         if rc_q == 0:
-            fasrc_jobs.reconcile_with_squeue(fasrc_jobs.parse_squeue(out_q))
+            fasrc_jobs.reconcile_with_squeue(
+                fasrc_jobs.parse_squeue(out_q), ssh=STATE.ssh,
+            )
 
         # 1. Scan remote for every .out / .err — one cheap SSH call.
         # ``stat -c '%Y\t%s\t%n'`` works on GNU coreutils (FASRC); falls
@@ -4713,8 +4956,6 @@ def create_app() -> Flask:
                                      f"[{started_at:.0f}, {ended_at:.0f}]"}), 404
 
         # Render in-memory.
-        import io as _io
-        from euclid_polish.training.log_plot import plot_training_records
         tmp_png = os.path.join(Config.VIS_DIR, "tmp_training_plot.png")
         os.makedirs(Config.VIS_DIR, exist_ok=True)
         plot_training_records(
@@ -4802,7 +5043,6 @@ def create_app() -> Flask:
         try:
             resp = _build_training_status()
         except Exception as e:
-            import traceback
             traceback.print_exc()
             resp = jsonify({
                 "ok":    False,
@@ -4930,7 +5170,6 @@ def create_app() -> Flask:
                     and MIRROR.status.last_checkpoint_line
                         != summary["last_checkpoint"]):
                 MIRROR.status.last_checkpoint_line = summary["last_checkpoint"]
-                import threading as _t
                 _t.Thread(target=MIRROR.trigger, daemon=True,
                           name="mirror-trigger").start()
 
@@ -5083,8 +5322,6 @@ def create_app() -> Flask:
         if out.strip() == "MISSING":
             return jsonify({"ok": True, "path": path, "rows": []})
 
-        import csv
-        import io as _io
         reader = csv.DictReader(_io.StringIO(out))
         rows = []
         for r in reader:
@@ -5159,7 +5396,6 @@ def create_app() -> Flask:
 
 def main() -> None:
     """Run the Flask app on 127.0.0.1:8765."""
-    import argparse
     ap = argparse.ArgumentParser(description="EuclidPolish localhost web UI")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)

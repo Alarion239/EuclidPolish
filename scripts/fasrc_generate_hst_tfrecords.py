@@ -35,6 +35,10 @@ from __future__ import annotations
 
 import os
 
+from concurrent.futures import (
+FIRST_COMPLETED, ProcessPoolExecutor, wait,
+)
+
 # Force-hide GPUs BEFORE TF is imported, even if SLURM allocated one.
 #
 # Why this script is CPU-only by design:
@@ -342,6 +346,8 @@ def _make_pair(
         when the CNN weights file isn't available yet.
     """
 
+    # Use the central sum-rebin implementation on MultiBandSkyImage so
+    # there's no duplicated reshape().sum() inline.
     H, W, C = hr_cutout_4ch.shape
     assert H % 2 == 0 and W % 2 == 0
     lr_cube = np.zeros((H // 2, W // 2, C), dtype=np.float32)
@@ -354,7 +360,7 @@ def _make_pair(
             denoiser_model=denoiser_model,
         )
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
-        rebinned = convolved.reshape(H // 2, 2, W // 2, 2).sum(axis=(1, 3))
+        rebinned = MultiBandSkyImage.rebin_array(convolved, 2)
         # Apply per-band Euclid noise (Poisson + read; artifacts off for
         # synthetic HST templates — adding them is a knob we can flip
         # later if the trained model overfits to the smoother dirty path).
@@ -601,10 +607,11 @@ def _process_one_galaxy(
     Hh, Wh = hr_resampled.shape
     H_hr = _WORKER_IMAGE_SIZE
     if Hh < H_hr or Wh < H_hr:
+        # Cutout smaller than the HR target — drop. We don't want
+        # ``crop_array``'s zero-padding behaviour here because a partial
+        # cutout would leak zero-valued sky into the training pair.
         return None
-    i0 = (Hh - H_hr) // 2
-    j0 = (Wh - H_hr) // 2
-    hr_clean_rate = hr_resampled[i0:i0 + H_hr, j0:j0 + H_hr]
+    hr_clean_rate = MultiBandSkyImage.crop_array(hr_resampled, H_hr)
 
     # No sky-offset subtraction here. HLSP COSMOS F814W mosaics are
     # already sky-subtracted by HAP, so the cutout median is ≈ 0 by
@@ -885,9 +892,6 @@ def main() -> int:
                 # workers stay busy while one finishes + the main
                 # process writes. Pool initialiser loads the kernel
                 # once per process.
-                from concurrent.futures import (
-                    FIRST_COMPLETED, ProcessPoolExecutor, wait,
-                )
 
                 with ProcessPoolExecutor(
                     max_workers=n_workers,

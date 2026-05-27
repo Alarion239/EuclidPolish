@@ -44,6 +44,8 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 
+from astropy.io import fits
+
 
 def _default_vis_psf_path() -> str:
     """Same VIS PSF FITS the synthetic forward (and the diff kernel) consume."""
@@ -63,7 +65,6 @@ def _load_vis_psf_kernel(
     crop). Default ``None`` keeps the full saved kernel to stay
     bit-equivalent to the numpy synthetic forward.
     """
-    from astropy.io import fits
 
     if psf_fits_path is None:
         psf_fits_path = _default_vis_psf_path()

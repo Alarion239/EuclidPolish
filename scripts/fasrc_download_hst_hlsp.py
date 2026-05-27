@@ -26,6 +26,10 @@ import os
 import sys
 import time
 
+import shutil
+from astroquery.mast import Observations
+from astropy.table import Table
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -71,7 +75,6 @@ def _flatten_mast_download_dir(out_dir: str) -> int:
             except OSError as e:
                 print(f"  failed to move {src} → {dst}: {e}")
     # Wipe the scratch tree (empty subdirs + any non-FITS leftovers).
-    import shutil
     shutil.rmtree(scratch, ignore_errors=True)
     return moved
 
@@ -127,7 +130,6 @@ def main() -> int:
         return 0
 
     print("[1/3] querying MAST HLSP catalog ...")
-    from astroquery.mast import Observations
     obs = Observations.query_criteria(
         obs_collection=OBS_COLLECTION,
         target_name=TARGET_NAME,
@@ -177,7 +179,6 @@ def main() -> int:
 
     print("[3/3] downloading (this can take a while) ...")
     if pending:
-        from astropy.table import Table
         try:
             Observations.download_products(
                 Table(rows=pending), download_dir=out_dir,

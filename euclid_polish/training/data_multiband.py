@@ -27,6 +27,8 @@ from tensorflow.python.data.experimental import AUTOTUNE
 from euclid_polish.config import Config
 from euclid_polish.sky.tfrecord import parse_record_graph_v2, tfrecord_path
 
+import os as _os
+
 
 # ---------------------------------------------------------------------------
 # Per-band asinh stretch (graph constants)
@@ -152,7 +154,6 @@ class MultiBandEuclidDataset:
         roundtrip_records_dir: Optional[str] = None,
         roundtrip_fraction: float = 0.0,
     ):
-        import os as _os
 
         if subset not in ("train", "validate"):
             raise ValueError("subset must be 'train' or 'validate'")
@@ -205,7 +206,6 @@ class MultiBandEuclidDataset:
     @staticmethod
     def _resolve_pair(records_dir: str, subset: str) -> tuple[str, str]:
         """Return ``(hr_file, dirty_file)`` for one records dir / subset."""
-        import os as _os
         hr_candidate = tfrecord_path(records_dir, f"hr_{subset}")
         legacy_clean = tfrecord_path(records_dir, f"clean_{subset}")
         dirty        = tfrecord_path(records_dir, f"dirty_{subset}")

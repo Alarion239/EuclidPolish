@@ -26,6 +26,9 @@ from matplotlib.gridspec import GridSpec
 from euclid_polish.config import Config
 from typing import Dict, Any, Tuple
 
+from euclid_polish.config import Config as _Cfg
+from euclid_polish.visualization.color import calibrated_rgb_panel
+
 
 def _percentile_bounds(
     data: np.ndarray,
@@ -229,8 +232,6 @@ class BaseVisualizer:
         """
         # Imported lazily to avoid a hard dep cycle if someone imports
         # BaseVisualizer without the color module.
-        from euclid_polish.config import Config as _Cfg
-        from euclid_polish.visualization.color import calibrated_rgb_panel
         if band_names is None:
             band_names = _Cfg.LR_INPUT_BAND_NAMES
         scale = float(asinh_scale) if asinh_scale is not None \

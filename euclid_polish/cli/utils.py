@@ -7,6 +7,8 @@ including validation, subprocess execution, and display formatting.
 
 import subprocess
 
+import questionary
+
 from euclid_polish.config import Config
 
 
@@ -179,8 +181,6 @@ class CommandRunner:
         bool
             True if command succeeded, False otherwise.
         """
-        import questionary
-
         # Get user confirmation
         if not questionary.confirm(prompt_msg, default=True).ask():
             DisplayFormatter.print_cancelled()

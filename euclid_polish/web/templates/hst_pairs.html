@@ -33,6 +33,12 @@
     No HST records cached locally yet — click <strong>↻ Sync from FASRC</strong>
     in the right panel to pull the validate split (~240 MB).
   </div>
+  <div style="margin-top:8px;">
+    <a id="fits-download" class="chip" href="#" download
+       title="Download raw 4-band cube (or 1-band HR target) as multi-HDU FITS. Linear electron values — no asinh, no clip, no colormap. Band chip is ignored (FITS carries all bands).">
+      📥 Download FITS (all bands)
+    </a>
+  </div>
 </div>
 
 <section class="card">
@@ -158,13 +164,25 @@ async function refreshTotals() {
   } catch (e) {}
 }
 
+function _updateFitsLink(sel) {
+  const a = document.getElementById("fits-download");
+  if (!a) return;
+  // FITS endpoint ignores `band` (it always returns the full
+  // 4-band cube), so omit it from the query — saves a couple of
+  // bytes and avoids confusing the user when they peek at the URL.
+  a.href = `/view/hst-pair.fits?subset=${sel.subset}` +
+           `&kind=${sel.kind}&i=${sel.i}`;
+}
+
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
   // Same renderer as /sky, just at a different URL.
-  buildUrl:  (sel) =>
-    `/view/hst-pair?subset=${sel.subset}&kind=${sel.kind}` +
-    `&band=${sel.band}&i=${sel.i}`,
+  buildUrl:  (sel) => {
+    _updateFitsLink(sel);
+    return `/view/hst-pair?subset=${sel.subset}&kind=${sel.kind}` +
+           `&band=${sel.band}&i=${sel.i}`;
+  },
   // Default to validate because that's what the Sync button pulls by
   // default — train is a separate (slow) opt-in.
   // Default to triptych so the page opens on the most useful view for

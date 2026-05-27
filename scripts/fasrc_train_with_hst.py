@@ -19,6 +19,15 @@ import os
 import sys
 import time
 
+import numpy as np
+import tensorflow as tf
+from euclid_polish.training import Trainer
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.training.forward_op import EuclidVISForwardOp
+from euclid_polish.training.models.wdsr import wdsr
+from tf_keras.losses import MeanAbsoluteError
+from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -94,15 +103,6 @@ def main() -> int:
         print("DRY RUN — would train.")
         print(f"\nRUNTIME_SECONDS={time.time() - t0:.1f}")
         return 0
-
-    import numpy as np
-    import tensorflow as tf
-    from euclid_polish.training import Trainer
-    from euclid_polish.training.data_multiband import MultiBandEuclidDataset
-    from euclid_polish.training.forward_op import EuclidVISForwardOp
-    from euclid_polish.training.models.wdsr import wdsr
-    from tf_keras.losses import MeanAbsoluteError
-    from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
     use_roundtrip = args.roundtrip_fraction > 0
     # The dataset needs source tags whenever the round-trip path is on.

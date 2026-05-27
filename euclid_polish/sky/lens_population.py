@@ -38,6 +38,9 @@ from euclid_polish.sky.profiles import (
     evaluate_sersic_at_coords,
 )
 
+from scipy.integrate import trapezoid
+from lenstronomy.LensModel.lens_model import LensModel
+
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -99,7 +102,6 @@ def _comoving_distance_mpc(
     integrand = 1.0 / E
     # ``np.trapz`` was removed in NumPy 2.0; use ``scipy.integrate.trapezoid``
     # for forward compatibility.
-    from scipy.integrate import trapezoid
     return DH * float(trapezoid(integrand, zs))
 
 
@@ -240,7 +242,6 @@ def _build_lenstronomy_lens(params: LensParams):
     Returns ``(lens_model, kwargs_list)``. Heavy import is deferred to here
     so the module is cheap to import when lensing is disabled.
     """
-    from lenstronomy.LensModel.lens_model import LensModel
     lens_model = LensModel(lens_model_list=["SIE", "SHEAR"])
 
     # Convert SIE axis ratio + PA to lenstronomy's eccentricity convention.

@@ -57,16 +57,18 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the original 5 steps, the two
+        """Registry must include the original 5 HST steps, the two
         round-trip steps (sky download + LR-only TFRecord build), the
         two transition-model steps (training-pair generation + CNN
-        training), and ``train_denoiser`` for Phase 1 of the
-        two-stage chain."""
+        training), ``train_denoiser`` for Phase 1 of the two-stage
+        chain, and the four legacy ``run_pipeline.py`` presets that
+        now share the same step abstraction."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "transition_pairs", "train_denoiser", "train_transition",
+            "gen_convolve", "convolve_only", "train_only", "custom",
         }
 
     def test_transition_pairs_step_emits_correct_argv(self):
@@ -232,9 +234,12 @@ class TestRegistry:
         with pytest.raises(KeyError, match="unknown"):
             REGISTRY.get("nonexistent")
 
-    def test_only_train_needs_gpu(self):
+    def test_gpu_steps_are_the_expected_set(self):
+        """Steps that flip ``needs_gpu=True`` are the HST trainer and
+        the two legacy training-only presets (train_only + custom).
+        Everything else (download, kernel, PSF extract, …) runs on CPU."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train"}
+        assert gpu_steps == {"train", "train_only", "custom"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -543,6 +548,8 @@ class TestFixedCpusEnforcement:
             data={
                 "confirm": "yes",
                 "n_cpus": "16",     # user tries to over-allocate
+                "n_gpus": "0",      # all resource fields are required
+                                    # (StepResources.from_form_strict)
                 "n_stars": "200",
                 "memory": "8G",
                 "time_limit": "2:00:00",
@@ -565,6 +572,8 @@ class TestFixedCpusEnforcement:
             data={
                 "confirm": "yes",
                 "n_cpus": "20",
+                "n_gpus": "0",      # all resource fields are required
+                                    # (StepResources.from_form_strict)
                 "n_train": "100",
                 "n_valid": "10",
                 "image_size": "256",

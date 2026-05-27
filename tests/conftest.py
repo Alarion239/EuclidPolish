@@ -151,6 +151,35 @@ def _protect_real_data_dir():
 
     DATA_DIR = Config.DATA_DIR
     INLINE_RESTORE_LIMIT = 16 * 1024 * 1024   # 16 MB
+    # Files at or above this size skip the SHA-256 round trip on both
+    # snapshot and verify — they use ``(size, mtime_ns)`` as a tamper
+    # check instead. Hashing the 10 GB COSMOS2025 catalog twice per
+    # session was ~50 s of the suite runtime; mtime+size is good
+    # enough for "did a test accidentally rewrite this file?" without
+    # the I/O cost. Small load-bearing files (PSFs, kernels, summary
+    # JSONs) — the ones the original incident actually touched —
+    # stay under this threshold and keep the full SHA-256 check.
+    HASH_SIZE_LIMIT = 32 * 1024 * 1024        # 32 MB
+
+    def _snapshot(p: str, size: int) -> dict:
+        if size >= HASH_SIZE_LIMIT:
+            try:
+                mtime_ns = os.stat(p).st_mtime_ns
+            except FileNotFoundError:
+                mtime_ns = 0
+            return {"sha": None, "size": size, "mtime_ns": mtime_ns,
+                    "blob": None}
+        with open(p, "rb") as fh:
+            blob = fh.read()
+        return {
+            "sha":      hashlib.sha256(blob).hexdigest(),
+            "size":     size,
+            "mtime_ns": None,
+            # Keep contents in memory only for files small enough to
+            # restore from RAM. Larger-than-inline files (16-32 MB)
+            # still get hashed but can't be auto-restored.
+            "blob":     blob if size <= INLINE_RESTORE_LIMIT else None,
+        }
 
     snapshots: dict = {}
     if os.path.isdir(DATA_DIR):
@@ -164,14 +193,7 @@ def _protect_real_data_dir():
                     st = os.stat(p)
                 except FileNotFoundError:
                     continue
-                with open(p, "rb") as fh:
-                    blob = fh.read()
-                snapshots[p] = {
-                    "sha":  hashlib.sha256(blob).hexdigest(),
-                    "size": st.st_size,
-                    # Keep contents in memory only for small files.
-                    "blob": blob if st.st_size <= INLINE_RESTORE_LIMIT else None,
-                }
+                snapshots[p] = _snapshot(p, st.st_size)
 
     yield
 
@@ -179,6 +201,19 @@ def _protect_real_data_dir():
     for p, snap in snapshots.items():
         if not os.path.exists(p):
             violations.append(("deleted", p))
+            continue
+        try:
+            st = os.stat(p)
+        except FileNotFoundError:
+            violations.append(("deleted", p))
+            continue
+        if snap["sha"] is None:
+            # Big-file shortcut: only compare size + mtime. Cheap.
+            if st.st_size != snap["size"] or st.st_mtime_ns != snap["mtime_ns"]:
+                violations.append(
+                    ("modified (large file, mtime+size diverged, cannot "
+                     "restore)", p),
+                )
             continue
         with open(p, "rb") as fh:
             cur = fh.read()

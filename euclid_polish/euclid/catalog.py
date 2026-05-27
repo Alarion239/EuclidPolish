@@ -36,6 +36,8 @@ from astroquery.esa.euclid import Euclid
 from euclid_polish.config import Config
 from euclid_polish.euclid.validator import angular_separation_arcsec
 
+from euclid_polish.config import Config as _Cfg
+
 POSITION_TOLERANCE_ARCSEC = 0.05  # duplicate-detection tolerance (arcsec)
 
 _FLAG_KINDS = ("valid", "corrupted", "download_failed")
@@ -307,7 +309,6 @@ class StarCatalog:
             "pending":   len(pending),
             "next_id":   catalog.get("next_id", 0),
         }
-        from euclid_polish.config import Config as _Cfg
         summary["valid_by_band"] = {
             b.name: sum(1 for s in stars if self.is_valid(s, band=b.name))
             for b in _Cfg.BANDS

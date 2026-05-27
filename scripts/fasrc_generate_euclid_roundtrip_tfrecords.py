@@ -31,6 +31,10 @@ from typing import Iterator, Optional
 import numpy as np
 import pandas as pd
 
+from astropy.io import fits
+from euclid_polish.sky.tfrecord import open_multiband_writer
+from euclid_polish.sky.types import MultiBandSkyImage
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -142,7 +146,6 @@ def _load_4band_cube(
     — irrelevant for the round-trip loss, which only checks
     ``Conv(M(lr)) ≈ lr`` on VIS and is sky-bias-invariant.
     """
-    from astropy.io import fits
 
     channels: list = []
     for band_name in Config.LR_INPUT_BAND_NAMES:
@@ -257,9 +260,6 @@ def main() -> int:
         runtime = time.time() - t0
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
-
-    from euclid_polish.sky.tfrecord import open_multiband_writer
-    from euclid_polish.sky.types import MultiBandSkyImage
 
     print(f"[2/3] streaming records to {args.output_dir} ...")
     counts: dict = {"train": 0, "validate": 0}

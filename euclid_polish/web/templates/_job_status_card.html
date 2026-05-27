@@ -1,0 +1,38 @@
+{# -----------------------------------------------------------------------
+   Structured job-status card.
+
+   Drop next to any job row with a known SLURM job id; the JS auto-binds
+   via DOMContentLoaded and polls /api/fasrc/jobs/<jobid>/status every
+   1.5 s.
+
+   Usage:
+
+     {% include "_job_status_card.html" with context %}
+
+   …after setting ``jobid`` in the surrounding context (and optionally
+   ``log_path`` to enable the "Show raw log" fallback).
+   ----------------------------------------------------------------------- #}
+<div class="job-status-card" data-jobid="{{ jobid }}">
+  <div class="job-status-head">
+    <span class="js-stage is-empty">waiting for first event…</span>
+    <span class="js-step-label"></span>
+  </div>
+  <progress class="js-progress" max="1" value="0" hidden></progress>
+
+  <details class="job-status-warnings">
+    <summary>Warnings (<span class="js-warn-count">0</span>)</summary>
+    <ul class="js-warn-list event-list"></ul>
+  </details>
+
+  <details class="job-status-errors">
+    <summary>Errors (<span class="js-err-count">0</span>)</summary>
+    <ul class="js-err-list event-list"></ul>
+  </details>
+
+  {% if log_path %}
+  <details class="job-status-raw">
+    <summary>Show raw log</summary>
+    <pre class="js-raw-log-body job-log">(raw log not loaded — click to fetch)</pre>
+  </details>
+  {% endif %}
+</div>

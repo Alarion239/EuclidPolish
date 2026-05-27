@@ -37,6 +37,11 @@ from scipy import signal as scipy_signal
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
+# Re-export the canonical noise function (lives in sky.noise to keep
+# sky.types' module-level imports free of circulars). Existing callers
+# of ``from euclid_polish.sky.multiband_forward import apply_band_noise``
+# continue to work via this re-export.
+from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
 from euclid_polish.euclid.psf_library import (
     make_gaussian_psf, psf_side_pixels_for_band,
 )
@@ -91,50 +96,10 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 # Forward model
 # ---------------------------------------------------------------------------
 
-def apply_band_noise(
-    signal_e: np.ndarray,
-    band: BandConfig,
-    rng: np.random.Generator,
-    *,
-    add_artifacts: bool = False,
-    artifact_config: Optional["ArtifactConfig"] = None,
-) -> np.ndarray:
-    """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
-
-    Module-level so non-class callers (e.g. the HST→Euclid TFRecord
-    generator at ``scripts/fasrc_generate_hst_tfrecords.py``) can use
-    the exact same noise model without having to instantiate a full
-    :class:`MultiBandForward`. The method on the class is a thin
-    wrapper that just reads ``add_artifacts`` + ``artifact_config``
-    off the instance config and delegates here.
-
-    Order matches the physical readout chain: photons + sky + dark
-    accumulate → cosmic rays / hot pixels / interpolation residuals
-    deposit charge → ramp is read with Gaussian read noise →
-    sky-subtracted on the ground.
-    """
-    from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
-
-    t_total = band.t_total_s
-    pixel_area = band.pixel_scale_lr_arcsec ** 2
-    sky_e  = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
-    dark_e = band.dark_e_per_s_per_pix * t_total
-
-    lam = np.clip(signal_e.astype(np.float64) + sky_e + dark_e, 0.0, None)
-    observed = rng.poisson(lam).astype(np.float64) - (sky_e + dark_e)
-
-    if add_artifacts:
-        acfg = artifact_config or ArtifactConfig()
-        sigma_floor_e = float(np.sqrt(
-            sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
-        ))
-        observed = inject_artifacts(
-            observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
-        ).astype(np.float64)
-
-    read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
-    read = rng.normal(0.0, read_sigma, size=signal_e.shape)
-    return (observed + read).astype(np.float32)
+# ``apply_band_noise`` lives in :mod:`euclid_polish.sky.noise` and is
+# re-exported at the top of this module (see the import block above)
+# so existing callers ``from euclid_polish.sky.multiband_forward
+# import apply_band_noise`` continue to work unchanged.
 
 
 class MultiBandForward:
@@ -169,17 +134,20 @@ class MultiBandForward:
     # ------------------------------------------------------------------ #
     @staticmethod
     def sum_rebin(arr_2d: np.ndarray, factor: int) -> np.ndarray:
-        """Photometric sum-rebin by integer ``factor``.
+        """Photometric sum-rebin with trailing-row trim.
 
-        Each output pixel is the sum of the (factor × factor) input pixels
-        it covers; total electron count is conserved. Trailing rows/cols
-        that don't fit a whole bin are trimmed.
+        **Thin wrapper** around
+        :meth:`euclid_polish.sky.types.MultiBandSkyImage.rebin_array` —
+        single source of truth for the rebin op. Trailing rows / cols
+        that don't fit a whole bin are silently trimmed
+        (``trim_remainder=True``); this matches the historical
+        behaviour of every caller of this static method
+        (``MultiBandForward._process_one_band``, the SR-output renderer
+        in ``web/app.py``).
         """
-        r = int(factor)
-        h, w = arr_2d.shape
-        h_t, w_t = (h // r) * r, (w // r) * r
-        view = arr_2d[:h_t, :w_t].reshape(h_t // r, r, w_t // r, r)
-        return view.sum(axis=(1, 3))
+        return MultiBandSkyImage.rebin_array(
+            arr_2d, int(factor), trim_remainder=True,
+        )
 
     # ------------------------------------------------------------------ #
     def _apply_band_noise(
@@ -219,8 +187,10 @@ class MultiBandForward:
         psf = self._psfs[band.name]
         target_scale = self.target_lr_pixel_scale_arcsec
 
-        # 1. PSF convolution on HR plane.
-        hr_e = scipy_signal.fftconvolve(hr_channel, psf.data, mode="same").astype(np.float32)
+        # 1. PSF convolution on HR plane — single source of truth is
+        #    PSF.convolved_with (defensively sum=1-normalises the
+        #    kernel and runs fftconvolve mode="same" + float32 cast).
+        hr_e = psf.convolved_with(hr_channel)
 
         # 2. Sum-rebin to the band's *native* LR scale (preserves photon shot noise
         #    statistics at the right pixel size for the per-band noise step).

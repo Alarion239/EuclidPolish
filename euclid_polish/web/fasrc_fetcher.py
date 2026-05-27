@@ -39,6 +39,8 @@ from typing import Dict, List, Optional, Tuple
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 
+from euclid_polish.web.remote import STATE
+
 
 # Local on-disk cache. Lives under the project ``data/`` so the existing
 # ``/inspect`` page (which whitelists subtrees of ``data/``) can serve it
@@ -220,7 +222,6 @@ def _evict_lru_until_under(limit: int) -> int:
 
 def _remote_size_bytes(remote_path: str) -> Tuple[bool, Optional[int], Optional[str]]:
     """``stat -c %s <path>`` over SSH → ``(ok, size_or_None, err)``."""
-    from euclid_polish.web.remote import STATE
     if STATE.ssh is None or not STATE.ssh.is_connected():
         return False, None, "ssh not connected"
     cmd = f"stat -c %s {shlex.quote(remote_path)}"
@@ -277,7 +278,6 @@ def fetch_one_file(
             )
 
     # 2. Stat the remote to enforce the size cap before transfer.
-    from euclid_polish.web.remote import STATE
     ok, remote_size, err = _remote_size_bytes(remote_path)
     if not ok:
         return FetchResult(ok=False, error=err)
@@ -358,7 +358,6 @@ def run_remote_python(
     Used by the HST tile inspector to call ``scripts/fasrc_inspect_tile.py``
     on a login node without rsync'ing the multi-GB tile back to local.
     """
-    from euclid_polish.web.remote import STATE
     if STATE.ssh is None or not STATE.ssh.is_connected():
         return 1, (b"" if binary else ""), "ssh not connected"
     cfg = fasrc_config.load()
@@ -395,7 +394,6 @@ def list_remote_dir(
     """
     if not is_allowed_remote_path(remote_dir):
         return False, [], f"path not under allowed FASRC roots: {remote_dir}"
-    from euclid_polish.web.remote import STATE
     if STATE.ssh is None or not STATE.ssh.is_connected():
         return False, [], "ssh not connected"
 

@@ -49,6 +49,12 @@
     <strong>↻ Sync from FASRC</strong> in the right panel to pull the
     validate split.
   </div>
+  <div style="margin-top:8px;">
+    <a id="fits-download" class="chip" href="#" download
+       title="Download the raw linear-electron arrays for the current view as a multi-HDU FITS. Open in DS9 / ginga to inspect the actual pixel values — no asinh stretch, no percentile clip, no colormap.">
+      📥 Download FITS (raw)
+    </a>
+  </div>
 </div>
 
 <section class="card">
@@ -207,25 +213,39 @@ function _showHideNoiseControls(kind) {
   el.style.display = kindsWithNoise.has(kind) ? "" : "none";
 }
 
+// Compose the query string once; the PNG view and the FITS download
+// share every parameter so we only need to build the suffix once and
+// reuse it for both URLs.
+function _composeTransitionPairQuery(sel) {
+  let u = `subset=${sel.subset}&kind=${sel.kind}&i=${sel.i}`;
+  const kindsWithNoise = new Set([
+    "noisy_hst", "hst_pair", "denoised_hst", "denoiser_strip",
+  ]);
+  if (kindsWithNoise.has(sel.kind)) {
+    const seed = (Number(sel.i) || 0) * 1000003
+               + (NOISE_UI.seedBump | 0);
+    u += `&alpha=${encodeURIComponent(NOISE_UI.alpha)}` +
+         `&sigma_floor=${encodeURIComponent(NOISE_UI.sigmaFloor)}` +
+         `&noise_seed=${seed}`;
+  }
+  return u;
+}
+
+function _updateFitsLink(sel) {
+  const a = document.getElementById("fits-download");
+  if (!a) return;
+  a.href = `/view/transition-pair.fits?${_composeTransitionPairQuery(sel)}`;
+}
+
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
   buildUrl:  (sel) => {
-    // Base URL — `i` is the record index; noise_seed combines index
-    // + reshuffle bump so toggling kind doesn't change the noise.
-    let u = `/view/transition-pair?subset=${sel.subset}` +
-            `&kind=${sel.kind}&i=${sel.i}`;
-    const kindsWithNoise = new Set([
-      "noisy_hst", "hst_pair", "denoised_hst", "denoiser_strip",
-    ]);
-    if (kindsWithNoise.has(sel.kind)) {
-      const seed = (Number(sel.i) || 0) * 1000003
-                 + (NOISE_UI.seedBump | 0);
-      u += `&alpha=${encodeURIComponent(NOISE_UI.alpha)}` +
-           `&sigma_floor=${encodeURIComponent(NOISE_UI.sigmaFloor)}` +
-           `&noise_seed=${seed}`;
-    }
-    return u;
+    const url = `/view/transition-pair?${_composeTransitionPairQuery(sel)}`;
+    // Keep the FITS download in lockstep with the PNG view — same
+    // query params, just a different endpoint.
+    _updateFitsLink(sel);
+    return url;
   },
   initial:   { kind: "input", subset: "{{ default_subset }}", i: 0 },
 });

@@ -25,6 +25,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+import tqdm as _tqdm_module
+from tqdm import auto as _tqdm_auto
+
 
 # ---------------------------------------------------------------------------
 # Job record
@@ -192,8 +195,6 @@ class _LogCapture:
             with cap.tqdm_hook("downloading cutouts"):
                 downloader.download(show_progress=True)
         """
-        import tqdm as _tqdm_module
-        from tqdm import auto as _tqdm_auto
 
         job = self.job
 

@@ -295,3 +295,35 @@ button.secondary:hover { background: #565e64; }
   font-family: "JetBrains Mono", Menlo, monospace;
 }
 
+
+/* ─── HST step cards: task / history / resources fieldsets ─────────────
+ * The submit form is split into three labelled groups so the user can
+ * scan top-down: "what am I asking the cluster to do?" → "what did this
+ * look like last time?" → "what resources should I give it?".
+ * Resources start empty per task #63; the history panel may auto-fill
+ * them from a successful match.
+ */
+.hst-step-form fieldset {
+  border: 1px solid #ddd; border-radius: 4px;
+  margin: 8px 0; padding: 8px 12px;
+}
+.hst-step-form fieldset > legend {
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 0 6px; color: #555;
+}
+.hst-step-form .js-history-panel {
+  max-height: 260px; overflow-y: auto;
+}
+.hst-step-form table.history-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  font-family: "JetBrains Mono", Menlo, monospace;
+}
+.hst-step-form table.history-table th,
+.hst-step-form table.history-table td {
+  border-bottom: 1px solid #eee; padding: 4px 6px; text-align: left;
+  white-space: nowrap;
+}
+.hst-step-form table.history-table th {
+  font-size: 11px; color: #777; font-weight: 600;
+}

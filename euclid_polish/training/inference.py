@@ -17,6 +17,8 @@ from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
+from euclid_polish.visualization.color import lupton_rgb
+
 
 def load_model_from_checkpoint(
     checkpoint_dir: str,
@@ -253,7 +255,6 @@ def _safe_lupton_rgb(cube: Optional[np.ndarray]) -> Optional[np.ndarray]:
     cube is missing or doesn't have all four bands."""
     if cube is None or cube.ndim != 3 or cube.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
         return None
-    from euclid_polish.visualization.color import lupton_rgb
     try:
         return lupton_rgb(
             cube, band_names=Config.LR_INPUT_BAND_NAMES,

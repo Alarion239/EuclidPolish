@@ -1,7 +1,8 @@
-"""Unit tests for the sbatch script template builder.
+"""Unit tests for the sbatch script template.
 
-These don't touch SSH at all — the generator is pure Python returning a
-string. We exercise:
+These don't touch SSH at all — :func:`render_sbatch_body` and the
+:class:`RunPipelineStep` family are pure-Python builders returning a
+dict. We exercise:
 
   * every numeric field reaches its ``#SBATCH`` line verbatim,
   * paths get shell-quoted so spaces/specials can't inject,
@@ -9,7 +10,9 @@ string. We exercise:
     settings, not the developer's defaults,
   * extra ``run_pipeline.py`` flags are appended literally,
   * the file paths returned for log/err line up with the ``--output``
-    and ``--error`` lines inside the script body.
+    and ``--error`` lines inside the script body,
+  * the legacy ``PRESETS`` dict (now derived from the step subclasses)
+    still has the four names the JS form hard-codes.
 """
 
 from __future__ import annotations
@@ -17,13 +20,12 @@ from __future__ import annotations
 import pytest
 
 from euclid_polish.web.fasrc_config import FasrcConfig
-from euclid_polish.web.fasrc_jobs import PRESETS, build_sbatch_script, resolve_preset
+from euclid_polish.web.fasrc_jobs import PRESETS, resolve_preset
+from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 
 
 def _params(**overrides):
     p = dict(
-        partition="gpu", n_gpus=1, n_cpus=8, memory="32G",
-        time_limit="12:00:00",
         n_train=6400, n_valid=200, image_size=510,
         batch_size=16, steps=400_000, extra_flags="",
     )
@@ -31,9 +33,26 @@ def _params(**overrides):
     return p
 
 
+def _resources(**overrides):
+    r = dict(partition="gpu", n_gpus=1, n_cpus=8, memory="32G",
+             time_limit="12:00:00")
+    r.update(overrides)
+    return StepResources(**r)
+
+
+def _build(label="test run", *, cfg=None, params=None, resources=None,
+           step_id="custom"):
+    """Render a script the way the Flask handler would."""
+    return REGISTRY.get(step_id).build_sbatch_body(
+        params=params or _params(),
+        resources=resources or _resources(),
+        cfg=cfg or FasrcConfig(),
+        label=label,
+    )
+
+
 def test_basic_script_contains_all_sbatch_fields():
-    cfg = FasrcConfig()
-    built = build_sbatch_script(label="test run", params=_params(), cfg=cfg)
+    built = _build()
     body = built["body"]
     assert body.startswith("#!/bin/bash")
     assert "#SBATCH --job-name=" in body
@@ -47,27 +66,29 @@ def test_basic_script_contains_all_sbatch_fields():
     # log paths match the returned hints
     assert f"#SBATCH --output={built['out']}" in body
     assert f"#SBATCH --error={built['err']}" in body
-    # python command uses the form's training params
-    assert "--ntrain 6400" in body
-    assert "--nvalid 200" in body
-    assert "--image-size 510" in body
-    assert "--batch-size 16" in body
-    assert "--steps 400000" in body
+    # python command uses the form's training params. Each argv token is
+    # rendered on its own continuation line, so we check the tokens
+    # individually rather than as a joined ``--name value`` substring.
+    for token in ("--ntrain", "6400", "--nvalid", "200",
+                  "--image-size", "510", "--batch-size", "16",
+                  "--steps", "400000"):
+        assert token in body, f"missing argv token: {token!r}"
 
 
 def test_custom_resources_are_propagated():
-    cfg = FasrcConfig()
-    built = build_sbatch_script(
-        label="big run", cfg=cfg,
-        params=_params(n_gpus=2, n_cpus=24, memory="128G",
-                       time_limit="2-00:00:00", steps=600_000),
+    built = _build(
+        label="big run",
+        resources=_resources(n_gpus=2, n_cpus=24, memory="128G",
+                             time_limit="2-00:00:00"),
+        params=_params(steps=600_000),
     )
     body = built["body"]
     assert "#SBATCH --gres=gpu:2" in body
     assert "#SBATCH --cpus-per-task=24" in body
     assert "#SBATCH --mem=128G" in body
     assert "#SBATCH --time=2-00:00:00" in body
-    assert "--steps 600000" in body
+    assert "--steps" in body
+    assert "600000" in body
 
 
 def test_paths_route_through_user_config():
@@ -76,7 +97,7 @@ def test_paths_route_through_user_config():
         ckpt_dir="/n/somewhere/ckpt",
         conda_env_path="/n/lab/conda-env",
     )
-    body = build_sbatch_script(label="x", params=_params(), cfg=cfg)["body"]
+    body = _build(cfg=cfg)["body"]
     # shlex.quote leaves simple paths unquoted; either form is acceptable.
     assert ("export EUCLID_POLISH_DATA_DIR=/n/somewhere/data" in body
             or "export EUCLID_POLISH_DATA_DIR='/n/somewhere/data'" in body)
@@ -87,48 +108,46 @@ def test_paths_route_through_user_config():
 
 
 def test_extra_flags_appended_verbatim():
-    body = build_sbatch_script(
-        label="reuse", cfg=FasrcConfig(),
+    body = _build(
         params=_params(extra_flags="--skip-generate --skip-convolve"),
     )["body"]
-    # The training command is one long shell line ending in --steps N <flags>
-    assert "--steps 400000 --skip-generate --skip-convolve" in body
+    # The argv tokens are shell-quoted individually and joined with
+    # ``\``-continuations across multiple lines; both --skip-* flags
+    # appear as standalone tokens after --steps.
+    assert "--skip-generate" in body
+    assert "--skip-convolve" in body
+    assert "--steps" in body
 
 
 def test_log_paths_consistent_between_metadata_and_script():
-    built = build_sbatch_script(
-        label="reuse", cfg=FasrcConfig(), params=_params(),
-    )
+    built = _build()
     # Each path in the returned dict shows up in the body verbatim once
     # in the SBATCH header.
     assert f"#SBATCH --output={built['out']}" in built["body"]
     assert f"#SBATCH --error={built['err']}"  in built["body"]
-    # And the script's relpath matches what we'll write to FASRC.
+    # And the script's relpath matches what we'll write to FASRC. The
+    # ``custom`` step (a RunPipelineStep) writes to ``logs/jobs``.
     assert built["script"].endswith(".sh")
     assert built["script"].startswith("logs/jobs/")
 
 
 def test_label_with_special_chars_does_not_break_shell():
     # Quotes in the label would otherwise break ``echo`` inside the script.
-    body = build_sbatch_script(
-        label="he said 'hi'; rm -rf /",
-        cfg=FasrcConfig(), params=_params(),
-    )["body"]
-    # The single-quotes were stripped; no literal "rm -rf /" line that runs.
-    # We just check the echo line for the sanitized label still works.
+    body = _build(label="he said 'hi'; rm -rf /")["body"]
+    # Single-quotes get stripped; the echo line still echoes a clean string.
     assert "Web-submitted job: he said hi; rm -rf /" in body
-    # And that no unescaped single quotes appear inside the echo line.
-    echo_line = [l for l in body.splitlines() if l.startswith("echo \"Web-submitted")]
-    assert echo_line, "echo header line missing"
+    echo_line = [l for l in body.splitlines()
+                 if l.startswith('echo "Web-submitted')]
+    assert echo_line, "echo banner line missing"
 
 
-@pytest.mark.parametrize("bad", ["abc", "", None])
-def test_bad_numeric_fields_raise(bad):
-    with pytest.raises((ValueError, TypeError)):
-        build_sbatch_script(
-            label="x", cfg=FasrcConfig(),
-            params=_params(n_gpus=bad),
-        )
+def test_bad_numeric_resource_fields_raise():
+    """``StepResources.from_form`` is the validation boundary; non-numeric
+    strings raise ``ValueError`` before the script renders. (Empty
+    strings deliberately fall back to the step's default — the form
+    sends blank fields for "use default", not for "reject submit".)"""
+    with pytest.raises(ValueError):
+        StepResources.from_form({"n_gpus": "abc"}, StepResources())
 
 
 # ---------------------------------------------------------------------------
@@ -148,22 +167,21 @@ def test_resolve_preset_unknown_falls_back_to_custom():
 def test_cpu_only_preset_omits_gres():
     """Some SLURM configs reject ``--gres=gpu:0``; CPU-only presets must
     drop the --gres line entirely."""
-    cfg = FasrcConfig()
-    built = build_sbatch_script(
-        label="cpu", cfg=cfg,
-        params=_params(n_gpus=0, partition="shared",
-                       extra_flags="--skip-train"),
+    built = _build(
+        step_id="gen_convolve",
+        resources=_resources(n_gpus=0, partition="shared"),
     )
     body = built["body"]
     assert "--gres" not in body, body
     assert "--cpus-per-task=" in body
+    # ``gen_convolve`` always appends --skip-train via the step's argv.
     assert "--skip-train" in body
 
 
 def test_gpu_preset_keeps_gres_line():
-    cfg = FasrcConfig()
-    built = build_sbatch_script(
-        label="gpu", cfg=cfg, params=_params(n_gpus=1, partition="gpu"),
+    built = _build(
+        step_id="train_only",
+        resources=_resources(n_gpus=1, partition="gpu"),
     )
     assert "#SBATCH --gres=gpu:1" in built["body"]
 
@@ -198,3 +216,28 @@ def test_train_only_preset_skips_generate_and_convolve():
     assert "--skip-train" not in p["skip_flags"]
     assert p["n_gpus"] >= 1
     assert p["needs_train_knobs"] is True
+
+
+def test_run_pipeline_step_banner_says_web_submitted():
+    """All four legacy presets share the ``Web-submitted job:`` banner
+    so existing log greps keep working."""
+    for step_id in ("gen_convolve", "convolve_only", "train_only", "custom"):
+        body = _build(step_id=step_id)["body"]
+        assert "Web-submitted job:" in body, step_id
+
+
+def test_hst_pipeline_step_banner_says_hst_pipeline():
+    """HST-pipeline steps share the ``HST pipeline step:`` banner."""
+    body = REGISTRY.get("kernel").build_sbatch_body(
+        params={}, resources=StepResources(), cfg=FasrcConfig(),
+        label="diff kernel",
+    )["body"]
+    assert "HST pipeline step: kernel" in body
+
+
+def test_step_id_marker_is_emitted_for_history_tracking():
+    """Every job emits ``STEP_ID=<step_id>`` at the tail so the runtime
+    parser can attribute the wall time to the right step."""
+    body = _build(step_id="custom")["body"]
+    assert "STEP_ID=custom" in body
+    assert "RUNTIME_SECONDS=" in body

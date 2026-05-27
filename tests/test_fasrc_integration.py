@@ -150,12 +150,19 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     assert "#SBATCH --cpus-per-task=16" in body
     assert "#SBATCH --mem=64G" in body
     assert "#SBATCH --time=06:00:00" in body
-    # Training knobs reached the run_pipeline command.
-    assert "--ntrain 100" in body
-    assert "--nvalid 5" in body
-    assert "--image-size 60" in body
-    assert "--batch-size 4" in body
-    assert "--steps 2000 --skip-generate" in body
+    # Training knobs reached the run_pipeline command. Each argv token
+    # is rendered on its own continuation line by the consolidated
+    # builder, so we check the tokens individually instead of as a
+    # joined ``--name value`` substring.
+    for token in (
+        "--ntrain", "100",
+        "--nvalid", "5",
+        "--image-size", "60",
+        "--batch-size", "4",
+        "--steps", "2000",
+        "--skip-generate",
+    ):
+        assert token in body, f"missing argv token: {token!r}"
     # Conda env path is the test's, not the developer default.
     assert str(fake_remote["cfg"].conda_env_path) in body
     assert str(fake_remote["cfg"].data_dir) in body

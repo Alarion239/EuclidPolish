@@ -1,4 +1,4 @@
-"""FASRC job tracking, sbatch templating, ETA heuristics.
+"""FASRC job tracking, submission helper, ETA heuristics.
 
 Two layers:
 
@@ -6,10 +6,11 @@ Two layers:
     this UI. Sqlite at ``~/.euclid_polish/fasrc_jobs.db``. Survives
     Flask restarts so the ETA model has history to draw from.
 
-  * :func:`build_sbatch_script` — assembles a one-shot SLURM script from
-    the user's parameter form. We submit a fresh script per job
-    (heredoc-streamed over SSH) rather than reusing ``fasrc_train.sh``
-    so the UI's job vs. on-disk script never drift.
+  * :func:`submit_sbatch_script` — single helper used by every Flask
+    submit handler: write the script over SSH, ``sbatch`` it, parse the
+    job id, record in :class:`JobDB`. Script *rendering* lives in
+    :mod:`euclid_polish.web.fasrc_pipeline`; this module just orchestrates
+    the SSH+DB side.
 
 The ETA model is intentionally simple: median seconds-per-step across
 the user's last N completed jobs, multiplied by their requested step
@@ -22,17 +23,21 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import sqlite3
 import statistics
-import textwrap
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.sacct import fetch_sacct_stats
 
 DB_DIR  = fasrc_config.CONFIG_DIR
 DB_PATH = os.path.join(DB_DIR, "fasrc_jobs.db")
+#: Append-once-update-many submission log. Separate from sqlite so the
+#: file can be ``cat``'d / loaded into pandas / diffed in git without
+#: any database tooling.
+JOB_LOG_PATH = os.path.join(DB_DIR, "fasrc_job_log.csv")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS fasrc_jobs (
@@ -43,6 +48,7 @@ CREATE TABLE IF NOT EXISTS fasrc_jobs (
     script_path     TEXT,
     log_path        TEXT,
     err_path        TEXT,
+    events_path     TEXT,
     state           TEXT,
     started_at      REAL,
     ended_at        REAL,
@@ -65,8 +71,8 @@ def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
     for col_def in (
         "runtime_seconds REAL",
         "step_id TEXT",
+        "events_path TEXT",
     ):
-        col_name = col_def.split()[0]
         try:
             conn.execute(f"ALTER TABLE fasrc_jobs ADD COLUMN {col_def}")
         except sqlite3.OperationalError as e:
@@ -93,18 +99,27 @@ class JobDB:
 
     # ---------------- CRUD --------------------------------------------------
 
-    def insert(self, jobid: str, *, label: str, params: Dict[str, Any],
-               script_path: str, log_path: str, err_path: str) -> None:
+    def insert(
+        self,
+        jobid: str,
+        *,
+        label:       str,
+        params:      Dict[str, Any],
+        script_path: str,
+        log_path:    str,
+        err_path:    str,
+        events_path: Optional[str] = None,
+    ) -> None:
         with self._conn() as c:
             c.execute(
                 """
                 INSERT OR REPLACE INTO fasrc_jobs
                   (jobid, submitted_at, label, params_json, script_path,
-                   log_path, err_path, state, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                   log_path, err_path, events_path, state, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
                 """,
                 (jobid, time.time(), label, json.dumps(params),
-                 script_path, log_path, err_path, time.time()),
+                 script_path, log_path, err_path, events_path, time.time()),
             )
 
     def update_state(self, jobid: str, *, state: str,
@@ -170,6 +185,9 @@ class JobDB:
 
 
 DB = JobDB()
+#: Module-level singleton; tests can swap in their own log via
+#: ``monkeypatch.setattr(fasrc_jobs, "JOBLOG", JobLog(tmp_csv))``.
+JOBLOG = JobLog(JOB_LOG_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -311,56 +329,39 @@ def median_runtime_for_step(step_id: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# sbatch template
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Submission presets
+# Submission presets — view of the legacy ``run_pipeline.py`` step classes
 # ---------------------------------------------------------------------------
 #
-# The UI lets the user pick one of these instead of hand-tuning every
-# resource knob. The CPU-only presets skip --gres=gpu entirely (some
-# SLURM configs reject ``gpu:0``) and append the right ``--skip-*`` flag
-# so they only run the stages they need. Resource defaults are tuned
-# from the OOM that hit the user at 510² × 4-channel × 6400 images.
+# The form's preset dropdown still expects a flat ``{name: {label,
+# partition, n_gpus, …, skip_flags, needs_train_knobs}}`` dict. Build
+# it from the :class:`RunPipelineStep` instances in the central registry
+# so resource specs live in exactly one place (the step subclasses).
 
-PRESETS: Dict[str, Dict[str, Any]] = {
-    "gen_convolve": {
-        "label":          "Generate + convolve (CPU)",
-        "partition":      "shared",
-        "n_gpus":         0,
-        "n_cpus":         16,
-        "memory":         "64G",
-        "time_limit":     "6:00:00",
-        "skip_flags":     "--skip-train",
-        "needs_train_knobs": False,
-    },
-    "convolve_only": {
-        "label":          "Convolve existing clean → dirty (CPU)",
-        "partition":      "shared",
-        "n_gpus":         0,
-        "n_cpus":         8,
-        "memory":         "32G",
-        "time_limit":     "2:00:00",
-        "skip_flags":     "--skip-generate --skip-train",
-        "needs_train_knobs": False,
-    },
-    "train_only": {
-        "label":          "Train (GPU)",
-        "partition":      "gpu",
-        "n_gpus":         1,
-        "n_cpus":         4,
-        "memory":         "32G",
-        "time_limit":     "24:00:00",
-        "skip_flags":     "--skip-generate --skip-convolve",
-        "needs_train_knobs": True,
-    },
-    "custom": {
-        "label":          "Custom (use form values, no auto --skip-* flags)",
-        "skip_flags":     "",
-        "needs_train_knobs": True,
-    },
-}
+
+def _build_presets() -> Dict[str, Dict[str, Any]]:
+    # Local import — :mod:`fasrc_pipeline` already imports
+    # :mod:`fasrc_config` from this package; pulling it at module
+    # top would close the cycle.
+    from euclid_polish.web.fasrc_pipeline import REGISTRY, RunPipelineStep
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for step in REGISTRY.all():
+        if not isinstance(step, RunPipelineStep):
+            continue
+        out[step.step_id] = {
+            "label":             step.label,
+            "partition":         step.defaults.partition,
+            "n_gpus":            int(step.defaults.n_gpus),
+            "n_cpus":            int(step.defaults.n_cpus),
+            "memory":            step.defaults.memory,
+            "time_limit":        step.defaults.time_limit,
+            "skip_flags":        " ".join(step.skip_flags),
+            "needs_train_knobs": bool(step.needs_train_knobs),
+        }
+    return out
+
+
+PRESETS: Dict[str, Dict[str, Any]] = _build_presets()
 
 
 def resolve_preset(name: str) -> Dict[str, Any]:
@@ -368,97 +369,139 @@ def resolve_preset(name: str) -> Dict[str, Any]:
     return PRESETS.get(name) or PRESETS["custom"]
 
 
-def build_sbatch_script(*, label: str, params: Dict[str, Any],
-                        cfg: fasrc_config.FasrcConfig,
-                        relative_log_dir: str = "logs/jobs") -> Dict[str, str]:
-    """Return the sbatch script body + the in-repo log/script paths.
+# ---------------------------------------------------------------------------
+# Submission helper — single SSH-write + sbatch + parse + DB.insert flow
+# ---------------------------------------------------------------------------
 
-    ``params`` keys (all required; UI supplies defaults from ``cfg``):
-      - n_gpus, n_cpus, memory, time_limit, partition
-      - n_train, n_valid, image_size, batch_size, steps
-      - extra_flags (free-form string appended to run_pipeline.py)
+# Marker for the heredoc that streams the script over SSH. Single source
+# of truth — both submit handlers used to hard-code their own copy.
+_HEREDOC_EOF = "__EUCLID_POLISH_EOF__"
+
+_SBATCH_JOBID_RE = re.compile(r"Submitted batch job (\d+)")
+
+
+def submit_sbatch_script(
+    ssh,
+    *,
+    cfg:      fasrc_config.FasrcConfig,
+    built:    Dict[str, str],
+    label:    str,
+    params:   Dict[str, Any],
+    step_id:  Optional[str] = None,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Write a rendered sbatch script to FASRC, ``sbatch`` it, record it.
+
+    Parameters
+    ----------
+    ssh :
+        A connected SSH session (e.g. ``STATE.ssh``). Must expose
+        ``run(cmd, timeout=…) -> (rc, stdout, stderr)``.
+    built :
+        Return value of :func:`fasrc_pipeline.render_sbatch_body` —
+        the dict with ``body``, ``script``, ``out``, ``err``, ``name``.
+    step_id :
+        If given, the row is tagged in :class:`JobDB` via ``set_step_id``
+        so the per-step runtime history queries pick it up.
+
+    Returns
+    -------
+    (slurm_id, payload) :
+        ``slurm_id`` is ``None`` on failure; in that case ``payload`` is
+        the ``jsonify``-able error dict the caller can return directly.
+        On success ``payload`` has ``ok=True`` and the fields the JS
+        client expects.
     """
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    job_name  = f"euclid-{ts}"
-    script_rel = f"{relative_log_dir}/{job_name}.sh"
-    out_rel    = f"{relative_log_dir}/{job_name}.out"
-    err_rel    = f"{relative_log_dir}/{job_name}.err"
+    remote_script = f"{cfg.repo_path}/{built['script']}"
+    write_cmd = (
+        f"mkdir -p {cfg.repo_path}/{os.path.dirname(built['script'])} && "
+        f"cat > {remote_script} <<'{_HEREDOC_EOF}'\n"
+        f"{built['body']}"
+        f"{_HEREDOC_EOF}\n"
+        f"chmod +x {remote_script}"
+    )
+    rc, _out, err = ssh.run(write_cmd, timeout=20)
+    if rc != 0:
+        return None, {"ok": False,
+                      "error": f"failed to write script: {err.strip()}"}
 
-    p = params
-    extra = (p.get("extra_flags") or "").strip()
-    safe_label = label.replace("\n", " ").replace("'", "")[:200]
+    rc, out, err = ssh.run(
+        f"cd {cfg.repo_path} && sbatch {built['script']}",
+        timeout=20,
+    )
+    if rc != 0:
+        return None, {"ok": False,
+                      "error": f"sbatch failed: {err.strip()}"}
+    m = _SBATCH_JOBID_RE.search(out)
+    if not m:
+        return None, {"ok": False,
+                      "error": f"unparseable sbatch output: {out}"}
+    slurm_id    = m.group(1)
+    log_path    = f"{cfg.repo_path}/{built['out']}"
+    err_path    = f"{cfg.repo_path}/{built['err']}"
+    # ``built`` may be missing ``events`` for callers that built their
+    # script through an older path; tolerate either shape.
+    events_rel  = built.get("events")
+    events_path = f"{cfg.repo_path}/{events_rel}" if events_rel else None
+    DB.insert(
+        slurm_id,
+        label=label,
+        params=params,
+        script_path=remote_script,
+        log_path=log_path,
+        err_path=err_path,
+        events_path=events_path,
+    )
+    if step_id:
+        DB.set_step_id(slurm_id, step_id)
 
-    # Omit --gres entirely when the user asked for 0 GPUs. SLURM configs
-    # vary on whether ``--gres=gpu:0`` is accepted; the safe form is no
-    # --gres line at all.
-    n_gpus = int(p['n_gpus'])
-    gres_line = f"#SBATCH --gres=gpu:{n_gpus}\n        " if n_gpus > 0 else ""
+    # Mirror into the CSV submission log. Resource fields come straight
+    # from ``params`` (the form values, post-validation by
+    # :class:`StepResources.from_form` → ``to_dict()``) so the log
+    # matches what SLURM saw on the ``#SBATCH`` lines. Script-specific
+    # params (n_stars, n_tiles, hst_fraction, …) are JSON-encoded into
+    # the ``params_json`` column. Errors here must not break the
+    # submit response, so swallow + log instead of raising.
+    try:
+        JOBLOG.record_submission(JobRecord(
+            jobid=slurm_id,
+            step_id=step_id or "",
+            label=label,
+            partition=str(params.get("partition", "")),
+            req_cpus=int(params.get("n_cpus") or 0),
+            req_gpus=int(params.get("n_gpus") or 0),
+            req_memory=str(params.get("memory", "")),
+            req_time_limit=str(params.get("time_limit", "")),
+            # ``sort_keys`` is load-bearing: the per-step history lookup
+            # filters by exact ``params_json`` string equality, so two
+            # submissions with the same task params must serialise
+            # identically regardless of form-field insertion order.
+            params_json=json.dumps(
+                {k: v for k, v in params.items()
+                 if k not in ("partition", "n_cpus", "n_gpus", "memory",
+                              "time_limit", "confirm", "label", "preset")},
+                ensure_ascii=False, separators=(",", ":"),
+                sort_keys=True,
+            ),
+            script_path=remote_script,
+            log_path=log_path,
+            err_path=err_path,
+            events_path=events_path or "",
+        ))
+    except Exception:
+        # The CSV log is a side channel; never let it fail the submit.
+        pass
 
-    body = textwrap.dedent(f"""\
-        #!/bin/bash
-        #SBATCH --job-name={shlex.quote(job_name)}
-        #SBATCH --partition={shlex.quote(p['partition'])}
-        {gres_line}#SBATCH --cpus-per-task={int(p['n_cpus'])}
-        #SBATCH --mem={p['memory']}
-        #SBATCH --time={p['time_limit']}
-        #SBATCH --output={out_rel}
-        #SBATCH --error={err_rel}
-
-        set -euo pipefail
-        cd "$SLURM_SUBMIT_DIR"
-        mkdir -p {relative_log_dir}
-
-        echo "============================================================"
-        echo "Web-submitted job: {safe_label}"
-        echo "Job id:   ${{SLURM_JOB_ID:-local}}"
-        echo "Host:     $(hostname)"
-        echo "Started:  $(date)"
-        echo "Workdir:  $(pwd)"
-        echo "GPUs:"
-        nvidia-smi --query-gpu=name,driver_version,memory.total \\
-                   --format=csv 2>/dev/null || true
-        echo "============================================================"
-
-        export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)}
-        export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)}
-        mkdir -p "$EUCLID_POLISH_DATA_DIR" "$EUCLID_POLISH_CKPT_DIR"
-
-        module purge
-        module load python
-        module load cuda
-
-        if [ -z "${{CONDA_SHLVL:-}}" ]; then
-          CONDA_BASE="$(conda info --base 2>/dev/null || true)"
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-            # shellcheck disable=SC1091
-            source "$CONDA_BASE/etc/profile.d/conda.sh"
-          fi
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/mamba.sh" ]; then
-            # shellcheck disable=SC1091
-            source "$CONDA_BASE/etc/profile.d/mamba.sh"
-          fi
-        fi
-        mamba activate {shlex.quote(cfg.conda_env_path)}
-
-        echo "Python:  $(which python)"
-        python -u scripts/run_pipeline.py \\
-          --ntrain {int(p['n_train'])} \\
-          --nvalid {int(p['n_valid'])} \\
-          --image-size {int(p['image_size'])} \\
-          --batch-size {int(p['batch_size'])} \\
-          --steps {int(p['steps'])} {extra}
-
-        echo "============================================================"
-        echo "Finished: $(date)"
-        echo "============================================================"
-    """)
-    return {
-        "body":     body,
-        "script":   script_rel,
-        "out":      out_rel,
-        "err":      err_rel,
-        "name":     job_name,
+    payload: Dict[str, Any] = {
+        "ok":          True,
+        "jobid":       slurm_id,
+        "label":       label,
+        "log_path":    log_path,
+        "events_path": events_path,
+        "params":      params,
     }
+    if step_id:
+        payload["step_id"] = step_id
+    return slurm_id, payload
 
 
 # ---------------------------------------------------------------------------
@@ -506,9 +549,52 @@ TERMINAL_STATES = frozenset({
 })
 
 
+def sync_pending_on_connect(
+    ssh: Any,
+    *,
+    db: Optional["JobDB"] = None,
+    job_log: Optional[JobLog] = None,
+    recent_limit: int = 50,
+) -> Dict[str, str]:
+    """Re-sync every non-terminal DB row against SLURM, fill missing post-mortems.
+
+    Called whenever the SSH session becomes available — at server
+    startup (auto-connect succeeded) and at the manual
+    ``/api/fasrc/connect`` POST handler. Catches the case where a job
+    ran to completion while the server was offline: ``squeue`` no
+    longer lists it, so :func:`reconcile_with_squeue` marks it
+    ``DONE`` and (because ``ssh`` is passed) fetches its ``sacct``
+    accounting row into the CSV log.
+
+    Returns the same change dict as :func:`reconcile_with_squeue`.
+    Silently returns ``{}`` if SSH is missing, disconnected, or the
+    squeue call fails — startup sync must never break the connect
+    handshake.
+    """
+    if ssh is None:
+        return {}
+    try:
+        if not ssh.is_connected():
+            return {}
+        rc, out, _err = ssh.run(
+            f"squeue -h -u $USER --format='{SQUEUE_FMT}'", timeout=15,
+        )
+    except Exception:
+        return {}
+    if rc != 0:
+        return {}
+    squeue_rows = parse_squeue(out)
+    return reconcile_with_squeue(
+        squeue_rows, db=db, job_log=job_log,
+        recent_limit=recent_limit, ssh=ssh,
+    )
+
+
 def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
                           *, db: Optional["JobDB"] = None,
-                          recent_limit: int = 50) -> Dict[str, str]:
+                          recent_limit: int = 50,
+                          ssh: Optional[Any] = None,
+                          job_log: Optional[JobLog] = None) -> Dict[str, str]:
     """Cross-check the JobDB against a live ``squeue`` snapshot.
 
     For every non-terminal DB row:
@@ -520,20 +606,28 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
         ``DONE`` with ``ended_at = now``;
       * if its jobid is NOT in ``squeue_rows`` and ``started_at`` is
         missing → we never saw it start *and* it isn't queued anywhere
-        we can ask about, so mark ``UNKNOWN``. That's the failure mode
-        the user complained about — DB said RUNNING but squeue had
-        never heard of the job.
+        we can ask about, so mark ``UNKNOWN``.
+
+    Side effect: when a job transitions to a terminal state *and* an
+    SSH handle is provided, ``sacct`` is queried for that job and its
+    post-mortem stats are folded into :data:`JOBLOG`. The CSV row was
+    already created at submit time; this fills in the actuals columns
+    (elapsed time, max RSS, exit code, …). A sacct failure is silent —
+    we never want to break the reconcile pass over a missing accounting
+    row.
 
     Returns a dict ``{jobid: new_state}`` for every row whose state we
     changed, which the caller can use to log/debug.
 
-    ``db`` defaults to the module-level :data:`DB` singleton; tests
-    pass an isolated JobDB.
+    ``db`` defaults to the module-level :data:`DB` singleton;
+    ``job_log`` defaults to :data:`JOBLOG`. Tests pass isolated ones.
     """
-    target_db = db if db is not None else DB
+    target_db  = db if db is not None else DB
+    target_log = job_log if job_log is not None else JOBLOG
     live_state: Dict[str, str] = {r["jobid"]: r.get("state", "?")
                                   for r in squeue_rows}
     changes: Dict[str, str] = {}
+    just_finalised: List[str] = []
 
     for stored in target_db.list_recent(recent_limit):
         jobid = stored["jobid"]
@@ -554,6 +648,8 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
                 target_db.update_state(jobid, state=live)
             if live != cur:
                 changes[jobid] = live
+                if live in TERMINAL_STATES:
+                    just_finalised.append(jobid)
             continue
 
         # jobid is not in live squeue → finalise it.
@@ -561,13 +657,26 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
             target_db.update_state(jobid, state="DONE",
                                    ended_at=time.time())
             changes[jobid] = "DONE"
+            just_finalised.append(jobid)
         else:
-            # Never seen running, and squeue doesn't know about it now —
-            # we have no information, treat as a failure so the user
-            # sees the row instead of it lingering as RUNNING forever.
             target_db.update_state(jobid, state="UNKNOWN",
                                    ended_at=time.time())
             changes[jobid] = "UNKNOWN"
+            just_finalised.append(jobid)
+
+    # Post-mortem accounting fetch. One ``sacct`` call per newly-
+    # finalised job — typically zero or one per reconcile pass.
+    if ssh is not None and just_finalised:
+        for jobid in just_finalised:
+            try:
+                stats = fetch_sacct_stats(ssh, jobid)
+            except Exception:
+                stats = None
+            if stats:
+                try:
+                    target_log.record_post_mortem(jobid, stats)
+                except Exception:
+                    pass
 
     return changes
 

@@ -21,11 +21,20 @@ import warnings
 
 import numpy as np
 
+from astropy.io import fits
+from photutils.psf import EPSFStar
+from astropy.stats import sigma_clipped_stats
+from photutils.detection import DAOStarFinder
+from astropy.nddata import NDData
+from photutils.psf import extract_stars
+from photutils.psf import EPSFBuilder, EPSFStars
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability import Reporter
 
 
 HLSP_DIR_NAME    = "hst_hlsp"
@@ -110,8 +119,6 @@ def _load_cached_star_stamps(
     iteratively refines centroids, so this is a good-enough starting
     guess and matches what ``extract_stars`` would produce.
     """
-    from astropy.io import fits
-    from photutils.psf import EPSFStar
 
     if not os.path.isdir(stars_dir):
         return [], FALLBACK_PIX_SCALE_ARCSEC, 0
@@ -156,8 +163,6 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
     :func:`photutils.psf.extract_stars` accepts it directly. See
     :func:`_extract_stamps_from_tile` for the call site.
     """
-    from astropy.stats import sigma_clipped_stats
-    from photutils.detection import DAOStarFinder
 
     mean, median, std = sigma_clipped_stats(data, sigma=3.0)
     # Threshold: 50× sigma — point-source-bright but not saturated.
@@ -201,8 +206,6 @@ def _extract_stamps_from_tile(
     at the public boundary (and is testable in isolation without needing
     a real HST tile + DAOStarFinder).
     """
-    from astropy.nddata import NDData
-    from photutils.psf import extract_stars
     if "x" not in sources.colnames or "y" not in sources.colnames:
         raise ValueError(
             "extract_stars requires 'x' and 'y' columns on the sources "
@@ -218,6 +221,10 @@ def main() -> int:
     in_dir  = args.input_dir  or os.path.join(Config.DATA_DIR, HLSP_DIR_NAME)
     out_dir = args.output_dir or os.path.join(Config.DATA_DIR, PSF_DIR_NAME)
     os.makedirs(out_dir, exist_ok=True)
+    # Structured progress for the web UI. ``from_env()`` is a no-op
+    # when ``EUCLID_POLISH_EVENTS_PATH`` isn't set (local dev), so the
+    # ``reporter.*`` calls below are safe in every context.
+    reporter = Reporter.from_env()
 
     print("=" * 64)
     print(f"  HST F814W ePSF extraction")
@@ -243,6 +250,7 @@ def main() -> int:
     # full tile scan (use it when you want to refresh the cached stamp
     # set with new HLSP tiles or new selection cuts).
     if args.reuse_stars:
+        reporter.set_stage("Looking for cached star stamps")
         cached, cached_scale, cached_n_tiles = _load_cached_star_stamps(
             stars_dir, half_side=PSF_HALF_SIDE_PIX,
         )
@@ -280,8 +288,11 @@ def main() -> int:
         ) if os.path.isdir(in_dir) else []
         print(f"[1/3] {len(tiles)} HLSP tiles found")
         if not tiles:
-            print(f"ERROR: no HLSP tiles in {in_dir} — run the download step first.")
+            reporter.error(
+                f"no HLSP tiles in {in_dir} — run the download step first.",
+            )
             return 1
+        reporter.set_stage(f"Scanning {len(tiles)} HLSP tiles for stars")
 
         if args.dry_run:
             print(f"\nDRY RUN — would scan {len(tiles)} tiles for "
@@ -292,7 +303,6 @@ def main() -> int:
 
         # ---- collect stars across tiles until we hit the target count ----
         print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
-        from astropy.io import fits
 
         stars_per_tile = max(1, args.n_stars // max(len(tiles), 1) * 2)
 
@@ -301,6 +311,7 @@ def main() -> int:
                 break
             tpath = os.path.join(in_dir, tname)
             print(f"      tile {tile_idx + 1}/{len(tiles)}: {tname}")
+            reporter.set_step(tile_idx + 1, len(tiles), label=tname)
             with fits.open(tpath, memmap=True) as hdul:
                 sci = next(
                     (e for e in hdul if e.is_image and e.data is not None), None,
@@ -324,14 +335,17 @@ def main() -> int:
             try:
                 stamps = _extract_stamps_from_tile(data, sources)
             except Exception as e:
-                print(f"        warn: extract_stars failed on this tile: "
-                      f"{type(e).__name__}: {e}")
+                msg = (f"extract_stars failed on tile {tname}: "
+                       f"{type(e).__name__}: {e}")
+                print(f"        warn: {msg}")
+                reporter.warn(msg)
                 continue
             star_stamps.extend(stamps)
             tiles_used.append(tname)
 
         star_stamps = star_stamps[:args.n_stars]
         if not star_stamps:
+            reporter.error("0 usable stars across all tiles")
             print("ERROR: 0 usable stars across all tiles")
             return 1
         print(f"      collected {len(star_stamps)} stars from "
@@ -369,12 +383,11 @@ def main() -> int:
     # ---- build the ePSF ----
     n_used = len(star_stamps)
     step_label = "[2/2]" if used_cache else "[3/3]"
+    reporter.set_stage(f"Building ePSF from {n_used} stars")
     print(f"{step_label} running EPSFBuilder (oversampling = {EPSF_OVERSAMPLING}) ...")
     # ``fits`` is needed below for writing the ePSF; the slow path imports
     # it inside its branch, so reimport here for the cache path. (Top-level
     # imports stay light to keep the dry-run snappy.)
-    from astropy.io import fits
-    from photutils.psf import EPSFBuilder, EPSFStars
     builder = EPSFBuilder(
         oversampling=EPSF_OVERSAMPLING,
         maxiters=10,

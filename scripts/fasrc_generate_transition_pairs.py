@@ -39,6 +39,10 @@ from astropy.io import fits
 from scipy import signal as scipy_signal
 from scipy.ndimage import zoom
 
+from euclid_polish.psf import load_hst_f814w_psf
+from euclid_polish.psf import load_euclid_band_psf
+from euclid_polish.psf import PSF as _PSF
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -98,74 +102,52 @@ def parse_args() -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------------------
-# PSF resampling — reuses the analytic-kernel script's helpers verbatim so
-# the two pipelines produce comparable PSFs on the HR grid.
+# PSF loaders — thin wrappers that delegate the whole "FITS → HR-grid PSF"
+# pipeline to ``euclid_polish.psf``. Kept here with numpy-array return
+# signatures so older callers keep working unchanged; new code should
+# call :func:`load_hst_f814w_psf` / :func:`load_euclid_band_psf` directly
+# to get the typed :class:`PSF` instead.
 # ---------------------------------------------------------------------------
 
 def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
-    """Resample a PSF onto ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
+    """Resample to ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
 
-    Mirrors ``scripts/fasrc_compute_differential_kernel._resample_to_hr_grid``
-    bit-for-bit. We don't import that helper directly so this script can
-    run standalone (the analytic-kernel script lives next door and could
-    move). Re-normalises to unit flux because ``scipy.ndimage.zoom``
-    interpolates surface brightness, not integrated flux.
+    Thin wrapper around :meth:`euclid_polish.psf.PSF.resampled_to` so
+    every PSF resampling site shares one implementation. Returns a
+    sum=1 numpy array.
     """
-    target_scale = Config.DEFAULT_PIXEL_SCALE   # 0.05″
-    if abs(src_scale - target_scale) < 1e-6:
-        out = np.asarray(psf_data, dtype=np.float64)
-    else:
-        factor = src_scale / target_scale            # < 1 if src is finer
-        out = zoom(psf_data.astype(np.float64), zoom=factor,
-                   order=3, mode="constant", grid_mode=False)
-    s = float(out.sum())
-    if s > 0:
-        out = out / s
-    return out
+    p = PSF(
+        data=np.asarray(psf_data, dtype=np.float32),
+        pixel_scale=float(src_scale),
+    )
+    return p.with_unit_sum().resampled_to(
+        Config.DEFAULT_PIXEL_SCALE,
+    ).data.astype(np.float64)
 
 
 def _crop_to_odd_square(psf: np.ndarray, side: int) -> np.ndarray:
-    """Centre-crop ``psf`` to an odd ``(side, side)`` window, zero-padding
-    if the input is smaller.
-
-    The PSFs we feed into ``scipy.signal.fftconvolve`` need to be smaller
-    than the HR scene (FFT memory grows as (H+K-1)²). Crop to ~10×FWHM
-    on each side; this keeps essentially all the flux but caps the
-    kernel at a few hundred pixels.
-    """
-    if side % 2 == 0:
-        raise ValueError(f"side must be odd, got {side}")
-    H, W = psf.shape
-    if H < side or W < side:
-        # Pad up to side — symmetric so the centre stays put.
-        pad_h = max(0, (side - H + 1) // 2)
-        pad_w = max(0, (side - W + 1) // 2)
-        psf = np.pad(psf, ((pad_h, pad_h), (pad_w, pad_w)), mode="constant")
-        H, W = psf.shape
-    i0 = (H - side) // 2
-    j0 = (W - side) // 2
-    out = psf[i0:i0 + side, j0:j0 + side]
-    s = float(out.sum())
-    if s > 0:
-        out = out / s
-    return out
+    """Centre-crop to ``(side, side)``, padding with zeros if needed,
+    renormalised to sum=1. Delegates to
+    :meth:`euclid_polish.psf.PSF.centre_cropped_to`."""
+    p = PSF(
+        data=np.asarray(psf, dtype=np.float32),
+        pixel_scale=Config.DEFAULT_PIXEL_SCALE,    # only the data shape matters here
+    )
+    return p.centre_cropped_to(side).data
 
 
 def _load_hst_psf_on_hr(path: str, target_side: int) -> np.ndarray:
-    """Load HST F814W ePSF, resample to HR grid, centre-crop to ``target_side``."""
-    with fits.open(path, memmap=False) as hdul:
-        data  = np.asarray(hdul[0].data, dtype=np.float64)
-        scale = float(hdul[0].header.get("PIXSCALE", 0.015))
-    hr = _resample_to_hr_grid(data, scale)
-    return _crop_to_odd_square(hr, target_side).astype(np.float32)
+    """Legacy entry point — returns the kernel as a numpy array."""
+    return load_hst_f814w_psf(
+        path, target_side=target_side,
+    ).data.astype(np.float32)
 
 
 def _load_euclid_vis_psf_on_hr(target_side: int) -> np.ndarray:
-    """Load the Euclid VIS empirical PSF on the HR grid."""
-    path = psf_path_for_band(Config.BAND_VIS)
-    p = PSF.from_fits(path)
-    hr = _resample_to_hr_grid(np.asarray(p.data, dtype=np.float64), p.pixel_scale)
-    return _crop_to_odd_square(hr, target_side).astype(np.float32)
+    """Legacy entry point — returns the kernel as a numpy array."""
+    return load_euclid_band_psf(
+        Config.BAND_VIS, target_side=target_side,
+    ).data.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +192,10 @@ def _stream_clean_vis_scenes(
             skipped_small += 1
             continue
         # VIS is always channel 0 in the project's band ordering.
-        scene = data[:, :, 0]
-        i0 = (H - crop) // 2
-        j0 = (W - crop) // 2
-        yield img.index if img.index is not None else yielded, \
-              scene[i0:i0 + crop, j0:j0 + crop]
+        # Delegate the centre-crop to the central MultiBandSkyImage
+        # helper so the math lives in one place.
+        scene = MultiBandSkyImage.crop_array(data[:, :, 0], crop)
+        yield img.index if img.index is not None else yielded, scene
         yielded += 1
     if skipped_small:
         print(f"      skipped {skipped_small} scenes smaller than "
@@ -246,26 +227,16 @@ def _convolve_pair(
     ``input.shape == scene.shape`` and
     ``target.shape == (H//rebin_factor, W//rebin_factor)``.
     """
-    # Defensive sum=1 normalisation right before convolution. The
-    # PSF loaders + ``_crop_to_odd_square`` already renormalise, but
-    # the Euclid VIS ePSF FITS on disk is saved un-normalised
-    # (``psf_extractor.to_psf`` wraps EPSFBuilder's raw output with
-    # sum ≈ 3), while the HST ePSF FITS is saved sum=1 by
-    # ``fasrc_extract_hst_psf.py``. If a future change ever skipped
-    # the loader-side normalisation, the un-normalised Euclid PSF
-    # would silently boost the target's amplitude by ~3× without
-    # touching its shape — invisible at training time, catastrophic
-    # for the photometric L1 loss. Doing it here at the convolution
-    # site too makes the invariant locally enforced.
-    psf_hst_n    = ensure_unit_sum(psf_hst)
-    psf_euclid_n = ensure_unit_sum(psf_euclid)
-    inp_hr = scipy_signal.fftconvolve(
-        scene, psf_hst_n, mode="same",
-    ).astype(np.float32)
-    tgt_hr = scipy_signal.fftconvolve(
-        scene, psf_euclid_n, mode="same",
-    ).astype(np.float32)
-    tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
+    # Wrap the raw kernel arrays as PSF instances so the convolution
+    # path goes through the central ``PSF.convolved_with`` method
+    # (defensive sum=1 normalisation + fftconvolve mode="same") and
+    # the rebin goes through ``MultiBandSkyImage.rebin_array``. No
+    # inline fftconvolve / reshape().sum() duplication.
+    psf_hst_obj    = _PSF(data=psf_hst,    pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+    psf_euclid_obj = _PSF(data=psf_euclid, pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+    inp_hr = psf_hst_obj.convolved_with(scene)
+    tgt_hr = psf_euclid_obj.convolved_with(scene)
+    tgt_lr = MultiBandSkyImage.rebin_array(tgt_hr, int(rebin_factor))
     return inp_hr, tgt_lr
 
 

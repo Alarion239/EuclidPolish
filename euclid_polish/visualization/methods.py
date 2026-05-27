@@ -23,6 +23,9 @@ from euclid_polish.visualization.base import (
     _asinh_scale_mad,
 )
 
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+
 
 def _smooth_for_display(data: np.ndarray, sigma: float = 1.5) -> np.ndarray:
     """Blur sparse delta-function inputs so point sources become visible.
@@ -160,7 +163,6 @@ def draw_clean_dirty_pair(
 
 def _star_arrays(stars: list[dict]):
     """Decompose the catalog into numpy arrays for the two plots below."""
-    import numpy as np
     ra   = np.array([s['ra']        for s in stars], dtype=np.float64)
     dec  = np.array([s['dec']       for s in stars], dtype=np.float64)
     mag  = np.array([s['magnitude'] for s in stars], dtype=np.float64)
@@ -177,10 +179,6 @@ def plot_star_positions(stars: list[dict], fig=None):
 
     Returns the populated matplotlib figure (caller saves / displays).
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from astropy.coordinates import SkyCoord
-    import astropy.units as u
 
     ra, dec, mag, corr = _star_arrays(stars)
     if ra.size == 0:
@@ -263,7 +261,6 @@ def draw_star_positions(
     output_path: str,
 ) -> None:
     """Save :func:`plot_star_positions` to ``output_path``."""
-    import matplotlib.pyplot as plt
     fig = plot_star_positions(stars)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=130, bbox_inches="tight")

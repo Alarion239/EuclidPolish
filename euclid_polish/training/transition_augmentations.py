@@ -33,107 +33,26 @@ import numpy as np
 import tensorflow as tf
 from scipy import signal as scipy_signal
 
+from euclid_polish.psf import PSF as _PSF
+from euclid_polish.sky.types import MultiBandSkyImage
+# Re-export the noise helpers from their new central home so existing
+# callers (``from euclid_polish.training.transition_augmentations import
+# add_hlsp_noise``) keep working. The actual implementations live in
+# :mod:`euclid_polish.sky.noise`.
+from euclid_polish.sky.noise import (   # noqa: F401
+    add_hlsp_noise,
+    sample_hlsp_noise_params,
+)
+
 
 # ---------------------------------------------------------------------------
 # Photometric sum-rebin (matches the downstream Euclid forward chain)
 # ---------------------------------------------------------------------------
 
-def add_hlsp_noise(
-    clean: np.ndarray,
-    *,
-    alpha: float,
-    sigma_floor: float,
-    rng: Optional[np.random.Generator] = None,
-) -> np.ndarray:
-    """Add HLSP F814W-style noise to a clean HR image (Euclid-scaled e⁻).
-
-    Models the two noise sources that dominate HLSP COSMOS F814W
-    rate maps after the pair-gen's ``rate × C`` rescaling to Euclid
-    electrons (where ``C = HST→VIS rate ratio × t_VIS ≈ 1514``).
-
-    Components
-    ----------
-
-    **Photon shot noise (Poisson on original HST counts).** In
-    Euclid-scaled units, the shot variance per HR pixel is
-    ``α · signal_e_HR`` where ``α = C / t_eff`` and ``t_eff`` is the
-    effective HLSP integration time at that pixel (which varies
-    across the tile — COSMOS-deep ≈ 2000s → α ≈ 0.76, COSMOS-DASH
-    ≈ 700s → α ≈ 2.2). The Gaussian approximation is exact in the
-    limit of large counts and indistinguishable from Poisson at the
-    25+ e⁻ pixel scale where any structure exists; it also stays
-    well-defined for sky-subtracted negative pixels (where literal
-    ``np.random.poisson`` would refuse to draw).
-
-    **Sky / read-noise floor.** Signal-independent Gaussian floor
-    matching the HLSP depth: ``σ_floor`` for COSMOS-deep is
-    ~10-20 e⁻ on the Euclid HR grid (5σ point-source depth
-    ~26.5-27 AB).
-
-    Total per-pixel noise variance:
-
-        σ² = α · max(clean, 0) + σ_floor²
-        ε  ∼ N(0, σ²)
-
-    Parameters
-    ----------
-    clean
-        Float array of HR pixels in Euclid-scaled electrons. Shape
-        is arbitrary; noise is sampled element-wise.
-    alpha
-        Shot-noise coefficient. Physical value is ``C / t_eff`` ≈
-        0.5-1.0 for COSMOS-deep, higher for shallower regions.
-    sigma_floor
-        Sky/read floor in electrons (per HR pixel). Typical
-        COSMOS-deep value ≈ 10-20.
-    rng
-        ``np.random.Generator`` for reproducibility. Fresh one
-        constructed when None.
-
-    Returns
-    -------
-    Float array of the same shape as ``clean``, with ε added.
-
-    Notes
-    -----
-    * Negative-clipped shot-variance: ``max(clean, 0)`` so
-      sky-subtracted negative pixels contribute only sky-floor noise,
-      not a NaN from ``√(negative)``.
-    * Does not enforce sum=1 or any normalisation — this is signal
-      space, not a kernel.
-    """
-    if alpha < 0:
-        raise ValueError(f"alpha must be ≥ 0, got {alpha}")
-    if sigma_floor < 0:
-        raise ValueError(f"sigma_floor must be ≥ 0, got {sigma_floor}")
-    if rng is None:
-        rng = np.random.default_rng()
-    clean_f = np.asarray(clean, dtype=np.float32)
-    shot_var = np.float32(alpha) * np.maximum(clean_f, 0.0)
-    total_var = shot_var + np.float32(sigma_floor) ** 2
-    sigma_per_pix = np.sqrt(total_var)
-    eps = rng.standard_normal(clean_f.shape).astype(np.float32) * sigma_per_pix
-    return clean_f + eps
-
-
-def sample_hlsp_noise_params(
-    rng: np.random.Generator,
-    *,
-    alpha_min: float = 0.5,
-    alpha_max: float = 1.0,
-    sigma_floor_min: float = 8.0,
-    sigma_floor_max: float = 22.0,
-) -> Tuple[float, float]:
-    """Sample one ``(alpha, sigma_floor)`` pair for HLSP noise.
-
-    The ranges span the spatial variation of effective exposure time
-    + sky depth across a real HLSP COSMOS F814W tile. Drawing a fresh
-    pair per training image teaches the denoiser to be robust across
-    the full distribution of tile positions, not just the centre.
-    """
-    alpha       = float(rng.uniform(alpha_min,       alpha_max))
-    sigma_floor = float(rng.uniform(sigma_floor_min, sigma_floor_max))
-    return alpha, sigma_floor
+# ``add_hlsp_noise`` and ``sample_hlsp_noise_params`` are re-exported
+# from :mod:`euclid_polish.sky.noise` at the top of this file — their
+# implementations live there now, this module just keeps the import
+# surface stable.
 
 
 def ensure_unit_sum(psf: np.ndarray, *, atol: float = 1e-4) -> np.ndarray:
@@ -166,37 +85,23 @@ def ensure_unit_sum(psf: np.ndarray, *, atol: float = 1e-4) -> np.ndarray:
 
 
 def sum_rebin_2d(arr: np.ndarray, factor: int) -> np.ndarray:
-    """Sum-rebin a 2-D or 3-D array by ``factor`` in the two leading axes.
+    """Photometric sum-rebin of a 2-D or 3-D array.
+
+    **This is a thin wrapper** around
+    :meth:`euclid_polish.sky.types.MultiBandSkyImage.rebin_array` —
+    the single source of truth for rebinning across the project. Kept
+    as a free function with this name because every transition-model
+    + training-augmentation path imports ``sum_rebin_2d`` directly;
+    making it a wrapper preserves the existing import surface while
+    eliminating the duplicated implementation.
 
     Each output pixel is the **sum** of a ``factor × factor`` block of
-    inputs — the photometric convention (preserves total flux / total
-    electrons), matching ``MultiBandForward.sum_rebin`` and the
-    ``EuclidVISForwardOp`` TF layer.
-
-    Both spatial dims must be divisible by ``factor``. Channel axis (if
-    present) passes through unchanged.
-
-    Why this lives here: the trainer compares ``sum_rebin(A_θ(HR))``
-    against an LR target, so the pair-generation + augmentation paths
-    must produce LR targets via the *same* rebin convention the trainer
-    uses. One implementation, everyone uses it.
+    inputs (photometric: preserves total electrons). Spatial dims must
+    be divisible by ``factor`` — anything else is a caller bug (pre-crop
+    with ``centre_cropped_to`` if you really mean to lose trailing
+    rows/cols).
     """
-    if factor < 1:
-        raise ValueError(f"factor must be ≥ 1, got {factor}")
-    if factor == 1:
-        return arr.copy()
-    if arr.ndim not in (2, 3):
-        raise ValueError(f"expected 2-D or 3-D, got shape {arr.shape}")
-    H, W = arr.shape[:2]
-    if H % factor != 0 or W % factor != 0:
-        raise ValueError(
-            f"spatial dims {(H, W)} not divisible by factor={factor}"
-        )
-    Hn, Wn = H // factor, W // factor
-    if arr.ndim == 2:
-        return arr.reshape(Hn, factor, Wn, factor).sum(axis=(1, 3))
-    C = arr.shape[2]
-    return arr.reshape(Hn, factor, Wn, factor, C).sum(axis=(1, 3))
+    return MultiBandSkyImage.rebin_array(arr, factor, trim_remainder=False)
 
 
 # ---------------------------------------------------------------------------
@@ -280,19 +185,16 @@ def make_star_field(
         amp = float(rng.uniform(amp_min, amp_max))
         deltas[cy, cx] += amp
 
-    # Defensive sum=1 normalisation right before convolution. See
-    # ``ensure_unit_sum`` for the motivation — guards against PSFs that
-    # arrive un-normalised (e.g. raw EPSFBuilder output saved without the
-    # explicit ``data/data.sum()`` step).
-    psf_hst_n    = ensure_unit_sum(psf_hst.astype(np.float64))
-    psf_euclid_n = ensure_unit_sum(psf_euclid.astype(np.float64))
-    inp_hr = scipy_signal.fftconvolve(
-        deltas, psf_hst_n, mode="same",
-    ).astype(np.float32)
-    tgt_hr = scipy_signal.fftconvolve(
-        deltas, psf_euclid_n, mode="same",
-    ).astype(np.float32)
-    tgt_lr = sum_rebin_2d(tgt_hr, rebin_factor)
+    # Route the convolution + rebin through the central PSF and
+    # MultiBandSkyImage helpers — single source of truth for both the
+    # sum=1 normalisation and the fftconvolve/rebin math. The PSF
+    # arrays are already on the HR grid by their loader contract.
+    hr_scale = 0.05
+    psf_hst_obj    = _PSF(data=psf_hst,    pixel_scale=hr_scale)
+    psf_euclid_obj = _PSF(data=psf_euclid, pixel_scale=hr_scale)
+    inp_hr = psf_hst_obj.convolved_with(deltas)
+    tgt_hr = psf_euclid_obj.convolved_with(deltas)
+    tgt_lr = MultiBandSkyImage.rebin_array(tgt_hr, rebin_factor)
     return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
 
 
@@ -427,16 +329,15 @@ def make_psf_identity_pair(
             f"image_size={image_size} must be divisible by "
             f"rebin_factor={rebin_factor}"
         )
-    # Same defensive sum=1 normalisation as ``make_star_field``: the
-    # identity pair is literally (PSF_HST, sum_rebin(PSF_Euclid)), so
-    # if either PSF arrives with sum ≠ 1 the pair's two sides end up
-    # at different total flux and the trainer's L1 loss develops a
-    # baseline offset that has nothing to do with the model's quality.
-    psf_hst_n    = ensure_unit_sum(psf_hst)
-    psf_euclid_n = ensure_unit_sum(psf_euclid)
+    # Defensive sum=1 normalisation via the PSF class so there's a
+    # single normalisation contract project-wide. Then the standard
+    # MultiBandSkyImage rebin for the LR target.
+    hr_scale = 0.05
+    psf_hst_n    = _PSF(data=psf_hst,    pixel_scale=hr_scale).with_unit_sum().data
+    psf_euclid_n = _PSF(data=psf_euclid, pixel_scale=hr_scale).with_unit_sum().data
     inp_hr = embed_in_canvas(psf_hst_n,    image_size).astype(np.float32)
     tgt_hr = embed_in_canvas(psf_euclid_n, image_size).astype(np.float32)
-    tgt_lr = sum_rebin_2d(tgt_hr, int(rebin_factor))
+    tgt_lr = MultiBandSkyImage.rebin_array(tgt_hr, int(rebin_factor))
     return inp_hr[..., np.newaxis], tgt_lr[..., np.newaxis]
 
 

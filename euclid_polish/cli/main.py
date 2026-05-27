@@ -57,6 +57,17 @@ from euclid_polish.sky.tfrecord import (
     write_multiband_skyimages,
 )
 
+from euclid_polish.training.inference import load_model_from_checkpoint
+from euclid_polish.training.log_plot import (
+default_log_path, plot_training_log,
+)
+from euclid_polish.training.inference import (
+load_model_from_checkpoint,
+load_model_from_weights,
+reconstruct,
+plot_reconstruction,
+)
+
 
 class InteractiveCLI:
     """
@@ -1161,7 +1172,6 @@ class InteractiveCLI:
             return
 
         try:
-            from euclid_polish.training.inference import load_model_from_checkpoint
 
             print(f"\nLoading model from {checkpoint_dir}...")
             model = load_model_from_checkpoint(
@@ -1211,9 +1221,6 @@ class InteractiveCLI:
 
     def _plot_training_log(self):
         """Plot the per-evaluation loss / PSNR curves from a training log."""
-        from euclid_polish.training.log_plot import (
-            default_log_path, plot_training_log,
-        )
 
         checkpoint_dir = input(
             f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): "
@@ -1317,12 +1324,6 @@ class InteractiveCLI:
             return
 
         try:
-            from euclid_polish.training.inference import (
-                load_model_from_checkpoint,
-                load_model_from_weights,
-                reconstruct,
-                plot_reconstruction,
-            )
 
             if source == "checkpoint":
                 ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR

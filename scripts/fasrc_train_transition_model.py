@@ -29,6 +29,8 @@ import numpy as np
 import tensorflow as tf
 from astropy.io import fits
 
+import signal as _signal
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -738,7 +740,6 @@ def main() -> int:
     # The per-validation save above already keeps the disk current, but
     # catching SIGTERM means we also capture any progress between the
     # last validation and the signal.
-    import signal as _signal
     _sigterm_received = {"flag": False}
 
     def _handle_sigterm(signum, frame):

@@ -34,6 +34,8 @@ from euclid_polish.sky.lens_population import (
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
 from euclid_polish.sky.types import MultiBandSkyImage
 
+from dataclasses import replace
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -201,7 +203,6 @@ class MultiBandSimulator:
         except RuntimeError:
             return None
         x_pix, y_pix = self._random_pix(rng)
-        from dataclasses import replace
         lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
         # Fast path: render the lens once into the 4-channel canvas (geometry
         # is band-independent; only per-band fluxes differ).

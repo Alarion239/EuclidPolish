@@ -24,6 +24,14 @@ import time
 
 import numpy as np
 
+from scipy.ndimage import zoom
+from astropy.io import fits
+from euclid_polish.euclid.psf_library import psf_path_for_band
+from euclid_polish.euclid.types import PSF
+from euclid_polish.sky.differential_kernel import (
+DifferentialKernel, compute_differential_kernel,
+)
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -166,7 +174,6 @@ def _zero_borders(psf: np.ndarray, *, border_pixels: int) -> np.ndarray:
 
 def _resample_to_hr_grid(psf_data: np.ndarray, src_scale: float) -> np.ndarray:
     """Resample a PSF from ``src_scale`` arcsec/pix to the HR grid."""
-    from scipy.ndimage import zoom
     target_scale = Config.DEFAULT_PIXEL_SCALE   # 0.05"
     if abs(src_scale - target_scale) < 1e-6:
         return np.asarray(psf_data, dtype=np.float64)
@@ -209,12 +216,6 @@ def main() -> int:
     t0 = time.time()
 
     print(f"[1/3] loading HST and Euclid PSFs ...")
-    from astropy.io import fits
-    from euclid_polish.euclid.psf_library import psf_path_for_band
-    from euclid_polish.euclid.types import PSF
-    from euclid_polish.sky.differential_kernel import (
-        DifferentialKernel, compute_differential_kernel,
-    )
 
     if not os.path.isfile(args.hst_psf):
         print(f"ERROR: HST PSF not found at {args.hst_psf}")

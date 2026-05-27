@@ -33,6 +33,11 @@ import os
 import sys
 import warnings
 
+from astropy.io import fits
+import numpy as np
+from astropy.stats import sigma_clipped_stats
+from PIL import Image
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -54,7 +59,6 @@ def parse_args() -> argparse.Namespace:
 
 def _dump_header_json(path: str) -> int:
     """Print {hdus: [{name, cards: [(key, val, comment), ...], shape, dtype}]}."""
-    from astropy.io import fits
     out = {"path": path, "hdus": []}
     with fits.open(path, memmap=True) as hdul:
         for i, hdu in enumerate(hdul):
@@ -96,9 +100,6 @@ def _dump_cutout_png(
     different scenes (sky-only patches vs. bright-galaxy patches).
     Percentile clip at [0.5, 99.5] then linearly maps to 8-bit gray.
     """
-    import numpy as np
-    from astropy.io import fits
-    from astropy.stats import sigma_clipped_stats
 
     with fits.open(path, memmap=True) as hdul:
         sci = next(
@@ -157,7 +158,6 @@ def _dump_cutout_png(
         img8 = (255 * (1.0 - norm)).astype(np.uint8)   # gray_r style
     img8 = np.flipud(img8)                              # FITS → PIL origin
 
-    from PIL import Image
     pil = Image.fromarray(img8, mode="L")
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
