@@ -179,17 +179,42 @@ def main() -> int:
     sci_fits = sci[[str(f).endswith(".fits") for f in sci["productFilename"]]]
     print(f"      {len(sci_fits)} SCIENCE FITS products")
 
-    # Skip downloads where the destination already exists and is non-empty.
+    # Skip downloads where the destination matches MAST's declared
+    # ``row["size"]`` exactly. A previous "size > 0" gate was too lax:
+    # a SLURM-killed run leaves the partial bytes on disk, the
+    # next ``re-submit`` saw the non-zero file and skipped it, and
+    # ``HLSPTileIndex`` later crashed with "buffer is too small" when
+    # astropy tried to read the truncated array. Tolerance is exact
+    # match — MAST sizes are bit-accurate, so any short-fall is a
+    # truncated write that needs re-downloading.
     pending = []
     skipped = 0
+    truncated = 0
     for row in sci_fits:
         fname = str(row["productFilename"])
         target_path = os.path.join(out_dir, fname)
-        if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
-            skipped += 1
-            continue
+        expected_size = int(row["size"])
+        if os.path.isfile(target_path):
+            actual_size = os.path.getsize(target_path)
+            if actual_size >= expected_size:
+                skipped += 1
+                continue
+            # Truncated. Delete + queue for re-download; tell the user
+            # so they can sanity-check the byte counts in the log.
+            truncated += 1
+            print(f"      truncated {fname}: "
+                  f"local {actual_size / 1e6:.0f} MB < "
+                  f"expected {expected_size / 1e6:.0f} MB — redownloading")
+            try:
+                os.remove(target_path)
+            except OSError as e:
+                reporter.warn(
+                    f"failed to remove truncated {fname}: {e}"
+                )
         pending.append(row)
     print(f"      {skipped} already on disk (skipped)")
+    if truncated:
+        print(f"      {truncated} truncated (will be redownloaded)")
     print(f"      {len(pending)} pending download")
 
     if args.dry_run:

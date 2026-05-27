@@ -3988,10 +3988,10 @@ def create_app() -> Flask:
             f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
         )
+        squeue_rows: List[Dict[str, Any]] = []
         if rc_q == 0:
-            fasrc_jobs.reconcile_with_squeue(
-                fasrc_jobs.parse_squeue(out_q), ssh=STATE.ssh,
-            )
+            squeue_rows = fasrc_jobs.parse_squeue(out_q)
+            fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=STATE.ssh)
 
         # Pick the newest still-live row. ``list_recent`` orders by
         # submitted_at DESC, so the first matching row IS the newest.
@@ -4002,6 +4002,20 @@ def create_app() -> Flask:
         )
         if current_row is None:
             return jsonify({"ok": True, "current": None})
+
+        # Merge live squeue fields into the row so the UI sees the
+        # current ``start_time`` (PENDING jobs only), ``reason`` (why
+        # SLURM hasn't started it: Priority / Resources / …), updated
+        # elapsed ``time``, and assigned ``nodes``. reconcile_with_squeue
+        # only persists state + started_at, so these have to be merged
+        # in at the response layer.
+        jid = str(current_row.get("jobid", "")).strip()
+        live = next((r for r in squeue_rows if r.get("jobid") == jid), None)
+        if live is not None:
+            for k in ("start_time", "reason", "nodes", "time", "time_limit"):
+                v = live.get(k)
+                if v is not None and v != "":
+                    current_row[k] = v
 
         # Fold the live event stream into a JobStatus.
         fetcher = JobStatusFetcher(ssh=STATE.ssh)

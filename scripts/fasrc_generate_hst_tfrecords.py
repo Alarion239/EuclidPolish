@@ -195,35 +195,56 @@ class HLSPTileIndex:
 
     def __init__(self, hlsp_dir: str):
         self.entries: List[Dict] = []
+        skipped: List[Tuple[str, str]] = []   # (fname, reason)
         for fname in sorted(os.listdir(hlsp_dir)):
             if not (fname.endswith(".fits")
                     and fname.startswith("hlsp_cosmos_hst_acs-wfc_mosaic")):
                 continue
             path = os.path.join(hlsp_dir, fname)
-            with fits.open(path, memmap=True) as hdul:
-                sci = next(
-                    (e for e in hdul
-                     if e.is_image and e.data is not None), None,
-                )
-                if sci is None:
-                    continue
-                wcs = WCS(sci.header)
-                H, W = sci.data.shape
-                # Footprint corners: convert pixel corners → RA/Dec.
-                corners_pix = np.array([[0, 0], [W, 0], [0, H], [W, H]])
-                radec = wcs.all_pix2world(corners_pix, 0)
-                ra_min  = float(radec[:, 0].min())
-                ra_max  = float(radec[:, 0].max())
-                dec_min = float(radec[:, 1].min())
-                dec_max = float(radec[:, 1].max())
-                self.entries.append({
-                    "path":    path,
-                    "ra_min":  ra_min, "ra_max": ra_max,
-                    "dec_min": dec_min, "dec_max": dec_max,
-                    "shape":   (H, W),
-                })
+            # Wrap the per-tile read so one truncated / corrupt FITS
+            # (e.g. left over from a killed download) doesn't abort the
+            # whole indexing pass. astropy can raise here, in WCS, or
+            # mid-iteration in next(); a bare ``except Exception`` is
+            # the right blast radius — we record the failure and keep
+            # building the index from the surviving tiles.
+            try:
+                with fits.open(path, memmap=True) as hdul:
+                    sci = next(
+                        (e for e in hdul
+                         if e.is_image and e.data is not None), None,
+                    )
+                    if sci is None:
+                        skipped.append((fname, "no image HDU"))
+                        continue
+                    wcs = WCS(sci.header)
+                    H, W = sci.data.shape
+                    # Footprint corners: convert pixel corners → RA/Dec.
+                    corners_pix = np.array([[0, 0], [W, 0], [0, H], [W, H]])
+                    radec = wcs.all_pix2world(corners_pix, 0)
+                    ra_min  = float(radec[:, 0].min())
+                    ra_max  = float(radec[:, 0].max())
+                    dec_min = float(radec[:, 1].min())
+                    dec_max = float(radec[:, 1].max())
+                    self.entries.append({
+                        "path":    path,
+                        "ra_min":  ra_min, "ra_max": ra_max,
+                        "dec_min": dec_min, "dec_max": dec_max,
+                        "shape":   (H, W),
+                    })
+            except Exception as e:
+                skipped.append((fname, f"{type(e).__name__}: {e}"))
+                continue
+        if skipped:
+            print(f"      WARN: skipped {len(skipped)} bad tile(s):")
+            for fname, reason in skipped:
+                print(f"        - {fname}  ({reason})")
+            print("      Re-run the tiles download to repair "
+                  "(it'll detect truncated files via size mismatch).")
         if not self.entries:
-            raise FileNotFoundError(f"no HLSP tiles in {hlsp_dir}")
+            raise FileNotFoundError(
+                f"no usable HLSP tiles in {hlsp_dir} "
+                f"({len(skipped)} were corrupt/skipped)"
+            )
 
     def find_tile(self, ra: float, dec: float) -> Optional[str]:
         """Return the FITS path of the tile containing (ra, dec), or None."""

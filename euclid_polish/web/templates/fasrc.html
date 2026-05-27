@@ -118,6 +118,15 @@
             <span id="extend-msg" class="muted" style="margin-left:6px; font-size:11px;"></span>
           </dd>
           <dt>Started</dt>     <dd id="cs-started" class="muted">—</dd>
+          <!-- PENDING-only: SLURM's estimated start time + the wait
+               reason it reports (Priority / Resources / Dependency / …).
+               Both rows are hidden via the parent ``<dt>``/``<dd>`` for
+               RUNNING jobs because squeue only reports them while the
+               row is pending. -->
+          <dt id="cs-est-start-label" style="display:none;">Est. start</dt>
+          <dd id="cs-est-start" style="display:none;">—</dd>
+          <dt id="cs-reason-label" style="display:none;">Reason</dt>
+          <dd id="cs-reason" style="display:none;" class="muted">—</dd>
         </dl>
         <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
           <button id="btn-run-cancel" type="button" class="danger">Cancel job</button>
@@ -525,11 +534,44 @@ async function refreshCurrentSubmission() {
      : 'badge-failed');
   $('cs-jobid').textContent   = __CS_JOBID || '—';
   $('cs-label').textContent   = job.label || '(unlabeled)';
-  $('cs-node').textContent    = job.node || job.nodelist || '—';
-  $('cs-elapsed').textContent = job.elapsed
+  $('cs-node').textContent    = job.nodes || job.node || job.nodelist || '—';
+  $('cs-elapsed').textContent = job.time || job.elapsed
     || (job.started_at ? fmtSecs(Date.now()/1000 - job.started_at) : '—');
   $('cs-limit').textContent   = job.time_limit || '—';
   $('cs-started').textContent = _fmtIsoLocal(job.started_at);
+
+  // PENDING-only fields: SLURM's estimated start time + the reason it
+  // hasn't started yet. squeue emits ``start_time`` as an ISO-ish
+  // string (e.g. ``2026-05-27T19:30:00``) or one of the sentinels
+  // ``N/A`` / ``Unknown`` / ``(null)`` when SLURM can't predict yet
+  // (typically the case for low-priority pending jobs in a contended
+  // queue). For Unknown/N/A we just show what squeue said + the
+  // reason chip; for a parseable timestamp we also show the countdown.
+  const isPending = (job.state === 'PENDING');
+  const hideEst = !isPending;
+  $('cs-est-start-label').style.display = hideEst ? 'none' : '';
+  $('cs-est-start').style.display       = hideEst ? 'none' : '';
+  $('cs-reason-label').style.display    = hideEst ? 'none' : '';
+  $('cs-reason').style.display          = hideEst ? 'none' : '';
+  if (isPending) {
+    const raw = String(job.start_time || '').trim();
+    let rendered = raw || '(unknown)';
+    // Only convert when squeue actually gave us a timestamp. Parsing
+    // ``N/A`` etc. silently turns into ``NaN`` which would print
+    // "Invalid Date" — guard against that.
+    if (raw && !/^(N\/?A|Unknown|\(null\))$/i.test(raw)) {
+      const ms = Date.parse(raw);
+      if (!isNaN(ms)) {
+        const secs = (ms / 1000) - (Date.now() / 1000);
+        const local = new Date(ms).toLocaleString();
+        rendered = secs > 0
+          ? `${local}  (in ${fmtSecs(secs)})`
+          : `${local}  (any moment now)`;
+      }
+    }
+    $('cs-est-start').textContent = rendered;
+    $('cs-reason').textContent    = job.reason || '—';
+  }
 
   // Stage card — current stage pill + step progress bar. set_step is
   // silent on stderr by design, so the bar is the only progress
