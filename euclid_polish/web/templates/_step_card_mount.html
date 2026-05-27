@@ -1,0 +1,44 @@
+{# -----------------------------------------------------------------------
+   Mount one FASRC pipeline step card on a non-FASRC page.
+
+   Renders a placeholder div + a tiny <script> that calls
+   ``window.FasrcStepCard.mountOne()``. The module fetches the step
+   metadata from /api/fasrc/hst/status, then renders the full
+   task-params + history + resources + submit UI in place.
+
+   Variables (set via ``{% include "_step_card_mount.html" with context %}``
+   or ``{% with step_id="..." %}…{% include %}…{% endwith %}``):
+
+     step_id          required. Matches FASRCPipelineStep.step_id and the
+                      URL on /api/fasrc/hst/<step_id>/submit.
+     on_submitted_js  optional. Arrow-function literal called after a
+                      successful submit, e.g. for refreshing the page's
+                      inspection UI:
+                          on_submitted_js="(jobid, payload) => refresh()"
+   ----------------------------------------------------------------------- #}
+<div class="fasrc-step-mount" id="step-mount-{{ step_id }}"
+     data-step-id="{{ step_id }}">
+  <span class="muted">loading step <code>{{ step_id }}</code>…</span>
+</div>
+<script>
+(function () {
+  const el = document.getElementById('step-mount-{{ step_id }}');
+  if (!el) return;
+  const opts = {
+    {%- if on_submitted_js %}
+    onSubmitted: {{ on_submitted_js|safe }},
+    {%- endif %}
+  };
+  function _mount() {
+    if (window.FasrcStepCard && typeof window.FasrcStepCard.mountOne === 'function') {
+      window.FasrcStepCard.mountOne(el, '{{ step_id }}', opts);
+    } else {
+      // fasrc_step_card.js is loaded from base.html before the page's
+      // own scripts block runs, but defer-order edge cases can still
+      // arrive here on a slow first paint. Retry once on the next tick.
+      setTimeout(_mount, 50);
+    }
+  }
+  _mount();
+})();
+</script>

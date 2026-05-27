@@ -13,6 +13,11 @@
   Directory: <code>{{ remote_dir }}</code>
 </p>
 
+<section class="card">
+  <h3>Download HLSP tiles</h3>
+  {% with step_id="download" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
 {% if not list_ok %}
 <section class="card">
   <h3>Could not list tiles</h3>

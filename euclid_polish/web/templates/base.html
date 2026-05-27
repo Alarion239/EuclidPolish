@@ -289,6 +289,11 @@
        templates/_job_status_card.html for the markup any page can drop
        in next to a job row. -->
   <script src="{{ url_for('static', filename='job_status.js') }}"></script>
+  <!-- Reusable HST/FASRC step-card module. Defines window.FasrcStepCard
+       with .renderMany() for fasrc.html and .mountOne() for per-task
+       pages (cutouts, PSFs, …). Loaded in base.html so every page can
+       drop in a step card via the _step_card_mount.html partial. -->
+  <script src="{{ url_for('static', filename='fasrc_step_card.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

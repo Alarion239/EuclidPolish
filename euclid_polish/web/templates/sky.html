@@ -55,6 +55,27 @@
 {% endblock %}
 
 {% block actions %}
+
+<h2 style="margin-top:0;">Euclid sky cutouts on FASRC</h2>
+
+<section class="card">
+  <h3>Download Euclid sky cutouts ({{ '`euclid_sky_download`' | safe }})</h3>
+  <p class="hint">Pull a patch of real-Euclid VIS/Y_E/J_E/H_E cutouts
+     from the SAS into <code>$DATA_DIR/euclid_sky/</code>. Feeds the
+     round-trip TFRecord builder below.</p>
+  {% with step_id="euclid_sky_download" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h3>Build round-trip TFRecords ({{ '`euclid_roundtrip_tfrecords`' | safe }})</h3>
+  <p class="hint">Chop the downloaded sky cutouts into LR-only TFRecord
+     stamps (VIS + Y_E + J_E + H_E). Used by the WDSR training step's
+     self-supervised round-trip loss.</p>
+  {% with step_id="euclid_roundtrip_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<h2 style="margin-top:24px;">Local synthetic sky (legacy)</h2>
+
 <section class="card">
   <h3>1 · Generate clean HR fields</h3>
   <form id="generate-form" action="/sky/generate">

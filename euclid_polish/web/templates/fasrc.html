@@ -65,7 +65,6 @@
 <div id="tabs" style="display:none;">
   <nav class="toolbar" style="margin-top:6px;">
     <a class="chip active" data-tab="training">🧠 Training</a>
-    <a class="chip"        data-tab="hst">🔭 HST pipeline</a>
     <a class="chip"        data-tab="git">🌿 Git</a>
     <a class="chip"        data-tab="storage">📁 Storage</a>
     <a class="chip"        data-tab="logs">📜 Logs</a>
@@ -279,25 +278,12 @@
     </div>
   </section>
 
-  <!-- =======================================================
-       TAB · HST pipeline (5 SLURM jobs for the HST-mix workflow)
-       ======================================================= -->
-  <section class="tab-panel" data-tab="hst" style="display:none;">
-    <section class="card">
-      <h3>🔭 HST → Euclid pipeline</h3>
-      <p class="hint">
-        Five SLURM jobs that build paired (HST clean, Euclid-forward dirty)
-        TFRecords from COSMOS HLSP F814W and train SR with a configurable
-        HST sample fraction. Each job submits as its own sbatch on FASRC
-        with separately tunable CPU/GPU/memory/wall time.
-      </p>
-      <p class="hint" id="hst-artifact-line">loading on-disk artifact status…</p>
-    </section>
-
-    <div id="hst-steps-area">
-      <p class="muted">loading pipeline steps…</p>
-    </div>
-  </section>
+  <!-- HST pipeline submission cards have moved out of this page; each
+       step is now mounted on its logical destination page next to the
+       inspection UI (HST tiles / HST PSF / Transition pairs / Training
+       / Sky data / HST Catalog). The polling-driven HST tab here used
+       to host the same cards — keeping the markup removed so users
+       don't get a stale duplicate of the form. -->
 
   <!-- =======================================================
        TAB · Git (status, fetch, pull — auto env-update on yml)
@@ -490,10 +476,8 @@
 {% endblock %}
 
 {% block scripts %}
-<!-- Reusable HST/FASRC step-card module. Defines window.FasrcStepCard
-     with .renderMany() for multi-step pages (this one) and
-     .mountOne() for single-step per-task pages (cutouts, PSFs, …). -->
-<script src="{{ url_for('static', filename='fasrc_step_card.js') }}"></script>
+<!-- Loaded globally by base.html: window.FasrcStepCard (.renderMany /
+     .mountOne) lives in static/fasrc_step_card.js. -->
 <script>
 const $ = (id) => document.getElementById(id);
 const escapeHtml = polishUI.escapeHtml;
@@ -1264,124 +1248,18 @@ setInterval(() => {
   if (!activeTab) return;
   if (activeTab === 'training') refreshTraining();
   if (activeTab === 'storage')  refreshListings();
-  if (activeTab === 'hst')      refreshHst();
+  // HST pipeline submissions live on their per-task pages now — no
+  // tab to refresh here.
   // git tab is manual-refresh: pulls and fetches are expensive enough
   // that auto-polling them isn't worth it.
 }, 5000);
 
 /* ============================================================
-   HST pipeline tab
-   ------------------------------------------------------------
-   Renders five cards (one per pipeline step) into #hst-steps-area
-   based on /api/fasrc/hst/status. Each card has its own form with
-   step-specific knobs + the SLURM allocation fields. Submitting
-   POSTs to /api/fasrc/hst/<step_id>/submit and shows the returned
-   job id inline.
-============================================================ */
+// HST pipeline JS used to live here (refreshHst, _renderHstArea,
+// _updateHstStatusOnly, plus the initial-tab-click handler). The
+// submission cards moved to their per-task pages — see
+// templates/_step_card_mount.html — so none of that JS is reachable
+// from this page anymore. Removed as part of task #65.
 
-// Card-rendering helpers (fmtRuntime, _stepCard, _stepSpecificFields,
-// _resourceFields) live in static/fasrc_step_card.js as
-// ``window.FasrcStepCard._internal.*``. They were extracted as part of
-// task #64 so the same card can render on per-task pages (cutouts,
-// PSFs, …) without duplicating the markup.
-
-// Track which steps have already been rendered so we only build the
-// cards (and thus reset their form values) ONCE per page load. Subsequent
-// polls only update read-only status decorations — never touch form inputs.
-let _HST_RENDERED = false;
-
-function _renderHstArea(j) {
-  const area = document.getElementById('hst-steps-area');
-  if (!area) return;
-  window.FasrcStepCard.renderMany(area, j.steps, j.artifacts || {}, {
-    onSubmitted: () => setTimeout(refreshHst, 1500),
-  });
-  _HST_RENDERED = true;
-}
-
-
-function _updateHstStatusOnly(j) {
-  // Refresh only the artifact badges + runtime hints on existing cards.
-  // Form input values are never touched.
-  const artifacts = j.artifacts || {};
-  const produces = {
-    download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
-    transition_pairs: 'transition_pairs',
-    train_transition: 'transition_model',
-    tfrecords: 'records', train: 'ckpt',
-    // Round-trip pipeline (keep in sync with the `artifacts` dict in
-    // api_fasrc_hst_status):
-    euclid_sky_download: 'euclid_sky',
-    euclid_roundtrip_tfrecords: 'roundtrip_records',
-  };
-  for (const step of j.steps) {
-    const card = document.querySelector(
-      `.hst-step-form[data-step-id="${step.step_id}"]`,
-    )?.closest('.card');
-    if (!card) continue;
-    const heading = card.querySelector('h3');
-    if (heading) {
-      const status = artifacts[produces[step.step_id]];
-      let badge = '';
-      if (status === true)  badge = ' <span class="badge badge-done">✓ output present</span>';
-      else if (status === false) badge = ' <span class="badge badge-running">○ output missing</span>';
-      // Replace just the badge span without rebuilding the whole heading.
-      const existing = heading.querySelector('.badge');
-      if (existing) existing.remove();
-      if (badge) heading.insertAdjacentHTML('beforeend', badge);
-    }
-    // Update the "median runtime" hint if it exists.
-    const hints = card.querySelectorAll('.hint');
-    if (hints.length >= 2) {
-      const med = step.median_runtime_s;
-      hints[1].innerHTML = med != null
-        ? `<span class="muted">median runtime: ${window.FasrcStepCard._internal.fmtRuntime(med)} (last 5)</span>`
-        : `<span class="muted">no runtime history yet</span>`;
-    }
-  }
-}
-
-async function refreshHst() {
-  let r;
-  try { r = await fetch('/api/fasrc/hst/status'); }
-  catch (e) { return; }
-  if (!r.ok) return;
-  const j = await r.json();
-  const area = document.getElementById('hst-steps-area');
-  if (!area) return;
-  if (!j.ssh_connected) {
-    area.innerHTML = `<p class="muted">connect via SSH first (top of the page)
-      to see live artifact status and submit jobs.</p>`;
-    _HST_RENDERED = false;   // force a fresh render once we reconnect
-    return;
-  }
-  const artifactLine = document.getElementById('hst-artifact-line');
-  if (artifactLine) {
-    const a = j.artifacts;
-    artifactLine.innerHTML =
-      `On FASRC at <code>${polishUI.escapeHtml(j.remote_paths.data_dir)}</code>: ` +
-      `tiles ${a.tiles ? '✓' : '✗'} · ` +
-      `HST PSF ${a.psf ? '✓' : '✗'} · ` +
-      `kernel ${a.kernel ? '✓' : '✗'} · ` +
-      `transition pairs ${a.transition_pairs ? '✓' : '✗'} · ` +
-      `denoiser ${a.denoiser ? '✓' : '✗'} · ` +
-      `transition model ${a.transition_model ? '✓' : '✗'} · ` +
-      `HST records ${a.records ? '✓' : '✗'} · ` +
-      `checkpoint ${a.ckpt ? '✓' : '✗'}`;
-  }
-  // First time: build the cards. Subsequent polls: status-only refresh
-  // that DOES NOT touch form input values. This is what fixes the
-  // "wall time keeps reverting to default" bug.
-  if (!_HST_RENDERED) {
-    _renderHstArea(j);
-  } else {
-    _updateHstStatusOnly(j);
-  }
-}
-
-// Refresh once on initial click of the HST tab.
-document.querySelector('[data-tab="hst"]')?.addEventListener('click', () => {
-  refreshHst();
-});
 </script>
 {% endblock %}

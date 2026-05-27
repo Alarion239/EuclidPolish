@@ -62,8 +62,18 @@
 
 {% block actions %}
 <section class="card">
+  <h3>Generate HST TFRecords (FASRC)</h3>
+  <p class="hint">The two-stage chain: optionally run the trained
+     denoiser over each HST stamp, then write
+     <code>clean_train/validate.tfrecord</code> +
+     <code>dirty_train/validate.tfrecord</code> +
+     <code>hr_train/validate.tfrecord</code> to FASRC.</p>
+  {% with step_id="tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
   <h3>Sync from FASRC</h3>
-  <p class="hint">Generates live on FASRC via step 4 of the HST pipeline.
+  <p class="hint">Pull the TFRecords down once the job above finishes.
      Validate split is small (~240 MB across 3 files); train split is
      multi-GB (skip unless you really want to scrub all 6400 pairs locally).</p>
   <form id="sync-form">
