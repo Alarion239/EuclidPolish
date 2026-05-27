@@ -2317,17 +2317,34 @@ def create_app() -> Flask:
     def hst_tiles_page():
         cfg_loaded = fasrc_config.load()
         remote_dir = f"{cfg_loaded.data_dir}/hst_hlsp"
+        # Depth 3 catches files at both the canonical flat layout AND
+        # the in-progress scratch layout astroquery uses while a job
+        # is still running: <hst_hlsp>/mastDownload/HLSP/<obs_id>/<file>.
+        # Without this, the page would show 0 new tiles for the entire
+        # duration of a multi-hour download, then jump to the full count
+        # only when the post-download flatten runs.
         ok, entries, list_err = list_remote_dir(
-            remote_dir, glob_pattern="hlsp_cosmos_*.fits", max_entries=200,
+            remote_dir, glob_pattern="hlsp_cosmos_*.fits",
+            max_entries=200, max_depth=3,
         )
-        tiles = []
+        # De-duplicate by basename, preferring the larger size (catches
+        # the brief window where a file exists both flat and nested
+        # mid-flatten — flat is the canonical copy when it's complete).
+        best: Dict[str, Dict[str, Any]] = {}
         for e in (entries or []):
-            tiles.append({
+            name = e["name"]
+            prev = best.get(name)
+            if prev is None or e["size"] > prev["size"]:
+                best[name] = e
+        tiles = [
+            {
                 "name":        e["name"],
                 "size_gb":     round(e["size"] / 1e9, 2),
                 "mtime":       e["mtime"],
                 "remote_path": f"{remote_dir}/{e['name']}",
-            })
+            }
+            for e in best.values()
+        ]
         tiles.sort(key=lambda t: t["name"])
         return render_template(
             "hst_tiles.html",
@@ -3936,6 +3953,66 @@ def create_app() -> Flask:
                 if r["state"] in ("RUNNING", "PENDING") else None
             )
         return jsonify({"jobs": rows})
+
+    @app.route("/api/fasrc/current-submission")
+    def api_fasrc_current_submission():
+        """Return the user's most-recent live submission + its event-stream status.
+
+        Looks at the JobDB for the latest job in ``PENDING`` or
+        ``RUNNING`` state, reconciles its row against ``squeue`` so the
+        elapsed/limit/node columns are fresh, and folds its ``.events``
+        JSONL into a :class:`JobStatus` (stage, full stage history,
+        step progress, warnings, errors).
+
+        Response::
+
+            { "ok": true, "current": null }   # no active job
+            { "ok": true,
+              "current": { "job": { ... DB row + squeue overrides ... },
+                           "status": { stage, stages, step, warnings,
+                                       errors, has_events, ... } } }
+
+        Used by the FASRC page's "Current Submission" tab. Replaces the
+        WDSR-specific ``/api/fasrc/training-status`` for the general job
+        case; the training-status endpoint stays for the trainer's own
+        live-metrics view.
+        """
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+
+        # Reconcile DB rows against squeue first — without this, a job
+        # that already finished still shows up as RUNNING in the DB and
+        # the tab would lie. One squeue call per refresh; the same one
+        # the Logs tab already makes.
+        rc_q, out_q, _err_q = STATE.ssh.run(
+            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            timeout=15,
+        )
+        if rc_q == 0:
+            fasrc_jobs.reconcile_with_squeue(
+                fasrc_jobs.parse_squeue(out_q), ssh=STATE.ssh,
+            )
+
+        # Pick the newest still-live row. ``list_recent`` orders by
+        # submitted_at DESC, so the first matching row IS the newest.
+        recent = fasrc_jobs.DB.list_recent(limit=10)
+        current_row = next(
+            (r for r in recent if r.get("state") in ("PENDING", "RUNNING")),
+            None,
+        )
+        if current_row is None:
+            return jsonify({"ok": True, "current": None})
+
+        # Fold the live event stream into a JobStatus.
+        fetcher = JobStatusFetcher(ssh=STATE.ssh)
+        status  = fetcher.fetch(events_path=current_row.get("events_path"))
+        return jsonify({
+            "ok":      True,
+            "current": {
+                "job":    current_row,
+                "status": status.to_dict(),
+            },
+        })
 
     @app.route("/api/fasrc/jobs/<jobid>/status")
     def api_fasrc_job_status(jobid: str):

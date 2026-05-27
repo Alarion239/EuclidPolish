@@ -93,6 +93,69 @@ class TestFoldEvents:
 
 
 # ---------------------------------------------------------------------------
+# fold_events — step-rate / ETA computation
+# ---------------------------------------------------------------------------
+
+class TestFoldEventsRate:
+
+    def test_rate_and_eta_within_current_stage(self):
+        """Step events within the current stage drive ``step_rate_per_s``
+        and ``step_eta_s``. Rate = Δsteps / Δt; ETA = (total − current) /
+        rate. Two valid in-stage points are enough.
+        """
+        lines = [
+            '{"ts":100.0,"kind":"stage","value":"train"}',
+            '{"ts":110.0,"kind":"step","value":{"current":100,"total":2000,"label":""}}',
+            '{"ts":120.0,"kind":"step","value":{"current":300,"total":2000,"label":""}}',
+        ]
+        s = fold_events("\n".join(lines))
+        # 200 steps over 10 s → 20 steps/s. 2000−300 = 1700 left → ETA 85 s.
+        assert s.step_rate_per_s == pytest.approx(20.0)
+        assert s.step_eta_s == pytest.approx(85.0)
+
+    def test_rate_resets_at_stage_boundary(self):
+        """A new ``set_stage`` clears the per-stage history — a quick
+        stage's rate must not pollute a slow following stage's ETA."""
+        lines = [
+            '{"ts":  0.0,"kind":"stage","value":"prep"}',
+            '{"ts":  1.0,"kind":"step","value":{"current":10,"total":10,"label":""}}',
+            '{"ts": 10.0,"kind":"stage","value":"train"}',
+            '{"ts": 20.0,"kind":"step","value":{"current": 50,"total":1000,"label":""}}',
+            '{"ts": 30.0,"kind":"step","value":{"current":100,"total":1000,"label":""}}',
+        ]
+        s = fold_events("\n".join(lines))
+        # In ``train`` stage: 50 steps over 10 s → 5 steps/s.
+        # 1000−100 = 900 left → ETA 180 s.
+        assert s.stage == "train"
+        assert s.step_rate_per_s == pytest.approx(5.0)
+        assert s.step_eta_s == pytest.approx(180.0)
+
+    def test_rate_undefined_with_single_step_event(self):
+        """One step event isn't enough — need two timestamps to measure
+        a rate. Both fields stay ``None``."""
+        lines = [
+            '{"ts":0.0,"kind":"stage","value":"train"}',
+            '{"ts":5.0,"kind":"step","value":{"current":1,"total":100,"label":""}}',
+        ]
+        s = fold_events("\n".join(lines))
+        assert s.step_rate_per_s is None
+        assert s.step_eta_s is None
+
+    def test_rate_undefined_when_steps_rewind(self):
+        """If ``current`` goes backwards (a script restart, or two
+        workers reporting different sub-ranges), Δsteps ≤ 0 — punt
+        rather than emit a negative ETA."""
+        lines = [
+            '{"ts": 0.0,"kind":"stage","value":"train"}',
+            '{"ts": 5.0,"kind":"step","value":{"current":100,"total":1000,"label":""}}',
+            '{"ts":10.0,"kind":"step","value":{"current": 80,"total":1000,"label":""}}',
+        ]
+        s = fold_events("\n".join(lines))
+        assert s.step_rate_per_s is None
+        assert s.step_eta_s is None
+
+
+# ---------------------------------------------------------------------------
 # fold_events — resilience
 # ---------------------------------------------------------------------------
 

@@ -64,48 +64,61 @@
 ============================================================ -->
 <div id="tabs" style="display:none;">
   <nav class="toolbar" style="margin-top:6px;">
-    <a class="chip active" data-tab="training">🧠 Training</a>
+    <a class="chip active" data-tab="current">📋 Current Submission</a>
     <a class="chip"        data-tab="git">🌿 Git</a>
     <a class="chip"        data-tab="storage">📁 Storage</a>
     <a class="chip"        data-tab="logs">📜 Logs</a>
   </nav>
 
   <!-- =======================================================
-       TAB · Training (dual-mode: form OR running-job panel)
+       TAB · Current Submission — job-agnostic live status driven by
+       the Reporter event stream (stage chip + step progress bar +
+       full stage history). Replaces the old WDSR-specific Training
+       tab. The empty-state card sits in for "no live job"; the
+       running-job blocks below are shown only when
+       /api/fasrc/current-submission returns a current row.
        ======================================================= -->
-  <section class="tab-panel" data-tab="training">
+  <section class="tab-panel" data-tab="current">
 
-    <!-- Mode A: a job is running. Hidden until /training-status confirms. -->
-    <div id="run-panel" style="display:none;">
+    <!-- Empty state: no PENDING/RUNNING job in the DB. -->
+    <div id="cs-empty-panel">
       <section class="card">
-        <h3>Job running
-          <span id="run-state" class="tag tag-warn"
+        <h3>No active job</h3>
+        <p class="muted">You don't have a PENDING or RUNNING SLURM job
+          right now. Submit one from any pipeline page (HST tiles,
+          Euclid cutouts, HST Catalog, Training, …) and its progress
+          will appear here.</p>
+      </section>
+    </div>
+
+    <!-- Live job: header (state + cancel + extend), then stage +
+         progress, then full stage history, then warnings/errors. -->
+    <div id="cs-live-panel" style="display:none;">
+      <section class="card">
+        <h3 id="cs-title">Job running
+          <span id="cs-state" class="tag tag-warn"
                 style="float:right;">RUNNING</span></h3>
         <dl class="kv">
-          <dt>Job id</dt>      <dd><code id="run-jobid">—</code></dd>
-          <dt>Label</dt>       <dd id="run-label">—</dd>
-          <dt>Node</dt>        <dd><code id="run-node">—</code></dd>
-          <dt>Elapsed</dt>     <dd id="run-elapsed">—</dd>
+          <dt>Job id</dt>      <dd><code id="cs-jobid">—</code></dd>
+          <dt>Label</dt>       <dd id="cs-label">—</dd>
+          <dt>Node</dt>        <dd><code id="cs-node">—</code></dd>
+          <dt>Elapsed</dt>     <dd id="cs-elapsed">—</dd>
           <dt>Limit</dt>
           <dd>
-            <span id="run-limit">—</span>
+            <span id="cs-limit">—</span>
             <span style="margin-left:8px; display:inline-flex; gap:4px; align-items:center;">
               <input id="extend-hours" type="number" min="0.25" max="24"
                      step="0.25" value="1" style="width:55px; padding:2px 4px;">
               <button id="btn-extend" type="button" class="secondary"
-                      style="padding:2px 8px;" title="scontrol update job=… TimeLimit=+HH:MM:SS">
+                      style="padding:2px 8px;"
+                      title="scontrol update job=… TimeLimit=+HH:MM:SS">
                 + hours
               </button>
             </span>
             <span id="extend-msg" class="muted" style="margin-left:6px; font-size:11px;"></span>
           </dd>
-          <dt>Stage</dt>       <dd id="run-stage">—</dd>
-          <dt>ETA</dt>         <dd id="run-eta">—</dd>
+          <dt>Started</dt>     <dd id="cs-started" class="muted">—</dd>
         </dl>
-        <div class="job-bar" style="margin-top:8px;">
-          <progress id="run-bar" max="100" value="0"></progress>
-          <span id="run-bar-label" class="bar-label">awaiting first step…</span>
-        </div>
         <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
           <button id="btn-run-cancel" type="button" class="danger">Cancel job</button>
           <span id="cancel-msg" class="muted" style="font-size:12px;"></span>
@@ -113,167 +126,41 @@
       </section>
 
       <section class="card">
-        <h3>Latest training metrics</h3>
-        <dl class="kv">
-          <dt>Step</dt>             <dd id="m-step">—</dd>
-          <dt>Loss</dt>             <dd id="m-loss">—</dd>
-          <dt>PSNR (stretched)</dt> <dd id="m-psnr-str">—</dd>
-          <dt>PSNR (raw)</dt>       <dd id="m-psnr-raw">—</dd>
-          <dt>Last checkpoint</dt>  <dd id="m-ckpt" class="muted">none yet</dd>
-        </dl>
-      </section>
-
-      <section class="card">
-        <h3>Validation history
-          <span class="muted" style="font-weight:normal; font-size:12px;">
-            (from <code>training_log.jsonl</code>, live)</span></h3>
-        <div id="val-table"><p class="muted">no validation rows yet</p></div>
-      </section>
-
-      <section class="card">
-        <h3>Checkpoint auto-mirror
-          <span id="mirror-tag" class="tag tag-warn" style="float:right;">off</span>
+        <h3>Stage
+          <span id="cs-stage-pill" class="tag tag-warn"
+                style="float:right; max-width:60%;
+                       overflow:hidden; text-overflow:ellipsis;">
+            awaiting first event…</span>
         </h3>
-        <p class="hint">Activates automatically once the job enters the
-          <code>train</code> stage. Syncs whenever the trainer logs a
-          <code>Checkpoint saved</code> line.</p>
-        <dl class="kv">
-          <dt>Local</dt>  <dd><code id="mirror-local">—</code></dd>
-          <dt>Remote</dt> <dd><code id="mirror-remote">—</code></dd>
-          <dt>Last sync</dt> <dd id="mirror-last" class="muted">never</dd>
-        </dl>
-        <div class="form-row" style="margin-top:6px;">
-          <button id="btn-mirror-trigger" type="button" class="secondary">Sync now</button>
-          <button id="btn-mirror-stop"    type="button" class="secondary">Stop</button>
+        <div class="job-bar" style="margin-top:6px;">
+          <progress id="cs-progress" max="100" value="0"></progress>
+          <span id="cs-progress-label" class="bar-label">no step counter yet</span>
         </div>
-      </section>
-    </div>
-
-    <!-- Mode B: no job. Three submission cards, one per pipeline stage. -->
-    <div id="submit-panel" style="display:none;">
-      <p class="hint">No SLURM job is running for you right now.
-        Pick a card below — each one submits a sbatch with stage-specific
-        resources and the matching <code>--skip-*</code> flags.</p>
-
-      <!-- ── Card 1: generate + convolve (CPU) ──────────────────────── -->
-      <section class="card">
-        <h3>1. Generate clean + convolve to dirty <span class="muted"
-              style="font-weight:normal; font-size:12px;">(CPU, no GPU)</span></h3>
-        <p class="hint">Runs STEP 1 (Sersic + lens rendering) and STEP 2
-          (per-band PSF convolution + Poisson/read noise + artifacts),
-          writing <code>clean_*.tfrecord</code> and
-          <code>dirty_*.tfrecord</code>. CPU-only — runs on a shared partition.</p>
-        <form class="form-row job-form" data-preset="gen_convolve">
-          <label>Label
-            <input name="label" placeholder="optional summary" size="26"></label>
-          <label>Partition
-            <input name="partition" value="shared" style="width:90px;"></label>
-          <label>CPUs
-            <input name="n_cpus" type="number" min="1" max="48" value="16" style="width:60px;"></label>
-          <label>Memory
-            <input name="memory" value="64G" style="width:70px;"></label>
-          <label>Time
-            <input name="time_limit" value="6:00:00" style="width:90px;"></label>
-
-          <label>n_train
-            <input name="n_train" type="number" min="1" value="{{ cfg.n_train }}" style="width:90px;"></label>
-          <label>n_valid
-            <input name="n_valid" type="number" min="1" value="{{ cfg.n_valid }}" style="width:80px;"></label>
-          <label>Image size
-            <input name="image_size" type="number" min="6" step="6" value="{{ cfg.image_size }}" style="width:80px;"></label>
-
-          <label style="flex:1; min-width:240px;">Extra flags
-            <input name="extra_flags" placeholder="optional" style="width:100%;"></label>
-
-          <input type="hidden" name="n_gpus" value="0">
-          <input type="hidden" name="batch_size" value="{{ cfg.batch_size }}">
-          <input type="hidden" name="steps" value="{{ cfg.steps }}">
-          <div style="flex-basis:100%;">
-            <button type="submit">Submit generate + convolve</button>
-          </div>
-        </form>
-        <pre class="job-log job-out" style="display:none; margin-top:10px;"></pre>
-      </section>
-
-      <!-- ── Card 2: convolve only (CPU) ────────────────────────────── -->
-      <section class="card">
-        <h3>2. Convolve existing clean → dirty <span class="muted"
-              style="font-weight:normal; font-size:12px;">(CPU, no GPU)</span></h3>
-        <p class="hint">Re-runs STEP 2 against existing
-          <code>clean_*.tfrecord</code> on disk — useful after PSF or noise-model
-          tweaks. No generate, no train.</p>
-        <form class="form-row job-form" data-preset="convolve_only">
-          <label>Label
-            <input name="label" placeholder="optional summary" size="26"></label>
-          <label>Partition
-            <input name="partition" value="shared" style="width:90px;"></label>
-          <label>CPUs
-            <input name="n_cpus" type="number" min="1" max="48" value="8" style="width:60px;"></label>
-          <label>Memory
-            <input name="memory" value="32G" style="width:70px;"></label>
-          <label>Time
-            <input name="time_limit" value="2:00:00" style="width:90px;"></label>
-
-          <label style="flex:1; min-width:240px;">Extra flags
-            <input name="extra_flags" placeholder="optional" style="width:100%;"></label>
-
-          <input type="hidden" name="n_gpus" value="0">
-          <input type="hidden" name="n_train" value="{{ cfg.n_train }}">
-          <input type="hidden" name="n_valid" value="{{ cfg.n_valid }}">
-          <input type="hidden" name="image_size" value="{{ cfg.image_size }}">
-          <input type="hidden" name="batch_size" value="{{ cfg.batch_size }}">
-          <input type="hidden" name="steps" value="{{ cfg.steps }}">
-          <div style="flex-basis:100%;">
-            <button type="submit">Submit convolve only</button>
-          </div>
-        </form>
-        <pre class="job-log job-out" style="display:none; margin-top:10px;"></pre>
-      </section>
-
-      <!-- ── Card 3: train (GPU) ────────────────────────────────────── -->
-      <section class="card">
-        <h3>3. Train <span class="muted"
-              style="font-weight:normal; font-size:12px;">(GPU, requires existing
-            <code>clean_*</code> / <code>dirty_*</code> on netscratch)</span></h3>
-        <p class="hint">Runs STEP 3 only — WDSR fit against the existing
-          TFRecords. Auto-mirrors checkpoints to the local <code>ckpt</code>
-          dir as the trainer writes them.</p>
-        <form class="form-row job-form" data-preset="train_only">
-          <label>Label
-            <input name="label" placeholder="optional summary" size="26"></label>
-          <label>Partition
-            <input name="partition" value="gpu" style="width:80px;"></label>
-          <label>GPUs
-            <input name="n_gpus" type="number" min="1" max="8" value="1" style="width:60px;"></label>
-          <label>CPUs
-            <input name="n_cpus" type="number" min="1" max="48" value="4" style="width:60px;"></label>
-          <label>Memory
-            <input name="memory" value="32G" style="width:70px;"></label>
-          <label>Time
-            <input name="time_limit" value="24:00:00" style="width:90px;"></label>
-
-          <label>Batch
-            <input name="batch_size" type="number" min="1" value="{{ cfg.batch_size }}" style="width:60px;"></label>
-          <label>Steps
-            <input name="steps" type="number" min="100" value="{{ cfg.steps }}" style="width:100px;"></label>
-
-          <label style="flex:1; min-width:240px;">Extra flags
-            <input name="extra_flags" placeholder="e.g. --num-res-blocks 16" style="width:100%;"></label>
-
-          <input type="hidden" name="n_train" value="{{ cfg.n_train }}">
-          <input type="hidden" name="n_valid" value="{{ cfg.n_valid }}">
-          <input type="hidden" name="image_size" value="{{ cfg.image_size }}">
-          <div style="flex-basis:100%; display:flex; gap:10px; align-items:center;">
-            <button type="submit">Submit training</button>
-            <span class="job-eta muted" data-stage="train"></span>
-          </div>
-        </form>
-        <pre class="job-log job-out" style="display:none; margin-top:10px;"></pre>
+        <p class="muted" style="margin:6px 0 0; font-size:11px;">
+          Stage + step come from the per-job <code>.events</code> JSONL the
+          script writes via the <code>Reporter</code>. Polled every 3 s.
+        </p>
       </section>
 
       <section class="card">
-        <h3>Recent submissions</h3>
-        <div id="recent-jobs"><span class="muted">none yet</span></div>
+        <h3>Stages so far
+          <span id="cs-stages-count" class="muted"
+                style="font-weight:normal; font-size:12px;"></span></h3>
+        <ol id="cs-stages-list" class="stages-list" style="margin:0; padding-left:0; list-style:none;">
+          <li class="muted">no stages reported yet</li>
+        </ol>
+      </section>
+
+      <section class="card" id="cs-warn-card" style="display:none;">
+        <h3>Warnings <span id="cs-warn-count" class="muted"
+                            style="font-weight:normal; font-size:12px;"></span></h3>
+        <ul id="cs-warn-list" style="margin:0; padding-left:18px;"></ul>
+      </section>
+
+      <section class="card" id="cs-err-card" style="display:none;">
+        <h3>Errors <span id="cs-err-count" class="muted"
+                          style="font-weight:normal; font-size:12px;"></span></h3>
+        <ul id="cs-err-list" style="margin:0; padding-left:18px;"></ul>
       </section>
     </div>
   </section>
@@ -509,7 +396,7 @@ document.querySelectorAll('.chip[data-tab]').forEach(chip => {
       c.classList.toggle('active', c.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach(p =>
       p.style.display = (p.dataset.tab === tab) ? 'block' : 'none');
-    if (tab === 'training') refreshTraining();
+    if (tab === 'current')  refreshCurrentSubmission();
     if (tab === 'git')      refreshRemoteGit();
     if (tab === 'storage')  refreshListings();
     if (tab === 'logs')     refreshLogs();
@@ -532,7 +419,7 @@ async function refreshConnState() {
   $('tabs').style.display           = conn ? 'block' : 'none';
   $('btn-disconnect').style.display = conn ? 'inline-block' : 'none';
 
-  if (conn) refreshTraining();   // landing tab
+  if (conn) refreshCurrentSubmission();   // landing tab
   return conn;
 }
 
@@ -583,109 +470,169 @@ $('settings-form').addEventListener('submit', async (e) => {
 });
 
 /* ============================================================
-   Training tab: dual-mode (submit form ↔ live-status)
+   Current Submission tab — job-agnostic live status driven by the
+   Reporter .events JSONL stream. One poll = one /api/fasrc/current-
+   submission request; the endpoint returns either ``current: null``
+   (no live job) or the latest PENDING/RUNNING row + folded
+   :class:`JobStatus` (stage, full stage history, step progress,
+   warnings, errors).
 ============================================================ */
-async function refreshTraining() {
-  const r = await api('/api/fasrc/training-status');
-  // r.ok is false either because we got a 4xx (not connected) OR
-  // because the route returned 200 with ok:false (recoverable error
-  // like a slow remote tail). Don't flicker the UI off in the second
-  // case — leave whatever panel is showing visible and surface the
-  // error in the bar label.
+
+// Remember the last job id we rendered so the cancel + extend buttons
+// can read it without scraping the DOM (the textContent dance the old
+// renderer did broke when the chip's :before content shifted).
+let __CS_JOBID = null;
+
+function _csHideLive() {
+  $('cs-empty-panel').style.display = 'block';
+  $('cs-live-panel').style.display  = 'none';
+  __CS_JOBID = null;
+}
+
+function _fmtIsoLocal(epoch) {
+  if (!epoch || isNaN(epoch)) return '—';
+  try {
+    return new Date(epoch * 1000).toLocaleString();
+  } catch { return '—'; }
+}
+
+async function refreshCurrentSubmission() {
+  const r = await api('/api/fasrc/current-submission');
   if (!r.ok) {
-    const bar = $('run-bar-label');
-    if (bar) bar.textContent = 'status: ' + (r.data?.error || 'request failed');
-    if (r.status === 400) {
-      $('submit-panel').style.display = 'none';
-      $('run-panel').style.display    = 'none';
+    _csHideLive();
+    return;
+  }
+  const current = r.data.current;
+  if (!current) {
+    _csHideLive();
+    return;
+  }
+
+  $('cs-empty-panel').style.display = 'none';
+  $('cs-live-panel').style.display  = 'block';
+
+  const job    = current.job    || {};
+  const status = current.status || {};
+
+  __CS_JOBID = String(job.jobid || '').trim();
+
+  // Header card — state pill + job metadata.
+  $('cs-state').textContent = job.state || 'UNKNOWN';
+  $('cs-state').className   =
+    'badge ' +
+    (job.state === 'RUNNING' ? 'badge-running'
+     : job.state === 'PENDING' ? 'badge-pending'
+     : 'badge-failed');
+  $('cs-jobid').textContent   = __CS_JOBID || '—';
+  $('cs-label').textContent   = job.label || '(unlabeled)';
+  $('cs-node').textContent    = job.node || job.nodelist || '—';
+  $('cs-elapsed').textContent = job.elapsed
+    || (job.started_at ? fmtSecs(Date.now()/1000 - job.started_at) : '—');
+  $('cs-limit').textContent   = job.time_limit || '—';
+  $('cs-started').textContent = _fmtIsoLocal(job.started_at);
+
+  // Stage card — current stage pill + step progress bar. set_step is
+  // silent on stderr by design, so the bar is the only progress
+  // indicator until the next stage transition arrives.
+  const stage = status.stage;
+  const stagePill = $('cs-stage-pill');
+  stagePill.textContent = stage || (status.has_events ? '(no stage event yet)' : 'waiting for first event…');
+  stagePill.className = 'tag ' + (stage ? 'tag-ok' : 'tag-warn');
+
+  const bar    = $('cs-progress');
+  const barLbl = $('cs-progress-label');
+  const step   = status.step;
+  if (step && step.total > 0) {
+    bar.max   = step.total;
+    bar.value = step.current;
+    const pct = (100 * step.current / step.total).toFixed(1);
+    const lbl = step.label ? step.label : 'step';
+    // ETA + rate come from the backend (averaged over step events
+    // emitted within the current stage). Surface them inline so the
+    // user sees "how long until this stage ends" without doing the
+    // mental math from the percentage.
+    const rate = status.step_rate_per_s;
+    const eta  = status.step_eta_s;
+    let suffix = '';
+    if (rate != null && rate > 0) {
+      const rateStr = rate >= 1
+        ? `${rate.toFixed(1)} step/s`
+        : `${(1 / rate).toFixed(1)} s/step`;
+      suffix = ` · ${rateStr}`;
+      if (eta != null && isFinite(eta)) {
+        suffix += ` · ETA ${fmtSecs(eta)}`;
+      }
     }
-    return;
-  }
-  if (r.data.running) {
-    renderRunning(r.data);
-    $('submit-panel').style.display = 'none';
-    $('run-panel').style.display    = 'block';
+    barLbl.textContent =
+      `${lbl} ${(step.current|0).toLocaleString()} / ${(step.total|0).toLocaleString()} (${pct}%)${suffix}`;
   } else {
-    $('run-panel').style.display    = 'none';
-    $('submit-panel').style.display = 'block';
-    refreshRecent();
-    refreshTrainEta();
+    // Indeterminate look — drop the value attribute so the browser
+    // animates a sweep instead of pinning at 0%.
+    bar.removeAttribute('value');
+    barLbl.textContent =
+      stage ? `${stage} — no per-step counter` : 'no step counter yet';
   }
-}
 
-function renderRunning(s) {
-  const j = s.job || {};
-  $('run-state').textContent = j.state || 'RUNNING';
-  $('run-jobid').textContent = j.jobid || '—';
-  $('run-label').textContent = j.label || '(unlabeled)';
-  $('run-node').textContent  = j.node || '?';
-  $('run-elapsed').textContent = j.elapsed || fmtSecs(j.elapsed_seconds);
-  $('run-limit').textContent   = j.time_limit || '?';
-
-  const stage = s.stage || 'unknown';
-  $('run-stage').innerHTML = `<span class="stage-pill stage-${escapeHtml(stage)}">${escapeHtml(stage)}</span>`;
-  $('run-eta').textContent = s.eta_seconds ? fmtSecs(s.eta_seconds) : '—';
-
-  const bar = $('run-bar'), barLbl = $('run-bar-label');
-  if (s.progress && s.progress.total) {
-    bar.max = s.progress.total;
-    bar.value = s.progress.current;
-    barLbl.textContent = `step ${s.progress.current.toLocaleString()} / ${s.progress.total.toLocaleString()} (${s.progress.pct.toFixed(2)}%)`;
-  } else if (stage === 'init' || stage === 'generate' || stage === 'convolve') {
-    bar.removeAttribute('value');     // indeterminate look
-    barLbl.textContent = `stage: ${stage} — no per-step counter yet`;
+  // Stage history — every set_stage event with timestamp; the last
+  // one is "current" and gets a different bullet.
+  const stages = status.stages || [];
+  const stagesList = $('cs-stages-list');
+  if (stages.length === 0) {
+    stagesList.innerHTML = '<li class="muted">no stages reported yet</li>';
+    $('cs-stages-count').textContent = '';
   } else {
-    bar.value = 0;
-    barLbl.textContent = 'awaiting first step…';
+    $('cs-stages-count').textContent = `(${stages.length})`;
+    stagesList.innerHTML = stages.map((s, i) => {
+      const isLast = (i === stages.length - 1);
+      const icon = isLast ? '●' : '✓';
+      const cls  = isLast ? 'stage-current' : 'stage-done';
+      const t    = s.ts ? new Date(s.ts * 1000).toLocaleTimeString() : '';
+      return `<li class="${cls}" style="padding:3px 0; font-size:13px;">
+        <span style="display:inline-block; width:14px;">${icon}</span>
+        <span class="muted" style="display:inline-block; min-width:84px;">${escapeHtml(t)}</span>
+        ${escapeHtml(s.name)}
+      </li>`;
+    }).join('');
   }
 
-  const m = s.latest_metrics || {};
-  $('m-step').textContent     = m.step ? m.step.toLocaleString() : '—';
-  $('m-loss').textContent     = m.loss      != null ? m.loss.toFixed(4)     : '—';
-  $('m-psnr-str').textContent = m.psnr_stretched != null ? m.psnr_stretched.toFixed(3) + ' dB' : '—';
-  $('m-psnr-raw').textContent = m.psnr_raw       != null ? m.psnr_raw.toFixed(3)       + ' dB' : '—';
-  $('m-ckpt').textContent     = s.last_checkpoint || 'none yet';
-  $('m-ckpt').className       = s.last_checkpoint ? '' : 'muted';
+  // Warnings — only show the card when there's content.
+  const warnings = status.warnings || [];
+  if (warnings.length === 0) {
+    $('cs-warn-card').style.display = 'none';
+  } else {
+    $('cs-warn-card').style.display = 'block';
+    $('cs-warn-count').textContent  = `(${warnings.length})`;
+    $('cs-warn-list').innerHTML = warnings.map(w => {
+      const t = w.ts ? new Date(w.ts * 1000).toLocaleTimeString() : '';
+      return `<li style="margin:3px 0; font-size:13px;">
+        <span class="muted">${escapeHtml(t)}</span> ${escapeHtml(w.msg)}
+      </li>`;
+    }).join('');
+  }
 
-  renderValidationTable(s.validations || []);
-  refreshMirror();   // pull mirror status (auto-managed by the backend)
-}
-
-function renderValidationTable(rows) {
-  if (!rows.length) {
-    $('val-table').innerHTML = '<p class="muted">no validation rows yet</p>';
-    return;
+  // Errors — same pattern as warnings.
+  const errors = status.errors || [];
+  if (errors.length === 0) {
+    $('cs-err-card').style.display = 'none';
+  } else {
+    $('cs-err-card').style.display = 'block';
+    $('cs-err-count').textContent  = `(${errors.length})`;
+    $('cs-err-list').innerHTML = errors.map(e => {
+      const t = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : '';
+      return `<li style="margin:3px 0; font-size:13px; color:#b94a48;">
+        <span class="muted">${escapeHtml(t)}</span> ${escapeHtml(e.msg)}
+      </li>`;
+    }).join('');
   }
-  const lastN = rows.slice(-25);
-  let html = '<table><tr><th>Step</th><th>Loss</th><th>PSNR str</th>'
-           + '<th>PSNR raw</th><th>Δ PSNR</th><th>Wall (s)</th></tr>';
-  let prev = null;
-  for (const r of lastN) {
-    const delta = prev != null ? (r.psnr_stretched - prev) : null;
-    const dHtml = delta == null ? '' :
-      `<span class="${delta >= 0 ? 'delta-good' : 'delta-bad'}">${delta >= 0 ? '+' : ''}${delta.toFixed(3)}</span>`;
-    html += `<tr class="val-row">
-      <td><code>${r.step.toLocaleString()}</code></td>
-      <td>${r.loss.toFixed(4)}</td>
-      <td>${r.psnr_stretched.toFixed(3)}</td>
-      <td>${r.psnr_raw.toFixed(3)}</td>
-      <td>${dHtml}</td>
-      <td class="muted">${r.duration_s ? r.duration_s.toFixed(1) : ''}</td>
-    </tr>`;
-    prev = r.psnr_stretched;
-  }
-  html += '</table>';
-  if (rows.length > lastN.length) {
-    html += `<p class="muted" style="font-size:11px;margin:6px 0 0;">
-              showing last ${lastN.length} of ${rows.length} validation events</p>`;
-  }
-  $('val-table').innerHTML = html;
 }
 
 $('btn-extend').onclick = async () => {
-  const jid   = $('run-jobid').textContent.trim();
+  const jid   = __CS_JOBID;
   const hours = $('extend-hours').value;
-  if (!jid || jid === '—') return;
+  if (!jid || !/^\d+$/.test(jid)) {
+    $('extend-msg').textContent = 'no live job to extend';
+    return;
+  }
   $('extend-msg').textContent = 'extending…';
   const r = await fetch('/api/fasrc/extend-time', {
     method: 'POST',
@@ -694,7 +641,7 @@ $('btn-extend').onclick = async () => {
   const data = await r.json();
   if (data.ok) {
     $('extend-msg').textContent = `+${hours}h (${data.delta}) — ${data.scontrol || ''}`;
-    setTimeout(refreshTraining, 800);
+    setTimeout(refreshCurrentSubmission, 800);
   } else {
     $('extend-msg').textContent = 'failed: ' + (data.error || '?');
   }
@@ -702,10 +649,9 @@ $('btn-extend').onclick = async () => {
 
 $('btn-run-cancel').onclick = async () => {
   const msg = $('cancel-msg');
-  const jid = $('run-jobid').textContent.trim();
-  console.log('[fasrc] cancel clicked; jobid =', JSON.stringify(jid));
-  if (!jid || jid === '—' || !/^\d+$/.test(jid)) {
-    msg.textContent = `no valid job id to cancel (got "${jid}")`;
+  const jid = __CS_JOBID;
+  if (!jid || !/^\d+$/.test(jid)) {
+    msg.textContent = `no live job to cancel`;
     return;
   }
   if (!confirm(`Cancel job ${jid}?`)) return;
@@ -718,166 +664,18 @@ $('btn-run-cancel').onclick = async () => {
     });
     let data = {};
     try { data = await r.json(); } catch {}
-    console.log('[fasrc] cancel response:', r.status, data);
     if (data.ok) {
       msg.textContent = `cancel sent (scancel ${jid}) — refreshing…`;
-      setTimeout(refreshTraining, 800);
+      setTimeout(refreshCurrentSubmission, 800);
     } else {
       msg.textContent = `cancel failed: ${data.error || ('HTTP ' + r.status)}`;
     }
   } catch (err) {
-    console.error('[fasrc] cancel exception:', err);
     msg.textContent = `cancel failed: ${err}`;
   } finally {
     btn.disabled = false;
   }
 };
-
-/* ============================================================
-   Submission cards — one form per stage. Every ``.job-form`` carries
-   its preset in ``data-preset``; the preset string drives the
-   ``--skip-*`` flag selection server-side. The training card also
-   refreshes its ETA line off the steps history.
-============================================================ */
-async function refreshTrainEta() {
-  const eta_el = document.querySelector('.job-eta[data-stage="train"]');
-  if (!eta_el) return;
-  const trainForm = document.querySelector('.job-form[data-preset="train_only"]');
-  if (!trainForm) return;
-  const steps = trainForm.elements.steps.value;
-  const { data } = await api(`/api/fasrc/eta?steps=${steps}`);
-  const spt = data.secs_per_step, eta = data.eta_seconds;
-  eta_el.textContent = spt
-    ? `(history: ${data.history_n} runs · ${spt.toFixed(3)} s/step · est. ${fmtSecs(eta)})`
-    : '(no history yet — first run will calibrate)';
-}
-
-const __JOB_FORMS = document.querySelectorAll('.job-form');
-console.log('[fasrc] binding job-form handlers — found', __JOB_FORMS.length,
-            'forms (presets:',
-            Array.from(__JOB_FORMS).map(f => f.dataset.preset).join(', '), ')');
-__JOB_FORMS.forEach(form => {
-  form.addEventListener('input', (e) => {
-    if (e.target.name === 'steps') refreshTrainEta();
-  });
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    console.log('[fasrc] submit clicked for preset', form.dataset.preset);
-    // .job-out is a sibling <pre> inside the same card, not a child of
-    // the form — scope the lookup to the card.
-    const card = form.closest('.card') || form.parentElement;
-    const out = card ? card.querySelector('.job-out') : null;
-    if (!out) {
-      alert('UI bug: could not find a .job-out element for preset '
-            + form.dataset.preset);
-      console.error('job-out element not found', { form, card });
-      return;
-    }
-
-    // ── Explicit confirmation before any SLURM submit goes to FASRC. ─────
-    // Same defence as the HST-pipeline form below: every submission
-    // must be a deliberate read-then-click flow with the full payload
-    // visible.
-    const fd = new FormData(form);
-    fd.set('preset', form.dataset.preset);
-    const summary = [];
-    for (const [k, v] of fd.entries()) {
-      if (v == null || v === '') continue;
-      summary.push(`  ${k} = ${v}`);
-    }
-    const msg =
-      `Submit a SLURM training job to FASRC?\n\n` +
-      `Preset: ${form.dataset.preset}\n\n` +
-      `Parameters:\n${summary.join('\n')}\n\n` +
-      `This will run on FASRC and consume real GPU resources. ` +
-      `Click OK to proceed, Cancel to abort.`;
-    if (!window.confirm(msg)) {
-      out.textContent = 'cancelled by user';
-      return;
-    }
-    // Explicit confirmation token — server rejects POSTs that lack it.
-    fd.set('confirm', 'yes');
-
-    out.style.display = 'block';
-    out.textContent = 'submitting…';
-    try {
-      const r = await fetch('/api/fasrc/submit', {
-        method: 'POST', body: new URLSearchParams(fd),
-      });
-      const data = await r.json();
-      console.log('[fasrc] /api/fasrc/submit response:', r.status, data);
-      if (data.ok) {
-        out.textContent =
-          `submitted: SLURM job ${data.jobid}\n` +
-          JSON.stringify(data.params, null, 2);
-        setTimeout(refreshTraining, 1200);
-      } else {
-        out.textContent = `error: ${data.error || 'unknown'}`;
-      }
-    } catch (err) {
-      console.error('[fasrc] submit failed:', err);
-      out.textContent = `request failed: ${err}`;
-    }
-  });
-});
-refreshTrainEta();
-
-async function refreshRecent() {
-  const { ok, data } = await api('/api/fasrc/jobs');
-  if (!ok || !data.jobs || data.jobs.length === 0) {
-    $('recent-jobs').innerHTML = '<p class="muted">no jobs submitted from this UI yet</p>';
-    return;
-  }
-  let html = '<table><tr><th>Job</th><th>State</th><th>Steps</th>'
-           + '<th>Submitted</th><th>Runtime</th><th></th></tr>';
-  for (const j of data.jobs.slice(0, 15)) {
-    let params = {}; try { params = JSON.parse(j.params_json || '{}'); } catch {}
-    const submitted = new Date(j.submitted_at * 1000).toLocaleString();
-    const runtime = (j.started_at && j.ended_at)
-      ? fmtSecs(j.ended_at - j.started_at)
-      : (j.started_at ? fmtSecs(Date.now()/1000 - j.started_at) + '…' : '');
-    html += `<tr>
-      <td><code>${escapeHtml(j.jobid)}</code></td>
-      <td>${escapeHtml(j.state)}</td>
-      <td>${j.progress_step||0}/${j.progress_total||params.steps||'?'}</td>
-      <td>${escapeHtml(submitted)}</td>
-      <td>${escapeHtml(runtime)}</td>
-      <td><button class="secondary" onclick="showStages('${j.jobid}')">Stages</button></td>
-    </tr>
-    <tr><td colspan="6" id="stages-${escapeHtml(j.jobid)}" style="padding:0;"></td></tr>`;
-  }
-  html += '</table>';
-  $('recent-jobs').innerHTML = html;
-}
-
-async function showStages(jobid) {
-  const slot = document.getElementById('stages-' + jobid);
-  if (!slot) return;
-  if (slot.dataset.shown === '1') {
-    slot.innerHTML = ''; slot.dataset.shown = '0'; return;
-  }
-  slot.innerHTML = '<em class="muted" style="padding:6px 8px;display:block;">loading stages…</em>';
-  const r = await fetch(`/api/fasrc/stages/${jobid}`);
-  const data = await r.json();
-  if (!data.ok || !data.rows || data.rows.length === 0) {
-    slot.innerHTML = `<em class="muted" style="padding:6px 8px;display:block;">no stages CSV yet at <code>${escapeHtml((data && data.path)||'?')}</code></em>`;
-    slot.dataset.shown = '1'; return;
-  }
-  const total = data.rows.reduce((a, r) => a + r.duration_seconds, 0) || 1;
-  let inner = '<div style="padding:6px 8px;background:#f3f5f8;"><table><tr>'
-           + '<th>Stage</th><th>Type</th><th>Duration</th><th>Share</th></tr>';
-  for (const r of data.rows) {
-    const share = (r.duration_seconds / total * 100).toFixed(1) + '%';
-    const kind  = r.params_dependent
-                ? '<span class="tag tag-warn">scales</span>'
-                : '<span class="tag tag-ok">fixed</span>';
-    inner += `<tr><td><code>${escapeHtml(r.stage)}</code></td><td>${kind}</td>
-              <td>${escapeHtml(fmtSecs(r.duration_seconds))}</td><td>${share}</td></tr>`;
-  }
-  inner += '</table></div>';
-  slot.innerHTML = inner;
-  slot.dataset.shown = '1';
-}
 
 /* ============================================================
    Git tab
@@ -1199,31 +997,6 @@ $('btn-ckpt-pull').onclick = async () => {
 };
 
 /* ============================================================
-   Mirror (status only; backend auto-manages enable/trigger)
-============================================================ */
-async function refreshMirror() {
-  const { data } = await api('/api/fasrc/mirror/status');
-  $('mirror-tag').textContent = data.enabled ? 'on' : 'off';
-  $('mirror-tag').className   = 'tag ' + (data.enabled ? 'tag-ok' : 'tag-warn');
-  $('mirror-local').textContent  = data.local_dir  || '—';
-  $('mirror-remote').textContent = data.remote_dir || '—';
-  if (data.last_run_at) {
-    const when = new Date(data.last_run_at * 1000).toLocaleTimeString();
-    const note = data.last_error ? ` · ${escapeHtml(data.last_error.slice(0,80))}` : '';
-    $('mirror-last').innerHTML = `${when} (rc=${data.last_rc})${note}`;
-    $('mirror-last').className = '';
-  }
-}
-$('btn-mirror-trigger').onclick = async () => {
-  await api('/api/fasrc/mirror/trigger', { method: 'POST' });
-  refreshMirror();
-};
-$('btn-mirror-stop').onclick = async () => {
-  await api('/api/fasrc/mirror/stop', { method: 'POST' });
-  refreshMirror();
-};
-
-/* ============================================================
    Initial load + periodic poll
 
    On first render: if already connected (e.g. ControlPersist is still
@@ -1246,7 +1019,7 @@ setInterval(refreshConnState, 6000);
 setInterval(() => {
   const activeTab = document.querySelector('.chip.active[data-tab]')?.dataset.tab;
   if (!activeTab) return;
-  if (activeTab === 'training') refreshTraining();
+  if (activeTab === 'current')  refreshCurrentSubmission();
   if (activeTab === 'storage')  refreshListings();
   // HST pipeline submissions live on their per-task pages now — no
   // tab to refresh here.

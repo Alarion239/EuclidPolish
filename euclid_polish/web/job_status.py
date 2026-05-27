@@ -65,11 +65,36 @@ class StepProgress:
 
 
 @dataclass(frozen=True)
+class StageEvent:
+    """One stage entry: when the script entered it + what it called it."""
+
+    ts:   float
+    name: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"ts": float(self.ts), "name": str(self.name)}
+
+
+@dataclass(frozen=True)
 class JobStatus:
     """Structured status of one job, derived from its events stream."""
 
     stage:        Optional[str]            = None
+    #: Full ordered history of stage transitions; the UI renders this
+    #: as a checklist with timestamps so the user can see what stages
+    #: ran before the current one. ``stage`` is the last entry's name
+    #: (or None when no stage event has been seen yet).
+    stages:       Tuple[StageEvent, ...]   = ()
     step:         Optional[StepProgress]   = None
+    #: Steps per wall-clock second within the *current* stage, computed
+    #: from the (current, ts) pairs the script has emitted since the
+    #: latest ``set_stage``. ``None`` when fewer than two step events
+    #: have arrived in this stage (rate is undefined).
+    step_rate_per_s: Optional[float]       = None
+    #: Estimated seconds until the current stage's ``step.total`` is
+    #: reached, at the current rate. ``None`` whenever
+    #: ``step_rate_per_s`` is ``None`` or ``total`` is missing/zero.
+    step_eta_s:    Optional[float]         = None
     warnings:     Tuple[Event, ...]        = ()
     errors:       Tuple[Event, ...]        = ()
     #: When the events file was last fetched (server clock). Lets the
@@ -82,12 +107,15 @@ class JobStatus:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "stage":        self.stage,
-            "step":         self.step.to_dict() if self.step else None,
-            "warnings":     [w.to_dict() for w in self.warnings],
-            "errors":       [e.to_dict() for e in self.errors],
-            "last_fetched": float(self.last_fetched),
-            "has_events":   bool(self.has_events),
+            "stage":           self.stage,
+            "stages":          [s.to_dict() for s in self.stages],
+            "step":            self.step.to_dict() if self.step else None,
+            "step_rate_per_s": self.step_rate_per_s,
+            "step_eta_s":      self.step_eta_s,
+            "warnings":        [w.to_dict() for w in self.warnings],
+            "errors":          [e.to_dict() for e in self.errors],
+            "last_fetched":    float(self.last_fetched),
+            "has_events":      bool(self.has_events),
         }
 
 
@@ -104,10 +132,17 @@ def fold_events(text: str) -> JobStatus:
     compatibility than 500 the status endpoint.
     """
     stage:     Optional[str]          = None
+    stages:    List[StageEvent]        = []
     step:      Optional[StepProgress] = None
     warnings:  List[Event]             = []
     errors:    List[Event]             = []
     saw_any    = False
+    #: Per-stage step history: list of (ts, current, total) tuples for
+    #: every step event since the latest ``stage`` event. Cleared on
+    #: every stage transition so rate/ETA only ever average inside the
+    #: current stage — a fast download stage's rate doesn't pollute the
+    #: ETA of a slow training stage that follows.
+    stage_step_history: List[Tuple[float, int, int]] = []
 
     for raw in text.splitlines():
         raw = raw.strip()
@@ -130,24 +165,50 @@ def fold_events(text: str) -> JobStatus:
 
         if kind == "stage" and isinstance(value, str):
             stage = value
+            stages.append(StageEvent(ts=ts_f, name=value))
+            # Reset per-stage step history — a new stage means we start
+            # measuring rate from its first step event.
+            stage_step_history = []
         elif kind == "step" and isinstance(value, dict):
             try:
+                cur = int(value.get("current", 0))
+                tot = int(value.get("total", 0))
                 step = StepProgress(
-                    current=int(value.get("current", 0)),
-                    total=int(value.get("total", 0)),
+                    current=cur,
+                    total=tot,
                     label=str(value.get("label", "")),
                 )
             except (TypeError, ValueError):
                 continue
+            stage_step_history.append((ts_f, cur, tot))
         elif kind == "warn" and isinstance(value, str):
             warnings.append(Event(ts=ts_f, msg=value))
         elif kind == "error" and isinstance(value, str):
             errors.append(Event(ts=ts_f, msg=value))
         # Unknown kinds are silently dropped — forward compatibility.
 
+    # Rate + ETA from steps within the *current* stage. We need at
+    # least two points spanning real wall time and real progress to
+    # avoid division-by-zero / negative ETAs from clock skew or
+    # rewound counters.
+    step_rate_per_s: Optional[float] = None
+    step_eta_s:      Optional[float] = None
+    if len(stage_step_history) >= 2:
+        first_ts, first_cur, _ = stage_step_history[0]
+        last_ts,  last_cur, last_tot = stage_step_history[-1]
+        dt = last_ts - first_ts
+        dn = last_cur - first_cur
+        if dt > 0 and dn > 0 and last_tot > 0:
+            step_rate_per_s = float(dn) / float(dt)
+            remaining = max(0, last_tot - last_cur)
+            step_eta_s = remaining / step_rate_per_s
+
     return JobStatus(
         stage=stage,
+        stages=tuple(stages),
         step=step,
+        step_rate_per_s=step_rate_per_s,
+        step_eta_s=step_eta_s,
         warnings=tuple(warnings),
         errors=tuple(errors),
         last_fetched=time.time(),

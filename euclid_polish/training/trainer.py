@@ -138,6 +138,8 @@ class Trainer:
         evaluate_every=1000,
         save_best_only=True,
         validate_images=Config.DEFAULT_VALIDATE_IMAGES,
+        step_callback=None,
+        step_callback_every=50,
     ):
         """
         Train the model.
@@ -156,6 +158,17 @@ class Trainer:
             Only save checkpoints when PSNR (stretched) improves.
         validate_images : int
             Max number of validation images to evaluate on during training.
+        step_callback : Optional[Callable[[int, int], None]]
+            Called as ``step_callback(current_step, total_steps)`` every
+            ``step_callback_every`` steps. Used to feed an external
+            progress reporter (e.g. the JSONL events file the FASRC
+            scripts write via :class:`Reporter`) without coupling the
+            trainer to it. ``None`` (default) → no callback.
+        step_callback_every : int
+            Cadence of ``step_callback`` invocations. 50 keeps the
+            JSONL events file small on a 200k-step run (~4k lines) while
+            still updating the UI's progress bar every ~5 s of wall
+            time at typical step rates.
         """
         loss_mean = Mean()
         gnorm_mean = Mean()
@@ -203,6 +216,17 @@ class Trainer:
 
             if step % 50 == 0:
                 pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
+
+            # External progress callback (e.g. the JSONL events file).
+            # Cadence-gated so a 200k-step run doesn't write 200k JSONL
+            # lines; the first step always fires so "did training start?"
+            # is answerable immediately. ``int(step)`` because tf returns
+            # a numpy int64 here and the callback's typed contract is
+            # plain Python int.
+            if step_callback is not None and (
+                step == start_step + 1 or step % step_callback_every == 0
+            ):
+                step_callback(int(step), int(steps))
 
             if step % evaluate_every == 0:
                 loss_value  = loss_mean.result()

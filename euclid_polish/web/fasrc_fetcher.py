@@ -382,15 +382,20 @@ def list_remote_dir(
     *,
     glob_pattern: str = "*",
     max_entries: int = 500,
+    max_depth: int = 1,
 ) -> Tuple[bool, List[Dict[str, object]], Optional[str]]:
     """List one remote directory via ``find`` over the existing SSH session.
 
     Returns ``(ok, entries, error)`` where each entry is
     ``{"name": ..., "size": int, "mtime": float}``.
 
-    Never recurses by default (``-maxdepth 1``) — large recursive walks
-    on a shared login node would be discourteous and slow. Cap of
-    ``max_entries`` to keep the response payload bounded.
+    Defaults to ``max_depth=1`` so the listing is fast on a shared
+    login node. Callers that need to see in-progress downloads stranded
+    under a scratch subdirectory (e.g. ``mastDownload/HLSP/<id>/<file>``
+    before the flatten step runs) can pass a larger depth. The caller
+    is responsible for de-duplicating by basename when raising the
+    depth, because the same logical file can briefly exist at both
+    nested and flat layouts during a partial flatten.
     """
     if not is_allowed_remote_path(remote_dir):
         return False, [], f"path not under allowed FASRC roots: {remote_dir}"
@@ -399,7 +404,7 @@ def list_remote_dir(
 
     # find ... -printf '%f|%s|%T@\n'  → name | size | mtime
     cmd = (
-        f"find {shlex.quote(remote_dir)} -maxdepth 1 -type f "
+        f"find {shlex.quote(remote_dir)} -maxdepth {int(max_depth)} -type f "
         f"-name {shlex.quote(glob_pattern)} "
         f"-printf '%f|%s|%T@\\n' | head -n {int(max_entries)}"
     )

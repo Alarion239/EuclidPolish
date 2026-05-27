@@ -132,15 +132,29 @@ class TestStderrEcho:
         _, err = capfd.readouterr()
         assert "ERROR: kaboom" in err
 
-    def test_step_is_silent_on_stderr(self, events_file, capfd):
-        """Step is high-frequency; echoing every step would flood the
-        raw log. Scripts that want a raw progress bar should keep tqdm
-        alongside the Reporter call."""
+    def test_step_echo_is_rate_limited(self, events_file, capfd):
+        """``set_step`` echoes once on the first call (so a quick "did
+        the loop start?" check works without a 30 s pause), then stays
+        quiet until ``STEP_ECHO_INTERVAL_S`` has elapsed. A tight 100-
+        iteration loop should produce exactly one ``STEP:`` line on
+        stderr while still appending all 100 events to the JSONL.
+        """
         r = Reporter(events_path=str(events_file))
         for i in range(100):
-            r.set_step(i, 100)
+            r.set_step(i, 100, label="train")
         _, err = capfd.readouterr()
-        assert err == ""
+        # Exactly one echo (the first one) — the next is gated by
+        # ``STEP_ECHO_INTERVAL_S`` (30 s) which the loop won't outrun.
+        step_lines = [ln for ln in err.splitlines() if ln.startswith("STEP:")]
+        assert len(step_lines) == 1
+        # And the echoed line carries the count, percentage, and label.
+        assert "0/100" in step_lines[0] or "1/100" in step_lines[0]
+        assert "train" in step_lines[0]
+        # The JSONL file still got every event — the rate-limit is on
+        # the echo, not on the structured stream.
+        with open(events_file) as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        assert len(lines) == 100
 
 
 # ---------------------------------------------------------------------------

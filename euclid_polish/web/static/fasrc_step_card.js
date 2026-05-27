@@ -82,30 +82,6 @@
         return `
           <label>Wiener regularisation
             <input type="number" name="regularisation" value="0.001" step="any" min="0"></label>`;
-      case 'transition_pairs':
-        return `
-          <label>Training pairs
-            <input type="number" name="n_train" value="4000" min="100" max="50000"
-                   title="Capped by clean_train.tfrecord size; pairs are emitted in
-order. Each pair is one HR input (~256² × float32) and one LR target
-(~128² × float32 at rebin=2)."></label>
-          <label>Validation pairs
-            <input type="number" name="n_valid" value="400" min="20" max="5000"></label>
-          <label>Crop size (HR px)
-            <input type="number" name="crop_size" value="256" step="2" min="64" max="512"
-                   title="Centre-crop each clean scene to this size before
-convolving. Must be divisible by rebin_factor."></label>
-          <label>Rebin factor
-            <input type="number" name="rebin_factor" value="2" min="1" max="8"
-                   title="Sum-rebin applied to the Euclid-blurred target before
-writing to disk. Default 2 matches Euclid HR→LR (0.05\"/pix → 0.10\"/pix).
-The trainer compares sum_rebin(A_θ(input)) against this LR target, so the
-model only has to be correct at LR — high-freq spike-mismatch residuals
-get averaged away."></label>`;
-      case 'train_transition':
-        return _trainTransitionFields();
-      case 'train_denoiser':
-        return _trainDenoiserFields();
       case 'tfrecords':
         return _tfrecordsFields();
       case 'euclid_sky_download':
@@ -140,6 +116,10 @@ large cutout don't leak across train/validate."></label>`;
   }
 
   function _tfrecordsFields() {
+    // Analytic-A forward model is single-stamp, CPU-only — no GPU, no
+    // batch_size knob. The script convolves one HR cube at a time and
+    // appends to the output TFRecord. ``max_relative_noise`` is the
+    // bright-stamp-rejection threshold (√S_max · |A|_peak > k · σ_LR).
     return `
       <label>Train scenes
         <input type="number" name="n_train" value="2000" min="100" max="50000"></label>
@@ -147,8 +127,9 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="n_valid" value="200" min="20" max="5000"></label>
       <label>Image size
         <input type="number" name="image_size" value="510" step="2" min="64" max="2048"></label>
-      <label>Batch size
-        <input type="number" name="batch_size" value="16" min="1" max="64"></label>`;
+      <label>Max relative noise (k)
+        <input type="number" name="max_relative_noise" value="5.0" step="0.5" min="0.5" max="50"
+               title="Reject a stamp when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection (fewer stars sneak in); larger k → more stamps kept. Default 5."></label>`;
   }
 
   function _hstTrainFields() {
@@ -161,74 +142,6 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"></label>
       <label>Round-trip fraction
         <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"></label>`;
-  }
-
-  function _trainTransitionFields() {
-    return `
-      <label>Training steps
-        <input type="number" name="steps" value="20000" min="1000" max="200000"></label>
-      <label>Batch size
-        <input type="number" name="batch_size" value="8" min="1" max="64"></label>
-      <label>Learning rate
-        <input type="number" name="learning_rate" value="0.002" step="any" min="1e-6" max="0.1"></label>
-      <label>Hidden channels (C)
-        <input type="number" name="channels" value="12" min="1" max="256"></label>
-      <label>Inner layers
-        <input type="number" name="n_inner_layers" value="3" min="0" max="6"></label>
-      <label>Kernel size (K)
-        <input type="number" name="kernel_size" value="3" min="1" max="51" step="2"></label>
-      <label>Max params
-        <input type="number" name="max_params" value="5000" min="100" max="1000000"></label>
-      <label>Analytic baseline kernel
-        <input type="text" name="analytic_baseline_kernel" value="" size="40"
-               placeholder="(empty = identity residual)"></label>
-      <label>Baseline crop (px)
-        <input type="number" name="baseline_crop" value="0" min="0" max="511" step="2"></label>
-      <label>Star-injection fraction
-        <input type="number" name="star_injection_fraction" value="0.2" step="0.05" min="0" max="1"></label>
-      <label>Max stars/image
-        <input type="number" name="max_stars_per_image" value="8" min="1" max="64"></label>
-      <label>Linear-combo fraction
-        <input type="number" name="linear_combo_fraction" value="0.3" step="0.05" min="0" max="1"></label>
-      <label>Rebin factor
-        <input type="number" name="rebin_factor" value="2" min="1" max="8"></label>
-      <label>Frozen denoiser (Phase 2)
-        <input type="text" name="frozen_denoiser" value="" size="40"
-               placeholder="(empty = single-stage; legacy)"></label>
-      <label>Noise α min (shot)
-        <input type="number" name="alpha_min" value="0" step="any" min="0" max="10"></label>
-      <label>Noise α max
-        <input type="number" name="alpha_max" value="0" step="any" min="0" max="10"></label>
-      <label>Noise σ_floor min (e⁻)
-        <input type="number" name="sigma_floor_min" value="0" step="any" min="0" max="200"></label>
-      <label>Noise σ_floor max (e⁻)
-        <input type="number" name="sigma_floor_max" value="0" step="any" min="0" max="200"></label>`;
-  }
-
-  function _trainDenoiserFields() {
-    return `
-      <label>Training steps
-        <input type="number" name="steps" value="20000" min="1000" max="200000"></label>
-      <label>Batch size
-        <input type="number" name="batch_size" value="8" min="1" max="64"></label>
-      <label>Learning rate
-        <input type="number" name="learning_rate" value="0.002" step="any" min="1e-6" max="0.1"></label>
-      <label>Hidden channels (C)
-        <input type="number" name="channels" value="8" min="1" max="64"></label>
-      <label>Inner layers
-        <input type="number" name="n_inner_layers" value="2" min="0" max="6"></label>
-      <label>Kernel size (K)
-        <input type="number" name="kernel_size" value="7" min="3" max="31" step="2"></label>
-      <label>Max params
-        <input type="number" name="max_params" value="10000" min="100" max="1000000"></label>
-      <label>Noise α min (shot)
-        <input type="number" name="alpha_min" value="0.5" step="any" min="0" max="10"></label>
-      <label>Noise α max
-        <input type="number" name="alpha_max" value="2.0" step="any" min="0" max="10"></label>
-      <label>Noise σ_floor min (e⁻)
-        <input type="number" name="sigma_floor_min" value="8" step="any" min="0" max="200"></label>
-      <label>Noise σ_floor max (e⁻)
-        <input type="number" name="sigma_floor_max" value="32" step="any" min="0" max="200"></label>`;
   }
 
   // ── Resource-field markup ──────────────────────────────────────────
@@ -245,15 +158,21 @@ large cutout don't leak across train/validate."></label>`;
       : `<label>CPUs
           <input type="number" name="n_cpus" min="1" max="64"
                  placeholder="e.g. ${d.n_cpus}"></label>`;
+    // GPU field is hidden + locked to 0 for CPU-only steps. The form
+    // still emits ``n_gpus=0`` via a hidden input so StepResources.from
+    // _form_strict doesn't reject the submission for the missing field.
+    const gpuField = step.needs_gpu
+      ? `<label>GPUs
+          <input type="number" name="n_gpus" min="0" max="8"
+                 placeholder="e.g. ${d.n_gpus}"></label>`
+      : `<input type="hidden" name="n_gpus" value="0">
+         <span class="muted" title="this step is CPU-only">GPUs: <b>0</b> (locked)</span>`;
     return `
       <label>Partition
         <input type="text" name="partition" size="8"
                placeholder="e.g. ${d.partition}"></label>
       ${cpuField}
-      <label>GPUs
-        <input type="number" name="n_gpus" min="0" max="8"
-               placeholder="e.g. ${d.n_gpus}"
-               ${step.needs_gpu ? '' : 'title="this step does not need a GPU"'}></label>
+      ${gpuField}
       <label>Memory
         <input type="text" name="memory" size="6"
                placeholder="e.g. ${d.memory}"></label>
@@ -270,9 +189,6 @@ large cutout don't leak across train/validate."></label>`;
     // Map step id → which artifact existence this step PRODUCES.
     const produces = {
       download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
-      transition_pairs: 'transition_pairs',
-      train_denoiser: 'denoiser',
-      train_transition: 'transition_model',
       tfrecords: 'records', train: 'ckpt',
       euclid_sky_download: 'euclid_sky',
       euclid_roundtrip_tfrecords: 'roundtrip_records',

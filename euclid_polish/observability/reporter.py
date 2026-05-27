@@ -62,12 +62,24 @@ class Reporter:
     raw progress bar should keep their existing ``tqdm`` alongside.
     """
 
+    #: Minimum wall-clock gap (seconds) between two ``set_step`` stderr
+    #: echoes. Every call still writes to the JSONL events file; the
+    #: rate-limit is only on the human-readable echo so a 200k-step
+    #: training loop doesn't flood ``.err``. 30 s gives roughly one
+    #: line per minute on a typical job and is short enough to spot a
+    #: stalled loop within a coffee.
+    STEP_ECHO_INTERVAL_S: float = 30.0
+
     def __init__(self, events_path: Optional[str] = None) -> None:
         self.events_path = events_path
         # Guard concurrent threaded writers in the same process.
         # Multi-process writers don't need this; ``O_APPEND`` gives
         # kernel-level line atomicity for writes under PIPE_BUF.
         self._lock = threading.Lock()
+        # Wall-clock of the last echoed step line; the first call always
+        # echoes so a quick "did the loop start?" check works without a
+        # 30 s pause.
+        self._last_step_echo_ts: float = 0.0
 
     # ------------------------------------------------------------------
     # Construction
@@ -100,14 +112,34 @@ class Reporter:
         """Record fine-grained progress within the current stage.
 
         ``current`` / ``total`` feed the UI progress bar; ``label`` is
-        an optional short string for the current item. Silent on
-        stderr by design — call sites are typically inside a loop.
+        an optional short string for the current item. Every call
+        appends to the JSONL events stream so the UI's poll sees the
+        latest number; stderr echo is rate-limited to one line per
+        :attr:`STEP_ECHO_INTERVAL_S` so a tight loop doesn't flood
+        ``.err``. The first call inside a stage always echoes so a
+        quick "did the loop actually start?" check works immediately.
         """
+        cur_i = int(current)
+        tot_i = int(total)
+        lbl_s = str(label)
         self._emit("step", {
-            "current": int(current),
-            "total":   int(total),
-            "label":   str(label),
+            "current": cur_i,
+            "total":   tot_i,
+            "label":   lbl_s,
         }, echo=False)
+
+        # Rate-limited human-readable echo to ``.err``. The first echo
+        # fires unconditionally (``_last_step_echo_ts`` starts at 0); the
+        # next one waits ``STEP_ECHO_INTERVAL_S`` seconds.
+        now = time.time()
+        if (now - self._last_step_echo_ts) >= self.STEP_ECHO_INTERVAL_S:
+            pct = (100.0 * cur_i / tot_i) if tot_i > 0 else 0.0
+            tag = f" {lbl_s}" if lbl_s else ""
+            print(
+                f"STEP: {cur_i:,}/{tot_i:,} ({pct:.1f}%){tag}",
+                file=sys.stderr, flush=True,
+            )
+            self._last_step_echo_ts = now
 
     def warn(self, msg: str) -> None:
         """Append a warning to the structured stream and to stderr."""

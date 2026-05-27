@@ -163,10 +163,15 @@ def main() -> int:
           f"{sum(int(np.prod(v.shape)) for v in model.trainable_variables):,}")
     reporter.set_stage(f"training {args.steps} steps")
     print(f"\n  training {args.steps} steps ...")
+
+    def _on_train_step(step: int, total: int) -> None:
+        reporter.set_step(step, total, "train")
+
     trainer.train(
         train_dataset, valid_dataset, steps=int(args.steps),
         evaluate_every=int(args.evaluate_every),
         save_best_only=True,
+        step_callback=_on_train_step,
     )
 
     runtime = time.time() - t0

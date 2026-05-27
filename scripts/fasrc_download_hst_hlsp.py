@@ -6,8 +6,14 @@ This script is meant to run on a FASRC compute node via sbatch (see
 runnable locally for testing — provide ``--dry-run`` to skip actual
 downloads.
 
-Source data: COSMOS HST/ACS-WFC F814W mosaic v1.3, 9×9 tile grid,
-~1.9 GB per tile.
+Source data: COSMOS HST/ACS-WFC F814W mosaic v1.3, **49 per-tile entries**
+in the MAST HLSP collection, ~1.9 GB per tile. The grid isn't a contiguous
+9×9 — MAST returns 49 per-tile rows whose ``obs_id`` matches the regex
+``acs-wfc_mosaic-`` followed by a digit (e.g. ``...mosaic-3-6_f814w_v1.3_img``). The catalog
+also contains a combined ``...mosaic_f814w_rlw_img`` covering the whole
+field as one tens-of-GB FITS — the filter excludes it, since downloading
+the combined product is both slow and useless for the per-tile WCS lookup
+the pair generator does.
 
 Output layout::
 
@@ -23,10 +29,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
 import time
-
-import shutil
 from astroquery.mast import Observations
 from astropy.table import Table
 
@@ -83,8 +89,11 @@ def _flatten_mast_download_dir(out_dir: str) -> int:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--n-tiles", type=int, default=25,
-                   help="Number of tiles to download (max 81). Tiles are "
-                        "ordered by central RA/Dec and the first N are taken.")
+                   help="Number of tiles to download. MAST has 49 per-tile "
+                        "rows in the COSMOS F814W v1.3 collection (the "
+                        "combined-mosaic row is filtered out); requesting "
+                        "more than 49 clamps to 49. Tiles are ordered by "
+                        "obs_id and the first N are taken.")
     p.add_argument("--output-dir", default=None,
                    help="Override the default $DATA_DIR/hst_hlsp/ location.")
     p.add_argument("--dry-run", action="store_true",
@@ -139,10 +148,19 @@ def main() -> int:
         target_name=TARGET_NAME,
         filters=FILTER,
     )
-    # Keep only mosaic tile entries (skip individual-source HLSP rows).
-    mask = ["acs-wfc_mosaic" in str(r["obs_id"]) for r in obs]
+    # Keep only per-tile v1.3 mosaics — entries named
+    # ``hlsp_cosmos_hst_acs-wfc_mosaic-<X>-<Y>_f814w_v1.3_img``. The
+    # raw catalog also contains the **combined** RLW mosaic
+    # (``...acs-wfc_mosaic_f814w_rlw_img``, the entire COSMOS field
+    # in one tens-of-GB FITS) which has no ``-X-Y`` grid suffix; that
+    # one is useless for our WCS-indexed tile lookup and downloading
+    # it gets the job killed at the wall-time limit. The regex
+    # requires the literal ``acs-wfc_mosaic-`` prefix followed by a
+    # digit so it matches the per-tile names exclusively.
+    mosaic_tile_re = re.compile(r"acs-wfc_mosaic-\d")
+    mask = [bool(mosaic_tile_re.search(str(r["obs_id"]))) for r in obs]
     obs = obs[mask]
-    print(f"      found {len(obs)} mosaic tiles in MAST")
+    print(f"      found {len(obs)} per-tile mosaics in MAST")
 
     if len(obs) == 0:
         reporter.error("no COSMOS HLSP tiles found — MAST query returned empty")
@@ -184,18 +202,29 @@ def main() -> int:
         return 0
 
     reporter.set_stage("downloading (this can take a while)")
-    print("[3/3] downloading (this can take a while) ...")
+    print(f"[3/3] downloading {len(pending)} tile(s) ...")
     if pending:
+        # Per-tile loop so we can emit progress between files. astroquery's
+        # bulk ``download_products`` is opaque (one call, all-or-nothing
+        # progress), and a single 1.9 GB tile is small enough that the
+        # extra HTTPS handshake per call is negligible. The price is the
+        # call-per-tile overhead; the win is live progress + the ability
+        # to swap in a ThreadPoolExecutor here later for parallel pulls.
         try:
-            Observations.download_products(
-                Table(rows=pending), download_dir=out_dir,
-                cache=True, mrp_only=False,
-            )
+            for i, row in enumerate(pending, start=1):
+                fname = str(row["productFilename"])
+                reporter.set_step(i, len(pending), label=fname)
+                print(f"  [{i}/{len(pending)}] {fname}  "
+                      f"({float(row['size']) / 1e6:.0f} MB)")
+                Observations.download_products(
+                    Table(rows=[row]), download_dir=out_dir,
+                    cache=True, mrp_only=False,
+                )
         finally:
-            # Always flatten — even if download_products raised partway
-            # through, anything it managed to write is rescued into the
-            # flat layout. This keeps the on-disk state consistent across
-            # crashes.
+            # Always flatten — even if a download raised partway
+            # through, anything that landed gets rescued into the
+            # flat layout. Keeps the on-disk state consistent across
+            # crashes / SLURM kills.
             moved = _flatten_mast_download_dir(out_dir)
             print(f"  flattened {moved} file(s) into {out_dir}/")
 
