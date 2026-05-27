@@ -2462,6 +2462,61 @@ def create_app() -> Flask:
                                default_n_valid=4,
                                default_lens_density=Config.LENS_DENSITY_ARCMIN2)
 
+    @app.route("/roundtrip")
+    def roundtrip_page():
+        """Dedicated page for the round-trip self-supervised pipeline.
+
+        Mounts the three FASRC steps that build and use the real-Euclid
+        round-trip records (download cutouts, chop into TFRecords, train
+        the WDSR with the round-trip mix). The viz column shows a live
+        disk-state summary so the user can see at a glance whether each
+        step has produced its output yet.
+        """
+        cfg_loaded = fasrc_config.load()
+        cutouts_dir = f"{cfg_loaded.data_dir}/euclid_sky/cutouts"
+        records_dir = f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip"
+
+        # Per-band cutout summary — one ``find`` per band, batched into a
+        # single SSH round-trip via list_remote_dir. SSH may be down on
+        # this page render (the connection gate is downstream); the
+        # helper returns ok=False quietly and we just show "no cutouts
+        # yet" in that case.
+        cutouts_summary: List[Dict[str, Any]] = []
+        for band_name in Config.LR_INPUT_BAND_NAMES:
+            band_dir = f"{cutouts_dir}/{band_name}"
+            ok, entries, _ = list_remote_dir(
+                band_dir, glob_pattern="*.fits", max_entries=100_000,
+            )
+            if not ok or not entries:
+                continue
+            n = len(entries)
+            size_gb = sum(int(e.get("size", 0)) for e in entries) / 1e9
+            cutouts_summary.append({
+                "band":    band_name,
+                "n":       n,
+                "size_gb": f"{size_gb:.2f}",
+            })
+
+        # Round-trip TFRecord listing — one shallow ls.
+        tfrecords: List[Dict[str, Any]] = []
+        ok, entries, _ = list_remote_dir(
+            records_dir, glob_pattern="*.tfrecord", max_entries=20,
+        )
+        if ok:
+            for e in sorted(entries, key=lambda r: str(r.get("name", ""))):
+                tfrecords.append({
+                    "name":    e["name"],
+                    "size_gb": f"{int(e.get('size', 0)) / 1e9:.2f}",
+                })
+
+        return render_template(
+            "roundtrip.html",
+            cutouts_dir=cutouts_dir,
+            records_dir=records_dir,
+            cutouts_summary=cutouts_summary,
+            tfrecords=tfrecords,
+        )
+
     @app.route("/sky/generate", methods=["POST"])
     def sky_generate():
         n_train = int(request.form.get("n_train", 20))

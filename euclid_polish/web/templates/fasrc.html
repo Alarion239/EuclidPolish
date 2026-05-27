@@ -505,6 +505,36 @@ function _fmtIsoLocal(epoch) {
   } catch { return '—'; }
 }
 
+// Render SLURM's wall-time string with a humanised duration alongside.
+// The colon-count gotcha (``30:00:00`` is 30 HOURS, not 30 minutes)
+// bites every couple of weeks; printing "1-06:00:00 (30h 0m)" makes
+// the user catch the mistake at a glance before the job runs.
+function _humanizeSlurmTime(s) {
+  if (!s) return '—';
+  s = String(s).trim();
+  if (!s || s === 'UNLIMITED' || s === 'N/A' || s === '(null)') return s || '—';
+  // Parse SLURM's `[D-]HH:MM:SS` or `MM:SS` or `MM`. ``MM`` alone is
+  // legal SLURM (e.g. "30" → 30 minutes); ``MM:SS`` is the form the
+  // step-card placeholder uses with two-digit minutes.
+  let days = 0, hh = 0, mm = 0, ss = 0;
+  let body = s;
+  if (body.includes('-')) {
+    const [d, rest] = body.split('-', 2);
+    days = parseInt(d, 10) || 0;
+    body = rest;
+  }
+  const parts = body.split(':').map(p => parseInt(p, 10) || 0);
+  if (parts.length === 3)        { [hh, mm, ss] = parts; }
+  else if (parts.length === 2)   { [mm, ss]      = parts; }
+  else if (parts.length === 1)   { mm = parts[0]; }
+  const totalMin = days * 1440 + hh * 60 + mm + Math.round(ss / 60);
+  let pretty;
+  if (totalMin < 60)        pretty = `${totalMin} min`;
+  else if (totalMin < 1440) pretty = `${Math.floor(totalMin/60)}h ${totalMin%60}m`;
+  else                      pretty = `${Math.floor(totalMin/1440)}d ${Math.floor((totalMin%1440)/60)}h`;
+  return `${s} (${pretty})`;
+}
+
 async function refreshCurrentSubmission() {
   const r = await api('/api/fasrc/current-submission');
   if (!r.ok) {
@@ -537,7 +567,10 @@ async function refreshCurrentSubmission() {
   $('cs-node').textContent    = job.nodes || job.node || job.nodelist || '—';
   $('cs-elapsed').textContent = job.time || job.elapsed
     || (job.started_at ? fmtSecs(Date.now()/1000 - job.started_at) : '—');
-  $('cs-limit').textContent   = job.time_limit || '—';
+  // Show raw SLURM time + humanised duration so a "30:00:00 = 30 h"
+  // typo (a common mix-up with sbatch's HH:MM:SS format) stares back
+  // at the user instead of hiding behind colons.
+  $('cs-limit').textContent   = _humanizeSlurmTime(job.time_limit);
   $('cs-started').textContent = _fmtIsoLocal(job.started_at);
 
   // PENDING-only fields: SLURM's estimated start time + the reason it

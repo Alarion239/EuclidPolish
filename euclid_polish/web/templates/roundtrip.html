@@ -1,0 +1,122 @@
+{% extends "base_split.html" %}
+{% block title %}Round-trip · EuclidPolish{% endblock %}
+{% block heading %}Round-trip self-supervised training{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label muted">
+    Three FASRC steps form the round-trip pipeline. Run them in order.
+    Each card submits an sbatch job; progress streams through the
+    <a href="/fasrc">Current Submission</a> tab.
+  </span>
+</div>
+{% endblock %}
+
+{% block viz %}
+<section class="card">
+  <h3>What is round-trip training?</h3>
+  <p class="hint">
+    Self-supervised loss using real Euclid LR cutouts — no HR ground
+    truth required. The model <code>M</code> is asked to super-resolve
+    a real Euclid stamp, the output is pushed back through the VIS PSF
+    + 2× sum-rebin (the deterministic forward operator
+    <code>EuclidVISForwardOp</code>), and the asinh-stretched recon is
+    compared to the asinh-stretched original LR:
+  </p>
+  <p class="hint" style="font-family: monospace; margin-top: 4px;">
+    loss = | asinh(Conv(M(lr)) / k) − asinh(lr_VIS / k) |
+  </p>
+  <p class="hint">
+    Mixed into the WDSR training batch via <code>--roundtrip-fraction</code>.
+    Synthetic + HST + round-trip records get blended per batch; the
+    trainer's source tag routes each example to the right loss.
+  </p>
+</section>
+
+<section class="card">
+  <h3>Step 1 artifacts — Euclid cutouts on disk</h3>
+  <p class="hint">
+    Lives on FASRC at <code>{{ cutouts_dir }}</code>. Each band has its own
+    subdir; positions that fell off the Euclid survey footprint silently
+    drop out at the mosaic-lookup step.
+  </p>
+  {% if cutouts_summary %}
+    <table>
+      <tr><th>Band</th><th style="text-align:right;">Cutouts</th><th style="text-align:right;">Size</th></tr>
+      {% for row in cutouts_summary %}
+        <tr>
+          <td><code>{{ row.band }}</code></td>
+          <td style="text-align:right;">{{ row.n }}</td>
+          <td style="text-align:right;">{{ row.size_gb }} GB</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">no cutouts yet — submit step 1 below.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Step 2 artifacts — round-trip TFRecords</h3>
+  <p class="hint">
+    Lives on FASRC at <code>{{ records_dir }}</code>. LR-only by design
+    (no HR target); each record carries <code>VIS + Y_E + J_E + H_E</code>
+    on the shared 0.10″/pix Euclid archive grid.
+  </p>
+  {% if tfrecords %}
+    <table>
+      <tr><th>File</th><th style="text-align:right;">Size</th></tr>
+      {% for f in tfrecords %}
+        <tr>
+          <td><code>{{ f.name }}</code></td>
+          <td style="text-align:right;">{{ f.size_gb }} GB</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">no TFRecords yet — submit step 2 below.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Step 1 · Download Euclid sky cutouts</h3>
+  <p class="hint">
+    Sample <em>N</em> random positions inside a sky disk and pull 4-band
+    Euclid cutouts (VIS + NIR Y/J/H) from the SAS. Cutouts land under
+    <code>$DATA_DIR/euclid_sky/cutouts/&lt;band&gt;/</code>. Position
+    catalogue at <code>$DATA_DIR/euclid_sky/stars.csv</code>. Idempotent
+    — already-downloaded files are skipped on re-submit.
+  </p>
+  {% with step_id="euclid_sky_download" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h3>Step 2 · Stack &amp; chop into round-trip TFRecords</h3>
+  <p class="hint">
+    Reads the per-band cutouts from step 1, stacks them into 4-channel
+    cubes, chops each cube into <code>stamp_size</code>² LR stamps,
+    multiplies pixel values by per-band <code>t_total_s</code> to convert
+    archive e⁻/s → total electrons (so the units match the synthetic +
+    HST records), and writes <code>dirty_train.tfrecord</code> +
+    <code>dirty_validate.tfrecord</code>.
+  </p>
+  {% with step_id="euclid_roundtrip_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h3>Step 3 · Train WDSR with round-trip mix</h3>
+  <p class="hint">
+    Submit the WDSR trainer. The same card lives on
+    <a href="/training">Training</a>; set
+    <code>roundtrip_fraction</code> &gt; 0 (e.g. 0.10–0.30) to mix the
+    LR-only stamps from step 2 into each batch. The trainer instantiates
+    <code>EuclidVISForwardOp(rebin_factor=2)</code> and routes per-example
+    loss off the source tag — supervised L1 for synthetic/HST examples,
+    asinh-space round-trip recon loss for the real-Euclid ones.
+    Progress (stage + step + ETA) streams to the FASRC tab.
+  </p>
+  {% with step_id="train" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+{% endblock %}

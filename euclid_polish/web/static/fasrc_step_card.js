@@ -85,15 +85,28 @@
       case 'tfrecords':
         return _tfrecordsFields();
       case 'euclid_sky_download':
+        // Field names mirror the EuclidSkyDownloadStep.build_command
+        // params (n_positions, vis_pixels, ra_centre, dec_centre,
+        // radius_deg). RA/Dec defaults point at EDF-N (the field with
+        // Q1 coverage); the script uniformly samples ``n_positions``
+        // points inside the cos-Dec-corrected disk, then pulls one
+        // 4-band cutout per surviving position from the Euclid SAS.
         return `
-          <label>RA (deg)
-            <input type="number" name="ra" value="150.0" step="any" min="0" max="360"></label>
-          <label>Dec (deg)
-            <input type="number" name="dec" value="2.0" step="any" min="-90" max="90"></label>
+          <label>N positions
+            <input type="number" name="n_positions" value="200" min="1" max="5000"
+                   title="How many random sky positions to draw inside the disk. Positions outside Euclid coverage are silently dropped at mosaic-lookup time, so the final cutout count is typically &lt; this."></label>
+          <label>VIS cutout (px)
+            <input type="number" name="vis_pixels" value="512" min="64" max="4096" step="32"
+                   title="Side length of the VIS cutout in 0.10″/pix Euclid pixels. NIR cutouts are sized to match the same angular footprint."></label>
+          <label>RA centre (deg)
+            <input type="number" name="ra_centre" value="270.0" step="any" min="0" max="360"
+                   title="Disk centre in ICRS degrees. Default 270° = EDF-N (matches Euclid Q1 coverage)."></label>
+          <label>Dec centre (deg)
+            <input type="number" name="dec_centre" value="66.0" step="any" min="-90" max="90"
+                   title="Default +66° = EDF-N."></label>
           <label>Radius (deg)
-            <input type="number" name="radius_deg" value="0.5" step="any" min="0.01" max="5"></label>
-          <label>Max tiles
-            <input type="number" name="max_tiles" value="10" min="1" max="100"></label>`;
+            <input type="number" name="radius_deg" value="2.0" step="any" min="0.01" max="10"
+                   title="Disk radius around (RA, Dec). 2° covers most of the contiguous EDF-N tile grid."></label>`;
       case 'euclid_roundtrip_tfrecords':
         return `
           <label>Max records
@@ -179,7 +192,12 @@ large cutout don't leak across train/validate."></label>`;
       <label>Wall time
         <input type="text" name="time_limit" size="9"
                placeholder="e.g. ${d.time_limit}"
-               title="HH:MM:SS or D-HH:MM:SS"></label>`;
+               title="SLURM time format:
+  30          → 30 minutes
+  30:00       → 30 min 0 sec
+  0:30:00     → 0 hr 30 min
+  30:00:00    → 30 HOURS (not minutes!)
+  1-06:00:00  → 1 day 6 hr"></label>`;
   }
 
   // ── Card markup ────────────────────────────────────────────────────
