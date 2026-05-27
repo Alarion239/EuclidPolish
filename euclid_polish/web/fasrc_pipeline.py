@@ -442,185 +442,18 @@ class DifferentialKernelStep(FASRCPipelineStep):
         ]
 
 
-class TransitionPairsStep(FASRCPipelineStep):
-    def __init__(self):
-        super().__init__(
-            step_id="transition_pairs",
-            label="3a. Generate transition-model training pairs",
-            description=(
-                "Take the synthetic clean HR scenes (from "
-                "scripts/run_pipeline.py) and convolve each with "
-                "PSF_HST and PSF_Euclid to produce (input, target) "
-                "pairs for the A_θ CNN. No noise on either side — "
-                "this is a pure PSF-transition training set. Output: "
-                "$DATA_DIR/images/records_transition/{input,target}_*.tfrecord."
-            ),
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="0:20:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        n_train      = int(params.get("n_train", 4000))
-        n_valid      = int(params.get("n_valid", 400))
-        crop_size    = int(params.get("crop_size", 256))
-        rebin_factor = int(params.get("rebin_factor", 2))
-        return [
-            "scripts/fasrc_generate_transition_pairs.py",
-            "--n-train",      str(n_train),
-            "--n-valid",      str(n_valid),
-            "--crop-size",    str(crop_size),
-            "--rebin-factor", str(rebin_factor),
-        ]
-
-
-class HSTDenoiserTrainStep(FASRCPipelineStep):
-    """Phase 1 of the two-stage HST→Euclid chain — train the denoiser.
-
-    Reads the existing ``records_transition/input_*.tfrecord`` shards
-    (those are clean HST-PSF-blurred HR scenes) and trains
-    :class:`HSTDenoiser` on (noisy_HR → clean_HR) pairs, where the
-    noisy side is sampled per-image from the HLSP shot + sky/read
-    noise model implemented in
-    :func:`euclid_polish.training.transition_augmentations.add_hlsp_noise`.
-
-    Output: ``$DATA_DIR/hst_psf/hst_denoiser.weights.h5`` plus the
-    matching ``hst_denoiser_summary.json``. Phase 2 (step 3b) reads
-    those via its ``--frozen-denoiser`` flag to chain the two models.
-    """
-
-    def __init__(self):
-        super().__init__(
-            step_id="train_denoiser",
-            label="3a-bis. Train HST denoiser (Phase 1 of two-stage)",
-            description=(
-                "Train the wider-kernel HSTDenoiser CNN on noisy → "
-                "clean HST pairs. The noise model emulates HLSP "
-                "F814W shot + sky/read noise. The trained weights "
-                "are picked up by step 3b when --frozen-denoiser is "
-                "set, and by step 4 automatically via the transition "
-                "model's summary JSON."
-            ),
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="0:30:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        steps           = int(params.get("steps", 20_000))
-        batch_size      = int(params.get("batch_size", 8))
-        learning_rate   = float(params.get("learning_rate", 2e-3))
-        channels        = int(params.get("channels", 8))
-        n_inner_layers  = int(params.get("n_inner_layers", 2))
-        kernel_size     = int(params.get("kernel_size", 7))
-        max_params      = int(params.get("max_params", 10_000))
-        alpha_min       = float(params.get("alpha_min",       0.5))
-        alpha_max       = float(params.get("alpha_max",       1.0))
-        sigma_floor_min = float(params.get("sigma_floor_min", 8.0))
-        sigma_floor_max = float(params.get("sigma_floor_max", 22.0))
-        return [
-            "scripts/fasrc_train_hst_denoiser.py",
-            "--steps",            str(steps),
-            "--batch-size",       str(batch_size),
-            "--learning-rate",    f"{learning_rate:g}",
-            "--channels",         str(channels),
-            "--n-inner-layers",   str(n_inner_layers),
-            "--kernel-size",      str(kernel_size),
-            "--max-params",       str(max_params),
-            "--alpha-min",        f"{alpha_min:g}",
-            "--alpha-max",        f"{alpha_max:g}",
-            "--sigma-floor-min",  f"{sigma_floor_min:g}",
-            "--sigma-floor-max",  f"{sigma_floor_max:g}",
-        ]
-
-
-class TransitionTrainStep(FASRCPipelineStep):
-    def __init__(self):
-        super().__init__(
-            step_id="train_transition",
-            label="3b. Train transition model A_θ (≤5k params)",
-            description=(
-                "Train the tiny PSF-transition CNN on the pairs from "
-                "step 3a. Replaces the analytic Wiener differential "
-                "kernel (step 3) — when "
-                "$DATA_DIR/hst_psf/transition_model.weights.h5 exists, "
-                "scripts/fasrc_generate_hst_tfrecords.py uses it "
-                "instead of diff_kernel_VIS.fits. GPU optional; on "
-                "CPU the small model still trains in O(10 min)."
-            ),
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="0:30:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        steps          = int(params.get("steps", 20_000))
-        batch_size     = int(params.get("batch_size", 8))
-        learning_rate  = float(params.get("learning_rate", 2e-3))
-        channels       = int(params.get("channels", 12))
-        n_inner_layers = int(params.get("n_inner_layers", 3))
-        kernel_size    = int(params.get("kernel_size", 3))
-        max_params     = int(params.get("max_params", 5000))
-        star_frac      = float(params.get("star_injection_fraction", 0.2))
-        max_stars      = int(params.get("max_stars_per_image", 8))
-        lin_combo_frac = float(params.get("linear_combo_fraction", 0.3))
-        rebin_factor   = int(params.get("rebin_factor", 2))
-        # Empty string → identity baseline (default); a path → analytic
-        # Wiener kernel pinned as the model's non-trainable baseline.
-        baseline_path  = str(params.get("analytic_baseline_kernel", "")).strip()
-        baseline_crop  = int(params.get("baseline_crop", 0))
-        # Phase-2 two-stage: optional frozen denoiser (Phase-1 output)
-        # prepended to the deconvolver's forward pass. When set, the
-        # trainer also applies HLSP-style noise to the input on-the-fly
-        # so the denoiser sees its training-time noise distribution.
-        frozen_den      = str(params.get("frozen_denoiser", "")).strip()
-        alpha_min       = float(params.get("alpha_min",       0.0))
-        alpha_max       = float(params.get("alpha_max",       0.0))
-        sigma_floor_min = float(params.get("sigma_floor_min", 0.0))
-        sigma_floor_max = float(params.get("sigma_floor_max", 0.0))
-        cmd = [
-            "scripts/fasrc_train_transition_model.py",
-            "--steps",                    str(steps),
-            "--batch-size",               str(batch_size),
-            "--learning-rate",            f"{learning_rate:g}",
-            "--channels",                 str(channels),
-            "--n-inner-layers",           str(n_inner_layers),
-            "--kernel-size",              str(kernel_size),
-            "--max-params",               str(max_params),
-            "--star-injection-fraction",  f"{star_frac:g}",
-            "--max-stars-per-image",      str(max_stars),
-            "--linear-combo-fraction",    f"{lin_combo_frac:g}",
-            "--rebin-factor",             str(rebin_factor),
-            "--baseline-crop",            str(baseline_crop),
-            "--alpha-min",                f"{alpha_min:g}",
-            "--alpha-max",                f"{alpha_max:g}",
-            "--sigma-floor-min",          f"{sigma_floor_min:g}",
-            "--sigma-floor-max",          f"{sigma_floor_max:g}",
-        ]
-        if baseline_path:
-            cmd += ["--analytic-baseline-kernel", baseline_path]
-        if frozen_den:
-            cmd += ["--frozen-denoiser", frozen_den]
-        return cmd
-
-
 class HSTTFRecordStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
             step_id="tfrecords",
             label="4. Generate HST → Euclid TFRecord pairs",
             description=(
-                "Cut HST targets from HLSP tiles, apply the HST→Euclid "
-                "transition (trained CNN A_θ when present, otherwise "
-                "the analytic kernel A) and Euclid noise model to "
-                "synthesise paired clean (HST) + dirty (Euclid-"
-                "equivalent) TFRecords."
+                "Cut HST targets from HLSP tiles, apply the analytic "
+                "differential kernel A and the Euclid per-band noise "
+                "model, rejecting stamps where the brightest pixel "
+                "would produce A(ε) ringing above "
+                "max_relative_noise × σ_LR. Writes paired clean (HST) "
+                "+ dirty (Euclid-equivalent) TFRecords."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
@@ -633,11 +466,13 @@ class HSTTFRecordStep(FASRCPipelineStep):
         n_train = int(params.get("n_train", 6400))
         n_valid = int(params.get("n_valid", 200))
         image_size = int(params.get("image_size", 510))
+        max_relative_noise = float(params.get("max_relative_noise", 5.0))
         return [
             "scripts/fasrc_generate_hst_tfrecords.py",
             "--n-train", str(n_train),
             "--n-valid", str(n_valid),
             "--image-size", str(image_size),
+            "--max-relative-noise", f"{max_relative_noise:g}",
         ]
 
 
@@ -903,9 +738,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTDownloadStep,
     HSTPSFExtractStep,
     DifferentialKernelStep,
-    TransitionPairsStep,
-    HSTDenoiserTrainStep,    # Phase 1 of the two-stage chain
-    TransitionTrainStep,     # Phase 2 (reads the denoiser via flag)
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
     EuclidRoundtripTFRecordStep,

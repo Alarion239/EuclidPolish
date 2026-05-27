@@ -55,22 +55,6 @@
   {% with step_id="train" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 
-<section class="card">
-  <h3>Phase 1 — Denoiser ({{ '`train_denoiser`' | safe }})</h3>
-  <p class="hint">Trains the standalone HST denoiser used as the first
-     stage of the two-stage chain. Output:
-     <code>$CKPT_DIR/hst_denoiser.weights.h5</code>.</p>
-  {% with step_id="train_denoiser" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
-<section class="card">
-  <h3>Phase 2 — Transition model ({{ '`train_transition`' | safe }})</h3>
-  <p class="hint">Trains the A_θ deconvolver against the transition pairs.
-     Set <code>frozen_denoiser</code> to the Phase 1 weights to chain
-     them at inference time.</p>
-  {% with step_id="train_transition" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
 <h2 style="margin-top:24px;">Legacy <code>run_pipeline.py</code> presets</h2>
 <p class="hint">
   Four canned configurations differing in resources + auto-appended

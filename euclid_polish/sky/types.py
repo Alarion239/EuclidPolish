@@ -36,7 +36,7 @@ import numpy as np
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.sky.noise import add_hlsp_noise, apply_band_noise
+from euclid_polish.sky.noise import apply_band_noise
 
 if TYPE_CHECKING:
     # PSF and ArtifactConfig are only referenced in type hints — keep
@@ -216,9 +216,8 @@ class MultiBandSkyImage:
         :meth:`sum_rebinned` (with ``trim_remainder=False``, strict
         about divisibility) AND by every free-floating helper in the
         codebase that needs to rebin a raw array
-        (:func:`euclid_polish.training.transition_augmentations.sum_rebin_2d`
-        delegates here; :meth:`MultiBandForward.sum_rebin` delegates
-        with ``trim_remainder=True``).
+        (:meth:`MultiBandForward.sum_rebin` delegates here with
+        ``trim_remainder=True``).
 
         Parameters
         ----------
@@ -442,47 +441,6 @@ class MultiBandSkyImage:
                 self.data[..., c], band, rng,
                 add_artifacts=add_artifacts,
                 artifact_config=artifact_config,
-            )
-        return dataclasses.replace(
-            self,
-            data=out.astype(self.data.dtype),
-            is_clean=False,
-        )
-
-    def with_hlsp_noise(
-        self,
-        *,
-        alpha: float,
-        sigma_floor: float,
-        rng: Optional[np.random.Generator] = None,
-    ) -> MultiBandSkyImage:
-        """Apply HLSP F814W-style Gaussian-approximated noise.
-
-        Signal-dependent shot variance plus a Gaussian sky/read floor —
-        the noise model the Phase-1 HST denoiser is trained on. See
-        :func:`euclid_polish.training.transition_augmentations.add_hlsp_noise`
-        for the derivation of ``α = C/t_eff``.
-
-        Use case: HST data (single-band, ``band_names=("VIS",)`` as a
-        VIS proxy), or any image where you want signal-dependent
-        Gaussian noise rather than the per-band Euclid Poisson model.
-        Marks the result ``is_clean=False``.
-
-        Applies the same ``(α, σ_floor)`` to every channel — caller
-        decides whether to draw fresh noise across channels by passing
-        the same ``rng`` (independent draws thanks to internal state
-        advancement).
-        """
-        if rng is None:
-            rng = np.random.default_rng()
-        H, W, C = self.data.shape
-        out = np.empty_like(self.data, dtype=np.float32)
-        for c in range(C):
-            out[..., c] = add_hlsp_noise(
-                self.data[..., c],
-                alpha=alpha,
-                sigma_floor=sigma_floor,
-                rng=rng,
             )
         return dataclasses.replace(
             self,

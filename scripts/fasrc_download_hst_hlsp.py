@@ -35,6 +35,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
 
 
 HLSP_DIR_NAME = "hst_hlsp"
@@ -98,6 +99,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     out_dir = args.output_dir or os.path.join(Config.DATA_DIR, HLSP_DIR_NAME)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -115,6 +117,7 @@ def main() -> int:
     # mid-flatten (sbatch wall-time hit, OOM, etc.). This is the fix for
     # the "some tiles end up under mastDownload/HLSP/<id>/, others sit
     # directly in hst_hlsp/" inconsistency.
+    reporter.set_stage("flattening previous mastDownload scratch")
     recovered = _flatten_mast_download_dir(out_dir)
     if recovered > 0:
         print(f"[0/3] recovered {recovered} tile(s) from previous "
@@ -129,6 +132,7 @@ def main() -> int:
         print(f"N_FILES_FLATTENED={recovered}")
         return 0
 
+    reporter.set_stage("querying MAST HLSP catalog")
     print("[1/3] querying MAST HLSP catalog ...")
     obs = Observations.query_criteria(
         obs_collection=OBS_COLLECTION,
@@ -141,6 +145,7 @@ def main() -> int:
     print(f"      found {len(obs)} mosaic tiles in MAST")
 
     if len(obs) == 0:
+        reporter.error("no COSMOS HLSP tiles found — MAST query returned empty")
         print("ERROR: no COSMOS HLSP tiles found — MAST query returned empty")
         return 1
 
@@ -149,6 +154,7 @@ def main() -> int:
     obs = obs[: int(args.n_tiles)]
     print(f"      selected {len(obs)} tiles for download")
 
+    reporter.set_stage("resolving science-product file list")
     print("[2/3] resolving science-product file list ...")
     prods = Observations.get_product_list(obs)
     sci = prods[prods["productType"] == "SCIENCE"]
@@ -177,6 +183,7 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
+    reporter.set_stage("downloading (this can take a while)")
     print("[3/3] downloading (this can take a while) ...")
     if pending:
         try:

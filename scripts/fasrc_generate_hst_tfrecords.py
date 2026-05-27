@@ -21,9 +21,12 @@ RA/Dec; per-source catalog fluxes are not used here):
      using a catalog-derived median ``e_band / e_VIS`` — a per-pixel
      global colour. Per-source colours are lost but the absolute scale
      is correct for noise statistics.
-  4. Apply the pre-computed differential kernel A to get the Euclid-PSF
+  4. Reject the stamp if its brightest pixel would make the analytic
+     forward operator ``A`` produce noise-amplified ringing larger than
+     ``max_relative_noise × σ_LR`` — see ``_is_stamp_too_bright``.
+  5. Apply the pre-computed differential kernel A to get the Euclid-PSF
      view, sum-rebin to LR scale (0.10″/pix), add per-band Euclid noise.
-  5. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
+  6. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
      TFRecord layout — same schema the synthetic generator uses.
 
 Output records land under ``$DATA_DIR/images/records_v2_hst/`` so the
@@ -40,30 +43,11 @@ FIRST_COMPLETED, ProcessPoolExecutor, wait,
 )
 
 # Force-hide GPUs BEFORE TF is imported, even if SLURM allocated one.
-#
-# Why this script is CPU-only by design:
-#
-#  * Heavy work = scipy.signal.fftconvolve (FFT, CPU only) over a 511²
-#    baseline kernel × 4 bands per cutout. No GPU path exists.
-#  * The trainable CNN residual is only ~5 k params — its forward
-#    pass takes ~1 ms on CPU; a GPU offers no measurable speedup.
-#  * Parallelism is process-pool-based (fork), and ``fork`` after the
-#    parent has touched CUDA puts every child in an invalid CUDA
-#    state. The first TF call in any worker then aborts with
-#    ``CUDA_ERROR_NOT_INITIALIZED`` and ``ProcessPoolExecutor`` raises
-#    ``BrokenProcessPool``. (SLURM job 15889067, May 2026: 8 child
-#    crashes within seconds of pool startup.)
-#
+# Heavy work here is ``scipy.signal.fftconvolve`` (FFT, CPU only) over
+# the 511² baseline kernel × 4 bands per cutout — no GPU path exists.
 # ``setdefault`` would be a no-op when SLURM has already set
 # ``CUDA_VISIBLE_DEVICES`` (which it does on every ``--gres=gpu:N``
-# job), so we use a hard assignment to override SLURM's value. If you
-# explicitly want this script to use a GPU anyway (e.g. you've also
-# disabled the worker pool with ``--n-workers 0``), set the env var
-# back yourself in the sbatch script *after* the Python launch:
-#     CUDA_VISIBLE_DEVICES=$SLURM_JOB_GPUS python fasrc_generate_hst_tfrecords.py ...
-# But note: a GPU does not speed this script up. For *training* the
-# transition model, request and keep a GPU normally — that's a
-# different script (``fasrc_train_transition_model.py``).
+# job), so we use a hard assignment to override SLURM's value.
 _prev_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 if _prev_cuda:
@@ -73,18 +57,15 @@ if _prev_cuda:
           f"Submit without --gres=gpu next time to free the device "
           f"for someone else.", flush=True)
 
-# Cap per-process thread counts BEFORE numpy/scipy/TF are imported.
-# With a 16-worker pool on 16 SLURM CPUs, the default lets each
-# worker spawn 16 intra-op threads → 256 OS threads contending for
-# 16 cores → all per-cutout work crawls. Pinning to 1 thread per
-# process restores 1:1 worker-to-core mapping. setdefault honours an
-# explicit override from the sbatch script if the caller really wants
-# multi-threaded BLAS.
+# Cap per-process thread counts BEFORE numpy/scipy are imported. With a
+# 16-worker pool on 16 SLURM CPUs, the default lets each worker spawn
+# 16 intra-op threads → 256 OS threads contending for 16 cores → all
+# per-cutout work crawls. Pinning to 1 thread per process restores 1:1
+# worker-to-core mapping. setdefault honours an explicit override from
+# the sbatch script if the caller really wants multi-threaded BLAS.
 os.environ.setdefault("OMP_NUM_THREADS",         "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS",    "1")
 os.environ.setdefault("MKL_NUM_THREADS",         "1")
-os.environ.setdefault("TF_NUM_INTRAOP_THREADS",  "1")
-os.environ.setdefault("TF_NUM_INTEROP_THREADS",  "1")
 
 import argparse
 import json
@@ -106,26 +87,16 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.differential_kernel import DifferentialKernel
-from euclid_polish.sky.multiband_forward import apply_band_noise
+from euclid_polish.sky.noise import apply_band_noise
 from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
-from euclid_polish.training.transition_model import (
-    HSTDenoiser,
-    HSTtoEuclidTransition,
-    apply_denoiser_numpy,
-    apply_transition_numpy,
-    load_denoiser_weights,
-    load_model_weights,
-)
 
 
 HLSP_DIR     = os.path.join(Config.DATA_DIR, "hst_hlsp")
 KERNEL_PATH  = os.path.join(Config.DATA_DIR, "hst_psf", "diff_kernel_VIS.fits")
-TRANSITION_MODEL_PATH = os.path.join(
-    Config.DATA_DIR, "hst_psf", "transition_model.weights.h5",
-)
 OUT_DIR      = os.path.join(Config.DATA_DIR, "images", "records_v2_hst")
 
 
@@ -139,24 +110,8 @@ def parse_args() -> argparse.Namespace:
                    help="HR cutout side in HR pixels (0.05\"/pix).")
     p.add_argument("--hlsp-dir",   default=HLSP_DIR)
     p.add_argument("--kernel",     default=KERNEL_PATH,
-                   help="Analytic Wiener differential kernel FITS. "
-                        "Used only when --transition-model is not provided "
-                        "(or its weights file is missing). Kept as a "
-                        "fallback so the old pipeline still works.")
-    p.add_argument("--transition-model", default=TRANSITION_MODEL_PATH,
-                   help="Trained CNN transition model "
-                        "(``transition_model.weights.h5``). When present, "
-                        "replaces the analytic kernel as the HST→Euclid "
-                        "PSF transition. Train via "
-                        "scripts/fasrc_train_transition_model.py. Pass "
-                        "an empty string or non-existent path to force "
-                        "the analytic-kernel fallback.")
-    p.add_argument("--transition-channels", type=int, default=12,
-                   help="Hidden channel width C of the transition model. "
-                        "Must match the value used at training time.")
-    p.add_argument("--transition-inner-layers", type=int, default=3,
-                   help="Number of inner Conv(C→C) layers. Must match "
-                        "the value used at training time.")
+                   help="Analytic Wiener differential kernel FITS, the "
+                        "forward operator A applied to every HR stamp.")
     p.add_argument("--output-dir", default=OUT_DIR)
     p.add_argument("--n-workers", type=int, default=_default_n_workers(),
                    help="Process pool size for parallel cutout + forward "
@@ -175,6 +130,19 @@ def parse_args() -> argparse.Namespace:
                         "include detection-threshold galaxies; lower "
                         "(22, 21) to focus on bright, well-resolved "
                         "morphology only.")
+    p.add_argument("--max-relative-noise", type=float, default=5.0,
+                   help="Reject any HR stamp whose brightest pixel "
+                        "would make A(ε) (HST-side shot noise propagated "
+                        "through the analytic kernel) exceed this many "
+                        "times the per-pixel Euclid LR noise budget σ_LR. "
+                        "Default 5 means A(ε) up to 5× σ_LR is fine; "
+                        "ringing larger than that around bright/saturated "
+                        "stars dominates the training signal and is what "
+                        "we're throwing away.")
+    p.add_argument("--oversample", type=float, default=3.0,
+                   help="Catalog candidate pool size as a multiple of "
+                        "(n_train + n_valid). Bright-stamp rejection "
+                        "throws candidates out, so we need spares.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -190,6 +158,28 @@ def _default_n_workers() -> int:
     if env.isdigit() and int(env) > 0:
         return int(env)
     return max(1, os.cpu_count() or 1)
+
+
+def _euclid_vis_sigma_lr_per_pixel() -> float:
+    """Per-pixel Euclid VIS LR noise σ in electrons (no signal term).
+
+    The noise budget for a single LR pixel of the VIS stack is the
+    sky + dark Poisson floor combined with the read-noise quadrature
+    sum over ``n_exposures``:
+
+        σ_LR = sqrt(sky_e + dark_e + n_exp · read_noise_e²)
+
+    where ``sky_e`` and ``dark_e`` are integrated over the LR pixel
+    area and total stack time. This matches the ``sigma_floor_e``
+    expression used by :func:`apply_band_noise`.
+    """
+    band = Config.BAND_VIS
+    t_total    = band.t_total_s
+    pixel_area = band.pixel_scale_lr_arcsec ** 2
+    sky_e   = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
+    dark_e  = band.dark_e_per_s_per_pix * t_total
+    read_var = band.n_exposures * (band.read_noise_e ** 2)
+    return float(np.sqrt(sky_e + dark_e + read_var))
 
 
 # ---------------------------------------------------------------------------
@@ -275,90 +265,96 @@ def _resample_hlsp_to_hr(hlsp_cutout: np.ndarray,
     return (out * np.float32(area_correction)).astype(np.float32)
 
 
-def _apply_transition(
-    hr_band: np.ndarray,
-    *,
-    transition_model,
-    diff_kernel: Optional[np.ndarray],
-    denoiser_model = None,
-) -> np.ndarray:
-    """Map an HR band image from HST-PSF space to Euclid-PSF space.
+def _kernel_forward(hr_band: np.ndarray, diff_kernel: np.ndarray) -> np.ndarray:
+    """Apply the analytic differential kernel A: HST-PSF → Euclid-PSF.
 
-    Three modes, ranked by preference:
-
-    1. **Two-stage** (``denoiser_model`` + ``transition_model``):
-       ``denoiser → A_analytic ⊛ · → deconvolver``. The denoiser
-       cleans HST-side noise before the analytic kernel amplifies
-       it; the deconvolver cleans the kernel's own artifacts. The
-       transition model carries the analytic baseline as a frozen
-       conv (Phase-2 trained), so calling
-       :func:`apply_transition_numpy` after the denoiser still runs
-       the full ``baseline + CNN`` graph.
-
-    2. **Single-stage CNN** (``transition_model`` only): the legacy
-       trained model. Used when no denoiser is configured.
-
-    3. **Analytic kernel only** (``diff_kernel``): fallback when no
-       trained model exists yet.
-
-    Returns an array of the same shape as ``hr_band``. No sum-rebin
-    here — that's applied separately downstream.
+    Pure FFT convolution on a single band image — no learned residual,
+    no denoiser. The kernel is the one solved for by
+    ``scripts/fasrc_compute_differential_kernel.py`` (saved as
+    ``$DATA_DIR/hst_psf/diff_kernel_VIS.fits``).
     """
-    if transition_model is not None:
-        if denoiser_model is not None:
-            # Two-stage: denoise → (baseline + CNN_2) inside the
-            # transition model. The denoiser is cheap (small K=7
-            # kernels, no large baseline) so a direct apply is fine.
-            denoised = apply_denoiser_numpy(denoiser_model, hr_band)
-            return apply_transition_numpy(transition_model, denoised)
-        return apply_transition_numpy(transition_model, hr_band)
-    if diff_kernel is None:
-        raise RuntimeError(
-            "neither transition_model nor diff_kernel is set — "
-            "_init_worker must populate one of them"
-        )
     return scipy_signal.fftconvolve(hr_band, diff_kernel, mode="same")
+
+
+def _is_stamp_too_bright(
+    hr_stamp: np.ndarray,
+    *,
+    diff_kernel: np.ndarray,
+    sigma_lr_band: float,
+    max_relative_noise: float,
+) -> Tuple[bool, Dict[str, float]]:
+    """Decide whether the analytic-A forward pass will ring around a bright pixel.
+
+    The forward operator A is linear, so after applying it to a noisy
+    HST observation::
+
+        A(HST_obs) = A(H·I + ε) = E·I + A(ε)
+
+    The artefact term ``A(ε)`` has its biggest contribution at the
+    brightest pixel — Poisson shot noise variance scales with signal,
+    so the standard deviation of ``A(ε)`` at the peak pixel is
+
+        σ(A·ε)(x_max) ≈ |A|_peak · σ(ε)(x_max) ≈ |A|_peak · √S_max
+
+    where ``S_max`` is the brightest HR pixel value in Euclid-scaled
+    electrons (VIS channel — the band the kernel was solved for) and
+    ``|A|_peak = max(abs(diff_kernel))``. We reject the stamp when
+    this contribution would exceed ``max_relative_noise`` times the
+    per-pixel Euclid LR noise budget σ_LR (sky + dark + read² · n_exp):
+
+        √S_max · |A|_peak  >  k · σ_LR
+
+    i.e. ``S_max > (k · σ_LR / |A|_peak)²``. Non-positive S_max is
+    handled by the ``max(S_max, 0)`` clamp inside the sqrt — a stamp
+    where the brightest pixel is ≤ 0 cannot have shot noise.
+    """
+    if max_relative_noise <= 0:
+        # Caller asked to disable the filter — let everything through.
+        return False, {"S_max": float(np.nan), "threshold_S_max": float(np.inf)}
+    a_peak = float(np.max(np.abs(diff_kernel)))
+    if a_peak <= 0 or sigma_lr_band <= 0:
+        # Defensive: a zero kernel or zero noise budget makes the
+        # threshold either +inf or 0; either way the math degenerates.
+        return False, {
+            "S_max": float(np.max(hr_stamp[..., 0])),
+            "threshold_S_max": float(np.inf),
+        }
+    # VIS is channel 0 by the cube layout in _hst_to_euclid_hr_cube.
+    s_max = float(np.max(hr_stamp[..., 0]))
+    s_clamped = max(s_max, 0.0)
+    artifact_sigma = a_peak * float(np.sqrt(s_clamped))
+    threshold = float(max_relative_noise) * float(sigma_lr_band)
+    reject = artifact_sigma > threshold
+    threshold_s_max = (threshold / a_peak) ** 2 if a_peak > 0 else float("inf")
+    diagnostics = {
+        "S_max":           s_max,
+        "a_peak":          a_peak,
+        "sigma_lr":        float(sigma_lr_band),
+        "artifact_sigma":  artifact_sigma,
+        "threshold":       threshold,
+        "threshold_S_max": threshold_s_max,
+    }
+    return reject, diagnostics
 
 
 def _make_pair(
     hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean
     *,
-    transition_model,
-    diff_kernel: Optional[np.ndarray],
+    diff_kernel: np.ndarray,
     rng: np.random.Generator,
-    denoiser_model = None,
 ) -> np.ndarray:
     """Forward-model the HR cube to a 4-band LR cube at 0.10″/pix.
 
-    For each band: (transition or A ⊛ ·) → sum-rebin ×2
-    → Poisson + read + sky + dark.
-
-    The transition step is what makes the chain photometrically
-    Euclid-equivalent while accounting for the HST-baked-in PSF.
-    Three modes, ranked by preference:
-
-      * **two-stage** (``denoiser_model`` + ``transition_model``):
-        denoiser → analytic kernel → deconvolver. Best when training
-        used a frozen denoiser (Phase 2 of the two-stage flow).
-      * **single-stage CNN** (``transition_model`` only): legacy
-        trained model. Used when no denoiser is configured.
-      * **analytic Wiener kernel** (``diff_kernel`` only): fallback
-        when the CNN weights file isn't available yet.
+    For each band: ``A ⊛ ·`` (analytic differential kernel) →
+    sum-rebin ×2 → Poisson + read + sky + dark.
     """
 
-    # Use the central sum-rebin implementation on MultiBandSkyImage so
-    # there's no duplicated reshape().sum() inline.
     H, W, C = hr_cutout_4ch.shape
     assert H % 2 == 0 and W % 2 == 0
     lr_cube = np.zeros((H // 2, W // 2, C), dtype=np.float32)
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
-        convolved = _apply_transition(
-            hr_cutout_4ch[..., k],
-            transition_model=transition_model,
-            diff_kernel=diff_kernel,
-            denoiser_model=denoiser_model,
-        )
+        convolved = _kernel_forward(hr_cutout_4ch[..., k], diff_kernel)
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
         rebinned = MultiBandSkyImage.rebin_array(convolved, 2)
         # Apply per-band Euclid noise (Poisson + read; artifacts off for
@@ -376,186 +372,47 @@ def _make_pair(
 # Module globals populated by ``_init_worker`` once per process. None
 # before init; checking them in ``_process_one_galaxy`` is what catches
 # a missing ``initializer=`` in the pool setup.
-_WORKER_KERNEL:           Optional[np.ndarray] = None
-_WORKER_TRANSITION_MODEL                       = None    # tf.keras.Model | None
-_WORKER_DENOISER_MODEL                         = None    # tf.keras.Model | None
-_WORKER_IMAGE_SIZE:       int                  = 0
-_WORKER_TYPICAL_RATIOS:   Optional[np.ndarray] = None
-
-
-def _load_summary_for_weights(weights_path: str) -> Dict[str, Any]:
-    """Read the ``transition_model_summary.json`` next to a weights file.
-
-    The summary records the exact hyperparameters used at training time
-    (channels, n_inner_layers, kernel_size, baseline kernel path, etc.).
-    Without it, the worker has to guess — and guessing wrong means
-    Keras' ``load_weights`` fails with ``"expected N variables, got M"``
-    because the reconstructed model has different shape than what's in
-    the file.
-
-    Returns an empty dict if the summary doesn't exist (legacy models
-    pre-summary). Caller must fall back to CLI defaults in that case.
-    """
-    summary_path = weights_path[:-len(".weights.h5")] + "_summary.json" \
-        if weights_path.endswith(".weights.h5") else weights_path + ".summary.json"
-    if not os.path.isfile(summary_path):
-        # Also try the legacy name produced by the training script.
-        dirpath = os.path.dirname(weights_path)
-        alt = os.path.join(dirpath, "transition_model_summary.json")
-        if os.path.isfile(alt):
-            summary_path = alt
-        else:
-            return {}
-    try:
-        with open(summary_path) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+_WORKER_KERNEL:             Optional[np.ndarray] = None
+_WORKER_IMAGE_SIZE:         int                  = 0
+_WORKER_TYPICAL_RATIOS:     Optional[np.ndarray] = None
+_WORKER_SIGMA_LR:           float                = 0.0
+_WORKER_MAX_RELATIVE_NOISE: float                = 0.0
 
 
 def _init_worker(
     kernel_path: str,
-    transition_model_path: Optional[str],
-    transition_channels: int,
-    transition_inner_layers: int,
     image_size: int,
     typical_band_ratios: np.ndarray,
+    sigma_lr_band: float,
+    max_relative_noise: float,
 ) -> None:
     """Called once per worker process at pool startup.
 
-    Loads the HST→Euclid transition operator and pins the per-band
-    electron ratios into module-level globals so each worker pays the
-    I/O + parse cost exactly once — not per-galaxy. Pickling the
-    kernel/model through every task argument would be ~1 MB per
+    Loads the analytic differential kernel ``A`` and pins the per-band
+    electron ratios + noise threshold into module-level globals so each
+    worker pays the I/O + parse cost exactly once — not per-galaxy.
+    Pickling the kernel through every task argument would be ~1 MB per
     submission × 6400 galaxies = 6 GB of pickle churn for nothing.
-
-    Selection rules:
-
-    * If ``transition_model_path`` is provided and the weights file
-      exists, the trained CNN is loaded and is the operator the worker
-      uses. **Hyperparameters come from the
-      ``transition_model_summary.json`` sidecar** when present (only
-      the CLI fallbacks ``transition_channels`` /
-      ``transition_inner_layers`` are used if the summary is missing).
-      The summary also tells us whether the model has an analytic
-      baseline pinned as a non-trainable layer; if so we load the
-      same baseline FITS so the layer shapes match the saved weights.
-    * Otherwise the analytic Wiener kernel is loaded from
-      ``kernel_path``. This is the legacy path; we keep it so workflows
-      that haven't run the CNN-training step yet still produce
-      TFRecords.
     """
-    global _WORKER_KERNEL, _WORKER_TRANSITION_MODEL
-    global _WORKER_DENOISER_MODEL
-    global _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
-    _WORKER_IMAGE_SIZE     = int(image_size)
-    _WORKER_TYPICAL_RATIOS = np.asarray(typical_band_ratios, dtype=np.float32)
-    _WORKER_DENOISER_MODEL = None
+    global _WORKER_KERNEL, _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
+    global _WORKER_SIGMA_LR, _WORKER_MAX_RELATIVE_NOISE
+    _WORKER_KERNEL             = DifferentialKernel.from_fits(kernel_path).data
+    _WORKER_IMAGE_SIZE         = int(image_size)
+    _WORKER_TYPICAL_RATIOS     = np.asarray(typical_band_ratios, dtype=np.float32)
+    _WORKER_SIGMA_LR           = float(sigma_lr_band)
+    _WORKER_MAX_RELATIVE_NOISE = float(max_relative_noise)
 
-    use_cnn = (
-        transition_model_path
-        and os.path.isfile(transition_model_path)
-    )
-    if use_cnn:
-        # Read training-time hyperparameters from the summary sidecar
-        # so the model is reconstructed with the right shape.
-        summary = _load_summary_for_weights(transition_model_path)
-        channels       = int(summary.get("channels",       transition_channels))
-        n_inner_layers = int(summary.get("n_inner_layers", transition_inner_layers))
-        kernel_size    = int(summary.get("kernel_size",    3))
-        baseline_path  = str(summary.get("analytic_baseline_kernel", ""))
-        baseline_crop  = int(summary.get("baseline_crop",  0))
-
-        # Load + crop the analytic baseline kernel if the model used one.
-        # Resolve it relative to the diff-kernel FITS path if the saved
-        # path is a FASRC-style absolute path that doesn't exist locally.
-        baseline_kernel = None
-        if baseline_path:
-            candidates = [baseline_path, kernel_path]
-            for cand in candidates:
-                if cand and os.path.isfile(cand):
-                    with fits.open(cand) as hdul:
-                        full = np.asarray(hdul[0].data, dtype=np.float32)
-                    if baseline_crop > 0 and baseline_crop < full.shape[0]:
-                        side = baseline_crop | 1
-                        i0 = (full.shape[0] - side) // 2
-                        baseline_kernel = full[i0:i0 + side, i0:i0 + side]
-                    else:
-                        baseline_kernel = full
-                    break
-            if baseline_kernel is None:
-                # Summary says baseline was used but we can't find the
-                # kernel file — fail loudly. Loading without the baseline
-                # would give the "expected 0 variables, received 1"
-                # Keras error.
-                raise RuntimeError(
-                    f"transition model summary records "
-                    f"analytic_baseline_kernel={baseline_path!r} but no "
-                    f"matching FITS was found locally. Tried: {candidates}. "
-                    f"Re-sync the kernel or remove the baseline reference."
-                )
-
-        model = HSTtoEuclidTransition(
-            channels=channels,
-            n_inner_layers=n_inner_layers,
-            kernel_size=kernel_size,
-            baseline_kernel=baseline_kernel,
-        )
-        load_model_weights(model, transition_model_path)
-        _WORKER_TRANSITION_MODEL = model
-        _WORKER_KERNEL = None
-
-        # ── Two-stage chain: load the frozen denoiser if Phase-2 was
-        #    used during training. The transition_model_summary.json
-        #    records its weights path + architecture under "denoiser".
-        denoiser_meta = summary.get("denoiser")
-        if denoiser_meta:
-            den_weights_path = denoiser_meta.get("weights_path", "")
-            # Resolve to a locally-existing path: try the recorded
-            # absolute path first (will exist if pipeline runs on the
-            # same machine as training), then a sibling of the
-            # transition model weights (matches our default layout
-            # under $DATA_DIR/hst_psf/).
-            local_den_default = os.path.join(
-                os.path.dirname(transition_model_path),
-                "hst_denoiser.weights.h5",
-            )
-            den_local = None
-            for cand in (den_weights_path, local_den_default):
-                if cand and os.path.isfile(cand):
-                    den_local = cand
-                    break
-            if den_local is None:
-                raise RuntimeError(
-                    f"transition model summary records a denoiser at "
-                    f"{den_weights_path!r}, but no local copy was found. "
-                    f"Re-sync the file or remove the 'denoiser' key "
-                    f"from {transition_model_path[:-len('.weights.h5')]}"
-                    f"_summary.json to fall back to single-stage."
-                )
-            denoiser = HSTDenoiser(
-                channels=int(denoiser_meta.get("channels", 8)),
-                n_inner_layers=int(denoiser_meta.get("n_inner_layers", 2)),
-                kernel_size=int(denoiser_meta.get("kernel_size", 7)),
-            )
-            load_denoiser_weights(denoiser, den_local)
-            _WORKER_DENOISER_MODEL = denoiser
-    else:
-        _WORKER_KERNEL           = DifferentialKernel.from_fits(kernel_path).data
-        _WORKER_TRANSITION_MODEL = None
-
-    # Heartbeat so a future stall in worker init (e.g. another slow
-    # tf.nn.conv2d during build) is visible from the SLURM log instead
-    # of looking identical to a healthy "just hasn't finished cutout #1
-    # yet" state.
-    two_stage_tag = " + denoiser" if _WORKER_DENOISER_MODEL is not None else ""
+    # Heartbeat so a future stall in worker init is visible from the
+    # SLURM log instead of looking identical to a healthy "just hasn't
+    # finished cutout #1 yet" state.
     print(f"      [worker {os.getpid()}] init complete "
-          f"(use_cnn={bool(use_cnn)}{two_stage_tag})", flush=True)
+          f"(kernel={_WORKER_KERNEL.shape}, σ_LR={_WORKER_SIGMA_LR:.2f}, "
+          f"max_rel_noise={_WORKER_MAX_RELATIVE_NOISE:.2f})", flush=True)
 
 
 def _process_one_galaxy(
     task: Tuple[int, float, float, str, int, int],
-) -> Optional[Tuple[int, np.ndarray, np.ndarray]]:
+) -> Tuple[Optional[Tuple[int, np.ndarray, np.ndarray]], Optional[str]]:
     """Cut + resample + forward-model one HST chunk of sky.
 
     Pure function — no shared state beyond the module globals set by
@@ -567,21 +424,19 @@ def _process_one_galaxy(
     its per-band catalog fluxes are no longer used. The HST cutout's
     own photometry sets the brightness of every source in the field.
 
-    Returns ``(catalog_idx, hr_cube, lr_cube)`` on success, ``None``
-    when the chunk can't be cut (off-tile, malformed FITS, cutout
-    smaller than the target HR size, or HST data all-NaN).
+    Returns ``((catalog_idx, hr_cube, lr_cube), None)`` on success.
+    Returns ``(None, reason)`` when the chunk can't be cut (off-tile,
+    malformed FITS, cutout smaller than the target HR size, HST data
+    all-NaN, or stamp rejected by the bright-pixel filter).
     """
     catalog_idx, ra, dec, tile_path, hlsp_side_pix, seed = task
-    if _WORKER_TYPICAL_RATIOS is None or (
-        _WORKER_KERNEL is None and _WORKER_TRANSITION_MODEL is None
-    ):
+    if _WORKER_TYPICAL_RATIOS is None or _WORKER_KERNEL is None:
         # If we ever forget the initializer, fail loudly rather than
         # silently using None and crashing deep in the FFT.
         raise RuntimeError(
             "_process_one_galaxy called without _init_worker — "
             "pass initializer=_init_worker to the pool."
         )
-
 
     try:
         with fits.open(tile_path, memmap=True) as hdul:
@@ -590,7 +445,7 @@ def _process_one_galaxy(
                 None,
             )
             if sci is None:
-                return None
+                return None, "no-image-hdu"
             wcs = WCS(sci.header)
             cutout = Cutout2D(
                 sci.data,
@@ -599,7 +454,7 @@ def _process_one_galaxy(
                 wcs=wcs, mode="strict",
             )
     except Exception:
-        return None
+        return None, "cutout-failed"
 
     hr_resampled = _resample_hlsp_to_hr(
         np.asarray(cutout.data, dtype=np.float32),
@@ -610,34 +465,40 @@ def _process_one_galaxy(
         # Cutout smaller than the HR target — drop. We don't want
         # ``crop_array``'s zero-padding behaviour here because a partial
         # cutout would leak zero-valued sky into the training pair.
-        return None
+        return None, "cutout-too-small"
     hr_clean_rate = MultiBandSkyImage.crop_array(hr_resampled, H_hr)
 
     # No sky-offset subtraction here. HLSP COSMOS F814W mosaics are
     # already sky-subtracted by HAP, so the cutout median is ≈ 0 by
-    # design. A multi-source 25″ chunk also has real galaxies leaking
-    # into any outer annulus we'd use as a "sky" reference, so the
-    # local-median estimate is biased upward and subtracting it
-    # uniformly down-shifts every real source. Finally, the Euclid
-    # forward model already does its own symmetric sky add/subtract
-    # in ``apply_band_noise`` — pre-subtracting on the HST side is
-    # redundant.
+    # design. The Euclid forward model also does its own symmetric sky
+    # add/subtract in ``apply_band_noise`` — pre-subtracting on the HST
+    # side is redundant.
 
     hr_cube = _hst_to_euclid_hr_cube(hr_clean_rate, _WORKER_TYPICAL_RATIOS)
     if hr_cube is None:
-        return None
+        return None, "hst-cube-allnan"
+
+    # Bright-stamp rejection: measure S_max from the fully-built HR
+    # cube but BEFORE the expensive forward modelling. A rejected
+    # stamp would only produce ringing-dominated dirty pixels.
+    reject, _diag = _is_stamp_too_bright(
+        hr_cube,
+        diff_kernel=_WORKER_KERNEL,
+        sigma_lr_band=_WORKER_SIGMA_LR,
+        max_relative_noise=_WORKER_MAX_RELATIVE_NOISE,
+    )
+    if reject:
+        return None, "rejected-bright"
 
     # Per-task RNG so noise is reproducible across runs at the same seed
     # but independent across galaxies in a single run.
     rng = np.random.default_rng(int(seed))
     lr_cube = _make_pair(
         hr_cube,
-        transition_model=_WORKER_TRANSITION_MODEL,
         diff_kernel=_WORKER_KERNEL,
         rng=rng,
-        denoiser_model=_WORKER_DENOISER_MODEL,
     )
-    return catalog_idx, hr_cube, lr_cube
+    return (catalog_idx, hr_cube, lr_cube), None
 
 
 def _hst_to_euclid_hr_cube(
@@ -663,12 +524,6 @@ def _hst_to_euclid_hr_cube(
       (every star and galaxy in the cube share the same colour) but
       the absolute scale is correct, which is what matters for noise
       statistics during training.
-
-    The catalog's ``total_flux_e`` for the central galaxy is **not used
-    here** — the old chain multiplied the (unit-normalised) cube by one
-    galaxy's catalog flux, allocating a single source's electron budget
-    across every visible source in the cutout. Real HST cutouts contain
-    many galaxies; that's the whole point.
     """
     if not np.isfinite(hst_rate_per_hr_pix).any():
         return None
@@ -694,59 +549,55 @@ def _hst_to_euclid_hr_cube(
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    use_cnn = bool(
-        args.transition_model and os.path.isfile(args.transition_model)
-    )
-
     print("=" * 64)
-    print(f"  HST → Euclid TFRecord pair generation")
+    print(f"  HST → Euclid TFRecord pair generation (analytic-A only)")
     print("=" * 64)
     print(f"  HLSP dir         = {args.hlsp_dir}")
-    print(f"  transition model = {args.transition_model} "
-          f"{'(found)' if use_cnn else '(missing — falling back to kernel)'}")
-    if not use_cnn:
-        print(f"  fallback kernel  = {args.kernel}")
+    print(f"  kernel           = {args.kernel}")
     print(f"  output           = {args.output_dir}")
     print(f"  n_train          = {args.n_train}")
     print(f"  n_valid          = {args.n_valid}")
     print(f"  image_size       = {args.image_size} (HR pixels)")
+    print(f"  max_rel_noise    = {args.max_relative_noise}")
+    print(f"  oversample       = {args.oversample}")
     print(f"  dry run          = {args.dry_run}")
     print()
 
     t0 = time.time()
     H_hr = int(args.image_size)
     if H_hr % 2 != 0:
+        reporter.error(f"image_size must be even (got {H_hr})")
         print(f"ERROR: image_size must be even (got {H_hr})")
         return 1
     # HR side in arcsec → HLSP-pixel side needed before resample to HR.
     hr_side_arcsec   = H_hr * Config.DEFAULT_PIXEL_SCALE      # e.g. 510 × 0.05 = 25.5"
     hlsp_side_pix    = int(np.ceil(hr_side_arcsec / 0.03))     # cutout size in HLSP pixels
 
+    reporter.set_stage("indexing HLSP tiles")
     print(f"[1/4] indexing HLSP tiles ...")
     if not os.path.isdir(args.hlsp_dir):
+        reporter.error(f"HLSP dir not found: {args.hlsp_dir}")
         print(f"ERROR: HLSP dir not found: {args.hlsp_dir}")
         print("       Run scripts/fasrc_download_hst_hlsp.py first.")
         return 1
     tiles = HLSPTileIndex(args.hlsp_dir)
     print(f"      {len(tiles.entries)} tiles indexed")
 
-    print(f"[2/4] loading transition operator + COSMOS catalog ...")
-    if not use_cnn and not os.path.isfile(args.kernel):
-        print(f"ERROR: neither transition model ({args.transition_model}) "
-              f"nor analytic kernel ({args.kernel}) exists. Run either "
-              "scripts/fasrc_train_transition_model.py or "
-              "scripts/fasrc_compute_differential_kernel.py first.")
+    reporter.set_stage("loading kernel + COSMOS catalog")
+    print(f"[2/4] loading analytic kernel + COSMOS catalog ...")
+    if not os.path.isfile(args.kernel):
+        reporter.error(f"analytic kernel ({args.kernel}) does not exist.")
+        print(f"ERROR: analytic kernel ({args.kernel}) does not exist. "
+              "Run scripts/fasrc_compute_differential_kernel.py first.")
         return 1
-    if use_cnn:
-        print(f"      using trained CNN transition model "
-              f"(channels={args.transition_channels}, "
-              f"inner_layers={args.transition_inner_layers})")
-    else:
-        dk = DifferentialKernel.from_fits(args.kernel)
-        print(f"      analytic kernel shape = {dk.data.shape} "
-              f"DC gain = {dk.dc_gain:.4f}")
+    dk = DifferentialKernel.from_fits(args.kernel)
+    print(f"      analytic kernel shape = {dk.data.shape} "
+          f"DC gain = {dk.dc_gain:.4f}")
+    sigma_lr_band = _euclid_vis_sigma_lr_per_pixel()
+    print(f"      Euclid VIS σ_LR per pixel = {sigma_lr_band:.2f} e⁻")
     catalog = open_cosmos2025(max_mag=args.max_mag)
     print(f"      {len(catalog):,} catalog galaxies after quality cuts "
           f"(VIS mag ≤ {args.max_mag})")
@@ -769,22 +620,34 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
+    reporter.set_stage("selecting galaxies on HLSP coverage")
     print(f"[3/4] selecting galaxies that fall on the HLSP coverage ...")
     # Walk catalog row-by-row, keep galaxies whose RA/Dec lands on a tile.
     rng = np.random.default_rng()
+    # Oversample the catalog so bright-stamp rejection has spares.
+    target_total   = args.n_train + args.n_valid
+    candidate_pool = min(len(catalog),
+                         max(target_total,
+                             int(np.ceil(args.oversample * target_total))))
     catalog_indices = np.arange(len(catalog))
     rng.shuffle(catalog_indices)
-    target_total = args.n_train + args.n_valid
-
+    catalog_indices = catalog_indices[:candidate_pool]
+    print(f"      shuffled candidate pool = {candidate_pool:,} "
+          f"(oversample = {args.oversample:g}× target {target_total})")
 
     n_workers = max(0, int(args.n_workers))
+    reporter.set_stage(f"streaming pairs (pool size = {n_workers})")
     print(f"[4/4] streaming pairs to {args.output_dir} "
           f"(pool size = {n_workers}) ...")
-    pairs_written = 0
-    pairs_skipped = 0
+    pairs_written          = 0
+    pairs_attempted        = 0
+    pairs_skipped_no_tile  = 0
+    pairs_skipped_cutout   = 0
+    pairs_skipped_bright   = 0
+    pairs_skipped_other    = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
-    summary = {"subsets": {}}
+    summary: Dict[str, Any] = {"subsets": {}}
     catalog_iter = iter(catalog_indices)
     base_seed = int(rng.integers(0, 2**31))
 
@@ -799,17 +662,26 @@ def main() -> int:
         what scales the cube). Returns the task tuple ready for
         ``_process_one_galaxy`` or ``None`` if the catalog is exhausted.
         """
-        nonlocal pairs_skipped
+        nonlocal pairs_skipped_no_tile
         for i in catalog_iter:
             ra  = float(catalog.ra_deg[i])
             dec = float(catalog.dec_deg[i])
             tile_path = tiles.find_tile(ra, dec)
             if tile_path is None:
-                pairs_skipped += 1
+                pairs_skipped_no_tile += 1
                 continue
             seed = (base_seed * 1_000_003 + int(i)) & 0x7FFFFFFF
             return (int(i), ra, dec, tile_path, hlsp_side_pix, seed)
         return None
+
+    def _classify_skip(reason: Optional[str]) -> None:
+        nonlocal pairs_skipped_cutout, pairs_skipped_bright, pairs_skipped_other
+        if reason == "rejected-bright":
+            pairs_skipped_bright += 1
+        elif reason in ("cutout-too-small", "cutout-failed", "no-image-hdu"):
+            pairs_skipped_cutout += 1
+        else:
+            pairs_skipped_other += 1
 
     def _write_result(result, subset_writers, subset_done):
         """Wrap one worker result as MultiBandSkyImages and write."""
@@ -841,16 +713,12 @@ def main() -> int:
         dw.write(dirty_img,   index=subset_done)
         hw.write(hr_vis_only, index=subset_done)
 
-    transition_model_path_arg = (
-        args.transition_model if use_cnn else ""
-    )
     init_args = (
         args.kernel,
-        transition_model_path_arg,
-        int(args.transition_channels),
-        int(args.transition_inner_layers),
         H_hr,
         typical_band_ratios,
+        sigma_lr_band,
+        float(args.max_relative_noise),
     )
 
     if n_workers == 0:
@@ -877,13 +745,15 @@ def main() -> int:
                     task = _next_task()
                     if task is None:
                         break
-                    result = _process_one_galaxy(task)
+                    pairs_attempted += 1
+                    result, reason = _process_one_galaxy(task)
                     if result is None:
-                        pairs_skipped += 1
+                        _classify_skip(reason)
                         continue
                     _write_result(result, writers, sub_done)
                     sub_done += 1
                     pairs_written += 1
+                    reporter.set_step(sub_done, target_n, subset)
                     if sub_done <= 5 or sub_done % 10 == 0:
                         print(f"      {subset}: {sub_done}/{target_n} written",
                               flush=True)
@@ -906,6 +776,7 @@ def main() -> int:
                         task = _next_task()
                         if task is None:
                             break
+                        pairs_attempted += 1
                         in_flight.add(pool.submit(_process_one_galaxy, task))
 
                     while in_flight and sub_done < target_n:
@@ -914,18 +785,22 @@ def main() -> int:
                         )
                         for fut in done:
                             try:
-                                result = fut.result()
+                                result, reason = fut.result()
                             except Exception as e:
+                                reporter.warn(
+                                    f"worker exception: {type(e).__name__}: {e}"
+                                )
                                 print(f"      worker exception: "
                                       f"{type(e).__name__}: {e}")
-                                pairs_skipped += 1
-                                result = None
+                                pairs_skipped_other += 1
+                                result, reason = None, "exception"
                             if result is None:
-                                pairs_skipped += 1
+                                _classify_skip(reason)
                             else:
                                 _write_result(result, writers, sub_done)
                                 sub_done += 1
                                 pairs_written += 1
+                                reporter.set_step(sub_done, target_n, subset)
                                 if sub_done <= 5 or sub_done % 10 == 0:
                                     print(f"      {subset}: {sub_done}/"
                                           f"{target_n} written", flush=True)
@@ -934,6 +809,7 @@ def main() -> int:
                             # Replenish so the pool stays warm.
                             task = _next_task()
                             if task is not None:
+                                pairs_attempted += 1
                                 in_flight.add(
                                     pool.submit(_process_one_galaxy, task)
                                 )
@@ -951,14 +827,31 @@ def main() -> int:
         print(f"      ✓ {subset}: {sub_done} pairs written")
 
     runtime = time.time() - t0
-    summary["pairs_written"] = pairs_written
-    summary["pairs_skipped"] = pairs_skipped
-    summary["elapsed_s"]     = round(runtime, 1)
+    summary["pairs_written"]         = pairs_written
+    summary["pairs_attempted"]       = pairs_attempted
+    summary["pairs_skipped_no_tile"] = pairs_skipped_no_tile
+    summary["pairs_skipped_cutout"]  = pairs_skipped_cutout
+    summary["pairs_skipped_bright"]  = pairs_skipped_bright
+    summary["pairs_skipped_other"]   = pairs_skipped_other
+    summary["max_relative_noise"]    = float(args.max_relative_noise)
+    summary["sigma_lr_band"]         = float(sigma_lr_band)
+    summary["elapsed_s"]             = round(runtime, 1)
     with open(os.path.join(args.output_dir, "generation_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print()
-    print(f"  wrote {pairs_written} pairs total ({pairs_skipped} skipped — "
-          f"position fell outside HLSP coverage or cutout failed)")
+    print(f"  wrote      {pairs_written} pairs")
+    print(f"  attempted  {pairs_attempted}")
+    print(f"  skipped    no-tile={pairs_skipped_no_tile} "
+          f"cutout={pairs_skipped_cutout} "
+          f"bright={pairs_skipped_bright} "
+          f"other={pairs_skipped_other}")
+    reporter.set_stage(
+        f"hst-tfrecords done: written={pairs_written} "
+        f"attempted={pairs_attempted} "
+        f"rejected_bright={pairs_skipped_bright} "
+        f"skipped_cutout={pairs_skipped_cutout} "
+        f"skipped_no_tile={pairs_skipped_no_tile}"
+    )
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
     print(f"PAIRS_WRITTEN={pairs_written}")
     return 0

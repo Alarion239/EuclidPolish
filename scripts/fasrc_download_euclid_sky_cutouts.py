@@ -47,6 +47,7 @@ from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.downloader import (
     DownloadConfig, EuclidCutoutDownloader,
 )
+from euclid_polish.observability.reporter import Reporter
 
 
 # Default sky-catalog location. Kept separate from the star catalog
@@ -157,6 +158,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     band_names = [n.strip() for n in args.bands.split(",") if n.strip()]
     arcsec_side = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
@@ -180,6 +182,7 @@ def main() -> int:
     catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
     if os.path.isfile(catalog_path) and not args.regenerate_catalog:
         existing = pd.read_csv(catalog_path)
+        reporter.set_stage("reusing sky catalog")
         print(f"[1/2] reusing sky catalog: {len(existing)} positions "
               f"in {catalog_path}")
     else:
@@ -193,6 +196,7 @@ def main() -> int:
                   f"and write to {catalog_path}")
         else:
             df.to_csv(catalog_path, index=False)
+            reporter.set_stage("generated sky catalog")
             print(f"[1/2] generated sky catalog: {len(df)} positions → "
                   f"{catalog_path}")
             # Show a few for sanity (RA/Dec inside the requested disk).
@@ -211,13 +215,19 @@ def main() -> int:
 
     cat = StarCatalog(args.output_dir)
     if not cat.exists():
+        reporter.error(
+            f"catalog write at {catalog_path} did not produce a readable file"
+        )
         print(f"ERROR: catalog write at {catalog_path} did not "
               "produce a readable file; check disk + permissions.")
         return 1
 
     # ---- 2. Per-band download ----
+    reporter.set_stage("per-band download")
     summary: dict = {}
-    for band_name in band_names:
+    n_bands = len(band_names)
+    for band_idx, band_name in enumerate(band_names):
+        reporter.set_step(band_idx + 1, n_bands, band_name)
         band = Config.get_band(band_name)
         native = band.cutout_size_for_arcsec(arcsec_side)
         print(f"\n=== {band_name}  (instrument={band.archive_instrument}"

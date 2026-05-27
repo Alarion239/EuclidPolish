@@ -60,21 +60,6 @@ AsinhStretch, ImageNormalize, MinMaxInterval,
 from PIL import Image
 from euclid_polish.web.fasrc_fetcher import CACHE_DIR as _FASRC_CACHE_DIR
 from euclid_polish.web.fasrc_fetcher import _local_path_for
-from euclid_polish.training.transition_model import (
-HSTDenoiser, load_denoiser_weights,
-)
-from euclid_polish.training.transition_augmentations import (
-add_hlsp_noise, sum_rebin_2d,
-)
-from euclid_polish.training.transition_model import (
-apply_denoiser_numpy,
-)
-from euclid_polish.training.transition_augmentations import (
-add_hlsp_noise,
-)
-from euclid_polish.training.transition_augmentations import (
-sum_rebin_2d,
-)
 from euclid_polish.visualization.color import calibrated_rgb_panel
 from euclid_polish.visualization.methods import plot_star_positions
 from euclid_polish.sky.tfrecord import tfrecord_path
@@ -85,12 +70,6 @@ from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 import importlib.util
 from scipy.signal import fftconvolve
 from matplotlib.colors import AsinhNorm
-from euclid_polish.training.transition_model import (
-HSTtoEuclidTransition, load_model_weights,
-)
-from euclid_polish.training.transition_augmentations import (
-sum_rebin_2d, embed_in_canvas,
-)
 import importlib.util as _ilu
 from euclid_polish.web.fasrc_fetcher import (
 is_allowed_remote_path, run_remote_python,
@@ -1428,520 +1407,6 @@ def _arrays_to_fits_bytes(
     return buf.getvalue()
 
 
-def _load_local_denoiser():
-    """Locate + reconstruct the trained HSTDenoiser from local cache.
-
-    Returns ``(denoiser, label)`` on success, ``(None, reason)`` when
-    no usable weights are present. ``label`` is "best" or "latest"
-    so the caller can title the panel accurately. Hyperparameters
-    come from the sidecar JSON; if it's missing we fall back to the
-    architectural defaults the trainer uses.
-    """
-    cfg = fasrc_config.load()
-    best_path = _local_path_for(
-        f"{cfg.data_dir}/hst_psf/hst_denoiser.best.weights.h5",
-    )
-    latest_path = _local_path_for(
-        f"{cfg.data_dir}/hst_psf/hst_denoiser.weights.h5",
-    )
-    if os.path.isfile(best_path):
-        weights_path, tag = best_path, "best"
-    elif os.path.isfile(latest_path):
-        weights_path, tag = latest_path, "latest"
-    else:
-        return None, "hst_denoiser.weights.h5 not in local cache"
-    summary_path = _local_path_for(
-        f"{cfg.data_dir}/hst_psf/hst_denoiser_summary.json",
-    )
-    channels       = 8
-    n_inner_layers = 2
-    kernel_size    = 7
-    if os.path.isfile(summary_path):
-        try:
-            with open(summary_path) as f:
-                s = json.load(f)
-            channels       = int(s.get("channels",       channels))
-            n_inner_layers = int(s.get("n_inner_layers", n_inner_layers))
-            kernel_size    = int(s.get("kernel_size",    kernel_size))
-        except Exception:
-            pass
-    model = HSTDenoiser(
-        channels=channels,
-        n_inner_layers=n_inner_layers,
-        kernel_size=kernel_size,
-    )
-    load_denoiser_weights(model, weights_path)
-    return model, tag
-
-
-def _compute_transition_pair_arrays(
-    subset: str, kind: str, index: int, records_dir: str,
-    *,
-    noise_alpha: float = 0.75,
-    noise_sigma_floor: float = 15.0,
-    noise_seed: int = 0,
-):
-    """Compute the raw linear arrays for one transition-pair view.
-
-    Returns ``(arrays_dict, header_meta_dict)``. Used by the FITS
-    download path; the PNG renderer carries its own copy of this
-    logic so its display-side knobs (asinh stretch knee, percentile
-    clip, colormap) stay close to the imshow calls.
-
-    Per kind:
-      * input         → {"INPUT": (H, W)}            HR clean⊛PSF_HST
-      * target        → {"TARGET": (H/2, W/2)}       LR sum_rebin(clean⊛PSF_Euclid)
-      * residual      → {"RESIDUAL": (H/2, W/2)}     target − sum_rebin(input)
-      * noisy_hst     → {"NOISY": (H, W)}            clean + ε
-      * hst_pair      → {"CLEAN": …, "NOISY": …}     both, same shape
-      * denoised_hst  → {"DENOISED": (H, W)}         CNN_1(clean + ε)
-      * denoiser_strip→ {"CLEAN": …, "NOISY": …,
-                         "DENOISED": …}              all three
-    """
-
-    if subset not in ("train", "validate"):
-        abort(400)
-    if kind not in ("input", "target", "residual",
-                    "noisy_hst", "hst_pair",
-                    "denoised_hst", "denoiser_strip"):
-        abort(400)
-
-    def _load(name: str):
-        path = tfrecord_path(records_dir, name)
-        if not os.path.exists(path):
-            abort(404)
-        records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
-        if not records or index >= len(records):
-            abort(404)
-        return records[min(index, len(records) - 1)]
-
-    base_meta = {
-        "KIND":    kind,
-        "SUBSET":  subset,
-        "INDEX":   int(index),
-    }
-
-    if kind in ("input", "target"):
-        rec = _load(f"{kind}_{subset}")
-        plane = rec.data[..., 0].astype(np.float32)
-        meta = {
-            **base_meta,
-            "PXSCALE": float(rec.pixel_scale_arcsec),
-        }
-        return {kind.upper(): plane}, meta
-
-    if kind == "residual":
-        inp = _load(f"input_{subset}")
-        tgt = _load(f"target_{subset}")
-        inp_plane = inp.data[..., 0].astype(np.float32)
-        tgt_plane = tgt.data[..., 0].astype(np.float32)
-        if inp_plane.shape != tgt_plane.shape:
-            Hi, Wi = inp_plane.shape
-            Ht, Wt = tgt_plane.shape
-            if Hi % Ht != 0 or Wi % Wt != 0 or (Hi // Ht) != (Wi // Wt):
-                abort(500)
-            inp_plane = sum_rebin_2d(inp_plane, Hi // Ht)
-        meta = {
-            **base_meta,
-            "PXSCALE": float(tgt.pixel_scale_arcsec),
-        }
-        return {"RESIDUAL": (tgt_plane - inp_plane).astype(np.float32)}, meta
-
-    # Noise-dependent kinds: load clean from input shard, draw fresh noise.
-    inp = _load(f"input_{subset}")
-    clean = inp.data[..., 0].astype(np.float32)
-    rng = np.random.default_rng(int(noise_seed))
-    noisy = add_hlsp_noise(
-        clean, alpha=float(noise_alpha),
-        sigma_floor=float(noise_sigma_floor), rng=rng,
-    )
-    noise_meta = {
-        **base_meta,
-        "PXSCALE": float(inp.pixel_scale_arcsec),
-        "ALPHA":   float(noise_alpha),
-        "SIGFLOOR": float(noise_sigma_floor),
-        "NSEED":   int(noise_seed),
-    }
-
-    if kind == "noisy_hst":
-        return {"NOISY": noisy.astype(np.float32)}, noise_meta
-
-    if kind == "hst_pair":
-        return (
-            {"CLEAN": clean.astype(np.float32),
-             "NOISY": noisy.astype(np.float32)},
-            noise_meta,
-        )
-
-    # Denoiser kinds — need trained weights.
-    denoiser, tag = _load_local_denoiser()
-    if denoiser is None:
-        abort(404, description=(
-            f"denoiser not available: {tag}. Train it (HST pipeline "
-            f"step 3a-bis) and sync the resulting weights file."
-        ))
-    denoised = apply_denoiser_numpy(denoiser, noisy)
-    denoiser_meta = {**noise_meta, "DENWEIGH": tag}
-    if kind == "denoised_hst":
-        return {"DENOISED": denoised.astype(np.float32)}, denoiser_meta
-    # denoiser_strip
-    return (
-        {"CLEAN":    clean.astype(np.float32),
-         "NOISY":    noisy.astype(np.float32),
-         "DENOISED": denoised.astype(np.float32)},
-        denoiser_meta,
-    )
-
-
-def _render_transition_pair_png(subset: str, kind: str, index: int,
-                                records_dir: str,
-                                *,
-                                noise_alpha: float = 0.75,
-                                noise_sigma_floor: float = 15.0,
-                                noise_seed: int = 0) -> bytes:
-    """Render one transition-model training sample.
-
-    The pair-generation script writes ``input_{subset}.tfrecord``
-    (clean ⊛ PSF_HST) and ``target_{subset}.tfrecord`` (clean ⊛
-    PSF_Euclid) — both single-channel VIS, both ``is_clean=True``.
-
-    ``kind`` ∈ {"input", "target", "residual", "noisy_hst",
-                "hst_pair", "denoised_hst", "denoiser_strip"}:
-
-      * ``input``    — clean HST-PSF-blurred HR scene (A_θ input).
-      * ``target``   — Euclid-PSF-blurred LR target (A_θ output).
-      * ``residual`` — ``target − sum_rebin(input)`` (what A_θ learns).
-                       Rendered with a divergent colormap centred at
-                       zero.
-      * ``noisy_hst``— ``input + HLSP-style ε`` (single panel). The
-                       Phase-1 denoiser's TRAINING INPUT, useful for
-                       eyeballing what realistic noise looks like at
-                       the configured (``α``, ``σ_floor``).
-      * ``hst_pair`` — side-by-side ``(clean_HST | noisy_HST)``. Same
-                       scene, same scale, same asinh+percentile clip
-                       on both panels — the easiest way to see how
-                       much detail the denoiser is being asked to
-                       recover.
-      * ``denoised_hst``  — ``CNN_1_frozen(noisy_hst)`` (single panel).
-                            Requires the trained denoiser weights to
-                            be present in the local FASRC cache.
-      * ``denoiser_strip``— 3 panels: clean ┃ noisy ┃ denoised, shared
-                            clip. The honest "how well is the denoiser
-                            doing?" view.
-
-    Noise parameters (``noise_alpha``, ``noise_sigma_floor``,
-    ``noise_seed``) are only consulted for the ``noisy_hst`` and
-    ``hst_pair`` kinds; defaults sit in the middle of the trainer's
-    typical range. Seed lets the UI keep noise stable across kind-
-    toggles for the same index.
-    """
-    matplotlib.use("Agg")
-
-    if subset not in ("train", "validate"):
-        abort(400)
-    if kind not in ("input", "target", "residual",
-                    "noisy_hst", "hst_pair",
-                    "denoised_hst", "denoiser_strip"):
-        abort(400)
-
-    def _load(name: str):
-        path = tfrecord_path(records_dir, name)
-        if not os.path.exists(path):
-            abort(404)
-        records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
-        if not records or index >= len(records):
-            abort(404)
-        return records[min(index, len(records) - 1)]
-
-    # ── Denoiser-pair views: clean HST vs noisy HST (the denoiser's
-    #    training pair). The `input_*.tfrecord` shards are the clean
-    #    HST-blurred scenes; we add HLSP-style noise on the fly with
-    #    the same model the trainer uses.
-    if kind == "hst_pair":
-        inp = _load(f"input_{subset}")
-        clean = inp.data[..., 0].astype(np.float32)
-        rng = np.random.default_rng(int(noise_seed))
-        noisy = add_hlsp_noise(
-            clean,
-            alpha=float(noise_alpha),
-            sigma_floor=float(noise_sigma_floor),
-            rng=rng,
-        )
-        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
-        s_clean = np.arcsinh(clean / knee)
-        s_noisy = np.arcsinh(noisy / knee)
-        # Shared clip so a wing pixel at the same physical intensity
-        # shows up the same shade on both panels.
-        lo, hi = np.percentile(
-            np.concatenate([s_clean.ravel(), s_noisy.ravel()]),
-            [1.0, 99.7],
-        )
-        if hi <= lo:
-            hi = lo + 1.0
-        fig, axes = plt.subplots(1, 2, figsize=(12, 6.5))
-        axes[0].imshow(s_clean, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi, interpolation="nearest")
-        axes[0].set_title(
-            f"clean HST · idx {inp.index}  "
-            f"({clean.shape[0]}×{clean.shape[1]} @ "
-            f"{inp.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
-        )
-        axes[1].imshow(s_noisy, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi, interpolation="nearest")
-        axes[1].set_title(
-            f"noisy HST · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻",
-            fontsize=10,
-        )
-        for ax in axes:
-            ax.set_xticks([]); ax.set_yticks([])
-        fig.suptitle(
-            f"HST denoiser pair · {subset} · idx {index}",
-            fontsize=11, y=1.01,
-        )
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, dpi=100, bbox_inches="tight", format="png")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
-
-    # ── Denoiser inspection. Loads the trained CNN_1 from local cache
-    #    and runs it on the noisy input. The strip view also surfaces
-    #    pixel-level metrics so a glance shows "is this actually doing
-    #    its job?".
-    if kind in ("denoised_hst", "denoiser_strip"):
-        inp = _load(f"input_{subset}")
-        clean = inp.data[..., 0].astype(np.float32)
-        rng = np.random.default_rng(int(noise_seed))
-        noisy = add_hlsp_noise(
-            clean,
-            alpha=float(noise_alpha),
-            sigma_floor=float(noise_sigma_floor),
-            rng=rng,
-        )
-        denoiser, tag = _load_local_denoiser()
-        if denoiser is None:
-            abort(404, description=(
-                f"denoiser not available: {tag}. Train it (HST "
-                f"pipeline step 3a-bis) and sync the resulting "
-                f"hst_denoiser.weights.h5 + hst_denoiser_summary.json "
-                f"from FASRC into the local cache."
-            ))
-        denoised = apply_denoiser_numpy(denoiser, noisy)
-        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
-        s_clean    = np.arcsinh(clean    / knee)
-        s_noisy    = np.arcsinh(noisy    / knee)
-        s_denoised = np.arcsinh(denoised / knee)
-        # Shared clip across all three panels so visual intensity is
-        # directly comparable (same physical electron count → same
-        # screen grey).
-        lo, hi = np.percentile(
-            np.concatenate(
-                [s_clean.ravel(), s_noisy.ravel(), s_denoised.ravel()]
-            ),
-            [1.0, 99.7],
-        )
-        if hi <= lo:
-            hi = lo + 1.0
-
-        # Quantitative summary: per-pixel L1 against the clean ground
-        # truth, and the "noise removed" fraction
-        # ``1 - ‖denoised−clean‖₁ / ‖noisy−clean‖₁``. Closer to 1 means
-        # the model removed most of the injected noise; near 0 (or
-        # negative) means it didn't help / made things worse.
-        l1_noisy    = float(np.abs(noisy    - clean).mean())
-        l1_denoised = float(np.abs(denoised - clean).mean())
-        if l1_noisy > 0:
-            noise_removed_frac = 1.0 - (l1_denoised / l1_noisy)
-        else:
-            noise_removed_frac = float("nan")
-
-        if kind == "denoised_hst":
-            fig, ax = plt.subplots(figsize=(6.5, 6.5))
-            ax.imshow(s_denoised, cmap="gray_r", origin="lower",
-                      vmin=lo, vmax=hi, interpolation="nearest")
-            ax.set_title(
-                f"denoised HST · {tag} weights · idx {inp.index}  "
-                f"(α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻; "
-                f"L1 vs clean: noisy={l1_noisy:.2f} → "
-                f"denoised={l1_denoised:.2f}, "
-                f"removed {noise_removed_frac*100:.1f}%)",
-                fontsize=9,
-            )
-            ax.set_xticks([]); ax.set_yticks([])
-            fig.tight_layout()
-            buf = io.BytesIO()
-            fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
-            plt.close(fig)
-            buf.seek(0)
-            return buf.getvalue()
-
-        # ── 3-panel strip: clean | noisy | denoised ──
-        fig, axes = plt.subplots(1, 3, figsize=(16, 5.4))
-        axes[0].imshow(s_clean, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi, interpolation="nearest")
-        axes[0].set_title(
-            f"clean (ground truth) · idx {inp.index}", fontsize=10,
-        )
-        axes[1].imshow(s_noisy, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi, interpolation="nearest")
-        axes[1].set_title(
-            f"noisy input · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻\n"
-            f"L1 vs clean = {l1_noisy:.2f} e⁻", fontsize=10,
-        )
-        axes[2].imshow(s_denoised, cmap="gray_r", origin="lower",
-                       vmin=lo, vmax=hi, interpolation="nearest")
-        axes[2].set_title(
-            f"denoised ({tag} weights)\n"
-            f"L1 vs clean = {l1_denoised:.2f} e⁻ "
-            f"({noise_removed_frac*100:+.1f}% noise removed)",
-            fontsize=10,
-        )
-        for ax in axes:
-            ax.set_xticks([]); ax.set_yticks([])
-        fig.suptitle(
-            f"HST denoiser inspection · {subset} · idx {index}",
-            fontsize=11, y=1.01,
-        )
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, dpi=100, bbox_inches="tight", format="png")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
-
-    if kind == "noisy_hst":
-        inp = _load(f"input_{subset}")
-        clean = inp.data[..., 0].astype(np.float32)
-        rng = np.random.default_rng(int(noise_seed))
-        noisy = add_hlsp_noise(
-            clean,
-            alpha=float(noise_alpha),
-            sigma_floor=float(noise_sigma_floor),
-            rng=rng,
-        )
-        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
-        s_clean = np.arcsinh(clean / knee)
-        s_noisy = np.arcsinh(noisy / knee)
-        # Shared range with the matching clean so the noisy display
-        # uses the same threshold as the clean panel would.
-        lo, hi = np.percentile(
-            np.concatenate([s_clean.ravel(), s_noisy.ravel()]),
-            [1.0, 99.7],
-        )
-        if hi <= lo:
-            hi = lo + 1.0
-        stretched = s_noisy
-        img_for_meta = inp
-        title_suffix = (
-            f"noisy_hst · α={noise_alpha:g}, σ_floor={noise_sigma_floor:g} e⁻"
-        )
-        cmap = "gray_r"
-        fig, ax = plt.subplots(figsize=(6.5, 6.5))
-        ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi,
-              interpolation="nearest")
-        ax.set_title(
-            f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
-            f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
-            f"{img_for_meta.pixel_scale_arcsec:.3f}\"/pix)",
-            fontsize=10,
-        )
-        ax.set_xticks([]); ax.set_yticks([])
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
-
-    if kind == "residual":
-        inp = _load(f"input_{subset}")
-        tgt = _load(f"target_{subset}")
-        # Input is HR (e.g. 256²), target is LR (e.g. 128² at rebin=2).
-        # Sum-rebin the input down to the target's grid before
-        # subtracting — this matches the loss the trainer optimises
-        # (``loss = ||sum_rebin(A_θ(input)) - target||``). The residual
-        # shown here is exactly the per-pixel target the model has to
-        # learn to predict.
-        inp_plane = inp.data[..., 0]
-        tgt_plane = tgt.data[..., 0]
-        if inp_plane.shape != tgt_plane.shape:
-            Hi, Wi = inp_plane.shape
-            Ht, Wt = tgt_plane.shape
-            if Hi % Ht != 0 or Wi % Wt != 0 or (Hi // Ht) != (Wi // Wt):
-                abort(500)   # non-integer rebin between sides
-            inp_plane = sum_rebin_2d(inp_plane, Hi // Ht)
-        plane = tgt_plane - inp_plane
-        img_for_meta = tgt
-        title_suffix = (
-            f"target − sum_rebin(input) (LR space; "
-            f"mean={plane.mean():.3g}, max|·|={np.abs(plane).max():.3g})"
-        )
-        cmap = "RdBu_r"
-        # Symmetric range around zero for divergent rendering.
-        a = float(np.abs(plane).max())
-        lo, hi = (-a, a) if a > 0 else (-1.0, 1.0)
-        stretched = plane
-    else:
-        # SHARED display clip across (input, target) panels.
-        #
-        # REGRESSION — the obvious-looking ``lo, hi = percentile(stretched,
-        # [1, 99.7])`` *per panel* is wrong here, even though it's the
-        # right default for every other single-panel view. Reason:
-        # ``input`` and ``target`` carry the SAME scene through DIFFERENT
-        # PSFs + an asymmetric ``sum_rebin`` on the target side. The
-        # target's per-pixel peak is ~2× the input's (rebin sums a 2×2
-        # block at peak), so an independent 99.7-percentile clip on
-        # each panel gives the target a ~4× wider asinh display range.
-        # The same physical wing intensity that pops out as grey on the
-        # input panel disappears into black on the target panel —
-        # *inverting* the physical truth (Euclid wings are 4-12×
-        # brighter than HST wings at every arcsec radius from 0.1" to
-        # 1.0"). End user perception: "Euclid PSF shrunk to HST size",
-        # even though the pipeline is faithful.
-        #
-        # Fix: compute one shared 99.7-percentile clip on the union of
-        # input + target asinh arrays. Keeps usable contrast (the same
-        # reason every other render uses 99.7-percentile) while making
-        # "mid-grey here" mean the same electron count as "mid-grey
-        # there" — the invariant a faithful side-by-side comparison
-        # actually needs.
-        record = _load(f"{kind}_{subset}")
-        plane = record.data[..., 0]
-        partner_kind = "target" if kind == "input" else "input"
-        partner = _load(f"{partner_kind}_{subset}")
-        partner_plane = partner.data[..., 0]
-        knee = float(Config.BAND_VIS.asinh_stretch_scale_e)
-        stretched = np.arcsinh(plane / knee)
-        partner_stretched = np.arcsinh(partner_plane / knee)
-        lo, hi = np.percentile(
-            np.concatenate([stretched.ravel(), partner_stretched.ravel()]),
-            [1.0, 99.7],
-        )
-        if hi <= lo:
-            hi = lo + 1.0
-        img_for_meta = record
-        title_suffix = kind
-        cmap = "gray_r"
-
-    fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.imshow(stretched, cmap=cmap, origin="lower", vmin=lo, vmax=hi,
-              interpolation="nearest")
-    ax.set_title(
-        f"transition · {subset} · {title_suffix} · idx {img_for_meta.index}  "
-        f"({img_for_meta.data.shape[0]}×{img_for_meta.data.shape[1]} @ "
-        f"{img_for_meta.pixel_scale_arcsec:.3f}\"/pix)",
-        fontsize=10,
-    )
-    ax.set_xticks([]); ax.set_yticks([])
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
 def _render_sky_record_png(subset: str, kind: str, band: str,
                            index: int,
                            records_dir: Optional[str] = None) -> bytes:
@@ -2789,248 +2254,20 @@ def create_app() -> Flask:
             "sum":         float(a_conv_h.sum()),
         })
 
-    @app.route("/hst-psf/transition-validate.png")
-    def hst_psf_transition_validate_png():
-        """Render the trained transition model A_θ on canonical inputs.
-
-        Pulls ``transition_model.weights.h5`` from FASRC (via the
-        fetcher cache) along with the HST PSF + Euclid VIS PSF. Applies
-        A_θ to:
-
-          * A centred unit-amplitude delta (a "point source") on the HR
-            canvas — output should look like A_θ's implicit kernel.
-          * The HST PSF embedded in the HR canvas — output should
-            approximate the Euclid PSF after sum-rebin.
-
-        Sum-rebins each output by ``rebin_factor`` (read from the
-        model's summary JSON; defaults to 2) and shows the LR result
-        alongside the Euclid target + residual.
-
-        Hyperparameters (channels, n_inner_layers) come from the
-        summary JSON so the constructor matches the saved weights.
-        Falls back to defaults (C=12, 3 inner layers) if the summary
-        isn't present.
-        """
-
-        cfg = fasrc_config.load()
-        hst_path     = _local_path_for(f"{cfg.data_dir}/hst_psf/F814W.fits")
-        euc_path     = os.path.join(Config.EUCLID_PSF_DIR, "euclid_psf_VIS.fits")
-        # Prefer the best-val_L1 checkpoint when available; fall back
-        # to the latest (= weights-on-shutdown / weights-at-end).
-        best_weights_path = _local_path_for(
-            f"{cfg.data_dir}/hst_psf/transition_model.best.weights.h5",
-        )
-        latest_weights_path = _local_path_for(
-            f"{cfg.data_dir}/hst_psf/transition_model.weights.h5",
-        )
-        if os.path.isfile(best_weights_path):
-            weights_path = best_weights_path
-            weights_tag  = "best"
-        else:
-            weights_path = latest_weights_path
-            weights_tag  = "latest"
-        summary_path = _local_path_for(
-            f"{cfg.data_dir}/hst_psf/transition_model_summary.json",
-        )
-        for p, label in (
-            (hst_path,     "HST PSF FITS — click Sync first"),
-            (euc_path,     "Euclid VIS PSF FITS — generate it via the PSF tab"),
-            (weights_path, "transition model weights — train it on FASRC + Sync"),
-        ):
-            if not os.path.isfile(p):
-                abort(404, description=f"missing: {p} ({label})")
-
-        # Read hyperparameters from the summary JSON when available;
-        # fall back to defaults that match the most common training run.
-        channels       = 12
-        n_inner_layers = 3
-        kernel_size    = 3
-        rebin_factor   = 2
-        baseline_path  = ""
-        baseline_crop  = 0
-        if os.path.isfile(summary_path):
-            try:
-                with open(summary_path) as f:
-                    s = json.load(f)
-                channels       = int(s.get("channels",       channels))
-                n_inner_layers = int(s.get("n_inner_layers", n_inner_layers))
-                kernel_size    = int(s.get("kernel_size",    kernel_size))
-                rebin_factor   = int(s.get("rebin_factor",   rebin_factor))
-                baseline_path  = str(s.get("analytic_baseline_kernel", ""))
-                baseline_crop  = int(s.get("baseline_crop",  baseline_crop))
-            except Exception:
-                pass
-
-        # If the trained model used an analytic baseline, load + crop
-        # the SAME kernel from the local cache. The kernel must be
-        # reconstructed before the model is built so the layer shapes
-        # match the saved weights file.
-        baseline_kernel = None
-        if baseline_path:
-            local_baseline = _local_path_for(
-                f"{cfg.data_dir}/hst_psf/diff_kernel_VIS.fits",
-            )
-            if os.path.isfile(local_baseline):
-                with fits.open(local_baseline) as hdul:
-                    full = np.asarray(hdul[0].data, dtype=np.float32)
-                if baseline_crop > 0 and baseline_crop < full.shape[0]:
-                    side = baseline_crop | 1
-                    i0 = (full.shape[0] - side) // 2
-                    baseline_kernel = full[i0:i0 + side, i0:i0 + side]
-                else:
-                    baseline_kernel = full
-
-        # Load PSFs on the HR grid, using the SAME resampler the
-        # pair generator + training script use (so the PSF we feed A_θ
-        # here is bit-equivalent to what it saw at training time).
-        repo_root = os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))
-        repo_root = os.path.dirname(repo_root)        # …/EuclidPolish
-        script = os.path.join(repo_root, "scripts",
-                              "fasrc_generate_transition_pairs.py")
-        spec = _ilu.spec_from_file_location("_fgtp", script)
-        mod  = _ilu.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        # Pick a canvas size that comfortably holds the Euclid PSF
-        # support, is divisible by rebin_factor, and matches what the
-        # training pre-flight observed (typical 510² scenes → use 256
-        # here for a snappy diagnostic). The model is fully
-        # convolutional, so canvas size is free to choose.
-        canvas = 256
-        if canvas % rebin_factor != 0:
-            canvas = (canvas // rebin_factor) * rebin_factor
-
-        psf_hst    = mod._load_hst_psf_on_hr(hst_path, 421)
-        psf_euclid = mod._load_euclid_vis_psf_on_hr(421)
-        psf_hst_canvas    = embed_in_canvas(psf_hst,    canvas).astype(np.float32)
-        psf_euclid_canvas = embed_in_canvas(psf_euclid, canvas).astype(np.float32)
-
-        # Build the model and load weights.
-        model = HSTtoEuclidTransition(
-            channels=channels, n_inner_layers=n_inner_layers,
-            kernel_size=kernel_size, baseline_kernel=baseline_kernel,
-        )
-        load_model_weights(model, weights_path)
-
-        # Two canonical inputs.
-        delta = np.zeros((canvas, canvas), dtype=np.float32)
-        delta[canvas // 2, canvas // 2] = 1.0
-
-        # Apply A_θ to each via a single batched call.
-        x = np.stack([delta, psf_hst_canvas], axis=0)[..., np.newaxis]
-        y = model(x.astype(np.float32), training=False).numpy()[..., 0]
-        out_delta = y[0]
-        out_hst   = y[1]
-
-        # Sum-rebin to LR for the bottom row + the PSF-identity probe.
-        out_delta_lr = sum_rebin_2d(out_delta, rebin_factor)
-        out_hst_lr   = sum_rebin_2d(out_hst,   rebin_factor)
-        euc_lr       = sum_rebin_2d(psf_euclid_canvas, rebin_factor)
-        residual_lr  = out_hst_lr - euc_lr
-
-        # Scalar diagnostics.
-        psf_id_err = (
-            float(np.abs(residual_lr).sum())
-            / (float(np.abs(euc_lr).sum()) + 1e-12)
-        )
-        peak_ratio_pt = (
-            float(out_delta.max()) / 1.0   # input peak is 1.0
-        )
-        flux_in_hst   = float(psf_hst_canvas.sum())
-        flux_out_hst  = float(out_hst.sum())
-        flux_out_lr   = float(out_hst_lr.sum())
-        flux_target_lr = float(euc_lr.sum())
-
-        # Render 3 × 3 panel grid. Use asinh stretch for the PSF
-        # panels so the wings + spikes show up alongside the core.
-        fig, axes = plt.subplots(3, 3, figsize=(13, 12), dpi=110)
-
-        def _imshow_psf(ax, arr, title, vmax=None):
-            if vmax is None:
-                vmax = max(float(arr.max()), 1e-9)
-            scale = max(vmax * 0.01, 1e-12)
-            norm = AsinhNorm(linear_width=scale, vmin=0.0, vmax=vmax)
-            ax.imshow(arr, cmap="gray_r", norm=norm, origin="lower",
-                      interpolation="nearest")
-            ax.set_title(title, fontsize=9)
-            ax.set_xticks([]); ax.set_yticks([])
-
-        def _imshow_residual(ax, arr, title):
-            r_lim = float(np.max(np.abs(arr)))
-            if r_lim <= 0:
-                r_lim = 1.0
-            norm = AsinhNorm(
-                linear_width=max(r_lim * 0.01, 1e-12),
-                vmin=-r_lim, vmax=+r_lim,
-            )
-            ax.imshow(arr, cmap="RdBu_r", norm=norm, origin="lower",
-                      interpolation="nearest")
-            ax.set_title(title, fontsize=9)
-            ax.set_xticks([]); ax.set_yticks([])
-
-        # Row 1 — point source path.
-        _imshow_psf(axes[0, 0], delta,         "point source input (HR, δ)")
-        _imshow_psf(axes[0, 1], out_delta,     f"A_θ(δ) [HR]  peak={out_delta.max():.3e}")
-        _imshow_psf(axes[0, 2], out_delta_lr,  f"sum_rebin(A_θ(δ)) [LR]  peak={out_delta_lr.max():.3e}")
-
-        # Row 2 — HST PSF path.
-        _imshow_psf(axes[1, 0], psf_hst_canvas, f"PSF_HST input (HR)  flux={flux_in_hst:.4f}")
-        _imshow_psf(axes[1, 1], out_hst,        f"A_θ(PSF_HST) [HR]  flux={flux_out_hst:.4f}")
-        _imshow_psf(axes[1, 2], out_hst_lr,
-                    f"sum_rebin(A_θ(PSF_HST)) [LR]\n"
-                    f"flux={flux_out_lr:.4f}")
-
-        # Row 3 — target Euclid PSF + residual + |residual|.
-        _imshow_psf(axes[2, 0], euc_lr,
-                    f"target: sum_rebin(PSF_Euclid) [LR]\n"
-                    f"flux={flux_target_lr:.4f}")
-        _imshow_residual(axes[2, 1], residual_lr,
-                         f"sum_rebin(A_θ(PSF_HST)) − target [LR]\n"
-                         f"max|res|={np.abs(residual_lr).max():.3e}")
-        _imshow_psf(axes[2, 2], np.abs(residual_lr),
-                    f"|residual| [LR]")
-
-        baseline_tag = (
-            f"baseline=analytic({baseline_kernel.shape[0]}²)"
-            if baseline_kernel is not None else "baseline=identity"
-        )
-        fig.suptitle(
-            f"A_θ inspector  —  ckpt={weights_tag}, K={kernel_size}, "
-            f"n_inner_layers={n_inner_layers}, C={channels}, "
-            f"RF={model.receptive_field} px, rebin={rebin_factor}, "
-            f"{baseline_tag}  "
-            f"|  PSF identity err = {psf_id_err:.4f}  "
-            f"|  point-source peak = {peak_ratio_pt:.3f}",
-            fontsize=11, y=0.99,
-        )
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.2)
-        plt.close(fig)
-        return send_file(io.BytesIO(buf.getvalue()),
-                         mimetype="image/png", max_age=0)
-
     @app.route("/api/hst-psf/sync", methods=["POST"])
     def api_hst_psf_sync():
-        """Re-rsync the HST PSF + differential kernel + trained
-        transition-model weights from FASRC.
+        """Re-rsync the HST PSF + differential kernel from FASRC.
 
         Bypasses the fetcher's 5-minute cache (``force=True``) so a
-        kernel/model you just rebuilt on FASRC shows up locally without
+        kernel you just rebuilt on FASRC shows up locally without
         waiting. Reports per-file status. Files that don't exist on
-        FASRC (e.g. you haven't trained A_θ yet) are reported as
-        failed individually but don't block the others.
+        FASRC are reported as failed individually but don't block the
+        others.
         """
         cfg_loaded = fasrc_config.load()
         targets = {
-            "psf":              f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
-            "kernel":           f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
-            "transition_model": f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
-            "transition_model_best":
-                f"{cfg_loaded.data_dir}/hst_psf/transition_model.best.weights.h5",
-            "transition_summary":
-                f"{cfg_loaded.data_dir}/hst_psf/transition_model_summary.json",
+            "psf":    f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
+            "kernel": f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
         }
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False
@@ -3514,6 +2751,39 @@ def create_app() -> Flask:
             default_subset="validate",
         )
 
+    def _load_diff_kernel_local() -> Optional[np.ndarray]:
+        """Return the analytic differential kernel from the local cache.
+
+        Returns ``None`` (without raising) when the kernel FITS isn't
+        synced yet, so callers can abort with a useful 404 message.
+        """
+        cfg = fasrc_config.load()
+        krn_path = _local_path_for(
+            f"{cfg.data_dir}/hst_psf/diff_kernel_VIS.fits"
+        )
+        if not os.path.isfile(krn_path):
+            return None
+        with fits.open(krn_path) as hdul:
+            return np.asarray(hdul[0].data, dtype=np.float32)
+
+    def _hst_analytic_lr_cube(
+        clean_hr_data: np.ndarray, kernel: np.ndarray, *, rebin: int = 2,
+    ) -> np.ndarray:
+        """Per-band ``fftconvolve(clean_HR, A)`` then sum-rebin × ``rebin``.
+
+        Returns the noiseless deterministic forward at the LR grid —
+        what a perfect forward model with no trained CNN and no noise
+        injection would produce. Lets the user isolate ringing
+        artifacts the CNN was meant to suppress.
+        """
+        out_hr = np.empty_like(clean_hr_data, dtype=np.float32)
+        for c in range(clean_hr_data.shape[-1]):
+            out_hr[..., c] = fftconvolve(
+                clean_hr_data[..., c].astype(np.float32), kernel,
+                mode="same",
+            )
+        return MultiBandSkyImage.rebin_array(out_hr, rebin)
+
     def _compute_hst_pair_arrays(subset, kind, index, records_dir):
         """Raw-array companion to ``_render_sky_record_png`` /
         ``_render_sky_record_pair_png``. Returns
@@ -3523,10 +2793,15 @@ def create_app() -> Flask:
         ``(H, W, C)`` shape so DS9 sees a proper data cube; FITS
         stores axes in NAXIS3-then-2 ordering so it surveys as
         "bands × H × W" via image-cube viewers.
+
+        ``kind="dirty_analytic"`` is computed live from the matching
+        ``clean`` record by applying the cached differential kernel
+        (no CNN, no noise) — used by the live debug view to surface
+        ringing artifacts directly attributable to the bare kernel.
         """
         if subset not in ("train", "validate"):
             abort(400)
-        if kind not in ("clean", "dirty", "hr", "pair"):
+        if kind not in ("clean", "dirty", "hr", "pair", "dirty_analytic"):
             abort(400)
 
         def _load(name):
@@ -3555,11 +2830,93 @@ def create_app() -> Flask:
                  "PXSCALEH": float(rs["hr"].pixel_scale_arcsec)},
             )
 
+        if kind == "dirty_analytic":
+            clean = _load(f"clean_{subset}")
+            kernel = _load_diff_kernel_local()
+            if kernel is None:
+                abort(404, description=(
+                    "diff_kernel_VIS.fits not in local cache — run the "
+                    "kernel step on FASRC and pull it down first."
+                ))
+            lr = _hst_analytic_lr_cube(
+                np.asarray(clean.data, dtype=np.float32), kernel,
+            )
+            # HR pixel scale (0.05") halves to 0.10" after sum-rebin ×2.
+            lr_pxscale = float(clean.pixel_scale_arcsec) * 2.0
+            return (
+                {"DIRTY_ANALYTIC": lr},
+                {**meta_base, "PXSCALE": lr_pxscale,
+                 "PXSCALEC": float(clean.pixel_scale_arcsec)},
+            )
+
         rec = _load(f"{kind}_{subset}")
         return (
             {kind.upper(): np.asarray(rec.data, dtype=np.float32)},
             {**meta_base, "PXSCALE": float(rec.pixel_scale_arcsec)},
         )
+
+    def _render_hst_dirty_analytic_png(
+        subset: str, band: str, index: int, records_dir: str,
+    ) -> bytes:
+        """Render ``sum_rebin(A ⊛ clean_HR)`` for one index — live, no CNN.
+
+        Same asinh / Lupton conventions as :func:`_render_sky_record_png`
+        so the output is directly comparable to the cached ``dirty``
+        record; the only difference is which forward operator produced
+        the LR side.
+        """
+        matplotlib.use("Agg")
+        if subset not in ("train", "validate"):
+            abort(400)
+        if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
+            abort(400)
+        arrays, meta = _compute_hst_pair_arrays(
+            subset, "dirty_analytic", index, records_dir,
+        )
+        data = arrays["DIRTY_ANALYTIC"]
+        pxscale = float(meta["PXSCALE"])
+
+        if band == "color" and data.shape[-1] >= len(Config.LR_INPUT_BAND_NAMES):
+            rgb = calibrated_rgb_panel(
+                data, band_names=Config.LR_INPUT_BAND_NAMES,
+                scheme="vis_nisp", reference="solar", stretch="asinh",
+                asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
+            )
+            fig, ax = plt.subplots(figsize=(6.5, 6.5))
+            ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
+                      interpolation="nearest")
+            ax.set_title(
+                f"dirty (analytic A, no CNN, no noise) {subset} · color "
+                f"· idx {index}  ({data.shape[0]}×{data.shape[1]} @ "
+                f"{pxscale:.3f}\"/pix)", fontsize=10,
+            )
+        else:
+            if data.shape[-1] == 1:
+                plane, band_name = data[..., 0], "VIS"
+            else:
+                k = list(Config.LR_INPUT_BAND_NAMES).index(band)
+                plane, band_name = data[..., k], band
+            bcfg = Config.get_band(band_name)
+            stretched = np.arcsinh(plane / float(bcfg.asinh_stretch_scale_e))
+            lo, hi = np.percentile(stretched, [1.0, 99.7])
+            if hi <= lo:
+                hi = lo + 1.0
+            fig, ax = plt.subplots(figsize=(6.5, 6.5))
+            ax.imshow(stretched, cmap="gray_r", origin="lower",
+                      vmin=lo, vmax=hi, interpolation="nearest")
+            ax.set_title(
+                f"dirty (analytic A, no CNN, no noise) {subset} · "
+                f"{band_name} · idx {index}  "
+                f"({data.shape[0]}×{data.shape[1]} @ "
+                f"{pxscale:.3f}\"/pix)", fontsize=10,
+            )
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
 
     @app.route("/view/hst-pair")
     def view_hst_pair():
@@ -3572,10 +2929,17 @@ def create_app() -> Flask:
             idx = 0
         # kind="pair" routes to the side-by-side triptych so the user
         # can compare HR clean / LR dirty / HR target at one index
-        # without chip-toggling. All other kinds use the single-image
-        # renderer for back-compat with bookmarks + direct links.
+        # without chip-toggling. ``dirty_analytic`` runs the bare
+        # differential kernel live (no CNN, no noise) on the matching
+        # ``clean`` HR record; everything else uses the single-image
+        # renderer reading directly from the cached TFRecords.
         if kind == "pair":
             png = _render_sky_record_pair_png(
+                subset, band, idx,
+                records_dir=_hst_pairs_local_dir(),
+            )
+        elif kind == "dirty_analytic":
+            png = _render_hst_dirty_analytic_png(
                 subset, band, idx,
                 records_dir=_hst_pairs_local_dir(),
             )
@@ -3591,13 +2955,21 @@ def create_app() -> Flask:
         """Raw-array FITS companion of ``/view/hst-pair``.
 
         Returns the linear electron pixel values for the requested
-        kind (single record, or all-three for ``kind=pair``). Bands
-        are preserved as the third axis so DS9's image-cube viewer
-        can step through VIS/Y_E/J_E/H_E. The display-side band chip
-        is ignored — FITS download always carries every band.
+        kind. The ``band`` query arg controls slicing:
+
+        * ``band`` in ``Config.LR_INPUT_BAND_NAMES`` (e.g. ``VIS``)
+          → return only that band as a 2-D ``(H, W)`` image. Lets the
+          user A/B one band against another viewer (e.g. compare
+          ``dirty`` VIS to ``dirty_analytic`` VIS in DS9 without
+          slicing).
+        * ``band=color`` or absent → full ``(H, W, C)`` cube, same
+          as before.
+        * Single-band records (e.g. ``hr``) are returned as-is in
+          either case.
         """
         subset = request.args.get("subset", "validate")
         kind   = request.args.get("kind",   "clean")
+        band   = request.args.get("band",   "color")
         try:
             idx = int(request.args.get("i", 0))
         except ValueError:
@@ -3606,8 +2978,25 @@ def create_app() -> Flask:
             subset, kind, idx,
             records_dir=_hst_pairs_local_dir(),
         )
+        # Slice down to one band when the chip selected a real band.
+        # Triptych ``kind="pair"`` keeps all panels cubed because there
+        # the user wants to inspect three records together; slicing
+        # one out doesn't compose with the others.
+        if (band in Config.LR_INPUT_BAND_NAMES
+                and kind != "pair"):
+            k_idx = list(Config.LR_INPUT_BAND_NAMES).index(band)
+            sliced: Dict[str, np.ndarray] = {}
+            for ext_name, arr in arrays.items():
+                if arr.ndim == 3 and arr.shape[-1] > k_idx:
+                    sliced[ext_name] = arr[..., k_idx]
+                else:
+                    # Single-band records (e.g. HR) pass through.
+                    sliced[ext_name] = arr
+            arrays = sliced
+            meta = {**meta, "BAND": band}
         data = _arrays_to_fits_bytes(arrays, header_meta=meta)
-        fname = f"hst_{kind}_{subset}_{idx}.fits"
+        band_tag = f"_{band}" if band in Config.LR_INPUT_BAND_NAMES else ""
+        fname = f"hst_{kind}_{subset}_{idx}{band_tag}.fits"
         return send_file(
             io.BytesIO(data), mimetype="application/fits",
             as_attachment=True, download_name=fname, max_age=0,
@@ -3653,157 +3042,6 @@ def create_app() -> Flask:
                     f"{remote_dir}/{kind}_train.tfrecord"
                 )
 
-        max_bytes = 5 * 1024 * 1024 * 1024
-        results: Dict[str, Dict[str, Any]] = {}
-        any_ok = False
-        for key, remote in targets.items():
-            r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
-            entry: Dict[str, Any] = {
-                "remote_path": remote,
-                "ok":          r.ok,
-                "size_bytes":  r.size_bytes,
-            }
-            if r.ok and r.local_path:
-                try:
-                    entry["local_mtime"] = os.path.getmtime(r.local_path)
-                except OSError:
-                    entry["local_mtime"] = None
-                any_ok = True
-            else:
-                entry["error"] = r.error
-            results[key] = entry
-        return jsonify({"ok": any_ok, "files": results,
-                        "include_train": include_train})
-
-    # =========================================================================
-    # Transition pairs — viewer for the (clean ⊛ PSF_HST, clean ⊛ PSF_Euclid)
-    # training data the transition-model CNN A_θ learns from.
-    # =========================================================================
-
-    def _transition_pairs_remote_dir() -> str:
-        cfg = fasrc_config.load()
-        return f"{cfg.data_dir}/images/records_transition"
-
-    def _transition_pairs_local_dir() -> str:
-        """Local cache dir for FASRC-pulled transition-pair shards.
-
-        Mirrors the convention used by ``_hst_pairs_local_dir`` so the
-        same fetcher writes here.
-        """
-        any_path = f"{_transition_pairs_remote_dir()}/input_validate.tfrecord"
-        return os.path.dirname(_local_path_for(any_path))
-
-    @app.route("/transition-pairs")
-    def transition_pairs_page():
-        local_dir = _transition_pairs_local_dir()
-        return render_template(
-            "transition_pairs.html",
-            tfrecords=_tfrecords_status(local_dir),
-            local_dir=local_dir,
-            remote_dir=_transition_pairs_remote_dir(),
-            # Validate split is the small one (~25 MB per file at default
-            # crop=256, n_valid=400); default the nav to it so the page
-            # works the moment Sync completes.
-            default_subset="validate",
-        )
-
-    @app.route("/view/transition-pair")
-    def view_transition_pair():
-        subset = request.args.get("subset", "validate")
-        kind   = request.args.get("kind",   "input")
-        try:
-            idx = int(request.args.get("i", 0))
-        except ValueError:
-            idx = 0
-        # Noise params for the ``noisy_hst`` / ``hst_pair`` kinds.
-        # Floats parsed with safe fallbacks so a typo doesn't 500 — it
-        # just falls back to a sane default.
-        def _flt(key: str, default: float) -> float:
-            try:
-                return float(request.args.get(key, default))
-            except (TypeError, ValueError):
-                return default
-        png = _render_transition_pair_png(
-            subset, kind, idx,
-            records_dir=_transition_pairs_local_dir(),
-            noise_alpha=_flt("alpha", 0.75),
-            noise_sigma_floor=_flt("sigma_floor", 15.0),
-            noise_seed=int(_flt("noise_seed", float(idx))),
-        )
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/view/transition-pair.fits")
-    def view_transition_pair_fits():
-        """Raw-array FITS download companion of ``/view/transition-pair``.
-
-        Multi-HDU file: each named array from
-        :func:`_compute_transition_pair_arrays` becomes its own HDU.
-        Linear electron values are preserved exactly — no asinh
-        stretch, no percentile clip, no colormap. Open in DS9 to
-        inspect the actual pixel values the trainer / denoiser
-        produced.
-        """
-        subset = request.args.get("subset", "validate")
-        kind   = request.args.get("kind",   "input")
-        try:
-            idx = int(request.args.get("i", 0))
-        except ValueError:
-            idx = 0
-        def _flt(key: str, default: float) -> float:
-            try:
-                return float(request.args.get(key, default))
-            except (TypeError, ValueError):
-                return default
-        arrays, meta = _compute_transition_pair_arrays(
-            subset, kind, idx,
-            records_dir=_transition_pairs_local_dir(),
-            noise_alpha=_flt("alpha", 0.75),
-            noise_sigma_floor=_flt("sigma_floor", 15.0),
-            noise_seed=int(_flt("noise_seed", float(idx))),
-        )
-        data = _arrays_to_fits_bytes(arrays, header_meta=meta)
-        # Filename suggested by the Content-Disposition so the browser
-        # saves it as <kind>_<subset>_<index>.fits instead of just
-        # 'view'. download_name is honoured by send_file.
-        fname = f"transition_{kind}_{subset}_{idx}.fits"
-        return send_file(
-            io.BytesIO(data), mimetype="application/fits",
-            as_attachment=True, download_name=fname, max_age=0,
-        )
-
-    @app.route("/api/transition-pairs/totals")
-    def api_transition_pairs_totals():
-        local = _transition_pairs_local_dir()
-        return jsonify({
-            name: _record_count(name, records_dir=local)
-            for name in ("input_train", "input_validate",
-                         "target_train", "target_validate")
-        })
-
-    @app.route("/api/transition-pairs/status")
-    def api_transition_pairs_status():
-        return jsonify(_tfrecords_status(_transition_pairs_local_dir()))
-
-    @app.route("/api/transition-pairs/sync", methods=["POST"])
-    def api_transition_pairs_sync():
-        """Rsync transition-pair TFRecord files from FASRC into the local cache.
-
-        Form arg ``include_train`` (default false) controls whether the
-        larger train-split files are pulled. Validation files are small
-        (~25 MB each, 2 files) so they're always synced.
-        """
-        remote_dir = _transition_pairs_remote_dir()
-        include_train = (request.values.get("include_train", "false")
-                         .lower() in ("1", "true", "yes", "on"))
-        targets: Dict[str, str] = {}
-        for side in ("input", "target"):
-            targets[f"{side}_validate"] = (
-                f"{remote_dir}/{side}_validate.tfrecord"
-            )
-            if include_train:
-                targets[f"{side}_train"] = (
-                    f"{remote_dir}/{side}_train.tfrecord"
-                )
         max_bytes = 5 * 1024 * 1024 * 1024
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False
@@ -4458,8 +3696,6 @@ def create_app() -> Flask:
         # (the JS side maps each step_id to one of these keys).
         artifacts = {
             "tiles": None, "psf": None, "kernel": None,
-            "transition_pairs": None, "denoiser": None,
-            "transition_model": None,
             "records": None, "ckpt": None,
             # Round-trip pipeline artifacts (Chunk C3 + web wiring):
             #   euclid_sky      — sky-position catalog written by the
@@ -4479,12 +3715,6 @@ def create_app() -> Flask:
                 "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
                 "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
                 "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
-                "transition_pairs":
-                    f"{cfg_loaded.data_dir}/images/records_transition/input_train.tfrecord",
-                "denoiser":
-                    f"{cfg_loaded.data_dir}/hst_psf/hst_denoiser.weights.h5",
-                "transition_model":
-                    f"{cfg_loaded.data_dir}/hst_psf/transition_model.weights.h5",
                 "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
                 "euclid_sky":

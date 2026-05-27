@@ -57,173 +57,49 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the original 5 HST steps, the two
-        round-trip steps (sky download + LR-only TFRecord build), the
-        two transition-model steps (training-pair generation + CNN
-        training), ``train_denoiser`` for Phase 1 of the two-stage
-        chain, and the four legacy ``run_pipeline.py`` presets that
-        now share the same step abstraction."""
+        """Registry must include the original HST steps (download,
+        extract-PSF, kernel, TFRecord generation, WDSR train), the two
+        round-trip steps (sky download + LR-only TFRecord build), and
+        the four legacy ``run_pipeline.py`` presets."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
-            "transition_pairs", "train_denoiser", "train_transition",
             "gen_convolve", "convolve_only", "train_only", "custom",
         }
 
-    def test_transition_pairs_step_emits_correct_argv(self):
-        step = REGISTRY.get("transition_pairs")
+    def test_tfrecords_step_passes_max_relative_noise(self):
+        """The bright-stamp rejection threshold must reach the
+        analytic-A generator. Without ``--max-relative-noise`` the
+        script would default to its own value and the form knob would
+        silently do nothing."""
+        step = REGISTRY.get("tfrecords")
         argv = step.build_command({
-            "n_train": 2000, "n_valid": 300, "crop_size": 128,
+            "n_train": 100, "n_valid": 10, "image_size": 256,
+            "max_relative_noise": 7.5,
         })
-        assert "scripts/fasrc_generate_transition_pairs.py" in argv
-        assert "--n-train" in argv and "2000" in argv
-        assert "--n-valid" in argv and "300" in argv
-        assert "--crop-size" in argv and "128" in argv
+        assert "scripts/fasrc_generate_hst_tfrecords.py" in argv
+        assert "--max-relative-noise" in argv
+        idx = argv.index("--max-relative-noise")
+        assert float(argv[idx + 1]) == pytest.approx(7.5)
 
-    def test_train_transition_step_emits_correct_argv(self):
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({
-            "steps": 5000, "batch_size": 4, "learning_rate": 1e-3,
-            "channels": 10, "n_inner_layers": 2,
-        })
-        assert "scripts/fasrc_train_transition_model.py" in argv
-        assert "--steps" in argv and "5000" in argv
-        assert "--channels" in argv and "10" in argv
-        assert "--n-inner-layers" in argv and "2" in argv
-        assert "--learning-rate" in argv
-
-    def test_train_denoiser_step_emits_correct_argv(self):
-        """Phase 1 of the two-stage chain. Must hit the denoiser
-        training script and emit the noise-range flags so the trainer
-        sees the same HLSP noise envelope the user configured."""
-        step = REGISTRY.get("train_denoiser")
-        argv = step.build_command({
-            "steps": 1000, "batch_size": 4,
-            "channels": 6, "n_inner_layers": 1, "kernel_size": 5,
-            "alpha_min": 0.4, "alpha_max": 0.9,
-            "sigma_floor_min": 7, "sigma_floor_max": 18,
-        })
-        assert "scripts/fasrc_train_hst_denoiser.py" in argv
-        assert "--steps" in argv and "1000" in argv
-        assert "--channels" in argv and "6" in argv
-        assert "--n-inner-layers" in argv and "1" in argv
-        assert "--kernel-size" in argv and "5" in argv
-        assert "--alpha-min" in argv and "0.4" in argv
-        assert "--alpha-max" in argv and "0.9" in argv
-        assert "--sigma-floor-min" in argv and "7" in argv
-        assert "--sigma-floor-max" in argv and "18" in argv
-
-    def test_train_transition_step_emits_phase2_flags(self):
-        """When the form carries --frozen-denoiser and noise ranges,
-        the transition trainer must receive them. Without these the
-        Phase-2 path is broken — the deconvolver would train on clean
-        inputs and the chain would degrade at inference."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({
-            "frozen_denoiser":  "/foo/hst_denoiser.weights.h5",
-            "alpha_min":        0.5,
-            "alpha_max":        1.0,
-            "sigma_floor_min":  8,
-            "sigma_floor_max":  22,
-        })
-        assert "--frozen-denoiser" in argv
-        assert "/foo/hst_denoiser.weights.h5" in argv
-        assert "--alpha-min" in argv and "0.5" in argv
-        assert "--alpha-max" in argv and "1" in argv
-        assert "--sigma-floor-min" in argv and "8" in argv
-        assert "--sigma-floor-max" in argv and "22" in argv
-
-    def test_train_transition_step_omits_frozen_denoiser_when_unset(self):
-        """Legacy single-stage path: no --frozen-denoiser flag should
-        appear when the form field is empty/missing."""
-        step = REGISTRY.get("train_transition")
+    def test_tfrecords_step_default_max_relative_noise(self):
+        """Form omitted → default 5.0 reaches the script."""
+        step = REGISTRY.get("tfrecords")
         argv = step.build_command({})
-        assert "--frozen-denoiser" not in argv
+        assert "--max-relative-noise" in argv
+        idx = argv.index("--max-relative-noise")
+        assert float(argv[idx + 1]) == pytest.approx(5.0)
 
-    def test_train_transition_step_includes_augmentation_flags(self):
-        """Star-injection + linear-combo fractions and max-stars must
-        reach the script's argv, otherwise the augmentations silently
-        default to off."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({
-            "star_injection_fraction": 0.25,
-            "max_stars_per_image": 12,
-            "linear_combo_fraction": 0.4,
-        })
-        assert "--star-injection-fraction" in argv
-        assert "0.25" in argv
-        assert "--max-stars-per-image" in argv
-        assert "12" in argv
-        assert "--linear-combo-fraction" in argv
-        assert "0.4" in argv
-
-    def test_train_transition_step_emits_kernel_size_and_max_params(self):
-        """REGRESSION — the architecture knobs (kernel_size, max_params)
-        must reach the script. Without these, the user has no way to
-        switch from the default tiny 11-px-RF model to e.g. a 2-layer
-        K=21 model from the web form."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({
-            "kernel_size":    21,
-            "n_inner_layers": 0,
-            "channels":       5,
-            "max_params":     5000,
-        })
-        assert "--kernel-size" in argv
-        assert "21" in argv
-        assert "--n-inner-layers" in argv
-        assert "0" in argv
-        assert "--max-params" in argv
-
-    def test_train_transition_step_defaults_kernel_size_and_max_params(self):
-        """Form omitted → defaults match script's argparse defaults
-        (K=3, max=5000)."""
-        step = REGISTRY.get("train_transition")
+    def test_tfrecords_step_does_not_emit_legacy_model_flags(self):
+        """The deleted two-stage chain CLI must not leak back in.
+        Past argv had ``--transition-model`` / ``--frozen-denoiser`` /
+        ``--frozen-denoiser-summary``; none of those should appear."""
+        step = REGISTRY.get("tfrecords")
         argv = step.build_command({})
-        assert "--kernel-size" in argv
-        assert "3" in argv
-        assert "--max-params" in argv
-        assert "5000" in argv
-
-    def test_train_transition_emits_analytic_baseline_when_provided(self):
-        """When the form supplies an analytic-baseline path, the flag
-        must reach the script. Without it the model defaults to the
-        identity-residual mode, defeating the whole point."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({
-            "analytic_baseline_kernel": "/n/foo/diff_kernel_VIS.fits",
-            "baseline_crop": 31,
-        })
-        assert "--analytic-baseline-kernel" in argv
-        idx = argv.index("--analytic-baseline-kernel")
-        assert argv[idx + 1] == "/n/foo/diff_kernel_VIS.fits"
-        assert "--baseline-crop" in argv
-        assert "31" in argv
-
-    def test_train_transition_omits_baseline_flag_when_blank(self):
-        """Empty baseline path → don't emit ``--analytic-baseline-kernel``
-        at all, so the script's argparse default (empty string → identity
-        residual) wins."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({"analytic_baseline_kernel": ""})
-        assert "--analytic-baseline-kernel" not in argv
-
-    def test_train_transition_step_defaults_match_script(self):
-        """When the form omits the augmentation knobs, the step should
-        emit defaults that match the script's argparse defaults."""
-        step = REGISTRY.get("train_transition")
-        argv = step.build_command({})
-        # The script's argparse defaults are 0.2 / 8 / 0.3.
-        assert "0.2" in argv
-        assert "8" in argv
-        assert "0.3" in argv
-
-    def test_train_transition_does_not_require_gpu(self):
-        # The model is tiny; CPU is the default.
-        step = REGISTRY.get("train_transition")
-        assert step.needs_gpu is False
-        assert step.defaults.n_gpus == 0
+        for flag in ("--transition-model", "--frozen-denoiser",
+                     "--frozen-denoiser-summary"):
+            assert flag not in argv
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
@@ -323,7 +199,7 @@ class TestSbatchRendering:
         Any GPU configuration must produce a body that LITERALLY
         starts with ``#!/bin/bash\\n``. No leading whitespace, no
         empty line, no BOM."""
-        for step_id in ("train", "train_transition"):
+        for step_id in ("train",):
             step = REGISTRY.get(step_id)
             # Force n_gpus to a non-zero value even if the default is 0,
             # so the test exercises the gres branch regardless of step

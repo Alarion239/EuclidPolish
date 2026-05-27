@@ -40,6 +40,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
 
 
 # Input: where the sky downloader put the per-band cutouts.
@@ -213,7 +214,12 @@ def _stamp_is_usable(stamp: np.ndarray, *, max_zero_fraction: float) -> bool:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     if args.vis_pixels % args.stamp_size != 0:
+        reporter.warn(
+            f"vis_pixels ({args.vis_pixels}) is not a multiple of "
+            f"stamp_size ({args.stamp_size}); trailing strip discarded"
+        )
         print(f"WARNING: vis_pixels ({args.vis_pixels}) is not a multiple "
               f"of stamp_size ({args.stamp_size}); trailing strip will "
               "be discarded.")
@@ -235,10 +241,12 @@ def main() -> int:
 
     cat_path = os.path.join(args.input_dir, Config.CATALOG_FILE)
     if not os.path.isfile(cat_path):
+        reporter.error(f"sky catalog not found at {cat_path}")
         print(f"ERROR: sky catalog not found at {cat_path}")
         print("       Run scripts/fasrc_download_euclid_sky_cutouts.py first.")
         return 1
     positions = pd.read_csv(cat_path)
+    reporter.set_stage("reading sky catalog")
     print(f"[1/3] sky catalog: {len(positions)} positions")
 
     # Train/validate split at the position level so stamps from one
@@ -261,6 +269,7 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
+    reporter.set_stage("streaming records")
     print(f"[2/3] streaming records to {args.output_dir} ...")
     counts: dict = {"train": 0, "validate": 0}
     dropped_no_4band = 0
@@ -273,7 +282,10 @@ def main() -> int:
 
     for subset, pos_ids in splits:
         with open_multiband_writer(f"dirty_{subset}", args.output_dir) as w:
-            for pid in sorted(pos_ids):
+            sorted_pos_ids = sorted(pos_ids)
+            n_pos = len(sorted_pos_ids)
+            for pos_i, pid in enumerate(sorted_pos_ids):
+                reporter.set_step(pos_i + 1, n_pos, subset)
                 cube = _load_4band_cube(
                     args.input_dir, pid, args.vis_pixels,
                     scale_to_electrons=args.scale_to_electrons,
@@ -300,6 +312,7 @@ def main() -> int:
         print(f"      {subset:8s}: wrote {counts[subset]} stamps")
 
     print()
+    reporter.set_stage("done")
     print(f"[3/3] done.")
     print(f"      positions missing one or more bands : "
           f"{dropped_no_4band} / {len(positions)}")

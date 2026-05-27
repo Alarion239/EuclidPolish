@@ -37,6 +37,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
 
 
 HST_PSF_PATH = os.path.join(Config.DATA_DIR, "hst_psf", "F814W.fits")
@@ -203,6 +204,7 @@ def _centre_crop_to(a: np.ndarray, side: int) -> np.ndarray:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     print("=" * 64)
     print(f"  Differential kernel A = E / H")
     print("=" * 64)
@@ -215,9 +217,11 @@ def main() -> int:
 
     t0 = time.time()
 
+    reporter.set_stage("loading HST and Euclid PSFs")
     print(f"[1/3] loading HST and Euclid PSFs ...")
 
     if not os.path.isfile(args.hst_psf):
+        reporter.error(f"HST PSF not found at {args.hst_psf}")
         print(f"ERROR: HST PSF not found at {args.hst_psf}")
         print("       Run scripts/fasrc_extract_hst_psf.py first.")
         return 1
@@ -228,6 +232,7 @@ def main() -> int:
     # 'psf_fits_filename'`` because the wrong type was indexed into.
     euclid_psf_path = psf_path_for_band(Config.BAND_VIS)
     if not euclid_psf_path or not os.path.isfile(euclid_psf_path):
+        reporter.error(f"Euclid VIS PSF not found at {euclid_psf_path}")
         print(f"ERROR: Euclid VIS PSF not found at {euclid_psf_path}")
         return 1
 
@@ -253,6 +258,7 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
+    reporter.set_stage("resampling both PSFs onto the HR grid")
     print(f"[2/3] resampling both PSFs onto the HR grid "
           f"({Config.DEFAULT_PIXEL_SCALE:.3f}\"/pix) ...")
     e_hr = _resample_to_hr_grid(euclid_data, euclid_scale)
@@ -279,6 +285,9 @@ def main() -> int:
     print(f"      flux retained after crop : "
           f"E {e_retained*100:.3f}%  H {h_retained*100:.3f}%")
     if e_retained < 0.99 or h_retained < 0.99:
+        reporter.warn(
+            f">1% of PSF flux outside --common-side={args.common_side} crop"
+        )
         print(f"      WARNING: >1% of PSF flux was outside the "
               f"--common-side={args.common_side} crop. The spikes "
               f"probably extend further than the crop — bump "
@@ -314,6 +323,7 @@ def main() -> int:
               f"H flux discarded={h_border_flux*100:.3f}%, "
               f"renormalised")
 
+    reporter.set_stage("solving A_hat via Wiener inverse")
     print(f"[3/3] solving A_hat = E_hat · conj(H_hat) / (|H_hat|² + reg²) ...")
     a = compute_differential_kernel(
         e_hr, h_hr, regularisation=args.regularisation,

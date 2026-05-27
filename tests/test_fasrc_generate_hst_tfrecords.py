@@ -15,7 +15,6 @@ where the real logic + parallelism bugs live anyway.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 
@@ -29,6 +28,18 @@ sys.path.insert(0, _REPO_ROOT)
 # ``_init_worker`` and ``_process_one_galaxy`` are pickle-resolvable
 # across process boundaries.
 sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
+
+
+# Default per-band ratios for tests — VIS=1.0 by construction, NISP
+# bands take order-of-magnitude typical values. Real value at runtime
+# comes from the catalog; for tests any plausible vector works.
+DEFAULT_TEST_RATIOS = np.array([1.0, 0.20, 0.30, 0.25], dtype=np.float32)
+
+# Loose noise budget for tests so the bright-stamp filter doesn't kick
+# in on the synthetic Gaussian tiles. ``max_rel_noise = 1e9`` is the
+# "disable filter" knob in the script's argument range; we use a
+# huge but finite value so the threshold computation still runs.
+DISABLE_FILTER_MAX_REL_NOISE = 1.0e9
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +107,6 @@ def _load_script():
     name, and the spawned worker subprocess has to be able to import
     that module by the same name. A unique-per-call name would unpickle
     in the worker to ``ModuleNotFoundError``.
-
-    Module state is reset between tests by the ``reset_worker_globals``
-    fixture below so the shared instance doesn't leak ``_WORKER_KERNEL``.
     """
     import fasrc_generate_hst_tfrecords as mod
     return mod
@@ -110,35 +118,34 @@ def reset_worker_globals():
     shared module instance behaves like a fresh import."""
     import fasrc_generate_hst_tfrecords as mod
     mod._WORKER_KERNEL = None
-    mod._WORKER_TRANSITION_MODEL = None
     mod._WORKER_IMAGE_SIZE = 0
     mod._WORKER_TYPICAL_RATIOS = None
+    mod._WORKER_SIGMA_LR = 0.0
+    mod._WORKER_MAX_RELATIVE_NOISE = 0.0
     yield
     mod._WORKER_KERNEL = None
-    mod._WORKER_TRANSITION_MODEL = None
     mod._WORKER_IMAGE_SIZE = 0
     mod._WORKER_TYPICAL_RATIOS = None
+    mod._WORKER_SIGMA_LR = 0.0
+    mod._WORKER_MAX_RELATIVE_NOISE = 0.0
 
 
-# Default per-band ratios for tests — VIS=1.0 by construction, NISP
-# bands take order-of-magnitude typical values. Real value at runtime
-# comes from the catalog; for tests any plausible vector works.
-DEFAULT_TEST_RATIOS = np.array([1.0, 0.20, 0.30, 0.25], dtype=np.float32)
+def _init_worker_with_kernel(mod, kernel_path: str, image_size: int,
+                              *, sigma_lr: float = 100.0,
+                              max_rel: float = DISABLE_FILTER_MAX_REL_NOISE):
+    """Wrapper around ``_init_worker`` for the common test setup.
 
-
-def _init_worker_with_kernel(mod, kernel_path: str, image_size: int):
-    """Wrapper around ``_init_worker`` that uses the analytic-kernel
-    fallback path (no transition model). Tests that don't care about
-    the CNN path go through this helper to keep the call signature
-    short.
+    ``sigma_lr`` defaults to a moderate value (~ Euclid VIS budget),
+    ``max_rel`` defaults to "essentially infinite" so the bright-stamp
+    filter does not reject synthetic Gaussian blobs unless a test
+    explicitly enables it.
     """
     mod._init_worker(
         kernel_path,
-        "",        # no transition model
-        12,        # transition_channels (ignored when path is "")
-        3,         # transition_inner_layers (ignored when path is "")
         image_size,
         DEFAULT_TEST_RATIOS,
+        sigma_lr,
+        max_rel,
     )
 
 
@@ -217,130 +224,117 @@ class TestInitWorker:
             mod._process_one_galaxy(task)
 
 
-class TestInitWorkerTwoStage:
-    """When the transition model's summary JSON carries a ``denoiser``
-    block, ``_init_worker`` must (a) reconstruct the denoiser with the
-    architecture in the JSON, (b) load its weights, and (c) populate
-    ``_WORKER_DENOISER_MODEL`` so ``_make_pair`` runs the full chain.
-    Missing denoiser file → loud RuntimeError, not silent fallback to
-    single-stage (that would corrupt the LR shards in subtle ways)."""
+# ---------------------------------------------------------------------------
+# _is_stamp_too_bright — bright-pixel rejection filter
+# ---------------------------------------------------------------------------
 
-    def _make_minimal_transition_pair(self, tmp_path, with_denoiser: bool):
-        """Build a tiny transition model + matching summary JSON.
+class TestIsStampTooBright:
+    """The analytic-A forward operator rings around very bright pixels:
+    ``A(ε)`` peak is ``|A|_peak · √S_max``. The filter rejects stamps
+    where that would exceed ``max_relative_noise × σ_LR``. Tests cover
+    threshold crossings, the zero/negative pixel edge case, and the
+    scaling behaviour of the ``max_relative_noise`` knob."""
 
-        Returns (transition_weights_path, denoiser_weights_path_or_None,
-        kernel_path). Kernel is a small odd Gaussian, transition model
-        is built without a baseline (keeps the test fast — the baseline
-        load-path is exercised elsewhere).
+    def _make_kernel_and_sigma(self, *, a_peak: float = 0.5,
+                                sigma_lr: float = 10.0) -> tuple:
+        """Build a tiny diff kernel with a known peak amplitude.
+
+        Returns ``(kernel, sigma_lr)`` — kernel is a 5×5 array with the
+        centre pixel set to ``a_peak`` (and zeros elsewhere).
         """
-        from astropy.io import fits
-        import json
-        from euclid_polish.training.transition_model import (
-            HSTDenoiser, HSTtoEuclidTransition,
-            save_denoiser_weights, save_model_weights,
-        )
+        k = np.zeros((5, 5), dtype=np.float32)
+        k[2, 2] = a_peak
+        return k, sigma_lr
 
-        # Tiny analytic kernel (delta) so the script's fallback path
-        # is also valid if we need it.
-        krn = tmp_path / "diff_kernel.fits"
-        delta = np.zeros((9, 9), dtype=np.float32); delta[4, 4] = 1.0
-        fits.PrimaryHDU(delta).writeto(str(krn), overwrite=True)
+    def _stamp_with_peak(self, s_max: float) -> np.ndarray:
+        """``(H, W, 4)`` HR cube with channel 0 (VIS) peak at S_max."""
+        stamp = np.zeros((8, 8, 4), dtype=np.float32)
+        stamp[4, 4, 0] = float(s_max)
+        return stamp
 
-        # Tiny transition model (no baseline so the test stays fast).
-        trans_path = tmp_path / "transition.weights.h5"
-        m_trans = HSTtoEuclidTransition(
-            channels=4, n_inner_layers=1, kernel_size=3,
-        )
-        save_model_weights(m_trans, str(trans_path))
-
-        # Matching summary JSON.
-        summary = {
-            "channels":       4,
-            "n_inner_layers": 1,
-            "kernel_size":    3,
-            "analytic_baseline_kernel": "",
-            "baseline_crop":  0,
-        }
-
-        denoiser_path = None
-        if with_denoiser:
-            denoiser_path = tmp_path / "hst_denoiser.weights.h5"
-            m_den = HSTDenoiser(channels=4, n_inner_layers=1, kernel_size=3)
-            save_denoiser_weights(m_den, str(denoiser_path))
-            summary["denoiser"] = {
-                "weights_path":   str(denoiser_path),
-                "channels":       4,
-                "n_inner_layers": 1,
-                "kernel_size":    3,
-            }
-
-        summary_path = (
-            str(trans_path)[:-len(".weights.h5")] + "_summary.json"
-        )
-        with open(summary_path, "w") as f:
-            json.dump(summary, f)
-        return str(trans_path), denoiser_path, str(krn)
-
-    def test_loads_denoiser_when_summary_has_block(self, tmp_path):
+    def test_faint_stamp_passes(self):
+        """A pixel where √S_max · |A|_peak is well below σ_LR must pass."""
         mod = _load_script()
-        # Make sure stale state from a prior test isn't leaking in.
-        mod._WORKER_DENOISER_MODEL = None
-        trans_path, den_path, krn = self._make_minimal_transition_pair(
-            tmp_path, with_denoiser=True,
+        kernel, sigma_lr = self._make_kernel_and_sigma(
+            a_peak=0.5, sigma_lr=10.0,
         )
-        mod._init_worker(
-            krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
+        # S_max=4 → √4 · 0.5 = 1.0 e⁻ artefact, 5 × 10 = 50 budget. Pass.
+        stamp = self._stamp_with_peak(4.0)
+        reject, diag = mod._is_stamp_too_bright(
+            stamp,
+            diff_kernel=kernel,
+            sigma_lr_band=sigma_lr,
+            max_relative_noise=5.0,
         )
-        assert mod._WORKER_TRANSITION_MODEL is not None
-        assert mod._WORKER_DENOISER_MODEL is not None, (
-            "summary contained a 'denoiser' block but worker didn't "
-            "load it — Phase-2 chain is broken"
-        )
+        assert reject is False
+        assert diag["S_max"] == pytest.approx(4.0)
+        assert diag["artifact_sigma"] < diag["threshold"]
 
-    def test_skips_denoiser_when_summary_lacks_block(self, tmp_path):
+    def test_bright_stamp_rejects(self):
+        """A pixel where √S_max · |A|_peak exceeds k · σ_LR must reject."""
         mod = _load_script()
-        mod._WORKER_DENOISER_MODEL = None
-        trans_path, _, krn = self._make_minimal_transition_pair(
-            tmp_path, with_denoiser=False,
+        kernel, sigma_lr = self._make_kernel_and_sigma(
+            a_peak=0.5, sigma_lr=10.0,
         )
-        mod._init_worker(
-            krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
+        # S_max=1e6 → √1e6 · 0.5 = 500 e⁻ artefact, 5 × 10 = 50 budget.
+        # 500 > 50 → reject.
+        stamp = self._stamp_with_peak(1.0e6)
+        reject, diag = mod._is_stamp_too_bright(
+            stamp,
+            diff_kernel=kernel,
+            sigma_lr_band=sigma_lr,
+            max_relative_noise=5.0,
         )
-        assert mod._WORKER_TRANSITION_MODEL is not None
-        assert mod._WORKER_DENOISER_MODEL is None, (
-            "summary had no 'denoiser' block — single-stage path "
-            "should leave _WORKER_DENOISER_MODEL = None"
-        )
+        assert reject is True
+        assert diag["artifact_sigma"] > diag["threshold"]
 
-    def test_missing_denoiser_file_raises(self, tmp_path):
-        """Summary records a denoiser path that doesn't exist locally
-        (the FASRC-style absolute path won't resolve when running
-        elsewhere). The worker must fail loudly rather than silently
-        falling back to single-stage and writing wrong LR shards."""
+    def test_threshold_scales_with_max_relative_noise(self):
+        """Same stamp, tighter ``max_relative_noise`` → rejection;
+        looser → pass. Confirms the knob actually controls the cut."""
         mod = _load_script()
-        mod._WORKER_DENOISER_MODEL = None
-        trans_path, _, krn = self._make_minimal_transition_pair(
-            tmp_path, with_denoiser=False,
+        kernel, sigma_lr = self._make_kernel_and_sigma(
+            a_peak=0.5, sigma_lr=10.0,
         )
-        # Doctor the summary to point at a non-existent denoiser file.
-        import json
-        summary_path = (
-            trans_path[:-len(".weights.h5")] + "_summary.json"
+        # √100 · 0.5 = 5; threshold = k · 10. So:
+        #   k = 1 → 5 < 10 (pass);  k = 0.1 → 5 > 1 (reject).
+        stamp = self._stamp_with_peak(100.0)
+        loose, _ = mod._is_stamp_too_bright(
+            stamp, diff_kernel=kernel, sigma_lr_band=sigma_lr,
+            max_relative_noise=1.0,
         )
-        with open(summary_path) as f:
-            s = json.load(f)
-        s["denoiser"] = {
-            "weights_path":   "/n/nope/hst_denoiser.weights.h5",
-            "channels":       4,
-            "n_inner_layers": 1,
-            "kernel_size":    3,
-        }
-        with open(summary_path, "w") as f:
-            json.dump(s, f)
-        with pytest.raises(RuntimeError, match="denoiser"):
-            mod._init_worker(
-                krn, trans_path, 12, 3, 64, DEFAULT_TEST_RATIOS,
-            )
+        tight, _ = mod._is_stamp_too_bright(
+            stamp, diff_kernel=kernel, sigma_lr_band=sigma_lr,
+            max_relative_noise=0.1,
+        )
+        assert loose is False
+        assert tight is True
+
+    def test_zero_or_negative_pixel_passes(self):
+        """A stamp with peak ≤ 0 has no shot-noise contribution and must
+        not be rejected — the ``max(S_max, 0)`` clamp inside the sqrt
+        keeps the math finite."""
+        mod = _load_script()
+        kernel, sigma_lr = self._make_kernel_and_sigma(
+            a_peak=0.5, sigma_lr=10.0,
+        )
+        stamp_zero = self._stamp_with_peak(0.0)
+        reject, diag = mod._is_stamp_too_bright(
+            stamp_zero,
+            diff_kernel=kernel,
+            sigma_lr_band=sigma_lr,
+            max_relative_noise=5.0,
+        )
+        assert reject is False
+        assert diag["artifact_sigma"] == pytest.approx(0.0)
+        # All-negative cube (e.g. sky-subtracted residual) should also pass.
+        stamp_neg = np.full((4, 4, 4), -3.0, dtype=np.float32)
+        reject_neg, _ = mod._is_stamp_too_bright(
+            stamp_neg,
+            diff_kernel=kernel,
+            sigma_lr_band=sigma_lr,
+            max_relative_noise=5.0,
+        )
+        assert reject_neg is False
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +356,9 @@ class TestProcessOneGalaxyHappyPath:
             200,           # hlsp_side_pix
             42,            # seed
         )
-        result = mod._process_one_galaxy(task)
+        result, reason = mod._process_one_galaxy(task)
         assert result is not None
+        assert reason is None
         catalog_idx, hr_cube, lr_cube = result
         assert catalog_idx == 7
         # HR is target image_size × NUM_LR_CHANNELS.
@@ -380,7 +375,8 @@ class TestProcessOneGalaxyHappyPath:
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, tile, 200, 1)
-        catalog_idx, hr, lr = mod._process_one_galaxy(task)
+        result, _ = mod._process_one_galaxy(task)
+        _, hr, lr = result
         assert np.isfinite(hr).all()
         assert np.isfinite(lr).all()
 
@@ -392,7 +388,8 @@ class TestProcessOneGalaxyHappyPath:
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, tile, 200, 1)
-        _, hr, _ = mod._process_one_galaxy(task)
+        result, _ = mod._process_one_galaxy(task)
+        _, hr, _ = result
         # Sum over bands → 2D map of total flux.
         flat = hr.sum(axis=-1)
         cy, cx = np.unravel_index(int(np.argmax(flat)), flat.shape)
@@ -414,7 +411,9 @@ class TestProcessOneGalaxyFailureModes:
         _init_worker_with_kernel(mod, krn, image_size=64)
         # 10 deg off — way outside the tile footprint.
         task = (0, 160.0, 12.0, tile, 200, 42)
-        assert mod._process_one_galaxy(task) is None
+        result, reason = mod._process_one_galaxy(task)
+        assert result is None
+        assert reason == "cutout-failed"
 
     def test_missing_file_returns_none(self, tmp_path):
         mod = _load_script()
@@ -422,7 +421,9 @@ class TestProcessOneGalaxyFailureModes:
         _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3,
                 str(tmp_path / "does-not-exist.fits"), 200, 42)
-        assert mod._process_one_galaxy(task) is None
+        result, reason = mod._process_one_galaxy(task)
+        assert result is None
+        assert reason == "cutout-failed"
 
     def test_cutout_smaller_than_image_size_returns_none(self, tmp_path):
         """If the requested ``hlsp_side_pix`` resamples down to fewer
@@ -434,7 +435,9 @@ class TestProcessOneGalaxyFailureModes:
         # Demand a huge HR side that the tiny HLSP cutout can't fill.
         _init_worker_with_kernel(mod, krn, image_size=2000)
         task = (0, 150.1, 2.3, tile, 50, 42)
-        assert mod._process_one_galaxy(task) is None
+        result, reason = mod._process_one_galaxy(task)
+        assert result is None
+        assert reason == "cutout-too-small"
 
     def test_all_nan_cutout_returns_none(self, tmp_path):
         """A degenerate cutout where every pixel is NaN can't be turned
@@ -458,7 +461,31 @@ class TestProcessOneGalaxyFailureModes:
         krn = _make_synthetic_kernel(tmp_path)
         _init_worker_with_kernel(mod, krn, image_size=64)
         task = (0, 150.1, 2.3, path, 200, 42)
-        assert mod._process_one_galaxy(task) is None
+        result, reason = mod._process_one_galaxy(task)
+        assert result is None
+        assert reason == "hst-cube-allnan"
+
+    def test_bright_stamp_rejected(self, tmp_path):
+        """A stamp whose HR cube would produce A(ε) ringing larger than
+        ``max_relative_noise × σ_LR`` must be rejected before forward
+        modelling — the whole point of the new filter."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        # Big bright blob so the resulting HR cube peak is large in
+        # Euclid-electron units.
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=400, blob_flux=1.0e6,
+        )
+        # Pin sigma_lr small + max_rel small → easy rejection.
+        mod._init_worker(
+            krn, 64, DEFAULT_TEST_RATIOS,
+            1.0,   # sigma_lr_band (tight budget)
+            0.01,  # max_relative_noise (very strict)
+        )
+        task = (0, 150.1, 2.3, tile, 200, 42)
+        result, reason = mod._process_one_galaxy(task)
+        assert result is None
+        assert reason == "rejected-bright"
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +505,10 @@ class TestRngDeterminism:
         _init_worker_with_kernel(mod, krn, image_size=64)
         task_a = (0, 150.1, 2.3, tile, 200, 12345)
         task_b = (0, 150.1, 2.3, tile, 200, 12345)
-        _, hr_a, lr_a = mod._process_one_galaxy(task_a)
-        _, hr_b, lr_b = mod._process_one_galaxy(task_b)
+        res_a, _ = mod._process_one_galaxy(task_a)
+        res_b, _ = mod._process_one_galaxy(task_b)
+        _, hr_a, lr_a = res_a
+        _, hr_b, lr_b = res_b
         np.testing.assert_array_equal(hr_a, hr_b)
         np.testing.assert_array_equal(lr_a, lr_b)
 
@@ -490,8 +519,10 @@ class TestRngDeterminism:
         _init_worker_with_kernel(mod, krn, image_size=64)
         t1 = (0, 150.1, 2.3, tile, 200, 12345)
         t2 = (0, 150.1, 2.3, tile, 200, 99999)
-        _, hr1, lr1 = mod._process_one_galaxy(t1)
-        _, hr2, lr2 = mod._process_one_galaxy(t2)
+        r1, _ = mod._process_one_galaxy(t1)
+        r2, _ = mod._process_one_galaxy(t2)
+        _, hr1, lr1 = r1
+        _, hr2, lr2 = r2
         # HR is deterministic (no noise) — should be identical.
         np.testing.assert_array_equal(hr1, hr2)
         # LR depends on the noise draw — should differ.
@@ -506,35 +537,12 @@ class TestHstNativePhotometry:
     """The HST→Euclid chain preserves HST's native photometry — every
     source in the cutout keeps its real Euclid magnitude, no
     catalog-flux normalisation.
-
-    These tests pin the three properties that broke under the old
-    chain (``_broadcast_hst_to_4bands``):
-
-      1. The HLSP→HR resample preserves *total flux*, not just per-pixel
-         surface brightness (the area-correction multiplier).
-      2. A single source's pixel value scales correctly into Euclid VIS
-         electrons via the ZP and stack-time formula.
-      3. **Multi-source brightness ratios are preserved** — a cutout
-         with two galaxies of brightness ratio ``r`` produces an HR/LR
-         with the same ratio, regardless of how much sky surrounds them.
-         The old chain allocated one catalog row's electron budget
-         across the whole cube; that collapsed any multi-source signal.
     """
 
     def test_resample_preserves_total_flux(self, tmp_path):
         """``_resample_hlsp_to_hr`` integrates over the larger HR pixel
-        instead of just interpolating surface brightness.
-
-        Without the area-correction multiplier, zooming down 0.03″ →
-        0.05″ would drop ~36 % of the input flux on the floor (scipy's
-        cubic-spline zoom returns the *interpolated value*, not the
-        integral over the new pixel area). The new chain fixes that.
-        """
+        instead of just interpolating surface brightness."""
         mod = _load_script()
-        # Constant input — every pixel = 1.0 e⁻/s. With area correction
-        # the output per-pixel value should be (HR_area / HLSP_area) =
-        # (0.05/0.03)² ≈ 2.78. Total flux integrated over the (smaller)
-        # output grid then equals total flux of the (larger) input grid.
         side = 100
         hlsp = np.ones((side, side), dtype=np.float32)
         hr = mod._resample_hlsp_to_hr(hlsp, hlsp_scale=0.03, hr_scale=0.05)
@@ -543,25 +551,16 @@ class TestHstNativePhotometry:
         b = 5
         assert np.allclose(hr[b:-b, b:-b], (0.05 / 0.03) ** 2, atol=1e-3)
 
-        # Total flux ratio: the output has (100 * 0.6)² ≈ 60² pixels,
-        # each holding 2.78 ≈ (1/0.6)². So total ≈ 60² × 2.78 ≈ 10000.
-        # Input total = 100² = 10000.
-        # (Match within edge-effect loss from the zoom near the borders.)
         input_total  = float(hlsp.sum())
         output_total = float(hr.sum())
         assert output_total == pytest.approx(input_total, rel=0.05)
 
     def test_hst_to_euclid_hr_cube_vis_scaling(self, tmp_path):
         """A constant HST rate maps to Euclid VIS electrons via the
-        documented ``rate_ratio × t_total`` formula.
-
-        Pins the literal photometric constant so a future config tweak
-        (different ZP, different stack time) is caught immediately.
-        """
+        documented ``rate_ratio × t_total`` formula."""
         from euclid_polish.config import Config
 
         mod = _load_script()
-        # Per-HR-pixel rate (e⁻/s after area correction).
         rate_per_hr_pix = np.full((8, 8), 1.0, dtype=np.float32)
         ratios = np.array([1.0, 0.1, 0.2, 0.15], dtype=np.float32)
         cube = mod._hst_to_euclid_hr_cube(rate_per_hr_pix, ratios)
@@ -574,7 +573,6 @@ class TestHstNativePhotometry:
         expected_vis = 1.0 * rate_ratio * vis.t_total_s
         assert cube[..., 0] == pytest.approx(expected_vis, rel=1e-5)
 
-        # NISP bands = VIS × ratio (per pixel).
         for k in (1, 2, 3):
             assert cube[..., k] == pytest.approx(
                 expected_vis * ratios[k], rel=1e-5,
@@ -582,13 +580,11 @@ class TestHstNativePhotometry:
 
     def test_hst_to_euclid_hr_cube_handles_signed_residual(self):
         """Symmetric residual noise (positive + negative pixels) must
-        pass through cleanly — the new chain explicitly drops the
-        old ``clip(..., 0)`` so noise averages to zero over the cube.
-        Negative pixels are allowed in the HR cube; the forward model's
-        Poisson step clips them at zero internally before the draw.
+        pass through cleanly — Negative pixels are allowed in the HR
+        cube; the forward model's Poisson step clips them at zero
+        internally before the draw.
         """
         mod = _load_script()
-        # Mostly-positive with some negative residual.
         rate = np.array([[1.0, -0.2], [-0.3, 0.5]], dtype=np.float32)
         cube = mod._hst_to_euclid_hr_cube(
             rate, np.array([1.0, 0.2, 0.3, 0.25], dtype=np.float32),
@@ -611,92 +607,22 @@ class TestHstNativePhotometry:
         )
         assert out is None
 
-    def test_multi_source_brightness_ratio_preserved(self, tmp_path):
-        """The whole point of switching to HST-native photometry.
-
-        A cutout with TWO sources of known brightness ratio ``r`` (here
-        4:1) must produce an HR cube where the per-source peaks still
-        sit in that ratio — regardless of how much sky surrounds them.
-
-        The OLD chain (``_broadcast_hst_to_4bands``) normalised the
-        whole cube to unit total flux then multiplied by *one* catalog
-        row's electron budget, collapsing any multi-source signal: each
-        source ended up with roughly its FRACTION of catalog flux, with
-        absolute scale dictated by sky residual rather than its real
-        HST photometry. This test would have failed on the old chain.
-        """
-        from astropy.io import fits
-        from astropy.wcs import WCS
-
-        mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-
-        # Build a synthetic HLSP-style tile with TWO Gaussian sources of
-        # known peak ratio 4:1.
-        side = 400
-        sigma = 6.0
-        yy, xx = np.mgrid[:side, :side]
-        # Source A: peak 400 at (150, 150). Source B: peak 100 at (250, 250).
-        ga = 400.0 * np.exp(
-            -((xx - 150) ** 2 + (yy - 150) ** 2) / (2.0 * sigma ** 2)
-        )
-        gb = 100.0 * np.exp(
-            -((xx - 250) ** 2 + (yy - 250) ** 2) / (2.0 * sigma ** 2)
-        )
-        data = (ga + gb).astype(np.float32)
-
-        w = WCS(naxis=2)
-        w.wcs.crpix = [side / 2 + 0.5, side / 2 + 0.5]
-        w.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
-        w.wcs.crval = [150.1, 2.3]
-        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-        tile = str(tmp_path / "two_source.fits")
-        fits.PrimaryHDU(data, header=w.to_header()).writeto(tile, overwrite=True)
-
-        _init_worker_with_kernel(mod, krn, image_size=128)
-        task = (0, 150.1, 2.3, tile, 300, 42)
-        result = mod._process_one_galaxy(task)
-        assert result is not None
-        _, hr, _ = result
-
-        # VIS channel; sources sit at HR positions roughly (60, 60) and
-        # (100, 100) after the 0.03→0.05 resample + central crop. Find
-        # them by argmax in two halves of the image.
-        vis = hr[..., 0]
-        upper_left  = vis[:64, :64]
-        lower_right = vis[64:, 64:]
-        peak_a = float(upper_left.max())
-        peak_b = float(lower_right.max())
-        ratio  = peak_a / peak_b if peak_b > 0 else 0
-        # Expect 4.0 to within a few % — small slack for the
-        # interpolation rounding + symmetric residual noise. Old
-        # chain would have produced a ratio determined by the cube
-        # SUM (a tiny number), not the per-source peaks.
-        assert 3.5 < ratio < 4.5, (
-            f"multi-source brightness ratio collapsed: peaks "
-            f"A={peak_a:.1f}, B={peak_b:.1f}, ratio={ratio:.2f} "
-            "(expected ~4.0)"
-        )
-
     def test_nisp_channels_use_typical_ratios(self, tmp_path):
-        """NISP[k] = VIS × typical_band_ratios[k] per pixel; verify
-        the global colour scale is the only difference between VIS
-        and each NISP channel in the HR cube."""
+        """NISP[k] = VIS × typical_band_ratios[k] per pixel."""
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         ratios = np.array([1.0, 0.15, 0.25, 0.20], dtype=np.float32)
         mod._init_worker(
-            krn, "", 12, 3, 64, ratios,
+            krn, 64, ratios, 100.0, DISABLE_FILTER_MAX_REL_NOISE,
         )
         task = (0, 150.1, 2.3, tile, 200, 1)
-        _, hr, _ = mod._process_one_galaxy(task)
+        result, _ = mod._process_one_galaxy(task)
+        _, hr, _ = result
 
         vis = hr[..., 0]
         for k in (1, 2, 3):
             band_hr = hr[..., k]
-            # Per-pixel ratio should equal the global scale exactly,
-            # everywhere VIS is non-zero (mostly the centre).
             mask = np.abs(vis) > 0.1 * np.abs(vis).max()
             np.testing.assert_allclose(
                 band_hr[mask] / vis[mask],
@@ -727,16 +653,18 @@ class TestPoolIntegration:
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, "", 12, 3, 64, DEFAULT_TEST_RATIOS),
+            initargs=(krn, 64, DEFAULT_TEST_RATIOS,
+                      100.0, DISABLE_FILTER_MAX_REL_NOISE),
         ) as pool:
             results = list(pool.map(mod._process_one_galaxy, tasks))
 
         assert len(results) == n_tasks
-        assert all(r is not None for r in results), (
+        successes = [r for r in results if r[0] is not None]
+        assert len(successes) == n_tasks, (
             "all tasks should succeed against the centred tile"
         )
         # Catalog indices preserved through serialisation.
-        recovered_ids = sorted(r[0] for r in results)
+        recovered_ids = sorted(r[0][0] for r in results)
         assert recovered_ids == list(range(n_tasks))
 
     def test_pool_mixes_success_and_skip(self, tmp_path):
@@ -763,169 +691,38 @@ class TestPoolIntegration:
         with ProcessPoolExecutor(
             max_workers=2,
             initializer=mod._init_worker,
-            initargs=(krn, "", 12, 3, 32, DEFAULT_TEST_RATIOS),
+            initargs=(krn, 32, DEFAULT_TEST_RATIOS,
+                      100.0, DISABLE_FILTER_MAX_REL_NOISE),
         ) as pool:
             results = list(pool.map(
                 mod._process_one_galaxy, ok_tasks + bad_tasks,
             ))
-        successes = [r for r in results if r is not None]
-        failures  = [r for r in results if r is None]
+        successes = [r for r in results if r[0] is not None]
+        failures  = [r for r in results if r[0] is None]
         assert len(successes) == 3
         assert len(failures)  == 2
 
 
 # ---------------------------------------------------------------------------
-# Transition-model selection (CNN ↔ analytic kernel fallback)
+# Per-pixel σ_LR computation (used to anchor the bright-stamp threshold)
 # ---------------------------------------------------------------------------
 
-class TestTransitionModelSelection:
-    """``_init_worker`` picks the trained CNN over the analytic kernel
-    when both are available, and falls back when the CNN file is
-    missing. We exercise both branches without needing a fully-trained
-    CNN — a freshly-instantiated, never-saved-to-disk model is enough
-    to verify the dispatching logic.
-    """
+class TestEuclidVisSigmaLrPerPixel:
+    """The threshold for the bright-stamp filter is anchored to the
+    Euclid VIS per-pixel LR noise budget. Verify the helper agrees
+    with the closed-form expression and that VIS BandConfig values
+    drive it (so a future config change is visible in the test)."""
 
-    def _save_untrained_cnn(self, tmp_path) -> str:
-        """Write a fresh transition-model weights file to disk.
-
-        At init the model is ~identity (residual init); good enough for
-        a pipeline-wiring test, since we only assert which branch ran,
-        not the photometric correctness of the output.
-        """
-        from euclid_polish.training.transition_model import (
-            HSTtoEuclidTransition, save_model_weights,
-        )
-        model = HSTtoEuclidTransition()
-        path = str(tmp_path / "transition_model.weights.h5")
-        save_model_weights(model, path)
-        return path
-
-    def test_init_worker_loads_cnn_when_available(self, tmp_path):
+    def test_matches_closed_form(self):
+        from euclid_polish.config import Config
         mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        cnn = self._save_untrained_cnn(tmp_path)
-        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
-        # CNN branch: transition model populated, kernel left as None.
-        assert mod._WORKER_TRANSITION_MODEL is not None
-        assert mod._WORKER_KERNEL is None
-
-    def test_init_worker_falls_back_to_kernel_when_cnn_missing(self, tmp_path):
-        mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        missing_cnn = str(tmp_path / "does_not_exist.weights.h5")
-        mod._init_worker(krn, missing_cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
-        # Kernel branch: analytic kernel populated, CNN left as None.
-        assert mod._WORKER_KERNEL is not None
-        assert mod._WORKER_TRANSITION_MODEL is None
-
-    def test_init_worker_falls_back_when_cnn_path_blank(self, tmp_path):
-        mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        mod._init_worker(krn, "", 12, 3, 64, DEFAULT_TEST_RATIOS)
-        assert mod._WORKER_KERNEL is not None
-        assert mod._WORKER_TRANSITION_MODEL is None
-
-    def test_process_galaxy_with_cnn_branch(self, tmp_path):
-        """End-to-end through the CNN branch: just-built A_θ ≈ identity,
-        so the LR cube should be finite + correctly-shaped (we don't
-        assert on numeric closeness to the kernel branch — that's a
-        training-quality test, not a wiring test)."""
-        mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        cnn = self._save_untrained_cnn(tmp_path)
-        tile = _make_synthetic_tile(tmp_path, side_pix=400)
-        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
-
-        task = (0, 150.1, 2.3, tile, 200, 42)
-        result = mod._process_one_galaxy(task)
-        assert result is not None
-        catalog_idx, hr_cube, lr_cube = result
-        assert hr_cube.shape == (64, 64, 4)
-        assert lr_cube.shape == (32, 32, 4)
-        assert np.isfinite(hr_cube).all()
-        assert np.isfinite(lr_cube).all()
-
-    def _save_cnn_with_baseline(self, tmp_path, kernel_fits_path):
-        """Write a transition-model weights file from a model that was
-        constructed with the analytic baseline kernel pinned. Also
-        emits the summary JSON the worker reads to reconstruct the
-        same model shape.
-        """
-        import json as _json
-        from euclid_polish.training.transition_model import (
-            HSTtoEuclidTransition, save_model_weights,
-        )
-        # Load the same FITS the worker will see at load time.
-        from astropy.io import fits as _fits
-        with _fits.open(kernel_fits_path) as hdul:
-            baseline_kernel = np.asarray(hdul[0].data, dtype=np.float32)
-        model = HSTtoEuclidTransition(
-            channels=4, n_inner_layers=1, kernel_size=3,
-            baseline_kernel=baseline_kernel,
-        )
-        weights_path = str(tmp_path / "transition_model.weights.h5")
-        save_model_weights(model, weights_path)
-        # Drop the summary JSON the worker reads.
-        summary_path = str(tmp_path / "transition_model_summary.json")
-        with open(summary_path, "w") as f:
-            _json.dump({
-                "channels":       4,
-                "n_inner_layers": 1,
-                "kernel_size":    3,
-                "analytic_baseline_kernel": kernel_fits_path,
-                "baseline_crop":  0,
-            }, f)
-        return weights_path
-
-    def test_init_worker_reconstructs_model_with_baseline(self, tmp_path):
-        """REGRESSION — when the trained model was saved with an
-        analytic baseline pinned as a non-trainable layer, the worker
-        MUST reconstruct it with the same baseline before loading the
-        weights. Reading channels/n_inner_layers from the CLI alone
-        gives a model with 0 top-level variables, while the weights
-        file has 1 (the baseline kernel) — Keras then raises
-        ``expected 0 variables, but received 1`` and the whole
-        ProcessPoolExecutor dies.
-
-        Verify that the worker reads the summary JSON, loads the
-        baseline FITS, and instantiates the model with both — so
-        the weights file loads without error.
-        """
-        mod = _load_script()
-        krn = _make_synthetic_kernel(tmp_path)
-        cnn = self._save_cnn_with_baseline(tmp_path, krn)
-        # Call with CLI defaults that DON'T match the saved
-        # hyperparameters — the worker should ignore the CLI values
-        # in favor of the summary's.
-        mod._init_worker(krn, cnn, 12, 3, 64, DEFAULT_TEST_RATIOS)
-        assert mod._WORKER_TRANSITION_MODEL is not None
-        # The reconstructed model must have a baseline kernel.
-        assert mod._WORKER_TRANSITION_MODEL._has_baseline is True
-        assert mod._WORKER_KERNEL is None
-
-    def test_init_worker_fails_loudly_when_baseline_missing(self, tmp_path):
-        """If the summary says a baseline was used but the FITS isn't
-        findable, the worker must raise a clear error rather than
-        silently constructing the wrong-shape model (which would then
-        explode inside ``load_weights`` with the cryptic
-        ``expected 0 variables, received 1``)."""
-        import json as _json
-        import pytest as _pt
-        # Save a model WITH baseline using a real kernel...
-        krn = _make_synthetic_kernel(tmp_path)
-        weights_path = self._save_cnn_with_baseline(tmp_path, krn)
-        # ...then doctor the summary to point at a nonexistent FITS.
-        summary_path = str(tmp_path / "transition_model_summary.json")
-        with open(summary_path) as f:
-            s = _json.load(f)
-        s["analytic_baseline_kernel"] = "/n/nowhere/does_not_exist.fits"
-        with open(summary_path, "w") as f:
-            _json.dump(s, f)
-        # Also remove the matching local kernel so the candidate-search
-        # in _init_worker has nothing to fall back to.
-        missing_krn = str(tmp_path / "missing_kernel.fits")
-        mod = _load_script()
-        with _pt.raises(RuntimeError, match="baseline.*kernel"):
-            mod._init_worker(missing_krn, weights_path, 12, 3, 64,
-                             DEFAULT_TEST_RATIOS)
+        sigma = mod._euclid_vis_sigma_lr_per_pixel()
+        band = Config.BAND_VIS
+        t_total = band.t_total_s
+        pixel_area = band.pixel_scale_lr_arcsec ** 2
+        sky = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
+        dark = band.dark_e_per_s_per_pix * t_total
+        read = band.n_exposures * band.read_noise_e ** 2
+        expected = float(np.sqrt(sky + dark + read))
+        assert sigma == pytest.approx(expected, rel=1e-6)
+        assert sigma > 0

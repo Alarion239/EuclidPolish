@@ -9,6 +9,8 @@
      title="side-by-side: clean HR | dirty LR | HR-VIS target">pair (triptych)</a>
   <a class="chip" data-group="kind" data-value="clean">clean (4-band HR)</a>
   <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
+  <a class="chip" data-group="kind" data-value="dirty_analytic"
+     title="sum_rebin(A ⊛ clean_HR) — live: bare analytic differential kernel, no CNN, no noise. Use this to isolate ringing artifacts from the kernel itself.">dirty (analytic A)</a>
   <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
@@ -35,8 +37,8 @@
   </div>
   <div style="margin-top:8px;">
     <a id="fits-download" class="chip" href="#" download
-       title="Download raw 4-band cube (or 1-band HR target) as multi-HDU FITS. Linear electron values — no asinh, no clip, no colormap. Band chip is ignored (FITS carries all bands).">
-      📥 Download FITS (all bands)
+       title="Download the raw linear-electron array for the current view as multi-HDU FITS. No asinh, no clip, no colormap. The selected band chip is honoured: VIS/Y_E/J_E/H_E → 2-D single-band image; color → full 4-band cube. The HR target is single-band regardless.">
+      📥 Download FITS
     </a>
   </div>
 </div>
@@ -63,8 +65,12 @@
 {% block actions %}
 <section class="card">
   <h3>Generate HST TFRecords (FASRC)</h3>
-  <p class="hint">The two-stage chain: optionally run the trained
-     denoiser over each HST stamp, then write
+  <p class="hint">Analytic-A only forward model. For every catalog
+     stamp the script convolves the HST cube with the precomputed
+     differential kernel <code>A</code> and rejects any stamp whose
+     brightest pixel would produce <code>A(ε)</code> ringing larger than
+     <code>max_relative_noise × σ_LR</code> (so bright stars don't leak
+     into the training set). Writes
      <code>clean_train/validate.tfrecord</code> +
      <code>dirty_train/validate.tfrecord</code> +
      <code>hr_train/validate.tfrecord</code> to FASRC.</p>
@@ -138,6 +144,12 @@ function maxIdx() {
       .map(v => (v == null ? 0 : v));
     return Math.max(0, Math.min(...ns) - 1);
   }
+  // dirty_analytic is computed live from the `clean` shard, so its
+  // navigation cap matches whichever clean record exists locally —
+  // the dirty/hr shards aren't involved.
+  if (k === "dirty_analytic") {
+    return Math.max(0, (totals[`clean_${s}`] || 0) - 1);
+  }
   return Math.max(0, (totals[`${k}_${s}`] || 0) - 1);
 }
 function clampIdx(i) {
@@ -177,11 +189,10 @@ async function refreshTotals() {
 function _updateFitsLink(sel) {
   const a = document.getElementById("fits-download");
   if (!a) return;
-  // FITS endpoint ignores `band` (it always returns the full
-  // 4-band cube), so omit it from the query — saves a couple of
-  // bytes and avoids confusing the user when they peek at the URL.
+  // Carry the band chip so single-band selections come down as 2-D
+  // (H, W) images; color → full 4-band cube (server default).
   a.href = `/view/hst-pair.fits?subset=${sel.subset}` +
-           `&kind=${sel.kind}&i=${sel.i}`;
+           `&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`;
 }
 
 polishUI.viz.bind({

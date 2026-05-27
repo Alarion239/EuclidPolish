@@ -21,6 +21,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+from euclid_polish.observability.reporter import Reporter
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.forward_op import EuclidVISForwardOp
@@ -84,6 +85,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     print("=" * 64)
     print(f"  WDSR training with HST + round-trip mix")
     print("=" * 64)
@@ -115,6 +117,7 @@ def main() -> int:
     # stays pure synthetic so the metric is comparable across runs and
     # round-trip records (which lack HR ground truth) can't slip into
     # the PSNR computation.
+    reporter.set_stage("building datasets")
     train_dataset = MultiBandEuclidDataset(
         subset="train",
         records_dir=args.records_syn,
@@ -133,6 +136,7 @@ def main() -> int:
               repeat_count=1)
 
     # Model + loss + optimizer (same recipe as the standard trainer).
+    reporter.set_stage("building model + optimizer")
     scale = Config.DEFAULT_REBIN_FACTOR
     model = wdsr(
         scale=scale, num_res_blocks=args.num_res_blocks,
@@ -157,6 +161,7 @@ def main() -> int:
     )
     print(f"      total trainable params: "
           f"{sum(int(np.prod(v.shape)) for v in model.trainable_variables):,}")
+    reporter.set_stage(f"training {args.steps} steps")
     print(f"\n  training {args.steps} steps ...")
     trainer.train(
         train_dataset, valid_dataset, steps=int(args.steps),

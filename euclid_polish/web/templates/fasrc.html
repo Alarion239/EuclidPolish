@@ -280,10 +280,10 @@
 
   <!-- HST pipeline submission cards have moved out of this page; each
        step is now mounted on its logical destination page next to the
-       inspection UI (HST tiles / HST PSF / Transition pairs / Training
-       / Sky data / HST Catalog). The polling-driven HST tab here used
-       to host the same cards — keeping the markup removed so users
-       don't get a stale duplicate of the form. -->
+       inspection UI (HST tiles / HST PSF / Training / Sky data /
+       HST Catalog). The polling-driven HST tab here used to host the
+       same cards — keeping the markup removed so users don't get a
+       stale duplicate of the form. -->
 
   <!-- =======================================================
        TAB · Git (status, fetch, pull — auto env-update on yml)
@@ -1253,13 +1253,5 @@ setInterval(() => {
   // git tab is manual-refresh: pulls and fetches are expensive enough
   // that auto-polling them isn't worth it.
 }, 5000);
-
-/* ============================================================
-// HST pipeline JS used to live here (refreshHst, _renderHstArea,
-// _updateHstStatusOnly, plus the initial-tab-click handler). The
-// submission cards moved to their per-task pages — see
-// templates/_step_card_mount.html — so none of that JS is reachable
-// from this page anymore. Removed as part of task #65.
-
 </script>
 {% endblock %}
