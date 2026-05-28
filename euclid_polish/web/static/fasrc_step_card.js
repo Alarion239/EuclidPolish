@@ -155,6 +155,9 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"></label>
       <label>Round-trip fraction
         <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"></label>
+      <label>Forward-op PSF crop (½)
+        <input type="number" name="forward_op_crop_half" value="0" step="8" min="0" max="512"
+               title="Optional central crop of the VIS PSF for the round-trip forward op → (2·crop+1)² kernel. 0 = full 1023×1023 PSF (the forward op convolves via FFT, so the full PSF is exact AND fast — no crop needed). Set >0 only to ablate the PSF wings. Only used when round-trip fraction > 0."></label>
       <label>Save-best w·synthetic
         <input type="number" name="save_best_w_syn" value="1.0" step="0.5" min="0" max="100"
                title="Weight of synthetic PSNR (dB) in the composite save-best score."></label>

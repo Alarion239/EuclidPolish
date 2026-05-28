@@ -130,18 +130,14 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
         psf = _load_vis_psf_kernel(
             self._psf_fits_path, crop_half_side=self._crop_half_side,
         )
-        # tf.nn.conv2d performs cross-correlation. To make it equivalent
-        # to true convolution (what scipy.signal.fftconvolve computes),
-        # flip the kernel in both axes. For a perfectly symmetric PSF
-        # this is a no-op, but real ePSFs can be asymmetric.
-        psf_flipped = psf[::-1, ::-1].copy()
-        # Conv-kernel shape: [kernel_h, kernel_w, in_channels, out_channels].
-        kernel = psf_flipped[:, :, np.newaxis, np.newaxis]
-        # Register as a non-trainable weight so it serialises with the model.
+        # Stored UN-flipped: the FFT path below computes true convolution
+        # directly (irfft(rfft(img)·rfft(psf))), matching
+        # ``scipy.signal.fftconvolve(img, psf)`` — no kernel flip needed
+        # (a flip would turn it into correlation). Shape ``[Kh, Kw]``.
         self._psf_kernel = self.add_weight(
             name="vis_psf_kernel",
-            shape=kernel.shape,
-            initializer=tf.constant_initializer(kernel),
+            shape=psf.shape,
+            initializer=tf.constant_initializer(psf),
             trainable=False,
             dtype=tf.float32,
         )
@@ -154,26 +150,53 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
     def call(self, hr_vis_linear: tf.Tensor) -> tf.Tensor:
         """Apply PSF + sum-rebin to a batch of HR VIS images.
 
+        The PSF convolution is done in the Fourier domain
+        (``tf.signal.rfft2d``) rather than ``tf.nn.conv2d``. The Euclid
+        VIS PSF is ~1023×1023 on the HR grid; a direct spatial conv2d
+        with a kernel that large forces cuDNN onto an FFT-conv path that
+        is pathologically slow / hangs on GPU. An explicit FFT is
+        O(N log N) regardless of kernel size, keeps the full PSF wings
+        (no cropping needed), is differentiable, and reproduces
+        ``scipy.signal.fftconvolve(..., mode='same')`` — the exact
+        operator the offline synthetic forward uses.
+
         Parameters
         ----------
         hr_vis_linear
             ``[B, H, W, 1]`` float32 tensor in linear electron units.
-            Must have an even number of pixels per side divisible by
-            ``rebin_factor`` (callers crop earlier in the pipeline so
-            this matches the rest of the data path).
 
         Returns
         -------
         ``[B, H // rebin_factor, W // rebin_factor, 1]`` float32 tensor
         in linear electron units (sum-rebin preserves photometric flux).
         """
-        # 1. Deterministic PSF conv.
-        x = tf.nn.conv2d(
-            hr_vis_linear, self._psf_kernel, strides=1, padding="SAME",
-        )
-        # 2. Sum-rebin via avg_pool × area. ``avg_pool2d`` with
-        #    padding='VALID' trims trailing pixels that don't fit a whole
-        #    bin — matches ``MultiBandForward.sum_rebin``'s ``[:h_t, :w_t]``.
+        psf = self._psf_kernel                       # [Kh, Kw], unit-sum
+        kh = int(psf.shape[0])
+        kw = int(psf.shape[1])
+
+        img = hr_vis_linear[..., 0]                  # [B, H, W]
+        h = tf.shape(img)[1]
+        w = tf.shape(img)[2]
+        # Linear (not circular) convolution: zero-pad both operands to
+        # the full-conv size (H+Kh-1, W+Kw-1) before transforming.
+        fh = h + (kh - 1)
+        fw = w + (kw - 1)
+        fft_len = tf.stack([fh, fw])
+
+        img_f = tf.signal.rfft2d(img, fft_length=fft_len)        # [B, fh, fw//2+1]
+        psf_f = tf.signal.rfft2d(psf, fft_length=fft_len)        # [fh, fw//2+1]
+        full  = tf.signal.irfft2d(img_f * psf_f, fft_length=fft_len)  # [B, fh, fw]
+
+        # ``mode='same'`` crop: scipy keeps the central H×W of the full
+        # linear conv, offset by ``(K-1)//2`` per axis.
+        sh = (kh - 1) // 2
+        sw = (kw - 1) // 2
+        same = full[:, sh:sh + h, sw:sw + w]         # [B, H, W]
+        x = same[..., tf.newaxis]                    # [B, H, W, 1]
+
+        # Sum-rebin via avg_pool × area. ``padding='VALID'`` trims
+        # trailing pixels that don't fit a whole bin — matches
+        # ``MultiBandForward.sum_rebin``'s ``[:h_t, :w_t]``.
         if self.rebin_factor > 1:
             x = tf.nn.avg_pool2d(
                 x, ksize=self.rebin_factor, strides=self.rebin_factor,

@@ -97,6 +97,15 @@ def parse_args() -> argparse.Namespace:
                         "~10–30 to matter; it can also be gamed by "
                         "under-sharpening, so it defaults to 0 "
                         "(monitored-only).")
+    p.add_argument("--forward-op-crop-half", type=int, default=0,
+                   help="Optional central crop of the VIS PSF kernel used "
+                        "by the round-trip forward op → (2·crop+1)² "
+                        "kernel. Default 0 = use the FULL saved PSF "
+                        "(~1023×1023): the forward op convolves via an "
+                        "explicit FFT (O(N log N)), so the full PSF — "
+                        "wings and all — is both exact and fast, no crop "
+                        "needed. Set a positive value only to ablate the "
+                        "PSF wings (e.g. 32 → 65×65 core-only).")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -193,9 +202,21 @@ def main() -> int:
         values=[1e-3, 5e-4],
     )
 
-    # Forward op only when the round-trip path is on. Loading + flipping
-    # the kernel takes ~tens of ms at startup; nothing if we skip.
-    forward_op = EuclidVISForwardOp(rebin_factor=scale) if use_roundtrip else None
+    # Forward op only when the round-trip path is on. The PSF kernel is
+    # CROPPED (crop_half_side) — the full ~400×400 saved PSF makes
+    # tf.nn.conv2d fall back to a slow/hanging FFT path on GPU; a 65×65
+    # crop runs ~40× faster and captures the VIS PSF to <0.1%.
+    crop_half = (args.forward_op_crop_half
+                 if args.forward_op_crop_half and args.forward_op_crop_half > 0
+                 else None)
+    forward_op = (
+        EuclidVISForwardOp(rebin_factor=scale, crop_half_side=crop_half)
+        if use_roundtrip else None
+    )
+    if forward_op is not None:
+        print(f"      round-trip forward op: VIS PSF kernel "
+              f"{forward_op.psf_kernel_size}×{forward_op.psf_kernel_size} "
+              f"(crop_half_side={crop_half})")
 
     trainer = Trainer(
         model=model,

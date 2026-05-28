@@ -580,6 +580,7 @@ class HSTTrainStep(FASRCPipelineStep):
         w_syn               = float(params.get("save_best_w_syn", 1.0))
         w_hst               = float(params.get("save_best_w_hst", 1.0))
         w_rt                = float(params.get("save_best_w_rt", 0.0))
+        fwd_crop            = int(params.get("forward_op_crop_half", 0))
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
@@ -589,10 +590,13 @@ class HSTTrainStep(FASRCPipelineStep):
             "--save-best-w-hst", f"{w_hst:g}",
             "--save-best-w-rt",  f"{w_rt:g}",
         ]
-        # Only emit the round-trip flag when non-default so existing
-        # SLURM submissions stay byte-identical until the user opts in.
+        # Only emit the round-trip flags when the path is on, so a
+        # supervised-only submission stays byte-identical.
         if roundtrip_fraction > 0:
-            cmd += ["--roundtrip-fraction", f"{roundtrip_fraction:g}"]
+            cmd += [
+                "--roundtrip-fraction", f"{roundtrip_fraction:g}",
+                "--forward-op-crop-half", str(fwd_crop),
+            ]
         return cmd
 
 
