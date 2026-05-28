@@ -484,11 +484,12 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
             description=(
                 "Generate N random sky positions inside a 2° disk on "
                 "the Euclid coverage map and pull large 4-band cutouts "
-                "(VIS + NISP Y/J/H) from the Euclid archive. Cutouts "
-                "land in $DATA_DIR/euclid_sky/cutouts/<band>/. Out-of-"
-                "coverage positions silently drop out at the mosaic "
-                "lookup step. This step is the prerequisite for the "
-                "round-trip self-supervised training path."
+                "(VIS + NISP Y/J/H) from the Euclid archive. Each "
+                "position is bundled into a single multi-HDU FITS at "
+                "$DATA_DIR/euclid_sky/cutouts/sky_NNNN.fits. Positions "
+                "where any band fails are skipped wholesale. This step "
+                "is the prerequisite for the round-trip self-supervised "
+                "training path."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
@@ -519,10 +520,11 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
             step_id="euclid_roundtrip_tfrecords",
             label="5b. Stack + chop Euclid sky cutouts into round-trip TFRecords",
             description=(
-                "Read per-band cutouts from 5a, stack into 4-channel "
-                "(VIS + Y/J/H) cubes on the shared 0.10\"/pix archive "
-                "grid, chop into smaller training stamps, and write "
-                "LR-only ``dirty_{train,validate}.tfrecord`` under "
+                "Read bundled per-position cutouts from 5a, pull the "
+                "four band ImageHDUs (VIS + Y/J/H) on the shared "
+                "0.10\"/pix archive grid, chop into smaller training "
+                "stamps, and write LR-only "
+                "``dirty_{train,validate}.tfrecord`` under "
                 "$DATA_DIR/images/records_v2_euclid_roundtrip/. "
                 "Per-band pixel values are multiplied by their "
                 "``t_total_s`` to convert archive e⁻/s units to the "

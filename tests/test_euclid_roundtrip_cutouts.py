@@ -139,38 +139,29 @@ class TestUniformDiskPositions:
 # 4-band cube assembly
 # ---------------------------------------------------------------------------
 
-def _write_synth_band_cutout(
-    path: str, *, side: int = 64, value: float = 1.0,
-) -> None:
-    """Write a constant-value square FITS — minimum the cube loader needs."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = np.full((side, side), value, dtype=np.float32)
-    hdu = fits.PrimaryHDU(data)
-    hdu.writeto(path, overwrite=True)
-
-
 def _layout_one_position(
     tmp_path, pid: int, side: int, *, missing_band: str | None = None,
     bad_shape_band: str | None = None,
 ):
-    """Lay out per-band cutouts in the directory tree the loader expects.
+    """Write a bundled multi-HDU FITS for one position.
 
-    Layout (mirrors `EuclidCutoutDownloader.__init__:159`):
-        ``<root>/cutouts/<band>/star_NNNN_<size>.fits``
+    Layout matches the new download script:
+        ``<tmp_path>/sky_NNNN.fits``
+    with one ``ImageHDU`` per band (``EXTNAME`` ∈ ``LR_INPUT_BAND_NAMES``).
     """
     from euclid_polish.config import Config
 
+    os.makedirs(str(tmp_path), exist_ok=True)
+    hdul = fits.HDUList([fits.PrimaryHDU()])
     for i, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         if band_name == missing_band:
             continue
-        band_dir = Config.cutout_dir_for_band(
-            band_name, root=os.path.join(str(tmp_path), Config.CUTOUTS_SUBDIR),
-        )
-        path = os.path.join(band_dir, f"star_{pid:04d}_{side}.fits")
-        if band_name == bad_shape_band:
-            _write_synth_band_cutout(path, side=side - 1, value=float(i + 1))
-        else:
-            _write_synth_band_cutout(path, side=side, value=float(i + 1))
+        this_side = side - 1 if band_name == bad_shape_band else side
+        data = np.full((this_side, this_side), float(i + 1), dtype=np.float32)
+        hdul.append(fits.ImageHDU(data=data, name=band_name))
+    hdul.writeto(
+        os.path.join(str(tmp_path), f"sky_{pid:04d}.fits"), overwrite=True,
+    )
 
 
 class TestLoadFourBandCube:

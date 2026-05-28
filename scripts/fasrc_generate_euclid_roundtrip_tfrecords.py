@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 """Stack 4-band Euclid sky cutouts into LR-only TFRecords for round-trip training.
 
-Reads per-band cutouts written by
-``scripts/fasrc_download_euclid_sky_cutouts.py`` (one large stamp per
-position per band, all delivered by the Euclid archive on the shared
-0.10″/pix mosaic grid — see ``config.py:222-223``), stacks them into
+Reads bundled multi-HDU cutouts written by
+``scripts/fasrc_download_euclid_sky_cutouts.py`` — one
+``sky_NNNN.fits`` per position, with four ``ImageHDU``s named
+``VIS``, ``Y_E``, ``J_E``, ``H_E`` all delivered by the Euclid archive
+on the shared 0.10″/pix mosaic grid (see ``config.py:222-223``). The
+generator pulls the four images by ``EXTNAME``, stacks them into
 ``(H, W, 4)`` cubes in the canonical
 :attr:`~euclid_polish.config.Config.LR_INPUT_BAND_NAMES` order, chops
 each cube into many smaller training stamps, and writes them as
@@ -43,29 +45,38 @@ from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 
 
-# Input: where the sky downloader put the per-band cutouts.
-DEFAULT_INPUT_DIR = os.path.join(Config.DATA_DIR, "euclid_sky")
+# Input: where the sky downloader put the bundled per-position cutouts.
+DEFAULT_INPUT_DIR = os.path.join(Config.DATA_DIR, "euclid_sky", "cutouts")
 # Output: separate records directory so the dataset loader can point
 # at it independently of the synthetic/HST stores.
 DEFAULT_OUTPUT_DIR = os.path.join(
     Config.DATA_DIR, "images", "records_v2_euclid_roundtrip",
 )
+# Sky-catalogue filename written by the download script. Kept here so
+# the TFRecord generator can read the position list without importing
+# the download script (which would also drag in optional download deps).
+SKY_CATALOG_FILENAME = "sky_positions.csv"
+
+
+def bundle_path_for_id(input_dir: str, pos_id: int) -> str:
+    """Return the absolute path of the bundled FITS for a given position id."""
+    return os.path.join(input_dir, f"sky_{pos_id:04d}.fits")
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input-dir", default=DEFAULT_INPUT_DIR,
-                   help="Root that holds the sky catalog + per-band "
-                        "cutout directories from the sky-download "
+                   help="Directory containing the bundled per-position "
+                        "FITS (``sky_NNNN.fits``) from the sky-download "
                         "step. Default: " + DEFAULT_INPUT_DIR)
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
                    help="Where to write the TFRecord shards. "
                         "Default: " + DEFAULT_OUTPUT_DIR)
     p.add_argument("--vis-pixels", type=int, default=512,
-                   help="Cutout size (in 0.10\"/pix grid pixels) used "
-                        "by the download step. Used to locate the "
-                        "FITS files on disk (filenames embed the "
-                        "size). Must match what was downloaded.")
+                   help="Expected cutout side (in 0.10\"/pix grid "
+                        "pixels) from the download step. Used only as "
+                        "a sanity print; bundled FITS carry the true "
+                        "shape in their VIS HDU.")
     p.add_argument("--stamp-size", type=int, default=128,
                    help="Side length (LR pixels at 0.10\"/pix) of the "
                         "training stamps to chop each large cutout "
@@ -110,24 +121,21 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _band_cutout_path(input_dir: str, band_name: str, position_id: int,
-                      vis_pixels: int) -> str:
-    """Match the filename convention from the downloader (``star_NNNN_SIZE.fits``)."""
-    cutout_dir = Config.cutout_dir_for_band(
-        band_name, root=os.path.join(input_dir, Config.CUTOUTS_SUBDIR),
-    )
-    return os.path.join(cutout_dir, f"star_{position_id:04d}_{vis_pixels}.fits")
-
-
 def _load_4band_cube(
     input_dir: str, position_id: int, vis_pixels: int,
     *, scale_to_electrons: bool = True,
 ) -> Optional[np.ndarray]:
-    """Load and stack VIS + Y_E + J_E + H_E cutouts for one position.
+    """Load and stack VIS + Y_E + J_E + H_E images for one position.
 
-    Returns ``(H, W, 4)`` float32 cube in the canonical
-    ``LR_INPUT_BAND_NAMES`` order, or ``None`` if any band is missing,
-    unreadable, or has a mismatched shape (e.g. truncated download).
+    Opens ``<input_dir>/sky_NNNN.fits`` once and pulls the four
+    ``ImageHDU`` arrays by ``EXTNAME``. Returns ``(H, W, 4)`` float32
+    in the canonical ``LR_INPUT_BAND_NAMES`` order, or ``None`` if the
+    bundle is missing, the file is unreadable/corrupt, an ``EXTNAME``
+    is missing, or shapes disagree.
+
+    The ``vis_pixels`` argument is kept for backwards-compatible call
+    sites but is no longer used to derive paths — bundle ids are flat
+    (``sky_NNNN.fits``) regardless of cutout size.
 
     Per ``config.py:222``, the Euclid archive delivers all four bands
     on the same 0.10″/pix mosaic grid, so no on-disk resampling is
@@ -147,21 +155,25 @@ def _load_4band_cube(
     — irrelevant for the round-trip loss, which only checks
     ``Conv(M(lr)) ≈ lr`` on VIS and is sky-bias-invariant.
     """
+    del vis_pixels  # bundle layout no longer needs the size for path lookup
 
-    channels: list = []
-    for band_name in Config.LR_INPUT_BAND_NAMES:
-        path = _band_cutout_path(input_dir, band_name, position_id, vis_pixels)
-        if not os.path.isfile(path):
-            return None
-        try:
-            with fits.open(path, memmap=False) as hdul:
-                arr = np.asarray(hdul[0].data, dtype=np.float32)
-        except Exception:
-            return None
-        if scale_to_electrons:
-            band = Config.get_band(band_name)
-            arr = arr * float(band.t_total_s)
-        channels.append(arr)
+    path = bundle_path_for_id(input_dir, position_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            extnames = {hdu.name for hdu in hdul}
+            channels: list = []
+            for band_name in Config.LR_INPUT_BAND_NAMES:
+                if band_name not in extnames:
+                    return None
+                arr = np.asarray(hdul[band_name].data, dtype=np.float32)
+                if scale_to_electrons:
+                    band = Config.get_band(band_name)
+                    arr = arr * float(band.t_total_s)
+                channels.append(arr)
+    except Exception:
+        return None
 
     shapes = {c.shape for c in channels}
     if len(shapes) != 1:
@@ -239,15 +251,29 @@ def main() -> int:
 
     t0 = time.time()
 
-    cat_path = os.path.join(args.input_dir, Config.CATALOG_FILE)
-    if not os.path.isfile(cat_path):
-        reporter.error(f"sky catalog not found at {cat_path}")
-        print(f"ERROR: sky catalog not found at {cat_path}")
+    # The sky-positions catalogue lives one level above the bundled
+    # cutouts (under ``$DATA_DIR/euclid_sky/``); the bundles themselves
+    # live in ``$DATA_DIR/euclid_sky/cutouts/``. Look for the CSV in
+    # ``input_dir`` first (a user can point both at the same root), then
+    # fall back to its parent so the default tree just works.
+    cat_candidates = [
+        os.path.join(args.input_dir, SKY_CATALOG_FILENAME),
+        os.path.join(os.path.dirname(os.path.abspath(args.input_dir)),
+                     SKY_CATALOG_FILENAME),
+    ]
+    cat_path = next((p for p in cat_candidates if os.path.isfile(p)), None)
+    if cat_path is None:
+        msg = (
+            f"sky positions catalogue not found at any of: "
+            f"{cat_candidates}"
+        )
+        reporter.error(msg)
+        print(f"ERROR: {msg}")
         print("       Run scripts/fasrc_download_euclid_sky_cutouts.py first.")
         return 1
     positions = pd.read_csv(cat_path)
     reporter.set_stage("reading sky catalog")
-    print(f"[1/3] sky catalog: {len(positions)} positions")
+    print(f"[1/3] sky catalogue: {len(positions)} positions  ({cat_path})")
 
     # Train/validate split at the position level so stamps from one
     # large cutout don't leak across the split.
@@ -292,6 +318,10 @@ def main() -> int:
                 )
                 if cube is None:
                     dropped_no_4band += 1
+                    reporter.warn(
+                        f"position {pid} bundle missing/corrupt/incomplete "
+                        f"({bundle_path_for_id(args.input_dir, pid)})"
+                    )
                     continue
                 for stamp in _chop_cube(cube, args.stamp_size):
                     if not _stamp_is_usable(

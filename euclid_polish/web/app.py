@@ -2476,23 +2476,21 @@ def create_app() -> Flask:
         cutouts_dir = f"{cfg_loaded.data_dir}/euclid_sky/cutouts"
         records_dir = f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip"
 
-        # Per-band cutout summary — one ``find`` per band, batched into a
-        # single SSH round-trip via list_remote_dir. SSH may be down on
-        # this page render (the connection gate is downstream); the
-        # helper returns ok=False quietly and we just show "no cutouts
-        # yet" in that case.
+        # Bundle summary — each ``sky_NNNN.fits`` carries all four bands,
+        # so one ``find`` over the cutouts dir gives us the per-position
+        # count and aggregate disk size in a single SSH round-trip. SSH
+        # may be down on this page render (the connection gate is
+        # downstream); the helper returns ok=False quietly and we just
+        # show "no cutouts yet" in that case.
         cutouts_summary: List[Dict[str, Any]] = []
-        for band_name in Config.LR_INPUT_BAND_NAMES:
-            band_dir = f"{cutouts_dir}/{band_name}"
-            ok, entries, _ = list_remote_dir(
-                band_dir, glob_pattern="*.fits", max_entries=100_000,
-            )
-            if not ok or not entries:
-                continue
+        ok, entries, _ = list_remote_dir(
+            cutouts_dir, glob_pattern="sky_*.fits", max_entries=100_000,
+        )
+        if ok and entries:
             n = len(entries)
             size_gb = sum(int(e.get("size", 0)) for e in entries) / 1e9
             cutouts_summary.append({
-                "band":    band_name,
+                "band":    "all 4 bands (bundled)",
                 "n":       n,
                 "size_gb": f"{size_gb:.2f}",
             })
@@ -3790,7 +3788,7 @@ def create_app() -> Flask:
                 "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
                 "euclid_sky":
-                    f"{cfg_loaded.data_dir}/euclid_sky/stars.csv",
+                    f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
                 "roundtrip_records":
                     f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
             }

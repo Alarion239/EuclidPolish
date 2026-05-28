@@ -14,46 +14,65 @@ This script handles the data-acquisition half of that path:
      coverage region). Positions outside Euclid coverage are filtered
      downstream when the cutout service can't find a covering mosaic
      tile, so we don't need an explicit footprint mask.
-  2. Write them as a sky catalog CSV in the same on-disk format
-     :class:`euclid_polish.euclid.catalog.StarCatalog` already uses for
-     ePSF stars — same loader, same flag tracking, separate file so
-     the star catalog stays clean.
-  3. Run :class:`euclid_polish.euclid.downloader.EuclidCutoutDownloader`
-     once per band, with a *large* cutout size (default 512 VIS px =
-     51.2″) so the TFRecord-generation step can chop each download into
-     many smaller training stamps.
+  2. Write the positions to ``$output_dir/sky_positions.csv`` (columns
+     ``id, ra, dec``).
+  3. For each position, fetch all four Euclid bands (VIS + NISP Y/J/H)
+     via :func:`euclid_polish.euclid.downloader.fetch_cutout_at` and
+     bundle them into a single multi-HDU FITS at
+     ``$output_dir/cutouts/sky_NNNN.fits`` with one ``ImageHDU`` per
+     band (``EXTNAME`` in ``VIS``, ``Y_E``, ``J_E``, ``H_E``).
 
-Per-band cutouts land in ``<output_dir>/cutouts/<band>/``, same layout
-as the star path. Downstream, ``fasrc_generate_euclid_roundtrip_tfrecords.py``
-stacks VIS + NISP into 4-channel cubes on the shared 0.10″ grid.
+A position is only written to disk if **all four bands** succeed —
+half-bundled files would force the downstream TFRecord step to grep
+for coverage across four directories. Better to lose a position than
+to silently corrupt the 4-band invariant.
+
+Migration notes — the on-disk layout used to be
+``$output_dir/cutouts/<band>/star_NNNN_<size>.fits`` with a catalogue
+called ``stars.csv``. To re-download cleanly under the new layout,
+remove the old artefacts first::
+
+    rm -rf $DATA_DIR/euclid_sky/cutouts/{VIS,Y_E,J_E,H_E}
+    rm -f  $DATA_DIR/euclid_sky/stars.csv
+
+Then re-run this script.
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 import sys
+import tempfile
 import time
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+
+from astropy.io import fits
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import (
-    DownloadConfig, EuclidCutoutDownloader,
-)
+from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.observability.reporter import Reporter
 
 
-# Default sky-catalog location. Kept separate from the star catalog
-# (``Config.DEFAULT_OUTPUT_DIR``) so the per-(band, size) flag columns
-# can't collide and the two pipelines can be re-run independently.
+# Default sky-catalog location. Kept separate from the ePSF star catalog
+# (``Config.DEFAULT_OUTPUT_DIR``) so the two pipelines can be re-run
+# independently.
 DEFAULT_SKY_OUTPUT_DIR = os.path.join(Config.DATA_DIR, "euclid_sky")
+# Sky-catalogue filename — distinct from ``Config.CATALOG_FILE``
+# (``stars.csv``) to make it obvious these are sky-region cutouts for
+# self-supervised training, NOT ePSF star cutouts.
+SKY_CATALOG_FILENAME = "sky_positions.csv"
+# Subdir for the bundled FITS. Lives directly under the output root so
+# the catalogue and cutouts share one easily-rsynced tree.
+CUTOUTS_SUBDIR = "cutouts"
 
 
 def _uniform_disk_positions(
@@ -74,10 +93,9 @@ def _uniform_disk_positions(
     flat sample, which would otherwise clump positions toward the poles
     of the local tangent plane).
 
-    Returns a DataFrame with the same ``(id, ra, dec, magnitude)``
-    columns :class:`StarCatalog` expects so the existing CSV reader
-    accepts it verbatim. ``magnitude`` is NaN — irrelevant for sky
-    cutouts, the catalog reader doesn't require it.
+    Returns a DataFrame with ``(id, ra, dec, magnitude)`` columns.
+    ``magnitude`` is NaN — irrelevant for sky cutouts, kept for legacy
+    test compatibility.
     """
     cos_dec = float(np.cos(np.deg2rad(dec_centre_deg)))
     # cos(90°) is ~6e-17 (positive due to float rounding), so a bare
@@ -110,11 +128,109 @@ def _uniform_disk_positions(
     return df
 
 
+def bundle_path_for_id(output_dir: str, pos_id: int) -> str:
+    """Return the absolute path of the bundled FITS for a given position id."""
+    return os.path.join(output_dir, CUTOUTS_SUBDIR, f"sky_{pos_id:04d}.fits")
+
+
+def _write_bundle(
+    target_path: str,
+    *,
+    pos_id: int,
+    ra: float,
+    dec: float,
+    vis_pixels: int,
+    arcsec_side: float,
+    band_files: dict,
+) -> None:
+    """Combine per-band tempfile FITS into a single multi-HDU bundle.
+
+    ``band_files`` is a ``{band_name: tempfile_path}`` map; one entry
+    per :data:`Config.LR_INPUT_BAND_NAMES` band. The output has a data-
+    less ``PrimaryHDU`` carrying position metadata in its header plus
+    one ``ImageHDU`` per band (``EXTNAME = band_name``).
+    """
+    primary_hdr = fits.Header()
+    primary_hdr["POS_ID"]  = (int(pos_id),         "Sky position id (matches sky_positions.csv)")
+    primary_hdr["RA"]      = (float(ra),           "ICRS right ascension (deg)")
+    primary_hdr["DEC"]     = (float(dec),          "ICRS declination (deg)")
+    primary_hdr["VIS_PIX"] = (int(vis_pixels),     "Cutout side in VIS pixels (0.10\"/pix)")
+    primary_hdr["ARCSEC"]  = (float(arcsec_side),  "Cutout side on sky (arcsec)")
+
+    hdul = fits.HDUList([fits.PrimaryHDU(header=primary_hdr)])
+    for band_name in Config.LR_INPUT_BAND_NAMES:
+        src = band_files[band_name]
+        with fits.open(src, memmap=False) as src_hdul:
+            data = np.asarray(src_hdul[0].data)
+            band_hdr = src_hdul[0].header.copy(strip=True)
+        band_hdr["EXTNAME"] = band_name
+        hdul.append(fits.ImageHDU(data=data, header=band_hdr, name=band_name))
+
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    hdul.writeto(target_path, overwrite=True)
+
+
+def _fetch_position_bundle(
+    *,
+    pos_id: int,
+    ra: float,
+    dec: float,
+    vis_pixels: int,
+    arcsec_side: float,
+    output_dir: str,
+) -> dict:
+    """Fetch all 4 bands for one position and write the bundled FITS.
+
+    Returns a dict with ``{"status": "written" | "cached" | "failed",
+    "id": pos_id, "errors": [...]}`` so the caller can tally outcomes.
+    Per-band tempfiles are removed in a ``finally`` block so a crash
+    mid-write doesn't strand them on disk.
+    """
+    target = bundle_path_for_id(output_dir, pos_id)
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
+        return {"status": "cached", "id": pos_id, "errors": []}
+
+    band_names: List[str] = list(Config.LR_INPUT_BAND_NAMES)
+    band_files: dict = {}
+    errors: list = []
+    tmp_dir = tempfile.mkdtemp(prefix=f"euclid_sky_{pos_id:04d}_")
+    try:
+        for band_name in band_names:
+            tmp_path = os.path.join(tmp_dir, f"{band_name}.fits")
+            ok, err = fetch_cutout_at(
+                ra=ra, dec=dec, band_name=band_name,
+                output_file=tmp_path,
+                cutout_size_vis_pixels=vis_pixels,
+            )
+            if not ok:
+                errors.append(f"{band_name}: {err}")
+                return {"status": "failed", "id": pos_id, "errors": errors}
+            band_files[band_name] = tmp_path
+
+        _write_bundle(
+            target,
+            pos_id=pos_id, ra=ra, dec=dec,
+            vis_pixels=vis_pixels, arcsec_side=arcsec_side,
+            band_files=band_files,
+        )
+        return {"status": "written", "id": pos_id, "errors": []}
+    finally:
+        for p in band_files.values():
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output-dir", default=DEFAULT_SKY_OUTPUT_DIR,
-                   help="Root for the sky catalog CSV and per-band "
-                        "cutout directories. Default: "
+                   help="Root for the sky catalogue CSV and bundled "
+                        "FITS cutouts. Default: "
                         f"{DEFAULT_SKY_OUTPUT_DIR}")
     p.add_argument("--n-positions", type=int, default=100,
                    help="Number of random sky positions to generate. "
@@ -137,16 +253,12 @@ def parse_args() -> argparse.Namespace:
                         "angular extent gets requested from each band "
                         "at its own native pixel scale.")
     p.add_argument("--workers", type=int, default=8,
-                   help="Parallel downloads per band")
-    p.add_argument("--bands",
-                   default=",".join(b.name for b in Config.BANDS),
-                   help="Comma-separated band list; default = all "
-                        "four (VIS + Y/J/H).")
+                   help="Parallel positions in flight at once.")
     p.add_argument("--regenerate-catalog", action="store_true",
-                   help="Overwrite the existing sky catalog CSV. "
-                        "Without this flag, an existing catalog is "
+                   help="Overwrite the existing sky-positions CSV. "
+                        "Without this flag, an existing catalogue is "
                         "reused (positions stay fixed across runs so "
-                        "the per-band download flag columns line up).")
+                        "the bundle ids line up).")
     p.add_argument("--seed", type=int, default=42,
                    help="RNG seed for position generation. Only "
                         "matters on the first run (or with "
@@ -156,10 +268,23 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _dir_size_bytes(path: str) -> int:
+    """Sum of file sizes under ``path``; returns 0 if the dir is absent."""
+    total = 0
+    if not os.path.isdir(path):
+        return 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+    return total
+
+
 def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
-    band_names = [n.strip() for n in args.bands.split(",") if n.strip()]
     arcsec_side = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
     print("=" * 64)
@@ -171,98 +296,104 @@ def main() -> int:
     print(f"  n_positions      = {args.n_positions}")
     print(f"  cutout size      = {args.vis_pixels} VIS px "
           f"(= {arcsec_side:.1f}\")")
-    print(f"  bands            = {band_names}")
-    print(f"  workers / band   = {args.workers}")
+    print(f"  bands (bundled)  = {list(Config.LR_INPUT_BAND_NAMES)}")
+    print(f"  workers          = {args.workers}")
     print()
 
     t0 = time.perf_counter()
 
-    # ---- 1. Sky catalog: generate or reuse ----
+    # ---- 1. Sky catalogue: generate or reuse ----
     os.makedirs(args.output_dir, exist_ok=True)
-    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    catalog_path = os.path.join(args.output_dir, SKY_CATALOG_FILENAME)
     if os.path.isfile(catalog_path) and not args.regenerate_catalog:
-        existing = pd.read_csv(catalog_path)
+        positions = pd.read_csv(catalog_path)
         reporter.set_stage("reusing sky catalog")
-        print(f"[1/2] reusing sky catalog: {len(existing)} positions "
+        print(f"[1/2] reusing sky catalogue: {len(positions)} positions "
               f"in {catalog_path}")
     else:
         rng = np.random.default_rng(args.seed)
-        df = _uniform_disk_positions(
+        positions = _uniform_disk_positions(
             args.ra_centre, args.dec_centre, args.radius_deg,
             args.n_positions, rng=rng,
         )
         if args.dry_run:
-            print(f"[1/2] DRY RUN — would generate {len(df)} positions "
+            print(f"[1/2] DRY RUN — would generate {len(positions)} positions "
                   f"and write to {catalog_path}")
         else:
-            df.to_csv(catalog_path, index=False)
-            reporter.set_stage("generated sky catalog")
-            print(f"[1/2] generated sky catalog: {len(df)} positions → "
+            reporter.set_stage("generating sky catalog")
+            positions.to_csv(catalog_path, index=False)
+            print(f"[1/2] generated sky catalogue: {len(positions)} positions → "
                   f"{catalog_path}")
-            # Show a few for sanity (RA/Dec inside the requested disk).
-            for _, row in df.head(3).iterrows():
+            for _, row in positions.head(3).iterrows():
                 print(f"        id={int(row['id']):03d}  "
                       f"RA={row['ra']:9.5f}°  Dec={row['dec']:+9.5f}°")
 
     if args.dry_run:
         print()
-        print(f"  DRY RUN — would download {len(band_names)} bands × "
-              f"{args.n_positions} positions at "
-              f"{args.vis_pixels} VIS px each.")
+        print(f"  DRY RUN — would fetch {len(Config.LR_INPUT_BAND_NAMES)} bands × "
+              f"{len(positions)} positions at "
+              f"{args.vis_pixels} VIS px each, bundling per position.")
         runtime = time.perf_counter() - t0
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
-    cat = StarCatalog(args.output_dir)
-    if not cat.exists():
-        reporter.error(
-            f"catalog write at {catalog_path} did not produce a readable file"
-        )
-        print(f"ERROR: catalog write at {catalog_path} did not "
-              "produce a readable file; check disk + permissions.")
-        return 1
+    # ---- 2. Per-position bundled download ----
+    reporter.set_stage("downloading bundles")
+    cutouts_dir = os.path.join(args.output_dir, CUTOUTS_SUBDIR)
+    os.makedirs(cutouts_dir, exist_ok=True)
 
-    # ---- 2. Per-band download ----
-    reporter.set_stage("per-band download")
-    summary: dict = {}
-    n_bands = len(band_names)
-    for band_idx, band_name in enumerate(band_names):
-        reporter.set_step(band_idx + 1, n_bands, band_name)
-        band = Config.get_band(band_name)
-        native = band.cutout_size_for_arcsec(arcsec_side)
-        print(f"\n=== {band_name}  (instrument={band.archive_instrument}"
-              f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
-              f"native_size={native} px) ===")
-        cfg = DownloadConfig.for_band(
-            band_name,
-            cutout_size_vis_pixels=args.vis_pixels,
-            max_workers=args.workers,
-        )
-        downloader = EuclidCutoutDownloader(cat, cfg)
-        t_band = time.perf_counter()
-        result = downloader.download(show_progress=True)
-        summary[band_name] = result
-        print(f"  → {band_name}: downloaded={result['downloaded']}, "
-              f"valid={result['valid']}, "
-              f"corrupted={result['corrupted']}, "
-              f"failed={result.get('failed', 0)}  "
-              f"[{time.perf_counter() - t_band:.0f}s]")
+    n_positions = len(positions)
+    n_written  = 0
+    n_cached   = 0
+    n_failed   = 0
 
+    # Materialise the (id, ra, dec) work-list up front so the
+    # ThreadPoolExecutor can dispatch from a simple iterable.
+    work = [
+        (int(row["id"]), float(row["ra"]), float(row["dec"]))
+        for _, row in positions.iterrows()
+    ]
+
+    completed_i = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        future_to_id = {
+            pool.submit(
+                _fetch_position_bundle,
+                pos_id=pid, ra=ra, dec=dec,
+                vis_pixels=args.vis_pixels, arcsec_side=arcsec_side,
+                output_dir=args.output_dir,
+            ): pid
+            for (pid, ra, dec) in work
+        }
+        for fut in concurrent.futures.as_completed(future_to_id):
+            pid = future_to_id[fut]
+            completed_i += 1
+            reporter.set_step(completed_i, n_positions, f"sky_{pid:04d}")
+            try:
+                result = fut.result()
+            except Exception as e:
+                n_failed += 1
+                reporter.warn(f"position {pid} crashed: {type(e).__name__}: {e}")
+                continue
+            status = result["status"]
+            if status == "written":
+                n_written += 1
+            elif status == "cached":
+                n_cached += 1
+            else:
+                n_failed += 1
+                for err in result["errors"]:
+                    reporter.warn(f"position {pid} failed: {err}")
+
+    # ---- 3. Summary ----
+    total_bytes = _dir_size_bytes(cutouts_dir)
     print()
     print("=" * 64)
     print(f"Summary  ({(time.perf_counter() - t0) / 60:.1f} min total):")
-    for name, r in summary.items():
-        print(f"  {name:5s}  +{r['downloaded']:4d}  "
-              f"valid={r['valid']}  corrupted={r['corrupted']}  "
-              f"failed={r.get('failed', 0)}")
-
-    # How many positions have ALL four bands? That's the upper bound
-    # for the round-trip TFRecord generator.
-    valid_per_band = {n: int(r["valid"]) for n, r in summary.items()}
-    if valid_per_band:
-        worst = min(valid_per_band.values())
-        print(f"\n  positions valid in *every* band (≤ min): "
-              f"~{worst} — these are what the TFRecord step will use.")
+    print(f"  positions written  = {n_written}")
+    print(f"  positions cached   = {n_cached}  (already on disk; skipped)")
+    print(f"  positions failed   = {n_failed}  (couldn't get all 4 bands)")
+    print(f"  bundle dir size    = {total_bytes / 1e9:.2f} GB  ({cutouts_dir})")
 
     runtime = time.perf_counter() - t0
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
