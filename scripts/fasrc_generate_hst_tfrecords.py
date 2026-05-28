@@ -120,18 +120,16 @@ def parse_args() -> argparse.Namespace:
                         "modelling. 0 disables the pool (single-process "
                         "fallback, useful for debugging). Default reads "
                         "SLURM_CPUS_PER_TASK if set, else os.cpu_count().")
-    p.add_argument("--max-mag", type=float, default=24.0,
+    p.add_argument("--max-mag", type=float, default=26.0,
                    help="Brightest-only catalog cut on the COSMOS2025 "
-                        "total VIS magnitude (bulge+disk). Default 24.0 "
-                        "sits inside Euclid's single-stack 5σ "
-                        "point-source depth (~24.5 in VIS) so generated "
-                        "pairs are visually obvious in the dirty image "
-                        "— faint sources below the noise floor make "
-                        "training data the model can't actually learn "
-                        "from. Bump to 25 if you specifically want to "
-                        "include detection-threshold galaxies; lower "
-                        "(22, 21) to focus on bright, well-resolved "
-                        "morphology only.")
+                        "total VIS magnitude (bulge+disk). Default 26.0 "
+                        "reaches well past Euclid's single-stack 5σ "
+                        "point-source depth (~24.5 in VIS) to include the "
+                        "fainter field galaxies that populate each cutout "
+                        "alongside the centered target — many such sources "
+                        "are visible in the stamps but were excluded by the "
+                        "old 24.0 cut. Lower (24, 22) to focus on bright, "
+                        "well-resolved morphology only.")
     p.add_argument("--max-relative-noise", type=float, default=5.0,
                    help="Reject any HR stamp whose brightest pixel "
                         "would make A(ε) (HST-side shot noise propagated "
