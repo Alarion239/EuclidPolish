@@ -1,15 +1,18 @@
 #!/usr/bin/env python
 """Generate clean (HST) + dirty (Euclid-forward) TFRecord pairs.
 
-For each selected COSMOS2025 sky position (the catalog only picks the
-RA/Dec; per-source catalog fluxes are not used here):
+Each HLSP mosaic is diced into a non-overlapping grid of square HR-sized
+chunks; we walk the (shuffled) grid and keep chunks until we reach the
+target pair count. No catalog positions are involved — the COSMOS2025
+catalog is loaded only for the typical per-band electron colours used to
+paint the NISP HR channels. For each grid chunk:
 
-  1. Cut an HR-grid-sized HST F814W cutout from the local HLSP tile that
-     contains it (``Cutout2D`` + WCS). HLSP delivers sky-subtracted
-     mosaics in e⁻/s, so we use those pixel values as-is — no extra
-     bg-subtract, no clip-to-zero. A 25″ chunk of sky contains many
-     visible sources and HST already gives each of them its real
-     F814W photometry; we want to preserve all of them.
+  1. Slice the chunk straight out of the HLSP mosaic by pixel. HLSP
+     delivers sky-subtracted mosaics in e⁻/s, so we use those pixel
+     values as-is — no extra bg-subtract, no clip-to-zero. Chunks that
+     straddle the mosaic's blank (zero/NaN) border fail the coverage
+     check and are dropped. HST already gives every source in the chunk
+     its real F814W photometry; we preserve all of them.
   2. Resample 0.03″ HLSP → 0.05″ HR with an area correction that
      preserves total flux through the zoom (scipy's cubic-spline zoom
      interpolates surface brightness; we multiply by the per-pixel-area
@@ -21,9 +24,13 @@ RA/Dec; per-source catalog fluxes are not used here):
      using a catalog-derived median ``e_band / e_VIS`` — a per-pixel
      global colour. Per-source colours are lost but the absolute scale
      is correct for noise statistics.
-  4. Reject the stamp if its brightest pixel would make the analytic
+  4. Reject the chunk if (a) its brightest pixel would make the analytic
      forward operator ``A`` produce noise-amplified ringing larger than
-     ``max_relative_noise × σ_LR`` — see ``_is_stamp_too_bright``.
+     ``max_relative_noise × σ_LR`` (``_is_stamp_too_bright``), or (b) it
+     contains a star — a bright point source DAOStarFinder flags above
+     ``star_threshold_sigma`` (``_has_bright_point_source``). Stars
+     forward-model to unlearnable ``A(ε)`` ringing, so we drop the chunk
+     and move to the next grid cell.
   5. Apply the pre-computed differential kernel A to get the Euclid-PSF
      view, sum-rebin to LR scale (0.10″/pix), add per-band Euclid noise.
   6. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
@@ -74,10 +81,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import astropy.units as u
-from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from astropy.nddata import Cutout2D
 from astropy.stats import sigma_clipped_stats
 from astropy.wcs import WCS
 from photutils.detection import DAOStarFinder
@@ -108,8 +112,10 @@ def parse_args() -> argparse.Namespace:
                    help="HST-derived training pairs to write.")
     p.add_argument("--n-valid", type=int, default=200,
                    help="HST-derived validation pairs to write.")
-    p.add_argument("--image-size", type=int, default=510,
-                   help="HR cutout side in HR pixels (0.05\"/pix).")
+    p.add_argument("--image-size", type=int, default=256,
+                   help="HR chunk side in HR pixels (0.05\"/pix). Mosaics "
+                        "are diced into a non-overlapping grid of these "
+                        "squares; smaller → more chunks per mosaic.")
     p.add_argument("--hlsp-dir",   default=HLSP_DIR)
     p.add_argument("--kernel",     default=KERNEL_PATH,
                    help="Analytic Wiener differential kernel FITS, the "
@@ -140,24 +146,22 @@ def parse_args() -> argparse.Namespace:
                         "stars dominates the training signal and is what "
                         "we're throwing away.")
     p.add_argument("--star-threshold-sigma", type=float, default=20.0,
-                   help="Reject a cutout if DAOStarFinder detects a "
+                   help="Reject a grid chunk if DAOStarFinder detects a "
                         "point source whose peak exceeds this many σ "
-                        "above the cutout's sigma-clipped background. "
-                        "Stars become A(ε) ringing in the forward model "
-                        "(noise-driven, unlearnable), so we drop any "
-                        "cutout containing one; resolved galaxies pass "
-                        "(the detector's sharpness/roundness cuts only "
-                        "flag PSF-like peaks). 0 disables the filter. "
-                        "Lower (10–15) to also drop fainter stars; "
-                        "higher (30+) to keep all but the brightest.")
+                        "above the chunk's sigma-clipped background. "
+                        "Stars forward-model to A(ε) ringing (unlearnable) "
+                        "so any chunk containing one is dropped; the "
+                        "sharpness/roundness cuts spare resolved galaxies. "
+                        "With grid tiling we can afford to be aggressive — "
+                        "rejected chunks just advance to the next grid "
+                        "cell. Lower (10–15) to chase fainter stars; 0 "
+                        "disables. Bright (problematic) stars sit hundreds "
+                        "of σ up, so 20 already catches every star that "
+                        "actually rings.")
     p.add_argument("--star-fwhm-px", type=float, default=2.5,
                    help="Matched-filter FWHM (HR pixels at 0.05\"/pix) "
                         "for the star detector. ≈ the HST F814W PSF FWHM "
                         "on the HR grid (~0.10\" → 2 px). Default 2.5.")
-    p.add_argument("--oversample", type=float, default=3.0,
-                   help="Catalog candidate pool size as a multiple of "
-                        "(n_train + n_valid). Bright-stamp + star "
-                        "rejection throw candidates out, so we need spares.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -260,14 +264,6 @@ class HLSPTileIndex:
                 f"no usable HLSP tiles in {hlsp_dir} "
                 f"({len(skipped)} were corrupt/skipped)"
             )
-
-    def find_tile(self, ra: float, dec: float) -> Optional[str]:
-        """Return the FITS path of the tile containing (ra, dec), or None."""
-        for e in self.entries:
-            if (e["ra_min"] <= ra <= e["ra_max"]
-                and e["dec_min"] <= dec <= e["dec_max"]):
-                return e["path"]
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +445,7 @@ def _make_pair(
 # ---------------------------------------------------------------------------
 
 # Module globals populated by ``_init_worker`` once per process. None
-# before init; checking them in ``_process_one_galaxy`` is what catches
+# before init; checking them in ``_process_one_tile`` is what catches
 # a missing ``initializer=`` in the pool setup.
 _WORKER_KERNEL:             Optional[np.ndarray] = None
 _WORKER_IMAGE_SIZE:         int                  = 0
@@ -458,6 +454,12 @@ _WORKER_SIGMA_LR:           float                = 0.0
 _WORKER_MAX_RELATIVE_NOISE: float                = 0.0
 _WORKER_STAR_FWHM:          float                = 0.0
 _WORKER_STAR_THRESH_SIGMA:  float                = 0.0
+
+# Minimum fraction of a raw grid chunk that must be real (finite,
+# non-zero) data. HLSP mosaics zero-pad / NaN-fill regions with no
+# exposure; a chunk straddling that border would leak blank sky into the
+# training pair, so anything below this is dropped.
+_MIN_TILE_COVERAGE: float = 0.95
 
 
 def _init_worker(
@@ -497,31 +499,29 @@ def _init_worker(
           f"star_thresh={_WORKER_STAR_THRESH_SIGMA:.1f}σ)", flush=True)
 
 
-def _process_one_galaxy(
-    task: Tuple[int, float, float, str, int, int],
-) -> Tuple[Optional[Tuple[int, np.ndarray, np.ndarray]], Optional[str]]:
-    """Cut + resample + forward-model one HST chunk of sky.
+def _process_one_tile(
+    task: Tuple[int, str, int, int, int, int],
+) -> Tuple[Optional[Tuple[str, np.ndarray, np.ndarray]], Optional[str]]:
+    """Cut + resample + forward-model one grid chunk of an HLSP mosaic.
 
     Pure function — no shared state beyond the module globals set by
-    ``_init_worker``. The kernel is the only non-trivial state and is
-    immutable across calls. The RNG is seeded per task so two workers
-    processing the same catalog_idx would produce identical output.
+    ``_init_worker``. ``task`` is a fixed pixel-grid cell
+    ``(tile_idx, tile_path, y0, x0, side, seed)``; the mosaic is sliced
+    directly by pixel (no WCS / catalog position). The RNG is seeded per
+    task so re-running the same cell reproduces the same LR noise.
 
-    Note: ``catalog_idx`` only selects *which RA/Dec to centre on* —
-    its per-band catalog fluxes are no longer used. The HST cutout's
-    own photometry sets the brightness of every source in the field.
-
-    Returns ``((catalog_idx, hr_cube, lr_cube), None)`` on success.
-    Returns ``(None, reason)`` when the chunk can't be cut (off-tile,
-    malformed FITS, cutout smaller than the target HR size, HST data
-    all-NaN, or stamp rejected by the bright-pixel filter).
+    Returns ``((provenance, hr_cube, lr_cube), None)`` on success, or
+    ``(None, reason)`` when the chunk can't be used: off the mosaic edge,
+    malformed FITS, below the coverage floor (straddles a blank border),
+    resamples smaller than the target HR size, all-NaN, or rejected by
+    the bright-pixel / star filters.
     """
-    catalog_idx, ra, dec, tile_path, hlsp_side_pix, seed = task
+    tile_idx, tile_path, y0, x0, side, seed = task
     if _WORKER_TYPICAL_RATIOS is None or _WORKER_KERNEL is None:
         # If we ever forget the initializer, fail loudly rather than
         # silently using None and crashing deep in the FFT.
         raise RuntimeError(
-            "_process_one_galaxy called without _init_worker — "
+            "_process_one_tile called without _init_worker — "
             "pass initializer=_init_worker to the pool."
         )
 
@@ -533,19 +533,23 @@ def _process_one_galaxy(
             )
             if sci is None:
                 return None, "no-image-hdu"
-            wcs = WCS(sci.header)
-            cutout = Cutout2D(
-                sci.data,
-                SkyCoord(ra * u.deg, dec * u.deg),
-                size=(hlsp_side_pix, hlsp_side_pix),
-                wcs=wcs, mode="strict",
+            H, W = sci.data.shape
+            if y0 < 0 or x0 < 0 or y0 + side > H or x0 + side > W:
+                return None, "cutout-failed"
+            chunk = np.asarray(
+                sci.data[y0:y0 + side, x0:x0 + side], dtype=np.float32,
             )
     except Exception:
         return None, "cutout-failed"
 
-    hr_resampled = _resample_hlsp_to_hr(
-        np.asarray(cutout.data, dtype=np.float32),
-    )
+    # Coverage: real sky-subtracted data is ~0-mean noise, so genuine
+    # pixels are essentially never exactly 0; a chunk straddling the
+    # mosaic's blank border shows up as a block of exact-0 / NaN.
+    covered = np.isfinite(chunk) & (chunk != 0.0)
+    if float(covered.mean()) < _MIN_TILE_COVERAGE:
+        return None, "no-coverage"
+
+    hr_resampled = _resample_hlsp_to_hr(chunk)
     Hh, Wh = hr_resampled.shape
     H_hr = _WORKER_IMAGE_SIZE
     if Hh < H_hr or Wh < H_hr:
@@ -600,7 +604,8 @@ def _process_one_galaxy(
         diff_kernel=_WORKER_KERNEL,
         rng=rng,
     )
-    return (catalog_idx, hr_cube, lr_cube), None
+    provenance = f"{os.path.basename(tile_path)}:y{y0}:x{x0}"
+    return (provenance, hr_cube, lr_cube), None
 
 
 def _hst_to_euclid_hr_cube(
@@ -664,7 +669,7 @@ def main() -> int:
     print(f"  n_valid          = {args.n_valid}")
     print(f"  image_size       = {args.image_size} (HR pixels)")
     print(f"  max_rel_noise    = {args.max_relative_noise}")
-    print(f"  oversample       = {args.oversample}")
+    print(f"  star_thresh      = {args.star_threshold_sigma}σ")
     print(f"  dry run          = {args.dry_run}")
     print()
 
@@ -722,20 +727,30 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={runtime:.1f}")
         return 0
 
-    reporter.set_stage("selecting galaxies on HLSP coverage")
-    print(f"[3/4] selecting galaxies that fall on the HLSP coverage ...")
-    # Walk catalog row-by-row, keep galaxies whose RA/Dec lands on a tile.
+    reporter.set_stage("dicing mosaics into a tile grid")
+    print(f"[3/4] dicing mosaics into {H_hr}² HR-pixel chunks ...")
+    # Walk every indexed mosaic and lay down a non-overlapping grid of
+    # ``hlsp_side_pix`` squares (one HR chunk each). No catalog positions
+    # involved — we just tile the sky and let the coverage + star filters
+    # decide which chunks survive.
     rng = np.random.default_rng()
-    # Oversample the catalog so bright-stamp rejection has spares.
-    target_total   = args.n_train + args.n_valid
-    candidate_pool = min(len(catalog),
-                         max(target_total,
-                             int(np.ceil(args.oversample * target_total))))
-    catalog_indices = np.arange(len(catalog))
-    rng.shuffle(catalog_indices)
-    catalog_indices = catalog_indices[:candidate_pool]
-    print(f"      shuffled candidate pool = {candidate_pool:,} "
-          f"(oversample = {args.oversample:g}× target {target_total})")
+    target_total = args.n_train + args.n_valid
+    grid_cells: List[Tuple[int, str, int, int]] = []
+    for tile_idx, e in enumerate(tiles.entries):
+        Ht, Wt = e["shape"]
+        for y0 in range(0, Ht - hlsp_side_pix + 1, hlsp_side_pix):
+            for x0 in range(0, Wt - hlsp_side_pix + 1, hlsp_side_pix):
+                grid_cells.append((tile_idx, e["path"], y0, x0))
+    if not grid_cells:
+        reporter.error("no grid chunks — is image_size larger than the mosaics?")
+        print("ERROR: no grid chunks; image_size may exceed the mosaic size.")
+        return 1
+    # Shuffle once so train + validate draw disjoint, spatially-mixed
+    # chunks (the single iterator is consumed across both subsets).
+    rng.shuffle(grid_cells)
+    print(f"      {len(grid_cells):,} grid chunks across "
+          f"{len(tiles.entries)} mosaics "
+          f"(target {target_total} pairs after coverage + star rejection)")
 
     n_workers = max(0, int(args.n_workers))
     reporter.set_stage(f"streaming pairs (pool size = {n_workers})")
@@ -743,7 +758,7 @@ def main() -> int:
           f"(pool size = {n_workers}) ...")
     pairs_written          = 0
     pairs_attempted        = 0
-    pairs_skipped_no_tile  = 0
+    pairs_skipped_coverage = 0
     pairs_skipped_cutout   = 0
     pairs_skipped_bright   = 0
     pairs_skipped_star     = 0
@@ -751,39 +766,32 @@ def main() -> int:
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
     summary: Dict[str, Any] = {"subsets": {}}
-    catalog_iter = iter(catalog_indices)
+    grid_iter = iter(enumerate(grid_cells))
     base_seed = int(rng.integers(0, 2**31))
 
     def _next_task() -> Optional[Tuple]:
-        """Pull the next candidate sky chunk off the shuffled catalog,
-        skipping centres whose RA/Dec doesn't land on any HLSP tile.
+        """Pop the next grid chunk off the pre-shuffled list.
 
-        Tile lookup runs in the *main* process because the index is
-        ~MB-scale shared state; cheaper than re-loading it per worker.
-        The catalog only selects the centre RA/Dec — its per-band
-        catalog fluxes are no longer used (HST's native photometry is
-        what scales the cube). Returns the task tuple ready for
-        ``_process_one_galaxy`` or ``None`` if the catalog is exhausted.
+        The single iterator is consumed across both subsets, so train and
+        validate never share a chunk. Returns the task tuple ready for
+        ``_process_one_tile`` or ``None`` when the grid is exhausted (we
+        may finish below target if rejection is heavy).
         """
-        nonlocal pairs_skipped_no_tile
-        for i in catalog_iter:
-            ra  = float(catalog.ra_deg[i])
-            dec = float(catalog.dec_deg[i])
-            tile_path = tiles.find_tile(ra, dec)
-            if tile_path is None:
-                pairs_skipped_no_tile += 1
-                continue
-            seed = (base_seed * 1_000_003 + int(i)) & 0x7FFFFFFF
-            return (int(i), ra, dec, tile_path, hlsp_side_pix, seed)
+        for cell_idx, (tile_idx, tile_path, y0, x0) in grid_iter:
+            seed = (base_seed * 1_000_003 + cell_idx) & 0x7FFFFFFF
+            return (tile_idx, tile_path, y0, x0, hlsp_side_pix, seed)
         return None
 
     def _classify_skip(reason: Optional[str]) -> None:
         nonlocal pairs_skipped_cutout, pairs_skipped_bright
         nonlocal pairs_skipped_star, pairs_skipped_other
+        nonlocal pairs_skipped_coverage
         if reason == "rejected-bright":
             pairs_skipped_bright += 1
         elif reason == "rejected-star":
             pairs_skipped_star += 1
+        elif reason == "no-coverage":
+            pairs_skipped_coverage += 1
         elif reason in ("cutout-too-small", "cutout-failed", "no-image-hdu"):
             pairs_skipped_cutout += 1
         else:
@@ -791,13 +799,9 @@ def main() -> int:
 
     def _write_result(result, subset_writers, subset_done):
         """Wrap one worker result as MultiBandSkyImages and write."""
-        catalog_idx, hr_cube, lr_cube = result
+        _provenance, hr_cube, lr_cube = result
         cw, dw, hw = subset_writers
-        try:
-            cosmos_id = int(catalog.catalog_id[catalog_idx])
-        except (IndexError, TypeError, ValueError):
-            cosmos_id = catalog_idx
-        meta = {"source": "hst_hlsp", "cosmos_id": cosmos_id}
+        meta = {"source": "hst_hlsp_tile"}
         clean_img = MultiBandSkyImage(
             data=hr_cube, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -847,14 +851,14 @@ def main() -> int:
 
             if n_workers == 0:
                 # No pool — sequential same as before, but routed
-                # through the same _process_one_galaxy helper so the
+                # through the same _process_one_tile helper so the
                 # two code paths can't diverge.
                 while sub_done < target_n:
                     task = _next_task()
                     if task is None:
                         break
                     pairs_attempted += 1
-                    result, reason = _process_one_galaxy(task)
+                    result, reason = _process_one_tile(task)
                     if result is None:
                         _classify_skip(reason)
                         continue
@@ -885,7 +889,7 @@ def main() -> int:
                         if task is None:
                             break
                         pairs_attempted += 1
-                        in_flight.add(pool.submit(_process_one_galaxy, task))
+                        in_flight.add(pool.submit(_process_one_tile, task))
 
                     while in_flight and sub_done < target_n:
                         done, in_flight = wait(
@@ -919,7 +923,7 @@ def main() -> int:
                             if task is not None:
                                 pairs_attempted += 1
                                 in_flight.add(
-                                    pool.submit(_process_one_galaxy, task)
+                                    pool.submit(_process_one_tile, task)
                                 )
 
                     # Cancel any over-submitted tasks once we have
@@ -935,10 +939,10 @@ def main() -> int:
         print(f"      ✓ {subset}: {sub_done} pairs written")
 
     runtime = time.time() - t0
-    summary["pairs_written"]         = pairs_written
-    summary["pairs_attempted"]       = pairs_attempted
-    summary["pairs_skipped_no_tile"] = pairs_skipped_no_tile
-    summary["pairs_skipped_cutout"]  = pairs_skipped_cutout
+    summary["pairs_written"]          = pairs_written
+    summary["pairs_attempted"]        = pairs_attempted
+    summary["pairs_skipped_coverage"] = pairs_skipped_coverage
+    summary["pairs_skipped_cutout"]   = pairs_skipped_cutout
     summary["pairs_skipped_bright"]  = pairs_skipped_bright
     summary["pairs_skipped_star"]    = pairs_skipped_star
     summary["pairs_skipped_other"]   = pairs_skipped_other
@@ -951,7 +955,7 @@ def main() -> int:
     print()
     print(f"  wrote      {pairs_written} pairs")
     print(f"  attempted  {pairs_attempted}")
-    print(f"  skipped    no-tile={pairs_skipped_no_tile} "
+    print(f"  skipped    coverage={pairs_skipped_coverage} "
           f"cutout={pairs_skipped_cutout} "
           f"bright={pairs_skipped_bright} "
           f"star={pairs_skipped_star} "
@@ -962,7 +966,7 @@ def main() -> int:
         f"rejected_bright={pairs_skipped_bright} "
         f"rejected_star={pairs_skipped_star} "
         f"skipped_cutout={pairs_skipped_cutout} "
-        f"skipped_no_tile={pairs_skipped_no_tile}"
+        f"skipped_coverage={pairs_skipped_coverage}"
     )
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
     print(f"PAIRS_WRITTEN={pairs_written}")

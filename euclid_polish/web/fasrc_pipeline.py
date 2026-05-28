@@ -463,9 +463,9 @@ class HSTTFRecordStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        n_train = int(params.get("n_train", 6400))
+        n_train = int(params.get("n_train", 2000))
         n_valid = int(params.get("n_valid", 200))
-        image_size = int(params.get("image_size", 510))
+        image_size = int(params.get("image_size", 256))
         max_relative_noise = float(params.get("max_relative_noise", 5.0))
         star_threshold_sigma = float(params.get("star_threshold_sigma", 20.0))
         return [

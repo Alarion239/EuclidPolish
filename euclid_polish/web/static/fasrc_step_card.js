@@ -130,22 +130,23 @@ large cutout don't leak across train/validate."></label>`;
 
   function _tfrecordsFields() {
     // Analytic-A forward model is single-stamp, CPU-only — no GPU, no
-    // batch_size knob. The script convolves one HR cube at a time and
-    // appends to the output TFRecord. ``max_relative_noise`` is the
-    // bright-stamp-rejection threshold (√S_max · |A|_peak > k · σ_LR).
+    // batch_size knob. Each HLSP mosaic is diced into a grid of
+    // ``image_size``² HR chunks; coverage + bright + star filters drop
+    // chunks until ``n_train`` + ``n_valid`` pairs are written.
     return `
       <label>Train scenes
         <input type="number" name="n_train" value="2000" min="100" max="50000"></label>
       <label>Validate scenes
         <input type="number" name="n_valid" value="200" min="20" max="5000"></label>
       <label>Image size
-        <input type="number" name="image_size" value="510" step="2" min="64" max="2048"></label>
+        <input type="number" name="image_size" value="256" step="2" min="64" max="2048"
+               title="HR chunk side in 0.05″/pix pixels. Mosaics are diced into a non-overlapping grid of these squares; smaller → more chunks per mosaic."></label>
       <label>Max relative noise (k)
         <input type="number" name="max_relative_noise" value="5.0" step="0.5" min="0.5" max="50"
-               title="Reject a stamp when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection; larger k → more stamps kept. Default 5."></label>
+               title="Reject a chunk when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection; larger k → more chunks kept. Default 5."></label>
       <label>Star reject (σ)
         <input type="number" name="star_threshold_sigma" value="20" step="5" min="0" max="100"
-               title="Reject any cutout where DAOStarFinder detects a point source brighter than this many σ above the cutout background. Stars forward-model to A(ε) ringing (unlearnable), so cutouts containing one are dropped; resolved galaxies pass (sharpness/roundness cuts only flag PSF-like peaks). Lower (10–15) = drop fainter stars too; 0 = disable."></label>`;
+               title="Reject a chunk if DAOStarFinder finds a point source brighter than this many σ above the chunk background. Stars forward-model to unlearnable A(ε) ringing; sharpness/roundness cuts spare resolved galaxies. With grid tiling, rejected chunks just advance to the next cell, so be aggressive — lower (10–15) chases fainter stars; 0 disables. Default 20 catches every star bright enough to ring."></label>`;
   }
 
   function _hstTrainFields() {

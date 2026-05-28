@@ -7,7 +7,7 @@ synthetic inputs — no FASRC, no real HLSP tiles, no real catalog —
 plus a small end-to-end pool run to make sure the multiprocess wiring
 actually works.
 
-Tests are scoped to ``_process_one_galaxy`` and friends rather than
+Tests are scoped to ``_process_one_tile`` and friends rather than
 the whole ``main()`` because main() pulls in the COSMOS2025 catalog
 loader (slow + opens MB of data files); the per-galaxy contract is
 where the real logic + parallelism bugs live anyway.
@@ -25,7 +25,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO_ROOT)
 # Putting scripts/ on sys.path lets ProcessPoolExecutor's spawned
 # workers re-import the script by its real filename, so
-# ``_init_worker`` and ``_process_one_galaxy`` are pickle-resolvable
+# ``_init_worker`` and ``_process_one_tile`` are pickle-resolvable
 # across process boundaries.
 sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
 
@@ -50,11 +50,15 @@ def _make_synthetic_tile(
     tmp_path, *, side_pix: int = 400, scale_arcsec: float = 0.03,
     ra_centre: float = 150.1, dec_centre: float = 2.3,
     blob_sigma_pix: float = 6.0, blob_flux: float = 100.0,
+    background: float = 1.0,
 ) -> str:
     """Write a tiny HLSP-style FITS tile with a TAN WCS + a centred blob.
 
-    Just enough for ``astropy.nddata.Cutout2D`` to extract from when
-    given the same RA/Dec we used as the tile centre. Returns the path.
+    The worker slices chunks straight out of the mosaic by pixel, so the
+    WCS is incidental now; we keep it so the file looks like a real HLSP
+    tile. A small uniform ``background`` keeps every pixel non-zero so a
+    sliced chunk clears the worker's coverage floor (real sky-subtracted
+    data is ~0-mean *noise*, never exact 0). Returns the path.
     """
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -64,7 +68,7 @@ def _make_synthetic_tile(
     data = blob_flux * np.exp(
         -((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * blob_sigma_pix ** 2)
     )
-    data = data.astype(np.float32)
+    data = (data + float(background)).astype(np.float32)
 
     w = WCS(naxis=2)
     w.wcs.crpix = [side_pix / 2 + 0.5, side_pix / 2 + 0.5]
@@ -103,7 +107,7 @@ def _load_script():
 
     Using a stable name (``fasrc_generate_hst_tfrecords``) — not a
     dynamic one — is critical for the pool integration tests: the
-    pickled reference to ``_process_one_galaxy`` carries the module
+    pickled reference to ``_process_one_tile`` carries the module
     name, and the spawned worker subprocess has to be able to import
     that module by the same name. A unique-per-call name would unpickle
     in the worker to ``ModuleNotFoundError``.
@@ -224,9 +228,9 @@ class TestInitWorker:
         function fails loudly with a clear message instead of silently
         crashing on a None deref in the FFT."""
         mod = _load_script()
-        task = (0, 150.1, 2.3, "/nope.fits", 64, 42)
+        task = (0, "/nope.fits", 0, 0, 64, 42)
         with pytest.raises(RuntimeError, match="_init_worker"):
-            mod._process_one_galaxy(task)
+            mod._process_one_tile(task)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +397,7 @@ class TestHasBrightPointSource:
 
 
 # ---------------------------------------------------------------------------
-# _process_one_galaxy — happy path + failure modes
+# _process_one_tile — happy path + failure modes
 # ---------------------------------------------------------------------------
 
 class TestProcessOneGalaxyHappyPath:
@@ -405,17 +409,18 @@ class TestProcessOneGalaxyHappyPath:
         _init_worker_with_kernel(mod, krn, image_size=64)
 
         task = (
-            7,             # catalog_idx (only used to label the result)
-            150.1, 2.3,    # ra, dec (= tile centre)
+            7,             # tile_idx (provenance only)
             tile,
-            200,           # hlsp_side_pix
+            100, 100,      # y0, x0 — chunk centred on the tile's blob
+            200,           # side (HLSP pixels)
             42,            # seed
         )
-        result, reason = mod._process_one_galaxy(task)
+        result, reason = mod._process_one_tile(task)
         assert result is not None
         assert reason is None
-        catalog_idx, hr_cube, lr_cube = result
-        assert catalog_idx == 7
+        provenance, hr_cube, lr_cube = result
+        # Provenance labels the source mosaic + grid cell.
+        assert isinstance(provenance, str) and "tile.fits" in provenance
         # HR is target image_size × NUM_LR_CHANNELS.
         assert hr_cube.shape == (64, 64, 4)
         # LR is HR // 2 (×2 rebin in _make_pair).
@@ -429,8 +434,8 @@ class TestProcessOneGalaxyHappyPath:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        task = (0, 150.1, 2.3, tile, 200, 1)
-        result, _ = mod._process_one_galaxy(task)
+        task = (0, tile, 100, 100, 200, 1)
+        result, _ = mod._process_one_tile(task)
         _, hr, lr = result
         assert np.isfinite(hr).all()
         assert np.isfinite(lr).all()
@@ -442,8 +447,8 @@ class TestProcessOneGalaxyHappyPath:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        task = (0, 150.1, 2.3, tile, 200, 1)
-        result, _ = mod._process_one_galaxy(task)
+        task = (0, tile, 100, 100, 200, 1)
+        result, _ = mod._process_one_tile(task)
         _, hr, _ = result
         # Sum over bands → 2D map of total flux.
         flat = hr.sum(axis=-1)
@@ -455,18 +460,16 @@ class TestProcessOneGalaxyHappyPath:
 
 class TestProcessOneGalaxyFailureModes:
 
-    def test_off_tile_returns_none(self, tmp_path):
-        """An RA/Dec far from the tile centre — Cutout2D's mode='strict'
-        refuses; we should return None, not crash."""
+    def test_off_edge_returns_none(self, tmp_path):
+        """A grid cell that runs past the mosaic edge — the slice would be
+        clipped, so we return None rather than emit a short chunk."""
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=200, ra_centre=150.0, dec_centre=2.0,
-        )
+        tile = _make_synthetic_tile(tmp_path, side_pix=200)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        # 10 deg off — way outside the tile footprint.
-        task = (0, 160.0, 12.0, tile, 200, 42)
-        result, reason = mod._process_one_galaxy(task)
+        # y0+side = 150+200 = 350 > 200 → off the edge.
+        task = (0, tile, 150, 150, 200, 42)
+        result, reason = mod._process_one_tile(task)
         assert result is None
         assert reason == "cutout-failed"
 
@@ -474,9 +477,8 @@ class TestProcessOneGalaxyFailureModes:
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        task = (0, 150.1, 2.3,
-                str(tmp_path / "does-not-exist.fits"), 200, 42)
-        result, reason = mod._process_one_galaxy(task)
+        task = (0, str(tmp_path / "does-not-exist.fits"), 0, 0, 200, 42)
+        result, reason = mod._process_one_tile(task)
         assert result is None
         assert reason == "cutout-failed"
 
@@ -489,36 +491,29 @@ class TestProcessOneGalaxyFailureModes:
         tile = _make_synthetic_tile(tmp_path, side_pix=200)
         # Demand a huge HR side that the tiny HLSP cutout can't fill.
         _init_worker_with_kernel(mod, krn, image_size=2000)
-        task = (0, 150.1, 2.3, tile, 50, 42)
-        result, reason = mod._process_one_galaxy(task)
+        task = (0, tile, 0, 0, 50, 42)
+        result, reason = mod._process_one_tile(task)
         assert result is None
         assert reason == "cutout-too-small"
 
     def test_all_nan_cutout_returns_none(self, tmp_path):
-        """A degenerate cutout where every pixel is NaN can't be turned
-        into a usable HR cube — propagate the None instead of writing a
-        TFRecord full of NaNs that'd poison training."""
+        """A degenerate chunk where every pixel is NaN has zero real
+        coverage — the coverage floor rejects it before forward modelling
+        so no TFRecord full of NaNs ever gets written."""
         from astropy.io import fits
-        from astropy.wcs import WCS
 
-        # Build a NaN-filled HLSP-shaped tile.
         side = 400
-        w = WCS(naxis=2)
-        w.wcs.crpix = [side / 2 + 0.5, side / 2 + 0.5]
-        w.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
-        w.wcs.crval = [150.1, 2.3]
-        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
         data = np.full((side, side), np.nan, dtype=np.float32)
         path = str(tmp_path / "nan_tile.fits")
-        fits.PrimaryHDU(data, header=w.to_header()).writeto(path, overwrite=True)
+        fits.PrimaryHDU(data).writeto(path, overwrite=True)
 
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        task = (0, 150.1, 2.3, path, 200, 42)
-        result, reason = mod._process_one_galaxy(task)
+        task = (0, path, 0, 0, 200, 42)
+        result, reason = mod._process_one_tile(task)
         assert result is None
-        assert reason == "hst-cube-allnan"
+        assert reason == "no-coverage"
 
     def test_bright_stamp_rejected(self, tmp_path):
         """A stamp whose HR cube would produce A(ε) ringing larger than
@@ -541,10 +536,25 @@ class TestProcessOneGalaxyFailureModes:
             2.5,   # star_fwhm_px
             0.0,   # star_threshold_sigma (disabled)
         )
-        task = (0, 150.1, 2.3, tile, 200, 42)
-        result, reason = mod._process_one_galaxy(task)
+        task = (0, tile, 100, 100, 200, 42)
+        result, reason = mod._process_one_tile(task)
         assert result is None
         assert reason == "rejected-bright"
+
+    def test_blank_chunk_rejected(self, tmp_path):
+        """A chunk that is mostly exact-zero (mosaic blank border) falls
+        below the coverage floor and is dropped."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        # No blob, no background → all exact zeros → 0% coverage.
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=400, blob_flux=0.0, background=0.0,
+        )
+        _init_worker_with_kernel(mod, krn, image_size=64)
+        task = (0, tile, 100, 100, 200, 42)
+        result, reason = mod._process_one_tile(task)
+        assert result is None
+        assert reason == "no-coverage"
 
 
 # ---------------------------------------------------------------------------
@@ -562,10 +572,10 @@ class TestRngDeterminism:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        task_a = (0, 150.1, 2.3, tile, 200, 12345)
-        task_b = (0, 150.1, 2.3, tile, 200, 12345)
-        res_a, _ = mod._process_one_galaxy(task_a)
-        res_b, _ = mod._process_one_galaxy(task_b)
+        task_a = (0, tile, 100, 100, 200, 12345)
+        task_b = (0, tile, 100, 100, 200, 12345)
+        res_a, _ = mod._process_one_tile(task_a)
+        res_b, _ = mod._process_one_tile(task_b)
         _, hr_a, lr_a = res_a
         _, hr_b, lr_b = res_b
         np.testing.assert_array_equal(hr_a, hr_b)
@@ -576,10 +586,10 @@ class TestRngDeterminism:
         krn = _make_synthetic_kernel(tmp_path)
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
         _init_worker_with_kernel(mod, krn, image_size=64)
-        t1 = (0, 150.1, 2.3, tile, 200, 12345)
-        t2 = (0, 150.1, 2.3, tile, 200, 99999)
-        r1, _ = mod._process_one_galaxy(t1)
-        r2, _ = mod._process_one_galaxy(t2)
+        t1 = (0, tile, 100, 100, 200, 12345)
+        t2 = (0, tile, 100, 100, 200, 99999)
+        r1, _ = mod._process_one_tile(t1)
+        r2, _ = mod._process_one_tile(t2)
         _, hr1, lr1 = r1
         _, hr2, lr2 = r2
         # HR is deterministic (no noise) — should be identical.
@@ -676,8 +686,8 @@ class TestHstNativePhotometry:
             krn, 64, ratios, 100.0, DISABLE_FILTER_MAX_REL_NOISE,
             2.5, 0.0,   # star_fwhm_px, star_threshold_sigma (disabled)
         )
-        task = (0, 150.1, 2.3, tile, 200, 1)
-        result, _ = mod._process_one_galaxy(task)
+        task = (0, tile, 100, 100, 200, 1)
+        result, _ = mod._process_one_tile(task)
         _, hr, _ = result
 
         vis = hr[..., 0]
@@ -705,8 +715,10 @@ class TestPoolIntegration:
         tile = _make_synthetic_tile(tmp_path, side_pix=400)
 
         n_tasks = 6
+        # Distinct in-bounds grid cells (varied x0) so each yields a
+        # distinct provenance label through serialisation.
         tasks = [
-            (i, 150.1, 2.3, tile, 200, 1000 + i)
+            (i, tile, 100, 20 * i, 200, 1000 + i)
             for i in range(n_tasks)
         ]
 
@@ -716,16 +728,17 @@ class TestPoolIntegration:
             initargs=(krn, 64, DEFAULT_TEST_RATIOS,
                       100.0, DISABLE_FILTER_MAX_REL_NOISE, 2.5, 0.0),
         ) as pool:
-            results = list(pool.map(mod._process_one_galaxy, tasks))
+            results = list(pool.map(mod._process_one_tile, tasks))
 
         assert len(results) == n_tasks
         successes = [r for r in results if r[0] is not None]
         assert len(successes) == n_tasks, (
-            "all tasks should succeed against the centred tile"
+            "all in-bounds chunks should succeed against the tile"
         )
-        # Catalog indices preserved through serialisation.
-        recovered_ids = sorted(r[0][0] for r in results)
-        assert recovered_ids == list(range(n_tasks))
+        # Distinct provenance labels survive serialisation back to main.
+        provenances = [r[0][0] for r in results]
+        assert all(isinstance(p, str) for p in provenances)
+        assert len(set(provenances)) == n_tasks
 
     def test_pool_mixes_success_and_skip(self, tmp_path):
         """Some tasks should succeed, others (off-tile) should come
@@ -735,17 +748,15 @@ class TestPoolIntegration:
 
         mod = _load_script()
         krn = _make_synthetic_kernel(tmp_path)
-        tile = _make_synthetic_tile(
-            tmp_path, side_pix=200,
-            ra_centre=150.0, dec_centre=2.0,
-        )
+        tile = _make_synthetic_tile(tmp_path, side_pix=200)
 
+        # In-bounds chunks succeed; off-edge chunks (y0+side > 200) fail.
         ok_tasks = [
-            (i, 150.0, 2.0, tile, 100, i)
+            (i, tile, 20 * i, 50, 100, i)
             for i in range(3)
         ]
         bad_tasks = [
-            (i + 100, 160.0, 12.0, tile, 100, i)
+            (i + 100, tile, 150, 150, 100, i)
             for i in range(2)
         ]
         with ProcessPoolExecutor(
@@ -755,7 +766,7 @@ class TestPoolIntegration:
                       100.0, DISABLE_FILTER_MAX_REL_NOISE, 2.5, 0.0),
         ) as pool:
             results = list(pool.map(
-                mod._process_one_galaxy, ok_tasks + bad_tasks,
+                mod._process_one_tile, ok_tasks + bad_tasks,
             ))
         successes = [r for r in results if r[0] is not None]
         failures  = [r for r in results if r[0] is None]
