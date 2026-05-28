@@ -126,26 +126,30 @@ def reset_worker_globals():
     mod._WORKER_TYPICAL_RATIOS = None
     mod._WORKER_SIGMA_LR = 0.0
     mod._WORKER_MAX_RELATIVE_NOISE = 0.0
+    mod._WORKER_MIN_SOURCE_SIGMA = 0.0
     yield
     mod._WORKER_KERNEL = None
     mod._WORKER_IMAGE_SIZE = 0
     mod._WORKER_TYPICAL_RATIOS = None
     mod._WORKER_SIGMA_LR = 0.0
     mod._WORKER_MAX_RELATIVE_NOISE = 0.0
+    mod._WORKER_MIN_SOURCE_SIGMA = 0.0
 
 
 def _init_worker_with_kernel(mod, kernel_path: str, image_size: int,
                               *, sigma_lr: float = 100.0,
                               max_rel: float = DISABLE_FILTER_MAX_REL_NOISE,
                               star_fwhm: float = 2.5,
-                              star_threshold_sigma: float = 0.0):
+                              star_threshold_sigma: float = 0.0,
+                              min_source_sigma: float = 0.0):
     """Wrapper around ``_init_worker`` for the common test setup.
 
     ``sigma_lr`` defaults to a moderate value (~ Euclid VIS budget),
     ``max_rel`` defaults to "essentially infinite" so the bright-stamp
-    filter does not reject synthetic Gaussian blobs, and
-    ``star_threshold_sigma`` defaults to 0 (star detection disabled) so
-    existing tests don't trip it unless they opt in.
+    filter does not reject synthetic Gaussian blobs, and both
+    ``star_threshold_sigma`` and ``min_source_sigma`` default to 0
+    (detection disabled) so existing tests don't trip them unless they
+    opt in.
     """
     mod._init_worker(
         kernel_path,
@@ -155,6 +159,7 @@ def _init_worker_with_kernel(mod, kernel_path: str, image_size: int,
         max_rel,
         star_fwhm,
         star_threshold_sigma,
+        min_source_sigma,
     )
 
 
@@ -396,6 +401,52 @@ class TestHasBrightPointSource:
         assert has_star is False
 
 
+class TestIsEmptyField:
+    """COSMOS has lots of blank sky. A chunk with no source above the
+    detection floor is a useless noise→noise pair and must be dropped,
+    even though it clears the (non-zero) coverage check."""
+
+    @staticmethod
+    def _gauss(side, cx, cy, fwhm, amp):
+        sigma = fwhm / 2.3548
+        y, x = np.mgrid[:side, :side]
+        return (amp * np.exp(-(((x - cx) ** 2 + (y - cy) ** 2)
+                               / (2 * sigma ** 2)))).astype(np.float32)
+
+    def test_noise_only_is_empty(self):
+        mod = _load_script()
+        rng = np.random.default_rng(0)
+        img = rng.normal(0.0, 1.0, size=(128, 128)).astype(np.float32)
+        empty, diag = mod._is_empty_field(img, min_source_sigma=5.0)
+        assert empty is True
+        assert diag["n_bright"] < mod._MIN_SOURCE_PIXELS
+
+    def test_field_with_source_not_empty(self):
+        mod = _load_script()
+        rng = np.random.default_rng(1)
+        img = rng.normal(0.0, 1.0, size=(128, 128)).astype(np.float32)
+        # A real (even modest) object: a resolved blob well above noise.
+        img += self._gauss(128, 64, 64, fwhm=8.0, amp=30.0)
+        empty, diag = mod._is_empty_field(img, min_source_sigma=5.0)
+        assert empty is False
+        assert diag["n_bright"] >= mod._MIN_SOURCE_PIXELS
+
+    def test_flat_chunk_is_empty(self):
+        """A perfectly flat chunk (σ=0) has no signal *and* no noise —
+        nothing to learn from, so it counts as empty."""
+        mod = _load_script()
+        img = np.full((64, 64), 3.0, dtype=np.float32)
+        empty, _ = mod._is_empty_field(img, min_source_sigma=5.0)
+        assert empty is True
+
+    def test_disabled_when_sigma_zero(self):
+        mod = _load_script()
+        rng = np.random.default_rng(2)
+        img = rng.normal(0.0, 1.0, size=(64, 64)).astype(np.float32)
+        empty, _ = mod._is_empty_field(img, min_source_sigma=0.0)
+        assert empty is False
+
+
 # ---------------------------------------------------------------------------
 # _process_one_tile — happy path + failure modes
 # ---------------------------------------------------------------------------
@@ -555,6 +606,21 @@ class TestProcessOneGalaxyFailureModes:
         result, reason = mod._process_one_tile(task)
         assert result is None
         assert reason == "no-coverage"
+
+    def test_empty_field_rejected(self, tmp_path):
+        """A chunk that clears coverage (non-zero background) but holds no
+        source is dropped as ``empty-field`` when the check is enabled."""
+        mod = _load_script()
+        krn = _make_synthetic_kernel(tmp_path)
+        # Flat positive background, no blob → covered, but σ=0 → empty.
+        tile = _make_synthetic_tile(
+            tmp_path, side_pix=400, blob_flux=0.0, background=5.0,
+        )
+        _init_worker_with_kernel(mod, krn, image_size=64, min_source_sigma=5.0)
+        task = (0, tile, 100, 100, 200, 42)
+        result, reason = mod._process_one_tile(task)
+        assert result is None
+        assert reason == "empty-field"
 
 
 # ---------------------------------------------------------------------------

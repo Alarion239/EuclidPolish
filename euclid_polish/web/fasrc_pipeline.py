@@ -468,6 +468,7 @@ class HSTTFRecordStep(FASRCPipelineStep):
         image_size = int(params.get("image_size", 256))
         max_relative_noise = float(params.get("max_relative_noise", 5.0))
         star_threshold_sigma = float(params.get("star_threshold_sigma", 20.0))
+        min_source_sigma = float(params.get("min_source_sigma", 5.0))
         return [
             "scripts/fasrc_generate_hst_tfrecords.py",
             "--n-train", str(n_train),
@@ -475,6 +476,7 @@ class HSTTFRecordStep(FASRCPipelineStep):
             "--image-size", str(image_size),
             "--max-relative-noise", f"{max_relative_noise:g}",
             "--star-threshold-sigma", f"{star_threshold_sigma:g}",
+            "--min-source-sigma", f"{min_source_sigma:g}",
         ]
 
 

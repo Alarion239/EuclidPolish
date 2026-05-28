@@ -162,6 +162,15 @@ def parse_args() -> argparse.Namespace:
                    help="Matched-filter FWHM (HR pixels at 0.05\"/pix) "
                         "for the star detector. ≈ the HST F814W PSF FWHM "
                         "on the HR grid (~0.10\" → 2 px). Default 2.5.")
+    p.add_argument("--min-source-sigma", type=float, default=5.0,
+                   help="Reject a chunk as empty unless it has at least a "
+                        "few pixels brighter than this many σ above its "
+                        "sigma-clipped background. COSMOS is full of blank "
+                        "sky that clears the coverage check (noise is "
+                        "non-zero) but holds no object — a useless "
+                        "noise→noise pair. Default 5 (standard detection "
+                        "floor); raise to demand brighter objects, 0 "
+                        "disables.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -412,6 +421,41 @@ def _has_bright_point_source(
                    "bg_std": float(std)}
 
 
+def _is_empty_field(
+    hr_vis: np.ndarray,
+    *,
+    min_source_sigma: float,
+) -> Tuple[bool, Dict[str, float]]:
+    """Reject a chunk that holds no real source — just sky noise.
+
+    COSMOS has lots of empty sky: a sky-subtracted chunk is ~0-mean
+    noise, so it clears the coverage check (pixels aren't exactly 0) yet
+    contains nothing to super-resolve, producing a useless (noise → noise)
+    training pair. We require at least ``_MIN_SOURCE_PIXELS`` pixels above
+    ``median + min_source_sigma · σ`` (sigma-clipped background of *this*
+    chunk). Pure Gaussian noise puts ~0 pixels that high in a 256² chunk,
+    so this rejects blank fields without touching real (even faint)
+    objects. Scale-invariant — works whatever electron units the cube is
+    in. Returns ``(is_empty, diagnostics)``.
+    """
+    if min_source_sigma <= 0:
+        return False, {"n_bright": -1.0}
+    img = np.asarray(hr_vis, dtype=np.float32)
+    if not np.isfinite(img).any():
+        return True, {"n_bright": 0.0}
+    _mean, median, std = sigma_clipped_stats(img, sigma=3.0)
+    if not np.isfinite(std) or std <= 0:
+        # Flat chunk (no noise, no signal) — nothing to learn from.
+        return True, {"n_bright": 0.0, "bg_std": float(std)}
+    n_bright = int(np.count_nonzero(img > median + float(min_source_sigma) * std))
+    peak_sigma = float((np.nanmax(img) - median) / std)
+    return n_bright < _MIN_SOURCE_PIXELS, {
+        "n_bright":   float(n_bright),
+        "peak_sigma": peak_sigma,
+        "bg_std":     float(std),
+    }
+
+
 def _make_pair(
     hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean
     *,
@@ -454,12 +498,19 @@ _WORKER_SIGMA_LR:           float                = 0.0
 _WORKER_MAX_RELATIVE_NOISE: float                = 0.0
 _WORKER_STAR_FWHM:          float                = 0.0
 _WORKER_STAR_THRESH_SIGMA:  float                = 0.0
+_WORKER_MIN_SOURCE_SIGMA:   float                = 0.0
 
 # Minimum fraction of a raw grid chunk that must be real (finite,
 # non-zero) data. HLSP mosaics zero-pad / NaN-fill regions with no
 # exposure; a chunk straddling that border would leak blank sky into the
 # training pair, so anything below this is dropped.
 _MIN_TILE_COVERAGE: float = 0.95
+
+# A chunk must hold at least this many pixels above the source-detection
+# threshold to count as containing a real object — guards against the
+# many empty (sky-only) fields in COSMOS, which otherwise pass coverage
+# (sky-subtracted noise is non-zero) but carry nothing to super-resolve.
+_MIN_SOURCE_PIXELS: int = 3
 
 
 def _init_worker(
@@ -470,6 +521,7 @@ def _init_worker(
     max_relative_noise: float,
     star_fwhm_px: float,
     star_threshold_sigma: float,
+    min_source_sigma: float = 0.0,
 ) -> None:
     """Called once per worker process at pool startup.
 
@@ -482,6 +534,7 @@ def _init_worker(
     global _WORKER_KERNEL, _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
     global _WORKER_SIGMA_LR, _WORKER_MAX_RELATIVE_NOISE
     global _WORKER_STAR_FWHM, _WORKER_STAR_THRESH_SIGMA
+    global _WORKER_MIN_SOURCE_SIGMA
     _WORKER_KERNEL             = DifferentialKernel.from_fits(kernel_path).data
     _WORKER_IMAGE_SIZE         = int(image_size)
     _WORKER_TYPICAL_RATIOS     = np.asarray(typical_band_ratios, dtype=np.float32)
@@ -489,6 +542,7 @@ def _init_worker(
     _WORKER_MAX_RELATIVE_NOISE = float(max_relative_noise)
     _WORKER_STAR_FWHM          = float(star_fwhm_px)
     _WORKER_STAR_THRESH_SIGMA  = float(star_threshold_sigma)
+    _WORKER_MIN_SOURCE_SIGMA   = float(min_source_sigma)
 
     # Heartbeat so a future stall in worker init is visible from the
     # SLURM log instead of looking identical to a healthy "just hasn't
@@ -496,7 +550,8 @@ def _init_worker(
     print(f"      [worker {os.getpid()}] init complete "
           f"(kernel={_WORKER_KERNEL.shape}, σ_LR={_WORKER_SIGMA_LR:.2f}, "
           f"max_rel_noise={_WORKER_MAX_RELATIVE_NOISE:.2f}, "
-          f"star_thresh={_WORKER_STAR_THRESH_SIGMA:.1f}σ)", flush=True)
+          f"star_thresh={_WORKER_STAR_THRESH_SIGMA:.1f}σ, "
+          f"min_source={_WORKER_MIN_SOURCE_SIGMA:.1f}σ)", flush=True)
 
 
 def _process_one_tile(
@@ -580,6 +635,17 @@ def _process_one_tile(
     )
     if reject:
         return None, "rejected-bright"
+
+    # Empty-field rejection: COSMOS is full of blank sky. A chunk with no
+    # source clears coverage (noise is non-zero) but is a useless
+    # noise→noise pair, so require at least one real object. Cheap, runs
+    # before the DAOStarFinder pass.
+    if _WORKER_MIN_SOURCE_SIGMA > 0:
+        empty, _ediag = _is_empty_field(
+            hr_cube[..., 0], min_source_sigma=_WORKER_MIN_SOURCE_SIGMA,
+        )
+        if empty:
+            return None, "empty-field"
 
     # Star rejection: drop the whole cutout if it contains a bright
     # point source. Stars forward-model to A(ε) ringing (noise-driven,
@@ -670,6 +736,7 @@ def main() -> int:
     print(f"  image_size       = {args.image_size} (HR pixels)")
     print(f"  max_rel_noise    = {args.max_relative_noise}")
     print(f"  star_thresh      = {args.star_threshold_sigma}σ")
+    print(f"  min_source       = {args.min_source_sigma}σ")
     print(f"  dry run          = {args.dry_run}")
     print()
 
@@ -762,6 +829,7 @@ def main() -> int:
     pairs_skipped_cutout   = 0
     pairs_skipped_bright   = 0
     pairs_skipped_star     = 0
+    pairs_skipped_empty    = 0
     pairs_skipped_other    = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
@@ -785,11 +853,13 @@ def main() -> int:
     def _classify_skip(reason: Optional[str]) -> None:
         nonlocal pairs_skipped_cutout, pairs_skipped_bright
         nonlocal pairs_skipped_star, pairs_skipped_other
-        nonlocal pairs_skipped_coverage
+        nonlocal pairs_skipped_coverage, pairs_skipped_empty
         if reason == "rejected-bright":
             pairs_skipped_bright += 1
         elif reason == "rejected-star":
             pairs_skipped_star += 1
+        elif reason == "empty-field":
+            pairs_skipped_empty += 1
         elif reason == "no-coverage":
             pairs_skipped_coverage += 1
         elif reason in ("cutout-too-small", "cutout-failed", "no-image-hdu"):
@@ -831,6 +901,7 @@ def main() -> int:
         float(args.max_relative_noise),
         float(args.star_fwhm_px),
         float(args.star_threshold_sigma),
+        float(args.min_source_sigma),
     )
 
     if n_workers == 0:
@@ -943,13 +1014,15 @@ def main() -> int:
     summary["pairs_attempted"]        = pairs_attempted
     summary["pairs_skipped_coverage"] = pairs_skipped_coverage
     summary["pairs_skipped_cutout"]   = pairs_skipped_cutout
-    summary["pairs_skipped_bright"]  = pairs_skipped_bright
-    summary["pairs_skipped_star"]    = pairs_skipped_star
-    summary["pairs_skipped_other"]   = pairs_skipped_other
-    summary["max_relative_noise"]    = float(args.max_relative_noise)
-    summary["star_threshold_sigma"]  = float(args.star_threshold_sigma)
-    summary["sigma_lr_band"]         = float(sigma_lr_band)
-    summary["elapsed_s"]             = round(runtime, 1)
+    summary["pairs_skipped_bright"]   = pairs_skipped_bright
+    summary["pairs_skipped_star"]     = pairs_skipped_star
+    summary["pairs_skipped_empty"]    = pairs_skipped_empty
+    summary["pairs_skipped_other"]    = pairs_skipped_other
+    summary["max_relative_noise"]     = float(args.max_relative_noise)
+    summary["star_threshold_sigma"]   = float(args.star_threshold_sigma)
+    summary["min_source_sigma"]       = float(args.min_source_sigma)
+    summary["sigma_lr_band"]          = float(sigma_lr_band)
+    summary["elapsed_s"]              = round(runtime, 1)
     with open(os.path.join(args.output_dir, "generation_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print()
@@ -959,12 +1032,14 @@ def main() -> int:
           f"cutout={pairs_skipped_cutout} "
           f"bright={pairs_skipped_bright} "
           f"star={pairs_skipped_star} "
+          f"empty={pairs_skipped_empty} "
           f"other={pairs_skipped_other}")
     reporter.set_stage(
         f"hst-tfrecords done: written={pairs_written} "
         f"attempted={pairs_attempted} "
         f"rejected_bright={pairs_skipped_bright} "
         f"rejected_star={pairs_skipped_star} "
+        f"rejected_empty={pairs_skipped_empty} "
         f"skipped_cutout={pairs_skipped_cutout} "
         f"skipped_coverage={pairs_skipped_coverage}"
     )

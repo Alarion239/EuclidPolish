@@ -146,7 +146,10 @@ large cutout don't leak across train/validate."></label>`;
                title="Reject a chunk when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection; larger k → more chunks kept. Default 5."></label>
       <label>Star reject (σ)
         <input type="number" name="star_threshold_sigma" value="20" step="5" min="0" max="100"
-               title="Reject a chunk if DAOStarFinder finds a point source brighter than this many σ above the chunk background. Stars forward-model to unlearnable A(ε) ringing; sharpness/roundness cuts spare resolved galaxies. With grid tiling, rejected chunks just advance to the next cell, so be aggressive — lower (10–15) chases fainter stars; 0 disables. Default 20 catches every star bright enough to ring."></label>`;
+               title="Reject a chunk if DAOStarFinder finds a point source brighter than this many σ above the chunk background. Stars forward-model to unlearnable A(ε) ringing; sharpness/roundness cuts spare resolved galaxies. With grid tiling, rejected chunks just advance to the next cell, so be aggressive — lower (10–15) chases fainter stars; 0 disables. Default 20 catches every star bright enough to ring."></label>
+      <label>Min source (σ)
+        <input type="number" name="min_source_sigma" value="5" step="1" min="0" max="50"
+               title="Reject a chunk as empty unless a few pixels exceed this many σ above its background. COSMOS is full of blank sky that clears the coverage check (noise is non-zero) but holds no object — a useless noise→noise pair. Default 5 (standard detection floor); raise to demand brighter objects; 0 disables."></label>`;
   }
 
   function _hstTrainFields() {
