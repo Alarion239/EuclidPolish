@@ -151,6 +151,7 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
         "psnr_stretched_hst": _opt_f("psnr_stretched_hst"),
         "psnr_raw_hst":       _opt_f("psnr_raw_hst"),
         "roundtrip_val_loss": _opt_f("roundtrip_val_loss"),
+        "save_best_score":    _opt_f("save_best_score"),
     }
 
 

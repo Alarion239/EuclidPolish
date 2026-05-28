@@ -78,7 +78,9 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import Cutout2D
+from astropy.stats import sigma_clipped_stats
 from astropy.wcs import WCS
+from photutils.detection import DAOStarFinder
 from scipy import signal as scipy_signal
 from scipy.ndimage import zoom
 
@@ -139,10 +141,25 @@ def parse_args() -> argparse.Namespace:
                         "ringing larger than that around bright/saturated "
                         "stars dominates the training signal and is what "
                         "we're throwing away.")
+    p.add_argument("--star-threshold-sigma", type=float, default=20.0,
+                   help="Reject a cutout if DAOStarFinder detects a "
+                        "point source whose peak exceeds this many σ "
+                        "above the cutout's sigma-clipped background. "
+                        "Stars become A(ε) ringing in the forward model "
+                        "(noise-driven, unlearnable), so we drop any "
+                        "cutout containing one; resolved galaxies pass "
+                        "(the detector's sharpness/roundness cuts only "
+                        "flag PSF-like peaks). 0 disables the filter. "
+                        "Lower (10–15) to also drop fainter stars; "
+                        "higher (30+) to keep all but the brightest.")
+    p.add_argument("--star-fwhm-px", type=float, default=2.5,
+                   help="Matched-filter FWHM (HR pixels at 0.05\"/pix) "
+                        "for the star detector. ≈ the HST F814W PSF FWHM "
+                        "on the HR grid (~0.10\" → 2 px). Default 2.5.")
     p.add_argument("--oversample", type=float, default=3.0,
                    help="Catalog candidate pool size as a multiple of "
-                        "(n_train + n_valid). Bright-stamp rejection "
-                        "throws candidates out, so we need spares.")
+                        "(n_train + n_valid). Bright-stamp + star "
+                        "rejection throw candidates out, so we need spares.")
     p.add_argument("--dry-run", action="store_true",
                    help="Plan only — no FITS reads, no TFRecord writes.")
     return p.parse_args()
@@ -358,6 +375,49 @@ def _is_stamp_too_bright(
     return reject, diagnostics
 
 
+def _has_bright_point_source(
+    hr_vis: np.ndarray,
+    *,
+    fwhm_px: float,
+    threshold_sigma: float,
+) -> Tuple[bool, Dict[str, float]]:
+    """Detect a star (bright point source) in the HR VIS plane.
+
+    The ``_is_stamp_too_bright`` filter only catches the single
+    brightest pixel; fainter stars slip through and the model ends up
+    learning ``A(ε)`` ringing instead of a real point source (it can't
+    — the ringing is noise-dependent, not a deterministic map). This
+    rejects the whole cutout when any star is present.
+
+    Uses ``DAOStarFinder`` (the same detector the ePSF extractor uses).
+    Its default sharpness (0.2–1.0) and roundness (−1..1) cuts select
+    PSF-like peaks, so resolved galaxies — even compact, bright ones —
+    are NOT flagged; only point sources are. ``threshold_sigma`` sets
+    how bright a peak (in units of the sigma-clipped background σ of
+    *this* cutout) counts as a star. Run on the VIS channel
+    (Euclid-scaled e⁻) before the expensive forward model so a rejected
+    stamp costs only the detection pass.
+
+    Returns ``(has_star, diagnostics)``.
+    """
+    if threshold_sigma <= 0:
+        return False, {"n_sources": 0.0}
+    img = np.asarray(hr_vis, dtype=np.float32)
+    if not np.isfinite(img).any():
+        return False, {"n_sources": 0.0}
+    _mean, median, std = sigma_clipped_stats(img, sigma=3.0)
+    if not np.isfinite(std) or std <= 0:
+        return False, {"n_sources": 0.0}
+    finder = DAOStarFinder(threshold=float(threshold_sigma) * float(std),
+                           fwhm=float(fwhm_px))
+    sources = finder(img - median)
+    n = 0 if sources is None else len(sources)
+    brightest = (float(np.max(sources["peak"])) if n
+                 else float("nan"))
+    return n > 0, {"n_sources": float(n), "brightest_peak": brightest,
+                   "bg_std": float(std)}
+
+
 def _make_pair(
     hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean
     *,
@@ -398,6 +458,8 @@ _WORKER_IMAGE_SIZE:         int                  = 0
 _WORKER_TYPICAL_RATIOS:     Optional[np.ndarray] = None
 _WORKER_SIGMA_LR:           float                = 0.0
 _WORKER_MAX_RELATIVE_NOISE: float                = 0.0
+_WORKER_STAR_FWHM:          float                = 0.0
+_WORKER_STAR_THRESH_SIGMA:  float                = 0.0
 
 
 def _init_worker(
@@ -406,29 +468,35 @@ def _init_worker(
     typical_band_ratios: np.ndarray,
     sigma_lr_band: float,
     max_relative_noise: float,
+    star_fwhm_px: float,
+    star_threshold_sigma: float,
 ) -> None:
     """Called once per worker process at pool startup.
 
     Loads the analytic differential kernel ``A`` and pins the per-band
-    electron ratios + noise threshold into module-level globals so each
-    worker pays the I/O + parse cost exactly once — not per-galaxy.
+    electron ratios + rejection thresholds into module-level globals so
+    each worker pays the I/O + parse cost exactly once — not per-galaxy.
     Pickling the kernel through every task argument would be ~1 MB per
     submission × 6400 galaxies = 6 GB of pickle churn for nothing.
     """
     global _WORKER_KERNEL, _WORKER_IMAGE_SIZE, _WORKER_TYPICAL_RATIOS
     global _WORKER_SIGMA_LR, _WORKER_MAX_RELATIVE_NOISE
+    global _WORKER_STAR_FWHM, _WORKER_STAR_THRESH_SIGMA
     _WORKER_KERNEL             = DifferentialKernel.from_fits(kernel_path).data
     _WORKER_IMAGE_SIZE         = int(image_size)
     _WORKER_TYPICAL_RATIOS     = np.asarray(typical_band_ratios, dtype=np.float32)
     _WORKER_SIGMA_LR           = float(sigma_lr_band)
     _WORKER_MAX_RELATIVE_NOISE = float(max_relative_noise)
+    _WORKER_STAR_FWHM          = float(star_fwhm_px)
+    _WORKER_STAR_THRESH_SIGMA  = float(star_threshold_sigma)
 
     # Heartbeat so a future stall in worker init is visible from the
     # SLURM log instead of looking identical to a healthy "just hasn't
     # finished cutout #1 yet" state.
     print(f"      [worker {os.getpid()}] init complete "
           f"(kernel={_WORKER_KERNEL.shape}, σ_LR={_WORKER_SIGMA_LR:.2f}, "
-          f"max_rel_noise={_WORKER_MAX_RELATIVE_NOISE:.2f})", flush=True)
+          f"max_rel_noise={_WORKER_MAX_RELATIVE_NOISE:.2f}, "
+          f"star_thresh={_WORKER_STAR_THRESH_SIGMA:.1f}σ)", flush=True)
 
 
 def _process_one_galaxy(
@@ -510,6 +578,21 @@ def _process_one_galaxy(
     )
     if reject:
         return None, "rejected-bright"
+
+    # Star rejection: drop the whole cutout if it contains a bright
+    # point source. Stars forward-model to A(ε) ringing (noise-driven,
+    # not a real point source), and the model can't learn that map — it
+    # just hallucinates stars from ringing. Galaxies (extended) survive
+    # because DAOStarFinder's sharpness/roundness cuts only flag PSF-like
+    # peaks. Runs before the forward model so a reject is cheap.
+    if _WORKER_STAR_THRESH_SIGMA > 0:
+        has_star, _sdiag = _has_bright_point_source(
+            hr_cube[..., 0],
+            fwhm_px=_WORKER_STAR_FWHM,
+            threshold_sigma=_WORKER_STAR_THRESH_SIGMA,
+        )
+        if has_star:
+            return None, "rejected-star"
 
     # Per-task RNG so noise is reproducible across runs at the same seed
     # but independent across galaxies in a single run.
@@ -665,6 +748,7 @@ def main() -> int:
     pairs_skipped_no_tile  = 0
     pairs_skipped_cutout   = 0
     pairs_skipped_bright   = 0
+    pairs_skipped_star     = 0
     pairs_skipped_other    = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
@@ -696,9 +780,12 @@ def main() -> int:
         return None
 
     def _classify_skip(reason: Optional[str]) -> None:
-        nonlocal pairs_skipped_cutout, pairs_skipped_bright, pairs_skipped_other
+        nonlocal pairs_skipped_cutout, pairs_skipped_bright
+        nonlocal pairs_skipped_star, pairs_skipped_other
         if reason == "rejected-bright":
             pairs_skipped_bright += 1
+        elif reason == "rejected-star":
+            pairs_skipped_star += 1
         elif reason in ("cutout-too-small", "cutout-failed", "no-image-hdu"):
             pairs_skipped_cutout += 1
         else:
@@ -740,6 +827,8 @@ def main() -> int:
         typical_band_ratios,
         sigma_lr_band,
         float(args.max_relative_noise),
+        float(args.star_fwhm_px),
+        float(args.star_threshold_sigma),
     )
 
     if n_workers == 0:
@@ -853,8 +942,10 @@ def main() -> int:
     summary["pairs_skipped_no_tile"] = pairs_skipped_no_tile
     summary["pairs_skipped_cutout"]  = pairs_skipped_cutout
     summary["pairs_skipped_bright"]  = pairs_skipped_bright
+    summary["pairs_skipped_star"]    = pairs_skipped_star
     summary["pairs_skipped_other"]   = pairs_skipped_other
     summary["max_relative_noise"]    = float(args.max_relative_noise)
+    summary["star_threshold_sigma"]  = float(args.star_threshold_sigma)
     summary["sigma_lr_band"]         = float(sigma_lr_band)
     summary["elapsed_s"]             = round(runtime, 1)
     with open(os.path.join(args.output_dir, "generation_summary.json"), "w") as f:
@@ -865,11 +956,13 @@ def main() -> int:
     print(f"  skipped    no-tile={pairs_skipped_no_tile} "
           f"cutout={pairs_skipped_cutout} "
           f"bright={pairs_skipped_bright} "
+          f"star={pairs_skipped_star} "
           f"other={pairs_skipped_other}")
     reporter.set_stage(
         f"hst-tfrecords done: written={pairs_written} "
         f"attempted={pairs_attempted} "
         f"rejected_bright={pairs_skipped_bright} "
+        f"rejected_star={pairs_skipped_star} "
         f"skipped_cutout={pairs_skipped_cutout} "
         f"skipped_no_tile={pairs_skipped_no_tile}"
     )

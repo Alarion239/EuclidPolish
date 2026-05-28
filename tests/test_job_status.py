@@ -15,6 +15,7 @@ from typing import Tuple
 import pytest
 
 from euclid_polish.web.job_status import (
+    STEP_RATE_EMA_ALPHA,
     Event,
     JobStatus,
     JobStatusFetcher,
@@ -153,6 +154,42 @@ class TestFoldEventsRate:
         s = fold_events("\n".join(lines))
         assert s.step_rate_per_s is None
         assert s.step_eta_s is None
+
+    def test_ema_weights_recent_intervals(self):
+        """A slow first interval then steady fast intervals: the reported
+        rate is the EMA of per-step duration, which moves OFF the slow
+        start toward the recent fast pace as more fast intervals arrive
+        (it does not converge instantly — that's the point of the decay).
+        Each interval advances 10 steps: the first over 100 s (spp 10),
+        the rest over 10 s (spp 1)."""
+        alpha = STEP_RATE_EMA_ALPHA
+        lines = ['{"ts":0.0,"kind":"stage","value":"train"}']
+        ts, cur = 0.0, 0
+        lines.append(f'{{"ts":{ts},"kind":"step",'
+                     f'"value":{{"current":{cur},"total":1000,"label":""}}}}')
+        ts, cur = 100.0, 10            # interval 0: spp = 100/10 = 10
+        lines.append(f'{{"ts":{ts},"kind":"step",'
+                     f'"value":{{"current":{cur},"total":1000,"label":""}}}}')
+        for _ in range(5):             # intervals 1..5: spp = 10/10 = 1
+            ts += 10.0
+            cur += 10
+            lines.append(f'{{"ts":{ts},"kind":"step",'
+                         f'"value":{{"current":{cur},"total":1000,"label":""}}}}')
+
+        # Reproduce the EMA the implementation computes.
+        ema = 10.0
+        for _ in range(5):
+            ema = (1.0 - alpha) * ema + alpha * 1.0
+        expected_rate = 1.0 / ema
+
+        s = fold_events("\n".join(lines))
+        assert s.step_rate_per_s == pytest.approx(expected_rate, rel=1e-6)
+        # Recency sanity: the estimate has moved off the slow-start rate
+        # (0.1 step/s) toward the fast pace (1 step/s), without reaching it.
+        assert 0.1 < s.step_rate_per_s < 1.0
+        # ETA divides remaining steps by the same EMA rate.
+        assert s.step_eta_s == pytest.approx(
+            (1000 - cur) / s.step_rate_per_s, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------

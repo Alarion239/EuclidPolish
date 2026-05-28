@@ -15,6 +15,11 @@ _NUMERIC_LOG_COLS = {
     "step", "wall_time", "loss",
     "psnr_stretched", "psnr_raw",
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
+    # Multi-source validation columns (empty in synthetic-only / older
+    # runs — read_training_log skips empty cells, so those rows simply
+    # won't carry the key and the corresponding panel is omitted).
+    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_loss",
+    "save_best_score",
 }
 
 
@@ -75,82 +80,140 @@ def plot_training_records(
     smooth_window: int = 0,
     title_suffix: str = "",
 ) -> Tuple[int, int]:
-    """Same plot as :func:`plot_training_log`, but from a pre-loaded list
-    of records. Used by the FASRC dashboard which fetches the log over
-    SSH and filters by wall-time window."""
+    """Plot the validation metrics — all on ONE graph.
+
+    Three curves share a single figure (from a pre-loaded record list;
+    used by the FASRC dashboard which fetches the log over SSH and
+    filters by wall-time window):
+
+      * synthetic PSNR (stretched)   — left y-axis, dB
+      * HST PSNR (stretched)         — left y-axis, dB (when logged)
+      * round-trip ("cycle-run") loss — right y-axis (when logged)
+
+    The two PSNRs share the left axis since they're the same unit and
+    "higher is better"; the round-trip loss lives on a twin right axis
+    because it's an asinh-space L1 (~0.1–1) where lower is better — a
+    different scale and direction, so overlaying it on the dB axis would
+    be meaningless. Synthetic-only / older runs without the HST /
+    round-trip columns just show the one PSNR line.
+
+    Returns ``(n_records, last_step)``.
+    """
     if not records:
         raise ValueError("plot_training_records: records is empty")
-    steps  = np.array([r["step"]  for r in records])
-    losses = np.array([r["loss"]  for r in records])
-    psnr_str = np.array([r["psnr_stretched"] for r in records])
-    psnr_raw = np.array([r["psnr_raw"]       for r in records])
+    steps    = np.array([r["step"]            for r in records])
+    psnr_syn = np.array([r["psnr_stretched"]  for r in records])
 
-    has_gnorm = all("gnorm_avg" in r for r in records)
-    if has_gnorm:
-        gnorm_avg = np.array([r["gnorm_avg"] for r in records])
-        gnorm_max = np.array([r["gnorm_max"] for r in records])
-        clip_norm = float(records[-1].get("clip_norm", 0.0))
+    def _opt_series(col: str) -> Tuple[np.ndarray, np.ndarray]:
+        """(steps, values) for the rows that actually carry ``col``.
 
-    if has_gnorm:
-        fig, (ax_loss, ax_g) = plt.subplots(
-            2, 1, figsize=(11, 8), sharex=True,
-            gridspec_kw=dict(height_ratios=[3, 1], hspace=0.08),
+        Multi-source columns are blank on rows from synthetic-only runs
+        (read_training_log drops empty cells → key absent) and ``None``
+        from the SSH parser; both are filtered so each curve plots only
+        the points genuinely measured.
+        """
+        xs: List[float] = []
+        ys: List[float] = []
+        for r in records:
+            v = r.get(col)
+            if v is None or v == "":
+                continue
+            try:
+                ys.append(float(v))
+                xs.append(int(r["step"]))
+            except (TypeError, ValueError):
+                continue
+        return np.array(xs), np.array(ys)
+
+    hst_x, hst_y     = _opt_series("psnr_stretched_hst")
+    rt_x,  rt_y      = _opt_series("roundtrip_val_loss")
+    score_x, score_y = _opt_series("save_best_score")
+    has_score = score_x.size > 0
+
+    def _smoothed(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        if smooth_window and smooth_window > 1 and y.size >= smooth_window:
+            k = np.ones(smooth_window) / smooth_window
+            return x[smooth_window - 1:], np.convolve(y, k, mode="valid")
+        return None, None
+
+    # Two stacked plots when the composite save-best score is logged:
+    # the combined validation metrics on top, the score we actually
+    # track for checkpointing on its own axes below. Older / score-less
+    # runs keep the single metrics graph.
+    if has_score:
+        fig, (ax_psnr, ax_score) = plt.subplots(
+            2, 1, figsize=(11, 9), sharex=True,
+            gridspec_kw=dict(height_ratios=[3, 2], hspace=0.12),
         )
     else:
-        fig, ax_loss = plt.subplots(figsize=(11, 6))
-        ax_g = None
+        fig, ax_psnr = plt.subplots(figsize=(11, 6))
+        ax_score = None
 
-    color_loss = "tab:blue"
-    ax_loss.plot(steps, losses, color=color_loss, alpha=0.85, lw=1.4, label="loss (MAE)")
-    ax_loss.set_ylabel("Loss", color=color_loss)
-    ax_loss.tick_params(axis="y", labelcolor=color_loss)
-    if (losses > 0).all():
-        ax_loss.set_yscale("log")
+    # ── Left axis: PSNR (dB), higher is better. ──
+    ax_psnr.plot(steps, psnr_syn, color="tab:red", lw=1.6, alpha=0.9,
+                 label="Synthetic PSNR")
+    if hst_x.size:
+        ax_psnr.plot(hst_x, hst_y, color="tab:green", lw=1.6, alpha=0.9,
+                     label="HST PSNR")
+    # Optional smoothed overlays.
+    sx, sy = _smoothed(steps, psnr_syn)
+    if sx is not None:
+        ax_psnr.plot(sx, sy, color="tab:red", lw=2.6, label="Synthetic PSNR (MA)")
+    if hst_x.size:
+        sx, sy = _smoothed(hst_x, hst_y)
+        if sx is not None:
+            ax_psnr.plot(sx, sy, color="tab:green", lw=2.6, label="HST PSNR (MA)")
+    ax_psnr.set_ylabel("PSNR (dB)  ·  higher better")
 
-    ax_psnr = ax_loss.twinx()
-    color_psnr_str = "tab:red"
-    color_psnr_raw = "tab:orange"
+    handles, labels = ax_psnr.get_legend_handles_labels()
 
-    ax_psnr.plot(steps, psnr_str, color=color_psnr_str, alpha=0.85, lw=1.4,
-                 label="PSNR stretched")
-    ax_psnr.plot(steps, psnr_raw, color=color_psnr_raw, alpha=0.85, lw=1.4,
-                 ls="--", label="PSNR raw e⁻")
-    ax_psnr.set_ylabel("PSNR (dB)", color="black")
-    ax_psnr.tick_params(axis="y", labelcolor="black")
+    # ── Right axis: round-trip loss, lower is better (different unit). ──
+    if rt_x.size:
+        ax_rt = ax_psnr.twinx()
+        ax_rt.plot(rt_x, rt_y, color="tab:purple", lw=1.6, ls="--", alpha=0.9,
+                   label="Cycle-run loss")
+        sx, sy = _smoothed(rt_x, rt_y)
+        if sx is not None:
+            ax_rt.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
+                       label="Cycle-run loss (MA)")
+        ax_rt.set_ylabel("Round-trip loss  ·  lower better", color="tab:purple")
+        ax_rt.tick_params(axis="y", labelcolor="tab:purple")
+        if (rt_y > 0).all():
+            ax_rt.set_yscale("log")
+        h2, l2 = ax_rt.get_legend_handles_labels()
+        handles += h2
+        labels += l2
 
-    if smooth_window and smooth_window > 1 and len(steps) >= smooth_window:
-        kernel = np.ones(smooth_window) / smooth_window
-        loss_s    = np.convolve(losses,   kernel, mode="valid")
-        psnr_s_s  = np.convolve(psnr_str, kernel, mode="valid")
-        psnr_r_s  = np.convolve(psnr_raw, kernel, mode="valid")
-        steps_s   = steps[smooth_window - 1:]
-        ax_loss.plot(steps_s, loss_s, color=color_loss, lw=2.4, label=f"loss (MA{smooth_window})")
-        ax_psnr.plot(steps_s, psnr_s_s, color=color_psnr_str, lw=2.4,
-                     label=f"PSNR str (MA{smooth_window})")
-        ax_psnr.plot(steps_s, psnr_r_s, color=color_psnr_raw, lw=2.4, ls="--",
-                     label=f"PSNR raw (MA{smooth_window})")
+    ax_psnr.legend(handles, labels, loc="best", framealpha=0.9, fontsize=9)
+    ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
 
-    h1, l1 = ax_loss.get_legend_handles_labels()
-    h2, l2 = ax_psnr.get_legend_handles_labels()
-    ax_loss.legend(h1 + h2, l1 + l2, loc="upper left", framealpha=0.9)
+    # ── Composite save-best score (the quantity checkpoint selection
+    #    keys on: w_syn·PSNR_syn + w_hst·PSNR_hst − w_rt·RT_loss). The
+    #    running max is the actual save-best threshold; the model is
+    #    checkpointed wherever the raw score touches that envelope. ──
+    if ax_score is not None:
+        ax_score.plot(score_x, score_y, color="tab:blue", lw=1.5,
+                      label="save-best score")
+        running_best = np.maximum.accumulate(score_y)
+        ax_score.plot(score_x, running_best, color="black", lw=1.2, ls="--",
+                      drawstyle="steps-post", label="best so far (save threshold)")
+        sx, sy = _smoothed(score_x, score_y)
+        if sx is not None:
+            ax_score.plot(sx, sy, color="tab:blue", lw=2.6,
+                          label="save-best score (MA)")
+        ax_score.set_ylabel("Composite score  ·  higher better")
+        ax_score.set_title(
+            "Overall save-best score (drives checkpoint selection)",
+            fontsize=9, loc="left",
+        )
+        ax_score.legend(loc="best", framealpha=0.9, fontsize=9)
 
-    if ax_g is not None:
-        ax_g.plot(steps, gnorm_avg, color="tab:gray",   lw=1.4, label="‖g‖ avg")
-        ax_g.plot(steps, gnorm_max, color="tab:purple", lw=0.8, alpha=0.7, label="‖g‖ max")
-        if clip_norm > 0 and np.isfinite(clip_norm):
-            ax_g.axhline(clip_norm, color="red", ls="--", lw=0.8,
-                         label=f"clip_norm={clip_norm:g}")
-        ax_g.set_ylabel("|g|")
-        ax_g.set_xlabel("Step")
-        if (gnorm_avg > 0).all():
-            ax_g.set_yscale("log")
-        ax_g.legend(loc="upper right", fontsize=8, framealpha=0.9)
-    else:
-        ax_loss.set_xlabel("Step")
+    # X-label on the bottom-most axes only (shared x when stacked).
+    (ax_score or ax_psnr).set_xlabel("Step")
 
     fig.suptitle(
-        f"Training log — {len(records)} evaluations, last step {int(steps[-1])}"
-        f"{title_suffix}",
+        f"Validation metrics — {len(records)} evals, last step "
+        f"{int(steps[-1])}{title_suffix}",
         fontsize=11,
     )
     fig.tight_layout()

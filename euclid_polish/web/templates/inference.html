@@ -59,15 +59,16 @@
   <h3>Real Euclid cutouts <span class="muted" style="font-size:12px;
       font-weight:normal;">(stored under
       <code>data/euclid_inference/cutouts/</code>)</span></h3>
-  <p class="hint">Each (RA, Dec, size) keeps its four LR band FITS plus
-    the super-resolved <code>SR.fits</code>. Click any link to download.</p>
+  <p class="hint">Only the most recent run is kept — each new cutout
+    overwrites the previous one. Shows the four LR band FITS plus the
+    super-resolved <code>SR.fits</code>. Click any link to download.</p>
   <table style="width:100%; font-size:12px;">
     <tr><th style="text-align:left;">Position / size</th>
         <th style="text-align:left;">Files</th></tr>
     {% for run in euclid_runs[:30] %}
       <tr style="border-top:1px solid #e2e5ea;">
         <td style="vertical-align:top; padding:4px 8px 4px 0;
-                   white-space:nowrap;"><code>{{ run.tag }}</code></td>
+                   white-space:nowrap;"><code>{{ run.label or run.tag }}</code></td>
         <td style="vertical-align:top; padding:4px 0;">
           {% for f in run.files %}
             <a href="{{ url_for('inspect_fits_page', fits='data/euclid_inference/' ~ f.rel) }}"

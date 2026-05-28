@@ -90,6 +90,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -688,10 +689,11 @@ def _job_reconstruct_euclid_cutout(
     bands into ``(H, W, 4)``, and runs the model.
 
     The downloaded FITS files (one per band) plus the super-resolved
-    VIS output are persisted under
-    ``Config.EUCLID_INFERENCE_DIR/<tag>/`` so the user can revisit a
-    position later without re-downloading. Each call re-uses cached
-    files when the size + position + header MAGZERO match.
+    VIS output are written to a single ``Config.EUCLID_INFERENCE_DIR/
+    cutouts/latest/`` slot that is wiped at the start of every call, so
+    each run *replaces* the previous records rather than accumulating one
+    directory per position. The input RA/Dec/size are preserved in the
+    SR FITS header for provenance.
     """
 
     if not tf.train.latest_checkpoint(checkpoint_dir):
@@ -702,12 +704,14 @@ def _job_reconstruct_euclid_cutout(
         nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
     )
 
-    # Persistent per-position cutout cache. One directory per
-    # (ra, dec, size) tuple. ``+`` / ``-`` in the dec value would
-    # confuse some shells, so encode as ``p`` / ``m``.
-    tag = (f"ra{ra:.4f}_dec{dec:+.4f}_sz{int(cutout_size_vis_pixels)}"
-           .replace("+", "p").replace("-", "m"))
-    cache_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts", tag)
+    # Single overwrite slot: wipe every previous cutout record (the old
+    # per-position directories included) so each call replaces the prior
+    # run rather than accumulating one directory per position. The input
+    # RA/Dec/size live in the SR FITS header for provenance.
+    cutouts_root = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
+    if os.path.isdir(cutouts_root):
+        shutil.rmtree(cutouts_root)
+    cache_dir = os.path.join(cutouts_root, "latest")
     os.makedirs(cache_dir, exist_ok=True)
 
     # Fetch each band; per-band MAGZERO from each header drives the
@@ -720,15 +724,12 @@ def _job_reconstruct_euclid_cutout(
                  f"downloading {band_name} cutout")
         band = Config.get_band(band_name)
         outf = os.path.join(cache_dir, f"{band_name}.fits")
-        if os.path.exists(outf) and os.path.getsize(outf) > 0:
-            print(f"  {band_name}: cached → {outf}")
-        else:
-            ok, err = fetch_cutout_at(
-                ra=ra, dec=dec, band_name=band_name, output_file=outf,
-                cutout_size_vis_pixels=cutout_size_vis_pixels,
-            )
-            if not ok:
-                raise RuntimeError(f"{band_name}: {err}")
+        ok, err = fetch_cutout_at(
+            ra=ra, dec=dec, band_name=band_name, output_file=outf,
+            cutout_size_vis_pixels=cutout_size_vis_pixels,
+        )
+        if not ok:
+            raise RuntimeError(f"{band_name}: {err}")
         with fits.open(outf) as hdul:
             arr = hdul[0].data.astype(np.float32)
             header = hdul[0].header
@@ -833,7 +834,14 @@ def _job_reconstruct_euclid_cutout(
 
     out_dir = Config.VIS_RECONSTRUCTION_DIR
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"euclid_{tag}.png")
+    # Drop stale Euclid-cutout renders (one used to be written per
+    # position); leave the synthetic reconstruction PNGs alone.
+    for stale in glob.glob(os.path.join(out_dir, "euclid_*.png")):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    out_path = os.path.join(out_dir, "euclid_latest.png")
     plot_reconstruction(lr_vis, sr_data, hr_data=None,
                         output_path=out_path, lr_cube=lr_cube,
                         asinh_scale=asinh_scale,
@@ -2637,8 +2645,23 @@ def create_app() -> Flask:
                             "size_kb":  int(os.path.getsize(f) / 1024),
                         })
                 if files:
+                    # The dir name is now a fixed "latest" slot, so read the
+                    # real position out of the SR header for a useful label.
+                    label = tag
+                    sr_local = os.path.join(d, "SR.fits")
+                    if os.path.isfile(sr_local):
+                        try:
+                            hdr = fits.getheader(sr_local)
+                            if hdr.get("RA") is not None and hdr.get("DEC") is not None:
+                                label = (f"RA {float(hdr['RA']):.4f}, "
+                                         f"Dec {float(hdr['DEC']):+.4f}")
+                                if hdr.get("CSIZE") is not None:
+                                    label += f"  ({int(hdr['CSIZE'])} px)"
+                        except Exception:  # noqa: BLE001 — label is cosmetic
+                            pass
                     euclid_runs.append({
                         "tag":   tag,
+                        "label": label,
                         "files": files,
                         "mtime": max(os.path.getmtime(os.path.join(d, f["name"]))
                                      for f in files),

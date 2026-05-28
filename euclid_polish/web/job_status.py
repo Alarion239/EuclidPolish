@@ -29,6 +29,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 
+#: Smoothing weight of the newest interval in the per-step-duration EMA
+#: that drives the rate/ETA estimate. 0.1 → each new interval shifts the
+#: estimate 10% toward its instantaneous value, 90% persists. Lower =
+#: smoother/slower to react; higher = noisier/faster. Tuned to shrug off
+#: a slow first interval (compile / cold cache) within ~10–20 events.
+STEP_RATE_EMA_ALPHA: float = 0.1
+
+
 # ---------------------------------------------------------------------------
 # Public dataclasses
 # ---------------------------------------------------------------------------
@@ -187,21 +195,35 @@ def fold_events(text: str) -> JobStatus:
             errors.append(Event(ts=ts_f, msg=value))
         # Unknown kinds are silently dropped — forward compatibility.
 
-    # Rate + ETA from steps within the *current* stage. We need at
-    # least two points spanning real wall time and real progress to
-    # avoid division-by-zero / negative ETAs from clock skew or
-    # rewound counters.
+    # Rate + ETA from steps within the *current* stage, via an EMA of
+    # per-step duration so recent intervals dominate. A plain
+    # total/total average lets a slow first interval (graph compilation,
+    # cold disk cache) pin the ETA pessimistic for the whole run; the
+    # EMA decays it away. We average *seconds per step* (not steps/s)
+    # so events that report uneven step strides — one tile vs 50 train
+    # steps — fold in on a common per-step basis. Intervals with
+    # non-positive Δt or Δsteps (clock skew, a rewound counter, a resume
+    # that re-emits an earlier step) are skipped, not folded.
     step_rate_per_s: Optional[float] = None
     step_eta_s:      Optional[float] = None
-    if len(stage_step_history) >= 2:
-        first_ts, first_cur, _ = stage_step_history[0]
-        last_ts,  last_cur, last_tot = stage_step_history[-1]
-        dt = last_ts - first_ts
-        dn = last_cur - first_cur
-        if dt > 0 and dn > 0 and last_tot > 0:
-            step_rate_per_s = float(dn) / float(dt)
+    ema_spp: Optional[float] = None        # EMA of seconds-per-step
+    for (t0, c0, _), (t1, c1, tot1) in zip(
+        stage_step_history, stage_step_history[1:]
+    ):
+        d_t = t1 - t0
+        d_n = c1 - c0
+        if d_t <= 0 or d_n <= 0:
+            continue
+        spp = d_t / d_n
+        ema_spp = (spp if ema_spp is None
+                   else (1.0 - STEP_RATE_EMA_ALPHA) * ema_spp
+                        + STEP_RATE_EMA_ALPHA * spp)
+    if ema_spp is not None and ema_spp > 0:
+        step_rate_per_s = 1.0 / ema_spp
+        _, last_cur, last_tot = stage_step_history[-1]
+        if last_tot > 0:
             remaining = max(0, last_tot - last_cur)
-            step_eta_s = remaining / step_rate_per_s
+            step_eta_s = remaining * ema_spp
 
     return JobStatus(
         stage=stage,

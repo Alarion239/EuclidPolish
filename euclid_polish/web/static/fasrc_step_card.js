@@ -142,7 +142,10 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="image_size" value="510" step="2" min="64" max="2048"></label>
       <label>Max relative noise (k)
         <input type="number" name="max_relative_noise" value="5.0" step="0.5" min="0.5" max="50"
-               title="Reject a stamp when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection (fewer stars sneak in); larger k → more stamps kept. Default 5."></label>`;
+               title="Reject a stamp when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection; larger k → more stamps kept. Default 5."></label>
+      <label>Star reject (σ)
+        <input type="number" name="star_threshold_sigma" value="20" step="5" min="0" max="100"
+               title="Reject any cutout where DAOStarFinder detects a point source brighter than this many σ above the cutout background. Stars forward-model to A(ε) ringing (unlearnable), so cutouts containing one are dropped; resolved galaxies pass (sharpness/roundness cuts only flag PSF-like peaks). Lower (10–15) = drop fainter stars too; 0 = disable."></label>`;
   }
 
   function _hstTrainFields() {

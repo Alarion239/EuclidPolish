@@ -132,13 +132,16 @@ def reset_worker_globals():
 
 def _init_worker_with_kernel(mod, kernel_path: str, image_size: int,
                               *, sigma_lr: float = 100.0,
-                              max_rel: float = DISABLE_FILTER_MAX_REL_NOISE):
+                              max_rel: float = DISABLE_FILTER_MAX_REL_NOISE,
+                              star_fwhm: float = 2.5,
+                              star_threshold_sigma: float = 0.0):
     """Wrapper around ``_init_worker`` for the common test setup.
 
     ``sigma_lr`` defaults to a moderate value (~ Euclid VIS budget),
     ``max_rel`` defaults to "essentially infinite" so the bright-stamp
-    filter does not reject synthetic Gaussian blobs unless a test
-    explicitly enables it.
+    filter does not reject synthetic Gaussian blobs, and
+    ``star_threshold_sigma`` defaults to 0 (star detection disabled) so
+    existing tests don't trip it unless they opt in.
     """
     mod._init_worker(
         kernel_path,
@@ -146,6 +149,8 @@ def _init_worker_with_kernel(mod, kernel_path: str, image_size: int,
         DEFAULT_TEST_RATIOS,
         sigma_lr,
         max_rel,
+        star_fwhm,
+        star_threshold_sigma,
     )
 
 
@@ -338,6 +343,56 @@ class TestIsStampTooBright:
 
 
 # ---------------------------------------------------------------------------
+# _has_bright_point_source — star detection / rejection
+# ---------------------------------------------------------------------------
+
+class TestHasBrightPointSource:
+    """A bright point source (star) must be detected; a smooth extended
+    blob (galaxy) must not — that's what keeps galaxy cutouts while
+    dropping the A(ε)-ringing-prone stars."""
+
+    @staticmethod
+    def _gauss(side, cx, cy, fwhm, amp):
+        sigma = fwhm / 2.3548
+        y, x = np.mgrid[:side, :side]
+        return (amp * np.exp(-(((x - cx) ** 2 + (y - cy) ** 2)
+                               / (2 * sigma ** 2)))).astype(np.float32)
+
+    def test_point_source_detected(self):
+        mod = _load_script()
+        rng = np.random.default_rng(0)
+        img = rng.normal(0.0, 1.0, size=(96, 96)).astype(np.float32)
+        # Sharp, bright PSF-like star (FWHM ~2.5 px) well above the noise.
+        img += self._gauss(96, 48, 48, fwhm=2.5, amp=400.0)
+        has_star, diag = mod._has_bright_point_source(
+            img, fwhm_px=2.5, threshold_sigma=20.0,
+        )
+        assert has_star is True
+        assert diag["n_sources"] >= 1
+
+    def test_extended_blob_not_flagged(self):
+        mod = _load_script()
+        rng = np.random.default_rng(1)
+        img = rng.normal(0.0, 1.0, size=(96, 96)).astype(np.float32)
+        # Broad, low-surface-brightness galaxy-like blob (FWHM ~20 px):
+        # bright in total but not PSF-sharp, so DAOStarFinder's
+        # sharpness cut rejects it.
+        img += self._gauss(96, 48, 48, fwhm=20.0, amp=40.0)
+        has_star, _ = mod._has_bright_point_source(
+            img, fwhm_px=2.5, threshold_sigma=20.0,
+        )
+        assert has_star is False
+
+    def test_disabled_when_threshold_zero(self):
+        mod = _load_script()
+        img = self._gauss(64, 32, 32, fwhm=2.5, amp=1000.0)
+        has_star, _ = mod._has_bright_point_source(
+            img, fwhm_px=2.5, threshold_sigma=0.0,
+        )
+        assert has_star is False
+
+
+# ---------------------------------------------------------------------------
 # _process_one_galaxy — happy path + failure modes
 # ---------------------------------------------------------------------------
 
@@ -476,11 +531,15 @@ class TestProcessOneGalaxyFailureModes:
         tile = _make_synthetic_tile(
             tmp_path, side_pix=400, blob_flux=1.0e6,
         )
-        # Pin sigma_lr small + max_rel small → easy rejection.
+        # Pin sigma_lr small + max_rel small → easy rejection. Star
+        # detection off (threshold 0) so this isolates the bright-pixel
+        # filter.
         mod._init_worker(
             krn, 64, DEFAULT_TEST_RATIOS,
             1.0,   # sigma_lr_band (tight budget)
             0.01,  # max_relative_noise (very strict)
+            2.5,   # star_fwhm_px
+            0.0,   # star_threshold_sigma (disabled)
         )
         task = (0, 150.1, 2.3, tile, 200, 42)
         result, reason = mod._process_one_galaxy(task)
@@ -615,6 +674,7 @@ class TestHstNativePhotometry:
         ratios = np.array([1.0, 0.15, 0.25, 0.20], dtype=np.float32)
         mod._init_worker(
             krn, 64, ratios, 100.0, DISABLE_FILTER_MAX_REL_NOISE,
+            2.5, 0.0,   # star_fwhm_px, star_threshold_sigma (disabled)
         )
         task = (0, 150.1, 2.3, tile, 200, 1)
         result, _ = mod._process_one_galaxy(task)
@@ -654,7 +714,7 @@ class TestPoolIntegration:
             max_workers=2,
             initializer=mod._init_worker,
             initargs=(krn, 64, DEFAULT_TEST_RATIOS,
-                      100.0, DISABLE_FILTER_MAX_REL_NOISE),
+                      100.0, DISABLE_FILTER_MAX_REL_NOISE, 2.5, 0.0),
         ) as pool:
             results = list(pool.map(mod._process_one_galaxy, tasks))
 
@@ -692,7 +752,7 @@ class TestPoolIntegration:
             max_workers=2,
             initializer=mod._init_worker,
             initargs=(krn, 32, DEFAULT_TEST_RATIOS,
-                      100.0, DISABLE_FILTER_MAX_REL_NOISE),
+                      100.0, DISABLE_FILTER_MAX_REL_NOISE, 2.5, 0.0),
         ) as pool:
             results = list(pool.map(
                 mod._process_one_galaxy, ok_tasks + bad_tasks,

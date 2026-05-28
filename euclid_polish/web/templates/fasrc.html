@@ -160,6 +160,24 @@
         </ol>
       </section>
 
+      <!-- Training curves — synthetic PSNR, HST PSNR, cycle-run loss vs
+           step, restricted to the current run's wall-time window. Only
+           shown once the trainer has logged validation rows; for
+           non-training jobs (download / kernel / …) the endpoint 404s
+           and the card stays hidden. -->
+      <section class="card" id="cs-plot-card" style="display:none;">
+        <h3>Training curves
+          <span class="muted" id="cs-plot-msg"
+                style="font-weight:normal; font-size:12px;"></span></h3>
+        <p class="hint" style="margin-top:0;">
+          Synthetic PSNR ┃ HST PSNR ┃ cycle-run (round-trip) loss, this
+          run only. Refreshes with the status poll.
+        </p>
+        <img id="cs-plot-img" alt="training curves"
+             style="display:none; max-width:100%; margin-top:6px;
+                    border:1px solid #e2e5ea; border-radius:3px;">
+      </section>
+
       <section class="card" id="cs-warn-card" style="display:none;">
         <h3>Warnings <span id="cs-warn-count" class="muted"
                             style="font-weight:normal; font-size:12px;"></span></h3>
@@ -287,19 +305,6 @@
       </p>
       <pre id="logs-viewer-content" class="job-log"
            style="max-height:540px;">(loading…)</pre>
-
-      <!-- Per-run validation-history plot (loss + PSNR vs step). Only
-           shown when the selected run has a wall-time window we can
-           filter the trainer's append-only training_log.csv with. -->
-      <div id="logs-train-plot-wrap" style="margin-top:14px;
-           border-top:1px solid #e2e5ea; padding-top:12px; display:none;">
-        <strong style="font-size:13px;">Validation log (this run)</strong>
-        <span class="muted" id="logs-train-plot-msg"
-              style="font-size:11px; margin-left:8px;"></span>
-        <img id="logs-train-plot" alt="training log plot"
-             style="display:none; max-width:100%; margin-top:8px;
-                    border:1px solid #e2e5ea; border-radius:3px;">
-      </div>
 
       <!-- Pull the remote ckpt dir into the local mirror via rsync.
            Same machinery as the auto-mirror's "Sync now" button — runs
@@ -495,7 +500,30 @@ let __CS_JOBID = null;
 function _csHideLive() {
   $('cs-empty-panel').style.display = 'block';
   $('cs-live-panel').style.display  = 'none';
+  $('cs-plot-card').style.display   = 'none';
   __CS_JOBID = null;
+}
+
+// Load the per-run training-curves PNG (synthetic PSNR ┃ HST PSNR ┃
+// cycle-run loss). ended_at=0 → the endpoint uses now() as the upper
+// bound, so an in-flight run's window grows each poll. A 404 (no
+// validation rows yet, or a non-training job) hides the card.
+function _refreshCurrentPlot(startedAt) {
+  const card = $('cs-plot-card');
+  const img  = $('cs-plot-img');
+  const msg  = $('cs-plot-msg');
+  if (!startedAt) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const url = '/api/fasrc/runs/training-plot.png'
+            + '?started_at=' + encodeURIComponent(startedAt)
+            + '&ended_at=0'
+            + '&_t=' + Date.now();
+  img.onload  = () => { img.style.display = 'block'; msg.textContent = ''; };
+  img.onerror = () => {
+    img.style.display = 'none';
+    msg.textContent = '(no validation rows logged yet)';
+  };
+  img.src = url;
 }
 
 function _fmtIsoLocal(epoch) {
@@ -605,6 +633,11 @@ async function refreshCurrentSubmission() {
     $('cs-est-start').textContent = rendered;
     $('cs-reason').textContent    = job.reason || '—';
   }
+
+  // Training curves — load the per-run plot when the job has a start
+  // time. The endpoint filters the trainer's training_log.csv to this
+  // run's window; for non-training jobs it 404s and we hide the card.
+  _refreshCurrentPlot(job.started_at);
 
   // Stage card — current stage pill + step progress bar. set_step is
   // silent on stderr by design, so the bar is the only progress
@@ -967,37 +1000,8 @@ async function refreshLogs() {
       };
       LOGS_STATE.which = LOGS_STATE.selected.out ? 'out' : 'err';
       openLogViewer();
-      refreshRunTrainingPlot();
     });
   });
-}
-
-async function refreshRunTrainingPlot() {
-  const sel = LOGS_STATE.selected;
-  if (!sel || !sel.started_at) {
-    $('logs-train-plot-wrap').style.display = 'none';
-    return;
-  }
-  $('logs-train-plot-wrap').style.display = 'block';
-  $('logs-train-plot-msg').textContent = 'loading…';
-  $('logs-train-plot').style.display = 'none';
-  // ended_at = 0 means the run is still active; the endpoint treats
-  // that as "use now() as the upper bound".
-  const url = '/api/fasrc/runs/training-plot.png'
-            + '?started_at=' + encodeURIComponent(sel.started_at)
-            + '&ended_at='   + encodeURIComponent(sel.ended_at || 0)
-            + '&_t=' + Date.now();   // cache buster
-  const img = $('logs-train-plot');
-  img.onload  = () => {
-    img.style.display = 'block';
-    $('logs-train-plot-msg').textContent = '';
-  };
-  img.onerror = () => {
-    img.style.display = 'none';
-    $('logs-train-plot-msg').textContent =
-      'no validation rows in this run\'s wall-time window (yet)';
-  };
-  img.src = url;
 }
 
 async function openLogViewer() {
