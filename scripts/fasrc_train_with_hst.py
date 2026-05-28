@@ -31,7 +31,10 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.training import Trainer
-from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.training.data_multiband import (
+    MultiBandEuclidDataset, lr_only_dataset,
+)
+from euclid_polish.sky.tfrecord import tfrecord_path
 from euclid_polish.training.forward_op import EuclidVISForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 
@@ -79,6 +82,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt-dir",     default=Config.DEFAULT_CHECKPOINT_DIR)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
+    p.add_argument("--save-best-w-syn", type=float, default=1.0,
+                   help="Weight of synthetic PSNR (dB) in the composite "
+                        "save-best score. Default 1.")
+    p.add_argument("--save-best-w-hst", type=float, default=1.0,
+                   help="Weight of HST PSNR (dB) in the composite "
+                        "save-best score. No effect when the HST "
+                        "validate split is absent. Default 1.")
+    p.add_argument("--save-best-w-rt", type=float, default=0.0,
+                   help="Weight of the round-trip recon loss in the "
+                        "composite save-best score (SUBTRACTED — lower "
+                        "loss is better). The RT loss is asinh-L1 (~0.1–1) "
+                        "while PSNRs are dB (~20–30), so this needs to be "
+                        "~10–30 to matter; it can also be gamed by "
+                        "under-sharpening, so it defaults to 0 "
+                        "(monitored-only).")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -135,6 +153,34 @@ def main() -> int:
     ).dataset(batch_size=int(args.batch_size), random_transform=False,
               repeat_count=1)
 
+    # Additive multi-source validation datasets. These never influence
+    # save-best (which stays keyed on the synthetic metric); they only
+    # surface per-source progress in the training log so a regime change
+    # that helps HST / round-trip while dipping synthetic is visible.
+    # Both are built leniently — a missing split logs a note and yields
+    # None rather than aborting the run.
+    hst_valid_dataset = None
+    if args.hst_fraction > 0:
+        try:
+            hst_valid_dataset = MultiBandEuclidDataset(
+                subset="validate",
+                records_dir=args.records_hst,
+            ).dataset(batch_size=int(args.batch_size),
+                      random_transform=False, repeat_count=1)
+        except FileNotFoundError:
+            print("  note: no HST validate split found — "
+                  "skipping HST validation logging")
+
+    roundtrip_valid_dataset = None
+    if use_roundtrip:
+        rt_dirty = tfrecord_path(args.records_roundtrip, "dirty_validate")
+        if os.path.exists(rt_dirty):
+            roundtrip_valid_dataset = lr_only_dataset(
+                rt_dirty, batch_size=int(args.batch_size))
+        else:
+            print("  note: no round-trip dirty_validate.tfrecord found — "
+                  "skipping round-trip validation logging")
+
     # Model + loss + optimizer (same recipe as the standard trainer).
     reporter.set_stage("building model + optimizer")
     scale = Config.DEFAULT_REBIN_FACTOR
@@ -167,11 +213,20 @@ def main() -> int:
     def _on_train_step(step: int, total: int) -> None:
         reporter.set_step(step, total, "train")
 
+    print(f"      save-best weights: syn={args.save_best_w_syn:g}, "
+          f"hst={args.save_best_w_hst:g}, rt={args.save_best_w_rt:g}")
     trainer.train(
         train_dataset, valid_dataset, steps=int(args.steps),
         evaluate_every=int(args.evaluate_every),
         save_best_only=True,
         step_callback=_on_train_step,
+        hst_valid_dataset=hst_valid_dataset,
+        roundtrip_valid_dataset=roundtrip_valid_dataset,
+        save_best_weights=(
+            float(args.save_best_w_syn),
+            float(args.save_best_w_hst),
+            float(args.save_best_w_rt),
+        ),
     )
 
     runtime = time.time() - t0

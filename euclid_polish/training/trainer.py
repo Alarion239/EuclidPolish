@@ -50,6 +50,15 @@ TRAINING_LOG_COLUMNS  = (
     "step", "wall_time", "loss",
     "psnr_stretched", "psnr_raw",
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
+    # Multi-source validation (additive). Empty string when the
+    # corresponding source dataset isn't wired for this run, so old
+    # plots that parse-float these columns skip them instead of
+    # choking on the text "nan".
+    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_loss",
+    # The composite scalar save-best actually keys on (weighted blend of
+    # the per-source metrics; see ``save_best_weights``). Logged so the
+    # decision is auditable from the CSV alone.
+    "save_best_score",
 )
 
 # Gradient clipping by global L2 norm — see ``Config.GRAD_CLIP_NORM``.
@@ -140,6 +149,9 @@ class Trainer:
         validate_images=Config.DEFAULT_VALIDATE_IMAGES,
         step_callback=None,
         step_callback_every=50,
+        hst_valid_dataset=None,
+        roundtrip_valid_dataset=None,
+        save_best_weights=(1.0, 1.0, 0.0),
     ):
         """
         Train the model.
@@ -149,7 +161,7 @@ class Trainer:
         train_dataset : tf.data.Dataset
             Training dataset.
         valid_dataset : tf.data.Dataset
-            Validation dataset.
+            Validation dataset (synthetic). Drives save-best.
         steps : int
             Number of training steps.
         evaluate_every : int
@@ -169,6 +181,36 @@ class Trainer:
             JSONL events file small on a 200k-step run (~4k lines) while
             still updating the UI's progress bar every ~5 s of wall
             time at typical step rates.
+        hst_valid_dataset : Optional[tf.data.Dataset]
+            HST ``(lr, hr)`` validation dataset. When provided, each
+            evaluation also records HST PSNR (stretched/raw) so a regime
+            change's effect on the HST source is visible even when the
+            synthetic metric dips. Purely additive — does NOT influence
+            save-best. ``None`` (default) leaves the HST columns empty.
+        roundtrip_valid_dataset : Optional[tf.data.Dataset]
+            LR-only round-trip validation dataset (see
+            :func:`euclid_polish.training.data_multiband.lr_only_dataset`).
+            When provided, each evaluation records the mean round-trip
+            reconstruction loss. Requires ``self.forward_op`` to be set;
+            otherwise the logged value is ``nan``. Additive only — does
+            NOT influence save-best. ``None`` leaves the column empty.
+        save_best_weights : tuple[float, float, float]
+            ``(w_syn, w_hst, w_rt)`` weights for the composite save-best
+            score, higher = better:
+
+                score = w_syn·PSNR_syn + w_hst·PSNR_hst − w_rt·RT_loss
+
+            The two PSNR terms are in dB (~20–30); the round-trip term
+            is an asinh-space L1 loss (~0.1–1.0) and is SUBTRACTED
+            (lower loss = better). Because of that scale gap, ``w_rt``
+            must be ~10–30× the PSNR weights to register, and it can be
+            gamed by under-sharpening — hence it defaults to 0. A term
+            drops out automatically when its validation dataset is
+            absent (e.g. ``w_hst`` has no effect when
+            ``hst_valid_dataset is None``). Default ``(1, 1, 0)`` →
+            synthetic + HST PSNR, equally weighted, round-trip
+            monitored-only. With HST/RT absent this reduces to plain
+            synthetic-PSNR save-best (backwards compatible).
         """
         loss_mean = Mean()
         gnorm_mean = Mean()
@@ -180,8 +222,39 @@ class Trainer:
         start_step = int(ckpt.step.numpy())
         remaining = steps - start_step
 
+        # The first validation of *this* run always force-saves and
+        # re-baselines ckpt.psnr (see the save-best block below).
+        # ``ckpt.psnr`` is checkpointed, so a run resumed under a
+        # changed training regime (e.g. a new HST / round-trip mix)
+        # inherits the *previous* regime's best — which the new mix
+        # typically can't beat on the synthetic metric — and would
+        # otherwise never write a checkpoint, discarding the new
+        # training. Local to this call, so it resets every resubmit.
+        first_eval_this_run = True
+
         log_path = os.path.join(ckpt_mgr.directory, TRAINING_LOG_FILENAME)
         os.makedirs(ckpt_mgr.directory, exist_ok=True)
+
+        # Resume-with-old-header guard. The CSV only writes a header when
+        # the file is new/empty; a run resumed against a log written with
+        # the OLD column set would append the new fieldnames' rows under
+        # the old header → misaligned columns. If the existing file's
+        # first line doesn't match the current header, rotate it out of
+        # the way and start fresh so each file is internally consistent.
+        expected_header = ",".join(TRAINING_LOG_COLUMNS)
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+            with open(log_path, "r", newline="") as fh:
+                first_line = fh.readline().rstrip("\r\n")
+            if first_line != expected_header:
+                backup = os.path.join(
+                    ckpt_mgr.directory,
+                    f"training_log.{time.strftime('%Y%m%d-%H%M%S')}.bak",
+                )
+                os.rename(log_path, backup)
+                tqdm.write(
+                    f"  ↻ Rotated training log with stale header → "
+                    f"{os.path.basename(backup)} (new columns added)"
+                )
 
         pbar = tqdm(
             train_dataset.take(remaining),
@@ -242,19 +315,61 @@ class Trainer:
                 psnr_str = float(metrics["psnr_stretched"].numpy())
                 psnr_raw = float(metrics["psnr_raw"].numpy())
 
+                # Multi-source validation (additive — never touches
+                # save-best). Empty string when a source isn't wired so
+                # downstream float-parsers skip the cell rather than
+                # choke on "nan" text.
+                psnr_str_hst: object = ""
+                psnr_raw_hst: object = ""
+                rt_val_loss:  object = ""
+                if hst_valid_dataset is not None:
+                    hst_metrics  = self.evaluate(
+                        hst_valid_dataset.take(validate_images))
+                    psnr_str_hst = float(hst_metrics["psnr_stretched"].numpy())
+                    psnr_raw_hst = float(hst_metrics["psnr_raw"].numpy())
+                if roundtrip_valid_dataset is not None:
+                    rt_val_loss = float(self.evaluate_roundtrip(
+                        roundtrip_valid_dataset.take(validate_images)))
+
+                # Composite save-best score (higher = better). Synthetic
+                # is always in; HST/RT terms join only when their
+                # validation set is wired. RT is subtracted (lower loss
+                # is better). All-zero weights would make every score 0
+                # and freeze save-best, so fall back to synthetic PSNR.
+                w_syn, w_hst, w_rt = save_best_weights
+                if (w_syn == 0 and w_hst == 0 and w_rt == 0):
+                    save_best_score = psnr_str
+                else:
+                    save_best_score = w_syn * psnr_str
+                    if psnr_str_hst != "":
+                        save_best_score += w_hst * float(psnr_str_hst)
+                    if rt_val_loss != "":
+                        save_best_score -= w_rt * float(rt_val_loss)
+
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
                     loss=f"{loss_value.numpy():.3f}",
                     PSNRs=f"{psnr_str:.2f}",
                     PSNRr=f"{psnr_raw:.2f}",
+                    score=f"{save_best_score:.2f}",
                 )
-                tqdm.write(
+                status = (
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"PSNR(str/raw) = {psnr_str:.3f}/{psnr_raw:.3f} dB, "
-                    f"|g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
+                    f"PSNR(str/raw) = {psnr_str:.3f}/{psnr_raw:.3f} dB"
+                )
+                if hst_valid_dataset is not None:
+                    status += (
+                        f" | HST PSNR(str/raw) = "
+                        f"{psnr_str_hst:.3f}/{psnr_raw_hst:.3f} dB"
+                    )
+                if roundtrip_valid_dataset is not None:
+                    status += f" | RT loss = {rt_val_loss:.4f}"
+                status += (
+                    f", |g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
                 )
+                tqdm.write(status)
 
                 # Persist for later plotting. Append-only CSV so each row
                 # is durable the moment ``evaluate_every`` fires — a job
@@ -269,6 +384,10 @@ class Trainer:
                     "gnorm_max":      float(gnorm_peak),
                     "clip_norm":      float(GRAD_CLIP_NORM),
                     "duration_s":     float(duration),
+                    "psnr_stretched_hst": psnr_str_hst,
+                    "psnr_raw_hst":       psnr_raw_hst,
+                    "roundtrip_val_loss": rt_val_loss,
+                    "save_best_score":    save_best_score,
                 }
                 write_header = (not os.path.exists(log_path)
                                 or os.path.getsize(log_path) == 0)
@@ -278,16 +397,37 @@ class Trainer:
                         w.writeheader()
                     w.writerow(row)
 
-                # save-best on PSNR_stretched (loss-aligned).
-                if save_best_only and metrics["psnr_stretched"] <= ckpt.psnr:
+                # save-best on the composite score (see save_best_weights).
+                # ``ckpt.psnr`` is the checkpointed best-score threshold —
+                # the name predates the composite; it now holds whatever
+                # save_best_weights blends, not the bare synthetic PSNR.
+                # The first validation of this run force-saves +
+                # re-baselines it so a regime change (new HST/round-trip
+                # mix) that dips below the inherited best still updates the
+                # weights; subsequent validations resume monotonic
+                # save-best on the composite.
+                is_first = first_eval_this_run
+                first_eval_this_run = False
+                should_save = (
+                    not save_best_only         # save-every mode
+                    or is_first                # re-baseline this run's 1st eval
+                    or save_best_score > ckpt.psnr  # genuine improvement
+                )
+                if not should_save:
                     self.now = time.perf_counter()
                     continue
 
-                ckpt.psnr = metrics["psnr_stretched"]
+                # ``.assign`` keeps ckpt.psnr a tf.Variable (so it stays
+                # checkpoint-tracked across resumes and exposes .numpy());
+                # the prior ``ckpt.psnr = <tensor>`` replaced the Variable
+                # with a bare tensor and silently dropped that tracking.
+                ckpt.psnr.assign(save_best_score)
                 ckpt_mgr.save()
+                why = ("re-baseline (first eval this run)"
+                       if is_first and save_best_only else "best so far")
                 tqdm.write(
-                    f"  ✓ Checkpoint saved (PSNR str={psnr_str:.3f}, "
-                    f"raw={psnr_raw:.3f} dB)"
+                    f"  ✓ Checkpoint saved [{why}] (score={save_best_score:.3f}; "
+                    f"PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
                 )
 
                 self.now = time.perf_counter()
@@ -406,6 +546,43 @@ class Trainer:
             and ``psnr_raw``.
         """
         return evaluate(self.checkpoint.model, dataset)
+
+    def evaluate_roundtrip(self, lr_dataset) -> float:
+        """Mean round-trip reconstruction loss over an LR-only dataset.
+
+        Computes the same quantity as the round-trip branch of
+        :meth:`train_step_mixed`, in eval mode and without gradients::
+
+            sr        = model(lr, training=False)
+            sr_lin    = inverse_asinh_stretch_hr(sr)
+            recon     = forward_op(sr_lin)
+            recon_str = asinh_stretch_hr(recon)
+            loss      = mean(|recon_str - lr[..., 0:1]|)
+
+        Parameters
+        ----------
+        lr_dataset : tf.data.Dataset
+            Yields LR tensors ``[B, H, W, 4]`` (e.g. from
+            :func:`euclid_polish.training.data_multiband.lr_only_dataset`).
+
+        Returns
+        -------
+        float
+            Set-mean round-trip loss, or ``nan`` when ``self.forward_op``
+            is ``None`` (the operator is required to map SR back to LR).
+        """
+        if self.forward_op is None:
+            return float("nan")
+        running = Mean()
+        for lr in lr_dataset:
+            sr               = self.checkpoint.model(lr, training=False)
+            sr_linear        = inverse_asinh_stretch_hr(sr)
+            lr_recon_linear  = self.forward_op(sr_linear)
+            lr_recon_stretch = asinh_stretch_hr(lr_recon_linear)
+            lr_vis           = lr[..., 0:1]
+            batch_loss       = tf.reduce_mean(tf.abs(lr_recon_stretch - lr_vis))
+            running(batch_loss)
+        return float(running.result().numpy())
 
     def restore(self):
         """Restore model from checkpoint if available."""

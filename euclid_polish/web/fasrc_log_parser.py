@@ -128,13 +128,29 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
             return float(v)
         except (TypeError, ValueError):
             return default
+
+    def _opt_f(key: str) -> Optional[float]:
+        """Float or ``None`` for the additive multi-source columns —
+        ``None`` means the source wasn't wired for that row (empty cell),
+        so the UI can drop the point instead of plotting a fake 0."""
+        v = rec.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     return {
-        "step":           int(_f("step")),
-        "loss":           _f("loss"),
-        "psnr_stretched": _f("psnr_stretched"),
-        "psnr_raw":       _f("psnr_raw"),
-        "duration_s":     _f("duration_s"),
-        "wall_time":      _f("wall_time"),
+        "step":               int(_f("step")),
+        "loss":               _f("loss"),
+        "psnr_stretched":     _f("psnr_stretched"),
+        "psnr_raw":           _f("psnr_raw"),
+        "duration_s":         _f("duration_s"),
+        "wall_time":          _f("wall_time"),
+        "psnr_stretched_hst": _opt_f("psnr_stretched_hst"),
+        "psnr_raw_hst":       _opt_f("psnr_raw_hst"),
+        "roundtrip_val_loss": _opt_f("roundtrip_val_loss"),
     }
 
 

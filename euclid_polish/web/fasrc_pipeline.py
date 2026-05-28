@@ -577,11 +577,17 @@ class HSTTrainStep(FASRCPipelineStep):
         batch_size          = int(params.get("batch_size", 16))
         hst_fraction        = float(params.get("hst_fraction", 0.1))
         roundtrip_fraction  = float(params.get("roundtrip_fraction", 0.0))
+        w_syn               = float(params.get("save_best_w_syn", 1.0))
+        w_hst               = float(params.get("save_best_w_hst", 1.0))
+        w_rt                = float(params.get("save_best_w_rt", 0.0))
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
             "--batch-size", str(batch_size),
             "--hst-fraction", f"{hst_fraction:g}",
+            "--save-best-w-syn", f"{w_syn:g}",
+            "--save-best-w-hst", f"{w_hst:g}",
+            "--save-best-w-rt",  f"{w_rt:g}",
         ]
         # Only emit the round-trip flag when non-default so existing
         # SLURM submissions stay byte-identical until the user opts in.

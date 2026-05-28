@@ -31,13 +31,16 @@ import pytest
 import tensorflow as tf
 from astropy.io import fits
 
+from euclid_polish.config import Config
+from euclid_polish.sky.tfrecord import open_multiband_writer, tfrecord_path
+from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.data_multiband import (
     SOURCE_HST, SOURCE_ROUNDTRIP, SOURCE_SYNTHETIC,
-    asinh_stretch_hr, asinh_stretch_lr,
+    asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
 )
 from euclid_polish.training.forward_op import EuclidVISForwardOp
 from euclid_polish.training.models.wdsr import wdsr
-from euclid_polish.training.trainer import Trainer
+from euclid_polish.training.trainer import Trainer, TRAINING_LOG_COLUMNS
 
 
 # ---------------------------------------------------------------------------
@@ -300,3 +303,247 @@ class TestForwardOpAbsent:
         src = tf.constant([SOURCE_ROUNDTRIP, SOURCE_SYNTHETIC], dtype=tf.int32)
         loss, _ = tiny_trainer.train_step_mixed(lr, hr, src)
         assert np.isfinite(float(loss.numpy()))
+
+
+# ---------------------------------------------------------------------------
+# 5. Multi-source validation logging (additive)
+# ---------------------------------------------------------------------------
+
+def _valid_pairs_dataset(n: int = 2, lr_side: int = 8, hr_side: int = 16,
+                         seed: int = 1, batch_size: int = 1):
+    """Tiny ``(lr, hr)`` validation dataset the trainer's ``evaluate``
+    consumes — batched 4-D tensors, hr at 2× the lr side."""
+    rng = np.random.default_rng(seed)
+    lr = rng.normal(size=(n, lr_side, lr_side, 4)).astype(np.float32)
+    hr = rng.normal(size=(n, hr_side, hr_side, 1)).astype(np.float32)
+    ds = tf.data.Dataset.from_tensor_slices((lr, hr))
+    return ds.batch(batch_size)
+
+
+def _train_pairs_dataset(n: int = 4, lr_side: int = 8, hr_side: int = 16,
+                         seed: int = 2, batch_size: int = 2):
+    """A small repeating supervised training dataset (2-tuples)."""
+    rng = np.random.default_rng(seed)
+    lr = rng.normal(size=(n, lr_side, lr_side, 4)).astype(np.float32)
+    hr = rng.normal(size=(n, hr_side, hr_side, 1)).astype(np.float32)
+    ds = tf.data.Dataset.from_tensor_slices((lr, hr))
+    return ds.batch(batch_size).repeat()
+
+
+def _write_lr_only_tfrecord(path_dir: str, subset: str = "validate",
+                            n: int = 3, side: int = 8, seed: int = 3) -> str:
+    """Write a tiny LR-only ``dirty_{subset}.tfrecord`` and return its path."""
+    rng = np.random.default_rng(seed)
+    with open_multiband_writer(f"dirty_{subset}", records_dir=path_dir) as w:
+        for i in range(n):
+            data = rng.normal(size=(side, side, 4)).astype(np.float32)
+            img = MultiBandSkyImage(
+                data=data,
+                pixel_scale_arcsec=0.10,
+                band_names=Config.LR_INPUT_BAND_NAMES,
+                is_clean=False,
+                index=i,
+                subset=subset,
+            )
+            w.write(img, index=i)
+    return tfrecord_path(path_dir, f"dirty_{subset}")
+
+
+class TestLrOnlyDataset:
+
+    def test_lr_only_dataset_shape(self, tmp_path):
+        """``lr_only_dataset`` yields batched LR tensors ``[B, H, W, 4]``."""
+        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
+        ds = lr_only_dataset(path, batch_size=2)
+        batches = list(ds)
+        assert len(batches) == 2          # 3 records → batches of 2 + 1
+        b0 = batches[0]
+        assert b0.shape.as_list() == [2, 8, 8, 4]
+        assert batches[1].shape.as_list() == [1, 8, 8, 4]
+        assert b0.dtype == tf.float32
+
+
+class TestEvaluateRoundtrip:
+
+    def test_returns_finite_with_forward_op(self, trainer_with_forward_op,
+                                            tmp_path):
+        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
+        ds = lr_only_dataset(path, batch_size=2)
+        val = trainer_with_forward_op.evaluate_roundtrip(ds)
+        assert isinstance(val, float)
+        assert np.isfinite(val)
+        assert val > 0   # random input → non-zero recon error
+
+    def test_returns_nan_without_forward_op(self, tiny_trainer, tmp_path):
+        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
+        ds = lr_only_dataset(path, batch_size=2)
+        val = tiny_trainer.evaluate_roundtrip(ds)
+        assert np.isnan(val)
+
+
+class TestMultiSourceValidationLogging:
+
+    def _read_log(self, ckpt_dir: str):
+        import csv
+        log_path = os.path.join(ckpt_dir, "training_log.csv")
+        with open(log_path, newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    def test_train_writes_new_columns(
+        self, tiny_model, tmp_path, tmp_psf_path,
+    ):
+        """``train()`` with HST + round-trip validation datasets records
+        the per-source columns (HST PSNR str/raw, round-trip loss) so a
+        regime change's effect on each source is auditable from the CSV."""
+        ckpt_dir = str(tmp_path / "ckpt_ms")
+        op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir, forward_op=op)
+
+        rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
+        train_ds = _train_pairs_dataset()
+        # Synthetic validation: deliberately mismatched → LOW psnr.
+        syn_valid = _valid_pairs_dataset(seed=10)
+        # HST validation: a different random pair (its absolute PSNR
+        # value is irrelevant — what matters is that it's logged
+        # separately and never drives save-best).
+        hst_valid = _valid_pairs_dataset(seed=20)
+        rt_valid = lr_only_dataset(rt_path, batch_size=2)
+
+        # Two evaluations: step 1 (re-baseline) and step 2.
+        trainer.train(
+            train_ds, syn_valid, steps=2, evaluate_every=1,
+            save_best_only=True, validate_images=4,
+            hst_valid_dataset=hst_valid,
+            roundtrip_valid_dataset=rt_valid,
+        )
+
+        rows = self._read_log(ckpt_dir)
+        assert len(rows) == 2
+        for col in ("psnr_stretched_hst", "psnr_raw_hst",
+                    "roundtrip_val_loss"):
+            assert col in rows[0]
+            # Non-empty + finite float for every row (all sources wired).
+            for r in rows:
+                assert r[col] != ""
+                assert np.isfinite(float(r[col]))
+
+        # The new columns must hold genuinely different numbers than the
+        # synthetic ones (proves they came from the HST/RT datasets, not
+        # a copy of the synthetic eval).
+        assert rows[0]["psnr_stretched_hst"] != rows[0]["psnr_stretched"]
+
+    def test_savebest_keys_on_composite_score(
+        self, tiny_model, tmp_path, tmp_psf_path,
+    ):
+        """Save-best now keys on the weighted composite. With default
+        weights (w_syn=1, w_hst=1, w_rt=0) and both synthetic + HST
+        validation wired, the logged ``save_best_score`` equals
+        ``psnr_syn + psnr_hst`` and the re-baselined ``ckpt.psnr`` holds
+        that composite — not bare synthetic PSNR."""
+        ckpt_dir = str(tmp_path / "ckpt_save")
+        op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir, forward_op=op)
+
+        rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
+        train_ds = _train_pairs_dataset()
+        syn_valid = _valid_pairs_dataset(seed=10)
+        hst_valid = _valid_pairs_dataset(seed=99)
+
+        before = float(trainer.checkpoint.psnr.numpy())
+        trainer.train(
+            train_ds, syn_valid, steps=1, evaluate_every=1,
+            save_best_only=True, validate_images=4,
+            hst_valid_dataset=hst_valid,
+            roundtrip_valid_dataset=lr_only_dataset(rt_path, batch_size=2),
+            save_best_weights=(1.0, 1.0, 0.0),
+        )
+        rows = self._read_log(ckpt_dir)
+        syn   = float(rows[0]["psnr_stretched"])
+        hst   = float(rows[0]["psnr_stretched_hst"])
+        score = float(rows[0]["save_best_score"])
+        # Composite = 1·syn + 1·hst − 0·rt.
+        assert abs(score - (syn + hst)) < 1e-3
+        # ckpt.psnr re-baselined to the composite, not bare synthetic.
+        assert abs(float(trainer.checkpoint.psnr.numpy()) - score) < 1e-3
+        assert abs(score - syn) > 1e-3, "composite collapsed to synthetic"
+        assert float(trainer.checkpoint.psnr.numpy()) != before
+
+    def test_savebest_weights_reduce_to_synthetic(
+        self, tiny_model, tmp_path, tmp_psf_path,
+    ):
+        """With w_hst=0, w_rt=0 the composite collapses to bare synthetic
+        PSNR even when HST validation is wired — backwards-compatible
+        behaviour for callers that don't opt into the mix."""
+        ckpt_dir = str(tmp_path / "ckpt_syn_only")
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        train_ds = _train_pairs_dataset()
+        syn_valid = _valid_pairs_dataset(seed=10)
+        hst_valid = _valid_pairs_dataset(seed=99)
+        trainer.train(
+            train_ds, syn_valid, steps=1, evaluate_every=1,
+            save_best_only=True, validate_images=4,
+            hst_valid_dataset=hst_valid,
+            save_best_weights=(1.0, 0.0, 0.0),
+        )
+        rows = self._read_log(ckpt_dir)
+        syn   = float(rows[0]["psnr_stretched"])
+        score = float(rows[0]["save_best_score"])
+        assert abs(score - syn) < 1e-3
+
+    def test_none_sources_logged_as_empty_string(
+        self, tiny_model, tmp_path,
+    ):
+        """When HST / round-trip datasets are not provided, their columns
+        are written as empty strings (not 'nan' text)."""
+        ckpt_dir = str(tmp_path / "ckpt_none")
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        train_ds = _train_pairs_dataset()
+        syn_valid = _valid_pairs_dataset(seed=10)
+        trainer.train(
+            train_ds, syn_valid, steps=1, evaluate_every=1,
+            save_best_only=True, validate_images=4,
+        )
+        rows = self._read_log(ckpt_dir)
+        assert rows[0]["psnr_stretched_hst"] == ""
+        assert rows[0]["psnr_raw_hst"] == ""
+        assert rows[0]["roundtrip_val_loss"] == ""
+
+
+class TestLogHeaderRotation:
+
+    def test_stale_header_rotated_to_bak(self, tiny_model, tmp_path):
+        """A pre-existing log written with the OLD column set is rotated
+        to ``training_log.<ts>.bak`` and a fresh file with the new header
+        is started."""
+        import csv
+        import glob
+        ckpt_dir = str(tmp_path / "ckpt_rot")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        log_path = os.path.join(ckpt_dir, "training_log.csv")
+        # Write a log with the OLD (pre-multi-source) columns.
+        old_cols = [
+            "step", "wall_time", "loss", "psnr_stretched", "psnr_raw",
+            "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
+        ]
+        with open(log_path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=old_cols)
+            w.writeheader()
+            w.writerow({c: 0 for c in old_cols})
+
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        trainer.train(
+            _train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+            steps=1, evaluate_every=1, save_best_only=True,
+            validate_images=4,
+        )
+
+        # Old file rotated out.
+        baks = glob.glob(os.path.join(ckpt_dir, "training_log.*.bak"))
+        assert len(baks) == 1, f"expected exactly one .bak, got {baks}"
+        # New file has the NEW header.
+        with open(log_path, newline="") as fh:
+            header = fh.readline().rstrip("\r\n")
+        assert header == ",".join(TRAINING_LOG_COLUMNS)
+        # The rotated backup retains the old header.
+        with open(baks[0], newline="") as fh:
+            assert fh.readline().rstrip("\r\n") == ",".join(old_cols)

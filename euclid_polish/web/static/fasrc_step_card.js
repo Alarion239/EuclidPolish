@@ -154,7 +154,16 @@ large cutout don't leak across train/validate."></label>`;
       <label>HST fraction
         <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"></label>
       <label>Round-trip fraction
-        <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"></label>`;
+        <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"></label>
+      <label>Save-best w·synthetic
+        <input type="number" name="save_best_w_syn" value="1.0" step="0.5" min="0" max="100"
+               title="Weight of synthetic PSNR (dB) in the composite save-best score."></label>
+      <label>Save-best w·HST
+        <input type="number" name="save_best_w_hst" value="1.0" step="0.5" min="0" max="100"
+               title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
+      <label>Save-best w·round-trip
+        <input type="number" name="save_best_w_rt" value="0" step="1" min="0" max="100"
+               title="Weight of the round-trip recon loss (SUBTRACTED — lower is better). RT loss is asinh-L1 (~0.1–1) vs PSNRs in dB (~20–30), so this needs ~10–30 to matter, and it can be gamed by under-sharpening. Default 0 = monitored only."></label>`;
   }
 
   // ── Resource-field markup ──────────────────────────────────────────

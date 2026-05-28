@@ -444,6 +444,27 @@ class MultiBandEuclidDataset:
         return mixed.batch(batch_size).prefetch(AUTOTUNE)
 
 
+def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:
+    """LR-only validation stream from a ``dirty_{subset}.tfrecord``.
+
+    Round-trip records carry no HR side, so the supervised
+    :func:`MultiBandEuclidDataset.dataset` builder doesn't fit them. This
+    standalone helper reads the dirty file, applies the same per-band
+    asinh stretch the training path uses, batches, and prefetches — no
+    shuffle, no repeat. Yields LR tensors only, shape ``[B, H, W, 4]``,
+    suitable for :meth:`Trainer.evaluate_roundtrip`.
+    """
+    n_lr = Config.NUM_LR_CHANNELS
+
+    def _parse_lr(raw):
+        return asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
+
+    ds = tf.data.TFRecordDataset(dirty_file).map(
+        _parse_lr, num_parallel_calls=AUTOTUNE,
+    )
+    return ds.batch(batch_size).prefetch(AUTOTUNE)
+
+
 def _augment_multiband(
     lr: tf.Tensor, hr: tf.Tensor, hr_patch_size: int, scale: int,
 ) -> tuple[tf.Tensor, tf.Tensor]:
