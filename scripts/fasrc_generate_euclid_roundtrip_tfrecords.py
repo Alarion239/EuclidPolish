@@ -34,8 +34,6 @@ import numpy as np
 import pandas as pd
 
 from astropy.io import fits
-from euclid_polish.sky.tfrecord import open_multiband_writer
-from euclid_polish.sky.types import MultiBandSkyImage
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -43,6 +41,8 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.sky.tfrecord import open_multiband_writer
+from euclid_polish.sky.types import MultiBandSkyImage
 
 
 # Input: where the sky downloader put the bundled per-position cutouts.

@@ -21,11 +21,6 @@ import time
 
 import numpy as np
 import tensorflow as tf
-from euclid_polish.observability.reporter import Reporter
-from euclid_polish.training import Trainer
-from euclid_polish.training.data_multiband import MultiBandEuclidDataset
-from euclid_polish.training.forward_op import EuclidVISForwardOp
-from euclid_polish.training.models.wdsr import wdsr
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
@@ -34,6 +29,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
+from euclid_polish.training import Trainer
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.training.forward_op import EuclidVISForwardOp
+from euclid_polish.training.models.wdsr import wdsr
 
 
 def parse_args() -> argparse.Namespace:
