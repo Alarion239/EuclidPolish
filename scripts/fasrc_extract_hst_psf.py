@@ -57,6 +57,12 @@ EPSF_OVERSAMPLING     = 1          # no oversampling — keep PSF at native
 PSF_HALF_SIDE_PIX     = 255        # final ePSF side = 2 × half + 1 = 511.
                                     # At 0.05"/pix that's a ~25.5" cut, plenty
                                     # of room for HST diffraction wings.
+MAX_STARS_PER_TILE    = 100        # take up to this many stars from each
+                                    # tile. HLSP tiles are ~500 MB each, so
+                                    # the bottleneck is per-tile I/O; letting
+                                    # a few rich tiles supply the whole target
+                                    # avoids scanning extra tiles just to fill
+                                    # an even per-tile quota.
 
 
 def _pixel_scale_from_header(header) -> float:
@@ -331,7 +337,11 @@ def main() -> int:
         # ---- collect stars across tiles until we hit the target count ----
         print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
 
-        stars_per_tile = max(1, args.n_stars // max(len(tiles), 1) * 2)
+        # Cap per tile (not an even split across tiles): the loop already
+        # stops once it has args.n_stars, so a couple of rich tiles can
+        # satisfy the target without scanning the rest. ~100 keeps some
+        # cross-tile diversity while slashing the number of 500 MB reads.
+        stars_per_tile = min(args.n_stars, MAX_STARS_PER_TILE)
 
         for tile_idx, tname in enumerate(tiles):
             if len(star_stamps) >= args.n_stars:

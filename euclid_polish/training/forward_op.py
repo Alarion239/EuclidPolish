@@ -52,6 +52,27 @@ def _default_vis_psf_path() -> str:
     return os.path.join(Config.EUCLID_PSF_DIR, Config.BAND_VIS.psf_fits_filename)
 
 
+def _default_hst_psf_path() -> str:
+    """HST F814W ePSF FITS — the same file the differential kernel consumes."""
+    return os.path.join(Config.DATA_DIR, "hst_psf", "F814W.fits")
+
+
+def _next_pow2(n: tf.Tensor) -> tf.Tensor:
+    """Smallest power of two ≥ ``n`` (scalar int tensor → scalar int32).
+
+    FFT throughput is dominated by the transform length's prime
+    factorisation; a linear-conv pad of ``H + K − 1`` often lands on an
+    ugly size (e.g. 1278 = 2·3²·71). Rounding the transform length up to
+    a power of two — cuFFT's fastest case — costs a little extra memory
+    but is far faster, and is exact for linear convolution (the extra
+    samples are trailing zeros). The ``-1e-6`` keeps an exact power of
+    two from rounding up to the next one due to float log round-off.
+    """
+    n_f = tf.cast(n, tf.float32)
+    exp = tf.math.ceil(tf.math.log(n_f) / tf.math.log(2.0) - 1e-6)
+    return tf.cast(tf.pow(2.0, exp), tf.int32)
+
+
 def _load_vis_psf_kernel(
     psf_fits_path: Optional[str] = None, *, crop_half_side: Optional[int] = None,
 ) -> np.ndarray:
@@ -177,10 +198,14 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
         img = hr_vis_linear[..., 0]                  # [B, H, W]
         h = tf.shape(img)[1]
         w = tf.shape(img)[2]
-        # Linear (not circular) convolution: zero-pad both operands to
-        # the full-conv size (H+Kh-1, W+Kw-1) before transforming.
-        fh = h + (kh - 1)
-        fw = w + (kw - 1)
+        # Linear (not circular) convolution: zero-pad both operands to at
+        # least the full-conv size (H+Kh-1, W+Kw-1). We round the FFT
+        # length up to a power of two — exact for linear conv (extra
+        # trailing zeros), but a much faster transform than the ugly
+        # H+K-1 length. The 'same' crop below is unaffected (it indexes
+        # the central H×W, well inside the valid region).
+        fh = _next_pow2(h + (kh - 1))
+        fw = _next_pow2(w + (kw - 1))
         fft_len = tf.stack([fh, fw])
 
         img_f = tf.signal.rfft2d(img, fft_length=fft_len)        # [B, fh, fw//2+1]
@@ -212,3 +237,32 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
             "crop_half_side": self._crop_half_side,
         })
         return cfg
+
+
+class HSTForwardOp(EuclidVISForwardOp):
+    """HST F814W image-formation forward op: ``H ⊛ SR``, no rebin.
+
+    Same FFT-conv machinery as :class:`EuclidVISForwardOp` but with the
+    HST PSF and ``rebin_factor=1`` — the HST image shares SR's 0.05″/pix
+    HR grid, so there is no downsample. Used by the ``SR = sky``
+    objective: the HST supervised loss compares ``H ⊛ SR`` to the
+    observed HST image, so the model learns the deconvolved sky (matching
+    what the synthetic + round-trip paths target) rather than the
+    HST-PSF-blurred image.
+    """
+
+    def __init__(
+        self,
+        psf_fits_path: Optional[str] = None,
+        *,
+        crop_half_side: Optional[int] = None,
+        name: str = "hst_forward_op",
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            psf_fits_path or _default_hst_psf_path(),
+            rebin_factor=1,
+            crop_half_side=crop_half_side,
+            name=name,
+            **kwargs,
+        )

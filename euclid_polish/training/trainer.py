@@ -77,6 +77,7 @@ class Trainer:
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
         checkpoint_dir='./ckpt/wdsr',
         forward_op=None,
+        hst_forward_op=None,
         synthetic_loss_weight: float = 1.0,
         hst_loss_weight: float = 1.0,
         roundtrip_loss_weight: float = 1.0,
@@ -118,6 +119,9 @@ class Trainer:
         self.now = None
         self.loss = loss
         self.forward_op = forward_op
+        # HST forward op (H ⊛ SR, no rebin) for the SR=sky objective —
+        # the HST supervised loss compares H⊛SR to the observed HST image.
+        self.hst_forward_op = hst_forward_op
         self.synthetic_loss_weight = float(synthetic_loss_weight)
         self.hst_loss_weight       = float(hst_loss_weight)
         self.roundtrip_loss_weight = float(roundtrip_loss_weight)
@@ -545,6 +549,60 @@ class Trainer:
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
 
+        return loss_value, gnorm
+
+    def train_step_sky(self, lr, hr, n_syn: int, n_hst: int, n_rt: int):
+        """``SR = deconvolved sky`` step on a fixed-layout batch.
+
+        The batch lanes are laid out in fixed, contiguous blocks so the
+        slices below are static Python ints (no per-step ``tf.gather``, no
+        retracing): ``[0:n_syn]`` synthetic, then ``n_hst`` HST, then
+        ``n_rt`` round-trip. Each source supervises the single sky
+        estimate ``SR`` through its own instrument's *forward* PSF:
+
+          * synthetic — ``|SR − scene|`` (direct; LR was E⊛scene, so the
+            clean target *is* the sky).
+          * HST       — ``|asinh(H ⊛ SR_lin) − HST_image|`` (no rebin;
+            HST shares SR's 0.05″ grid).
+          * round-trip— ``|asinh(rebin(E ⊛ SR_lin)) − LR_vis|``.
+
+        All comparisons are in asinh space (the stretch the records and
+        the model output already use); the PSF convs run in linear space
+        (``inverse_asinh`` → conv → ``asinh``). Per-source loss weights
+        scale each block. ``hr`` carries the scene / HST image for the
+        supervised lanes (dummy for round-trip lanes, never read).
+        """
+        with tf.GradientTape() as tape:
+            sr     = self.checkpoint.model(lr, training=True)   # asinh space
+            sr_lin = inverse_asinh_stretch_hr(sr)               # linear electrons
+            per_example = []   # list of [n_*] loss vectors
+
+            i = 0
+            if n_syn > 0:
+                s = slice(i, i + n_syn)
+                d = tf.reduce_mean(tf.abs(sr[s] - hr[s]), axis=[1, 2, 3])
+                per_example.append(self.synthetic_loss_weight * d)
+                i += n_syn
+            if n_hst > 0:
+                s = slice(i, i + n_hst)
+                hconv = asinh_stretch_hr(self.hst_forward_op(sr_lin[s]))
+                d = tf.reduce_mean(tf.abs(hconv - hr[s]), axis=[1, 2, 3])
+                per_example.append(self.hst_loss_weight * d)
+                i += n_hst
+            if n_rt > 0:
+                s = slice(i, i + n_rt)
+                econv = asinh_stretch_hr(self.forward_op(sr_lin[s]))
+                lr_vis = lr[s][..., 0:1]
+                d = tf.reduce_mean(tf.abs(econv - lr_vis), axis=[1, 2, 3])
+                per_example.append(self.roundtrip_loss_weight * d)
+
+            loss_value = tf.reduce_mean(tf.concat(per_example, axis=0))
+
+        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
+        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
+        self.checkpoint.optimizer.apply_gradients(
+            zip(gradients, self.checkpoint.model.trainable_variables)
+        )
         return loss_value, gnorm
 
     def evaluate(self, dataset):
