@@ -85,8 +85,6 @@
       <input type="number" step="0.1" name="magnitude_min"   placeholder="e.g. 15"></label>
     <label>Max magnitude <span class="muted">(dimmer rejected)</span>
       <input type="number" step="0.1" name="magnitude_limit" placeholder="e.g. 21"></label>
-    <label>Output dir
-      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
     <button type="submit">Run query</button>
   </form>
   <div id="brightest-status"></div>
@@ -100,8 +98,6 @@
     <label>Radius (°) <input type="number" step="0.05" name="radius" value="1" required></label>
     <label>Min magnitude <input type="number" step="0.1" name="magnitude_min" placeholder="e.g. 15"></label>
     <label>Max magnitude <input type="number" step="0.1" name="magnitude_limit" value="20" required></label>
-    <label>Output dir
-      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
     <button type="submit">Run query</button>
   </form>
   <div id="region-status"></div>
@@ -111,8 +107,6 @@
   <h3>Integrity check</h3>
   <p class="hint">Tally valid / corrupted FITS counts per band.</p>
   <form id="integrity-form" action="/catalog/integrity">
-    <label>Output dir
-      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
     <button type="submit">Check</button>
   </form>
   <div id="integrity-status"></div>
