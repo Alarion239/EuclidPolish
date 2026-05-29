@@ -77,7 +77,8 @@
 <section class="card">
   <h3>Query: brightest N</h3>
   <p class="hint">Sorts <code>mer_catalogue</code> by VIS flux server-side.
-     Set <em>min mag</em> ≈ 15 to skip stars that saturate the NISP detector.</p>
+     Set <em>min mag</em> ≈ 15 to skip stars that saturate the NISP detector.
+     Runs an integrity tally of any cutouts already on disk afterwards.</p>
   <form id="brightest-form" action="/catalog/query-brightest">
     <label>Number of stars
       <input type="number" name="num_stars" value="200" min="1" max="100000"></label>
@@ -88,28 +89,6 @@
     <button type="submit">Run query</button>
   </form>
   <div id="brightest-status"></div>
-</section>
-
-<section class="card">
-  <h3>Query: region (cone)</h3>
-  <form id="region-form" action="/catalog/query-region">
-    <label>RA  <input type="number" step="0.01" name="ra"      value="270" required></label>
-    <label>Dec <input type="number" step="0.01" name="dec"    value="66"  required></label>
-    <label>Radius (°) <input type="number" step="0.05" name="radius" value="1" required></label>
-    <label>Min magnitude <input type="number" step="0.1" name="magnitude_min" placeholder="e.g. 15"></label>
-    <label>Max magnitude <input type="number" step="0.1" name="magnitude_limit" value="20" required></label>
-    <button type="submit">Run query</button>
-  </form>
-  <div id="region-status"></div>
-</section>
-
-<section class="card">
-  <h3>Integrity check</h3>
-  <p class="hint">Tally valid / corrupted FITS counts per band.</p>
-  <form id="integrity-form" action="/catalog/integrity">
-    <button type="submit">Check</button>
-  </form>
-  <div id="integrity-status"></div>
 </section>
 {% endblock %}
 
@@ -140,8 +119,6 @@ function bindRun(formId, statusId) {
   });
 }
 bindRun("brightest-form",  "brightest-status");
-bindRun("region-form",     "region-status");
-bindRun("integrity-form",  "integrity-status");
 
 const lf = document.getElementById("login-form");
 if (lf) {

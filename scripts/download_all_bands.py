@@ -29,6 +29,7 @@ from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.downloader import (
     DownloadConfig, EuclidCutoutDownloader,
 )
+from euclid_polish.observability.reporter import Reporter
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     band_names = [n.strip() for n in args.bands.split(",") if n.strip()]
     arcsec = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
@@ -59,14 +61,20 @@ def main() -> int:
 
     cat = StarCatalog(args.output_dir)
     if not cat.exists():
+        reporter.error(f"no catalog at {cat.catalog_path}")
         print(f"✗ no catalog at {cat.catalog_path}")
         return 1
 
     summary: dict[str, dict] = {}
+    n_bands = len(band_names)
     t0 = time.perf_counter()
-    for band_name in band_names:
+    for i, band_name in enumerate(band_names):
         band = Config.get_band(band_name)
         native = band.cutout_size_for_arcsec(arcsec)
+        # One stage per band; the step bar tracks band progress (the
+        # downloader's own tqdm covers per-file detail in the raw log).
+        reporter.set_stage(f"downloading {band_name}")
+        reporter.set_step(i, n_bands, band_name)
         print(f"=== {band_name}  (instrument={band.archive_instrument}"
               f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
               f"native_size={native} px) ===")
@@ -79,10 +87,16 @@ def main() -> int:
         t_band = time.perf_counter()
         result = downloader.download(show_progress=True)
         summary[band_name] = result
+        if result.get("corrupted", 0) or result.get("failed", 0):
+            reporter.warn(
+                f"{band_name}: corrupted={result.get('corrupted', 0)}, "
+                f"failed={result.get('failed', 0)}"
+            )
         print(f"  → {band_name}: downloaded={result['downloaded']}, "
               f"valid={result['valid']}, corrupted={result['corrupted']}, "
               f"failed={result.get('failed', 0)}  "
               f"[{time.perf_counter() - t_band:.0f}s]\n")
+    reporter.set_step(n_bands, n_bands, "done")
 
     print("=" * 50)
     print(f"Summary  ({(time.perf_counter() - t0) / 60:.1f} min total):")

@@ -129,6 +129,30 @@ a large cutout. Each large cutout yields (vis_pixels / stamp_size)² stamps."></
             <input type="number" name="valid_fraction" value="0.1" step="0.05" min="0" max="0.5"
                    title="Split at the position level so stamps from one
 large cutout don't leak across train/validate."></label>`;
+      case 'download_euclid_cutouts':
+        // Mirrors EuclidCutoutDownloadStep.build_command (vis_pixels,
+        // workers). One shared angular field; each band fetches its own
+        // native pixel count for the same footprint.
+        return `
+          <label>VIS cutout (px)
+            <input type="number" name="vis_pixels" value="512" min="32" max="4096" step="32"
+                   title="Cutout side in 0.10″/pix VIS pixels. NISP bands fetch the same angular footprint at their own native pixel count."></label>
+          <label>Parallel workers
+            <input type="number" name="workers" value="8" min="1" max="32"
+                   title="Concurrent per-band downloads from the Euclid archive."></label>`;
+      case 'extract_euclid_psf':
+        // Mirrors EuclidPSFExtractStep.build_command (num_stars,
+        // vis_pixels, output_size). Extracts ALL four bands in one job.
+        return `
+          <label>Stars per band
+            <input type="number" name="num_stars" value="200" min="10" max="5000"
+                   title="Up to this many cutouts per band feed EPSFBuilder."></label>
+          <label>VIS cutout (px)
+            <input type="number" name="vis_pixels" value="512" min="32" max="4096" step="32"
+                   title="Shared angular field (in VIS px) used to pick each band's native cutout size — must match what was downloaded."></label>
+          <label>Output PSF size (oversampled px)
+            <input type="number" name="output_size" value="0" min="0" max="4096"
+                   title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
       case 'train':
         return _hstTrainFields();
       default:

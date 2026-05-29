@@ -59,12 +59,14 @@ class TestRegistry:
     def test_all_steps_present(self):
         """Registry must include the original HST steps (download,
         extract-PSF, kernel, TFRecord generation, WDSR train), the two
-        round-trip steps (sky download + LR-only TFRecord build), and
-        the four legacy ``run_pipeline.py`` presets."""
+        round-trip steps (sky download + LR-only TFRecord build), the two
+        Euclid star-cutout steps (per-page cutout download + all-band ePSF
+        extraction), and the four legacy ``run_pipeline.py`` presets."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
+            "download_euclid_cutouts", "extract_euclid_psf",
             "gen_convolve", "convolve_only", "train_only", "custom",
         }
 

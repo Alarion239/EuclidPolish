@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Optional
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -33,6 +34,7 @@ from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
 )
+from euclid_polish.observability.reporter import Reporter
 
 
 def _cutout_dir_for_band(band: BandConfig) -> str:
@@ -83,7 +85,10 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def extract_band(band: BandConfig, args: argparse.Namespace) -> bool:
+def extract_band(band: BandConfig, args: argparse.Namespace,
+                 reporter: Optional[Reporter] = None) -> bool:
+    reporter = reporter or Reporter(events_path=None)  # no-op when unset
+    reporter.set_stage(f"extracting {band.name} ePSF")
     cutout_dir = _cutout_dir_for_band(band)
     out_path   = os.path.join(args.psf_dir, band.psf_fits_filename)
 
@@ -105,6 +110,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace) -> bool:
     print(f"  output:      {out_path}")
 
     if not os.path.isdir(cutout_dir):
+        reporter.warn(f"{band.name}: cutout directory not found — skipping")
         print(f"  ⚠️  cutout directory not found — skipping. "
               f"Run the cutout downloader for band={band.name} first.")
         return False
@@ -126,6 +132,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace) -> bool:
     extractor = PSFExtractor(cfg)
     all_files = extractor.get_cutout_files(cutout_dir, cutout_size=cutout_size)
     if not all_files:
+        reporter.warn(f"{band.name}: no cutouts of size {cutout_size} found — skipping")
         print(f"  ⚠️  no cutouts of size {cutout_size} found — skipping.")
         return False
 
@@ -135,6 +142,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace) -> bool:
     try:
         epsf, fitted = extractor.build_epsf(selected)
     except Exception as e:
+        reporter.error(f"{band.name}: extraction failed: {type(e).__name__}: {e}")
         print(f"  ✗ extraction failed: {type(e).__name__}: {e}")
         return False
 
@@ -154,6 +162,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace) -> bool:
 
 def main() -> int:
     args = parse_args()
+    reporter = Reporter.from_env()
     if args.cutout_size is not None and args.vis_pixels is not None:
         print("✗ Pass either --cutout-size or --vis-pixels, not both.")
         return 1
@@ -170,10 +179,13 @@ def main() -> int:
     print(f"  psf-dir      = {args.psf_dir}\n")
 
     succeeded = []
-    for band in bands:
-        ok = extract_band(band, args)
+    n_bands = len(bands)
+    for i, band in enumerate(bands):
+        reporter.set_step(i, n_bands, band.name)
+        ok = extract_band(band, args, reporter=reporter)
         succeeded.append((band.name, ok))
         print()
+    reporter.set_step(n_bands, n_bands, "done")
 
     print("=" * 50)
     print("Summary:")

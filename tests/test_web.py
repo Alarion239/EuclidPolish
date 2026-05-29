@@ -101,35 +101,17 @@ def test_inference_page_renders(client):
 # job-tracker tests above.
 # ---------------------------------------------------------------------------
 
-def test_post_catalog_integrity_returns_job_id(client):
-    r = client.post("/catalog/integrity", data={"output_dir": "/tmp/no_such"})
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
-def test_post_cutouts_download_requires_bands(client):
-    r = client.post("/cutouts/download", data={"cutout_size_vis_pixels": 64})
-    assert r.status_code == 400
-    body = r.get_json()
-    assert body.get("ok") is False
-
-
-def test_post_cutouts_download_accepts_multi_band(client):
-    r = client.post("/cutouts/download", data={
-        "bands": ["VIS", "Y_E"],
-        "cutout_size_vis_pixels": 64,
-        "max_workers": 2,
-    })
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
-def test_post_psfs_extract_accepts_band(client):
-    r = client.post("/psfs/extract", data={
-        "band": "VIS", "num_stars": 8, "cutout_size": 65,
-    })
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
+def test_removed_routes_are_gone(client):
+    """Region-cone, standalone integrity, and the old local download/extract
+    routes were removed — cutout download + PSF extraction are now FASRC
+    pipeline steps, and integrity folds into the brightest-N query."""
+    # 404 = no rule matches; 405 = the URL now only matches a different
+    # rule (e.g. POST /cutouts/download hits the GET-only gallery route).
+    # Either way the old POST endpoint is gone.
+    for path in ("/catalog/query-region", "/catalog/integrity",
+                 "/cutouts/download", "/psfs/extract"):
+        r = client.post(path, data={})
+        assert r.status_code in (404, 405), f"{path} should be removed"
 
 
 def test_post_psfs_visualize_returns_job_id(client):

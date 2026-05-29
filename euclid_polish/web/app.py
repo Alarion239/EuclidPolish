@@ -26,12 +26,6 @@ from euclid_polish.sky.tfrecord import (
 open_multiband_writer, tfrecord_path,
 )
 from euclid_polish.sky.types import MultiBandSkyImage
-from euclid_polish.euclid.downloader import (
-DownloadConfig, EuclidCutoutDownloader,
-)
-from euclid_polish.euclid.psf_extractor import (
-PSFExtractionConfig, PSFExtractor,
-)
 from euclid_polish.euclid.validator import FitsValidator
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from euclid_polish.training import Trainer
@@ -377,86 +371,15 @@ def _job_query_brightest(cap, num_stars: int, output_dir: str,
         magnitude_min=magnitude_min,
     )
     print(result["message"])
+    # Fold the cutout-integrity tally into the query: now that there's no
+    # standalone "Integrity check" action, every catalog query re-scans
+    # whatever cutouts already live on disk and reports valid/corrupted
+    # counts per band alongside the query result.
+    try:
+        result["integrity"] = _job_check_integrity(cap, output_dir)
+    except Exception as e:  # never let an integrity hiccup fail the query
+        print(f"integrity tally skipped: {type(e).__name__}: {e}")
     return result
-
-
-def _job_query_region(cap, ra: float, dec: float, radius: float,
-                      mag_limit: float, output_dir: str,
-                      magnitude_min: Optional[float] = None) -> Dict[str, Any]:
-    """Query Euclid archive for stars in a cone, optionally excluding bright ones."""
-    extra = f" mag>{magnitude_min}" if magnitude_min is not None else ""
-    print(f"querying ra={ra}, dec={dec}, radius={radius}°, mag<{mag_limit}"
-          f"{extra} → {output_dir}")
-    cat = StarCatalog(output_dir)
-    result = cat.query_euclid_catalog(
-        ra=ra, dec=dec, radius=radius, magnitude_limit=mag_limit,
-        magnitude_min=magnitude_min,
-    )
-    print(result["message"])
-    return result
-
-
-def _job_download_cutouts(cap, bands: list[str], cutout_size_vis_pixels: int,
-                          max_workers: int, output_dir: str) -> Dict[str, Any]:
-    """Download cutouts for each selected band; tqdm-driven progress bar."""
-
-    cat = StarCatalog(output_dir)
-    arcsec = cutout_size_vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
-    print(f"selected bands: {bands}")
-    print(f"angular field: {arcsec:.2f}\"  (= {cutout_size_vis_pixels} VIS px)")
-    per_band: dict[str, dict] = {}
-    for band_name in bands:
-        native = Config.get_band(band_name).cutout_size_for_arcsec(arcsec)
-        print(f"\n=== {band_name}  native_size = {native} ===")
-        cfg = DownloadConfig.for_band(
-            band_name,
-            cutout_size_vis_pixels=cutout_size_vis_pixels,
-            max_workers=max_workers,
-        )
-        dl = EuclidCutoutDownloader(cat, cfg)
-        # The downloader uses tqdm internally; hook drives the UI bar.
-        with cap.tqdm_hook(label=f"download {band_name}"):
-            r = dl.download(show_progress=True)
-        per_band[band_name] = r
-        print(f"  → downloaded {r['downloaded']}, valid={r['valid']}, "
-              f"corrupted={r['corrupted']}, failed={r.get('failed', 0)}")
-    return per_band
-
-
-def _job_extract_psf(cap, band_name: str, num_stars: int,
-                     cutout_size: int, output_size: int | None,
-                     output_dir: str, psf_dir: str) -> Dict[str, Any]:
-    """Extract a per-band empirical ePSF from local cutouts."""
-
-    band = Config.get_band(band_name)
-    cutout_dir = Config.cutout_dir_for_band(
-        band.name, root=os.path.join(output_dir, "cutouts"),
-    )
-    if not os.path.isdir(cutout_dir):
-        raise FileNotFoundError(f"no cutout dir for {band.name}: {cutout_dir}")
-    cfg = PSFExtractionConfig(
-        psf_size=cutout_size - 1 if cutout_size % 2 == 0 else cutout_size - 2,
-        output_size=output_size,
-        oversampling=band.epsf_oversampling,
-        progress_bar=False,
-    )
-    extractor = PSFExtractor(cfg)
-    files = extractor.get_cutout_files(cutout_dir, cutout_size=cutout_size)
-    if not files:
-        raise FileNotFoundError(
-            f"no cutouts of size {cutout_size} in {cutout_dir}"
-        )
-    selected = extractor.select_files(files, num_stars=num_stars)
-    print(f"using {len(selected)} of {len(files)} stars for {band.name}")
-    with cap.tqdm_hook(label=f"EPSFBuilder {band_name}"):
-        extractor.build_epsf(selected)
-    psf = extractor.to_psf(band.epsf_pixel_scale_arcsec)
-    os.makedirs(psf_dir, exist_ok=True)
-    saved = psf.save(psf_dir, filename=band.psf_fits_filename)
-    print(f"saved {saved}: shape={psf.data.shape}, "
-          f"pixel_scale={psf.pixel_scale:.4f}\"/pix")
-    return {"path": saved, "shape": list(psf.data.shape),
-            "pixel_scale": psf.pixel_scale}
 
 
 def _job_check_integrity(cap, output_dir: str) -> Dict[str, Any]:
@@ -2031,32 +1954,6 @@ def create_app() -> Flask:
         )
         return jsonify({"job_id": job_id})
 
-    @app.route("/catalog/query-region", methods=["POST"])
-    def catalog_query_region():
-        ra  = float(request.form.get("ra"))
-        dec = float(request.form.get("dec"))
-        rad = float(request.form.get("radius"))
-        mag = float(request.form.get("magnitude_limit"))
-        mag_min_raw = request.form.get("magnitude_min", "").strip()
-        mag_min = float(mag_min_raw) if mag_min_raw else None
-        out = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
-        extra = f" mag>{mag_min}" if mag_min is not None else ""
-        job_id = REGISTRY.spawn(
-            label=f"query region ra={ra:.2f} dec={dec:.2f} r={rad}° mag<{mag}{extra}",
-            target=lambda cap: _job_query_region(
-                cap, ra, dec, rad, mag, out, magnitude_min=mag_min),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/catalog/integrity", methods=["POST"])
-    def catalog_integrity():
-        out = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
-        job_id = REGISTRY.spawn(
-            label="check cutouts integrity",
-            target=lambda cap: _job_check_integrity(cap, out),
-        )
-        return jsonify({"job_id": job_id})
-
     # ---------------- Authentication ----------------
     @app.route("/auth/login", methods=["POST"])
     def auth_login():
@@ -2088,23 +1985,6 @@ def create_app() -> Flask:
             cutout_layout=_cutout_layout_status(),
             default_vis_pixels=Config.DEFAULT_CUTOUT_SIZE,
         )
-
-    @app.route("/cutouts/download", methods=["POST"])
-    def cutouts_download():
-        bands  = request.form.getlist("bands")
-        if not bands:
-            return jsonify({"ok": False, "error": "no bands selected"}), 400
-        vis_px = int(request.form.get("cutout_size_vis_pixels",
-                                       Config.DEFAULT_CUTOUT_SIZE))
-        workers = int(request.form.get("max_workers", 8))
-        out = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
-        job_id = REGISTRY.spawn(
-            label=f"download cutouts ({'+'.join(bands)}, {vis_px} VIS px)",
-            target=lambda cap: _job_download_cutouts(
-                cap, bands, vis_px, workers, out,
-            ),
-        )
-        return jsonify({"job_id": job_id})
 
     # ---------------- Cutout gallery + live FITS→PNG ----------------
     @app.route("/cutouts/<band_name>")
@@ -2612,24 +2492,6 @@ def create_app() -> Flask:
             default_num_stars=200,
             default_output_size=1024,
         )
-
-    @app.route("/psfs/extract", methods=["POST"])
-    def psfs_extract():
-        band_name   = request.form.get("band")
-        num_stars   = int(request.form.get("num_stars", 200))
-        cutout_size = int(request.form.get("cutout_size", Config.DEFAULT_CUTOUT_SIZE))
-        output_raw  = request.form.get("output_size", "").strip()
-        output_size = int(output_raw) if output_raw else None
-        out_dir     = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
-        psf_dir     = request.form.get("psf_dir",    Config.EUCLID_PSF_DIR)
-        job_id = REGISTRY.spawn(
-            label=f"extract {band_name} ePSF ({num_stars} stars)",
-            target=lambda cap: _job_extract_psf(
-                cap, band_name, num_stars, cutout_size, output_size,
-                out_dir, psf_dir,
-            ),
-        )
-        return jsonify({"job_id": job_id})
 
     @app.route("/psfs/visualize", methods=["POST"])
     def psfs_visualize():
@@ -4015,6 +3877,12 @@ def create_app() -> Flask:
             #                     the UI can flip ✓ as soon as the
             #                     first shard lands.
             "euclid_sky": None, "roundtrip_records": None,
+            # Per-page Euclid star-cutout pipeline:
+            #   euclid_cutouts — VIS cutout subdir, written by the
+            #                    download_euclid_cutouts step.
+            #   euclid_psf     — VIS empirical ePSF, written by the
+            #                    extract_euclid_psf (all-band) step.
+            "euclid_cutouts": None, "euclid_psf": None,
         }
         if ssh_ok:
             paths = {
@@ -4027,6 +3895,10 @@ def create_app() -> Flask:
                     f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
                 "roundtrip_records":
                     f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
+                "euclid_cutouts":
+                    f"{cfg_loaded.data_dir}/euclid_stars/cutouts/VIS",
+                "euclid_psf":
+                    f"{cfg_loaded.data_dir}/euclid_psf/euclid_psf_VIS.fits",
             }
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"

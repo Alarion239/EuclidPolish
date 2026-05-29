@@ -59,27 +59,14 @@
 
 {% block actions %}
 <section class="card">
-  <h3>Extract empirical ePSF</h3>
-  <p class="hint">Runs photutils' <code>EPSFBuilder</code> on local star
-     cutouts. Bright clipped-core stars are rejected automatically.</p>
-  <form id="extract-form" action="/psfs/extract">
-    <label>Band
-      <select name="band">
-        {% for b in bands %}
-          <option value="{{ b.name }}">{{ b.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Number of stars
-      <input type="number" name="num_stars" value="{{ default_num_stars }}" min="10" max="5000"></label>
-    <label>Cutout size (native px)
-      <input type="number" name="cutout_size" value="512" min="32" max="2048"></label>
-    <label>Output PSF size (oversampled px)
-      <input type="number" name="output_size" value="{{ default_output_size }}" min="0" max="4096"></label>
-    <button type="submit">Extract PSF</button>
-  </form>
-  <div id="extract-status"></div>
+  <h3>Extract empirical ePSFs (FASRC)</h3>
+  <p class="hint">Submits a SLURM job that runs photutils'
+     <code>EPSFBuilder</code> on the downloaded cutouts for <strong>all
+     four bands</strong> (VIS + NISP Y/J/H) in one job. Bright
+     clipped-core stars are rejected automatically; bands with no cutouts
+     fall back to a Gaussian PSF.</p>
 </section>
+{% with step_id="extract_euclid_psf" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}
 
 {% block scripts %}
@@ -96,13 +83,6 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   if (!chip) return;
   e.preventDefault();
   polishUI.viz.set(chip.dataset.group, chip.dataset.value);
-});
-
-document.getElementById("extract-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  polishUI.run(e.target, document.getElementById("extract-status"), {
-    onDone: () => { polishUI.viz.refresh(); setTimeout(() => location.reload(), 2500); },
-  });
 });
 </script>
 {% endblock %}

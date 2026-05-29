@@ -562,6 +562,71 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
         ]
 
 
+class EuclidCutoutDownloadStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="download_euclid_cutouts",
+            label="Download Euclid star cutouts (all bands)",
+            description=(
+                "Pull per-band cutouts (VIS + NISP Y/J/H) for every star "
+                "in the catalog from the Euclid archive into "
+                "$DATA_DIR/euclid_stars/cutouts/<band>/. One shared "
+                "angular field is sized from the VIS pixel count; each "
+                "band fetches its own native pixel count. Run a catalog "
+                "query first so stars.csv exists."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=8, n_gpus=0,
+                memory="16G", time_limit="2:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        vis_pixels = int(params.get("vis_pixels", 512))
+        workers    = int(params.get("workers", 8))
+        return [
+            "scripts/download_all_bands.py",
+            "--vis-pixels", str(vis_pixels),
+            "--workers",    str(workers),
+        ]
+
+
+class EuclidPSFExtractStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="extract_euclid_psf",
+            label="Extract Euclid ePSFs (all 4 bands)",
+            description=(
+                "Run photutils EPSFBuilder on the downloaded star cutouts "
+                "for ALL four bands (VIS + NISP Y/J/H) in one job, writing "
+                "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits. Bright "
+                "clipped-core stars are rejected automatically. Bands with "
+                "no cutouts are skipped and fall back to a Gaussian PSF."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="32G", time_limit="1:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        num_stars  = int(params.get("num_stars", 200))
+        vis_pixels = int(params.get("vis_pixels", 512))
+        cmd = [
+            "scripts/extract_all_band_psfs.py",
+            "--num-stars",  str(num_stars),
+            "--vis-pixels", str(vis_pixels),
+        ]
+        # Optional explicit final ePSF size (oversampled px); 0/blank →
+        # photutils' default (cutout_size × oversampling + 1).
+        output_size = int(params.get("output_size", 0) or 0)
+        if output_size > 0:
+            cmd += ["--output-size", str(output_size)]
+        return cmd
+
+
 class HSTTrainStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
@@ -772,6 +837,8 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
     EuclidRoundtripTFRecordStep,
+    EuclidCutoutDownloadStep,
+    EuclidPSFExtractStep,
     HSTTrainStep,
     # Legacy ``run_pipeline.py`` presets (kept for the existing form).
     GenConvolveStep,

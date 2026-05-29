@@ -85,29 +85,13 @@
 {% block actions %}
 {% if catalog.present %}
 <section class="card">
-  <h3>Download cutouts</h3>
-  <p class="hint">Pick the bands and one cutout size in VIS pixels at
-     0.10"/pix; each band fetches its own native pixel count for the
-     same angular field.</p>
-  <form id="download-form" action="/cutouts/download">
-    <label>Bands</label>
-    <div class="checkbox-grid">
-      {% for b in bands %}
-        <label>
-          <input type="checkbox" name="bands" value="{{ b.name }}" checked>
-          {{ b.name }}
-        </label>
-      {% endfor %}
-    </div>
-    <label>Cutout size (VIS px)
-      <input type="number" name="cutout_size_vis_pixels"
-             value="{{ default_vis_pixels }}" min="32" max="4096"></label>
-    <label>Parallel workers
-      <input type="number" name="max_workers" value="8" min="1" max="16"></label>
-    <button type="submit">Start download</button>
-  </form>
-  <div id="download-status"></div>
+  <h3>Download cutouts (FASRC)</h3>
+  <p class="hint">Submits a SLURM job that pulls all four bands (VIS +
+     NISP Y/J/H) for every catalog star from the Euclid archive. One
+     shared angular field is sized from the VIS pixel count; each band
+     fetches its own native pixel count.</p>
 </section>
+{% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% else %}
 <section class="card">
   <p class="hint">Run a catalog query first.</p>
@@ -130,15 +114,5 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
     el.style.display = (want === "all" || el.dataset.band === want) ? "" : "none";
   });
 });
-
-const f = document.getElementById("download-form");
-if (f) {
-  f.addEventListener("submit", (e) => {
-    e.preventDefault();
-    polishUI.run(f, document.getElementById("download-status"), {
-      onDone: () => setTimeout(() => location.reload(), 2000),
-    });
-  });
-}
 </script>
 {% endblock %}
