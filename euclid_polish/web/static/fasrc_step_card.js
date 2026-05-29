@@ -80,7 +80,10 @@
             <input type="number" name="n_stars" value="200" min="20" max="5000"></label>
           <label>PSF half-side (px)
             <input type="number" name="half_side" value="255" min="31" max="767"
-                   title="Half-side of each star stamp → the ePSF spans (2·half+1) px at the ~0.05″/pix HLSP scale: 255 → 511², 511 → 1023². Always odd, so the PSF stays centred. Changing it forces a full tile re-scan (cached stamps are size-specific)."></label>`;
+                   title="Half-side of the FINAL ePSF → spans (2·half+1) px at the ~0.05″/pix HLSP scale: 255 → 511², 511 → 1023². Always odd, so the PSF stays centred. Changing it forces a full tile re-scan (cached stamps are size-specific)."></label>
+          <label>Extraction margin (frac)
+            <input type="number" name="extract_margin_frac" value="0.08" step="0.01" min="0" max="0.25"
+                   title="Extract star stamps this fraction larger than the half-side, then trim the extra border off the built ePSF. EPSFBuilder's smoothing leaves edge artifacts on the outermost pixels; this margin pushes them into the trimmed region so the final PSF borders are clean. 0.08 = 8%; 0 disables."></label>`;
       case 'kernel':
         return `
           <label>Wiener regularisation

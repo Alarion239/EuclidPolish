@@ -81,13 +81,21 @@ def parse_args() -> argparse.Namespace:
                         "slower). The actual number used is reported in "
                         "the FITS header.")
     p.add_argument("--half-side", type=int, default=PSF_HALF_SIDE_PIX,
-                   help="Half-side of each star stamp in HLSP pixels; the "
+                   help="Half-side of the FINAL ePSF in HLSP pixels; the "
                         "ePSF spans (2·half+1) px at the ~0.05\"/pix HLSP "
                         "scale (255 → 511², 511 → 1023²). 2·half+1 is always "
                         "odd, so the PSF stays centred on a pixel. Larger "
                         "captures more wings at higher per-tile I/O cost. "
                         "Changing it invalidates the cached star stamps "
                         "(different side) → forces a full tile re-scan.")
+    p.add_argument("--extract-margin-frac", type=float, default=0.08,
+                   help="Extract star stamps this fraction larger than "
+                        "--half-side, then trim the extra border off the "
+                        "built ePSF. EPSFBuilder's smoothing leaves edge "
+                        "artifacts on the outermost pixels; the margin "
+                        "pushes those into the trimmed region so the final "
+                        "(2·half+1)² PSF has clean borders. Default 0.08 "
+                        "(8%); 0 disables.")
     p.add_argument("--input-dir", default=None,
                    help="Directory of HLSP tiles. Defaults to $DATA_DIR/hst_hlsp/.")
     p.add_argument("--output-dir", default=None,
@@ -227,6 +235,12 @@ def _extract_stamps_from_tile(
 
 def main() -> int:
     args = parse_args()
+    # Extract from a margin-enlarged stamp, then trim the border (where
+    # EPSFBuilder's smoothing leaves artifacts) back to the requested
+    # --half-side. EPSF_OVERSAMPLING px of trim per native margin pixel.
+    margin_px    = (max(1, int(round(args.half_side * args.extract_margin_frac)))
+                    if args.extract_margin_frac > 0 else 0)
+    half_extract = args.half_side + margin_px
     in_dir  = args.input_dir  or os.path.join(Config.DATA_DIR, HLSP_DIR_NAME)
     out_dir = args.output_dir or os.path.join(Config.DATA_DIR, PSF_DIR_NAME)
     os.makedirs(out_dir, exist_ok=True)
@@ -242,7 +256,9 @@ def main() -> int:
     print(f"  output dir      = {out_dir}")
     print(f"  target n_stars  = {args.n_stars}")
     print(f"  half_side       = {args.half_side} "
-          f"(→ {2 * args.half_side + 1}² star stamps)")
+          f"(final ePSF → {2 * args.half_side + 1}²)")
+    print(f"  extract margin  = {args.extract_margin_frac:.0%} "
+          f"(+{margin_px}px → {2 * half_extract + 1}² stamps, border trimmed)")
     print()
 
     t0 = time.time()
@@ -263,7 +279,7 @@ def main() -> int:
     if args.reuse_stars:
         reporter.set_stage("Looking for cached star stamps")
         cached, cached_scale, cached_n_tiles = _load_cached_star_stamps(
-            stars_dir, half_side=args.half_side,
+            stars_dir, half_side=half_extract,
         )
         if cached:
             n_use = min(len(cached), args.n_stars)
@@ -339,7 +355,7 @@ def main() -> int:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 sources = _find_stars_in_tile(
-                    data, max_n=stars_per_tile, half_side=args.half_side)
+                    data, max_n=stars_per_tile, half_side=half_extract)
             if sources is None or len(sources) == 0:
                 print(f"        (no stars passed quality cuts)")
                 continue
@@ -413,7 +429,17 @@ def main() -> int:
     # right before the call so we get the best of both.
     epsf, _fitted_stars = builder(EPSFStars(star_stamps))
     psf_arr = np.asarray(epsf.data, dtype=np.float32)
-    psf_arr = psf_arr / float(psf_arr.sum())   # unit flux
+
+    # Trim the margin border (EPSFBuilder's smoothing artifacts live in the
+    # outermost pixels). ``EPSF_OVERSAMPLING`` ePSF pixels per native margin
+    # pixel; the symmetric crop keeps the PSF centred and odd-sized.
+    trim = margin_px * EPSF_OVERSAMPLING
+    M = psf_arr.shape[0]
+    if trim > 0 and 2 * trim < M:
+        psf_arr = psf_arr[trim:M - trim, trim:M - trim]
+        print(f"      trimmed {trim}px border each side: {M}² → "
+              f"{psf_arr.shape[0]}²")
+    psf_arr = psf_arr / float(psf_arr.sum())   # unit flux (after trim)
 
     psf_pix_scale = pix_scale_observed / EPSF_OVERSAMPLING
     out_path = os.path.join(out_dir, PSF_FILE_NAME)
@@ -424,6 +450,8 @@ def main() -> int:
     h["INSTRUME"] = ("ACS/WFC", "HST instrument")
     h["NSTARS"]   = (n_used, "stars used in EPSFBuilder")
     h["NTILES"]   = (len(tiles_used), "HLSP tiles contributing stars")
+    h["HALFSIDE"] = (args.half_side, "requested final ePSF half-side (px)")
+    h["EXTRMARG"] = (margin_px, "extra border px extracted then trimmed")
     h["OVERSAMP"] = (EPSF_OVERSAMPLING, "oversampling factor relative to HLSP grid")
     h["PIXSCALE"] = (psf_pix_scale, "arcsec / pixel")
     h["TILESCAL"] = (pix_scale_observed, "source tile pixel scale (arcsec)")
