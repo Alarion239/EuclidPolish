@@ -80,6 +80,14 @@ def parse_args() -> argparse.Namespace:
                    help="Target number of stars to use (more = higher S/N, "
                         "slower). The actual number used is reported in "
                         "the FITS header.")
+    p.add_argument("--half-side", type=int, default=PSF_HALF_SIDE_PIX,
+                   help="Half-side of each star stamp in HLSP pixels; the "
+                        "ePSF spans (2·half+1) px at the ~0.05\"/pix HLSP "
+                        "scale (255 → 511², 511 → 1023²). 2·half+1 is always "
+                        "odd, so the PSF stays centred on a pixel. Larger "
+                        "captures more wings at higher per-tile I/O cost. "
+                        "Changing it invalidates the cached star stamps "
+                        "(different side) → forces a full tile re-scan.")
     p.add_argument("--input-dir", default=None,
                    help="Directory of HLSP tiles. Defaults to $DATA_DIR/hst_hlsp/.")
     p.add_argument("--output-dir", default=None,
@@ -155,7 +163,8 @@ def _load_cached_star_stamps(
 
 
 def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
-                        sigma: float = 5.0) -> "Table":
+                        sigma: float = 5.0,
+                        half_side: int = PSF_HALF_SIDE_PIX) -> "Table":
     """Detect bright unsaturated point sources in one tile.
 
     Returns an astropy Table with at least ``x`` and ``y`` columns
@@ -178,7 +187,7 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
     sources.sort("peak")
     sources.reverse()
     H, W = data.shape
-    border = PSF_HALF_SIDE_PIX + 5
+    border = half_side + 5
     keep = [
         (border < r["xcentroid"] < W - border
          and border < r["ycentroid"] < H - border)
@@ -232,6 +241,8 @@ def main() -> int:
     print(f"  HLSP tile dir   = {in_dir}")
     print(f"  output dir      = {out_dir}")
     print(f"  target n_stars  = {args.n_stars}")
+    print(f"  half_side       = {args.half_side} "
+          f"(→ {2 * args.half_side + 1}² star stamps)")
     print()
 
     t0 = time.time()
@@ -252,7 +263,7 @@ def main() -> int:
     if args.reuse_stars:
         reporter.set_stage("Looking for cached star stamps")
         cached, cached_scale, cached_n_tiles = _load_cached_star_stamps(
-            stars_dir, half_side=PSF_HALF_SIDE_PIX,
+            stars_dir, half_side=args.half_side,
         )
         if cached:
             n_use = min(len(cached), args.n_stars)
@@ -327,13 +338,15 @@ def main() -> int:
                           f"{pix_scale_observed:.4f}\"/pix")
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                sources = _find_stars_in_tile(data, max_n=stars_per_tile)
+                sources = _find_stars_in_tile(
+                    data, max_n=stars_per_tile, half_side=args.half_side)
             if sources is None or len(sources) == 0:
                 print(f"        (no stars passed quality cuts)")
                 continue
             print(f"        + {len(sources)} stars")
             try:
-                stamps = _extract_stamps_from_tile(data, sources)
+                stamps = _extract_stamps_from_tile(
+                    data, sources, half_side=args.half_side)
             except Exception as e:
                 msg = (f"extract_stars failed on tile {tname}: "
                        f"{type(e).__name__}: {e}")

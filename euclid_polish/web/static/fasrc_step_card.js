@@ -77,7 +77,10 @@
       case 'extract_psf':
         return `
           <label>Target N stars
-            <input type="number" name="n_stars" value="200" min="20" max="5000"></label>`;
+            <input type="number" name="n_stars" value="200" min="20" max="5000"></label>
+          <label>PSF half-side (px)
+            <input type="number" name="half_side" value="255" min="31" max="767"
+                   title="Half-side of each star stamp → the ePSF spans (2·half+1) px at the ~0.05″/pix HLSP scale: 255 → 511², 511 → 1023². Always odd, so the PSF stays centred. Changing it forces a full tile re-scan (cached stamps are size-specific)."></label>`;
       case 'kernel':
         return `
           <label>Wiener regularisation

@@ -412,9 +412,11 @@ class HSTPSFExtractStep(FASRCPipelineStep):
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         n_stars = int(params.get("n_stars", 200))
+        half_side = int(params.get("half_side", 255))
         return [
             "scripts/fasrc_extract_hst_psf.py",
             "--n-stars", str(n_stars),
+            "--half-side", str(half_side),
         ]
 
 
