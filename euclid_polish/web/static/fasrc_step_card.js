@@ -162,6 +162,15 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"></label>
       <label>Round-trip fraction
         <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"></label>
+      <label>Loss weight · synthetic
+        <input type="number" name="synthetic_loss_weight" value="1" step="0.5" min="0" max="100"
+               title="Per-example TRAINING-loss multiplier for synthetic records. 1 = default; raise to up-weight that source's gradient, 0 to ablate (kept in the batch mix but zero gradient)."></label>
+      <label>Loss weight · HST
+        <input type="number" name="hst_loss_weight" value="1" step="0.5" min="0" max="100"
+               title="Per-example TRAINING-loss multiplier for HST records. 1 = default. Distinct from the data fraction: fraction sets how many HST examples per batch, this scales each one's loss."></label>
+      <label>Loss weight · round-trip
+        <input type="number" name="roundtrip_loss_weight" value="1" step="0.5" min="0" max="100"
+               title="Per-example TRAINING-loss multiplier for round-trip records. Round-trip gradient share ≈ roundtrip_fraction × this. Caution: the round-trip loss is minimized by an UN-sharpened (blurry) SR, so very high values push the model away from super-resolving — it's a regularizer, not a sharpening driver. Only used when round-trip fraction > 0."></label>
       <label>Forward-op PSF crop (½)
         <input type="number" name="forward_op_crop_half" value="0" step="8" min="0" max="512"
                title="Optional central crop of the VIS PSF for the round-trip forward op → (2·crop+1)² kernel. 0 = full 1023×1023 PSF (the forward op convolves via FFT, so the full PSF is exact AND fast — no crop needed). Set >0 only to ablate the PSF wings. Only used when round-trip fraction > 0."></label>
@@ -172,8 +181,8 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="save_best_w_hst" value="1.0" step="0.5" min="0" max="100"
                title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
       <label>Save-best w·round-trip
-        <input type="number" name="save_best_w_rt" value="0" step="1" min="0" max="100"
-               title="Weight of the round-trip recon loss (SUBTRACTED — lower is better). RT loss is asinh-L1 (~0.1–1) vs PSNRs in dB (~20–30), so this needs ~10–30 to matter, and it can be gamed by under-sharpening. Default 0 = monitored only."></label>`;
+        <input type="number" name="save_best_w_rt" value="0" step="0.5" min="0" max="100"
+               title="Weight of the round-trip PSNR (dB, ADDED — higher is better) in the composite save-best score. Now on the same dB scale as the other two PSNRs, so a weight near 1 is comparable; note round-trip PSNR is measured at LR resolution so it sits higher in absolute dB. Default 0 = monitored only."></label>`;
   }
 
   // ── Resource-field markup ──────────────────────────────────────────

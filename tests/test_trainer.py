@@ -285,6 +285,38 @@ class TestMixedRouting:
         )
 
 
+class TestPerSourceLossWeights:
+    """Each example is scaled by the loss-weight knob matching its source
+    tag. Zero-weight is the cleanest probe — it must zero that source's
+    loss exactly (and produce no gradient), independent of model state."""
+
+    def test_zero_synthetic_weight_zeros_loss(self, tiny_model, tmp_path):
+        lr, hr = _rand_batch()
+        src = tf.constant([SOURCE_SYNTHETIC] * int(lr.shape[0]), dtype=tf.int32)
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "syn0"),
+                    synthetic_loss_weight=0.0)
+        loss, _ = t.train_step_mixed(lr, hr, src)
+        assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
+
+    def test_zero_hst_weight_zeros_loss(self, tiny_model, tmp_path):
+        lr, hr = _rand_batch()
+        src = tf.constant([SOURCE_HST] * int(lr.shape[0]), dtype=tf.int32)
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst0"),
+                    hst_loss_weight=0.0)
+        loss, _ = t.train_step_mixed(lr, hr, src)
+        assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
+
+    def test_source_weights_are_disjoint(self, tiny_model, tmp_path):
+        """An HST-only batch is untouched by the synthetic weight — the
+        per-source masks don't overlap."""
+        lr, hr = _rand_batch()
+        src = tf.constant([SOURCE_HST] * int(lr.shape[0]), dtype=tf.int32)
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "mix"),
+                    synthetic_loss_weight=0.0, hst_loss_weight=1.0)
+        loss, _ = t.train_step_mixed(lr, hr, src)
+        assert float(loss.numpy()) > 0.0
+
+
 # ---------------------------------------------------------------------------
 # 4. Forward-op-absent fallback
 # ---------------------------------------------------------------------------
@@ -371,8 +403,7 @@ class TestEvaluateRoundtrip:
         ds = lr_only_dataset(path, batch_size=2)
         val = trainer_with_forward_op.evaluate_roundtrip(ds)
         assert isinstance(val, float)
-        assert np.isfinite(val)
-        assert val > 0   # random input → non-zero recon error
+        assert np.isfinite(val)   # round-trip PSNR in dB (a finite real)
 
     def test_returns_nan_without_forward_op(self, tiny_trainer, tmp_path):
         path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
@@ -393,7 +424,7 @@ class TestMultiSourceValidationLogging:
         self, tiny_model, tmp_path, tmp_psf_path,
     ):
         """``train()`` with HST + round-trip validation datasets records
-        the per-source columns (HST PSNR str/raw, round-trip loss) so a
+        the per-source columns (HST PSNR str/raw, round-trip PSNR) so a
         regime change's effect on each source is auditable from the CSV."""
         ckpt_dir = str(tmp_path / "ckpt_ms")
         op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
@@ -420,7 +451,7 @@ class TestMultiSourceValidationLogging:
         rows = self._read_log(ckpt_dir)
         assert len(rows) == 2
         for col in ("psnr_stretched_hst", "psnr_raw_hst",
-                    "roundtrip_val_loss"):
+                    "roundtrip_val_psnr"):
             assert col in rows[0]
             # Non-empty + finite float for every row (all sources wired).
             for r in rows:
@@ -506,7 +537,7 @@ class TestMultiSourceValidationLogging:
         rows = self._read_log(ckpt_dir)
         assert rows[0]["psnr_stretched_hst"] == ""
         assert rows[0]["psnr_raw_hst"] == ""
-        assert rows[0]["roundtrip_val_loss"] == ""
+        assert rows[0]["roundtrip_val_psnr"] == ""
 
 
 class TestLogHeaderRotation:

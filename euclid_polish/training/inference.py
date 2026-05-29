@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
+from astropy.wcs import WCS
 
 from euclid_polish.config import Config
 from euclid_polish.training.models.common import resolve_single
@@ -18,6 +19,41 @@ from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.base import BaseVisualizer
 
 from euclid_polish.visualization.color import lupton_rgb
+
+
+def scaled_wcs_header(vis_header, scale: int):
+    """Return a copy of ``vis_header`` with its WCS magnified by ``scale``.
+
+    The SR image has ``scale``× more pixels per side at ``1/scale`` the
+    pixel scale, so the WCS needs the standard magnify transform:
+    ``CRPIX → scale·CRPIX − (scale−1)/2`` and the pixel-scale terms
+    (CD matrix or CDELT) divided by ``scale``. This keeps the SR aligned
+    on-sky with the original LR cutout. Falls back to the unscaled header
+    when the WCS can't be parsed (the rescale is a bonus, never fatal).
+    """
+    hdr = vis_header.copy()
+    try:
+        w = WCS(vis_header)
+        if not w.has_celestial:
+            return hdr
+        w = w.deepcopy()
+        off = (scale - 1) / 2.0
+        w.wcs.crpix = [c * scale - off for c in w.wcs.crpix]
+        if w.wcs.has_cd():
+            w.wcs.cd = w.wcs.cd / scale
+        else:
+            w.wcs.cdelt = [d / scale for d in w.wcs.cdelt]
+        scaled = w.to_header()
+        # Drop the old WCS keys before merging the scaled ones so stale
+        # CD/CDELT/CRPIX don't linger.
+        for key in list(hdr.keys()):
+            if key.startswith(("CRPIX", "CRVAL", "CDELT", "CD1_", "CD2_",
+                               "PC1_", "PC2_", "CTYPE", "CUNIT")):
+                del hdr[key]
+        hdr.update(scaled)
+    except Exception as e:  # noqa: BLE001 — WCS is a bonus, never fatal
+        hdr["WCSNOTE"] = f"SR WCS rescale skipped: {type(e).__name__}"
+    return hdr
 
 
 def load_model_from_checkpoint(

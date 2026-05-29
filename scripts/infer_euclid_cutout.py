@@ -1,17 +1,22 @@
 #!/usr/bin/env python
 """Download a real Euclid 4-band cutout, run it through a trained WDSR
-checkpoint, and write two FITS: the super-resolved VIS (SR, 0.05"/pix)
-and the original VIS LR cutout (0.10"/pix).
+checkpoint, and write two FITS to your local disk:
+
+  * ``original_stack.fits`` — the stacked 4-band original LR cube
+    (VIS, Y_E, J_E, H_E) at 0.10"/pix, in electrons, stored as one image
+    plane per band (band 0 = VIS, directly comparable to SR).
+  * ``SR.fits`` — the super-resolved VIS image at 0.05"/pix.
 
 The model takes the 4-band Euclid LR cube (VIS + NIR Y/J/H) as input and
 emits a single-band VIS HR image, so all four bands are fetched at the
 same sky footprint, converted from the archive's ADU/s to electrons via
-each band's MAGZERO, stacked, and run through ``reconstruct``.
+each band's MAGZERO, stacked, and run through ``reconstruct``. The raw
+per-band archive cutouts are also kept as ``raw_<band>.fits``.
 
 Usage:
     python scripts/infer_euclid_cutout.py \
-        --ra 52.5389 --dec -30.5 --vis-pixels 2048 \
-        --ckpt-dir ckpt/wdsr --out-dir data/euclid_inference/adhoc
+        --ra 267.4229 --dec 64.8873 --vis-pixels 1024 \
+        --ckpt-dir ckpt/wdsr --out-dir data/euclid_inference/local_cutout
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ import sys
 
 import numpy as np
 from astropy.io import fits
-from astropy.wcs import WCS
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -31,7 +35,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.training.inference import (
-    load_model_from_checkpoint, reconstruct,
+    load_model_from_checkpoint, reconstruct, scaled_wcs_header,
 )
 
 
@@ -48,39 +52,6 @@ def parse_args() -> argparse.Namespace:
                    default=os.path.join(Config.DATA_DIR,
                                         "euclid_inference", "adhoc"))
     return p.parse_args()
-
-
-def _scaled_wcs_header(vis_header, scale: int):
-    """Return a copy of the VIS header with WCS magnified by ``scale``.
-
-    SR has ``scale``× more pixels per side at ``1/scale`` the pixel
-    scale. Standard magnify transform: ``CRPIX → scale·CRPIX − (scale−1)/2``
-    and the pixel-scale terms (CD matrix or CDELT) divided by ``scale``.
-    Falls back to the unscaled header if the WCS can't be parsed.
-    """
-    hdr = vis_header.copy()
-    try:
-        w = WCS(vis_header)
-        if not w.has_celestial:
-            return hdr
-        w = w.deepcopy()
-        off = (scale - 1) / 2.0
-        w.wcs.crpix = [c * scale - off for c in w.wcs.crpix]
-        if w.wcs.has_cd():
-            w.wcs.cd = w.wcs.cd / scale
-        else:
-            w.wcs.cdelt = [d / scale for d in w.wcs.cdelt]
-        scaled = w.to_header()
-        # Drop the old WCS keys before merging the scaled ones so stale
-        # CD/CDELT/CRPIX don't linger.
-        for key in list(hdr.keys()):
-            if key.startswith(("CRPIX", "CRVAL", "CDELT", "CD1_", "CD2_",
-                               "PC1_", "PC2_", "CTYPE", "CUNIT")):
-                del hdr[key]
-        hdr.update(scaled)
-    except Exception as e:  # noqa: BLE001 — WCS is a bonus, never fatal
-        hdr["WCSNOTE"] = f"SR WCS rescale skipped: {type(e).__name__}"
-    return hdr
 
 
 def main() -> int:
@@ -105,18 +76,17 @@ def main() -> int:
     bands_e: dict = {}
     vis_header = None
     for band_name in Config.LR_INPUT_BAND_NAMES:
+        # Always download fresh — reusing a cached raw file would silently
+        # serve a *previous* position's cutout when --out-dir is reused.
         outf = os.path.join(args.out_dir, f"raw_{band_name}.fits")
-        if os.path.exists(outf) and os.path.getsize(outf) > 0:
-            print(f"  {band_name}: cached")
-        else:
-            print(f"  {band_name}: downloading …")
-            ok, err = fetch_cutout_at(
-                ra=args.ra, dec=args.dec, band_name=band_name,
-                output_file=outf, cutout_size_vis_pixels=args.vis_pixels,
-            )
-            if not ok:
-                print(f"ERROR downloading {band_name}: {err}")
-                return 1
+        print(f"  {band_name}: downloading …")
+        ok, err = fetch_cutout_at(
+            ra=args.ra, dec=args.dec, band_name=band_name,
+            output_file=outf, cutout_size_vis_pixels=args.vis_pixels,
+        )
+        if not ok:
+            print(f"ERROR downloading {band_name}: {err}")
+            return 1
         band = Config.get_band(band_name)
         with fits.open(outf) as hdul:
             arr = hdul[0].data.astype(np.float32)
@@ -151,17 +121,32 @@ def main() -> int:
                 del h[k]
         return h
 
-    vis_path = os.path.join(args.out_dir, "original_VIS.fits")
+    # Stacked 4-band original: one image plane per band (NAXIS3), in
+    # LR_INPUT_BAND_NAMES order so band 0 is VIS. ``axis=0`` puts the band
+    # axis as the slowest FITS axis, so viewers show four H×W planes under
+    # the 2-D VIS WCS. All header values stay plain ASCII (FITS requires
+    # it — non-ASCII silently crashes the write).
+    stack = np.stack(
+        [bands_e[n] for n in Config.LR_INPUT_BAND_NAMES], axis=0,
+    ).astype(np.float32)
+    stack_header = _clean(vis_header) or fits.Header()
+    stack_header["OBJECT"] = "Euclid LR stack (electrons)"
+    stack_header["BUNIT"]  = "electron"
+    stack_header["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
+                              "NAXIS3 plane order")
+    stack_path = os.path.join(args.out_dir, "original_stack.fits")
+    fits.PrimaryHDU(stack, header=stack_header).writeto(
+        stack_path, overwrite=True, output_verify="silentfix")
+
+    sr_header = (_clean(scaled_wcs_header(vis_header, scale))
+                 if vis_header is not None else fits.Header())
+    sr_header["OBJECT"] = "Euclid SR VIS (WDSR)"
+    sr_header["BUNIT"]  = "electron"
     sr_path = os.path.join(args.out_dir, "SR.fits")
-    fits.PrimaryHDU(lr_vis.astype(np.float32),
-                    header=_clean(vis_header)).writeto(
-        vis_path, overwrite=True, output_verify="silentfix")
-    sr_header = (_clean(_scaled_wcs_header(vis_header, scale))
-                 if vis_header is not None else None)
-    fits.PrimaryHDU(sr.astype(np.float32),
-                    header=sr_header).writeto(
+    fits.PrimaryHDU(sr.astype(np.float32), header=sr_header).writeto(
         sr_path, overwrite=True, output_verify="silentfix")
-    print(f"wrote {vis_path}  ({lr_vis.shape}, 0.10\"/pix)")
+    print(f"wrote {stack_path}  ({stack.shape}, 0.10\"/pix, "
+          f"bands={Config.LR_INPUT_BAND_NAMES})")
     print(f"wrote {sr_path}  ({sr.shape}, 0.05\"/pix)")
     return 0
 

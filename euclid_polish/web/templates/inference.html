@@ -157,8 +157,10 @@
 <section class="card">
   <h3>Reconstruct (real Euclid cutout)</h3>
   <p class="hint">Downloads VIS + Y_E + J_E + H_E cutouts at your (RA, Dec)
-     from the Euclid archive, runs WDSR, saves the LR-VIS vs SR comparison.
-     No HR target — only LR and SR panels.</p>
+     from the Euclid archive, runs WDSR, and writes downloadable FITS —
+     <code>original_stack.fits</code> (the stacked 4-band original, band
+     0 = VIS) and <code>SR.fits</code> (super-resolved VIS, 2× WCS) —
+     plus the LR-VIS vs SR comparison PNG. No HR target.</p>
   <form id="recon-euclid-form" action="/inference/reconstruct-euclid">
     <label>RA (deg)
       <input type="text" name="ra" value="267.4229" size="12" required></label>

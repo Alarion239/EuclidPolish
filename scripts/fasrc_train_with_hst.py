@@ -72,6 +72,14 @@ def parse_args() -> argparse.Namespace:
                        Config.DATA_DIR, "images", "records_v2_euclid_roundtrip"),
                    help="Round-trip Euclid TFRecord directory (built "
                         "by fasrc_generate_euclid_roundtrip_tfrecords.py).")
+    p.add_argument("--synthetic-loss-weight", type=float, default=1.0,
+                   help="Per-example loss multiplier for synthetic "
+                        "records. Default 1.0; set to 0 to keep them in "
+                        "the batch mix but zero their gradient (ablation).")
+    p.add_argument("--hst-loss-weight", type=float, default=1.0,
+                   help="Per-example loss multiplier for HST records. "
+                        "Default 1.0; raise to up-weight the HST "
+                        "supervised path, 0 to ablate.")
     p.add_argument("--roundtrip-loss-weight", type=float, default=1.0,
                    help="Multiplier on the per-example round-trip "
                         "loss before averaging with the supervised "
@@ -90,13 +98,13 @@ def parse_args() -> argparse.Namespace:
                         "save-best score. No effect when the HST "
                         "validate split is absent. Default 1.")
     p.add_argument("--save-best-w-rt", type=float, default=0.0,
-                   help="Weight of the round-trip recon loss in the "
-                        "composite save-best score (SUBTRACTED — lower "
-                        "loss is better). The RT loss is asinh-L1 (~0.1–1) "
-                        "while PSNRs are dB (~20–30), so this needs to be "
-                        "~10–30 to matter; it can also be gamed by "
-                        "under-sharpening, so it defaults to 0 "
-                        "(monitored-only).")
+                   help="Weight of the round-trip PSNR (dB) in the "
+                        "composite save-best score (ADDED — higher is "
+                        "better, like the other two PSNRs). All three "
+                        "terms now share the dB scale, so a weight near 1 "
+                        "is comparable; note the round-trip PSNR is "
+                        "measured at LR resolution and sits higher in "
+                        "absolute dB. Defaults to 0 (monitored-only).")
     p.add_argument("--forward-op-crop-half", type=int, default=0,
                    help="Optional central crop of the VIS PSF kernel used "
                         "by the round-trip forward op → (2·crop+1)² "
@@ -123,7 +131,8 @@ def main() -> int:
     print(f"  synthetic records  = {args.records_syn}")
     print(f"  HST records        = {args.records_hst}")
     print(f"  round-trip records = {args.records_roundtrip}")
-    print(f"  rt loss weight     = {args.roundtrip_loss_weight}")
+    print(f"  loss weights syn/hst/rt = {args.synthetic_loss_weight}/"
+          f"{args.hst_loss_weight}/{args.roundtrip_loss_weight}")
     print(f"  checkpoint dir     = {args.ckpt_dir}")
     print()
 
@@ -224,6 +233,8 @@ def main() -> int:
         learning_rate=schedule,
         checkpoint_dir=args.ckpt_dir,
         forward_op=forward_op,
+        synthetic_loss_weight=float(args.synthetic_loss_weight),
+        hst_loss_weight=float(args.hst_loss_weight),
         roundtrip_loss_weight=float(args.roundtrip_loss_weight),
     )
     print(f"      total trainable params: "

@@ -37,7 +37,7 @@ from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.training.data_multiband import (
-    SOURCE_ROUNDTRIP, asinh_stretch_hr, inverse_asinh_stretch_hr,
+    SOURCE_HST, SOURCE_ROUNDTRIP, asinh_stretch_hr, inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate
 
@@ -54,7 +54,7 @@ TRAINING_LOG_COLUMNS  = (
     # corresponding source dataset isn't wired for this run, so old
     # plots that parse-float these columns skip them instead of
     # choking on the text "nan".
-    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_loss",
+    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_psnr",
     # The composite scalar save-best actually keys on (weighted blend of
     # the per-source metrics; see ``save_best_weights``). Logged so the
     # decision is auditable from the CSV alone.
@@ -77,6 +77,8 @@ class Trainer:
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
         checkpoint_dir='./ckpt/wdsr',
         forward_op=None,
+        synthetic_loss_weight: float = 1.0,
+        hst_loss_weight: float = 1.0,
         roundtrip_loss_weight: float = 1.0,
     ):
         """
@@ -100,23 +102,30 @@ class Trainer:
             L1, which compares ``sr`` against the dummy zeros ``hr``;
             this is rarely what you want, so configure the forward op
             whenever ``roundtrip_fraction > 0`` on the dataset.
-        roundtrip_loss_weight : float
-            Multiplier on the per-example round-trip loss before
-            averaging with the supervised loss. Default 1.0 makes the
-            two losses contribute equally per example (so a 60/20/20
-            synthetic/HST/round-trip mix produces an 80/20 supervised/
-            round-trip gradient contribution by batch). Bump above 1 to
-            up-weight the round-trip path; set to 0 to disable while
-            keeping the round-trip dataset wired (useful for ablations).
+        synthetic_loss_weight, hst_loss_weight, roundtrip_loss_weight : float
+            Per-source multipliers on the per-example loss before the
+            batch mean. Each example is weighted by the knob matching its
+            source tag (synthetic / HST / round-trip). All default to 1.0,
+            which reproduces the previous behaviour (every example
+            contributes equally; the round-trip term used to be the only
+            one weighted). Raise a knob to up-weight that source's
+            gradient contribution; set to 0 to keep the dataset wired but
+            zero out its loss (ablation). The round-trip term is also
+            gated on ``forward_op`` being set (see above) — without it,
+            round-trip examples fall through to the (dummy-HR) supervised
+            loss, so configure the op whenever ``roundtrip_fraction > 0``.
         """
         self.now = None
         self.loss = loss
         self.forward_op = forward_op
+        self.synthetic_loss_weight = float(synthetic_loss_weight)
+        self.hst_loss_weight       = float(hst_loss_weight)
         self.roundtrip_loss_weight = float(roundtrip_loss_weight)
-        # Cache the SOURCE_ROUNDTRIP constant on the trainer so the
-        # @tf.function below doesn't capture a Python int that'd force
-        # a retrace if its value ever changed.
+        # Cache the source-tag constants on the trainer so the
+        # @tf.function below doesn't capture Python ints that'd force a
+        # retrace if their values ever changed.
         self._source_roundtrip = tf.constant(SOURCE_ROUNDTRIP, dtype=tf.int32)
+        self._source_hst       = tf.constant(SOURCE_HST, dtype=tf.int32)
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -198,15 +207,15 @@ class Trainer:
             ``(w_syn, w_hst, w_rt)`` weights for the composite save-best
             score, higher = better:
 
-                score = w_syn·PSNR_syn + w_hst·PSNR_hst − w_rt·RT_loss
+                score = w_syn·PSNR_syn + w_hst·PSNR_hst + w_rt·PSNR_rt
 
-            The two PSNR terms are in dB (~20–30); the round-trip term
-            is an asinh-space L1 loss (~0.1–1.0) and is SUBTRACTED
-            (lower loss = better). Because of that scale gap, ``w_rt``
-            must be ~10–30× the PSNR weights to register, and it can be
-            gamed by under-sharpening — hence it defaults to 0. A term
-            drops out automatically when its validation dataset is
-            absent (e.g. ``w_hst`` has no effect when
+            All three terms are now PSNR in dB, so they share one scale
+            and the round-trip term is ADDED like the others (no scale-gap
+            fudge factor needed). Note the round-trip PSNR is taken at LR
+            resolution, so it tends to sit higher in absolute dB than the
+            HR-resolution synthetic/HST PSNRs — keep that in mind when
+            weighting. A term drops out automatically when its validation
+            dataset is absent (e.g. ``w_hst`` has no effect when
             ``hst_valid_dataset is None``). Default ``(1, 1, 0)`` →
             synthetic + HST PSNR, equally weighted, round-trip
             monitored-only. With HST/RT absent this reduces to plain
@@ -321,21 +330,22 @@ class Trainer:
                 # choke on "nan" text.
                 psnr_str_hst: object = ""
                 psnr_raw_hst: object = ""
-                rt_val_loss:  object = ""
+                rt_val_psnr:  object = ""
                 if hst_valid_dataset is not None:
                     hst_metrics  = self.evaluate(
                         hst_valid_dataset.take(validate_images))
                     psnr_str_hst = float(hst_metrics["psnr_stretched"].numpy())
                     psnr_raw_hst = float(hst_metrics["psnr_raw"].numpy())
                 if roundtrip_valid_dataset is not None:
-                    rt_val_loss = float(self.evaluate_roundtrip(
+                    rt_val_psnr = float(self.evaluate_roundtrip(
                         roundtrip_valid_dataset.take(validate_images)))
 
                 # Composite save-best score (higher = better). Synthetic
                 # is always in; HST/RT terms join only when their
-                # validation set is wired. RT is subtracted (lower loss
-                # is better). All-zero weights would make every score 0
-                # and freeze save-best, so fall back to synthetic PSNR.
+                # validation set is wired. All three terms are now PSNR in
+                # dB, so RT is added like the others. All-zero weights
+                # would make every score 0 and freeze save-best, so fall
+                # back to synthetic PSNR.
                 w_syn, w_hst, w_rt = save_best_weights
                 if (w_syn == 0 and w_hst == 0 and w_rt == 0):
                     save_best_score = psnr_str
@@ -343,8 +353,8 @@ class Trainer:
                     save_best_score = w_syn * psnr_str
                     if psnr_str_hst != "":
                         save_best_score += w_hst * float(psnr_str_hst)
-                    if rt_val_loss != "":
-                        save_best_score -= w_rt * float(rt_val_loss)
+                    if rt_val_psnr != "":
+                        save_best_score += w_rt * float(rt_val_psnr)
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -364,7 +374,7 @@ class Trainer:
                         f"{psnr_str_hst:.3f}/{psnr_raw_hst:.3f} dB"
                     )
                 if roundtrip_valid_dataset is not None:
-                    status += f" | RT loss = {rt_val_loss:.4f}"
+                    status += f" | RT PSNR = {rt_val_psnr:.3f} dB"
                 status += (
                     f", |g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
@@ -386,7 +396,7 @@ class Trainer:
                     "duration_s":     float(duration),
                     "psnr_stretched_hst": psnr_str_hst,
                     "psnr_raw_hst":       psnr_raw_hst,
-                    "roundtrip_val_loss": rt_val_loss,
+                    "roundtrip_val_psnr": rt_val_psnr,
                     "save_best_score":    save_best_score,
                 }
                 write_header = (not os.path.exists(log_path)
@@ -494,13 +504,17 @@ class Trainer:
             # per-pixel scale comparable to the round-trip term below.
             sup_per_example = tf.reduce_mean(tf.abs(sr - hr), axis=[1, 2, 3])
 
+            is_rt  = tf.equal(source, self._source_roundtrip)
+            is_hst = tf.equal(source, self._source_hst)
+            is_syn = tf.logical_not(tf.logical_or(is_rt, is_hst))
+
             if self.forward_op is None:
                 # No forward op installed — fall back to supervised for
                 # *all* examples (dummy HR poisons the round-trip ones,
                 # but the trainer can't compute the round-trip loss
                 # without the op). Caller should configure the op
                 # whenever the dataset is built with roundtrip_fraction>0.
-                per_example = sup_per_example
+                base_per_example = sup_per_example
             else:
                 # Round-trip loss in asinh space (matches the supervised
                 # loss space so the per-example magnitudes are
@@ -513,14 +527,17 @@ class Trainer:
                 rt_per_example   = tf.reduce_mean(
                     tf.abs(lr_recon_stretch - lr_vis), axis=[1, 2, 3],
                 )
-                is_rt = tf.equal(source, self._source_roundtrip)
-                per_example = tf.where(
-                    is_rt,
-                    self.roundtrip_loss_weight * rt_per_example,
-                    sup_per_example,
-                )
+                base_per_example = tf.where(is_rt, rt_per_example,
+                                            sup_per_example)
 
-            loss_value = tf.reduce_mean(per_example)
+            # Per-source weight: each example scaled by the knob matching
+            # its source tag (exactly one mask is 1 per example).
+            weight = (
+                tf.cast(is_syn, tf.float32) * self.synthetic_loss_weight
+                + tf.cast(is_hst, tf.float32) * self.hst_loss_weight
+                + tf.cast(is_rt, tf.float32) * self.roundtrip_loss_weight
+            )
+            loss_value = tf.reduce_mean(weight * base_per_example)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
@@ -548,16 +565,22 @@ class Trainer:
         return evaluate(self.checkpoint.model, dataset)
 
     def evaluate_roundtrip(self, lr_dataset) -> float:
-        """Mean round-trip reconstruction loss over an LR-only dataset.
+        """Mean round-trip reconstruction PSNR (dB) over an LR-only dataset.
 
-        Computes the same quantity as the round-trip branch of
-        :meth:`train_step_mixed`, in eval mode and without gradients::
+        Forward-models the SR back to Euclid LR and compares it to the
+        observed LR VIS, in eval mode and without gradients::
 
             sr        = model(lr, training=False)
             sr_lin    = inverse_asinh_stretch_hr(sr)
             recon     = forward_op(sr_lin)
             recon_str = asinh_stretch_hr(recon)
-            loss      = mean(|recon_str - lr[..., 0:1]|)
+            psnr      = PSNR(lr[..., 0:1], recon_str)   # asinh space
+
+        PSNR is taken in the same asinh-stretched space and against the
+        same peak (``Config.PSNR_PEAK_STRETCHED``) as the synthetic and
+        HST PSNRs, so all three validation metrics share one dB scale.
+        Higher = the SR is more self-consistent with the observed Euclid
+        LR (cycle consistency).
 
         Parameters
         ----------
@@ -568,20 +591,23 @@ class Trainer:
         Returns
         -------
         float
-            Set-mean round-trip loss, or ``nan`` when ``self.forward_op``
-            is ``None`` (the operator is required to map SR back to LR).
+            Set-mean round-trip PSNR in dB, or ``nan`` when
+            ``self.forward_op`` is ``None`` (the operator is required to
+            map SR back to LR).
         """
         if self.forward_op is None:
             return float("nan")
         running = Mean()
+        max_val = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=tf.float32)
         for lr in lr_dataset:
             sr               = self.checkpoint.model(lr, training=False)
             sr_linear        = inverse_asinh_stretch_hr(sr)
             lr_recon_linear  = self.forward_op(sr_linear)
             lr_recon_stretch = asinh_stretch_hr(lr_recon_linear)
             lr_vis           = lr[..., 0:1]
-            batch_loss       = tf.reduce_mean(tf.abs(lr_recon_stretch - lr_vis))
-            running(batch_loss)
+            batch_psnr       = tf.reduce_mean(
+                tf.image.psnr(lr_vis, lr_recon_stretch, max_val=max_val))
+            running(batch_psnr)
         return float(running.result().numpy())
 
     def restore(self):

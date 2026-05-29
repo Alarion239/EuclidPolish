@@ -44,6 +44,7 @@ read_multiband_skyimages, tfrecord_path,
 )
 from euclid_polish.training.inference import (
 load_model_from_checkpoint, reconstruct, plot_reconstruction,
+scaled_wcs_header,
 )
 from astropy.io import fits as _fits
 from astropy.io import fits
@@ -670,6 +671,36 @@ def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
     return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
 
 
+def _forward_model_sr_residual(
+    sr_data: np.ndarray, lr_vis: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Push SR back through the VIS forward chain and diff against the LR.
+
+    Convolves SR with the empirical VIS ePSF, sum-rebins ×2 to the
+    0.10″/pix LR grid (the deterministic ``EuclidVISForwardOp`` chain),
+    crops to the common shape, and returns ``(predicted_dirty, residual)``
+    with ``residual = lr_vis − predicted_dirty``. This is the round-trip
+    self-consistency check — a well-behaved model reproduces the observed
+    Euclid LR. May raise on PSF-load / shape errors; callers handle it.
+    """
+    psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+    vis_psf = psfs[Config.BAND_VIS.name]
+    sr_hr = scipy_signal.fftconvolve(
+        sr_data, vis_psf.data, mode="same",
+    ).astype(np.float32)
+    rebin_factor = int(round(
+        Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
+    ))
+    predicted = MultiBandForward.sum_rebin(sr_hr, rebin_factor)
+    # ``sum_rebin`` may trim a row/col if HR isn't divisible by the rebin
+    # factor — match the LR shape by cropping to the smaller.
+    h = min(predicted.shape[0], lr_vis.shape[0])
+    w = min(predicted.shape[1], lr_vis.shape[1])
+    predicted = predicted[:h, :w].astype(np.float32)
+    residual = (lr_vis[:h, :w].astype(np.float32) - predicted).astype(np.float32)
+    return predicted, residual
+
+
 def _job_reconstruct_euclid_cutout(
     cap,
     ra: float,
@@ -719,6 +750,7 @@ def _job_reconstruct_euclid_cutout(
     # calibration scale the simulator uses.
     bands_data: Dict[str, np.ndarray] = {}
     bands_info: Dict[str, Dict[str, Any]] = {}
+    vis_header = None
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         cap.tick(k, len(Config.LR_INPUT_BAND_NAMES) + 2,
                  f"downloading {band_name} cutout")
@@ -733,6 +765,8 @@ def _job_reconstruct_euclid_cutout(
         with fits.open(outf) as hdul:
             arr = hdul[0].data.astype(np.float32)
             header = hdul[0].header
+        if band_name == "VIS":
+            vis_header = header.copy()
         magzero = float(header.get("MAGZERO",
                                    band.sim_zeropoint_e))
         # m_AB = MAGZERO - 2.5·log10(F_archive)  (archive units = ADU/s)
@@ -771,6 +805,33 @@ def _job_reconstruct_euclid_cutout(
     _, sr_data = reconstruct(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
+    # ESA cutout headers carry an EXTNAME that's invalid on a PrimaryHDU;
+    # strip it (and let silentfix handle the rest) so the writes don't
+    # trip FITS verification.
+    def _clean_hdr(hdr):
+        if hdr is None:
+            return fits.Header()
+        h = hdr.copy()
+        for kbad in ("EXTNAME", "XTENSION"):
+            if kbad in h:
+                del h[kbad]
+        return h
+
+    # Stacked 4-band original (electrons): one image plane per band in
+    # LR_INPUT_BAND_NAMES order (band 0 = VIS), carrying the VIS WCS so it
+    # overlays the SR on-sky — the same downloadable output the standalone
+    # infer_euclid_cutout.py script produces.
+    stack = np.moveaxis(lr_cube, -1, 0).astype(np.float32)   # (4, H, W)
+    stack_hdr = _clean_hdr(vis_header)
+    stack_hdr["OBJECT"] = "Euclid LR stack (electrons)"
+    stack_hdr["BUNIT"]  = "electron"
+    stack_hdr["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
+                           "NAXIS3 plane order")
+    stack_path = os.path.join(cache_dir, "original_stack.fits")
+    fits.PrimaryHDU(stack, header=stack_hdr).writeto(
+        stack_path, overwrite=True, output_verify="silentfix")
+    print(f"  ✓ saved stacked original → {stack_path}")
+
     # ────────────────────────────────────────────────────────────────
     # Self-consistency check: forward-model the SR and compare to the
     # observed dirty LR. If the network is doing its job, applying the
@@ -783,22 +844,7 @@ def _job_reconstruct_euclid_cutout(
              len(Config.LR_INPUT_BAND_NAMES) + 3,
              "forward-modelling SR for residual")
     try:
-        psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
-        vis_psf = psfs[Config.BAND_VIS.name]
-        sr_hr = scipy_signal.fftconvolve(
-            sr_data, vis_psf.data, mode="same",
-        ).astype(np.float32)
-        rebin_factor = int(round(
-            Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
-        ))
-        predicted_dirty = MultiBandForward.sum_rebin(sr_hr, rebin_factor)
-        # ``sum_rebin`` may trim a row/col if HR isn't divisible by the
-        # rebin factor — match the LR shape by cropping to the smaller.
-        h = min(predicted_dirty.shape[0], lr_vis.shape[0])
-        w = min(predicted_dirty.shape[1], lr_vis.shape[1])
-        predicted_dirty = predicted_dirty[:h, :w].astype(np.float32)
-        lr_vis_aligned  = lr_vis[:h, :w].astype(np.float32)
-        residual = (lr_vis_aligned - predicted_dirty).astype(np.float32)
+        predicted_dirty, residual = _forward_model_sr_residual(sr_data, lr_vis)
         print(f"  ✓ residual stats: mean={residual.mean():.3g}, "
               f"std={residual.std():.3g}, "
               f"|max|={np.abs(residual).max():.3g}")
@@ -807,10 +853,14 @@ def _job_reconstruct_euclid_cutout(
         predicted_dirty = None
         residual = None
 
-    # Save SR, predicted-dirty, and residual as FITS in the cache dir.
+    # Save SR with the 2× magnified VIS WCS so it overlays the stacked
+    # original on-sky (0.05″/pix vs 0.10″/pix).
     sr_fits_path = os.path.join(cache_dir, "SR.fits")
-    sr_hdu = fits.PrimaryHDU(sr_data.astype(np.float32))
+    sr_hdr = (_clean_hdr(scaled_wcs_header(vis_header, scale))
+              if vis_header is not None else fits.Header())
+    sr_hdu = fits.PrimaryHDU(sr_data.astype(np.float32), header=sr_hdr)
     sr_hdu.header["OBJECT"]   = "Euclid SR (WDSR VIS)"
+    sr_hdu.header["BUNIT"]    = "electron"
     sr_hdu.header["RA"]       = (float(ra),  "Input RA (deg)")
     sr_hdu.header["DEC"]      = (float(dec), "Input Dec (deg)")
     sr_hdu.header["CSIZE"]    = (int(cutout_size_vis_pixels),
@@ -818,17 +868,18 @@ def _job_reconstruct_euclid_cutout(
     sr_hdu.header["CKPT"]     = (str(checkpoint_dir)[:60], "Checkpoint dir")
     sr_hdu.header["ASINH"]    = (float(asinh_scale or Config.STRETCH_SCALE_E),
                                  "asinh stretch knee used for plot")
-    sr_hdu.writeto(sr_fits_path, overwrite=True)
+    sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
 
     if predicted_dirty is not None and residual is not None:
         pd_path = os.path.join(cache_dir, "SR_forward.fits")
         ph = fits.PrimaryHDU(predicted_dirty)
-        ph.header["OBJECT"] = "VIS-PSF ⨂ SR + 2× rebin (predicted LR)"
+        # FITS header values must be plain ASCII — no unicode math symbols.
+        ph.header["OBJECT"] = "VIS-PSF conv SR + 2x rebin (predicted LR)"
         ph.writeto(pd_path, overwrite=True)
         res_path = os.path.join(cache_dir, "residual.fits")
         rh = fits.PrimaryHDU(residual)
-        rh.header["OBJECT"] = "Dirty(VIS) − VIS-PSF ⨂ SR + 2× rebin"
+        rh.header["OBJECT"] = "Dirty(VIS) - VIS-PSF conv SR + 2x rebin"
         rh.writeto(res_path, overwrite=True)
         print(f"  ✓ saved SR_forward + residual → {cache_dir}")
 
@@ -860,6 +911,137 @@ def _job_reconstruct_euclid_cutout(
         "cutout_size":  cutout_size_vis_pixels,
         "bands":        bands_info,
         "residual_std": float(residual.std()) if residual is not None else None,
+    }
+
+
+def _plot_lr_input(lr_cube, output_path, asinh_scale, *, label=""):
+    """Render the 4-band LR input as an asinh montage (no model needed).
+
+    Used by the round-trip inspector before any checkpoint exists, so the
+    user can still eyeball the real-Euclid stamps the network will be fed.
+    """
+    scale = float(asinh_scale) if asinh_scale and asinh_scale > 0 \
+            else float(Config.STRETCH_SCALE_E)
+    names = Config.LR_INPUT_BAND_NAMES
+    fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4.2))
+    if len(names) == 1:
+        axes = [axes]
+    for ax, name in zip(axes, names):
+        plane = np.arcsinh(lr_cube[..., names.index(name)] / scale)
+        ax.imshow(plane, origin="lower", cmap="gray", interpolation="nearest")
+        ax.set_title(f"{name} (asinh)", fontsize=10)
+        ax.set_xticks([]); ax.set_yticks([])
+    fig.suptitle(f"Round-trip LR input · {label}  (0.10\"/pix, electrons)",
+                 fontsize=11)
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _job_roundtrip_inspect(
+    cap,
+    pos_id: int,
+    checkpoint_dir: str,
+    num_res_blocks: int,
+    asinh_scale: Optional[float] = None,
+    show_all_bands: bool = False,
+) -> Dict[str, Any]:
+    """Inspect one real-Euclid round-trip cutout — and its round-trip
+    reconstruction once a checkpoint exists.
+
+    Pulls the bundled ``sky_<pos_id>.fits`` (the 4-band cutouts step 1 of
+    the round-trip pipeline writes on FASRC) into the local cache, scales
+    each band by ``t_total_s`` to match the round-trip TFRecords the
+    trainer saw, and renders the LR input. When the local checkpoint
+    mirror has a checkpoint, it also runs ``M → SR``, forward-models SR
+    back to the Euclid LR grid, and shows the round-trip residual — the
+    exact self-consistency the round-trip loss optimises.
+    """
+    cfg = fasrc_config.load()
+    remote = f"{cfg.data_dir}/euclid_sky/cutouts/sky_{int(pos_id):04d}.fits"
+    cap.tick(0, 4, f"fetching sky_{int(pos_id):04d}.fits from FASRC")
+    res = _fasrc_fetcher.fetch_one_file(remote)
+    if not res.ok:
+        raise RuntimeError(f"could not fetch {remote}: {res.error}")
+    local = res.local_path
+
+    cap.tick(1, 4, "reading 4-band bundle")
+    bands_data: Dict[str, np.ndarray] = {}
+    bands_info: Dict[str, Dict[str, Any]] = {}
+    with fits.open(local) as hdul:
+        names_present = {h.name for h in hdul if getattr(h, "name", "")}
+        primary_hdr = hdul[0].header
+        for band_name in Config.LR_INPUT_BAND_NAMES:
+            if band_name not in names_present:
+                raise RuntimeError(
+                    f"bundle {os.path.basename(local)} is missing band "
+                    f"{band_name} (HDUs: {sorted(names_present)})"
+                )
+            band = Config.get_band(band_name)
+            # Archive e⁻/s → total electrons over the stack (× t_total_s),
+            # matching fasrc_generate_euclid_roundtrip_tfrecords.py.
+            data_e = (np.asarray(hdul[band_name].data, dtype=np.float32)
+                      * float(band.t_total_s))
+            bands_data[band_name] = data_e
+            bands_info[band_name] = {
+                "shape":     list(data_e.shape),
+                "t_total_s": float(band.t_total_s),
+                "pix_mean":  float(np.mean(data_e)),
+                "pix_std":   float(np.std(data_e)),
+            }
+    ra  = float(primary_hdr.get("RA",  float("nan")))
+    dec = float(primary_hdr.get("DEC", float("nan")))
+
+    shapes = {n: bands_data[n].shape for n in Config.LR_INPUT_BAND_NAMES}
+    if len(set(shapes.values())) != 1:
+        raise RuntimeError(f"per-band shapes disagree: {shapes}")
+    lr_cube = np.stack(
+        [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
+    )
+    lr_vis = lr_cube[..., 0]
+
+    out_dir = Config.VIS_RECONSTRUCTION_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "roundtrip_latest.png")
+
+    has_ckpt = bool(tf.train.latest_checkpoint(checkpoint_dir))
+    residual_std = None
+    if has_ckpt:
+        cap.tick(2, 4, "running model + round-trip forward")
+        model = load_model_from_checkpoint(
+            checkpoint_dir, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
+            nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+        )
+        _, sr_data = reconstruct(model, lr_cube)
+        try:
+            predicted_dirty, residual = _forward_model_sr_residual(sr_data, lr_vis)
+            residual_std = float(residual.std())
+        except Exception as e:  # noqa: BLE001 — residual is a bonus panel
+            print(f"  residual skipped: {type(e).__name__}: {e}")
+            predicted_dirty, residual = None, None
+        plot_reconstruction(
+            lr_vis, sr_data, hr_data=None, output_path=out_path,
+            lr_cube=lr_cube, asinh_scale=asinh_scale,
+            show_all_bands=show_all_bands,
+            predicted_dirty=predicted_dirty, residual=residual,
+        )
+    else:
+        cap.tick(2, 4, "no checkpoint yet — rendering LR input only")
+        _plot_lr_input(lr_cube, out_path, asinh_scale,
+                       label=f"sky_{int(pos_id):04d}")
+    cap.tick(4, 4, "done")
+    print(f"  ✓ {out_path}")
+    return {
+        "output_path":    out_path,
+        "pos_id":         int(pos_id),
+        "ra":             ra,
+        "dec":            dec,
+        "has_checkpoint": has_ckpt,
+        "shape":          list(lr_vis.shape),
+        "bands":          bands_info,
+        "residual_std":   residual_std,
+        "local_bundle":   local,
     }
 
 
@@ -2521,7 +2703,38 @@ def create_app() -> Flask:
             records_dir=records_dir,
             cutouts_summary=cutouts_summary,
             tfrecords=tfrecords,
+            default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
         )
+
+    @app.route("/roundtrip/inspect", methods=["POST"])
+    def roundtrip_inspect():
+        """Fetch one round-trip sky cutout from FASRC and render it — plus
+        its round-trip reconstruction when a local checkpoint exists."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"error": "not connected to FASRC — connect "
+                            "first to fetch the cutout bundle"}), 400
+        try:
+            pos_id = int(request.form["pos_id"])
+        except (KeyError, ValueError):
+            return jsonify({"error": "pos_id must be an integer"}), 400
+        if pos_id < 0:
+            return jsonify({"error": f"pos_id={pos_id} must be >= 0"}), 400
+        ckpt_dir = request.form.get("checkpoint_dir",
+                                    Config.DEFAULT_CHECKPOINT_DIR)
+        nrb = int(request.form.get("num_res_blocks",
+                                   Config.DEFAULT_NUM_RES_BLOCKS))
+        asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
+        show_all = request.form.get("show_all_bands", "").lower() in (
+            "1", "on", "true", "yes",
+        )
+        job_id = REGISTRY.spawn(
+            label=f"round-trip inspect sky_{pos_id:04d}",
+            target=lambda cap: _job_roundtrip_inspect(
+                cap, pos_id, ckpt_dir, nrb,
+                asinh_scale=asinh, show_all_bands=show_all,
+            ),
+        )
+        return jsonify({"job_id": job_id})
 
     @app.route("/sky/generate", methods=["POST"])
     def sky_generate():
@@ -2634,7 +2847,8 @@ def create_app() -> Flask:
                 if not os.path.isdir(d):
                     continue
                 files = []
-                for name in ("VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
+                for name in ("original_stack.fits",
+                             "VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
                              "SR.fits", "SR_forward.fits", "residual.fits"):
                     f = os.path.join(d, name)
                     if os.path.isfile(f):

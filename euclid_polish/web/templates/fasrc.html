@@ -160,7 +160,7 @@
         </ol>
       </section>
 
-      <!-- Training curves — synthetic PSNR, HST PSNR, cycle-run loss vs
+      <!-- Training curves — synthetic PSNR, HST PSNR, cycle-run PSNR vs
            step, restricted to the current run's wall-time window. Only
            shown once the trainer has logged validation rows; for
            non-training jobs (download / kernel / …) the endpoint 404s
@@ -170,7 +170,7 @@
           <span class="muted" id="cs-plot-msg"
                 style="font-weight:normal; font-size:12px;"></span></h3>
         <p class="hint" style="margin-top:0;">
-          Synthetic PSNR ┃ HST PSNR ┃ cycle-run (round-trip) loss, this
+          Synthetic PSNR ┃ HST PSNR ┃ cycle-run (round-trip) PSNR, this
           run only. Refreshes with the status poll.
         </p>
         <img id="cs-plot-img" alt="training curves"
@@ -505,7 +505,7 @@ function _csHideLive() {
 }
 
 // Load the per-run training-curves PNG (synthetic PSNR ┃ HST PSNR ┃
-// cycle-run loss). ended_at=0 → the endpoint uses now() as the upper
+// cycle-run PSNR). ended_at=0 → the endpoint uses now() as the upper
 // bound, so an in-flight run's window grows each poll. A 404 (no
 // validation rows yet, or a non-training job) hides the card.
 function _refreshCurrentPlot(startedAt) {

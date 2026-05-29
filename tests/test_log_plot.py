@@ -1,7 +1,7 @@
 """Tests for the training-log plotter, including the multi-source panels.
 
 The round-trip workflow wants three curves visible — synthetic PSNR,
-HST PSNR, and the cycle-run (round-trip) loss. These pin that:
+HST PSNR, and the cycle-run (round-trip) PSNR. These pin that:
 
   * synthetic-only records still produce a valid plot (back-compat),
   * records carrying the HST / round-trip columns add their panels,
@@ -39,16 +39,15 @@ def test_synthetic_only_records_plot(tmp_path):
 
 
 def test_multisource_records_one_graph(tmp_path):
-    """When HST PSNR + round-trip loss are present, all three validation
-    metrics render on a single combined graph (two PSNRs on the left
-    dB axis, round-trip loss on the twin right axis) and the call
-    returns the right record/step counts."""
+    """When HST PSNR + round-trip PSNR are present, all three validation
+    metrics render on a single combined graph (all three on the shared
+    dB axis) and the call returns the right record/step counts."""
     records = []
     for s in (0, 100, 200, 300):
         r = _base_row(s)
         r["psnr_stretched_hst"] = 18.0 + s * 0.02
         r["psnr_raw_hst"] = 48.0 + s * 0.02
-        r["roundtrip_val_loss"] = 0.5 / (1 + s * 0.001)
+        r["roundtrip_val_psnr"] = 35.0 + s * 0.01
         records.append(r)
     out = str(tmp_path / "multi.png")
     n, last = plot_training_records(records, out, smooth_window=2)
@@ -66,7 +65,7 @@ def test_save_best_score_adds_second_panel(tmp_path):
     for s, sc in zip((0, 100, 200, 300), scores):
         r = _base_row(s)
         r["psnr_stretched_hst"] = 18.0 + s * 0.02
-        r["roundtrip_val_loss"] = 0.5
+        r["roundtrip_val_psnr"] = 35.0
         r["save_best_score"] = sc
         records.append(r)
     out = str(tmp_path / "score.png")
@@ -83,7 +82,7 @@ def test_partial_multisource_columns_filtered(tmp_path):
         r = _base_row(s)
         # HST present only on the middle row; round-trip never.
         r["psnr_stretched_hst"] = 19.0 if s == 100 else None
-        r["roundtrip_val_loss"] = ""   # blank string, as the CSV writes
+        r["roundtrip_val_psnr"] = ""   # blank string, as the CSV writes
         records.append(r)
     out = str(tmp_path / "partial.png")
     n, _ = plot_training_records(records, out)

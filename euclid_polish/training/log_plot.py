@@ -18,7 +18,7 @@ _NUMERIC_LOG_COLS = {
     # Multi-source validation columns (empty in synthetic-only / older
     # runs — read_training_log skips empty cells, so those rows simply
     # won't carry the key and the corresponding panel is omitted).
-    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_loss",
+    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_psnr",
     "save_best_score",
 }
 
@@ -86,16 +86,13 @@ def plot_training_records(
     used by the FASRC dashboard which fetches the log over SSH and
     filters by wall-time window):
 
-      * synthetic PSNR (stretched)   — left y-axis, dB
-      * HST PSNR (stretched)         — left y-axis, dB (when logged)
-      * round-trip ("cycle-run") loss — right y-axis (when logged)
+      * synthetic PSNR (stretched)   — dB
+      * HST PSNR (stretched)         — dB (when logged)
+      * round-trip ("cycle-run") PSNR — dB (when logged)
 
-    The two PSNRs share the left axis since they're the same unit and
-    "higher is better"; the round-trip loss lives on a twin right axis
-    because it's an asinh-space L1 (~0.1–1) where lower is better — a
-    different scale and direction, so overlaying it on the dB axis would
-    be meaningless. Synthetic-only / older runs without the HST /
-    round-trip columns just show the one PSNR line.
+    All three are PSNR in dB and "higher is better", so they share one
+    left axis. Synthetic-only / older runs without the HST / round-trip
+    columns just show the one PSNR line.
 
     Returns ``(n_records, last_step)``.
     """
@@ -126,7 +123,7 @@ def plot_training_records(
         return np.array(xs), np.array(ys)
 
     hst_x, hst_y     = _opt_series("psnr_stretched_hst")
-    rt_x,  rt_y      = _opt_series("roundtrip_val_loss")
+    rt_x,  rt_y      = _opt_series("roundtrip_val_psnr")
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
 
@@ -165,30 +162,21 @@ def plot_training_records(
             ax_psnr.plot(sx, sy, color="tab:green", lw=2.6, label="HST PSNR (MA)")
     ax_psnr.set_ylabel("PSNR (dB)  ·  higher better")
 
-    handles, labels = ax_psnr.get_legend_handles_labels()
-
-    # ── Right axis: round-trip loss, lower is better (different unit). ──
+    # ── Round-trip PSNR shares the same dB axis — all three metrics are
+    #    now PSNR (higher better), so no twin axis is needed. ──
     if rt_x.size:
-        ax_rt = ax_psnr.twinx()
-        ax_rt.plot(rt_x, rt_y, color="tab:purple", lw=1.6, ls="--", alpha=0.9,
-                   label="Cycle-run loss")
+        ax_psnr.plot(rt_x, rt_y, color="tab:purple", lw=1.6, ls="--",
+                     alpha=0.9, label="Round-trip PSNR")
         sx, sy = _smoothed(rt_x, rt_y)
         if sx is not None:
-            ax_rt.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
-                       label="Cycle-run loss (MA)")
-        ax_rt.set_ylabel("Round-trip loss  ·  lower better", color="tab:purple")
-        ax_rt.tick_params(axis="y", labelcolor="tab:purple")
-        if (rt_y > 0).all():
-            ax_rt.set_yscale("log")
-        h2, l2 = ax_rt.get_legend_handles_labels()
-        handles += h2
-        labels += l2
+            ax_psnr.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
+                         label="Round-trip PSNR (MA)")
 
-    ax_psnr.legend(handles, labels, loc="best", framealpha=0.9, fontsize=9)
+    ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
     ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
 
     # ── Composite save-best score (the quantity checkpoint selection
-    #    keys on: w_syn·PSNR_syn + w_hst·PSNR_hst − w_rt·RT_loss). The
+    #    keys on: w_syn·PSNR_syn + w_hst·PSNR_hst + w_rt·PSNR_rt). The
     #    running max is the actual save-best threshold; the model is
     #    checkpointed wherever the raw score touches that envelope. ──
     if ax_score is not None:

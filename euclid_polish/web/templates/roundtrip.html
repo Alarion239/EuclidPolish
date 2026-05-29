@@ -34,6 +34,21 @@
 </section>
 
 <section class="card">
+  <h3>Round-trip inspector</h3>
+  <p class="hint" id="rt-inspect-msg">
+    Pull one real-Euclid cutout (the kind of stamp the network is fed) from
+    FASRC and view it. Once a checkpoint exists, this also runs the model
+    and shows the full round-trip: <code>LR → SR → forward-model back to
+    the Euclid grid → residual</code> — the exact self-consistency the
+    round-trip loss optimises. Run it from the panel on the right.
+  </p>
+  <img id="rt-inspect-img" alt="round-trip inspection"
+       style="display:none; max-width:100%; margin-top:6px;
+              border:1px solid #d0d3d9; border-radius:4px;">
+  <div id="rt-inspect-status" style="margin-top:6px;"></div>
+</section>
+
+<section class="card">
   <h3>Step 1 artifacts — Euclid cutouts on disk</h3>
   <p class="hint">
     Lives on FASRC at <code>{{ cutouts_dir }}</code>. Each position is one
@@ -81,6 +96,47 @@
 {% endblock %}
 
 {% block actions %}
+<section class="card">
+  <h3>Inspect a round-trip cutout</h3>
+  <p class="hint">
+    Fetches one <code>sky_NNNN.fits</code> bundle from FASRC, scales each
+    band to total electrons (× <code>t_total_s</code>, matching the
+    round-trip TFRecords), and renders the 4-band LR input. With a local
+    checkpoint it also runs the model and shows the round-trip residual.
+    Needs an active FASRC connection.
+  </p>
+  <form id="rt-inspect-form" action="/roundtrip/inspect">
+    <label>Position id
+      <input type="number" name="pos_id" value="0" min="0" required
+             title="Index of the sky_NNNN.fits bundle (0-based; see the cutout count below)."></label>
+    <label>Checkpoint dir
+      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="20"></label>
+    <label>Residual blocks
+      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <label>asinh scale (e⁻)
+      <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
+             title="Brightness knee for the asinh panels. Lower brings up faint extended emission; higher compresses bright sources."></label>
+    <label style="display:flex; align-items:center; gap:6px;"
+           title="Show each of the four LR bands (VIS, Y_E, J_E, H_E) as its own grayscale panel.">
+      <input type="checkbox" name="show_all_bands" value="1" style="margin:0;">
+      <span>Show all 4 bands separately</span></label>
+    <button type="submit">Fetch &amp; inspect</button>
+  </form>
+  <div id="rt-inspect-form-status"></div>
+  <script>
+  document.getElementById("rt-inspect-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(e.target, document.getElementById("rt-inspect-status"), {
+      onDone: () => {
+        const img = document.getElementById("rt-inspect-img");
+        img.src = "{{ url_for('serve_vis', relpath='reconstruction/roundtrip_latest.png') }}?t=" + Date.now();
+        img.style.display = "block";
+      },
+    });
+  });
+  </script>
+</section>
+
 <section class="card">
   <h3>Step 1 · Download Euclid sky cutouts</h3>
   <p class="hint">

@@ -584,6 +584,9 @@ class HSTTrainStep(FASRCPipelineStep):
         w_syn               = float(params.get("save_best_w_syn", 1.0))
         w_hst               = float(params.get("save_best_w_hst", 1.0))
         w_rt                = float(params.get("save_best_w_rt", 0.0))
+        lw_syn              = float(params.get("synthetic_loss_weight", 1.0))
+        lw_hst              = float(params.get("hst_loss_weight", 1.0))
+        lw_rt               = float(params.get("roundtrip_loss_weight", 1.0))
         fwd_crop            = int(params.get("forward_op_crop_half", 0))
         cmd = [
             "scripts/fasrc_train_with_hst.py",
@@ -593,12 +596,15 @@ class HSTTrainStep(FASRCPipelineStep):
             "--save-best-w-syn", f"{w_syn:g}",
             "--save-best-w-hst", f"{w_hst:g}",
             "--save-best-w-rt",  f"{w_rt:g}",
+            "--synthetic-loss-weight", f"{lw_syn:g}",
+            "--hst-loss-weight",       f"{lw_hst:g}",
         ]
         # Only emit the round-trip flags when the path is on, so a
         # supervised-only submission stays byte-identical.
         if roundtrip_fraction > 0:
             cmd += [
                 "--roundtrip-fraction", f"{roundtrip_fraction:g}",
+                "--roundtrip-loss-weight", f"{lw_rt:g}",
                 "--forward-op-crop-half", str(fwd_crop),
             ]
         return cmd
