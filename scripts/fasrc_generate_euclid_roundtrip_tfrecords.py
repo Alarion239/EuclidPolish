@@ -45,17 +45,10 @@ from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
 
 
-# Input: where the sky downloader put the bundled per-position cutouts.
-DEFAULT_INPUT_DIR = os.path.join(Config.DATA_DIR, "euclid_sky", "cutouts")
-# Output: separate records directory so the dataset loader can point
-# at it independently of the synthetic/HST stores.
-DEFAULT_OUTPUT_DIR = os.path.join(
-    Config.DATA_DIR, "images", "records_v2_euclid_roundtrip",
-)
-# Sky-catalogue filename written by the download script. Kept here so
-# the TFRecord generator can read the position list without importing
-# the download script (which would also drag in optional download deps).
-SKY_CATALOG_FILENAME = "sky_positions.csv"
+# Input dir (bundled per-position cutouts), output records dir, and the
+# sky-catalogue filename now live in Config — see
+# Config.EUCLID_SKY_CUTOUTS_DIR, Config.ROUNDTRIP_RECORDS_DIR, and
+# Config.EuclidSky.SKY_CATALOG_FILENAME.
 
 
 def bundle_path_for_id(input_dir: str, pos_id: int) -> str:
@@ -65,13 +58,13 @@ def bundle_path_for_id(input_dir: str, pos_id: int) -> str:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--input-dir", default=DEFAULT_INPUT_DIR,
+    p.add_argument("--input-dir", default=Config.EUCLID_SKY_CUTOUTS_DIR,
                    help="Directory containing the bundled per-position "
                         "FITS (``sky_NNNN.fits``) from the sky-download "
-                        "step. Default: " + DEFAULT_INPUT_DIR)
-    p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
+                        "step. Default: " + Config.EUCLID_SKY_CUTOUTS_DIR)
+    p.add_argument("--output-dir", default=Config.ROUNDTRIP_RECORDS_DIR,
                    help="Where to write the TFRecord shards. "
-                        "Default: " + DEFAULT_OUTPUT_DIR)
+                        "Default: " + Config.ROUNDTRIP_RECORDS_DIR)
     p.add_argument("--vis-pixels", type=int, default=512,
                    help="Expected cutout side (in 0.10\"/pix grid "
                         "pixels) from the download step. Used only as "
@@ -257,9 +250,9 @@ def main() -> int:
     # ``input_dir`` first (a user can point both at the same root), then
     # fall back to its parent so the default tree just works.
     cat_candidates = [
-        os.path.join(args.input_dir, SKY_CATALOG_FILENAME),
+        os.path.join(args.input_dir, Config.EuclidSky.SKY_CATALOG_FILENAME),
         os.path.join(os.path.dirname(os.path.abspath(args.input_dir)),
-                     SKY_CATALOG_FILENAME),
+                     Config.EuclidSky.SKY_CATALOG_FILENAME),
     ]
     cat_path = next((p for p in cat_candidates if os.path.isfile(p)), None)
     if cat_path is None:

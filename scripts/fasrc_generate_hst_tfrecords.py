@@ -97,13 +97,9 @@ from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.differential_kernel import DifferentialKernel
 from euclid_polish.sky.noise import apply_band_noise
+from euclid_polish.sky.resample import upsample as resample_upsample
 from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
-
-
-HLSP_DIR     = os.path.join(Config.DATA_DIR, "hst_hlsp")
-KERNEL_PATH  = os.path.join(Config.DATA_DIR, "hst_psf", "diff_kernel_VIS.fits")
-OUT_DIR      = os.path.join(Config.DATA_DIR, "images", "records_v2_hst")
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,11 +112,11 @@ def parse_args() -> argparse.Namespace:
                    help="HR chunk side in HR pixels (0.05\"/pix). Mosaics "
                         "are diced into a non-overlapping grid of these "
                         "squares; smaller → more chunks per mosaic.")
-    p.add_argument("--hlsp-dir",   default=HLSP_DIR)
-    p.add_argument("--kernel",     default=KERNEL_PATH,
+    p.add_argument("--hlsp-dir",   default=Config.HLSP_DIR)
+    p.add_argument("--kernel",     default=Config.HST_DIFF_KERNEL_PATH,
                    help="Analytic Wiener differential kernel FITS, the "
                         "forward operator A applied to every HR stamp.")
-    p.add_argument("--output-dir", default=OUT_DIR)
+    p.add_argument("--output-dir", default=Config.HST_RECORDS_DIR)
     p.add_argument("--n-workers", type=int, default=_default_n_workers(),
                    help="Process pool size for parallel cutout + forward "
                         "modelling. 0 disables the pool (single-process "
@@ -431,8 +427,8 @@ def _is_empty_field(
     COSMOS has lots of empty sky: a sky-subtracted chunk is ~0-mean
     noise, so it clears the coverage check (pixels aren't exactly 0) yet
     contains nothing to super-resolve, producing a useless (noise → noise)
-    training pair. We require at least ``_MIN_SOURCE_PIXELS`` pixels above
-    ``median + min_source_sigma · σ`` (sigma-clipped background of *this*
+    training pair. We require at least ``Config.HST.MIN_SOURCE_PIXELS`` pixels
+    above ``median + min_source_sigma · σ`` (sigma-clipped background of *this*
     chunk). Pure Gaussian noise puts ~0 pixels that high in a 256² chunk,
     so this rejects blank fields without touching real (even faint)
     objects. Scale-invariant — works whatever electron units the cube is
@@ -449,7 +445,7 @@ def _is_empty_field(
         return True, {"n_bright": 0.0, "bg_std": float(std)}
     n_bright = int(np.count_nonzero(img > median + float(min_source_sigma) * std))
     peak_sigma = float((np.nanmax(img) - median) / std)
-    return n_bright < _MIN_SOURCE_PIXELS, {
+    return n_bright < Config.HST.MIN_SOURCE_PIXELS, {
         "n_bright":   float(n_bright),
         "peak_sigma": peak_sigma,
         "bg_std":     float(std),
@@ -457,30 +453,52 @@ def _is_empty_field(
 
 
 def _make_pair(
-    hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean
+    hr_cutout_4ch: np.ndarray,            # (H, W, 4) HR clean, H,W ÷ Config.max_native_rebin()
     *,
     diff_kernel: np.ndarray,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Forward-model the HR cube to a 4-band LR cube at 0.10″/pix.
+    """Forward-model the HR cube to a 4-band LR cube on the shared 0.10″ grid.
 
-    For each band: ``A ⊛ ·`` (analytic differential kernel) →
-    sum-rebin ×2 → Poisson + read + sky + dark.
+    Per band: ``A ⊛ ·`` (the single VIS differential kernel, applied to every
+    band) → sum-rebin to the band's *native* detector scale (VIS 2×→0.10″,
+    NISP 6×→0.30″) → per-band Euclid noise on that native grid → Lanczos3
+    upsample NISP back to 0.10″. This rebin/noise/upsample chain mirrors
+    :meth:`MultiBandForward._process_one_band`, so the HST dirty path's NISP
+    channels carry the same 0.30″ native-sampling + SWarp-resample signature
+    the synthetic and real Euclid NISP mosaics have (0.30″ H2RG detector →
+    MER Lanczos3 → 0.10″). ``H,W`` must already be trimmed to a multiple of
+    ``Config.max_native_rebin()`` (handled by the caller) so all four LR
+    channels land on the same grid.
     """
 
     H, W, C = hr_cutout_4ch.shape
-    assert H % 2 == 0 and W % 2 == 0
-    lr_cube = np.zeros((H // 2, W // 2, C), dtype=np.float32)
+    hr_scale     = Config.DEFAULT_PIXEL_SCALE
+    target_scale = Config.BAND_VIS.pixel_scale_lr_arcsec
+    vis_rebin    = int(round(target_scale / hr_scale))          # 2 → VIS LR grid
+    lr_cube = np.zeros((H // vis_rebin, W // vis_rebin, C), dtype=np.float32)
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
         convolved = _kernel_forward(hr_cutout_4ch[..., k], diff_kernel)
-        # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
-        rebinned = MultiBandSkyImage.rebin_array(convolved, 2)
-        # Apply per-band Euclid noise (Poisson + read; artifacts off for
-        # synthetic HST templates — adding them is a knob we can flip
-        # later if the trained model overfits to the smoother dirty path).
-        lr_cube[..., k] = apply_band_noise(rebinned, band, rng,
-                                           add_artifacts=False)
+        # Sum-rebin to the band's native detector scale (photometric: conserves
+        # total electrons per native pixel).
+        rebin_factor = int(round(band.native_detector_scale_arcsec / hr_scale))
+        rebinned = MultiBandSkyImage.rebin_array(convolved, rebin_factor)
+        # Per-band Euclid noise on the native grid (Poisson + read; artifacts
+        # off for synthetic HST templates — a knob we can flip later if the
+        # trained model overfits to the smoother dirty path).
+        noised = apply_band_noise(
+            rebinned, band, rng, add_artifacts=False,
+            pixel_scale_arcsec=band.native_detector_scale_arcsec,
+        )
+        # Resample NISP back onto the shared 0.10″ archive grid (VIS: factor 1).
+        upsample_factor = int(round(band.native_detector_scale_arcsec / target_scale))
+        if upsample_factor > 1:
+            noised = resample_upsample(
+                noised, factor=upsample_factor, kernel=Config.NISP_RESAMPLE_KERNEL,
+                conserve_flux=True,
+            )
+        lr_cube[..., k] = noised.astype(np.float32, copy=False)
     return lr_cube
 
 
@@ -499,18 +517,6 @@ _WORKER_MAX_RELATIVE_NOISE: float                = 0.0
 _WORKER_STAR_FWHM:          float                = 0.0
 _WORKER_STAR_THRESH_SIGMA:  float                = 0.0
 _WORKER_MIN_SOURCE_SIGMA:   float                = 0.0
-
-# Minimum fraction of a raw grid chunk that must be real (finite,
-# non-zero) data. HLSP mosaics zero-pad / NaN-fill regions with no
-# exposure; a chunk straddling that border would leak blank sky into the
-# training pair, so anything below this is dropped.
-_MIN_TILE_COVERAGE: float = 0.95
-
-# A chunk must hold at least this many pixels above the source-detection
-# threshold to count as containing a real object — guards against the
-# many empty (sky-only) fields in COSMOS, which otherwise pass coverage
-# (sky-subtracted noise is non-zero) but carry nothing to super-resolve.
-_MIN_SOURCE_PIXELS: int = 3
 
 
 def _init_worker(
@@ -572,6 +578,7 @@ def _process_one_tile(
     the bright-pixel / star filters.
     """
     tile_idx, tile_path, y0, x0, side, seed = task
+    max_rebin = Config.max_native_rebin()
     if _WORKER_TYPICAL_RATIOS is None or _WORKER_KERNEL is None:
         # If we ever forget the initializer, fail loudly rather than
         # silently using None and crashing deep in the FFT.
@@ -601,7 +608,7 @@ def _process_one_tile(
     # pixels are essentially never exactly 0; a chunk straddling the
     # mosaic's blank border shows up as a block of exact-0 / NaN.
     covered = np.isfinite(chunk) & (chunk != 0.0)
-    if float(covered.mean()) < _MIN_TILE_COVERAGE:
+    if float(covered.mean()) < Config.HST.MIN_TILE_COVERAGE:
         return None, "no-coverage"
 
     hr_resampled = _resample_hlsp_to_hr(chunk)
@@ -623,6 +630,13 @@ def _process_one_tile(
     hr_cube = _hst_to_euclid_hr_cube(hr_clean_rate, _WORKER_TYPICAL_RATIOS)
     if hr_cube is None:
         return None, "hst-cube-allnan"
+
+    # Trim HR to a multiple of the max native rebin (NISP 6×) so the VIS (2×)
+    # and NISP (6×→×3 upsample) LR channels land on the same 0.10″ grid. A
+    # few edge pixels are not science-relevant; mirrors MultiBandForward.
+    Ht = (hr_cube.shape[0] // max_rebin) * max_rebin
+    Wt = (hr_cube.shape[1] // max_rebin) * max_rebin
+    hr_cube = hr_cube[:Ht, :Wt, :]
 
     # Bright-stamp rejection: measure S_max from the fully-built HR
     # cube but BEFORE the expensive forward modelling. A rejected

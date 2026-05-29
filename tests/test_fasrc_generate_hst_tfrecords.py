@@ -29,6 +29,8 @@ sys.path.insert(0, _REPO_ROOT)
 # across process boundaries.
 sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
 
+from euclid_polish.config import Config
+
 
 # Default per-band ratios for tests — VIS=1.0 by construction, NISP
 # bands take order-of-magnitude typical values. Real value at runtime
@@ -419,7 +421,7 @@ class TestIsEmptyField:
         img = rng.normal(0.0, 1.0, size=(128, 128)).astype(np.float32)
         empty, diag = mod._is_empty_field(img, min_source_sigma=5.0)
         assert empty is True
-        assert diag["n_bright"] < mod._MIN_SOURCE_PIXELS
+        assert diag["n_bright"] < Config.HST.MIN_SOURCE_PIXELS
 
     def test_field_with_source_not_empty(self):
         mod = _load_script()
@@ -429,7 +431,7 @@ class TestIsEmptyField:
         img += self._gauss(128, 64, 64, fwhm=8.0, amp=30.0)
         empty, diag = mod._is_empty_field(img, min_source_sigma=5.0)
         assert empty is False
-        assert diag["n_bright"] >= mod._MIN_SOURCE_PIXELS
+        assert diag["n_bright"] >= Config.HST.MIN_SOURCE_PIXELS
 
     def test_flat_chunk_is_empty(self):
         """A perfectly flat chunk (σ=0) has no signal *and* no noise —
@@ -472,10 +474,12 @@ class TestProcessOneGalaxyHappyPath:
         provenance, hr_cube, lr_cube = result
         # Provenance labels the source mosaic + grid cell.
         assert isinstance(provenance, str) and "tile.fits" in provenance
-        # HR is target image_size × NUM_LR_CHANNELS.
-        assert hr_cube.shape == (64, 64, 4)
-        # LR is HR // 2 (×2 rebin in _make_pair).
-        assert lr_cube.shape == (32, 32, 4)
+        # HR is the target image_size (64) trimmed to a multiple of the max
+        # native rebin (NISP 6×) → 60, so VIS (2×) and NISP (6×→×3 upsample)
+        # LR channels share the same 0.10″ grid.
+        assert hr_cube.shape == (60, 60, 4)
+        # LR is HR // 2 (VIS LR grid).
+        assert lr_cube.shape == (30, 30, 4)
         assert hr_cube.dtype == np.float32
         assert lr_cube.dtype == np.float32
 

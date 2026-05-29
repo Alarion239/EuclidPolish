@@ -35,6 +35,21 @@ def test_lr_input_band_names_match_bands_tuple():
     assert Config.LR_INPUT_BAND_NAMES == tuple(b.name for b in Config.BANDS)
 
 
+def test_native_detector_scale_vis_vs_nisp():
+    """VIS samples natively at 0.10″; NISP H2RGs at 0.30″. The archive/network
+    grid (pixel_scale_lr_arcsec) is a uniform 0.10″ for every band — the
+    forward model rebins to the native scale, then resamples NISP back."""
+    assert Config.BAND_VIS.native_detector_scale_arcsec == 0.10
+    assert Config.BAND_VIS.pixel_scale_lr_arcsec == 0.10
+    for b in (Config.BAND_Y_E, Config.BAND_J_E, Config.BAND_H_E):
+        assert b.native_detector_scale_arcsec == 0.30, b.name
+        assert b.pixel_scale_lr_arcsec == 0.10, b.name
+    # Native rebin factor onto the 0.05″ HR grid: VIS 2×, NISP 6×.
+    hr = Config.DEFAULT_PIXEL_SCALE
+    assert round(Config.BAND_VIS.native_detector_scale_arcsec / hr) == 2
+    assert round(Config.BAND_H_E.native_detector_scale_arcsec / hr) == 6
+
+
 def test_channel_counts():
     assert Config.NUM_LR_CHANNELS == 4
     assert Config.NUM_HR_CHANNELS == 1

@@ -6,10 +6,9 @@ import os
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_fetcher import (
-    CACHE_DIR,
-    MAX_PULL_BYTES,
     FetchResult,
     _local_path_for,
     allowed_remote_roots,
@@ -55,7 +54,7 @@ class TestCachePathLayout:
 
     def test_local_path_under_cache_dir(self):
         local = _local_path_for("/n/netscratch/foo/bar/baz.fits")
-        assert local.startswith(os.path.realpath(CACHE_DIR))
+        assert local.startswith(os.path.realpath(Config.FASRC_CACHE_DIR))
         assert local.endswith("/baz.fits")
 
     def test_unique_local_paths_for_different_remotes(self):
@@ -98,7 +97,7 @@ class TestForceBypassesCache:
     def test_force_bypasses_fresh_cache(self, tmp_path, monkeypatch):
         from euclid_polish.web import fasrc_fetcher as ff
         # Point the cache at tmp_path and the safety check at "always ok".
-        monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
 
         # Plant a fresh "cached" file so the no-force path would short-circuit.
@@ -147,7 +146,7 @@ class TestCacheEviction:
 
     def test_cache_size_reads_existing_files(self, tmp_path, monkeypatch):
         from euclid_polish.web import fasrc_fetcher as ff
-        monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         # No files → 0
         assert ff.cache_size_bytes() == 0
         # Write a couple of files
@@ -157,7 +156,7 @@ class TestCacheEviction:
 
     def test_evict_lru_frees_oldest_first(self, tmp_path, monkeypatch):
         from euclid_polish.web import fasrc_fetcher as ff
-        monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         f1 = tmp_path / "old"
         f2 = tmp_path / "new"
         f1.write_bytes(b"x" * 1000)

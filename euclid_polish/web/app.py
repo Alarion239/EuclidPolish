@@ -59,7 +59,6 @@ from astropy.visualization import (
 AsinhStretch, ImageNormalize, MinMaxInterval,
 )
 from PIL import Image
-from euclid_polish.web.fasrc_fetcher import CACHE_DIR as _FASRC_CACHE_DIR
 from euclid_polish.web.fasrc_fetcher import _local_path_for
 from euclid_polish.visualization.color import calibrated_rgb_panel
 from euclid_polish.visualization.methods import plot_star_positions
@@ -1423,7 +1422,7 @@ def _inspectable_roots() -> List[str]:
         Config.EUCLID_INFERENCE_DIR,       # real-Euclid inference outputs
         Config.VIS_DIR,                     # reconstruction PNG/FITS, demos, sky_fits
         Config.RECORDS_DIR_V2,              # TFRecords (not FITS) — kept for completeness
-        _FASRC_CACHE_DIR,                  # rsync'd-from-FASRC FITS files
+        Config.FASRC_CACHE_DIR,            # rsync'd-from-FASRC FITS files
     ]
     out = []
     for p in roots:

@@ -22,11 +22,6 @@ from euclid_polish.euclid.validator import FitsValidator, angular_separation_arc
 from euclid_polish.config import Config
 
 
-# Constants
-POSITION_TOLERANCE_ARCSEC = 0.5  # Tolerance for position matching (arcsec)
-SIZE_TOLERANCE_PIXELS = 10  # Tolerance for cutout size matching (pixels)
-
-
 @dataclass
 class DownloadConfig:
     """Configuration for cutout downloading (one band at a time).
@@ -45,8 +40,8 @@ class DownloadConfig:
     """
     cutout_size: int = Config.DEFAULT_CUTOUT_SIZE
     cutout_radius: float = 0.2  # arcmin
-    position_tolerance: float = POSITION_TOLERANCE_ARCSEC
-    size_tolerance: int = SIZE_TOLERANCE_PIXELS
+    position_tolerance: float = Config.Matching.DOWNLOAD_POSITION_TOL_ARCSEC
+    size_tolerance: int = Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS
     environment: str = "PDR"
     max_workers: int = 8  # parallel cutout HTTPS fetches
     band: str = "VIS"

@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web.app import create_app
 from euclid_polish.web.jobs import REGISTRY
 
@@ -409,7 +410,7 @@ def test_view_hst_pair_pair_kind_404_when_not_synced(
     none are cached, it must 404 — not 500 — same as single-image
     kinds. Regression on the multi-shard composite path."""
     from euclid_polish.web import fasrc_fetcher as ff
-    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
     r = client.get("/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0")
     assert r.status_code == 404
 
@@ -444,7 +445,7 @@ def test_view_hst_pair_pair_kind_renders_real_png(
 
     # Point the local cache at tmp_path and the remote at a fixed
     # absolute path so _hst_pairs_local_dir resolves under tmp_path.
-    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
     # Override the FASRC config's data_dir → we want
     # _hst_pairs_remote_dir() → "{data_dir}/images/records_v2_hst" to
     # land somewhere stable, but the renderer only reads the LOCAL
@@ -527,7 +528,7 @@ def test_view_hst_pair_404_when_not_synced(client, tmp_path, monkeypatch):
     machine (which is exactly what regressed the first time I wrote
     this — my own ``data/_fasrc_cache/`` had real validate files)."""
     from euclid_polish.web import fasrc_fetcher as ff
-    monkeypatch.setattr(ff, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
     r = client.get("/view/hst-pair?subset=validate&kind=clean&band=VIS&i=0")
     assert r.status_code == 404
 

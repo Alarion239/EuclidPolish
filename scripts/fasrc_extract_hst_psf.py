@@ -37,51 +37,18 @@ from euclid_polish.config import Config
 from euclid_polish.observability import Reporter
 
 
-HLSP_DIR_NAME    = "hst_hlsp"
-PSF_DIR_NAME     = "hst_psf"
-PSF_FILE_NAME    = "F814W.fits"
-# Per-star stamp library populated for the HST cutouts UI tab. Tiny
-# (~260 KB each) and useful for spot-checking which sources fed the
-# ePSF — same role the Euclid star cutouts play for the VIS PSF.
-STARS_DIR_NAME   = "hst_stars"
-# COSMOS HLSP can ship at either 30 mas or 50 mas. Rather than hardcode
-# one, we read PIXSCALE from each tile's WCS header (see
-# ``_pixel_scale_from_header``) and use that throughout. The default
-# below is only a last-ditch fallback if the header has neither CDELT
-# nor CD matrix entries.
-FALLBACK_PIX_SCALE_ARCSEC = 0.05
-EPSF_OVERSAMPLING     = 1          # no oversampling — keep PSF at native
-                                    # tile scale so downstream code doesn't
-                                    # have to resample (the differential
-                                    # kernel script also lives on this grid).
-PSF_HALF_SIDE_PIX     = 255        # final ePSF side = 2 × half + 1 = 511.
-                                    # At 0.05"/pix that's a ~25.5" cut, plenty
-                                    # of room for HST diffraction wings.
-MAX_STARS_PER_TILE    = 100        # take up to this many stars from each
-                                    # tile. HLSP tiles are ~500 MB each, so
-                                    # the bottleneck is per-tile I/O; letting
-                                    # a few rich tiles supply the whole target
-                                    # avoids scanning extra tiles just to fill
-                                    # an even per-tile quota.
-# Per-stamp acceptance cuts. Large stamps (e.g. 1023²) straddle tile
-# seams / ACS chip gaps (drizzle fills no-coverage with 0), and a
-# coverage-biased background lets noise through the detector — both
-# poison the ePSF. Reject any stamp that is not (nearly) fully covered
-# or whose central source isn't clearly above the local robust noise.
-MAX_UNCOVERED_FRAC    = 0.005      # >0.5% exact-0 / NaN pixels → seam/hole
-MIN_STAMP_PEAK_SNR    = 30.0       # brightest pixel ≥ this × MAD σ, else noise
-MAX_PEAK_OFFCENTER_PX = 5          # brightest pixel must be within this many
-                                    # px of the stamp centre, else a brighter
-                                    # NEIGHBOUR is in frame (crowding) — those
-                                    # drag EPSFBuilder's recentring off the
-                                    # target star and smear the ePSF.
+# HST PSF-extraction constants now live on Config.HST (see
+# euclid_polish/config.py): HLSP_DIR_NAME, PSF_DIR_NAME, PSF_FILE_NAME,
+# STARS_DIR_NAME, FALLBACK_PIX_SCALE_ARCSEC, EPSF_OVERSAMPLING,
+# PSF_HALF_SIDE_PIX, MAX_STARS_PER_TILE, MAX_UNCOVERED_FRAC,
+# MIN_STAMP_PEAK_SNR, MAX_PEAK_OFFCENTER_PX.
 
 
 def _pixel_scale_from_header(header) -> float:
     """Read pixel scale (arcsec/pix) from a FITS WCS header.
 
     Tries CDELT first, then the CD matrix. Falls back to
-    :data:`FALLBACK_PIX_SCALE_ARCSEC` only if neither is present.
+    :data:`Config.HST.FALLBACK_PIX_SCALE_ARCSEC` only if neither is present.
     """
     if "CDELT1" in header:
         return abs(float(header["CDELT1"])) * 3600.0
@@ -89,7 +56,7 @@ def _pixel_scale_from_header(header) -> float:
         cd11 = float(header["CD1_1"])
         cd12 = float(header.get("CD1_2", 0.0))
         return float(np.sqrt(cd11 ** 2 + cd12 ** 2)) * 3600.0
-    return FALLBACK_PIX_SCALE_ARCSEC
+    return Config.HST.FALLBACK_PIX_SCALE_ARCSEC
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,7 +65,7 @@ def parse_args() -> argparse.Namespace:
                    help="Target number of stars to use (more = higher S/N, "
                         "slower). The actual number used is reported in "
                         "the FITS header.")
-    p.add_argument("--half-side", type=int, default=PSF_HALF_SIDE_PIX,
+    p.add_argument("--half-side", type=int, default=Config.HST.PSF_HALF_SIDE_PIX,
                    help="Half-side of the FINAL ePSF in HLSP pixels; the "
                         "ePSF spans (2·half+1) px at the ~0.05\"/pix HLSP "
                         "scale (255 → 511², 511 → 1023²). 2·half+1 is always "
@@ -136,7 +103,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_cached_star_stamps(
-    stars_dir: str, *, half_side: int = PSF_HALF_SIDE_PIX,
+    stars_dir: str, *, half_side: int = Config.HST.PSF_HALF_SIDE_PIX,
 ) -> tuple:
     """Load per-star FITS stamps from a previous run, as ``EPSFStar`` objects.
 
@@ -155,7 +122,7 @@ def _load_cached_star_stamps(
     """
 
     if not os.path.isdir(stars_dir):
-        return [], FALLBACK_PIX_SCALE_ARCSEC, 0
+        return [], Config.HST.FALLBACK_PIX_SCALE_ARCSEC, 0
 
     expected_side = 2 * half_side + 1
     suffix = f"_{expected_side}.fits"
@@ -164,7 +131,7 @@ def _load_cached_star_stamps(
         if f.startswith("star_") and f.endswith(suffix)
     )
     if not files:
-        return [], FALLBACK_PIX_SCALE_ARCSEC, 0
+        return [], Config.HST.FALLBACK_PIX_SCALE_ARCSEC, 0
 
     stamps: list = []
     pix_scale: float | None = None
@@ -176,7 +143,7 @@ def _load_cached_star_stamps(
                 arr = np.asarray(hdul[0].data, dtype=np.float32)
                 h = hdul[0].header
                 if pix_scale is None:
-                    pix_scale  = float(h.get("PIXSCALE", FALLBACK_PIX_SCALE_ARCSEC))
+                    pix_scale  = float(h.get("PIXSCALE", Config.HST.FALLBACK_PIX_SCALE_ARCSEC))
                     n_tiles_src = int(h.get("NTILESRC", 0))
         except Exception:
             continue
@@ -190,12 +157,12 @@ def _load_cached_star_stamps(
         side = arr.shape[0]
         stamps.append(EPSFStar(data=arr, cutout_center=(side / 2.0, side / 2.0)))
 
-    return stamps, (pix_scale if pix_scale is not None else FALLBACK_PIX_SCALE_ARCSEC), n_tiles_src
+    return stamps, (pix_scale if pix_scale is not None else Config.HST.FALLBACK_PIX_SCALE_ARCSEC), n_tiles_src
 
 
 def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
                         sigma: float = 5.0,
-                        half_side: int = PSF_HALF_SIDE_PIX) -> "Table":
+                        half_side: int = Config.HST.PSF_HALF_SIDE_PIX) -> "Table":
     """Detect bright unsaturated point sources in one tile.
 
     Returns an astropy Table with at least ``x`` and ``y`` columns
@@ -261,30 +228,30 @@ def _is_clean_star_stamp(arr: np.ndarray) -> bool:
         recentre onto that neighbour and stack misaligned → a noisy,
         asymmetric ePSF core (the regression that prompted this). The big
         1023² stamps make this common, so require the global peak to sit
-        within ``MAX_PEAK_OFFCENTER_PX`` of the stamp centre.
+        within ``Config.HST.MAX_PEAK_OFFCENTER_PX`` of the stamp centre.
     """
     arr = np.asarray(arr, dtype=np.float32)
     if arr.size == 0 or not np.isfinite(arr).all():
         return False
-    if float(np.mean(arr == 0.0)) > MAX_UNCOVERED_FRAC:
+    if float(np.mean(arr == 0.0)) > Config.HST.MAX_UNCOVERED_FRAC:
         return False
     med = float(np.median(arr))
     mad = float(np.median(np.abs(arr - med))) * 1.4826   # robust σ
     if mad <= 0:
         return False
-    if (float(np.max(arr)) - med) < MIN_STAMP_PEAK_SNR * mad:
+    if (float(np.max(arr)) - med) < Config.HST.MIN_STAMP_PEAK_SNR * mad:
         return False
     py, px = np.unravel_index(int(np.argmax(arr)), arr.shape)
     cy = (arr.shape[0] - 1) / 2.0
     cx = (arr.shape[1] - 1) / 2.0
-    if (abs(py - cy) > MAX_PEAK_OFFCENTER_PX
-            or abs(px - cx) > MAX_PEAK_OFFCENTER_PX):
+    if (abs(py - cy) > Config.HST.MAX_PEAK_OFFCENTER_PX
+            or abs(px - cx) > Config.HST.MAX_PEAK_OFFCENTER_PX):
         return False
     return True
 
 
 def _extract_stamps_from_tile(
-    data: np.ndarray, sources: "Table", *, half_side: int = PSF_HALF_SIDE_PIX,
+    data: np.ndarray, sources: "Table", *, half_side: int = Config.HST.PSF_HALF_SIDE_PIX,
 ) -> list:
     """Pull ``2·half_side+1``-pixel stamps for each source in ``sources``.
 
@@ -311,12 +278,12 @@ def main() -> int:
     args = parse_args()
     # Extract from a margin-enlarged stamp, then trim the border (where
     # EPSFBuilder's smoothing leaves artifacts) back to the requested
-    # --half-side. EPSF_OVERSAMPLING px of trim per native margin pixel.
+    # --half-side. Config.HST.EPSF_OVERSAMPLING px of trim per native margin pixel.
     margin_px    = (max(1, int(round(args.half_side * args.extract_margin_frac)))
                     if args.extract_margin_frac > 0 else 0)
     half_extract = args.half_side + margin_px
-    in_dir  = args.input_dir  or os.path.join(Config.DATA_DIR, HLSP_DIR_NAME)
-    out_dir = args.output_dir or os.path.join(Config.DATA_DIR, PSF_DIR_NAME)
+    in_dir  = args.input_dir  or Config.HLSP_DIR
+    out_dir = args.output_dir or Config.HST_PSF_DIR
     os.makedirs(out_dir, exist_ok=True)
     # Structured progress for the web UI. ``from_env()`` is a no-op
     # when ``EUCLID_POLISH_EVENTS_PATH`` isn't set (local dev), so the
@@ -337,10 +304,10 @@ def main() -> int:
 
     t0 = time.time()
 
-    stars_dir = os.path.join(Config.DATA_DIR, STARS_DIR_NAME)
+    stars_dir = os.path.join(Config.DATA_DIR, Config.HST.STARS_DIR_NAME)
     star_stamps: list = []
     tiles_used: list = []
-    pix_scale_observed: float = FALLBACK_PIX_SCALE_ARCSEC
+    pix_scale_observed: float = Config.HST.FALLBACK_PIX_SCALE_ARCSEC
     used_cache = False
 
     # ---- fast path: feed EPSFBuilder from a previous run's stamps ----
@@ -409,7 +376,7 @@ def main() -> int:
         # stops once it has args.n_stars, so a couple of rich tiles can
         # satisfy the target without scanning the rest. ~100 keeps some
         # cross-tile diversity while slashing the number of 500 MB reads.
-        stars_per_tile = min(args.n_stars, MAX_STARS_PER_TILE)
+        stars_per_tile = min(args.n_stars, Config.HST.MAX_STARS_PER_TILE)
 
         for tile_idx, tname in enumerate(tiles):
             if len(star_stamps) >= args.n_stars:
@@ -491,12 +458,12 @@ def main() -> int:
     n_used = len(star_stamps)
     step_label = "[2/2]" if used_cache else "[3/3]"
     reporter.set_stage(f"Building ePSF from {n_used} stars")
-    print(f"{step_label} running EPSFBuilder (oversampling = {EPSF_OVERSAMPLING}) ...")
+    print(f"{step_label} running EPSFBuilder (oversampling = {Config.HST.EPSF_OVERSAMPLING}) ...")
     # ``fits`` is needed below for writing the ePSF; the slow path imports
     # it inside its branch, so reimport here for the cache path. (Top-level
     # imports stay light to keep the dry-run snappy.)
     builder = EPSFBuilder(
-        oversampling=EPSF_OVERSAMPLING,
+        oversampling=Config.HST.EPSF_OVERSAMPLING,
         maxiters=10,
         smoothing_kernel="quartic",
         progress_bar=False,
@@ -527,8 +494,8 @@ def main() -> int:
               f"(EPSFBuilder produced {M}²)")
     psf_arr = psf_arr / float(psf_arr.sum())   # unit flux (after resize)
 
-    psf_pix_scale = pix_scale_observed / EPSF_OVERSAMPLING
-    out_path = os.path.join(out_dir, PSF_FILE_NAME)
+    psf_pix_scale = pix_scale_observed / Config.HST.EPSF_OVERSAMPLING
+    out_path = os.path.join(out_dir, Config.HST.PSF_FILE_NAME)
     hdu = fits.PrimaryHDU(psf_arr)
     h = hdu.header
     h["OBJECT"]   = ("HST F814W ePSF", "empirical PSF from COSMOS HLSP")
@@ -538,14 +505,14 @@ def main() -> int:
     h["NTILES"]   = (len(tiles_used), "HLSP tiles contributing stars")
     h["HALFSIDE"] = (args.half_side, "requested final ePSF half-side (px)")
     h["EXTRMARG"] = (margin_px, "extra border px extracted then trimmed")
-    h["OVERSAMP"] = (EPSF_OVERSAMPLING, "oversampling factor relative to HLSP grid")
+    h["OVERSAMP"] = (Config.HST.EPSF_OVERSAMPLING, "oversampling factor relative to HLSP grid")
     h["PIXSCALE"] = (psf_pix_scale, "arcsec / pixel")
     h["TILESCAL"] = (pix_scale_observed, "source tile pixel scale (arcsec)")
     h["BUNIT"]    = ("", "unit flux (sums to 1)")
     hdu.writeto(out_path, overwrite=True)
     print(f"  wrote ePSF → {out_path}")
     print(f"    shape    = {psf_arr.shape}")
-    print(f"    pix scale = {psf_pix_scale:.4f}\"/pix  (tile {pix_scale_observed:.4f}\"/pix, oversample ×{EPSF_OVERSAMPLING})")
+    print(f"    pix scale = {psf_pix_scale:.4f}\"/pix  (tile {pix_scale_observed:.4f}\"/pix, oversample ×{Config.HST.EPSF_OVERSAMPLING})")
     print(f"    flux sum  = {psf_arr.sum():.6f}  (should be 1.0)")
 
     runtime = time.time() - t0

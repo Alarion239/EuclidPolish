@@ -54,7 +54,7 @@ def _default_vis_psf_path() -> str:
 
 def _default_hst_psf_path() -> str:
     """HST F814W ePSF FITS — the same file the differential kernel consumes."""
-    return os.path.join(Config.DATA_DIR, "hst_psf", "F814W.fits")
+    return Config.HST_PSF_PATH
 
 
 def _next_pow2(n: tf.Tensor) -> tf.Tensor:

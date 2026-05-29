@@ -14,8 +14,8 @@ from typing import Tuple
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web.job_status import (
-    STEP_RATE_EMA_ALPHA,
     Event,
     JobStatus,
     JobStatusFetcher,
@@ -162,7 +162,7 @@ class TestFoldEventsRate:
         (it does not converge instantly — that's the point of the decay).
         Each interval advances 10 steps: the first over 100 s (spp 10),
         the rest over 10 s (spp 1)."""
-        alpha = STEP_RATE_EMA_ALPHA
+        alpha = Config.WebFetch.STEP_RATE_EMA_ALPHA
         lines = ['{"ts":0.0,"kind":"stage","value":"train"}']
         ts, cur = 0.0, 0
         lines.append(f'{{"ts":{ts},"kind":"step",'

@@ -28,13 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
-
-#: Smoothing weight of the newest interval in the per-step-duration EMA
-#: that drives the rate/ETA estimate. 0.1 → each new interval shifts the
-#: estimate 10% toward its instantaneous value, 90% persists. Lower =
-#: smoother/slower to react; higher = noisier/faster. Tuned to shrug off
-#: a slow first interval (compile / cold cache) within ~10–20 events.
-STEP_RATE_EMA_ALPHA: float = 0.1
+from euclid_polish.config import Config
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +210,8 @@ def fold_events(text: str) -> JobStatus:
             continue
         spp = d_t / d_n
         ema_spp = (spp if ema_spp is None
-                   else (1.0 - STEP_RATE_EMA_ALPHA) * ema_spp
-                        + STEP_RATE_EMA_ALPHA * spp)
+                   else (1.0 - Config.WebFetch.STEP_RATE_EMA_ALPHA) * ema_spp
+                        + Config.WebFetch.STEP_RATE_EMA_ALPHA * spp)
     if ema_spp is not None and ema_spp > 0:
         step_rate_per_s = 1.0 / ema_spp
         _, last_cur, last_tot = stage_step_history[-1]

@@ -25,37 +25,15 @@ After calibration, three bands feed the Lupton 2004 asinh stretch
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Tuple
 
 import numpy as np
 
 from euclid_polish.config import Config
 
 
-# ---------------------------------------------------------------------------
-# Calibration constants
-# ---------------------------------------------------------------------------
-#
-# Solar AB magnitudes through Euclid VIS / Y_E / J_E / H_E. These are
-# absolute magnitudes (M_AB at 10 pc), taken from Willmer 2018
-# (ApJS 236:47) for the closest published equivalent filters: HST F814W
-# for VIS, 2MASS Y / J / H for the NISP bands. They're accurate to
-# ~0.05 mag — enough for visual color balancing, not photometry.
-SOLAR_AB_MAG: Dict[str, float] = {
-    "VIS": 4.52,   # HST F814W proxy
-    "Y_E": 4.92,   # 2MASS Y proxy
-    "J_E": 5.10,   # 2MASS J
-    "H_E": 5.12,   # 2MASS H
-}
-
-
-# Default 3-band picks from the 4 Euclid channels. Each scheme is
-# ``(R, G, B)`` band names.
-RGB_SCHEMES: Dict[str, Tuple[str, str, str]] = {
-    "vis_nisp":     ("H_E", "J_E", "VIS"),   # spans full Euclid range
-    "nisp_only":    ("H_E", "J_E", "Y_E"),   # NIR-only, VIS-free
-    "h_y_vis":      ("H_E", "Y_E", "VIS"),   # wider spacing on the green channel
-}
+# Calibration constants (solar AB mags + default RGB band picks) now live
+# in Config.Color — see Config.Color.SOLAR_AB_MAG / Config.Color.RGB_SCHEMES.
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +61,7 @@ def _solar_balance(band_name: str) -> float:
     by construction and any redder/bluer source's color is measured
     relative to sun.
     """
-    return 1.0 / (10 ** (-0.4 * SOLAR_AB_MAG[band_name]))
+    return 1.0 / (10 ** (-0.4 * Config.Color.SOLAR_AB_MAG[band_name]))
 
 
 def calibrate(
@@ -198,10 +176,10 @@ def calibrated_rgb_panel(
         raise ValueError(f"stretch must be 'linear' or 'asinh'; got {stretch!r}")
     if cube.ndim != 3:
         raise ValueError(f"cube must be 3-D; got shape {cube.shape}")
-    if scheme not in RGB_SCHEMES:
-        raise ValueError(f"scheme must be one of {list(RGB_SCHEMES)}; got {scheme!r}")
+    if scheme not in Config.Color.RGB_SCHEMES:
+        raise ValueError(f"scheme must be one of {list(Config.Color.RGB_SCHEMES)}; got {scheme!r}")
     idx = {name: i for i, name in enumerate(band_names)}
-    rgb_names = RGB_SCHEMES[scheme]
+    rgb_names = Config.Color.RGB_SCHEMES[scheme]
     try:
         chans = [cube[..., idx[n]].astype(np.float64, copy=True) for n in rgb_names]
     except KeyError as exc:
@@ -278,12 +256,12 @@ def lupton_rgb(
             f"band_names length ({len(band_names)}) doesn't match cube "
             f"channel count ({cube.shape[-1]})"
         )
-    if scheme not in RGB_SCHEMES:
+    if scheme not in Config.Color.RGB_SCHEMES:
         raise ValueError(
-            f"scheme must be one of {list(RGB_SCHEMES)}; got {scheme!r}"
+            f"scheme must be one of {list(Config.Color.RGB_SCHEMES)}; got {scheme!r}"
         )
     calibrated = calibrate(cube, band_names=band_names, reference=reference)
-    rgb_bands = RGB_SCHEMES[scheme]
+    rgb_bands = Config.Color.RGB_SCHEMES[scheme]
     idx = {name: i for i, name in enumerate(band_names)}
     try:
         r = calibrated[..., idx[rgb_bands[0]]]

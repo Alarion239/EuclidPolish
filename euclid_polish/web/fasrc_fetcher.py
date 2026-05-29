@@ -42,34 +42,6 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web.remote import STATE
 
 
-# Local on-disk cache. Lives under the project ``data/`` so the existing
-# ``/inspect`` page (which whitelists subtrees of ``data/``) can serve it
-# without further config.
-CACHE_SUBDIR  = "_fasrc_cache"
-CACHE_DIR     = os.path.join(Config.DATA_DIR, CACHE_SUBDIR)
-
-
-# ---------------------------------------------------------------------------
-# Configuration knobs (module-level constants — change in code if needed)
-# ---------------------------------------------------------------------------
-
-# Hard cap on any single pull. 50 MB keeps small FITS (PSFs, kernels, star
-# cutouts, log tails) inside the budget and refuses HLSP tiles, full
-# TFRecords, etc.
-MAX_PULL_BYTES   = 50 * 1024 * 1024
-
-# How long a cached file is considered fresh. Clicks within this window
-# serve from disk and don't touch SSH. 5 minutes balances "see updates
-# from a just-finished sbatch" against "don't re-pull the same PSF every
-# refresh."
-CACHE_TTL_SECONDS = 300
-
-# Cap on the cache directory. Cheap LRU eviction kicks in when this is
-# exceeded — oldest mtime first. Bigger files are evicted first within
-# the oldest bucket so a single small file doesn't push everything out.
-MAX_CACHE_BYTES   = 2 * 1024 * 1024 * 1024     # 2 GB
-
-
 # ---------------------------------------------------------------------------
 # Safety: which remote paths are reachable
 # ---------------------------------------------------------------------------
@@ -112,13 +84,13 @@ def is_allowed_remote_path(remote_path: str) -> bool:
 def _local_path_for(remote_path: str) -> str:
     """Deterministic local cache path for a given remote absolute path.
 
-    We strip the leading ``/`` and place under ``CACHE_DIR`` so two
-    different remote paths can't collide and ``os.path.realpath`` gives a
-    predictable result. The path is also what the inspector page sees in
-    its safety check (already whitelists subtrees of ``data/``).
+    We strip the leading ``/`` and place under ``Config.FASRC_CACHE_DIR``
+    so two different remote paths can't collide and ``os.path.realpath``
+    gives a predictable result. The path is also what the inspector page
+    sees in its safety check (already whitelists subtrees of ``data/``).
     """
     rel = remote_path.lstrip("/")
-    return os.path.realpath(os.path.join(CACHE_DIR, rel))
+    return os.path.realpath(os.path.join(Config.FASRC_CACHE_DIR, rel))
 
 
 def _ensure_parent_dir(path: str) -> None:
@@ -157,8 +129,8 @@ class FetchResult:
         True iff the cached local path exists and was either fresh or
         successfully refreshed.
     local_path
-        Where on disk the cached copy lives (always inside ``CACHE_DIR``).
-        Valid only when ``ok=True``.
+        Where on disk the cached copy lives (always inside
+        ``Config.FASRC_CACHE_DIR``). Valid only when ``ok=True``.
     from_cache
         True if the request was satisfied without touching SSH.
     error
@@ -179,11 +151,11 @@ class FetchResult:
 # ---------------------------------------------------------------------------
 
 def _cache_files() -> List[Tuple[str, int, float]]:
-    """List ``(path, size, mtime)`` for every file under ``CACHE_DIR``."""
+    """List ``(path, size, mtime)`` for every file under ``Config.FASRC_CACHE_DIR``."""
     out = []
-    if not os.path.isdir(CACHE_DIR):
+    if not os.path.isdir(Config.FASRC_CACHE_DIR):
         return out
-    for dirpath, _dirs, files in os.walk(CACHE_DIR):
+    for dirpath, _dirs, files in os.walk(Config.FASRC_CACHE_DIR):
         for fname in files:
             full = os.path.join(dirpath, fname)
             try:
@@ -240,8 +212,8 @@ def _remote_size_bytes(remote_path: str) -> Tuple[bool, Optional[int], Optional[
 def fetch_one_file(
     remote_path: str,
     *,
-    max_bytes: int = MAX_PULL_BYTES,
-    cache_ttl: int = CACHE_TTL_SECONDS,
+    max_bytes: int = Config.WebFetch.MAX_PULL_BYTES,
+    cache_ttl: int = Config.WebFetch.CACHE_TTL_SECONDS,
     force: bool = False,
 ) -> FetchResult:
     """Pull one file from FASRC into the local cache.
@@ -332,8 +304,8 @@ def fetch_one_file(
 
         # Background cleanup: keep cache below the cap. Cheap; only walks
         # the cache subtree.
-        if cache_size_bytes() > MAX_CACHE_BYTES:
-            _evict_lru_until_under(MAX_CACHE_BYTES)
+        if cache_size_bytes() > Config.WebFetch.MAX_CACHE_BYTES:
+            _evict_lru_until_under(Config.WebFetch.MAX_CACHE_BYTES)
 
         return FetchResult(
             ok=True, local_path=local, from_cache=False,

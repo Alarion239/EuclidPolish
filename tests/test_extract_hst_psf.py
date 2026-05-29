@@ -17,6 +17,8 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from euclid_polish.config import Config
+
 
 _SCRIPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -102,7 +104,7 @@ class TestPixelScaleReader:
     def test_falls_back_when_no_wcs(self, script_module):
         h = fits.Header()
         scale = script_module._pixel_scale_from_header(h)
-        assert scale == script_module.FALLBACK_PIX_SCALE_ARCSEC
+        assert scale == Config.HST.FALLBACK_PIX_SCALE_ARCSEC
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +210,7 @@ class TestCachedStarLoader:
             str(tmp_path / "does_not_exist"), half_side=self._HALF_SIDE,
         )
         assert stamps == []
-        assert scale == script_module.FALLBACK_PIX_SCALE_ARCSEC
+        assert scale == Config.HST.FALLBACK_PIX_SCALE_ARCSEC
         assert n == 0
 
     def test_empty_dir_returns_empty(self, script_module, tmp_path):
@@ -216,7 +218,7 @@ class TestCachedStarLoader:
             str(tmp_path), half_side=self._HALF_SIDE,
         )
         assert stamps == []
-        assert scale == script_module.FALLBACK_PIX_SCALE_ARCSEC
+        assert scale == Config.HST.FALLBACK_PIX_SCALE_ARCSEC
         assert n == 0
 
     def test_loads_compatible_stamps_with_metadata(self, script_module, tmp_path):

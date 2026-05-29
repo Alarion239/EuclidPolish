@@ -38,8 +38,6 @@ from euclid_polish.euclid.validator import angular_separation_arcsec
 
 from euclid_polish.config import Config as _Cfg
 
-POSITION_TOLERANCE_ARCSEC = 0.05  # duplicate-detection tolerance (arcsec)
-
 _FLAG_KINDS = ("valid", "corrupted", "download_failed")
 _FLAG_RE    = re.compile(r"^(valid|corrupted|download_failed):([^:]+):(\d+)$")
 _BASE_COLS  = ("id", "ra", "dec", "magnitude")
@@ -323,7 +321,7 @@ class StarCatalog:
 
     def _is_duplicate_star(self, ra: float, dec: float,
                            existing_stars: List[Dict],
-                           tolerance_arcsec: float = POSITION_TOLERANCE_ARCSEC
+                           tolerance_arcsec: float = Config.Matching.CATALOG_POSITION_TOL_ARCSEC
                            ) -> bool:
         for star in existing_stars:
             if angular_separation_arcsec(ra, dec,

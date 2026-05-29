@@ -50,7 +50,7 @@ def _flat_in_solar(scale: float = 1e6) -> np.ndarray:
         ab = b.t_total_s * 10 ** (0.4 * b.zeropoint_ab_e_per_s)
         # multiply by inverse solar balance so the calibrate() step's
         # solar balance brings it back to ``scale``:
-        sb = 10 ** (-0.4 * color.SOLAR_AB_MAG[name])
+        sb = 10 ** (-0.4 * Config.Color.SOLAR_AB_MAG[name])
         img[..., k] = float(scale * ab * sb)
     return img
 

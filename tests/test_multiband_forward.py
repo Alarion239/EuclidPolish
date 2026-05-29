@@ -72,16 +72,19 @@ def test_lr_band_names_in_canonical_order(forward: MultiBandForward, hr_field):
 def test_noise_off_preserves_total_flux_per_band(forward: MultiBandForward, hr_field):
     """Sum over each LR channel ≈ sum over the corresponding HR channel.
 
-    Convolution + sum-rebin conserve total electrons. With every band at
-    0.10″/pix LR (uniform-archive pipeline) the rebin factor is 2 for all
-    four bands and there is no NISP upsample stage — flux is conserved
-    exactly across all channels.
+    Convolution + sum-rebin conserve total electrons exactly, so VIS (2×
+    rebin, no upsample) matches to floating-point. NISP samples at its native
+    0.30″ (6× rebin) and is then Lanczos3-upsampled back to 0.10″ with
+    ``conserve_flux=True``; that resample splits each native pixel's flux
+    across the finer grid, conserving the total only approximately (~%) due to
+    Lanczos side lobes — hence the looser tolerance for the NISP bands.
     """
     lr, _ = forward.process(hr_field, rng=np.random.default_rng(0))
     for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
         hr_total = hr_field.data[..., k].sum()
         lr_total = lr.data[..., k].sum()
-        assert lr_total == pytest.approx(hr_total, rel=1e-3), name
+        rel = 1e-3 if name == "VIS" else 1e-2
+        assert lr_total == pytest.approx(hr_total, rel=rel), name
 
 
 # ---------------------------------------------------------------------------

@@ -62,17 +62,9 @@ from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.observability.reporter import Reporter
 
 
-# Default sky-catalog location. Kept separate from the ePSF star catalog
-# (``Config.DEFAULT_OUTPUT_DIR``) so the two pipelines can be re-run
-# independently.
-DEFAULT_SKY_OUTPUT_DIR = os.path.join(Config.DATA_DIR, "euclid_sky")
-# Sky-catalogue filename — distinct from ``Config.CATALOG_FILE``
-# (``stars.csv``) to make it obvious these are sky-region cutouts for
-# self-supervised training, NOT ePSF star cutouts.
-SKY_CATALOG_FILENAME = "sky_positions.csv"
-# Subdir for the bundled FITS. Lives directly under the output root so
-# the catalogue and cutouts share one easily-rsynced tree.
-CUTOUTS_SUBDIR = "cutouts"
+# Sky-catalog location, catalogue filename, and cutouts subdir now live in
+# Config — see Config.EUCLID_SKY_DIR, Config.EuclidSky.SKY_CATALOG_FILENAME,
+# and Config.EuclidSky.CUTOUTS_SUBDIR.
 
 
 def _uniform_disk_positions(
@@ -130,7 +122,7 @@ def _uniform_disk_positions(
 
 def bundle_path_for_id(output_dir: str, pos_id: int) -> str:
     """Return the absolute path of the bundled FITS for a given position id."""
-    return os.path.join(output_dir, CUTOUTS_SUBDIR, f"sky_{pos_id:04d}.fits")
+    return os.path.join(output_dir, Config.EuclidSky.CUTOUTS_SUBDIR, f"sky_{pos_id:04d}.fits")
 
 
 def _write_bundle(
@@ -228,10 +220,10 @@ def _fetch_position_bundle(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--output-dir", default=DEFAULT_SKY_OUTPUT_DIR,
+    p.add_argument("--output-dir", default=Config.EUCLID_SKY_DIR,
                    help="Root for the sky catalogue CSV and bundled "
                         "FITS cutouts. Default: "
-                        f"{DEFAULT_SKY_OUTPUT_DIR}")
+                        f"{Config.EUCLID_SKY_DIR}")
     p.add_argument("--n-positions", type=int, default=100,
                    help="Number of random sky positions to generate. "
                         "After per-position 4-band download some will "
@@ -304,7 +296,7 @@ def main() -> int:
 
     # ---- 1. Sky catalogue: generate or reuse ----
     os.makedirs(args.output_dir, exist_ok=True)
-    catalog_path = os.path.join(args.output_dir, SKY_CATALOG_FILENAME)
+    catalog_path = os.path.join(args.output_dir, Config.EuclidSky.SKY_CATALOG_FILENAME)
     if os.path.isfile(catalog_path) and not args.regenerate_catalog:
         positions = pd.read_csv(catalog_path)
         reporter.set_stage("reusing sky catalog")
@@ -339,7 +331,7 @@ def main() -> int:
 
     # ---- 2. Per-position bundled download ----
     reporter.set_stage("downloading bundles")
-    cutouts_dir = os.path.join(args.output_dir, CUTOUTS_SUBDIR)
+    cutouts_dir = os.path.join(args.output_dir, Config.EuclidSky.CUTOUTS_SUBDIR)
     os.makedirs(cutouts_dir, exist_ok=True)
 
     n_positions = len(positions)

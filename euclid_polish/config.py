@@ -8,7 +8,7 @@ eliminating magic strings and numbers scattered throughout the codebase.
 import math
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import ClassVar, Dict, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +32,17 @@ class BandConfig:
     the per-second zeropoint; multiply by the stack integration via
     :attr:`sim_zeropoint_e` to get the magnitude-of-1-electron-over-the-stack.
 
-    ``pixel_scale_lr_arcsec`` is the **native** detector pixel scale (0.10"
-    for VIS, 0.30" for the NISP HAWAII-2RGs). After the forward model the
-    NISP channels are resampled to match VIS LR scale; the resampled grid
-    is what reaches the network, but the noise floor is set by the native
-    pixel.
+    ``pixel_scale_lr_arcsec`` is the **archive mosaic** pixel scale that
+    reaches the network — 0.10"/pix for *every* band, because the Euclid
+    MER pipeline resamples VIS and NISP alike onto a common 0.10" grid. It
+    drives archive cutout sizing, the downloader, and ePSF oversampling.
+
+    ``native_detector_scale_arcsec`` is the **native detector** pixel pitch
+    (0.10" for the VIS CCDs, 0.30" for the NISP HAWAII-2RGs). The forward
+    model rebins to this scale, sets the per-band Poisson + read noise floor
+    there, then Lanczos-resamples the NISP channels back onto the 0.10"
+    archive grid — mirroring how real NISP is delivered (0.30" detector →
+    SWarp/Lanczos3 → 0.10" mosaic). For VIS the two scales coincide.
     """
 
     name: str
@@ -55,11 +61,17 @@ class BandConfig:
     # are served as instrument='NISP' with filter_name='NIR_Y' etc.
     archive_instrument: str = "VIS"
     archive_filter: str = ""
+    # Native detector pixel pitch in arcsec — the scale the forward model
+    # rebins to (and sets the noise floor on) before resampling NISP back
+    # onto the 0.10" archive grid. VIS CCDs sample at 0.10"; NISP HAWAII-2RGs
+    # at 0.30". Distinct from ``pixel_scale_lr_arcsec`` (the 0.10" archive/
+    # network grid). See the class docstring.
+    native_detector_scale_arcsec: float = 0.10
     # ePSF oversampling factor: the photutils EPSFBuilder is given this
     # as ``oversampling=N`` so the resulting ePSF lives on a grid with
-    # pixel scale ``pixel_scale_lr_arcsec / N``. Picked per-band so every
-    # band's saved ePSF sits at 0.05"/pix (the HR grid the forward model
-    # convolves on): VIS → 2, NISP → 6.
+    # pixel scale ``pixel_scale_lr_arcsec / N``. Every band's archive grid
+    # is 0.10", so N=2 puts the saved ePSF at 0.05"/pix (the HR grid the
+    # forward model convolves on) for all four bands.
     epsf_oversampling: int = 2
     # Native detector pixel pitch (microns). Used for cosmic-ray rate
     # scaling (CRs/cm²/s → CRs/pixel). VIS CCD pixels are 12 µm; the
@@ -220,9 +232,13 @@ class Config:
     )
 
     # Euclid archive delivers every band — VIS and NISP alike — resampled to
-    # 0.10″/pixel mosaics. So the LR grid is uniform across all four bands;
-    # ePSF oversampling = 2 puts every saved PSF on the same 0.05″/pix HR
-    # grid the forward model convolves on.
+    # 0.10″/pixel mosaics, so the network input grid is uniform across all
+    # four bands and ePSF oversampling = 2 puts every saved PSF on the same
+    # 0.05″/pix HR grid the forward model convolves on. NISP, however, is
+    # *natively* sampled at 0.30″ (18 µm H2RGs) and SWarp-resampled to 0.10″
+    # by MER — so the forward model rebins NISP to 0.30″, applies its noise
+    # floor there, then Lanczos3-upsamples back to 0.10″ (see
+    # ``native_detector_scale_arcsec`` and ``MultiBandForward``).
     # NISP constants from Schirmer+ 2022 (A&A 662, A92, NISP photometric
     # system; arXiv:2203.01650) and Euclid Coll. III (Schirmer+ 2025,
     # A&A 697, A3 NISP Instrument); ROS exposure time from Scaramella+ 2022
@@ -232,6 +248,7 @@ class Config:
     BAND_Y_E = BandConfig(
         name                    = "Y_E",
         pixel_scale_lr_arcsec   = 0.10,
+        native_detector_scale_arcsec = 0.30,
         psf_fwhm_arcsec         = 0.40,
         psf_fits_filename       = "euclid_psf_Y.fits",
         zeropoint_ab_e_per_s    = 25.04,
@@ -249,6 +266,7 @@ class Config:
     BAND_J_E = BandConfig(
         name                    = "J_E",
         pixel_scale_lr_arcsec   = 0.10,
+        native_detector_scale_arcsec = 0.30,
         psf_fwhm_arcsec         = 0.45,
         psf_fits_filename       = "euclid_psf_J.fits",
         zeropoint_ab_e_per_s    = 25.26,
@@ -266,6 +284,7 @@ class Config:
     BAND_H_E = BandConfig(
         name                    = "H_E",
         pixel_scale_lr_arcsec   = 0.10,
+        native_detector_scale_arcsec = 0.30,
         psf_fwhm_arcsec         = 0.48,
         psf_fits_filename       = "euclid_psf_H.fits",
         zeropoint_ab_e_per_s    = 25.21,
@@ -319,6 +338,9 @@ class Config:
     # the network sees them: stretched = asinh(x / STRETCH_SCALE_E). Linear for
     # |x| ≪ scale, log-like for |x| ≫ scale; signed; smooth inverse (sinh).
     STRETCH_SCALE_E              = 1000.0   # e⁻ — knee between linear and log regimes
+    # Clip on the asinh-space value before the inverse sinh, so a runaway SR
+    # output can't overflow when un-stretched: sinh(20)·STRETCH_SCALE_E ≈ 2.4e8 e⁻.
+    SINH_STRETCH_CLIP            = 20.0
 
     # PSNR peak references — set to a mag-17 star's electron count over the
     # stack (a "very bright" plausible source). The asinh-space peak is the
@@ -612,6 +634,112 @@ class Config:
     #     compensates for interpolation-based zoom (preserves surface
     #     brightness, not per-pixel integrated flux).
     HST_HLSP_PIXEL_SCALE_ARCSEC   = 0.03
+
+    # =====================================================================
+    # Consolidated module constants (nested topical namespaces)
+    # =====================================================================
+    # Knobs that used to live as module-level constants in individual
+    # pipeline modules are gathered here so there's a single place to tune
+    # them. Each group is a frozen dataclass used purely as a namespace
+    # (access via e.g. ``Config.HST.PSF_HALF_SIDE_PIX``). Derived full paths
+    # that join these names onto ``DATA_DIR`` follow as flat attributes,
+    # matching the existing path section.
+
+    @dataclass(frozen=True)
+    class HST:
+        """HST F814W HLSP → Euclid VIS pipeline (download → ePSF → TFRecords).
+
+        Migrated from scripts/fasrc_download_hst_hlsp.py,
+        fasrc_extract_hst_psf.py, fasrc_generate_hst_tfrecords.py and
+        fasrc_compute_differential_kernel.py.
+        """
+        # --- HLSP mosaic download (MAST) ---
+        TARGET_NAME: str         = "COSMOS"
+        FILTER: str              = "F814W"
+        OBS_COLLECTION: str      = "HLSP"
+        MAST_SCRATCH_SUBDIR: str = "mastDownload"  # MAST's nested write subtree
+        # --- directory / file names under DATA_DIR ---
+        HLSP_DIR_NAME: str    = "hst_hlsp"
+        PSF_DIR_NAME: str     = "hst_psf"
+        PSF_FILE_NAME: str    = "F814W.fits"
+        STARS_DIR_NAME: str   = "hst_stars"   # per-star ePSF stamp library (UI)
+        DIFF_KERNEL_FILE: str = "diff_kernel_VIS.fits"
+        RECORDS_SUBDIR: str   = "images/records_v2_hst"
+        # --- ePSF extraction ---
+        FALLBACK_PIX_SCALE_ARCSEC: float = 0.05  # only if WCS lacks CDELT/CD
+        EPSF_OVERSAMPLING: int     = 1           # keep PSF at native tile scale
+        PSF_HALF_SIDE_PIX: int     = 255         # ePSF side = 2*half+1 = 511
+        MAX_STARS_PER_TILE: int    = 100         # cap stars taken per HLSP tile
+        MAX_UNCOVERED_FRAC: float  = 0.005       # >0.5% zero/NaN → seam/hole
+        MIN_STAMP_PEAK_SNR: float  = 30.0        # peak ≥ this × MAD σ, else noise
+        MAX_PEAK_OFFCENTER_PX: int = 5           # peak within this of stamp centre
+        # --- TFRecord generation ---
+        MIN_TILE_COVERAGE: float = 0.95          # min finite/non-zero fraction
+        MIN_SOURCE_PIXELS: int   = 3             # min above-threshold source pixels
+
+    @dataclass(frozen=True)
+    class Matching:
+        """Position/size tolerances. Catalog dedup and archive-cutout reuse
+        use deliberately different position tolerances (0.05″ vs 0.5″) — they
+        were two separate ``POSITION_TOLERANCE_ARCSEC`` constants before."""
+        CATALOG_POSITION_TOL_ARCSEC: float  = 0.05  # euclid/catalog.py dedup
+        DOWNLOAD_POSITION_TOL_ARCSEC: float = 0.5   # euclid/downloader.py reuse
+        DOWNLOAD_SIZE_TOL_PIXELS: int       = 10
+
+    @dataclass(frozen=True)
+    class WebFetch:
+        """FASRC artifact fetch cache + job-progress smoothing (euclid_polish/web)."""
+        CACHE_SUBDIR: str          = "_fasrc_cache"
+        MAX_PULL_BYTES: int        = 50 * 1024 * 1024        # per-file pull cap
+        CACHE_TTL_SECONDS: int     = 300                     # re-pull after this
+        MAX_CACHE_BYTES: int       = 2 * 1024 * 1024 * 1024  # 2 GB LRU budget
+        STEP_RATE_EMA_ALPHA: float = 0.1                     # job step-rate EMA
+
+    @dataclass(frozen=True)
+    class EuclidSky:
+        """Real-Euclid sky cutout download + round-trip TFRecord layout."""
+        SKY_SUBDIR: str               = "euclid_sky"
+        CUTOUTS_SUBDIR: str           = "cutouts"
+        SKY_CATALOG_FILENAME: str     = "sky_positions.csv"
+        ROUNDTRIP_RECORDS_SUBDIR: str = "images/records_v2_euclid_roundtrip"
+
+    @dataclass(frozen=True)
+    class Color:
+        """Visualization color constants (euclid_polish/visualization/color.py).
+
+        Solar absolute mags (Willmer 2018, ApJS 236:47; HST F814W for VIS,
+        2MASS Y/J/H for NISP) and default RGB band picks ``(R, G, B)``."""
+        SOLAR_AB_MAG: ClassVar[Dict[str, float]] = {
+            "VIS": 4.52,   # HST F814W proxy
+            "Y_E": 4.92,   # 2MASS Y proxy
+            "J_E": 5.10,   # 2MASS J
+            "H_E": 5.12,   # 2MASS H
+        }
+        RGB_SCHEMES: ClassVar[Dict[str, Tuple[str, str, str]]] = {
+            "vis_nisp":  ("H_E", "J_E", "VIS"),   # spans full Euclid range
+            "nisp_only": ("H_E", "J_E", "Y_E"),   # NIR-only, VIS-free
+            "h_y_vis":   ("H_E", "Y_E", "VIS"),   # wider green-channel spacing
+        }
+
+    # --- derived full paths (join the nested names onto DATA_DIR) ---
+    HLSP_DIR               = os.path.join(DATA_DIR, HST.HLSP_DIR_NAME)
+    HST_PSF_DIR            = os.path.join(DATA_DIR, HST.PSF_DIR_NAME)
+    HST_PSF_PATH           = os.path.join(HST_PSF_DIR, HST.PSF_FILE_NAME)
+    HST_DIFF_KERNEL_PATH   = os.path.join(HST_PSF_DIR, HST.DIFF_KERNEL_FILE)
+    HST_RECORDS_DIR        = os.path.join(DATA_DIR, HST.RECORDS_SUBDIR)
+    EUCLID_SKY_DIR         = os.path.join(DATA_DIR, EuclidSky.SKY_SUBDIR)
+    EUCLID_SKY_CUTOUTS_DIR = os.path.join(EUCLID_SKY_DIR, EuclidSky.CUTOUTS_SUBDIR)
+    ROUNDTRIP_RECORDS_DIR  = os.path.join(DATA_DIR, EuclidSky.ROUNDTRIP_RECORDS_SUBDIR)
+    FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
+
+    @classmethod
+    def max_native_rebin(cls) -> int:
+        """Largest band rebin factor onto the HR grid (NISP 6× to 0.30″).
+        Used to trim HR canvases so every LR channel lands on one grid."""
+        return max(
+            int(round(b.native_detector_scale_arcsec / cls.DEFAULT_PIXEL_SCALE))
+            for b in cls.BANDS
+        )
 
     @classmethod
     def get_band(cls, name: str) -> "BandConfig":

@@ -40,12 +40,6 @@ from euclid_polish.sky.differential_kernel import (
 )
 
 
-HST_PSF_PATH = os.path.join(Config.DATA_DIR, "hst_psf", "F814W.fits")
-DIFF_KERNEL_PATH = os.path.join(
-    Config.DATA_DIR, "hst_psf", "diff_kernel_VIS.fits",
-)
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--regularisation", type=float, default=1e-2,
@@ -69,9 +63,9 @@ def parse_args() -> argparse.Namespace:
                         "crop so you can spot the case where it's eating "
                         "real signal (<99% is a red flag — widen "
                         "--common-side).")
-    p.add_argument("--hst-psf", default=HST_PSF_PATH,
+    p.add_argument("--hst-psf", default=Config.HST_PSF_PATH,
                    help="Path to HST F814W ePSF FITS.")
-    p.add_argument("--output", default=DIFF_KERNEL_PATH,
+    p.add_argument("--output", default=Config.HST_DIFF_KERNEL_PATH,
                    help="Where to write the differential kernel FITS.")
     p.add_argument("--bg-subtract", action=argparse.BooleanOptionalAction,
                    default=True,

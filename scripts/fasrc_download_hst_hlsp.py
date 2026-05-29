@@ -44,14 +44,9 @@ from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 
 
-HLSP_DIR_NAME = "hst_hlsp"
-TARGET_NAME   = "COSMOS"
-FILTER        = "F814W"
-OBS_COLLECTION = "HLSP"
-# MAST's ``download_products`` writes into ``<download_dir>/mastDownload/HLSP/<obs_id>/<file>``.
-# We always want the flat layout ``<download_dir>/<file>`` so the rest of
-# the pipeline doesn't have to know about the scratch subtree.
-MAST_SCRATCH_SUBDIR = "mastDownload"
+# HLSP download constants now live on Config.HST (see
+# euclid_polish/config.py): HLSP_DIR_NAME, TARGET_NAME, FILTER,
+# OBS_COLLECTION, MAST_SCRATCH_SUBDIR.
 
 
 def _flatten_mast_download_dir(out_dir: str) -> int:
@@ -61,7 +56,7 @@ def _flatten_mast_download_dir(out_dir: str) -> int:
     mid-flatten and any orphaned nested tiles will be promoted to the
     flat layout. Returns the number of files relocated.
     """
-    scratch = os.path.join(out_dir, MAST_SCRATCH_SUBDIR)
+    scratch = os.path.join(out_dir, Config.HST.MAST_SCRATCH_SUBDIR)
     if not os.path.isdir(scratch):
         return 0
     moved = 0
@@ -109,7 +104,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
-    out_dir = args.output_dir or os.path.join(Config.DATA_DIR, HLSP_DIR_NAME)
+    out_dir = args.output_dir or Config.HLSP_DIR
     os.makedirs(out_dir, exist_ok=True)
 
     print("=" * 64)
@@ -144,9 +139,9 @@ def main() -> int:
     reporter.set_stage("querying MAST HLSP catalog")
     print("[1/3] querying MAST HLSP catalog ...")
     obs = Observations.query_criteria(
-        obs_collection=OBS_COLLECTION,
-        target_name=TARGET_NAME,
-        filters=FILTER,
+        obs_collection=Config.HST.OBS_COLLECTION,
+        target_name=Config.HST.TARGET_NAME,
+        filters=Config.HST.FILTER,
     )
     # Keep only per-tile v1.3 mosaics — entries named
     # ``hlsp_cosmos_hst_acs-wfc_mosaic-<X>-<Y>_f814w_v1.3_img``. The
@@ -264,8 +259,8 @@ def main() -> int:
     print(f"  on-disk size     = {total_gb:.1f} GB")
 
     summary = {
-        "target":      TARGET_NAME,
-        "filter":      FILTER,
+        "target":      Config.HST.TARGET_NAME,
+        "filter":      Config.HST.FILTER,
         "n_requested": args.n_tiles,
         "n_skipped":   skipped,
         "n_downloaded": len(pending),

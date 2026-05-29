@@ -10,7 +10,7 @@ _PSNR_MAX_VAL_STRETCHED = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=t
 _PSNR_MAX_VAL_RAW       = tf.constant(float(Config.PSNR_PEAK_E),         dtype=tf.float32)
 
 _STRETCH_SCALE = tf.constant(float(Config.STRETCH_SCALE_E), dtype=tf.float32)
-_SINH_CLIP     = tf.constant(20.0, dtype=tf.float32)   # sinh(20)·k ≈ 2.4e8
+_SINH_CLIP     = tf.constant(float(Config.SINH_STRETCH_CLIP), dtype=tf.float32)  # sinh(clip)·k ≈ 2.4e8
 
 
 # ---------------------------------------------------------------------------
