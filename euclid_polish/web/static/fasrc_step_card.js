@@ -200,8 +200,12 @@ large cutout don't leak across train/validate."></label>`;
 
   function resourceFields(step) {
     const d = step.defaults;
+    // Locked CPU steps still emit ``n_cpus`` via a hidden input (same as
+    // the GPU field below) — otherwise the value is never submitted and
+    // StepResources.from_form_strict rejects the missing required field.
     const cpuField = (step.fixed_cpus != null)
-      ? `<span class="muted" title="this step is single-threaded; allocation is locked">CPUs: <b>${step.fixed_cpus}</b> (locked)</span>`
+      ? `<input type="hidden" name="n_cpus" value="${step.fixed_cpus}">
+         <span class="muted" title="this step is single-threaded; allocation is locked">CPUs: <b>${step.fixed_cpus}</b> (locked)</span>`
       : `<label>CPUs
           <input type="number" name="n_cpus" min="1" max="64"
                  placeholder="e.g. ${d.n_cpus}"></label>`;

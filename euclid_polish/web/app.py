@@ -4083,6 +4083,13 @@ def create_app() -> Flask:
         if confirm_err is not None:
             return confirm_err
 
+        # A step with a locked CPU count renders the field as read-only
+        # text, so the form may not carry ``n_cpus`` at all. Inject the
+        # locked value before the strict parse (which requires it) — the
+        # value is forced again below regardless of what the form sent.
+        if step.fixed_cpus is not None:
+            form["n_cpus"] = str(step.fixed_cpus)
+
         try:
             resources = StepResources.from_form_strict(form)
         except ValueError as e:
