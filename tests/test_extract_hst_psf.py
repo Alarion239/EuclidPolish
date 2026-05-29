@@ -307,3 +307,13 @@ class TestCleanStarStamp:
         s = self._star(101, 200.0)
         s[10:20, 10:20] = np.nan
         assert script_module._is_clean_star_stamp(s) is False
+
+    def test_off_center_brighter_neighbor_rejected(self, script_module):
+        """Crowding: a neighbour brighter than the centred star pulls
+        EPSFBuilder's recentring off-target — reject (the actual cause of
+        the noisy/asymmetric ePSF at large half-side)."""
+        s = self._star(201, 50.0)                      # centred star, peak ~50
+        y, x = np.mgrid[:201, :201]
+        s += (120.0 * np.exp(-(((x - 160) ** 2 + (y - 40) ** 2)
+                               / (2.0 * 3.0 ** 2)))).astype(np.float32)  # brighter, off-centre
+        assert script_module._is_clean_star_stamp(s) is False

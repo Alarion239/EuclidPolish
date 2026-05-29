@@ -69,7 +69,12 @@ MAX_STARS_PER_TILE    = 100        # take up to this many stars from each
 # poison the ePSF. Reject any stamp that is not (nearly) fully covered
 # or whose central source isn't clearly above the local robust noise.
 MAX_UNCOVERED_FRAC    = 0.005      # >0.5% exact-0 / NaN pixels → seam/hole
-MIN_STAMP_PEAK_SNR    = 30.0       # central peak ≥ this × MAD σ, else noise
+MIN_STAMP_PEAK_SNR    = 30.0       # brightest pixel ≥ this × MAD σ, else noise
+MAX_PEAK_OFFCENTER_PX = 5          # brightest pixel must be within this many
+                                    # px of the stamp centre, else a brighter
+                                    # NEIGHBOUR is in frame (crowding) — those
+                                    # drag EPSFBuilder's recentring off the
+                                    # target star and smear the ePSF.
 
 
 def _pixel_scale_from_header(header) -> float:
@@ -240,18 +245,23 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
 
 
 def _is_clean_star_stamp(arr: np.ndarray) -> bool:
-    """Accept only fully-covered, clearly-peaked star stamps.
+    """Accept only fully-covered, clearly-peaked, *isolated* star stamps.
 
-    Rejects the two failure modes large stamps expose:
+    Rejects the failure modes large stamps expose:
 
       * **Coverage hole / tile seam** — a block of exact-0 (drizzle
         no-coverage fill) or NaN pixels. A clean sky stamp is continuous
         noise, so it has essentially no exact zeros.
-      * **Noise-dominated** — the central 'source' is barely above the
+      * **Noise-dominated** — the brightest pixel is barely above the
         local noise. S/N is measured per stamp with a robust MAD σ (the
-        star is a tiny pixel fraction, so it doesn't inflate the MAD), so
-        it isn't fooled by a whole-tile background estimate that a
-        coverage hole skewed.
+        star is a tiny pixel fraction, so it doesn't inflate the MAD).
+      * **Crowded / off-centre** — ``extract_stars`` centres the cutout
+        on the detected star, so if the brightest pixel is NOT at the
+        centre a brighter *neighbour* is in frame. EPSFBuilder would then
+        recentre onto that neighbour and stack misaligned → a noisy,
+        asymmetric ePSF core (the regression that prompted this). The big
+        1023² stamps make this common, so require the global peak to sit
+        within ``MAX_PEAK_OFFCENTER_PX`` of the stamp centre.
     """
     arr = np.asarray(arr, dtype=np.float32)
     if arr.size == 0 or not np.isfinite(arr).all():
@@ -262,7 +272,15 @@ def _is_clean_star_stamp(arr: np.ndarray) -> bool:
     mad = float(np.median(np.abs(arr - med))) * 1.4826   # robust σ
     if mad <= 0:
         return False
-    return (float(np.max(arr)) - med) >= MIN_STAMP_PEAK_SNR * mad
+    if (float(np.max(arr)) - med) < MIN_STAMP_PEAK_SNR * mad:
+        return False
+    py, px = np.unravel_index(int(np.argmax(arr)), arr.shape)
+    cy = (arr.shape[0] - 1) / 2.0
+    cx = (arr.shape[1] - 1) / 2.0
+    if (abs(py - cy) > MAX_PEAK_OFFCENTER_PX
+            or abs(px - cx) > MAX_PEAK_OFFCENTER_PX):
+        return False
+    return True
 
 
 def _extract_stamps_from_tile(
@@ -422,7 +440,7 @@ def main() -> int:
             print(f"        + {len(sources)} stars")
             try:
                 stamps = _extract_stamps_from_tile(
-                    data, sources, half_side=args.half_side)
+                    data, sources, half_side=half_extract)
             except Exception as e:
                 msg = (f"extract_stars failed on tile {tname}: "
                        f"{type(e).__name__}: {e}")
@@ -490,16 +508,24 @@ def main() -> int:
     epsf, _fitted_stars = builder(EPSFStars(star_stamps))
     psf_arr = np.asarray(epsf.data, dtype=np.float32)
 
-    # Trim the margin border (EPSFBuilder's smoothing artifacts live in the
-    # outermost pixels). ``EPSF_OVERSAMPLING`` ePSF pixels per native margin
-    # pixel; the symmetric crop keeps the PSF centred and odd-sized.
-    trim = margin_px * EPSF_OVERSAMPLING
+    # Size the ePSF to EXACTLY the requested (2·half_side+1). EPSFBuilder
+    # does NOT preserve the input stamp side (e.g. 1105² stamps → 1025²
+    # ePSF here), so we cannot trim by ``margin_px`` — we centre-crop (or
+    # zero-pad, if it came back smaller) straight to the target. Symmetric
+    # on an odd array keeps the PSF centred. The margin still helped: it
+    # gave EPSFBuilder room so its output ≥ target.
+    target = 2 * args.half_side + 1
     M = psf_arr.shape[0]
-    if trim > 0 and 2 * trim < M:
-        psf_arr = psf_arr[trim:M - trim, trim:M - trim]
-        print(f"      trimmed {trim}px border each side: {M}² → "
-              f"{psf_arr.shape[0]}²")
-    psf_arr = psf_arr / float(psf_arr.sum())   # unit flux (after trim)
+    if M > target:
+        off = (M - target) // 2
+        psf_arr = psf_arr[off:off + target, off:off + target]
+    elif M < target:
+        lo = (target - M) // 2
+        psf_arr = np.pad(psf_arr, ((lo, target - M - lo), (lo, target - M - lo)))
+    if psf_arr.shape[0] != M:
+        print(f"      ePSF sized to requested {target}² "
+              f"(EPSFBuilder produced {M}²)")
+    psf_arr = psf_arr / float(psf_arr.sum())   # unit flux (after resize)
 
     psf_pix_scale = pix_scale_observed / EPSF_OVERSAMPLING
     out_path = os.path.join(out_dir, PSF_FILE_NAME)
