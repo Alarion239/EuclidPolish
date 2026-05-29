@@ -270,3 +270,40 @@ class TestCachedStarLoader:
         )
         assert len(stamps) == 1
         assert stamps[0].data.shape == (self._FULL_SIDE, self._FULL_SIDE)
+
+
+class TestCleanStarStamp:
+    """Per-stamp acceptance cuts. Large stamps (e.g. 1023²) straddle tile
+    seams / coverage holes and a coverage-biased background lets noise
+    through; both must be rejected so they don't poison the ePSF. This
+    pins the regression that produced "border" and "pure noise" cutouts.
+    """
+
+    @staticmethod
+    def _star(side: int, amp: float, seed: int = 0) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        a = rng.normal(0.0, 1.0, (side, side)).astype(np.float32)
+        y, x = np.mgrid[:side, :side]
+        c = (side - 1) / 2.0
+        a += (amp * np.exp(-(((x - c) ** 2 + (y - c) ** 2) / (2.0 * 3.0 ** 2)))
+              ).astype(np.float32)
+        return a
+
+    def test_clean_star_accepted(self, script_module):
+        assert script_module._is_clean_star_stamp(self._star(101, 200.0)) is True
+
+    def test_pure_noise_rejected(self, script_module):
+        rng = np.random.default_rng(1)
+        noise = rng.normal(0.0, 1.0, (101, 101)).astype(np.float32)
+        assert script_module._is_clean_star_stamp(noise) is False
+
+    def test_coverage_hole_rejected(self, script_module):
+        # A block of exact zeros = an uncovered tile seam / chip gap.
+        s = self._star(101, 200.0)
+        s[:, :40] = 0.0
+        assert script_module._is_clean_star_stamp(s) is False
+
+    def test_nan_patch_rejected(self, script_module):
+        s = self._star(101, 200.0)
+        s[10:20, 10:20] = np.nan
+        assert script_module._is_clean_star_stamp(s) is False

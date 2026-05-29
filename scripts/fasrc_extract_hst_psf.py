@@ -63,6 +63,13 @@ MAX_STARS_PER_TILE    = 100        # take up to this many stars from each
                                     # a few rich tiles supply the whole target
                                     # avoids scanning extra tiles just to fill
                                     # an even per-tile quota.
+# Per-stamp acceptance cuts. Large stamps (e.g. 1023²) straddle tile
+# seams / ACS chip gaps (drizzle fills no-coverage with 0), and a
+# coverage-biased background lets noise through the detector — both
+# poison the ePSF. Reject any stamp that is not (nearly) fully covered
+# or whose central source isn't clearly above the local robust noise.
+MAX_UNCOVERED_FRAC    = 0.005      # >0.5% exact-0 / NaN pixels → seam/hole
+MIN_STAMP_PEAK_SNR    = 30.0       # central peak ≥ this × MAD σ, else noise
 
 
 def _pixel_scale_from_header(header) -> float:
@@ -170,6 +177,11 @@ def _load_cached_star_stamps(
             continue
         if arr.shape != (expected_side, expected_side):
             continue
+        # Apply the same clean-stamp cut to cached stamps, so re-running
+        # with --reuse-stars after a bad run (which may have cached
+        # seam/noise stamps) still yields a clean ePSF.
+        if not _is_clean_star_stamp(arr):
+            continue
         side = arr.shape[0]
         stamps.append(EPSFStar(data=arr, cutout_center=(side / 2.0, side / 2.0)))
 
@@ -187,7 +199,15 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
     :func:`_extract_stamps_from_tile` for the call site.
     """
 
-    mean, median, std = sigma_clipped_stats(data, sigma=3.0)
+    # Background from COVERED sky only. Drizzle fills no-coverage with 0;
+    # including those zeros biases the σ-clipped stats, giving a wrong 50σ
+    # threshold that lets noise through. Mask exact-0 / non-finite first.
+    covered = np.isfinite(data) & (data != 0.0)
+    if not covered.any():
+        return None
+    mean, median, std = sigma_clipped_stats(data[covered], sigma=3.0)
+    if not np.isfinite(std) or std <= 0:
+        return None
     # Threshold: 50× sigma — point-source-bright but not saturated.
     finder = DAOStarFinder(
         threshold=50 * std, fwhm=4.0,    # ~4 px FWHM at 0.05"/pix → 0.20"
@@ -219,6 +239,32 @@ def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
     return sources
 
 
+def _is_clean_star_stamp(arr: np.ndarray) -> bool:
+    """Accept only fully-covered, clearly-peaked star stamps.
+
+    Rejects the two failure modes large stamps expose:
+
+      * **Coverage hole / tile seam** — a block of exact-0 (drizzle
+        no-coverage fill) or NaN pixels. A clean sky stamp is continuous
+        noise, so it has essentially no exact zeros.
+      * **Noise-dominated** — the central 'source' is barely above the
+        local noise. S/N is measured per stamp with a robust MAD σ (the
+        star is a tiny pixel fraction, so it doesn't inflate the MAD), so
+        it isn't fooled by a whole-tile background estimate that a
+        coverage hole skewed.
+    """
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.size == 0 or not np.isfinite(arr).all():
+        return False
+    if float(np.mean(arr == 0.0)) > MAX_UNCOVERED_FRAC:
+        return False
+    med = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - med))) * 1.4826   # robust σ
+    if mad <= 0:
+        return False
+    return (float(np.max(arr)) - med) >= MIN_STAMP_PEAK_SNR * mad
+
+
 def _extract_stamps_from_tile(
     data: np.ndarray, sources: "Table", *, half_side: int = PSF_HALF_SIDE_PIX,
 ) -> list:
@@ -236,7 +282,11 @@ def _extract_stamps_from_tile(
             "did a caller supply a different table?"
         )
     nd = NDData(data=data)
-    return list(extract_stars(nd, sources, size=2 * half_side + 1))
+    stamps = list(extract_stars(nd, sources, size=2 * half_side + 1))
+    # Reject stamps straddling a tile seam / coverage hole or dominated by
+    # noise — these otherwise poison the ePSF (the symptom that prompted
+    # this check: "border" and "pure noise" cutouts at large half-side).
+    return [st for st in stamps if _is_clean_star_stamp(np.asarray(st.data))]
 
 
 def main() -> int:

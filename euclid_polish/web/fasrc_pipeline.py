@@ -404,7 +404,12 @@ class HSTPSFExtractStep(FASRCPipelineStep):
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
-                memory="8G", time_limit="0:10:00",
+                # Peak ≈ a materialised ~500 MB HLSP tile + working copies
+                # (~1–2 GB, half-side-independent) plus the held star stamps
+                # (n_stars·(2·half+1)²·4 B → ~1 GB for 200 stars at 1023²)
+                # and EPSFBuilder (~1 GB). 16 GB gives clear headroom for
+                # large PSFs / higher n_stars; bump in the form if needed.
+                memory="16G", time_limit="0:20:00",
             ),
             needs_gpu=False,
             fixed_cpus=1,

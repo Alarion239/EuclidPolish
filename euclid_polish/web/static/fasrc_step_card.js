@@ -83,7 +83,9 @@
                    title="Half-side of the FINAL ePSF → spans (2·half+1) px at the ~0.05″/pix HLSP scale: 255 → 511², 511 → 1023². Always odd, so the PSF stays centred. Changing it forces a full tile re-scan (cached stamps are size-specific)."></label>
           <label>Extraction margin (frac)
             <input type="number" name="extract_margin_frac" value="0.08" step="0.01" min="0" max="0.25"
-                   title="Extract star stamps this fraction larger than the half-side, then trim the extra border off the built ePSF. EPSFBuilder's smoothing leaves edge artifacts on the outermost pixels; this margin pushes them into the trimmed region so the final PSF borders are clean. 0.08 = 8%; 0 disables."></label>`;
+                   title="Extract star stamps this fraction larger than the half-side, then trim the extra border off the built ePSF. EPSFBuilder's smoothing leaves edge artifacts on the outermost pixels; this margin pushes them into the trimmed region so the final PSF borders are clean. 0.08 = 8%; 0 disables."></label>
+          <span class="js-extract-mem muted" style="flex-basis:100%; font-size:12px;"
+                title="EPSFBuilder holds several float64 copies of every star cutout, so peak RAM ≈ n_stars · (2·half+1)² · ~60 B. Set the Memory field at or above this."></span>`;
       case 'kernel':
         return `
           <label>Wiener regularisation
@@ -416,6 +418,7 @@ large cutout don't leak across train/validate."></label>`;
   function wireHistoryAndPrefill(scope) {
     scope.querySelectorAll('.hst-step-form').forEach(form => {
       fetchHistoryAndPrefill(form);
+      wireExtractMemEstimate(form);
       let timer = null;
       const debounced = () => {
         if (timer) clearTimeout(timer);
@@ -425,6 +428,48 @@ large cutout don't leak across train/validate."></label>`;
         el.addEventListener('input', debounced);
       });
     });
+  }
+
+  // ── HST-PSF-extract memory estimate ────────────────────────────────
+  //
+  // EPSFBuilder works in float64 and keeps several copies of *every*
+  // star cutout through its iterations, so peak RAM is dominated by
+  // ``n_stars · (2·half_extract+1)² · ~60 B`` (empirically measured: a
+  // 500-star / 1023² run peaked ~32 GB). Surface a live estimate so a
+  // big PSF / high n_stars doesn't OOM by surprise.
+
+  function _extractMemEstimateGB(nStars, halfSide, marginFrac) {
+    if (!(nStars > 0) || !(halfSide > 0)) return null;
+    const marginPx = marginFrac > 0
+      ? Math.max(1, Math.round(halfSide * marginFrac)) : 0;
+    const stamp = 2 * (halfSide + marginPx) + 1;
+    // ~60 B/star-px × 1.4 safety, + ~2 GB for the materialised HLSP tile.
+    return Math.ceil(nStars * stamp * stamp * 60e-9 * 1.4) + 2;
+  }
+
+  function wireExtractMemEstimate(form) {
+    if (form.dataset.stepId !== 'extract_psf') return;
+    const hint   = form.querySelector('.js-extract-mem');
+    const memEl  = form.querySelector('input[name="memory"]');
+    const nEl    = form.querySelector('input[name="n_stars"]');
+    const hEl    = form.querySelector('input[name="half_side"]');
+    const mEl    = form.querySelector('input[name="extract_margin_frac"]');
+    if (!hint || !nEl || !hEl) return;
+    const num = (el, fb) => parseFloat((el && (el.value || el.placeholder)) || fb);
+    const recompute = () => {
+      const gb = _extractMemEstimateGB(
+        num(nEl, '0'), num(hEl, '0'), num(mEl, '0'));
+      if (gb == null) { hint.textContent = ''; return; }
+      const stamp = 2 * (num(hEl, '0')
+        + (num(mEl, '0') > 0 ? Math.max(1, Math.round(num(hEl, '0') * num(mEl, '0'))) : 0)) + 1;
+      hint.textContent =
+        `≈ ${gb} GB RAM for ${num(nEl, '0')} stars at ${stamp}² — set Memory ≥ this.`;
+      // Guide the Memory field (placeholder only, so history prefill /
+      // a typed value still win).
+      if (memEl) memEl.placeholder = `e.g. ${gb}G`;
+    };
+    [nEl, hEl, mEl].forEach(el => el && el.addEventListener('input', recompute));
+    recompute();
   }
 
   // ── Submit handler ─────────────────────────────────────────────────
