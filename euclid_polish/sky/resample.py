@@ -173,25 +173,10 @@ def cubic_upsample(arr_2d: np.ndarray, factor: int) -> np.ndarray:
 
 def upsample(
     arr_2d: np.ndarray, factor: int, kernel: Literal["lanczos3", "cubic"] = "lanczos3",
-    *, conserve_flux: bool = False,
 ) -> np.ndarray:
-    """Dispatch to the requested resampling kernel.
-
-    The kernels are **value-preserving** (kernel weights sum to 1, so a flat
-    field maps to itself); upsampling an image by ``factor`` therefore leaves
-    each pixel's value ~unchanged and inflates the *total* by ~``factor²``.
-    Pass ``conserve_flux=True`` to instead split each source pixel's flux
-    across the finer grid (divide by ``factor²``) — the correct behaviour for
-    resampling **electron counts** (e.g. the NISP 0.30″→0.10″ stage, matching
-    how MER conserves total flux). Conservation is approximate (~%) because
-    Lanczos has negative side lobes and edge renormalisation.
-    """
+    """Dispatch to the requested resampling kernel."""
     if kernel == "lanczos3":
-        out = lanczos3_upsample(arr_2d, factor)
-    elif kernel == "cubic":
-        out = cubic_upsample(arr_2d, factor)
-    else:
-        raise ValueError(f"Unknown resample kernel {kernel!r}")
-    if conserve_flux and factor > 1:
-        out = (out / float(factor * factor)).astype(arr_2d.dtype, copy=False)
-    return out
+        return lanczos3_upsample(arr_2d, factor)
+    if kernel == "cubic":
+        return cubic_upsample(arr_2d, factor)
+    raise ValueError(f"Unknown resample kernel {kernel!r}")

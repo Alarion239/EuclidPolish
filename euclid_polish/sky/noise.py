@@ -37,7 +37,6 @@ def apply_band_noise(
     *,
     add_artifacts: bool = False,
     artifact_config: Optional["ArtifactConfig"] = None,
-    pixel_scale_arcsec: Optional[float] = None,
 ) -> np.ndarray:
     """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
 
@@ -46,13 +45,6 @@ def apply_band_noise(
     deposit charge → ramp is read with Gaussian read noise →
     sky-subtracted on the ground.
 
-    ``pixel_scale_arcsec`` is the angular scale of the grid ``signal_e`` is
-    binned onto — it sets the sky/dark electrons per pixel and the cosmic-ray
-    areal density. Defaults to ``band.pixel_scale_lr_arcsec`` (the 0.10"
-    archive grid). The forward model passes ``band.native_detector_scale_arcsec``
-    so the NISP noise floor is set on the true 0.30" detector pixel before
-    the Lanczos upsample to 0.10".
-
     Module-level so non-class callers (e.g. the HST→Euclid TFRecord
     generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
     :class:`MultiBandForward` per-band pipeline, the
@@ -60,10 +52,8 @@ def apply_band_noise(
     exact same noise model.
     """
 
-    scale = (band.pixel_scale_lr_arcsec if pixel_scale_arcsec is None
-             else float(pixel_scale_arcsec))
     t_total = band.t_total_s
-    pixel_area = scale ** 2
+    pixel_area = band.pixel_scale_lr_arcsec ** 2
     sky_e  = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
     dark_e = band.dark_e_per_s_per_pix * t_total
 
@@ -79,7 +69,6 @@ def apply_band_noise(
         ))
         observed = inject_artifacts(
             observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
-            grid_scale_arcsec=scale,
         ).astype(np.float64)
 
     read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)

@@ -159,16 +159,11 @@ class MultiBandForward:
         """Method wrapper that pulls add_artifacts + artifact_config off
         ``self.config`` and delegates to the module-level
         :func:`apply_band_noise`. Kept as a method for back-compat with
-        the existing pipeline; new callers should use the function.
-
-        ``signal_e`` is binned on the band's native detector grid (step 2 of
-        :meth:`_process_one_band`), so the noise floor + cosmic-ray density
-        are set there — 0.30″ for NISP, 0.10″ for VIS."""
+        the existing pipeline; new callers should use the function."""
         return apply_band_noise(
             signal_e, band, rng,
             add_artifacts=self.config.add_artifacts,
             artifact_config=self.config.artifact_config,
-            pixel_scale_arcsec=band.native_detector_scale_arcsec,
         )
 
     # ------------------------------------------------------------------ #
@@ -197,27 +192,22 @@ class MultiBandForward:
         #    kernel and runs fftconvolve mode="same" + float32 cast).
         hr_e = psf.convolved_with(hr_channel)
 
-        # 2. Sum-rebin to the band's *native* detector scale (preserves photon
-        #    shot noise statistics at the right pixel size for the per-band
-        #    noise step). VIS samples at 0.10″ (2× from 0.05″ HR); NISP samples
-        #    at 0.30″ (6×) — the real H2RG detector pitch, pre-MER-resampling.
-        rebin_factor = int(round(band.native_detector_scale_arcsec / self.config.hr_pixel_scale))
+        # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
+        #    statistics at the right pixel size for the per-band noise step).
+        rebin_factor = int(round(band.pixel_scale_lr_arcsec / self.config.hr_pixel_scale))
         lr_signal_e = self.sum_rebin(hr_e, rebin_factor)
 
-        # 3. Apply per-band noise on the native detector grid.
+        # 3. Apply per-band noise on the LR grid.
         if self.config.add_noise:
             lr_e = self._apply_band_noise(lr_signal_e, band, rng)
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)
 
-        # 4. Resample to the shared LR (archive) grid. VIS already matches
-        #    (factor 1, copy); NISP is the 0.30″→0.10″ integer ratio (3×),
-        #    matching MER's SWarp/Lanczos3 resampling of NISP onto the mosaic.
-        upsample_factor = int(round(band.native_detector_scale_arcsec / target_scale))
+        # 4. Resample to the shared LR grid; VIS factor is 1.
+        upsample_factor = int(round(band.pixel_scale_lr_arcsec / target_scale))
         if upsample_factor > 1:
             lr_e = resample_upsample(
                 lr_e, factor=upsample_factor, kernel=self.config.nisp_resample_kernel,
-                conserve_flux=True,
             )
         return lr_e.astype(np.float32, copy=False)
 
@@ -261,7 +251,7 @@ class MultiBandForward:
         # NISP upsample) chain. Trim to the largest such multiple — a few
         # pixels at the edge are not science-relevant.
         max_rebin = max(
-            int(round(b.native_detector_scale_arcsec / self.config.hr_pixel_scale))
+            int(round(b.pixel_scale_lr_arcsec / self.config.hr_pixel_scale))
             for b in Config.BANDS
         )
         H_full, W_full = hr_4ch.data.shape[:2]

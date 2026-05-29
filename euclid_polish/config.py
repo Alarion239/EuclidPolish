@@ -38,11 +38,10 @@ class BandConfig:
     drives archive cutout sizing, the downloader, and ePSF oversampling.
 
     ``native_detector_scale_arcsec`` is the **native detector** pixel pitch
-    (0.10" for the VIS CCDs, 0.30" for the NISP HAWAII-2RGs). The forward
-    model rebins to this scale, sets the per-band Poisson + read noise floor
-    there, then Lanczos-resamples the NISP channels back onto the 0.10"
-    archive grid — mirroring how real NISP is delivered (0.30" detector →
-    SWarp/Lanczos3 → 0.10" mosaic). For VIS the two scales coincide.
+    (0.10" for the VIS CCDs, 0.30" for the NISP HAWAII-2RGs). It is used only
+    for the cosmic-ray areal density on the H2RG/CCD (CRs/cm²/s → CRs/pixel);
+    it is NOT used by the forward rebin, which works on the uniform 0.10"
+    archive grid that reaches the network. For VIS the two scales coincide.
     """
 
     name: str
@@ -61,11 +60,11 @@ class BandConfig:
     # are served as instrument='NISP' with filter_name='NIR_Y' etc.
     archive_instrument: str = "VIS"
     archive_filter: str = ""
-    # Native detector pixel pitch in arcsec — the scale the forward model
-    # rebins to (and sets the noise floor on) before resampling NISP back
-    # onto the 0.10" archive grid. VIS CCDs sample at 0.10"; NISP HAWAII-2RGs
-    # at 0.30". Distinct from ``pixel_scale_lr_arcsec`` (the 0.10" archive/
-    # network grid). See the class docstring.
+    # Native detector pixel pitch in arcsec — used for the cosmic-ray areal
+    # density on the H2RG/CCD (CRs/cm²/s → CRs/pixel). NOT used by the forward
+    # rebin, which works on the uniform 0.10" archive grid. VIS CCDs sample at
+    # 0.10"; NISP HAWAII-2RGs at 0.30". Distinct from ``pixel_scale_lr_arcsec``
+    # (the 0.10" archive/network grid). See the class docstring.
     native_detector_scale_arcsec: float = 0.10
     # ePSF oversampling factor: the photutils EPSFBuilder is given this
     # as ``oversampling=N`` so the resulting ePSF lives on a grid with
@@ -232,13 +231,9 @@ class Config:
     )
 
     # Euclid archive delivers every band — VIS and NISP alike — resampled to
-    # 0.10″/pixel mosaics, so the network input grid is uniform across all
-    # four bands and ePSF oversampling = 2 puts every saved PSF on the same
-    # 0.05″/pix HR grid the forward model convolves on. NISP, however, is
-    # *natively* sampled at 0.30″ (18 µm H2RGs) and SWarp-resampled to 0.10″
-    # by MER — so the forward model rebins NISP to 0.30″, applies its noise
-    # floor there, then Lanczos3-upsamples back to 0.10″ (see
-    # ``native_detector_scale_arcsec`` and ``MultiBandForward``).
+    # 0.10″/pixel mosaics, so the network input grid (the LR grid) is uniform
+    # across all four bands and ePSF oversampling = 2 puts every saved PSF on
+    # the same 0.05″/pix HR grid the forward model convolves on.
     # NISP constants from Schirmer+ 2022 (A&A 662, A92, NISP photometric
     # system; arXiv:2203.01650) and Euclid Coll. III (Schirmer+ 2025,
     # A&A 697, A3 NISP Instrument); ROS exposure time from Scaramella+ 2022
@@ -731,15 +726,6 @@ class Config:
     EUCLID_SKY_CUTOUTS_DIR = os.path.join(EUCLID_SKY_DIR, EuclidSky.CUTOUTS_SUBDIR)
     ROUNDTRIP_RECORDS_DIR  = os.path.join(DATA_DIR, EuclidSky.ROUNDTRIP_RECORDS_SUBDIR)
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
-
-    @classmethod
-    def max_native_rebin(cls) -> int:
-        """Largest band rebin factor onto the HR grid (NISP 6× to 0.30″).
-        Used to trim HR canvases so every LR channel lands on one grid."""
-        return max(
-            int(round(b.native_detector_scale_arcsec / cls.DEFAULT_PIXEL_SCALE))
-            for b in cls.BANDS
-        )
 
     @classmethod
     def get_band(cls, name: str) -> "BandConfig":

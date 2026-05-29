@@ -113,26 +113,19 @@ def expected_cosmic_ray_count(
     image_shape: tuple[int, int],
     band: BandConfig,
     cfg: ArtifactConfig,
-    grid_scale_arcsec: Optional[float] = None,
 ) -> float:
     """Expected number of CR hits for one frame at this band's exposure.
 
-    ``image_shape`` is in pixels of the grid ``grid_scale_arcsec`` describes
-    (default: the band's 0.10″ archive grid). We convert to the equivalent
-    native detector area: VIS is 1:1 with its 12 µm pixel, NISP is 1:9 (each
-    archive 0.10″ pixel covers 1/9 of a native 18 µm 0.30″ pixel). When the
-    forward model injects on the native 0.30″ grid, pass ``grid_scale_arcsec
-    = 0.30`` so the ratio collapses to 1:1 and the count is not over-divided.
+    ``image_shape`` is in LR archive pixels (typically 0.10″/pix). VIS 1:1,
+    NISP 1:9.
     """
     if not cfg.add_cosmic_rays or cfg.cr_rate_per_s_per_cm2 == 0:
         return 0.0
     H, W = image_shape
-    grid_scale = (band.pixel_scale_lr_arcsec if grid_scale_arcsec is None
-                  else float(grid_scale_arcsec))
     # Detector pixel area in cm² (1 µm = 1e-4 cm).
     det_area_cm2 = (band.detector_pixel_um * 1e-4) ** 2
     # Number of *native* detector pixels covered by the frame.
-    pix_ratio   = _native_pix_arcsec(band) / grid_scale
+    pix_ratio   = _native_pix_arcsec(band) / band.pixel_scale_lr_arcsec
     n_native_pixels = (H * W) / (pix_ratio ** 2)
     t_total = band.exposure_time_s * band.n_exposures
     # Per-band post-rejection factor: VIS has aggressive cross-dither CR
@@ -146,7 +139,6 @@ def inject_cosmic_rays(
     band: BandConfig,
     rng: np.random.Generator,
     cfg: ArtifactConfig,
-    grid_scale_arcsec: Optional[float] = None,
 ) -> np.ndarray:
     """Add CR hits to ``image_e`` (in-place safe, returns array).
 
@@ -155,15 +147,11 @@ def inject_cosmic_rays(
     deposited charge is exponential with scale ``cr_charge_median_e``
     and is spread along a randomly oriented short track of length
     1–``cr_max_track_length`` native pixels (clipped to the image).
-
-    ``grid_scale_arcsec`` (default: the band's 0.10″ archive grid) sets the
-    areal density via :func:`expected_cosmic_ray_count`.
     """
     if not cfg.add_cosmic_rays:
         return image_e
     H, W = image_e.shape
-    mean_n = expected_cosmic_ray_count((H, W), band, cfg,
-                                       grid_scale_arcsec=grid_scale_arcsec)
+    mean_n = expected_cosmic_ray_count((H, W), band, cfg)
     if mean_n <= 0:
         return image_e
     n_hits = int(rng.poisson(mean_n))
@@ -350,7 +338,6 @@ def inject_artifacts(
     rng: np.random.Generator,
     cfg: Optional[ArtifactConfig] = None,
     local_sigma_e: float = 0.0,
-    grid_scale_arcsec: Optional[float] = None,
 ) -> np.ndarray:
     """Apply the full artifact stack (CR + hot pixels + streaks) to one band frame.
 
@@ -358,14 +345,9 @@ def inject_artifacts(
     LR grid (Poisson sky + dark + read quadrature); needed by
     :func:`inject_streaks` to calibrate its sub-σ amplitude. Pass 0.0 to
     disable streaks even if ``cfg.add_streaks`` is True.
-
-    ``grid_scale_arcsec`` is the angular scale of the grid ``image_e`` is on
-    (default: the band's 0.10″ archive grid); it controls the cosmic-ray
-    areal density. The forward model passes the native detector scale.
     """
     cfg = cfg or ArtifactConfig()
-    out = inject_cosmic_rays(image_e, band, rng, cfg,
-                             grid_scale_arcsec=grid_scale_arcsec)
+    out = inject_cosmic_rays(image_e, band, rng, cfg)
     out = inject_hot_pixels(out, rng, cfg)
     out = inject_streaks(out, rng, cfg, local_sigma_e)
     return out

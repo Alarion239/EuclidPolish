@@ -74,25 +74,6 @@ def test_factor_must_be_positive():
         cubic_upsample(np.zeros((4, 4)), factor=-1)
 
 
-def test_conserve_flux_splits_total_across_finer_grid():
-    """Value-preserving upsample inflates the total by ~factor²; conserve_flux
-    splits flux so the total is (approximately) preserved — the behaviour the
-    forward model needs for the NISP 0.30″→0.10″ electron-count resample."""
-    rng = np.random.default_rng(0)
-    from scipy.ndimage import gaussian_filter
-    arr = gaussian_filter(np.abs(rng.normal(size=(30, 30))), sigma=3.0).astype(np.float64)
-    total = arr.sum()
-    val_preserving = upsample(arr, factor=3, kernel="lanczos3")
-    flux_conserving = upsample(arr, factor=3, kernel="lanczos3", conserve_flux=True)
-    # Value-preserving total grows ~factor² = 9×.
-    assert val_preserving.sum() == pytest.approx(9 * total, rel=0.05)
-    # Flux-conserving total is preserved to ~%.
-    assert flux_conserving.sum() == pytest.approx(total, rel=0.02)
-    # factor==1 is a no-op even with conserve_flux.
-    same = upsample(arr, factor=1, kernel="lanczos3", conserve_flux=True)
-    np.testing.assert_array_equal(same, arr)
-
-
 def test_lanczos3_smooth_image_close_to_cubic():
     """For a slowly-varying image both kernels give nearly the same result."""
     rng = np.random.default_rng(0)

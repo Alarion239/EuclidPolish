@@ -474,12 +474,10 @@ class TestProcessOneGalaxyHappyPath:
         provenance, hr_cube, lr_cube = result
         # Provenance labels the source mosaic + grid cell.
         assert isinstance(provenance, str) and "tile.fits" in provenance
-        # HR is the target image_size (64) trimmed to a multiple of the max
-        # native rebin (NISP 6×) → 60, so VIS (2×) and NISP (6×→×3 upsample)
-        # LR channels share the same 0.10″ grid.
-        assert hr_cube.shape == (60, 60, 4)
-        # LR is HR // 2 (VIS LR grid).
-        assert lr_cube.shape == (30, 30, 4)
+        # HR is target image_size × NUM_LR_CHANNELS.
+        assert hr_cube.shape == (64, 64, 4)
+        # LR is HR // 2 (×2 rebin in _make_pair).
+        assert lr_cube.shape == (32, 32, 4)
         assert hr_cube.dtype == np.float32
         assert lr_cube.dtype == np.float32
 

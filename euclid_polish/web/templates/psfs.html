@@ -76,10 +76,6 @@
       <input type="number" name="cutout_size" value="512" min="32" max="2048"></label>
     <label>Output PSF size (oversampled px)
       <input type="number" name="output_size" value="{{ default_output_size }}" min="0" max="4096"></label>
-    <label>Cutouts root
-      <input type="text" name="output_dir" value="./data/euclid_stars" size="22"></label>
-    <label>PSF output dir
-      <input type="text" name="psf_dir" value="./data/euclid_psf" size="22"></label>
     <button type="submit">Extract PSF</button>
   </form>
   <div id="extract-status"></div>
