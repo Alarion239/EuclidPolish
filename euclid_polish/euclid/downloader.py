@@ -18,6 +18,26 @@ import astropy.units as u
 from tqdm import tqdm
 
 from euclid_polish.euclid.catalog import StarCatalog
+
+
+def core_is_saturated(data: np.ndarray, core_size: int) -> bool:
+    """True if the central ``core_size × core_size`` region is clipped.
+
+    Mirrors :meth:`PSFExtractor.extract_psf_star_from_cutout`: the Euclid
+    MER pipeline zeros pixels above well capacity, so an oversaturated /
+    clipped star has a hole (non-finite or ``<= 0`` values) at its centre.
+    Cutouts are centred on the star, so we inspect the central core.
+    ``core_size <= 0`` disables the check (returns False).
+    """
+    if core_size is None or core_size < 1 or data is None:
+        return False
+    ny, nx = data.shape[:2]
+    cy, cx = ny // 2, nx // 2
+    sh = int(core_size) // 2
+    core = data[max(0, cy - sh): cy + sh + 1, max(0, cx - sh): cx + sh + 1]
+    if core.size == 0:
+        return True
+    return bool((~np.isfinite(core)).any() or (core <= 0).any())
 from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
 from euclid_polish.config import Config
 
@@ -48,6 +68,13 @@ class DownloadConfig:
     instrument: str = "VIS"
     filter_name: Optional[str] = None
     pixel_scale_arcsec: float = Config.VIS_PIXEL_SCALE_ARCSEC
+    # Saturation/clipping rejection: a downloaded cutout is rejected when
+    # its central ``saturation_core_size × saturation_core_size`` region
+    # (centred on the star) contains any non-finite or ``<= 0`` pixel —
+    # the Euclid MER pipeline zeros out detector pixels above well
+    # capacity, so a clipped/saturated core shows up as that hole. Same
+    # check the PSF extractor applies (PSFExtractionConfig). 0 disables.
+    saturation_core_size: int = 7
 
     @classmethod
     def for_band(
@@ -481,6 +508,16 @@ class EuclidCutoutDownloader:
                     output_file, star['ra'], star['dec'], self.config.position_tolerance
                 )
                 if is_valid:
+                    # Reject oversaturated / clipped cores (MER zeros the
+                    # peak of bright stars). Same check the PSF extractor
+                    # applies; a saturated star fails on retry too, so it
+                    # ends up flagged corrupted rather than feeding a bad
+                    # cutout into PSF extraction / training.
+                    data = self.validator.get_data(output_file)
+                    if core_is_saturated(data, self.config.saturation_core_size):
+                        if os.path.exists(output_file):
+                            os.remove(output_file)
+                        return star_id, False
                     return star_id, True
                 if os.path.exists(output_file):
                     os.remove(output_file)
