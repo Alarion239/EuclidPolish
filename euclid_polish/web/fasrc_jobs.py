@@ -688,7 +688,9 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
     changes: Dict[str, str] = {}
     just_finalised: List[str] = []
 
-    for stored in target_db.list_recent(recent_limit):
+    db_rows = list(target_db.list_recent(recent_limit))
+    db_state_before = {s["jobid"]: (s.get("state") or "") for s in db_rows}
+    for stored in db_rows:
         jobid = stored["jobid"]
         cur   = stored.get("state") or ""
         if cur in TERMINAL_STATES:
@@ -723,19 +725,38 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
             changes[jobid] = "UNKNOWN"
             just_finalised.append(jobid)
 
-    # Post-mortem accounting fetch. One ``sacct`` call per newly-
-    # finalised job — typically zero or one per reconcile pass.
-    if ssh is not None and just_finalised:
-        for jobid in just_finalised:
+    # Post-mortem accounting. We fetch sacct for jobs that JUST finalised
+    # this pass AND (re)try any recent job that is terminal in the DB but
+    # whose CSV log row still has no recorded state. sacct accounting lags
+    # the job's actual end by minutes — especially for CANCELLED / TIMEOUT
+    # — so a single fetch at finalisation often returns nothing and would
+    # leave the per-step history panel stuck on "pending" forever. Since
+    # reconcile runs on every dashboard poll, retrying here fills the row
+    # in as soon as sacct catches up.
+    needs_pm: List[str] = list(just_finalised)
+    for jid, stt in db_state_before.items():
+        if jid in needs_pm or stt not in TERMINAL_STATES:
+            continue
+        row = target_log.get(jid)
+        if row is not None and not (row.get("state") or "").strip():
+            needs_pm.append(jid)
+
+    if ssh is not None and needs_pm:
+        for jobid in needs_pm:
             try:
                 stats = fetch_sacct_stats(ssh, jobid)
             except Exception:
                 stats = None
-            if stats:
-                try:
-                    target_log.record_post_mortem(jobid, stats)
-                except Exception:
-                    pass
+            if not stats:
+                continue
+            # record_post_mortem fills the CSV row's actuals AND its real
+            # terminal ``state`` (e.g. CANCELLED / TIMEOUT) from sacct —
+            # squeue can't report those, so without this the per-step
+            # history panel would show the job stuck on "pending".
+            try:
+                target_log.record_post_mortem(jobid, stats)
+            except Exception:
+                pass
 
     return changes
 

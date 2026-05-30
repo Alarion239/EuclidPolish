@@ -25,6 +25,15 @@ _SACCT_DONE = (
     "143|572|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
 )
 
+# A cancelled/timeout job: squeue never reports it (already gone), so its
+# real terminal state only shows up via sacct, often minutes later.
+_SACCT_CANCELLED = (
+    "12345|CANCELLED by 1000|0:15|2026-05-26T14:33:21|2026-05-26T14:35:44|"
+    "143|572||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
+    "12345.batch|CANCELLED|0:15|2026-05-26T14:33:21|2026-05-26T14:35:44|"
+    "143|572|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
+)
+
 
 class _SSHStub:
     """SSH stand-in with scripted ``run`` responses keyed by command prefix."""
@@ -87,6 +96,48 @@ class TestReconcileSacctHook:
         assert r["exit_code"] == "0:0"
         assert r["max_rss_mb"] == "2048.0"
         assert r["alloc_gpus"] == "1"
+
+    def test_retries_post_mortem_for_unfilled_terminal_row(self, db, job_log):
+        """sacct accounting lags a job's end (esp. CANCELLED/TIMEOUT), so the
+        first fetch at finalisation can return nothing, leaving the CSV row
+        on 'pending'. A later reconcile must retry for any DB-terminal job
+        whose CSV state is still blank — otherwise the per-step history
+        panel never reflects the cancellation."""
+        # Already terminal in the DB (e.g. a prior pass marked it DONE), but
+        # the CSV row was never filled (sacct was empty back then).
+        db.insert("12345", label="x", params={},
+                  script_path="/s", log_path="/o", err_path="/e")
+        db.update_state("12345", state="DONE", ended_at=1_700_000_100.0)
+        job_log.record_submission(JobRecord(jobid="12345"))
+        assert (job_log.get("12345").get("state") or "") == ""
+
+        ssh = _SSHStub({"sacct ": (0, _SACCT_CANCELLED, "")})
+        fasrc_jobs.reconcile_with_squeue(
+            squeue_rows=[], db=db, job_log=job_log, ssh=ssh,
+        )
+
+        # The retry fetched sacct and filled the CSV with the real terminal
+        # state + utilisation actuals.
+        assert sum(1 for c in ssh.calls if c.startswith("sacct ")) == 1
+        r = job_log.get("12345")
+        assert r["state"] == "CANCELLED"
+        assert r["max_rss_mb"] == "2048.0"
+        assert float(r["cpu_efficiency"]) == pytest.approx(1.0)
+
+    def test_filled_terminal_row_is_not_refetched(self, db, job_log):
+        """Once the CSV row has a recorded state, reconcile must NOT keep
+        hammering sacct for it every pass."""
+        db.insert("12345", label="x", params={},
+                  script_path="/s", log_path="/o", err_path="/e")
+        db.update_state("12345", state="DONE", ended_at=1_700_000_100.0)
+        job_log.record_submission(JobRecord(jobid="12345"))
+        job_log.record_post_mortem("12345", {"state": "CANCELLED"})
+
+        ssh = _SSHStub({"sacct ": (0, _SACCT_CANCELLED, "")})
+        fasrc_jobs.reconcile_with_squeue(
+            squeue_rows=[], db=db, job_log=job_log, ssh=ssh,
+        )
+        assert sum(1 for c in ssh.calls if c.startswith("sacct ")) == 0
 
     def test_no_ssh_means_no_sacct_call(self, db, job_log):
         """Reconcile without an ssh handle (e.g. server can't reach
