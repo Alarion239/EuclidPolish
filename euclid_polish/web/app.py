@@ -153,8 +153,30 @@ def _catalog_status() -> Dict[str, Any]:
             "path": _fasrc_catalog_remote_path()}
 
 
+def _fasrc_psf_dir(force: bool = True) -> Optional[str]:
+    """Pull the FASRC Euclid ePSFs into the local cache; return the dir
+    holding them, or None if none are on FASRC yet.
+
+    The all-band extraction job writes ``euclid_psf_<band>.fits`` to
+    netscratch ``$DATA_DIR/euclid_psf``, so the laptop UI must rsync those
+    down and read them — not a stale local copy. The four band files share
+    one remote dir, so they land in one local cache dir."""
+    cfg = fasrc_config.load()
+    local_dir: Optional[str] = None
+    for band in Config.BANDS:
+        remote = f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}"
+        res = _fasrc_fetcher.fetch_one_file(remote, force=force)
+        if res.ok and res.local_path and os.path.isfile(res.local_path):
+            local_dir = os.path.dirname(res.local_path)
+    return local_dir
+
+
 def _psf_status() -> Dict[str, Any]:
-    inv = psf_inventory()
+    psf_dir = _fasrc_psf_dir()
+    # No FASRC PSFs yet → every band shows the Gaussian fallback (rather
+    # than reading whatever stale ePSF might sit in the local data dir).
+    inv = (psf_inventory(psf_dir=psf_dir) if psf_dir
+           else {b.name: None for b in Config.BANDS})
     bands = []
     for b in Config.BANDS:
         path = inv.get(b.name)
@@ -1411,7 +1433,12 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
     """Render one band (or all four) on a log-stretch panel as PNG bytes."""
     matplotlib.use("Agg")
 
-    psfs = load_all_band_psfs()
+    # Render the FASRC-extracted PSFs (pulled to the local cache), not a
+    # stale local copy. None → nothing on FASRC yet.
+    psf_dir = _fasrc_psf_dir()
+    if not psf_dir:
+        abort(404)
+    psfs = load_all_band_psfs(psf_dir=psf_dir)
     if band and band != "all":
         if band not in psfs:
             abort(404)
