@@ -18,14 +18,28 @@ All file paths and constants come from :mod:`euclid_polish.config`.
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import shutil
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# Cap per-process BLAS threads BEFORE numpy import so the parallel
+# generate+forward workers map 1:1 onto their CPUs instead of each
+# spawning a thread per core. Affects only numpy/scipy (generation +
+# forward model); TF training uses its own thread pools, so this does NOT
+# slow the train step. ``setdefault`` honours an explicit override.
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
 
 # Make ``euclid_polish`` importable when running this file directly.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+from typing import List, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -94,6 +108,15 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     ap.add_argument("--require-empirical-psf", action="store_true",
                     help="Fail if any band lacks a real ePSF (no Gaussian fallback).")
+    ap.add_argument("--gen-workers", type=int, default=1,
+                    help="Parallelise synthetic generation across this many "
+                         "processes. >1 runs a COMBINED generate+forward pass "
+                         "(each worker renders clean → hr+dirty for a "
+                         "contiguous index range into its own TFRecord "
+                         "shards, then the shards are concatenated in order). "
+                         "Requires both generate and convolve (i.e. neither "
+                         "--skip-generate nor --skip-convolve); falls back to "
+                         "the serial two-step path otherwise.")
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
@@ -225,6 +248,152 @@ def step_convolve(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Parallel combined generate + forward (one process per index range)
+# ---------------------------------------------------------------------------
+
+def _concat_tfrecords(part_paths: List[str], out_path: str) -> None:
+    """Byte-concatenate TFRecord shard files into one TFRecord.
+
+    A TFRecord file is a bare back-to-back sequence of self-framed records
+    (no header/footer), so concatenating shards in order yields a valid
+    TFRecord whose records appear in shard order. Missing/empty parts are
+    skipped."""
+    with open(out_path, "wb") as out:
+        for p in part_paths:
+            if os.path.exists(p) and os.path.getsize(p) > 0:
+                with open(p, "rb") as f:
+                    shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
+
+
+def _shard_bounds(n: int, n_shards: int) -> List[Tuple[int, int]]:
+    """Contiguous ``[start, end)`` ranges partitioning ``[0, n)``."""
+    return [(round(k * n / n_shards), round((k + 1) * n / n_shards))
+            for k in range(n_shards)]
+
+
+def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
+                             start: int, count: int, shard_id: int,
+                             seed) -> Tuple[str, int, int]:
+    """Generate clean → forward to hr+dirty for ``[start, start+count)`` and
+    write the triple to per-shard TFRecords.
+
+    Pure (no globals / pool) so it's unit-testable with an injected
+    sim/fwd. Records are written ``clean[i] → hr[i] → dirty[i]`` in the same
+    order, so concatenating shards in id order keeps clean/hr/dirty
+    position-aligned (the dataset pairs by position, not by stored index)."""
+    rng = np.random.default_rng(seed)
+    tag = f"{subset}.part{shard_id:04d}"
+    with open_multiband_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
+         open_multiband_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
+         open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw:
+        for i in range(start, start + count):
+            sky, _ = sim.simulate_field(rng)
+            sky.index = i
+            sky.subset = subset
+            lr, hr = fwd.process(sky, rng=rng)
+            hr.index = i
+            hr.subset = subset
+            lr.index = i
+            lr.subset = subset
+            cw.write(sky, index=i)
+            hw.write(hr, index=i)
+            dw.write(lr, index=i)
+    return subset, shard_id, count
+
+
+# Worker-process globals, built once per worker by ``_gen_init_worker``.
+_W_SIM = None
+_W_FWD = None
+_W_RECORDS_DIR = ""
+
+
+def _gen_init_worker(catalog_path, image_size, psf_dir,
+                     require_empirical_psf, records_dir) -> None:
+    """ProcessPool initializer: build the (small, filtered) catalog +
+    simulator + forward model once per worker. The COSMOS2025 FITS is
+    memmapped and only the filtered columns are held, so each worker's copy
+    is a few MB — no 10 GB-per-worker blow-up."""
+    global _W_SIM, _W_FWD, _W_RECORDS_DIR
+    cat = open_cosmos2025(path=catalog_path)
+    _W_SIM = MultiBandSimulator(
+        cat, MultiBandGeneratorConfig(image_size=image_size,
+                                      pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+    )
+    psfs = load_all_band_psfs(
+        psf_dir=psf_dir, require_empirical=require_empirical_psf,
+        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+    )
+    _W_FWD = MultiBandForward(psfs_by_band=psfs,
+                              config=MultiBandForwardConfig(add_noise=True))
+    _W_RECORDS_DIR = records_dir
+
+
+def _gen_convolve_shard(task) -> Tuple[str, int, int]:
+    """Top-level pool entry point → ``_generate_convolve_range`` with the
+    worker-global sim/fwd."""
+    subset, start, count, shard_id, seed = task
+    return _generate_convolve_range(
+        _W_SIM, _W_FWD, _W_RECORDS_DIR, subset, start, count, shard_id, seed,
+    )
+
+
+def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
+    _banner(f"STEP 1+2 (parallel ×{args.gen_workers}): generate clean HR + "
+            f"forward-model to dirty Euclid LR")
+    reporter = Reporter.from_env()
+    os.makedirs(args.records_dir, exist_ok=True)
+    workers = max(1, int(args.gen_workers))
+
+    for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
+        if n <= 0:
+            continue
+        # More shards than workers → finer progress + load balancing.
+        # ~256 images/shard, but at least one shard per worker and never
+        # more shards than images.
+        n_shards = min(n, max(workers, math.ceil(n / 256)))
+        bounds = _shard_bounds(n, n_shards)
+        master_seed = int.from_bytes(os.urandom(8), "little")
+        tasks = []
+        for sid, (start, end) in enumerate(bounds):
+            if end > start:
+                # SeedSequence material → reproducible, independent per shard.
+                seed = [master_seed, (1 if subset == "train" else 2), sid]
+                tasks.append((subset, start, end - start, sid, seed))
+
+        reporter.set_stage(f"generate+forward {subset} (×{workers})")
+        _log(f"  {subset}: {n} pairs across {len(tasks)} shards, "
+             f"{workers} workers (master_seed={master_seed})")
+        t0 = time.perf_counter()
+        done = 0
+        with ProcessPoolExecutor(
+            max_workers=workers, initializer=_gen_init_worker,
+            initargs=(args.catalog, args.image_size, args.psf_dir,
+                      args.require_empirical_psf, args.records_dir),
+        ) as pool:
+            futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
+            for fut in as_completed(futs):
+                _subset, _sid, cnt = fut.result()
+                done += cnt
+                reporter.set_step(done, n, f"{subset} {done}/{n}")
+
+        # Merge shards IN ID ORDER so clean/hr/dirty stay position-aligned.
+        reporter.set_stage(f"merging {subset} shards")
+        for kind in ("clean", "hr", "dirty"):
+            parts = [tfrecord_path(args.records_dir,
+                                   f"{kind}_{subset}.part{sid:04d}")
+                     for sid, (s, e) in enumerate(bounds) if e > s]
+            _concat_tfrecords(parts, tfrecord_path(args.records_dir,
+                                                   f"{kind}_{subset}"))
+            for p in parts:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
+             f"→ clean + hr + dirty {subset}")
+
+
+# ---------------------------------------------------------------------------
 # Step 3: train WDSR (4-channel in, 1-channel out)
 # ---------------------------------------------------------------------------
 
@@ -303,17 +472,26 @@ def main() -> int:
     timer.mark("init", params_dependent=False,
                started_at=t_script_start, ended_at=time.time())
 
-    if not args.skip_generate:
+    # Parallel combined path: one process per index range does generate +
+    # forward in a single pass, then shards are concatenated. Only when both
+    # stages are wanted (the standalone re-convolve case stays serial).
+    parallel_gen = (int(getattr(args, "gen_workers", 1) or 1) > 1
+                    and not args.skip_generate and not args.skip_convolve)
+    if parallel_gen:
         with timer.stage("generate", params_dependent=True):
-            step_generate(args)
+            step_generate_and_convolve_parallel(args)
     else:
-        print("STEP 1 skipped (--skip-generate)")
+        if not args.skip_generate:
+            with timer.stage("generate", params_dependent=True):
+                step_generate(args)
+        else:
+            print("STEP 1 skipped (--skip-generate)")
 
-    if not args.skip_convolve:
-        with timer.stage("convolve", params_dependent=True):
-            step_convolve(args)
-    else:
-        print("STEP 2 skipped (--skip-convolve)")
+        if not args.skip_convolve:
+            with timer.stage("convolve", params_dependent=True):
+                step_convolve(args)
+        else:
+            print("STEP 2 skipped (--skip-convolve)")
 
     if not args.skip_train:
         with timer.stage("train", params_dependent=True):

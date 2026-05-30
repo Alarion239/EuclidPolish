@@ -792,6 +792,17 @@ class SyntheticGenerateStep(RunPipelineStep):
             needs_train_knobs=True,
         )
 
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        # Parallelise generation across the allocated CPUs: one process per
+        # CPU runs the combined generate+forward pass on its index range.
+        cmd = super().build_command(params)
+        try:
+            workers = int(params.get("n_cpus") or self.defaults.n_cpus)
+        except (TypeError, ValueError):
+            workers = self.defaults.n_cpus
+        cmd += ["--gen-workers", str(max(1, workers))]
+        return cmd
+
 
 class GenConvolveStep(RunPipelineStep):
     def __init__(self) -> None:
