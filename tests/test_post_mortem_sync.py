@@ -140,6 +140,30 @@ class TestReconcileSacctHook:
         )
         assert sum(1 for c in ssh.calls if c.startswith("sacct ")) == 0
 
+    def test_refresh_all_repulls_terminal_rows_only(self, db, job_log):
+        """One-shot backfill: re-pull sacct for finalised rows (overwriting
+        a stale stat like the old always-1.0 cpu_efficiency) and skip rows
+        that haven't finished yet."""
+        job_log.record_submission(JobRecord(jobid="12345"))
+        job_log.record_post_mortem(
+            "12345", {"state": "COMPLETED", "cpu_efficiency": 9.99})
+        # Still-pending row (blank state) → must be skipped.
+        job_log.record_submission(JobRecord(jobid="55555"))
+
+        ssh = _SSHStub({"sacct ": (0, _SACCT_DONE, "")})
+        result = fasrc_jobs.refresh_all_post_mortems(ssh, job_log=job_log)
+
+        assert result["ok"] is True
+        assert result["total"] == 1 and result["updated"] == 1
+        # Stale efficiency overwritten by the re-pulled correct value.
+        assert float(job_log.get("12345")["cpu_efficiency"]) == pytest.approx(1.0)
+        # The pending row was never queried.
+        assert all("55555" not in c for c in ssh.calls)
+
+    def test_refresh_all_not_connected(self, job_log):
+        result = fasrc_jobs.refresh_all_post_mortems(None, job_log=job_log)
+        assert result["ok"] is False and result["updated"] == 0
+
     def test_no_ssh_means_no_sacct_call(self, db, job_log):
         """Reconcile without an ssh handle (e.g. server can't reach
         FASRC right now) must still update DB state but skip sacct."""

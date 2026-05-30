@@ -649,6 +649,38 @@ def sync_pending_on_connect(
     )
 
 
+def refresh_all_post_mortems(
+    ssh: Any, *, job_log: Optional[JobLog] = None,
+) -> Dict[str, Any]:
+    """Re-pull sacct for every finalised job in the CSV log and re-record.
+
+    One-shot maintenance: when the way a post-mortem field is *computed*
+    changes (e.g. cpu_efficiency switching from the always-1.0 CPUTimeRAW
+    to real TotalCPU), rows already written hold the stale value and the
+    normal reconcile won't re-fetch them (it only retries rows with a blank
+    state). This re-queries sacct — authoritative — for each terminal job
+    and overwrites the actuals. Jobs sacct has since purged are skipped
+    (their old values stay). Returns ``{ok, updated, total}``.
+    """
+    target_log = job_log if job_log is not None else JOBLOG
+    if ssh is None or not ssh.is_connected():
+        return {"ok": False, "error": "not connected", "updated": 0, "total": 0}
+    candidates = [
+        r for r in target_log.list_all()
+        if r.get("jobid") and (r.get("state") or "").strip() in TERMINAL_STATES
+    ]
+    updated = 0
+    for r in candidates:
+        jobid = r["jobid"]
+        try:
+            stats = fetch_sacct_stats(ssh, jobid)
+        except Exception:
+            stats = None
+        if stats and target_log.record_post_mortem(jobid, stats):
+            updated += 1
+    return {"ok": True, "updated": updated, "total": len(candidates)}
+
+
 def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
                           *, db: Optional["JobDB"] = None,
                           recent_limit: int = 50,

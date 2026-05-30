@@ -4016,6 +4016,16 @@ def create_app() -> Flask:
             return jsonify(payload), 500
         return jsonify(payload)
 
+    @app.route("/api/fasrc/refresh-accounting", methods=["POST"])
+    def api_fasrc_refresh_accounting():
+        """One-shot: re-pull sacct for every finalised job and re-record.
+
+        Use after a change to how a post-mortem stat is computed (e.g. the
+        CPU-utilisation fix) to backfill existing history rows."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        return jsonify(fasrc_jobs.refresh_all_post_mortems(STATE.ssh))
+
     @app.route("/api/fasrc/hst/runtime-history/<step_id>")
     def api_fasrc_hst_runtime_history(step_id: str):
         return jsonify({
