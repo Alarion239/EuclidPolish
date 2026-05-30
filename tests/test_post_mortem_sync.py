@@ -20,18 +20,19 @@ from euclid_polish.web import fasrc_jobs
 
 _SACCT_DONE = (
     "12345|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|"
-    "143|572||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
+    "143|572|09:32||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
     "12345.batch|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|"
-    "143|572|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
+    "143|572|09:32|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
 )
 
 # A cancelled/timeout job: squeue never reports it (already gone), so its
 # real terminal state only shows up via sacct, often minutes later.
+# TotalCPU 09:32 = 572 s = elapsed × 4 cores → 100% utilisation.
 _SACCT_CANCELLED = (
     "12345|CANCELLED by 1000|0:15|2026-05-26T14:33:21|2026-05-26T14:35:44|"
-    "143|572||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
+    "143|572|09:32||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
     "12345.batch|CANCELLED|0:15|2026-05-26T14:33:21|2026-05-26T14:35:44|"
-    "143|572|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
+    "143|572|09:32|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
 )
 
 

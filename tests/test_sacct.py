@@ -80,23 +80,34 @@ class TestGresCount:
 
 #   Field order matches euclid_polish.web.sacct._SACCT_FIELDS:
 #   JobID | State | ExitCode | Start | End | ElapsedRaw | CPUTimeRAW |
-#   MaxRSS | ReqMem | ReqCPUS | ReqTRES | AllocCPUS | AllocTRES | Timelimit
+#   TotalCPU | MaxRSS | ReqMem | ReqCPUS | ReqTRES | AllocCPUS | AllocTRES |
+#   Timelimit
+# TotalCPU is the CPU time actually CONSUMED (duration string); CPUTimeRAW
+# is merely Elapsed × NCPUS (allocated). Efficiency uses TotalCPU.
 # Main rows leave MaxRSS empty (it sits on the .batch step); .batch rows
 # leave ReqMem / ReqCPUS / ReqTRES / AllocCPUS / Timelimit empty
 # (those live on the parent job).
+# This job used all 4 cores fully → TotalCPU 09:32 = 572 s = elapsed × 4.
 _SACCT_COMPLETED = """\
-12345|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|143|572||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00
-12345.batch|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|143|572|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"""
+12345|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|143|572|09:32||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00
+12345.batch|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|143|572|09:32|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"""
+
+
+# A single-threaded job on 4 cores: TotalCPU 01:40 = 100 s ≈ elapsed (one
+# core busy) → efficiency 100/(100×4) = 0.25, NOT 1.0.
+_SACCT_PARTIAL = """\
+222|COMPLETED|0:0|2026-05-26T18:00:00|2026-05-26T18:01:40|100|400|01:40||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,mem=8000M|1:00:00
+222.batch|COMPLETED|0:0|2026-05-26T18:00:00|2026-05-26T18:01:40|100|400|01:40|512M||||||cpu=4,mem=8000M|"""
 
 
 _SACCT_OOM = """\
-67890|OUT_OF_MEMORY|0:9|2026-05-26T15:01:00|2026-05-26T15:01:42|42|168||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,mem=8000M|1:00:00
-67890.batch|OUT_OF_MEMORY|0:9|2026-05-26T15:01:00|2026-05-26T15:01:42|42|168|8500M||||||cpu=4,mem=8000M|"""
+67890|OUT_OF_MEMORY|0:9|2026-05-26T15:01:00|2026-05-26T15:01:42|42|168|01:24||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,mem=8000M|1:00:00
+67890.batch|OUT_OF_MEMORY|0:9|2026-05-26T15:01:00|2026-05-26T15:01:42|42|168|01:24|8500M||||||cpu=4,mem=8000M|"""
 
 
 _SACCT_CANCELLED = """\
-11111|CANCELLED by 5550|0:15|2026-05-26T16:00:00|2026-05-26T16:00:09|9|9||8000Mc|1|cpu=1,mem=8000M|1|cpu=1,mem=8000M|0:10:00
-11111.batch|CANCELLED|0:15|2026-05-26T16:00:00|2026-05-26T16:00:09|9|9|256M||||||cpu=1,mem=8000M|"""
+11111|CANCELLED by 5550|0:15|2026-05-26T16:00:00|2026-05-26T16:00:09|9|9|00:09||8000Mc|1|cpu=1,mem=8000M|1|cpu=1,mem=8000M|0:10:00
+11111.batch|CANCELLED|0:15|2026-05-26T16:00:00|2026-05-26T16:00:09|9|9|00:09|256M||||||cpu=1,mem=8000M|"""
 
 
 class TestParseSacctOutput:
@@ -117,6 +128,18 @@ class TestParseSacctOutput:
         assert stats["alloc_memory_mb"] == 8000.0
         # 572 CPU-s / (143 elapsed × 4 cores) = 1.0 — fully used.
         assert stats["cpu_efficiency"] == pytest.approx(1.0)
+
+    def test_cpu_efficiency_uses_totalcpu_not_allocated(self):
+        """A single-threaded job on 4 cores must report ~25%, NOT 100%.
+
+        Regression: efficiency was computed from CPUTimeRAW (= Elapsed ×
+        NCPUS, the *allocated* CPU-time), making it a constant 1.0. It must
+        use TotalCPU (CPU-time actually consumed)."""
+        stats = parse_sacct_output(_SACCT_PARTIAL)
+        # TotalCPU 01:40 = 100 s consumed (not CPUTimeRAW = 400).
+        assert stats["cpu_seconds"] == pytest.approx(100.0)
+        # 100 / (100 elapsed × 4 cores) = 0.25.
+        assert stats["cpu_efficiency"] == pytest.approx(0.25)
 
     def test_oom_job_recorded_with_state_and_peak(self):
         stats = parse_sacct_output(_SACCT_OOM)
@@ -140,7 +163,7 @@ class TestParseSacctOutput:
         crash and must report what it can."""
         text = (
             "99|COMPLETED|0:0|2026-05-26T17:00:00|2026-05-26T17:00:05|"
-            "5|10||100M|1|cpu=1,mem=100M|1|cpu=1,mem=100M|0:01:00"
+            "5|10|00:05||100M|1|cpu=1,mem=100M|1|cpu=1,mem=100M|0:01:00"
         )
         stats = parse_sacct_output(text)
         assert stats["state"] == "COMPLETED"
@@ -150,7 +173,7 @@ class TestParseSacctOutput:
 
     def test_unknown_timestamps_drop_to_empty(self):
         text = (
-            "1|PENDING|0:0|Unknown|Unknown|0|0|||0|cpu=0,mem=0M|0|cpu=0,mem=0M|0:10:00"
+            "1|PENDING|0:0|Unknown|Unknown|0|0|00:00|||0|cpu=0,mem=0M|0|cpu=0,mem=0M|0:10:00"
         )
         stats = parse_sacct_output(text)
         assert stats["started_at"] == ""
@@ -159,7 +182,7 @@ class TestParseSacctOutput:
     def test_cpu_efficiency_none_when_no_elapsed(self):
         """A job that never ran has elapsed=0 → efficiency must not divide."""
         text = (
-            "1|CANCELLED|0:0|Unknown|Unknown|0|0|||0|cpu=0,mem=0M|0|cpu=0,mem=0M|0:10:00"
+            "1|CANCELLED|0:0|Unknown|Unknown|0|0|00:00|||0|cpu=0,mem=0M|0|cpu=0,mem=0M|0:10:00"
         )
         stats = parse_sacct_output(text)
         assert stats["cpu_efficiency"] is None

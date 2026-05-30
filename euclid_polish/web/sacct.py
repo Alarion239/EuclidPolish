@@ -44,6 +44,7 @@ _SACCT_FIELDS: Tuple[str, ...] = (
     "End",
     "ElapsedRaw",
     "CPUTimeRAW",
+    "TotalCPU",
     "MaxRSS",
     "ReqMem",
     "ReqCPUS",
@@ -110,10 +111,14 @@ def parse_sacct_output(text: str) -> Dict[str, Any]:
     batch_row = next((r for r in rows if r["JobID"].endswith(".batch")), None)
 
     elapsed_sec = _parse_int(main_row.get("ElapsedRaw")) or 0
-    # CPUTimeRAW often sits on the batch step; fall back to main if not.
+    # CPU time actually CONSUMED (user+system across all cores) — TotalCPU,
+    # NOT CPUTimeRAW. CPUTimeRAW = Elapsed × NCPUS is merely the *allocated*
+    # CPU time, so using it makes efficiency a constant 1.0. TotalCPU is
+    # what ``seff`` divides by (Elapsed × NCPUS) to get real utilisation.
+    # Prefer the batch step (where the work runs); fall back to the main row.
     cpu_seconds = (
-        _parse_float((batch_row or {}).get("CPUTimeRAW"))
-        or _parse_float(main_row.get("CPUTimeRAW"))
+        _parse_slurm_duration_secs((batch_row or {}).get("TotalCPU"))
+        or _parse_slurm_duration_secs(main_row.get("TotalCPU"))
         or 0.0
     )
     alloc_cpus = _parse_int(main_row.get("AllocCPUS")) or 0
@@ -174,6 +179,38 @@ def _parse_float(s: Any) -> Optional[float]:
         return float(str(s).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _parse_slurm_duration_secs(s: Any) -> Optional[float]:
+    """Parse a SLURM duration (e.g. ``TotalCPU``) into seconds.
+
+    Formats: ``"SS.mmm"``, ``"MM:SS.mmm"``, ``"HH:MM:SS"``,
+    ``"DD-HH:MM:SS"``. Returns None on empty / unparseable input."""
+    if s is None:
+        return None
+    raw = str(s).strip()
+    if not raw or raw in ("Unknown", "None", "N/A"):
+        return None
+    days = 0.0
+    if "-" in raw:
+        d, raw = raw.split("-", 1)
+        try:
+            days = float(d)
+        except ValueError:
+            return None
+    try:
+        parts = [float(p) for p in raw.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        h, m, sec = 0.0, parts[0], parts[1]
+    elif len(parts) == 1:
+        h, m, sec = 0.0, 0.0, parts[0]
+    else:
+        return None
+    return days * 86400.0 + h * 3600.0 + m * 60.0 + sec
 
 
 _MEM_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([KMGT]?)\s*([cn]?)\s*$",
