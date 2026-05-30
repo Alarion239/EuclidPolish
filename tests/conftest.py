@@ -103,6 +103,22 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
     yield
+    # Drain background REGISTRY jobs a route spawned during the test (e.g.
+    # /psfs/visualize writes psf_<band>.png to Config.VIS_PSF_DIR in a
+    # daemon thread). They must finish while the redirects above are still
+    # active — this fixture's teardown runs BEFORE its ``monkeypatch``
+    # dependency reverts the paths — otherwise a late write lands in the
+    # real ./data tree and trips the session-teardown immutability guard.
+    try:
+        import time as _time
+        from euclid_polish.web.jobs import REGISTRY
+        _deadline = _time.monotonic() + 5.0
+        while _time.monotonic() < _deadline:
+            if not any(j.get("status") == "running" for j in REGISTRY.list()):
+                break
+            _time.sleep(0.02)
+    except Exception:
+        pass
 
 
 @_pytest.fixture(autouse=True, scope="function")

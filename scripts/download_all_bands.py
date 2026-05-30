@@ -25,6 +25,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.euclid import auth
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.downloader import (
     DownloadConfig, EuclidCutoutDownloader,
@@ -65,16 +66,28 @@ def main() -> int:
         print(f"✗ no catalog at {cat.catalog_path}")
         return 1
 
+    # Log in to the Euclid archive (proprietary cutouts need it). Tries
+    # EUCLID_USER/EUCLID_PASSWORD env, then ~/.euclid_credentials (written
+    # by the WebUI "Euclid archive login" form). Non-interactive on FASRC.
+    reporter.set_stage("authenticating with Euclid archive")
+    if auth.login(allow_interactive=False):
+        print(f"✓ Euclid archive login OK (user={auth.current_user()})")
+    else:
+        reporter.warn(
+            "not authenticated with the Euclid archive — proprietary "
+            "cutouts will fail. Set credentials in the WebUI (Cutouts page)."
+        )
+        print("⚠️  proceeding unauthenticated (public data only)")
+
     summary: dict[str, dict] = {}
     n_bands = len(band_names)
     t0 = time.perf_counter()
     for i, band_name in enumerate(band_names):
         band = Config.get_band(band_name)
         native = band.cutout_size_for_arcsec(arcsec)
-        # One stage per band; the step bar tracks band progress (the
-        # downloader's own tqdm covers per-file detail in the raw log).
-        reporter.set_stage(f"downloading {band_name}")
-        reporter.set_step(i, n_bands, band_name)
+        # One stage per band; the per-cutout progress_cb below drives the
+        # step bar (current/total within the band).
+        reporter.set_stage(f"downloading {band_name} ({i + 1}/{n_bands})")
         print(f"=== {band_name}  (instrument={band.archive_instrument}"
               f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
               f"native_size={native} px) ===")
@@ -85,7 +98,14 @@ def main() -> int:
         )
         downloader = EuclidCutoutDownloader(cat, cfg)
         t_band = time.perf_counter()
-        result = downloader.download(show_progress=True)
+        # Per-cutout progress → WebUI bar (resets per band; stage names the
+        # band). Emitting every cutout is cheap (JSONL append) and the
+        # stderr echo is rate-limited inside Reporter.set_step.
+        result = downloader.download(
+            show_progress=True,
+            progress_cb=lambda cur, tot, lbl, _b=band_name:
+                reporter.set_step(cur, tot, f"{_b} {lbl}"),
+        )
         summary[band_name] = result
         if result.get("corrupted", 0) or result.get("failed", 0):
             reporter.warn(

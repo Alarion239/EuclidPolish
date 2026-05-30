@@ -8,7 +8,7 @@ Euclid VIS cutouts from the Euclid archive.
 import os
 import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Callable, List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
 import numpy as np
@@ -354,7 +354,8 @@ class EuclidCutoutDownloader:
     def download(
         self,
         star_ids: Optional[List[int]] = None,
-        show_progress: bool = True
+        show_progress: bool = True,
+        progress_cb: Optional[Callable[[int, int, str], None]] = None,
     ) -> dict:
         """
         Download cutouts for stars in the catalog.
@@ -365,6 +366,10 @@ class EuclidCutoutDownloader:
             Specific star IDs to download. If None, downloads all missing stars.
         show_progress : bool
             Whether to show progress bar.
+        progress_cb : callable, optional
+            Called as ``progress_cb(current, total, label)`` after each
+            cutout finishes — used to drive the WebUI progress bar via the
+            structured Reporter (the FASRC job has no terminal for tqdm).
 
         Returns:
         --------
@@ -492,10 +497,13 @@ class EuclidCutoutDownloader:
                     desc=f"Downloading (size {cutout_size}, {self.config.max_workers}x)",
                     disable=not show_progress,
                 )
-                for fut in progress:
+                n_total = len(futures)
+                for done_i, fut in enumerate(progress, start=1):
                     star_id, ok = fut.result()
                     if not ok:
                         corrupted_star_ids.append(star_id)
+                    if progress_cb is not None:
+                        progress_cb(done_i, n_total, f"star_{star_id:04d}")
 
         # Update catalog — per-(band, size) flags.
         new_valid_ids = [

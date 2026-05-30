@@ -133,6 +133,59 @@ def test_query_brightest_requires_fasrc_connection(client, monkeypatch):
         assert r.get_json().get("ok") is False
 
 
+def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
+    """Saving Euclid credentials writes ~/.euclid_credentials on FASRC via a
+    quoted heredoc (password as stdin, not argv), mode 600. Nothing is
+    stored on the laptop."""
+    from euclid_polish.web import remote as web_remote
+    captured = {}
+
+    class _CapSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60):
+            captured["cmd"] = cmd
+            return (0, "", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _CapSSH())
+    r = client.post("/euclid-auth/save",
+                    data={"euclid_user": "alice", "euclid_password": "s3cr3t!$x"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    cmd = captured["cmd"]
+    assert "alice" in cmd and "s3cr3t!$x" in cmd
+    assert ".euclid_credentials" in cmd
+    assert "umask 077" in cmd and "chmod 600" in cmd
+    # Heredoc terminator present so the password lands as file content.
+    assert "__EUCLID_CREDS_EOF__" in cmd
+
+
+def test_euclid_auth_save_rejects_blank(client, monkeypatch):
+    from euclid_polish.web import remote as web_remote
+
+    class _OkSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60): return (0, "", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _OkSSH())
+    r = client.post("/euclid-auth/save",
+                    data={"euclid_user": "", "euclid_password": "x"})
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False
+
+
+def test_euclid_auth_status_reports_presence(client, monkeypatch):
+    from euclid_polish.web import remote as web_remote
+
+    class _PresentSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60): return (0, "alice\n", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _PresentSSH())
+    r = client.get("/euclid-auth/status")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["present"] is True and body["user"] == "alice"
+
+
 def test_post_psfs_visualize_returns_job_id(client):
     r = client.post("/psfs/visualize", data={"band": "VIS"})
     assert r.status_code == 200
