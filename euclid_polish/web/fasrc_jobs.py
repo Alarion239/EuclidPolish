@@ -349,6 +349,8 @@ def _build_presets() -> Dict[str, Dict[str, Any]]:
     for step in REGISTRY.all():
         if not isinstance(step, RunPipelineStep):
             continue
+        if not getattr(step, "in_preset_dropdown", True):
+            continue
         out[step.step_id] = {
             "label":             step.label,
             "partition":         step.defaults.partition,

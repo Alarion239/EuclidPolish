@@ -67,6 +67,7 @@ class TestRegistry:
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "download_euclid_cutouts", "extract_euclid_psf",
+            "synthetic_generate",
             "gen_convolve", "convolve_only", "train_only", "custom",
         }
 

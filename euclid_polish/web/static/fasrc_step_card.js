@@ -153,6 +153,18 @@ large cutout don't leak across train/validate."></label>`;
           <label>Output PSF size (oversampled px)
             <input type="number" name="output_size" value="0" min="0" max="4096"
                    title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
+      case 'synthetic_generate':
+        // Mirrors run_pipeline.py --skip-train (RunPipelineStep.build_command
+        // reads n_train / n_valid / image_size). Renders synthetic clean HR
+        // scenes + forward-models to dirty Euclid LR.
+        return `
+          <label>Train scenes
+            <input type="number" name="n_train" value="6400" min="1" max="50000"></label>
+          <label>Validate scenes
+            <input type="number" name="n_valid" value="100" min="1" max="5000"></label>
+          <label>HR image size (px)
+            <input type="number" name="image_size" value="252" step="2" min="60" max="2048"
+                   title="HR scene side in 0.05″/pix pixels. Forward-modelled to 0.10″ LR (and 0.30″→Lanczos for NISP)."></label>`;
       case 'train':
         return _hstTrainFields();
       default:
@@ -277,6 +289,7 @@ large cutout don't leak across train/validate."></label>`;
       // New per-page tasks (registered in Phase 2 of the migration):
       download_euclid_cutouts: 'euclid_cutouts',
       extract_euclid_psf:      'euclid_psf',
+      synthetic_generate:      'synthetic_records',
     }[step.step_id];
     const status = artifactStatus[produces];
     let statusBadge = '';

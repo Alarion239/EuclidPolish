@@ -729,6 +729,10 @@ class RunPipelineStep(FASRCPipelineStep):
 
     log_dir_prefix:  ClassVar[str] = "logs/jobs"
     job_name_prefix: ClassVar[str] = "euclid"
+    #: Whether this step appears in the legacy training-form preset
+    #: dropdown (:data:`fasrc_jobs.PRESETS`). Steps with a dedicated step
+    #: card elsewhere (e.g. synthetic_generate on /sky) opt out.
+    in_preset_dropdown: ClassVar[bool] = True
 
     def banner_line(self, label: str) -> str:
         return f"Web-submitted job: {label}"
@@ -753,6 +757,40 @@ class RunPipelineStep(FASRCPipelineStep):
         if extra:
             cmd.extend(shlex.split(extra))
         return cmd
+
+
+class SyntheticGenerateStep(RunPipelineStep):
+    """Synthetic training-pair generation for the /sky page.
+
+    Renders synthetic clean HR scenes (COSMOS2025 galaxies + stars +
+    strong lenses) and forward-models them to dirty Euclid LR with the
+    empirical band PSFs, writing clean + HR + dirty TFRecords. Same
+    ``run_pipeline.py --skip-train`` work the legacy gen_convolve preset
+    does, but surfaced as a dedicated, knob-bearing step card on /sky.
+    """
+
+    # Dedicated step card on /sky → keep it out of the legacy training-form
+    # preset dropdown (PRESETS stays the canonical four).
+    in_preset_dropdown: ClassVar[bool] = False
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="synthetic_generate",
+            label="Generate synthetic training pairs (CPU)",
+            description=(
+                "Render synthetic clean HR scenes (COSMOS2025 galaxies + "
+                "stars + strong lenses) and forward-model them to dirty "
+                "Euclid LR with the empirical band PSFs, writing clean + HR "
+                "+ dirty TFRecords to $DATA_DIR/images/records_v2/. Skips "
+                "training, so it runs on a CPU partition."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=16, n_gpus=0,
+                memory="64G", time_limit="6:00:00",
+            ),
+            skip_flags=("--skip-train",),
+            needs_train_knobs=True,
+        )
 
 
 class GenConvolveStep(RunPipelineStep):
@@ -847,6 +885,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidRoundtripTFRecordStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
+    SyntheticGenerateStep,
     HSTTrainStep,
     # Legacy ``run_pipeline.py`` presets (kept for the existing form).
     GenConvolveStep,

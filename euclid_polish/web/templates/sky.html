@@ -39,57 +39,34 @@
 </p>
 
 <section class="card">
-  <h3>Records on disk</h3>
-  <p class="hint"><code>{{ tfrecords.dir }}</code></p>
-  {% if tfrecords.files %}
+  <h3>Records on FASRC</h3>
+  <p class="hint"><code>{{ records_dir }}</code></p>
+  {% if tfrecords %}
     <table>
       <tr><th>File</th><th>Size</th></tr>
-      {% for f in tfrecords.files %}
+      {% for f in tfrecords %}
         <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
       {% endfor %}
     </table>
   {% else %}
-    <p class="muted">empty — run step 1 first.</p>
+    <p class="muted">empty — run the generator on the right.</p>
   {% endif %}
+  <p class="hint">The image preview above renders <em>local</em> records
+     (if any); the table reflects what the FASRC job produced.</p>
 </section>
 {% endblock %}
 
 {% block actions %}
-
-<p class="hint" style="margin-top:0;">
-  The round-trip cards (download Euclid cutouts + build round-trip
-  TFRecords) moved to the dedicated <a href="/roundtrip">Round-trip</a>
-  page. This page now only hosts the local synthetic-sky generator.
-</p>
-
-<h2 style="margin-top:8px;">Local synthetic sky (legacy)</h2>
-
 <section class="card">
-  <h3>1 · Generate clean HR fields</h3>
-  <form id="generate-form" action="/sky/generate">
-    <label>HR image size (px)
-      <input type="number" name="image_size" value="{{ default_image_size }}" min="60" max="2048"></label>
-    <label>Training images
-      <input type="number" name="n_train" value="{{ default_n_train }}" min="1" max="20000"></label>
-    <label>Validation images
-      <input type="number" name="n_valid" value="{{ default_n_valid }}" min="1" max="5000"></label>
-    <label>Lens density (/arcmin²)
-      <input type="number" name="lens_density" value="{{ default_lens_density }}" step="0.5" min="0"></label>
-    <button type="submit">Generate</button>
-  </form>
-  <div id="generate-status"></div>
+  <h3>Synthetic training pairs (FASRC)</h3>
+  <p class="hint">Submits a SLURM job that renders synthetic clean HR
+     scenes (COSMOS2025 galaxies + stars + strong lenses) and
+     forward-models them to dirty Euclid LR with the empirical band PSFs,
+     writing clean + HR + dirty TFRecords to <code>records_v2/</code> on
+     netscratch. The round-trip cards live on the
+     <a href="/roundtrip">Round-trip</a> page.</p>
 </section>
-
-<section class="card">
-  <h3>2 · Forward model (HR → LR)</h3>
-  <p class="hint">Convolves each HR scene with its band's PSF (empirical
-     or Gaussian fallback) and adds per-band Poisson + read noise.
-     Requires step 1's output.</p>
-  <form id="forward-form" action="/sky/forward">
-    <button type="submit">Run forward model</button>
-  </form>
-  <div id="forward-status"></div>
-</section>
+{% with step_id="synthetic_generate" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}
 
 {% block scripts %}
@@ -161,19 +138,6 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
 
 document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
 document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
-
-document.getElementById("generate-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  polishUI.run(e.target, document.getElementById("generate-status"), {
-    onDone: () => { refreshTotals().then(() => polishUI.viz.refresh()); },
-  });
-});
-document.getElementById("forward-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  polishUI.run(e.target, document.getElementById("forward-status"), {
-    onDone: () => { refreshTotals().then(() => polishUI.viz.refresh()); },
-  });
-});
 
 refreshTotals();
 </script>

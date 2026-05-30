@@ -302,107 +302,6 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
 # Background-job target functions
 # ---------------------------------------------------------------------------
 
-def _job_generate(cap, image_size: int, n_train: int, n_valid: int,
-                  lens_density: float) -> Dict[str, Any]:
-    """Run the multi-band clean-field generator with live progress.
-
-    Fully synthetic — galaxies render via the Sersic B+D decomposition
-    from the COSMOS catalog. (HST-morphology data is a separate stream,
-    forward-modelled offline by ``scripts/fasrc_generate_hst_tfrecords.py``
-    and mixed in at the dataloader.)
-    """
-
-    print(f"Generating clean fields: image_size={image_size}, n_train={n_train}, "
-          f"n_valid={n_valid}, lens_density={lens_density}")
-    catalog = open_cosmos2025()
-    print(f"Catalog: {type(catalog).__name__} ({len(catalog)} galaxies)")
-
-    cfg = MultiBandGeneratorConfig(
-        image_size=image_size,
-        pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=lens_density,
-    )
-    sim = MultiBandSimulator(catalog, cfg)
-    os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
-    result: Dict[str, Any] = {}
-    total_n = n_train + n_valid
-    done = 0
-    for subset, n in (("train", n_train), ("validate", n_valid)):
-        # Entropy-seeded master RNG so each click of the web button
-        # produces fresh fields. Seed logged for after-the-fact replay.
-        master_seed = int.from_bytes(os.urandom(8), "little")
-        rng = np.random.default_rng(master_seed)
-        print(f"  {subset}: master_seed={master_seed}")
-        # Stream each image to disk to bound RSS — accumulating a list
-        # of 6400 510² × 4-channel fields would cost ~26 GB.
-        with open_multiband_writer(f"clean_{subset}",
-                                   records_dir=Config.RECORDS_DIR_V2) as w:
-            for i in range(n):
-                sky, _ = sim.simulate_field(rng)
-                sky.index = i
-                sky.subset = subset
-                w.write(sky, index=i)
-                done += 1
-                cap.tick(done, total_n, f"generating {subset} {i+1}/{n}")
-            path, count = w.path, w.count
-        print(f"  ✓ {path}")
-        result[subset] = {"path": path, "count": count}
-    return result
-
-
-def _job_forward(cap) -> Dict[str, Any]:
-    """Apply the multi-band forward model with progress tracking."""
-
-    psfs = load_all_band_psfs()
-    print("Loaded PSFs:")
-    for name, psf in psfs.items():
-        print(f"  {name:5s} shape={psf.data.shape} scale={psf.pixel_scale:.3f}\"")
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
-
-    # Pre-count total for the progress bar
-    totals = {}
-    for subset in ("train", "validate"):
-        path = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
-        if os.path.exists(path):
-            totals[subset] = sum(1 for _ in tf.data.TFRecordDataset(path))
-    grand_total = sum(totals.values())
-    done = 0
-    result: Dict[str, Any] = {}
-
-    for subset in ("train", "validate"):
-        clean = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
-        if not os.path.exists(clean):
-            print(f"  ⚠️  no clean_{subset} on disk, skipping")
-            continue
-        # Entropy-seeded forward-model RNG — fresh noise/CR/streak draw
-        # every run, with the master seed logged for replay.
-        master_seed = int.from_bytes(os.urandom(8), "little")
-        rng = np.random.default_rng(master_seed)
-        print(f"  forward {subset}: master_seed={master_seed}")
-        # Stream LR + HR pairs to disk — at 6400 fields the in-memory
-        # list approach was costing ~13 GB and risking another OOM after
-        # the generator's fix.
-        n = totals.get(subset, 0)
-        with open_multiband_writer(f"hr_{subset}",
-                                   records_dir=Config.RECORDS_DIR_V2) as hr_w, \
-             open_multiband_writer(f"dirty_{subset}",
-                                   records_dir=Config.RECORDS_DIR_V2) as lr_w:
-            for i, raw in enumerate(tf.data.TFRecordDataset(clean)):
-                hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
-                lr, hr = fwd.process(hr_4ch, rng=rng)
-                lr.index = i; hr.index = i
-                lr.subset = subset; hr.subset = subset
-                hr_w.write(hr, index=i)
-                lr_w.write(lr, index=i)
-                done += 1
-                cap.tick(done, grand_total, f"forward-model {subset}")
-        result[subset] = {"n": n}
-        print(f"  ✓ {subset}: wrote {hr_w.count} hr_{subset} + "
-              f"{lr_w.count} dirty_{subset} records")
-    return result
-
-
 def _job_train(cap, steps: int, batch_size: int, num_res_blocks: int,
                evaluate_every: int, checkpoint_dir: str) -> Dict[str, Any]:
     """Train the WDSR model on the v2 multi-band TFRecords."""
@@ -2580,12 +2479,25 @@ def create_app() -> Flask:
     # ---------------- Sky generation + forward ----------------
     @app.route("/sky")
     def sky_page():
+        # Synthetic records are now generated on FASRC, so list the remote
+        # records_v2 dir (one shallow ls) rather than the local disk. SSH is
+        # up on this page (the connection gate is upstream); on failure we
+        # just show "no records yet".
+        cfg_loaded = fasrc_config.load()
+        records_dir = f"{cfg_loaded.data_dir}/images/records_v2"
+        tfrecords: List[Dict[str, Any]] = []
+        ok, entries, _ = list_remote_dir(
+            records_dir, glob_pattern="*.tfrecord", max_entries=50,
+        )
+        if ok:
+            for e in sorted(entries, key=lambda r: str(r.get("name", ""))):
+                tfrecords.append({
+                    "name":    e["name"],
+                    "size_mb": f"{int(e.get('size', 0)) / 1e6:.1f}",
+                })
         return render_template("sky.html",
-                               tfrecords=_tfrecords_status(),
-                               default_image_size=510,
-                               default_n_train=20,
-                               default_n_valid=4,
-                               default_lens_density=Config.LENS_DENSITY_ARCMIN2)
+                               records_dir=records_dir,
+                               tfrecords=tfrecords)
 
     @app.route("/roundtrip")
     def roundtrip_page():
@@ -2668,30 +2580,6 @@ def create_app() -> Flask:
                 cap, pos_id, ckpt_dir, nrb,
                 asinh_scale=asinh, show_all_bands=show_all,
             ),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/sky/generate", methods=["POST"])
-    def sky_generate():
-        n_train = int(request.form.get("n_train", 20))
-        n_valid = int(request.form.get("n_valid", 4))
-        image_size = int(request.form.get("image_size", 510))
-        lens_density = float(request.form.get("lens_density",
-                                              Config.LENS_DENSITY_ARCMIN2))
-        tag = f"generate {n_train}+{n_valid} @ {image_size}²"
-        job_id = REGISTRY.spawn(
-            label=tag,
-            target=lambda cap: _job_generate(
-                cap, image_size, n_train, n_valid, lens_density,
-            ),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/sky/forward", methods=["POST"])
-    def sky_forward():
-        job_id = REGISTRY.spawn(
-            label="forward model (PSF + noise)",
-            target=lambda cap: _job_forward(cap),
         )
         return jsonify({"job_id": job_id})
 
@@ -3961,6 +3849,8 @@ def create_app() -> Flask:
             #   euclid_psf     — VIS empirical ePSF, written by the
             #                    extract_euclid_psf (all-band) step.
             "euclid_cutouts": None, "euclid_psf": None,
+            # Synthetic generation (/sky page).
+            "synthetic_records": None,
         }
         if ssh_ok:
             paths = {
@@ -3977,6 +3867,8 @@ def create_app() -> Flask:
                     f"{cfg_loaded.data_dir}/euclid_stars/cutouts/VIS",
                 "euclid_psf":
                     f"{cfg_loaded.data_dir}/euclid_psf/euclid_psf_VIS.fits",
+                "synthetic_records":
+                    f"{cfg_loaded.data_dir}/images/records_v2/clean_train.tfrecord",
             }
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
