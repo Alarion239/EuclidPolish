@@ -132,6 +132,7 @@ button.secondary:hover { background: #565e64; }
 .badge-running { background: #fdedb1; color: #6c5500; }
 .badge-done    { background: #cde6cf; color: #14600c; }
 .badge-failed  { background: #ffd0d0; color: #761515; }
+.badge-cancelled { background: #fde3c0; color: #7a4a00; }
 
 .job-bar { margin: 8px 0; }
 .job-bar progress {

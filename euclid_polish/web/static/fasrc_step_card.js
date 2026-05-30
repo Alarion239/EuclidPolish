@@ -378,18 +378,41 @@ large cutout don't leak across train/validate."></label>`;
       <tr>
         <th>submitted</th><th>state</th><th>task</th>
         <th>cpus</th><th>gpus</th><th>mem</th><th>time</th>
-        <th>elapsed</th><th>max RSS</th>
+        <th>elapsed</th>
+        <th title="CPU efficiency = CPU-time used ÷ (elapsed × allocated CPUs). ~100% means the allocated cores were fully busy; low means cores sat idle.">CPU util</th>
+        <th title="Peak resident memory (MaxRSS) vs the memory you requested.">mem util</th>
       </tr>`;
     const rowHtml = rows.slice(0, 20).map(r => {
-      const stateClass = (r.state === 'COMPLETED') ? 'badge-done'
-                       : (r.state === '') ? 'badge-running'
+      const st = (r.state || '').toUpperCase();
+      // CANCELLED / TIMEOUT are not crashes — the job ran and was stopped
+      // (by the user or the wall-clock limit). Flag them amber, not red,
+      // and still show whatever utilisation sacct captured for the partial
+      // run rather than treating the row as a failure with no data.
+      // Prefix-match: sacct emits variants like "CANCELLED by 1234" or
+      // "CANCELLED+" depending on version.
+      const stateClass = (st === 'COMPLETED' || st === 'DONE') ? 'badge-done'
+                       : (st === '') ? 'badge-running'
+                       : (st.startsWith('CANCELLED') || st.startsWith('TIMEOUT')) ? 'badge-cancelled'
                        : 'badge-failed';
       const taskShort = r.params_json
         ? escapeHtml(r.params_json.length > 60
             ? r.params_json.slice(0, 57) + '…' : r.params_json)
         : '—';
       const elapsed = r.elapsed_seconds ? fmtRuntime(parseFloat(r.elapsed_seconds)) : '—';
-      const rss     = r.max_rss_mb ? `${parseFloat(r.max_rss_mb).toFixed(0)} MB` : '—';
+      // CPU utilisation: sacct's cpu_efficiency (a 0–1 fraction). Recorded
+      // for cancelled/timeout jobs too; blank when sacct had nothing
+      // (e.g. cancelled before the batch step ran) → show "—".
+      const eff     = parseFloat(r.cpu_efficiency);
+      const cpuUtil = Number.isFinite(eff) ? `${(eff * 100).toFixed(0)}%` : '—';
+      // Memory utilisation: peak RSS, and a % of the allocation when known.
+      const rssMb   = parseFloat(r.max_rss_mb);
+      const allocMb = parseFloat(r.alloc_memory_mb);
+      let memUtil = '—';
+      if (Number.isFinite(rssMb)) {
+        memUtil = (Number.isFinite(allocMb) && allocMb > 0)
+          ? `${(100 * rssMb / allocMb).toFixed(0)}% (${rssMb.toFixed(0)} MB)`
+          : `${rssMb.toFixed(0)} MB`;
+      }
       return `<tr>
         <td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td>
         <td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td>
@@ -399,7 +422,8 @@ large cutout don't leak across train/validate."></label>`;
         <td>${escapeHtml(r.req_memory || '')}</td>
         <td>${escapeHtml(r.req_time_limit || '')}</td>
         <td>${elapsed}</td>
-        <td>${rss}</td>
+        <td>${cpuUtil}</td>
+        <td>${memUtil}</td>
       </tr>`;
     }).join('');
     return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;
