@@ -201,7 +201,7 @@ large cutout don't leak across train/validate."></label>`;
       <label>Training steps
         <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
       <label>Batch size
-        <input type="number" name="batch_size" value="16" min="1" max="64"></label>
+        <input type="number" name="batch_size" value="4" min="1" max="64"></label>
       <label>HST fraction
         <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"></label>
       <label>Round-trip fraction

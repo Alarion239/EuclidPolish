@@ -175,7 +175,16 @@ class Config:
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389 (5×10³ stars / deg²)
+    # Stars are deliberately OVER-REPRESENTED for training (the real Wide-
+    # Survey density is ~1.389/arcmin² = 5×10³/deg²). With 96²-HR random
+    # crops (0.0064 arcmin² each) the real density puts a star in <1% of
+    # crops, and the HST training stream rejects stars entirely — so a
+    # network trained on the mix barely sees stars and handles them poorly
+    # at inference. Bumping to ~30/arcmin² puts a star in a meaningful
+    # fraction of crops (bright stars' wings cover several more). Same
+    # rationale as the ×1600 lens over-representation (LENS_DENSITY_ARCMIN2).
+    # Drop back toward 1.4 for realistic-sky generation.
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 30.0
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
@@ -345,15 +354,20 @@ class Config:
     PSNR_PEAK_E                  = 10 ** (-0.4 * (PSNR_PEAK_MAG - SIM_VIS_ZEROPOINT_E))
     PSNR_PEAK_STRETCHED          = math.asinh(PSNR_PEAK_E / STRETCH_SCALE_E)
 
-    # Star magnitude distribution (probability thresholds and ranges)
-    STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
-    STAR_MAG_PROB_MID            = 0.95     # below → mid bin
+    # Star magnitude distribution (probability thresholds and ranges).
+    # The bright bin is widened toward brighter (mag 13) and given a higher
+    # weight so the network sees BIG stars — brighter point sources spread
+    # more flux above the noise through the PSF, so their wings (and the
+    # diffraction structure the model must reconstruct) extend much further.
+    # Without these, the brightest synthetic star was only mag 16.
+    STAR_MAG_PROB_FAINT          = 0.65     # below → faint bin
+    STAR_MAG_PROB_MID            = 0.88     # below → mid bin (bright bin = 12%)
     STAR_MAG_FAINT_BASE          = 22.0
     STAR_MAG_FAINT_RANGE         = 3.0
     STAR_MAG_MID_BASE            = 18.0
     STAR_MAG_MID_RANGE           = 4.0
-    STAR_MAG_BRIGHT_BASE         = 16.0
-    STAR_MAG_BRIGHT_RANGE        = 2.0
+    STAR_MAG_BRIGHT_BASE         = 13.0     # was 16.0 — add genuinely big stars
+    STAR_MAG_BRIGHT_RANGE        = 3.0      # 13–16
 
     # Donut-galaxy (toy gravitational-lens ring) defaults.
     # Sized so the central hole is blurred by the Euclid VIS PSF (FWHM ≈ 0.14"):
@@ -433,14 +447,23 @@ class Config:
 
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000
-    DEFAULT_BATCH_SIZE           = 16
+    # 4 (was 16): the HR crop was enlarged 96 -> 192 (see DEFAULT_HR_CROP_SIZE),
+    # a 4x activation-area increase. Dropping the batch 4x keeps per-step memory
+    # roughly constant (16*48^2 == 4*96^2 LR pixels) and matches the original
+    # POLISH default (batch=4).
+    DEFAULT_BATCH_SIZE           = 4
     DEFAULT_EVALUATE_EVERY       = 1000
     DEFAULT_VALIDATE_IMAGES      = 100
     DEFAULT_NUM_RES_BLOCKS       = 32
     DEFAULT_CHECKPOINT_DIR       = os.environ.get(
         "EUCLID_POLISH_CKPT_DIR", "./ckpt/wdsr",
     )
-    DEFAULT_HR_CROP_SIZE         = 96
+    # 192 HR / 96 LR (was 96/48). The WDSR-B receptive field is ~69 LR px;
+    # a 48-px LR crop clipped it, so the model could never see context beyond
+    # ~46 px and large objects (bright stars, extended galaxies) never fit in
+    # one crop. 96 LR px now exceeds the RF and admits big sources. Paired with
+    # the 4x smaller default batch so training memory stays ~constant.
+    DEFAULT_HR_CROP_SIZE         = 192
 
     # Reconstruction output
     VIS_RECONSTRUCTION_DIR       = os.path.join(DATA_DIR, "vis/reconstruction")

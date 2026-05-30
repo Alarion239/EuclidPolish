@@ -29,6 +29,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 
 
@@ -660,7 +661,8 @@ class HSTTrainStep(FASRCPipelineStep):
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         steps               = int(params.get("steps", 400_000))
-        batch_size          = int(params.get("batch_size", 16))
+        batch_size          = int(params.get("batch_size",
+                                              Config.DEFAULT_BATCH_SIZE))
         hst_fraction        = float(params.get("hst_fraction", 0.1))
         roundtrip_fraction  = float(params.get("roundtrip_fraction", 0.0))
         w_syn               = float(params.get("save_best_w_syn", 1.0))
