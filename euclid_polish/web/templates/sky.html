@@ -51,8 +51,16 @@
   {% else %}
     <p class="muted">empty — run the generator on the right.</p>
   {% endif %}
-  <p class="hint">The image preview above renders <em>local</em> records
-     (if any); the table reflects what the FASRC job produced.</p>
+  <p class="hint">The preview above renders the <strong>FASRC</strong>
+     records — sync them down first (validate shards are small; train is
+     multi-GB).</p>
+  <form id="sky-sync-form">
+    <label style="display:inline-flex; align-items:center; gap:6px;">
+      <input type="checkbox" name="include_train"> also pull train shards
+    </label>
+    <button type="submit">⤓ Sync records from FASRC</button>
+  </form>
+  <div id="sky-sync-status"></div>
 </section>
 {% endblock %}
 
@@ -122,7 +130,7 @@ polishUI.viz.bind({
     setTimeout(updateInspectLink, 0);
     return `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`;
   },
-  initial:   { kind: "clean", subset: "train", band: "VIS", i: 0 },
+  initial:   { kind: "clean", subset: "validate", band: "VIS", i: 0 },
 });
 updateInspectLink();
 
@@ -138,6 +146,26 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
 
 document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
 document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
+
+// Sync the FASRC records into the local cache, then refresh the preview.
+document.getElementById("sky-sync-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("sky-sync-status");
+  statusEl.innerHTML = "syncing from FASRC… (large shards may take a while)";
+  try {
+    const r = await fetch("/api/sky/sync", { method: "POST", body: new FormData(e.target) });
+    const d = await r.json();
+    if (d.ok) {
+      const n = Object.values(d.files).filter(f => f.ok).length;
+      statusEl.innerHTML = `<p>✓ synced ${n} shard(s).</p>`;
+      refreshTotals().then(() => polishUI.viz.refresh());
+    } else {
+      statusEl.innerHTML = `<p>✗ sync failed (nothing pulled). Generate on FASRC first?</p>`;
+    }
+  } catch (err) {
+    statusEl.innerHTML = `<p>✗ ${err}</p>`;
+  }
+});
 
 refreshTotals();
 </script>

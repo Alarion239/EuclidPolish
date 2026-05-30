@@ -1133,12 +1133,14 @@ def _list_band_cutouts(band_name: str, output_dir: str) -> List[str]:
 
 def _export_sky_record_fits(
     subset: str, kind: str, band: str, index: int,
+    records_dir: Optional[str] = None,
 ) -> str:
     """Materialise one sky record as a single-band FITS file.
 
     Caches the result under ``data/vis/sky_fits/`` so repeat clicks on
     the same record don't re-read the TFRecord. Returns the absolute
-    path to the saved file.
+    path to the saved file. ``records_dir`` defaults to the local
+    ``RECORDS_DIR_V2``; the /sky viewer passes the FASRC cache dir.
     """
 
     if subset not in ("train", "validate"):
@@ -1162,7 +1164,7 @@ def _export_sky_record_fits(
         abort(400)
 
     name = f"{kind}_{subset}"
-    src_path = tfrecord_path(Config.RECORDS_DIR_V2, name)
+    src_path = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(src_path):
         abort(404)
 
@@ -2805,16 +2807,34 @@ def create_app() -> Flask:
         png = _render_psf_panel_png(None if band == "all" else band)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
+    def _sky_records_remote_dir() -> str:
+        cfg = fasrc_config.load()
+        return f"{cfg.data_dir}/images/records_v2"
+
+    def _sky_records_local_dir() -> str:
+        """Local cache dir mirroring the remote synthetic records dir.
+
+        Same convention as :func:`fasrc_fetcher._local_path_for`, so the
+        viewer reads exactly what ``/api/sky/sync`` (fetch_one_file)
+        writes. The synthetic generator runs on FASRC, so the preview
+        renders the synced shards — not a stale local copy."""
+        any_path = f"{_sky_records_remote_dir()}/clean_validate.tfrecord"
+        return os.path.dirname(_local_path_for(any_path))
+
     @app.route("/view/sky")
     def view_sky():
-        subset = request.args.get("subset", "train")
+        subset = request.args.get("subset", "validate")
         kind   = request.args.get("kind",   "clean")
         band   = request.args.get("band",   "VIS")
         try:
             idx = int(request.args.get("i", 0))
         except ValueError:
             idx = 0
-        png = _render_sky_record_png(subset, kind, band, idx)
+        # Render from the FASRC-synced records cache (populated by
+        # /api/sky/sync), not the local data dir.
+        png = _render_sky_record_png(
+            subset, kind, band, idx, records_dir=_sky_records_local_dir(),
+        )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/catalog")
@@ -2844,14 +2864,44 @@ def create_app() -> Flask:
 
     @app.route("/api/sky/totals")
     def api_sky_totals():
+        local = _sky_records_local_dir()
         return jsonify({
-            "clean_train":    _record_count("clean_train"),
-            "clean_validate": _record_count("clean_validate"),
-            "dirty_train":    _record_count("dirty_train"),
-            "dirty_validate": _record_count("dirty_validate"),
-            "hr_train":       _record_count("hr_train"),
-            "hr_validate":    _record_count("hr_validate"),
+            name: _record_count(name, records_dir=local)
+            for name in ("clean_train", "clean_validate",
+                         "dirty_train", "dirty_validate",
+                         "hr_train",    "hr_validate")
         })
+
+    @app.route("/api/sky/sync", methods=["POST"])
+    def api_sky_sync():
+        """Rsync the synthetic TFRecord shards from FASRC into the local
+        cache so the preview can render them.
+
+        ``include_train`` (default false) controls whether the large
+        train-split files are pulled; validate shards are always included.
+        Lifts the fetcher's 50 MB cap to 5 GB since TFRecords are large and
+        this is an explicit user-requested transfer."""
+        remote_dir = _sky_records_remote_dir()
+        include_train = (request.values.get("include_train", "false")
+                         .lower() in ("1", "true", "yes", "on"))
+        targets: Dict[str, str] = {}
+        for kind in ("clean", "dirty", "hr"):
+            targets[f"{kind}_validate"] = f"{remote_dir}/{kind}_validate.tfrecord"
+            if include_train:
+                targets[f"{kind}_train"] = f"{remote_dir}/{kind}_train.tfrecord"
+        max_bytes = 5 * 1024 * 1024 * 1024
+        results: Dict[str, Dict[str, Any]] = {}
+        any_ok = False
+        for key, remote in targets.items():
+            r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            entry: Dict[str, Any] = {"ok": r.ok, "size_bytes": r.size_bytes}
+            if r.ok:
+                any_ok = True
+            else:
+                entry["error"] = r.error
+            results[key] = entry
+        return jsonify({"ok": any_ok, "files": results,
+                        "include_train": include_train})
 
     # =========================================================================
     # HST Catalog — same viewer as /sky but pointed at the FASRC-cached HST
@@ -3206,6 +3256,7 @@ def create_app() -> Flask:
             kind=request.args.get("kind", ""),
             band=request.args.get("band", ""),
             index=request.args.get("i", "0"),
+            records_dir=_sky_records_local_dir(),
         )
         return send_file(path, as_attachment=True,
                          download_name=os.path.basename(path),
@@ -3219,6 +3270,7 @@ def create_app() -> Flask:
             kind=request.args.get("kind", ""),
             band=request.args.get("band", ""),
             index=request.args.get("i", "0"),
+            records_dir=_sky_records_local_dir(),
         )
         return redirect(url_for("inspect_fits_page",
                                 fits=_safe_relpath(path)))
