@@ -785,12 +785,18 @@ def test_hst_status_keeps_pre_existing_artifact_keys(client):
         assert key in artifacts, f"original artifact key '{key}' missing"
 
 
-def test_hst_status_omits_deleted_two_stage_chain_keys(client):
+def test_hst_status_omits_deleted_two_stage_chain_keys(client, monkeypatch):
     """The deleted two-stage chain (``train_denoiser`` /
     ``train_transition`` / ``transition_pairs``) and its on-disk
     artifacts must no longer surface via /api/fasrc/hst/status — they
     were ripped out wholesale and any lingering reference would render
     a broken UI card."""
+    # Pin ssh=None so the endpoint returns its static step/artifact maps
+    # and skips the live SSH probe entirely. This test only asserts the
+    # *shape* (step ids + artifact keys), and pinning makes it immune to
+    # whatever ssh stub a prior test happened to leave on the global STATE.
+    from euclid_polish.web import remote as web_remote
+    monkeypatch.setattr(web_remote.STATE, "ssh", None)
     r = client.get("/api/fasrc/hst/status")
     body = r.get_json()
     step_ids = {s["step_id"] for s in body["steps"]}

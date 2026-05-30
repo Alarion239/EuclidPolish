@@ -29,11 +29,13 @@ def test_command_is_login_shell_and_well_formed():
     assert cmd.startswith("bash -lc ")
     # The inner command is a single shell-quoted token.
     inner = shlex.split(cmd)[2]
-    assert inner.startswith("cd /n/holylabs/REPO &&")
+    assert inner.startswith("cd /n/holylabs/REPO")
     # netscratch paths exported so the remote script reads/writes the
     # shared data dir, and the env is activated before python runs.
     assert "export EUCLID_POLISH_DATA_DIR=/n/netscratch/DATA" in inner
+    # mamba preferred, conda fallback — both reference the env prefix.
     assert "mamba activate /n/holylabs/ENV" in inner
+    assert "conda activate /n/holylabs/ENV" in inner
     assert inner.rstrip().endswith(
         "python -u scripts/query_brightest_stars.py --num-stars 500"
     )

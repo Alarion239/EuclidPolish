@@ -399,19 +399,26 @@ def build_remote_python_command(
     whole inner command is single-quoted via :func:`shlex.quote`, so the
     embedded ``$(…)`` / ``$CONDA_BASE`` are evaluated remotely, not locally.
     """
+    env = shlex.quote(cfg.conda_env_path)
     py_cmd = "python -u " + " ".join(shlex.quote(a) for a in argv)
     inner = (
-        f"cd {shlex.quote(cfg.repo_path)} && "
-        f"export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)} && "
-        f"export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)} && "
-        # Mirror render_sbatch_body's activation: source conda/mamba only
-        # if the login shell hasn't already initialised them.
-        'if [ -z "${CONDA_SHLVL:-}" ]; then '
+        # ``cd`` is the one strict step — bail loudly (127) if the repo
+        # path is wrong rather than running python in the wrong place.
+        f"cd {shlex.quote(cfg.repo_path)} || exit 127; "
+        f"export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)}; "
+        f"export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)}; "
+        # Match the sbatch template: load python, then source conda+mamba
+        # *unconditionally* (NOT gated on CONDA_SHLVL). A login shell often
+        # has conda's base already active — which defines ``conda`` but not
+        # ``mamba`` — so gating on CONDA_SHLVL left ``mamba`` undefined and
+        # ``mamba activate`` exited 127. Sourcing every time fixes that.
+        "module load python >/dev/null 2>&1 || true; "
         'CB="$(conda info --base 2>/dev/null || true)"; '
-        '[ -n "$CB" ] && [ -f "$CB/etc/profile.d/conda.sh" ] && . "$CB/etc/profile.d/conda.sh"; '
-        '[ -n "$CB" ] && [ -f "$CB/etc/profile.d/mamba.sh" ] && . "$CB/etc/profile.d/mamba.sh"; '
-        'fi; '
-        f"mamba activate {shlex.quote(cfg.conda_env_path)} && "
+        'if [ -n "$CB" ] && [ -f "$CB/etc/profile.d/conda.sh" ]; then . "$CB/etc/profile.d/conda.sh"; fi; '
+        'if [ -n "$CB" ] && [ -f "$CB/etc/profile.d/mamba.sh" ]; then . "$CB/etc/profile.d/mamba.sh"; fi; '
+        # Prefer mamba (matches sbatch) but fall back to conda if the
+        # install doesn't ship the mamba shell function.
+        f"if command -v mamba >/dev/null 2>&1; then mamba activate {env}; else conda activate {env}; fi && "
         f"{py_cmd}"
     )
     return "bash -lc " + shlex.quote(inner)
