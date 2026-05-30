@@ -67,6 +67,38 @@ class StepProgress:
 
 
 @dataclass(frozen=True)
+class ParallelProgress:
+    """Aggregate progress of a parallel phase (many worker processes).
+
+    ``current``/``total`` is the cumulative count summed across all worker
+    units; ``active_workers`` is how many distinct processes emitted a
+    progress event within the recent window (i.e. are crunching right now);
+    ``n_workers`` is how many were requested.
+    """
+
+    current:        int
+    total:          int
+    active_workers: int
+    n_workers:      int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "current":        int(self.current),
+            "total":          int(self.total),
+            "active_workers": int(self.active_workers),
+            "n_workers":      int(self.n_workers),
+        }
+
+
+#: A worker is counted "active" if its most recent event is within this many
+#: seconds of the newest event in the stream (using event timestamps, not
+#: the server clock — worker/server clocks may differ). Generous enough to
+#: cover a slow single image (a 512² generate+forward can take several
+#: seconds, during which a worker emits nothing).
+_PARALLEL_ACTIVE_WINDOW_S = 60.0
+
+
+@dataclass(frozen=True)
 class StageEvent:
     """One stage entry: when the script entered it + what it called it."""
 
@@ -97,6 +129,11 @@ class JobStatus:
     #: reached, at the current rate. ``None`` whenever
     #: ``step_rate_per_s`` is ``None`` or ``total`` is missing/zero.
     step_eta_s:    Optional[float]         = None
+    #: Present only during a parallel phase: cumulative count + how many
+    #: worker processes are active right now. ``step`` mirrors the same
+    #: cumulative (current/total) so the progress bar + rate/ETA work
+    #: unchanged; ``parallel`` adds the live worker count.
+    parallel:     Optional[ParallelProgress] = None
     warnings:     Tuple[Event, ...]        = ()
     errors:       Tuple[Event, ...]        = ()
     #: When the events file was last fetched (server clock). Lets the
@@ -114,6 +151,7 @@ class JobStatus:
             "step":            self.step.to_dict() if self.step else None,
             "step_rate_per_s": self.step_rate_per_s,
             "step_eta_s":      self.step_eta_s,
+            "parallel":        self.parallel.to_dict() if self.parallel else None,
             "warnings":        [w.to_dict() for w in self.warnings],
             "errors":          [e.to_dict() for e in self.errors],
             "last_fetched":    float(self.last_fetched),
@@ -145,6 +183,14 @@ def fold_events(text: str) -> JobStatus:
     #: current stage — a fast download stage's rate doesn't pollute the
     #: ETA of a slow training stage that follows.
     stage_step_history: List[Tuple[float, int, int]] = []
+
+    # Parallel-phase aggregation. ``by_worker`` keeps each worker unit's
+    # latest (ts, current, total, pid); ``parallel_history`` records the
+    # cumulative-over-time so the bar's rate/ETA work on the aggregate.
+    parallel_total:   int = 0
+    parallel_workers: int = 0
+    by_worker: Dict[str, Tuple[float, int, int, Any]] = {}
+    parallel_history: List[Tuple[float, int, int]] = []
 
     for raw in text.splitlines():
         raw = raw.strip()
@@ -183,11 +229,53 @@ def fold_events(text: str) -> JobStatus:
             except (TypeError, ValueError):
                 continue
             stage_step_history.append((ts_f, cur, tot))
+        elif kind == "parallel" and isinstance(value, dict):
+            try:
+                parallel_total   = int(value.get("total", 0))
+                parallel_workers = int(value.get("workers", 0))
+            except (TypeError, ValueError):
+                pass
+            # A new parallel phase (e.g. train → validate) starts fresh:
+            # reset the per-worker aggregation so its bar tracks only this
+            # phase, the same way a ``stage`` event resets the step history.
+            by_worker = {}
+            parallel_history = []
+        elif kind == "worker" and isinstance(value, dict):
+            try:
+                wid = str(value.get("worker_id", ""))
+                cur = int(value.get("current", 0))
+                tot = int(value.get("total", 0))
+            except (TypeError, ValueError):
+                continue
+            by_worker[wid] = (ts_f, cur, tot, value.get("pid"))
+            # Cumulative across every worker unit seen so far.
+            cumulative = sum(v[1] for v in by_worker.values())
+            grand = parallel_total or sum(v[2] for v in by_worker.values())
+            parallel_history.append((ts_f, cumulative, grand))
         elif kind == "warn" and isinstance(value, str):
             warnings.append(Event(ts=ts_f, msg=value))
         elif kind == "error" and isinstance(value, str):
             errors.append(Event(ts=ts_f, msg=value))
         # Unknown kinds are silently dropped — forward compatibility.
+
+    # Parallel phase: fold the per-worker stream into one cumulative bar
+    # (so the existing progress/rate/ETA path works unchanged) plus a live
+    # count of how many worker processes are crunching right now.
+    parallel: Optional[ParallelProgress] = None
+    if parallel_history:
+        _, cum, grand = parallel_history[-1]
+        step = StepProgress(current=cum, total=grand, label="")
+        newest_ts = max(v[0] for v in by_worker.values())
+        active_pids = {
+            v[3] for v in by_worker.values()
+            if v[3] is not None and v[1] < v[2]
+            and (newest_ts - v[0]) <= _PARALLEL_ACTIVE_WINDOW_S
+        }
+        parallel = ParallelProgress(
+            current=cum, total=grand,
+            active_workers=len(active_pids),
+            n_workers=parallel_workers,
+        )
 
     # Rate + ETA from steps within the *current* stage, via an EMA of
     # per-step duration so recent intervals dominate. A plain
@@ -198,11 +286,14 @@ def fold_events(text: str) -> JobStatus:
     # steps — fold in on a common per-step basis. Intervals with
     # non-positive Δt or Δsteps (clock skew, a rewound counter, a resume
     # that re-emits an earlier step) are skipped, not folded.
+    # During a parallel phase the cumulative-over-time history drives the
+    # rate/ETA; otherwise the per-stage serial step history does.
+    rate_history = parallel_history if parallel_history else stage_step_history
     step_rate_per_s: Optional[float] = None
     step_eta_s:      Optional[float] = None
     ema_spp: Optional[float] = None        # EMA of seconds-per-step
     for (t0, c0, _), (t1, c1, tot1) in zip(
-        stage_step_history, stage_step_history[1:]
+        rate_history, rate_history[1:]
     ):
         d_t = t1 - t0
         d_n = c1 - c0
@@ -214,7 +305,7 @@ def fold_events(text: str) -> JobStatus:
                         + Config.WebFetch.STEP_RATE_EMA_ALPHA * spp)
     if ema_spp is not None and ema_spp > 0:
         step_rate_per_s = 1.0 / ema_spp
-        _, last_cur, last_tot = stage_step_history[-1]
+        _, last_cur, last_tot = rate_history[-1]
         if last_tot > 0:
             remaining = max(0, last_tot - last_cur)
             step_eta_s = remaining * ema_spp
@@ -225,6 +316,7 @@ def fold_events(text: str) -> JobStatus:
         step=step,
         step_rate_per_s=step_rate_per_s,
         step_eta_s=step_eta_s,
+        parallel=parallel,
         warnings=tuple(warnings),
         errors=tuple(errors),
         last_fetched=time.time(),

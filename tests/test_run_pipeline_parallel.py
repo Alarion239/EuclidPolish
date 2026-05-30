@@ -71,6 +71,25 @@ def test_concat_tfrecords_skips_missing(tmp_path):
     assert os.path.exists(out) and os.path.getsize(out) == 0
 
 
+def test_worker_emits_progress_events(tmp_path, monkeypatch):
+    """Each worker reports its shard progress to the shared events file, so
+    the job-status consumer can fold a cumulative count + active workers."""
+    from euclid_polish.web.job_status import fold_events
+    sim, fwd = _sim_fwd()
+    events = tmp_path / "ev.jsonl"
+    monkeypatch.setenv("EUCLID_POLISH_EVENTS_PATH", str(events))
+    rp._generate_convolve_range(sim, fwd, str(tmp_path), "train", 0, 2, 3,
+                                seed=[1, 1, 3])
+    text = events.read_text()
+    assert '"kind":"worker"' in text
+    # Prepend the parent's parallel announcement and fold: the shard wrote 2.
+    s = fold_events(
+        '{"ts":1,"kind":"parallel","value":{"total":2,"workers":1}}\n' + text
+    )
+    assert s.parallel is not None
+    assert s.parallel.current == 2 and s.parallel.total == 2
+
+
 def test_parallel_shards_merge_into_paired_records(tmp_path):
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)

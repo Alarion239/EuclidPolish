@@ -29,6 +29,70 @@ def _jsonl(*events) -> str:
     return "\n".join(json.dumps(e) for e in events) + "\n"
 
 
+def _w(wid, pid, cur, tot, ts):
+    return {"ts": ts, "kind": "worker",
+            "value": {"worker_id": str(wid), "pid": pid,
+                      "current": cur, "total": tot}}
+
+
+# ---------------------------------------------------------------------------
+# fold_events — parallel worker aggregation
+# ---------------------------------------------------------------------------
+
+class TestParallelFold:
+
+    def test_cumulative_and_active_workers(self):
+        text = _jsonl(
+            {"ts": 100.0, "kind": "stage", "value": "generate+forward train"},
+            {"ts": 100.1, "kind": "parallel", "value": {"total": 10, "workers": 4}},
+            _w("0", 11, 0, 3, 100.2),
+            _w("1", 12, 0, 3, 100.2),
+            _w("0", 11, 3, 3, 105.0),   # shard 0 done (pid 11 frees up)
+            _w("2", 11, 1, 4, 106.0),   # pid 11 now on shard 2
+            _w("1", 12, 2, 3, 106.0),   # pid 12 still on shard 1
+        )
+        s = fold_events(text)
+        # cumulative = shard0(3) + shard1(2) + shard2(1) = 6 of 10.
+        assert s.step.current == 6 and s.step.total == 10
+        assert s.parallel is not None
+        assert s.parallel.current == 6 and s.parallel.total == 10
+        assert s.parallel.n_workers == 4
+        # Active = distinct pids with work left + recent: shard0 is done
+        # (excluded), shard2/pid11 and shard1/pid12 in progress → 2 procs.
+        assert s.parallel.active_workers == 2
+
+    def test_all_done_means_zero_active(self):
+        text = _jsonl(
+            {"ts": 100.0, "kind": "parallel", "value": {"total": 3, "workers": 2}},
+            _w("0", 1, 2, 2, 200.0),
+            _w("1", 2, 1, 1, 200.0),
+        )
+        s = fold_events(text)
+        assert s.step.current == 3 and s.step.total == 3
+        assert s.parallel.active_workers == 0   # nothing left to do
+
+    def test_stale_worker_not_counted_active(self):
+        text = _jsonl(
+            {"ts": 100.0, "kind": "parallel", "value": {"total": 10, "workers": 3}},
+            _w("0", 1, 1, 5, 900.0),     # last heard 100 s before the newest
+            _w("1", 2, 1, 5, 1000.0),    # recent
+        )
+        s = fold_events(text)
+        assert s.parallel.active_workers == 1   # only the recent process
+
+    def test_new_parallel_phase_resets(self):
+        text = _jsonl(
+            {"ts": 100.0, "kind": "parallel", "value": {"total": 6400, "workers": 16}},
+            _w("0", 1, 256, 256, 200.0),   # a finished train shard
+            {"ts": 300.0, "kind": "parallel", "value": {"total": 100, "workers": 16}},
+            _w("0", 1, 4, 50, 301.0),      # validate phase, fresh
+        )
+        s = fold_events(text)
+        # Cumulative reflects only the validate phase, not the train carry-over.
+        assert s.step.current == 4 and s.step.total == 100
+        assert s.parallel.total == 100
+
+
 # ---------------------------------------------------------------------------
 # fold_events — happy paths
 # ---------------------------------------------------------------------------

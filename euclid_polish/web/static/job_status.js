@@ -132,9 +132,15 @@ class JobStatusCard {
     if (this.slots.stepLabel) {
       const step = status.step;
       if (step) {
-        const label = step.label
+        let label = step.label
           ? `${step.label} (${step.current}/${step.total})`
           : `${step.current}/${step.total}`;
+        // Parallel phase: append the live worker count (cumulative count is
+        // already the step current/total).
+        const par = status.parallel;
+        if (par && par.n_workers > 0) {
+          label += ` · ${par.active_workers}/${par.n_workers} workers active`;
+        }
         this.slots.stepLabel.textContent = label;
       } else {
         this.slots.stepLabel.textContent = "";

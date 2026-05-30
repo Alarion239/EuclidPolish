@@ -141,6 +141,42 @@ class Reporter:
             )
             self._last_step_echo_ts = now
 
+    def set_parallel(self, total: int, workers: int, label: str = "") -> None:
+        """Announce a parallel phase: ``total`` items split across ``workers``
+        worker processes.
+
+        Emitted once by the *parent* before fanning out. The consumer uses
+        it to know the job-level total (for the cumulative bar) and how many
+        workers were requested. Workers then report their own progress via
+        :meth:`set_worker_step`.
+        """
+        self._emit("parallel", {
+            "total":   int(total),
+            "workers": int(workers),
+            "label":   str(label),
+        }, echo=True)
+
+    def set_worker_step(
+        self, worker_id: Any, current: int, total: int, label: str = "",
+    ) -> None:
+        """Report one worker's progress within a parallel phase.
+
+        Each worker process calls this with a STABLE ``worker_id`` for the
+        unit of work it owns (e.g. a shard id) plus that unit's
+        ``current``/``total``. The os PID is attached automatically so the
+        consumer can count how many distinct processes are active. The
+        consumer sums ``current`` across worker_ids for the cumulative
+        count. ``echo=False`` — high-frequency, would flood the raw log;
+        the parent's stage line is enough there.
+        """
+        self._emit("worker", {
+            "worker_id": str(worker_id),
+            "pid":       os.getpid(),
+            "current":   int(current),
+            "total":     int(total),
+            "label":     str(label),
+        }, echo=False)
+
     def warn(self, msg: str) -> None:
         """Append a warning to the structured stream and to stderr."""
         self._emit("warn", str(msg), echo=True, stderr_prefix="WARN")

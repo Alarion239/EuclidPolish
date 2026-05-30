@@ -283,10 +283,17 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     position-aligned (the dataset pairs by position, not by stored index)."""
     rng = np.random.default_rng(seed)
     tag = f"{subset}.part{shard_id:04d}"
+    # Per-worker progress → the parent's events file (shared, append-atomic).
+    # Keyed by shard_id so the consumer can sum a cumulative count and tell
+    # how many processes are busy. Rate-limited so 16 workers don't flood
+    # the file; register at 0 up front so a just-started shard shows.
+    reporter = Reporter.from_env()
+    reporter.set_worker_step(shard_id, 0, count, subset)
+    last_emit = time.perf_counter()
     with open_multiband_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
          open_multiband_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
          open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw:
-        for i in range(start, start + count):
+        for local, i in enumerate(range(start, start + count), start=1):
             sky, _ = sim.simulate_field(rng)
             sky.index = i
             sky.subset = subset
@@ -298,6 +305,10 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
             cw.write(sky, index=i)
             hw.write(hr, index=i)
             dw.write(lr, index=i)
+            now = time.perf_counter()
+            if local == count or (now - last_emit) >= 2.0:
+                reporter.set_worker_step(shard_id, local, count, subset)
+                last_emit = now
     return subset, shard_id, count
 
 
@@ -361,10 +372,13 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                 tasks.append((subset, start, end - start, sid, seed))
 
         reporter.set_stage(f"generate+forward {subset} (×{workers})")
+        # Announce the parallel phase: total items + worker count. The
+        # workers report their own progress; the consumer sums a cumulative
+        # bar and counts active processes.
+        reporter.set_parallel(n, workers, label=subset)
         _log(f"  {subset}: {n} pairs across {len(tasks)} shards, "
              f"{workers} workers (master_seed={master_seed})")
         t0 = time.perf_counter()
-        done = 0
         with ProcessPoolExecutor(
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(args.catalog, args.image_size, args.psf_dir,
@@ -372,9 +386,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         ) as pool:
             futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
             for fut in as_completed(futs):
-                _subset, _sid, cnt = fut.result()
-                done += cnt
-                reporter.set_step(done, n, f"{subset} {done}/{n}")
+                fut.result()   # surface worker exceptions; progress is
+                               # driven by the workers' set_worker_step.
 
         # Merge shards IN ID ORDER so clean/hr/dirty stay position-aligned.
         reporter.set_stage(f"merging {subset} shards")
