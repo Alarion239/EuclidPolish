@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 import statistics
 import time
@@ -378,6 +379,55 @@ def resolve_preset(name: str) -> Dict[str, Any]:
 _HEREDOC_EOF = "__EUCLID_POLISH_EOF__"
 
 _SBATCH_JOBID_RE = re.compile(r"Submitted batch job (\d+)")
+
+
+def build_remote_python_command(
+    cfg: fasrc_config.FasrcConfig, argv: List[str],
+) -> str:
+    """Build the ``bash -lc '…'`` string that runs a project script on the
+    FASRC **login node** (no SLURM).
+
+    Activates the conda/mamba env exactly like the sbatch template's setup
+    block (so it matches what already works on the cluster), exports
+    ``EUCLID_POLISH_DATA_DIR`` / ``EUCLID_POLISH_CKPT_DIR`` so the script
+    reads/writes the shared netscratch paths, ``cd``s into the remote repo,
+    and runs ``python -u <argv>``. ``argv`` is repo-relative (e.g.
+    ``["scripts/query_brightest_stars.py", "--num-stars", "200"]``).
+
+    A login shell (``bash -l``) is used so the user's conda init runs; the
+    explicit source-conda block is a fallback for non-init shells. The
+    whole inner command is single-quoted via :func:`shlex.quote`, so the
+    embedded ``$(…)`` / ``$CONDA_BASE`` are evaluated remotely, not locally.
+    """
+    py_cmd = "python -u " + " ".join(shlex.quote(a) for a in argv)
+    inner = (
+        f"cd {shlex.quote(cfg.repo_path)} && "
+        f"export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)} && "
+        f"export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)} && "
+        # Mirror render_sbatch_body's activation: source conda/mamba only
+        # if the login shell hasn't already initialised them.
+        'if [ -z "${CONDA_SHLVL:-}" ]; then '
+        'CB="$(conda info --base 2>/dev/null || true)"; '
+        '[ -n "$CB" ] && [ -f "$CB/etc/profile.d/conda.sh" ] && . "$CB/etc/profile.d/conda.sh"; '
+        '[ -n "$CB" ] && [ -f "$CB/etc/profile.d/mamba.sh" ] && . "$CB/etc/profile.d/mamba.sh"; '
+        'fi; '
+        f"mamba activate {shlex.quote(cfg.conda_env_path)} && "
+        f"{py_cmd}"
+    )
+    return "bash -lc " + shlex.quote(inner)
+
+
+def run_remote_python(
+    ssh, *, cfg: fasrc_config.FasrcConfig, argv: List[str], timeout: int = 300,
+) -> Tuple[int, str, str]:
+    """Run a project Python script on the FASRC login node over SSH.
+
+    Synchronous (blocks up to ``timeout`` s) — meant for quick work like a
+    catalog archive query, not heavy compute (that goes through
+    :func:`submit_sbatch_script`). Returns ``(rc, stdout, stderr)``.
+    """
+    cmd = build_remote_python_command(cfg, argv)
+    return ssh.run(cmd, timeout=timeout)
 
 
 def submit_sbatch_script(

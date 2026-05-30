@@ -26,7 +26,6 @@ from euclid_polish.sky.tfrecord import (
 open_multiband_writer, tfrecord_path,
 )
 from euclid_polish.sky.types import MultiBandSkyImage
-from euclid_polish.euclid.validator import FitsValidator
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
@@ -353,68 +352,6 @@ def _job_forward(cap) -> Dict[str, Any]:
         print(f"  ✓ {subset}: wrote {hr_w.count} hr_{subset} + "
               f"{lr_w.count} dirty_{subset} records")
     return result
-
-
-def _job_query_brightest(cap, num_stars: int, output_dir: str,
-                         magnitude_limit: Optional[float] = None,
-                         magnitude_min: Optional[float] = None) -> Dict[str, Any]:
-    """Query Euclid archive for the N brightest stars in the given mag window."""
-    window = []
-    if magnitude_min is not None:   window.append(f"mag>{magnitude_min}")
-    if magnitude_limit is not None: window.append(f"mag<{magnitude_limit}")
-    win_str = (" [" + ", ".join(window) + "]") if window else ""
-    print(f"querying {num_stars} brightest stars{win_str} into {output_dir}")
-    cat = StarCatalog(output_dir)
-    result = cat.query_brightest_stars(
-        num_stars=num_stars,
-        magnitude_limit=magnitude_limit,
-        magnitude_min=magnitude_min,
-    )
-    print(result["message"])
-    # Fold the cutout-integrity tally into the query: now that there's no
-    # standalone "Integrity check" action, every catalog query re-scans
-    # whatever cutouts already live on disk and reports valid/corrupted
-    # counts per band alongside the query result.
-    try:
-        result["integrity"] = _job_check_integrity(cap, output_dir)
-    except Exception as e:  # never let an integrity hiccup fail the query
-        print(f"integrity tally skipped: {type(e).__name__}: {e}")
-    return result
-
-
-def _job_check_integrity(cap, output_dir: str) -> Dict[str, Any]:
-    """Scan every cutout under output_dir/cutouts/<band>/ for corruption."""
-
-    validator = FitsValidator()
-    cutout_root = os.path.join(output_dir, "cutouts")
-    bands = Config.LR_INPUT_BAND_NAMES
-    summary: dict[str, dict] = {}
-    # Pre-count for the unified progress bar
-    all_files = []
-    for name in bands:
-        band_dir = Config.cutout_dir_for_band(name, root=cutout_root)
-        if os.path.isdir(band_dir):
-            all_files.extend((name, f) for f in glob.glob(os.path.join(band_dir, "*.fits")))
-    total = len(all_files)
-    done = 0
-    for name in bands:
-        band_dir = Config.cutout_dir_for_band(name, root=cutout_root)
-        if not os.path.isdir(band_dir):
-            summary[name] = {"valid": 0, "corrupted": 0, "absent": True}
-            continue
-        files = glob.glob(os.path.join(band_dir, "*.fits"))
-        ok = bad = 0
-        for f in files:
-            is_valid, _ = validator.validate_basic_integrity(f)
-            if is_valid:
-                ok += 1
-            else:
-                bad += 1
-            done += 1
-            cap.tick(done, total, f"checking {name}")
-        summary[name] = {"valid": ok, "corrupted": bad, "absent": False}
-        print(f"{name}: valid={ok}, corrupted={bad}, total={len(files)}")
-    return summary
 
 
 def _job_train(cap, steps: int, batch_size: int, num_res_blocks: int,
@@ -1938,8 +1875,21 @@ def create_app() -> Flask:
 
     @app.route("/catalog/query-brightest", methods=["POST"])
     def catalog_query_brightest():
+        """Run the brightest-N archive query on the FASRC login node.
+
+        The web server runs on the laptop, but the catalog must land on
+        the shared netscratch ``$DATA_DIR`` where the cutout-download /
+        PSF SLURM jobs read it. So the query executes over SSH on the
+        login node (a quick archive call — not a SLURM job), writing
+        ``stars.csv`` remotely. Output streams back into the job log."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({
+                "ok": False,
+                "error": "Connect to FASRC first (the query runs on the "
+                         "login node so the catalog lands on netscratch).",
+            }), 400
+        ssh = STATE.ssh
         n   = int(request.form.get("num_stars", 200))
-        out = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
         mag_lim_raw = request.form.get("magnitude_limit", "").strip()
         mag_min_raw = request.form.get("magnitude_min", "").strip()
         mag_lim = float(mag_lim_raw) if mag_lim_raw else None
@@ -1947,10 +1897,31 @@ def create_app() -> Flask:
         win = ""
         if mag_min is not None: win += f" mag>{mag_min}"
         if mag_lim is not None: win += f" mag<{mag_lim}"
+
+        # No --output-dir: the remote script defaults to its own
+        # $DATA_DIR/euclid_stars, which build_remote_python_command points
+        # at netscratch via EUCLID_POLISH_DATA_DIR.
+        argv = ["scripts/query_brightest_stars.py", "--num-stars", str(n)]
+        if mag_min is not None: argv += ["--magnitude-min", f"{mag_min:g}"]
+        if mag_lim is not None: argv += ["--magnitude-limit", f"{mag_lim:g}"]
+
+        def _run(cap):
+            cfg = fasrc_config.load()
+            print(f"[FASRC login node] python -u {' '.join(argv)}")
+            rc, out, err = fasrc_jobs.run_remote_python(
+                ssh, cfg=cfg, argv=argv, timeout=300,
+            )
+            if out:
+                print(out)
+            if err.strip():
+                print(err)
+            if rc != 0:
+                raise RuntimeError(f"remote query exited with code {rc}")
+            return {"rc": rc}
+
         job_id = REGISTRY.spawn(
-            label=f"query {n} brightest stars{win}",
-            target=lambda cap: _job_query_brightest(
-                cap, n, out, magnitude_limit=mag_lim, magnitude_min=mag_min),
+            label=f"query {n} brightest stars{win} (FASRC login node)",
+            target=_run,
         )
         return jsonify({"job_id": job_id})
 

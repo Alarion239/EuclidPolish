@@ -114,6 +114,25 @@ def test_removed_routes_are_gone(client):
         assert r.status_code in (404, 405), f"{path} should be removed"
 
 
+def test_query_brightest_requires_fasrc_connection(client, monkeypatch):
+    """The brightest-N query now runs on the FASRC login node over SSH, so
+    without a connection it must NOT run locally. The global SSH gate
+    (before_request) redirects every non-allowlisted path to the
+    connection-error page when no session is up."""
+    from euclid_polish.web import remote as web_remote
+    monkeypatch.setattr(web_remote.STATE, "ssh", None)
+    r = client.post("/catalog/query-brightest",
+                    data={"num_stars": 10}, follow_redirects=False)
+    # 302 → connection-error (the gate); the request never reaches a local
+    # query path. (If the gate is ever relaxed, the route's own guard
+    # returns 400 with an ok=False JSON instead — both are acceptable.)
+    assert r.status_code in (302, 400)
+    if r.status_code == 302:
+        assert "/connection-error" in r.headers.get("Location", "")
+    else:
+        assert r.get_json().get("ok") is False
+
+
 def test_post_psfs_visualize_returns_job_id(client):
     r = client.post("/psfs/visualize", data={"band": "VIS"})
     assert r.status_code == 200

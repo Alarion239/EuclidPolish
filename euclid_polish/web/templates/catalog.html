@@ -79,6 +79,10 @@
   <p class="hint">Sorts <code>mer_catalogue</code> by VIS flux server-side.
      Set <em>min mag</em> ≈ 15 to skip stars that saturate the NISP detector.
      Runs an integrity tally of any cutouts already on disk afterwards.</p>
+  <p class="hint"><strong>Runs on the FASRC login node</strong> (over SSH,
+     not a SLURM job) so <code>stars.csv</code> lands on the shared
+     netscratch <code>$DATA_DIR</code> the download/PSF jobs read — connect
+     to FASRC first.</p>
   <form id="brightest-form" action="/catalog/query-brightest">
     <label>Number of stars
       <input type="number" name="num_stars" value="200" min="1" max="100000"></label>
