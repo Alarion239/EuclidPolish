@@ -35,6 +35,7 @@ from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.multiband_forward import (
     MultiBandForward, MultiBandForwardConfig,
@@ -120,6 +121,13 @@ def step_generate(args: argparse.Namespace) -> None:
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
+    # Structured progress for the WebUI (no terminal for tqdm under SLURM).
+    # One cumulative bar across train + validate.
+    reporter = Reporter.from_env()
+    reporter.set_stage("generating clean HR fields")
+    grand_total = int(args.ntrain) + int(args.nvalid)
+    done = 0
+
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         # Entropy-seeded master RNG so repeat runs see fresh randomness.
         # The seed is logged so a curious-looking run can be replayed
@@ -138,6 +146,8 @@ def step_generate(args: argparse.Namespace) -> None:
                 sky.index = i
                 sky.subset = subset
                 w.write(sky, index=i)
+                done += 1
+                reporter.set_step(done, grand_total, f"generate {subset} {i + 1}/{n}")
             path, count = w.path, w.count
         _log(f"  {subset}: done — {count} → {path}  "
              f"({time.perf_counter() - t0:.1f} s)")
@@ -162,6 +172,18 @@ def step_convolve(args: argparse.Namespace) -> None:
     fwd = MultiBandForward(psfs_by_band=psfs,
                            config=MultiBandForwardConfig(add_noise=True))
 
+    # Structured progress for the WebUI — one cumulative bar across both
+    # subsets present. Pre-count the clean records (re-iterating is ~ms).
+    reporter = Reporter.from_env()
+    reporter.set_stage("forward-modelling HR → LR")
+    counts = {}
+    for subset in ("train", "validate"):
+        p = tfrecord_path(args.records_dir, f"clean_{subset}")
+        counts[subset] = (sum(1 for _ in tf.data.TFRecordDataset(p))
+                          if os.path.exists(p) else 0)
+    grand_total = sum(counts.values())
+    done = 0
+
     for subset in ("train", "validate"):
         clean_path = tfrecord_path(args.records_dir, f"clean_{subset}")
         if not os.path.exists(clean_path):
@@ -171,8 +193,7 @@ def step_convolve(args: argparse.Namespace) -> None:
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
-        # Total count for the tqdm bar — re-iterating once costs ~ms.
-        n_total = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
+        n_total = counts[subset]
         # Entropy-seeded forward-model RNG — different noise / artifact
         # realisation every run. Master seed is logged for replay.
         master_seed = int.from_bytes(os.urandom(8), "little")
@@ -197,6 +218,8 @@ def step_convolve(args: argparse.Namespace) -> None:
                 hr.subset = subset
                 hr_w.write(hr, index=i)
                 lr_w.write(lr, index=i)
+                done += 1
+                reporter.set_step(done, grand_total, f"forward {subset} {i + 1}/{n_total}")
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ kept clean + wrote hr + dirty {subset}")
 
