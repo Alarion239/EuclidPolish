@@ -118,12 +118,39 @@ _CUTOUT_FNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+\.fits$")
 # Read-only status helpers
 # ---------------------------------------------------------------------------
 
+def _fasrc_catalog_remote_path() -> str:
+    """Remote path of the catalog the FASRC-side query writes."""
+    cfg = fasrc_config.load()
+    return f"{cfg.data_dir}/euclid_stars/{Config.CATALOG_FILE}"
+
+
+def _fasrc_catalog_dir(force: bool = True) -> Optional[str]:
+    """Pull the FASRC ``stars.csv`` into the local cache; return the dir
+    holding it (for ``StarCatalog(<dir>)``), or None if the remote catalog
+    isn't there / can't be fetched.
+
+    The brightest-N query runs on the FASRC login node and writes the
+    catalog to netscratch ``$DATA_DIR/euclid_stars``. The laptop UI must
+    read *that* copy — never a stale local one — for the summary + plots,
+    so we rsync it down on demand."""
+    res = _fasrc_fetcher.fetch_one_file(_fasrc_catalog_remote_path(), force=force)
+    if not res.ok or not res.local_path or not os.path.isfile(res.local_path):
+        return None
+    return os.path.dirname(res.local_path)
+
+
 def _catalog_status() -> Dict[str, Any]:
-    cat = StarCatalog()
+    cat_dir = _fasrc_catalog_dir()
+    if cat_dir is None:
+        return {"present": False}
+    cat = StarCatalog(cat_dir)
     if not cat.exists():
         return {"present": False}
     summary = cat.get_summary()
-    return {"present": True, "summary": summary, "path": cat.catalog_path}
+    # Show the *remote* path so the page makes clear this is the FASRC
+    # (netscratch) catalog, not the local cache copy we render from.
+    return {"present": True, "summary": summary,
+            "path": _fasrc_catalog_remote_path()}
 
 
 def _psf_status() -> Dict[str, Any]:
@@ -2829,7 +2856,11 @@ def create_app() -> Flask:
     @app.route("/view/catalog")
     def view_catalog():
         view = request.args.get("view", "positions")
-        out  = request.args.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
+        # Render from the FASRC catalog (pulled to the local cache), not a
+        # stale local stars.csv — the query writes it on netscratch.
+        out = _fasrc_catalog_dir(force=True)
+        if out is None:
+            abort(404)
         png = _render_catalog_view_png(view, out)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
