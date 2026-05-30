@@ -24,7 +24,16 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Optional, Tuple
+
+# Cap per-process BLAS threads BEFORE numpy/scipy import. We run the bands
+# in a process pool (one worker per band); without this each worker would
+# spawn one BLAS thread per core, oversubscribing the 4 CPUs the job locks.
+# ``setdefault`` honours an explicit override from the environment.
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -82,13 +91,17 @@ def parse_args() -> argparse.Namespace:
                     help="Output directory for the band-keyed PSF FITS files")
     ap.add_argument("--bands", default=",".join(b.name for b in Config.BANDS),
                     help="Comma-separated list of bands to process")
+    ap.add_argument("--max-procs", type=int, default=4,
+                    help="Bands to extract in parallel (one process per "
+                         "band; capped at the band count). The FASRC step "
+                         "locks the allocation to 4 CPUs to match the 4 "
+                         "Euclid bands.")
     return ap.parse_args()
 
 
 def extract_band(band: BandConfig, args: argparse.Namespace,
                  reporter: Optional[Reporter] = None) -> bool:
     reporter = reporter or Reporter(events_path=None)  # no-op when unset
-    reporter.set_stage(f"extracting {band.name} ePSF")
     cutout_dir = _cutout_dir_for_band(band)
     out_path   = os.path.join(args.psf_dir, band.psf_fits_filename)
 
@@ -160,6 +173,22 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     return True
 
 
+def _extract_band_worker(task: Tuple[str, argparse.Namespace]) -> Tuple[str, bool]:
+    """Process-pool entry point: extract one band's ePSF.
+
+    Top-level (picklable). Each worker builds its own :class:`Reporter`
+    from the env — the per-job events file is append-only and POSIX-atomic
+    for sub-PIPE_BUF writes, so the 4 band workers share it safely without
+    passing the (unpicklable, lock-bearing) parent reporter across the
+    fork.
+    """
+    band_name, args = task
+    band = Config.get_band(band_name)
+    reporter = Reporter.from_env()
+    ok = extract_band(band, args, reporter=reporter)
+    return band_name, ok
+
+
 def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
@@ -168,6 +197,8 @@ def main() -> int:
         return 1
     requested = [name.strip() for name in args.bands.split(",") if name.strip()]
     bands = [Config.get_band(name) for name in requested]
+    n_bands = len(bands)
+    n_procs = max(1, min(args.max_procs, n_bands))
 
     print(f"Extracting ePSF for bands: {[b.name for b in bands]}")
     print(f"  num-stars    = {args.num_stars}")
@@ -176,16 +207,38 @@ def main() -> int:
     else:
         print(f"  cutout-size  = {args.cutout_size}")
     print(f"  output-size  = {args.output_size}")
-    print(f"  psf-dir      = {args.psf_dir}\n")
+    print(f"  psf-dir      = {args.psf_dir}")
+    print(f"  parallel     = {n_procs} band(s) at once\n")
 
+    reporter.set_stage(f"extracting {n_bands} ePSF(s) — {n_procs}-way parallel")
     succeeded = []
-    n_bands = len(bands)
-    for i, band in enumerate(bands):
-        reporter.set_step(i, n_bands, band.name)
-        ok = extract_band(band, args, reporter=reporter)
-        succeeded.append((band.name, ok))
-        print()
-    reporter.set_step(n_bands, n_bands, "done")
+    done = 0
+    if n_procs == 1:
+        # Single band (or forced serial): no pool overhead.
+        for band in bands:
+            ok = extract_band(band, args, reporter=reporter)
+            succeeded.append((band.name, ok))
+            done += 1
+            reporter.set_step(done, n_bands, band.name)
+            print()
+    else:
+        with ProcessPoolExecutor(max_workers=n_procs) as pool:
+            futures = {
+                pool.submit(_extract_band_worker, (b.name, args)): b.name
+                for b in bands
+            }
+            for fut in as_completed(futures):
+                band_name = futures[fut]
+                try:
+                    name, ok = fut.result()
+                except Exception as e:
+                    reporter.warn(f"{band_name}: worker crashed: "
+                                  f"{type(e).__name__}: {e}")
+                    name, ok = band_name, False
+                succeeded.append((name, ok))
+                done += 1
+                reporter.set_step(done, n_bands, name)
+                print(f"[{done}/{n_bands}] {name}: {'✓' if ok else '✗'}", flush=True)
 
     print("=" * 50)
     print("Summary:")

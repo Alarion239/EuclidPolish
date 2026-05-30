@@ -124,10 +124,20 @@ class TestRegistry:
         assert step.fixed_cpus == 1
         assert step.defaults.n_cpus == 1
 
+    def test_euclid_psf_extract_locks_four_cpus(self):
+        """The all-band Euclid ePSF step runs one process per band and
+        locks the allocation to 4 CPUs."""
+        step = REGISTRY.get("extract_euclid_psf")
+        assert step.fixed_cpus == 4
+        assert step.defaults.n_cpus == 4
+        assert "--max-procs" in step.build_command({})
+
     def test_other_steps_do_not_lock_cpus(self):
-        """Only extract_psf should enforce fixed_cpus today."""
+        """Only the two PSF-extraction steps enforce fixed_cpus today: the
+        HST ePSF (single-threaded → 1 CPU) and the all-band Euclid ePSF
+        (one process per band → 4 CPUs)."""
         locked = {s.step_id for s in REGISTRY.all() if s.fixed_cpus is not None}
-        assert locked == {"extract_psf"}
+        assert locked == {"extract_psf", "extract_euclid_psf"}
 
     def test_every_step_has_label_and_description(self):
         for s in REGISTRY.all():

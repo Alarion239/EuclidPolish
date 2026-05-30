@@ -599,16 +599,23 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             label="Extract Euclid ePSFs (all 4 bands)",
             description=(
                 "Run photutils EPSFBuilder on the downloaded star cutouts "
-                "for ALL four bands (VIS + NISP Y/J/H) in one job, writing "
+                "for ALL four bands (VIS + NISP Y/J/H) in one job — the four "
+                "bands run in parallel, one process per CPU (allocation "
+                "locked to 4 CPUs). Writes "
                 "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits. Bright "
                 "clipped-core stars are rejected automatically. Bands with "
                 "no cutouts are skipped and fall back to a Gaussian PSF."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
-                memory="32G", time_limit="1:00:00",
+                # 4 EPSFBuilders run at once → ~4× the single-band peak.
+                memory="48G", time_limit="1:00:00",
             ),
             needs_gpu=False,
+            # One process per band (4 bands) → lock the allocation to 4 CPUs
+            # so SLURM doesn't hand out cores the job can't use, and the UI
+            # hides the CPU field.
+            fixed_cpus=4,
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
@@ -618,6 +625,7 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             "scripts/extract_all_band_psfs.py",
             "--num-stars",  str(num_stars),
             "--vis-pixels", str(vis_pixels),
+            "--max-procs",  "4",
         ]
         # Optional explicit final ePSF size (oversampled px); 0/blank →
         # photutils' default (cutout_size × oversampling + 1).
