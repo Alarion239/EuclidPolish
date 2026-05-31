@@ -35,7 +35,7 @@ from euclid_polish.training.data_multiband import (
     MultiBandEuclidDataset, lr_only_dataset,
 )
 from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.training.forward_op import EuclidVISForwardOp
+from euclid_polish.training.forward_op import EuclidVISForwardOp, HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 
 
@@ -143,28 +143,57 @@ def main() -> int:
         return 0
 
     use_roundtrip = args.roundtrip_fraction > 0
-    # The dataset needs source tags whenever the round-trip path is on.
-    # When it's off we keep the pre-round-trip 2-tuple API so the
-    # validation loop / existing callers don't change behaviour.
-    needs_source_tag = use_roundtrip
+    use_hst       = args.hst_fraction > 0
+
+    # Fixed contiguous batch layout for ``Trainer.train_step_sky``. Each
+    # batch is ``[n_syn synthetic | n_hst HST | n_rt round-trip]`` with
+    # these exact per-lane counts, derived from the batch size and the
+    # fraction knobs. A requested lane that rounds to 0 rows is a
+    # misconfiguration (the batch is too small for that fraction) — fail
+    # loudly rather than silently never training it.
+    batch_size = int(args.batch_size)
+    n_hst = round(batch_size * float(args.hst_fraction)) if use_hst else 0
+    n_rt  = round(batch_size * float(args.roundtrip_fraction)) if use_roundtrip else 0
+    n_syn = batch_size - n_hst - n_rt
+    if use_hst and n_hst == 0:
+        raise SystemExit(
+            f"hst_fraction={args.hst_fraction} rounds to 0 rows at "
+            f"batch_size={batch_size}; raise the batch size or the fraction"
+        )
+    if use_roundtrip and n_rt == 0:
+        raise SystemExit(
+            f"roundtrip_fraction={args.roundtrip_fraction} rounds to 0 rows "
+            f"at batch_size={batch_size}; raise the batch size or the fraction"
+        )
+    if n_syn < 1:
+        raise SystemExit(
+            f"hst+roundtrip fractions leave no synthetic rows at "
+            f"batch_size={batch_size} (n_syn={n_syn}); lower the fractions"
+        )
+    fixed_layout = use_hst or use_roundtrip
+    lane_counts  = (n_syn, n_hst, n_rt) if fixed_layout else None
 
     # Two dataset instances — one for training, one for validation. HST
     # and round-trip sources are only mixed into training; validation
     # stays pure synthetic so the metric is comparable across runs and
     # round-trip records (which lack HR ground truth) can't slip into
-    # the PSNR computation.
+    # the synthetic PSNR computation.
     reporter.set_stage("building datasets")
-    train_dataset = MultiBandEuclidDataset(
-        subset="train",
-        records_dir=args.records_syn,
-        hst_records_dir=args.records_hst if args.hst_fraction > 0 else None,
-        hst_fraction=float(args.hst_fraction),
-        roundtrip_records_dir=args.records_roundtrip if use_roundtrip else None,
-        roundtrip_fraction=float(args.roundtrip_fraction),
-    ).dataset(
-        batch_size=int(args.batch_size), random_transform=True,
-        with_source_tag=needs_source_tag,
-    )
+    if fixed_layout:
+        print(f"      fixed batch layout: syn={n_syn} hst={n_hst} rt={n_rt}")
+        train_dataset = MultiBandEuclidDataset(
+            subset="train",
+            records_dir=args.records_syn,
+            hst_records_dir=args.records_hst if use_hst else None,
+            hst_fraction=float(args.hst_fraction),
+            roundtrip_records_dir=args.records_roundtrip if use_roundtrip else None,
+            roundtrip_fraction=float(args.roundtrip_fraction),
+        ).dataset_fixed_layout(n_syn, n_hst, n_rt, random_transform=True)
+    else:
+        train_dataset = MultiBandEuclidDataset(
+            subset="train",
+            records_dir=args.records_syn,
+        ).dataset(batch_size=batch_size, random_transform=True)
     valid_dataset = MultiBandEuclidDataset(
         subset="validate",
         records_dir=args.records_syn,
@@ -227,12 +256,24 @@ def main() -> int:
               f"{forward_op.psf_kernel_size}×{forward_op.psf_kernel_size} "
               f"(crop_half_side={crop_half})")
 
+    # HST forward op for the SR=sky objective: H ⊛ SR (HST F814W PSF,
+    # rebin_factor=1 — HST shares SR's 0.05″ grid). Reuses the same
+    # crop_half knob; the F814W ePSF is narrow, so the crop is lossless.
+    hst_forward_op = (
+        HSTForwardOp(crop_half_side=crop_half) if use_hst else None
+    )
+    if hst_forward_op is not None:
+        print(f"      HST forward op: F814W PSF kernel "
+              f"{hst_forward_op.psf_kernel_size}×{hst_forward_op.psf_kernel_size} "
+              f"(crop_half_side={crop_half})")
+
     trainer = Trainer(
         model=model,
         loss=MeanAbsoluteError(),
         learning_rate=schedule,
         checkpoint_dir=args.ckpt_dir,
         forward_op=forward_op,
+        hst_forward_op=hst_forward_op,
         synthetic_loss_weight=float(args.synthetic_loss_weight),
         hst_loss_weight=float(args.hst_loss_weight),
         roundtrip_loss_weight=float(args.roundtrip_loss_weight),
@@ -259,6 +300,7 @@ def main() -> int:
             float(args.save_best_w_hst),
             float(args.save_best_w_rt),
         ),
+        lane_counts=lane_counts,
     )
 
     runtime = time.time() - t0

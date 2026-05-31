@@ -123,55 +123,82 @@ def _write_test_dirty_only(tmp_path, subset: str = "train") -> str:
     return str(tmp_path)
 
 
-def test_dataset_emits_source_tag_when_requested(tmp_path):
-    """``with_source_tag=True`` switches to (lr, hr, source) 3-tuples."""
-    from euclid_polish.training.data_multiband import SOURCE_SYNTHETIC
-
-    rdir = _write_test_records(tmp_path)
-    ds = MultiBandEuclidDataset(
-        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
-    ).dataset(
-        batch_size=2, random_transform=True, repeat_count=1,
-        with_source_tag=True,
-    )
-    batch = next(iter(ds))
-    assert len(batch) == 3, "expected (lr, hr, source) 3-tuple"
-    lr, hr, src = batch
-    assert lr.shape == (2, 8, 8, 4)
-    assert hr.shape == (2, 16, 16, 1)
-    assert src.shape == (2,)
-    assert src.dtype == tf.int32
-    # All examples are from the synthetic source — no HST or round-trip
-    # configured in this test.
-    assert (src.numpy() == SOURCE_SYNTHETIC).all()
-
-
-def test_dataset_2tuple_default_preserves_backward_compat(tmp_path):
-    """The default ``with_source_tag=False`` keeps the old 2-tuple API.
-
-    Pinned because many existing call sites (scripts/run_pipeline.py,
-    web/app.py, cli/main.py) destructure ``lr, hr = batch``.
-    """
+def test_dataset_default_is_2tuple(tmp_path):
+    """``dataset()`` yields the pure-synthetic ``(lr, hr)`` 2-tuple — the
+    pure-supervised path used by run_pipeline.py / cli / web inference and
+    every validation stream (all destructure ``lr, hr = batch``)."""
     rdir = _write_test_records(tmp_path)
     ds = MultiBandEuclidDataset(
         subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
     ).dataset(batch_size=2, random_transform=True, repeat_count=1)
     batch = next(iter(ds))
     assert len(batch) == 2
+    lr, hr = batch
+    assert lr.shape == (2, 8, 8, 4)
+    assert hr.shape == (2, 16, 16, 1)
 
 
-def test_roundtrip_fraction_requires_source_tag(tmp_path):
-    """Mixing round-trip data without source tags would silently treat
-    the dummy zeros HR as ground truth — refuse the configuration."""
+def test_fixed_layout_syn_only_shapes(tmp_path):
+    """``dataset_fixed_layout`` with only a synthetic lane yields a single
+    block of ``(lr, hr)`` 2-tuples at the requested count."""
     rdir = _write_test_records(tmp_path)
+    ds = MultiBandEuclidDataset(
+        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
+    ).dataset_fixed_layout(2, 0, 0, random_transform=True)
+    lr, hr = next(iter(ds))
+    assert lr.shape == (2, 8, 8, 4)
+    assert hr.shape == (2, 16, 16, 1)
+
+
+def test_fixed_layout_three_way_counts(tmp_path):
+    """A ``[n_syn | n_hst | n_rt]`` layout produces a batch of exactly
+    that size, contiguous in lane order, with the round-trip block's HR
+    slot all-zero (the dummy that ``train_step_sky`` never reads)."""
+    rdir    = _write_test_records(tmp_path)
+    hst_dir = tmp_path / "hst_records"
+    hst_dir.mkdir()
+    _write_test_records(hst_dir)            # clean_train + dirty_train
     rt_dir = tmp_path / "rt_records"
     _write_test_dirty_only(rt_dir, subset="train")
+
+    n_syn, n_hst, n_rt = 2, 1, 1
+    ds = MultiBandEuclidDataset(
+        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
+        hst_records_dir=str(hst_dir), hst_fraction=0.25,
+        roundtrip_records_dir=str(rt_dir), roundtrip_fraction=0.25,
+    ).dataset_fixed_layout(n_syn, n_hst, n_rt, random_transform=True)
+
+    lr, hr = next(iter(ds))
+    B = n_syn + n_hst + n_rt
+    assert lr.shape == (B, 8, 8, 4)
+    assert hr.shape == (B, 16, 16, 1)
+    # Round-trip lane is the last n_rt rows; its HR slot is dummy zeros.
+    rt_hr = hr.numpy()[n_syn + n_hst:]
+    assert (rt_hr == 0.0).all(), (
+        f"round-trip dummy HR contained non-zero values: "
+        f"max abs = {np.abs(rt_hr).max()}"
+    )
+
+
+def test_fixed_layout_missing_hst_records_raises(tmp_path):
+    """A fixed layout that requests an HST lane it wasn't given records
+    for is an error — no silent single-source fallback."""
+    rdir = _write_test_records(tmp_path)
     ds_obj = MultiBandEuclidDataset(
         subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
-        roundtrip_records_dir=str(rt_dir), roundtrip_fraction=0.2,
     )
-    with pytest.raises(ValueError, match="with_source_tag=True"):
-        ds_obj.dataset(batch_size=2, random_transform=True, repeat_count=1)
+    with pytest.raises(ValueError, match="no HST records"):
+        ds_obj.dataset_fixed_layout(2, 1, 0, random_transform=True)
+
+
+def test_fixed_layout_missing_roundtrip_records_raises(tmp_path):
+    """Likewise for a requested round-trip lane with no round-trip records."""
+    rdir = _write_test_records(tmp_path)
+    ds_obj = MultiBandEuclidDataset(
+        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
+    )
+    with pytest.raises(ValueError, match="no round-trip records"):
+        ds_obj.dataset_fixed_layout(2, 0, 1, random_transform=True)
 
 
 def test_fraction_sum_overflow_rejected():
@@ -181,101 +208,6 @@ def test_fraction_sum_overflow_rejected():
             subset="train", records_dir="/tmp/does-not-matter",
             hst_fraction=0.6, roundtrip_fraction=0.5,
         )
-
-
-def test_three_way_mix_distribution(tmp_path):
-    """Per-example source distribution matches the configured weights.
-
-    With 100 sampled examples and a 60/20/20 split the per-source
-    count should cluster near the expected mean; we use loose
-    tolerances so the test isn't flaky.
-    """
-    from euclid_polish.training.data_multiband import (
-        SOURCE_SYNTHETIC, SOURCE_HST, SOURCE_ROUNDTRIP,
-    )
-
-    rdir    = _write_test_records(tmp_path)
-    hst_dir = tmp_path / "hst_records"
-    hst_dir.mkdir()
-    # HST stream needs (clean + dirty) — reuse the same writer.
-    _ = _write_test_records(hst_dir)   # writes clean_train + dirty_train
-
-    rt_dir = tmp_path / "rt_records"
-    _write_test_dirty_only(rt_dir, subset="train")
-
-    ds = MultiBandEuclidDataset(
-        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
-        hst_records_dir=str(hst_dir), hst_fraction=0.20,
-        roundtrip_records_dir=str(rt_dir), roundtrip_fraction=0.20,
-    ).dataset(
-        batch_size=1, random_transform=True, repeat_count=None,
-        with_source_tag=True,
-    )
-
-    sources = []
-    for i, batch in enumerate(ds):
-        if i >= 200: break
-        _, _, src = batch
-        sources.extend(src.numpy().tolist())
-
-    n = len(sources)
-    n_syn = sources.count(SOURCE_SYNTHETIC)
-    n_hst = sources.count(SOURCE_HST)
-    n_rt  = sources.count(SOURCE_ROUNDTRIP)
-    assert n_syn + n_hst + n_rt == n, "every example must carry a known source tag"
-    # Sample sizes are small → wide tolerances. Just verify each source
-    # contributes non-trivially and synthetic dominates.
-    assert n_syn > n_hst, (
-        f"synthetic (weight 0.6) should dominate HST (0.2); got "
-        f"syn={n_syn} hst={n_hst}"
-    )
-    assert n_syn > n_rt,  (
-        f"synthetic (weight 0.6) should dominate round-trip (0.2); got "
-        f"syn={n_syn} rt={n_rt}"
-    )
-    assert n_hst > 0,     "HST source missing entirely"
-    assert n_rt  > 0,     "round-trip source missing entirely"
-
-
-def test_roundtrip_stream_dummy_hr_is_zero(tmp_path):
-    """The HR slot for round-trip examples must be zeros — the trainer
-    detects round-trip via the source tag but a non-zero dummy would
-    pollute any (incorrectly applied) supervised L1."""
-    from euclid_polish.training.data_multiband import SOURCE_ROUNDTRIP
-
-    rdir    = _write_test_records(tmp_path)
-    rt_dir  = tmp_path / "rt_records"
-    _write_test_dirty_only(rt_dir, subset="train")
-
-    # roundtrip_fraction=1.0 would technically be valid but we keep
-    # synthetic at 1e-6 weight so we always see round-trip batches.
-    ds = MultiBandEuclidDataset(
-        subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
-        roundtrip_records_dir=str(rt_dir), roundtrip_fraction=0.99,
-    ).dataset(
-        batch_size=2, random_transform=True, repeat_count=None,
-        with_source_tag=True,
-    )
-
-    saw_roundtrip = False
-    for i, (lr, hr, src) in enumerate(ds):
-        if i >= 20: break
-        rt_mask = src.numpy() == SOURCE_ROUNDTRIP
-        if not rt_mask.any():
-            continue
-        saw_roundtrip = True
-        # Every round-trip example's HR slot is exact zeros (the
-        # trainer ignores it, but it has to be zero to keep accidental
-        # supervised paths well-defined).
-        rt_hr = hr.numpy()[rt_mask]
-        assert (rt_hr == 0.0).all(), (
-            f"round-trip dummy HR contained non-zero values: "
-            f"max abs = {np.abs(rt_hr).max()}"
-        )
-    assert saw_roundtrip, (
-        "no round-trip examples observed across 20 batches even at "
-        "fraction 0.99 — sampling may be broken"
-    )
 
 
 # ---------------------------------------------------------------------------

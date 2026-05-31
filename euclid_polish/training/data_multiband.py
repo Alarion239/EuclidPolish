@@ -87,34 +87,32 @@ def inverse_asinh_stretch_hr(y: tf.Tensor) -> tf.Tensor:
 # Dataset
 # ---------------------------------------------------------------------------
 
-# Source-tag constants for the (lr, hr, source) tuples emitted when
-# ``with_source_tag=True``. The trainer routes per-example loss off
-# these — keep them in sync with ``Trainer._SOURCE_*`` and with the
-# round-trip handling in ``Trainer.train_step``.
-SOURCE_SYNTHETIC = 0
-SOURCE_HST       = 1
-SOURCE_ROUNDTRIP = 2
-
 
 class MultiBandEuclidDataset:
     """Reads paired v2 (clean HR-VIS, dirty LR-4channel) records.
 
-    Up to three data sources can be mixed at the per-example level via
-    :func:`tf.data.Dataset.sample_from_datasets`:
+    Up to three data sources feed training. :meth:`dataset` streams the
+    primary synthetic source alone as ``(lr, hr)`` 2-tuples (the
+    pure-supervised path + every validation stream).
+    :meth:`dataset_fixed_layout` combines the sources into **fixed
+    contiguous-block batches** ``[n_syn | n_hst | n_rt]`` for
+    :meth:`Trainer.train_step_sky`, which slices each lane by its static
+    count (no per-example source tags, no random interleaving):
 
       * **synthetic** (always present): the primary
         ``records_dir`` with full ``(lr, hr)`` pairs from the simulated
         forward model.
       * **HST** (optional): ``hst_records_dir`` + ``hst_fraction`` —
         forward-modelled HST→Euclid pairs from
-        ``scripts/fasrc_generate_hst_tfrecords.py``.
+        ``scripts/fasrc_generate_hst_tfrecords.py``. ``hr`` is the
+        observed HST image; ``train_step_sky`` supervises ``H ⊛ SR``
+        against it.
       * **round-trip** (optional): ``roundtrip_records_dir`` +
         ``roundtrip_fraction`` — *real* Euclid LR cutouts from
         ``scripts/fasrc_generate_euclid_roundtrip_tfrecords.py``. These
-        records have **no HR side**; the trainer detects them via the
-        per-example source tag and switches to the self-supervised
-        round-trip loss ``|asinh(Conv(M(lr))/k) - lr|`` instead of the
-        supervised L1.
+        records have **no HR side** (a dummy zero HR rides along, never
+        read); ``train_step_sky`` applies the self-supervised round-trip
+        loss ``|asinh(rebin(E ⊛ SR)) - lr_vis|``.
 
     Parameters
     ----------
@@ -263,15 +261,14 @@ class MultiBandEuclidDataset:
         *, random_transform: bool, repeat_count: Optional[int],
         cache: bool,
     ) -> tf.data.Dataset:
-        """LR-only round-trip stream → ``(lr, dummy_hr, source=ROUNDTRIP)``.
+        """LR-only round-trip stream → ``(lr, dummy_hr)``.
 
-        Round-trip records have no HR side; the trainer's round-trip
-        loss is computed entirely on LR + the model's own forward
-        reconstruction. We still emit a 3-tuple so the sampled mix is
-        shape-homogeneous; ``dummy_hr`` is a zero-tensor at the
-        supervised HR patch shape (training) or scaled-up from the LR
-        record shape (validation). The trainer masks it out via the
-        source tag so the zeros never contribute to the loss.
+        Round-trip records have no HR side; ``train_step_sky`` computes
+        the round-trip loss entirely on LR + the model's own forward
+        reconstruction. ``dummy_hr`` is a zero-tensor at the supervised
+        HR patch shape (training) or scaled-up from the LR record shape
+        (validation); it is never read by the loss (the round-trip lane
+        is identified by its fixed position in the batch, not a tag).
         """
         n_lr = Config.NUM_LR_CHANNELS
 
@@ -321,127 +318,105 @@ class MultiBandEuclidDataset:
                 return lr, hr_c
             ds = ds.map(_attach_dummy_hr, num_parallel_calls=AUTOTUNE)
 
-        src = tf.constant(SOURCE_ROUNDTRIP, dtype=tf.int32)
-        ds = ds.map(lambda lr, hr: (lr, hr, src),
-                    num_parallel_calls=AUTOTUNE)
         return ds.repeat(repeat_count)
 
-    @staticmethod
-    def _attach_source_tag(
-        ds: tf.data.Dataset, source_id: int,
+    def dataset_fixed_layout(
+        self,
+        n_syn: int,
+        n_hst: int,
+        n_rt: int,
+        *,
+        random_transform: bool = True,
+        repeat_count: Optional[int] = None,
     ) -> tf.data.Dataset:
-        """Map ``(lr, hr) → (lr, hr, source_id)`` so streams are 3-tuple."""
-        src = tf.constant(int(source_id), dtype=tf.int32)
-        return ds.map(lambda lr, hr: (lr, hr, src),
-                      num_parallel_calls=AUTOTUNE)
+        """Fixed contiguous-block batches for :meth:`Trainer.train_step_sky`.
+
+        Every batch is laid out as ``[n_syn synthetic | n_hst HST |
+        n_rt round-trip]`` — exactly these per-lane counts, in this
+        order, no source tags. The trainer slices each lane by its
+        static count and applies that lane's forward op, so there is no
+        per-example branching. Each lane is shuffled and batched
+        independently (``drop_remainder=True`` for static shapes), then
+        the per-lane batches are concatenated along the batch axis.
+
+        A lane with count 0 is omitted. Requesting a lane whose records
+        weren't configured (``n_hst>0`` without HST records, ``n_rt>0``
+        without round-trip records) is an error — unlike the lenient
+        single-source fallback, a fixed layout must get what it asks for.
+        Yields ``(lr, hr)`` 2-tuples with ``lr`` ``[B, h, w, 4]`` and
+        ``hr`` ``[B, H, W, 1]`` where ``B = n_syn + n_hst + n_rt``.
+        """
+        lanes: list = []
+        if n_syn > 0:
+            syn = self._build_single_source(
+                self.dirty_file, self.clean_file,
+                random_transform=random_transform, repeat_count=repeat_count,
+                cache=True,
+            )
+            lanes.append(syn.batch(n_syn, drop_remainder=True))
+        if n_hst > 0:
+            if self.hst_clean_file is None or self.hst_dirty_file is None:
+                raise ValueError(
+                    "dataset_fixed_layout: n_hst > 0 but no HST records are "
+                    "configured (pass hst_records_dir and hst_fraction > 0)"
+                )
+            hst = self._build_single_source(
+                self.hst_dirty_file, self.hst_clean_file,
+                random_transform=random_transform, repeat_count=repeat_count,
+                cache=True,
+            )
+            lanes.append(hst.batch(n_hst, drop_remainder=True))
+        if n_rt > 0:
+            if self.roundtrip_dirty_file is None:
+                raise ValueError(
+                    "dataset_fixed_layout: n_rt > 0 but no round-trip records "
+                    "are configured (pass roundtrip_records_dir and "
+                    "roundtrip_fraction > 0)"
+                )
+            rt = self._build_roundtrip_source(
+                self.roundtrip_dirty_file,
+                random_transform=random_transform, repeat_count=repeat_count,
+                cache=True,
+            )
+            lanes.append(rt.batch(n_rt, drop_remainder=True))
+
+        if not lanes:
+            raise ValueError("dataset_fixed_layout: all lane counts are 0")
+        if len(lanes) == 1:
+            return lanes[0].prefetch(AUTOTUNE)
+
+        def _concat_blocks(*blocks):
+            lrs = [lr for lr, _ in blocks]
+            hrs = [hr for _, hr in blocks]
+            return tf.concat(lrs, axis=0), tf.concat(hrs, axis=0)
+
+        zipped = tf.data.Dataset.zip(tuple(lanes))
+        return zipped.map(
+            _concat_blocks, num_parallel_calls=AUTOTUNE,
+        ).prefetch(AUTOTUNE)
 
     def dataset(
         self,
         batch_size: int = Config.DEFAULT_BATCH_SIZE,
         random_transform: bool = True,
         repeat_count: Optional[int] = None,
-        with_source_tag: bool = False,
     ) -> tf.data.Dataset:
-        """Build the streaming ``tf.data.Dataset``.
+        """Build the single-source streaming ``tf.data.Dataset``.
 
-        When ``with_source_tag=False`` (default — preserves the old API
-        across the existing callers), yields ``(lr, hr)`` 2-tuples. When
-        ``True``, yields ``(lr, hr, source)`` 3-tuples with the source
-        tag in ``{SOURCE_SYNTHETIC, SOURCE_HST, SOURCE_ROUNDTRIP}``. The
-        round-trip trainer requires source tags to route per-example
-        loss; setting ``roundtrip_fraction > 0`` without
-        ``with_source_tag=True`` is an error because the dummy HR would
-        otherwise look like real ground truth.
-
-        Up to three streams are mixed via
-        :func:`tf.data.Dataset.sample_from_datasets`. Weights:
-
-          * synthetic = ``1 - hst_fraction - roundtrip_fraction``
-          * HST       = ``hst_fraction``       (if configured & valid)
-          * round-trip= ``roundtrip_fraction`` (if configured & valid)
-
-        A configured-but-missing secondary/tertiary source silently
-        falls back to the remaining streams (its weight is dropped) —
-        same lenient behaviour as the pre-round-trip code.
+        Yields ``(lr, hr)`` 2-tuples from the primary (synthetic)
+        records — the pure-supervised path used by ``run_pipeline.py``,
+        the CLI, the web inference helpers, and every validation stream.
+        Multi-source training (synthetic + HST + round-trip) goes through
+        :meth:`dataset_fixed_layout`, which lays the sources out in fixed
+        contiguous blocks for :meth:`Trainer.train_step_sky` instead of
+        randomly interleaving them.
         """
-        if self.roundtrip_fraction > 0 and not with_source_tag:
-            raise ValueError(
-                "roundtrip_fraction > 0 requires with_source_tag=True so "
-                "the trainer can detect round-trip examples; the dummy "
-                "HR placeholder would otherwise be silently treated as "
-                "ground truth"
-            )
-
         primary = self._build_single_source(
             self.dirty_file, self.clean_file,
             random_transform=random_transform, repeat_count=repeat_count,
             cache=True,
         )
-
-        # Collect (stream, weight, source_id) for each active source.
-        # Weights track what the *intended* fractions are; we adjust for
-        # any source that falls back to "missing" (re-normalising the
-        # remaining weights so they still sum to 1).
-        streams: list = [(primary, 1.0, SOURCE_SYNTHETIC)]
-
-        if (self.hst_clean_file is not None
-            and self.hst_dirty_file is not None
-            and self.hst_fraction > 0):
-            secondary = self._build_single_source(
-                self.hst_dirty_file, self.hst_clean_file,
-                random_transform=random_transform, repeat_count=repeat_count,
-                cache=True,
-            )
-            streams.append((secondary, self.hst_fraction, SOURCE_HST))
-
-        if (self.roundtrip_dirty_file is not None
-            and self.roundtrip_fraction > 0):
-            tertiary = self._build_roundtrip_source(
-                self.roundtrip_dirty_file,
-                random_transform=random_transform, repeat_count=repeat_count,
-                cache=True,
-            )
-            # Round-trip stream already carries its own source tag —
-            # build_single_source doesn't yet, so we have to wrap the
-            # primary/secondary below to match.
-            streams.append((tertiary, self.roundtrip_fraction, SOURCE_ROUNDTRIP))
-
-        # Attach source tags to the synthetic/HST streams (the round-
-        # trip helper already attaches its own). Always 3-tuple
-        # internally; we strip back to 2-tuple at the end if the caller
-        # asked for the old API.
-        tagged_streams: list = []
-        for stream, weight, src_id in streams:
-            if src_id == SOURCE_ROUNDTRIP:
-                tagged_streams.append((stream, weight))
-            else:
-                tagged_streams.append(
-                    (self._attach_source_tag(stream, src_id), weight),
-                )
-
-        if len(tagged_streams) == 1:
-            mixed = tagged_streams[0][0]
-        else:
-            # Primary weight = 1 − (sum of secondary weights).
-            primary_weight = max(
-                0.0, 1.0 - sum(w for _, w in tagged_streams[1:])
-            )
-            weights = [primary_weight] + [w for _, w in tagged_streams[1:]]
-            mixed = tf.data.Dataset.sample_from_datasets(
-                [s for s, _ in tagged_streams],
-                weights=weights,
-                stop_on_empty_dataset=False,
-            )
-
-        if not with_source_tag:
-            # Backward-compat: drop the source tag for existing callers
-            # that destructure ``lr, hr = batch``.
-            mixed = mixed.map(
-                lambda lr, hr, src: (lr, hr),
-                num_parallel_calls=AUTOTUNE,
-            )
-
-        return mixed.batch(batch_size).prefetch(AUTOTUNE)
+        return primary.batch(batch_size).prefetch(AUTOTUNE)
 
 
 def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:

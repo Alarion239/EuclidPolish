@@ -1,25 +1,22 @@
-"""Tests for the source-aware trainer (round-trip integration).
+"""Tests for the SR=sky trainer (``train_step_sky``).
 
-Covers the loss-routing logic added in Chunk C2 of the round-trip
-training feature. The trainer can now consume either:
-
-  * legacy 2-tuple batches ``(lr, hr)`` — unchanged supervised path
-  * new 3-tuple batches ``(lr, hr, source)`` — per-element source tag
-    routes between supervised L1 and the round-trip reconstruction loss
-
-These tests pin three properties:
+The model estimates one quantity — the deconvolved sky ``SR`` — and each
+source supervises it through its own forward operator on a **fixed
+contiguous-block batch** ``[n_syn | n_hst | n_rt]`` (no per-example
+source tags, no ``tf.where`` branching). These tests pin:
 
   1. **Backward compatibility**: the supervised ``train_step(lr, hr)``
-     still drives gradients exactly as before — pre-round-trip
-     callers (``scripts/run_pipeline.py``, ``cli/main.py``, the web
-     inference helpers) keep working without code changes.
-  2. **Round-trip semantics**: a 100 %-round-trip batch trains on
-     ``|asinh(Conv(M(lr))/k) - lr_vis|``, with gradients propagating
-     through both M and the forward op (the op's PSF stays frozen —
-     it's non-trainable — but gradients still flow through it back
-     into M).
-  3. **Mixed routing**: a heterogeneous batch (supervised + round-trip
-     in the same batch) computes both loss terms in one tape pass.
+     (``lane_counts=None`` path) still drives gradients as before — the
+     pure-synthetic callers (``run_pipeline.py``, ``cli/main.py``, the
+     web inference helpers) are unaffected.
+  2. **Round-trip lane**: an all-round-trip layout trains on
+     ``|asinh(rebin(E ⊛ SR)) - lr_vis|`` with gradients flowing through
+     both M and the (frozen) VIS forward op.
+  3. **HST lane**: an all-HST layout trains on
+     ``|asinh(H ⊛ SR) - HST_image|`` through the (frozen) HST forward op.
+  4. **Mixed layout**: a single ``[syn | hst | rt]`` batch sums all three
+     lane losses in one tape pass via static slices.
+  5. **Per-lane weights** and the **missing-op guards**.
 """
 
 from __future__ import annotations
@@ -35,10 +32,9 @@ from euclid_polish.config import Config
 from euclid_polish.sky.tfrecord import open_multiband_writer, tfrecord_path
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.data_multiband import (
-    SOURCE_HST, SOURCE_ROUNDTRIP, SOURCE_SYNTHETIC,
     asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
 )
-from euclid_polish.training.forward_op import EuclidVISForwardOp
+from euclid_polish.training.forward_op import EuclidVISForwardOp, HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer, TRAINING_LOG_COLUMNS
 
@@ -79,6 +75,20 @@ def trainer_with_forward_op(tiny_model, tmp_path, tmp_psf_path):
     return Trainer(
         tiny_model, checkpoint_dir=str(tmp_path / "ckpt_rt"),
         forward_op=op, roundtrip_loss_weight=1.0,
+    )
+
+
+@pytest.fixture
+def trainer_with_both_ops(tiny_model, tmp_path, tmp_psf_path):
+    """Trainer wired with both forward ops (VIS round-trip + HST), so a
+    full ``[syn | hst | rt]`` layout can run. The HST op reuses the tiny
+    Gaussian PSF (rebin_factor is forced to 1 inside ``HSTForwardOp``)."""
+    vis_op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+    hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
+    return Trainer(
+        tiny_model, checkpoint_dir=str(tmp_path / "ckpt_both"),
+        forward_op=vis_op, hst_forward_op=hst_op,
+        roundtrip_loss_weight=1.0, hst_loss_weight=1.0,
     )
 
 
@@ -128,14 +138,13 @@ class TestSupervisedBackwardCompat:
 class TestRoundTripPath:
 
     def test_pure_roundtrip_batch_trains(self, trainer_with_forward_op):
-        """A batch tagged entirely as ``SOURCE_ROUNDTRIP`` runs through
-        ``train_step_mixed`` and produces finite loss + gradients. HR is
-        a dummy zeros tensor (matching what the dataset emits)."""
+        """An all-round-trip layout ``(0, 0, B)`` runs through
+        ``train_step_sky`` and produces finite, positive loss + gradients.
+        HR is a dummy zeros tensor (matching what the dataset emits)."""
         lr, _ = _rand_batch()
-        # Dummy HR slot — same shape as supervised HR, all zeros.
         hr_dummy = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        src = tf.constant([SOURCE_ROUNDTRIP, SOURCE_ROUNDTRIP], dtype=tf.int32)
-        loss, gnorm = trainer_with_forward_op.train_step_mixed(lr, hr_dummy, src)
+        loss, gnorm = trainer_with_forward_op.train_step_sky(
+            lr, hr_dummy, 0, 0, 2)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))
         assert float(loss.numpy()) > 0, (
@@ -149,8 +158,6 @@ class TestRoundTripPath:
         training effect — Conv would block the gradient signal.
         """
         lr, _ = _rand_batch()
-        hr_dummy = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        src = tf.constant([SOURCE_ROUNDTRIP, SOURCE_ROUNDTRIP], dtype=tf.int32)
 
         model = trainer_with_forward_op.checkpoint.model
         op    = trainer_with_forward_op.forward_op
@@ -176,11 +183,10 @@ class TestRoundTripPath:
         """The PSF is a physical constant; the optimiser must not move it."""
         lr, _ = _rand_batch()
         hr_dummy = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        src = tf.constant([SOURCE_ROUNDTRIP, SOURCE_ROUNDTRIP], dtype=tf.int32)
 
         before = trainer_with_forward_op.forward_op._psf_kernel.numpy().copy()
         for _ in range(3):
-            trainer_with_forward_op.train_step_mixed(lr, hr_dummy, src)
+            trainer_with_forward_op.train_step_sky(lr, hr_dummy, 0, 0, 2)
         after = trainer_with_forward_op.forward_op._psf_kernel.numpy()
         np.testing.assert_array_equal(before, after,
             err_msg="PSF kernel drifted during training — must be non-trainable",
@@ -188,70 +194,67 @@ class TestRoundTripPath:
 
 
 # ---------------------------------------------------------------------------
-# 3. Mixed batch routing
+# 3. HST lane
 # ---------------------------------------------------------------------------
 
-class TestMixedRouting:
+class TestHstLane:
 
-    def test_heterogeneous_batch_computes_both_losses(
-        self, trainer_with_forward_op,
+    def test_pure_hst_batch_trains_through_forward_op(
+        self, trainer_with_both_ops,
     ):
-        """Half supervised, half round-trip in one batch → both contribute."""
+        """An all-HST layout ``(0, B, 0)`` trains on ``|H⊛SR - HST|``,
+        finite + positive, with the HST op in the gradient path."""
+        lr, hr = _rand_batch(batch_size=2)
+        loss, gnorm = trainer_with_both_ops.train_step_sky(lr, hr, 0, 2, 0)
+        assert np.isfinite(float(loss.numpy()))
+        assert np.isfinite(float(gnorm.numpy()))
+        assert float(loss.numpy()) > 0
+
+    def test_hst_psf_remains_non_trainable(self, trainer_with_both_ops):
+        """The HST PSF is a physical constant — the optimiser must not move it."""
+        lr, hr = _rand_batch(batch_size=2)
+        before = trainer_with_both_ops.hst_forward_op._psf_kernel.numpy().copy()
+        for _ in range(3):
+            trainer_with_both_ops.train_step_sky(lr, hr, 0, 2, 0)
+        after = trainer_with_both_ops.hst_forward_op._psf_kernel.numpy()
+        np.testing.assert_array_equal(before, after,
+            err_msg="HST PSF kernel drifted — must be non-trainable")
+
+
+# ---------------------------------------------------------------------------
+# 4. Mixed fixed-layout batch
+# ---------------------------------------------------------------------------
+
+class TestMixedLayout:
+
+    def test_full_layout_sums_all_three_lanes(self, trainer_with_both_ops):
+        """A single ``[syn | hst | rt]`` batch (1, 1, 2) runs all three
+        lanes in one tape pass and yields finite, positive loss."""
         lr, hr = _rand_batch(batch_size=4)
-        # 2 supervised + 2 round-trip in the same batch.
-        src = tf.constant(
-            [SOURCE_SYNTHETIC, SOURCE_HST,
-             SOURCE_ROUNDTRIP, SOURCE_ROUNDTRIP],
-            dtype=tf.int32,
-        )
-        loss, _ = trainer_with_forward_op.train_step_mixed(lr, hr, src)
+        loss, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
         assert np.isfinite(float(loss.numpy()))
         assert float(loss.numpy()) > 0
 
-    def test_all_supervised_via_mixed_equals_supervised_step(
-        self, trainer_with_forward_op,
+    def test_all_synthetic_layout_equals_supervised(
+        self, trainer_with_both_ops,
     ):
-        """A batch with no round-trip tags should yield the same scalar
-        loss as the legacy supervised path (numerical equivalence —
-        both reduce to ``mean(|sr - hr|)`` per element).
-
-        Catches accidental scaling drift in the mixed-loss code that
-        would silently change pre-round-trip-era training dynamics
-        when the dataset emits source tags but no round-trip stream
-        is configured.
-        """
+        """An all-synthetic layout ``(B, 0, 0)`` reduces to the supervised
+        ``mean(|sr - hr|)`` — the synthetic lane applies no forward op."""
         lr, hr = _rand_batch(batch_size=4)
-        src_all_sup = tf.constant(
-            [SOURCE_SYNTHETIC] * 4, dtype=tf.int32,
-        )
-        # Mixed path with all-supervised tags.
-        mix_loss, _ = trainer_with_forward_op.train_step_mixed(
-            lr, hr, src_all_sup,
-        )
-        # Reference: legacy supervised path. Use a *separate* trainer
-        # so optimiser state from the prior call doesn't bias the
-        # comparison.
-        from euclid_polish.training.models.wdsr import wdsr as _wdsr
-        # Re-seed model with same architecture / random init isn't
-        # possible without weight transfer; instead just compute the
-        # equivalent reduce_mean directly, which is what
-        # ``MeanAbsoluteError`` does under the hood.
-        sr = trainer_with_forward_op.checkpoint.model(lr, training=False)
+        sr = trainer_with_both_ops.checkpoint.model(lr, training=False)
         ref_loss = float(tf.reduce_mean(tf.abs(sr - hr)).numpy())
-        # The mixed path took a gradient step *before* computing
-        # ``ref_loss``, so the model weights have already moved. We
-        # only check that ``mix_loss`` is in a sensible neighbourhood
-        # of the pure L1 — not bit-exact.
-        assert abs(float(mix_loss.numpy()) - ref_loss) < 1.0, (
-            f"mixed-all-supervised loss {float(mix_loss.numpy()):.4f} "
-            f"vs L1 reference {ref_loss:.4f} differ by more than 1.0 — "
-            "loss formula likely drifted"
+        loss, _ = trainer_with_both_ops.train_step_sky(lr, hr, 4, 0, 0)
+        # The step takes a gradient update before we read ref_loss off the
+        # moved weights, so only a neighbourhood check is meaningful.
+        assert abs(float(loss.numpy()) - ref_loss) < 1.0, (
+            f"all-synthetic layout loss {float(loss.numpy()):.4f} vs L1 "
+            f"reference {ref_loss:.4f} differ by >1.0 — formula drifted"
         )
 
     def test_roundtrip_weight_scales_loss(
         self, tiny_model, tmp_path, tmp_psf_path,
     ):
-        """Doubling ``roundtrip_loss_weight`` doubles the round-trip term."""
+        """Doubling ``roundtrip_loss_weight`` ~doubles an all-RT loss."""
         op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
         t1 = Trainer(
             tiny_model, checkpoint_dir=str(tmp_path / "ckpt_w1"),
@@ -263,21 +266,8 @@ class TestMixedRouting:
         )
         lr, _  = _rand_batch()
         hr_dum = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        src    = tf.constant([SOURCE_ROUNDTRIP, SOURCE_ROUNDTRIP], dtype=tf.int32)
-        # Snapshot model weights so the optimiser step doesn't
-        # diverge between t1 / t2 calls. Easiest is to compute the
-        # raw losses *without* applying gradients — but train_step
-        # applies them. Instead, compare immediately and accept that
-        # t2's reported loss is computed on the same starting weights
-        # only for the first call.
-        l1, _ = t1.train_step_mixed(lr, hr_dum, src)
-        # Reset model weights — call train_step_mixed on a fresh
-        # trainer with identical init via the same model object.
-        l2, _ = t2.train_step_mixed(lr, hr_dum, src)
-        # After one step the model weights are different, but the
-        # weight ratio should approximately hold for the first call
-        # (t2 takes a step proportionally larger). Loose tolerance —
-        # all we want to pin is that the weight isn't ignored.
+        l1, _ = t1.train_step_sky(lr, hr_dum, 0, 0, 2)
+        l2, _ = t2.train_step_sky(lr, hr_dum, 0, 0, 2)
         ratio = float(l2.numpy()) / float(l1.numpy())
         assert ratio > 1.3, (
             f"roundtrip_loss_weight=2 should yield ~2× the loss; "
@@ -285,56 +275,57 @@ class TestMixedRouting:
         )
 
 
-class TestPerSourceLossWeights:
-    """Each example is scaled by the loss-weight knob matching its source
-    tag. Zero-weight is the cleanest probe — it must zero that source's
-    loss exactly (and produce no gradient), independent of model state."""
+class TestPerLaneLossWeights:
+    """Each lane is scaled by its loss-weight knob. Zero-weight is the
+    cleanest probe — it must zero that lane's loss exactly."""
 
     def test_zero_synthetic_weight_zeros_loss(self, tiny_model, tmp_path):
         lr, hr = _rand_batch()
-        src = tf.constant([SOURCE_SYNTHETIC] * int(lr.shape[0]), dtype=tf.int32)
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "syn0"),
                     synthetic_loss_weight=0.0)
-        loss, _ = t.train_step_mixed(lr, hr, src)
+        loss, _ = t.train_step_sky(lr, hr, int(lr.shape[0]), 0, 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
-    def test_zero_hst_weight_zeros_loss(self, tiny_model, tmp_path):
+    def test_zero_hst_weight_zeros_loss(
+        self, tiny_model, tmp_path, tmp_psf_path,
+    ):
         lr, hr = _rand_batch()
-        src = tf.constant([SOURCE_HST] * int(lr.shape[0]), dtype=tf.int32)
+        hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst0"),
-                    hst_loss_weight=0.0)
-        loss, _ = t.train_step_mixed(lr, hr, src)
+                    hst_forward_op=hst_op, hst_loss_weight=0.0)
+        loss, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
-    def test_source_weights_are_disjoint(self, tiny_model, tmp_path):
-        """An HST-only batch is untouched by the synthetic weight — the
-        per-source masks don't overlap."""
+    def test_hst_lane_nonzero_when_weighted(
+        self, tiny_model, tmp_path, tmp_psf_path,
+    ):
+        """An all-HST layout with a non-zero HST weight produces loss > 0."""
         lr, hr = _rand_batch()
-        src = tf.constant([SOURCE_HST] * int(lr.shape[0]), dtype=tf.int32)
-        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "mix"),
+        hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst1"),
+                    hst_forward_op=hst_op,
                     synthetic_loss_weight=0.0, hst_loss_weight=1.0)
-        loss, _ = t.train_step_mixed(lr, hr, src)
+        loss, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
         assert float(loss.numpy()) > 0.0
 
 
 # ---------------------------------------------------------------------------
-# 4. Forward-op-absent fallback
+# 5. Missing-op guards
 # ---------------------------------------------------------------------------
 
-class TestForwardOpAbsent:
+class TestForwardOpGuards:
 
-    def test_mixed_step_without_forward_op_uses_supervised_l1(
-        self, tiny_trainer,
-    ):
-        """If ``forward_op=None`` and a round-trip-tagged example arrives,
-        the trainer falls back to supervised L1 for *all* examples in
-        the batch (best behaviour for misconfiguration: keep training
-        rather than crash, but document via the warning in the
-        ``train_step_mixed`` docstring)."""
+    def test_hst_lane_without_hst_op_raises(self, tiny_trainer):
+        """``n_hst > 0`` without an HST forward op is a config error."""
         lr, hr = _rand_batch()
-        src = tf.constant([SOURCE_ROUNDTRIP, SOURCE_SYNTHETIC], dtype=tf.int32)
-        loss, _ = tiny_trainer.train_step_mixed(lr, hr, src)
-        assert np.isfinite(float(loss.numpy()))
+        with pytest.raises(ValueError, match="hst_forward_op"):
+            tiny_trainer.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
+
+    def test_roundtrip_lane_without_op_raises(self, tiny_trainer):
+        """``n_rt > 0`` without a VIS forward op is a config error."""
+        lr, hr = _rand_batch()
+        with pytest.raises(ValueError, match="forward_op"):
+            tiny_trainer.train_step_sky(lr, hr, 0, 0, int(lr.shape[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +419,9 @@ class TestMultiSourceValidationLogging:
         regime change's effect on each source is auditable from the CSV."""
         ckpt_dir = str(tmp_path / "ckpt_ms")
         op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
-        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir, forward_op=op)
+        hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir,
+                          forward_op=op, hst_forward_op=hst_op)
 
         rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
         train_ds = _train_pairs_dataset()
@@ -473,7 +466,9 @@ class TestMultiSourceValidationLogging:
         that composite — not bare synthetic PSNR."""
         ckpt_dir = str(tmp_path / "ckpt_save")
         op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
-        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir, forward_op=op)
+        hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir,
+                          forward_op=op, hst_forward_op=hst_op)
 
         rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
         train_ds = _train_pairs_dataset()
@@ -506,7 +501,9 @@ class TestMultiSourceValidationLogging:
         PSNR even when HST validation is wired — backwards-compatible
         behaviour for callers that don't opt into the mix."""
         ckpt_dir = str(tmp_path / "ckpt_syn_only")
-        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir,
+                          hst_forward_op=hst_op)
         train_ds = _train_pairs_dataset()
         syn_valid = _valid_pairs_dataset(seed=10)
         hst_valid = _valid_pairs_dataset(seed=99)

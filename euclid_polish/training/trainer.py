@@ -1,32 +1,37 @@
 """
 Trainer module for WDSR super-resolution models.
 
-This module provides the Trainer class for training WDSR models. It
-supports two batch formats:
+The model always estimates one quantity: the **deconvolved sky** ``SR``.
+Every source supervises that single estimate through its own
+instrument's forward operator, so the objective is consistent across
+sources (no source pulls ``SR`` toward a PSF-blurred image). The trainer
+drives this via two batch formats, dispatched on ``lane_counts`` in
+:meth:`Trainer.train`:
 
-  * 2-tuple ``(lr, hr)`` — the pre-existing supervised path. Used by
-    ``scripts/run_pipeline.py``, ``cli/main.py``, the web inference
-    helpers, etc. Loss = ``MeanAbsoluteError(sr, hr)``.
-  * 3-tuple ``(lr, hr, source)`` — emitted when the dataset is built
-    with ``with_source_tag=True``. ``source`` is a per-example int32
-    tensor; the trainer routes the loss per element:
+  * 2-tuple ``(lr, hr)`` with ``lane_counts=None`` — the pure-supervised
+    path (``|SR - hr|``). Used by ``scripts/run_pipeline.py``,
+    ``cli/main.py``, the web inference helpers, and every validation
+    stream. → :meth:`train_step`.
+  * 2-tuple ``(lr, hr)`` with ``lane_counts=(n_syn, n_hst, n_rt)`` — a
+    **fixed contiguous layout** batch (first ``n_syn`` synthetic, then
+    ``n_hst`` HST, then ``n_rt`` round-trip), produced by
+    :meth:`MultiBandEuclidDataset.dataset_fixed_layout`. →
+    :meth:`train_step_sky`, which slices each lane by its static count
+    and applies that lane's forward op:
 
-      - ``SOURCE_SYNTHETIC`` / ``SOURCE_HST``: supervised L1
-        (``|sr - hr|`` in asinh space, as before).
-      - ``SOURCE_ROUNDTRIP``: self-supervised reconstruction
-        ``|asinh(Conv(inverse_asinh(sr)) / k) - lr_vis|`` — the
-        synthetic forward op (PSF + 2× sum-rebin, deterministic, no
-        noise) takes the model's HR prediction back down to LR and
-        compares against the input LR's VIS channel.
+      - synthetic — ``|SR - scene|`` (direct; the clean target is the sky).
+      - HST       — ``|asinh(H ⊛ SR) - HST_image|`` (HST F814W PSF, no rebin).
+      - round-trip— ``|asinh(rebin(E ⊛ SR)) - LR_vis|`` (VIS PSF + 2× rebin).
 
-The split is per *example*, not per batch: a single batch can carry a
-mix of supervised + round-trip examples, and gradients are computed in
-one tape pass.
+The split is by fixed *position* (static Python-int slices), not a
+per-example ``tf.where`` mask — so there is no branching and each lane's
+conv is a single batched op over its block.
 """
 import csv
 import os
 import time
 
+import numpy as np
 import tensorflow as tf
 
 from tf_keras.losses import MeanAbsoluteError
@@ -37,7 +42,7 @@ from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.training.data_multiband import (
-    SOURCE_HST, SOURCE_ROUNDTRIP, asinh_stretch_hr, inverse_asinh_stretch_hr,
+    asinh_stretch_hr, inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate
 
@@ -125,11 +130,6 @@ class Trainer:
         self.synthetic_loss_weight = float(synthetic_loss_weight)
         self.hst_loss_weight       = float(hst_loss_weight)
         self.roundtrip_loss_weight = float(roundtrip_loss_weight)
-        # Cache the source-tag constants on the trainer so the
-        # @tf.function below doesn't capture Python ints that'd force a
-        # retrace if their values ever changed.
-        self._source_roundtrip = tf.constant(SOURCE_ROUNDTRIP, dtype=tf.int32)
-        self._source_hst       = tf.constant(SOURCE_HST, dtype=tf.int32)
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -165,6 +165,7 @@ class Trainer:
         hst_valid_dataset=None,
         roundtrip_valid_dataset=None,
         save_best_weights=(1.0, 1.0, 0.0),
+        lane_counts=None,
     ):
         """
         Train the model.
@@ -283,18 +284,19 @@ class Trainer:
         for batch in pbar:
             ckpt.step.assign_add(1)
             step = ckpt.step.numpy()
-            # Backward-compatible dispatch: 2-tuple → supervised-only
-            # (pre-round-trip behaviour, used by run_pipeline.py /
-            # cli/main.py / the web inference helpers); 3-tuple →
-            # mixed source-aware path used by the round-trip trainer.
-            # tf.function specialises on signature, so each branch
-            # compiles independently and the Python-level switch is
-            # free per batch.
-            if isinstance(batch, tuple) and len(batch) == 3:
-                lr, hr, source = batch
-                loss, gnorm = self.train_step_mixed(lr, hr, source)
+            # Dispatch on ``lane_counts``. When None (the pure-supervised
+            # path used by run_pipeline.py / cli/main.py / the web
+            # inference helpers and every validation stream), batches are
+            # plain ``(lr, hr)`` 2-tuples → ``train_step``. When set, the
+            # dataset is a fixed contiguous ``[n_syn | n_hst | n_rt]``
+            # layout → ``train_step_sky``, which slices each lane by its
+            # static count and applies that lane's forward op (no
+            # per-example branching). The counts are Python ints, so the
+            # @tf.function traces once for the run's fixed layout.
+            lr, hr = batch
+            if lane_counts is not None:
+                loss, gnorm = self.train_step_sky(lr, hr, *lane_counts)
             else:
-                lr, hr = batch
                 loss, gnorm = self.train_step(lr, hr)
             loss_mean(loss)
             gnorm_mean(gnorm)
@@ -336,10 +338,21 @@ class Trainer:
                 psnr_raw_hst: object = ""
                 rt_val_psnr:  object = ""
                 if hst_valid_dataset is not None:
-                    hst_metrics  = self.evaluate(
+                    # Consistent with the SR=sky objective: score the HST
+                    # source through the forward op (PSNR between H⊛SR and
+                    # the observed HST image), NOT SR vs the HST image
+                    # directly — the latter would reward HST-PSF blur and
+                    # fight the synthetic/round-trip lanes.
+                    hst_metrics  = self.evaluate_hst(
                         hst_valid_dataset.take(validate_images))
                     psnr_str_hst = float(hst_metrics["psnr_stretched"].numpy())
                     psnr_raw_hst = float(hst_metrics["psnr_raw"].numpy())
+                    # evaluate_hst returns NaN when no HST forward op is
+                    # installed; treat that like "not wired" (empty cell)
+                    # so a NaN can't slip into the composite save-best.
+                    if not np.isfinite(psnr_str_hst):
+                        psnr_str_hst = ""
+                        psnr_raw_hst = ""
                 if roundtrip_valid_dataset is not None:
                     rt_val_psnr = float(self.evaluate_roundtrip(
                         roundtrip_valid_dataset.take(validate_images)))
@@ -475,82 +488,6 @@ class Trainer:
         return loss_value, gnorm
 
     @tf.function
-    def train_step_mixed(self, lr, hr, source):
-        """
-        Source-aware training step for heterogeneous batches.
-
-        Per element of the batch, the loss is chosen from the source tag:
-
-          * ``source ≠ SOURCE_ROUNDTRIP`` → supervised
-            ``|sr - hr|`` (asinh space, ``hr`` is real ground truth).
-          * ``source == SOURCE_ROUNDTRIP`` → round-trip
-            ``|asinh(Conv(inverse_asinh(sr)) / k) - lr_vis|`` (asinh
-            space, ``hr`` is dummy zeros and never enters the loss).
-
-        The two per-example loss vectors are masked + summed, then
-        normalised by the batch size to keep the scalar loss
-        independent of the source mix. ``forward_op`` MUST be set when
-        any round-trip examples can arrive — otherwise the round-trip
-        path silently degrades to comparing ``sr`` against the dummy
-        zeros, which would push the model toward outputting zeros for
-        round-trip-tagged batches.
-
-        Returns
-        -------
-        loss_value, gnorm : tf.Tensor
-            Same semantics as :meth:`train_step`.
-        """
-        with tf.GradientTape() as tape:
-            sr = self.checkpoint.model(lr, training=True)
-
-            # Supervised L1 per example over (H, W, C) → shape [B].
-            # ``reduce_mean`` over the spatial+channel axes keeps the
-            # per-pixel scale comparable to the round-trip term below.
-            sup_per_example = tf.reduce_mean(tf.abs(sr - hr), axis=[1, 2, 3])
-
-            is_rt  = tf.equal(source, self._source_roundtrip)
-            is_hst = tf.equal(source, self._source_hst)
-            is_syn = tf.logical_not(tf.logical_or(is_rt, is_hst))
-
-            if self.forward_op is None:
-                # No forward op installed — fall back to supervised for
-                # *all* examples (dummy HR poisons the round-trip ones,
-                # but the trainer can't compute the round-trip loss
-                # without the op). Caller should configure the op
-                # whenever the dataset is built with roundtrip_fraction>0.
-                base_per_example = sup_per_example
-            else:
-                # Round-trip loss in asinh space (matches the supervised
-                # loss space so the per-example magnitudes are
-                # comparable). The VIS asinh knee on both sides
-                # cancels the stretch's scale dependence.
-                sr_linear        = inverse_asinh_stretch_hr(sr)
-                lr_recon_linear  = self.forward_op(sr_linear)
-                lr_recon_stretch = asinh_stretch_hr(lr_recon_linear)
-                lr_vis           = lr[..., 0:1]
-                rt_per_example   = tf.reduce_mean(
-                    tf.abs(lr_recon_stretch - lr_vis), axis=[1, 2, 3],
-                )
-                base_per_example = tf.where(is_rt, rt_per_example,
-                                            sup_per_example)
-
-            # Per-source weight: each example scaled by the knob matching
-            # its source tag (exactly one mask is 1 per example).
-            weight = (
-                tf.cast(is_syn, tf.float32) * self.synthetic_loss_weight
-                + tf.cast(is_hst, tf.float32) * self.hst_loss_weight
-                + tf.cast(is_rt, tf.float32) * self.roundtrip_loss_weight
-            )
-            loss_value = tf.reduce_mean(weight * base_per_example)
-
-        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
-        self.checkpoint.optimizer.apply_gradients(
-            zip(gradients, self.checkpoint.model.trainable_variables)
-        )
-
-        return loss_value, gnorm
-
     def train_step_sky(self, lr, hr, n_syn: int, n_hst: int, n_rt: int):
         """``SR = deconvolved sky`` step on a fixed-layout batch.
 
@@ -571,7 +508,23 @@ class Trainer:
         (``inverse_asinh`` → conv → ``asinh``). Per-source loss weights
         scale each block. ``hr`` carries the scene / HST image for the
         supervised lanes (dummy for round-trip lanes, never read).
+
+        ``n_syn``/``n_hst``/``n_rt`` are Python ints, so these guards and
+        the slice logic resolve at trace time — a lane is compiled into
+        the graph only when its count is non-zero, and the required
+        forward op must be installed or tracing raises.
         """
+        if n_hst > 0 and self.hst_forward_op is None:
+            raise ValueError(
+                "train_step_sky: n_hst > 0 requires hst_forward_op to be set "
+                "(HSTForwardOp); the HST lane convolves SR with the HST PSF"
+            )
+        if n_rt > 0 and self.forward_op is None:
+            raise ValueError(
+                "train_step_sky: n_rt > 0 requires forward_op to be set "
+                "(EuclidVISForwardOp); the round-trip lane convolves SR with "
+                "the VIS PSF"
+            )
         with tf.GradientTape() as tape:
             sr     = self.checkpoint.model(lr, training=True)   # asinh space
             sr_lin = inverse_asinh_stretch_hr(sr)               # linear electrons
@@ -667,6 +620,46 @@ class Trainer:
                 tf.image.psnr(lr_vis, lr_recon_stretch, max_val=max_val))
             running(batch_psnr)
         return float(running.result().numpy())
+
+    def evaluate_hst(self, hst_dataset) -> dict:
+        """HST-source validation through the forward op (SR=sky-consistent).
+
+        Mirrors the HST training lane: compares ``H ⊛ SR`` to the observed
+        HST image rather than ``SR`` directly. Scoring ``SR`` against the
+        HST image would reward HST-PSF blur and contradict the synthetic /
+        round-trip lanes (which target the deconvolved sky), so the metric
+        must apply the same forward op the loss does. For each ``(lr, hr)``
+        — ``hr`` the observed HST image, asinh-stretched on the 0.05″ grid::
+
+            sr     = model(lr, training=False)
+            sr_lin = inverse_asinh(sr)
+            hconv  = hst_forward_op(sr_lin)        # H ⊛ SR, linear e⁻, HR grid
+            psnr_stretched = PSNR(hr, asinh(hconv), PSNR_PEAK_STRETCHED)
+            psnr_raw       = PSNR(inverse_asinh(hr), hconv, PSNR_PEAK_E)
+
+        Returns ``{"psnr_stretched", "psnr_raw"}`` as set-mean scalar
+        tensors (same keys as :func:`models.common.evaluate`), or NaN
+        tensors when ``hst_forward_op`` is ``None``.
+        """
+        if self.hst_forward_op is None:
+            nan = tf.constant(float("nan"), dtype=tf.float32)
+            return {"psnr_stretched": nan, "psnr_raw": nan}
+        str_mean = Mean()
+        raw_mean = Mean()
+        max_str = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=tf.float32)
+        max_raw = tf.constant(float(Config.PSNR_PEAK_E), dtype=tf.float32)
+        for lr, hr in hst_dataset:
+            sr        = self.checkpoint.model(lr, training=False)
+            sr_lin    = inverse_asinh_stretch_hr(sr)
+            hconv_lin = self.hst_forward_op(sr_lin)
+            hconv_str = asinh_stretch_hr(hconv_lin)
+            str_mean(tf.reduce_mean(
+                tf.image.psnr(hr, hconv_str, max_val=max_str)))
+            hr_lin = inverse_asinh_stretch_hr(hr)
+            raw_mean(tf.reduce_mean(
+                tf.image.psnr(hr_lin, hconv_lin, max_val=max_raw)))
+        return {"psnr_stretched": str_mean.result(),
+                "psnr_raw": raw_mean.result()}
 
     def restore(self):
         """Restore model from checkpoint if available."""
