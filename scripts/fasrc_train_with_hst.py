@@ -43,25 +43,26 @@ from euclid_polish.training.models.wdsr import wdsr
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--steps",        type=int,   default=Config.DEFAULT_TRAIN_STEPS)
-    p.add_argument("--batch-size",   type=int,   default=Config.DEFAULT_BATCH_SIZE)
-    p.add_argument("--hst-fraction", type=float, default=0.10,
-                   help="Fraction of each batch drawn from the HST "
-                        "TFRecord source (0 → identical to current "
-                        "training, 1 → only HST).")
-    p.add_argument("--roundtrip-fraction", type=float, default=0.0,
-                   help="Fraction of each batch drawn from the real "
-                        "Euclid round-trip records "
-                        "($DATA_DIR/images/records_v2_euclid_roundtrip "
-                        "by default). When > 0, the trainer mixes a "
-                        "self-supervised reconstruction loss "
-                        "|asinh(Conv(M(lr))/k) - lr_vis| into the "
-                        "batch for those examples. Requires the VIS "
-                        "PSF FITS at "
-                        "$DATA_DIR/euclid_psf/euclid_psf_VIS.fits "
-                        "(loaded into a TF-graph forward op). "
-                        "``hst_fraction + roundtrip_fraction`` must "
-                        "be ≤ 1; the remainder is synthetic. Default "
-                        "0 keeps pre-round-trip behaviour bit-for-bit.")
+    # Explicit per-lane batch composition for ``Trainer.train_step_sky``.
+    # Each step's batch is the fixed contiguous block layout
+    # ``[n_syn synthetic | n_hst HST | n_rt round-trip]``; the batch size
+    # is just their sum. Counts (not fractions) because the trainer slices
+    # by these exact integers — no rounding, no "fraction rounds to 0 rows"
+    # footgun.
+    p.add_argument("--n-syn", type=int, default=Config.DEFAULT_BATCH_SIZE,
+                   help="Synthetic examples per batch. Must be ≥ 1 "
+                        "(the synthetic lane is always present).")
+    p.add_argument("--n-hst", type=int, default=0,
+                   help="HST examples per batch (SR=sky lane, "
+                        "|asinh(H⊛SR) - HST_image|). 0 disables it. "
+                        "Requires the HST records (--records-hst) and the "
+                        "F814W ePSF.")
+    p.add_argument("--n-rt", type=int, default=0,
+                   help="Round-trip examples per batch (self-supervised "
+                        "|asinh(rebin(E⊛SR)) - lr_vis|). 0 disables it. "
+                        "Requires the round-trip records (--records-roundtrip) "
+                        "and the VIS PSF FITS at "
+                        "$DATA_DIR/euclid_psf/euclid_psf_VIS.fits.")
     p.add_argument("--records-syn",  default=Config.RECORDS_DIR_V2,
                    help="Synthetic TFRecord directory.")
     p.add_argument("--records-hst",
@@ -134,9 +135,8 @@ def main() -> int:
     print(f"  WDSR training with HST + round-trip mix")
     print("=" * 64)
     print(f"  steps              = {args.steps}")
-    print(f"  batch size         = {args.batch_size}")
-    print(f"  HST fraction       = {args.hst_fraction}")
-    print(f"  round-trip fraction= {args.roundtrip_fraction}")
+    print(f"  batch layout       = syn {args.n_syn} / hst {args.n_hst} / "
+          f"rt {args.n_rt}  (batch {args.n_syn + args.n_hst + args.n_rt})")
     print(f"  synthetic records  = {args.records_syn}")
     print(f"  HST records        = {args.records_hst}")
     print(f"  round-trip records = {args.records_roundtrip}")
@@ -151,36 +151,20 @@ def main() -> int:
         print(f"\nRUNTIME_SECONDS={time.time() - t0:.1f}")
         return 0
 
-    use_roundtrip = args.roundtrip_fraction > 0
-    use_hst       = args.hst_fraction > 0
-
-    # Fixed contiguous batch layout for ``Trainer.train_step_sky``. Each
-    # batch is ``[n_syn synthetic | n_hst HST | n_rt round-trip]`` with
-    # these exact per-lane counts, derived from the batch size and the
-    # fraction knobs. A requested lane that rounds to 0 rows is a
-    # misconfiguration (the batch is too small for that fraction) — fail
-    # loudly rather than silently never training it.
-    batch_size = int(args.batch_size)
-    n_hst = round(batch_size * float(args.hst_fraction)) if use_hst else 0
-    n_rt  = round(batch_size * float(args.roundtrip_fraction)) if use_roundtrip else 0
-    n_syn = batch_size - n_hst - n_rt
-    if use_hst and n_hst == 0:
-        raise SystemExit(
-            f"hst_fraction={args.hst_fraction} rounds to 0 rows at "
-            f"batch_size={batch_size}; raise the batch size or the fraction"
-        )
-    if use_roundtrip and n_rt == 0:
-        raise SystemExit(
-            f"roundtrip_fraction={args.roundtrip_fraction} rounds to 0 rows "
-            f"at batch_size={batch_size}; raise the batch size or the fraction"
-        )
+    # Explicit per-lane batch composition. The batch is the fixed
+    # contiguous layout ``[n_syn | n_hst | n_rt]``; batch_size is their sum.
+    n_syn = int(args.n_syn)
+    n_hst = int(args.n_hst)
+    n_rt  = int(args.n_rt)
+    if min(n_syn, n_hst, n_rt) < 0:
+        raise SystemExit("--n-syn / --n-hst / --n-rt must be ≥ 0")
     if n_syn < 1:
-        raise SystemExit(
-            f"hst+roundtrip fractions leave no synthetic rows at "
-            f"batch_size={batch_size} (n_syn={n_syn}); lower the fractions"
-        )
-    fixed_layout = use_hst or use_roundtrip
-    lane_counts  = (n_syn, n_hst, n_rt) if fixed_layout else None
+        raise SystemExit("--n-syn must be ≥ 1 (the synthetic lane is always on)")
+    use_hst       = n_hst > 0
+    use_roundtrip = n_rt > 0
+    fixed_layout  = use_hst or use_roundtrip
+    batch_size    = n_syn + n_hst + n_rt
+    lane_counts   = (n_syn, n_hst, n_rt) if fixed_layout else None
 
     # Two dataset instances — one for training, one for validation. HST
     # and round-trip sources are only mixed into training; validation
@@ -189,16 +173,16 @@ def main() -> int:
     # the synthetic PSNR computation.
     reporter.set_stage("building datasets")
     if fixed_layout:
-        print(f"      fixed batch layout: syn={n_syn} hst={n_hst} rt={n_rt}")
+        print(f"      fixed batch layout: syn={n_syn} hst={n_hst} rt={n_rt} "
+              f"(batch={batch_size})")
         train_dataset = MultiBandEuclidDataset(
             subset="train",
             records_dir=args.records_syn,
             hst_records_dir=args.records_hst if use_hst else None,
-            hst_fraction=float(args.hst_fraction),
             roundtrip_records_dir=args.records_roundtrip if use_roundtrip else None,
-            roundtrip_fraction=float(args.roundtrip_fraction),
         ).dataset_fixed_layout(n_syn, n_hst, n_rt, random_transform=True)
     else:
+        print(f"      pure-synthetic batch: {batch_size}")
         train_dataset = MultiBandEuclidDataset(
             subset="train",
             records_dir=args.records_syn,
@@ -206,7 +190,7 @@ def main() -> int:
     valid_dataset = MultiBandEuclidDataset(
         subset="validate",
         records_dir=args.records_syn,
-    ).dataset(batch_size=int(args.batch_size), random_transform=False,
+    ).dataset(batch_size=batch_size, random_transform=False,
               repeat_count=1)
 
     # Additive multi-source validation datasets. These never influence
@@ -216,12 +200,12 @@ def main() -> int:
     # Both are built leniently — a missing split logs a note and yields
     # None rather than aborting the run.
     hst_valid_dataset = None
-    if args.hst_fraction > 0:
+    if use_hst:
         try:
             hst_valid_dataset = MultiBandEuclidDataset(
                 subset="validate",
                 records_dir=args.records_hst,
-            ).dataset(batch_size=int(args.batch_size),
+            ).dataset(batch_size=batch_size,
                       random_transform=False, repeat_count=1)
         except FileNotFoundError:
             print("  note: no HST validate split found — "
@@ -232,7 +216,7 @@ def main() -> int:
         rt_dirty = tfrecord_path(args.records_roundtrip, "dirty_validate")
         if os.path.exists(rt_dirty):
             roundtrip_valid_dataset = lr_only_dataset(
-                rt_dirty, batch_size=int(args.batch_size))
+                rt_dirty, batch_size=batch_size)
         else:
             print("  note: no round-trip dirty_validate.tfrecord found — "
                   "skipping round-trip validation logging")

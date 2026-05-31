@@ -200,19 +200,19 @@ large cutout don't leak across train/validate."></label>`;
     return `
       <label>Training steps
         <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
-      <label>Batch size
-        <input type="number" name="batch_size" value="4" min="1" max="64"
-               title="Examples per step at HR-crop 192 / LR-crop 96. 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (32–64) to raise GPU utilisation — watch the live GPU gauge. NOTE fixed-layout constraint: batch × each non-zero fraction must round to ≥1 row, or the job aborts."></label>
+      <label># synthetic / batch
+        <input type="number" name="n_syn" value="4" min="1" max="256"
+               title="Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_rt] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge."></label>
+      <label># HST / batch
+        <input type="number" name="n_hst" value="0" min="0" max="256"
+               title="HST examples per batch — the SR=sky lane |asinh(H⊛SR) − HST_image|. 0 disables it. Needs the HST records (records_v2_hst) + the F814W ePSF. A whole integer, so no rounding surprises: e.g. 1 HST per 4 synthetic = 20% HST."></label>
+      <label># round-trip / batch
+        <input type="number" name="n_rt" value="0" min="0" max="256"
+               title="Round-trip examples per batch — self-supervised |asinh(rebin(E⊛SR)) − lr_vis|. 0 disables it. Needs the round-trip records + the VIS PSF FITS."></label>
       <label>Learning rate
         <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
                placeholder="blank = 1e-3→5e-4 schedule"
                title="Constant Adam LR for the whole run (e.g. 0.001). Leave blank for the default two-phase schedule 1e-3 → 5e-4 at steps//2. Constant is simpler for an exploratory restart; the decay gives a slightly sharper final result. Scale up with a larger batch."></label>
-      <label>HST fraction
-        <input type="number" name="hst_fraction" value="0.1" step="0.05" min="0" max="1"
-               title="Share of each batch drawn from HST records. Trains |H⊛SR − HST_image| (SR=sky). Fixed layout: n_hst = round(batch × this) and must be ≥1 — e.g. batch 4 needs fraction ≥ 0.25, batch 32 allows 0.03+. 0 disables the HST lane."></label>
-      <label>Round-trip fraction
-        <input type="number" name="roundtrip_fraction" value="0" step="0.05" min="0" max="1"
-               title="Share of each batch drawn from real-Euclid round-trip records. Trains |E⊛SR − LR_vis| (cycle consistency). Same ≥1-row rule: round(batch × this) must be ≥1. 0 disables the round-trip lane."></label>
       <label>Loss weight · synthetic
         <input type="number" name="synthetic_loss_weight" value="1" step="0.5" min="0" max="100"
                title="Per-example TRAINING-loss multiplier for synthetic records. 1 = default; raise to up-weight that source's gradient, 0 to ablate (kept in the batch mix but zero gradient)."></label>
@@ -578,28 +578,22 @@ large cutout don't leak across train/validate."></label>`;
         `Change Partition to "gpu" (or "gpu_test" for short jobs) ` +
         `before submitting.\n`;
     }
-    // Fixed-layout batch sanity for the train step: each non-zero source
-    // fraction must yield ≥1 row at this batch size, and synthetic rows
-    // must remain — otherwise fasrc_train_with_hst.py aborts at startup.
+    // Fixed-layout batch sanity for the train step: the synthetic lane
+    // must have ≥1 row (it's always on) and the total batch must be ≥1.
     if (stepId === 'train') {
-      const bs = parseInt(body.get('batch_size') ?? '0', 10);
-      const hf = parseFloat(body.get('hst_fraction') ?? '0') || 0;
-      const rf = parseFloat(body.get('roundtrip_fraction') ?? '0') || 0;
-      const nHst = Math.round(bs * hf);
-      const nRt  = Math.round(bs * rf);
-      const nSyn = bs - nHst - nRt;
-      const issues = [];
-      if (hf > 0 && nHst < 1)
-        issues.push(`HST fraction ${hf} × batch ${bs} rounds to 0 HST rows`);
-      if (rf > 0 && nRt < 1)
-        issues.push(`round-trip fraction ${rf} × batch ${bs} rounds to 0 rows`);
-      if (Number.isFinite(nSyn) && nSyn < 1)
-        issues.push(`no synthetic rows left (n_syn=${nSyn})`);
-      if (issues.length) {
+      const nSyn = parseInt(body.get('n_syn') ?? '0', 10) || 0;
+      const nHst = parseInt(body.get('n_hst') ?? '0', 10) || 0;
+      const nRt  = parseInt(body.get('n_rt')  ?? '0', 10) || 0;
+      if (nSyn < 1) {
         warning +=
-          `\n⚠️  WARNING: fixed batch layout problem — ${issues.join('; ')}. ` +
-          `The job aborts at startup. Raise the batch size or adjust the ` +
-          `fraction(s) so batch × fraction ≥ 1.\n`;
+          `\n⚠️  WARNING: # synthetic = ${nSyn}, but the synthetic lane is ` +
+          `always required (≥ 1). The job aborts at startup.\n`;
+      } else {
+        // Friendly confirmation of the resulting batch composition.
+        const batch = nSyn + nHst + nRt;
+        warning +=
+          `\nBatch layout: ${nSyn} synthetic + ${nHst} HST + ${nRt} ` +
+          `round-trip = batch ${batch}.\n`;
       }
     }
     const msg =

@@ -661,10 +661,12 @@ class HSTTrainStep(FASRCPipelineStep):
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         steps               = int(params.get("steps", 400_000))
-        batch_size          = int(params.get("batch_size",
-                                              Config.DEFAULT_BATCH_SIZE))
-        hst_fraction        = float(params.get("hst_fraction", 0.1))
-        roundtrip_fraction  = float(params.get("roundtrip_fraction", 0.0))
+        # Explicit per-lane batch composition (the batch is their sum). The
+        # synthetic lane is always present; HST / round-trip lanes are on
+        # only when their count > 0.
+        n_syn               = int(params.get("n_syn", Config.DEFAULT_BATCH_SIZE))
+        n_hst               = int(params.get("n_hst", 0) or 0)
+        n_rt                = int(params.get("n_rt", 0) or 0)
         w_syn               = float(params.get("save_best_w_syn", 1.0))
         w_hst               = float(params.get("save_best_w_hst", 1.0))
         w_rt                = float(params.get("save_best_w_rt", 0.0))
@@ -676,23 +678,23 @@ class HSTTrainStep(FASRCPipelineStep):
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
-            "--batch-size", str(batch_size),
-            "--hst-fraction", f"{hst_fraction:g}",
+            "--n-syn", str(n_syn),
             "--save-best-w-syn", f"{w_syn:g}",
             "--save-best-w-hst", f"{w_hst:g}",
             "--save-best-w-rt",  f"{w_rt:g}",
             "--synthetic-loss-weight", f"{lw_syn:g}",
-            "--hst-loss-weight",       f"{lw_hst:g}",
         ]
         # Constant LR only when explicitly set; blank/0 keeps the default
         # decay schedule so an unspecified submit stays byte-identical.
         if learning_rate > 0:
             cmd += ["--learning-rate", f"{learning_rate:g}"]
-        # Only emit the round-trip flags when the path is on, so a
-        # supervised-only submission stays byte-identical.
-        if roundtrip_fraction > 0:
+        # Emit a lane's flags only when its count > 0, so a supervised-only
+        # submission stays minimal.
+        if n_hst > 0:
+            cmd += ["--n-hst", str(n_hst), "--hst-loss-weight", f"{lw_hst:g}"]
+        if n_rt > 0:
             cmd += [
-                "--roundtrip-fraction", f"{roundtrip_fraction:g}",
+                "--n-rt", str(n_rt),
                 "--roundtrip-loss-weight", f"{lw_rt:g}",
                 "--forward-op-crop-half", str(fwd_crop),
             ]

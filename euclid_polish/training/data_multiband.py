@@ -177,26 +177,27 @@ class MultiBandEuclidDataset:
             records_dir, subset,
         )
 
-        # Secondary HST source: optional. When the directory exists and
-        # ``hst_fraction > 0``, ``dataset()`` interleaves the two streams.
+        # Secondary HST source: optional. Resolved whenever a records dir
+        # is given; ``dataset_fixed_layout`` decides per-run whether to use
+        # it (via its ``n_hst`` count). ``hst_fraction`` is retained only
+        # for the constructor's ≤1 sum-validation and back-compat callers.
         self.hst_clean_file: Optional[str] = None
         self.hst_dirty_file: Optional[str] = None
-        if hst_records_dir is not None and self.hst_fraction > 0:
+        if hst_records_dir is not None:
             try:
                 self.hst_clean_file, self.hst_dirty_file = self._resolve_pair(
                     hst_records_dir, subset,
                 )
             except FileNotFoundError:
-                # Fall back to single-source cleanly — better to keep
-                # training than to abort with a missing-records error.
+                # Fall back cleanly — better to surface "no HST records"
+                # at dataset_fixed_layout than to abort construction.
                 self.hst_clean_file = None
                 self.hst_dirty_file = None
 
         # Tertiary round-trip source: LR-only, no clean/HR side. Resolve
-        # only the dirty file. Same lenient fallback as HST so a missing
-        # tertiary doesn't kill the training run.
+        # only the dirty file. Same lenient fallback as HST.
         self.roundtrip_dirty_file: Optional[str] = None
-        if roundtrip_records_dir is not None and self.roundtrip_fraction > 0:
+        if roundtrip_records_dir is not None:
             rt_dirty = tfrecord_path(roundtrip_records_dir, f"dirty_{subset}")
             if _os.path.exists(rt_dirty):
                 self.roundtrip_dirty_file = rt_dirty
