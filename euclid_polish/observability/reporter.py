@@ -177,6 +177,22 @@ class Reporter:
             "label":     str(label),
         }, echo=False)
 
+    def sample_resources(self, sample: dict) -> None:
+        """Emit one resource-utilisation sample (CPU%% / GPU%% / GPU mem%%).
+
+        ``sample`` is a flat dict with any of ``cpu``, ``gpu``,
+        ``gpu_mem``, ``gpu_mem_used_mb``, ``gpu_mem_total_mb`` (a
+        CPU-only node emits just ``{"cpu": ...}``). High-frequency and
+        machine-only, so ``echo=False`` — it never touches ``.err``. The
+        web consumer folds a smoothed live gauge; the post-mortem
+        summarises mean/peak into the job log. Empty samples are dropped.
+        Produced by
+        :class:`euclid_polish.observability.resource_sampler.ResourceSampler`.
+        """
+        if not sample:
+            return
+        self._emit("resource", dict(sample), echo=False)
+
     def warn(self, msg: str) -> None:
         """Append a warning to the structured stream and to stderr."""
         self._emit("warn", str(msg), echo=True, stderr_prefix="WARN")

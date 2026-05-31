@@ -19,6 +19,11 @@
   </div>
   <progress class="js-progress" max="1" value="0" hidden></progress>
 
+  {# Live GPU / CPU utilisation (smoothed). Populated by JobStatusCard
+     from the folded ``resource`` samples; stays hidden until the first
+     sample arrives. #}
+  <div class="js-resources job-status-resources" hidden></div>
+
   <details class="job-status-warnings">
     <summary>Warnings (<span class="js-warn-count">0</span>)</summary>
     <ul class="js-warn-list event-list"></ul>

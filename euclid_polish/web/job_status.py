@@ -97,6 +97,54 @@ class ParallelProgress:
 #: seconds, during which a worker emits nothing).
 _PARALLEL_ACTIVE_WINDOW_S = 60.0
 
+#: How many of the most recent samples the "live" gauge averages over —
+#: the smoothing the user sees so a single spiky reading doesn't make the
+#: number jump. 6 samples ≈ the last minute at the sampler's 10 s cadence.
+_RESOURCE_SMOOTH_WINDOW = 6
+#: Cap on the per-metric series handed to the UI sparkline; the newest
+#: points are kept. Bounds the status payload on a multi-hour job.
+_RESOURCE_SERIES_CAP = 60
+
+
+@dataclass(frozen=True)
+class ResourceUsage:
+    """CPU + GPU utilisation folded from the ``resource`` sample stream.
+
+    ``*_percent`` are the *smoothed live* values (mean of the last
+    :data:`_RESOURCE_SMOOTH_WINDOW` samples) the card shows ticking; the
+    ``*_mean`` / ``*_peak`` aggregates span the whole run and feed the
+    post-mortem. ``cpu_series`` / ``gpu_series`` are the recent raw
+    samples for a sparkline. Any metric absent from the stream (e.g. GPU
+    on a CPU-only job) stays ``None`` / empty.
+    """
+
+    cpu_percent:     Optional[float]   = None
+    gpu_percent:     Optional[float]   = None
+    gpu_mem_percent: Optional[float]   = None
+    cpu_mean:        Optional[float]   = None
+    cpu_peak:        Optional[float]   = None
+    gpu_mean:        Optional[float]   = None
+    gpu_peak:        Optional[float]   = None
+    gpu_mem_peak:    Optional[float]   = None
+    n_samples:       int               = 0
+    cpu_series:      Tuple[float, ...] = ()
+    gpu_series:      Tuple[float, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cpu_percent":     self.cpu_percent,
+            "gpu_percent":     self.gpu_percent,
+            "gpu_mem_percent": self.gpu_mem_percent,
+            "cpu_mean":        self.cpu_mean,
+            "cpu_peak":        self.cpu_peak,
+            "gpu_mean":        self.gpu_mean,
+            "gpu_peak":        self.gpu_peak,
+            "gpu_mem_peak":    self.gpu_mem_peak,
+            "n_samples":       int(self.n_samples),
+            "cpu_series":      list(self.cpu_series),
+            "gpu_series":      list(self.gpu_series),
+        }
+
 
 @dataclass(frozen=True)
 class StageEvent:
@@ -134,6 +182,10 @@ class JobStatus:
     #: cumulative (current/total) so the progress bar + rate/ETA work
     #: unchanged; ``parallel`` adds the live worker count.
     parallel:     Optional[ParallelProgress] = None
+    #: Smoothed live CPU/GPU utilisation + run aggregates, folded from the
+    #: ``resource`` sample stream. ``None`` when the job emitted no samples
+    #: (older scripts, or one that didn't start the ResourceSampler).
+    resources:    Optional[ResourceUsage]  = None
     warnings:     Tuple[Event, ...]        = ()
     errors:       Tuple[Event, ...]        = ()
     #: When the events file was last fetched (server clock). Lets the
@@ -152,6 +204,7 @@ class JobStatus:
             "step_rate_per_s": self.step_rate_per_s,
             "step_eta_s":      self.step_eta_s,
             "parallel":        self.parallel.to_dict() if self.parallel else None,
+            "resources":       self.resources.to_dict() if self.resources else None,
             "warnings":        [w.to_dict() for w in self.warnings],
             "errors":          [e.to_dict() for e in self.errors],
             "last_fetched":    float(self.last_fetched),
@@ -191,6 +244,12 @@ def fold_events(text: str) -> JobStatus:
     parallel_workers: int = 0
     by_worker: Dict[str, Tuple[float, int, int, Any]] = {}
     parallel_history: List[Tuple[float, int, int]] = []
+
+    # Resource-utilisation samples (CPU/GPU). Kept as separate per-metric
+    # series because a CPU-only job emits ``cpu`` without ``gpu``.
+    res_cpu:     List[float] = []
+    res_gpu:     List[float] = []
+    res_gpu_mem: List[float] = []
 
     for raw in text.splitlines():
         raw = raw.strip()
@@ -252,6 +311,14 @@ def fold_events(text: str) -> JobStatus:
             cumulative = sum(v[1] for v in by_worker.values())
             grand = parallel_total or sum(v[2] for v in by_worker.values())
             parallel_history.append((ts_f, cumulative, grand))
+        elif kind == "resource" and isinstance(value, dict):
+            for key, bucket in (("cpu", res_cpu), ("gpu", res_gpu),
+                                ("gpu_mem", res_gpu_mem)):
+                if key in value:
+                    try:
+                        bucket.append(float(value[key]))
+                    except (TypeError, ValueError):
+                        pass
         elif kind == "warn" and isinstance(value, str):
             warnings.append(Event(ts=ts_f, msg=value))
         elif kind == "error" and isinstance(value, str):
@@ -310,6 +377,33 @@ def fold_events(text: str) -> JobStatus:
             remaining = max(0, last_tot - last_cur)
             step_eta_s = remaining * ema_spp
 
+    # Resource utilisation: smoothed live value (last-N mean) + run
+    # aggregates (mean/peak) + a capped recent series for the sparkline.
+    def _smooth(xs: List[float]) -> Optional[float]:
+        if not xs:
+            return None
+        tail = xs[-_RESOURCE_SMOOTH_WINDOW:]
+        return sum(tail) / len(tail)
+
+    def _mean(xs: List[float]) -> Optional[float]:
+        return (sum(xs) / len(xs)) if xs else None
+
+    resources: Optional[ResourceUsage] = None
+    if res_cpu or res_gpu:
+        resources = ResourceUsage(
+            cpu_percent=_smooth(res_cpu),
+            gpu_percent=_smooth(res_gpu),
+            gpu_mem_percent=_smooth(res_gpu_mem),
+            cpu_mean=_mean(res_cpu),
+            cpu_peak=max(res_cpu) if res_cpu else None,
+            gpu_mean=_mean(res_gpu),
+            gpu_peak=max(res_gpu) if res_gpu else None,
+            gpu_mem_peak=max(res_gpu_mem) if res_gpu_mem else None,
+            n_samples=max(len(res_cpu), len(res_gpu)),
+            cpu_series=tuple(res_cpu[-_RESOURCE_SERIES_CAP:]),
+            gpu_series=tuple(res_gpu[-_RESOURCE_SERIES_CAP:]),
+        )
+
     return JobStatus(
         stage=stage,
         stages=tuple(stages),
@@ -317,6 +411,7 @@ def fold_events(text: str) -> JobStatus:
         step_rate_per_s=step_rate_per_s,
         step_eta_s=step_eta_s,
         parallel=parallel,
+        resources=resources,
         warnings=tuple(warnings),
         errors=tuple(errors),
         last_fetched=time.time(),

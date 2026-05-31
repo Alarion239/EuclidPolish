@@ -30,6 +30,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import (
     MultiBandEuclidDataset, lr_only_dataset,
@@ -288,20 +289,23 @@ def main() -> int:
 
     print(f"      save-best weights: syn={args.save_best_w_syn:g}, "
           f"hst={args.save_best_w_hst:g}, rt={args.save_best_w_rt:g}")
-    trainer.train(
-        train_dataset, valid_dataset, steps=int(args.steps),
-        evaluate_every=int(args.evaluate_every),
-        save_best_only=True,
-        step_callback=_on_train_step,
-        hst_valid_dataset=hst_valid_dataset,
-        roundtrip_valid_dataset=roundtrip_valid_dataset,
-        save_best_weights=(
-            float(args.save_best_w_syn),
-            float(args.save_best_w_hst),
-            float(args.save_best_w_rt),
-        ),
-        lane_counts=lane_counts,
-    )
+    # Sample GPU + CPU utilisation through training so the WebUI shows a
+    # live smoothed gauge and the post-mortem records mean/peak.
+    with ResourceSampler(reporter):
+        trainer.train(
+            train_dataset, valid_dataset, steps=int(args.steps),
+            evaluate_every=int(args.evaluate_every),
+            save_best_only=True,
+            step_callback=_on_train_step,
+            hst_valid_dataset=hst_valid_dataset,
+            roundtrip_valid_dataset=roundtrip_valid_dataset,
+            save_best_weights=(
+                float(args.save_best_w_syn),
+                float(args.save_best_w_hst),
+                float(args.save_best_w_rt),
+            ),
+            lane_counts=lane_counts,
+        )
 
     runtime = time.time() - t0
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")

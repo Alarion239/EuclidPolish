@@ -50,6 +50,7 @@ from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psfs
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.multiband_forward import (
     MultiBandForward, MultiBandForwardConfig,
@@ -147,6 +148,10 @@ def step_generate(args: argparse.Namespace) -> None:
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).
     # One cumulative bar across train + validate.
     reporter = Reporter.from_env()
+    # Sample CPU (and GPU, if the train step runs on one) through the whole
+    # pipeline so the WebUI shows live utilisation — confirms the parallel
+    # generate workers are actually busy. Daemon thread; dies at exit.
+    ResourceSampler(reporter).start()
     reporter.set_stage("generating clean HR fields")
     grand_total = int(args.ntrain) + int(args.nvalid)
     done = 0

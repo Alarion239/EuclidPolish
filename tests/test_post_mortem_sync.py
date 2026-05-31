@@ -264,3 +264,50 @@ class TestSyncPendingOnConnect:
         assert fasrc_jobs.sync_pending_on_connect(
             ssh, db=db, job_log=job_log,
         ) == {}
+
+
+# ---------------------------------------------------------------------------
+# Resource-utilisation post-mortem (GPU/CPU folded from the events stream)
+# ---------------------------------------------------------------------------
+
+_RES_EVENTS = (
+    '{"ts":1,"kind":"resource","value":{"gpu":40.0,"gpu_mem":30.0,"cpu":80.0}}\n'
+    '{"ts":2,"kind":"resource","value":{"gpu":60.0,"gpu_mem":50.0,"cpu":90.0}}\n'
+)
+
+
+class TestResourcePostMortem:
+
+    def test_fetch_resource_summary_folds_events(self):
+        ssh = _SSHStub({"cat /remote/job.events": (0, _RES_EVENTS, "")})
+        out = fasrc_jobs.fetch_resource_summary(ssh, "/remote/job.events")
+        assert out["gpu_util_mean"] == "50.0"   # (40+60)/2
+        assert out["gpu_util_peak"] == "60.0"
+        assert out["gpu_mem_peak"] == "50.0"
+        assert out["cpu_util_mean"] == "85.0"   # (80+90)/2
+        assert out["cpu_util_peak"] == "90.0"
+
+    def test_summary_empty_without_samples(self):
+        ssh = _SSHStub({"cat ": (0, '{"ts":1,"kind":"stage","value":"x"}\n', "")})
+        assert fasrc_jobs.fetch_resource_summary(ssh, "/x.events") == {}
+
+    def test_summary_empty_when_disconnected(self):
+        ssh = _SSHStub({}, connected=False)
+        assert fasrc_jobs.fetch_resource_summary(ssh, "/x.events") == {}
+
+    def test_refresh_all_records_gpu_util(self, job_log):
+        """refresh_all_post_mortems merges the resource summary into the CSV
+        row alongside the sacct actuals."""
+        job_log.record_submission(JobRecord(
+            jobid="555", state="COMPLETED",
+            events_path="/remote/job.events"))
+        ssh = _SSHStub({
+            "sacct ": (0, _SACCT_DONE, ""),
+            "cat /remote/job.events": (0, _RES_EVENTS, ""),
+        })
+        res = fasrc_jobs.refresh_all_post_mortems(ssh, job_log=job_log)
+        assert res["updated"] == 1
+        r = job_log.get("555")
+        assert r["gpu_util_mean"] == "50.0"
+        assert r["gpu_util_peak"] == "60.0"
+        assert r["cpu_util_peak"] == "90.0"

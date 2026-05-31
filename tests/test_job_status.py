@@ -398,3 +398,56 @@ class TestJobStatusFetcher:
         # Single round-trip per fetch.
         assert len(stub.calls) == 1
         assert "/remote/job.events" in stub.calls[0]
+
+
+# ---------------------------------------------------------------------------
+# fold_events — resource utilisation (GPU/CPU) samples
+# ---------------------------------------------------------------------------
+
+def _res(ts, **kw):
+    return {"ts": ts, "kind": "resource", "value": kw}
+
+
+class TestResourceFold:
+
+    def test_no_resource_events_leaves_resources_none(self):
+        s = fold_events(_jsonl({"ts": 1.0, "kind": "stage", "value": "x"}))
+        assert s.resources is None
+
+    def test_smoothed_live_value_is_recent_mean(self):
+        # 10 samples; the smoothed gauge averages only the last few, so a
+        # low early run doesn't drag the live reading down.
+        evs = [_res(float(i), gpu=10.0) for i in range(5)]
+        evs += [_res(float(5 + i), gpu=90.0) for i in range(6)]
+        s = fold_events(_jsonl(*evs))
+        assert s.resources is not None
+        # Last 6 samples are all 90 → smoothed ≈ 90, not the 10s.
+        assert s.resources.gpu_percent == pytest.approx(90.0, abs=1e-6)
+        # Aggregates span the whole run.
+        assert s.resources.gpu_peak == pytest.approx(90.0)
+        assert s.resources.gpu_mean < 90.0
+        assert s.resources.n_samples == 11
+
+    def test_cpu_only_job_has_no_gpu(self):
+        s = fold_events(_jsonl(_res(1.0, cpu=42.0), _res(2.0, cpu=44.0)))
+        assert s.resources is not None
+        assert s.resources.cpu_percent == pytest.approx(43.0)
+        assert s.resources.gpu_percent is None
+        assert s.resources.gpu_peak is None
+
+    def test_series_capped_and_in_dict(self):
+        evs = [_res(float(i), gpu=float(i % 100), cpu=50.0) for i in range(200)]
+        s = fold_events(_jsonl(*evs))
+        d = s.to_dict()["resources"]
+        assert d is not None
+        assert len(d["gpu_series"]) == 60          # _RESOURCE_SERIES_CAP
+        assert d["cpu_percent"] == pytest.approx(50.0)
+
+    def test_malformed_sample_skipped(self):
+        s = fold_events(_jsonl(
+            _res(1.0, gpu="not-a-number"),
+            _res(2.0, gpu=70.0),
+        ))
+        assert s.resources is not None
+        assert s.resources.gpu_peak == pytest.approx(70.0)
+        assert s.resources.n_samples == 1

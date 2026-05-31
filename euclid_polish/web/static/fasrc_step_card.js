@@ -381,6 +381,7 @@ large cutout don't leak across train/validate."></label>`;
         <th>elapsed</th>
         <th title="CPU efficiency = CPU-time used ÷ (elapsed × allocated CPUs). ~100% means the allocated cores were fully busy; low means cores sat idle.">CPU util</th>
         <th title="Peak resident memory (MaxRSS) vs the memory you requested.">mem util</th>
+        <th title="GPU compute utilisation (mean, with peak) sampled by nvidia-smi during the run. Blank for CPU-only jobs or runs from before GPU sampling.">GPU util</th>
       </tr>`;
     const rowHtml = rows.slice(0, 20).map(r => {
       const st = (r.state || '').toUpperCase();
@@ -413,6 +414,16 @@ large cutout don't leak across train/validate."></label>`;
           ? `${(100 * rssMb / allocMb).toFixed(0)}% (${rssMb.toFixed(0)} MB)`
           : `${rssMb.toFixed(0)} MB`;
       }
+      // GPU utilisation: mean (+ peak) from the run's nvidia-smi samples,
+      // folded into the post-mortem. Blank for CPU-only jobs.
+      const gpuMean = parseFloat(r.gpu_util_mean);
+      const gpuPeak = parseFloat(r.gpu_util_peak);
+      let gpuUtil = '—';
+      if (Number.isFinite(gpuMean)) {
+        gpuUtil = Number.isFinite(gpuPeak)
+          ? `${gpuMean.toFixed(0)}% (peak ${gpuPeak.toFixed(0)}%)`
+          : `${gpuMean.toFixed(0)}%`;
+      }
       return `<tr>
         <td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td>
         <td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td>
@@ -424,6 +435,7 @@ large cutout don't leak across train/validate."></label>`;
         <td>${elapsed}</td>
         <td>${cpuUtil}</td>
         <td>${memUtil}</td>
+        <td>${gpuUtil}</td>
       </tr>`;
     }).join('');
     return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;

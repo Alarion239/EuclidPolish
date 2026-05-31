@@ -49,6 +49,7 @@ class JobStatusCard {
       stage:     root.querySelector(".js-stage"),
       progress:  root.querySelector(".js-progress"),
       stepLabel: root.querySelector(".js-step-label"),
+      resources: root.querySelector(".js-resources"),
       warnList:  root.querySelector(".js-warn-list"),
       errList:   root.querySelector(".js-err-list"),
       rawLog:    root.querySelector(".js-raw-log-body"),
@@ -104,11 +105,17 @@ class JobStatusCard {
    */
   render(status) {
     // Skip the DOM write if nothing meaningful changed since last tick.
+    const r = status.resources;
     const sig = JSON.stringify({
       stage:    status.stage,
       step:     status.step,
       n_warn:   (status.warnings || []).length,
       n_err:    (status.errors   || []).length,
+      // Round so sub-percent jitter doesn't force a DOM write every poll,
+      // but real movement (and the sparkline) still updates.
+      res:      r ? [Math.round(r.gpu_percent), Math.round(r.cpu_percent),
+                     Math.round(r.gpu_mem_percent), (r.gpu_series || []).length]
+                  : null,
     });
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -147,8 +154,67 @@ class JobStatusCard {
       }
     }
 
+    this._renderResources(this.slots.resources, status.resources);
+
     this._renderList(this.slots.warnList, status.warnings, "warn");
     this._renderList(this.slots.errList,  status.errors,   "err");
+  }
+
+  /**
+   * Render the smoothed GPU/CPU utilisation gauges + a GPU sparkline.
+   * Hidden until the first ``resource`` sample arrives.
+   *
+   * @param {HTMLElement} el - the .js-resources slot (may be absent)
+   * @param {Object|null} res - status.resources
+   */
+  _renderResources(el, res) {
+    if (!el) return;
+    if (!res || !res.n_samples) { el.hidden = true; return; }
+    el.hidden = false;
+
+    const pct = v => (v == null || !Number.isFinite(v))
+      ? null : `${v.toFixed(0)}%`;
+    const gauges = [];
+    const gpu = pct(res.gpu_percent);
+    if (gpu !== null) {
+      const peak = pct(res.gpu_peak);
+      const mem  = pct(res.gpu_mem_percent);
+      gauges.push(
+        `<span class="res-gauge" title="GPU compute utilisation `
+        + `(smoothed; peak ${peak ?? '—'}, mem ${mem ?? '—'})">`
+        + `GPU <b>${gpu}</b></span>`);
+      if (mem !== null) {
+        gauges.push(`<span class="res-gauge res-gauge-sub" `
+          + `title="GPU memory utilisation">mem ${mem}</span>`);
+      }
+    }
+    const cpu = pct(res.cpu_percent);
+    if (cpu !== null) {
+      const peak = pct(res.cpu_peak);
+      gauges.push(
+        `<span class="res-gauge" title="Node CPU utilisation `
+        + `(smoothed; peak ${peak ?? '—'})">CPU <b>${cpu}</b></span>`);
+    }
+    const spark = this._sparkline(res.gpu_series && res.gpu_series.length
+      ? res.gpu_series : res.cpu_series);
+    el.innerHTML = gauges.join("")
+      + (spark ? `<span class="res-spark" aria-hidden="true">${spark}</span>` : "");
+  }
+
+  /**
+   * Tiny inline unicode sparkline (0–100%) from a numeric series.
+   * Returns "" for an empty series.
+   */
+  _sparkline(series) {
+    if (!series || !series.length) return "";
+    const blocks = "▁▂▃▄▅▆▇█";
+    // Fixed 0–100 scale so the height reads as absolute utilisation,
+    // not auto-ranged — a flat-low GPU should look low, not full.
+    return series.slice(-40).map(v => {
+      const c = Math.max(0, Math.min(100, v));
+      return blocks[Math.min(blocks.length - 1,
+                             Math.round((c / 100) * (blocks.length - 1)))];
+    }).join("");
   }
 
   _renderList(ul, events, kind) {

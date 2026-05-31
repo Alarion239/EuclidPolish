@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.job_status import fold_events
 from euclid_polish.web.sacct import fetch_sacct_stats
 
 DB_DIR  = fasrc_config.CONFIG_DIR
@@ -649,6 +650,44 @@ def sync_pending_on_connect(
     )
 
 
+def fetch_resource_summary(ssh: Any, events_path: Optional[str]) -> Dict[str, Any]:
+    """Fold a job's ``resource`` samples into post-mortem summary fields.
+
+    ``cat``s the remote events file, folds it (reusing the same
+    :func:`fold_events` the live status uses) and projects the
+    :class:`ResourceUsage` aggregates onto :class:`JobRecord`'s
+    ``gpu_util_*`` / ``gpu_mem_peak`` / ``cpu_util_*`` columns. Returns
+    ``{}`` when SSH is down, the file is missing, or the job emitted no
+    samples — so a job from before this feature simply leaves the columns
+    blank. Percentages are rounded for a tidy CSV.
+    """
+    if not events_path or ssh is None or not ssh.is_connected():
+        return {}
+    try:
+        rc, out, _err = ssh.run(
+            f"cat {events_path} 2>/dev/null || true", timeout=10,
+        )
+    except Exception:
+        return {}
+    if rc != 0 or not out:
+        return {}
+    res = fold_events(out).resources
+    if res is None or res.n_samples == 0:
+        return {}
+
+    def _r(x: Optional[float]) -> Optional[str]:
+        return None if x is None else f"{x:.1f}"
+
+    stats = {
+        "gpu_util_mean": _r(res.gpu_mean),
+        "gpu_util_peak": _r(res.gpu_peak),
+        "gpu_mem_peak":  _r(res.gpu_mem_peak),
+        "cpu_util_mean": _r(res.cpu_mean),
+        "cpu_util_peak": _r(res.cpu_peak),
+    }
+    return {k: v for k, v in stats.items() if v is not None}
+
+
 def refresh_all_post_mortems(
     ssh: Any, *, job_log: Optional[JobLog] = None,
 ) -> Dict[str, Any]:
@@ -676,8 +715,12 @@ def refresh_all_post_mortems(
             stats = fetch_sacct_stats(ssh, jobid)
         except Exception:
             stats = None
-        if stats and target_log.record_post_mortem(jobid, stats):
-            updated += 1
+        if stats:
+            # Fold the events stream's resource samples in alongside the
+            # sacct actuals so the history panel keeps GPU/CPU util.
+            stats.update(fetch_resource_summary(ssh, r.get("events_path")))
+            if target_log.record_post_mortem(jobid, stats):
+                updated += 1
     return {"ok": True, "updated": updated, "total": len(candidates)}
 
 
@@ -781,6 +824,11 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
                 stats = None
             if not stats:
                 continue
+            # Merge the events stream's resource summary (GPU/CPU util)
+            # into the sacct actuals before recording.
+            pm_row = target_log.get(jobid)
+            stats.update(fetch_resource_summary(
+                ssh, pm_row.get("events_path") if pm_row else None))
             # record_post_mortem fills the CSV row's actuals AND its real
             # terminal ``state`` (e.g. CANCELLED / TIMEOUT) from sacct —
             # squeue can't report those, so without this the per-step

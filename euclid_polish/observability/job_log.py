@@ -79,6 +79,17 @@ class JobRecord:
     alloc_gpus:      str = ""
     alloc_memory_mb: str = ""
 
+    # ---- Live resource-utilisation summary (from the events stream) ---
+    # Folded from the job's ``resource`` samples by the post-mortem (see
+    # ``fasrc_jobs.fetch_resource_summary``). Percent. ``cpu_util_*`` are
+    # node-wide CPU% (distinct from ``cpu_efficiency``, which is sacct's
+    # allocated-core efficiency); ``gpu_*`` come from nvidia-smi.
+    gpu_util_mean:   str = ""
+    gpu_util_peak:   str = ""
+    gpu_mem_peak:    str = ""           # peak GPU memory utilisation, %
+    cpu_util_mean:   str = ""
+    cpu_util_peak:   str = ""
+
 
 class JobLog:
     """Append-once-update-many CSV log of every submission.
