@@ -91,6 +91,7 @@ class Trainer:
         synthetic_loss_weight: float = 1.0,
         hst_loss_weight: float = 1.0,
         roundtrip_loss_weight: float = 1.0,
+        nonneg_sr_weight: float = Config.NONNEG_SR_WEIGHT,
     ):
         """
         Initialize the trainer.
@@ -125,6 +126,15 @@ class Trainer:
             gated on ``forward_op`` being set (see above) — without it,
             round-trip examples fall through to the (dummy-HR) supervised
             loss, so configure the op whenever ``roundtrip_fraction > 0``.
+        nonneg_sr_weight : float
+            Weight of the non-negativity penalty ``λ · mean(relu(-SR))``
+            added to every step's loss. SR is the model's single output
+            (the deconvolved sky), shared by all three lanes, so one term
+            on it constrains them all toward physically valid (≥ 0) flux.
+            Penalised in asinh space (scale-matched to the MAE loss). 0
+            disables it. Default ``Config.NONNEG_SR_WEIGHT``. A soft
+            penalty makes negatives rare/small, not impossible — clamp the
+            delivered product for a hard guarantee.
         """
         self.now = None
         self.loss = loss
@@ -135,6 +145,7 @@ class Trainer:
         self.synthetic_loss_weight = float(synthetic_loss_weight)
         self.hst_loss_weight       = float(hst_loss_weight)
         self.roundtrip_loss_weight = float(roundtrip_loss_weight)
+        self.nonneg_sr_weight      = float(nonneg_sr_weight)
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -534,6 +545,7 @@ class Trainer:
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)
+            loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
@@ -542,6 +554,21 @@ class Trainer:
         )
 
         return loss_value, gnorm
+
+    def _add_nonneg_penalty(self, loss_value, sr):
+        """Add ``λ · mean(relu(-SR))`` to ``loss_value`` (no-op when λ=0).
+
+        SR is the model's single output, so this one term — applied to the
+        whole batch's ``sr`` — penalises negativity for every lane at once
+        (synthetic, HST, round-trip all branch from this SR). Penalised in
+        asinh space; ``relu(-sr)`` is 0 where sr ≥ 0 and grows linearly
+        with how negative it is, a constant upward push on negative pixels.
+        ``λ`` is a Python float, so this resolves at trace time.
+        """
+        if self.nonneg_sr_weight > 0:
+            penalty = tf.reduce_mean(tf.nn.relu(-sr))
+            return loss_value + self.nonneg_sr_weight * penalty
+        return loss_value
 
     @tf.function
     def train_step_sky(self, lr, hr, n_syn: int, n_hst: int, n_rt: int):
@@ -606,6 +633,8 @@ class Trainer:
                 per_example.append(self.roundtrip_loss_weight * d)
 
             loss_value = tf.reduce_mean(tf.concat(per_example, axis=0))
+            # One non-negativity penalty on the shared SR covers all lanes.
+            loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)

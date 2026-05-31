@@ -412,6 +412,20 @@ class TestConcreteSteps:
         idx = argv.index("--learning-rate")
         assert float(argv[idx + 1]) == pytest.approx(0.001)
 
+    def test_train_emits_nonneg_sr_weight_when_set(self):
+        # Non-blank → emitted (0 is valid and disables the penalty).
+        for val, expect in ((2.5, 2.5), (0, 0.0)):
+            argv = HSTTrainStep().build_command({"nonneg_sr_weight": val})
+            assert "--nonneg-sr-weight" in argv
+            idx = argv.index("--nonneg-sr-weight")
+            assert float(argv[idx + 1]) == pytest.approx(expect)
+
+    def test_train_omits_nonneg_sr_weight_when_blank(self):
+        # Blank → not emitted (script falls back to Config.NONNEG_SR_WEIGHT).
+        assert "--nonneg-sr-weight" not in HSTTrainStep().build_command({})
+        assert "--nonneg-sr-weight" not in HSTTrainStep().build_command(
+            {"nonneg_sr_weight": ""})
+
     def test_train_omits_learning_rate_when_blank(self):
         # Blank / 0 keeps the default decay schedule — no flag emitted, so an
         # unspecified submit stays byte-identical to before.

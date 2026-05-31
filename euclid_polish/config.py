@@ -444,6 +444,17 @@ class Config:
     # bad-batch spike can't corrupt weights. Set to math.inf to disable.
     GRAD_CLIP_NORM               = 5.0
 
+    # Non-negativity regularisation on SR (the model's deconvolved-sky
+    # output). Surface brightness is physically >= 0, but the WDSR head is
+    # unconstrained, so SR can go slightly negative. A soft penalty
+    # ``λ · mean(relu(-SR))`` (asinh space) added to every step's loss
+    # pushes the model to output >= 0 naturally across all three lanes
+    # (they all branch from the same SR). 0 disables; tune by watching the
+    # validation negative-pixel fraction. A penalty makes negatives
+    # rare/small, not impossible — clamp the delivered product for a hard
+    # guarantee.
+    NONNEG_SR_WEIGHT             = 1.0
+
 
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000

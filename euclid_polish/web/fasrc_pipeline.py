@@ -675,6 +675,7 @@ class HSTTrainStep(FASRCPipelineStep):
         lw_rt               = float(params.get("roundtrip_loss_weight", 1.0))
         fwd_crop            = int(params.get("forward_op_crop_half", 0))
         learning_rate       = float(params.get("learning_rate", 0.0) or 0.0)
+        nonneg_raw          = str(params.get("nonneg_sr_weight", "")).strip()
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
@@ -688,6 +689,11 @@ class HSTTrainStep(FASRCPipelineStep):
         # decay schedule so an unspecified submit stays byte-identical.
         if learning_rate > 0:
             cmd += ["--learning-rate", f"{learning_rate:g}"]
+        # SR non-negativity penalty weight, only when the form provides one
+        # (blank → the script's Config.NONNEG_SR_WEIGHT default). 0 is a
+        # valid value (disables the penalty), so emit on any non-blank.
+        if nonneg_raw != "":
+            cmd += ["--nonneg-sr-weight", f"{float(nonneg_raw):g}"]
         # Emit a lane's flags only when its count > 0, so a supervised-only
         # submission stays minimal.
         if n_hst > 0:

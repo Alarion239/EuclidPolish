@@ -213,6 +213,10 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
                placeholder="blank = 1e-3→5e-4 schedule"
                title="Constant Adam LR for the whole run (e.g. 0.001). Leave blank for the default two-phase schedule 1e-3 → 5e-4 at steps//2. Constant is simpler for an exploratory restart; the decay gives a slightly sharper final result. Scale up with a larger batch."></label>
+      <label>SR non-negativity λ
+        <input type="number" name="nonneg_sr_weight" value="" step="0.5" min="0" max="100"
+               placeholder="blank = config default"
+               title="Weight of the SR non-negativity penalty λ·mean(relu(-SR)) added to the loss. SR is the model's single sky output, so this constrains all three lanes toward physical (≥0) flux at once. Blank = the config default (1.0); 0 disables. Tune by watching the negative-pixel fraction — raise if negatives persist, lower if it flattens faint structure."></label>
       <label>Loss weight · synthetic
         <input type="number" name="synthetic_loss_weight" value="1" step="0.5" min="0" max="100"
                title="Per-example TRAINING-loss multiplier for synthetic records. 1 = default; raise to up-weight that source's gradient, 0 to ablate (kept in the batch mix but zero gradient)."></label>

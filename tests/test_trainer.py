@@ -256,13 +256,15 @@ class TestMixedLayout:
     ):
         """Doubling ``roundtrip_loss_weight`` ~doubles an all-RT loss."""
         op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+        # nonneg_sr_weight=0 so the loss is purely the round-trip term and
+        # the ×2 weight ratio isn't diluted by the additive penalty.
         t1 = Trainer(
             tiny_model, checkpoint_dir=str(tmp_path / "ckpt_w1"),
-            forward_op=op, roundtrip_loss_weight=1.0,
+            forward_op=op, roundtrip_loss_weight=1.0, nonneg_sr_weight=0.0,
         )
         t2 = Trainer(
             tiny_model, checkpoint_dir=str(tmp_path / "ckpt_w2"),
-            forward_op=op, roundtrip_loss_weight=2.0,
+            forward_op=op, roundtrip_loss_weight=2.0, nonneg_sr_weight=0.0,
         )
         lr, _  = _rand_batch()
         hr_dum = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
@@ -281,8 +283,9 @@ class TestPerLaneLossWeights:
 
     def test_zero_synthetic_weight_zeros_loss(self, tiny_model, tmp_path):
         lr, hr = _rand_batch()
+        # nonneg_sr_weight=0 so the loss is purely the (zeroed) lane term.
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "syn0"),
-                    synthetic_loss_weight=0.0)
+                    synthetic_loss_weight=0.0, nonneg_sr_weight=0.0)
         loss, _ = t.train_step_sky(lr, hr, int(lr.shape[0]), 0, 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
@@ -292,7 +295,8 @@ class TestPerLaneLossWeights:
         lr, hr = _rand_batch()
         hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst0"),
-                    hst_forward_op=hst_op, hst_loss_weight=0.0)
+                    hst_forward_op=hst_op, hst_loss_weight=0.0,
+                    nonneg_sr_weight=0.0)
         loss, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
@@ -647,3 +651,58 @@ class TestResumeBaseline:
         base = [r for r in rows if r.get("is_baseline") == "1"][0]
         # ckpt.psnr is never below the measured baseline.
         assert float(t2.checkpoint.psnr.numpy()) >= float(base["save_best_score"]) - 1e-3
+
+
+# ---------------------------------------------------------------------------
+# SR non-negativity penalty (λ · mean(relu(-SR)))
+# ---------------------------------------------------------------------------
+
+class TestNonNegPenalty:
+
+    def test_penalty_math(self, tiny_model, tmp_path):
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "nn"),
+                    nonneg_sr_weight=2.0)
+        sr   = tf.constant([[-1.0, 0.0, 3.0, -2.0]], dtype=tf.float32)
+        base = tf.constant(0.5, dtype=tf.float32)
+        out  = float(t._add_nonneg_penalty(base, sr).numpy())
+        # mean(relu(-sr)) = mean([1, 0, 0, 2]) = 0.75 → 0.5 + 2·0.75 = 2.0
+        assert out == pytest.approx(2.0, abs=1e-6)
+
+    def test_zero_weight_is_noop(self, tiny_model, tmp_path):
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "nn0"),
+                    nonneg_sr_weight=0.0)
+        sr   = tf.constant([[-5.0, -5.0]], dtype=tf.float32)
+        base = tf.constant(1.0, dtype=tf.float32)
+        assert float(t._add_nonneg_penalty(base, sr).numpy()) == pytest.approx(1.0)
+
+    def test_default_weight_from_config(self, tiny_model, tmp_path):
+        from euclid_polish.config import Config as _Cfg
+        t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "nnd"))
+        assert t.nonneg_sr_weight == pytest.approx(float(_Cfg.NONNEG_SR_WEIGHT))
+
+    def test_penalty_drives_sr_less_negative(self, tmp_path):
+        """A few steps with a strong penalty and a ≥0 target reduce the
+        negative part of SR — the model learns to output non-negative."""
+        model = _tiny_wdsr()
+        t = Trainer(model, checkpoint_dir=str(tmp_path / "nn_drive"),
+                    nonneg_sr_weight=10.0)
+        rng = np.random.default_rng(0)
+        lr = tf.constant(rng.normal(size=(4, 8, 8, 4)).astype(np.float32))
+        hr = tf.constant(np.abs(rng.normal(size=(4, 16, 16, 1))).astype(np.float32))
+
+        neg_before = float(tf.reduce_mean(tf.nn.relu(-model(lr))).numpy())
+        for _ in range(40):
+            t.train_step(lr, hr)
+        neg_after = float(tf.reduce_mean(tf.nn.relu(-model(lr))).numpy())
+        if neg_before < 1e-4:
+            pytest.skip("SR already non-negative at init — nothing to drive")
+        assert neg_after < neg_before, (
+            f"penalty did not reduce negativity: {neg_before:.4f} -> {neg_after:.4f}"
+        )
+
+    def test_train_step_sky_runs_with_penalty(self, trainer_with_both_ops):
+        """The penalty term integrates into the composite SR=sky step."""
+        lr, hr = _rand_batch(batch_size=4)
+        loss, gnorm = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
+        assert np.isfinite(float(loss.numpy()))
+        assert np.isfinite(float(gnorm.numpy()))

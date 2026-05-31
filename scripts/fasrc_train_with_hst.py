@@ -100,6 +100,14 @@ def parse_args() -> argparse.Namespace:
                         "for an exploratory restart; the decay gives a "
                         "slightly sharper final result. With a larger batch, "
                         "scale the LR up accordingly.")
+    p.add_argument("--nonneg-sr-weight", type=float,
+                   default=Config.NONNEG_SR_WEIGHT,
+                   help="Weight of the SR non-negativity penalty "
+                        "λ·mean(relu(-SR)) added to every step's loss. SR is "
+                        "the model's single deconvolved-sky output, so this "
+                        "constrains all three lanes toward physical (≥0) "
+                        "flux at once. 0 disables. Default from "
+                        "Config.NONNEG_SR_WEIGHT.")
     p.add_argument("--save-best-w-syn", type=float, default=1.0,
                    help="Weight of synthetic PSNR (dB) in the composite "
                         "save-best score. Default 1.")
@@ -278,6 +286,7 @@ def main() -> int:
         synthetic_loss_weight=float(args.synthetic_loss_weight),
         hst_loss_weight=float(args.hst_loss_weight),
         roundtrip_loss_weight=float(args.roundtrip_loss_weight),
+        nonneg_sr_weight=float(args.nonneg_sr_weight),
     )
     print(f"      total trainable params: "
           f"{sum(int(np.prod(v.shape)) for v in model.trainable_variables):,}")
