@@ -91,6 +91,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt-dir",     default=Config.DEFAULT_CHECKPOINT_DIR)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
+    p.add_argument("--learning-rate", type=float, default=0.0,
+                   help="Constant Adam learning rate for the whole run "
+                        "(e.g. 0.001). 0 (default) uses the two-phase "
+                        "PiecewiseConstantDecay schedule 1e-3 → 5e-4 at "
+                        "steps//2. A constant LR is simpler to reason about "
+                        "for an exploratory restart; the decay gives a "
+                        "slightly sharper final result. With a larger batch, "
+                        "scale the LR up accordingly.")
     p.add_argument("--save-best-w-syn", type=float, default=1.0,
                    help="Weight of synthetic PSNR (dB) in the composite "
                         "save-best score. Default 1.")
@@ -236,10 +244,18 @@ def main() -> int:
         scale=scale, num_res_blocks=args.num_res_blocks,
         nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
     )
-    schedule = PiecewiseConstantDecay(
-        boundaries=[args.steps // 2],
-        values=[1e-3, 5e-4],
-    )
+    # Learning rate: a constant when ``--learning-rate`` is given, else the
+    # two-phase decay (1e-3 → 5e-4 at the half-way step). Adam accepts a
+    # bare float or a schedule object interchangeably.
+    if args.learning_rate and args.learning_rate > 0:
+        schedule = float(args.learning_rate)
+        print(f"      learning rate: constant {schedule:g}")
+    else:
+        schedule = PiecewiseConstantDecay(
+            boundaries=[args.steps // 2],
+            values=[1e-3, 5e-4],
+        )
+        print(f"      learning rate: 1e-3 → 5e-4 at step {args.steps // 2}")
 
     # Forward op only when the round-trip path is on. The PSF kernel is
     # CROPPED (crop_half_side) — the full ~400×400 saved PSF makes

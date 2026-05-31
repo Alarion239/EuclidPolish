@@ -672,6 +672,7 @@ class HSTTrainStep(FASRCPipelineStep):
         lw_hst              = float(params.get("hst_loss_weight", 1.0))
         lw_rt               = float(params.get("roundtrip_loss_weight", 1.0))
         fwd_crop            = int(params.get("forward_op_crop_half", 0))
+        learning_rate       = float(params.get("learning_rate", 0.0) or 0.0)
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
@@ -683,6 +684,10 @@ class HSTTrainStep(FASRCPipelineStep):
             "--synthetic-loss-weight", f"{lw_syn:g}",
             "--hst-loss-weight",       f"{lw_hst:g}",
         ]
+        # Constant LR only when explicitly set; blank/0 keeps the default
+        # decay schedule so an unspecified submit stays byte-identical.
+        if learning_rate > 0:
+            cmd += ["--learning-rate", f"{learning_rate:g}"]
         # Only emit the round-trip flags when the path is on, so a
         # supervised-only submission stays byte-identical.
         if roundtrip_fraction > 0:

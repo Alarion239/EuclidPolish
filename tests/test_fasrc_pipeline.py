@@ -396,6 +396,21 @@ class TestConcreteSteps:
         idx = argv.index("--hst-fraction")
         assert float(argv[idx + 1]) == pytest.approx(0.25)
 
+    def test_train_emits_constant_learning_rate_when_set(self):
+        argv = HSTTrainStep().build_command({"learning_rate": 0.001})
+        assert "--learning-rate" in argv
+        idx = argv.index("--learning-rate")
+        assert float(argv[idx + 1]) == pytest.approx(0.001)
+
+    def test_train_omits_learning_rate_when_blank(self):
+        # Blank / 0 keeps the default decay schedule — no flag emitted, so an
+        # unspecified submit stays byte-identical to before.
+        assert "--learning-rate" not in HSTTrainStep().build_command({})
+        assert "--learning-rate" not in HSTTrainStep().build_command(
+            {"learning_rate": 0})
+        assert "--learning-rate" not in HSTTrainStep().build_command(
+            {"learning_rate": ""})
+
     def test_tfrecords_passes_image_size(self):
         argv = HSTTFRecordStep().build_command({"image_size": 256})
         assert "--image-size" in argv
