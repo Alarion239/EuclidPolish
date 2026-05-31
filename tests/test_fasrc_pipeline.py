@@ -61,14 +61,14 @@ class TestRegistry:
         extract-PSF, kernel, TFRecord generation, WDSR train), the two
         round-trip steps (sky download + LR-only TFRecord build), the two
         Euclid star-cutout steps (per-page cutout download + all-band ePSF
-        extraction), and the four legacy ``run_pipeline.py`` presets."""
+        extraction), and the synthetic generator. The legacy
+        ``run_pipeline.py`` training presets were removed."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "download_euclid_cutouts", "extract_euclid_psf",
             "synthetic_generate",
-            "gen_convolve", "convolve_only", "train_only", "custom",
         }
 
     def test_tfrecords_step_passes_max_relative_noise(self):
@@ -114,11 +114,10 @@ class TestRegistry:
             REGISTRY.get("nonexistent")
 
     def test_gpu_steps_are_the_expected_set(self):
-        """Steps that flip ``needs_gpu=True`` are the HST trainer and
-        the two legacy training-only presets (train_only + custom).
-        Everything else (download, kernel, PSF extract, …) runs on CPU."""
+        """The only GPU step is the HST/WDSR trainer; everything else
+        (download, kernel, PSF extract, synthetic generate, …) is CPU."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train", "train_only", "custom"}
+        assert gpu_steps == {"train"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")

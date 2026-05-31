@@ -86,8 +86,12 @@ def test_training_page_renders(client):
     assert r.status_code == 200
     body = r.data.decode()
     assert "Training" in body
-    assert "Evaluate" in body
-    assert "Plot training log" in body
+    # The single FASRC training card mounts the "train" step.
+    assert 'data-step-id="train"' in body or 'step_id="train"' in body \
+        or "Training on FASRC" in body
+    # Legacy preset + local-training sections were removed.
+    assert "run_pipeline.py</code> presets" not in body
+    assert "Local training (deprecated)" not in body
 
 
 def test_inference_page_renders(client):
@@ -189,12 +193,6 @@ def test_euclid_auth_status_reports_presence(client, monkeypatch):
 
 def test_post_psfs_visualize_returns_job_id(client):
     r = client.post("/psfs/visualize", data={"band": "VIS"})
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
-def test_post_training_plot_log_returns_job_id(client):
-    r = client.post("/training/plot-log", data={"checkpoint_dir": "/tmp/nope"})
     assert r.status_code == 200
     assert "job_id" in r.get_json()
 

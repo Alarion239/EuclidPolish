@@ -702,19 +702,14 @@ class HSTTrainStep(FASRCPipelineStep):
 
 
 # ---------------------------------------------------------------------------
-# ``run_pipeline.py`` presets
+# ``run_pipeline.py`` step base
 # ---------------------------------------------------------------------------
 #
-# The original ``/api/fasrc/submit`` endpoint exposed four canned
-# "presets" (gen_convolve / convolve_only / train_only / custom) that
-# differed in resources and which ``--skip-*`` flags they appended to
-# ``scripts/run_pipeline.py``. They are now :class:`FASRCPipelineStep`
-# subclasses so submission flows through the same render+submit helpers
-# as every other job — one template, one DB write, one log directory.
-#
-# UI compatibility: :func:`fasrc_jobs.PRESETS` derives its dict from
-# these subclasses, so the JS form's preset dropdown keeps working
-# without changes.
+# Shared base for jobs that shell out to ``scripts/run_pipeline.py``. The
+# only surviving concrete step is :class:`SyntheticGenerateStep` (the
+# synthetic training-pair generator). The old four-preset training form
+# (gen_convolve / convolve_only / train_only / custom) was removed —
+# training now goes exclusively through :class:`HSTTrainStep`.
 
 
 @dataclass
@@ -731,17 +726,11 @@ class RunPipelineStep(FASRCPipelineStep):
     #: ``defaults`` field is mutable, but this one is set per-class).
     skip_flags:        Tuple[str, ...] = ()
     #: Whether the UI should show the training-only knob fields
-    #: (n_train / n_valid / image_size / batch_size / steps). The
-    #: convolve presets don't need them; ``train_only`` and ``custom``
-    #: do. Surfaced in :data:`fasrc_jobs.PRESETS` for the JS form.
+    #: (n_train / n_valid / image_size / batch_size / steps).
     needs_train_knobs: bool = True
 
     log_dir_prefix:  ClassVar[str] = "logs/jobs"
     job_name_prefix: ClassVar[str] = "euclid"
-    #: Whether this step appears in the legacy training-form preset
-    #: dropdown (:data:`fasrc_jobs.PRESETS`). Steps with a dedicated step
-    #: card elsewhere (e.g. synthetic_generate on /sky) opt out.
-    in_preset_dropdown: ClassVar[bool] = True
 
     def banner_line(self, label: str) -> str:
         return f"Web-submitted job: {label}"
@@ -773,14 +762,10 @@ class SyntheticGenerateStep(RunPipelineStep):
 
     Renders synthetic clean HR scenes (COSMOS2025 galaxies + stars +
     strong lenses) and forward-models them to dirty Euclid LR with the
-    empirical band PSFs, writing clean + HR + dirty TFRecords. Same
-    ``run_pipeline.py --skip-train`` work the legacy gen_convolve preset
-    does, but surfaced as a dedicated, knob-bearing step card on /sky.
+    empirical band PSFs, writing clean + HR + dirty TFRecords. Runs
+    ``run_pipeline.py --skip-train`` as a dedicated, knob-bearing step
+    card on /sky.
     """
-
-    # Dedicated step card on /sky → keep it out of the legacy training-form
-    # preset dropdown (PRESETS stays the canonical four).
-    in_preset_dropdown: ClassVar[bool] = False
 
     def __init__(self) -> None:
         super().__init__(
@@ -813,85 +798,6 @@ class SyntheticGenerateStep(RunPipelineStep):
         return cmd
 
 
-class GenConvolveStep(RunPipelineStep):
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="gen_convolve",
-            label="Generate + convolve (CPU)",
-            description=(
-                "Render synthetic clean HR scenes and convolve them with "
-                "the Euclid PSF into the dirty LR set. Skips training so "
-                "the run finishes on a CPU partition."
-            ),
-            defaults=StepResources(
-                partition="shared", n_cpus=16, n_gpus=0,
-                memory="64G", time_limit="6:00:00",
-            ),
-            skip_flags=("--skip-train",),
-            needs_train_knobs=False,
-        )
-
-
-class ConvolveOnlyStep(RunPipelineStep):
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="convolve_only",
-            label="Convolve existing clean → dirty (CPU)",
-            description=(
-                "Re-convolve the already-generated clean HR scenes against "
-                "the current PSF / kernel. Skips generation and training."
-            ),
-            defaults=StepResources(
-                partition="shared", n_cpus=8, n_gpus=0,
-                memory="32G", time_limit="2:00:00",
-            ),
-            skip_flags=("--skip-generate", "--skip-train"),
-            needs_train_knobs=False,
-        )
-
-
-class TrainOnlyStep(RunPipelineStep):
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="train_only",
-            label="Train (GPU)",
-            description=(
-                "Train the WDSR model on pre-generated TFRecords. Skips "
-                "scene generation and convolution."
-            ),
-            defaults=StepResources(
-                partition="gpu", n_cpus=4, n_gpus=1,
-                memory="32G", time_limit="24:00:00",
-            ),
-            needs_gpu=True,
-            skip_flags=("--skip-generate", "--skip-convolve"),
-            needs_train_knobs=True,
-        )
-
-
-class CustomTrainStep(RunPipelineStep):
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="custom",
-            label="Custom (use form values, no auto --skip-* flags)",
-            description=(
-                "Use the resource and training knobs straight from the "
-                "form. No ``--skip-*`` flags are added automatically; "
-                "pass them through ``extra_flags`` if you need them."
-            ),
-            # The form's resource fields ultimately override these, so
-            # the defaults here are a sane "fits everything" baseline
-            # rather than a tuned preset.
-            defaults=StepResources(
-                partition="gpu", n_cpus=8, n_gpus=1,
-                memory="32G", time_limit="12:00:00",
-            ),
-            needs_gpu=True,
-            skip_flags=(),
-            needs_train_knobs=True,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
@@ -907,11 +813,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidPSFExtractStep,
     SyntheticGenerateStep,
     HSTTrainStep,
-    # Legacy ``run_pipeline.py`` presets (kept for the existing form).
-    GenConvolveStep,
-    ConvolveOnlyStep,
-    TrainOnlyStep,
-    CustomTrainStep,
 )
 
 

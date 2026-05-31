@@ -331,49 +331,6 @@ def median_runtime_for_step(step_id: str) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Submission presets — view of the legacy ``run_pipeline.py`` step classes
-# ---------------------------------------------------------------------------
-#
-# The form's preset dropdown still expects a flat ``{name: {label,
-# partition, n_gpus, …, skip_flags, needs_train_knobs}}`` dict. Build
-# it from the :class:`RunPipelineStep` instances in the central registry
-# so resource specs live in exactly one place (the step subclasses).
-
-
-def _build_presets() -> Dict[str, Dict[str, Any]]:
-    # Local import — :mod:`fasrc_pipeline` already imports
-    # :mod:`fasrc_config` from this package; pulling it at module
-    # top would close the cycle.
-    from euclid_polish.web.fasrc_pipeline import REGISTRY, RunPipelineStep
-
-    out: Dict[str, Dict[str, Any]] = {}
-    for step in REGISTRY.all():
-        if not isinstance(step, RunPipelineStep):
-            continue
-        if not getattr(step, "in_preset_dropdown", True):
-            continue
-        out[step.step_id] = {
-            "label":             step.label,
-            "partition":         step.defaults.partition,
-            "n_gpus":            int(step.defaults.n_gpus),
-            "n_cpus":            int(step.defaults.n_cpus),
-            "memory":            step.defaults.memory,
-            "time_limit":        step.defaults.time_limit,
-            "skip_flags":        " ".join(step.skip_flags),
-            "needs_train_knobs": bool(step.needs_train_knobs),
-        }
-    return out
-
-
-PRESETS: Dict[str, Dict[str, Any]] = _build_presets()
-
-
-def resolve_preset(name: str) -> Dict[str, Any]:
-    """Return the preset dict for ``name`` (falls back to ``custom``)."""
-    return PRESETS.get(name) or PRESETS["custom"]
-
-
-# ---------------------------------------------------------------------------
 # Submission helper — single SSH-write + sbatch + parse + DB.insert flow
 # ---------------------------------------------------------------------------
 

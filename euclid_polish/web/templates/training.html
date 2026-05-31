@@ -54,80 +54,6 @@
      train the WDSR super-resolver. Output: <code>$CKPT_DIR/wdsr/</code>.</p>
   {% with step_id="train" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
-
-<h2 style="margin-top:24px;">Legacy <code>run_pipeline.py</code> presets</h2>
-<p class="hint">
-  Four canned configurations differing in resources + auto-appended
-  <code>--skip-*</code> flags. Use these for one-off legacy training
-  runs; new work should go through the registered HST-pipeline steps
-  above.
-</p>
-
-<section class="card">
-  <h3>Train (GPU)</h3>
-  {% with step_id="train_only" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
-<section class="card">
-  <h3>Generate + convolve (CPU)</h3>
-  {% with step_id="gen_convolve" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
-<section class="card">
-  <h3>Convolve existing clean → dirty (CPU)</h3>
-  {% with step_id="convolve_only" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
-<section class="card">
-  <h3>Custom (use form values, no auto <code>--skip-*</code> flags)</h3>
-  {% with step_id="custom" %}{% include "_step_card_mount.html" %}{% endwith %}
-</section>
-
-<h2 style="margin-top:24px;">Local training (deprecated)</h2>
-<p class="hint">
-  Runs on this machine via <code>JobRegistry.spawn(...)</code> — kept for
-  smoke tests; prefer the FASRC cards above for real runs.
-</p>
-
-<section class="card">
-  <h3>Train</h3>
-  <form id="train-form" action="/training/train">
-    <label>Steps
-      <input type="number" name="steps" value="{{ default_steps }}" min="100" max="2000000"></label>
-    <label>Batch size
-      <input type="number" name="batch_size" value="{{ default_batch }}" min="1" max="256"></label>
-    <label>Residual blocks
-      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}" min="1" max="64"></label>
-    <label>Evaluate every
-      <input type="number" name="evaluate_every" value="{{ default_eval_every }}" min="1" max="50000"></label>
-    <label>Checkpoint dir
-      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
-    <button type="submit">Start training</button>
-  </form>
-  <div id="train-status"></div>
-</section>
-
-<section class="card">
-  <h3>Evaluate</h3>
-  <form id="eval-form" action="/training/evaluate">
-    <label>Checkpoint dir
-      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
-    <label>Residual blocks
-      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
-    <button type="submit">Evaluate</button>
-  </form>
-  <div id="eval-status"></div>
-</section>
-
-<section class="card">
-  <h3>Plot training log</h3>
-  <form id="plot-form" action="/training/plot-log">
-    <label>Checkpoint dir
-      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
-    <button type="submit">Plot log</button>
-  </form>
-  <div id="plot-status"></div>
-</section>
 {% endblock %}
 
 {% block scripts %}
@@ -138,19 +64,5 @@ polishUI.viz.bind({
   buildUrl:  (sel) => `/view/training-log?checkpoint_dir=./ckpt/wdsr`,
   initial:   { view: "log" },
 });
-
-function bindRun(formId, statusId) {
-  const f = document.getElementById(formId);
-  if (!f) return;
-  f.addEventListener("submit", (e) => {
-    e.preventDefault();
-    polishUI.run(f, document.getElementById(statusId), {
-      onDone: () => polishUI.viz.refresh(),
-    });
-  });
-}
-bindRun("train-form", "train-status");
-bindRun("eval-form",  "eval-status");
-bindRun("plot-form",  "plot-status");
 </script>
 {% endblock %}

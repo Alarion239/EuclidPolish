@@ -302,51 +302,6 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
 # Background-job target functions
 # ---------------------------------------------------------------------------
 
-def _job_train(cap, steps: int, batch_size: int, num_res_blocks: int,
-               evaluate_every: int, checkpoint_dir: str) -> Dict[str, Any]:
-    """Train the WDSR model on the v2 multi-band TFRecords."""
-
-    scale = Config.DEFAULT_REBIN_FACTOR
-    print(f"training: steps={steps}, batch={batch_size}, ckpt={checkpoint_dir}")
-    train = MultiBandEuclidDataset(scale=scale, subset="train").dataset(
-        batch_size=batch_size, random_transform=True,
-    )
-    valid = MultiBandEuclidDataset(scale=scale, subset="validate").dataset(
-        batch_size=1, random_transform=False, repeat_count=1,
-    )
-    model = wdsr(scale=scale, num_res_blocks=num_res_blocks,
-                 nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS)
-    schedule = PiecewiseConstantDecay(boundaries=[200_000], values=[1e-3, 5e-4])
-    trainer = Trainer(model=model, learning_rate=schedule,
-                      checkpoint_dir=checkpoint_dir)
-    # Trainer.train uses tqdm internally — the hook drives our progress bar.
-    with cap.tqdm_hook(label="training"):
-        trainer.train(train, valid, steps=steps,
-                      evaluate_every=evaluate_every)
-    return {"checkpoint_dir": checkpoint_dir, "steps": steps}
-
-
-def _job_evaluate(cap, checkpoint_dir: str, num_res_blocks: int) -> Dict[str, Any]:
-    """Run validation PSNRs against the latest checkpoint."""
-
-    scale = Config.DEFAULT_REBIN_FACTOR
-    print(f"evaluating checkpoints under {checkpoint_dir}")
-    if not tf.train.latest_checkpoint(checkpoint_dir):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
-    model = load_model_from_checkpoint(
-        checkpoint_dir, scale, num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
-    )
-    valid_ds = MultiBandEuclidDataset(scale=scale, subset="validate").dataset(
-        batch_size=1, random_transform=False, repeat_count=1,
-    )
-    metrics = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
-    out = {k: float(v.numpy()) for k, v in metrics.items()}
-    print(f"  psnr_stretched = {out['psnr_stretched']:.3f} dB")
-    print(f"  psnr_raw       = {out['psnr_raw']:.3f} dB")
-    return out
-
-
 def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     """Pick the current ``training_log.csv`` or fall back to legacy
     ``training_log.jsonl`` so logs from runs before the CSV switch still
@@ -356,20 +311,6 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
         if os.path.exists(p):
             return p
     return None
-
-
-def _job_plot_training_log(cap, checkpoint_dir: str) -> Dict[str, Any]:
-    """Render the training-log PNG (loss + PSNR vs step)."""
-    log_path = _resolve_training_log(checkpoint_dir)
-    if log_path is None:
-        raise FileNotFoundError(
-            f"no training_log.csv or .jsonl in {checkpoint_dir}"
-        )
-    out_path = os.path.join(Config.VIS_DIR, "training_log.png")
-    os.makedirs(Config.VIS_DIR, exist_ok=True)
-    plot_training_log(log_path, out_path)
-    print(f"wrote {out_path}")
-    return {"path": out_path}
 
 
 def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
@@ -2592,45 +2533,7 @@ def create_app() -> Flask:
             "training.html",
             tfrecords=_tfrecords_status(),
             checkpoints=_checkpoints_status(),
-            default_steps=Config.DEFAULT_TRAIN_STEPS,
-            default_batch=Config.DEFAULT_BATCH_SIZE,
-            default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
-            default_eval_every=Config.DEFAULT_EVALUATE_EVERY,
         )
-
-    @app.route("/training/train", methods=["POST"])
-    def training_train():
-        steps = int(request.form.get("steps", Config.DEFAULT_TRAIN_STEPS))
-        batch = int(request.form.get("batch_size", Config.DEFAULT_BATCH_SIZE))
-        nrb   = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
-        eval_every = int(request.form.get("evaluate_every",
-                                           Config.DEFAULT_EVALUATE_EVERY))
-        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
-        job_id = REGISTRY.spawn(
-            label=f"train WDSR ({steps} steps, batch {batch})",
-            target=lambda cap: _job_train(cap, steps, batch, nrb,
-                                          eval_every, ckpt_dir),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/training/evaluate", methods=["POST"])
-    def training_evaluate():
-        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
-        nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
-        job_id = REGISTRY.spawn(
-            label="evaluate latest checkpoint",
-            target=lambda cap: _job_evaluate(cap, ckpt_dir, nrb),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/training/plot-log", methods=["POST"])
-    def training_plot_log():
-        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
-        job_id = REGISTRY.spawn(
-            label="plot training log",
-            target=lambda cap: _job_plot_training_log(cap, ckpt_dir),
-        )
-        return jsonify({"job_id": job_id})
 
     # ---------------- Inference page ----------------
     @app.route("/inference")
@@ -3740,14 +3643,6 @@ def create_app() -> Flask:
 
     # ---- submission -------------------------------------------------------
 
-    @app.route("/api/fasrc/presets")
-    def api_fasrc_presets():
-        """Return the submission preset table so the JS form can render
-        the dropdown and auto-fill resource fields when a preset changes."""
-        # Stripping the python-only ``skip_flags`` / ``needs_train_knobs``
-        # would lose data the UI uses — leave them in.
-        return jsonify({"presets": fasrc_jobs.PRESETS})
-
     @app.route("/api/fasrc/eta")
     def api_fasrc_eta():
         try:
@@ -3781,11 +3676,12 @@ def create_app() -> Flask:
 
     @app.route("/api/fasrc/submit", methods=["POST"])
     def api_fasrc_submit():
-        """Legacy ``run_pipeline.py`` submission.
+        """``run_pipeline.py`` submission (API path).
 
-        Maps the ``preset`` form field to the matching
-        :class:`FASRCPipelineStep` subclass and submits through the same
-        helper as the HST-pipeline endpoint.
+        Submits a ``scripts/run_pipeline.py`` job through the shared
+        sbatch helper. The only registered run_pipeline step is
+        ``synthetic_generate``; an optional ``step`` form field can name
+        another registered step, otherwise it defaults to that.
         """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -3795,14 +3691,14 @@ def create_app() -> Flask:
 
         cfg = fasrc_config.load()
         f = request.form
-        preset_name = f.get("preset", "custom")
+        step_name = f.get("step") or f.get("preset") or "synthetic_generate"
         try:
-            step = STEP_REGISTRY.get(preset_name)
+            step = STEP_REGISTRY.get(step_name)
         except KeyError:
-            # Unknown preset names fall back to the catch-all "custom"
-            # so a stale frontend can't 404 the submit.
-            step = STEP_REGISTRY.get("custom")
-            preset_name = "custom"
+            # Unknown names fall back to the synthetic generator so a stale
+            # frontend can't 404 the submit.
+            step = STEP_REGISTRY.get("synthetic_generate")
+            step_name = "synthetic_generate"
 
         # Resources from the form, falling back to the step's defaults
         # (so the legacy form fields keep working even when fields are
@@ -3826,7 +3722,6 @@ def create_app() -> Flask:
             }
         except (TypeError, ValueError) as e:
             return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
-        params["preset"] = preset_name
         params.update(resources.to_dict())
 
         label = f.get("label", "").strip() or (
