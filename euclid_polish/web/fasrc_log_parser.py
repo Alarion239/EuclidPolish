@@ -152,6 +152,9 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
         "psnr_raw_hst":       _opt_f("psnr_raw_hst"),
         "roundtrip_val_psnr": _opt_f("roundtrip_val_psnr"),
         "save_best_score":    _opt_f("save_best_score"),
+        # Resume-baseline flag ("1" on the one bar-to-beat row) — passed
+        # through so the dashboard plot can draw the dashed baseline line.
+        "is_baseline":        str(rec.get("is_baseline", "") or ""),
     }
 
 

@@ -575,3 +575,75 @@ class TestLogHeaderRotation:
         # The rotated backup retains the old header.
         with open(baks[0], newline="") as fh:
             assert fh.readline().rstrip("\r\n") == ",".join(old_cols)
+
+
+# ---------------------------------------------------------------------------
+# Resume baseline — validate the restored checkpoint instead of force-saving
+# ---------------------------------------------------------------------------
+
+def _tiny_wdsr():
+    return wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=1, num_filters=4)
+
+
+class TestResumeBaseline:
+
+    def _read_log(self, ckpt_dir: str):
+        import csv
+        with open(os.path.join(ckpt_dir, "training_log.csv"), newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    def test_fresh_run_writes_no_baseline_row(self, tmp_path):
+        """A from-scratch run has nothing to validate → no is_baseline row."""
+        ckpt_dir = str(tmp_path / "ckpt_fresh")
+        t = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        t.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                steps=2, evaluate_every=1, save_best_only=True,
+                validate_images=4)
+        rows = self._read_log(ckpt_dir)
+        assert rows and all(r.get("is_baseline", "") != "1" for r in rows)
+
+    def test_resume_writes_baseline_row_and_seeds_threshold(self, tmp_path):
+        """On resume the restored checkpoint is validated under this run's
+        setup, one is_baseline row is written at the resumed step, and
+        ckpt.psnr is seeded with that score (the bar to beat) — no
+        force-save."""
+        ckpt_dir = str(tmp_path / "ckpt_resume")
+        t1 = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        t1.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                 steps=2, evaluate_every=1, save_best_only=True,
+                 validate_images=4)
+        resumed_step = int(t1.checkpoint.step.numpy())
+        assert resumed_step == 2
+
+        # New Trainer on the same dir restores the checkpoint (step > 0).
+        t2 = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        assert int(t2.checkpoint.step.numpy()) == resumed_step
+        t2.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                 steps=resumed_step + 2, evaluate_every=1,
+                 save_best_only=True, validate_images=4)
+
+        rows = self._read_log(ckpt_dir)
+        base = [r for r in rows if r.get("is_baseline") == "1"]
+        assert len(base) == 1, "exactly one baseline row per resume"
+        assert int(base[0]["step"]) == resumed_step
+        baseline_score = float(base[0]["save_best_score"])
+        # The threshold was seeded by the baseline; later evals only raise it.
+        assert float(t2.checkpoint.psnr.numpy()) >= baseline_score - 1e-3
+
+    def test_resume_baseline_does_not_overwrite_unbeaten_best(self, tmp_path):
+        """If the resumed run never beats the baseline, the seeded threshold
+        is preserved (no save-best regression to a worse score)."""
+        ckpt_dir = str(tmp_path / "ckpt_keep")
+        t1 = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        t1.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                 steps=2, evaluate_every=1, save_best_only=True,
+                 validate_images=4)
+
+        t2 = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        t2.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                 steps=int(t2.checkpoint.step.numpy()) + 1, evaluate_every=1,
+                 save_best_only=True, validate_images=4)
+        rows = self._read_log(ckpt_dir)
+        base = [r for r in rows if r.get("is_baseline") == "1"][0]
+        # ckpt.psnr is never below the measured baseline.
+        assert float(t2.checkpoint.psnr.numpy()) >= float(base["save_best_score"]) - 1e-3

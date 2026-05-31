@@ -88,3 +88,25 @@ def test_partial_multisource_columns_filtered(tmp_path):
     n, _ = plot_training_records(records, out)
     assert n == 3
     assert os.path.getsize(out) > 0
+
+
+def test_baseline_row_draws_without_error(tmp_path):
+    """A resume ``is_baseline`` row (the bar-to-beat) is plotted as a dashed
+    reference line and doesn't break the figure."""
+    records = []
+    # One baseline row, then normal eval rows after the resume step.
+    base = _base_row(5000)
+    base["save_best_score"] = 40.0
+    base["psnr_stretched_hst"] = 30.0
+    base["is_baseline"] = "1"
+    records.append(base)
+    for s in (5100, 5200, 5300):
+        r = _base_row(s)
+        r["save_best_score"] = 38.0 + (s - 5100) * 0.005
+        r["psnr_stretched_hst"] = 29.0
+        r["is_baseline"] = ""
+        records.append(r)
+    out = str(tmp_path / "baseline.png")
+    n, last = plot_training_records(records, out)
+    assert n == 4 and last == 5300
+    assert os.path.getsize(out) > 0

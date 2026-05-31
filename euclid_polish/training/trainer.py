@@ -64,6 +64,11 @@ TRAINING_LOG_COLUMNS  = (
     # the per-source metrics; see ``save_best_weights``). Logged so the
     # decision is auditable from the CSV alone.
     "save_best_score",
+    # "1" on the single pre-training row written when a run resumes: the
+    # restored checkpoint's score measured under THIS run's validation
+    # setup. It seeds the save-best threshold (no force-save) and the log
+    # plot draws it as a dashed "bar to beat" line. Empty on normal rows.
+    "is_baseline",
 )
 
 # Gradient clipping by global L2 norm — see ``Config.GRAD_CLIP_NORM``.
@@ -152,6 +157,65 @@ class Trainer:
         """Get the model."""
         return self.checkpoint.model
 
+    def _validate(
+        self, valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+        validate_images, save_best_weights,
+    ) -> dict:
+        """Run every wired validation source and the composite save-best score.
+
+        Single source of truth for the metric block: used both for the
+        pre-training baseline eval (the restored checkpoint's score) and
+        for each in-loop evaluation, so the two are computed identically
+        and the baseline is directly comparable to later points.
+
+        Returns a dict with ``psnr_str`` / ``psnr_raw`` (synthetic, always)
+        plus ``psnr_str_hst`` / ``psnr_raw_hst`` / ``rt_val_psnr`` (empty
+        string when that source isn't wired) and the composite
+        ``save_best_score``.
+        """
+        metrics  = self.evaluate(valid_dataset.take(validate_images))
+        psnr_str = float(metrics["psnr_stretched"].numpy())
+        psnr_raw = float(metrics["psnr_raw"].numpy())
+
+        psnr_str_hst: object = ""
+        psnr_raw_hst: object = ""
+        rt_val_psnr:  object = ""
+        if hst_valid_dataset is not None:
+            # SR=sky-consistent: score H⊛SR vs the observed HST image (see
+            # evaluate_hst), not SR vs HST directly. NaN (no HST forward op)
+            # is treated as "not wired" so it can't poison the composite.
+            hm = self.evaluate_hst(hst_valid_dataset.take(validate_images))
+            psnr_str_hst = float(hm["psnr_stretched"].numpy())
+            psnr_raw_hst = float(hm["psnr_raw"].numpy())
+            if not np.isfinite(psnr_str_hst):
+                psnr_str_hst = ""
+                psnr_raw_hst = ""
+        if roundtrip_valid_dataset is not None:
+            rt_val_psnr = float(self.evaluate_roundtrip(
+                roundtrip_valid_dataset.take(validate_images)))
+
+        # Composite (higher = better). Synthetic always in; HST/RT join only
+        # when wired. All-zero weights would freeze save-best, so fall back
+        # to bare synthetic PSNR.
+        w_syn, w_hst, w_rt = save_best_weights
+        if w_syn == 0 and w_hst == 0 and w_rt == 0:
+            save_best_score = psnr_str
+        else:
+            save_best_score = w_syn * psnr_str
+            if psnr_str_hst != "":
+                save_best_score += w_hst * float(psnr_str_hst)
+            if rt_val_psnr != "":
+                save_best_score += w_rt * float(rt_val_psnr)
+
+        return {
+            "psnr_str":        psnr_str,
+            "psnr_raw":        psnr_raw,
+            "psnr_str_hst":    psnr_str_hst,
+            "psnr_raw_hst":    psnr_raw_hst,
+            "rt_val_psnr":     rt_val_psnr,
+            "save_best_score": save_best_score,
+        }
+
     def train(
         self,
         train_dataset,
@@ -236,16 +300,6 @@ class Trainer:
         start_step = int(ckpt.step.numpy())
         remaining = steps - start_step
 
-        # The first validation of *this* run always force-saves and
-        # re-baselines ckpt.psnr (see the save-best block below).
-        # ``ckpt.psnr`` is checkpointed, so a run resumed under a
-        # changed training regime (e.g. a new HST / round-trip mix)
-        # inherits the *previous* regime's best — which the new mix
-        # typically can't beat on the synthetic metric — and would
-        # otherwise never write a checkpoint, discarding the new
-        # training. Local to this call, so it resets every resubmit.
-        first_eval_this_run = True
-
         log_path = os.path.join(ckpt_mgr.directory, TRAINING_LOG_FILENAME)
         os.makedirs(ckpt_mgr.directory, exist_ok=True)
 
@@ -269,6 +323,49 @@ class Trainer:
                     f"  ↻ Rotated training log with stale header → "
                     f"{os.path.basename(backup)} (new columns added)"
                 )
+
+        # Resume baseline: measure the RESTORED checkpoint's score under
+        # *this* run's validation setup and seed the save-best threshold
+        # with it — instead of force-saving on the first eval. The previous
+        # checkpoint stays the best until genuinely beaten, and the log gets
+        # a single ``is_baseline`` row the plot draws as a dashed "bar to
+        # beat" line. Only when resuming (start_step > 0) and in save-best
+        # mode; a fresh run has nothing to validate and starts from the
+        # checkpoint's initial ``psnr`` sentinel.
+        if save_best_only and start_step > 0:
+            b = self._validate(
+                valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+                validate_images, save_best_weights,
+            )
+            ckpt.psnr.assign(b["save_best_score"])
+            base_row = {
+                "step":               int(start_step),
+                "wall_time":          time.time(),
+                "loss":               "",
+                "psnr_stretched":     b["psnr_str"],
+                "psnr_raw":           b["psnr_raw"],
+                "gnorm_avg":          "",
+                "gnorm_max":          "",
+                "clip_norm":          float(GRAD_CLIP_NORM),
+                "duration_s":         "",
+                "psnr_stretched_hst": b["psnr_str_hst"],
+                "psnr_raw_hst":       b["psnr_raw_hst"],
+                "roundtrip_val_psnr": b["rt_val_psnr"],
+                "save_best_score":    b["save_best_score"],
+                "is_baseline":        "1",
+            }
+            write_header = (not os.path.exists(log_path)
+                            or os.path.getsize(log_path) == 0)
+            with open(log_path, "a", newline="") as fh:
+                w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
+                if write_header:
+                    w.writeheader()
+                w.writerow(base_row)
+            tqdm.write(
+                f"  ▏baseline (restored ckpt @ step {start_step}): "
+                f"score={b['save_best_score']:.3f} "
+                f"(PSNR str={b['psnr_str']:.3f} dB) — bar to beat, no save"
+            )
 
         pbar = tqdm(
             train_dataset.take(remaining),
@@ -324,54 +421,18 @@ class Trainer:
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
 
-                # Compute validation PSNR (stretched: loss-aligned, used for
-                # save-best; raw: photometric).
-                metrics  = self.evaluate(valid_dataset.take(validate_images))
-                psnr_str = float(metrics["psnr_stretched"].numpy())
-                psnr_raw = float(metrics["psnr_raw"].numpy())
-
-                # Multi-source validation (additive — never touches
-                # save-best). Empty string when a source isn't wired so
-                # downstream float-parsers skip the cell rather than
-                # choke on "nan" text.
-                psnr_str_hst: object = ""
-                psnr_raw_hst: object = ""
-                rt_val_psnr:  object = ""
-                if hst_valid_dataset is not None:
-                    # Consistent with the SR=sky objective: score the HST
-                    # source through the forward op (PSNR between H⊛SR and
-                    # the observed HST image), NOT SR vs the HST image
-                    # directly — the latter would reward HST-PSF blur and
-                    # fight the synthetic/round-trip lanes.
-                    hst_metrics  = self.evaluate_hst(
-                        hst_valid_dataset.take(validate_images))
-                    psnr_str_hst = float(hst_metrics["psnr_stretched"].numpy())
-                    psnr_raw_hst = float(hst_metrics["psnr_raw"].numpy())
-                    # evaluate_hst returns NaN when no HST forward op is
-                    # installed; treat that like "not wired" (empty cell)
-                    # so a NaN can't slip into the composite save-best.
-                    if not np.isfinite(psnr_str_hst):
-                        psnr_str_hst = ""
-                        psnr_raw_hst = ""
-                if roundtrip_valid_dataset is not None:
-                    rt_val_psnr = float(self.evaluate_roundtrip(
-                        roundtrip_valid_dataset.take(validate_images)))
-
-                # Composite save-best score (higher = better). Synthetic
-                # is always in; HST/RT terms join only when their
-                # validation set is wired. All three terms are now PSNR in
-                # dB, so RT is added like the others. All-zero weights
-                # would make every score 0 and freeze save-best, so fall
-                # back to synthetic PSNR.
-                w_syn, w_hst, w_rt = save_best_weights
-                if (w_syn == 0 and w_hst == 0 and w_rt == 0):
-                    save_best_score = psnr_str
-                else:
-                    save_best_score = w_syn * psnr_str
-                    if psnr_str_hst != "":
-                        save_best_score += w_hst * float(psnr_str_hst)
-                    if rt_val_psnr != "":
-                        save_best_score += w_rt * float(rt_val_psnr)
+                # Validation + composite score (same code path as the
+                # resume baseline, so the two are directly comparable).
+                v = self._validate(
+                    valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+                    validate_images, save_best_weights,
+                )
+                psnr_str        = v["psnr_str"]
+                psnr_raw        = v["psnr_raw"]
+                psnr_str_hst    = v["psnr_str_hst"]
+                psnr_raw_hst    = v["psnr_raw_hst"]
+                rt_val_psnr     = v["rt_val_psnr"]
+                save_best_score = v["save_best_score"]
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -415,6 +476,7 @@ class Trainer:
                     "psnr_raw_hst":       psnr_raw_hst,
                     "roundtrip_val_psnr": rt_val_psnr,
                     "save_best_score":    save_best_score,
+                    "is_baseline":        "",
                 }
                 write_header = (not os.path.exists(log_path)
                                 or os.path.getsize(log_path) == 0)
@@ -428,16 +490,11 @@ class Trainer:
                 # ``ckpt.psnr`` is the checkpointed best-score threshold —
                 # the name predates the composite; it now holds whatever
                 # save_best_weights blends, not the bare synthetic PSNR.
-                # The first validation of this run force-saves +
-                # re-baselines it so a regime change (new HST/round-trip
-                # mix) that dips below the inherited best still updates the
-                # weights; subsequent validations resume monotonic
-                # save-best on the composite.
-                is_first = first_eval_this_run
-                first_eval_this_run = False
+                # On a resume it was seeded by the baseline eval above, so
+                # we only save on a genuine improvement over the restored
+                # checkpoint's measured score — no force-save churn.
                 should_save = (
-                    not save_best_only         # save-every mode
-                    or is_first                # re-baseline this run's 1st eval
+                    not save_best_only              # save-every mode
                     or save_best_score > ckpt.psnr  # genuine improvement
                 )
                 if not should_save:
@@ -450,10 +507,9 @@ class Trainer:
                 # with a bare tensor and silently dropped that tracking.
                 ckpt.psnr.assign(save_best_score)
                 ckpt_mgr.save()
-                why = ("re-baseline (first eval this run)"
-                       if is_first and save_best_only else "best so far")
                 tqdm.write(
-                    f"  ✓ Checkpoint saved [{why}] (score={save_best_score:.3f}; "
+                    f"  ✓ Checkpoint saved [best so far] "
+                    f"(score={save_best_score:.3f}; "
                     f"PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
                 )
 

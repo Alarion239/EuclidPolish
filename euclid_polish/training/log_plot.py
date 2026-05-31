@@ -127,6 +127,25 @@ def plot_training_records(
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
 
+    # Resume baseline: the restored checkpoint's score measured at this
+    # run's start (Trainer writes one is_baseline row per resume). The
+    # latest one is the current "bar to beat" — drawn as a dashed
+    # horizontal line so the run's target is visible from step 0.
+    baseline_rows = [r for r in records
+                     if str(r.get("is_baseline", "")).strip() in ("1", "1.0")]
+    baseline = baseline_rows[-1] if baseline_rows else None
+
+    def _baseline_val(col: str):
+        if baseline is None:
+            return None
+        v = baseline.get(col)
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     def _smoothed(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if smooth_window and smooth_window > 1 and y.size >= smooth_window:
             k = np.ones(smooth_window) / smooth_window
@@ -172,6 +191,20 @@ def plot_training_records(
             ax_psnr.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
                          label="Round-trip PSNR (MA)")
 
+    # Dashed "bar to beat" lines at the resume baseline for each metric.
+    b_syn = _baseline_val("psnr_stretched")
+    if b_syn is not None:
+        ax_psnr.axhline(b_syn, color="tab:red", lw=1.0, ls=":", alpha=0.7,
+                        label="Synthetic baseline (prev ckpt)")
+    b_hst = _baseline_val("psnr_stretched_hst")
+    if b_hst is not None:
+        ax_psnr.axhline(b_hst, color="tab:green", lw=1.0, ls=":", alpha=0.7,
+                        label="HST baseline")
+    b_rt = _baseline_val("roundtrip_val_psnr")
+    if b_rt is not None:
+        ax_psnr.axhline(b_rt, color="tab:purple", lw=1.0, ls=":", alpha=0.7,
+                        label="Round-trip baseline")
+
     ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
     ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
 
@@ -189,6 +222,10 @@ def plot_training_records(
         if sx is not None:
             ax_score.plot(sx, sy, color="tab:blue", lw=2.6,
                           label="save-best score (MA)")
+        b_score = _baseline_val("save_best_score")
+        if b_score is not None:
+            ax_score.axhline(b_score, color="dimgray", lw=1.3, ls=":",
+                             alpha=0.85, label="resume baseline (bar to beat)")
         ax_score.set_ylabel("Composite score  ·  higher better")
         ax_score.set_title(
             "Overall save-best score (drives checkpoint selection)",
