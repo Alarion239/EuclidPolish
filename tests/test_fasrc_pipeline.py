@@ -299,27 +299,27 @@ class TestSbatchRendering:
         assert shlex.quote(cfg.data_dir) in out["body"]
 
     def test_train_step_omits_lane_flags_when_zero(self, cfg):
-        """A pure-synthetic submit (no HST / round-trip counts) emits only
-        the synthetic lane — no HST or round-trip flags leak in and enable
-        a lane whose records may not exist."""
+        """A pure-synthetic submit (no HST / star-anchor counts) emits only
+        the synthetic lane — no HST or anchor flags leak in and enable a
+        lane whose records may not exist."""
         step = REGISTRY.get("train")
         out = step.build_sbatch_body(
             params={"steps": 100, "n_syn": 8},
             resources=step.defaults, cfg=cfg, label="x",
         )
         body = out["body"]
-        assert "--n-rt" not in body
+        assert "--n-anchor" not in body
         assert "--n-hst" not in body
 
     def test_train_step_emits_lane_flags_when_positive(self, cfg):
         step = REGISTRY.get("train")
         out = step.build_sbatch_body(
-            params={"steps": 100, "n_syn": 6, "n_hst": 2, "n_rt": 2},
+            params={"steps": 100, "n_syn": 6, "n_hst": 2, "n_anchor": 2},
             resources=step.defaults, cfg=cfg, label="x",
         )
         body = out["body"]
         assert "--n-hst" in body
-        assert "--n-rt" in body
+        assert "--n-anchor" in body
 
     def test_euclid_sky_download_step_args(self, cfg):
         step = REGISTRY.get("euclid_sky_download")
@@ -384,26 +384,33 @@ class TestConcreteSteps:
 
     def test_train_passes_lane_counts(self):
         argv = HSTTrainStep().build_command(
-            {"n_syn": 24, "n_hst": 8, "n_rt": 0})
+            {"n_syn": 24, "n_hst": 8, "n_anchor": 0})
         assert argv[argv.index("--n-syn") + 1] == "24"
         assert argv[argv.index("--n-hst") + 1] == "8"
         # HST lane on → its loss-weight flag rides along.
         assert "--hst-loss-weight" in argv
-        # Round-trip lane off → no round-trip flags.
-        assert "--n-rt" not in argv
-        assert "--roundtrip-loss-weight" not in argv
+        # Star-anchor lane off → no anchor flags.
+        assert "--n-anchor" not in argv
+        assert "--star-anchor-loss-weight" not in argv
 
     def test_train_default_is_pure_synthetic(self):
-        # No counts given → synthetic-only (n_syn default), no HST/RT lanes.
+        # No counts given → synthetic-only (n_syn default), no HST/anchor lanes.
         argv = HSTTrainStep().build_command({})
         assert "--n-syn" in argv
         assert "--n-hst" not in argv
-        assert "--n-rt" not in argv
+        assert "--n-anchor" not in argv
 
-    def test_train_emits_roundtrip_flags_when_n_rt_set(self):
-        argv = HSTTrainStep().build_command({"n_syn": 6, "n_rt": 2})
-        assert argv[argv.index("--n-rt") + 1] == "2"
-        assert "--roundtrip-loss-weight" in argv
+    def test_train_emits_anchor_flags_when_n_anchor_set(self):
+        argv = HSTTrainStep().build_command({"n_syn": 6, "n_anchor": 2})
+        assert argv[argv.index("--n-anchor") + 1] == "2"
+        assert "--star-anchor-loss-weight" in argv
+        # forward-op-crop-half belongs to the HST lane now, not anchor.
+        assert "--forward-op-crop-half" not in argv
+
+    def test_train_emits_hst_crop_flag_when_n_hst_set(self):
+        argv = HSTTrainStep().build_command({"n_syn": 6, "n_hst": 2})
+        assert argv[argv.index("--n-hst") + 1] == "2"
+        assert "--hst-loss-weight" in argv
         assert "--forward-op-crop-half" in argv
 
     def test_train_emits_constant_learning_rate_when_set(self):

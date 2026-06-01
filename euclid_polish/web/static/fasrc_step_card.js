@@ -202,13 +202,13 @@ large cutout don't leak across train/validate."></label>`;
         <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
       <label># synthetic / batch
         <input type="number" name="n_syn" value="4" min="1" max="256"
-               title="Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_rt] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge."></label>
+               title="Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_anchor] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge."></label>
       <label># HST / batch
         <input type="number" name="n_hst" value="0" min="0" max="256"
                title="HST examples per batch — the SR=sky lane |asinh(H⊛SR) − HST_image|. 0 disables it. Needs the HST records (records_v2_hst) + the F814W ePSF. A whole integer, so no rounding surprises: e.g. 1 HST per 4 synthetic = 20% HST."></label>
-      <label># round-trip / batch
-        <input type="number" name="n_rt" value="0" min="0" max="256"
-               title="Round-trip examples per batch — self-supervised |asinh(rebin(E⊛SR)) − lr_vis|. 0 disables it. Needs the round-trip records + the VIS PSF FITS."></label>
+      <label># star-anchor / batch
+        <input type="number" name="n_anchor" value="0" min="0" max="256"
+               title="Star-anchor examples per batch — operator-free masked |SR − delta| at the catalog star pixel (pins real Euclid stars to points of known flux; no PSF). 0 disables it. Needs the star-anchor records (records_v2_star_anchor)."></label>
       <label>Learning rate
         <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
                placeholder="blank = 1e-3→5e-4 schedule"
@@ -223,21 +223,21 @@ large cutout don't leak across train/validate."></label>`;
       <label>Loss weight · HST
         <input type="number" name="hst_loss_weight" value="1" step="0.5" min="0" max="100"
                title="Per-example TRAINING-loss multiplier for HST records. 1 = default. Distinct from the data fraction: fraction sets how many HST examples per batch, this scales each one's loss."></label>
-      <label>Loss weight · round-trip
-        <input type="number" name="roundtrip_loss_weight" value="1" step="0.5" min="0" max="100"
-               title="Per-example TRAINING-loss multiplier for round-trip records. Round-trip gradient share ≈ roundtrip_fraction × this. Caution: the round-trip loss is minimized by an UN-sharpened (blurry) SR, so very high values push the model away from super-resolving — it's a regularizer, not a sharpening driver. Only used when round-trip fraction > 0."></label>
+      <label>Loss weight · star-anchor
+        <input type="number" name="star_anchor_loss_weight" value="1" step="0.5" min="0" max="100"
+               title="Per-example TRAINING-loss multiplier for the star-anchor lane (masked |SR − delta| at the star pixel). 1 = default; raise to up-weight the anchor, 0 to ablate (anchor data still loaded, loss contribution zeroed). Only used when #star-anchor > 0."></label>
       <label>Forward-op PSF crop (½)
         <input type="number" name="forward_op_crop_half" value="0" step="8" min="0" max="512"
-               title="Optional central crop of the VIS PSF for the round-trip forward op → (2·crop+1)² kernel. 0 = full 1023×1023 PSF (the forward op convolves via FFT, so the full PSF is exact AND fast — no crop needed). Set >0 only to ablate the PSF wings. Only used when round-trip fraction > 0."></label>
+               title="Optional central crop of the F814W PSF for the HST forward op → (2·crop+1)² kernel. 0 = full PSF (the forward op convolves via FFT, so the full PSF is exact AND fast — no crop needed). Set >0 only to ablate the PSF wings. Only used when #HST > 0."></label>
       <label>Save-best w·synthetic
         <input type="number" name="save_best_w_syn" value="1.0" step="0.5" min="0" max="100"
                title="Weight of synthetic PSNR (dB) in the composite save-best score."></label>
       <label>Save-best w·HST
         <input type="number" name="save_best_w_hst" value="1.0" step="0.5" min="0" max="100"
                title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
-      <label>Save-best w·round-trip
-        <input type="number" name="save_best_w_rt" value="0" step="0.5" min="0" max="100"
-               title="Weight of the round-trip PSNR (dB, ADDED — higher is better) in the composite save-best score. Now on the same dB scale as the other two PSNRs, so a weight near 1 is comparable; note round-trip PSNR is measured at LR resolution so it sits higher in absolute dB. Default 0 = monitored only."></label>
+      <label>Save-best w·star-anchor
+        <input type="number" name="save_best_w_anchor" value="0" step="0.5" min="0" max="100"
+               title="Weight of the star-anchor PSNR (dB, ADDED — higher is better) in the composite save-best score. Masked to the star pixel; on the same dB scale as the other two PSNRs. Default 0 = monitored only."></label>
       <label class="checkbox-field" style="flex-basis:100%;"
              title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change (e.g. new output head / lane counts), when the old score is meaningless. No effect on a fresh run.">
         <input type="checkbox" name="overwrite_best" value="1">
@@ -591,17 +591,17 @@ large cutout don't leak across train/validate."></label>`;
     if (stepId === 'train') {
       const nSyn = parseInt(body.get('n_syn') ?? '0', 10) || 0;
       const nHst = parseInt(body.get('n_hst') ?? '0', 10) || 0;
-      const nRt  = parseInt(body.get('n_rt')  ?? '0', 10) || 0;
+      const nAnchor = parseInt(body.get('n_anchor') ?? '0', 10) || 0;
       if (nSyn < 1) {
         warning +=
           `\n⚠️  WARNING: # synthetic = ${nSyn}, but the synthetic lane is ` +
           `always required (≥ 1). The job aborts at startup.\n`;
       } else {
         // Friendly confirmation of the resulting batch composition.
-        const batch = nSyn + nHst + nRt;
+        const batch = nSyn + nHst + nAnchor;
         warning +=
-          `\nBatch layout: ${nSyn} synthetic + ${nHst} HST + ${nRt} ` +
-          `round-trip = batch ${batch}.\n`;
+          `\nBatch layout: ${nSyn} synthetic + ${nHst} HST + ${nAnchor} ` +
+          `star-anchor = batch ${batch}.\n`;
       }
     }
     const msg =

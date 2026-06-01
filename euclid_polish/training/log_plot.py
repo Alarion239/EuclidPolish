@@ -18,7 +18,7 @@ _NUMERIC_LOG_COLS = {
     # Multi-source validation columns (empty in synthetic-only / older
     # runs — read_training_log skips empty cells, so those rows simply
     # won't carry the key and the corresponding panel is omitted).
-    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_psnr",
+    "psnr_stretched_hst", "psnr_raw_hst", "anchor_val_psnr",
     "save_best_score",
 }
 
@@ -88,10 +88,10 @@ def plot_training_records(
 
       * synthetic PSNR (stretched)   — dB
       * HST PSNR (stretched)         — dB (when logged)
-      * round-trip ("cycle-run") PSNR — dB (when logged)
+      * star-anchor PSNR (masked at the star pixel) — dB (when logged)
 
     All three are PSNR in dB and "higher is better", so they share one
-    left axis. Synthetic-only / older runs without the HST / round-trip
+    left axis. Synthetic-only / older runs without the HST / star-anchor
     columns just show the one PSNR line.
 
     Returns ``(n_records, last_step)``.
@@ -123,7 +123,7 @@ def plot_training_records(
         return np.array(xs), np.array(ys)
 
     hst_x, hst_y     = _opt_series("psnr_stretched_hst")
-    rt_x,  rt_y      = _opt_series("roundtrip_val_psnr")
+    anc_x, anc_y     = _opt_series("anchor_val_psnr")
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
 
@@ -181,15 +181,15 @@ def plot_training_records(
             ax_psnr.plot(sx, sy, color="tab:green", lw=2.6, label="HST PSNR (MA)")
     ax_psnr.set_ylabel("PSNR (dB)  ·  higher better")
 
-    # ── Round-trip PSNR shares the same dB axis — all three metrics are
-    #    now PSNR (higher better), so no twin axis is needed. ──
-    if rt_x.size:
-        ax_psnr.plot(rt_x, rt_y, color="tab:purple", lw=1.6, ls="--",
-                     alpha=0.9, label="Round-trip PSNR")
-        sx, sy = _smoothed(rt_x, rt_y)
+    # ── Star-anchor PSNR shares the same dB axis — all three metrics are
+    #    PSNR (higher better), so no twin axis is needed. ──
+    if anc_x.size:
+        ax_psnr.plot(anc_x, anc_y, color="tab:purple", lw=1.6, ls="--",
+                     alpha=0.9, label="Star-anchor PSNR")
+        sx, sy = _smoothed(anc_x, anc_y)
         if sx is not None:
             ax_psnr.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
-                         label="Round-trip PSNR (MA)")
+                         label="Star-anchor PSNR (MA)")
 
     # Dashed "bar to beat" lines at the resume baseline for each metric.
     b_syn = _baseline_val("psnr_stretched")
@@ -200,10 +200,10 @@ def plot_training_records(
     if b_hst is not None:
         ax_psnr.axhline(b_hst, color="tab:green", lw=1.0, ls=":", alpha=0.7,
                         label="HST baseline")
-    b_rt = _baseline_val("roundtrip_val_psnr")
-    if b_rt is not None:
-        ax_psnr.axhline(b_rt, color="tab:purple", lw=1.0, ls=":", alpha=0.7,
-                        label="Round-trip baseline")
+    b_anc = _baseline_val("anchor_val_psnr")
+    if b_anc is not None:
+        ax_psnr.axhline(b_anc, color="tab:purple", lw=1.0, ls=":", alpha=0.7,
+                        label="Star-anchor baseline")
 
     ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
     ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")

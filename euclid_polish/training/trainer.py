@@ -12,16 +12,16 @@ drives this via two batch formats, dispatched on ``lane_counts`` in
     path (``|SR - hr|``). Used by ``scripts/run_pipeline.py``,
     ``cli/main.py``, the web inference helpers, and every validation
     stream. → :meth:`train_step`.
-  * 2-tuple ``(lr, hr)`` with ``lane_counts=(n_syn, n_hst, n_rt)`` — a
+  * 2-tuple ``(lr, hr)`` with ``lane_counts=(n_syn, n_hst, n_anchor)`` — a
     **fixed contiguous layout** batch (first ``n_syn`` synthetic, then
-    ``n_hst`` HST, then ``n_rt`` round-trip), produced by
+    ``n_hst`` HST, then ``n_anchor`` star-anchor), produced by
     :meth:`MultiBandEuclidDataset.dataset_fixed_layout`. →
-    :meth:`train_step_sky`, which slices each lane by its static count
-    and applies that lane's forward op:
+    :meth:`train_step_sky`, which slices each lane by its static count:
 
       - synthetic — ``|SR - scene|`` (direct; the clean target is the sky).
       - HST       — ``|asinh(H ⊛ SR) - HST_image|`` (HST F814W PSF, no rebin).
-      - round-trip— ``|asinh(rebin(E ⊛ SR)) - LR_vis|`` (VIS PSF + 2× rebin).
+      - star-anchor — masked ``|SR - delta_target|`` at the star pixel only
+        (catalog flux at a real Euclid star; operator-free, no PSF).
 
 The split is by fixed *position* (static Python-int slices), not a
 per-example ``tf.where`` mask — so there is no branching and each lane's
@@ -59,7 +59,7 @@ TRAINING_LOG_COLUMNS  = (
     # corresponding source dataset isn't wired for this run, so old
     # plots that parse-float these columns skip them instead of
     # choking on the text "nan".
-    "psnr_stretched_hst", "psnr_raw_hst", "roundtrip_val_psnr",
+    "psnr_stretched_hst", "psnr_raw_hst", "anchor_val_psnr",
     # The composite scalar save-best actually keys on (weighted blend of
     # the per-source metrics; see ``save_best_weights``). Logged so the
     # decision is auditable from the CSV alone.
@@ -90,7 +90,7 @@ class Trainer:
         hst_forward_op=None,
         synthetic_loss_weight: float = 1.0,
         hst_loss_weight: float = 1.0,
-        roundtrip_loss_weight: float = 1.0,
+        star_anchor_loss_weight: float = 1.0,
         nonneg_sr_weight: float = Config.NONNEG_SR_WEIGHT,
     ):
         """
@@ -107,25 +107,20 @@ class Trainer:
         checkpoint_dir : str
             Directory for saving checkpoints.
         forward_op : tf.keras.layers.Layer, optional
-            Differentiable Euclid VIS forward op (PSF + 2× sum-rebin)
-            used for round-trip examples. ``None`` (default) disables
-            the round-trip path even if source tags arrive — in that
-            case round-trip examples fall through to the supervised
-            L1, which compares ``sr`` against the dummy zeros ``hr``;
-            this is rarely what you want, so configure the forward op
-            whenever ``roundtrip_fraction > 0`` on the dataset.
-        synthetic_loss_weight, hst_loss_weight, roundtrip_loss_weight : float
+            Differentiable Euclid VIS forward op (PSF + 2× sum-rebin).
+            Retained for back-compat; the star-anchor objective is
+            operator-free, so this is no longer used by training (the
+            ``EuclidVISForwardOp`` class still backs the ``/inference``
+            forward(SR) panel). ``None`` (default).
+        synthetic_loss_weight, hst_loss_weight, star_anchor_loss_weight : float
             Per-source multipliers on the per-example loss before the
-            batch mean. Each example is weighted by the knob matching its
-            source tag (synthetic / HST / round-trip). All default to 1.0,
-            which reproduces the previous behaviour (every example
-            contributes equally; the round-trip term used to be the only
-            one weighted). Raise a knob to up-weight that source's
-            gradient contribution; set to 0 to keep the dataset wired but
-            zero out its loss (ablation). The round-trip term is also
-            gated on ``forward_op`` being set (see above) — without it,
-            round-trip examples fall through to the (dummy-HR) supervised
-            loss, so configure the op whenever ``roundtrip_fraction > 0``.
+            batch mean. Each lane (synthetic / HST / star-anchor) is
+            scaled by its knob. All default to 1.0. Raise a knob to
+            up-weight that lane's gradient contribution; set to 0 to keep
+            the dataset wired but zero out its loss (ablation). The
+            star-anchor lane supervises ``SR`` against a sparse HR
+            delta-target (catalog flux at the star), masked to the star
+            pixel — no PSF.
         nonneg_sr_weight : float
             Weight of the non-negativity penalty ``λ · mean(relu(-SR))``
             added to every step's loss. SR is the model's single output
@@ -142,10 +137,10 @@ class Trainer:
         # HST forward op (H ⊛ SR, no rebin) for the SR=sky objective —
         # the HST supervised loss compares H⊛SR to the observed HST image.
         self.hst_forward_op = hst_forward_op
-        self.synthetic_loss_weight = float(synthetic_loss_weight)
-        self.hst_loss_weight       = float(hst_loss_weight)
-        self.roundtrip_loss_weight = float(roundtrip_loss_weight)
-        self.nonneg_sr_weight      = float(nonneg_sr_weight)
+        self.synthetic_loss_weight   = float(synthetic_loss_weight)
+        self.hst_loss_weight         = float(hst_loss_weight)
+        self.star_anchor_loss_weight = float(star_anchor_loss_weight)
+        self.nonneg_sr_weight        = float(nonneg_sr_weight)
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -169,7 +164,7 @@ class Trainer:
         return self.checkpoint.model
 
     def _validate(
-        self, valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+        self, valid_dataset, hst_valid_dataset, anchor_valid_dataset,
         validate_images, save_best_weights,
     ) -> dict:
         """Run every wired validation source and the composite save-best score.
@@ -180,17 +175,17 @@ class Trainer:
         and the baseline is directly comparable to later points.
 
         Returns a dict with ``psnr_str`` / ``psnr_raw`` (synthetic, always)
-        plus ``psnr_str_hst`` / ``psnr_raw_hst`` / ``rt_val_psnr`` (empty
-        string when that source isn't wired) and the composite
+        plus ``psnr_str_hst`` / ``psnr_raw_hst`` / ``anchor_val_psnr``
+        (empty string when that source isn't wired) and the composite
         ``save_best_score``.
         """
         metrics  = self.evaluate(valid_dataset.take(validate_images))
         psnr_str = float(metrics["psnr_stretched"].numpy())
         psnr_raw = float(metrics["psnr_raw"].numpy())
 
-        psnr_str_hst: object = ""
-        psnr_raw_hst: object = ""
-        rt_val_psnr:  object = ""
+        psnr_str_hst:    object = ""
+        psnr_raw_hst:    object = ""
+        anchor_val_psnr: object = ""
         if hst_valid_dataset is not None:
             # SR=sky-consistent: score H⊛SR vs the observed HST image (see
             # evaluate_hst), not SR vs HST directly. NaN (no HST forward op)
@@ -201,29 +196,31 @@ class Trainer:
             if not np.isfinite(psnr_str_hst):
                 psnr_str_hst = ""
                 psnr_raw_hst = ""
-        if roundtrip_valid_dataset is not None:
-            rt_val_psnr = float(self.evaluate_roundtrip(
-                roundtrip_valid_dataset.take(validate_images)))
+        if anchor_valid_dataset is not None:
+            anchor_val_psnr = float(self.evaluate_anchor(
+                anchor_valid_dataset.take(validate_images)))
+            if not np.isfinite(anchor_val_psnr):
+                anchor_val_psnr = ""
 
-        # Composite (higher = better). Synthetic always in; HST/RT join only
-        # when wired. All-zero weights would freeze save-best, so fall back
-        # to bare synthetic PSNR.
-        w_syn, w_hst, w_rt = save_best_weights
-        if w_syn == 0 and w_hst == 0 and w_rt == 0:
+        # Composite (higher = better). Synthetic always in; HST/anchor join
+        # only when wired. All-zero weights would freeze save-best, so fall
+        # back to bare synthetic PSNR.
+        w_syn, w_hst, w_anchor = save_best_weights
+        if w_syn == 0 and w_hst == 0 and w_anchor == 0:
             save_best_score = psnr_str
         else:
             save_best_score = w_syn * psnr_str
             if psnr_str_hst != "":
                 save_best_score += w_hst * float(psnr_str_hst)
-            if rt_val_psnr != "":
-                save_best_score += w_rt * float(rt_val_psnr)
+            if anchor_val_psnr != "":
+                save_best_score += w_anchor * float(anchor_val_psnr)
 
         return {
             "psnr_str":        psnr_str,
             "psnr_raw":        psnr_raw,
             "psnr_str_hst":    psnr_str_hst,
             "psnr_raw_hst":    psnr_raw_hst,
-            "rt_val_psnr":     rt_val_psnr,
+            "anchor_val_psnr": anchor_val_psnr,
             "save_best_score": save_best_score,
         }
 
@@ -238,7 +235,7 @@ class Trainer:
         step_callback=None,
         step_callback_every=50,
         hst_valid_dataset=None,
-        roundtrip_valid_dataset=None,
+        anchor_valid_dataset=None,
         save_best_weights=(1.0, 1.0, 0.0),
         lane_counts=None,
         compute_resume_baseline=True,
@@ -277,29 +274,25 @@ class Trainer:
             change's effect on the HST source is visible even when the
             synthetic metric dips. Purely additive — does NOT influence
             save-best. ``None`` (default) leaves the HST columns empty.
-        roundtrip_valid_dataset : Optional[tf.data.Dataset]
-            LR-only round-trip validation dataset (see
-            :func:`euclid_polish.training.data_multiband.lr_only_dataset`).
-            When provided, each evaluation records the mean round-trip
-            reconstruction loss. Requires ``self.forward_op`` to be set;
-            otherwise the logged value is ``nan``. Additive only — does
-            NOT influence save-best. ``None`` leaves the column empty.
+        anchor_valid_dataset : Optional[tf.data.Dataset]
+            Star-anchor ``(lr, hr)`` validation dataset (real Euclid star
+            cutouts + sparse HR delta-target). When provided, each
+            evaluation records the masked star-anchor PSNR (dB) — how well
+            SR matches the catalog flux at the star pixel. Additive only —
+            does NOT influence save-best unless ``w_anchor`` > 0. ``None``
+            leaves the column empty.
         save_best_weights : tuple[float, float, float]
-            ``(w_syn, w_hst, w_rt)`` weights for the composite save-best
-            score, higher = better:
+            ``(w_syn, w_hst, w_anchor)`` weights for the composite
+            save-best score, higher = better:
 
-                score = w_syn·PSNR_syn + w_hst·PSNR_hst + w_rt·PSNR_rt
+                score = w_syn·PSNR_syn + w_hst·PSNR_hst + w_anchor·PSNR_anchor
 
-            All three terms are now PSNR in dB, so they share one scale
-            and the round-trip term is ADDED like the others (no scale-gap
-            fudge factor needed). Note the round-trip PSNR is taken at LR
-            resolution, so it tends to sit higher in absolute dB than the
-            HR-resolution synthetic/HST PSNRs — keep that in mind when
-            weighting. A term drops out automatically when its validation
+            All three terms are PSNR in dB, so they share one scale and add
+            directly. A term drops out automatically when its validation
             dataset is absent (e.g. ``w_hst`` has no effect when
             ``hst_valid_dataset is None``). Default ``(1, 1, 0)`` →
-            synthetic + HST PSNR, equally weighted, round-trip
-            monitored-only. With HST/RT absent this reduces to plain
+            synthetic + HST PSNR, equally weighted, star-anchor
+            monitored-only. With HST/anchor absent this reduces to plain
             synthetic-PSNR save-best (backwards compatible).
         compute_resume_baseline : bool
             On a *resumed* run (save-best mode), whether to measure the
@@ -362,7 +355,7 @@ class Trainer:
         if save_best_only and start_step > 0:
             if compute_resume_baseline:
                 b = self._validate(
-                    valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+                    valid_dataset, hst_valid_dataset, anchor_valid_dataset,
                     validate_images, save_best_weights,
                 )
                 ckpt.psnr.assign(b["save_best_score"])
@@ -378,7 +371,7 @@ class Trainer:
                     "duration_s":         "",
                     "psnr_stretched_hst": b["psnr_str_hst"],
                     "psnr_raw_hst":       b["psnr_raw_hst"],
-                    "roundtrip_val_psnr": b["rt_val_psnr"],
+                    "anchor_val_psnr":    b["anchor_val_psnr"],
                     "save_best_score":    b["save_best_score"],
                     "is_baseline":        "1",
                 }
@@ -419,7 +412,7 @@ class Trainer:
             # path used by run_pipeline.py / cli/main.py / the web
             # inference helpers and every validation stream), batches are
             # plain ``(lr, hr)`` 2-tuples → ``train_step``. When set, the
-            # dataset is a fixed contiguous ``[n_syn | n_hst | n_rt]``
+            # dataset is a fixed contiguous ``[n_syn | n_hst | n_anchor]``
             # layout → ``train_step_sky``, which slices each lane by its
             # static count and applies that lane's forward op (no
             # per-example branching). The counts are Python ints, so the
@@ -458,14 +451,14 @@ class Trainer:
                 # Validation + composite score (same code path as the
                 # resume baseline, so the two are directly comparable).
                 v = self._validate(
-                    valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+                    valid_dataset, hst_valid_dataset, anchor_valid_dataset,
                     validate_images, save_best_weights,
                 )
                 psnr_str        = v["psnr_str"]
                 psnr_raw        = v["psnr_raw"]
                 psnr_str_hst    = v["psnr_str_hst"]
                 psnr_raw_hst    = v["psnr_raw_hst"]
-                rt_val_psnr     = v["rt_val_psnr"]
+                anchor_val_psnr = v["anchor_val_psnr"]
                 save_best_score = v["save_best_score"]
 
                 duration = time.perf_counter() - self.now
@@ -485,8 +478,8 @@ class Trainer:
                         f" | HST PSNR(str/raw) = "
                         f"{psnr_str_hst:.3f}/{psnr_raw_hst:.3f} dB"
                     )
-                if roundtrip_valid_dataset is not None:
-                    status += f" | RT PSNR = {rt_val_psnr:.3f} dB"
+                if anchor_valid_dataset is not None and anchor_val_psnr != "":
+                    status += f" | anchor PSNR = {anchor_val_psnr:.3f} dB"
                 status += (
                     f", |g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
                     f"({duration:.2f}s)"
@@ -508,7 +501,7 @@ class Trainer:
                     "duration_s":     float(duration),
                     "psnr_stretched_hst": psnr_str_hst,
                     "psnr_raw_hst":       psnr_raw_hst,
-                    "roundtrip_val_psnr": rt_val_psnr,
+                    "anchor_val_psnr":    anchor_val_psnr,
                     "save_best_score":    save_best_score,
                     "is_baseline":        "",
                 }
@@ -554,7 +547,7 @@ class Trainer:
     @tf.function
     def train_step(self, lr, hr):
         """
-        Perform one supervised training step (pre-round-trip API).
+        Perform one supervised training step (pure-supervised API).
 
         Returns
         -------
@@ -583,7 +576,7 @@ class Trainer:
 
         SR is the model's single output, so this one term — applied to the
         whole batch's ``sr`` — penalises negativity for every lane at once
-        (synthetic, HST, round-trip all branch from this SR). Penalised in
+        (synthetic, HST, star-anchor all branch from this SR). Penalised in
         asinh space; ``relu(-sr)`` is 0 where sr ≥ 0 and grows linearly
         with how negative it is, a constant upward push on negative pixels.
         ``λ`` is a Python float, so this resolves at trace time.
@@ -594,42 +587,38 @@ class Trainer:
         return loss_value
 
     @tf.function
-    def train_step_sky(self, lr, hr, n_syn: int, n_hst: int, n_rt: int):
+    def train_step_sky(self, lr, hr, n_syn: int, n_hst: int, n_anchor: int):
         """``SR = deconvolved sky`` step on a fixed-layout batch.
 
         The batch lanes are laid out in fixed, contiguous blocks so the
         slices below are static Python ints (no per-step ``tf.gather``, no
         retracing): ``[0:n_syn]`` synthetic, then ``n_hst`` HST, then
-        ``n_rt`` round-trip. Each source supervises the single sky
-        estimate ``SR`` through its own instrument's *forward* PSF:
+        ``n_anchor`` star-anchor. Each lane supervises the single sky
+        estimate ``SR``:
 
           * synthetic — ``|SR − scene|`` (direct; LR was E⊛scene, so the
             clean target *is* the sky).
           * HST       — ``|asinh(H ⊛ SR_lin) − HST_image|`` (no rebin;
             HST shares SR's 0.05″ grid).
-          * round-trip— ``|asinh(rebin(E ⊛ SR_lin)) − LR_vis|``.
+          * star-anchor — masked ``|SR − delta_target|``, evaluated ONLY at
+            the star pixels (``delta_target > 0``). The target is a sparse
+            HR image: catalog VIS flux at the star, zero elsewhere.
+            Operator-free — no PSF — so it cannot be poisoned by PSF
+            mismatch; it pins real stars to points of known flux.
 
         All comparisons are in asinh space (the stretch the records and
-        the model output already use); the PSF convs run in linear space
-        (``inverse_asinh`` → conv → ``asinh``). Per-source loss weights
-        scale each block. ``hr`` carries the scene / HST image for the
-        supervised lanes (dummy for round-trip lanes, never read).
+        the model output already use); the HST conv runs in linear space
+        (``inverse_asinh`` → conv → ``asinh``). Per-lane loss weights scale
+        each block. ``hr`` carries the scene / HST image / delta-target.
 
-        ``n_syn``/``n_hst``/``n_rt`` are Python ints, so these guards and
-        the slice logic resolve at trace time — a lane is compiled into
-        the graph only when its count is non-zero, and the required
-        forward op must be installed or tracing raises.
+        ``n_syn``/``n_hst``/``n_anchor`` are Python ints, so these guards and
+        the slice logic resolve at trace time — a lane is compiled into the
+        graph only when its count is non-zero.
         """
         if n_hst > 0 and self.hst_forward_op is None:
             raise ValueError(
                 "train_step_sky: n_hst > 0 requires hst_forward_op to be set "
                 "(HSTForwardOp); the HST lane convolves SR with the HST PSF"
-            )
-        if n_rt > 0 and self.forward_op is None:
-            raise ValueError(
-                "train_step_sky: n_rt > 0 requires forward_op to be set "
-                "(EuclidVISForwardOp); the round-trip lane convolves SR with "
-                "the VIS PSF"
             )
         with tf.GradientTape() as tape:
             sr     = self.checkpoint.model(lr, training=True)   # asinh space
@@ -648,12 +637,13 @@ class Trainer:
                 d = tf.reduce_mean(tf.abs(hconv - hr[s]), axis=[1, 2, 3])
                 per_example.append(self.hst_loss_weight * d)
                 i += n_hst
-            if n_rt > 0:
-                s = slice(i, i + n_rt)
-                econv = asinh_stretch_hr(self.forward_op(sr_lin[s]))
-                lr_vis = lr[s][..., 0:1]
-                d = tf.reduce_mean(tf.abs(econv - lr_vis), axis=[1, 2, 3])
-                per_example.append(self.roundtrip_loss_weight * d)
+            if n_anchor > 0:
+                s = slice(i, i + n_anchor)
+                target = hr[s]                                  # asinh delta-target
+                mask   = tf.cast(target > 0, target.dtype)      # star pixels only
+                num    = tf.reduce_sum(mask * tf.abs(sr[s] - target), axis=[1, 2, 3])
+                den    = tf.reduce_sum(mask, axis=[1, 2, 3]) + 1e-6
+                per_example.append(self.star_anchor_loss_weight * (num / den))
 
             loss_value = tf.reduce_mean(tf.concat(per_example, axis=0))
             # One non-negativity penalty on the shared SR covers all lanes.
@@ -683,51 +673,44 @@ class Trainer:
         """
         return evaluate(self.checkpoint.model, dataset)
 
-    def evaluate_roundtrip(self, lr_dataset) -> float:
-        """Mean round-trip reconstruction PSNR (dB) over an LR-only dataset.
+    def evaluate_anchor(self, anchor_dataset) -> float:
+        """Mean star-anchor PSNR (dB) over the masked star pixels.
 
-        Forward-models the SR back to Euclid LR and compares it to the
-        observed LR VIS, in eval mode and without gradients::
+        Scores SR only where the sparse HR delta-target is non-zero (the
+        star pixel = catalog VIS flux), in eval mode without gradients::
 
-            sr        = model(lr, training=False)
-            sr_lin    = inverse_asinh_stretch_hr(sr)
-            recon     = forward_op(sr_lin)
-            recon_str = asinh_stretch_hr(recon)
-            psnr      = PSNR(lr[..., 0:1], recon_str)   # asinh space
+            sr   = model(lr, training=False)              # asinh space
+            mask = (hr > 0)                               # star pixel(s)
+            mse  = mean_over_mask((sr − hr)²)             # per image
+            psnr = 10·log10(PSNR_PEAK_STRETCHED² / mse)
 
-        PSNR is taken in the same asinh-stretched space and against the
-        same peak (``Config.PSNR_PEAK_STRETCHED``) as the synthetic and
-        HST PSNRs, so all three validation metrics share one dB scale.
-        Higher = the SR is more self-consistent with the observed Euclid
-        LR (cycle consistency).
+        Same asinh space and peak (``Config.PSNR_PEAK_STRETCHED``) as the
+        synthetic / HST PSNRs, so all metrics share one dB scale. Higher =
+        the model places the right flux at the star. Operator-free (no PSF).
+        Returns ``nan`` when no image in the set carries a star.
 
         Parameters
         ----------
-        lr_dataset : tf.data.Dataset
-            Yields LR tensors ``[B, H, W, 4]`` (e.g. from
-            :func:`euclid_polish.training.data_multiband.lr_only_dataset`).
-
-        Returns
-        -------
-        float
-            Set-mean round-trip PSNR in dB, or ``nan`` when
-            ``self.forward_op`` is ``None`` (the operator is required to
-            map SR back to LR).
+        anchor_dataset : tf.data.Dataset
+            Yields ``(lr, hr)`` with ``hr`` the asinh-stretched delta-target.
         """
-        if self.forward_op is None:
-            return float("nan")
         running = Mean()
-        max_val = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=tf.float32)
-        for lr in lr_dataset:
-            sr               = self.checkpoint.model(lr, training=False)
-            sr_linear        = inverse_asinh_stretch_hr(sr)
-            lr_recon_linear  = self.forward_op(sr_linear)
-            lr_recon_stretch = asinh_stretch_hr(lr_recon_linear)
-            lr_vis           = lr[..., 0:1]
-            batch_psnr       = tf.reduce_mean(
-                tf.image.psnr(lr_vis, lr_recon_stretch, max_val=max_val))
-            running(batch_psnr)
-        return float(running.result().numpy())
+        saw = False
+        peak2 = tf.constant(float(Config.PSNR_PEAK_STRETCHED) ** 2, dtype=tf.float32)
+        ln10 = tf.constant(2.302585092994046, dtype=tf.float32)
+        for lr, hr in anchor_dataset:
+            sr   = self.checkpoint.model(lr, training=False)
+            mask = tf.cast(hr > 0, sr.dtype)
+            cnt  = tf.reduce_sum(mask, axis=[1, 2, 3])
+            sse  = tf.reduce_sum(mask * (sr - hr) ** 2, axis=[1, 2, 3])
+            valid = cnt > 0
+            mse  = sse / tf.maximum(cnt, 1.0)
+            psnr = 10.0 * tf.math.log(peak2 / tf.maximum(mse, 1e-12)) / ln10
+            psnr = tf.boolean_mask(psnr, valid)
+            if int(tf.size(psnr)) > 0:
+                running(tf.reduce_mean(psnr))
+                saw = True
+        return float(running.result().numpy()) if saw else float("nan")
 
     def evaluate_hst(self, hst_dataset) -> dict:
         """HST-source validation through the forward op (SR=sky-consistent).
@@ -735,7 +718,7 @@ class Trainer:
         Mirrors the HST training lane: compares ``H ⊛ SR`` to the observed
         HST image rather than ``SR`` directly. Scoring ``SR`` against the
         HST image would reward HST-PSF blur and contradict the synthetic /
-        round-trip lanes (which target the deconvolved sky), so the metric
+        anchor lane (which targets the deconvolved sky), so the metric
         must apply the same forward op the loss does. For each ``(lr, hr)``
         — ``hr`` the observed HST image, asinh-stretched on the 0.05″ grid::
 

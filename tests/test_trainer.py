@@ -1,22 +1,21 @@
 """Tests for the SR=sky trainer (``train_step_sky``).
 
 The model estimates one quantity — the deconvolved sky ``SR`` — and each
-source supervises it through its own forward operator on a **fixed
-contiguous-block batch** ``[n_syn | n_hst | n_rt]`` (no per-example
-source tags, no ``tf.where`` branching). These tests pin:
+lane supervises it on a **fixed contiguous-block batch**
+``[n_syn | n_hst | n_anchor]`` (no per-example source tags, no
+``tf.where`` branching). These tests pin:
 
   1. **Backward compatibility**: the supervised ``train_step(lr, hr)``
      (``lane_counts=None`` path) still drives gradients as before — the
      pure-synthetic callers (``run_pipeline.py``, ``cli/main.py``, the
      web inference helpers) are unaffected.
-  2. **Round-trip lane**: an all-round-trip layout trains on
-     ``|asinh(rebin(E ⊛ SR)) - lr_vis|`` with gradients flowing through
-     both M and the (frozen) VIS forward op.
+  2. **Star-anchor lane**: an all-anchor layout trains on the masked
+     ``|SR - delta_target|`` at the star pixel — operator-free (no PSF).
   3. **HST lane**: an all-HST layout trains on
      ``|asinh(H ⊛ SR) - HST_image|`` through the (frozen) HST forward op.
-  4. **Mixed layout**: a single ``[syn | hst | rt]`` batch sums all three
-     lane losses in one tape pass via static slices.
-  5. **Per-lane weights** and the **missing-op guards**.
+  4. **Mixed layout**: a single ``[syn | hst | anchor]`` batch sums all
+     three lane losses in one tape pass via static slices.
+  5. **Per-lane weights** and the **missing-op guard** (HST only).
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.data_multiband import (
     asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
 )
-from euclid_polish.training.forward_op import EuclidVISForwardOp, HSTForwardOp
+from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer, TRAINING_LOG_COLUMNS
 
@@ -70,25 +69,23 @@ def tiny_trainer(tiny_model, tmp_path):
 
 
 @pytest.fixture
-def trainer_with_forward_op(tiny_model, tmp_path, tmp_psf_path):
-    op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+def trainer_with_anchor(tiny_model, tmp_path):
+    """Trainer for the operator-free star-anchor lane (no forward op)."""
     return Trainer(
-        tiny_model, checkpoint_dir=str(tmp_path / "ckpt_rt"),
-        forward_op=op, roundtrip_loss_weight=1.0,
+        tiny_model, checkpoint_dir=str(tmp_path / "ckpt_anchor"),
+        star_anchor_loss_weight=1.0,
     )
 
 
 @pytest.fixture
 def trainer_with_both_ops(tiny_model, tmp_path, tmp_psf_path):
-    """Trainer wired with both forward ops (VIS round-trip + HST), so a
-    full ``[syn | hst | rt]`` layout can run. The HST op reuses the tiny
-    Gaussian PSF (rebin_factor is forced to 1 inside ``HSTForwardOp``)."""
-    vis_op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
+    """Trainer wired so a full ``[syn | hst | anchor]`` layout can run: the
+    HST lane needs the HST forward op; the anchor lane is operator-free.
+    The HST op reuses the tiny Gaussian PSF (rebin_factor forced to 1)."""
     hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
     return Trainer(
         tiny_model, checkpoint_dir=str(tmp_path / "ckpt_both"),
-        forward_op=vis_op, hst_forward_op=hst_op,
-        roundtrip_loss_weight=1.0, hst_loss_weight=1.0,
+        hst_forward_op=hst_op, hst_loss_weight=1.0, star_anchor_loss_weight=1.0,
     )
 
 
@@ -102,6 +99,30 @@ def _rand_batch(batch_size: int = 2, lr_side: int = 8, hr_side: int = 16,
         rng.normal(size=(batch_size, hr_side, hr_side, 1)).astype(np.float32),
     )
     return lr, hr
+
+
+def _anchor_batch(batch_size: int = 2, lr_side: int = 8, hr_side: int = 16,
+                  seed: int = 0):
+    """``(lr, hr)`` where ``hr`` is a sparse delta-target: zero except one
+    positive 'star' pixel per image (what the masked anchor loss reads)."""
+    rng = np.random.default_rng(seed)
+    lr = tf.constant(
+        rng.normal(size=(batch_size, lr_side, lr_side, 4)).astype(np.float32),
+    )
+    hr = np.zeros((batch_size, hr_side, hr_side, 1), dtype=np.float32)
+    hr[:, hr_side // 2, hr_side // 2, 0] = 5.0
+    return lr, tf.constant(hr)
+
+
+def _anchor_valid_dataset(n: int = 2, lr_side: int = 8, seed: int = 1,
+                          batch_size: int = 1):
+    """Batched anchor ``(lr, hr)`` validation dataset for evaluate_anchor."""
+    rng = np.random.default_rng(seed)
+    hr_side = lr_side * 2
+    lr = rng.normal(size=(n, lr_side, lr_side, 4)).astype(np.float32)
+    hr = np.zeros((n, hr_side, hr_side, 1), dtype=np.float32)
+    hr[:, hr_side // 2, hr_side // 2, 0] = 5.0
+    return tf.data.Dataset.from_tensor_slices((lr, hr)).batch(batch_size)
 
 
 # ---------------------------------------------------------------------------
@@ -132,65 +153,56 @@ class TestSupervisedBackwardCompat:
 
 
 # ---------------------------------------------------------------------------
-# 2. Round-trip path
+# 2. Star-anchor lane (operator-free)
 # ---------------------------------------------------------------------------
 
-class TestRoundTripPath:
+class TestAnchorLane:
 
-    def test_pure_roundtrip_batch_trains(self, trainer_with_forward_op):
-        """An all-round-trip layout ``(0, 0, B)`` runs through
-        ``train_step_sky`` and produces finite, positive loss + gradients.
-        HR is a dummy zeros tensor (matching what the dataset emits)."""
-        lr, _ = _rand_batch()
-        hr_dummy = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        loss, gnorm = trainer_with_forward_op.train_step_sky(
-            lr, hr_dummy, 0, 0, 2)
+    def test_pure_anchor_batch_trains(self, trainer_with_anchor):
+        """An all-anchor layout ``(0, 0, B)`` runs through ``train_step_sky``
+        (no forward op) and produces finite, positive loss + gradients. ``hr``
+        is the sparse delta-target; the loss is masked to the star pixel."""
+        lr, hr = _anchor_batch()
+        loss, gnorm = trainer_with_anchor.train_step_sky(lr, hr, 0, 0, 2)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))
         assert float(loss.numpy()) > 0, (
-            "round-trip loss on a random batch should be strictly positive"
+            "anchor loss on a random SR vs a 5.0 delta should be positive"
         )
 
-    def test_roundtrip_gradients_reach_model(self, trainer_with_forward_op):
-        """Gradients of the round-trip loss w.r.t. M's weights must be non-zero.
-
-        Without this property the round-trip dataset would have zero
-        training effect — Conv would block the gradient signal.
-        """
-        lr, _ = _rand_batch()
-
-        model = trainer_with_forward_op.checkpoint.model
-        op    = trainer_with_forward_op.forward_op
+    def test_anchor_gradients_reach_model(self, trainer_with_anchor):
+        """Gradients of the masked anchor loss w.r.t. M's weights must be
+        non-zero — otherwise the anchor lane has no training effect."""
+        lr, hr = _anchor_batch()
+        model = trainer_with_anchor.checkpoint.model
         with tf.GradientTape() as tape:
             sr = model(lr, training=True)
-            from euclid_polish.training.data_multiband import inverse_asinh_stretch_hr
-            sr_lin = inverse_asinh_stretch_hr(sr)
-            recon  = asinh_stretch_hr(op(sr_lin))
-            loss   = tf.reduce_mean(tf.abs(recon - lr[..., 0:1]))
+            mask = tf.cast(hr > 0, sr.dtype)
+            num = tf.reduce_sum(mask * tf.abs(sr - hr), axis=[1, 2, 3])
+            den = tf.reduce_sum(mask, axis=[1, 2, 3]) + 1e-6
+            loss = tf.reduce_mean(num / den)
         grads = tape.gradient(loss, model.trainable_variables)
         max_g = float(max(
             tf.reduce_max(tf.abs(g)).numpy() for g in grads if g is not None
         ))
-        assert max_g > 0, (
-            "round-trip loss produced zero gradient — Conv may have "
-            "broken the gradient path or M's trainable vars aren't "
-            "in the tape"
-        )
+        assert max_g > 0, "masked anchor loss produced zero gradient"
 
-    def test_forward_op_psf_remains_non_trainable_under_training(
-        self, trainer_with_forward_op,
-    ):
-        """The PSF is a physical constant; the optimiser must not move it."""
-        lr, _ = _rand_batch()
-        hr_dummy = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
+    def test_anchor_loss_only_sees_star_pixels(self, trainer_with_anchor):
+        """The masked loss must ignore non-star pixels: changing ``hr`` ONLY
+        off the star pixel leaves the anchor loss unchanged."""
+        lr, hr = _anchor_batch(seed=7)
+        hr2 = hr.numpy().copy()
+        hr2[:, 0, 0, 0] = -1234.0                # non-star pixel — mask>0 excludes it
+        model = trainer_with_anchor.checkpoint.model
 
-        before = trainer_with_forward_op.forward_op._psf_kernel.numpy().copy()
-        for _ in range(3):
-            trainer_with_forward_op.train_step_sky(lr, hr_dummy, 0, 0, 2)
-        after = trainer_with_forward_op.forward_op._psf_kernel.numpy()
-        np.testing.assert_array_equal(before, after,
-            err_msg="PSF kernel drifted during training — must be non-trainable",
-        )
+        def masked(target):
+            sr = model(lr, training=False)
+            m = tf.cast(target > 0, sr.dtype)
+            num = tf.reduce_sum(m * tf.abs(sr - target), axis=[1, 2, 3])
+            den = tf.reduce_sum(m, axis=[1, 2, 3]) + 1e-6
+            return float(tf.reduce_mean(num / den).numpy())
+
+        assert masked(hr) == pytest.approx(masked(tf.constant(hr2)), rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +240,10 @@ class TestHstLane:
 class TestMixedLayout:
 
     def test_full_layout_sums_all_three_lanes(self, trainer_with_both_ops):
-        """A single ``[syn | hst | rt]`` batch (1, 1, 2) runs all three
-        lanes in one tape pass and yields finite, positive loss."""
-        lr, hr = _rand_batch(batch_size=4)
+        """A single ``[syn | hst | anchor]`` batch (1, 1, 2) runs all three
+        lanes in one tape pass and yields finite, positive loss. ``hr`` has a
+        positive star pixel per image, so the anchor lane's mask is non-empty."""
+        lr, hr = _anchor_batch(batch_size=4)
         loss, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
         assert np.isfinite(float(loss.numpy()))
         assert float(loss.numpy()) > 0
@@ -251,28 +264,24 @@ class TestMixedLayout:
             f"reference {ref_loss:.4f} differ by >1.0 — formula drifted"
         )
 
-    def test_roundtrip_weight_scales_loss(
-        self, tiny_model, tmp_path, tmp_psf_path,
-    ):
-        """Doubling ``roundtrip_loss_weight`` ~doubles an all-RT loss."""
-        op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
-        # nonneg_sr_weight=0 so the loss is purely the round-trip term and
-        # the ×2 weight ratio isn't diluted by the additive penalty.
+    def test_anchor_weight_scales_loss(self, tiny_model, tmp_path):
+        """Doubling ``star_anchor_loss_weight`` ~doubles an all-anchor loss."""
+        # nonneg_sr_weight=0 so the loss is purely the anchor term and the
+        # ×2 weight ratio isn't diluted by the additive penalty.
         t1 = Trainer(
             tiny_model, checkpoint_dir=str(tmp_path / "ckpt_w1"),
-            forward_op=op, roundtrip_loss_weight=1.0, nonneg_sr_weight=0.0,
+            star_anchor_loss_weight=1.0, nonneg_sr_weight=0.0,
         )
         t2 = Trainer(
             tiny_model, checkpoint_dir=str(tmp_path / "ckpt_w2"),
-            forward_op=op, roundtrip_loss_weight=2.0, nonneg_sr_weight=0.0,
+            star_anchor_loss_weight=2.0, nonneg_sr_weight=0.0,
         )
-        lr, _  = _rand_batch()
-        hr_dum = tf.zeros([2, 16, 16, 1], dtype=tf.float32)
-        l1, _ = t1.train_step_sky(lr, hr_dum, 0, 0, 2)
-        l2, _ = t2.train_step_sky(lr, hr_dum, 0, 0, 2)
+        lr, hr = _anchor_batch()
+        l1, _ = t1.train_step_sky(lr, hr, 0, 0, 2)
+        l2, _ = t2.train_step_sky(lr, hr, 0, 0, 2)
         ratio = float(l2.numpy()) / float(l1.numpy())
         assert ratio > 1.3, (
-            f"roundtrip_loss_weight=2 should yield ~2× the loss; "
+            f"star_anchor_loss_weight=2 should yield ~2× the loss; "
             f"got ratio {ratio:.2f}"
         )
 
@@ -325,11 +334,12 @@ class TestForwardOpGuards:
         with pytest.raises(ValueError, match="hst_forward_op"):
             tiny_trainer.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
 
-    def test_roundtrip_lane_without_op_raises(self, tiny_trainer):
-        """``n_rt > 0`` without a VIS forward op is a config error."""
-        lr, hr = _rand_batch()
-        with pytest.raises(ValueError, match="forward_op"):
-            tiny_trainer.train_step_sky(lr, hr, 0, 0, int(lr.shape[0]))
+    def test_anchor_lane_needs_no_op(self, tiny_trainer):
+        """The anchor lane is operator-free — ``n_anchor > 0`` runs on a bare
+        trainer (no forward op) without raising."""
+        lr, hr = _anchor_batch()
+        loss, _ = tiny_trainer.train_step_sky(lr, hr, 0, 0, int(lr.shape[0]))
+        assert np.isfinite(float(loss.numpy()))
 
 
 # ---------------------------------------------------------------------------
@@ -390,21 +400,21 @@ class TestLrOnlyDataset:
         assert b0.dtype == tf.float32
 
 
-class TestEvaluateRoundtrip:
+class TestEvaluateAnchor:
 
-    def test_returns_finite_with_forward_op(self, trainer_with_forward_op,
-                                            tmp_path):
-        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
-        ds = lr_only_dataset(path, batch_size=2)
-        val = trainer_with_forward_op.evaluate_roundtrip(ds)
+    def test_returns_finite_masked_psnr(self, tiny_trainer):
+        """evaluate_anchor returns a finite dB PSNR masked to star pixels."""
+        ds = _anchor_valid_dataset(n=3, batch_size=2)
+        val = tiny_trainer.evaluate_anchor(ds)
         assert isinstance(val, float)
-        assert np.isfinite(val)   # round-trip PSNR in dB (a finite real)
+        assert np.isfinite(val)
 
-    def test_returns_nan_without_forward_op(self, tiny_trainer, tmp_path):
-        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
-        ds = lr_only_dataset(path, batch_size=2)
-        val = tiny_trainer.evaluate_roundtrip(ds)
-        assert np.isnan(val)
+    def test_returns_nan_when_no_stars(self, tiny_trainer):
+        """A dataset whose ``hr`` is all-zero (no star pixel) → nan."""
+        lr = np.zeros((2, 8, 8, 4), dtype=np.float32)
+        hr = np.zeros((2, 16, 16, 1), dtype=np.float32)
+        ds = tf.data.Dataset.from_tensor_slices((lr, hr)).batch(1)
+        assert np.isnan(tiny_trainer.evaluate_anchor(ds))
 
 
 class TestMultiSourceValidationLogging:
@@ -418,37 +428,32 @@ class TestMultiSourceValidationLogging:
     def test_train_writes_new_columns(
         self, tiny_model, tmp_path, tmp_psf_path,
     ):
-        """``train()`` with HST + round-trip validation datasets records
-        the per-source columns (HST PSNR str/raw, round-trip PSNR) so a
-        regime change's effect on each source is auditable from the CSV."""
+        """``train()`` with HST + star-anchor validation datasets records
+        the per-source columns (HST PSNR str/raw, anchor PSNR) so a regime
+        change's effect on each source is auditable from the CSV."""
         ckpt_dir = str(tmp_path / "ckpt_ms")
-        op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
         hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
         trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir,
-                          forward_op=op, hst_forward_op=hst_op)
+                          hst_forward_op=hst_op)
 
-        rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
         train_ds = _train_pairs_dataset()
         # Synthetic validation: deliberately mismatched → LOW psnr.
         syn_valid = _valid_pairs_dataset(seed=10)
-        # HST validation: a different random pair (its absolute PSNR
-        # value is irrelevant — what matters is that it's logged
-        # separately and never drives save-best).
         hst_valid = _valid_pairs_dataset(seed=20)
-        rt_valid = lr_only_dataset(rt_path, batch_size=2)
+        anchor_valid = _anchor_valid_dataset(n=2, batch_size=2)
 
         # Two evaluations: step 1 (re-baseline) and step 2.
         trainer.train(
             train_ds, syn_valid, steps=2, evaluate_every=1,
             save_best_only=True, validate_images=4,
             hst_valid_dataset=hst_valid,
-            roundtrip_valid_dataset=rt_valid,
+            anchor_valid_dataset=anchor_valid,
         )
 
         rows = self._read_log(ckpt_dir)
         assert len(rows) == 2
         for col in ("psnr_stretched_hst", "psnr_raw_hst",
-                    "roundtrip_val_psnr"):
+                    "anchor_val_psnr"):
             assert col in rows[0]
             # Non-empty + finite float for every row (all sources wired).
             for r in rows:
@@ -456,7 +461,7 @@ class TestMultiSourceValidationLogging:
                 assert np.isfinite(float(r[col]))
 
         # The new columns must hold genuinely different numbers than the
-        # synthetic ones (proves they came from the HST/RT datasets, not
+        # synthetic ones (proves they came from the HST/anchor datasets, not
         # a copy of the synthetic eval).
         assert rows[0]["psnr_stretched_hst"] != rows[0]["psnr_stretched"]
 
@@ -464,17 +469,15 @@ class TestMultiSourceValidationLogging:
         self, tiny_model, tmp_path, tmp_psf_path,
     ):
         """Save-best now keys on the weighted composite. With default
-        weights (w_syn=1, w_hst=1, w_rt=0) and both synthetic + HST
+        weights (w_syn=1, w_hst=1, w_anchor=0) and both synthetic + HST
         validation wired, the logged ``save_best_score`` equals
         ``psnr_syn + psnr_hst`` and the re-baselined ``ckpt.psnr`` holds
         that composite — not bare synthetic PSNR."""
         ckpt_dir = str(tmp_path / "ckpt_save")
-        op = EuclidVISForwardOp(psf_fits_path=tmp_psf_path, rebin_factor=2)
         hst_op = HSTForwardOp(psf_fits_path=tmp_psf_path)
         trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir,
-                          forward_op=op, hst_forward_op=hst_op)
+                          hst_forward_op=hst_op)
 
-        rt_path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=2, side=8)
         train_ds = _train_pairs_dataset()
         syn_valid = _valid_pairs_dataset(seed=10)
         hst_valid = _valid_pairs_dataset(seed=99)
@@ -484,7 +487,7 @@ class TestMultiSourceValidationLogging:
             train_ds, syn_valid, steps=1, evaluate_every=1,
             save_best_only=True, validate_images=4,
             hst_valid_dataset=hst_valid,
-            roundtrip_valid_dataset=lr_only_dataset(rt_path, batch_size=2),
+            anchor_valid_dataset=_anchor_valid_dataset(n=2, batch_size=2),
             save_best_weights=(1.0, 1.0, 0.0),
         )
         rows = self._read_log(ckpt_dir)
@@ -525,7 +528,7 @@ class TestMultiSourceValidationLogging:
     def test_none_sources_logged_as_empty_string(
         self, tiny_model, tmp_path,
     ):
-        """When HST / round-trip datasets are not provided, their columns
+        """When HST / star-anchor datasets are not provided, their columns
         are written as empty strings (not 'nan' text)."""
         ckpt_dir = str(tmp_path / "ckpt_none")
         trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
@@ -538,7 +541,7 @@ class TestMultiSourceValidationLogging:
         rows = self._read_log(ckpt_dir)
         assert rows[0]["psnr_stretched_hst"] == ""
         assert rows[0]["psnr_raw_hst"] == ""
-        assert rows[0]["roundtrip_val_psnr"] == ""
+        assert rows[0]["anchor_val_psnr"] == ""
 
 
 class TestLogHeaderRotation:

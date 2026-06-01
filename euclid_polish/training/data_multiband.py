@@ -95,7 +95,7 @@ class MultiBandEuclidDataset:
     primary synthetic source alone as ``(lr, hr)`` 2-tuples (the
     pure-supervised path + every validation stream).
     :meth:`dataset_fixed_layout` combines the sources into **fixed
-    contiguous-block batches** ``[n_syn | n_hst | n_rt]`` for
+    contiguous-block batches** ``[n_syn | n_hst | n_anchor]`` for
     :meth:`Trainer.train_step_sky`, which slices each lane by its static
     count (no per-example source tags, no random interleaving):
 
@@ -107,12 +107,13 @@ class MultiBandEuclidDataset:
         ``scripts/fasrc_generate_hst_tfrecords.py``. ``hr`` is the
         observed HST image; ``train_step_sky`` supervises ``H ⊛ SR``
         against it.
-      * **round-trip** (optional): ``roundtrip_records_dir`` +
-        ``roundtrip_fraction`` — *real* Euclid LR cutouts from
-        ``scripts/fasrc_generate_euclid_roundtrip_tfrecords.py``. These
-        records have **no HR side** (a dummy zero HR rides along, never
-        read); ``train_step_sky`` applies the self-supervised round-trip
-        loss ``|asinh(rebin(E ⊛ SR)) - lr_vis|``.
+      * **star-anchor** (optional): ``anchor_records_dir`` — real Euclid
+        star cutouts from
+        ``scripts/fasrc_generate_star_anchor_tfrecords.py``, paired with a
+        sparse HR delta-target (one pixel = the catalog VIS flux at the
+        star). Structurally a ``(dirty, hr)`` pair like the synthetic lane;
+        ``train_step_sky`` supervises ``SR`` against the delta but **masks
+        the loss to the star pixel** — operator-free (no PSF).
 
     Parameters
     ----------
@@ -131,14 +132,14 @@ class MultiBandEuclidDataset:
         missing the right TFRecords.
     hst_fraction
         Per-example draw weight for the HST source.
-    roundtrip_records_dir
-        Optional tertiary records dir containing LR-only Euclid
-        cutouts. Has no effect when ``roundtrip_fraction == 0`` or
-        the ``dirty_{subset}.tfrecord`` is missing.
-    roundtrip_fraction
-        Per-example draw weight for the round-trip source.
-        ``hst_fraction + roundtrip_fraction`` must be ≤ 1; the
-        remainder is the synthetic weight.
+    anchor_records_dir
+        Optional tertiary records dir containing star-anchor pairs
+        (``dirty_anchor_{subset}`` + ``hr_anchor_{subset}``). Has no
+        effect when ``n_anchor == 0`` or the records are missing.
+    anchor_fraction
+        Retained for the constructor's ≤1 sum-validation / back-compat;
+        ``hst_fraction + anchor_fraction`` must be ≤ 1. The actual lane
+        size is driven by ``n_anchor`` in ``dataset_fixed_layout``.
     """
 
     def __init__(
@@ -149,29 +150,29 @@ class MultiBandEuclidDataset:
         hr_patch_size: int = Config.DEFAULT_HR_CROP_SIZE,
         hst_records_dir: Optional[str] = None,
         hst_fraction: float = 0.0,
-        roundtrip_records_dir: Optional[str] = None,
-        roundtrip_fraction: float = 0.0,
+        anchor_records_dir: Optional[str] = None,
+        anchor_fraction: float = 0.0,
     ):
 
         if subset not in ("train", "validate"):
             raise ValueError("subset must be 'train' or 'validate'")
         if not (0.0 <= hst_fraction <= 1.0):
             raise ValueError(f"hst_fraction must be in [0, 1], got {hst_fraction}")
-        if not (0.0 <= roundtrip_fraction <= 1.0):
+        if not (0.0 <= anchor_fraction <= 1.0):
             raise ValueError(
-                f"roundtrip_fraction must be in [0, 1], got {roundtrip_fraction}"
+                f"anchor_fraction must be in [0, 1], got {anchor_fraction}"
             )
-        if hst_fraction + roundtrip_fraction > 1.0 + 1e-6:
+        if hst_fraction + anchor_fraction > 1.0 + 1e-6:
             raise ValueError(
-                f"hst_fraction ({hst_fraction}) + roundtrip_fraction "
-                f"({roundtrip_fraction}) must be ≤ 1 — the remainder "
+                f"hst_fraction ({hst_fraction}) + anchor_fraction "
+                f"({anchor_fraction}) must be ≤ 1 — the remainder "
                 "is the synthetic weight"
             )
         self.scale              = int(scale)
         self.hr_patch_size      = int(hr_patch_size)
         self.subset             = subset
         self.hst_fraction       = float(hst_fraction)
-        self.roundtrip_fraction = float(roundtrip_fraction)
+        self.anchor_fraction    = float(anchor_fraction)
 
         self.clean_file, self.dirty_file = self._resolve_pair(
             records_dir, subset,
@@ -194,13 +195,20 @@ class MultiBandEuclidDataset:
                 self.hst_clean_file = None
                 self.hst_dirty_file = None
 
-        # Tertiary round-trip source: LR-only, no clean/HR side. Resolve
-        # only the dirty file. Same lenient fallback as HST.
-        self.roundtrip_dirty_file: Optional[str] = None
-        if roundtrip_records_dir is not None:
-            rt_dirty = tfrecord_path(roundtrip_records_dir, f"dirty_{subset}")
-            if _os.path.exists(rt_dirty):
-                self.roundtrip_dirty_file = rt_dirty
+        # Tertiary star-anchor source: real Euclid star cutouts + a sparse
+        # HR delta-target (one pixel = catalog flux). Structurally a
+        # (dirty, hr) pair like the synthetic lane, so it reuses
+        # ``_build_single_source``; the trainer masks the loss to the star
+        # pixel. Resolved whenever the records dir is given; same lenient
+        # fallback as HST.
+        self.anchor_dirty_file: Optional[str] = None
+        self.anchor_clean_file: Optional[str] = None
+        if anchor_records_dir is not None:
+            a_dirty = tfrecord_path(anchor_records_dir, f"dirty_anchor_{subset}")
+            a_hr    = tfrecord_path(anchor_records_dir, f"hr_anchor_{subset}")
+            if _os.path.exists(a_dirty) and _os.path.exists(a_hr):
+                self.anchor_dirty_file = a_dirty
+                self.anchor_clean_file = a_hr
 
     @staticmethod
     def _resolve_pair(records_dir: str, subset: str) -> tuple[str, str]:
@@ -257,75 +265,11 @@ class MultiBandEuclidDataset:
             )
         return ds.repeat(repeat_count)
 
-    def _build_roundtrip_source(
-        self, dirty_file: str,
-        *, random_transform: bool, repeat_count: Optional[int],
-        cache: bool,
-    ) -> tf.data.Dataset:
-        """LR-only round-trip stream → ``(lr, dummy_hr)``.
-
-        Round-trip records have no HR side; ``train_step_sky`` computes
-        the round-trip loss entirely on LR + the model's own forward
-        reconstruction. ``dummy_hr`` is a zero-tensor at the supervised
-        HR patch shape (training) or scaled-up from the LR record shape
-        (validation); it is never read by the loss (the round-trip lane
-        is identified by its fixed position in the batch, not a tag).
-        """
-        n_lr = Config.NUM_LR_CHANNELS
-
-        def _parse_lr(raw):
-            return asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
-
-        ds = tf.data.TFRecordDataset(dirty_file).map(
-            _parse_lr, num_parallel_calls=AUTOTUNE,
-        )
-        if cache:
-            ds = ds.cache()
-
-        scale = self.scale
-        if random_transform:
-            lr_patch = self.hr_patch_size // scale
-            hr_patch = self.hr_patch_size
-
-            def _crop_lr_with_dummy_hr(lr):
-                lr_h = tf.shape(lr)[0]
-                lr_w = tf.shape(lr)[1]
-                # Same aligned-crop policy as ``_augment_multiband`` —
-                # snap to a multiple of ``scale`` so the dummy HR's
-                # virtual top-left aligns with the LR crop.
-                max_x = (lr_h - lr_patch) // 1 * 1
-                max_y = (lr_w - lr_patch) // 1 * 1
-                lr_x = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
-                lr_y = tf.random.uniform([], 0, max_y + 1, dtype=tf.int32)
-                lr_c = lr[lr_x : lr_x + lr_patch, lr_y : lr_y + lr_patch, :]
-                hr_c = tf.zeros(
-                    [hr_patch, hr_patch, Config.NUM_HR_CHANNELS],
-                    dtype=lr.dtype,
-                )
-                return lr_c, hr_c
-
-            ds = ds.shuffle(buffer_size=200)
-            ds = ds.map(_crop_lr_with_dummy_hr, num_parallel_calls=AUTOTUNE)
-        else:
-            # Validation / inference: keep records at native size, build
-            # a shape-matched dummy HR by upscaling the LR shape.
-            def _attach_dummy_hr(lr):
-                lr_h = tf.shape(lr)[0]
-                lr_w = tf.shape(lr)[1]
-                hr_c = tf.zeros(
-                    [lr_h * scale, lr_w * scale, Config.NUM_HR_CHANNELS],
-                    dtype=lr.dtype,
-                )
-                return lr, hr_c
-            ds = ds.map(_attach_dummy_hr, num_parallel_calls=AUTOTUNE)
-
-        return ds.repeat(repeat_count)
-
     def dataset_fixed_layout(
         self,
         n_syn: int,
         n_hst: int,
-        n_rt: int,
+        n_anchor: int,
         *,
         random_transform: bool = True,
         repeat_count: Optional[int] = None,
@@ -333,19 +277,24 @@ class MultiBandEuclidDataset:
         """Fixed contiguous-block batches for :meth:`Trainer.train_step_sky`.
 
         Every batch is laid out as ``[n_syn synthetic | n_hst HST |
-        n_rt round-trip]`` — exactly these per-lane counts, in this
+        n_anchor star-anchor]`` — exactly these per-lane counts, in this
         order, no source tags. The trainer slices each lane by its
-        static count and applies that lane's forward op, so there is no
-        per-example branching. Each lane is shuffled and batched
-        independently (``drop_remainder=True`` for static shapes), then
-        the per-lane batches are concatenated along the batch axis.
+        static count, so there is no per-example branching. Each lane is
+        shuffled and batched independently (``drop_remainder=True`` for
+        static shapes), then the per-lane batches are concatenated along
+        the batch axis.
+
+        The star-anchor lane is a ``(dirty_anchor, hr_anchor)`` pair like
+        the synthetic lane — real Euclid star cutouts + a sparse HR
+        delta-target — so it reuses ``_build_single_source``; the trainer
+        masks its loss to the (single) star pixel.
 
         A lane with count 0 is omitted. Requesting a lane whose records
-        weren't configured (``n_hst>0`` without HST records, ``n_rt>0``
-        without round-trip records) is an error — unlike the lenient
+        weren't configured (``n_hst>0`` without HST records, ``n_anchor>0``
+        without star-anchor records) is an error — unlike the lenient
         single-source fallback, a fixed layout must get what it asks for.
         Yields ``(lr, hr)`` 2-tuples with ``lr`` ``[B, h, w, 4]`` and
-        ``hr`` ``[B, H, W, 1]`` where ``B = n_syn + n_hst + n_rt``.
+        ``hr`` ``[B, H, W, 1]`` where ``B = n_syn + n_hst + n_anchor``.
         """
         lanes: list = []
         if n_syn > 0:
@@ -367,19 +316,18 @@ class MultiBandEuclidDataset:
                 cache=True,
             )
             lanes.append(hst.batch(n_hst, drop_remainder=True))
-        if n_rt > 0:
-            if self.roundtrip_dirty_file is None:
+        if n_anchor > 0:
+            if self.anchor_dirty_file is None or self.anchor_clean_file is None:
                 raise ValueError(
-                    "dataset_fixed_layout: n_rt > 0 but no round-trip records "
-                    "are configured (pass roundtrip_records_dir and "
-                    "roundtrip_fraction > 0)"
+                    "dataset_fixed_layout: n_anchor > 0 but no star-anchor "
+                    "records are configured (pass anchor_records_dir)"
                 )
-            rt = self._build_roundtrip_source(
-                self.roundtrip_dirty_file,
+            anc = self._build_single_source(
+                self.anchor_dirty_file, self.anchor_clean_file,
                 random_transform=random_transform, repeat_count=repeat_count,
                 cache=True,
             )
-            lanes.append(rt.batch(n_rt, drop_remainder=True))
+            lanes.append(anc.batch(n_anchor, drop_remainder=True))
 
         if not lanes:
             raise ValueError("dataset_fixed_layout: all lane counts are 0")
@@ -407,7 +355,7 @@ class MultiBandEuclidDataset:
         Yields ``(lr, hr)`` 2-tuples from the primary (synthetic)
         records — the pure-supervised path used by ``run_pipeline.py``,
         the CLI, the web inference helpers, and every validation stream.
-        Multi-source training (synthetic + HST + round-trip) goes through
+        Multi-source training (synthetic + HST + star-anchor) goes through
         :meth:`dataset_fixed_layout`, which lays the sources out in fixed
         contiguous blocks for :meth:`Trainer.train_step_sky` instead of
         randomly interleaving them.
@@ -418,6 +366,29 @@ class MultiBandEuclidDataset:
             cache=True,
         )
         return primary.batch(batch_size).prefetch(AUTOTUNE)
+
+    def anchor_dataset(
+        self,
+        batch_size: int = 1,
+        *,
+        random_transform: bool = False,
+        repeat_count: Optional[int] = 1,
+    ) -> Optional[tf.data.Dataset]:
+        """Star-anchor ``(lr, hr)`` stream for validation/monitoring.
+
+        Yields the ``(dirty_anchor, hr_anchor)`` pair — ``hr`` is the sparse
+        HR delta-target (zero except the star pixel). Used by
+        :meth:`Trainer.evaluate_anchor`, which masks to the star pixel.
+        Returns ``None`` when no star-anchor records are configured.
+        """
+        if self.anchor_dirty_file is None or self.anchor_clean_file is None:
+            return None
+        ds = self._build_single_source(
+            self.anchor_dirty_file, self.anchor_clean_file,
+            random_transform=random_transform, repeat_count=repeat_count,
+            cache=False,
+        )
+        return ds.batch(batch_size).prefetch(AUTOTUNE)
 
 
 def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:

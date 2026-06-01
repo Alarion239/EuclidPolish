@@ -104,22 +104,27 @@ def test_multiband_dataset_without_augmentation(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Source-tag emission + 3-source mixing (round-trip integration)
+# 3-source mixing (synthetic + HST + star-anchor fixed layout)
 # ---------------------------------------------------------------------------
 
-def _write_test_dirty_only(tmp_path, subset: str = "train") -> str:
-    """Write *only* the dirty TFRecord — used to fake a round-trip records dir."""
-    rng = np.random.default_rng(2025)
-    imgs = [
-        MultiBandSkyImage(
-            data=(rng.normal(size=(32, 32, 4)) * 100.0).astype(np.float32),
-            pixel_scale_arcsec=0.10,
-            band_names=Config.LR_INPUT_BAND_NAMES,
-            is_clean=False,
-        )
-        for _ in range(4)
-    ]
-    write_multiband_skyimages(imgs, f"dirty_{subset}", records_dir=str(tmp_path))
+def _write_anchor_records(tmp_path, subset: str = "train") -> str:
+    """Write a star-anchor ``(dirty_anchor, hr_anchor)`` pair. ``hr`` is a
+    sparse delta-target — zeros except one positive star pixel at the centre.
+    Records are sized ≤ 2·patch−2 (HR 24, LR 12) so any aligned 16-crop keeps
+    the centred star."""
+    rng = np.random.default_rng(7)
+    lr_imgs, hr_imgs = [], []
+    for _ in range(4):
+        lr = (rng.normal(size=(12, 12, 4)) * 100.0).astype(np.float32)
+        hr = np.zeros((24, 24, 1), dtype=np.float32)
+        hr[12, 12, 0] = 5.0e5                      # one star pixel at the centre
+        lr_imgs.append(MultiBandSkyImage(
+            data=lr, pixel_scale_arcsec=0.10,
+            band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False))
+        hr_imgs.append(MultiBandSkyImage(
+            data=hr, pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True))
+    write_multiband_skyimages(lr_imgs, f"dirty_anchor_{subset}", records_dir=str(tmp_path))
+    write_multiband_skyimages(hr_imgs, f"hr_anchor_{subset}", records_dir=str(tmp_path))
     return str(tmp_path)
 
 
@@ -151,32 +156,33 @@ def test_fixed_layout_syn_only_shapes(tmp_path):
 
 
 def test_fixed_layout_three_way_counts(tmp_path):
-    """A ``[n_syn | n_hst | n_rt]`` layout produces a batch of exactly
-    that size, contiguous in lane order, with the round-trip block's HR
-    slot all-zero (the dummy that ``train_step_sky`` never reads)."""
+    """A ``[n_syn | n_hst | n_anchor]`` layout produces a batch of exactly
+    that size, contiguous in lane order, with the star-anchor block's HR
+    slot carrying the sparse delta (≥1 positive pixel per anchor example)."""
     rdir    = _write_test_records(tmp_path)
     hst_dir = tmp_path / "hst_records"
     hst_dir.mkdir()
     _write_test_records(hst_dir)            # clean_train + dirty_train
-    rt_dir = tmp_path / "rt_records"
-    _write_test_dirty_only(rt_dir, subset="train")
+    anchor_dir = tmp_path / "anchor_records"
+    anchor_dir.mkdir()
+    _write_anchor_records(anchor_dir, subset="train")
 
-    n_syn, n_hst, n_rt = 2, 1, 1
+    n_syn, n_hst, n_anchor = 2, 1, 1
     ds = MultiBandEuclidDataset(
         subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
         hst_records_dir=str(hst_dir), hst_fraction=0.25,
-        roundtrip_records_dir=str(rt_dir), roundtrip_fraction=0.25,
-    ).dataset_fixed_layout(n_syn, n_hst, n_rt, random_transform=True)
+        anchor_records_dir=str(anchor_dir), anchor_fraction=0.25,
+    ).dataset_fixed_layout(n_syn, n_hst, n_anchor, random_transform=True)
 
     lr, hr = next(iter(ds))
-    B = n_syn + n_hst + n_rt
+    B = n_syn + n_hst + n_anchor
     assert lr.shape == (B, 8, 8, 4)
     assert hr.shape == (B, 16, 16, 1)
-    # Round-trip lane is the last n_rt rows; its HR slot is dummy zeros.
-    rt_hr = hr.numpy()[n_syn + n_hst:]
-    assert (rt_hr == 0.0).all(), (
-        f"round-trip dummy HR contained non-zero values: "
-        f"max abs = {np.abs(rt_hr).max()}"
+    # The star-anchor lane is the last n_anchor rows; its HR delta survives
+    # the crop (records are sized so the centred star is always kept).
+    anchor_hr = hr.numpy()[n_syn + n_hst:]
+    assert (anchor_hr > 0).any(), (
+        "star-anchor HR delta was cropped out — the star pixel must survive"
     )
 
 
@@ -191,22 +197,22 @@ def test_fixed_layout_missing_hst_records_raises(tmp_path):
         ds_obj.dataset_fixed_layout(2, 1, 0, random_transform=True)
 
 
-def test_fixed_layout_missing_roundtrip_records_raises(tmp_path):
-    """Likewise for a requested round-trip lane with no round-trip records."""
+def test_fixed_layout_missing_anchor_records_raises(tmp_path):
+    """Likewise for a requested star-anchor lane with no anchor records."""
     rdir = _write_test_records(tmp_path)
     ds_obj = MultiBandEuclidDataset(
         subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
     )
-    with pytest.raises(ValueError, match="no round-trip records"):
+    with pytest.raises(ValueError, match="no star-anchor records"):
         ds_obj.dataset_fixed_layout(2, 0, 1, random_transform=True)
 
 
 def test_fraction_sum_overflow_rejected():
-    """``hst_fraction + roundtrip_fraction > 1`` is nonsense."""
+    """``hst_fraction + anchor_fraction > 1`` is nonsense."""
     with pytest.raises(ValueError, match="must be ≤ 1"):
         MultiBandEuclidDataset(
             subset="train", records_dir="/tmp/does-not-matter",
-            hst_fraction=0.6, roundtrip_fraction=0.5,
+            hst_fraction=0.6, anchor_fraction=0.5,
         )
 
 

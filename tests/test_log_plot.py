@@ -1,10 +1,10 @@
 """Tests for the training-log plotter, including the multi-source panels.
 
-The round-trip workflow wants three curves visible — synthetic PSNR,
-HST PSNR, and the cycle-run (round-trip) PSNR. These pin that:
+The workflow wants three curves visible — synthetic PSNR, HST PSNR, and
+the star-anchor PSNR. These pin that:
 
   * synthetic-only records still produce a valid plot (back-compat),
-  * records carrying the HST / round-trip columns add their panels,
+  * records carrying the HST / star-anchor columns add their panels,
   * rows with the columns blank/None are filtered, not crashed on.
 """
 
@@ -39,7 +39,7 @@ def test_synthetic_only_records_plot(tmp_path):
 
 
 def test_multisource_records_one_graph(tmp_path):
-    """When HST PSNR + round-trip PSNR are present, all three validation
+    """When HST PSNR + star-anchor PSNR are present, all three validation
     metrics render on a single combined graph (all three on the shared
     dB axis) and the call returns the right record/step counts."""
     records = []
@@ -47,7 +47,7 @@ def test_multisource_records_one_graph(tmp_path):
         r = _base_row(s)
         r["psnr_stretched_hst"] = 18.0 + s * 0.02
         r["psnr_raw_hst"] = 48.0 + s * 0.02
-        r["roundtrip_val_psnr"] = 35.0 + s * 0.01
+        r["anchor_val_psnr"] = 35.0 + s * 0.01
         records.append(r)
     out = str(tmp_path / "multi.png")
     n, last = plot_training_records(records, out, smooth_window=2)
@@ -65,7 +65,7 @@ def test_save_best_score_adds_second_panel(tmp_path):
     for s, sc in zip((0, 100, 200, 300), scores):
         r = _base_row(s)
         r["psnr_stretched_hst"] = 18.0 + s * 0.02
-        r["roundtrip_val_psnr"] = 35.0
+        r["anchor_val_psnr"] = 35.0
         r["save_best_score"] = sc
         records.append(r)
     out = str(tmp_path / "score.png")
@@ -80,9 +80,9 @@ def test_partial_multisource_columns_filtered(tmp_path):
     records = []
     for s in (0, 100, 200):
         r = _base_row(s)
-        # HST present only on the middle row; round-trip never.
+        # HST present only on the middle row; star-anchor never.
         r["psnr_stretched_hst"] = 19.0 if s == 100 else None
-        r["roundtrip_val_psnr"] = ""   # blank string, as the CSV writes
+        r["anchor_val_psnr"] = ""   # blank string, as the CSV writes
         records.append(r)
     out = str(tmp_path / "partial.png")
     n, _ = plot_training_records(records, out)

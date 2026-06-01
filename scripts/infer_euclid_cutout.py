@@ -34,6 +34,9 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.downloader import fetch_cutout_at
+from euclid_polish.euclid.photometry import (
+    adu_per_s_to_electrons, adu_per_s_to_electrons_factor,
+)
 from euclid_polish.training.inference import (
     load_model_from_checkpoint, reconstruct, scaled_wcs_header,
 )
@@ -94,8 +97,8 @@ def main() -> int:
         if band_name == "VIS":
             vis_header = header.copy()
         magzero = float(header.get("MAGZERO", band.sim_zeropoint_e))
-        adu_to_e = 10 ** ((band.sim_zeropoint_e - magzero) / 2.5)
-        bands_e[band_name] = (arr * adu_to_e).astype(np.float32)
+        adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
+        bands_e[band_name] = adu_per_s_to_electrons(arr, magzero, band)
         print(f"    shape={bands_e[band_name].shape}  MAGZERO={magzero:.3f}"
               f"  ADU/s→e⁻={adu_to_e:.1f}")
 

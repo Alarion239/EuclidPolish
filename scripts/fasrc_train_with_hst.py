@@ -32,11 +32,8 @@ from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.training import Trainer
-from euclid_polish.training.data_multiband import (
-    MultiBandEuclidDataset, lr_only_dataset,
-)
-from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.training.forward_op import EuclidVISForwardOp, HSTForwardOp
+from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 
 
@@ -45,10 +42,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--steps",        type=int,   default=Config.DEFAULT_TRAIN_STEPS)
     # Explicit per-lane batch composition for ``Trainer.train_step_sky``.
     # Each step's batch is the fixed contiguous block layout
-    # ``[n_syn synthetic | n_hst HST | n_rt round-trip]``; the batch size
-    # is just their sum. Counts (not fractions) because the trainer slices
-    # by these exact integers — no rounding, no "fraction rounds to 0 rows"
-    # footgun.
+    # ``[n_syn synthetic | n_hst HST | n_anchor star-anchor]``; the batch
+    # size is just their sum. Counts (not fractions) because the trainer
+    # slices by these exact integers — no rounding, no "fraction rounds to
+    # 0 rows" footgun.
     p.add_argument("--n-syn", type=int, default=Config.DEFAULT_BATCH_SIZE,
                    help="Synthetic examples per batch. Must be ≥ 1 "
                         "(the synthetic lane is always present).")
@@ -57,23 +54,23 @@ def parse_args() -> argparse.Namespace:
                         "|asinh(H⊛SR) - HST_image|). 0 disables it. "
                         "Requires the HST records (--records-hst) and the "
                         "F814W ePSF.")
-    p.add_argument("--n-rt", type=int, default=0,
-                   help="Round-trip examples per batch (self-supervised "
-                        "|asinh(rebin(E⊛SR)) - lr_vis|). 0 disables it. "
-                        "Requires the round-trip records (--records-roundtrip) "
-                        "and the VIS PSF FITS at "
-                        "$DATA_DIR/euclid_psf/euclid_psf_VIS.fits.")
+    p.add_argument("--n-anchor", type=int, default=0,
+                   help="Star-anchor examples per batch (operator-free: "
+                        "masked |SR - delta| at the catalog star pixel). "
+                        "0 disables it. Requires the star-anchor records "
+                        "(--records-anchor) built by "
+                        "fasrc_generate_star_anchor_tfrecords.py.")
     p.add_argument("--records-syn",  default=Config.RECORDS_DIR_V2,
                    help="Synthetic TFRecord directory.")
     p.add_argument("--records-hst",
                    default=os.path.join(Config.DATA_DIR, "images", "records_v2_hst"),
                    help="HST-derived TFRecord directory (built by "
                         "fasrc_generate_hst_tfrecords.py).")
-    p.add_argument("--records-roundtrip",
+    p.add_argument("--records-anchor",
                    default=os.path.join(
-                       Config.DATA_DIR, "images", "records_v2_euclid_roundtrip"),
-                   help="Round-trip Euclid TFRecord directory (built "
-                        "by fasrc_generate_euclid_roundtrip_tfrecords.py).")
+                       Config.DATA_DIR, "images", "records_v2_star_anchor"),
+                   help="Star-anchor TFRecord directory (built by "
+                        "fasrc_generate_star_anchor_tfrecords.py).")
     p.add_argument("--synthetic-loss-weight", type=float, default=1.0,
                    help="Per-example loss multiplier for synthetic "
                         "records. Default 1.0; set to 0 to keep them in "
@@ -82,13 +79,11 @@ def parse_args() -> argparse.Namespace:
                    help="Per-example loss multiplier for HST records. "
                         "Default 1.0; raise to up-weight the HST "
                         "supervised path, 0 to ablate.")
-    p.add_argument("--roundtrip-loss-weight", type=float, default=1.0,
-                   help="Multiplier on the per-example round-trip "
-                        "loss before averaging with the supervised "
-                        "loss. Default 1.0; bump to up-weight the "
-                        "round-trip path, set to 0 for an ablation "
-                        "(round-trip data still loaded, but loss "
-                        "contribution zeroed out).")
+    p.add_argument("--star-anchor-loss-weight", type=float, default=1.0,
+                   help="Multiplier on the per-example star-anchor loss "
+                        "(masked at the star pixel). Default 1.0; bump to "
+                        "up-weight the anchor, set to 0 to ablate (anchor "
+                        "data still loaded, loss contribution zeroed out).")
     p.add_argument("--ckpt-dir",     default=Config.DEFAULT_CHECKPOINT_DIR)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
@@ -122,23 +117,19 @@ def parse_args() -> argparse.Namespace:
                    help="Weight of HST PSNR (dB) in the composite "
                         "save-best score. No effect when the HST "
                         "validate split is absent. Default 1.")
-    p.add_argument("--save-best-w-rt", type=float, default=0.0,
-                   help="Weight of the round-trip PSNR (dB) in the "
+    p.add_argument("--save-best-w-anchor", type=float, default=0.0,
+                   help="Weight of the star-anchor PSNR (dB) in the "
                         "composite save-best score (ADDED — higher is "
-                        "better, like the other two PSNRs). All three "
-                        "terms now share the dB scale, so a weight near 1 "
-                        "is comparable; note the round-trip PSNR is "
-                        "measured at LR resolution and sits higher in "
-                        "absolute dB. Defaults to 0 (monitored-only).")
+                        "better, like the other two PSNRs). The anchor "
+                        "PSNR is masked to the star pixel. Defaults to 0 "
+                        "(monitored-only).")
     p.add_argument("--forward-op-crop-half", type=int, default=0,
-                   help="Optional central crop of the VIS PSF kernel used "
-                        "by the round-trip forward op → (2·crop+1)² "
-                        "kernel. Default 0 = use the FULL saved PSF "
-                        "(~1023×1023): the forward op convolves via an "
-                        "explicit FFT (O(N log N)), so the full PSF — "
-                        "wings and all — is both exact and fast, no crop "
-                        "needed. Set a positive value only to ablate the "
-                        "PSF wings (e.g. 32 → 65×65 core-only).")
+                   help="Optional central crop of the F814W PSF kernel used "
+                        "by the HST forward op → (2·crop+1)² kernel. "
+                        "Default 0 = use the FULL saved PSF: the forward op "
+                        "convolves via an explicit FFT (O(N log N)), so the "
+                        "full PSF — wings and all — is exact and fast. Set a "
+                        "positive value only to ablate the PSF wings.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -147,16 +138,17 @@ def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
     print("=" * 64)
-    print(f"  WDSR training with HST + round-trip mix")
+    print(f"  WDSR training with HST + star-anchor mix")
     print("=" * 64)
     print(f"  steps              = {args.steps}")
     print(f"  batch layout       = syn {args.n_syn} / hst {args.n_hst} / "
-          f"rt {args.n_rt}  (batch {args.n_syn + args.n_hst + args.n_rt})")
+          f"anchor {args.n_anchor}  "
+          f"(batch {args.n_syn + args.n_hst + args.n_anchor})")
     print(f"  synthetic records  = {args.records_syn}")
     print(f"  HST records        = {args.records_hst}")
-    print(f"  round-trip records = {args.records_roundtrip}")
-    print(f"  loss weights syn/hst/rt = {args.synthetic_loss_weight}/"
-          f"{args.hst_loss_weight}/{args.roundtrip_loss_weight}")
+    print(f"  star-anchor records= {args.records_anchor}")
+    print(f"  loss weights syn/hst/anchor = {args.synthetic_loss_weight}/"
+          f"{args.hst_loss_weight}/{args.star_anchor_loss_weight}")
     print(f"  checkpoint dir     = {args.ckpt_dir}")
     print()
 
@@ -167,35 +159,33 @@ def main() -> int:
         return 0
 
     # Explicit per-lane batch composition. The batch is the fixed
-    # contiguous layout ``[n_syn | n_hst | n_rt]``; batch_size is their sum.
-    n_syn = int(args.n_syn)
-    n_hst = int(args.n_hst)
-    n_rt  = int(args.n_rt)
-    if min(n_syn, n_hst, n_rt) < 0:
-        raise SystemExit("--n-syn / --n-hst / --n-rt must be ≥ 0")
+    # contiguous layout ``[n_syn | n_hst | n_anchor]``; batch_size is the sum.
+    n_syn    = int(args.n_syn)
+    n_hst    = int(args.n_hst)
+    n_anchor = int(args.n_anchor)
+    if min(n_syn, n_hst, n_anchor) < 0:
+        raise SystemExit("--n-syn / --n-hst / --n-anchor must be ≥ 0")
     if n_syn < 1:
         raise SystemExit("--n-syn must be ≥ 1 (the synthetic lane is always on)")
-    use_hst       = n_hst > 0
-    use_roundtrip = n_rt > 0
-    fixed_layout  = use_hst or use_roundtrip
-    batch_size    = n_syn + n_hst + n_rt
-    lane_counts   = (n_syn, n_hst, n_rt) if fixed_layout else None
+    use_hst      = n_hst > 0
+    use_anchor   = n_anchor > 0
+    fixed_layout = use_hst or use_anchor
+    batch_size   = n_syn + n_hst + n_anchor
+    lane_counts  = (n_syn, n_hst, n_anchor) if fixed_layout else None
 
     # Two dataset instances — one for training, one for validation. HST
-    # and round-trip sources are only mixed into training; validation
-    # stays pure synthetic so the metric is comparable across runs and
-    # round-trip records (which lack HR ground truth) can't slip into
-    # the synthetic PSNR computation.
+    # and star-anchor sources are only mixed into training; the synthetic
+    # validation split stays pure so the metric is comparable across runs.
     reporter.set_stage("building datasets")
     if fixed_layout:
-        print(f"      fixed batch layout: syn={n_syn} hst={n_hst} rt={n_rt} "
-              f"(batch={batch_size})")
+        print(f"      fixed batch layout: syn={n_syn} hst={n_hst} "
+              f"anchor={n_anchor} (batch={batch_size})")
         train_dataset = MultiBandEuclidDataset(
             subset="train",
             records_dir=args.records_syn,
             hst_records_dir=args.records_hst if use_hst else None,
-            roundtrip_records_dir=args.records_roundtrip if use_roundtrip else None,
-        ).dataset_fixed_layout(n_syn, n_hst, n_rt, random_transform=True)
+            anchor_records_dir=args.records_anchor if use_anchor else None,
+        ).dataset_fixed_layout(n_syn, n_hst, n_anchor, random_transform=True)
     else:
         print(f"      pure-synthetic batch: {batch_size}")
         train_dataset = MultiBandEuclidDataset(
@@ -211,7 +201,7 @@ def main() -> int:
     # Additive multi-source validation datasets. These never influence
     # save-best (which stays keyed on the synthetic metric); they only
     # surface per-source progress in the training log so a regime change
-    # that helps HST / round-trip while dipping synthetic is visible.
+    # that helps HST / star-anchor while dipping synthetic is visible.
     # Both are built leniently — a missing split logs a note and yields
     # None rather than aborting the run.
     hst_valid_dataset = None
@@ -226,15 +216,17 @@ def main() -> int:
             print("  note: no HST validate split found — "
                   "skipping HST validation logging")
 
-    roundtrip_valid_dataset = None
-    if use_roundtrip:
-        rt_dirty = tfrecord_path(args.records_roundtrip, "dirty_validate")
-        if os.path.exists(rt_dirty):
-            roundtrip_valid_dataset = lr_only_dataset(
-                rt_dirty, batch_size=batch_size)
-        else:
-            print("  note: no round-trip dirty_validate.tfrecord found — "
-                  "skipping round-trip validation logging")
+    anchor_valid_dataset = None
+    if use_anchor:
+        anchor_valid_dataset = MultiBandEuclidDataset(
+            subset="validate",
+            records_dir=args.records_syn,
+            anchor_records_dir=args.records_anchor,
+        ).anchor_dataset(batch_size=batch_size, random_transform=False,
+                         repeat_count=1)
+        if anchor_valid_dataset is None:
+            print("  note: no star-anchor validate split found — "
+                  "skipping anchor validation logging")
 
     # Model + loss + optimizer (same recipe as the standard trainer).
     reporter.set_stage("building model + optimizer")
@@ -256,25 +248,12 @@ def main() -> int:
         )
         print(f"      learning rate: 1e-3 → 5e-4 at step {args.steps // 2}")
 
-    # Forward op only when the round-trip path is on. The PSF kernel is
-    # CROPPED (crop_half_side) — the full ~400×400 saved PSF makes
-    # tf.nn.conv2d fall back to a slow/hanging FFT path on GPU; a 65×65
-    # crop runs ~40× faster and captures the VIS PSF to <0.1%.
+    # HST forward op for the SR=sky objective: H ⊛ SR (HST F814W PSF,
+    # rebin_factor=1 — HST shares SR's 0.05″ grid). The star-anchor lane
+    # is operator-free, so no VIS forward op is built for training.
     crop_half = (args.forward_op_crop_half
                  if args.forward_op_crop_half and args.forward_op_crop_half > 0
                  else None)
-    forward_op = (
-        EuclidVISForwardOp(rebin_factor=scale, crop_half_side=crop_half)
-        if use_roundtrip else None
-    )
-    if forward_op is not None:
-        print(f"      round-trip forward op: VIS PSF kernel "
-              f"{forward_op.psf_kernel_size}×{forward_op.psf_kernel_size} "
-              f"(crop_half_side={crop_half})")
-
-    # HST forward op for the SR=sky objective: H ⊛ SR (HST F814W PSF,
-    # rebin_factor=1 — HST shares SR's 0.05″ grid). Reuses the same
-    # crop_half knob; the F814W ePSF is narrow, so the crop is lossless.
     hst_forward_op = (
         HSTForwardOp(crop_half_side=crop_half) if use_hst else None
     )
@@ -288,11 +267,10 @@ def main() -> int:
         loss=MeanAbsoluteError(),
         learning_rate=schedule,
         checkpoint_dir=args.ckpt_dir,
-        forward_op=forward_op,
         hst_forward_op=hst_forward_op,
         synthetic_loss_weight=float(args.synthetic_loss_weight),
         hst_loss_weight=float(args.hst_loss_weight),
-        roundtrip_loss_weight=float(args.roundtrip_loss_weight),
+        star_anchor_loss_weight=float(args.star_anchor_loss_weight),
         nonneg_sr_weight=float(args.nonneg_sr_weight),
     )
     print(f"      total trainable params: "
@@ -304,7 +282,7 @@ def main() -> int:
         reporter.set_step(step, total, "train")
 
     print(f"      save-best weights: syn={args.save_best_w_syn:g}, "
-          f"hst={args.save_best_w_hst:g}, rt={args.save_best_w_rt:g}")
+          f"hst={args.save_best_w_hst:g}, anchor={args.save_best_w_anchor:g}")
     # Sample GPU + CPU utilisation through training so the WebUI shows a
     # live smoothed gauge and the post-mortem records mean/peak.
     with ResourceSampler(reporter):
@@ -314,11 +292,11 @@ def main() -> int:
             save_best_only=True,
             step_callback=_on_train_step,
             hst_valid_dataset=hst_valid_dataset,
-            roundtrip_valid_dataset=roundtrip_valid_dataset,
+            anchor_valid_dataset=anchor_valid_dataset,
             save_best_weights=(
                 float(args.save_best_w_syn),
                 float(args.save_best_w_hst),
-                float(args.save_best_w_rt),
+                float(args.save_best_w_anchor),
             ),
             lane_counts=lane_counts,
             compute_resume_baseline=bool(args.resume_baseline),

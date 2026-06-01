@@ -640,17 +640,15 @@ class HSTTrainStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
             step_id="train",
-            label="6. Train WDSR with HST + round-trip mix",
+            label="6. Train WDSR with HST + star-anchor mix",
             description=(
                 "Train the WDSR model on a mix of synthetic + "
-                "HST-derived + (optional) real-Euclid round-trip "
-                "TFRecords. ``hst_fraction`` and ``roundtrip_fraction`` "
-                "control per-batch sampling; their sum must be ≤ 1. "
-                "When ``roundtrip_fraction > 0`` the trainer adds a "
-                "self-supervised loss "
-                "``|asinh(Conv(M(lr))/k) - lr_vis|`` for round-trip "
-                "examples, using the VIS PSF FITS as a TF-graph "
-                "forward op (PSF + 2× sum-rebin, deterministic)."
+                "HST-derived + (optional) real-Euclid star-anchor "
+                "TFRecords. Per-lane counts (#syn / #HST / #anchor) set "
+                "the fixed batch layout. The star-anchor lane pins real "
+                "Euclid stars to point sources of catalog flux via a "
+                "masked loss at the star pixel — operator-free (no PSF), "
+                "so it can't be poisoned by PSF mismatch."
             ),
             defaults=StepResources(
                 partition="gpu", n_cpus=4, n_gpus=1,
@@ -662,17 +660,17 @@ class HSTTrainStep(FASRCPipelineStep):
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         steps               = int(params.get("steps", 400_000))
         # Explicit per-lane batch composition (the batch is their sum). The
-        # synthetic lane is always present; HST / round-trip lanes are on
+        # synthetic lane is always present; HST / star-anchor lanes are on
         # only when their count > 0.
         n_syn               = int(params.get("n_syn", Config.DEFAULT_BATCH_SIZE))
         n_hst               = int(params.get("n_hst", 0) or 0)
-        n_rt                = int(params.get("n_rt", 0) or 0)
+        n_anchor            = int(params.get("n_anchor", 0) or 0)
         w_syn               = float(params.get("save_best_w_syn", 1.0))
         w_hst               = float(params.get("save_best_w_hst", 1.0))
-        w_rt                = float(params.get("save_best_w_rt", 0.0))
+        w_anchor            = float(params.get("save_best_w_anchor", 0.0))
         lw_syn              = float(params.get("synthetic_loss_weight", 1.0))
         lw_hst              = float(params.get("hst_loss_weight", 1.0))
-        lw_rt               = float(params.get("roundtrip_loss_weight", 1.0))
+        lw_anchor           = float(params.get("star_anchor_loss_weight", 1.0))
         fwd_crop            = int(params.get("forward_op_crop_half", 0))
         learning_rate       = float(params.get("learning_rate", 0.0) or 0.0)
         nonneg_raw          = str(params.get("nonneg_sr_weight", "")).strip()
@@ -687,7 +685,7 @@ class HSTTrainStep(FASRCPipelineStep):
             "--n-syn", str(n_syn),
             "--save-best-w-syn", f"{w_syn:g}",
             "--save-best-w-hst", f"{w_hst:g}",
-            "--save-best-w-rt",  f"{w_rt:g}",
+            "--save-best-w-anchor", f"{w_anchor:g}",
             "--synthetic-loss-weight", f"{lw_syn:g}",
         ]
         # Constant LR only when explicitly set; blank/0 keeps the default
@@ -704,14 +702,18 @@ class HSTTrainStep(FASRCPipelineStep):
         if overwrite_best:
             cmd += ["--no-resume-baseline"]
         # Emit a lane's flags only when its count > 0, so a supervised-only
-        # submission stays minimal.
+        # submission stays minimal. ``--forward-op-crop-half`` now belongs to
+        # the HST forward op (the anchor lane is operator-free).
         if n_hst > 0:
-            cmd += ["--n-hst", str(n_hst), "--hst-loss-weight", f"{lw_hst:g}"]
-        if n_rt > 0:
             cmd += [
-                "--n-rt", str(n_rt),
-                "--roundtrip-loss-weight", f"{lw_rt:g}",
+                "--n-hst", str(n_hst),
+                "--hst-loss-weight", f"{lw_hst:g}",
                 "--forward-op-crop-half", str(fwd_crop),
+            ]
+        if n_anchor > 0:
+            cmd += [
+                "--n-anchor", str(n_anchor),
+                "--star-anchor-loss-weight", f"{lw_anchor:g}",
             ]
         return cmd
 
