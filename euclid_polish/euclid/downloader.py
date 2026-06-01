@@ -18,6 +18,8 @@ import astropy.units as u
 from tqdm import tqdm
 
 from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
+from euclid_polish.config import Config
 
 
 def core_is_saturated(data: np.ndarray, core_size: int) -> bool:
@@ -38,8 +40,6 @@ def core_is_saturated(data: np.ndarray, core_size: int) -> bool:
     if core.size == 0:
         return True
     return bool((~np.isfinite(core)).any() or (core <= 0).any())
-from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
-from euclid_polish.config import Config
 
 
 @dataclass
