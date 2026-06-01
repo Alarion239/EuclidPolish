@@ -197,9 +197,11 @@ def test_post_psfs_visualize_returns_job_id(client):
     assert "job_id" in r.get_json()
 
 
-def test_post_inference_reconstruct_returns_job_id(client):
-    r = client.post("/inference/reconstruct", data={
-        "checkpoint_dir": "/tmp/nope", "subset": "validate", "n_images": 2,
+def test_post_inference_generate_reconstruct_returns_job_id(client):
+    # Spawns a background job and returns its id even without a live FASRC
+    # connection — the job itself fails fast ("not connected") in that case.
+    r = client.post("/inference/generate-reconstruct", data={
+        "checkpoint_dir": "/tmp/nope", "hr_image_size": 510, "n_pairs": 1,
     })
     assert r.status_code == 200
     assert "job_id" in r.get_json()

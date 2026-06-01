@@ -84,7 +84,9 @@ import os
 import re
 import shlex
 import shutil
+import textwrap
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -313,114 +315,201 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     return None
 
 
-def _job_reconstruct(cap, checkpoint_dir: str, num_res_blocks: int,
-                     subset: str, n_images: int,
-                     asinh_scale: Optional[float] = None) -> Dict[str, Any]:
-    """Run inference on N random LR records; render side-by-side PNGs."""
+def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
+                             n_pairs: int) -> str:
+    """Shell command that generates ``n_pairs`` synthetic *validate* pairs
+    at ``hr_image_size`` on the FASRC **login node** — a plain command, not
+    an sbatch job.
 
-    scale = Config.DEFAULT_REBIN_FACTOR
-    if not tf.train.latest_checkpoint(checkpoint_dir):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
-    model = load_model_from_checkpoint(
-        checkpoint_dir, scale, num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
-    )
+    Reuses ``scripts/run_pipeline.py`` (the same generator ``/sky`` uses);
+    with ``EUCLID_POLISH_DATA_DIR`` pointed at the netscratch data dir, the
+    script's defaults resolve the 10 GB COSMOS catalog and the FASRC ePSFs.
+    Output TFRecords go to the throwaway ``remote_tmp`` so the training
+    records are never touched. Mirrors the conda activation prologue the
+    sbatch wrapper uses, minus the GPU module (generation is CPU-only).
+    """
+    q = shlex.quote
+    return textwrap.dedent(f"""
+        set -e
+        export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
+        mkdir -p {q(remote_tmp)}
+        module purge 2>/dev/null || true
+        module load python 2>/dev/null || true
+        if [ -z "${{CONDA_SHLVL:-}}" ]; then
+          CONDA_BASE="$(conda info --base 2>/dev/null || true)"
+          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+            source "$CONDA_BASE/etc/profile.d/conda.sh"
+          fi
+          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/mamba.sh" ]; then
+            source "$CONDA_BASE/etc/profile.d/mamba.sh"
+          fi
+        fi
+        mamba activate {q(cfg.conda_env_path)}
+        cd {q(cfg.repo_path)}
+        python -u scripts/run_pipeline.py \
+          --ntrain 0 --nvalid {int(n_pairs)} --image-size {int(hr_image_size)} \
+          --records-dir {q(remote_tmp)} --skip-train --gen-workers 1
+    """).strip()
 
-    lr_path = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
-    # ``hr_<subset>``    : 1-channel VIS target the trainer fit against,
-    #                     used as ``hr_data`` for the residual + PSNR
-    #                     panels (needs to match SR's single channel).
-    # ``clean_<subset>`` : 4-channel HR cube kept for inspection. We
-    #                     always read it (when present) so the HR color
-    #                     panel pulls from the *clean* sky, not from
-    #                     the 1-channel target. Falls back to channel 0
-    #                     of clean when ``hr_<subset>`` is absent.
-    hr_path     = tfrecord_path(Config.RECORDS_DIR_V2, f"hr_{subset}")
-    clean_path  = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
-    if not os.path.exists(lr_path):
-        raise FileNotFoundError(f"no records in {Config.RECORDS_DIR_V2}")
-    lr_records   = read_multiband_skyimages(lr_path, num_images=10_000)
-    hr_records   = (read_multiband_skyimages(hr_path, num_images=10_000)
-                    if os.path.exists(hr_path) else [])
-    clean_records = (read_multiband_skyimages(clean_path, num_images=10_000)
-                     if os.path.exists(clean_path) else [])
-    hr_by_idx    = {h.index: h for h in hr_records}
-    clean_by_idx = {c.index: c for c in clean_records}
-    n = min(n_images, len(lr_records))
-    rng = np.random.default_rng()
-    chosen = rng.choice(len(lr_records), size=n, replace=False)
-    out_dir = Config.VIS_RECONSTRUCTION_DIR
-    os.makedirs(out_dir, exist_ok=True)
-    out_paths = []
-    for k, i in enumerate(chosen):
-        lr_img = lr_records[i]
-        # Keep the full 4-band LR cube for the color composite — the
-        # 2-D ``lr_data`` returned by reconstruct() is VIS-only.
-        lr_cube_for_color = (lr_img.data
-                             if lr_img.data.ndim == 3
-                                and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
-                             else None)
-        lr_data, sr_data = reconstruct(model, lr_img.data)
 
-        # HR color is taken from the CLEAN record (4-band, noise-free)
-        # — never from the 1-channel hr_<subset>. The latter is only
-        # used for the residual / PSNR math.
-        hr_cube_for_color = None
-        if lr_img.index in clean_by_idx:
-            raw = clean_by_idx[lr_img.index].data
-            if raw.ndim == 3 and raw.shape[-1] == Config.NUM_LR_CHANNELS:
-                hr_cube_for_color = raw
+def _job_generate_reconstruct(
+    cap, checkpoint_dir: str, num_res_blocks: int,
+    hr_image_size: int, n_pairs: int,
+    asinh_scale: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Generate fresh synthetic pair(s) on the FASRC login node, pull them
+    down, run the model locally, and render LR | SR | HR | forward(SR) |
+    residual with the FASRC PSF the checkpoint trained against.
 
-        # HR truth for residual / PSNR — single channel VIS.
-        hr_data = None
-        if lr_img.index in hr_by_idx:
-            raw = hr_by_idx[lr_img.index].data
-            if raw.ndim == 3 and raw.shape[-1] >= 1:
-                hr_data = raw[..., 0]
-            elif raw.ndim == 2:
-                hr_data = raw
-        elif hr_cube_for_color is not None:
-            # Fall back to channel 0 of the clean record when no
-            # dedicated hr_<subset> file is present.
-            hr_data = hr_cube_for_color[..., 0]
-        out = os.path.join(out_dir, f"reconstruct_idx{lr_img.index:04d}.png")
-        plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
-                            output_path=out,
-                            lr_cube=lr_cube_for_color,
-                            hr_cube=hr_cube_for_color,
-                            asinh_scale=asinh_scale)
-        # Persist the SR plane as FITS alongside the PNG, with
-        # provenance keywords so it stays useful for downstream analysis.
-        # Also persist LR (VIS-channel) and HR truth as sidecars so the
-        # inspector can show each panel's raw pixels — not just the PNG
-        # composite.
+    Flow: (1) pull the Euclid ePSFs from FASRC; (2) run ``run_pipeline.py``
+    on the **login node** (not sbatch) writing one-or-more validate pairs to
+    a throwaway remote dir; (3) rsync them down; (4) WDSR inference locally;
+    (5) ``forward(SR)`` with the *same* FASRC PSF; (6) write FITS + PNG into
+    ``VIS_RECONSTRUCTION_DIR``. The remote/local temp dirs are cleaned up.
+    """
+    if STATE.ssh is None or not STATE.ssh.is_connected():
+        raise RuntimeError(
+            "not connected to FASRC — connect on the FASRC tab first; "
+            "login-node generation needs the SSH session"
+        )
+    cfg = fasrc_config.load()
+    total = n_pairs + 2  # PSF pull + login-node gen + one tick per scene
 
-        def _write_panel_fits(stem: str, data2d: np.ndarray, label: str) -> None:
-            if data2d is None:
-                return
-            arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
-            hdu = _fits.PrimaryHDU(arr)
-            hdu.header["OBJECT"] = (f"EuclidPolish {label} (VIS)", "panel label")
-            hdu.header["SUBSET"] = (subset, "TFRecord subset")
-            hdu.header["IDX"]    = (int(lr_img.index), "record index in subset")
-            hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "Checkpoint dir")
-            hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
-                                    "asinh stretch knee used for the plot")
-            hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
-            hdu.writeto(os.path.join(out_dir, stem + ".fits"), overwrite=True)
+    # 1. Pull the FASRC ePSFs so generation AND the local forward(SR) use
+    #    the same PSF the checkpoint trained against. Writes to the cache,
+    #    never data/euclid_psf.
+    cap.tick(0, total, "pulling FASRC ePSFs")
+    psf_dir = _fasrc_psf_dir(force=True)
+    if not psf_dir:
+        raise FileNotFoundError("no Euclid ePSFs on FASRC to pull")
+    print(f"  ✓ FASRC ePSFs → {psf_dir}")
 
-        stem = f"reconstruct_idx{lr_img.index:04d}"
-        _write_panel_fits(stem,            sr_data, "SR")
-        _write_panel_fits(stem + "_lr",    lr_data, "LR")
-        _write_panel_fits(stem + "_hr",    hr_data, "HR")
-        out_paths.append(out)
-        cap.tick(k + 1, n, f"reconstructing idx {lr_img.index}")
-        print(f"  ✓ {out}")
-    return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
+    # 2. Generate on the login node into a throwaway dir.
+    remote_tmp = f"{cfg.data_dir}/_inference_gen/{uuid.uuid4().hex}"
+    local_tmp = os.path.join(Config.DATA_DIR, "_inference_gen", uuid.uuid4().hex)
+    cap.tick(1, total,
+             f"generating {n_pairs} pair(s) @ {hr_image_size}px on FASRC login node")
+    print(f"  login-node generate → {remote_tmp}")
+    try:
+        rc, out, err = STATE.ssh.run(
+            _login_node_generate_cmd(cfg, remote_tmp, hr_image_size, n_pairs),
+            timeout=900,
+        )
+        if rc != 0:
+            tail = (err.strip() or out.strip())[-2000:]
+            raise RuntimeError(f"login-node generation failed (rc={rc}):\n{tail}")
+
+        # 3. Pull the pair(s) down. ``rsync -a`` tries to preserve perms, so
+        #    a Linux→macOS pull can exit rc=23 ("unable to escalate mode")
+        #    while still copying every file — don't fail on rc alone; the
+        #    file-existence check below is the real gate.
+        rc, _o, perr = STATE.ssh.rsync_pull(remote_tmp + "/", local_tmp, timeout=600)
+        if rc != 0:
+            print(f"  ⚠ rsync exited rc={rc} (continuing): {perr.strip()[:300]}")
+
+        lr_path    = tfrecord_path(local_tmp, "dirty_validate")
+        hr_path    = tfrecord_path(local_tmp, "hr_validate")
+        clean_path = tfrecord_path(local_tmp, "clean_validate")
+        if not os.path.exists(lr_path):
+            raise FileNotFoundError(
+                f"login-node generation produced no dirty records in {local_tmp}")
+        lr_records    = read_multiband_skyimages(lr_path, num_images=10_000)
+        hr_records    = (read_multiband_skyimages(hr_path, num_images=10_000)
+                         if os.path.exists(hr_path) else [])
+        clean_records = (read_multiband_skyimages(clean_path, num_images=10_000)
+                         if os.path.exists(clean_path) else [])
+        hr_by_idx    = {h.index: h for h in hr_records}
+        clean_by_idx = {c.index: c for c in clean_records}
+
+        # 4. Model — load once.
+        scale = Config.DEFAULT_REBIN_FACTOR
+        if not tf.train.latest_checkpoint(checkpoint_dir):
+            raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
+        model = load_model_from_checkpoint(
+            checkpoint_dir, scale, num_res_blocks,
+            nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+        )
+
+        out_dir = Config.VIS_RECONSTRUCTION_DIR
+        os.makedirs(out_dir, exist_ok=True)
+        out_paths = []
+        for k, lr_img in enumerate(lr_records):
+            # Keep the full 4-band LR cube for the color composite — the
+            # 2-D ``lr_data`` returned by reconstruct() is VIS-only.
+            lr_cube_for_color = (lr_img.data
+                                 if lr_img.data.ndim == 3
+                                    and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
+                                 else None)
+            lr_data, sr_data = reconstruct(model, lr_img.data)
+
+            # HR color from the CLEAN (noise-free) record; residual/PSNR from
+            # the 1-channel hr_<subset>, falling back to clean channel 0.
+            hr_cube_for_color = None
+            if lr_img.index in clean_by_idx:
+                raw = clean_by_idx[lr_img.index].data
+                if raw.ndim == 3 and raw.shape[-1] == Config.NUM_LR_CHANNELS:
+                    hr_cube_for_color = raw
+            hr_data = None
+            if lr_img.index in hr_by_idx:
+                raw = hr_by_idx[lr_img.index].data
+                hr_data = raw[..., 0] if raw.ndim == 3 else raw
+            elif hr_cube_for_color is not None:
+                hr_data = hr_cube_for_color[..., 0]
+
+            # forward(SR) with the FASRC PSF (matches gen + training).
+            predicted = residual = None
+            try:
+                predicted, residual = _forward_model_sr_residual(
+                    sr_data, lr_data, psf_dir=psf_dir)
+            except Exception as e:  # noqa: BLE001 — panel is best-effort
+                print(f"  ⚠ forward(SR) failed: {e}")
+
+            stem = f"gensynth_{hr_image_size}px_idx{lr_img.index:04d}"
+            out = os.path.join(out_dir, stem + ".png")
+            plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
+                                output_path=out,
+                                lr_cube=lr_cube_for_color,
+                                hr_cube=hr_cube_for_color,
+                                asinh_scale=asinh_scale,
+                                predicted_dirty=predicted,
+                                residual=residual)
+
+            def _write_fits(name: str, data2d, label: str) -> None:
+                if data2d is None:
+                    return
+                arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
+                hdu = _fits.PrimaryHDU(arr)
+                hdu.header["OBJECT"] = (f"EuclidPolish {label} (VIS)", "panel label")
+                hdu.header["IDX"]    = (int(lr_img.index), "scene index")
+                hdu.header["HRSIZE"] = (int(hr_image_size), "HR side px (0.05in/px)")
+                hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "checkpoint dir")
+                hdu.header["PSFSRC"] = ("FASRC", "ePSF pulled from FASRC (training PSF)")
+                hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
+                                        "asinh stretch knee used for the plot")
+                hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
+                hdu.writeto(os.path.join(out_dir, name), overwrite=True)
+
+            _write_fits(stem + ".fits",           sr_data,   "SR")
+            _write_fits(stem + "_lr.fits",        lr_data,   "LR dirty")
+            _write_fits(stem + "_hr.fits",        hr_data,   "HR clean")
+            _write_fits(stem + "_srforward.fits", predicted, "VIS PSF (x) SR + 2x rebin")
+            _write_fits(stem + "_residual.fits",  residual,  "LR - forward(SR)")
+            out_paths.append(out)
+            cap.tick(k + 2, total, f"reconstructed scene {lr_img.index}")
+            print(f"  ✓ {out}")
+        return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
+    finally:
+        # Best-effort cleanup: remote throwaway dir + local temp pull.
+        try:
+            STATE.ssh.run(f"rm -rf {shlex.quote(remote_tmp)}", timeout=30)
+        except Exception:  # noqa: BLE001
+            pass
+        shutil.rmtree(local_tmp, ignore_errors=True)
 
 
 def _forward_model_sr_residual(
     sr_data: np.ndarray, lr_vis: np.ndarray,
+    psf_dir: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Push SR back through the VIS forward chain and diff against the LR.
 
@@ -430,8 +519,16 @@ def _forward_model_sr_residual(
     with ``residual = lr_vis − predicted_dirty``. This is the round-trip
     self-consistency check — a well-behaved model reproduces the observed
     Euclid LR. May raise on PSF-load / shape errors; callers handle it.
+
+    ``psf_dir`` overrides which Euclid ePSFs to convolve with. The
+    generate+reconstruct path passes the FASRC-pulled PSF dir so the
+    forward op uses the *same* PSF the checkpoint trained against (and
+    that the login-node generation used), not the local committed copy.
     """
-    psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+    psfs = load_all_band_psfs(
+        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        **({"psf_dir": psf_dir} if psf_dir else {}),
+    )
     vis_psf = psfs[Config.BAND_VIS.name]
     sr_hr = scipy_signal.fftconvolve(
         sr_data, vis_psf.data, mode="same",
@@ -461,7 +558,7 @@ def _job_reconstruct_euclid_cutout(
 ) -> Dict[str, Any]:
     """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
 
-    Unlike ``_job_reconstruct`` (which iterates over synthetic TFRecords),
+    Unlike ``_job_generate_reconstruct`` (which renders a synthetic scene),
     this fetches a real cutout at ``(ra, dec)`` for every band, converts
     each from the archive's ADU s⁻¹ units to electrons-over-the-stack (so
     the model sees the same scale it was trained on), stacks the four
@@ -2617,7 +2714,6 @@ def create_app() -> Flask:
             recon_pngs=recon_pngs,
             euclid_runs=euclid_runs,
             default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
-            default_n_images=4,
         )
 
     def _parse_asinh_scale(raw: str) -> Optional[float]:
@@ -2633,17 +2729,29 @@ def create_app() -> Flask:
             return None
         return val if val > 0 else None
 
-    @app.route("/inference/reconstruct", methods=["POST"])
-    def inference_reconstruct():
+    @app.route("/inference/generate-reconstruct", methods=["POST"])
+    def inference_generate_reconstruct():
         ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
         nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
-        subset = request.form.get("subset", "validate")
-        n = int(request.form.get("n_images", 4))
         asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
+        try:
+            hr_size = int(request.form.get("hr_image_size", 510))
+        except (TypeError, ValueError):
+            return jsonify({"error": "hr_image_size must be an integer"}), 400
+        # The generator rebins NISP ×6, so the HR side must be a multiple of
+        # 6. Clamp to a sane range and round to the nearest multiple.
+        hr_size = max(60, min(2048, hr_size))
+        if hr_size % 6:
+            hr_size = int(round(hr_size / 6)) * 6
+        try:
+            n_pairs = int(request.form.get("n_pairs", 1))
+        except (TypeError, ValueError):
+            n_pairs = 1
+        n_pairs = max(1, min(8, n_pairs))
         job_id = REGISTRY.spawn(
-            label=f"reconstruct {n} {subset} images",
-            target=lambda cap: _job_reconstruct(
-                cap, ckpt_dir, nrb, subset, n, asinh_scale=asinh,
+            label=f"gen+reconstruct {n_pairs}×{hr_size}px (FASRC login-node gen)",
+            target=lambda cap: _job_generate_reconstruct(
+                cap, ckpt_dir, nrb, hr_size, n_pairs, asinh_scale=asinh,
             ),
         )
         return jsonify({"job_id": job_id})

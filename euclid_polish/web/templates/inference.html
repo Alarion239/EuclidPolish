@@ -130,28 +130,31 @@
 
 {% block actions %}
 <section class="card">
-  <h3>Reconstruct (synthetic TFRecords)</h3>
-  <p class="hint">Loads the latest checkpoint, picks N random LR records,
-     runs WDSR, saves LR / SR / HR side-by-side PNGs.</p>
-  <form id="recon-form" action="/inference/reconstruct">
+  <h3>Generate + Reconstruct (synthetic)</h3>
+  <p class="hint">Pulls the Euclid ePSFs from FASRC, generates a fresh
+     synthetic pair on the FASRC <strong>login node</strong> (same generator
+     as <a href="/sky">/sky</a> — a plain command, <em>not</em> an sbatch
+     job) at your HR size, runs WDSR locally, and writes
+     LR / SR / HR / forward(SR) / residual FITS plus a side-by-side PNG.
+     <code>forward(SR)</code> uses the same FASRC PSF the checkpoint trained
+     against. Requires an active FASRC connection.</p>
+  <form id="gen-recon-form" action="/inference/generate-reconstruct">
     <label>Checkpoint dir
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
     <label>Residual blocks
       <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
-    <label>Subset
-      <select name="subset">
-        <option value="validate">validate</option>
-        <option value="train">train</option>
-      </select>
-    </label>
-    <label>Number of images
-      <input type="number" name="n_images" value="{{ default_n_images }}" min="1" max="32"></label>
+    <label title="HR scene side in 0.05″/pix pixels. Rounded to a multiple of 6 (the NISP rebin factor); the LR pair is half this at 0.10″/pix.">
+      HR image size (px)
+      <input type="number" name="hr_image_size" value="510" min="60" max="2048" step="6"></label>
+    <label title="Number of independent scenes to generate + reconstruct in one run.">
+      Number of pairs
+      <input type="number" name="n_pairs" value="1" min="1" max="8"></label>
     <label>asinh scale (e⁻)
       <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
              title="Brightness knee for the asinh panels. Smaller = brighter faint sources; larger = compresses bright sources more. 1000 e⁻ matches the training default."></label>
-    <button type="submit">Reconstruct</button>
+    <button type="submit">Generate &amp; Reconstruct</button>
   </form>
-  <div id="recon-status"></div>
+  <div id="gen-recon-status"></div>
 </section>
 
 <section class="card">
@@ -190,9 +193,9 @@
 
 {% block scripts %}
 <script>
-document.getElementById("recon-form").addEventListener("submit", (e) => {
+document.getElementById("gen-recon-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  polishUI.run(e.target, document.getElementById("recon-status"), {
+  polishUI.run(e.target, document.getElementById("gen-recon-status"), {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });
