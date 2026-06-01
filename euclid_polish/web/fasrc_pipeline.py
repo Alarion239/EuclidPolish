@@ -676,6 +676,11 @@ class HSTTrainStep(FASRCPipelineStep):
         fwd_crop            = int(params.get("forward_op_crop_half", 0))
         learning_rate       = float(params.get("learning_rate", 0.0) or 0.0)
         nonneg_raw          = str(params.get("nonneg_sr_weight", "")).strip()
+        # Checkbox: when checked the form sends a truthy value; unchecked →
+        # absent → default (compute the resume baseline). Programmatic
+        # callers that omit it keep the default too.
+        overwrite_best      = str(params.get("overwrite_best", "")).strip() \
+            in ("1", "true", "True", "on", "yes")
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
@@ -694,6 +699,10 @@ class HSTTrainStep(FASRCPipelineStep):
         # valid value (disables the penalty), so emit on any non-blank.
         if nonneg_raw != "":
             cmd += ["--nonneg-sr-weight", f"{float(nonneg_raw):g}"]
+        # Overwrite the previous best instead of computing a resume baseline
+        # (e.g. after an architecture change). Default keeps the baseline.
+        if overwrite_best:
+            cmd += ["--no-resume-baseline"]
         # Emit a lane's flags only when its count > 0, so a supervised-only
         # submission stays minimal.
         if n_hst > 0:

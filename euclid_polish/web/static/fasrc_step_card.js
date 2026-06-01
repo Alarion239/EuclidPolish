@@ -237,7 +237,11 @@ large cutout don't leak across train/validate."></label>`;
                title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
       <label>Save-best w·round-trip
         <input type="number" name="save_best_w_rt" value="0" step="0.5" min="0" max="100"
-               title="Weight of the round-trip PSNR (dB, ADDED — higher is better) in the composite save-best score. Now on the same dB scale as the other two PSNRs, so a weight near 1 is comparable; note round-trip PSNR is measured at LR resolution so it sits higher in absolute dB. Default 0 = monitored only."></label>`;
+               title="Weight of the round-trip PSNR (dB, ADDED — higher is better) in the composite save-best score. Now on the same dB scale as the other two PSNRs, so a weight near 1 is comparable; note round-trip PSNR is measured at LR resolution so it sits higher in absolute dB. Default 0 = monitored only."></label>
+      <label class="checkbox-field" style="flex-basis:100%;"
+             title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change (e.g. new output head / lane counts), when the old score is meaningless. No effect on a fresh run.">
+        <input type="checkbox" name="overwrite_best" value="1">
+        Overwrite previous best (skip resume baseline)</label>`;
   }
 
   // ── Resource-field markup ──────────────────────────────────────────

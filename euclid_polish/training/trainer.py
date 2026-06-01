@@ -241,6 +241,7 @@ class Trainer:
         roundtrip_valid_dataset=None,
         save_best_weights=(1.0, 1.0, 0.0),
         lane_counts=None,
+        compute_resume_baseline=True,
     ):
         """
         Train the model.
@@ -300,6 +301,14 @@ class Trainer:
             synthetic + HST PSNR, equally weighted, round-trip
             monitored-only. With HST/RT absent this reduces to plain
             synthetic-PSNR save-best (backwards compatible).
+        compute_resume_baseline : bool
+            On a *resumed* run (save-best mode), whether to measure the
+            restored checkpoint's score as the bar to beat (``True``,
+            default) or ignore it and overwrite the previous best
+            (``False``). Set ``False`` when the architecture changed so the
+            old checkpoint's score is meaningless — the save-best threshold
+            is reset and this run's first eval saves. No effect on a fresh
+            run.
         """
         loss_mean = Mean()
         gnorm_mean = Mean()
@@ -335,48 +344,62 @@ class Trainer:
                     f"{os.path.basename(backup)} (new columns added)"
                 )
 
-        # Resume baseline: measure the RESTORED checkpoint's score under
-        # *this* run's validation setup and seed the save-best threshold
-        # with it — instead of force-saving on the first eval. The previous
-        # checkpoint stays the best until genuinely beaten, and the log gets
-        # a single ``is_baseline`` row the plot draws as a dashed "bar to
-        # beat" line. Only when resuming (start_step > 0) and in save-best
-        # mode; a fresh run has nothing to validate and starts from the
-        # checkpoint's initial ``psnr`` sentinel.
+        # Resume handling (save-best mode, resumed run only — a fresh run has
+        # nothing to validate and starts from the checkpoint's initial
+        # ``psnr`` sentinel).
+        #
+        #   compute_resume_baseline=True  (default): measure the RESTORED
+        #     checkpoint's score under *this* run's validation setup and seed
+        #     the save-best threshold with it — instead of force-saving on the
+        #     first eval. The previous checkpoint stays the best until
+        #     genuinely beaten; the log gets one ``is_baseline`` row the plot
+        #     draws as a dashed "bar to beat" line.
+        #
+        #   compute_resume_baseline=False: ignore the restored best entirely
+        #     (e.g. the architecture changed, so its score is meaningless or
+        #     incomparable). Reset the threshold to -inf so this run's first
+        #     eval saves and overwrites the previous best. No baseline row.
         if save_best_only and start_step > 0:
-            b = self._validate(
-                valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
-                validate_images, save_best_weights,
-            )
-            ckpt.psnr.assign(b["save_best_score"])
-            base_row = {
-                "step":               int(start_step),
-                "wall_time":          time.time(),
-                "loss":               "",
-                "psnr_stretched":     b["psnr_str"],
-                "psnr_raw":           b["psnr_raw"],
-                "gnorm_avg":          "",
-                "gnorm_max":          "",
-                "clip_norm":          float(GRAD_CLIP_NORM),
-                "duration_s":         "",
-                "psnr_stretched_hst": b["psnr_str_hst"],
-                "psnr_raw_hst":       b["psnr_raw_hst"],
-                "roundtrip_val_psnr": b["rt_val_psnr"],
-                "save_best_score":    b["save_best_score"],
-                "is_baseline":        "1",
-            }
-            write_header = (not os.path.exists(log_path)
-                            or os.path.getsize(log_path) == 0)
-            with open(log_path, "a", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
-                if write_header:
-                    w.writeheader()
-                w.writerow(base_row)
-            tqdm.write(
-                f"  ▏baseline (restored ckpt @ step {start_step}): "
-                f"score={b['save_best_score']:.3f} "
-                f"(PSNR str={b['psnr_str']:.3f} dB) — bar to beat, no save"
-            )
+            if compute_resume_baseline:
+                b = self._validate(
+                    valid_dataset, hst_valid_dataset, roundtrip_valid_dataset,
+                    validate_images, save_best_weights,
+                )
+                ckpt.psnr.assign(b["save_best_score"])
+                base_row = {
+                    "step":               int(start_step),
+                    "wall_time":          time.time(),
+                    "loss":               "",
+                    "psnr_stretched":     b["psnr_str"],
+                    "psnr_raw":           b["psnr_raw"],
+                    "gnorm_avg":          "",
+                    "gnorm_max":          "",
+                    "clip_norm":          float(GRAD_CLIP_NORM),
+                    "duration_s":         "",
+                    "psnr_stretched_hst": b["psnr_str_hst"],
+                    "psnr_raw_hst":       b["psnr_raw_hst"],
+                    "roundtrip_val_psnr": b["rt_val_psnr"],
+                    "save_best_score":    b["save_best_score"],
+                    "is_baseline":        "1",
+                }
+                write_header = (not os.path.exists(log_path)
+                                or os.path.getsize(log_path) == 0)
+                with open(log_path, "a", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
+                    if write_header:
+                        w.writeheader()
+                    w.writerow(base_row)
+                tqdm.write(
+                    f"  ▏baseline (restored ckpt @ step {start_step}): "
+                    f"score={b['save_best_score']:.3f} "
+                    f"(PSNR str={b['psnr_str']:.3f} dB) — bar to beat, no save"
+                )
+            else:
+                ckpt.psnr.assign(float("-inf"))
+                tqdm.write(
+                    "  ▏resume baseline disabled — save-best threshold reset; "
+                    "this run overwrites the previous best on its first eval"
+                )
 
         pbar = tqdm(
             train_dataset.take(remaining),

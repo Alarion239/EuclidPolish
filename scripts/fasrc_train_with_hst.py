@@ -108,6 +108,13 @@ def parse_args() -> argparse.Namespace:
                         "constrains all three lanes toward physical (≥0) "
                         "flux at once. 0 disables. Default from "
                         "Config.NONNEG_SR_WEIGHT.")
+    p.add_argument("--resume-baseline", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="On a resumed run, measure the restored checkpoint's "
+                        "score as the save-best bar to beat (default). Use "
+                        "--no-resume-baseline to ignore the previous best and "
+                        "overwrite it — appropriate when the architecture "
+                        "changed so the old score is meaningless.")
     p.add_argument("--save-best-w-syn", type=float, default=1.0,
                    help="Weight of synthetic PSNR (dB) in the composite "
                         "save-best score. Default 1.")
@@ -314,6 +321,7 @@ def main() -> int:
                 float(args.save_best_w_rt),
             ),
             lane_counts=lane_counts,
+            compute_resume_baseline=bool(args.resume_baseline),
         )
 
     runtime = time.time() - t0
