@@ -12,7 +12,8 @@ from euclid_polish.training.trainer import TRAINING_LOG_FILENAME
 
 
 _NUMERIC_LOG_COLS = {
-    "step", "wall_time", "loss",
+    "step", "wall_time",
+    "loss", "loss_syn", "loss_hst", "loss_anchor",
     "psnr_stretched", "psnr_raw",
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
     # Multi-source validation columns (empty in synthetic-only / older
@@ -127,6 +128,16 @@ def plot_training_records(
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
 
+    # Per-lane training losses (lower better). Colours match the PSNR lines.
+    loss_data = []
+    for col, color, lab in (("loss_syn",    "tab:red",    "Synthetic loss"),
+                            ("loss_hst",    "tab:green",  "HST loss"),
+                            ("loss_anchor", "tab:purple", "Star-anchor loss")):
+        lx, ly = _opt_series(col)
+        if lx.size:
+            loss_data.append((lx, ly, color, lab))
+    has_loss = len(loss_data) > 0
+
     # Resume baseline: the restored checkpoint's score measured at this
     # run's start (Trainer writes one is_baseline row per resume). The
     # latest one is the current "bar to beat" — drawn as a dashed
@@ -152,18 +163,25 @@ def plot_training_records(
             return x[smooth_window - 1:], np.convolve(y, k, mode="valid")
         return None, None
 
-    # Two stacked plots when the composite save-best score is logged:
-    # the combined validation metrics on top, the score we actually
-    # track for checkpointing on its own axes below. Older / score-less
-    # runs keep the single metrics graph.
-    if has_score:
-        fig, (ax_psnr, ax_score) = plt.subplots(
-            2, 1, figsize=(11, 9), sharex=True,
-            gridspec_kw=dict(height_ratios=[3, 2], hspace=0.12),
-        )
+    # Stacked panels (shared x): PSNR always; per-lane Loss when logged;
+    # the composite save-best score when logged. Older / single-metric runs
+    # collapse to just the PSNR graph.
+    panels = ["psnr"] + (["loss"] if has_loss else []) + (
+        ["score"] if has_score else [])
+    ratios = {"psnr": 3, "loss": 2, "score": 2}
+    if len(panels) == 1:
+        fig, ax0 = plt.subplots(figsize=(11, 6))
+        axmap = {"psnr": ax0}
     else:
-        fig, ax_psnr = plt.subplots(figsize=(11, 6))
-        ax_score = None
+        fig, axs = plt.subplots(
+            len(panels), 1, figsize=(11, 3 * len(panels)), sharex=True,
+            gridspec_kw=dict(height_ratios=[ratios[p] for p in panels],
+                             hspace=0.12),
+        )
+        axmap = {p: ax for p, ax in zip(panels, np.atleast_1d(axs))}
+    ax_psnr  = axmap["psnr"]
+    ax_loss  = axmap.get("loss")
+    ax_score = axmap.get("score")
 
     # ── Left axis: PSNR (dB), higher is better. ──
     ax_psnr.plot(steps, psnr_syn, color="tab:red", lw=1.6, alpha=0.9,
@@ -208,6 +226,19 @@ def plot_training_records(
     ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
     ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
 
+    # ── Per-lane training loss (lower is better; log scale spans the lanes'
+    #    ~1e-3–1 range). One line per active lane, colour-matched to PSNR. ──
+    if ax_loss is not None:
+        for lx, ly, color, lab in loss_data:
+            ax_loss.plot(lx, ly, color=color, lw=1.6, alpha=0.9, label=lab)
+            sx, sy = _smoothed(lx, ly)
+            if sx is not None:
+                ax_loss.plot(sx, sy, color=color, lw=2.6, label=f"{lab} (MA)")
+        ax_loss.set_yscale("log")
+        ax_loss.set_ylabel("Loss  ·  lower better (log)")
+        ax_loss.legend(loc="best", framealpha=0.9, fontsize=9)
+        ax_loss.set_title("Per-lane training loss", fontsize=9, loc="left")
+
     # ── Composite save-best score (the quantity checkpoint selection
     #    keys on: w_syn·PSNR_syn + w_hst·PSNR_hst + w_rt·PSNR_rt). The
     #    running max is the actual save-best threshold; the model is
@@ -234,7 +265,7 @@ def plot_training_records(
         ax_score.legend(loc="best", framealpha=0.9, fontsize=9)
 
     # X-label on the bottom-most axes only (shared x when stacked).
-    (ax_score or ax_psnr).set_xlabel("Step")
+    axmap[panels[-1]].set_xlabel("Step")
 
     fig.suptitle(
         f"Validation metrics — {len(records)} evals, last step "

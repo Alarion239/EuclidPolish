@@ -55,6 +55,22 @@ def test_multisource_records_one_graph(tmp_path):
     assert os.path.getsize(out) > 0
 
 
+def test_loss_columns_render_loss_panel(tmp_path):
+    """Per-lane loss columns add the Loss panel (3 panels with the score)
+    and the plot renders without error."""
+    records = []
+    for s in (0, 100, 200, 300):
+        r = _base_row(s)
+        r["loss_syn"] = 0.01 / (1 + s * 0.001)
+        r["loss_anchor"] = 0.02 / (1 + s * 0.001)
+        r["save_best_score"] = 30.0 + s * 0.001
+        records.append(r)
+    out = str(tmp_path / "loss.png")
+    n, last = plot_training_records(records, out, smooth_window=2)
+    assert n == 4 and last == 300
+    assert os.path.getsize(out) > 0
+
+
 def test_save_best_score_adds_second_panel(tmp_path):
     """When the composite ``save_best_score`` column is present, the plot
     renders the second (score) panel without error and returns the right
