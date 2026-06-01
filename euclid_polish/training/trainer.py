@@ -83,6 +83,14 @@ TRAINING_LOG_COLUMNS  = (
 # value. Set ``Config.GRAD_CLIP_NORM = math.inf`` to disable.
 GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
 
+# Cap on the per-star anchor PSNR. The anchor target is a single delta
+# pixel, so a model that nails that one pixel drives its MSE → 0 and the
+# raw PSNR → +∞ (well above the realistic synthetic/HST ~50–70 dB range),
+# spiking the metric and squashing the plot's y-axis. Clip each star's PSNR
+# to this ceiling — "≥ this = essentially exact" — so it stays finite and on
+# the same scale as the other PSNRs.
+ANCHOR_PSNR_MAX_DB = 80.0
+
 
 class Trainer:
     """Trainer for WDSR super-resolution models."""
@@ -718,6 +726,9 @@ class Trainer:
         Same asinh space and peak (``Config.PSNR_PEAK_STRETCHED``) as the
         synthetic / HST PSNRs, so all metrics share one dB scale. Higher =
         the model places the right flux at the star. Operator-free (no PSF).
+        Because the target is a single pixel, a near-exact match would send
+        the raw PSNR → +∞; each star's PSNR is therefore clipped to
+        ``ANCHOR_PSNR_MAX_DB`` so the metric stays finite and bounded.
         Returns ``nan`` when no image in the set carries a star.
 
         Parameters
@@ -727,8 +738,9 @@ class Trainer:
         """
         running = Mean()
         saw = False
-        peak2 = tf.constant(float(Config.PSNR_PEAK_STRETCHED) ** 2, dtype=tf.float32)
-        ln10 = tf.constant(2.302585092994046, dtype=tf.float32)
+        peak2   = tf.constant(float(Config.PSNR_PEAK_STRETCHED) ** 2, dtype=tf.float32)
+        ln10    = tf.constant(2.302585092994046, dtype=tf.float32)
+        max_psnr = tf.constant(ANCHOR_PSNR_MAX_DB, dtype=tf.float32)
         for lr, hr in anchor_dataset:
             sr   = self.checkpoint.model(lr, training=False)
             mask = tf.cast(hr > 0, sr.dtype)
@@ -737,6 +749,8 @@ class Trainer:
             valid = cnt > 0
             mse  = sse / tf.maximum(cnt, 1.0)
             psnr = 10.0 * tf.math.log(peak2 / tf.maximum(mse, 1e-12)) / ln10
+            # Clip per-star so one nailed pixel can't spike the metric to ~140 dB.
+            psnr = tf.minimum(psnr, max_psnr)
             psnr = tf.boolean_mask(psnr, valid)
             if int(tf.size(psnr)) > 0:
                 running(tf.reduce_mean(psnr))

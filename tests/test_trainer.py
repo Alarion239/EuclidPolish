@@ -413,11 +413,33 @@ class TestLrOnlyDataset:
 class TestEvaluateAnchor:
 
     def test_returns_finite_masked_psnr(self, tiny_trainer):
-        """evaluate_anchor returns a finite dB PSNR masked to star pixels."""
+        """evaluate_anchor returns a finite dB PSNR masked to star pixels,
+        within the cap."""
+        from euclid_polish.training.trainer import ANCHOR_PSNR_MAX_DB
         ds = _anchor_valid_dataset(n=3, batch_size=2)
         val = tiny_trainer.evaluate_anchor(ds)
         assert isinstance(val, float)
         assert np.isfinite(val)
+        assert val <= ANCHOR_PSNR_MAX_DB + 1e-4
+
+    def test_exact_match_is_capped_not_inf(self, tiny_trainer):
+        """A star pixel the model matches exactly drives MSE→0; the PSNR must
+        be the finite cap, not +inf (single-pixel target ⇒ unbounded raw)."""
+        from euclid_polish.training.trainer import ANCHOR_PSNR_MAX_DB
+        rng = np.random.default_rng(3)
+        lr = rng.normal(size=(3, 8, 8, 4)).astype(np.float32)
+        sr = tiny_trainer.checkpoint.model(tf.constant(lr), training=False).numpy()
+        hr = np.zeros((3, 16, 16, 1), dtype=np.float32)
+        for b in range(sr.shape[0]):
+            flat = sr[b, ..., 0]
+            r, c = np.unravel_index(int(np.argmax(flat)), flat.shape)
+            # Set the masked star pixel to the model's exact value there (>0
+            # so the mask keeps it) → that pixel's MSE is 0.
+            hr[b, r, c, 0] = max(float(flat[r, c]), 1e-3)
+        ds = tf.data.Dataset.from_tensor_slices((lr, hr)).batch(1)
+        val = tiny_trainer.evaluate_anchor(ds)
+        assert np.isfinite(val)
+        assert val <= ANCHOR_PSNR_MAX_DB + 1e-4
 
     def test_returns_nan_when_no_stars(self, tiny_trainer):
         """A dataset whose ``hr`` is all-zero (no star pixel) → nan."""
