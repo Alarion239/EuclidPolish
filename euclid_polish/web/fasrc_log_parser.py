@@ -144,6 +144,10 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "step":               int(_f("step")),
         "loss":               _f("loss"),
+        # Per-lane training losses (blank when that lane is off this run).
+        "loss_syn":           _opt_f("loss_syn"),
+        "loss_hst":           _opt_f("loss_hst"),
+        "loss_anchor":        _opt_f("loss_anchor"),
         "psnr_stretched":     _f("psnr_stretched"),
         "psnr_raw":           _f("psnr_raw"),
         "duration_s":         _f("duration_s"),

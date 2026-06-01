@@ -163,7 +163,7 @@ class TestAnchorLane:
         (no forward op) and produces finite, positive loss + gradients. ``hr``
         is the sparse delta-target; the loss is masked to the star pixel."""
         lr, hr = _anchor_batch()
-        loss, gnorm = trainer_with_anchor.train_step_sky(lr, hr, 0, 0, 2)
+        loss, gnorm, _ = trainer_with_anchor.train_step_sky(lr, hr, 0, 0, 2)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))
         assert float(loss.numpy()) > 0, (
@@ -204,6 +204,16 @@ class TestAnchorLane:
 
         assert masked(hr) == pytest.approx(masked(tf.constant(hr2)), rel=1e-6)
 
+    def test_returns_per_lane_losses(self, trainer_with_both_ops):
+        """train_step_sky returns (loss, gnorm, (syn, hst, anchor)); an off
+        lane is exactly 0.0 and the active lane is finite > 0 (these feed the
+        per-lane loss columns of the metrics CSV)."""
+        lr, hr = _anchor_batch(batch_size=2)
+        loss, gnorm, lane = trainer_with_both_ops.train_step_sky(lr, hr, 0, 0, 2)
+        syn, hst, anchor = (float(x.numpy()) for x in lane)
+        assert syn == 0.0 and hst == 0.0          # not active in an all-anchor layout
+        assert np.isfinite(anchor) and anchor > 0
+
 
 # ---------------------------------------------------------------------------
 # 3. HST lane
@@ -217,7 +227,7 @@ class TestHstLane:
         """An all-HST layout ``(0, B, 0)`` trains on ``|H⊛SR - HST|``,
         finite + positive, with the HST op in the gradient path."""
         lr, hr = _rand_batch(batch_size=2)
-        loss, gnorm = trainer_with_both_ops.train_step_sky(lr, hr, 0, 2, 0)
+        loss, gnorm, _ = trainer_with_both_ops.train_step_sky(lr, hr, 0, 2, 0)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))
         assert float(loss.numpy()) > 0
@@ -244,7 +254,7 @@ class TestMixedLayout:
         lanes in one tape pass and yields finite, positive loss. ``hr`` has a
         positive star pixel per image, so the anchor lane's mask is non-empty."""
         lr, hr = _anchor_batch(batch_size=4)
-        loss, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
+        loss, _, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
         assert np.isfinite(float(loss.numpy()))
         assert float(loss.numpy()) > 0
 
@@ -256,7 +266,7 @@ class TestMixedLayout:
         lr, hr = _rand_batch(batch_size=4)
         sr = trainer_with_both_ops.checkpoint.model(lr, training=False)
         ref_loss = float(tf.reduce_mean(tf.abs(sr - hr)).numpy())
-        loss, _ = trainer_with_both_ops.train_step_sky(lr, hr, 4, 0, 0)
+        loss, _, _ = trainer_with_both_ops.train_step_sky(lr, hr, 4, 0, 0)
         # The step takes a gradient update before we read ref_loss off the
         # moved weights, so only a neighbourhood check is meaningful.
         assert abs(float(loss.numpy()) - ref_loss) < 1.0, (
@@ -277,8 +287,8 @@ class TestMixedLayout:
             star_anchor_loss_weight=2.0, nonneg_sr_weight=0.0,
         )
         lr, hr = _anchor_batch()
-        l1, _ = t1.train_step_sky(lr, hr, 0, 0, 2)
-        l2, _ = t2.train_step_sky(lr, hr, 0, 0, 2)
+        l1, _, _ = t1.train_step_sky(lr, hr, 0, 0, 2)
+        l2, _, _ = t2.train_step_sky(lr, hr, 0, 0, 2)
         ratio = float(l2.numpy()) / float(l1.numpy())
         assert ratio > 1.3, (
             f"star_anchor_loss_weight=2 should yield ~2× the loss; "
@@ -295,7 +305,7 @@ class TestPerLaneLossWeights:
         # nonneg_sr_weight=0 so the loss is purely the (zeroed) lane term.
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "syn0"),
                     synthetic_loss_weight=0.0, nonneg_sr_weight=0.0)
-        loss, _ = t.train_step_sky(lr, hr, int(lr.shape[0]), 0, 0)
+        loss, _, _ = t.train_step_sky(lr, hr, int(lr.shape[0]), 0, 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
     def test_zero_hst_weight_zeros_loss(
@@ -306,7 +316,7 @@ class TestPerLaneLossWeights:
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst0"),
                     hst_forward_op=hst_op, hst_loss_weight=0.0,
                     nonneg_sr_weight=0.0)
-        loss, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
+        loss, _, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
         assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
 
     def test_hst_lane_nonzero_when_weighted(
@@ -318,7 +328,7 @@ class TestPerLaneLossWeights:
         t = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "hst1"),
                     hst_forward_op=hst_op,
                     synthetic_loss_weight=0.0, hst_loss_weight=1.0)
-        loss, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
+        loss, _, _ = t.train_step_sky(lr, hr, 0, int(lr.shape[0]), 0)
         assert float(loss.numpy()) > 0.0
 
 
@@ -338,7 +348,7 @@ class TestForwardOpGuards:
         """The anchor lane is operator-free — ``n_anchor > 0`` runs on a bare
         trainer (no forward op) without raising."""
         lr, hr = _anchor_batch()
-        loss, _ = tiny_trainer.train_step_sky(lr, hr, 0, 0, int(lr.shape[0]))
+        loss, _, _ = tiny_trainer.train_step_sky(lr, hr, 0, 0, int(lr.shape[0]))
         assert np.isfinite(float(loss.numpy()))
 
 
@@ -459,6 +469,14 @@ class TestMultiSourceValidationLogging:
             for r in rows:
                 assert r[col] != ""
                 assert np.isfinite(float(r[col]))
+
+        # Per-lane training losses: this run trains pure-supervised (no
+        # lane_counts), so the synthetic loss is logged and HST/anchor are
+        # blank — the whole-history loss columns exist and behave.
+        for r in rows:
+            assert r["loss_syn"] != "" and np.isfinite(float(r["loss_syn"]))
+            assert r["loss_hst"] == ""
+            assert r["loss_anchor"] == ""
 
         # The new columns must hold genuinely different numbers than the
         # synthetic ones (proves they came from the HST/anchor datasets, not
@@ -706,6 +724,6 @@ class TestNonNegPenalty:
     def test_train_step_sky_runs_with_penalty(self, trainer_with_both_ops):
         """The penalty term integrates into the composite SR=sky step."""
         lr, hr = _rand_batch(batch_size=4)
-        loss, gnorm = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
+        loss, gnorm, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))

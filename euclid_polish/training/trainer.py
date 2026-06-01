@@ -27,7 +27,6 @@ The split is by fixed *position* (static Python-int slices), not a
 per-example ``tf.where`` mask — so there is no branching and each lane's
 conv is a single batched op over its block.
 """
-import csv
 import os
 import time
 
@@ -41,6 +40,7 @@ from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
 
 from euclid_polish.config import Config
+from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.training.data_multiband import (
     asinh_stretch_hr, inverse_asinh_stretch_hr,
 )
@@ -49,10 +49,17 @@ from euclid_polish.training.models.common import evaluate
 # Append-only CSV — one row per evaluate_every batch — readable by Excel,
 # pandas, the FASRC dashboard, and the in-tree plot_training_log helper
 # without any custom parser. Validation history persists in real time so
-# a job killed mid-training still leaves a usable log behind.
+# a job killed mid-training still leaves a usable log behind. Owned by
+# ``euclid_polish.observability.training_log.TrainingLog`` (schema +
+# append + resume rotation); the trainer just builds rows.
 TRAINING_LOG_FILENAME = "training_log.csv"
 TRAINING_LOG_COLUMNS  = (
-    "step", "wall_time", "loss",
+    "step", "wall_time",
+    # ``loss`` is the optimised composite (mean over the eval window of the
+    # concatenated per-lane weighted losses). ``loss_{syn,hst,anchor}`` are
+    # the per-lane *unweighted* mean losses — the whole training history of
+    # each mode, no log-parsing. Empty when a lane is off this run.
+    "loss", "loss_syn", "loss_hst", "loss_anchor",
     "psnr_stretched", "psnr_raw",
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
     # Multi-source validation (additive). Empty string when the
@@ -304,6 +311,14 @@ class Trainer:
             run.
         """
         loss_mean = Mean()
+        # Per-lane unweighted mean losses over the eval window — the
+        # synthetic lane is always present; HST / star-anchor only when their
+        # lane is active this run (tracked by ``active_hst`` / ``active_anchor``).
+        loss_syn_mean    = Mean()
+        loss_hst_mean    = Mean()
+        loss_anchor_mean = Mean()
+        active_hst    = lane_counts is not None and lane_counts[1] > 0
+        active_anchor = lane_counts is not None and lane_counts[2] > 0
         gnorm_mean = Mean()
         gnorm_max  = tf.Variable(0.0, trainable=False)
 
@@ -313,29 +328,18 @@ class Trainer:
         start_step = int(ckpt.step.numpy())
         remaining = steps - start_step
 
-        log_path = os.path.join(ckpt_mgr.directory, TRAINING_LOG_FILENAME)
         os.makedirs(ckpt_mgr.directory, exist_ok=True)
-
-        # Resume-with-old-header guard. The CSV only writes a header when
-        # the file is new/empty; a run resumed against a log written with
-        # the OLD column set would append the new fieldnames' rows under
-        # the old header → misaligned columns. If the existing file's
-        # first line doesn't match the current header, rotate it out of
-        # the way and start fresh so each file is internally consistent.
-        expected_header = ",".join(TRAINING_LOG_COLUMNS)
-        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-            with open(log_path, "r", newline="") as fh:
-                first_line = fh.readline().rstrip("\r\n")
-            if first_line != expected_header:
-                backup = os.path.join(
-                    ckpt_mgr.directory,
-                    f"training_log.{time.strftime('%Y%m%d-%H%M%S')}.bak",
-                )
-                os.rename(log_path, backup)
-                tqdm.write(
-                    f"  ↻ Rotated training log with stale header → "
-                    f"{os.path.basename(backup)} (new columns added)"
-                )
+        # The structured, resume-continuous metrics CSV lives with the
+        # checkpoint and owns its own schema + stale-header rotation.
+        train_log = TrainingLog(
+            os.path.join(ckpt_mgr.directory, TRAINING_LOG_FILENAME),
+            TRAINING_LOG_COLUMNS,
+        )
+        if train_log.rotated_backup:
+            tqdm.write(
+                f"  ↻ Rotated training log with stale header → "
+                f"{os.path.basename(train_log.rotated_backup)} (new columns)"
+            )
 
         # Resume handling (save-best mode, resumed run only — a fresh run has
         # nothing to validate and starts from the checkpoint's initial
@@ -362,7 +366,11 @@ class Trainer:
                 base_row = {
                     "step":               int(start_step),
                     "wall_time":          time.time(),
+                    # No training step has run yet → loss columns blank.
                     "loss":               "",
+                    "loss_syn":           "",
+                    "loss_hst":           "",
+                    "loss_anchor":        "",
                     "psnr_stretched":     b["psnr_str"],
                     "psnr_raw":           b["psnr_raw"],
                     "gnorm_avg":          "",
@@ -375,13 +383,7 @@ class Trainer:
                     "save_best_score":    b["save_best_score"],
                     "is_baseline":        "1",
                 }
-                write_header = (not os.path.exists(log_path)
-                                or os.path.getsize(log_path) == 0)
-                with open(log_path, "a", newline="") as fh:
-                    w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
-                    if write_header:
-                        w.writeheader()
-                    w.writerow(base_row)
+                train_log.append(base_row)
                 tqdm.write(
                     f"  ▏baseline (restored ckpt @ step {start_step}): "
                     f"score={b['save_best_score']:.3f} "
@@ -419,9 +421,18 @@ class Trainer:
             # @tf.function traces once for the run's fixed layout.
             lr, hr = batch
             if lane_counts is not None:
-                loss, gnorm = self.train_step_sky(lr, hr, *lane_counts)
+                loss, gnorm, lane_loss = self.train_step_sky(lr, hr, *lane_counts)
+                # ``lane_loss`` = (syn, hst, anchor) unweighted mean losses
+                # (0.0 for off lanes). Accumulate only the active lanes so a
+                # disabled lane's column stays blank, not a misleading 0.
+                loss_syn_mean(lane_loss[0])
+                if active_hst:
+                    loss_hst_mean(lane_loss[1])
+                if active_anchor:
+                    loss_anchor_mean(lane_loss[2])
             else:
                 loss, gnorm = self.train_step(lr, hr)
+                loss_syn_mean(loss)          # pure-supervised = synthetic only
             loss_mean(loss)
             gnorm_mean(gnorm)
             gnorm_max.assign(tf.maximum(gnorm_max, gnorm))
@@ -442,9 +453,17 @@ class Trainer:
 
             if step % evaluate_every == 0:
                 loss_value  = loss_mean.result()
+                # Per-lane mean losses over the window; "" for off lanes so
+                # the column is blank rather than a misleading 0.0.
+                loss_syn    = float(loss_syn_mean.result().numpy())
+                loss_hst    = float(loss_hst_mean.result().numpy()) if active_hst else ""
+                loss_anchor = float(loss_anchor_mean.result().numpy()) if active_anchor else ""
                 gnorm_avg   = gnorm_mean.result()
                 gnorm_peak  = float(gnorm_max.numpy())
                 loss_mean.reset_state()
+                loss_syn_mean.reset_state()
+                loss_hst_mean.reset_state()
+                loss_anchor_mean.reset_state()
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
 
@@ -493,6 +512,9 @@ class Trainer:
                     "step":           int(step),
                     "wall_time":      time.time(),
                     "loss":           float(loss_value.numpy()),
+                    "loss_syn":       loss_syn,
+                    "loss_hst":       loss_hst,
+                    "loss_anchor":    loss_anchor,
                     "psnr_stretched": psnr_str,
                     "psnr_raw":       psnr_raw,
                     "gnorm_avg":      float(gnorm_avg.numpy()),
@@ -505,13 +527,7 @@ class Trainer:
                     "save_best_score":    save_best_score,
                     "is_baseline":        "",
                 }
-                write_header = (not os.path.exists(log_path)
-                                or os.path.getsize(log_path) == 0)
-                with open(log_path, "a", newline="") as fh:
-                    w = csv.DictWriter(fh, fieldnames=TRAINING_LOG_COLUMNS)
-                    if write_header:
-                        w.writeheader()
-                    w.writerow(row)
+                train_log.append(row)
 
                 # save-best on the composite score (see save_best_weights).
                 # ``ckpt.psnr`` is the checkpointed best-score threshold —
@@ -614,6 +630,11 @@ class Trainer:
         ``n_syn``/``n_hst``/``n_anchor`` are Python ints, so these guards and
         the slice logic resolve at trace time — a lane is compiled into the
         graph only when its count is non-zero.
+
+        Returns ``(loss_value, gnorm, (syn_loss, hst_loss, anchor_loss))`` —
+        the optimised composite loss, the gradient global-norm, and the three
+        per-lane *unweighted* mean losses (0.0 for an off lane) for the
+        metrics CSV.
         """
         if n_hst > 0 and self.hst_forward_op is None:
             raise ValueError(
@@ -626,16 +647,24 @@ class Trainer:
             per_example = []   # list of [n_*] loss vectors
 
             i = 0
+            # Per-lane *unweighted* mean losses, returned for the metrics
+            # CSV (0.0 for an off lane). The optimised ``loss_value`` still
+            # uses the per-lane weights via ``per_example``.
+            syn_loss    = tf.zeros([], tf.float32)
+            hst_loss    = tf.zeros([], tf.float32)
+            anchor_loss = tf.zeros([], tf.float32)
             if n_syn > 0:
                 s = slice(i, i + n_syn)
                 d = tf.reduce_mean(tf.abs(sr[s] - hr[s]), axis=[1, 2, 3])
                 per_example.append(self.synthetic_loss_weight * d)
+                syn_loss = tf.reduce_mean(d)
                 i += n_syn
             if n_hst > 0:
                 s = slice(i, i + n_hst)
                 hconv = asinh_stretch_hr(self.hst_forward_op(sr_lin[s]))
                 d = tf.reduce_mean(tf.abs(hconv - hr[s]), axis=[1, 2, 3])
                 per_example.append(self.hst_loss_weight * d)
+                hst_loss = tf.reduce_mean(d)
                 i += n_hst
             if n_anchor > 0:
                 s = slice(i, i + n_anchor)
@@ -643,7 +672,9 @@ class Trainer:
                 mask   = tf.cast(target > 0, target.dtype)      # star pixels only
                 num    = tf.reduce_sum(mask * tf.abs(sr[s] - target), axis=[1, 2, 3])
                 den    = tf.reduce_sum(mask, axis=[1, 2, 3]) + 1e-6
-                per_example.append(self.star_anchor_loss_weight * (num / den))
+                anchor_per_example = num / den
+                per_example.append(self.star_anchor_loss_weight * anchor_per_example)
+                anchor_loss = tf.reduce_mean(anchor_per_example)
 
             loss_value = tf.reduce_mean(tf.concat(per_example, axis=0))
             # One non-negativity penalty on the shared SR covers all lanes.
@@ -654,7 +685,7 @@ class Trainer:
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
-        return loss_value, gnorm
+        return loss_value, gnorm, (syn_loss, hst_loss, anchor_loss)
 
     def evaluate(self, dataset):
         """
