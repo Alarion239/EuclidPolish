@@ -82,3 +82,21 @@ def test_anchor_flux_matches_catalog_magnitude():
     _, hr = gen.make_anchor_example(
         np.zeros((128, 128, 4), np.float32), (64.0, 64.0), flux, 64)
     assert hr[..., 0].max() == pytest.approx(flux)
+
+
+def test_anchor_flux_e_prefers_psf_flux():
+    from euclid_polish.euclid.photometry import uJy_to_electrons
+    # Both present + a deliberately inconsistent magnitude → the raw PSF flux wins.
+    row = {"flux_psf_uJy": "12.5", "fluxerr_psf_uJy": "0.1", "magnitude": "99"}
+    assert gen.anchor_flux_e(row) == pytest.approx(
+        uJy_to_electrons(12.5, Config.BAND_VIS))
+
+
+def test_anchor_flux_e_falls_back_to_magnitude():
+    # No / blank flux → fall back to the catalog magnitude.
+    assert gen.anchor_flux_e({"magnitude": "19.0"}) == pytest.approx(
+        ab_mag_to_electrons(19.0, Config.BAND_VIS))
+    assert gen.anchor_flux_e({"flux_psf_uJy": "", "magnitude": "20.0"}) == pytest.approx(
+        ab_mag_to_electrons(20.0, Config.BAND_VIS))
+    # Neither → None.
+    assert gen.anchor_flux_e({}) is None

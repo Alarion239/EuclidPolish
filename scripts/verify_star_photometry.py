@@ -11,10 +11,12 @@ aperture means catalog-mag electrons ≈ total measured electrons — i.e. the
 anchor delta-target (built from catalog mag) is on the same scale the model
 sees.
 
-NOTE: the catalog ``magnitude`` derives from ``flux_vis_1fwhm_aper`` (a
-1-FWHM *aperture* flux), so expect the small-aperture ratio near 1 and the
-large-aperture ratio to reveal any aperture correction needed for a *total*
-point-source delta. This script only reports; it changes nothing.
+The anchor flux is now the catalog ``flux_vis_psf`` (TPHOT PSF-fitting flux,
+µJy) — already a *total* point-source flux — converted to electrons via the
+physical µJy→AB→e⁻ path (``uJy_to_electrons``). So the large-aperture ratio
+should land near 1 with no aperture correction; a gross constant offset at
+all radii instead points to a zeropoint/units mistake. This script only
+reports; it changes nothing.
 
 Run where the cutouts live (FASRC):
     python scripts/verify_star_photometry.py --n 40 --size 512
@@ -36,8 +38,21 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import (
-    ab_mag_to_electrons, adu_per_s_to_electrons,
+    ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
 )
+
+
+def _catalog_electrons(row: dict, band) -> float:
+    """Catalog-implied electrons: prefer the raw PSF flux (flux_psf_uJy,
+    physical µJy→e⁻), fall back to the magnitude for older catalogs."""
+    flux = row.get("flux_psf_uJy")
+    try:
+        f = float(flux)
+        if f > 0:
+            return uJy_to_electrons(f, band)
+    except (TypeError, ValueError):
+        pass
+    return ab_mag_to_electrons(float(row["magnitude"]), band)
 
 
 def _aperture_sum(img_e: np.ndarray, r: float) -> float:
@@ -87,7 +102,7 @@ def main() -> int:
             arr = np.asarray(hdul[0].data, dtype=np.float32)
             magzero = float(hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
         img_e = adu_per_s_to_electrons(arr, magzero, band)
-        cat_e = ab_mag_to_electrons(mag, band)
+        cat_e = _catalog_electrons(row, band)
         sums = [_aperture_sum(img_e, r) for r in args.radii]
         for r, s in zip(args.radii, sums):
             if cat_e > 0:
@@ -102,10 +117,14 @@ def main() -> int:
             print(f"  r={r:g}px : median={np.median(vals):.3f}  "
                   f"(n={len(vals)}, IQR "
                   f"{np.percentile(vals, 25):.3f}-{np.percentile(vals, 75):.3f})")
-    print("\n→ large-aperture ratio ≈ 1 ⇒ catalog mag ≈ total electrons "
-          "(anchor delta needs no correction).\n"
-          "→ if it plateaus below 1, multiply the anchor flux by 1/plateau "
-          "(aperture correction) so the delta carries the star's TOTAL flux.")
+    print("\n→ ratio (measured / catalog) per radius:\n"
+          "   • a gross constant offset at ALL radii ⇒ a zeropoint/units bug\n"
+          "     (the catalog flux is µJy, AB ZP {:.2f}; verify it round-trips).\n"
+          "   • with PSF flux, the moderate-aperture ratio ≈ 1 ⇒ no correction.\n"
+          "     If you instead anchor on an aperture flux and the ratio rises\n"
+          "     with radius, the correction factor is that (>1) ratio itself —\n"
+          "     anchor_flux = catalog_flux × ratio — NOT 1/ratio."
+          .format(Config.AB_ZP_UJY))
     return 0
 
 

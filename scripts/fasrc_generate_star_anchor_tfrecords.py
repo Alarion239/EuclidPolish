@@ -2,10 +2,11 @@
 """Build star-anchor TFRecords from the centered per-star cutouts.
 
 Reuses the cutouts we already download for PSF extraction
-(``data/euclid_stars/cutouts/<band>/star_NNNN_<size>.fits``) plus the
-catalog magnitudes in ``stars.csv``. Each cutout is fetched at the star's
-catalog RA/Dec, so the star sits at the central pixel; all four bands are
-co-registered on the common 0.10″/pix archive grid.
+(``data/euclid_stars/cutouts/<band>/star_NNNN_<size>.fits``) plus the catalog
+photometry in ``stars.csv`` — preferring the raw PSF flux ``flux_psf_uJy``
+(TPHOT, total point-source flux) and falling back to ``magnitude``. Each
+cutout is fetched at the star's catalog RA/Dec, so the star sits at the
+central pixel; all four bands are co-registered on the common 0.10″/pix grid.
 
 For each usable star we write a ``(dirty_anchor, hr_anchor)`` pair —
 structurally identical to the synthetic ``(dirty, hr)`` pair so the
@@ -43,7 +44,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import (
-    ab_mag_to_electrons, adu_per_s_to_electrons,
+    ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
 )
 from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
@@ -118,6 +119,30 @@ def make_anchor_example(
     return lr_cube, hr_target
 
 
+def _row_float(row: dict, key: str) -> Optional[float]:
+    v = row.get(key)
+    if v is None or str(v).strip() == "":
+        return None
+    try:
+        f = float(v)
+        return f if f == f else None        # drop NaN
+    except (TypeError, ValueError):
+        return None
+
+
+def anchor_flux_e(row: dict) -> Optional[float]:
+    """Star-anchor delta value in electrons. Prefer the raw PSF flux
+    (``flux_psf_uJy`` → electrons, physical scale); fall back to the catalog
+    magnitude for older catalogs that predate the flux columns."""
+    flux_uJy = _row_float(row, "flux_psf_uJy")
+    if flux_uJy is not None and flux_uJy > 0:
+        return uJy_to_electrons(flux_uJy, Config.BAND_VIS)
+    mag = _row_float(row, "magnitude")
+    if mag is not None:
+        return ab_mag_to_electrons(mag, Config.BAND_VIS)
+    return None
+
+
 def _read_stars(stars_csv: str, limit: Optional[int]):
     with open(stars_csv) as fh:
         rows = list(csv.DictReader(fh))
@@ -136,6 +161,9 @@ def main() -> int:
     p.add_argument("--output-dir", default=STAR_ANCHOR_RECORDS_DIR)
     p.add_argument("--valid-every", type=int, default=10,
                    help="Every Nth usable star goes to the validate split.")
+    p.add_argument("--snr-min", type=float, default=None,
+                   help="Skip stars whose PSF flux_psf_uJy / fluxerr_psf_uJy "
+                        "is below this (well-measured flux only). Off by default.")
     p.add_argument("--limit", type=int, default=None)
     args = p.parse_args()
 
@@ -156,7 +184,17 @@ def main() -> int:
         usable = 0
         for row in rows:
             sid = int(row["id"])
-            mag = float(row["magnitude"])
+            # Optional SNR cut on the raw PSF photometry.
+            if args.snr_min is not None and args.snr_min > 0:
+                flux = _row_float(row, "flux_psf_uJy")
+                ferr = _row_float(row, "fluxerr_psf_uJy")
+                if not (flux and ferr and ferr > 0 and flux / ferr >= args.snr_min):
+                    skipped += 1
+                    continue
+            flux_e = anchor_flux_e(row)
+            if flux_e is None or flux_e <= 0:
+                skipped += 1
+                continue
             loaded = load_star_cube(sid, args.size)
             if loaded is None:
                 skipped += 1
@@ -167,8 +205,7 @@ def main() -> int:
             except Exception:                      # missing/invalid WCS
                 skipped += 1
                 continue
-            ex = make_anchor_example(
-                cube_e, (sx, sy), ab_mag_to_electrons(mag, Config.BAND_VIS), args.stamp)
+            ex = make_anchor_example(cube_e, (sx, sy), flux_e, args.stamp)
             if ex is None:
                 skipped += 1
                 continue

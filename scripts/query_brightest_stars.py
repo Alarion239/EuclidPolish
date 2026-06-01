@@ -43,10 +43,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-stars", type=int, default=Config.DEFAULT_BRIGHTEST_N,
                    help="Number of brightest stars to keep (server-side TOP N).")
     p.add_argument("--magnitude-min", type=float, default=None,
-                   help="Bright-end cutoff (mag): brighter stars rejected. "
-                        "≈ 15 skips stars that saturate the NISP detector.")
+                   help="Bright-end cutoff (AB mag): brighter stars rejected. "
+                        "Use to skip stars that saturate (especially NISP). "
+                        "Magnitudes are now proper AB from flux_vis_psf "
+                        "(µJy), so this differs from the old aperture scale.")
     p.add_argument("--magnitude-limit", type=float, default=None,
-                   help="Faint-end cutoff (mag): dimmer stars rejected.")
+                   help="Faint-end cutoff (AB mag): dimmer stars rejected.")
+    p.add_argument("--snr-min", type=float, default=None,
+                   help="Keep only well-measured stars: PSF "
+                        "flux_vis_psf / fluxerr_vis_psf ≥ this (e.g. 50). "
+                        "Off by default.")
     p.add_argument("--output-dir", default=Config.DEFAULT_OUTPUT_DIR,
                    help="Star catalog root (stars.csv + cutouts/ live here).")
     return p.parse_args()
@@ -103,6 +109,7 @@ def main() -> int:
         num_stars=args.num_stars,
         magnitude_limit=args.magnitude_limit,
         magnitude_min=args.magnitude_min,
+        snr_min=args.snr_min,
     )
     print(result["message"])
     if "Query failed" in str(result.get("message", "")):

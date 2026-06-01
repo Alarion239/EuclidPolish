@@ -18,9 +18,26 @@ consistent — see ``scripts/verify_star_photometry.py``.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from euclid_polish.config import BandConfig
+from euclid_polish.config import BandConfig, Config
+
+
+def uJy_to_ab_mag(flux_uJy: float) -> float:
+    """AB magnitude of a flux quoted in microJansky:
+    ``mag = Config.AB_ZP_UJY − 2.5·log10(flux_µJy)`` (3631 Jy = AB 0)."""
+    return float(Config.AB_ZP_UJY - 2.5 * math.log10(float(flux_uJy)))
+
+
+def uJy_to_electrons(flux_uJy: float, band: BandConfig) -> float:
+    """Catalogue flux (µJy, AB) → electrons over ``band``'s stack — the scale
+    the model and the star-anchor delta-targets use. Routes through the AB
+    system: ``e⁻ = flux_µJy · 10**(0.4·(band.sim_zeropoint_e − AB_ZP_UJY))``.
+    Equivalent to ``ab_mag_to_electrons(uJy_to_ab_mag(flux_µJy), band)``."""
+    return float(flux_uJy) * float(
+        10.0 ** (0.4 * (band.sim_zeropoint_e - Config.AB_ZP_UJY)))
 
 
 def ab_mag_to_electrons(mag: float, band: BandConfig) -> float:

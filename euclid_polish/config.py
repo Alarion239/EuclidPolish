@@ -189,9 +189,16 @@ class Config:
 
     # VIS instrument
     # Catalog zeropoint: interprets MER catalog flux_vis_1fwhm_aper → AB mag
-    # (used by euclid/catalog.py — do not change without re-validating against
-    # real Euclid Q1 catalog data).
+    # (legacy; used by euclid/catalog.py — do not change without re-validating
+    # against real Euclid Q1 catalog data).
     DEFAULT_VIS_ZEROPOINT        = 26.2
+    # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
+    # flux columns (flux_vis_psf, flux_vis_*fwhm_aper, …) are in µJy, and for
+    # an AB flux ``mag_AB = AB_ZP_UJY − 2.5·log10(flux_µJy)`` with
+    # ``AB_ZP_UJY = 8.90 + 2.5·log10(1e6) = 23.90`` (3631 Jy = AB 0). Star-anchor
+    # photometry uses this physical scale (the absolute electron scale is then
+    # confirmed against the cutouts by scripts/verify_star_photometry.py).
+    AB_ZP_UJY                    = 23.90
     VIS_PIXEL_SCALE_ARCSEC       = 0.10     # native Euclid VIS pixel scale (arcsec/pixel)
 
     # Euclid VIS detector parameters (MSSL VIS-PP, Cropper+ 2014, Euclid Q1 docs)

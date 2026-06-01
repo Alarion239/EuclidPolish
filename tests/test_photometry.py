@@ -11,6 +11,8 @@ from euclid_polish.euclid.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
     adu_per_s_to_electrons_factor,
+    uJy_to_ab_mag,
+    uJy_to_electrons,
 )
 
 BAND = Config.BAND_VIS
@@ -40,6 +42,24 @@ def test_adu_factor_unity_when_magzero_equals_stack_zp():
     arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
     out = adu_per_s_to_electrons(arr, BAND.sim_zeropoint_e, BAND)
     np.testing.assert_allclose(out, arr, rtol=1e-6)
+
+
+def test_uJy_ab_mag_zeropoint():
+    # A 1-µJy source sits at the µJy AB zeropoint; 10× brighter = 2.5 mag less.
+    assert uJy_to_ab_mag(1.0) == pytest.approx(Config.AB_ZP_UJY, abs=1e-9)
+    assert uJy_to_ab_mag(10.0) == pytest.approx(Config.AB_ZP_UJY - 2.5, abs=1e-9)
+
+
+def test_uJy_to_electrons_matches_mag_path():
+    # Direct µJy→e⁻ must equal routing through AB mag → electrons.
+    for f in (0.5, 12.0, 3.4e3):
+        assert uJy_to_electrons(f, BAND) == pytest.approx(
+            ab_mag_to_electrons(uJy_to_ab_mag(f), BAND), rel=1e-9)
+
+
+def test_uJy_to_electrons_scales_linearly():
+    assert uJy_to_electrons(20.0, BAND) == pytest.approx(
+        2.0 * uJy_to_electrons(10.0, BAND), rel=1e-9)
 
 
 def test_adu_conversion_consistent_with_mag_chain():

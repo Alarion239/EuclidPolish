@@ -92,6 +92,21 @@ def test_save_load_roundtrip_preserves_per_band_flags(tmp_path):
     assert StarCatalog.is_corrupted(s2, 256, band="H_E")
 
 
+def test_psf_flux_columns_roundtrip_when_present(tmp_path):
+    """A star carrying the raw PSF flux + error round-trips them; a star
+    without them stays clean (no flux keys, no forced NaN column)."""
+    cat = StarCatalog(str(tmp_path))
+    with_flux = {"id": 0, "ra": 1.0, "dec": 2.0, "magnitude": 19.0,
+                 "flux_psf_uJy": 12.5, "fluxerr_psf_uJy": 0.2}
+    without   = {"id": 1, "ra": 3.0, "dec": 4.0, "magnitude": 20.0}
+    cat.save({"stars": [with_flux, without], "next_id": 2})
+
+    loaded = {s["id"]: s for s in cat.load()["stars"]}
+    assert loaded[0]["flux_psf_uJy"] == 12.5
+    assert loaded[0]["fluxerr_psf_uJy"] == 0.2
+    assert "flux_psf_uJy" not in loaded[1]      # absent stays absent
+
+
 def test_csv_columns_use_kind_band_size_naming(tmp_path):
     import pandas as pd
     cat = StarCatalog(str(tmp_path))

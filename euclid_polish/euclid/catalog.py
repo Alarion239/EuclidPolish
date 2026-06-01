@@ -34,6 +34,7 @@ import pandas as pd
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.photometry import uJy_to_ab_mag
 from euclid_polish.euclid.validator import angular_separation_arcsec
 
 from euclid_polish.config import Config as _Cfg
@@ -46,6 +47,16 @@ _BASE_COLS  = ("id", "ra", "dec", "magnitude")
 # ---------------------------------------------------------------------------
 # Row ⇄ star-dict conversion
 # ---------------------------------------------------------------------------
+
+def _unmask_float(value) -> Optional[float]:
+    """Astropy masked-table cell → ``float``, or ``None`` when masked/missing."""
+    if value is None or (hasattr(value, "mask") and bool(value.mask)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def _nan_or(value, cast):
     """Cast ``value`` or return NaN/None when missing.
@@ -70,6 +81,12 @@ def _row_to_star(row: Dict[str, Any]) -> Dict[str, Any]:
         "dec":       _nan_or(row.get("dec"),       float),
         "magnitude": _nan_or(row.get("magnitude"), float),
     }
+    # Optional raw PSF photometry (µJy) — present for star-anchor stars,
+    # absent for older catalogs / test rows (kept out of the star dict then).
+    for k in ("flux_psf_uJy", "fluxerr_psf_uJy"):
+        v = row.get(k)
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            star[k] = float(v)
     flags: Dict[str, Dict[str, Dict[str, bool]]] = {k: {} for k in _FLAG_KINDS}
     for col, val in row.items():
         m = _FLAG_RE.match(str(col))
@@ -99,6 +116,10 @@ def _star_to_row(star: Dict[str, Any]) -> Dict[str, Any]:
         "dec":       _nan_or(star.get("dec"),       float),
         "magnitude": _nan_or(star.get("magnitude"), float),
     }
+    for k in ("flux_psf_uJy", "fluxerr_psf_uJy"):
+        v = star.get(k)
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            row[k] = float(v)
     for kind in _FLAG_KINDS:
         nested = star.get(kind)
         if not isinstance(nested, dict):
@@ -335,16 +356,20 @@ class StarCatalog:
                             num_stars: Optional[int] = None,
                             magnitude_min: Optional[float] = None
                             ) -> List[Dict[str, Any]]:
-        """ADQL cone query on ``mer_catalogue`` (legacy synchronous path)."""
+        """ADQL cone query on ``mer_catalogue`` (legacy synchronous path).
+
+        Uses ``flux_vis_psf`` (TPHOT PSF flux, µJy) + ``fluxerr_vis_psf`` like
+        the async path; magnitudes are proper AB (``Config.AB_ZP_UJY``)."""
         query = f"""
         SELECT TOP 100000
-            right_ascension, declination, flux_vis_1fwhm_aper
+            right_ascension, declination, flux_vis_psf, fluxerr_vis_psf
         FROM catalogue.mer_catalogue
         WHERE CONTAINS(
             POINT('ICRS', right_ascension, declination),
             CIRCLE('ICRS', {ra}, {dec}, {radius})
         ) = 1
-          AND flux_vis_1fwhm_aper IS NOT NULL
+          AND flux_vis_psf IS NOT NULL
+          AND flux_vis_psf > 0
         """
         try:
             job = Euclid.launch_job(query)
@@ -352,48 +377,27 @@ class StarCatalog:
             if results is None or len(results) == 0:
                 return []
 
-            flux_values = np.array(results["flux_vis_1fwhm_aper"])
-            sorted_indices = np.argsort(flux_values)[::-1]
-            if len(sorted_indices) > 10000:
-                sorted_indices = sorted_indices[:10000]
-            else:
-                results = results[sorted_indices]
-
-            valid_flux_mask = []
-            for flux in results["flux_vis_1fwhm_aper"]:
-                ok = True
-                if flux is None or (hasattr(flux, "mask") and flux.mask):
-                    ok = False
-                elif flux <= 0:
-                    ok = False
-                valid_flux_mask.append(ok)
-            results_valid = results[np.array(valid_flux_mask)]
-            if len(results_valid) == 0:
-                return []
-
-            magnitudes = [
-                -2.5 * np.log10(flux) + Config.DEFAULT_VIS_ZEROPOINT
-                for flux in results_valid["flux_vis_1fwhm_aper"]
-            ]
-            results_valid.add_column(np.array(magnitudes), name="vis_magnitude")
-
-            window_mask = results_valid["vis_magnitude"] < magnitude_limit
-            if magnitude_min is not None:
-                window_mask &= results_valid["vis_magnitude"] > magnitude_min
-            bright_stars = results_valid[window_mask]
-            if len(bright_stars) == 0:
-                return []
-            bright_stars = bright_stars[np.argsort(bright_stars["vis_magnitude"])]
-
             stars: List[Dict[str, Any]] = []
-            for star in bright_stars:
+            for row in results:
+                flux = _unmask_float(row["flux_vis_psf"])
+                if flux is None or not np.isfinite(flux) or flux <= 0:
+                    continue
+                ferr = _unmask_float(row["fluxerr_vis_psf"])
+                mag = uJy_to_ab_mag(flux)
+                if mag >= magnitude_limit:
+                    continue
+                if magnitude_min is not None and mag <= magnitude_min:
+                    continue
                 stars.append({
-                    "ra":        float(star["right_ascension"]),
-                    "dec":       float(star["declination"]),
-                    "magnitude": float(star["vis_magnitude"]),
+                    "ra":              float(row["right_ascension"]),
+                    "dec":             float(row["declination"]),
+                    "magnitude":       mag,
+                    "flux_psf_uJy":    flux,
+                    "fluxerr_psf_uJy": ferr if (ferr is not None and np.isfinite(ferr)) else float("nan"),
                 })
-                if num_stars is not None and len(stars) >= num_stars:
-                    break
+            stars.sort(key=lambda s: s["magnitude"])
+            if num_stars is not None:
+                stars = stars[:num_stars]
             return stars
         except Exception as e:
             print(f"    Query failed: {e}")
@@ -487,8 +491,17 @@ class StarCatalog:
                               radius: Optional[float] = None,
                               magnitude_limit: Optional[float] = None,
                               magnitude_min: Optional[float] = None,
+                              snr_min: Optional[float] = None,
                               ) -> Dict[str, Any]:
-        """Server-side TOP-N query sorted by VIS flux (descending)."""
+        """Server-side TOP-N query sorted by VIS **PSF** flux (descending).
+
+        Uses ``flux_vis_psf`` (TPHOT PSF-fitting photometry, µJy) — the
+        point-source-optimal total flux — and its error ``fluxerr_vis_psf``.
+        Magnitudes are proper AB (µJy zeropoint ``Config.AB_ZP_UJY``); the raw
+        flux + error are stored so the star-anchor delta uses the physical
+        flux directly (and a zeropoint tweak never needs a re-query).
+        ``snr_min`` keeps only well-measured stars (``flux/fluxerr ≥ snr_min``).
+        """
         if num_stars <= 0:
             raise ValueError("num_stars must be positive")
         if (magnitude_min is not None and magnitude_limit is not None
@@ -503,15 +516,20 @@ class StarCatalog:
             raise ValueError("ra, dec, and radius must be provided together")
 
         where_clauses = [
-            "flux_vis_1fwhm_aper IS NOT NULL",
-            "flux_vis_1fwhm_aper > 0",
+            "flux_vis_psf IS NOT NULL",
+            "flux_vis_psf > 0",
+            "fluxerr_vis_psf IS NOT NULL",
+            "fluxerr_vis_psf > 0",
         ]
+        # Magnitude window → µJy PSF-flux bounds via the AB µJy zeropoint.
         if magnitude_limit is not None:
-            flux_min = 10 ** ((Config.DEFAULT_VIS_ZEROPOINT - magnitude_limit) / 2.5)
-            where_clauses.append(f"flux_vis_1fwhm_aper > {flux_min}")
+            flux_min = 10 ** ((Config.AB_ZP_UJY - magnitude_limit) / 2.5)
+            where_clauses.append(f"flux_vis_psf > {flux_min}")
         if magnitude_min is not None:
-            flux_max = 10 ** ((Config.DEFAULT_VIS_ZEROPOINT - magnitude_min) / 2.5)
-            where_clauses.append(f"flux_vis_1fwhm_aper < {flux_max}")
+            flux_max = 10 ** ((Config.AB_ZP_UJY - magnitude_min) / 2.5)
+            where_clauses.append(f"flux_vis_psf < {flux_max}")
+        if snr_min is not None and snr_min > 0:
+            where_clauses.append(f"flux_vis_psf > {float(snr_min)} * fluxerr_vis_psf")
         if all(cone_given):
             where_clauses.append(
                 f"CONTAINS(POINT('ICRS', right_ascension, declination), "
@@ -519,10 +537,11 @@ class StarCatalog:
             )
 
         query = (
-            f"SELECT TOP {num_stars} right_ascension, declination, flux_vis_1fwhm_aper "
+            f"SELECT TOP {num_stars} right_ascension, declination, "
+            f"flux_vis_psf, fluxerr_vis_psf "
             f"FROM catalogue.mer_catalogue "
             f"WHERE {' AND '.join(where_clauses)} "
-            f"ORDER BY flux_vis_1fwhm_aper DESC"
+            f"ORDER BY flux_vis_psf DESC"
         )
 
         try:
@@ -543,19 +562,17 @@ class StarCatalog:
 
         new_stars: List[Dict[str, Any]] = []
         for row in results:
-            flux_raw = row["flux_vis_1fwhm_aper"]
-            # Even with the WHERE clause filter, astropy returns masked
-            # tables — guard against masked / NaN values before float().
-            if flux_raw is None or (hasattr(flux_raw, "mask") and bool(flux_raw.mask)):
+            flux = _unmask_float(row["flux_vis_psf"])
+            ferr = _unmask_float(row["fluxerr_vis_psf"])
+            # Even with the WHERE filter, astropy returns masked tables — guard.
+            if flux is None or not np.isfinite(flux) or flux <= 0:
                 continue
-            flux = float(flux_raw)
-            if not np.isfinite(flux) or flux <= 0:
-                continue
-            mag = -2.5 * np.log10(flux) + Config.DEFAULT_VIS_ZEROPOINT
             new_stars.append({
-                "ra":        float(row["right_ascension"]),
-                "dec":       float(row["declination"]),
-                "magnitude": float(mag),
+                "ra":             float(row["right_ascension"]),
+                "dec":            float(row["declination"]),
+                "magnitude":      uJy_to_ab_mag(flux),
+                "flux_psf_uJy":   flux,
+                "fluxerr_psf_uJy": ferr if (ferr is not None and np.isfinite(ferr)) else float("nan"),
             })
 
         catalog = self.load()
