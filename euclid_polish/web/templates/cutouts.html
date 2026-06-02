@@ -111,12 +111,15 @@
 
 <section class="card">
   <h3>Verify photometry scale (read-only)</h3>
-  <p class="hint">Runs <code>verify_star_photometry.py</code> on the FASRC
-     login node: aperture-measures N downloaded VIS cutouts (in electrons)
-     and compares to each star's catalog PSF flux. A median ratio ≈ 1
-     confirms the absolute electron scale the star-anchor delta-targets use;
-     a constant offset at all radii flags a zeropoint/units bug. Reports
-     only — writes nothing. Connect to FASRC first.</p>
+  <p class="hint">Runs <code>verify_star_photometry.py</code> as a short
+     SLURM job (cancellable on the
+     <a href="{{ url_for('fasrc_page') }}">FASRC page</a>):
+     aperture-measures N downloaded VIS cutouts (in electrons) and compares
+     to each star's catalog PSF flux. A median ratio ≈ 1 confirms the
+     absolute electron scale the star-anchor delta-targets use; a constant
+     offset at all radii flags a zeropoint/units bug. Reports only — writes
+     nothing (the ratio table lands in the job log). Connect to FASRC
+     first.</p>
   <form id="verify-photometry-form" action="/cutouts/verify-photometry">
     <label>N stars
       <input type="number" name="n" value="40" min="1" max="1000"></label>
@@ -174,13 +177,27 @@ async function refreshEuclidCredsStatus() {
     }
   } catch (e) { /* leave blank */ }
 }
-// ── Photometry-scale verification (read-only login-node job) ────────
+// ── Photometry-scale verification (read-only SLURM job) ─────────────
+// Runs as a short SLURM job so it's cancellable on /fasrc; the ratio
+// table lands in the sbatch log, tracked by the FASRC job panel.
 const verifyForm = document.getElementById("verify-photometry-form");
 if (verifyForm) {
-  verifyForm.addEventListener("submit", (e) => {
+  verifyForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    polishUI.run(verifyForm,
-                 document.getElementById("verify-photometry-status"), {});
+    const statusEl = document.getElementById("verify-photometry-status");
+    statusEl.innerHTML = "submitting…";
+    try {
+      const r = await fetch(verifyForm.action,
+                            { method: "POST", body: new FormData(verifyForm) });
+      const d = await r.json();
+      statusEl.innerHTML = (d.ok && d.jobid)
+        ? `<p>✓ Submitted SLURM job <code>${d.jobid}</code> — track &amp; ` +
+          `cancel it (and read the ratio report) on the ` +
+          `<a href="/fasrc">FASRC page →</a>.</p>`
+        : `<p>✗ ${d.error || "submit failed"}</p>`;
+    } catch (err) {
+      statusEl.innerHTML = `<p>✗ ${err}</p>`;
+    }
   });
 }
 

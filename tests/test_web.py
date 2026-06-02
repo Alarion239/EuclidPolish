@@ -120,10 +120,10 @@ def test_removed_routes_are_gone(client):
 
 
 def test_query_brightest_requires_fasrc_connection(client, monkeypatch):
-    """The brightest-N query now runs on the FASRC login node over SSH, so
-    without a connection it must NOT run locally. The global SSH gate
-    (before_request) redirects every non-allowlisted path to the
-    connection-error page when no session is up."""
+    """The brightest-N query now submits a SLURM job over SSH, so without a
+    connection it must NOT run locally. The global SSH gate (before_request)
+    redirects every non-allowlisted path to the connection-error page when no
+    session is up."""
     from euclid_polish.web import remote as web_remote
     monkeypatch.setattr(web_remote.STATE, "ssh", None)
     r = client.post("/catalog/query-brightest",
@@ -136,6 +136,68 @@ def test_query_brightest_requires_fasrc_connection(client, monkeypatch):
         assert "/connection-error" in r.headers.get("Location", "")
     else:
         assert r.get_json().get("ok") is False
+
+
+def _stub_connected_ssh(monkeypatch):
+    from euclid_polish.web import remote as web_remote
+
+    class _SSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=None): return (0, "", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _SSH())
+
+
+def _capture_sbatch_submit(monkeypatch):
+    """Stub ``submit_sbatch_script`` so the route renders a real sbatch body
+    (captured) but no JobDB/sbatch is touched. Returns the capture dict."""
+    from euclid_polish.web import fasrc_jobs
+    captured = {}
+
+    def fake_submit(ssh, *, cfg, built, label, params, step_id):
+        captured.update(built=built, label=label, params=params, step_id=step_id)
+        return "12345", {"ok": True, "jobid": "12345", "label": label}
+
+    monkeypatch.setattr(fasrc_jobs, "submit_sbatch_script", fake_submit)
+    return captured
+
+
+def test_query_brightest_submits_slurm_job(client, monkeypatch):
+    """The brightest-N query is now a cancellable SLURM job: the route
+    renders an sbatch running query_brightest_stars.py with the window +
+    SNR flags and returns the slurm job id."""
+    _stub_connected_ssh(monkeypatch)
+    captured = _capture_sbatch_submit(monkeypatch)
+    r = client.post("/catalog/query-brightest", data={
+        "num_stars": 3000, "magnitude_min": "16",
+        "magnitude_limit": "19", "snr_min": "50"})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True and d["jobid"] == "12345"
+    assert captured["step_id"] == "query_brightest_stars"
+    body = captured["built"]["body"]
+    assert "query_brightest_stars.py" in body
+    assert "--num-stars" in body and "3000" in body
+    assert "--magnitude-min" in body and "--magnitude-limit" in body
+    assert "--snr-min" in body
+    # Short CPU allocation on the shared partition (no GPU).
+    assert "--partition=shared" in body
+    assert "--gres=gpu" not in body
+
+
+def test_verify_photometry_submits_slurm_job(client, monkeypatch):
+    """The photometry-scale check is now a cancellable SLURM job."""
+    _stub_connected_ssh(monkeypatch)
+    captured = _capture_sbatch_submit(monkeypatch)
+    r = client.post("/cutouts/verify-photometry", data={"n": 40, "size": 256})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True and d["jobid"] == "12345"
+    assert captured["step_id"] == "verify_photometry"
+    body = captured["built"]["body"]
+    assert "verify_star_photometry.py" in body
+    assert "--n" in body and "40" in body
+    assert "--size" in body and "256" in body
 
 
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):

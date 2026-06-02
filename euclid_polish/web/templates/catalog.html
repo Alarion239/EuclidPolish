@@ -82,10 +82,11 @@
      saturate (NISP saturates first), <em>min SNR</em> to keep only
      well-measured flux (<code>flux/σ</code>, e.g. 50) for clean anchors.
      Runs an integrity tally of any cutouts already on disk afterwards.</p>
-  <p class="hint"><strong>Runs on the FASRC login node</strong> (over SSH,
-     not a SLURM job) so <code>stars.csv</code> lands on the shared
-     netscratch <code>$DATA_DIR</code> the download/PSF jobs read — connect
-     to FASRC first.</p>
+  <p class="hint"><strong>Runs as a short SLURM job</strong> (so you can
+     cancel it on the <a href="{{ url_for('fasrc_page') }}">FASRC page</a>)
+     and writes <code>stars.csv</code> to the shared netscratch
+     <code>$DATA_DIR</code> the download/PSF jobs read — connect to FASRC
+     first.</p>
   <form id="brightest-form" action="/catalog/query-brightest">
     <label>Number of stars
       <input type="number" name="num_stars" value="200" min="1" max="100000"></label>
@@ -117,14 +118,32 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   polishUI.viz.set(chip.dataset.group, chip.dataset.value);
 });
 
+// The query now runs as a short SLURM job (cancellable on /fasrc), so we
+// post the form and report the submitted job id rather than polling a
+// laptop-side job.
+async function submitFasrcJob(form, statusEl) {
+  statusEl.innerHTML = "submitting…";
+  try {
+    const r = await fetch(form.action, { method: "POST", body: new FormData(form) });
+    const d = await r.json();
+    if (d.ok && d.jobid) {
+      statusEl.innerHTML =
+        `<p>✓ Submitted SLURM job <code>${d.jobid}</code> — track &amp; ` +
+        `cancel it on the <a href="/fasrc">FASRC page →</a>. Reload this ` +
+        `page once it finishes to see the catalog.</p>`;
+    } else {
+      statusEl.innerHTML = `<p>✗ ${d.error || "submit failed"}</p>`;
+    }
+  } catch (e) {
+    statusEl.innerHTML = `<p>✗ ${e}</p>`;
+  }
+}
 function bindRun(formId, statusId) {
   const f = document.getElementById(formId);
   if (!f) return;
   f.addEventListener("submit", (e) => {
     e.preventDefault();
-    polishUI.run(f, document.getElementById(statusId), {
-      onDone: () => { polishUI.viz.refresh(); setTimeout(() => location.reload(), 1800); },
-    });
+    submitFasrcJob(f, document.getElementById(statusId));
   });
 }
 bindRun("brightest-form",  "brightest-status");
