@@ -278,6 +278,83 @@ class TestPSFIO:
 
 
 # ---------------------------------------------------------------------------
+# Rotation (telescope-roll modelling)
+# ---------------------------------------------------------------------------
+
+class TestRotation:
+
+    def _spiked(self, side: int = 21) -> PSF:
+        """Centred Gaussian + a bright horizontal 'spike' row (asymmetric)."""
+        a = _gauss(side, 2.0).astype(np.float64)
+        a[side // 2, :] += 0.02              # horizontal ray through centre
+        return PSF(data=(a / a.sum()).astype(np.float32), pixel_scale=0.05)
+
+    def test_zero_is_identity(self):
+        p = self._spiked()
+        np.testing.assert_array_equal(p.rotated(0).data, p.data)
+
+    def test_360_is_identity(self):
+        p = self._spiked()
+        np.testing.assert_allclose(p.rotated(360).data, p.data, rtol=1e-6)
+
+    def test_90_is_exact_rot90_direction(self):
+        """The 90° fast path is exact np.rot90(k=1) — direction matches
+        scipy.ndimage.rotate (verified at implementation time)."""
+        p = self._spiked()
+        expected = np.rot90(p.data, k=1)
+        expected = expected / expected.sum()
+        np.testing.assert_allclose(p.rotated(90).data, expected, rtol=1e-6)
+
+    def test_90_turns_horizontal_spike_vertical(self):
+        c = 21 // 2
+        rot = self._spiked(21).rotated(90)
+        # The bright row becomes a bright column.
+        assert rot.data[:, c].sum() > rot.data[c, :].sum()
+
+    def test_sum_preserved_and_nonneg_for_arbitrary_angle(self):
+        rot = self._spiked().rotated(37.0)
+        assert rot.data.sum() == pytest.approx(1.0, abs=1e-6)
+        assert float(rot.data.min()) >= 0.0          # clip_negative default
+
+    def test_peak_stays_centred(self):
+        c = 21 // 2
+        rot = self._spiked(21).rotated(45.0)
+        pky, pkx = np.unravel_index(int(np.argmax(rot.data)), rot.data.shape)
+        assert (pky, pkx) == (c, c)
+
+    def test_roundtrip_approx_identity_for_smooth_psf(self):
+        """A smooth PSF rotated +θ then −θ returns almost exactly (no
+        systematic shift; interpolation is gentle on smooth content)."""
+        p = PSF(data=_gauss(31, 3.0), pixel_scale=0.05)
+        back = p.rotated(30.0).rotated(-30.0)
+        np.testing.assert_allclose(back.data, p.data, atol=1e-4)
+
+    def test_sharp_feature_degrades_but_bounded(self):
+        """A sharp spike loses contrast through arbitrary-angle interpolation
+        (the cost of a non-90° rotation) — bounded, and avoided entirely on
+        the exact quarter-turn path."""
+        p = self._spiked()
+        back = p.rotated(30.0).rotated(-30.0)
+        peak = float(p.data.max())
+        assert float(np.abs(back.data - p.data).max()) < 0.4 * peak  # smeared, not destroyed
+        # Exact 90° round-trip is loss-free (no interpolation).
+        exact = p.rotated(90.0).rotated(-90.0)
+        np.testing.assert_allclose(exact.data, p.data, rtol=1e-6)
+
+    def test_negative_clip_can_be_disabled(self):
+        """Cubic spline rings slightly negative on the sharp ray when the
+        clip is off — confirms the default clip is doing something."""
+        rot = self._spiked().rotated(37.0, clip_negative=False, order=3)
+        assert float(rot.data.min()) < 0.0
+
+    def test_pixel_scale_and_oversampling_preserved(self):
+        p = PSF(data=_gauss(21, 2.0), pixel_scale=0.025, oversampling=4)
+        rot = p.rotated(23.0)
+        assert rot.pixel_scale == 0.025
+        assert rot.oversampling == 4
+
+
+# ---------------------------------------------------------------------------
 # Back-compat shim
 # ---------------------------------------------------------------------------
 

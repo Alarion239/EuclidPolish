@@ -30,7 +30,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import zoom, shift as ndi_shift
+from scipy.ndimage import zoom, shift as ndi_shift, rotate as ndi_rotate
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
@@ -284,6 +284,65 @@ class PSF:
         return replace(
             self,
             data=shifted.astype(self.data.dtype, copy=False),
+        )
+
+    def rotated(
+        self,
+        angle_deg: float,
+        *,
+        order: int = 3,
+        clip_negative: bool = True,
+    ) -> PSF:
+        """Rotate the kernel ``angle_deg`` degrees about its centre.
+
+        Models the telescope ROLL: the diffraction spikes are fixed in the
+        instrument frame, but each Euclid pointing has a different roll, so
+        the PSF appears rotated by that angle in the North-up MER mosaic.
+        Convolving a North-up scene with a roll-θ-rotated kernel reproduces
+        a given roll, so per-scene random rotation lets the model see the
+        full roll family without ever blending two orientations into an
+        unphysical multi-spike PSF.
+
+        Direction matches ``scipy.ndimage.rotate`` (verified: a whole
+        quarter-turn equals ``np.rot90(k=round(angle/90))``).
+
+        Whole multiples of 90° take the **exact** ``np.rot90`` path — no
+        interpolation, no flux loss, no ringing. Any other angle resamples
+        onto the rotated grid with a spline (``order``: 3 = cubic, 1 =
+        bilinear). The kernel is odd-sided and (after ``.recentred()``)
+        centred, so rotation is about the true centre pixel and the peak
+        stays put.
+
+        ``clip_negative`` (default True) zeroes the small negative pixels a
+        cubic spline rings into the sharp spikes; the result is then
+        renormalised to sum=1 (interpolation does not conserve flux
+        exactly). ``mode="constant"`` fills the rotated-in corners with 0
+        (sky); rotation preserves radius-from-centre, so all energy within
+        radius ``N/2`` stays in frame at every angle and the corner-clipped
+        wing flux (typically <~1% at our kernel sizes) is absorbed by the
+        renormalisation.
+        """
+        angle = float(angle_deg) % 360.0
+        if angle == 0.0:
+            return self
+        if angle % 90.0 == 0.0:
+            # Exact quarter-turn: index remap, no interpolation.
+            out = np.rot90(np.asarray(self.data), k=int(round(angle / 90.0)) % 4)
+        else:
+            out = ndi_rotate(
+                self.data.astype(np.float64), angle,
+                reshape=False, order=int(order),
+                mode="constant", cval=0.0,
+            )
+            if clip_negative:
+                out = np.clip(out, 0.0, None)
+        out = np.ascontiguousarray(out, dtype=np.float64)
+        s = float(out.sum())
+        if s > 0:
+            out = out / s
+        return replace(
+            self,
+            data=out.astype(self.data.dtype, copy=False),
         )
 
     def convolved_with(self, image: np.ndarray) -> np.ndarray:
