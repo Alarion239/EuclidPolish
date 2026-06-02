@@ -16,7 +16,6 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.psf_extractor import PSFExtractor
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.psf import PSF
-from euclid_polish.web.job_status import fold_events
 
 gen = importlib.import_module("scripts.extract_all_band_psfs")
 
@@ -95,12 +94,30 @@ def test_load_star_positions_missing_file_is_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Per-PSF progress reporting (parallel worker steps)
+# Phase 1 (cluster_band) + per-PSF progress reporting
 # ---------------------------------------------------------------------------
 
-def _stub_extract_band_io(monkeypatch):
-    """Stub the IO + heavy EPSFBuilder so only the reporting / config wiring of
-    ``extract_band`` runs (3 clusters of 3 stars)."""
+class _FakeStar:
+    def __init__(self, side=5):
+        self.data = np.zeros((side, side), dtype=np.float32)
+
+
+def _fake_args(tmp_path, **over):
+    base = dict(
+        num_stars=None, cutout_size=64, vis_pixels=None, output_size=None,
+        psf_dir=str(tmp_path / "psf"), stars_per_psf=100, min_stars_per_psf=50,
+        stars_csv=str(tmp_path / "stars.csv"), max_procs=1,
+        bands="VIS,Y_E")
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_cluster_band_returns_jobs_and_gates_tqdm(tmp_path, monkeypatch):
+    """``cluster_band`` loads + clusters into per-cluster build jobs (stamps +
+    star count + centroid), and disables tqdm under a job (events path set)."""
+    cutdir = tmp_path / "cutouts"
+    cutdir.mkdir()
+    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
     monkeypatch.setattr(gen, "_load_star_positions", lambda csv: {})
     monkeypatch.setattr(gen, "cluster_star_indices",
                         lambda ids, pos, spp, min_stars=50:
@@ -109,54 +126,7 @@ def _stub_extract_band_io(monkeypatch):
                         lambda self, d, cutout_size=None:
                         [(i, f"f{i}") for i in range(9)])
     monkeypatch.setattr(PSFExtractor, "extract_accepted_stars",
-                        lambda self, files: [(i, object()) for i in range(9)])
-    monkeypatch.setattr(PSFExtractor, "build_epsf_from_stars",
-                        lambda self, stars: (object(), None))
-    monkeypatch.setattr(
-        PSFExtractor, "psf_from_epsf",
-        staticmethod(lambda epsf, scale:
-                     PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
-                         pixel_scale=scale)))
-
-
-def _fake_args(tmp_path):
-    return argparse.Namespace(
-        num_stars=None, cutout_size=64, vis_pixels=None, output_size=None,
-        psf_dir=str(tmp_path / "psf"), stars_per_psf=100, min_stars_per_psf=50,
-        stars_csv=str(tmp_path / "stars.csv"))
-
-
-def test_extract_band_reports_a_worker_step_per_psf(tmp_path, monkeypatch):
-    """``extract_band`` emits one ``set_worker_step`` per cluster PSF (keyed by
-    band name), so the bar advances as each PSF lands."""
-    cutdir = tmp_path / "cutouts"
-    cutdir.mkdir()
-    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
-    _stub_extract_band_io(monkeypatch)
-
-    band = Config.BAND_VIS
-    ev = tmp_path / "job.events"
-    reporter = Reporter(events_path=str(ev))
-    assert gen.extract_band(band, _fake_args(tmp_path), reporter=reporter) is True
-
-    worker = [json.loads(l)["value"] for l in ev.read_text().splitlines()
-              if json.loads(l)["kind"] == "worker"]
-    vis = [(w["current"], w["total"]) for w in worker
-           if w["worker_id"] == band.name]
-    assert (0, 3) in vis                     # announced up front
-    assert [c for c, _ in vis] == [0, 1, 2, 3]   # one step per PSF, to 3/3
-    assert all(t == 3 for _, t in vis)
-
-
-def test_tqdm_off_under_job_on_interactively(tmp_path, monkeypatch):
-    """tqdm (the extractor's progress bars) is disabled when a Reporter has an
-    events path (SLURM job → would flood .err) and enabled when it doesn't
-    (interactive). We spy on the PSFExtractionConfig the extractor is built
-    with."""
-    cutdir = tmp_path / "cutouts"
-    cutdir.mkdir()
-    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
-    _stub_extract_band_io(monkeypatch)
+                        lambda self, files: [(i, _FakeStar()) for i in range(9)])
 
     seen = {}
     orig_init = PSFExtractor.__init__
@@ -164,38 +134,71 @@ def test_tqdm_off_under_job_on_interactively(tmp_path, monkeypatch):
     def spy_init(self, config=None):
         seen["progress_bar"] = config.progress_bar if config else None
         orig_init(self, config)
-
     monkeypatch.setattr(PSFExtractor, "__init__", spy_init)
-    band = Config.BAND_VIS
 
-    # Job context (events path set) → tqdm OFF.
-    gen.extract_band(band, _fake_args(tmp_path),
-                     reporter=Reporter(events_path=str(tmp_path / "j.events")))
+    # Job context (events path) → tqdm OFF.
+    plan = gen.cluster_band(Config.BAND_VIS, _fake_args(tmp_path),
+                            Reporter(events_path=str(tmp_path / "j.events")))
     assert seen["progress_bar"] is False
+    assert len(plan["jobs"]) == 3
+    for ci, stamps, n, centroid in plan["jobs"]:
+        assert len(stamps) == 3 and n == 3
+        assert all(isinstance(s, np.ndarray) for s in stamps)
 
     # Interactive (no events path) → tqdm ON.
-    gen.extract_band(band, _fake_args(tmp_path),
-                     reporter=Reporter(events_path=None))
+    gen.cluster_band(Config.BAND_VIS, _fake_args(tmp_path),
+                     Reporter(events_path=None))
     assert seen["progress_bar"] is True
 
 
-def test_parallel_worker_steps_sum_across_bands(tmp_path):
-    """Two bands reporting interleaved worker steps fold into ONE cumulative
-    bar (the consumer sums ``current`` across worker ids) — the property the
-    parallel band extraction relies on."""
-    ev = tmp_path / "job.events"
-    r = Reporter(events_path=str(ev))
-    r.set_parallel(0, 2, label="extract")     # total=0 → summed from workers
-    r.set_worker_step("VIS", 0, 3)
-    r.set_worker_step("Y_E", 0, 2)
-    r.set_worker_step("VIS", 1, 3)
-    r.set_worker_step("Y_E", 1, 2)
-    r.set_worker_step("VIS", 2, 3)
-    r.set_worker_step("Y_E", 2, 2)
-    r.set_worker_step("VIS", 3, 3)
+def test_build_cluster_psf_builds_from_stamps(monkeypatch):
+    """``_build_cluster_psf`` rebuilds EPSFStars from the stamp arrays and
+    returns a PSF (EPSFBuilder stubbed)."""
+    monkeypatch.setattr(PSFExtractor, "build_epsf_from_stars",
+                        lambda self, stars: (object(), None))
+    monkeypatch.setattr(
+        PSFExtractor, "psf_from_epsf",
+        staticmethod(lambda epsf, scale:
+                     PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
+                         pixel_scale=scale)))
+    from euclid_polish.euclid.psf_extractor import PSFExtractionConfig
+    cfg = PSFExtractionConfig(psf_size=5, progress_bar=False)
+    psf = gen._build_cluster_psf((cfg, 0.025,
+                                  [np.ones((5, 5), np.float32) for _ in range(3)]))
+    assert isinstance(psf, PSF)
+    assert psf.pixel_scale == 0.025
 
-    st = fold_events(ev.read_text())
-    assert st.parallel is not None
-    assert st.parallel.current == 5          # 3 (VIS) + 2 (Y_E)
-    assert st.parallel.total == 5            # summed per-band totals
-    assert st.step.current == 5 and st.step.total == 5   # bar mirrors it
+
+def test_main_reports_one_monotonic_bar_over_all_psfs(tmp_path, monkeypatch):
+    """``main`` builds every cluster in one pool (serial here) and reports a
+    single monotonic set_step bar over ALL PSFs across the bands (3 VIS + 2
+    Y_E = 5), in band order."""
+    def fake_plan(band, n):
+        return {"cfg": None, "scale": band.epsf_pixel_scale_arcsec,
+                "filename": band.psf_fits_filename,
+                "jobs": [(ci, [np.ones((5, 5), np.float32)], 3, (1.0, 2.0))
+                         for ci in range(n)],
+                "have_positions": True}
+
+    plans = {"VIS": fake_plan(Config.BAND_VIS, 3),
+             "Y_E": fake_plan(Config.get_band("Y_E"), 2)}
+    monkeypatch.setattr(gen, "cluster_band",
+                        lambda band, args, reporter: plans.get(band.name))
+    monkeypatch.setattr(gen, "_build_cluster_psf",
+                        lambda payload: PSF(
+                            data=np.full((5, 5), 1.0 / 25, np.float32),
+                            pixel_scale=payload[1]))
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=1))
+
+    ev = tmp_path / "job.events"
+    monkeypatch.setenv("EUCLID_POLISH_EVENTS_PATH", str(ev))
+    assert gen.main() == 0
+
+    steps = [json.loads(l)["value"] for l in ev.read_text().splitlines()
+             if json.loads(l)["kind"] == "step"]
+    # The building stage uses total = 5 (3 VIS + 2 Y_E).
+    build = [s["current"] for s in steps if s["total"] == 5]
+    assert build == [0, 1, 2, 3, 4, 5]              # monotonic, one per PSF
+    # Both bands' PSFSets were written.
+    assert (tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename).exists()

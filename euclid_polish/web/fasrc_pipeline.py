@@ -665,39 +665,38 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             step_id="extract_euclid_psf",
             label="Extract Euclid ePSFs (all 4 bands)",
             description=(
-                "Run photutils EPSFBuilder on the downloaded star cutouts "
-                "for ALL four bands (VIS + NISP Y/J/H) in one job — the four "
-                "bands run in parallel, one process per CPU (allocation "
-                "locked to 4 CPUs). Each band's good stars are K-Means++ "
-                "clustered by sky position into groups of 'stars per PSF', "
-                "and one ePSF is built per cluster (the PSF varies across the "
-                "field). Writes a multi-extension "
+                "Run photutils EPSFBuilder on the downloaded star cutouts for "
+                "ALL four bands (VIS + NISP Y/J/H) in one job. Each band's "
+                "good stars are K-Means++ clustered by sky position into "
+                "groups of 'stars per PSF', and one ePSF is built per cluster "
+                "(the PSF varies across the field). Bands are processed one at "
+                "a time, but a band's cluster PSFs are built in parallel "
+                "across ALL the CPUs you allocate (choose more CPUs to go "
+                "faster). Writes a multi-extension "
                 "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits (HDU0=mean, "
                 "HDU1..K=cluster PSFs). Bright clipped-core stars are rejected "
                 "automatically. Bands with no cutouts fall back to a Gaussian."
             ),
             defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                # 4 EPSFBuilders run at once → ~4× the single-band peak.
-                # Per-cluster builds use fewer stars (lower peak), but each
-                # band now runs K≈n_good/N builds serially → more wall-time.
+                partition="shared", n_cpus=8, n_gpus=0,
+                # One band's stars held in memory + n_cpus EPSFBuilders (each
+                # on a ~100-star cluster). Scale memory up with the CPU count
+                # and the cutout size.
                 memory="48G", time_limit="6:00:00",
             ),
             needs_gpu=False,
-            # One process per band (4 bands) → lock the allocation to 4 CPUs
-            # so SLURM doesn't hand out cores the job can't use, and the UI
-            # hides the CPU field.
-            fixed_cpus=4,
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         vis_pixels    = int(params.get("vis_pixels", 512))
         stars_per_psf = int(params.get("stars_per_psf", 100))
+        # Use every allocated CPU to build cluster PSFs in parallel.
+        n_cpus = int(params.get("n_cpus", 8) or 8)
         cmd = [
             "scripts/extract_all_band_psfs.py",
             "--vis-pixels",    str(vis_pixels),
             "--stars-per-psf", str(stars_per_psf),
-            "--max-procs",     "4",
+            "--max-procs",     str(n_cpus),
         ]
         # Optional cap on total stars considered per band (blank/0 → all good
         # cutouts, then clustered into groups of stars_per_psf).

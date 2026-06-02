@@ -47,6 +47,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import numpy as np
+from photutils.psf import EPSFStar
 from sklearn.cluster import KMeans
 
 from euclid_polish.config import BandConfig, Config
@@ -224,22 +225,29 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--bands", default=",".join(b.name for b in Config.BANDS),
                     help="Comma-separated list of bands to process")
     ap.add_argument("--max-procs", type=int, default=4,
-                    help="Bands to extract in parallel (one process per "
-                         "band; capped at the band count). The FASRC step "
-                         "locks the allocation to 4 CPUs to match the 4 "
-                         "Euclid bands.")
+                    help="Parallel ePSF (cluster) builds — set to the number "
+                         "of allocated CPUs. Bands are processed one at a time "
+                         "(VIS, then Y_E, …) and that band's cluster PSFs are "
+                         "built across all these workers, so a 30-cluster band "
+                         "uses every CPU instead of one. The FASRC step passes "
+                         "the CPU count you choose in the web form.")
     return ap.parse_args()
 
 
-def extract_band(band: BandConfig, args: argparse.Namespace,
-                 reporter: Optional[Reporter] = None) -> bool:
-    reporter = reporter or Reporter(events_path=None)  # no-op when unset
-    cutout_dir = _cutout_dir_for_band(band)
-    out_path   = os.path.join(args.psf_dir, band.psf_fits_filename)
+def cluster_band(
+    band: BandConfig, args: argparse.Namespace, reporter: Reporter,
+) -> Optional[dict]:
+    """Phase 1 for one band: load the cutouts, reject saturated/edge stars,
+    K-Means++ cluster the survivors by sky position, and return a build plan.
 
-    # Pick the native cutout size for this band: either user-supplied
-    # ``--cutout-size`` (same for every band), or derived from the shared
-    # angular field via ``--vis-pixels``.
+    The returned dict carries ``jobs`` — a list of
+    ``(cluster_idx, stamps, n_stars, centroid)`` ready to build in parallel,
+    where ``stamps`` are the normalised star cutouts (ndarrays) for that
+    cluster. Returns ``None`` to skip the band (no cutouts / no usable stars).
+    """
+    cutout_dir = _cutout_dir_for_band(band)
+    out_path = os.path.join(args.psf_dir, band.psf_fits_filename)
+
     if args.vis_pixels is not None:
         arcsec = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
         cutout_size = band.cutout_size_for_arcsec(arcsec)
@@ -248,28 +256,21 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     else:
         cutout_size = Config.DEFAULT_CUTOUT_SIZE
 
-    header = f"=== {band.name} ==="
-    print(header)
+    print(f"=== {band.name} ===")
     print(f"  cutouts:     {cutout_dir}")
     print(f"  cutout-size: {cutout_size} px (native)")
     print(f"  output:      {out_path}")
-
     if not os.path.isdir(cutout_dir):
         reporter.warn(f"{band.name}: cutout directory not found — skipping")
         print(f"  ⚠️  cutout directory not found — skipping. "
               f"Run the cutout downloader for band={band.name} first.")
-        return False
+        return None
 
-    # ``psf_size`` is the *native* centred crop EPSFBuilder receives from
-    # each star. For an output PSF of side ``output_size`` at oversampling
-    # ``ovs``, the input crop must contain ``output_size / ovs`` native
-    # pixels (the natural EPSF grid is ``psf_size × ovs + 1``). Without
-    # this, EPSFBuilder fills the outer regions with zeros / noise because
-    # no star contributes flux there.
+    # ``psf_size`` is the *native* centred crop EPSFBuilder receives from each
+    # star (the natural EPSF grid is ``psf_size × ovs + 1``).
     psf_size = cutout_size - 1 if cutout_size % 2 == 0 else cutout_size - 2
-    # tqdm (the "Processing cutouts" bar + EPSFBuilder's) only when running
-    # interactively. Under SLURM (events path set) the Reporter drives the UI
-    # progress bar, so the per-iteration tqdm would just flood the .err log.
+    # tqdm only when interactive; under SLURM (events path set) the Reporter
+    # drives the UI bar, so per-iteration tqdm would just flood the .err log.
     cfg = PSFExtractionConfig(
         progress_bar=(reporter.events_path is None),
         psf_size=psf_size,
@@ -282,7 +283,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     if not all_files:
         reporter.warn(f"{band.name}: no cutouts of size {cutout_size} found — skipping")
         print(f"  ⚠️  no cutouts of size {cutout_size} found — skipping.")
-        return False
+        return None
 
     selected = extractor.select_files(all_files, num_stars=args.num_stars)
     print(f"  considering {len(selected)} of {len(all_files)} available stars")
@@ -293,13 +294,11 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     if not accepted:
         reporter.warn(f"{band.name}: no usable (non-saturated) stars — skipping")
         print("  ⚠️  no usable stars after saturation/edge rejection — skipping.")
-        return False
+        return None
     ids = [sid for sid, _ in accepted]
     stars = [star for _, star in accepted]
     print(f"  accepted {len(stars)} good stars")
 
-    # Spatially cluster the good stars into groups of ~--stars-per-psf and
-    # extract one ePSF per cluster (the PSF varies across the field).
     positions = _load_star_positions(args.stars_csv)
     if not positions:
         print(f"  ⚠️  no positions in {args.stars_csv} — single ePSF from all "
@@ -311,73 +310,42 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
           f"min {args.min_stars_per_psf}): "
           f"sizes {[len(c) for c in clusters]}")
 
-    # Pixel scale on the *oversampled* ePSF grid: native / oversampling.
-    # By picking ``epsf_oversampling`` so this equals 0.05"/pix for every
-    # band, all ePSFs land on the same HR grid the forward model uses.
-    epsf_pixel_scale = band.epsf_pixel_scale_arcsec
-
-    psfs: List[PSF] = []
-    centroids: List[Tuple[float, float]] = []
-    star_counts: List[int] = []
-    n_clusters = len(clusters)
-    # Announce this band's share of the work up front so the cumulative
-    # cross-band bar knows its total before the first ePSF lands.
-    reporter.set_worker_step(band.name, 0, n_clusters, f"{band.name}: 0/{n_clusters}")
+    jobs = []
     for ci, cluster in enumerate(clusters):
-        cluster_stars = [stars[i] for i in cluster]
-        try:
-            epsf, _ = extractor.build_epsf_from_stars(cluster_stars)
-        except Exception as e:
-            reporter.warn(f"{band.name}: cluster {ci} failed "
-                          f"({type(e).__name__}: {e}) — skipping cluster")
-            print(f"  ✗ cluster {ci} failed: {type(e).__name__}: {e}")
-        else:
-            psfs.append(extractor.psf_from_epsf(epsf, epsf_pixel_scale))
-            star_counts.append(len(cluster_stars))   # sampling weight
-            pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
-            if pts:
-                centroids.append((float(np.mean([p[0] for p in pts])),
-                                  float(np.mean([p[1] for p in pts]))))
-            else:
-                centroids.append((float("nan"), float("nan")))
-        # Report after every cluster (built or skipped) so the bar always
-        # advances to n_clusters; the consumer sums these across bands.
-        reporter.set_worker_step(band.name, ci + 1, n_clusters,
-                                 f"{band.name}: PSF {ci + 1}/{n_clusters} "
-                                 f"({len(cluster_stars)} stars)")
+        # Normalised star cutouts (ndarrays) — picklable; the worker rebuilds
+        # the EPSFStar objects, so nothing photutils-specific is pickled.
+        stamps = [np.asarray(stars[i].data, dtype=np.float32) for i in cluster]
+        pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
+        centroid = ((float(np.mean([p[0] for p in pts])),
+                     float(np.mean([p[1] for p in pts]))) if pts
+                    else (float("nan"), float("nan")))
+        jobs.append((ci, stamps, len(cluster), centroid))
 
-    if not psfs:
-        reporter.error(f"{band.name}: every cluster failed to build")
-        print("  ✗ every cluster failed to build")
-        return False
-
-    have_centroids = bool(positions) and all(
-        np.isfinite(c[0]) and np.isfinite(c[1]) for c in centroids)
-    psf_set = PSFSet.from_psfs(
-        psfs, centroids=centroids if have_centroids else None,
-        n_stars=star_counts)
-    os.makedirs(args.psf_dir, exist_ok=True)
-    saved = psf_set.save(args.psf_dir, filename=band.psf_fits_filename)
-    print(f"  ✓ saved {saved}")
-    print(f"     {psf_set.n} PSF(s), shape={psf_set.shape}, "
-          f"pixel_scale={psf_set.pixel_scale:.4f}\"/pix")
-    return True
+    return {
+        "cfg":            cfg,
+        "scale":          band.epsf_pixel_scale_arcsec,
+        "filename":       band.psf_fits_filename,
+        "jobs":           jobs,
+        "have_positions": bool(positions),
+    }
 
 
-def _extract_band_worker(task: Tuple[str, argparse.Namespace]) -> Tuple[str, bool]:
-    """Process-pool entry point: extract one band's ePSF.
+def _build_cluster_psf(payload):
+    """Worker: build ONE cluster's ePSF from its star stamps.
 
-    Top-level (picklable). Each worker builds its own :class:`Reporter`
-    from the env — the per-job events file is append-only and POSIX-atomic
-    for sub-PIPE_BUF writes, so the 4 band workers share it safely without
-    passing the (unpicklable, lock-bearing) parent reporter across the
-    fork.
+    Top-level + picklable. ``payload`` is ``(cfg, epsf_pixel_scale, stamps)``
+    where ``stamps`` is a list of normalised cutout ndarrays; the EPSFStar
+    objects are reconstructed here so only plain arrays cross the process
+    boundary. Returns a :class:`PSF` (picklable). EPSFBuilder runs
+    single-threaded (BLAS capped at the module top), so N workers use N cores.
     """
-    band_name, args = task
-    band = Config.get_band(band_name)
-    reporter = Reporter.from_env()
-    ok = extract_band(band, args, reporter=reporter)
-    return band_name, ok
+    cfg, scale, stamps = payload
+    extractor = PSFExtractor(cfg)
+    stars = [EPSFStar(data=np.asarray(d, dtype=np.float32),
+                      cutout_center=(d.shape[1] // 2, d.shape[0] // 2))
+             for d in stamps]
+    epsf, _ = extractor.build_epsf_from_stars(stars)
+    return extractor.psf_from_epsf(epsf, scale)
 
 
 def main() -> int:
@@ -388,8 +356,7 @@ def main() -> int:
         return 1
     requested = [name.strip() for name in args.bands.split(",") if name.strip()]
     bands = [Config.get_band(name) for name in requested]
-    n_bands = len(bands)
-    n_procs = max(1, min(args.max_procs, n_bands))
+    n_workers = max(1, int(args.max_procs))
 
     print(f"Extracting ePSF for bands: {[b.name for b in bands]}")
     print(f"  num-stars    = {args.num_stars if args.num_stars else 'all'} (cap)")
@@ -402,48 +369,105 @@ def main() -> int:
         print(f"  cutout-size  = {args.cutout_size}")
     print(f"  output-size  = {args.output_size}")
     print(f"  psf-dir      = {args.psf_dir}")
-    print(f"  parallel     = {n_procs} band(s) at once\n")
+    print(f"  workers      = {n_workers} parallel ePSF builds\n")
 
-    reporter.set_stage(f"extracting {n_bands} ePSF(s) — {n_procs}-way parallel")
-    # Per-PSF progress is reported by each band as a parallel "worker"
-    # (worker_id = band name): the consumer sums the per-band (current/total)
-    # into one cumulative cross-band bar. total=0 → the bar's denominator is
-    # the sum of the per-band cluster counts the workers report (we don't know
-    # ΣK until each band clusters). Works for both the pool and the serial
-    # path (one worker per band either way).
-    reporter.set_parallel(0, n_procs, label=f"extracting {n_bands} ePSF(s)")
-    succeeded = []
+    # Phase 1 — per band (sequential, so "VIS first, then Y_E, …"): load +
+    # reject + cluster. Holds each band's plan (cluster star stamps) so the
+    # total PSF count is known before building starts.
+    reporter.set_stage("clustering stars")
+    plan = {}
+    for bi, band in enumerate(bands, start=1):
+        p = cluster_band(band, args, reporter)
+        if p is not None:
+            plan[band.name] = p
+        reporter.set_step(bi, len(bands), f"clustered {band.name}")
+        print()
+
+    total = sum(len(p["jobs"]) for p in plan.values())
+    if total == 0:
+        print("No bands had usable cutouts; nothing to build.")
+        return 0
+
+    # Phase 2 — build EVERY cluster ePSF in ONE pool of ``n_workers`` (all the
+    # allocated CPUs build PSFs in parallel). Tasks are submitted in band order
+    # so VIS PSFs go first; one monotonic cumulative bar over all PSFs.
+    reporter.set_stage(f"building {total} ePSF(s) on {n_workers} worker(s)")
+    results = {name: {} for name in plan}        # band -> {cluster_idx: PSF}
+    tasks = [(band.name, ci, (plan[band.name]["cfg"],
+                              plan[band.name]["scale"], stamps))
+             for band in bands if band.name in plan
+             for ci, stamps, _n, _c in plan[band.name]["jobs"]]
+
     done = 0
-    if n_procs == 1:
-        # Single band (or forced serial): no pool overhead.
-        for band in bands:
-            ok = extract_band(band, args, reporter=reporter)
-            succeeded.append((band.name, ok))
-            done += 1
-            print()
-    else:
-        with ProcessPoolExecutor(max_workers=n_procs) as pool:
-            futures = {
-                pool.submit(_extract_band_worker, (b.name, args)): b.name
-                for b in bands
-            }
-            for fut in as_completed(futures):
-                band_name = futures[fut]
-                try:
-                    name, ok = fut.result()
-                except Exception as e:
-                    reporter.warn(f"{band_name}: worker crashed: "
-                                  f"{type(e).__name__}: {e}")
-                    name, ok = band_name, False
-                succeeded.append((name, ok))
-                done += 1
-                print(f"[{done}/{n_bands}] {name}: {'✓' if ok else '✗'}", flush=True)
+    reporter.set_step(0, total, "building ePSFs")
 
+    def _record(band_name: str, ci: int, psf) -> None:
+        nonlocal done
+        if psf is not None:
+            results[band_name][ci] = psf
+        done += 1
+        reporter.set_step(done, total, f"{band_name}: PSF {ci}")
+        print(f"[{done}/{total}] {band_name} PSF {ci}", flush=True)
+
+    if n_workers <= 1:
+        for band_name, ci, payload in tasks:
+            try:
+                psf = _build_cluster_psf(payload)
+            except Exception as e:
+                reporter.warn(f"{band_name} cluster {ci} failed: "
+                              f"{type(e).__name__}: {e}")
+                psf = None
+            _record(band_name, ci, psf)
+    else:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futmap = {pool.submit(_build_cluster_psf, payload): (bn, ci)
+                      for bn, ci, payload in tasks}
+            for fut in as_completed(futmap):
+                band_name, ci = futmap[fut]
+                try:
+                    psf = fut.result()
+                except Exception as e:
+                    reporter.warn(f"{band_name} cluster {ci} failed: "
+                                  f"{type(e).__name__}: {e}")
+                    psf = None
+                _record(band_name, ci, psf)
+
+    # Phase 3 — assemble + save one PSFSet per band (in cluster order).
     print("=" * 50)
+    succeeded = []
+    for band in bands:
+        p = plan.get(band.name)
+        if p is None:
+            succeeded.append((band.name, False))
+            continue
+        built = results[band.name]
+        psfs: List[PSF] = []
+        centroids: List[Tuple[float, float]] = []
+        star_counts: List[int] = []
+        for ci, _stamps, n, centroid in p["jobs"]:
+            if ci in built:
+                psfs.append(built[ci])
+                star_counts.append(n)
+                centroids.append(centroid)
+        if not psfs:
+            reporter.error(f"{band.name}: every cluster failed to build")
+            print(f"  ✗ {band.name}: every cluster failed to build")
+            succeeded.append((band.name, False))
+            continue
+        have_centroids = p["have_positions"] and all(
+            np.isfinite(c[0]) and np.isfinite(c[1]) for c in centroids)
+        psf_set = PSFSet.from_psfs(
+            psfs, centroids=centroids if have_centroids else None,
+            n_stars=star_counts)
+        os.makedirs(args.psf_dir, exist_ok=True)
+        saved = psf_set.save(args.psf_dir, filename=p["filename"])
+        print(f"  ✓ {band.name}: {psf_set.n} PSF(s), shape={psf_set.shape} "
+              f"→ {saved}")
+        succeeded.append((band.name, True))
+
     print("Summary:")
     for name, ok in succeeded:
-        mark = "✓" if ok else "✗"
-        print(f"  {mark} {name}")
+        print(f"  {'✓' if ok else '✗'} {name}")
     n_ok = sum(1 for _, ok in succeeded if ok)
     print(f"\n{n_ok}/{len(succeeded)} bands extracted; missing bands will "
           "use Gaussian fallback in the forward model.")
