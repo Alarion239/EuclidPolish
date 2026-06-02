@@ -98,16 +98,9 @@ def test_load_star_positions_missing_file_is_empty(tmp_path):
 # Per-PSF progress reporting (parallel worker steps)
 # ---------------------------------------------------------------------------
 
-def test_extract_band_reports_a_worker_step_per_psf(tmp_path, monkeypatch):
-    """``extract_band`` emits one ``set_worker_step`` per cluster PSF (keyed by
-    band name), so the bar advances as each PSF lands — exercised with the
-    heavy EPSFBuilder / IO stubbed out."""
-    band = Config.BAND_VIS
-    cutdir = tmp_path / "cutouts"
-    cutdir.mkdir()
-
-    # Stub the IO + heavy build so only the reporting wiring runs.
-    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
+def _stub_extract_band_io(monkeypatch):
+    """Stub the IO + heavy EPSFBuilder so only the reporting / config wiring of
+    ``extract_band`` runs (3 clusters of 3 stars)."""
     monkeypatch.setattr(gen, "_load_star_positions", lambda csv: {})
     monkeypatch.setattr(gen, "cluster_star_indices",
                         lambda ids, pos, spp, min_stars=50:
@@ -125,14 +118,26 @@ def test_extract_band_reports_a_worker_step_per_psf(tmp_path, monkeypatch):
                      PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
                          pixel_scale=scale)))
 
-    ev = tmp_path / "job.events"
-    reporter = Reporter(events_path=str(ev))
-    args = argparse.Namespace(
+
+def _fake_args(tmp_path):
+    return argparse.Namespace(
         num_stars=None, cutout_size=64, vis_pixels=None, output_size=None,
         psf_dir=str(tmp_path / "psf"), stars_per_psf=100, min_stars_per_psf=50,
         stars_csv=str(tmp_path / "stars.csv"))
 
-    assert gen.extract_band(band, args, reporter=reporter) is True
+
+def test_extract_band_reports_a_worker_step_per_psf(tmp_path, monkeypatch):
+    """``extract_band`` emits one ``set_worker_step`` per cluster PSF (keyed by
+    band name), so the bar advances as each PSF lands."""
+    cutdir = tmp_path / "cutouts"
+    cutdir.mkdir()
+    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
+    _stub_extract_band_io(monkeypatch)
+
+    band = Config.BAND_VIS
+    ev = tmp_path / "job.events"
+    reporter = Reporter(events_path=str(ev))
+    assert gen.extract_band(band, _fake_args(tmp_path), reporter=reporter) is True
 
     worker = [json.loads(l)["value"] for l in ev.read_text().splitlines()
               if json.loads(l)["kind"] == "worker"]
@@ -141,6 +146,37 @@ def test_extract_band_reports_a_worker_step_per_psf(tmp_path, monkeypatch):
     assert (0, 3) in vis                     # announced up front
     assert [c for c, _ in vis] == [0, 1, 2, 3]   # one step per PSF, to 3/3
     assert all(t == 3 for _, t in vis)
+
+
+def test_tqdm_off_under_job_on_interactively(tmp_path, monkeypatch):
+    """tqdm (the extractor's progress bars) is disabled when a Reporter has an
+    events path (SLURM job → would flood .err) and enabled when it doesn't
+    (interactive). We spy on the PSFExtractionConfig the extractor is built
+    with."""
+    cutdir = tmp_path / "cutouts"
+    cutdir.mkdir()
+    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
+    _stub_extract_band_io(monkeypatch)
+
+    seen = {}
+    orig_init = PSFExtractor.__init__
+
+    def spy_init(self, config=None):
+        seen["progress_bar"] = config.progress_bar if config else None
+        orig_init(self, config)
+
+    monkeypatch.setattr(PSFExtractor, "__init__", spy_init)
+    band = Config.BAND_VIS
+
+    # Job context (events path set) → tqdm OFF.
+    gen.extract_band(band, _fake_args(tmp_path),
+                     reporter=Reporter(events_path=str(tmp_path / "j.events")))
+    assert seen["progress_bar"] is False
+
+    # Interactive (no events path) → tqdm ON.
+    gen.extract_band(band, _fake_args(tmp_path),
+                     reporter=Reporter(events_path=None))
+    assert seen["progress_bar"] is True
 
 
 def test_parallel_worker_steps_sum_across_bands(tmp_path):

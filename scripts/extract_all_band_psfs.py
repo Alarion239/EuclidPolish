@@ -267,8 +267,11 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     # this, EPSFBuilder fills the outer regions with zeros / noise because
     # no star contributes flux there.
     psf_size = cutout_size - 1 if cutout_size % 2 == 0 else cutout_size - 2
+    # tqdm (the "Processing cutouts" bar + EPSFBuilder's) only when running
+    # interactively. Under SLURM (events path set) the Reporter drives the UI
+    # progress bar, so the per-iteration tqdm would just flood the .err log.
     cfg = PSFExtractionConfig(
-        progress_bar=True,
+        progress_bar=(reporter.events_path is None),
         psf_size=psf_size,
         output_size=args.output_size,
         oversampling=band.epsf_oversampling,
