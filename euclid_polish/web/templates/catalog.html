@@ -76,8 +76,11 @@
 
 <section class="card">
   <h3>Query: brightest N</h3>
-  <p class="hint">Sorts <code>mer_catalogue</code> by VIS flux server-side.
-     Set <em>min mag</em> ≈ 15 to skip stars that saturate the NISP detector.
+  <p class="hint">Sorts <code>mer_catalogue</code> by PSF flux
+     (<code>flux_vis_psf</code>) server-side; magnitudes are proper AB from
+     that µJy flux. Use <em>min mag</em> to skip stars bright enough to
+     saturate (NISP saturates first), <em>min SNR</em> to keep only
+     well-measured flux (<code>flux/σ</code>, e.g. 50) for clean anchors.
      Runs an integrity tally of any cutouts already on disk afterwards.</p>
   <p class="hint"><strong>Runs on the FASRC login node</strong> (over SSH,
      not a SLURM job) so <code>stars.csv</code> lands on the shared
@@ -90,6 +93,8 @@
       <input type="number" step="0.1" name="magnitude_min"   placeholder="e.g. 15"></label>
     <label>Max magnitude <span class="muted">(dimmer rejected)</span>
       <input type="number" step="0.1" name="magnitude_limit" placeholder="e.g. 21"></label>
+    <label>Min SNR <span class="muted">(flux/σ; blank = off)</span>
+      <input type="number" step="1" name="snr_min" placeholder="e.g. 50"></label>
     <button type="submit">Run query</button>
   </form>
   <div id="brightest-status"></div>

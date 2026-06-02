@@ -153,6 +153,29 @@ large cutout don't leak across train/validate."></label>`;
           <label>Output PSF size (oversampled px)
             <input type="number" name="output_size" value="0" min="0" max="4096"
                    title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
+      case 'euclid_star_anchor_tfrecords':
+        // Mirrors EuclidStarAnchorTFRecordStep.build_command (size, stamp,
+        // valid_every, snr_min, limit). Assembles the downloaded star
+        // cutouts + catalog PSF flux → (dirty_anchor, hr_anchor) single-
+        // pixel delta-target pairs. Operator-free (no PSF).
+        return `
+          <label>Cutout size (px, as downloaded)
+            <input type="number" name="size" value="256" min="32" max="4096" step="32"
+                   title="Side of the per-star cutouts to read — must match the size the cutout-download job used. Stars are read from star_NNNN_<size>.fits, so a mismatch finds no files."></label>
+          <label>LR stamp (px)
+            <input type="number" name="stamp" value="128" min="64" max="2048"
+                   title="Star-centred LR stamp side written to each record. Must be ≥ the training LR crop (HR_CROP/2) so the random training crop always keeps the star in-frame."></label>
+          <label>Validate every Nth
+            <input type="number" name="valid_every" value="10" min="2" max="100"
+                   title="Every Nth usable star goes to the validate split; the rest train."></label>
+          <label>Min SNR <span class="muted">(blank = off)</span>
+            <input type="number" name="snr_min" value="" step="1" min="0" max="1000"
+                   placeholder="e.g. 50"
+                   title="Skip stars whose PSF flux_psf_uJy / fluxerr_psf_uJy is below this (keep only well-measured flux). Blank/0 = keep all."></label>
+          <label>Limit stars <span class="muted">(blank = all)</span>
+            <input type="number" name="limit" value="" min="1" max="100000"
+                   placeholder="all"
+                   title="Only process the first N catalog rows (debugging). Blank = all."></label>`;
       case 'synthetic_generate':
         // Mirrors run_pipeline.py --skip-train (RunPipelineStep.build_command
         // reads n_train / n_valid / image_size). Renders synthetic clean HR
@@ -304,6 +327,7 @@ large cutout don't leak across train/validate."></label>`;
       // New per-page tasks (registered in Phase 2 of the migration):
       download_euclid_cutouts: 'euclid_cutouts',
       extract_euclid_psf:      'euclid_psf',
+      euclid_star_anchor_tfrecords: 'star_anchor_records',
       synthetic_generate:      'synthetic_records',
     }[step.step_id];
     const status = artifactStatus[produces];

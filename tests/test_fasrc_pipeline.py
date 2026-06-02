@@ -59,15 +59,17 @@ class TestRegistry:
     def test_all_steps_present(self):
         """Registry must include the original HST steps (download,
         extract-PSF, kernel, TFRecord generation, WDSR train), the two
-        round-trip steps (sky download + LR-only TFRecord build), the two
+        round-trip steps (sky download + LR-only TFRecord build), the
         Euclid star-cutout steps (per-page cutout download + all-band ePSF
-        extraction), and the synthetic generator. The legacy
-        ``run_pipeline.py`` training presets were removed."""
+        extraction + star-anchor TFRecord build), and the synthetic
+        generator. The legacy ``run_pipeline.py`` training presets were
+        removed."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "download_euclid_cutouts", "extract_euclid_psf",
+            "euclid_star_anchor_tfrecords",
             "synthetic_generate",
         }
 
@@ -103,6 +105,37 @@ class TestRegistry:
         for flag in ("--transition-model", "--frozen-denoiser",
                      "--frozen-denoiser-summary"):
             assert flag not in argv
+
+    def test_star_anchor_step_default_command(self):
+        """Defaults reach the generator: 256-px cutouts, 128-px stamp,
+        validate every 10th. The optional cuts are absent."""
+        step = REGISTRY.get("euclid_star_anchor_tfrecords")
+        argv = step.build_command({})
+        assert argv[0] == "scripts/fasrc_generate_star_anchor_tfrecords.py"
+        assert argv[argv.index("--size") + 1] == "256"
+        assert argv[argv.index("--stamp") + 1] == "128"
+        assert argv[argv.index("--valid-every") + 1] == "10"
+        assert "--snr-min" not in argv
+        assert "--limit" not in argv
+
+    def test_star_anchor_step_optional_flags(self):
+        """Form-supplied SNR cut + row limit reach the script."""
+        step = REGISTRY.get("euclid_star_anchor_tfrecords")
+        argv = step.build_command({"size": 512, "stamp": 160,
+                                   "valid_every": 8, "snr_min": 50,
+                                   "limit": 300})
+        assert argv[argv.index("--size") + 1] == "512"
+        assert argv[argv.index("--stamp") + 1] == "160"
+        assert argv[argv.index("--snr-min") + 1] == "50"
+        assert argv[argv.index("--limit") + 1] == "300"
+
+    def test_star_anchor_step_blank_optionals_omitted(self):
+        """Blank / 0 means 'no cut' / 'all rows' — the flag is dropped so
+        the script keeps its own default behaviour."""
+        step = REGISTRY.get("euclid_star_anchor_tfrecords")
+        argv = step.build_command({"snr_min": "0", "limit": ""})
+        assert "--snr-min" not in argv
+        assert "--limit" not in argv
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)

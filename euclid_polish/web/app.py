@@ -1887,9 +1887,12 @@ def create_app() -> Flask:
         mag_min_raw = request.form.get("magnitude_min", "").strip()
         mag_lim = float(mag_lim_raw) if mag_lim_raw else None
         mag_min = float(mag_min_raw) if mag_min_raw else None
+        snr_min_raw = request.form.get("snr_min", "").strip()
+        snr_min = float(snr_min_raw) if snr_min_raw else None
         win = ""
         if mag_min is not None: win += f" mag>{mag_min}"
         if mag_lim is not None: win += f" mag<{mag_lim}"
+        if snr_min is not None: win += f" snr≥{snr_min:g}"
 
         # No --output-dir: the remote script defaults to its own
         # $DATA_DIR/euclid_stars, which build_remote_python_command points
@@ -1897,6 +1900,7 @@ def create_app() -> Flask:
         argv = ["scripts/query_brightest_stars.py", "--num-stars", str(n)]
         if mag_min is not None: argv += ["--magnitude-min", f"{mag_min:g}"]
         if mag_lim is not None: argv += ["--magnitude-limit", f"{mag_lim:g}"]
+        if snr_min is not None: argv += ["--snr-min", f"{snr_min:g}"]
 
         def _run(cap):
             cfg = fasrc_config.load()
@@ -1914,6 +1918,49 @@ def create_app() -> Flask:
 
         job_id = REGISTRY.spawn(
             label=f"query {n} brightest stars{win} (FASRC login node)",
+            target=_run,
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/cutouts/verify-photometry", methods=["POST"])
+    def cutouts_verify_photometry():
+        """Run the read-only photometry-scale check on the FASRC login node.
+
+        ``verify_star_photometry.py`` aperture-measures N downloaded VIS
+        cutouts (electrons) and compares to each star's catalog PSF flux —
+        a median ratio ≈ 1 confirms the absolute electron scale the
+        star-anchor delta-targets are built on. It only reads the cutouts on
+        netscratch + prints a report, so it runs on the login node (not a
+        SLURM job); the ratio table streams back into the job log."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({
+                "ok": False,
+                "error": "Connect to FASRC first (the check reads the "
+                         "cutouts on netscratch over SSH).",
+            }), 400
+        ssh = STATE.ssh
+        n    = int(request.form.get("n", 40))
+        size = int(request.form.get("size", 256))
+        argv = ["scripts/verify_star_photometry.py",
+                "--n", str(n), "--size", str(size)]
+
+        def _run(cap):
+            cfg = fasrc_config.load()
+            print(f"[FASRC login node] python -u {' '.join(argv)}")
+            rc, out, err = fasrc_jobs.run_remote_python(
+                ssh, cfg=cfg, argv=argv, timeout=600,
+            )
+            if out:
+                print(out)
+            if err.strip():
+                print(err)
+            if rc != 0:
+                raise RuntimeError(f"remote verify exited with code {rc}")
+            return {"rc": rc}
+
+        job_id = REGISTRY.spawn(
+            label=f"verify photometry scale (n={n}, size={size}px, "
+                  f"FASRC login node)",
             target=_run,
         )
         return jsonify({"job_id": job_id})

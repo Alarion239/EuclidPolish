@@ -636,6 +636,51 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         return cmd
 
 
+class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="euclid_star_anchor_tfrecords",
+            label="Build star-anchor TFRecords (real Euclid stars → delta targets)",
+            description=(
+                "Assemble the downloaded per-star cutouts (all 4 bands) + the "
+                "catalog PSF photometry into the operator-free star-anchor "
+                "training records under "
+                "$DATA_DIR/images/records_v2_star_anchor/. Each usable star "
+                "(all 4 bands clean) becomes a (dirty_anchor, hr_anchor) pair: "
+                "the 4-band LR cube + a single-pixel HR delta carrying the "
+                "catalog VIS flux (electrons) at the star's WCS-exact pixel — "
+                "no PSF, so it can't be poisoned by PSF mismatch. Run a "
+                "catalog query + cutout download first; ``--size`` must match "
+                "the size the cutouts were downloaded at."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="1:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        size        = int(params.get("size", 256))
+        stamp       = int(params.get("stamp", 128))
+        valid_every = int(params.get("valid_every", 10))
+        cmd = [
+            "scripts/fasrc_generate_star_anchor_tfrecords.py",
+            "--size",        str(size),
+            "--stamp",       str(stamp),
+            "--valid-every", str(valid_every),
+        ]
+        # Optional SNR cut on the raw PSF photometry (blank/0 → keep all).
+        snr_min = str(params.get("snr_min", "")).strip()
+        if snr_min not in ("", "0"):
+            cmd += ["--snr-min", f"{float(snr_min):g}"]
+        # Optional row cap for a quick debugging pass (blank → all).
+        limit = str(params.get("limit", "")).strip()
+        if limit not in ("", "0"):
+            cmd += ["--limit", str(int(float(limit)))]
+        return cmd
+
+
 class HSTTrainStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
@@ -828,6 +873,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidRoundtripTFRecordStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
+    EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,
 )

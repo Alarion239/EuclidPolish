@@ -108,6 +108,34 @@
      fetches its own native pixel count.</p>
 </section>
 {% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
+
+<section class="card">
+  <h3>Verify photometry scale (read-only)</h3>
+  <p class="hint">Runs <code>verify_star_photometry.py</code> on the FASRC
+     login node: aperture-measures N downloaded VIS cutouts (in electrons)
+     and compares to each star's catalog PSF flux. A median ratio ≈ 1
+     confirms the absolute electron scale the star-anchor delta-targets use;
+     a constant offset at all radii flags a zeropoint/units bug. Reports
+     only — writes nothing. Connect to FASRC first.</p>
+  <form id="verify-photometry-form" action="/cutouts/verify-photometry">
+    <label>N stars
+      <input type="number" name="n" value="40" min="1" max="1000"></label>
+    <label>Cutout size (px, as downloaded)
+      <input type="number" name="size" value="256" min="32" max="4096" step="32"></label>
+    <button type="submit">Run check</button>
+  </form>
+  <div id="verify-photometry-status"></div>
+</section>
+
+<section class="card">
+  <h3>Build star-anchor TFRecords</h3>
+  <p class="hint">Turns the downloaded cutouts + catalog PSF flux into the
+     real-Euclid star-anchor training records
+     (<code>records_v2_star_anchor</code>) the training lane consumes. Each
+     usable star → a single-pixel HR delta of its catalog VIS flux at the
+     WCS-exact pixel. <code>--size</code> must match the cutout download.</p>
+</section>
+{% with step_id="euclid_star_anchor_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% else %}
 <section class="card">
   <p class="hint">Run a catalog query first.</p>
@@ -146,6 +174,16 @@ async function refreshEuclidCredsStatus() {
     }
   } catch (e) { /* leave blank */ }
 }
+// ── Photometry-scale verification (read-only login-node job) ────────
+const verifyForm = document.getElementById("verify-photometry-form");
+if (verifyForm) {
+  verifyForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(verifyForm,
+                 document.getElementById("verify-photometry-status"), {});
+  });
+}
+
 const credsForm = document.getElementById("euclid-creds-form");
 if (credsForm) {
   credsForm.addEventListener("submit", async (e) => {
