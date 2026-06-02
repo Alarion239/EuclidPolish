@@ -270,12 +270,16 @@ class PSFExtractor:
 
         return epsf_star
 
-    def extract_psf_stars_from_files(
+    def extract_accepted_stars(
         self,
         cutout_files: List[Tuple[int, str]]
-    ) -> List[EPSFStar]:
-        """
-        Extract PSF stars from multiple cutout files.
+    ) -> List[Tuple[int, EPSFStar]]:
+        """Extract accepted PSF stars, **keeping each star's index**.
+
+        One load pass over the files. Returns ``[(index, EPSFStar)]`` for
+        every star that passes the saturation + edge checks — the index
+        (parsed from the ``star_NNNN_*`` filename) lets callers join the
+        star back to its catalog RA/Dec for spatial clustering.
 
         Updates ``self.n_rejected_*`` counters with the cause of every
         rejection (load failure / edge crop / saturation). Saturation
@@ -284,7 +288,7 @@ class PSFExtractor:
         self.n_rejected_load = 0
         self.n_rejected_edge = 0
         self.n_rejected_saturated = 0
-        all_epsf_stars = []
+        accepted: List[Tuple[int, EPSFStar]] = []
 
         iterator = tqdm(
             cutout_files,
@@ -325,7 +329,7 @@ class PSFExtractor:
                     self.n_rejected_edge += 1
                     continue
 
-                all_epsf_stars.append(epsf_star)
+                accepted.append((index, epsf_star))
 
             except Exception as e:
                 self.n_rejected_load += 1
@@ -340,7 +344,15 @@ class PSFExtractor:
         if self.n_rejected_load:
             print(f"  rejected {self.n_rejected_load} stars (FITS load error)")
 
-        return all_epsf_stars
+        return accepted
+
+    def extract_psf_stars_from_files(
+        self,
+        cutout_files: List[Tuple[int, str]]
+    ) -> List[EPSFStar]:
+        """Accepted PSF stars without their indices (thin wrapper around
+        :meth:`extract_accepted_stars` for callers that don't cluster)."""
+        return [star for _, star in self.extract_accepted_stars(cutout_files)]
 
     def build_epsf(
         self,
@@ -361,14 +373,26 @@ class PSFExtractor:
         """
         # Extract PSF stars from cutouts
         all_epsf_stars = self.extract_psf_stars_from_files(cutout_files)
+        return self.build_epsf_from_stars(all_epsf_stars)
 
-        if len(all_epsf_stars) == 0:
+    def build_epsf_from_stars(
+        self,
+        epsf_stars: List[EPSFStar],
+    ) -> Tuple[EPSFModel, EPSFStars]:
+        """Run EPSFBuilder on already-extracted ``EPSFStar`` objects.
+
+        Split out of :meth:`build_epsf` so the per-cluster extraction
+        path (cluster the accepted stars, then build one ePSF per group)
+        can reuse the builder step without re-loading FITS. Sets
+        ``self.epsf`` / ``self.fitted_stars`` to the most recent build.
+        """
+        if len(epsf_stars) == 0:
             raise ValueError("No valid PSF stars extracted from cutouts")
 
-        print(f"Extracted {len(all_epsf_stars)} PSF stars from cutouts")
+        print(f"Extracted {len(epsf_stars)} PSF stars from cutouts")
 
         # Build ePSF
-        epsf_stars = EPSFStars(all_epsf_stars)
+        epsf_star_container = EPSFStars(list(epsf_stars))
 
         print("Building effective PSF...")
         builder_kwargs = dict(
@@ -385,45 +409,41 @@ class PSFExtractor:
             print(f"  requesting output PSF shape {out_side}×{out_side}")
         epsf_builder = EPSFBuilder(**builder_kwargs)
 
-        epsf, fitted_stars = epsf_builder(epsf_stars)
+        epsf, fitted_stars = epsf_builder(epsf_star_container)
 
         self.epsf = epsf
         self.fitted_stars = fitted_stars
 
         return epsf, fitted_stars
 
-    def to_psf(self, pixel_scale: float) -> PSF:
+    @staticmethod
+    def psf_from_epsf(epsf: EPSFModel, pixel_scale: float) -> PSF:
+        """Wrap an ``EPSFModel`` in a typed :class:`PSF` (FWHM measured).
+
+        Parametrised on ``epsf`` so the per-cluster loop can wrap each
+        cluster's model; :meth:`to_psf` uses ``self.epsf``.
+
+        ``pixel_scale`` is the oversampled-grid scale (native /
+        oversampling) — e.g. 0.10/4 = 0.025″/pix for VIS at ovs=4.
         """
-        Wrap the built ePSF in a typed PSF object.
-
-        Parameters:
-        -----------
-        pixel_scale : float
-            Pixel scale of the ePSF kernel grid in arcsec/pixel.
-            For a Euclid VIS PSF built with oversampling=4 at native 0.10 arcsec/pix,
-            this would be 0.10 / 4 = 0.025 arcsec/pix.
-
-        Returns:
-        --------
-        PSF
-            Typed PSF with data, pixel_scale, fwhm_arcsec, and oversampling set.
-        """
-        if self.epsf is None:
-            raise ValueError("No PSF has been built yet. Call build_epsf() first.")
-
         oversamp_val = (
-            self.epsf.oversampling[0]
-            if hasattr(self.epsf.oversampling, '__iter__')
-            else self.epsf.oversampling
+            epsf.oversampling[0]
+            if hasattr(epsf.oversampling, '__iter__')
+            else epsf.oversampling
         )
-
         psf = PSF(
-            data=self.epsf.data.astype(np.float32),
+            data=epsf.data.astype(np.float32),
             pixel_scale=pixel_scale,
             oversampling=int(oversamp_val),
         )
         psf.fwhm_arcsec = psf.fwhm_pixels() * pixel_scale
         return psf
+
+    def to_psf(self, pixel_scale: float) -> PSF:
+        """Wrap the most-recently-built ePSF (``self.epsf``) in a PSF."""
+        if self.epsf is None:
+            raise ValueError("No PSF has been built yet. Call build_epsf() first.")
+        return self.psf_from_epsf(self.epsf, pixel_scale)
 
     def get_summary(self) -> dict:
         """

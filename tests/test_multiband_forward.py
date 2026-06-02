@@ -152,6 +152,68 @@ def test_invalid_kernel_raises():
 
 
 # ---------------------------------------------------------------------------
+# Position-dependent PSF sets
+# ---------------------------------------------------------------------------
+
+def _vis_psf_set(n, fwhms):
+    """A VIS PSFSet of ``n`` Gaussian kernels at the HR grid."""
+    from euclid_polish.psf import PSF, PSFSet
+    members = []
+    for fwhm in fwhms[:n]:
+        side = 31
+        x = np.arange(side) - side // 2
+        X, Y = np.meshgrid(x, x)
+        s = fwhm / 2.355
+        g = np.exp(-(X * X + Y * Y) / (2 * s * s)).astype(np.float32)
+        members.append(PSF(data=g / g.sum(),
+                           pixel_scale=Config.DEFAULT_PIXEL_SCALE))
+    return PSFSet.from_psfs(members)
+
+
+def test_single_psf_set_matches_old_psf_dict(hr_field):
+    """K=1 set per band reproduces the old psfs_by_band path byte-for-byte."""
+    from euclid_polish.psf import PSFSet
+    psfs = {b.name: default_psf_for_band(b, Config.DEFAULT_PIXEL_SCALE)
+            for b in Config.BANDS}
+    sets = {name: PSFSet.from_psfs([p]) for name, p in psfs.items()}
+    cfg = MultiBandForwardConfig(add_noise=False)
+    old = MultiBandForward(psfs_by_band=psfs, config=cfg)
+    new = MultiBandForward(psf_sets_by_band=sets, config=cfg)
+    lr_o, _ = old.process(hr_field, rng=np.random.default_rng(3))
+    lr_n, _ = new.process(hr_field, rng=np.random.default_rng(3))
+    np.testing.assert_allclose(lr_o.data, lr_n.data, atol=1e-5)
+
+
+def test_randomized_psf_varies_scene_to_scene(hr_field):
+    """With K>1 VIS PSFs and randomize_psf on, two scenes get different PSFs."""
+    sets = {b.name: _vis_psf_set(1, [0.16]) for b in Config.BANDS}
+    sets[Config.BAND_VIS.name] = _vis_psf_set(2, [1.0, 5.0])
+    fwd = MultiBandForward(
+        psf_sets_by_band=sets,
+        config=MultiBandForwardConfig(add_noise=False, randomize_psf=True),
+    )
+    a, _ = fwd.process(hr_field, rng=np.random.default_rng(1))
+    b, _ = fwd.process(hr_field, rng=np.random.default_rng(2))
+    assert not np.allclose(a.data[..., 0], b.data[..., 0])
+    # Flux is still preserved (convex blend of sum=1 PSFs → sum=1).
+    assert a.data[..., 0].sum() == pytest.approx(hr_field.data[..., 0].sum(),
+                                                 rel=1e-3)
+
+
+def test_randomize_off_uses_mean_deterministically(hr_field):
+    """randomize_psf=False → the field-mean PSF every scene (deterministic)."""
+    sets = {b.name: _vis_psf_set(1, [0.16]) for b in Config.BANDS}
+    sets[Config.BAND_VIS.name] = _vis_psf_set(3, [1.0, 3.0, 5.0])
+    fwd = MultiBandForward(
+        psf_sets_by_band=sets,
+        config=MultiBandForwardConfig(add_noise=False, randomize_psf=False),
+    )
+    a, _ = fwd.process(hr_field, rng=np.random.default_rng(1))
+    b, _ = fwd.process(hr_field, rng=np.random.default_rng(2))
+    np.testing.assert_allclose(a.data[..., 0], b.data[..., 0], atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
 # Reproducibility
 # ---------------------------------------------------------------------------
 

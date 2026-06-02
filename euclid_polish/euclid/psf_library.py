@@ -30,6 +30,7 @@ from scipy.ndimage import zoom
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
+from euclid_polish.psf.psf_set import PSFSet
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +210,68 @@ def load_all_band_psfs(
     """
     return {
         band.name: load_band_psf(
+            band,
+            target_pixel_scale=target_pixel_scale,
+            psf_dir=psf_dir,
+            require_empirical=require_empirical,
+        )
+        for band in Config.BANDS
+    }
+
+
+# ---------------------------------------------------------------------------
+# PSF *sets* (position-dependent ensembles)
+# ---------------------------------------------------------------------------
+
+def load_band_psf_set(
+    band: BandConfig,
+    *,
+    target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+    psf_dir: str = Config.EUCLID_PSF_DIR,
+    require_empirical: bool = False,
+) -> PSFSet:
+    """Return the position-dependent :class:`PSFSet` for ``band``.
+
+    Resolution order mirrors :func:`load_band_psf`:
+
+      1. ``psf_dir / band.psf_fits_filename`` exists → ``PSFSet.from_fits``
+         (reads the K cluster PSFs from the multi-extension file; a legacy
+         single-PSF FITS loads as a 1-element set), resampled to
+         ``target_pixel_scale``.
+      2. Otherwise a Gaussian fallback wrapped as a **1-element** set.
+
+    A 1-element set behaves exactly like the single PSF (its ``sample`` is
+    deterministic), so callers can always treat a band uniformly as a set.
+    """
+    path = psf_path_for_band(band, psf_dir)
+    if os.path.isfile(path):
+        return PSFSet.from_fits(path).resampled_to(target_pixel_scale)
+
+    if require_empirical:
+        raise FileNotFoundError(
+            f"No empirical PSF for band {band.name} at {path}. "
+            "Run the extraction step or pass require_empirical=False."
+        )
+    target_side = psf_side_pixels_for_band(band, target_pixel_scale)
+    gaussian = make_gaussian_psf(band.psf_fwhm_arcsec, target_pixel_scale,
+                                 size=target_side)
+    return PSFSet.from_psfs([gaussian])
+
+
+def load_all_band_psf_sets(
+    *,
+    target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+    psf_dir: str = Config.EUCLID_PSF_DIR,
+    require_empirical: bool = False,
+) -> Dict[str, PSFSet]:
+    """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
+
+    Ready to pass to :class:`euclid_polish.sky.multiband_forward.MultiBandForward`
+    as ``psf_sets_by_band`` so generation draws a random convex blend of each
+    band's cluster PSFs per scene.
+    """
+    return {
+        band.name: load_band_psf_set(
             band,
             target_pixel_scale=target_pixel_scale,
             psf_dir=psf_dir,

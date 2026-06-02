@@ -141,12 +141,18 @@ large cutout don't leak across train/validate."></label>`;
             <input type="number" name="workers" value="8" min="1" max="32"
                    title="Concurrent per-band downloads from the Euclid archive."></label>`;
       case 'extract_euclid_psf':
-        // Mirrors EuclidPSFExtractStep.build_command (num_stars,
-        // vis_pixels, output_size). Extracts ALL four bands in one job.
+        // Mirrors EuclidPSFExtractStep.build_command (stars_per_psf,
+        // vis_pixels, num_stars cap, output_size). Extracts ALL four bands
+        // in one job; each band's good stars are spatially clustered into
+        // groups of 'stars per PSF' → one ePSF per cluster.
         return `
-          <label>Stars per band
-            <input type="number" name="num_stars" value="200" min="10" max="5000"
-                   title="Up to this many cutouts per band feed EPSFBuilder."></label>
+          <label>Stars per PSF (N)
+            <input type="number" name="stars_per_psf" value="100" min="10" max="2000"
+                   title="Each band's good stars are K-Means++ clustered by sky position into K=round(n_good/N) groups, one ePSF per cluster (the PSF varies across the field). 3000 good stars at N=100 → ~30 PSFs. Generation draws a random convex blend of the K kernels."></label>
+          <label>Max stars per band <span class="muted">(blank = all)</span>
+            <input type="number" name="num_stars" value="" min="10" max="100000"
+                   placeholder="all"
+                   title="Optional cap on stars considered per band before clustering. Blank/0 = use ALL good cutouts (recommended — that's how you get many PSFs)."></label>
           <label>VIS cutout (px)
             <input type="number" name="vis_pixels" value="512" min="32" max="4096" step="32"
                    title="Shared angular field (in VIS px) used to pick each band's native cutout size — must match what was downloaded."></label>

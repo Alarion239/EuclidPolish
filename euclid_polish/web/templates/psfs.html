@@ -23,7 +23,7 @@
   <table>
     <tr>
       <th>Band</th><th>FWHM (")</th><th>Oversampling</th>
-      <th>ePSF px scale</th><th>Status</th><th>Saved kernel</th>
+      <th>ePSF px scale</th><th>Status</th><th># PSFs</th><th>Saved kernel</th>
     </tr>
     {% for b in status.bands %}
       <tr>
@@ -40,8 +40,16 @@
         </td>
         <td>
           {% if b.empirical %}
+            <span title="Position-dependent cluster PSFs (HDU0=mean, HDU1..K). Generation draws a random convex blend of these.">{{ b.n_psf or 1 }}</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if b.empirical %}
             <code>{{ b.shape[0] }}×{{ b.shape[1] }}</code>
             @ {{ '%.4f'|format(b.pixel_scale) }}"/pix
+            <span class="muted">(mean)</span>
             <br>
             <a href="{{ url_for('inspect_fits_page', fits=b.path) }}"
                target="_blank"
@@ -62,9 +70,13 @@
   <h3>Extract empirical ePSFs (FASRC)</h3>
   <p class="hint">Submits a SLURM job that runs photutils'
      <code>EPSFBuilder</code> on the downloaded cutouts for <strong>all
-     four bands</strong> (VIS + NISP Y/J/H) in one job. Bright
-     clipped-core stars are rejected automatically; bands with no cutouts
-     fall back to a Gaussian PSF.</p>
+     four bands</strong> (VIS + NISP Y/J/H) in one job. Each band's good
+     stars are K-Means++ clustered by sky position into groups of
+     <em>stars per PSF</em> → <strong>one ePSF per cluster</strong> (the PSF
+     varies across the field), saved as a multi-extension FITS (HDU0=mean,
+     HDU1..K=cluster PSFs). Generation draws a random convex blend of the K
+     kernels. Bright clipped-core stars are rejected automatically; bands
+     with no cutouts fall back to a Gaussian PSF.</p>
 </section>
 {% with step_id="extract_euclid_psf" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}

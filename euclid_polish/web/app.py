@@ -98,7 +98,7 @@ from flask import (
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.psf_library import (
-    load_all_band_psfs, psf_inventory, psf_path_for_band,
+    load_all_band_psfs, load_all_band_psf_sets, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.euclid.types import PSF
 from euclid_polish.web import (
@@ -195,6 +195,11 @@ def _psf_status() -> Dict[str, Any]:
                 psf = PSF.from_fits(path)
                 item["shape"]      = list(psf.data.shape)
                 item["pixel_scale"]= psf.pixel_scale
+                # Number of position-dependent cluster PSFs in the file
+                # (NPSF header on the multi-extension format; 1 for a legacy
+                # single-PSF FITS).
+                with fits.open(path) as _hdul:
+                    item["n_psf"] = int(_hdul[0].header.get("NPSF", 1))
             except Exception as e:
                 item["error"] = str(e)
         bands.append(item)
@@ -944,8 +949,8 @@ def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
     sky, meta = sim.simulate_field(rng, n_lenses=n_lenses)
     print(f"generated 510² field: {meta['n_galaxies']} gal, "
           f"{meta['n_stars']} stars, {meta['n_lenses']} lenses")
-    psfs = load_all_band_psfs()
-    fwd = MultiBandForward(psfs_by_band=psfs,
+    psf_sets = load_all_band_psf_sets()
+    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
                            config=MultiBandForwardConfig(add_noise=True))
     lr, hr = fwd.process(sky, rng=np.random.default_rng(42))
 

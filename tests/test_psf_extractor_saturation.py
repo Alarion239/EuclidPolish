@@ -111,3 +111,29 @@ def test_rejection_counters_attribute_cause(tmp_path):
     assert ext.n_rejected_saturated  == 2
     assert ext.n_rejected_load       == 1
     assert ext.n_rejected_edge       == 0
+
+
+def test_extract_accepted_stars_keeps_indices(tmp_path):
+    """``extract_accepted_stars`` returns (id, EPSFStar) for the accepted
+    stars only — the id (from the filename) lets the caller join each star
+    to its catalog position for spatial clustering."""
+    from astropy.io import fits
+    files = []
+    # ids 0,2,4 clean; ids 1,3 clipped (rejected).
+    for i, arr in enumerate([
+        _make_clean_star(), _make_clipped_star(), _make_clean_star(),
+        _make_clipped_star(), _make_clean_star(),
+    ]):
+        path = tmp_path / f"star_{i:04d}_33.fits"
+        fits.PrimaryHDU(arr).writeto(path, overwrite=True)
+        files.append((i, str(path)))
+
+    cfg = PSFExtractionConfig(psf_size=15, saturation_core_size=7,
+                              progress_bar=False)
+    ext = PSFExtractor(cfg)
+    accepted = ext.extract_accepted_stars(files)
+
+    assert [sid for sid, _ in accepted] == [0, 2, 4]
+    assert ext.n_rejected_saturated == 2
+    # The legacy id-free wrapper returns the same stars, sans ids.
+    assert len(ext.extract_psf_stars_from_files(files)) == 3

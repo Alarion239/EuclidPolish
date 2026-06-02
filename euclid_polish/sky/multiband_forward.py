@@ -37,6 +37,7 @@ from scipy import signal as scipy_signal
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
+from euclid_polish.psf.psf_set import PSFSet
 # Re-export the canonical noise function (lives in sky.noise to keep
 # sky.types' module-level imports free of circulars). Existing callers
 # of ``from euclid_polish.sky.multiband_forward import apply_band_noise``
@@ -61,6 +62,12 @@ class MultiBandForwardConfig:
     nisp_resample_factor: int = Config.NISP_LR_TO_VIS_LR_RATIO  # 3
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: Optional["ArtifactConfig"] = None        # type: ignore[name-defined]
+    # Position-dependent PSF: when a band carries K>1 cluster PSFs, draw a
+    # random convex (Dirichlet(alpha)) blend of them per scene so the network
+    # trains against the field's PSF variation. With K=1 (single PSF) this is
+    # a no-op and the output is byte-identical to the old single-PSF forward.
+    randomize_psf: bool = True
+    psf_dirichlet_alpha: float = 1.0
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -109,27 +116,43 @@ class MultiBandForward:
         self,
         psfs_by_band: Optional[Dict[str, PSF]] = None,
         config: Optional[MultiBandForwardConfig] = None,
+        *,
+        psf_sets_by_band: Optional[Dict[str, PSFSet]] = None,
     ):
         """
         Parameters
         ----------
         psfs_by_band : dict mapping band name → PSF, all on the HR grid.
-                       Missing entries are filled with a Gaussian fallback
-                       using the band's nominal FWHM.
+                       Each is wrapped as a 1-element :class:`PSFSet` (so a
+                       single PSF behaves deterministically). Missing entries
+                       are filled with a Gaussian fallback.
+        psf_sets_by_band : dict mapping band name → :class:`PSFSet` (the
+                       position-dependent ensemble). Takes priority over
+                       ``psfs_by_band`` for any band present in both. This is
+                       the path that enables per-scene random PSF blending.
         config       : :class:`MultiBandForwardConfig`.
         """
         self.config = config or MultiBandForwardConfig()
-        self._psfs = dict(psfs_by_band) if psfs_by_band is not None else {}
-        # Fill missing bands with Gaussian fallbacks at HR scale.
+        # Unify on PSFSets internally: K=1 reproduces the old single-PSF path.
+        sets: Dict[str, PSFSet] = (
+            dict(psf_sets_by_band) if psf_sets_by_band is not None else {})
+        if psfs_by_band is not None:
+            for name, psf in psfs_by_band.items():
+                sets.setdefault(name, PSFSet.from_psfs([psf]))
+        # Fill missing bands with Gaussian fallbacks (1-element set) at HR scale.
         for band in Config.BANDS:
-            self._psfs.setdefault(band.name, default_psf_for_band(band, self.config.hr_pixel_scale))
-        # Sanity-check PSF pixel scales.
-        for band_name, psf in self._psfs.items():
-            if abs(psf.pixel_scale - self.config.hr_pixel_scale) > 1e-4:
-                raise ValueError(
-                    f"PSF for band {band_name} has pixel_scale={psf.pixel_scale}; "
-                    f"forward model expects HR pixel scale {self.config.hr_pixel_scale}"
-                )
+            if band.name not in sets:
+                sets[band.name] = PSFSet.from_psfs(
+                    [default_psf_for_band(band, self.config.hr_pixel_scale)])
+        self._psf_sets = sets
+        # Sanity-check PSF pixel scales (every member of every set).
+        for band_name, pset in self._psf_sets.items():
+            for psf in pset.psfs:
+                if abs(psf.pixel_scale - self.config.hr_pixel_scale) > 1e-4:
+                    raise ValueError(
+                        f"PSF for band {band_name} has pixel_scale={psf.pixel_scale}; "
+                        f"forward model expects HR pixel scale {self.config.hr_pixel_scale}"
+                    )
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -184,7 +207,15 @@ class MultiBandForward:
         rng: np.random.Generator,
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
-        psf = self._psfs[band.name]
+        # Pick this scene's PSF from the band's ensemble: a random convex
+        # (Dirichlet) blend of the K cluster PSFs when randomisation is on and
+        # K>1, else the field-mean (a 1-element set returns its only member,
+        # so single-PSF bands are deterministic and unchanged).
+        pset = self._psf_sets[band.name]
+        if self.config.randomize_psf and pset.n > 1:
+            psf = pset.sample(rng, alpha=self.config.psf_dirichlet_alpha)
+        else:
+            psf = pset.mean()
         target_scale = self.target_lr_pixel_scale_arcsec
 
         # 1. PSF convolution on HR plane — single source of truth is

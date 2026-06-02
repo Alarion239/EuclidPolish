@@ -48,7 +48,7 @@ from tqdm import tqdm
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.euclid.psf_library import load_all_band_psf_sets
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
@@ -188,16 +188,16 @@ def step_generate(args: argparse.Namespace) -> None:
 def step_convolve(args: argparse.Namespace) -> None:
     _banner("STEP 2: HR → LR  (per-band PSF + noise + NISP→VIS-LR resample)")
 
-    psfs = load_all_band_psfs(
+    psf_sets = load_all_band_psf_sets(
         psf_dir=args.psf_dir,
         require_empirical=args.require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
-    for name, psf in psfs.items():
-        _log(f"  PSF[{name}]: shape={psf.shape}, "
-             f"{psf.pixel_scale}\"/pix, fwhm≈{psf.fwhm_arcsec or '?'}")
+    for name, pset in psf_sets.items():
+        _log(f"  PSF[{name}]: {pset.n} kernel(s), shape={pset.shape}, "
+             f"{pset.pixel_scale}\"/pix")
 
-    fwd = MultiBandForward(psfs_by_band=psfs,
+    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
                            config=MultiBandForwardConfig(add_noise=True))
 
     # Structured progress for the WebUI — one cumulative bar across both
@@ -335,11 +335,11 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
         cat, MultiBandGeneratorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE),
     )
-    psfs = load_all_band_psfs(
+    psf_sets = load_all_band_psf_sets(
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
-    _W_FWD = MultiBandForward(psfs_by_band=psfs,
+    _W_FWD = MultiBandForward(psf_sets_by_band=psf_sets,
                               config=MultiBandForwardConfig(add_noise=True))
     _W_RECORDS_DIR = records_dir
 

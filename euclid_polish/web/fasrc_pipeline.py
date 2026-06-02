@@ -602,15 +602,20 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
                 "Run photutils EPSFBuilder on the downloaded star cutouts "
                 "for ALL four bands (VIS + NISP Y/J/H) in one job — the four "
                 "bands run in parallel, one process per CPU (allocation "
-                "locked to 4 CPUs). Writes "
-                "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits. Bright "
-                "clipped-core stars are rejected automatically. Bands with "
-                "no cutouts are skipped and fall back to a Gaussian PSF."
+                "locked to 4 CPUs). Each band's good stars are K-Means++ "
+                "clustered by sky position into groups of 'stars per PSF', "
+                "and one ePSF is built per cluster (the PSF varies across the "
+                "field). Writes a multi-extension "
+                "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits (HDU0=mean, "
+                "HDU1..K=cluster PSFs). Bright clipped-core stars are rejected "
+                "automatically. Bands with no cutouts fall back to a Gaussian."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
                 # 4 EPSFBuilders run at once → ~4× the single-band peak.
-                memory="48G", time_limit="1:00:00",
+                # Per-cluster builds use fewer stars (lower peak), but each
+                # band now runs K≈n_good/N builds serially → more wall-time.
+                memory="48G", time_limit="6:00:00",
             ),
             needs_gpu=False,
             # One process per band (4 bands) → lock the allocation to 4 CPUs
@@ -620,14 +625,19 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        num_stars  = int(params.get("num_stars", 200))
-        vis_pixels = int(params.get("vis_pixels", 512))
+        vis_pixels    = int(params.get("vis_pixels", 512))
+        stars_per_psf = int(params.get("stars_per_psf", 100))
         cmd = [
             "scripts/extract_all_band_psfs.py",
-            "--num-stars",  str(num_stars),
-            "--vis-pixels", str(vis_pixels),
-            "--max-procs",  "4",
+            "--vis-pixels",    str(vis_pixels),
+            "--stars-per-psf", str(stars_per_psf),
+            "--max-procs",     "4",
         ]
+        # Optional cap on total stars considered per band (blank/0 → all good
+        # cutouts, then clustered into groups of stars_per_psf).
+        num_stars = int(params.get("num_stars", 0) or 0)
+        if num_stars > 0:
+            cmd += ["--num-stars", str(num_stars)]
         # Optional explicit final ePSF size (oversampled px); 0/blank →
         # photutils' default (cutout_size × oversampling + 1).
         output_size = int(params.get("output_size", 0) or 0)

@@ -42,7 +42,7 @@ from euclid_polish.sky.multiband_forward import (
 )
 from euclid_polish.euclid.types import PSF
 from euclid_polish.euclid.psf_library import (
-    load_all_band_psfs, psf_inventory, psf_path_for_band,
+    load_all_band_psf_sets, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
@@ -865,7 +865,7 @@ class InteractiveCLI:
         require_empirical = require_emp_raw.startswith("y")
 
         try:
-            psfs = load_all_band_psfs(
+            psf_sets = load_all_band_psf_sets(
                 psf_dir=psf_dir,
                 require_empirical=require_empirical,
                 target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -900,7 +900,7 @@ class InteractiveCLI:
             return
 
         forward = MultiBandForward(
-            psfs_by_band=psfs,
+            psf_sets_by_band=psf_sets,
             config=MultiBandForwardConfig(add_noise=True),
         )
 

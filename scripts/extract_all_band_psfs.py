@@ -6,15 +6,20 @@ For each of ``Config.BANDS`` this script:
   1. Looks for cutouts in the band-specific directory:
        VIS  → ``Config.DEFAULT_OUTPUT_DIR/cutouts``
        NISP → ``Config.NISP_DEFAULT_OUTPUT_DIR_BY_BAND[band.name]/cutouts``
-  2. If cutouts are present, picks up to ``--num-stars`` of them at the
-     ``--cutout-size`` size and runs :class:`PSFExtractor`.
-  3. Saves the result to ``data/euclid_psf/<band.psf_fits_filename>``
-     (e.g. ``euclid_psf_VIS.fits``).
+  2. Loads + accepts the good cutouts (saturation/edge rejection), then
+     **spatially clusters** them by catalog sky position (K-Means++) into
+     groups of ``--stars-per-psf`` and builds **one ePSF per cluster** — the
+     Euclid PSF varies across the focal plane, so a band gets K≈n_good/N PSFs
+     (e.g. 3000 good stars at N=100 → ~30 PSFs) instead of one average kernel.
+  3. Saves them as a multi-extension FITS to
+     ``data/euclid_psf/<band.psf_fits_filename>`` (e.g. ``euclid_psf_VIS.fits``):
+     HDU[0] is the mean PSF (so single-PSF readers keep working), HDU[1..K] are
+     the cluster PSFs. Generation draws a random convex blend of the K kernels.
   4. If no cutouts are present for a band, prints a clear note and
      continues — the loader will fall back to a Gaussian PSF for that band.
 
 Usage:
-    python scripts/extract_all_band_psfs.py
+    python scripts/extract_all_band_psfs.py --stars-per-psf 100 --vis-pixels 256
     python scripts/extract_all_band_psfs.py --num-stars 100 --cutout-size 256
     python scripts/extract_all_band_psfs.py --bands VIS,Y_E
 """
@@ -22,10 +27,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import math
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Cap per-process BLAS threads BEFORE numpy/scipy import. We run the bands
 # in a process pool (one worker per band); without this each worker would
@@ -39,10 +46,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import numpy as np
+from sklearn.cluster import KMeans
+
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
 )
+from euclid_polish.psf import PSF, PSFSet
 from euclid_polish.observability.reporter import Reporter
 
 
@@ -67,10 +78,85 @@ def _cutout_dir_for_band(band: BandConfig) -> str:
     return new_path
 
 
+def _load_star_positions(stars_csv: str) -> Dict[int, Tuple[float, float]]:
+    """Map star ``id → (ra, dec)`` from the catalog CSV.
+
+    Used to spatially cluster each band's good stars before extraction.
+    Returns an empty dict if the file is missing — callers then fall
+    back to a single ePSF from all accepted stars (the old behaviour).
+    """
+    if not os.path.isfile(stars_csv):
+        return {}
+    positions: Dict[int, Tuple[float, float]] = {}
+    with open(stars_csv) as fh:
+        for row in csv.DictReader(fh):
+            try:
+                positions[int(row["id"])] = (float(row["ra"]), float(row["dec"]))
+            except (KeyError, ValueError, TypeError):
+                continue
+    return positions
+
+
+def cluster_star_indices(
+    ids: List[int],
+    positions: Dict[int, Tuple[float, float]],
+    stars_per_psf: int,
+) -> List[List[int]]:
+    """Group the ``ids`` into spatially-coherent clusters of ~``stars_per_psf``.
+
+    K = max(1, round(n / stars_per_psf)) clusters via K-Means++ on the
+    sky positions (RA scaled by cos(dec₀) so Euclidean distance ≈ angular
+    separation). Returns a list of clusters, each a list of positions
+    *into* ``ids`` (so callers can index their parallel star list).
+
+    Stars without a catalog position are dropped. With < ``stars_per_psf``
+    positioned stars, or no positions at all, returns a single cluster of
+    every index (one ePSF, the old behaviour).
+    """
+    pts = []
+    keep = []
+    for i, sid in enumerate(ids):
+        pos = positions.get(sid)
+        if pos is not None:
+            keep.append(i)
+            pts.append(pos)
+    if len(keep) < max(1, int(stars_per_psf)):
+        # Too few positioned stars to split — one ePSF from everything.
+        return [list(range(len(ids)))]
+
+    arr = np.asarray(pts, dtype=np.float64)
+    dec0 = float(np.mean(arr[:, 1]))
+    scaled = np.column_stack([
+        arr[:, 0] * math.cos(math.radians(dec0)),
+        arr[:, 1],
+    ])
+    k = max(1, round(len(keep) / float(stars_per_psf)))
+    if k == 1:
+        return [list(keep)]
+    labels = KMeans(
+        n_clusters=k, init="k-means++", n_init=10, random_state=0,
+    ).fit_predict(scaled)
+    clusters: List[List[int]] = [[] for _ in range(k)]
+    for local_i, lab in enumerate(labels):
+        clusters[int(lab)].append(keep[local_i])
+    return [c for c in clusters if c]
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--num-stars", type=int, default=200,
-                    help="Stars to use per band (default 200)")
+    ap.add_argument("--num-stars", type=int, default=None,
+                    help="Optional cap on stars considered per band "
+                         "(default: use ALL good cutouts). The stars are then "
+                         "clustered into groups of --stars-per-psf.")
+    ap.add_argument("--stars-per-psf", type=int, default=100,
+                    help="Target stars per extracted PSF (N). The band's good "
+                         "stars are K-Means++ clustered by sky position into "
+                         "K=round(n_good/N) groups, one ePSF each. 3000 good "
+                         "stars at N=100 → ~30 PSFs. Default 100.")
+    ap.add_argument("--stars-csv", default=os.path.join(
+                        Config.DEFAULT_OUTPUT_DIR, "stars.csv"),
+                    help="Catalog CSV (id, ra, dec) used to spatially cluster "
+                         "stars. Missing → single ePSF from all good stars.")
     ap.add_argument("--cutout-size", type=int, default=None,
                     help="Cutout side in native pixels (must match filename "
                          "suffix). When set, the same value is used for every "
@@ -150,26 +236,68 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
         return False
 
     selected = extractor.select_files(all_files, num_stars=args.num_stars)
-    print(f"  using {len(selected)} of {len(all_files)} available stars")
+    print(f"  considering {len(selected)} of {len(all_files)} available stars")
 
-    try:
-        epsf, fitted = extractor.build_epsf(selected)
-    except Exception as e:
-        reporter.error(f"{band.name}: extraction failed: {type(e).__name__}: {e}")
-        print(f"  ✗ extraction failed: {type(e).__name__}: {e}")
+    # Load + accept (saturation/edge reject) in one pass, keeping ids so we
+    # can join each star to its catalog sky position for clustering.
+    accepted = extractor.extract_accepted_stars(selected)
+    if not accepted:
+        reporter.warn(f"{band.name}: no usable (non-saturated) stars — skipping")
+        print("  ⚠️  no usable stars after saturation/edge rejection — skipping.")
         return False
+    ids = [sid for sid, _ in accepted]
+    stars = [star for _, star in accepted]
+    print(f"  accepted {len(stars)} good stars")
+
+    # Spatially cluster the good stars into groups of ~--stars-per-psf and
+    # extract one ePSF per cluster (the PSF varies across the field).
+    positions = _load_star_positions(args.stars_csv)
+    if not positions:
+        print(f"  ⚠️  no positions in {args.stars_csv} — single ePSF from all "
+              f"good stars (no spatial clustering).")
+    clusters = cluster_star_indices(ids, positions, args.stars_per_psf)
+    print(f"  {len(clusters)} cluster(s) "
+          f"(target {args.stars_per_psf} stars/PSF): "
+          f"sizes {[len(c) for c in clusters]}")
 
     # Pixel scale on the *oversampled* ePSF grid: native / oversampling.
     # By picking ``epsf_oversampling`` so this equals 0.05"/pix for every
     # band, all ePSFs land on the same HR grid the forward model uses.
     epsf_pixel_scale = band.epsf_pixel_scale_arcsec
-    psf = extractor.to_psf(epsf_pixel_scale)
+
+    psfs: List[PSF] = []
+    centroids: List[Tuple[float, float]] = []
+    for ci, cluster in enumerate(clusters):
+        cluster_stars = [stars[i] for i in cluster]
+        try:
+            epsf, _ = extractor.build_epsf_from_stars(cluster_stars)
+        except Exception as e:
+            reporter.warn(f"{band.name}: cluster {ci} failed "
+                          f"({type(e).__name__}: {e}) — skipping cluster")
+            print(f"  ✗ cluster {ci} failed: {type(e).__name__}: {e}")
+            continue
+        psfs.append(extractor.psf_from_epsf(epsf, epsf_pixel_scale))
+        pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
+        if pts:
+            centroids.append((float(np.mean([p[0] for p in pts])),
+                              float(np.mean([p[1] for p in pts]))))
+        else:
+            centroids.append((float("nan"), float("nan")))
+
+    if not psfs:
+        reporter.error(f"{band.name}: every cluster failed to build")
+        print("  ✗ every cluster failed to build")
+        return False
+
+    have_centroids = bool(positions) and all(
+        np.isfinite(c[0]) and np.isfinite(c[1]) for c in centroids)
+    psf_set = PSFSet.from_psfs(
+        psfs, centroids=centroids if have_centroids else None)
     os.makedirs(args.psf_dir, exist_ok=True)
-    saved = psf.save(args.psf_dir, filename=band.psf_fits_filename)
+    saved = psf_set.save(args.psf_dir, filename=band.psf_fits_filename)
     print(f"  ✓ saved {saved}")
-    print(f"     shape={psf.shape}, "
-          f"pixel_scale={psf.pixel_scale:.4f}\"/pix, "
-          f"fwhm≈{psf.fwhm_arcsec or '?'}")
+    print(f"     {psf_set.n} PSF(s), shape={psf_set.shape}, "
+          f"pixel_scale={psf_set.pixel_scale:.4f}\"/pix")
     return True
 
 
@@ -201,7 +329,9 @@ def main() -> int:
     n_procs = max(1, min(args.max_procs, n_bands))
 
     print(f"Extracting ePSF for bands: {[b.name for b in bands]}")
-    print(f"  num-stars    = {args.num_stars}")
+    print(f"  num-stars    = {args.num_stars if args.num_stars else 'all'} (cap)")
+    print(f"  stars-per-psf= {args.stars_per_psf}  (→ K=round(n_good/N) PSFs/band)")
+    print(f"  stars-csv    = {args.stars_csv}")
     if args.vis_pixels is not None:
         print(f"  vis-pixels   = {args.vis_pixels}  (per-band native size derived)")
     else:
