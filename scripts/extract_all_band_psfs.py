@@ -316,6 +316,10 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     psfs: List[PSF] = []
     centroids: List[Tuple[float, float]] = []
     star_counts: List[int] = []
+    n_clusters = len(clusters)
+    # Announce this band's share of the work up front so the cumulative
+    # cross-band bar knows its total before the first ePSF lands.
+    reporter.set_worker_step(band.name, 0, n_clusters, f"{band.name}: 0/{n_clusters}")
     for ci, cluster in enumerate(clusters):
         cluster_stars = [stars[i] for i in cluster]
         try:
@@ -324,15 +328,20 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
             reporter.warn(f"{band.name}: cluster {ci} failed "
                           f"({type(e).__name__}: {e}) — skipping cluster")
             print(f"  ✗ cluster {ci} failed: {type(e).__name__}: {e}")
-            continue
-        psfs.append(extractor.psf_from_epsf(epsf, epsf_pixel_scale))
-        star_counts.append(len(cluster_stars))   # sampling weight
-        pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
-        if pts:
-            centroids.append((float(np.mean([p[0] for p in pts])),
-                              float(np.mean([p[1] for p in pts]))))
         else:
-            centroids.append((float("nan"), float("nan")))
+            psfs.append(extractor.psf_from_epsf(epsf, epsf_pixel_scale))
+            star_counts.append(len(cluster_stars))   # sampling weight
+            pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
+            if pts:
+                centroids.append((float(np.mean([p[0] for p in pts])),
+                                  float(np.mean([p[1] for p in pts]))))
+            else:
+                centroids.append((float("nan"), float("nan")))
+        # Report after every cluster (built or skipped) so the bar always
+        # advances to n_clusters; the consumer sums these across bands.
+        reporter.set_worker_step(band.name, ci + 1, n_clusters,
+                                 f"{band.name}: PSF {ci + 1}/{n_clusters} "
+                                 f"({len(cluster_stars)} stars)")
 
     if not psfs:
         reporter.error(f"{band.name}: every cluster failed to build")
@@ -393,6 +402,13 @@ def main() -> int:
     print(f"  parallel     = {n_procs} band(s) at once\n")
 
     reporter.set_stage(f"extracting {n_bands} ePSF(s) — {n_procs}-way parallel")
+    # Per-PSF progress is reported by each band as a parallel "worker"
+    # (worker_id = band name): the consumer sums the per-band (current/total)
+    # into one cumulative cross-band bar. total=0 → the bar's denominator is
+    # the sum of the per-band cluster counts the workers report (we don't know
+    # ΣK until each band clusters). Works for both the pool and the serial
+    # path (one worker per band either way).
+    reporter.set_parallel(0, n_procs, label=f"extracting {n_bands} ePSF(s)")
     succeeded = []
     done = 0
     if n_procs == 1:
@@ -401,7 +417,6 @@ def main() -> int:
             ok = extract_band(band, args, reporter=reporter)
             succeeded.append((band.name, ok))
             done += 1
-            reporter.set_step(done, n_bands, band.name)
             print()
     else:
         with ProcessPoolExecutor(max_workers=n_procs) as pool:
@@ -419,7 +434,6 @@ def main() -> int:
                     name, ok = band_name, False
                 succeeded.append((name, ok))
                 done += 1
-                reporter.set_step(done, n_bands, name)
                 print(f"[{done}/{n_bands}] {name}: {'✓' if ok else '✗'}", flush=True)
 
     print("=" * 50)
