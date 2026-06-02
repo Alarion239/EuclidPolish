@@ -727,6 +727,10 @@ class Config:
         """FASRC artifact fetch cache + job-progress smoothing (euclid_polish/web)."""
         CACHE_SUBDIR: str          = "_fasrc_cache"
         MAX_PULL_BYTES: int        = 50 * 1024 * 1024        # per-file pull cap
+        # ePSF FITS are now multi-extension (mean + K cluster PSFs), so a band
+        # file is tens-to-hundreds of MB — well over the generic cap. They are
+        # bounded (K kernels), so the PSF fetch path uses this larger cap.
+        MAX_PSF_PULL_BYTES: int    = 512 * 1024 * 1024       # ePSF stack pull cap
         CACHE_TTL_SECONDS: int     = 300                     # re-pull after this
         MAX_CACHE_BYTES: int       = 2 * 1024 * 1024 * 1024  # 2 GB LRU budget
         STEP_RATE_EMA_ALPHA: float = 0.1                     # job step-rate EMA

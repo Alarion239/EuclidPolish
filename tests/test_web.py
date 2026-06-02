@@ -127,6 +127,43 @@ def test_removed_routes_are_gone(client):
 # guards in test_step_history.py.
 
 
+def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
+    """Loading /psfs reads the local ePSF cache only — it must NOT rsync from
+    FASRC on page load (the slow behaviour we replaced with a button)."""
+    from euclid_polish.web import fasrc_fetcher
+    calls = []
+
+    def spy(*a, **k):
+        calls.append((a, k))
+        return fasrc_fetcher.FetchResult(ok=False)
+
+    monkeypatch.setattr(fasrc_fetcher, "fetch_one_file", spy)
+    assert client.get("/psfs").status_code == 200
+    assert calls == []                         # cache-only; no fetch on load
+
+
+def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch):
+    """The Synchronise button force-fetches all four bands using the larger
+    ePSF pull cap, so the multi-extension VIS file (tens-to-hundreds of MB)
+    isn't rejected by the generic 50 MB cap."""
+    from euclid_polish.web import fasrc_fetcher
+    seen = []
+
+    def fake(remote, *, force=False, max_bytes=None, **k):
+        seen.append((remote, force, max_bytes))
+        return fasrc_fetcher.FetchResult(ok=True, local_path="/tmp/x",
+                                         size_bytes=76_000_000)
+
+    monkeypatch.setattr(fasrc_fetcher, "fetch_one_file", fake)
+    r = client.post("/api/euclid-psf/sync")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True
+    assert set(d["files"]) == {b.name for b in Config.BANDS}
+    assert all(force for _, force, _ in seen)               # force=True
+    assert all(mb == Config.WebFetch.MAX_PSF_PULL_BYTES for _, _, mb in seen)
+
+
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
     """Saving Euclid credentials writes ~/.euclid_credentials on FASRC via a
     quoted heredoc (password as stdin, not argv), mode 600. Nothing is

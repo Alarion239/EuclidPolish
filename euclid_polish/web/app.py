@@ -167,14 +167,34 @@ def _fasrc_psf_dir(force: bool = True) -> Optional[str]:
     local_dir: Optional[str] = None
     for band in Config.BANDS:
         remote = f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}"
-        res = _fasrc_fetcher.fetch_one_file(remote, force=force)
+        res = _fasrc_fetcher.fetch_one_file(
+            remote, force=force,
+            max_bytes=Config.WebFetch.MAX_PSF_PULL_BYTES)
         if res.ok and res.local_path and os.path.isfile(res.local_path):
             local_dir = os.path.dirname(res.local_path)
     return local_dir
 
 
+def _cached_fasrc_psf_dir() -> Optional[str]:
+    """Local cache dir holding the FASRC ePSFs **without** triggering a fetch.
+
+    Page renders read whatever was last synced (fast, no SSH round-trip); the
+    explicit "Synchronise" button (``/api/euclid-psf/sync``) is the only thing
+    that re-rsyncs. Returns None if nothing has been synced down yet."""
+    cfg = fasrc_config.load()
+    local_dir: Optional[str] = None
+    for band in Config.BANDS:
+        local = _local_path_for(
+            f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}")
+        if os.path.isfile(local):
+            local_dir = os.path.dirname(local)
+    return local_dir
+
+
 def _psf_status() -> Dict[str, Any]:
-    psf_dir = _fasrc_psf_dir()
+    # Read the local cache only — no rsync on page load. The Synchronise
+    # button pulls fresh ePSFs from FASRC on demand.
+    psf_dir = _cached_fasrc_psf_dir()
     # No FASRC PSFs yet → every band shows the Gaussian fallback (rather
     # than reading whatever stale ePSF might sit in the local data dir).
     inv = (psf_inventory(psf_dir=psf_dir) if psf_dir
@@ -2466,6 +2486,32 @@ def create_app() -> Flask:
             default_num_stars=200,
             default_output_size=1024,
         )
+
+    @app.route("/api/euclid-psf/sync", methods=["POST"])
+    def api_euclid_psf_sync():
+        """Force a re-rsync of the four Euclid band ePSFs from FASRC.
+
+        The /psfs page reads the local cache only (no rsync on load), so this
+        is how you pull a freshly-extracted PSF down — ``force=True`` bypasses
+        the fetcher's TTL cache. Per-band status; bands not yet on FASRC are
+        reported failed individually without blocking the others."""
+        cfg_loaded = fasrc_config.load()
+        results: Dict[str, Dict[str, Any]] = {}
+        any_ok = False
+        for band in Config.BANDS:
+            remote = f"{cfg_loaded.data_dir}/euclid_psf/{band.psf_fits_filename}"
+            r = _fasrc_fetcher.fetch_one_file(
+                remote, force=True,
+                max_bytes=Config.WebFetch.MAX_PSF_PULL_BYTES)
+            entry: Dict[str, Any] = {
+                "remote_path": remote, "ok": r.ok, "size_bytes": r.size_bytes,
+            }
+            if r.ok and r.local_path:
+                any_ok = True
+            else:
+                entry["error"] = r.error
+            results[band.name] = entry
+        return jsonify({"ok": any_ok, "files": results})
 
     @app.route("/psfs/visualize", methods=["POST"])
     def psfs_visualize():

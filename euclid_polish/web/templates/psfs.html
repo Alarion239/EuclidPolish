@@ -67,6 +67,16 @@
 
 {% block actions %}
 <section class="card">
+  <h3>Synchronise from FASRC</h3>
+  <p class="hint">The inventory is read from the <strong>local cache</strong> —
+     no rsync on page load. After an extraction job finishes on FASRC, click to
+     pull the four band ePSFs down (multi-extension FITS can be large, so it may
+     take a moment). Connect to FASRC first.</p>
+  <button id="psf-sync-btn" type="button">⟳ Synchronise ePSFs</button>
+  <div id="psf-sync-status" class="hint"></div>
+</section>
+
+<section class="card">
   <h3>Extract empirical ePSFs (FASRC)</h3>
   <p class="hint">Submits a SLURM job that runs photutils'
      <code>EPSFBuilder</code> on the downloaded cutouts for <strong>all
@@ -96,5 +106,37 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   e.preventDefault();
   polishUI.viz.set(chip.dataset.group, chip.dataset.value);
 });
+
+// ── Manual ePSF synchronisation (rsync the band FITS from FASRC) ──────
+const psfSyncBtn = document.getElementById("psf-sync-btn");
+if (psfSyncBtn) {
+  psfSyncBtn.addEventListener("click", async () => {
+    const statusEl = document.getElementById("psf-sync-status");
+    psfSyncBtn.disabled = true;
+    statusEl.textContent = "syncing… (rsync from FASRC — may take a moment)";
+    try {
+      const r = await fetch("/api/euclid-psf/sync", { method: "POST" });
+      const d = await r.json();
+      const failed = Object.entries(d.files || {})
+        .filter(([, f]) => !f.ok)
+        .map(([b, f]) => `${b}: ${f.error || "not on FASRC"}`);
+      if (d.ok && failed.length === 0) {
+        statusEl.innerHTML = "✓ synced — reloading…";
+        setTimeout(() => location.reload(), 600);
+      } else if (d.ok) {
+        statusEl.innerHTML = "✓ synced (some bands skipped: " +
+          failed.join("; ") + ") — reloading…";
+        setTimeout(() => location.reload(), 1200);
+      } else {
+        statusEl.innerHTML = "✗ " + (failed.join("; ") ||
+          "sync failed — connect to FASRC first");
+        psfSyncBtn.disabled = false;
+      }
+    } catch (e) {
+      statusEl.textContent = "✗ " + e;
+      psfSyncBtn.disabled = false;
+    }
+  });
+}
 </script>
 {% endblock %}
