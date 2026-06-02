@@ -1871,10 +1871,11 @@ def create_app() -> Flask:
             cutout_layout=_cutout_layout_status(),
         )
 
-    # The catalog query + photometry verify are now a single FASRC pipeline
-    # step (``euclid_catalog``) submitted through the standard
-    # ``/api/fasrc/hst/<step_id>/submit`` route — editable resources, run
-    # history and Cancel-job all come for free. The bespoke
+    # The catalog query + photometry verify are now two separate FASRC
+    # pipeline steps (``euclid_query`` on the catalog page, then download,
+    # then ``euclid_verify_photometry`` on the cutouts page) submitted through
+    # the standard ``/api/fasrc/hst/<step_id>/submit`` route — editable
+    # resources, run history and Cancel-job all come for free. The bespoke
     # ``/catalog/query-brightest`` + ``/cutouts/verify-photometry`` routes
     # were removed.
 

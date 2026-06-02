@@ -159,18 +159,10 @@ large cutout don't leak across train/validate."></label>`;
           <label>Output PSF size (oversampled px)
             <input type="number" name="output_size" value="0" min="0" max="4096"
                    title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
-      case 'euclid_catalog':
-        // Mirrors EuclidCatalogStep.build_command (mode, num_stars, mag
-        // window, snr_min, verify_n, verify_size). One job: query the
-        // brightest stars and/or verify the photometry scale.
+      case 'euclid_query':
+        // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
+        // snr_min). Writes stars.csv. Run first, then download, then verify.
         return `
-          <label>Mode
-            <select name="mode"
-                    title="query: write stars.csv only. verify: re-check the photometry scale against existing cutouts (no re-query). both: query then verify whatever cutouts exist.">
-              <option value="both">query + verify</option>
-              <option value="query">query only</option>
-              <option value="verify">verify only</option>
-            </select></label>
           <label>Number of stars
             <input type="number" name="num_stars" value="3000" min="1" max="100000"
                    title="Server-side TOP N by PSF flux (flux_vis_psf) within the magnitude window."></label>
@@ -182,13 +174,17 @@ large cutout don't leak across train/validate."></label>`;
                    title="Faint-end cutoff (AB mag)."></label>
           <label>Min SNR <span class="muted">(blank = off)</span>
             <input type="number" name="snr_min" step="1" placeholder="e.g. 50"
-                   title="Keep only well-measured stars: flux_vis_psf / fluxerr_vis_psf ≥ this."></label>
-          <label>Verify: N stars
-            <input type="number" name="verify_n" value="40" min="1" max="1000"
-                   title="How many stars to aperture-measure in the verify pass."></label>
-          <label>Verify: cutout size (px)
-            <input type="number" name="verify_size" value="256" min="32" max="4096" step="32"
-                   title="Cutout side to read in the verify pass — must match the downloaded cutouts."></label>`;
+                   title="Keep only well-measured stars: flux_vis_psf / fluxerr_vis_psf ≥ this."></label>`;
+      case 'euclid_verify_photometry':
+        // Mirrors EuclidVerifyPhotometryStep.build_command (n, size).
+        // Read-only scale check — run AFTER the cutout download.
+        return `
+          <label>N stars
+            <input type="number" name="n" value="40" min="1" max="1000"
+                   title="How many stars to aperture-measure for the median measured/catalog ratio."></label>
+          <label>Cutout size (px, as downloaded)
+            <input type="number" name="size" value="256" min="32" max="4096" step="32"
+                   title="Cutout side to read — must match the size the cutouts were downloaded at (reads star_NNNN_<size>.fits)."></label>`;
       case 'euclid_star_anchor_tfrecords':
         // Mirrors EuclidStarAnchorTFRecordStep.build_command (size, stamp,
         // valid_every, snr_min, limit). Assembles the downloaded star
@@ -361,7 +357,7 @@ large cutout don't leak across train/validate."></label>`;
       euclid_sky_download: 'euclid_sky',
       euclid_roundtrip_tfrecords: 'roundtrip_records',
       // New per-page tasks (registered in Phase 2 of the migration):
-      euclid_catalog:          'catalog',
+      euclid_query:            'catalog',
       download_euclid_cutouts: 'euclid_cutouts',
       extract_euclid_psf:      'euclid_psf',
       euclid_star_anchor_tfrecords: 'star_anchor_records',

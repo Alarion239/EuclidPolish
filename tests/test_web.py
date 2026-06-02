@@ -121,9 +121,10 @@ def test_removed_routes_are_gone(client):
         assert r.status_code in (404, 405), f"{path} should be removed"
 
 
-# The catalog query + photometry verify are now the ``euclid_catalog`` pipeline
-# step; its argv construction is tested in test_fasrc_pipeline.py and the submit
-# route's connection/confirm guards in test_step_history.py.
+# The catalog query + photometry verify are now two separate pipeline steps
+# (``euclid_query``, ``euclid_verify_photometry``); their argv construction is
+# tested in test_fasrc_pipeline.py and the submit route's connection/confirm
+# guards in test_step_history.py.
 
 
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):

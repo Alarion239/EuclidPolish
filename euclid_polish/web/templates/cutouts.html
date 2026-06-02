@@ -110,11 +110,14 @@
 {% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
 
 <section class="card">
-  <p class="hint">After downloading, verify the photometry scale from the
-     <a href="{{ url_for('catalog_page') }}">Catalog page</a> (run the catalog
-     step in <em>verify only</em> mode — median measured/catalog ratio ≈ 1
-     confirms the absolute electron scale).</p>
+  <h3>Verify photometry scale (read-only)</h3>
+  <p class="hint">Run this <strong>after</strong> the download: aperture-measures
+     N VIS cutouts (electrons) vs each star's catalog PSF flux. A median ratio
+     ≈ 1 confirms the absolute electron scale the star-anchor delta-targets use;
+     a constant offset at all radii flags a zeropoint/units bug. Set the size to
+     match the download. Writes nothing — the ratio table lands in the job log.</p>
 </section>
+{% with step_id="euclid_verify_photometry" %}{% include "_step_card_mount.html" %}{% endwith %}
 
 <section class="card">
   <h3>Build star-anchor TFRecords</h3>

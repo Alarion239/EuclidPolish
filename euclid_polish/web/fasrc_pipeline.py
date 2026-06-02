@@ -563,37 +563,31 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
         ]
 
 
-class EuclidCatalogStep(FASRCPipelineStep):
+class EuclidQueryStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
-            step_id="euclid_catalog",
-            label="Query catalog + verify photometry",
+            step_id="euclid_query",
+            label="Query Euclid catalog (brightest N)",
             description=(
-                "One job that queries the N brightest Euclid stars "
-                "(flux_vis_psf, ESA TAP) into $DATA_DIR/euclid_stars/stars.csv "
-                "and/or verifies the photometry scale against the downloaded "
-                "cutouts (median measured/catalog electron ratio ≈ 1 confirms "
-                "the absolute scale the star-anchor delta-targets use). Mode "
-                "'both' queries then verifies whatever cutouts exist; 'verify' "
-                "re-checks after a download without re-querying. Runs on the "
-                "shared partition (outbound internet for the TAP query); the "
-                "report lands in the job log."
+                "Query the N brightest Euclid stars by PSF flux "
+                "(flux_vis_psf, ESA TAP) into "
+                "$DATA_DIR/euclid_stars/stars.csv. Magnitudes are proper AB "
+                "from the µJy flux; the magnitude window skips saturating "
+                "stars and the SNR cut keeps only well-measured flux. Runs on "
+                "the shared partition — its compute nodes have outbound "
+                "internet for the TAP query (the cutout downloader runs there "
+                "too). Run this first, then download cutouts, then verify."
             ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
-                memory="8G", time_limit="30:00",
+                memory="4G", time_limit="30:00",
             ),
             needs_gpu=False,
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        mode      = str(params.get("mode", "both")).strip() or "both"
         num_stars = int(params.get("num_stars", 200) or 200)
-        cmd = [
-            "scripts/euclid_catalog_step.py",
-            "--mode", mode,
-            "--num-stars", str(num_stars),
-        ]
+        cmd = ["scripts/query_brightest_stars.py", "--num-stars", str(num_stars)]
         mag_min = str(params.get("magnitude_min", "")).strip()
         if mag_min:
             cmd += ["--magnitude-min", f"{float(mag_min):g}"]
@@ -603,11 +597,36 @@ class EuclidCatalogStep(FASRCPipelineStep):
         snr_min = str(params.get("snr_min", "")).strip()
         if snr_min:
             cmd += ["--snr-min", f"{float(snr_min):g}"]
-        cmd += [
-            "--verify-n",    str(int(params.get("verify_n", 40) or 40)),
-            "--verify-size", str(int(params.get("verify_size", 256) or 256)),
-        ]
         return cmd
+
+
+class EuclidVerifyPhotometryStep(FASRCPipelineStep):
+    def __init__(self):
+        super().__init__(
+            step_id="euclid_verify_photometry",
+            label="Verify photometry scale",
+            description=(
+                "Aperture-measure N downloaded VIS cutouts (in electrons) and "
+                "compare to each star's catalog PSF flux — a median "
+                "measured/catalog ratio ≈ 1 confirms the absolute electron "
+                "scale the star-anchor delta-targets are built on; a constant "
+                "offset at all radii flags a zeropoint/units bug. Read-only "
+                "(writes nothing; the ratio table lands in the job log). "
+                "Requires the cutouts on disk — run AFTER the download, and "
+                "set the size to match what was downloaded."
+            ),
+            defaults=StepResources(
+                partition="shared", n_cpus=1, n_gpus=0,
+                memory="8G", time_limit="30:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        n    = int(params.get("n", 40) or 40)
+        size = int(params.get("size", 256) or 256)
+        return ["scripts/verify_star_photometry.py",
+                "--n", str(n), "--size", str(size)]
 
 
 class EuclidCutoutDownloadStep(FASRCPipelineStep):
@@ -928,7 +947,8 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
     EuclidRoundtripTFRecordStep,
-    EuclidCatalogStep,
+    EuclidQueryStep,
+    EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
     EuclidStarAnchorTFRecordStep,
