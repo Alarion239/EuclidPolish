@@ -97,17 +97,54 @@ def _load_star_positions(stars_csv: str) -> Dict[int, Tuple[float, float]]:
     return positions
 
 
+def _merge_small_clusters(
+    clusters: List[List[int]],
+    coord_by_idx: Dict[int, np.ndarray],
+    min_stars: int,
+) -> List[List[int]]:
+    """Merge any cluster smaller than ``min_stars`` into its nearest
+    neighbour (by centroid) until every cluster meets the floor or only one
+    remains. Guarantees ≥ ``min_stars`` per cluster whenever the total
+    allows it (a single field with < min_stars stars stays as one cluster)."""
+    clusters = [list(c) for c in clusters]
+
+    def centroid(c: List[int]) -> np.ndarray:
+        return np.mean([coord_by_idx[i] for i in c], axis=0)
+
+    while len(clusters) > 1:
+        sizes = [len(c) for c in clusters]
+        s = int(np.argmin(sizes))
+        if sizes[s] >= min_stars:
+            break
+        cs = centroid(clusters[s])
+        nearest, best = None, None
+        for j, c in enumerate(clusters):
+            if j == s:
+                continue
+            d = float(np.sum((centroid(c) - cs) ** 2))
+            if best is None or d < best:
+                best, nearest = d, j
+        clusters[nearest].extend(clusters[s])
+        del clusters[s]
+    return clusters
+
+
 def cluster_star_indices(
     ids: List[int],
     positions: Dict[int, Tuple[float, float]],
     stars_per_psf: int,
+    *,
+    min_stars: int = 50,
 ) -> List[List[int]]:
     """Group the ``ids`` into spatially-coherent clusters of ~``stars_per_psf``.
 
-    K = max(1, round(n / stars_per_psf)) clusters via K-Means++ on the
-    sky positions (RA scaled by cos(dec₀) so Euclidean distance ≈ angular
-    separation). Returns a list of clusters, each a list of positions
-    *into* ``ids`` (so callers can index their parallel star list).
+    K = max(1, round(n / stars_per_psf)) clusters via K-Means++ on the sky
+    positions (RA scaled by cos(dec₀) so Euclidean distance ≈ angular
+    separation), then any cluster smaller than ``min_stars`` is merged into
+    its nearest neighbour — so the average is ~``stars_per_psf`` but no ePSF
+    is ever built from fewer than ``min_stars`` stars (noisy under-sampled
+    PSFs). Returns a list of clusters, each a list of positions *into*
+    ``ids`` (so callers can index their parallel star list).
 
     Stars without a catalog position are dropped. With < ``stars_per_psf``
     positioned stars, or no positions at all, returns a single cluster of
@@ -139,7 +176,10 @@ def cluster_star_indices(
     clusters: List[List[int]] = [[] for _ in range(k)]
     for local_i, lab in enumerate(labels):
         clusters[int(lab)].append(keep[local_i])
-    return [c for c in clusters if c]
+    clusters = [c for c in clusters if c]
+    # Enforce the per-cluster floor (merge under-sized clusters).
+    coord_by_idx = {keep[j]: scaled[j] for j in range(len(keep))}
+    return _merge_small_clusters(clusters, coord_by_idx, int(min_stars))
 
 
 def parse_args() -> argparse.Namespace:
@@ -149,10 +189,16 @@ def parse_args() -> argparse.Namespace:
                          "(default: use ALL good cutouts). The stars are then "
                          "clustered into groups of --stars-per-psf.")
     ap.add_argument("--stars-per-psf", type=int, default=100,
-                    help="Target stars per extracted PSF (N). The band's good "
-                         "stars are K-Means++ clustered by sky position into "
-                         "K=round(n_good/N) groups, one ePSF each. 3000 good "
-                         "stars at N=100 → ~30 PSFs. Default 100.")
+                    help="Target (average) stars per extracted PSF (N). The "
+                         "band's good stars are K-Means++ clustered by sky "
+                         "position into K=round(n_good/N) groups, one ePSF "
+                         "each. 3000 good stars at N=100 → ~30 PSFs. Default "
+                         "100.")
+    ap.add_argument("--min-stars-per-psf", type=int, default=50,
+                    help="Hard floor on stars per cluster: clusters smaller "
+                         "than this are merged into their nearest neighbour, "
+                         "so no ePSF is built from too few (noisy) stars. "
+                         "Default 50.")
     ap.add_argument("--stars-csv", default=os.path.join(
                         Config.DEFAULT_OUTPUT_DIR, "stars.csv"),
                     help="Catalog CSV (id, ra, dec) used to spatially cluster "
@@ -255,9 +301,11 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     if not positions:
         print(f"  ⚠️  no positions in {args.stars_csv} — single ePSF from all "
               f"good stars (no spatial clustering).")
-    clusters = cluster_star_indices(ids, positions, args.stars_per_psf)
+    clusters = cluster_star_indices(ids, positions, args.stars_per_psf,
+                                    min_stars=args.min_stars_per_psf)
     print(f"  {len(clusters)} cluster(s) "
-          f"(target {args.stars_per_psf} stars/PSF): "
+          f"(target {args.stars_per_psf} stars/PSF, "
+          f"min {args.min_stars_per_psf}): "
           f"sizes {[len(c) for c in clusters]}")
 
     # Pixel scale on the *oversampled* ePSF grid: native / oversampling.
@@ -267,6 +315,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
 
     psfs: List[PSF] = []
     centroids: List[Tuple[float, float]] = []
+    star_counts: List[int] = []
     for ci, cluster in enumerate(clusters):
         cluster_stars = [stars[i] for i in cluster]
         try:
@@ -277,6 +326,7 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
             print(f"  ✗ cluster {ci} failed: {type(e).__name__}: {e}")
             continue
         psfs.append(extractor.psf_from_epsf(epsf, epsf_pixel_scale))
+        star_counts.append(len(cluster_stars))   # sampling weight
         pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
         if pts:
             centroids.append((float(np.mean([p[0] for p in pts])),
@@ -292,7 +342,8 @@ def extract_band(band: BandConfig, args: argparse.Namespace,
     have_centroids = bool(positions) and all(
         np.isfinite(c[0]) and np.isfinite(c[1]) for c in centroids)
     psf_set = PSFSet.from_psfs(
-        psfs, centroids=centroids if have_centroids else None)
+        psfs, centroids=centroids if have_centroids else None,
+        n_stars=star_counts)
     os.makedirs(args.psf_dir, exist_ok=True)
     saved = psf_set.save(args.psf_dir, filename=band.psf_fits_filename)
     print(f"  ✓ saved {saved}")
@@ -331,6 +382,7 @@ def main() -> int:
     print(f"Extracting ePSF for bands: {[b.name for b in bands]}")
     print(f"  num-stars    = {args.num_stars if args.num_stars else 'all'} (cap)")
     print(f"  stars-per-psf= {args.stars_per_psf}  (→ K=round(n_good/N) PSFs/band)")
+    print(f"  min-stars/psf= {args.min_stars_per_psf}  (smaller clusters merged)")
     print(f"  stars-csv    = {args.stars_csv}")
     if args.vis_pixels is not None:
         print(f"  vis-pixels   = {args.vis_pixels}  (per-band native size derived)")

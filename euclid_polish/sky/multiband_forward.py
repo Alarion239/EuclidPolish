@@ -62,12 +62,15 @@ class MultiBandForwardConfig:
     nisp_resample_factor: int = Config.NISP_LR_TO_VIS_LR_RATIO  # 3
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: Optional["ArtifactConfig"] = None        # type: ignore[name-defined]
-    # Position-dependent PSF: when a band carries K>1 cluster PSFs, draw a
-    # random convex (Dirichlet(alpha)) blend of them per scene so the network
-    # trains against the field's PSF variation. With K=1 (single PSF) this is
-    # a no-op and the output is byte-identical to the old single-PSF forward.
+    # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws
+    # one PSF via ``PSFSet.sample_for_generation`` — a star-count-weighted
+    # cluster pick, then with probability (1 - psf_unrotated_prob) a random
+    # roll rotation (modelling the per-pointing telescope roll). No blending
+    # (blending rolls would superimpose spikes). With ``randomize_psf`` off,
+    # the field-mean PSF is used (deterministic — matches the old single-PSF
+    # forward when K=1).
     randomize_psf: bool = True
-    psf_dirichlet_alpha: float = 1.0
+    psf_unrotated_prob: float = 0.3
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -207,13 +210,13 @@ class MultiBandForward:
         rng: np.random.Generator,
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
-        # Pick this scene's PSF from the band's ensemble: a random convex
-        # (Dirichlet) blend of the K cluster PSFs when randomisation is on and
-        # K>1, else the field-mean (a 1-element set returns its only member,
-        # so single-PSF bands are deterministic and unchanged).
+        # Pick this scene's PSF from the band's ensemble: a star-count-weighted
+        # cluster pick + a random roll rotation (operator-free, no blending)
+        # when randomisation is on, else the deterministic field-mean.
         pset = self._psf_sets[band.name]
-        if self.config.randomize_psf and pset.n > 1:
-            psf = pset.sample(rng, alpha=self.config.psf_dirichlet_alpha)
+        if self.config.randomize_psf:
+            psf = pset.sample_for_generation(
+                rng, use_unrotated_prob=self.config.psf_unrotated_prob)
         else:
             psf = pset.mean()
         target_scale = self.target_lr_pixel_scale_arcsec

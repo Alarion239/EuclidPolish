@@ -13,15 +13,34 @@ gen = importlib.import_module("scripts.extract_all_band_psfs")
 
 def test_cluster_splits_into_round_n_over_k_groups():
     # 30 stars in 3 tight spatial blobs; N=10 → K=round(30/10)=3.
+    # min_stars=5 so the (intended) 10-star clusters aren't merged.
     ids = list(range(30))
     positions = {i: (10.0 + (i // 10) * 0.5, 2.0 + (i % 10) * 1e-3)
                  for i in ids}
-    clusters = gen.cluster_star_indices(ids, positions, stars_per_psf=10)
+    clusters = gen.cluster_star_indices(ids, positions, stars_per_psf=10,
+                                        min_stars=5)
     assert len(clusters) == 3
     assert sorted(len(c) for c in clusters) == [10, 10, 10]
     # Every id assigned exactly once.
     flat = sorted(i for c in clusters for i in c)
     assert flat == ids
+
+
+def test_cluster_enforces_min_stars_floor():
+    """No cluster ends up below the min floor: one sparse far-away clump is
+    merged into a neighbour rather than forming a tiny under-sampled PSF."""
+    # 200 stars in a tight blob + 10 stars in a far-away clump.
+    ids = list(range(210))
+    positions = {}
+    for i in range(200):
+        positions[i] = (10.0 + (i % 20) * 1e-3, 2.0 + (i // 20) * 1e-3)
+    for i in range(200, 210):
+        positions[i] = (50.0 + (i - 200) * 1e-3, 40.0)     # far clump of 10
+    clusters = gen.cluster_star_indices(ids, positions, stars_per_psf=100,
+                                        min_stars=50)
+    assert all(len(c) >= 50 for c in clusters), [len(c) for c in clusters]
+    # Every id still assigned exactly once.
+    assert sorted(i for c in clusters for i in c) == ids
 
 
 def test_cluster_returns_single_group_without_positions():

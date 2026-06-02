@@ -1,6 +1,7 @@
 """Tests for :class:`euclid_polish.psf.PSFSet` — the position-dependent PSF
-ensemble: mean, Dirichlet sampling, and the multi-extension FITS round-trip
-(PrimaryHDU = mean so legacy single-PSF readers keep working)."""
+ensemble: mean, the star-count-weighted + random-roll generation sampler, and
+the multi-extension FITS round-trip (PrimaryHDU = mean so legacy single-PSF
+readers keep working)."""
 
 from __future__ import annotations
 
@@ -51,29 +52,53 @@ def test_mean_is_unit_sum_average():
     assert m.data[7, 5] == pytest.approx(0.5)
 
 
-def test_sample_is_convex_unit_sum_and_varies():
+def test_sample_for_generation_unit_sum_and_reproducible():
     pset = PSFSet.from_psfs([_gauss(31, 2.0), _gauss(31, 5.0)])
+    a = pset.sample_for_generation(np.random.default_rng(42))
+    b = pset.sample_for_generation(np.random.default_rng(42))
+    assert a.total_flux == pytest.approx(1.0, abs=1e-5)
+    np.testing.assert_allclose(a.data, b.data)          # seed-reproducible
+
+
+def test_sample_weights_by_star_count():
+    """A cluster's pick probability is proportional to its star count, so a
+    heavily-outnumbered few-star PSF is drawn rarely."""
+    pset = PSFSet.from_psfs([_gauss(31, 2.0), _gauss(31, 5.0)],
+                            n_stars=[1, 999])
     rng = np.random.default_rng(0)
-    s1 = pset.sample(rng)
-    s2 = pset.sample(rng)
-    assert s1.total_flux == pytest.approx(1.0, abs=1e-5)
-    # Convex blend of two non-negative PSFs stays non-negative.
-    assert float(s1.data.min()) >= -1e-7
-    assert not np.allclose(s1.data, s2.data)
+    # Force no rotation so each draw is exactly one of the two members.
+    picks = [pset.sample_for_generation(rng, use_unrotated_prob=1.0)
+             for _ in range(400)]
+    n_first = sum(np.allclose(p.data, pset.psfs[0].data) for p in picks)
+    assert n_first < 20            # the 1-star PSF almost never appears
 
 
-def test_sample_is_reproducible_under_seed():
-    pset = PSFSet.from_psfs([_gauss(31, 2.0), _gauss(31, 5.0), _gauss(31, 8.0)])
-    a = pset.sample(np.random.default_rng(42))
-    b = pset.sample(np.random.default_rng(42))
-    np.testing.assert_allclose(a.data, b.data)
+def test_sample_uniform_when_no_star_counts():
+    pset = PSFSet.from_psfs([_gauss(31, 2.0), _gauss(31, 5.0)])  # n_stars None
+    assert pset._pick_weights() is None
 
 
-def test_single_element_sample_is_the_member():
-    pset = PSFSet.from_psfs([_gauss(21, 3.0)])
-    assert pset.n == 1
-    s = pset.sample(np.random.default_rng(1))
-    np.testing.assert_allclose(s.data, pset.psfs[0].data)
+def test_sample_unrotated_vs_rotated_probability():
+    """≈30% of draws are unrotated (identical to a member); the rest are
+    rotated (differ from every member)."""
+    pset = PSFSet.from_psfs([_gauss(31, 2.0)])      # single member, K=1
+    rng = np.random.default_rng(1)
+    draws = [pset.sample_for_generation(rng, use_unrotated_prob=0.3)
+             for _ in range(600)]
+    unrot = sum(np.allclose(d.data, pset.psfs[0].data) for d in draws)
+    assert 0.2 < unrot / len(draws) < 0.4           # ~30%
+    # Every draw is still sum=1.
+    assert all(d.total_flux == pytest.approx(1.0, abs=1e-5) for d in draws)
+
+
+def test_sample_rotation_angle_is_in_1_359():
+    """With unrotated prob 0, the member is always rotated by a real roll."""
+    pset = PSFSet.from_psfs([_gauss(31, 2.0)])
+    rng = np.random.default_rng(2)
+    for _ in range(50):
+        d = pset.sample_for_generation(rng, use_unrotated_prob=0.0)
+        # A rotated Gaussian-with-no-asymmetry is ≈ itself, but flux is kept.
+        assert d.total_flux == pytest.approx(1.0, abs=1e-5)
 
 
 def test_fits_roundtrip_primary_is_mean(tmp_path):
@@ -106,6 +131,24 @@ def test_from_fits_legacy_single_hdu_loads_as_one_element(tmp_path):
     pset = PSFSet.from_fits(path)
     assert pset.n == 1
     np.testing.assert_allclose(pset.psfs[0].data, legacy.data, atol=1e-6)
+
+
+def test_n_stars_roundtrips_through_fits(tmp_path):
+    """Per-PSF star counts (the sampling weights) persist as NSTARS and load
+    back; a file without them yields n_stars=None (→ uniform sampling)."""
+    pset = PSFSet.from_psfs([_gauss(21, 2.0), _gauss(21, 4.0)],
+                            n_stars=[120, 57])
+    path = pset.save(str(tmp_path), "euclid_psf_NSTARS.fits")
+    with fits.open(path) as hdul:
+        image_hdus = [h for h in hdul if h.data is not None]
+        assert image_hdus[1].header["NSTARS"] == 120
+        assert image_hdus[2].header["NSTARS"] == 57
+    loaded = PSFSet.from_fits(path)
+    assert loaded.n_stars == [120, 57]
+
+    no_counts = PSFSet.from_psfs([_gauss(21, 2.0), _gauss(21, 4.0)])
+    p2 = no_counts.save(str(tmp_path), "euclid_psf_NONE.fits")
+    assert PSFSet.from_fits(p2).n_stars is None
 
 
 def test_grid_ops_map_over_members():

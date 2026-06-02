@@ -171,12 +171,14 @@ def _vis_psf_set(n, fwhms):
 
 
 def test_single_psf_set_matches_old_psf_dict(hr_field):
-    """K=1 set per band reproduces the old psfs_by_band path byte-for-byte."""
+    """Wrapping a single PSF as a 1-element set (new psf_sets_by_band API)
+    reproduces the old psfs_by_band path — with randomisation off both use the
+    deterministic mean, which for K=1 is just that PSF."""
     from euclid_polish.psf import PSFSet
     psfs = {b.name: default_psf_for_band(b, Config.DEFAULT_PIXEL_SCALE)
             for b in Config.BANDS}
     sets = {name: PSFSet.from_psfs([p]) for name, p in psfs.items()}
-    cfg = MultiBandForwardConfig(add_noise=False)
+    cfg = MultiBandForwardConfig(add_noise=False, randomize_psf=False)
     old = MultiBandForward(psfs_by_band=psfs, config=cfg)
     new = MultiBandForward(psf_sets_by_band=sets, config=cfg)
     lr_o, _ = old.process(hr_field, rng=np.random.default_rng(3))
@@ -185,17 +187,20 @@ def test_single_psf_set_matches_old_psf_dict(hr_field):
 
 
 def test_randomized_psf_varies_scene_to_scene(hr_field):
-    """With K>1 VIS PSFs and randomize_psf on, two scenes get different PSFs."""
+    """With randomisation on, two scenes draw different PSFs (different pick
+    and/or roll), so their VIS LR channels differ. Force always-rotate so the
+    test is robust to the 30% unrotated draws."""
     sets = {b.name: _vis_psf_set(1, [0.16]) for b in Config.BANDS}
     sets[Config.BAND_VIS.name] = _vis_psf_set(2, [1.0, 5.0])
     fwd = MultiBandForward(
         psf_sets_by_band=sets,
-        config=MultiBandForwardConfig(add_noise=False, randomize_psf=True),
+        config=MultiBandForwardConfig(add_noise=False, randomize_psf=True,
+                                      psf_unrotated_prob=0.0),
     )
     a, _ = fwd.process(hr_field, rng=np.random.default_rng(1))
     b, _ = fwd.process(hr_field, rng=np.random.default_rng(2))
     assert not np.allclose(a.data[..., 0], b.data[..., 0])
-    # Flux is still preserved (convex blend of sum=1 PSFs → sum=1).
+    # Rotation preserves total flux (the kernel stays sum=1).
     assert a.data[..., 0].sum() == pytest.approx(hr_field.data[..., 0].sum(),
                                                  rel=1e-3)
 

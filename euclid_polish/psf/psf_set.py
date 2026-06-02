@@ -8,9 +8,12 @@ sample the field's PSF variation. :class:`PSFSet` holds those K
 and exposes:
 
   * :meth:`mean`   — the field-averaged PSF (a single :class:`PSF`).
-  * :meth:`sample` — a random *convex* (Dirichlet) blend of the K
-    kernels, used at generation time so each synthetic scene sees a
-    different-but-physical PSF drawn from the ensemble.
+  * :meth:`sample_for_generation` — draw one PSF for a synthetic scene:
+    pick a cluster weighted by its star count (few-star, noisier PSFs
+    appear rarely), then with a configurable probability rotate it by a
+    random roll angle (modelling the per-pointing telescope roll). We do
+    NOT blend two cluster PSFs — blending rolls would superimpose
+    diffraction spikes into an unphysical multi-spike PSF.
   * grid ops (:meth:`resampled_to`, :meth:`centre_cropped_to`,
     :meth:`recentred`) that map over the members and return a new set.
   * FITS I/O — a multi-extension file whose **PrimaryHDU is the mean
@@ -50,6 +53,10 @@ class PSFSet:
         Optional per-PSF ``(ra, dec)`` field centroid of the star
         cluster the kernel was built from — informational, written to
         the FITS headers for provenance.
+    n_stars
+        Optional per-PSF count of the stars its ePSF was built from.
+        Used as the sampling weight (a PSF from few stars is noisier, so
+        it should appear rarely). ``None`` → uniform sampling.
     oversampling
         Optional EPSFBuilder oversampling factor (shared by members).
 
@@ -60,6 +67,7 @@ class PSFSet:
     psfs: List[PSF]
     pixel_scale: float
     centroids: Optional[List[Tuple[float, float]]] = None
+    n_stars: Optional[List[int]] = None
     oversampling: Optional[int] = None
 
     def __post_init__(self) -> None:
@@ -88,12 +96,13 @@ class PSFSet:
         psfs: List[PSF],
         *,
         centroids: Optional[List[Tuple[float, float]]] = None,
+        n_stars: Optional[List[int]] = None,
     ) -> PSFSet:
         """Build a set from a list of PSFs, normalising each to sum=1.
 
-        Requires all members to share pixel scale and shape — the
-        ensemble convex blend (and the mean) is only meaningful on a
-        common grid.
+        Requires all members to share pixel scale and shape — the mean
+        and the sampling weights are only meaningful on a common grid.
+        ``n_stars`` (per-PSF star counts) becomes the sampling weight.
         """
         if not psfs:
             raise ValueError("from_psfs needs at least one PSF")
@@ -114,6 +123,7 @@ class PSFSet:
             psfs=unit,
             pixel_scale=scale,
             centroids=list(centroids) if centroids is not None else None,
+            n_stars=[int(c) for c in n_stars] if n_stars is not None else None,
             oversampling=unit[0].oversampling,
         )
 
@@ -137,27 +147,44 @@ class PSFSet:
             oversampling=self.oversampling,
         ).with_unit_sum()
 
-    def sample(self, rng: np.random.Generator, *, alpha: float = 1.0) -> PSF:
-        """Return a random convex blend of the K kernels.
+    def _pick_weights(self) -> Optional[np.ndarray]:
+        """Per-PSF sampling probabilities ∝ star count, or ``None`` (→
+        uniform) when no usable counts are present."""
+        if (self.n_stars is not None and len(self.n_stars) == self.n
+                and sum(self.n_stars) > 0):
+            w = np.asarray(self.n_stars, dtype=np.float64)
+            return w / w.sum()
+        return None
 
-        Weights ``w ~ Dirichlet(alpha · 1_K)`` (so ``Σw = 1`` and the
-        blend is flux-preserving). ``alpha = 1`` is uniform over the
-        simplex; ``alpha < 1`` concentrates near a single cluster PSF;
-        ``alpha > 1`` concentrates near the mean. A 1-element set
-        returns its only member (deterministic), so a single-PSF band
-        reproduces the old behaviour exactly.
+    def sample_for_generation(
+        self,
+        rng: np.random.Generator,
+        *,
+        use_unrotated_prob: float = 0.3,
+        angle_min: int = 1,
+        angle_max: int = 359,
+        rotation_order: int = 3,
+    ) -> PSF:
+        """Draw one PSF for a synthetic scene.
+
+        1. Pick a cluster PSF with probability **proportional to its star
+           count** (``n_stars``), so few-star, noisier PSFs appear rarely.
+           Falls back to uniform when no counts are present.
+        2. With probability ``use_unrotated_prob`` (default 0.3) return it
+           as-is.
+        3. Otherwise rotate it by a random integer roll angle in
+           ``[angle_min, angle_max]`` (default 1..359 — 0/360 would be the
+           identity, already covered by step 2).
+
+        No blending and no cropping: each scene gets one real, single-roll
+        kernel — exactly what occurs at one Euclid pointing.
         """
-        if self.n == 1:
-            return self.psfs[0]
-        w = rng.dirichlet([float(alpha)] * self.n)
-        blended = np.zeros(self.shape, dtype=np.float64)
-        for wi, p in zip(w, self.psfs):
-            blended += float(wi) * np.asarray(p.data, dtype=np.float64)
-        return PSF(
-            data=blended.astype(np.float32),
-            pixel_scale=self.pixel_scale,
-            oversampling=self.oversampling,
-        ).with_unit_sum()
+        idx = int(rng.choice(self.n, p=self._pick_weights()))
+        psf = self.psfs[idx]
+        if rng.random() < float(use_unrotated_prob):
+            return psf
+        angle = int(rng.integers(int(angle_min), int(angle_max) + 1))
+        return psf.rotated(float(angle), order=int(rotation_order))
 
     # ------------------------------------------------------------------
     # Grid operations — map over members, return a new PSFSet
@@ -169,6 +196,7 @@ class PSFSet:
             psfs=out,
             pixel_scale=float(target_pixel_scale),
             centroids=self.centroids,
+            n_stars=self.n_stars,
             oversampling=self.oversampling,
         )
 
@@ -179,6 +207,7 @@ class PSFSet:
             psfs=out,
             pixel_scale=self.pixel_scale,
             centroids=self.centroids,
+            n_stars=self.n_stars,
             oversampling=self.oversampling,
         )
 
@@ -188,6 +217,7 @@ class PSFSet:
             psfs=out,
             pixel_scale=self.pixel_scale,
             centroids=self.centroids,
+            n_stars=self.n_stars,
             oversampling=self.oversampling,
         )
 
@@ -237,6 +267,9 @@ class PSFSet:
                 ra, dec = self.centroids[i]
                 hdu.header["RA"] = (float(ra), "Cluster centroid RA (deg)")
                 hdu.header["DEC"] = (float(dec), "Cluster centroid Dec (deg)")
+            if self.n_stars is not None and i < len(self.n_stars):
+                hdu.header["NSTARS"] = (int(self.n_stars[i]),
+                                        "Stars the ePSF was built from")
             hdus.append(hdu)
 
         fits.HDUList(hdus).writeto(fits_path, overwrite=True)
@@ -253,7 +286,9 @@ class PSFSet:
         """
         members: List[PSF] = []
         centroids: List[Tuple[float, float]] = []
+        star_counts: List[int] = []
         have_centroids = False
+        have_counts = False
         with fits.open(fits_path) as hdul:
             image_hdus = [h for h in hdul
                           if getattr(h, "data", None) is not None]
@@ -271,11 +306,17 @@ class PSFSet:
                     have_centroids = True
                 else:
                     centroids.append((float("nan"), float("nan")))
+                if "NSTARS" in h.header:
+                    star_counts.append(int(h.header["NSTARS"]))
+                    have_counts = True
+                else:
+                    star_counts.append(0)
         if normalise:
             members = [p.with_unit_sum() for p in members]
         return cls(
             psfs=members,
             pixel_scale=float(members[0].pixel_scale),
             centroids=centroids if have_centroids else None,
+            n_stars=star_counts if have_counts else None,
             oversampling=members[0].oversampling,
         )
