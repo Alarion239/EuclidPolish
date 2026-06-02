@@ -175,16 +175,12 @@ class Config:
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
-    # Stars are deliberately OVER-REPRESENTED for training (the real Wide-
-    # Survey density is ~1.389/arcmin² = 5×10³/deg²). With 96²-HR random
-    # crops (0.0064 arcmin² each) the real density puts a star in <1% of
-    # crops, and the HST training stream rejects stars entirely — so a
-    # network trained on the mix barely sees stars and handles them poorly
-    # at inference. Bumping to ~30/arcmin² puts a star in a meaningful
-    # fraction of crops (bright stars' wings cover several more). Same
-    # rationale as the ×1600 lens over-representation (LENS_DENSITY_ARCMIN2).
-    # Drop back toward 1.4 for realistic-sky generation.
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 30.0
+    # Stars use the real Wide-Survey areal density (~1.389/arcmin² =
+    # 5×10³/deg²). They were previously over-represented at 30/arcmin² so a
+    # network trained on the synthetic+HST mix saw enough of them, but now
+    # that the star-anchor lane supervises real Euclid stars directly we
+    # match the actual sky for realistic-sky generation.
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389 (5×10³ stars / deg²)
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
@@ -519,12 +515,12 @@ class Config:
     LENS_COSMOLOGY_OMEGA_M  = 0.3
     LENS_COSMOLOGY_OMEGA_L  = 0.7
 
-    # 512² HR field at 0.05"/pix = 0.182 arcmin² → 16.5/arcmin² yields ~3
-    # lenses per field on average. This is well above the Collett 2015
-    # observed-sky density (~1 per 100 arcmin² at Euclid VIS depth) — the
-    # over-representation is deliberate so the network sees enough lensed
-    # examples per epoch. Drop to 1e-2 for realistic-sky generation.
-    LENS_DENSITY_ARCMIN2    = 16.5
+    # 512² HR field at 0.05"/pix = 0.182 arcmin² → 1.65/arcmin² yields ~0.30
+    # lenses per field on average (10× fewer than the previous 16.5). Still
+    # well above the Collett 2015 observed-sky density (~1 per 100 arcmin² at
+    # Euclid VIS depth), so the network still sees lensed examples while the
+    # scenes look far less lens-crowded. Drop to 1e-2 for fully realistic sky.
+    LENS_DENSITY_ARCMIN2    = 1.65
     LENS_Z_LENS_MIN         = 0.20
     LENS_Z_LENS_MAX         = 1.20
     LENS_Z_SOURCE_OFFSET    = 0.30      # minimum z_s - z_l
