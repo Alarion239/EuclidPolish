@@ -67,9 +67,7 @@ import importlib.util as _ilu
 from euclid_polish.web.fasrc_fetcher import (
 is_allowed_remote_path, run_remote_python,
 )
-from euclid_polish.web.fasrc_pipeline import (
-    REGISTRY as STEP_REGISTRY, StepResources, render_sbatch_body,
-)
+from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY, StepResources
 from euclid_polish.web.job_status import JobStatusFetcher
 import io as _io
 from euclid_polish.training.log_plot import plot_training_records
@@ -206,46 +204,6 @@ def _psf_status() -> Dict[str, Any]:
                 item["error"] = str(e)
         bands.append(item)
     return {"bands": bands}
-
-
-def _submit_quick_fasrc_job(
-    ssh, *,
-    argv: List[str],
-    label: str,
-    step_id: str,
-    resources: StepResources,
-    params: Dict[str, Any],
-):
-    """Render + submit a short CPU SLURM job for a quick FASRC task
-    (catalog query / photometry verify) and register it in the JobDB.
-
-    The login-node path (a blocking SSH command inside a daemon thread)
-    cannot be cancelled — there is no stop hook. Routing the same work
-    through SLURM instead means the job lands in the JobDB, shows up in the
-    FASRC job panel, and is cancellable via the standard ``scancel`` button
-    on ``/fasrc``. Returns ``(slurm_id, payload)`` from
-    :func:`fasrc_jobs.submit_sbatch_script` (``slurm_id`` is None on failure,
-    ``payload`` the jsonify-able dict to return either way)."""
-    cfg = fasrc_config.load()
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    job_name = f"euclid-{step_id}-{ts}"
-    built = render_sbatch_body(
-        job_name=job_name,
-        relative_log_dir="logs/euclid_pipeline",
-        resources=resources,
-        cfg=cfg,
-        label=label,
-        cmd_argv=argv,
-        banner_line=f"Web-submitted job: {step_id} - {label}",
-        step_id=step_id,
-    )
-    params_for_db = dict(params)
-    params_for_db.update(resources.to_dict())
-    params_for_db["step_id"] = step_id
-    return fasrc_jobs.submit_sbatch_script(
-        ssh, cfg=cfg, built=built, label=label,
-        params=params_for_db, step_id=step_id,
-    )
 
 
 def _tfrecords_status(records_dir: Optional[str] = None) -> Dict[str, Any]:
@@ -1913,92 +1871,12 @@ def create_app() -> Flask:
             cutout_layout=_cutout_layout_status(),
         )
 
-    @app.route("/catalog/query-brightest", methods=["POST"])
-    def catalog_query_brightest():
-        """Submit the brightest-N archive query as a short SLURM job.
-
-        The catalog must land on the shared netscratch ``$DATA_DIR`` where
-        the cutout-download / PSF jobs read it, and the query hits the ESA
-        TAP service — the ``shared`` partition's compute nodes have outbound
-        internet (the cutout-download job runs there too). Running it through
-        SLURM rather than the login node means the standard Cancel-job button
-        on ``/fasrc`` can stop it (login-node jobs can't be cancelled). The
-        output lands in the sbatch log, tracked by the FASRC job panel."""
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({
-                "ok": False,
-                "error": "Connect to FASRC first (the job lands on "
-                         "netscratch where the download/PSF jobs read it).",
-            }), 400
-        n   = int(request.form.get("num_stars", 200))
-        mag_lim_raw = request.form.get("magnitude_limit", "").strip()
-        mag_min_raw = request.form.get("magnitude_min", "").strip()
-        mag_lim = float(mag_lim_raw) if mag_lim_raw else None
-        mag_min = float(mag_min_raw) if mag_min_raw else None
-        snr_min_raw = request.form.get("snr_min", "").strip()
-        snr_min = float(snr_min_raw) if snr_min_raw else None
-        win = ""
-        if mag_min is not None: win += f" mag>{mag_min}"
-        if mag_lim is not None: win += f" mag<{mag_lim}"
-        if snr_min is not None: win += f" snr≥{snr_min:g}"
-
-        # No --output-dir: the remote script defaults to its own
-        # $DATA_DIR/euclid_stars, which the sbatch template points at
-        # netscratch via EUCLID_POLISH_DATA_DIR.
-        argv = ["scripts/query_brightest_stars.py", "--num-stars", str(n)]
-        if mag_min is not None: argv += ["--magnitude-min", f"{mag_min:g}"]
-        if mag_lim is not None: argv += ["--magnitude-limit", f"{mag_lim:g}"]
-        if snr_min is not None: argv += ["--snr-min", f"{snr_min:g}"]
-
-        slurm_id, payload = _submit_quick_fasrc_job(
-            STATE.ssh,
-            argv=argv,
-            label=f"query {n} brightest stars{win}",
-            step_id="query_brightest_stars",
-            resources=StepResources(partition="shared", n_cpus=1, n_gpus=0,
-                                    memory="4G", time_limit="30:00"),
-            params={"num_stars": n,
-                    "magnitude_min": mag_min_raw, "magnitude_limit": mag_lim_raw,
-                    "snr_min": snr_min_raw},
-        )
-        if slurm_id is None:
-            return jsonify(payload), 500
-        return jsonify(payload)
-
-    @app.route("/cutouts/verify-photometry", methods=["POST"])
-    def cutouts_verify_photometry():
-        """Submit the read-only photometry-scale check as a short SLURM job.
-
-        ``verify_star_photometry.py`` aperture-measures N downloaded VIS
-        cutouts (electrons) and compares to each star's catalog PSF flux —
-        a median ratio ≈ 1 confirms the absolute electron scale the
-        star-anchor delta-targets are built on. It only reads the cutouts on
-        netscratch + prints a report. Routed through SLURM (not the login
-        node) so the standard Cancel-job button on ``/fasrc`` can stop it;
-        the ratio table lands in the sbatch log."""
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({
-                "ok": False,
-                "error": "Connect to FASRC first (the check reads the "
-                         "cutouts on netscratch).",
-            }), 400
-        n    = int(request.form.get("n", 40))
-        size = int(request.form.get("size", 256))
-        argv = ["scripts/verify_star_photometry.py",
-                "--n", str(n), "--size", str(size)]
-
-        slurm_id, payload = _submit_quick_fasrc_job(
-            STATE.ssh,
-            argv=argv,
-            label=f"verify photometry scale (n={n}, size={size}px)",
-            step_id="verify_photometry",
-            resources=StepResources(partition="shared", n_cpus=1, n_gpus=0,
-                                    memory="8G", time_limit="30:00"),
-            params={"n": n, "size": size},
-        )
-        if slurm_id is None:
-            return jsonify(payload), 500
-        return jsonify(payload)
+    # The catalog query + photometry verify are now a single FASRC pipeline
+    # step (``euclid_catalog``) submitted through the standard
+    # ``/api/fasrc/hst/<step_id>/submit`` route — editable resources, run
+    # history and Cancel-job all come for free. The bespoke
+    # ``/catalog/query-brightest`` + ``/cutouts/verify-photometry`` routes
+    # were removed.
 
     # ---------------- Authentication ----------------
     @app.route("/auth/login", methods=["POST"])

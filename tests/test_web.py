@@ -107,97 +107,23 @@ def test_inference_page_renders(client):
 # ---------------------------------------------------------------------------
 
 def test_removed_routes_are_gone(client):
-    """Region-cone, standalone integrity, and the old local download/extract
-    routes were removed — cutout download + PSF extraction are now FASRC
-    pipeline steps, and integrity folds into the brightest-N query."""
+    """Region-cone, standalone integrity, the old local download/extract
+    routes, and the bespoke catalog-query / verify-photometry routes were all
+    removed — cutout download + PSF extraction + the catalog query+verify are
+    now FASRC pipeline steps submitted via /api/fasrc/hst/<step_id>/submit."""
     # 404 = no rule matches; 405 = the URL now only matches a different
     # rule (e.g. POST /cutouts/download hits the GET-only gallery route).
     # Either way the old POST endpoint is gone.
     for path in ("/catalog/query-region", "/catalog/integrity",
-                 "/cutouts/download", "/psfs/extract"):
+                 "/cutouts/download", "/psfs/extract",
+                 "/catalog/query-brightest", "/cutouts/verify-photometry"):
         r = client.post(path, data={})
         assert r.status_code in (404, 405), f"{path} should be removed"
 
 
-def test_query_brightest_requires_fasrc_connection(client, monkeypatch):
-    """The brightest-N query now submits a SLURM job over SSH, so without a
-    connection it must NOT run locally. The global SSH gate (before_request)
-    redirects every non-allowlisted path to the connection-error page when no
-    session is up."""
-    from euclid_polish.web import remote as web_remote
-    monkeypatch.setattr(web_remote.STATE, "ssh", None)
-    r = client.post("/catalog/query-brightest",
-                    data={"num_stars": 10}, follow_redirects=False)
-    # 302 → connection-error (the gate); the request never reaches a local
-    # query path. (If the gate is ever relaxed, the route's own guard
-    # returns 400 with an ok=False JSON instead — both are acceptable.)
-    assert r.status_code in (302, 400)
-    if r.status_code == 302:
-        assert "/connection-error" in r.headers.get("Location", "")
-    else:
-        assert r.get_json().get("ok") is False
-
-
-def _stub_connected_ssh(monkeypatch):
-    from euclid_polish.web import remote as web_remote
-
-    class _SSH:
-        def is_connected(self): return True
-        def run(self, cmd, timeout=None): return (0, "", "")
-
-    monkeypatch.setattr(web_remote.STATE, "ssh", _SSH())
-
-
-def _capture_sbatch_submit(monkeypatch):
-    """Stub ``submit_sbatch_script`` so the route renders a real sbatch body
-    (captured) but no JobDB/sbatch is touched. Returns the capture dict."""
-    from euclid_polish.web import fasrc_jobs
-    captured = {}
-
-    def fake_submit(ssh, *, cfg, built, label, params, step_id):
-        captured.update(built=built, label=label, params=params, step_id=step_id)
-        return "12345", {"ok": True, "jobid": "12345", "label": label}
-
-    monkeypatch.setattr(fasrc_jobs, "submit_sbatch_script", fake_submit)
-    return captured
-
-
-def test_query_brightest_submits_slurm_job(client, monkeypatch):
-    """The brightest-N query is now a cancellable SLURM job: the route
-    renders an sbatch running query_brightest_stars.py with the window +
-    SNR flags and returns the slurm job id."""
-    _stub_connected_ssh(monkeypatch)
-    captured = _capture_sbatch_submit(monkeypatch)
-    r = client.post("/catalog/query-brightest", data={
-        "num_stars": 3000, "magnitude_min": "16",
-        "magnitude_limit": "19", "snr_min": "50"})
-    assert r.status_code == 200
-    d = r.get_json()
-    assert d["ok"] is True and d["jobid"] == "12345"
-    assert captured["step_id"] == "query_brightest_stars"
-    body = captured["built"]["body"]
-    assert "query_brightest_stars.py" in body
-    assert "--num-stars" in body and "3000" in body
-    assert "--magnitude-min" in body and "--magnitude-limit" in body
-    assert "--snr-min" in body
-    # Short CPU allocation on the shared partition (no GPU).
-    assert "--partition=shared" in body
-    assert "--gres=gpu" not in body
-
-
-def test_verify_photometry_submits_slurm_job(client, monkeypatch):
-    """The photometry-scale check is now a cancellable SLURM job."""
-    _stub_connected_ssh(monkeypatch)
-    captured = _capture_sbatch_submit(monkeypatch)
-    r = client.post("/cutouts/verify-photometry", data={"n": 40, "size": 256})
-    assert r.status_code == 200
-    d = r.get_json()
-    assert d["ok"] is True and d["jobid"] == "12345"
-    assert captured["step_id"] == "verify_photometry"
-    body = captured["built"]["body"]
-    assert "verify_star_photometry.py" in body
-    assert "--n" in body and "40" in body
-    assert "--size" in body and "256" in body
+# The catalog query + photometry verify are now the ``euclid_catalog`` pipeline
+# step; its argv construction is tested in test_fasrc_pipeline.py and the submit
+# route's connection/confirm guards in test_step_history.py.
 
 
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):

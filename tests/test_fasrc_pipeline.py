@@ -68,6 +68,7 @@ class TestRegistry:
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords", "train",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
+            "euclid_catalog",
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
             "synthetic_generate",
@@ -105,6 +106,38 @@ class TestRegistry:
         for flag in ("--transition-model", "--frozen-denoiser",
                      "--frozen-denoiser-summary"):
             assert flag not in argv
+
+    def test_catalog_step_default_mode_is_both(self):
+        """The unified catalog step defaults to query+verify and forwards the
+        verify knobs so a fresh run also sanity-checks the scale."""
+        step = REGISTRY.get("euclid_catalog")
+        argv = step.build_command({"num_stars": 3000})
+        assert argv[0] == "scripts/euclid_catalog_step.py"
+        assert argv[argv.index("--mode") + 1] == "both"
+        assert argv[argv.index("--num-stars") + 1] == "3000"
+        assert "--verify-n" in argv and "--verify-size" in argv
+        # No window/SNR flags unless the form supplies them.
+        assert "--magnitude-min" not in argv
+        assert "--snr-min" not in argv
+
+    def test_catalog_step_full_window_and_verify(self):
+        step = REGISTRY.get("euclid_catalog")
+        argv = step.build_command({
+            "mode": "query", "num_stars": 3000,
+            "magnitude_min": "16", "magnitude_limit": "19", "snr_min": "50",
+            "verify_n": 60, "verify_size": 512,
+        })
+        assert argv[argv.index("--mode") + 1] == "query"
+        assert argv[argv.index("--magnitude-min") + 1] == "16"
+        assert argv[argv.index("--magnitude-limit") + 1] == "19"
+        assert argv[argv.index("--snr-min") + 1] == "50"
+        assert argv[argv.index("--verify-n") + 1] == "60"
+        assert argv[argv.index("--verify-size") + 1] == "512"
+
+    def test_catalog_step_is_cpu_only(self):
+        step = REGISTRY.get("euclid_catalog")
+        assert step.needs_gpu is False
+        assert step.defaults.n_gpus == 0
 
     def test_star_anchor_step_default_command(self):
         """Defaults reach the generator: 256-px cutouts, 128-px stamp,
