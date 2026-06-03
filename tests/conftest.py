@@ -102,6 +102,26 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         Config, "VIS_STAR_POSITIONS",
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
+
+    # Isolate the FASRC job stores (sqlite DB + CSV job log) so NO test ever
+    # writes into the real ``~/.euclid_polish/{fasrc_jobs.db,
+    # fasrc_job_log.csv}``. The integration fixtures only patched ``DB``, so
+    # every submit test was appending the fake-sbatch sentinel jobid 99999
+    # into the user's real job log — and since ``/api/fasrc/submit`` defaults
+    # the step to ``synthetic_generate``, those phantom rows flooded that
+    # card's "previous runs" panel with never-finalising "pending" entries.
+    # A fresh per-test store also means no run history leaks between tests.
+    from euclid_polish.web import fasrc_jobs as _fasrc_jobs
+    monkeypatch.setattr(
+        _fasrc_jobs, "JOBLOG",
+        _fasrc_jobs.JobLog(str(pkg_tmp / "fasrc_job_log.csv")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _fasrc_jobs, "DB",
+        _fasrc_jobs.JobDB(path=str(pkg_tmp / "fasrc_jobs.db")),
+        raising=False,
+    )
     yield
     # Drain background REGISTRY jobs a route spawned during the test (e.g.
     # /psfs/visualize writes psf_<band>.png to Config.VIS_PSF_DIR in a
