@@ -183,6 +183,30 @@ def _valid_4band_stars(force: bool = False):
     return best, sorted(by_size[best])
 
 
+def _ensure_local_star_cutout(band: str, sid: int, size: int) -> Optional[str]:
+    """Local canonical path of star ``sid``'s ``band`` cutout, PERSISTENTLY
+    saved under ``data/euclid_stars/cutouts/<band>/`` (the same layout the
+    gallery + /inspect read). Pulled from FASRC once on first request;
+    later views read the saved copy — no re-pull, no LRU eviction. Returns
+    None when not cached and FASRC isn't reachable."""
+    local_dir = Config.cutout_dir_for_band(
+        band, root=os.path.join(Config.DEFAULT_OUTPUT_DIR, Config.CUTOUTS_SUBDIR))
+    fname = f"star_{int(sid):04d}_{int(size)}.fits"
+    local_path = os.path.join(local_dir, fname)
+    if os.path.isfile(local_path):
+        return local_path                       # already saved — no pull
+    if not STATE.ssh or not STATE.ssh.is_connected():
+        return None
+    cfg = fasrc_config.load()
+    remote = f"{cfg.data_dir}/euclid_stars/cutouts/{band}/{fname}"
+    os.makedirs(local_dir, exist_ok=True)
+    try:
+        STATE.ssh.rsync_pull(remote, local_dir, timeout=120)
+    except Exception:
+        return None
+    return local_path if os.path.isfile(local_path) else None
+
+
 def _catalog_status() -> Dict[str, Any]:
     cat_dir = _fasrc_catalog_dir()
     if cat_dir is None:
@@ -2033,12 +2057,15 @@ def create_app() -> Flask:
     # ---------------- Cutouts page ----------------
     @app.route("/cutouts")
     def cutouts_page():
+        size, ids = _valid_4band_stars(force=True)
         return render_template(
             "cutouts.html",
             catalog=_catalog_status(),
             bands=Config.BANDS,
             cutout_layout=_cutout_layout_status(),
             default_vis_pixels=Config.DEFAULT_CUTOUT_SIZE,
+            n_valid=len(ids),
+            cutout_size=size,
         )
 
     # ---------------- Cutout gallery + live FITS→PNG ----------------
@@ -2086,51 +2113,55 @@ def create_app() -> Flask:
         return send_file(io.BytesIO(png), mimetype="image/png",
                          max_age=3600)
 
-    # ---------------- Star cutouts gallery (lazy-pulled from FASRC) -------
+    # ---------------- Star cutouts navigator (merged into /cutouts) ------
     #
     # Same navigator as /sky, but one real-Euclid star per index: only stars
-    # valid in ALL 4 bands, each band's cutout pulled from FASRC + cached on
-    # first view (no bulk download). Index → the i-th valid star.
-    @app.route("/star-cutouts")
-    def star_cutouts_page():
-        size, ids = _valid_4band_stars(force=True)
-        return render_template(
-            "star_cutouts.html",
-            n_valid=len(ids),
-            cutout_size=size,
-        )
-
+    # valid in ALL 4 bands. Each band's cutout is pulled from FASRC ONCE to
+    # the canonical local dir (data/euclid_stars/cutouts/<band>/) and SAVED
+    # there persistently, so revisiting never re-pulls it. The UI lives at
+    # the top of the /cutouts page; these endpoints back it.
     @app.route("/api/star-cutouts/totals")
     def api_star_cutouts_totals():
         size, ids = _valid_4band_stars(force=True)
         return jsonify({"count": len(ids), "size": size})
 
-    @app.route("/view/star-cutout")
-    def view_star_cutout():
-        band = request.args.get("band", "VIS")
-        try:
-            idx = int(request.args.get("i", 0))
-        except ValueError:
-            idx = 0
+    def _resolve_star_cutout(band: str, i_arg: str):
+        """``(BandConfig, local_path)`` for the i-th valid-in-all-4 star's
+        ``band`` cutout, pulling+saving it locally on first request; abort
+        otherwise. Shared by the image + inspect routes."""
         try:
             band_cfg = Config.get_band(band)
         except Exception:
             abort(404)
-        # Read the cached catalog (force=False) — the page load already
-        # pulled it; don't rsync stars.csv on every image step.
+        try:
+            idx = int(i_arg)
+        except (TypeError, ValueError):
+            idx = 0
+        # Cached catalog (force=False) — the page load already pulled it.
         size, ids = _valid_4band_stars(force=False)
         if not ids or size is None:
             abort(404)
         idx = max(0, min(idx, len(ids) - 1))
-        sid = ids[idx]
-        cfg = fasrc_config.load()
-        remote = (f"{cfg.data_dir}/euclid_stars/cutouts/{band}/"
-                  f"star_{sid:04d}_{int(size)}.fits")
-        res = _fasrc_fetcher.fetch_one_file(remote)   # lazy pull + cache
-        if not res.ok or not res.local_path or not os.path.isfile(res.local_path):
+        local_path = _ensure_local_star_cutout(band, ids[idx], size)
+        if not local_path:
             abort(404)
-        png = _render_fits_to_png(res.local_path, band_cfg)
+        return band_cfg, local_path
+
+    @app.route("/view/star-cutout")
+    def view_star_cutout():
+        band_cfg, local_path = _resolve_star_cutout(
+            request.args.get("band", "VIS"), request.args.get("i", "0"))
+        png = _render_fits_to_png(local_path, band_cfg)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    @app.route("/star-cutout/inspect")
+    def star_cutout_inspect():
+        """Save the cutout locally (once) then jump into the universal FITS
+        inspector — header + download — for the navigator's current star."""
+        _band_cfg, local_path = _resolve_star_cutout(
+            request.args.get("band", "VIS"), request.args.get("i", "0"))
+        return redirect(url_for("inspect_fits_page",
+                                fits=_safe_relpath(local_path)))
 
     # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
     @app.route("/hst-psf")

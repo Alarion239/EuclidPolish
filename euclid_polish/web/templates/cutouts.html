@@ -1,23 +1,36 @@
 {% extends "base_split.html" %}
 {% block title %}Cutouts · EuclidPolish{% endblock %}
-{% block heading %}Cutouts{% endblock %}
+{% block heading %}Euclid cutouts{% endblock %}
 
 {% block toolbar %}
 <div class="toolbar">
   <span class="toolbar-label">Band</span>
-  <a class="chip active" id="band-all" data-group="band" data-value="all">all</a>
-  {% for b in bands %}
-    <a class="chip" data-group="band" data-value="{{ b.name }}">{{ b.name }}</a>
+  {% for n in ('VIS', 'Y_E', 'J_E', 'H_E') %}
+    <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
   {% endfor %}
+  <span class="toolbar-label">Star</span>
+  <button class="chip" id="idx-prev">‹</button>
+  <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
+  <button class="chip" id="idx-next">›</button>
 </div>
 {% endblock %}
 
 {% block viz %}
-{% if not catalog.present %}
-<section class="card">
-</section>
-{% else %}
+{# ── Star navigator (valid in all 4 bands) — saved locally on first view ── #}
+<div class="viz-area">
+  <img id="viz-img" alt="star cutout">
+  <div class="placeholder">No stars valid in all 4 bands yet — download
+    cutouts below, then the integrity pass marks the valid ones.</div>
+</div>
+<p class="hint" style="margin-top: 8px;">
+  <a id="inspect-link" href="#" target="_blank">
+    🔬 Inspect this cutout as FITS (header + download)
+  </a>
+  <span class="muted">— {{ n_valid }} star(s) valid in all 4 bands{% if cutout_size %}
+    (size {{ cutout_size }} px){% endif %}; pulled from FASRC + saved locally.</span>
+</p>
 
+{% if catalog.present %}
 <section class="card">
   <h3>Current state</h3>
   <table>
@@ -42,36 +55,6 @@
     {% endfor %}
   </table>
 </section>
-
-{% set has_any = (cutout_layout.bands | selectattr('count', 'gt', 0) | list) %}
-{% if has_any %}
-<section class="card">
-  <h3>Preview</h3>
-  {% for entry in cutout_layout.bands %}
-    {% if entry.count > 0 %}
-      <div class="band-preview" data-band="{{ entry.name }}">
-        <h4 style="margin: 14px 0 6px;">
-          <a href="{{ url_for('cutouts_gallery', band_name=entry.name) }}">{{ entry.name }}</a>
-          <span class="muted">({{ entry.count }} files)</span>
-        </h4>
-        <div class="gallery" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
-          {% for fname in entry.preview %}
-            <a class="thumb"
-               href="{{ url_for('inspect_fits_page', fits='data/euclid_stars/cutouts/' ~ entry.name ~ '/' ~ fname) }}"
-               target="_blank"
-               title="Inspect FITS header + download">
-              <img loading="lazy"
-                   src="{{ url_for('cutout_image', band_name=entry.name, filename=fname, size=140) }}"
-                   alt="{{ fname }}">
-              <span class="thumb-label">{{ fname }}</span>
-            </a>
-          {% endfor %}
-        </div>
-      </div>
-    {% endif %}
-  {% endfor %}
-</section>
-{% endif %}
 {% endif %}
 {% endblock %}
 
@@ -112,18 +95,51 @@
 
 {% block scripts %}
 <script>
-// Band-filter toolbar: shows / hides per-band preview groups in the centre pane.
+// ── Star navigator (valid in all 4 bands) ───────────────────────────
+let totals = { count: {{ n_valid }} };
+let curIdx = 0;
+
+function maxIdx() { return Math.max(0, (totals.count || 0) - 1); }
+function setIdx(i) {
+  curIdx = Math.max(0, Math.min(i, maxIdx()));
+  document.getElementById("idx-display").textContent = `${curIdx} / ${maxIdx()}`;
+  polishUI.viz.set("i", curIdx);
+}
+function updateInspectLink() {
+  const link = document.getElementById("inspect-link");
+  if (!link) return;
+  link.href = `/star-cutout/inspect?band=${polishUI.viz.get("band")}&i=${polishUI.viz.get("i")}`;
+}
+async function refreshTotals() {
+  try {
+    const r = await fetch("/api/star-cutouts/totals");
+    totals = await r.json();
+    setIdx(curIdx);
+  } catch (e) {}
+}
+
+polishUI.viz.bind({
+  imgId:     "viz-img",
+  toolbarId: null,
+  buildUrl:  (sel) => {
+    setTimeout(updateInspectLink, 0);   // keep the inspect link in sync
+    return `/view/star-cutout?band=${sel.band}&i=${sel.i}`;
+  },
+  initial:   { band: "VIS", i: 0 },
+});
+updateInspectLink();
+
 document.querySelector(".toolbar").addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip[data-group='band']");
+  const chip = e.target.closest(".chip[data-group]");
   if (!chip) return;
   e.preventDefault();
-  document.querySelectorAll(".chip[data-group='band']").forEach(c =>
-    c.classList.toggle("active", c === chip));
-  const want = chip.dataset.value;
-  document.querySelectorAll(".band-preview").forEach(el => {
-    el.style.display = (want === "all" || el.dataset.band === want) ? "" : "none";
-  });
+  if (chip.dataset.group === "i") return;   // index display; not a switcher
+  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
+  setIdx(curIdx);
 });
+document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
+document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
+refreshTotals();
 
 // ── Euclid archive credentials ──────────────────────────────────────
 async function refreshEuclidCredsStatus() {
