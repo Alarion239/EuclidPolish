@@ -917,7 +917,7 @@ function fmtDate(epoch) {
 
 async function refreshLogs() {
   const { ok, data } = await api('/api/fasrc/runs');
-  if (data && data.log_dir) $('logs-dir').textContent = data.log_dir;
+  if (data && data.log_dir && $('logs-dir')) $('logs-dir').textContent = data.log_dir;
   if (!ok) {
     const err = (data && data.error) ? data.error : 'request failed';
     $('logs-list').innerHTML = `<p class="muted">${escapeHtml(err)}</p>`;
@@ -993,7 +993,7 @@ async function openLogViewer() {
   $('logs-viewer-name').innerHTML = `<code>${escapeHtml(sel.name)}</code>`;
   $('logs-viewer-jobid').textContent = sel.jobid ? `(job ${sel.jobid})` : '';
   const path = LOGS_STATE.which === 'err' ? sel.err : sel.out;
-  $('logs-viewer-path').textContent = path || '(no file)';
+  if ($('logs-viewer-path')) $('logs-viewer-path').textContent = path || '(no file)';
   // Visual toggle on the .out / .err buttons.
   $('btn-show-out').classList.toggle('active', LOGS_STATE.which === 'out');
   $('btn-show-err').classList.toggle('active', LOGS_STATE.which === 'err');
@@ -1003,7 +1003,7 @@ async function openLogViewer() {
     $('logs-viewer-content').textContent = '(no ' + LOGS_STATE.which + ' file)';
     return;
   }
-  const lines = parseInt($('logs-lines').value, 10) || 1000;
+  const lines = parseInt($('logs-lines')?.value, 10) || 1000;
   $('logs-viewer-content').textContent = 'loading…';
   const url = '/api/fasrc/runs/log?path=' + encodeURIComponent(path)
             + '&lines=' + lines;
@@ -1020,7 +1020,8 @@ $('btn-logs-refresh').onclick = refreshLogs;
 $('btn-show-out').onclick   = () => { LOGS_STATE.which = 'out'; openLogViewer(); };
 $('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer(); };
 $('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
-$('logs-lines').onchange    = () => { if (LOGS_STATE.selected) openLogViewer(); };
+const _logsLinesEl = $('logs-lines');
+if (_logsLinesEl) _logsLinesEl.onchange = () => { if (LOGS_STATE.selected) openLogViewer(); };
 
 // Rsync pull from the remote ckpt dir to the configured local mirror.
 // Uses the auto-mirror's "trigger" endpoint, so the same rsync flags
