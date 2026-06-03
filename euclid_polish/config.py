@@ -175,12 +175,16 @@ class Config:
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
-    # Stars use the real Wide-Survey areal density (~1.389/arcmin² =
-    # 5×10³/deg²). They were previously over-represented at 30/arcmin² so a
-    # network trained on the synthetic+HST mix saw enough of them, but now
-    # that the star-anchor lane supervises real Euclid stars directly we
-    # match the actual sky for realistic-sky generation.
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389 (5×10³ stars / deg²)
+    # Stars are deliberately OVER-represented vs the real Wide-Survey sky
+    # (~1.389/arcmin²): point sources are the only thing that teaches the
+    # network to invert the PSF, and at the real density a 192px HR train
+    # crop (0.0256 arcmin²) lands a star only ~3.5% of the time — the net
+    # never sees one and learns to blur, not deconvolve. At 100/arcmin² a
+    # crop averages ~2.6 stars (~92% contain ≥1), so deconvolution gets a
+    # constant gradient. This is a TRAINING-SIGNAL knob, not sky realism;
+    # the magnitudes stay physical (real 13–25 VIS range, per-band colours,
+    # flux via each band's sim_zeropoint_e), only the COUNT is inflated.
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 3.6e5 / 3600.0   # = 100 stars / arcmin²
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
