@@ -23,12 +23,10 @@
 {% block viz %}
 {% if not list_ok %}
 <section class="card">
-  <p class="hint">Could not list <code>{{ remote_dir }}</code> on FASRC:</p>
   <pre class="job-error">{{ list_err or 'unknown error' }}</pre>
 </section>
 {% elif total == 0 %}
 <section class="card">
-  <p class="hint">No HST star cutouts on FASRC yet.</p>
   <p>The HST PSF-extraction pipeline (FASRC tab → HST pipeline → step 2)
      saves each used star as a small FITS in <code>{{ remote_dir }}</code>.
      Run it once to populate this gallery.</p>
@@ -36,13 +34,6 @@
 {% else %}
 <section class="card">
   <h3>{{ total }} star cutouts</h3>
-  <p class="hint">
-    Each thumbnail is rsync'd from FASRC on demand (~260 KB per file).
-    Clicking a thumbnail pulls the FITS into <code>data/_fasrc_cache/</code>
-    and opens the inspector (header + download). Re-clicks within 5 min serve
-    from cache. HLSP mosaic tiles (~1.9 GB each) are intentionally excluded
-    — the size cap is 50 MB per pull. Browse those via the FASRC tab.
-  </p>
   <div class="gallery">
     {% for f in files %}
       <a class="thumb"
@@ -64,18 +55,10 @@
 {% block actions %}
 <section class="card">
   <h3>Re-extract</h3>
-  <p class="hint">The HST PSF extraction sbatch step (in the FASRC tab)
-     repopulates this gallery as a side effect: each star it uses for
-     <code>EPSFBuilder</code> is saved as a FITS in this directory.</p>
   <p><a class="chip" href="{{ url_for('fasrc_page') }}">→ FASRC pipeline tab</a></p>
 </section>
 
 <section class="card">
   <h3>HLSP tiles</h3>
-  <p class="hint">The 1.9 GB COSMOS HLSP tiles live under
-     <code>{{ remote_dir.rstrip('/').rsplit('/', 1)[0] }}/hst_hlsp/</code>
-     on FASRC. They're too big to preview through this tab (the 50 MB cap
-     refuses them — see the linked FASRC transfer guidelines on the HST PSF page).
-     Inspect them from a FASRC compute node or via Globus instead.</p>
 </section>
 {% endblock %}

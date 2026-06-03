@@ -145,13 +145,6 @@ class JobDB:
                       "progress_total = ?, last_seen = ? WHERE jobid = ?",
                       (int(step), int(total), time.time(), jobid))
 
-    def update_runtime(self, jobid: str, runtime_seconds: float) -> None:
-        """Record the script-reported wall time from a ``RUNTIME_SECONDS=...`` line."""
-        with self._conn() as c:
-            c.execute("UPDATE fasrc_jobs SET runtime_seconds = ?, "
-                      "last_seen = ? WHERE jobid = ?",
-                      (float(runtime_seconds), time.time(), jobid))
-
     def set_step_id(self, jobid: str, step_id: str) -> None:
         """Tag a job with its HST-pipeline step id (for per-step history)."""
         with self._conn() as c:
@@ -266,10 +259,6 @@ def eta_for_running(row: Dict[str, Any]) -> Optional[float]:
 #  ``step/total`` pair and ignore the rest. Falls through if absent.
 _TQDM_PROGRESS_RE = re.compile(r"(\d{1,8})\s*/\s*(\d{1,8})")
 
-#  HST pipeline scripts emit a final ``RUNTIME_SECONDS=12345.6`` line — this
-#  lets the UI store actual wall time without having to compute from
-#  started_at/ended_at (which can be wrong if SLURM was queued).
-_RUNTIME_RE = re.compile(r"RUNTIME_SECONDS=([\d.]+)")
 _STEP_ID_RE = re.compile(r"STEP_ID=([A-Za-z0-9_\-]+)")
 
 
@@ -285,17 +274,6 @@ def parse_progress(line: str) -> Optional[tuple[int, int]]:
     return step, total
 
 
-def parse_runtime_seconds(text: str) -> Optional[float]:
-    """Extract the last ``RUNTIME_SECONDS=...`` line from ``text`` (None if absent)."""
-    last: Optional[float] = None
-    for m in _RUNTIME_RE.finditer(text or ""):
-        try:
-            last = float(m.group(1))
-        except ValueError:
-            continue
-    return last
-
-
 def parse_step_id(text: str) -> Optional[str]:
     """Extract the last ``STEP_ID=...`` line — set by HST-pipeline sbatch banners."""
     last: Optional[str] = None
@@ -304,30 +282,6 @@ def parse_step_id(text: str) -> Optional[str]:
     return last
 
 
-def runtime_history_for_step(step_id: str, *, limit: int = 5) -> List[float]:
-    """Return the last ``limit`` completed runtimes for a given HST step.
-
-    Used by the UI to render "last runtime: ~3 min" hints next to each
-    pipeline step's submit button. Returns newest-first; empty if no
-    history yet.
-    """
-    with DB._conn() as c:
-        rows = c.execute(
-            "SELECT runtime_seconds FROM fasrc_jobs "
-            "WHERE step_id = ? AND runtime_seconds IS NOT NULL "
-            "  AND runtime_seconds > 0 "
-            "ORDER BY submitted_at DESC LIMIT ?",
-            (str(step_id), int(limit)),
-        ).fetchall()
-    return [float(r["runtime_seconds"]) for r in rows]
-
-
-def median_runtime_for_step(step_id: str) -> Optional[float]:
-    """Median of the last few runtimes for ``step_id``; None if no data."""
-    hist = runtime_history_for_step(step_id, limit=5)
-    if not hist:
-        return None
-    return statistics.median(hist)
 
 
 # ---------------------------------------------------------------------------

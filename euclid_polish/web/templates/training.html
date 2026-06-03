@@ -17,7 +17,6 @@
 
 <section class="card">
   <h3>Checkpoints on disk</h3>
-  <p class="hint"><code>{{ checkpoints.dir }}</code></p>
   {% if checkpoints.files %}
     <table>
       <tr><th>File</th><th>Size</th></tr>
@@ -50,8 +49,6 @@
 
 <section class="card">
   <h3>WDSR end-to-end ({{ '`train`' | safe }})</h3>
-  <p class="hint">Full pipeline: load HST + (optional) round-trip TFRecords,
-     train the WDSR super-resolver. Output: <code>$CKPT_DIR/wdsr/</code>.</p>
   {% with step_id="train" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 {% endblock %}

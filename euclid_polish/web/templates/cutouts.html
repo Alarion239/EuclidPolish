@@ -15,15 +15,11 @@
 {% block viz %}
 {% if not catalog.present %}
 <section class="card">
-  <p class="hint">No star catalog yet — visit
-    <a href="{{ url_for('catalog_page') }}">Catalog</a> and run a query first.</p>
 </section>
 {% else %}
 
 <section class="card">
   <h3>Current state</h3>
-  <p class="hint">Each band's cutouts live under
-     <code>{{ cutout_layout.root }}/&lt;band&gt;/</code>.</p>
   <table>
     <tr><th>Band</th><th>Native scale</th><th>Valid (catalog)</th>
         <th>Files on disk</th><th>Browse</th></tr>
@@ -51,9 +47,6 @@
 {% if has_any %}
 <section class="card">
   <h3>Preview</h3>
-  <p class="hint">Live-rendered thumbnails from each band's <code>cutouts/</code>
-     directory with the per-band asinh stretch. Click for full-resolution PNG;
-     "gallery →" opens the paginated view.</p>
   {% for entry in cutout_layout.bands %}
     {% if entry.count > 0 %}
       <div class="band-preview" data-band="{{ entry.name }}">
@@ -85,10 +78,6 @@
 {% block actions %}
 <section class="card">
   <h3>Euclid archive login <span id="euclid-creds-badge"></span></h3>
-  <p class="hint">Needed to download proprietary cutouts. Stored on FASRC
-     at <code>~/.euclid_credentials</code> (mode 600) — the download job
-     logs in there. The password is sent over the SSH channel and is never
-     saved on this laptop or in the job database.</p>
   <form id="euclid-creds-form" action="/euclid-auth/save">
     <label>Euclid username
       <input type="text" name="euclid_user" autocomplete="username"></label>
@@ -102,35 +91,20 @@
 {% if catalog.present %}
 <section class="card">
   <h3>Download cutouts (FASRC)</h3>
-  <p class="hint">Submits a SLURM job that pulls all four bands (VIS +
-     NISP Y/J/H) for every catalog star from the Euclid archive. One
-     shared angular field is sized from the VIS pixel count; each band
-     fetches its own native pixel count.</p>
 </section>
 {% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
 
 <section class="card">
   <h3>Verify photometry scale (read-only)</h3>
-  <p class="hint">Run this <strong>after</strong> the download: aperture-measures
-     N VIS cutouts (electrons) vs each star's catalog PSF flux. A median ratio
-     ≈ 1 confirms the absolute electron scale the star-anchor delta-targets use;
-     a constant offset at all radii flags a zeropoint/units bug. Set the size to
-     match the download. Writes nothing — the ratio table lands in the job log.</p>
 </section>
 {% with step_id="euclid_verify_photometry" %}{% include "_step_card_mount.html" %}{% endwith %}
 
 <section class="card">
   <h3>Build star-anchor TFRecords</h3>
-  <p class="hint">Turns the downloaded cutouts + catalog PSF flux into the
-     real-Euclid star-anchor training records
-     (<code>records_v2_star_anchor</code>) the training lane consumes. Each
-     usable star → a single-pixel HR delta of its catalog VIS flux at the
-     WCS-exact pixel. <code>--size</code> must match the cutout download.</p>
 </section>
 {% with step_id="euclid_star_anchor_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% else %}
 <section class="card">
-  <p class="hint">Run a catalog query first.</p>
   <a class="chip" href="{{ url_for('catalog_page') }}">⭐ Open catalog</a>
 </section>
 {% endif %}

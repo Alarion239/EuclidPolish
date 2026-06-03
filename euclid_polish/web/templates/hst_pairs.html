@@ -45,7 +45,6 @@
 
 <section class="card">
   <h3>Cached records on disk</h3>
-  <p class="hint"><code>{{ local_dir }}</code></p>
   <p class="hint" style="margin-top:0;">
     Mirrored from FASRC: <code>{{ remote_dir }}</code>
   </p>
@@ -65,23 +64,11 @@
 {% block actions %}
 <section class="card">
   <h3>Generate HST TFRecords (FASRC)</h3>
-  <p class="hint">Analytic-A only forward model. For every catalog
-     stamp the script convolves the HST cube with the precomputed
-     differential kernel <code>A</code> and rejects any stamp whose
-     brightest pixel would produce <code>A(ε)</code> ringing larger than
-     <code>max_relative_noise × σ_LR</code> (so bright stars don't leak
-     into the training set). Writes
-     <code>clean_train/validate.tfrecord</code> +
-     <code>dirty_train/validate.tfrecord</code> +
-     <code>hr_train/validate.tfrecord</code> to FASRC.</p>
   {% with step_id="tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 
 <section class="card">
   <h3>Sync from FASRC</h3>
-  <p class="hint">Pull the TFRecords down once the job above finishes.
-     Validate split is small (~240 MB across 3 files); train split is
-     multi-GB (skip unless you really want to scrub all 6400 pairs locally).</p>
   <form id="sync-form">
     <label style="display:flex; align-items:center; gap:6px; margin: 6px 0 10px;">
       <input type="checkbox" id="sync-include-train" name="include_train"
@@ -99,7 +86,6 @@
 
 <section class="card">
   <h3>Record counts</h3>
-  <p class="hint">Live from the local cache; refreshes after each sync.</p>
   <table id="totals-table">
     <tr><th>File</th><th style="text-align:right;">N pairs</th></tr>
     <tr><td><code>clean_validate</code></td><td id="t-clean_validate" style="text-align:right;">—</td></tr>
@@ -113,12 +99,6 @@
 
 <section class="card">
   <h3>How this differs from <code>/sky</code></h3>
-  <p class="hint">Same MultiBandSkyImage schema, same renderer — the
-     records here come from cutouts of real HST F814W tiles convolved
-     with the differential kernel <code>A</code> to forward-model into
-     Euclid LR. <code>/sky</code> shows the synthetic Sérsic+lens
-     generator's output; this page shows what the network sees when
-     trained on real morphology.</p>
 </section>
 {% endblock %}
 

@@ -40,7 +40,6 @@
 
 <section class="card">
   <h3>Records on FASRC</h3>
-  <p class="hint"><code>{{ records_dir }}</code></p>
   {% if tfrecords %}
     <table>
       <tr><th>File</th><th>Size</th></tr>
@@ -51,9 +50,6 @@
   {% else %}
     <p class="muted">empty — run the generator on the right.</p>
   {% endif %}
-  <p class="hint">The preview above renders the <strong>FASRC</strong>
-     records — sync them down first (validate shards are small; train is
-     multi-GB).</p>
   <form id="sky-sync-form">
     <label style="display:inline-flex; align-items:center; gap:6px;">
       <input type="checkbox" name="include_train"> also pull train shards
@@ -67,12 +63,6 @@
 {% block actions %}
 <section class="card">
   <h3>Synthetic training pairs (FASRC)</h3>
-  <p class="hint">Submits a SLURM job that renders synthetic clean HR
-     scenes (COSMOS2025 galaxies + stars + strong lenses) and
-     forward-models them to dirty Euclid LR with the empirical band PSFs,
-     writing clean + HR + dirty TFRecords to <code>records_v2/</code> on
-     netscratch. The round-trip cards live on the
-     <a href="/roundtrip">Round-trip</a> page.</p>
 </section>
 {% with step_id="synthetic_generate" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}

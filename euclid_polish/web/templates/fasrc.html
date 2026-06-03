@@ -222,9 +222,6 @@
       <h3>Conda environment
         <span id="env-update-tag" class="muted" style="float:right; font-weight:normal; font-size:12px;"></span>
       </h3>
-      <p class="hint">Updates automatically when <code>environment.yml</code>
-        moves on git pull. The button below re-runs the update on demand
-        (<code>module load python &amp;&amp; yes | mamba env update</code>).</p>
       <p><code>{{ cfg.conda_env_path }}</code></p>
       <button id="btn-env-update" type="button">Update environment now</button>
       <button id="btn-env-stop"   type="button" class="secondary">Stop tail</button>
@@ -242,7 +239,6 @@
         <button id="btn-data-refresh" type="button" class="secondary"
                 style="float:right;">↻ Refresh</button>
       </h3>
-      <p class="hint"><code>{{ cfg.data_dir }}</code></p>
       <div id="data-listing"><span class="muted">loading…</span></div>
       <div style="border-top:1px solid #e2e5ea; margin-top:12px; padding-top:10px;">
         <button id="btn-bootstrap" type="button">Sync from holylabs</button>
@@ -260,7 +256,6 @@
         <button id="btn-ckpt-refresh" type="button" class="secondary"
                 style="float:right;">↻ Refresh</button>
       </h3>
-      <p class="hint"><code>{{ cfg.ckpt_dir }}</code></p>
       <div id="ckpt-listing"><span class="muted">loading…</span></div>
     </section>
   </section>
@@ -274,9 +269,6 @@
         <button id="btn-logs-refresh" type="button" class="secondary"
                 style="float:right;">↻ Refresh</button>
       </h3>
-      <p class="hint">Every job that has left a <code>.out</code> /
-        <code>.err</code> under <code id="logs-dir">…</code>.
-        Newest first. Click a row to view its logs.</p>
       <div id="logs-list"><span class="muted">loading…</span></div>
     </section>
 
@@ -293,16 +285,6 @@
                   style="padding:2px 10px; margin-left:6px;">close</button>
         </span>
       </h3>
-      <p class="hint">
-        Tail of last <select id="logs-lines" style="margin:0 4px;">
-          <option value="500">500</option>
-          <option value="1000" selected>1000</option>
-          <option value="2000">2000</option>
-          <option value="5000">5000</option>
-        </select> lines.
-        <span id="logs-viewer-path" class="muted"
-              style="margin-left:6px; word-break:break-all;"></span>
-      </p>
       <pre id="logs-viewer-content" class="job-log"
            style="max-height:540px;">(loading…)</pre>
 

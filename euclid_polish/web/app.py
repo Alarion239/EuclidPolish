@@ -3879,19 +3879,12 @@ def create_app() -> Flask:
 
         steps_payload = []
         for step in STEP_REGISTRY.all():
-            median = fasrc_jobs.median_runtime_for_step(step.step_id)
-            history = fasrc_jobs.runtime_history_for_step(
-                step.step_id, limit=5,
-            )
             steps_payload.append({
                 "step_id":     step.step_id,
                 "label":       step.label,
-                "description": step.description,
                 "needs_gpu":   step.needs_gpu,
                 "fixed_cpus":  step.fixed_cpus,
                 "defaults":    step.defaults.to_dict(),
-                "median_runtime_s":   median,
-                "runtime_history_s":  history,
             })
 
         # Cheap probes for "does this artifact exist on FASRC?" — single
@@ -4043,14 +4036,6 @@ def create_app() -> Flask:
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         return jsonify(fasrc_jobs.refresh_all_post_mortems(STATE.ssh))
-
-    @app.route("/api/fasrc/hst/runtime-history/<step_id>")
-    def api_fasrc_hst_runtime_history(step_id: str):
-        return jsonify({
-            "step_id":  step_id,
-            "history":  fasrc_jobs.runtime_history_for_step(step_id, limit=10),
-            "median":   fasrc_jobs.median_runtime_for_step(step_id),
-        })
 
     @app.route("/api/fasrc/hst/<step_id>/history", methods=["GET", "POST"])
     def api_fasrc_hst_step_history(step_id: str):

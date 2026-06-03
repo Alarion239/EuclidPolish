@@ -2,16 +2,6 @@
 {% block title %}HST tiles · EuclidPolish{% endblock %}
 {% block content %}
 <h2>🔭 HST tiles (FASRC)</h2>
-<p class="hint">
-  Inspect downloaded COSMOS HLSP tiles on FASRC without rsync'ing the
-  ~1.9 GB files locally. The header is fetched as JSON over SSH and a
-  random small cutout is rendered remotely (memmap on the FITS, so the
-  full tile is never materialised). Each "Refresh cutout" click picks a
-  new random centre.
-</p>
-<p class="hint">
-  Directory: <code>{{ remote_dir }}</code>
-</p>
 
 <section class="card">
   <h3>Download HLSP tiles</h3>
@@ -32,7 +22,6 @@
 
 <section class="card">
   <h3>Tiles</h3>
-  <p class="hint">{{ tiles | length }} tiles · click a tab to inspect.</p>
   <div id="tile-tabs" class="toolbar" style="flex-wrap: wrap; gap: 6px;">
     {% for t in tiles %}
       <a class="chip{% if loop.first %} active{% endif %}"
@@ -48,11 +37,6 @@
 <div class="grid">
   <section class="card">
     <h3>Cutout</h3>
-    <p class="hint">
-      Selected tile: <code id="tile-current-name">{{ tiles[0].name }}</code>
-      <br>
-      <span class="muted" id="tile-current-meta">centre / shape will appear after first render</span>
-    </p>
     <p style="margin: 8px 0;">
       <label>Size (px)
         <input type="number" id="tile-cutout-size" value="256" min="32" max="1024"
@@ -73,7 +57,6 @@
 
   <section class="card">
     <h3>FITS header</h3>
-    <p class="hint">First image HDU. Long string values are truncated to 200 chars.</p>
     <div id="tile-header-pane" style="max-height: 520px; overflow-y: auto;
                                        background: #11141e; padding: 8px;
                                        border-radius: 4px; font-family: monospace;

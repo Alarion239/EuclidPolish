@@ -20,7 +20,6 @@
 {% if status.present %}
 <section class="card">
   <h3>Summary</h3>
-  <p class="hint">Catalog: <code>{{ status.path }}</code></p>
   <dl class="kv">
     <dt>Total stars</dt>      <dd>{{ status.summary.total }}</dd>
     <dt>Valid (any band)</dt> <dd>{{ status.summary.valid }}</dd>
@@ -64,7 +63,6 @@
     <p>Logged in as <code>{{ current_user or 'authenticated user' }}</code>.</p>
     <button id="logout-btn" class="secondary">Logout</button>
   {% else %}
-    <p class="hint">Anonymous queries work for public catalogs.</p>
     <form id="login-form" action="/auth/login">
       <label>Username <input type="text" name="username" required></label>
       <label>Password <input type="password" name="password" required></label>
@@ -76,14 +74,6 @@
 
 <section class="card">
   <h3>Query catalog (brightest N)</h3>
-  <p class="hint">A SLURM job (editable CPUs / wall-time + run history, like
-     every other step) that queries the brightest stars by PSF flux
-     (<code>flux_vis_psf</code>; magnitudes are proper AB from that µJy flux)
-     into <code>stars.csv</code>. Use <em>min mag</em> to skip stars bright
-     enough to saturate, <em>min SNR</em> for clean anchors. Next:
-     <a href="{{ url_for('cutouts_page') }}">download cutouts</a>, then verify
-     the photometry scale there. Connect to FASRC first; cancel from the
-     <a href="{{ url_for('fasrc_page') }}">FASRC page</a>.</p>
 </section>
 {% with step_id="euclid_query", on_submitted_js="(jobid) => { document.getElementById('catalog-submit-note').innerHTML = '✓ Submitted SLURM job ' + jobid + ' — track &amp; cancel on the FASRC page; reload here once it finishes.'; }" %}
   {% include "_step_card_mount.html" %}

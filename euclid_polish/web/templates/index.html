@@ -2,8 +2,6 @@
 {% block title %}Dashboard · EuclidPolish{% endblock %}
 {% block content %}
 <h2>Dashboard</h2>
-<p class="hint">Live status of every pipeline stage. Click into the
-   pages on the left to run operations.</p>
 
 <div class="grid">
   <section class="card">
@@ -15,7 +13,6 @@
         <dt>Pending</dt>          <dd>{{ catalog.summary.pending }}</dd>
         <dt>Corrupted</dt>        <dd>{{ catalog.summary.corrupted }}</dd>
       </dl>
-      <p class="hint">Per-band valid:</p>
       <ul class="psf-list">
         {% for name, n in catalog.summary.valid_by_band.items() %}
           <li><code>{{ name }}</code> · <b>{{ n }}</b></li>
@@ -48,7 +45,6 @@
 
   <section class="card">
     <h3>🌌 Records</h3>
-    <p class="hint">{{ tfrecords.dir }}</p>
     {% if tfrecords.files %}
       <ul>
         {% for f in tfrecords.files %}
@@ -63,7 +59,6 @@
 
   <section class="card">
     <h3>🧠 Checkpoints</h3>
-    <p class="hint">{{ checkpoints.dir }}</p>
     {% if checkpoints.files %}
       <ul>
         {% for f in checkpoints.files[:5] %}

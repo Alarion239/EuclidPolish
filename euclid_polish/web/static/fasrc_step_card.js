@@ -368,16 +368,9 @@ large cutout don't leak across train/validate."></label>`;
     if (status === true)  statusBadge = '<span class="badge badge-done">✓ output present</span>';
     else if (status === false) statusBadge = '<span class="badge badge-running">○ output missing</span>';
 
-    const med = step.median_runtime_s;
-    const medLine = med != null
-      ? `<span class="muted">median runtime: ${fmtRuntime(med)} (last 5)</span>`
-      : `<span class="muted">no runtime history yet</span>`;
-
     return `
     <section class="card">
       <h3>${escapeHtml(step.label)} ${statusBadge}</h3>
-      <p class="hint">${escapeHtml(step.description)}</p>
-      <p class="hint">${medLine}</p>
 
       <form data-step-id="${step.step_id}" class="hst-step-form"
             autocomplete="off">

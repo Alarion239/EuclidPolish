@@ -2,13 +2,6 @@
 {% block title %}{{ band.name }} cutouts · EuclidPolish{% endblock %}
 {% block content %}
 <h2>{{ band.name }} cutouts</h2>
-<p class="hint">
-  Live-rendered from FITS with the per-band asinh stretch (scale =
-  {{ '%.0f'|format(band.asinh_stretch_scale_e) }} e⁻). Each thumbnail is
-  clipped at the 1.0 / 99.7 percentiles after stretch. Bright pixels show
-  as dark on the inverted gray scale. Click a thumbnail to open the FITS
-  inspector (header + download link).
-</p>
 
 <section class="card">
   <div class="form-row" style="justify-content: space-between; align-items: center;">

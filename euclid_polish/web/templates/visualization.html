@@ -12,11 +12,6 @@
 
 {% block viz %}
 {% if pngs %}
-<p class="hint">PNGs are matplotlib composites; clicking a thumbnail opens
-   the underlying FITS in the inspector when one exists (e.g. demo lens
-   per-band FITS, reconstruction SR.fits). If no sidecar FITS is found
-   (training-log plot, RGB color composites), the click opens the raw
-   PNG instead.</p>
 <div class="gallery">
   {% for p in pngs[:60] %}
     {% if p.inspect_fits %}
@@ -38,7 +33,6 @@
   {% endfor %}
 </div>
 {% if pngs | length > 60 %}
-  <p class="hint">+ {{ pngs | length - 60 }} more not shown.</p>
 {% endif %}
 {% else %}
 <div class="viz-area">
@@ -50,8 +44,6 @@
 {% block actions %}
 <section class="card">
   <h3>Quick lens demo</h3>
-  <p class="hint">Generates one 510² 4-band HR field with N lenses,
-     runs forward, renders HR clean + LR dirty 2×2 panels.</p>
   <form id="demo-form" action="/visualization/demo">
     <label>Lenses to force <input type="number" name="n_lenses" value="3" min="0" max="10"></label>
     <button type="submit">Generate demo</button>

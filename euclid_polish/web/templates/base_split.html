@@ -1,24 +1,23 @@
-{# Three-column page layout: [ sidebar | center viz | right actions ].
-   Pages that need actions panel + center visualization extend this.
+{# Single-column page layout: [ sidebar (left, in base.html) | main ].
+   The main column stacks the visualization on top and the job-submission
+   cards in a full-width section at the bottom — there is no right bar.
    Override:
      - title    : page <title>
-     - heading  : H2 at the top of the center pane
+     - heading  : H2 at the top of the main pane
      - toolbar  : selector-strip above the visualizations (band picker, etc.)
-     - viz      : main visualization area in the centre
-     - actions  : right-hand actions / forms panel
+     - viz      : main visualization area
+     - actions  : job-submission / forms section (rendered at the bottom)
 #}
 {% extends "base.html" %}
 {% block content %}
-  <div class="three-col">
-    <section class="viz-pane">
-      <div class="viz-header">
-        <h2>{% block heading %}{% endblock %}</h2>
-        {% block toolbar %}{% endblock %}
-      </div>
-      {% block viz %}{% endblock %}
-    </section>
-    <aside class="actions-pane">
-      {% block actions %}{% endblock %}
-    </aside>
-  </div>
+  <section class="viz-pane">
+    <div class="viz-header">
+      <h2>{% block heading %}{% endblock %}</h2>
+      {% block toolbar %}{% endblock %}
+    </div>
+    {% block viz %}{% endblock %}
+  </section>
+  <section class="actions-pane">
+    {% block actions %}{% endblock %}
+  </section>
 {% endblock %}

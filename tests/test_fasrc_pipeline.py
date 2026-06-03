@@ -205,10 +205,9 @@ class TestRegistry:
         locked = {s.step_id for s in REGISTRY.all() if s.fixed_cpus is not None}
         assert locked == {"extract_psf"}
 
-    def test_every_step_has_label_and_description(self):
+    def test_every_step_has_label(self):
         for s in REGISTRY.all():
             assert s.label
-            assert s.description
             assert s.step_id
 
 
@@ -418,7 +417,7 @@ class TestSbatchRendering:
         class _DangerStep(FASRCPipelineStep):
             def __init__(self):
                 super().__init__(
-                    step_id="danger", label="x", description="x",
+                    step_id="danger", label="x",
                     defaults=StepResources(),
                 )
             def build_command(self, params):

@@ -45,7 +45,6 @@
   {% endfor %}
 </div>
 {% if recon_pngs|length > 24 %}
-  <p class="hint">+ {{ recon_pngs | length - 24 }} more not shown.</p>
 {% endif %}
 {% else %}
 <div class="viz-area">
@@ -59,9 +58,6 @@
   <h3>Real Euclid cutouts <span class="muted" style="font-size:12px;
       font-weight:normal;">(stored under
       <code>data/euclid_inference/cutouts/</code>)</span></h3>
-  <p class="hint">Only the most recent run is kept — each new cutout
-    overwrites the previous one. Shows the four LR band FITS plus the
-    super-resolved <code>SR.fits</code>. Click any link to download.</p>
   <table style="width:100%; font-size:12px;">
     <tr><th style="text-align:left;">Position / size</th>
         <th style="text-align:left;">Files</th></tr>
@@ -131,13 +127,6 @@
 {% block actions %}
 <section class="card">
   <h3>Generate + Reconstruct (synthetic)</h3>
-  <p class="hint">Pulls the Euclid ePSFs from FASRC, generates a fresh
-     synthetic pair on the FASRC <strong>login node</strong> (same generator
-     as <a href="/sky">/sky</a> — a plain command, <em>not</em> an sbatch
-     job) at your HR size, runs WDSR locally, and writes
-     LR / SR / HR / forward(SR) / residual FITS plus a side-by-side PNG.
-     <code>forward(SR)</code> uses the same FASRC PSF the checkpoint trained
-     against. Requires an active FASRC connection.</p>
   <form id="gen-recon-form" action="/inference/generate-reconstruct">
     <label>Checkpoint dir
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
@@ -159,11 +148,6 @@
 
 <section class="card">
   <h3>Reconstruct (real Euclid cutout)</h3>
-  <p class="hint">Downloads VIS + Y_E + J_E + H_E cutouts at your (RA, Dec)
-     from the Euclid archive, runs WDSR, and writes downloadable FITS —
-     <code>original_stack.fits</code> (the stacked 4-band original, band
-     0 = VIS) and <code>SR.fits</code> (super-resolved VIS, 2× WCS) —
-     plus the LR-VIS vs SR comparison PNG. No HR target.</p>
   <form id="recon-euclid-form" action="/inference/reconstruct-euclid">
     <label>RA (deg)
       <input type="text" name="ra" value="267.4229" size="12" required></label>

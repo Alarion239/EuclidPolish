@@ -68,25 +68,12 @@
 {% block actions %}
 <section class="card">
   <h3>Synchronise from FASRC</h3>
-  <p class="hint">The inventory is read from the <strong>local cache</strong> —
-     no rsync on page load. After an extraction job finishes on FASRC, click to
-     pull the four band ePSFs down (multi-extension FITS can be large, so it may
-     take a moment). Connect to FASRC first.</p>
   <button id="psf-sync-btn" type="button">⟳ Synchronise ePSFs</button>
   <div id="psf-sync-status" class="hint"></div>
 </section>
 
 <section class="card">
   <h3>Extract empirical ePSFs (FASRC)</h3>
-  <p class="hint">Submits a SLURM job that runs photutils'
-     <code>EPSFBuilder</code> on the downloaded cutouts for <strong>all
-     four bands</strong> (VIS + NISP Y/J/H) in one job. Each band's good
-     stars are K-Means++ clustered by sky position into groups of
-     <em>stars per PSF</em> → <strong>one ePSF per cluster</strong> (the PSF
-     varies across the field), saved as a multi-extension FITS (HDU0=mean,
-     HDU1..K=cluster PSFs). Generation draws a random convex blend of the K
-     kernels. Bright clipped-core stars are rejected automatically; bands
-     with no cutouts fall back to a Gaussian PSF.</p>
 </section>
 {% with step_id="extract_euclid_psf" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}

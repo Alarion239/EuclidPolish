@@ -215,34 +215,26 @@ button.secondary:hover { background: #565e64; }
 .nav-list { padding-left: 0; }
 
 /* =============================================================
-   Three-column page layout: sidebar (left, in base.html) | viz | actions.
-   Pages with actions extend base_split.html; the .content wrap is
-   already set up by base.html, so .three-col only manages the inner
-   split between center + right.
+   Single-column page layout: sidebar (left, in base.html) | main.
+   base_split.html stacks the viz pane on top and a full-width actions
+   section (the job-submission cards) at the bottom — no right bar.
 ============================================================= */
-.three-col {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 24px;
-  align-items: start;
-}
-.three-col .viz-pane { min-width: 0; }
-.three-col .actions-pane {
-  position: sticky;
-  top: 16px;
-  align-self: start;
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
-}
-.three-col .actions-pane .card { margin-bottom: 14px; }
-.three-col .actions-pane .card h3 { font-size: 14px; }
-.three-col .actions-pane .card form input,
-.three-col .actions-pane .card form select { font-size: 12px; }
+.viz-pane { min-width: 0; }
 
-@media (max-width: 1100px) {
-  .three-col { grid-template-columns: 1fr; }
-  .three-col .actions-pane { position: static; max-height: none; }
+/* Job-submission cards: full-width section below the viz. The pane itself
+   is the grid container, so its cards + step-mounts flow side by side and
+   wrap, instead of stacking in a narrow right sidebar. */
+.actions-pane {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid #232838;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 480px));
+  gap: 16px 20px;
+  align-items: start;
+  justify-content: start;
 }
+.actions-pane > .card { margin-bottom: 0; }
 
 .viz-header {
   display: flex;

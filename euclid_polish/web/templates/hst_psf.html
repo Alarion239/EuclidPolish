@@ -37,7 +37,6 @@
 
 <section class="card">
   <h3>Files on FASRC</h3>
-  <p class="hint"><code>{{ remote_dir }}</code></p>
   {% if files %}
     <table>
       <tr><th>File</th><th>Size</th><th></th></tr>
@@ -84,9 +83,6 @@
 
 <section class="card">
   <h3>Differential kernel A = E / H</h3>
-  <p class="hint">After both PSFs (Euclid VIS + HST F814W) exist on FASRC,
-     submit this step to compute the differential kernel. The output
-     (<code>diff_kernel_VIS.fits</code>) shows up in the file list above.</p>
   {% with step_id="kernel" %}{% include "_step_card_mount.html" %}{% endwith %}
   <button id="btn-validate" type="button"
           title="Convolve the local kernel with the local HST PSF and compare to the local Euclid PSF. Fully offline — no FASRC round-trip.">

@@ -142,8 +142,6 @@ class FASRCPipelineStep(ABC):
     step_id:   str
     #: Human label shown in the UI.
     label:     str
-    #: One-line description for the form's hint text.
-    description: str
     #: Default SLURM allocation. Overridable per-submission via the form.
     defaults:  StepResources
     #: True iff this job needs GPUs (used by the form to enable/disable the gpu count field).
@@ -375,10 +373,6 @@ class HSTDownloadStep(FASRCPipelineStep):
         super().__init__(
             step_id="download",
             label="1. Download COSMOS HLSP tiles",
-            description=(
-                "Pull COSMOS F814W HLSP mosaic tiles (~1.9 GB each) "
-                "from MAST into $DATA_DIR/hst_hlsp/. Idempotent."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=2, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -399,14 +393,6 @@ class HSTPSFExtractStep(FASRCPipelineStep):
         super().__init__(
             step_id="extract_psf",
             label="2. Extract HST F814W ePSF",
-            description=(
-                "Scan the downloaded HLSP tiles for bright unsaturated "
-                "stars and run photutils EPSFBuilder. Writes "
-                "$DATA_DIR/hst_psf/F814W.fits. Single-threaded — "
-                "DAOStarFinder and EPSFBuilder don't parallelise, so "
-                "the allocation is locked at 1 CPU to avoid wasting "
-                "FASRC cores."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 # Peak ≈ a materialised ~500 MB HLSP tile + working copies
@@ -437,10 +423,6 @@ class DifferentialKernelStep(FASRCPipelineStep):
         super().__init__(
             step_id="kernel",
             label="3. Build differential kernel A = E / H",
-            description=(
-                "Solve A ⊛ H = E in Fourier space with Wiener "
-                "regularisation. Writes $DATA_DIR/hst_psf/diff_kernel_VIS.fits."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="4G", time_limit="0:05:00",
@@ -461,14 +443,6 @@ class HSTTFRecordStep(FASRCPipelineStep):
         super().__init__(
             step_id="tfrecords",
             label="4. Generate HST → Euclid TFRecord pairs",
-            description=(
-                "Cut HST targets from HLSP tiles, apply the analytic "
-                "differential kernel A and the Euclid per-band noise "
-                "model, rejecting stamps where the brightest pixel "
-                "would produce A(ε) ringing above "
-                "max_relative_noise × σ_LR. Writes paired clean (HST) "
-                "+ dirty (Euclid-equivalent) TFRecords."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
                 memory="64G", time_limit="0:10:00",
@@ -499,16 +473,6 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_sky_download",
             label="5a. Download real Euclid sky cutouts (round-trip)",
-            description=(
-                "Generate N random sky positions inside a 2° disk on "
-                "the Euclid coverage map and pull large 4-band cutouts "
-                "(VIS + NISP Y/J/H) from the Euclid archive. Each "
-                "position is bundled into a single multi-HDU FITS at "
-                "$DATA_DIR/euclid_sky/cutouts/sky_NNNN.fits. Positions "
-                "where any band fails are skipped wholesale. This step "
-                "is the prerequisite for the round-trip self-supervised "
-                "training path."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 memory="16G", time_limit="2:00:00",
@@ -537,17 +501,6 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_roundtrip_tfrecords",
             label="5b. Stack + chop Euclid sky cutouts into round-trip TFRecords",
-            description=(
-                "Read bundled per-position cutouts from 5a, pull the "
-                "four band ImageHDUs (VIS + Y/J/H) on the shared "
-                "0.10\"/pix archive grid, chop into smaller training "
-                "stamps, and write LR-only "
-                "``dirty_{train,validate}.tfrecord`` under "
-                "$DATA_DIR/images/records_v2_euclid_roundtrip/. "
-                "Per-band pixel values are multiplied by their "
-                "``t_total_s`` to convert archive e⁻/s units to the "
-                "total electrons the synthetic/HST records use."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -572,16 +525,6 @@ class EuclidQueryStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_query",
             label="Query Euclid catalog (brightest N)",
-            description=(
-                "Query the N brightest Euclid stars by PSF flux "
-                "(flux_vis_psf, ESA TAP) into "
-                "$DATA_DIR/euclid_stars/stars.csv. Magnitudes are proper AB "
-                "from the µJy flux; the magnitude window skips saturating "
-                "stars and the SNR cut keeps only well-measured flux. Runs on "
-                "the shared partition — its compute nodes have outbound "
-                "internet for the TAP query (the cutout downloader runs there "
-                "too). Run this first, then download cutouts, then verify."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="4G", time_limit="30:00",
@@ -609,16 +552,6 @@ class EuclidVerifyPhotometryStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_verify_photometry",
             label="Verify photometry scale",
-            description=(
-                "Aperture-measure N downloaded VIS cutouts (in electrons) and "
-                "compare to each star's catalog PSF flux — a median "
-                "measured/catalog ratio ≈ 1 confirms the absolute electron "
-                "scale the star-anchor delta-targets are built on; a constant "
-                "offset at all radii flags a zeropoint/units bug. Read-only "
-                "(writes nothing; the ratio table lands in the job log). "
-                "Requires the cutouts on disk — run AFTER the download, and "
-                "set the size to match what was downloaded."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="8G", time_limit="30:00",
@@ -638,14 +571,6 @@ class EuclidCutoutDownloadStep(FASRCPipelineStep):
         super().__init__(
             step_id="download_euclid_cutouts",
             label="Download Euclid star cutouts (all bands)",
-            description=(
-                "Pull per-band cutouts (VIS + NISP Y/J/H) for every star "
-                "in the catalog from the Euclid archive into "
-                "$DATA_DIR/euclid_stars/cutouts/<band>/. One shared "
-                "angular field is sized from the VIS pixel count; each "
-                "band fetches its own native pixel count. Run a catalog "
-                "query first so stars.csv exists."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 memory="16G", time_limit="2:00:00",
@@ -668,19 +593,6 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         super().__init__(
             step_id="extract_euclid_psf",
             label="Extract Euclid ePSFs (all 4 bands)",
-            description=(
-                "Run photutils EPSFBuilder on the downloaded star cutouts for "
-                "ALL four bands (VIS + NISP Y/J/H) in one job. Each band's "
-                "good stars are K-Means++ clustered by sky position into "
-                "groups of 'stars per PSF', and one ePSF is built per cluster "
-                "(the PSF varies across the field). Bands are processed one at "
-                "a time, but a band's cluster PSFs are built in parallel "
-                "across ALL the CPUs you allocate (choose more CPUs to go "
-                "faster). Writes a multi-extension "
-                "$DATA_DIR/euclid_psf/euclid_psf_<band>.fits (HDU0=mean, "
-                "HDU1..K=cluster PSFs). Bright clipped-core stars are rejected "
-                "automatically. Bands with no cutouts fall back to a Gaussian."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 # One band's stars held in memory + n_cpus EPSFBuilders (each
@@ -720,18 +632,6 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_star_anchor_tfrecords",
             label="Build star-anchor TFRecords (real Euclid stars → delta targets)",
-            description=(
-                "Assemble the downloaded per-star cutouts (all 4 bands) + the "
-                "catalog PSF photometry into the operator-free star-anchor "
-                "training records under "
-                "$DATA_DIR/images/records_v2_star_anchor/. Each usable star "
-                "(all 4 bands clean) becomes a (dirty_anchor, hr_anchor) pair: "
-                "the 4-band LR cube + a single-pixel HR delta carrying the "
-                "catalog VIS flux (electrons) at the star's WCS-exact pixel — "
-                "no PSF, so it can't be poisoned by PSF mismatch. Run a "
-                "catalog query + cutout download first; ``--size`` must match "
-                "the size the cutouts were downloaded at."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -765,15 +665,6 @@ class HSTTrainStep(FASRCPipelineStep):
         super().__init__(
             step_id="train",
             label="6. Train WDSR with HST + star-anchor mix",
-            description=(
-                "Train the WDSR model on a mix of synthetic + "
-                "HST-derived + (optional) real-Euclid star-anchor "
-                "TFRecords. Per-lane counts (#syn / #HST / #anchor) set "
-                "the fixed batch layout. The star-anchor lane pins real "
-                "Euclid stars to point sources of catalog flux via a "
-                "masked loss at the star pixel — operator-free (no PSF), "
-                "so it can't be poisoned by PSF mismatch."
-            ),
             defaults=StepResources(
                 partition="gpu", n_cpus=4, n_gpus=1,
                 memory="32G", time_limit="24:00:00",
@@ -912,13 +803,6 @@ class SyntheticGenerateStep(RunPipelineStep):
         super().__init__(
             step_id="synthetic_generate",
             label="Generate synthetic training pairs (CPU)",
-            description=(
-                "Render synthetic clean HR scenes (COSMOS2025 galaxies + "
-                "stars + strong lenses) and forward-model them to dirty "
-                "Euclid LR with the empirical band PSFs, writing clean + HR "
-                "+ dirty TFRecords to $DATA_DIR/images/records_v2/. Skips "
-                "training, so it runs on a CPU partition."
-            ),
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
                 memory="64G", time_limit="6:00:00",
