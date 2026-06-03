@@ -40,6 +40,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.tfrecord import open_multiband_writer
 from euclid_polish.sky.types import MultiBandSkyImage
@@ -95,20 +96,23 @@ def parse_args() -> argparse.Namespace:
                         "split.")
     p.add_argument("--scale-to-electrons", action=argparse.BooleanOptionalAction,
                    default=True,
-                   help="Multiply each band's pixel values by its "
-                        "``t_total_s`` before writing. Euclid archive "
-                        "mosaics arrive in e⁻/s; the synthetic and "
-                        "HST records are in total electrons over the "
-                        "full stack. Scaling here puts everything on "
-                        "the same e⁻ scale so the shared asinh stretch "
-                        "(knee 1000 e⁻) compresses all three sources "
-                        "to comparable signal ranges and the round-"
-                        "trip vs supervised loss magnitudes stay "
-                        "balanced. Verified empirically: NISP medians "
-                        "match expected per-pixel sky to ~10 % in "
-                        "e⁻/s, off by 400× in total e⁻. Use "
-                        "``--no-scale-to-electrons`` only if you've "
-                        "confirmed the archive changed units.")
+                   help="Convert each band's archive pixels to electrons "
+                        "over the stack using the SAME zeropoint factor as "
+                        "every other Euclid-data path: "
+                        "``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` with "
+                        "MAGZERO read from each band's header (the cutout "
+                        "bundle preserves it). This is the conversion "
+                        "verify_star_photometry.py validates (measured/"
+                        "catalog ratio ≈ 1), so the round-trip LR lands on "
+                        "the identical electron scale as the synthetic, "
+                        "star-anchor and direct-cutout lanes — the shared "
+                        "asinh stretch (knee 1000 e⁻) then balances the "
+                        "round-trip vs supervised loss. (The previous "
+                        "``× t_total_s`` factor was ~2.3× too faint because "
+                        "it assumed the archive ZP equalled "
+                        "VIS_AB_ZP_E_PER_S=25.50 rather than the header's "
+                        "MAGZERO≈24.6.) Use ``--no-scale-to-electrons`` only "
+                        "to leave the raw archive units untouched.")
     p.add_argument("--dry-run", action="store_true",
                    help="Walk inputs and report counts, don't write.")
     return p.parse_args()
@@ -135,17 +139,20 @@ def _load_4band_cube(
     needed here — just verify shapes agree and stack.
 
     **Units conversion** — ``scale_to_electrons=True`` (default) is what
-    you want for training. Empirical inspection of downloaded cutouts
-    (see chunk-A units check in the PR description) shows all four
-    Euclid mosaic bands are delivered in **e⁻/s**: NISP medians match
-    expected per-pixel sky brightness to ~10 %, VIS medians sit near 0
-    (sky-subtracted by the archive). The synthetic/HST records are in
-    **total electrons** over the full integration stack. Multiplying
-    each band by its ``t_total_s`` puts the round-trip records on the
-    same scale, so the same asinh stretch (knee 1000 e⁻) compresses
-    everything to comparable ranges and the supervised vs round-trip
-    loss magnitudes stay balanced. VIS keeps its sky-subtracted offset
-    — irrelevant for the round-trip loss, which only checks
+    you want for training. The Euclid mosaic bands are delivered in
+    archive **e⁻/s** calibrated to each header's ``MAGZERO`` (≈24.6 for
+    VIS). To land on the synthetic/HST/star-anchor **total-electron**
+    scale we apply the band's zeropoint factor
+    ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (≈5176 for VIS) — the
+    exact conversion ``verify_star_photometry.py`` validates against
+    catalogue fluxes (measured/catalog ratio ≈ 1) and the same factor
+    the direct-cutout reconstruct uses. This replaces the earlier
+    ``× t_total_s`` (≈2260) approximation, which was ~2.3× too faint
+    because it implicitly assumed the archive ZP equalled
+    ``VIS_AB_ZP_E_PER_S=25.50`` rather than the header MAGZERO. With the
+    shared asinh stretch (knee 1000 e⁻) the round-trip and supervised
+    loss magnitudes then stay balanced. VIS keeps its sky-subtracted
+    offset — irrelevant for the round-trip loss, which only checks
     ``Conv(M(lr)) ≈ lr`` on VIS and is sky-bias-invariant.
     """
     del vis_pixels  # bundle layout no longer needs the size for path lookup
@@ -160,10 +167,18 @@ def _load_4band_cube(
             for band_name in Config.LR_INPUT_BAND_NAMES:
                 if band_name not in extnames:
                     return None
-                arr = np.asarray(hdul[band_name].data, dtype=np.float32)
+                hdu = hdul[band_name]
+                arr = np.asarray(hdu.data, dtype=np.float32)
                 if scale_to_electrons:
                     band = Config.get_band(band_name)
-                    arr = arr * float(band.t_total_s)
+                    # Same archive e⁻/s → total-e⁻ conversion as the
+                    # direct-cutout / star-anchor lanes: zeropoint factor
+                    # from each band header's MAGZERO (preserved in the
+                    # bundle). Falls back to sim_zeropoint_e (factor 1) only
+                    # if a header somehow lacks MAGZERO.
+                    magzero = float(hdu.header.get("MAGZERO",
+                                                   band.sim_zeropoint_e))
+                    arr = arr * adu_per_s_to_electrons_factor(magzero, band)
                 channels.append(arr)
     except Exception:
         return None

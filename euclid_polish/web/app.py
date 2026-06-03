@@ -42,6 +42,7 @@ scaled_wcs_header,
 from astropy.io import fits as _fits
 from astropy.io import fits
 from euclid_polish.euclid.downloader import fetch_cutout_at
+from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from scipy import signal as scipy_signal
 from euclid_polish.sky.multiband_forward import MultiBandForward
 from euclid_polish.visualization.methods import draw_star_positions
@@ -821,9 +822,11 @@ def _job_roundtrip_inspect(
     reconstruction once a checkpoint exists.
 
     Pulls the bundled ``sky_<pos_id>.fits`` (the 4-band cutouts step 1 of
-    the round-trip pipeline writes on FASRC) into the local cache, scales
-    each band by ``t_total_s`` to match the round-trip TFRecords the
-    trainer saw, and renders the LR input. When the local checkpoint
+    the round-trip pipeline writes on FASRC) into the local cache,
+    converts each band from archive e⁻/s to total electrons via its
+    MAGZERO zeropoint factor (the same conversion the round-trip
+    TFRecords the trainer saw now use), and renders the LR input. When
+    the local checkpoint
     mirror has a checkpoint, it also runs ``M → SR``, forward-models SR
     back to the Euclid LR grid, and shows the round-trip residual — the
     exact self-consistency the round-trip loss optimises.
@@ -849,16 +852,23 @@ def _job_roundtrip_inspect(
                     f"{band_name} (HDUs: {sorted(names_present)})"
                 )
             band = Config.get_band(band_name)
-            # Archive e⁻/s → total electrons over the stack (× t_total_s),
-            # matching fasrc_generate_euclid_roundtrip_tfrecords.py.
+            # Archive e⁻/s → total electrons over the stack via the band's
+            # MAGZERO zeropoint factor — the SAME conversion as the
+            # direct-cutout reconstruct and the round-trip TFRecord
+            # generator (verify_star_photometry-validated). MAGZERO is
+            # preserved per band in the sky bundle.
+            band_hdr = hdul[band_name].header
+            magzero = float(band_hdr.get("MAGZERO", band.sim_zeropoint_e))
+            adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
             data_e = (np.asarray(hdul[band_name].data, dtype=np.float32)
-                      * float(band.t_total_s))
+                      * adu_to_e)
             bands_data[band_name] = data_e
             bands_info[band_name] = {
-                "shape":     list(data_e.shape),
-                "t_total_s": float(band.t_total_s),
-                "pix_mean":  float(np.mean(data_e)),
-                "pix_std":   float(np.std(data_e)),
+                "shape":    list(data_e.shape),
+                "magzero":  magzero,
+                "adu_to_e": adu_to_e,
+                "pix_mean": float(np.mean(data_e)),
+                "pix_std":  float(np.std(data_e)),
             }
     ra  = float(primary_hdr.get("RA",  float("nan")))
     dec = float(primary_hdr.get("DEC", float("nan")))

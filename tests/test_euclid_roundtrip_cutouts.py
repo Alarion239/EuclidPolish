@@ -158,7 +158,12 @@ def _layout_one_position(
             continue
         this_side = side - 1 if band_name == bad_shape_band else side
         data = np.full((this_side, this_side), float(i + 1), dtype=np.float32)
-        hdul.append(fits.ImageHDU(data=data, name=band_name))
+        hdu = fits.ImageHDU(data=data, name=band_name)
+        # The real download bundle copies the source MAGZERO into every band
+        # header (fasrc_download_euclid_sky_cutouts.py); mirror it so the
+        # zeropoint conversion exercises the real path.
+        hdu.header["MAGZERO"] = 24.6
+        hdul.append(hdu)
     hdul.writeto(
         os.path.join(str(tmp_path), f"sky_{pid:04d}.fits"), overwrite=True,
     )
@@ -202,31 +207,33 @@ class TestLoadFourBandCube:
             str(tmp_path), 99, vis_pixels=64, scale_to_electrons=False,
         ) is None
 
-    def test_scales_each_band_by_its_integration_time(self, tf_mod, tmp_path):
+    def test_scales_each_band_by_its_magzero_zeropoint(self, tf_mod, tmp_path):
         """Default ``scale_to_electrons=True`` puts archive e⁻/s cutouts on the
-        synthetic/HST total-electron scale.
+        synthetic/HST total-electron scale via the band's MAGZERO zeropoint
+        factor — the verify_star_photometry-validated conversion shared with
+        the direct-cutout and star-anchor lanes (NOT the old ~2.3×-too-faint
+        ``× t_total_s``).
 
-        Without this, the round-trip LR signal would be ~10²–10³× smaller
-        than synthetic LR after asinh stretch, the 0.2 mix weight would
-        effectively become near-zero, and the supervised gradient would
-        dominate. Per-band ``t_total_s`` (VIS 4×565 = 2260 s; NISP
-        4×112 = 448 s) is the conversion factor we read off the band
-        configs at chunk-A units-check time.
+        Without a consistent electron scale the round-trip LR would sit at a
+        different brightness than synthetic LR after asinh stretch, skewing
+        the round-trip vs supervised loss balance.
         """
         from euclid_polish.config import Config
+        from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 
-        _layout_one_position(tmp_path, pid=7, side=64)
+        _layout_one_position(tmp_path, pid=7, side=64)   # MAGZERO=24.6 per band
         cube = tf_mod._load_4band_cube(
             str(tmp_path), 7, vis_pixels=64, scale_to_electrons=True,
         )
         assert cube is not None
         for i, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
-            expected = float(i + 1) * band.t_total_s   # input value × scale
+            factor = adu_per_s_to_electrons_factor(24.6, band)
+            expected = float(i + 1) * factor           # input value × ZP factor
             assert np.allclose(cube[..., i], expected), (
                 f"channel {i} ({band_name}) scaled wrong: "
                 f"got {cube[0, 0, i]}, expected {expected} "
-                f"(input={i + 1}, t_total_s={band.t_total_s})"
+                f"(input={i + 1}, factor={factor})"
             )
 
 
