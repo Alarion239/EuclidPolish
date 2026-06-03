@@ -27,7 +27,7 @@ from euclid_polish.psf.core import (
     PSF,
     DEFAULT_HR_PIXEL_SCALE,
 )
-from euclid_polish.psf.psf_set import PSFSet
+from euclid_polish.psf.psf_set import PSFSet, PSFSample
 from euclid_polish.psf.measurements import (
     estimate_fwhm_pixels_1d,
     fwhm_pixels_radial,
@@ -44,6 +44,7 @@ from euclid_polish.psf.loaders import (
 __all__ = [
     "PSF",
     "PSFSet",
+    "PSFSample",
     "DEFAULT_HR_PIXEL_SCALE",
     "estimate_fwhm_pixels_1d",
     "fwhm_pixels_radial",

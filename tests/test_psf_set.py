@@ -101,6 +101,28 @@ def test_sample_rotation_angle_is_in_1_359():
         assert d.total_flux == pytest.approx(1.0, abs=1e-5)
 
 
+def test_draw_and_apply_couples_index_and_roll():
+    """One PSFSample applied to two bands selects the SAME cluster index and
+    the SAME roll in both — the cross-band consistency the generator relies on."""
+    from euclid_polish.psf import PSFSample
+    a = PSFSet.from_psfs([_gauss(31, 2.0), _gauss(31, 5.0), _gauss(31, 8.0)])
+    b = PSFSet.from_psfs([_gauss(21, 2.0), _gauss(21, 5.0), _gauss(21, 8.0)])
+    spec = a.draw_sample(np.random.default_rng(3), use_unrotated_prob=0.0)
+    assert isinstance(spec, PSFSample) and spec.angle is not None
+    pa = a.apply_sample(spec)
+    np.testing.assert_allclose(pa.data, a.psfs[spec.index].rotated(spec.angle).data)
+    assert b.apply_sample(spec).shape == (21, 21)   # b's same-index cluster, same roll
+
+
+def test_apply_sample_clamps_index_for_smaller_set():
+    """A Gaussian-fallback band (fewer members) clamps the shared index to its
+    own range rather than indexing out of bounds."""
+    from euclid_polish.psf import PSFSample
+    one = PSFSet.from_psfs([_gauss(21, 3.0)])
+    got = one.apply_sample(PSFSample(index=2, angle=None))
+    np.testing.assert_allclose(got.data, one.psfs[0].data)
+
+
 def test_fits_roundtrip_primary_is_mean(tmp_path):
     pset = PSFSet.from_psfs([_gauss(21, 2.0), _gauss(21, 4.0), _gauss(21, 6.0)],
                             centroids=[(10.0, 2.0), (10.1, 2.1), (10.2, 2.2)])

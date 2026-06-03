@@ -94,7 +94,7 @@ def test_load_star_positions_missing_file_is_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 (cluster_band) + per-PSF progress reporting
+# Phase 1 (load_accepted_band) + common clustering + per-PSF reporting
 # ---------------------------------------------------------------------------
 
 class _FakeStar:
@@ -112,16 +112,12 @@ def _fake_args(tmp_path, **over):
     return argparse.Namespace(**base)
 
 
-def test_cluster_band_returns_jobs_and_gates_tqdm(tmp_path, monkeypatch):
-    """``cluster_band`` loads + clusters into per-cluster build jobs (stamps +
-    star count + centroid), and disables tqdm under a job (events path set)."""
+def test_load_accepted_band_returns_stamps_and_gates_tqdm(tmp_path, monkeypatch):
+    """``load_accepted_band`` returns ``{star_id: stamp}`` for the accepted
+    stars and disables tqdm under a job (events path set)."""
     cutdir = tmp_path / "cutouts"
     cutdir.mkdir()
     monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
-    monkeypatch.setattr(gen, "_load_star_positions", lambda csv: {})
-    monkeypatch.setattr(gen, "cluster_star_indices",
-                        lambda ids, pos, spp, min_stars=50:
-                        [[0, 1, 2], [3, 4, 5], [6, 7, 8]])
     monkeypatch.setattr(PSFExtractor, "get_cutout_files",
                         lambda self, d, cutout_size=None:
                         [(i, f"f{i}") for i in range(9)])
@@ -137,17 +133,15 @@ def test_cluster_band_returns_jobs_and_gates_tqdm(tmp_path, monkeypatch):
     monkeypatch.setattr(PSFExtractor, "__init__", spy_init)
 
     # Job context (events path) → tqdm OFF.
-    plan = gen.cluster_band(Config.BAND_VIS, _fake_args(tmp_path),
-                            Reporter(events_path=str(tmp_path / "j.events")))
+    d = gen.load_accepted_band(Config.BAND_VIS, _fake_args(tmp_path),
+                               Reporter(events_path=str(tmp_path / "j.events")))
     assert seen["progress_bar"] is False
-    assert len(plan["jobs"]) == 3
-    for ci, stamps, n, centroid in plan["jobs"]:
-        assert len(stamps) == 3 and n == 3
-        assert all(isinstance(s, np.ndarray) for s in stamps)
+    assert set(d["accepted"]) == set(range(9))
+    assert all(isinstance(s, np.ndarray) for s in d["accepted"].values())
 
     # Interactive (no events path) → tqdm ON.
-    gen.cluster_band(Config.BAND_VIS, _fake_args(tmp_path),
-                     Reporter(events_path=None))
+    gen.load_accepted_band(Config.BAND_VIS, _fake_args(tmp_path),
+                           Reporter(events_path=None))
     assert seen["progress_bar"] is True
 
 
@@ -169,36 +163,67 @@ def test_build_cluster_psf_builds_from_stamps(monkeypatch):
     assert psf.pixel_scale == 0.025
 
 
-def test_main_reports_one_monotonic_bar_over_all_psfs(tmp_path, monkeypatch):
-    """``main`` builds every cluster in one pool (serial here) and reports a
-    single monotonic set_step bar over ALL PSFs across the bands (3 VIS + 2
-    Y_E = 5), in band order."""
-    def fake_plan(band, n):
+def _patch_main(tmp_path, monkeypatch, accepts, idx_clusters, positions=None):
+    """Stub load_accepted_band / clustering / build / args so ``main`` runs
+    over fake data. ``accepts`` maps band name → set of accepted star ids."""
+    def fake_band(band, args, reporter):
         return {"cfg": None, "scale": band.epsf_pixel_scale_arcsec,
                 "filename": band.psf_fits_filename,
-                "jobs": [(ci, [np.ones((5, 5), np.float32)], 3, (1.0, 2.0))
-                         for ci in range(n)],
-                "have_positions": True}
+                "accepted": {i: np.ones((5, 5), np.float32)
+                             for i in accepts[band.name]}}
+    monkeypatch.setattr(gen, "load_accepted_band", fake_band)
+    monkeypatch.setattr(gen, "_load_star_positions",
+                        lambda csv: positions if positions is not None
+                        else {i: (10.0 + i * 0.01, 2.0) for i in range(6)})
+    monkeypatch.setattr(gen, "cluster_star_indices",
+                        lambda ids, pos, spp, min_stars=50: idx_clusters)
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=1))
 
-    plans = {"VIS": fake_plan(Config.BAND_VIS, 3),
-             "Y_E": fake_plan(Config.get_band("Y_E"), 2)}
-    monkeypatch.setattr(gen, "cluster_band",
-                        lambda band, args, reporter: plans.get(band.name))
+
+def test_main_builds_shared_clusters_with_one_bar(tmp_path, monkeypatch):
+    """All four bands share the clustering: 2 bands × 2 clusters build under one
+    monotonic bar, and both bands are saved with identical (consistent)
+    numbering + star counts."""
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
     monkeypatch.setattr(gen, "_build_cluster_psf",
                         lambda payload: PSF(
                             data=np.full((5, 5), 1.0 / 25, np.float32),
                             pixel_scale=payload[1]))
-    monkeypatch.setattr(gen, "parse_args",
-                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=1))
-
     ev = tmp_path / "job.events"
     monkeypatch.setenv("EUCLID_POLISH_EVENTS_PATH", str(ev))
     assert gen.main() == 0
 
     steps = [json.loads(l)["value"] for l in ev.read_text().splitlines()
              if json.loads(l)["kind"] == "step"]
-    # The building stage uses total = 5 (3 VIS + 2 Y_E).
-    build = [s["current"] for s in steps if s["total"] == 5]
-    assert build == [0, 1, 2, 3, 4, 5]              # monotonic, one per PSF
-    # Both bands' PSFSets were written.
-    assert (tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename).exists()
+    build = [s["current"] for s in steps if s["total"] == 4]   # 2 bands × 2
+    assert build == [0, 1, 2, 3, 4]
+
+    from euclid_polish.psf import PSFSet
+    vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
+    y_e = PSFSet.from_fits(str(tmp_path / "psf" / Config.get_band("Y_E").psf_fits_filename))
+    assert vis.n == y_e.n == 2
+    assert vis.n_stars == y_e.n_stars == [3, 3]    # same clustering → same counts
+
+
+def test_main_clusters_only_all_band_common_stars(tmp_path, monkeypatch):
+    """Only stars accepted in EVERY band are clustered/built — so a band's
+    cluster ci is the same stars in every band."""
+    # VIS accepts 0..3, Y_E accepts 2..5 → common = {2, 3}.
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": {0, 1, 2, 3}, "Y_E": {2, 3, 4, 5}},
+                idx_clusters=[[0, 1]])             # one cluster of the 2 common
+    built_sizes = []
+    monkeypatch.setattr(gen, "_build_cluster_psf",
+                        lambda payload: built_sizes.append(len(payload[2])) or
+                        PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
+                            pixel_scale=payload[1]))
+    monkeypatch.setenv("EUCLID_POLISH_EVENTS_PATH", str(tmp_path / "e.events"))
+    assert gen.main() == 0
+
+    assert built_sizes == [2, 2]                   # each band built the 2 common stars
+    from euclid_polish.psf import PSFSet
+    vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
+    assert vis.n == 1 and vis.n_stars == [2]

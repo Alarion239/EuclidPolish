@@ -205,6 +205,24 @@ def test_randomized_psf_varies_scene_to_scene(hr_field):
                                                  rel=1e-3)
 
 
+def test_forward_shares_one_psf_sample_across_bands(hr_field, monkeypatch):
+    """One PSFSample (cluster index + roll) is drawn per scene and applied to
+    all four bands — physically a single pointing, one telescope roll."""
+    from euclid_polish.psf import PSFSet
+    seen = []
+    orig = PSFSet.apply_sample
+    monkeypatch.setattr(
+        PSFSet, "apply_sample",
+        lambda self, sample, **k: seen.append(sample) or orig(self, sample, **k))
+    sets = {b.name: _vis_psf_set(3, [1.0, 2.0, 3.0]) for b in Config.BANDS}
+    fwd = MultiBandForward(
+        psf_sets_by_band=sets,
+        config=MultiBandForwardConfig(add_noise=False, randomize_psf=True))
+    fwd.process(hr_field, rng=np.random.default_rng(1))
+    assert len(seen) == 4                      # one apply per band
+    assert all(s == seen[0] for s in seen)     # the SAME shared sample
+
+
 def test_randomize_off_uses_mean_deterministically(hr_field):
     """randomize_psf=False → the field-mean PSF every scene (deterministic)."""
     sets = {b.name: _vis_psf_set(1, [0.16]) for b in Config.BANDS}

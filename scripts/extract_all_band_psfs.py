@@ -6,15 +6,19 @@ For each of ``Config.BANDS`` this script:
   1. Looks for cutouts in the band-specific directory:
        VIS  → ``Config.DEFAULT_OUTPUT_DIR/cutouts``
        NISP → ``Config.NISP_DEFAULT_OUTPUT_DIR_BY_BAND[band.name]/cutouts``
-  2. Loads + accepts the good cutouts (saturation/edge rejection), then
-     **spatially clusters** them by catalog sky position (K-Means++) into
-     groups of ``--stars-per-psf`` and builds **one ePSF per cluster** — the
-     Euclid PSF varies across the focal plane, so a band gets K≈n_good/N PSFs
-     (e.g. 3000 good stars at N=100 → ~30 PSFs) instead of one average kernel.
+  2. Loads + accepts the good cutouts (saturation/edge rejection) for every
+     band, then **clusters ONCE** the stars that are valid in ALL four bands,
+     by catalog sky position (K-Means++) into groups of ``--stars-per-psf``.
+     Each band builds **one ePSF per cluster** from that band's cutouts of the
+     cluster's stars — the Euclid PSF varies across the focal plane, so a band
+     gets K≈n_common/N PSFs instead of one average kernel. The SHARED
+     clustering means cluster ``ci`` is the same stars / field region in every
+     band (consistent numbering across bands).
   3. Saves them as a multi-extension FITS to
      ``data/euclid_psf/<band.psf_fits_filename>`` (e.g. ``euclid_psf_VIS.fits``):
      HDU[0] is the mean PSF (so single-PSF readers keep working), HDU[1..K] are
-     the cluster PSFs. Generation draws a random convex blend of the K kernels.
+     the cluster PSFs (same numbering in every band). Generation draws one
+     cluster + roll per scene and applies it to all four bands.
   4. If no cutouts are present for a band, prints a clear note and
      continues — the loader will fall back to a Gaussian PSF for that band.
 
@@ -234,19 +238,17 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def cluster_band(
+def load_accepted_band(
     band: BandConfig, args: argparse.Namespace, reporter: Reporter,
-) -> Optional[dict]:
-    """Phase 1 for one band: load the cutouts, reject saturated/edge stars,
-    K-Means++ cluster the survivors by sky position, and return a build plan.
+) -> Optional[Dict]:
+    """Load one band's cutouts and reject saturated/edge stars.
 
-    The returned dict carries ``jobs`` — a list of
-    ``(cluster_idx, stamps, n_stars, centroid)`` ready to build in parallel,
-    where ``stamps`` are the normalised star cutouts (ndarrays) for that
-    cluster. Returns ``None`` to skip the band (no cutouts / no usable stars).
-    """
+    Returns ``{cfg, scale, filename, accepted}`` where ``accepted`` is
+    ``{star_id: normalised-cutout ndarray}`` for every star that passes the
+    checks, or ``None`` to skip the band (no cutouts / no usable stars). No
+    clustering here — the clustering is done ONCE on the stars common to all
+    bands, so cluster numbering is shared (see :func:`main`)."""
     cutout_dir = _cutout_dir_for_band(band)
-    out_path = os.path.join(args.psf_dir, band.psf_fits_filename)
 
     if args.vis_pixels is not None:
         arcsec = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
@@ -259,7 +261,6 @@ def cluster_band(
     print(f"=== {band.name} ===")
     print(f"  cutouts:     {cutout_dir}")
     print(f"  cutout-size: {cutout_size} px (native)")
-    print(f"  output:      {out_path}")
     if not os.path.isdir(cutout_dir):
         reporter.warn(f"{band.name}: cutout directory not found — skipping")
         print(f"  ⚠️  cutout directory not found — skipping. "
@@ -287,46 +288,20 @@ def cluster_band(
 
     selected = extractor.select_files(all_files, num_stars=args.num_stars)
     print(f"  considering {len(selected)} of {len(all_files)} available stars")
-
-    # Load + accept (saturation/edge reject) in one pass, keeping ids so we
-    # can join each star to its catalog sky position for clustering.
     accepted = extractor.extract_accepted_stars(selected)
     if not accepted:
         reporter.warn(f"{band.name}: no usable (non-saturated) stars — skipping")
         print("  ⚠️  no usable stars after saturation/edge rejection — skipping.")
         return None
-    ids = [sid for sid, _ in accepted]
-    stars = [star for _, star in accepted]
-    print(f"  accepted {len(stars)} good stars")
-
-    positions = _load_star_positions(args.stars_csv)
-    if not positions:
-        print(f"  ⚠️  no positions in {args.stars_csv} — single ePSF from all "
-              f"good stars (no spatial clustering).")
-    clusters = cluster_star_indices(ids, positions, args.stars_per_psf,
-                                    min_stars=args.min_stars_per_psf)
-    print(f"  {len(clusters)} cluster(s) "
-          f"(target {args.stars_per_psf} stars/PSF, "
-          f"min {args.min_stars_per_psf}): "
-          f"sizes {[len(c) for c in clusters]}")
-
-    jobs = []
-    for ci, cluster in enumerate(clusters):
-        # Normalised star cutouts (ndarrays) — picklable; the worker rebuilds
-        # the EPSFStar objects, so nothing photutils-specific is pickled.
-        stamps = [np.asarray(stars[i].data, dtype=np.float32) for i in cluster]
-        pts = [positions[ids[i]] for i in cluster if ids[i] in positions]
-        centroid = ((float(np.mean([p[0] for p in pts])),
-                     float(np.mean([p[1] for p in pts]))) if pts
-                    else (float("nan"), float("nan")))
-        jobs.append((ci, stamps, len(cluster), centroid))
-
+    print(f"  accepted {len(accepted)} good stars")
     return {
-        "cfg":            cfg,
-        "scale":          band.epsf_pixel_scale_arcsec,
-        "filename":       band.psf_fits_filename,
-        "jobs":           jobs,
-        "have_positions": bool(positions),
+        "cfg":      cfg,
+        "scale":    band.epsf_pixel_scale_arcsec,
+        "filename": band.psf_fits_filename,
+        # Normalised cutouts (ndarrays) — picklable; the worker rebuilds the
+        # EPSFStar objects, so nothing photutils-specific crosses processes.
+        "accepted": {sid: np.asarray(star.data, dtype=np.float32)
+                     for sid, star in accepted},
     }
 
 
@@ -371,33 +346,70 @@ def main() -> int:
     print(f"  psf-dir      = {args.psf_dir}")
     print(f"  workers      = {n_workers} parallel ePSF builds\n")
 
-    # Phase 1 — per band (sequential, so "VIS first, then Y_E, …"): load +
-    # reject + cluster. Holds each band's plan (cluster star stamps) so the
-    # total PSF count is known before building starts.
-    reporter.set_stage("clustering stars")
-    plan = {}
+    # Phase 1 — load + reject each band (sequential, so "VIS first, then …").
+    reporter.set_stage("loading + rejecting stars")
+    band_data: Dict[str, Dict] = {}
     for bi, band in enumerate(bands, start=1):
-        p = cluster_band(band, args, reporter)
-        if p is not None:
-            plan[band.name] = p
-        reporter.set_step(bi, len(bands), f"clustered {band.name}")
+        d = load_accepted_band(band, args, reporter)
+        if d is not None:
+            band_data[band.name] = d
+        reporter.set_step(bi, len(bands), f"loaded {band.name}")
         print()
-
-    total = sum(len(p["jobs"]) for p in plan.values())
-    if total == 0:
+    if not band_data:
         print("No bands had usable cutouts; nothing to build.")
         return 0
 
-    # Phase 2 — build EVERY cluster ePSF in ONE pool of ``n_workers`` (all the
-    # allocated CPUs build PSFs in parallel). Tasks are submitted in band order
-    # so VIS PSFs go first; one monotonic cumulative bar over all PSFs.
-    reporter.set_stage(f"building {total} ePSF(s) on {n_workers} worker(s)")
-    results = {name: {} for name in plan}        # band -> {cluster_idx: PSF}
-    tasks = [(band.name, ci, (plan[band.name]["cfg"],
-                              plan[band.name]["scale"], stamps))
-             for band in bands if band.name in plan
-             for ci, stamps, _n, _c in plan[band.name]["jobs"]]
+    # Cluster ONCE on the stars accepted in ALL present bands, so every band's
+    # ePSFs share the same clustering + numbering (cluster ci = the same stars,
+    # same field region, in every band — required for the cross-band-consistent
+    # generation sampler).
+    present = [b.name for b in bands if b.name in band_data]      # band order
+    common = set.intersection(*(set(band_data[b]["accepted"]) for b in present))
+    print(f"{len(common)} star(s) valid in all {len(present)} band(s) "
+          f"{present}")
+    positions = _load_star_positions(args.stars_csv)
+    common_pos = sorted(i for i in common if i in positions) if positions else []
+    if common_pos:
+        idx_clusters = cluster_star_indices(
+            common_pos, positions, args.stars_per_psf,
+            min_stars=args.min_stars_per_psf)
+        clusters = [[common_pos[i] for i in c] for c in idx_clusters if c]
+    elif common:
+        print("  ⚠️  no catalog positions for the common stars — one shared "
+              "ePSF per band from all common stars.")
+        clusters = [sorted(common)]
+    else:
+        print("No stars are valid in every band; nothing to build.")
+        return 0
 
+    n_clusters = len(clusters)
+    star_counts = [len(c) for c in clusters]
+    centroids: List[Tuple[float, float]] = []
+    for c in clusters:
+        pts = [positions[i] for i in c if i in positions]
+        centroids.append((float(np.mean([p[0] for p in pts])),
+                          float(np.mean([p[1] for p in pts]))) if pts
+                         else (float("nan"), float("nan")))
+    have_centroids = bool(positions) and all(
+        np.isfinite(a) and np.isfinite(b) for a, b in centroids)
+    print(f"{n_clusters} shared cluster(s) (target {args.stars_per_psf}/PSF, "
+          f"min {args.min_stars_per_psf}): sizes {star_counts}\n")
+
+    # Drop the now-unused (non-common) stamps to save memory.
+    used = set().union(*clusters)
+    for b in present:
+        band_data[b]["accepted"] = {i: band_data[b]["accepted"][i]
+                                    for i in used if i in band_data[b]["accepted"]}
+
+    # Phase 2 — build EVERY (band, cluster) ePSF in ONE pool of ``n_workers``
+    # (all allocated CPUs in parallel), submitted in band order. One monotonic
+    # bar over all PSFs.
+    tasks = [(bn, ci, (band_data[bn]["cfg"], band_data[bn]["scale"],
+                       [band_data[bn]["accepted"][i] for i in clusters[ci]]))
+             for bn in present for ci in range(n_clusters)]
+    total = len(tasks)
+    reporter.set_stage(f"building {total} ePSF(s) on {n_workers} worker(s)")
+    results = {bn: {} for bn in present}         # band -> {cluster_idx: PSF}
     done = 0
     reporter.set_step(0, total, "building ePSFs")
 
@@ -432,35 +444,32 @@ def main() -> int:
                     psf = None
                 _record(band_name, ci, psf)
 
-    # Phase 3 — assemble + save one PSFSet per band (in cluster order).
+    # Phase 3 — a cluster survives only if EVERY present band built it, so the
+    # saved PSFSets keep identical numbering (cluster ci ↔ same stars in all
+    # bands). Save one PSFSet per band over the surviving clusters.
     print("=" * 50)
+    survive = [ci for ci in range(n_clusters)
+               if all(ci in results[bn] for bn in present)]
+    if len(survive) < n_clusters:
+        print(f"  ⚠️  dropped {n_clusters - len(survive)} cluster(s) that failed "
+              f"in ≥1 band (kept numbering consistent across bands)")
     succeeded = []
     for band in bands:
-        p = plan.get(band.name)
-        if p is None:
+        if band.name not in present:
             succeeded.append((band.name, False))
             continue
-        built = results[band.name]
-        psfs: List[PSF] = []
-        centroids: List[Tuple[float, float]] = []
-        star_counts: List[int] = []
-        for ci, _stamps, n, centroid in p["jobs"]:
-            if ci in built:
-                psfs.append(built[ci])
-                star_counts.append(n)
-                centroids.append(centroid)
+        psfs = [results[band.name][ci] for ci in survive]
         if not psfs:
-            reporter.error(f"{band.name}: every cluster failed to build")
-            print(f"  ✗ {band.name}: every cluster failed to build")
+            reporter.error(f"{band.name}: no clusters survived in every band")
+            print(f"  ✗ {band.name}: no clusters survived in every band")
             succeeded.append((band.name, False))
             continue
-        have_centroids = p["have_positions"] and all(
-            np.isfinite(c[0]) and np.isfinite(c[1]) for c in centroids)
         psf_set = PSFSet.from_psfs(
-            psfs, centroids=centroids if have_centroids else None,
-            n_stars=star_counts)
+            psfs,
+            centroids=[centroids[ci] for ci in survive] if have_centroids else None,
+            n_stars=[star_counts[ci] for ci in survive])
         os.makedirs(args.psf_dir, exist_ok=True)
-        saved = psf_set.save(args.psf_dir, filename=p["filename"])
+        saved = psf_set.save(args.psf_dir, filename=band_data[band.name]["filename"])
         print(f"  ✓ {band.name}: {psf_set.n} PSF(s), shape={psf_set.shape} "
               f"→ {saved}")
         succeeded.append((band.name, True))

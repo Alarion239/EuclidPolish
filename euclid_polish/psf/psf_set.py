@@ -37,6 +37,20 @@ from astropy.io import fits
 from euclid_polish.psf.core import PSF
 
 
+@dataclass(frozen=True)
+class PSFSample:
+    """One scene's PSF draw, shared across all bands so the synthetic data is
+    physically consistent (one pointing → one field position + one roll).
+
+    ``index`` selects the cluster PSF (the band PSFSets share a common
+    clustering + numbering, so the same index is the same field region in
+    every band). ``angle`` is the telescope roll in degrees, or ``None`` for
+    no rotation. The same :class:`PSFSample` is applied to every band's set."""
+
+    index: int
+    angle: Optional[float] = None
+
+
 @dataclass
 class PSFSet:
     """An ordered ensemble of K :class:`PSF` kernels for one band.
@@ -156,6 +170,43 @@ class PSFSet:
             return w / w.sum()
         return None
 
+    def draw_sample(
+        self,
+        rng: np.random.Generator,
+        *,
+        use_unrotated_prob: float = 0.3,
+        angle_min: int = 1,
+        angle_max: int = 359,
+    ) -> PSFSample:
+        """Draw a :class:`PSFSample` (cluster index + roll) for one scene.
+
+        1. Pick a cluster with probability **proportional to its star count**
+           (``n_stars``); few-star, noisier PSFs appear rarely. Uniform when
+           no counts are present.
+        2. With probability ``use_unrotated_prob`` (default 0.3) no rotation.
+        3. Otherwise a random integer roll in ``[angle_min, angle_max]``
+           (default 1..359 — 0/360 is the identity, covered by step 2).
+
+        Drawn ONCE per scene from a reference set and applied to every band
+        via :meth:`apply_sample`, so all bands share the field position + roll.
+        """
+        idx = int(rng.choice(self.n, p=self._pick_weights()))
+        if rng.random() < float(use_unrotated_prob):
+            return PSFSample(index=idx, angle=None)
+        return PSFSample(index=idx,
+                         angle=float(rng.integers(int(angle_min),
+                                                  int(angle_max) + 1)))
+
+    def apply_sample(self, sample: PSFSample, *, rotation_order: int = 3) -> PSF:
+        """Realise a :class:`PSFSample` against THIS band's set: take cluster
+        ``sample.index`` (clamped if this set has fewer members — e.g. a
+        Gaussian-fallback band) and rotate by the shared roll. No blending,
+        no cropping — one real single-roll kernel."""
+        psf = self.psfs[min(int(sample.index), self.n - 1)]
+        if sample.angle is None:
+            return psf
+        return psf.rotated(float(sample.angle), order=int(rotation_order))
+
     def sample_for_generation(
         self,
         rng: np.random.Generator,
@@ -165,26 +216,12 @@ class PSFSet:
         angle_max: int = 359,
         rotation_order: int = 3,
     ) -> PSF:
-        """Draw one PSF for a synthetic scene.
-
-        1. Pick a cluster PSF with probability **proportional to its star
-           count** (``n_stars``), so few-star, noisier PSFs appear rarely.
-           Falls back to uniform when no counts are present.
-        2. With probability ``use_unrotated_prob`` (default 0.3) return it
-           as-is.
-        3. Otherwise rotate it by a random integer roll angle in
-           ``[angle_min, angle_max]`` (default 1..359 — 0/360 would be the
-           identity, already covered by step 2).
-
-        No blending and no cropping: each scene gets one real, single-roll
-        kernel — exactly what occurs at one Euclid pointing.
-        """
-        idx = int(rng.choice(self.n, p=self._pick_weights()))
-        psf = self.psfs[idx]
-        if rng.random() < float(use_unrotated_prob):
-            return psf
-        angle = int(rng.integers(int(angle_min), int(angle_max) + 1))
-        return psf.rotated(float(angle), order=int(rotation_order))
+        """Single-set convenience: ``apply_sample(draw_sample(rng))``. The
+        multi-band generator instead draws one :class:`PSFSample` and applies
+        it across all bands so the roll + field position are shared."""
+        spec = self.draw_sample(rng, use_unrotated_prob=use_unrotated_prob,
+                                angle_min=angle_min, angle_max=angle_max)
+        return self.apply_sample(spec, rotation_order=rotation_order)
 
     # ------------------------------------------------------------------
     # Grid operations — map over members, return a new PSFSet

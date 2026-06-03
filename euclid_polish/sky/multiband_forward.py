@@ -37,7 +37,7 @@ from scipy import signal as scipy_signal
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
-from euclid_polish.psf.psf_set import PSFSet
+from euclid_polish.psf.psf_set import PSFSet, PSFSample
 # Re-export the canonical noise function (lives in sky.noise to keep
 # sky.types' module-level imports free of circulars). Existing callers
 # of ``from euclid_polish.sky.multiband_forward import apply_band_noise``
@@ -203,22 +203,28 @@ class MultiBandForward:
         """
         return Config.BAND_VIS.pixel_scale_lr_arcsec
 
+    def _draw_psf_sample(self, rng: np.random.Generator) -> "PSFSample":
+        """Draw ONE :class:`PSFSample` (cluster index + roll) for the whole
+        scene, from the band with the most cluster PSFs (the reference for the
+        common clustering). Applied to every band so all four share the field
+        position and the telescope roll — physically one pointing."""
+        ref = max(self._psf_sets.values(), key=lambda p: p.n)
+        return ref.draw_sample(
+            rng, use_unrotated_prob=self.config.psf_unrotated_prob)
+
     def _process_one_band(
         self,
         hr_channel: np.ndarray,
         band: BandConfig,
         rng: np.random.Generator,
+        psf_spec: "Optional[PSFSample]" = None,
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
-        # Pick this scene's PSF from the band's ensemble: a star-count-weighted
-        # cluster pick + a random roll rotation (operator-free, no blending)
-        # when randomisation is on, else the deterministic field-mean.
+        # Realise the scene's shared PSF sample against this band's set: cluster
+        # ``psf_spec.index`` rotated by the shared roll (operator-free, no
+        # blending). ``psf_spec=None`` → the deterministic field-mean.
         pset = self._psf_sets[band.name]
-        if self.config.randomize_psf:
-            psf = pset.sample_for_generation(
-                rng, use_unrotated_prob=self.config.psf_unrotated_prob)
-        else:
-            psf = pset.mean()
+        psf = pset.apply_sample(psf_spec) if psf_spec is not None else pset.mean()
         target_scale = self.target_lr_pixel_scale_arcsec
 
         # 1. PSF convolution on HR plane — single source of truth is
@@ -293,12 +299,17 @@ class MultiBandForward:
         W_trim = (W_full // max_rebin) * max_rebin
         hr_data_trim = hr_4ch.data[:H_trim, :W_trim, :]
 
+        # Draw ONE PSF sample (cluster index + roll) for the whole scene so all
+        # four bands share the field position and the telescope roll — one
+        # physical pointing. ``None`` (randomisation off) → each band's mean.
+        psf_spec = self._draw_psf_sample(rng) if self.config.randomize_psf else None
+
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
         for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
             lr_channels.append(self._process_one_band(
-                hr_data_trim[..., k], band, rng,
+                hr_data_trim[..., k], band, rng, psf_spec=psf_spec,
             ))
         # All channels must end on the same grid (the VIS LR grid).
         target_shape = lr_channels[0].shape
