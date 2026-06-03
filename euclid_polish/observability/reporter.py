@@ -92,8 +92,19 @@ class Reporter:
         Returns a no-op reporter when the env var is missing — so the
         same script works under SLURM (events file present) and during
         local development (no env var, no file, no errors).
+
+        When the events file IS present, a Reporter is driving the WebUI
+        progress bar, so any ``tqdm`` bar would just flood the job's
+        ``.err`` log with redundant ASCII frames. Silence every tqdm bar
+        in this process by exporting ``TQDM_DISABLE`` (tqdm reads it at
+        each bar's creation). ``setdefault`` so an explicit override from
+        the environment still wins. ``tqdm.write`` status lines (parsed
+        from ``.out``) are unaffected — only the live bar is suppressed.
         """
-        return cls(events_path=os.environ.get(ENV_EVENTS_PATH))
+        events_path = os.environ.get(ENV_EVENTS_PATH)
+        if events_path:
+            os.environ.setdefault("TQDM_DISABLE", "1")
+        return cls(events_path=events_path)
 
     # ------------------------------------------------------------------
     # Public emit API

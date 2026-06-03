@@ -63,6 +63,29 @@ class TestNoOp:
         assert r.events_path is None
         r.set_stage("x")  # should not raise
 
+    def test_from_env_with_events_silences_tqdm(self, monkeypatch, tmp_path):
+        """Under a job (events file present) the Reporter drives the WebUI
+        bar, so from_env() exports TQDM_DISABLE to keep tqdm bars out of the
+        .err log. (monkeypatch.delenv restores the prior state at teardown,
+        so the flag never leaks into other tests.)"""
+        monkeypatch.setenv(ENV_EVENTS_PATH, str(tmp_path / "j.events"))
+        monkeypatch.delenv("TQDM_DISABLE", raising=False)
+        Reporter.from_env()
+        assert os.environ.get("TQDM_DISABLE") == "1"
+
+    def test_from_env_no_events_leaves_tqdm_untouched(self, monkeypatch):
+        monkeypatch.delenv(ENV_EVENTS_PATH, raising=False)
+        monkeypatch.delenv("TQDM_DISABLE", raising=False)
+        Reporter.from_env()
+        assert "TQDM_DISABLE" not in os.environ
+
+    def test_from_env_respects_explicit_tqdm_disable(self, monkeypatch, tmp_path):
+        """An explicit TQDM_DISABLE in the environment wins over the default."""
+        monkeypatch.setenv(ENV_EVENTS_PATH, str(tmp_path / "j.events"))
+        monkeypatch.setenv("TQDM_DISABLE", "0")
+        Reporter.from_env()
+        assert os.environ["TQDM_DISABLE"] == "0"
+
 
 # ---------------------------------------------------------------------------
 # Event shape

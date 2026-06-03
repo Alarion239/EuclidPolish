@@ -323,6 +323,10 @@ def render_sbatch_body(
         # ``Reporter.from_env()`` reads this to open the per-job
         # structured events stream.
         export EUCLID_POLISH_EVENTS_PATH={shlex.quote(events_rel)}
+        # The WebUI bar is driven by the Reporter, so silence every tqdm
+        # progress bar in the job — otherwise they flood the .err log with
+        # redundant ASCII frames. ``tqdm.write`` status lines (.out) stay.
+        export TQDM_DISABLE=1
         mkdir -p "$EUCLID_POLISH_DATA_DIR" "$EUCLID_POLISH_CKPT_DIR"
 
         module purge
