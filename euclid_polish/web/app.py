@@ -640,10 +640,8 @@ def _job_reconstruct_euclid_cutout(
             vis_header = header.copy()
         magzero = float(header.get("MAGZERO",
                                    band.sim_zeropoint_e))
-        # m_AB = MAGZERO - 2.5·log10(F_archive)  (archive units = ADU/s)
-        # m_AB = ZP_stack_e - 2.5·log10(F_e_over_stack)
-        #  ⇒ F_e = F_archive · 10^((ZP_stack_e − MAGZERO)/2.5)
-        adu_to_e = 10 ** ((band.sim_zeropoint_e - magzero) / 2.5)
+        # Single source of truth for archive ADU/s → electrons-over-stack.
+        adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
         data_e = (arr * adu_to_e).astype(np.float32)
         bands_data[band_name] = data_e
         bands_info[band_name] = {

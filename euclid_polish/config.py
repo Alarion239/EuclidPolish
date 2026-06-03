@@ -184,10 +184,6 @@ class Config:
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
-    # Catalog zeropoint: interprets MER catalog flux_vis_1fwhm_aper → AB mag
-    # (legacy; used by euclid/catalog.py — do not change without re-validating
-    # against real Euclid Q1 catalog data).
-    DEFAULT_VIS_ZEROPOINT        = 26.2
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
     # flux columns (flux_vis_psf, flux_vis_*fwhm_aper, …) are in µJy, and for
     # an AB flux ``mag_AB = AB_ZP_UJY − 2.5·log10(flux_µJy)`` with
@@ -225,17 +221,23 @@ class Config:
     # Euclid III. NISP Instrument (Schirmer+ 2025); read/dark are
     # HAWAII-2RG typical values.
 
+    # VIS fields reference the scalar VIS constants above so each physical
+    # value (zeropoint, exposure budget, sky, noise) is defined exactly ONCE.
+    # This is what keeps the per-band ``sim_zeropoint_e`` in lock-step with the
+    # scalar ``SIM_VIS_ZEROPOINT_E`` / ``SKY_E_PER_S_PER_ARCSEC2`` — editing the
+    # scalar updates both, so the synthetic and real-cutout electron scales can
+    # never silently diverge.
     BAND_VIS = BandConfig(
         name                    = "VIS",
-        pixel_scale_lr_arcsec   = 0.10,
+        pixel_scale_lr_arcsec   = VIS_PIXEL_SCALE_ARCSEC,
         psf_fwhm_arcsec         = 0.16,
         psf_fits_filename       = "euclid_psf_VIS.fits",
-        zeropoint_ab_e_per_s    = 25.50,
-        sky_mag_ab_arcsec2      = 22.35,
-        exposure_time_s         = 565.0,
-        n_exposures             = 4,
-        read_noise_e            = 4.5,
-        dark_e_per_s_per_pix    = 0.001,
+        zeropoint_ab_e_per_s    = VIS_AB_ZP_E_PER_S,
+        sky_mag_ab_arcsec2      = SKY_MAG_AB_ARCSEC2,
+        exposure_time_s         = EXPOSURE_TIME_S,
+        n_exposures             = N_EXPOSURES,
+        read_noise_e            = READ_NOISE_E,
+        dark_e_per_s_per_pix    = DARK_E_PER_S_PER_PIX,
         asinh_stretch_scale_e   = 1000.0,
         # VIS CR rejection via across-dither image differencing kills ~98%
         # of hits before they reach the science image (0.02 ≈ 1/50).
