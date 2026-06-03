@@ -712,6 +712,7 @@ large cutout don't leak across train/validate."></label>`;
           <span class="js-step-label"></span>
         </div>
         <progress class="js-progress" max="1" value="0" hidden></progress>
+        <div class="js-metrics job-status-metrics" hidden></div>
         <details class="job-status-warnings">
           <summary>Warnings (<span class="js-warn-count">0</span>)</summary>
           <ul class="js-warn-list event-list"></ul>

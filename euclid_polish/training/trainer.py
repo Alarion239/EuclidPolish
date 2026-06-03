@@ -249,6 +249,7 @@ class Trainer:
         validate_images=Config.DEFAULT_VALIDATE_IMAGES,
         step_callback=None,
         step_callback_every=50,
+        eval_callback=None,
         hst_valid_dataset=None,
         anchor_valid_dataset=None,
         save_best_weights=(1.0, 1.0, 0.0),
@@ -278,6 +279,15 @@ class Trainer:
             progress reporter (e.g. the JSONL events file the FASRC
             scripts write via :class:`Reporter`) without coupling the
             trainer to it. ``None`` (default) → no callback.
+        eval_callback : Optional[Callable[[dict], None]]
+            Called once per evaluate with that evaluate's full metrics row
+            (step, total, loss + per-lane losses, PSNR str/raw + HST/anchor
+            variants, gradient norms, duration, ``save_best_score`` and a
+            ``saved`` flag set when the eval wrote a checkpoint). Used to
+            feed the structured event stream (``Reporter.metric``) so the
+            WebUI reads training progress from events, not by parsing logs.
+            ``None`` (default) → no callback. Fires every ``evaluate_every``
+            steps, so it's already sparse — no extra cadence gating.
         step_callback_every : int
             Cadence of ``step_callback`` invocations. 50 keeps the
             JSONL events file small on a 200k-step run (~4k lines) while
@@ -548,6 +558,17 @@ class Trainer:
                     not save_best_only              # save-every mode
                     or save_best_score > ckpt.psnr  # genuine improvement
                 )
+
+                # Emit this evaluate's metrics to the structured event
+                # stream BEFORE the save branch's ``continue`` so every
+                # eval (saved or not) reaches the WebUI. Pass a copy with
+                # the ``saved`` flag so the events stream — not the .out
+                # log — carries loss/PSNR/checkpoint progress. ``total``
+                # lets the consumer show step N/total without a step event.
+                if eval_callback is not None:
+                    eval_callback({**row, "total": int(steps),
+                                   "saved": bool(should_save)})
+
                 if not should_save:
                     self.now = time.perf_counter()
                     continue

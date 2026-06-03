@@ -239,8 +239,9 @@ def test_queue_endpoint_parses_fake_squeue_output(fake_remote, client):
 
 
 def test_training_status_running_returns_parsed_summary(fake_remote, client):
-    """Plant a fake squeue + log files, then assert the route returns the
-    parsed stage / progress / metrics dict the UI expects."""
+    """Plant a fake squeue + a Reporter *events* stream (NOT logs), then
+    assert the route folds stage / progress / metrics / checkpoint straight
+    from the events — no log parsing."""
     bin_dir = fake_remote["bin_dir"]
     # Squeue: one RUNNING job. The jobid matches what we'll plant in sqlite.
     (bin_dir / "squeue").write_text(textwrap.dedent("""\
@@ -249,33 +250,29 @@ def test_training_status_running_returns_parsed_summary(fake_remote, client):
     """))
     os.chmod(bin_dir / "squeue", 0o755)
 
-    # Plant the .out / .err / training_log.jsonl in the locations the
-    # route will look for them based on what's stored in sqlite.
     cfg = fake_remote["cfg"]
     log_dir = Path(cfg.repo_path) / "logs" / "jobs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    out_path = log_dir / "euclid-test.out"
-    err_path = log_dir / "euclid-test.err"
+    out_path    = log_dir / "euclid-test.out"
+    err_path    = log_dir / "euclid-test.err"
+    events_path = log_dir / "euclid-test.events"
     fake_remote["db"].insert(
         "88888", label="test run", params={"steps": 400_000},
         script_path=str(log_dir / "euclid-test.sh"),
         log_path=str(out_path), err_path=str(err_path),
+        events_path=str(events_path),
     )
-    out_path.write_text(textwrap.dedent("""\
-        [...] STEP 1: Generate clean 4-band HR fields ...
-        [...] STEP 2: HR → LR ...
-        [...] STEP 3: Train WDSR (400000 steps, batch 16, eval every 1000)
-        [t] Step 12000/400000: loss = 4.21, PSNR(str/raw) = 22.314/19.872 dB, |g| 0.3/1.4 (3.51s)
-          ✓ Checkpoint saved (PSNR str=22.314)
-    """))
-    err_path.write_text("Training:   3% 12000/400000 [12:00<5:30:14, 10.0step/s]\n")
-
-    ckpt_dir = Path(cfg.ckpt_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    (ckpt_dir / "training_log.jsonl").write_text(
-        '{"step": 11000, "loss": 4.3, "psnr_stretched": 22.1, "psnr_raw": 19.7, "duration_s": 3.5, "wall_time": 0}\n'
-        '{"step": 12000, "loss": 4.21, "psnr_stretched": 22.314, "psnr_raw": 19.872, "duration_s": 3.5, "wall_time": 0}\n'
-    )
+    # The structured event stream the trainer writes via Reporter: one
+    # stage, two step events (so rate/ETA is computable) and two metric
+    # samples (the second wrote a checkpoint → saved=True).
+    events = [
+        {"ts": 100.0, "kind": "stage",  "value": "training 400000 steps"},
+        {"ts": 110.0, "kind": "step",   "value": {"current": 11000, "total": 400000, "label": "train"}},
+        {"ts": 110.0, "kind": "metric", "value": {"step": 11000, "total": 400000, "loss": 4.3, "psnr_stretched": 22.1, "psnr_raw": 19.7}},
+        {"ts": 210.0, "kind": "step",   "value": {"current": 12000, "total": 400000, "label": "train"}},
+        {"ts": 210.0, "kind": "metric", "value": {"step": 12000, "total": 400000, "loss": 4.21, "psnr_stretched": 22.314, "psnr_raw": 19.872, "saved": True}},
+    ]
+    events_path.write_text("".join(json.dumps(e) + "\n" for e in events))
 
     r = client.get("/api/fasrc/training-status")
     assert r.status_code == 200, r.get_json()
@@ -284,12 +281,13 @@ def test_training_status_running_returns_parsed_summary(fake_remote, client):
     assert data["running"] is True
     assert data["job"]["jobid"]  == "88888"
     assert data["job"]["label"]  == "test run"
-    assert data["stage"] == "train"
+    assert data["stage"] == "training 400000 steps"
     assert data["progress"]["current"] == 12000
     assert data["progress"]["total"]   == 400000
     assert data["latest_metrics"]["psnr_stretched"] == 22.314
-    assert "Checkpoint saved" in data["last_checkpoint"]
+    assert data["last_checkpoint"] == "step 12000"       # from the saved flag
     assert data["latest_validation"]["step"] == 12000
+    assert len(data["validations"]) == 2
     assert data["eta_seconds"] is not None
 
 
@@ -344,7 +342,7 @@ def test_git_pull_does_not_flag_env_update_for_unrelated_changes(fake_remote, cl
 # Live log SSE
 # ---------------------------------------------------------------------------
 
-def test_log_stream_emits_lines_and_updates_progress(fake_remote, client):
+def test_log_stream_emits_lines(fake_remote, client):
     # First submit a job so the db knows about it + the log path.
     r = client.post("/api/fasrc/submit", data={
         "confirm": "yes",
@@ -381,10 +379,12 @@ def test_log_stream_emits_lines_and_updates_progress(fake_remote, client):
     assert "step 100/1000" in combined
     assert "step 300/1000" in combined
 
-    # The line parser should have written into sqlite as side-effect.
+    # The log stream is now a pure raw-log VIEWER: it emits lines but does
+    # NOT scrape progress out of them. Progress comes from the Reporter
+    # event stream (folded in JobStatus by /api/fasrc/training-status), so
+    # the DB progress is untouched by merely tailing the log.
     row = fake_remote["db"].get(jobid)
-    assert row["progress_total"] == 1000
-    assert row["progress_step"] >= 100  # latest line we saw
+    assert row["progress_step"] in (None, 0)
 
 
 # ---------------------------------------------------------------------------

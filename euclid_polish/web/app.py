@@ -4619,96 +4619,53 @@ def create_app() -> Flask:
                    or f"{cfg.repo_path}/logs/jobs/{live['name']}.out"
         err_path = (stored or {}).get("err_path") \
                    or log_path.replace(".out", ".err")
-        # Trainer writes ``training_log.csv``; pre-CSV runs left
-        # ``training_log.jsonl`` — try the new name first and fall back
-        # so partially-mirrored ckpt dirs still light up the dashboard.
-        train_log_csv   = f"{cfg.ckpt_dir}/training_log.csv"
-        train_log_jsonl = f"{cfg.ckpt_dir}/training_log.jsonl"
-
-        # 2. Fetch the relevant log tails in one SSH call. Wrapped in
-        # ``{ ...; exit 0; }`` so a missing optional file (e.g. the
-        # training log before the first eval) doesn't fail the whole
-        # route. Every section is independently guarded with
-        # ``2>/dev/null`` + ``|| true``. The training-log block first
-        # tries the CSV, then the legacy JSONL — the parser auto-detects
-        # the format from the leading character.
-        cmd = (
-            f"{{ "
-            f"  echo __OUT__ ; "
-            f"  tail -n 500 {shlex.quote(log_path)} 2>/dev/null || true ; "
-            f"  echo __ERR__ ; "
-            f"  tail -n 200 {shlex.quote(err_path)} 2>/dev/null || true ; "
-            f"  echo __JSONL__ ; "
-            # For the CSV path, the header is line 1 — we MUST keep it for
-            # csv.DictReader. ``head -n 1 + tail -n 200`` covers files of
-            # any size and the awk dedupes the duplicate when the file is
-            # shorter than 200 rows (header would otherwise appear twice).
-            f"  if [ -f {shlex.quote(train_log_csv)} ]; then "
-            f"    {{ head -n 1 {shlex.quote(train_log_csv)} ; "
-            f"       tail -n 200 {shlex.quote(train_log_csv)} ; }} 2>/dev/null "
-            f"    | awk '!seen[$0]++' || true ; "
-            f"  elif [ -f {shlex.quote(train_log_jsonl)} ]; then "
-            f"    tail -n 200 {shlex.quote(train_log_jsonl)} 2>/dev/null || true ; "
-            f"  fi ; "
-            f"}}; exit 0"
-        )
-        rc, out, _err = STATE.ssh.run(cmd, timeout=15)
-        # rc should always be 0 thanks to ``exit 0``; if it isn't, ssh
-        # itself failed (e.g. socket died). Surface a clear message
-        # instead of a generic 500.
-        if rc != 0:
-            return jsonify({
-                "ok":    False,
-                "error": "ssh failed to read remote logs — "
-                         "try refreshing or reconnecting",
-            })
-
-        sections = {"__OUT__": "", "__ERR__": "", "__JSONL__": ""}
-        current  = None
-        for line in out.splitlines():
-            if line in sections:
-                current = line
-                continue
-            if current:
-                sections[current] += line + "\n"
-
+        # 2. Fold the job's structured event stream into a JobStatus —
+        # the SAME Reporter events the JobStatusCard polls. No log
+        # scraping: stage, progress, per-evaluate metrics (loss/PSNR) and
+        # the checkpoint marker all come from the events file the trainer
+        # writes via :class:`Reporter`.
         elapsed_s = fasrc_jobs.parse_slurm_time(live.get("time"))
+        status = JobStatusFetcher(ssh=STATE.ssh).fetch(
+            events_path=(stored or {}).get("events_path"))
 
-        history_spt = fasrc_jobs.secs_per_step_history()
-        summary = fasrc_log_parser.summarise(
-            out_text=sections["__OUT__"],
-            err_text=sections["__ERR__"],
-            jsonl_text=sections["__JSONL__"],
-            elapsed_seconds=elapsed_s,
-            history_secs_per_step=history_spt,
-        )
+        # Map JobStatus → the dashboard's existing field shape.
+        progress = None
+        if status.step is not None and status.step.total > 0:
+            cur, tot = status.step.current, status.step.total
+            progress = {"current": cur, "total": tot,
+                        "pct": round(100.0 * cur / tot, 2)}
+        # ``stage_index`` is just how far through the stage sequence we are
+        # (0-based); ``pipeline_done`` is always False here — this branch
+        # only runs while a job is RUNNING in squeue.
+        stage_index = max(0, len(status.stages) - 1)
 
         # 3. Side-effect: keep sqlite up to date so /api/fasrc/jobs is
         # accurate for the recent-submissions panel.
-        if summary["progress"]:
+        if progress:
             fasrc_jobs.DB.update_progress(
-                jobid,
-                summary["progress"]["current"],
-                summary["progress"]["total"],
-            )
+                jobid, progress["current"], progress["total"])
         if stored and stored["started_at"] is None:
             fasrc_jobs.DB.update_state(
                 jobid, state="RUNNING",
                 started_at=time.time() - elapsed_s,
             )
 
-        # 4. Activate the auto-mirror during the train stage and trigger
-        # an immediate sync whenever a fresh "Checkpoint saved" line
-        # shows up. ``MIRROR.trigger()`` calls rsync synchronously and
-        # can block for minutes on large checkpoint dirs — dispatch on
-        # a daemon thread so the status poll stays snappy.
-        if summary["stage"] == "train":
+        # 4. Activate the auto-mirror during the training stage and trigger
+        # an immediate sync whenever a fresh checkpoint marker arrives on
+        # the event stream (the trainer emits ``saved`` on each checkpoint
+        # eval; fold_events surfaces it as ``last_checkpoint``).
+        # ``MIRROR.trigger()`` rsyncs synchronously and can block for
+        # minutes on large ckpt dirs — dispatch on a daemon thread so the
+        # status poll stays snappy.
+        in_training = bool(status.stage
+                           and status.stage.lower().startswith("training"))
+        if in_training:
             if not MIRROR.status.enabled:
                 MIRROR.start()
-            if (summary["last_checkpoint"]
+            if (status.last_checkpoint
                     and MIRROR.status.last_checkpoint_line
-                        != summary["last_checkpoint"]):
-                MIRROR.status.last_checkpoint_line = summary["last_checkpoint"]
+                        != status.last_checkpoint):
+                MIRROR.status.last_checkpoint_line = status.last_checkpoint
                 _t.Thread(target=MIRROR.trigger, daemon=True,
                           name="mirror-trigger").start()
 
@@ -4729,15 +4686,15 @@ def create_app() -> Flask:
                 "label":           (stored or {}).get("label", ""),
                 "params":          json.loads((stored or {}).get("params_json") or "null"),
             },
-            "stage":             summary["stage"],
-            "stage_index":       summary["stage_index"],
-            "pipeline_done":     summary["pipeline_done"],
-            "progress":          summary["progress"],
-            "latest_metrics":    summary["latest_metrics"],
-            "last_checkpoint":   summary["last_checkpoint"],
-            "validations":       summary["validations"],
-            "latest_validation": summary["latest_validation"],
-            "eta_seconds":       summary["eta_seconds"],
+            "stage":             status.stage,
+            "stage_index":       stage_index,
+            "pipeline_done":     False,
+            "progress":          progress,
+            "latest_metrics":    status.latest_metrics,
+            "last_checkpoint":   status.last_checkpoint,
+            "validations":       list(status.metrics),
+            "latest_validation": status.latest_metrics,
+            "eta_seconds":       status.step_eta_s,
             "queue_rows":        running_rows,
         })
 
@@ -4766,9 +4723,10 @@ def create_app() -> Flask:
                    f" tail -F -n 200 {log_path})")
             try:
                 for line in STATE.ssh.stream(cmd):
-                    prog = fasrc_jobs.parse_progress(line)
-                    if prog:
-                        fasrc_jobs.DB.update_progress(jobid, prog[0], prog[1])
+                    # This stream is the raw-log VIEWER only. Progress is no
+                    # longer scraped from log lines — it comes from the
+                    # Reporter event stream (folded in JobStatus); the DB
+                    # progress is updated by the events-based status poll.
                     # SSE framing: one event per line, multiline data uses
                     # repeated ``data:`` lines.
                     safe = line.replace("\r", "")

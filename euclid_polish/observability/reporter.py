@@ -8,10 +8,11 @@ Events
 ------
 Each line in the events file is a single JSON object::
 
-    {"ts": 1731234567.89, "kind": "stage", "value": "Downloading HLSP tiles"}
-    {"ts": 1731234568.12, "kind": "step",  "value": {"current": 3, "total": 25, "label": "tile 3"}}
-    {"ts": 1731234568.15, "kind": "warn",  "value": "tile 12 checksum mismatch"}
-    {"ts": 1731234568.20, "kind": "error", "value": "tile 14 missing from MAST"}
+    {"ts": 1731234567.89, "kind": "stage",  "value": "Downloading HLSP tiles"}
+    {"ts": 1731234568.12, "kind": "step",   "value": {"current": 3, "total": 25, "label": "tile 3"}}
+    {"ts": 1731234568.15, "kind": "metric", "value": {"step": 1500, "total": 200000, "loss": 0.042, "psnr_stretched": 38.1, "psnr_raw": 41.7, "saved": true}}
+    {"ts": 1731234568.15, "kind": "warn",   "value": "tile 12 checksum mismatch"}
+    {"ts": 1731234568.20, "kind": "error",  "value": "tile 14 missing from MAST"}
 
 Adding a new event kind (``"metric"``, ``"checkpoint"``, ``"image"``,
 …) is a single-line producer change plus a new consumer handler in
@@ -203,6 +204,27 @@ class Reporter:
         if not sample:
             return
         self._emit("resource", dict(sample), echo=False)
+
+    def metric(self, metrics: dict) -> None:
+        """Emit one structured metrics sample — the training "progress" the
+        WebUI used to scrape out of the ``.out`` log.
+
+        ``metrics`` is a flat dict from one evaluate: ``step``/``total``,
+        ``loss`` (+ per-lane ``loss_syn``/``loss_hst``/``loss_anchor``),
+        ``psnr_stretched``/``psnr_raw`` (+ HST/anchor variants), gradient
+        norms, ``duration_s``, ``save_best_score`` and a ``saved`` flag
+        when this eval wrote a checkpoint. The web consumer folds these
+        into the live :class:`JobStatus` (latest metrics + validation
+        history + last-checkpoint marker), so the UI reads training
+        progress straight from the events stream and never parses logs.
+
+        ``echo=False``: the human-readable status line already goes to
+        ``.out`` via the trainer's ``tqdm.write`` — this is the machine
+        channel. Empty dicts are dropped.
+        """
+        if not metrics:
+            return
+        self._emit("metric", dict(metrics), echo=False)
 
     def warn(self, msg: str) -> None:
         """Append a warning to the structured stream and to stderr."""

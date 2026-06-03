@@ -281,6 +281,12 @@ def main() -> int:
     def _on_train_step(step: int, total: int) -> None:
         reporter.set_step(step, total, "train")
 
+    def _on_eval(row: dict) -> None:
+        # Every evaluate's metrics (loss/PSNR/checkpoint) onto the event
+        # stream, so the WebUI reads training progress from events — never
+        # by scraping the .out log.
+        reporter.metric(row)
+
     print(f"      save-best weights: syn={args.save_best_w_syn:g}, "
           f"hst={args.save_best_w_hst:g}, anchor={args.save_best_w_anchor:g}")
     # Sample GPU + CPU utilisation through training so the WebUI shows a
@@ -291,6 +297,7 @@ def main() -> int:
             evaluate_every=int(args.evaluate_every),
             save_best_only=True,
             step_callback=_on_train_step,
+            eval_callback=_on_eval,
             hst_valid_dataset=hst_valid_dataset,
             anchor_valid_dataset=anchor_valid_dataset,
             save_best_weights=(

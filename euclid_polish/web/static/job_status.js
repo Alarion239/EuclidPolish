@@ -49,6 +49,7 @@ class JobStatusCard {
       stage:     root.querySelector(".js-stage"),
       progress:  root.querySelector(".js-progress"),
       stepLabel: root.querySelector(".js-step-label"),
+      metrics:   root.querySelector(".js-metrics"),
       resources: root.querySelector(".js-resources"),
       warnList:  root.querySelector(".js-warn-list"),
       errList:   root.querySelector(".js-err-list"),
@@ -109,6 +110,8 @@ class JobStatusCard {
     const sig = JSON.stringify({
       stage:    status.stage,
       step:     status.step,
+      metrics:  status.latest_metrics,
+      ckpt:     status.last_checkpoint,
       n_warn:   (status.warnings || []).length,
       n_err:    (status.errors   || []).length,
       // Round so sub-percent jitter doesn't force a DOM write every poll,
@@ -154,10 +157,41 @@ class JobStatusCard {
       }
     }
 
+    this._renderMetrics(this.slots.metrics, status.latest_metrics,
+                        status.last_checkpoint);
+
     this._renderResources(this.slots.resources, status.resources);
 
     this._renderList(this.slots.warnList, status.warnings, "warn");
     this._renderList(this.slots.errList,  status.errors,   "err");
+  }
+
+  /**
+   * Render the latest training-metrics sample (loss + PSNR per lane +
+   * last-checkpoint marker) folded from the ``metric`` event stream — the
+   * live training progress that used to be scraped from the .out log.
+   * Hidden until the first evaluate emits a metric event.
+   *
+   * @param {Element|null} slot
+   * @param {Object|null} m - status.latest_metrics
+   * @param {string|null} ckpt - status.last_checkpoint ("step N")
+   */
+  _renderMetrics(slot, m, ckpt) {
+    if (!slot) return;
+    if (!m) { slot.hidden = true; slot.textContent = ""; return; }
+    const fmt = (v, d = 3) =>
+      (typeof v === "number" && isFinite(v)) ? v.toFixed(d) : null;
+    const parts = [];
+    const loss = fmt(m.loss, 4);
+    if (loss !== null) parts.push(`loss ${loss}`);
+    const ps = fmt(m.psnr_stretched, 2), pr = fmt(m.psnr_raw, 2);
+    if (ps !== null && pr !== null) parts.push(`PSNR ${ps}/${pr} dB`);
+    else if (ps !== null) parts.push(`PSNR ${ps} dB`);
+    const ah = fmt(m.anchor_val_psnr, 2);
+    if (ah !== null) parts.push(`anchor ${ah} dB`);
+    if (ckpt) parts.push(`✓ ckpt @ ${ckpt}`);
+    slot.hidden = parts.length === 0;
+    slot.textContent = parts.join("  ·  ");
   }
 
   /**

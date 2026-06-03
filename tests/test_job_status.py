@@ -332,6 +332,51 @@ class TestToDict:
         assert d["errors"]   == [{"ts": 2.0, "msg": "e"}]
         assert d["has_events"] is True
         assert isinstance(d["last_fetched"], float)
+        # Metric fields default to empty/None when no metric events seen.
+        assert d["latest_metrics"] is None
+        assert d["metrics"] == []
+        assert d["last_checkpoint"] is None
+
+
+class TestMetricFold:
+    """``metric`` events fold into latest_metrics / metrics history /
+    last_checkpoint — the events-native training progress the WebUI reads
+    instead of parsing the .out log."""
+
+    @staticmethod
+    def _events(*rows) -> str:
+        return "\n".join(
+            json.dumps({"ts": float(i), "kind": "metric", "value": r})
+            for i, r in enumerate(rows)
+        )
+
+    def test_latest_metric_wins_and_history_accumulates(self):
+        s = fold_events(self._events(
+            {"step": 100, "total": 1000, "loss": 0.5, "psnr_stretched": 30.0},
+            {"step": 200, "total": 1000, "loss": 0.3, "psnr_stretched": 33.0},
+        ))
+        assert s.latest_metrics["step"] == 200
+        assert s.latest_metrics["loss"] == 0.3
+        assert len(s.metrics) == 2
+        assert [m["step"] for m in s.metrics] == [100, 200]
+        # to_dict surfaces them for the UI.
+        assert s.to_dict()["latest_metrics"]["psnr_stretched"] == 33.0
+
+    def test_saved_flag_sets_last_checkpoint(self):
+        s = fold_events(self._events(
+            {"step": 100, "loss": 0.5},
+            {"step": 200, "loss": 0.3, "saved": True},
+            {"step": 300, "loss": 0.2},
+        ))
+        assert s.last_checkpoint == "step 200"
+
+    def test_history_capped_to_newest(self):
+        from euclid_polish.web.job_status import _METRICS_CAP
+        rows = [{"step": i, "loss": 0.0} for i in range(_METRICS_CAP + 25)]
+        s = fold_events(self._events(*rows))
+        assert len(s.metrics) == _METRICS_CAP
+        assert s.metrics[-1]["step"] == _METRICS_CAP + 24   # newest kept
+        assert s.latest_metrics["step"] == _METRICS_CAP + 24
 
 
 # ---------------------------------------------------------------------------

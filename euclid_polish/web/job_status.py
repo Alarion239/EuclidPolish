@@ -105,6 +105,12 @@ _RESOURCE_SMOOTH_WINDOW = 6
 #: points are kept. Bounds the status payload on a multi-hour job.
 _RESOURCE_SERIES_CAP = 60
 
+#: Cap on the training-metrics history handed to the UI. One sample per
+#: evaluate (every ``evaluate_every`` steps), so 500 covers a very long
+#: run; the newest are kept. The full curve still lives in the training-log
+#: artifact — this is just the live readout.
+_METRICS_CAP = 500
+
 
 @dataclass(frozen=True)
 class ResourceUsage:
@@ -186,6 +192,19 @@ class JobStatus:
     #: ``resource`` sample stream. ``None`` when the job emitted no samples
     #: (older scripts, or one that didn't start the ResourceSampler).
     resources:    Optional[ResourceUsage]  = None
+    #: Latest training-metrics sample folded from the ``metric`` event
+    #: stream (loss, PSNR per lane, gradient norms, …) — the live training
+    #: progress the WebUI used to scrape from the ``.out`` log. ``None``
+    #: until the first evaluate emits a metric event.
+    latest_metrics: Optional[Dict[str, Any]] = None
+    #: Full (capped) history of metric samples in arrival order — one per
+    #: evaluate. Drives the live loss/PSNR readout and the in-card
+    #: validation list without reading the training-log file.
+    metrics:        Tuple[Dict[str, Any], ...] = ()
+    #: The latest metric sample that wrote a checkpoint (``saved`` truthy),
+    #: as a short ``"step N"`` marker — the events-native replacement for
+    #: the ``Checkpoint saved`` log line that triggers the ckpt mirror.
+    last_checkpoint: Optional[str]          = None
     warnings:     Tuple[Event, ...]        = ()
     errors:       Tuple[Event, ...]        = ()
     #: When the events file was last fetched (server clock). Lets the
@@ -205,6 +224,9 @@ class JobStatus:
             "step_eta_s":      self.step_eta_s,
             "parallel":        self.parallel.to_dict() if self.parallel else None,
             "resources":       self.resources.to_dict() if self.resources else None,
+            "latest_metrics":  self.latest_metrics,
+            "metrics":         list(self.metrics),
+            "last_checkpoint": self.last_checkpoint,
             "warnings":        [w.to_dict() for w in self.warnings],
             "errors":          [e.to_dict() for e in self.errors],
             "last_fetched":    float(self.last_fetched),
@@ -250,6 +272,12 @@ def fold_events(text: str) -> JobStatus:
     res_cpu:     List[float] = []
     res_gpu:     List[float] = []
     res_gpu_mem: List[float] = []
+
+    # Training-metrics samples (one per evaluate) folded from the ``metric``
+    # event stream. ``last_checkpoint`` is the latest sample that wrote a
+    # checkpoint — the events-native replacement for the ".out" log line.
+    metrics:         List[Dict[str, Any]] = []
+    last_checkpoint: Optional[str]        = None
 
     for raw in text.splitlines():
         raw = raw.strip()
@@ -319,6 +347,19 @@ def fold_events(text: str) -> JobStatus:
                         bucket.append(float(value[key]))
                     except (TypeError, ValueError):
                         pass
+        elif kind == "metric" and isinstance(value, dict):
+            # One evaluate's metrics. Stamp the event ts so a consumer can
+            # plot against wall time even if the producer didn't include it.
+            sample = dict(value)
+            sample.setdefault("wall_time", ts_f)
+            metrics.append(sample)
+            # ``saved`` truthy ⇒ this eval wrote a checkpoint; remember it as
+            # a compact marker the mirror trigger keys on (cheaper + more
+            # reliable than grepping ".out" for "Checkpoint saved").
+            if value.get("saved"):
+                step_no = value.get("step")
+                last_checkpoint = (f"step {int(step_no)}"
+                                   if step_no is not None else "saved")
         elif kind == "warn" and isinstance(value, str):
             warnings.append(Event(ts=ts_f, msg=value))
         elif kind == "error" and isinstance(value, str):
@@ -412,6 +453,9 @@ def fold_events(text: str) -> JobStatus:
         step_eta_s=step_eta_s,
         parallel=parallel,
         resources=resources,
+        latest_metrics=(metrics[-1] if metrics else None),
+        metrics=tuple(metrics[-_METRICS_CAP:]),
+        last_checkpoint=last_checkpoint,
         warnings=tuple(warnings),
         errors=tuple(errors),
         last_fetched=time.time(),
