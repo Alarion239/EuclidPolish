@@ -61,17 +61,30 @@ def star_cutout_path(star_id: int, band_name: str, size: int) -> str:
 def load_star_cube(star_id: int, size: int) -> Optional[Tuple[np.ndarray, fits.Header]]:
     """Load the 4 co-registered band cutouts, convert each ADU/s→e⁻, and
     stack to ``(H, W, 4)`` in canonical band order. Returns ``(cube, vis_header)``
-    or ``None`` if any band is missing or the shapes disagree."""
+    or ``None`` if any band is missing, unreadable/corrupt, or the shapes
+    disagree (so one bad cutout skips the star, never crashing the job)."""
     planes = []
     vis_header = None
     for band_name in Config.LR_INPUT_BAND_NAMES:
         path = star_cutout_path(star_id, band_name, size)
         if not os.path.isfile(path):
             return None
-        with fits.open(path) as hdul:
-            arr = np.asarray(hdul[0].data, dtype=np.float32)
-            header = hdul[0].header
-            magzero = float(header.get("MAGZERO", Config.get_band(band_name).sim_zeropoint_e))
+        # A truncated / empty / otherwise corrupt cutout must skip the star,
+        # not crash the whole job (same as every other FITS-reading pipeline).
+        # ``np.asarray(..., dtype)`` copies while the file is still open so the
+        # array stays valid after the (possibly memmapped) HDUList closes.
+        try:
+            with fits.open(path) as hdul:
+                if hdul[0].data is None:
+                    raise OSError("no image data in primary HDU")
+                arr = np.asarray(hdul[0].data, dtype=np.float32)
+                header = hdul[0].header.copy()
+                magzero = float(header.get(
+                    "MAGZERO", Config.get_band(band_name).sim_zeropoint_e))
+        except Exception as e:
+            print(f"  ⚠️  star {star_id:04d} {band_name}: unreadable cutout "
+                  f"({type(e).__name__}: {e}) — skipping star")
+            return None
         if arr.ndim != 2:
             return None
         planes.append(adu_per_s_to_electrons(arr, magzero, Config.get_band(band_name)))

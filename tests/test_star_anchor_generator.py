@@ -75,6 +75,46 @@ def test_star_pixel_and_load_cube_roundtrip(tmp_path, monkeypatch):
     assert sy == pytest.approx(naxis / 2 - 0.5, abs=1e-3)
 
 
+def test_load_star_cube_skips_corrupt_cutout(tmp_path, monkeypatch):
+    """A truncated/corrupt cutout for any band → load_star_cube returns None
+    (the star is skipped) instead of raising and killing the whole job."""
+    monkeypatch.setattr(Config, "STAR_CUTOUTS_ROOT", str(tmp_path))
+    naxis = 64
+    for band in Config.LR_INPUT_BAND_NAMES:
+        d = os.path.join(str(tmp_path), band)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"star_0000_{naxis}.fits")
+        if band == Config.BAND_VIS.name:
+            with open(path, "wb") as fh:           # not a valid FITS at all
+                fh.write(b"not a fits file at all")
+        else:
+            fits.PrimaryHDU(
+                data=np.zeros((naxis, naxis), dtype=np.float32),
+                header=_tan_header(naxis, 150.0, 2.0)
+            ).writeto(path, overwrite=True)
+
+    assert gen.load_star_cube(0, naxis) is None      # no exception raised
+
+
+def test_load_star_cube_skips_empty_primary(tmp_path, monkeypatch):
+    """A cutout whose primary HDU has no image data is also skipped."""
+    monkeypatch.setattr(Config, "STAR_CUTOUTS_ROOT", str(tmp_path))
+    naxis = 64
+    for band in Config.LR_INPUT_BAND_NAMES:
+        d = os.path.join(str(tmp_path), band)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"star_0000_{naxis}.fits")
+        if band == Config.BAND_VIS.name:
+            fits.PrimaryHDU(data=None).writeto(path, overwrite=True)   # empty
+        else:
+            fits.PrimaryHDU(
+                data=np.zeros((naxis, naxis), dtype=np.float32),
+                header=_tan_header(naxis, 150.0, 2.0)
+            ).writeto(path, overwrite=True)
+
+    assert gen.load_star_cube(0, naxis) is None
+
+
 def test_anchor_flux_matches_catalog_magnitude():
     # The delta value is the catalog VIS flux in electrons.
     mag = 17.0
