@@ -130,6 +130,11 @@
   <form id="gen-recon-form" action="/inference/generate-reconstruct">
     <label>Checkpoint dir
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <label>Checkpoint
+      <select name="ckpt_kind">
+        <option value="psnr">PSNR-best</option>
+        <option value="loss">Loss-best (loss_best/)</option>
+      </select></label>
     <label>Residual blocks
       <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
     <label title="HR scene side in 0.05″/pix pixels. Rounded to a multiple of 6 (the NISP rebin factor); the LR pair is half this at 0.10″/pix.">
@@ -161,6 +166,11 @@
              style="width:90px;"></label>
     <label>Checkpoint dir
       <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
+    <label>Checkpoint
+      <select name="ckpt_kind">
+        <option value="psnr">PSNR-best</option>
+        <option value="loss">Loss-best (loss_best/)</option>
+      </select></label>
     <label>Residual blocks
       <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
     <label style="display:flex; align-items:center; gap:6px;"

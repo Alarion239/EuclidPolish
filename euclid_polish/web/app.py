@@ -341,6 +341,18 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     return None
 
 
+def _ckpt_dir_for_kind(checkpoint_dir: str, kind: Optional[str]) -> str:
+    """Resolve the inference checkpoint dir for the chosen save-best track.
+
+    The trainer keeps two checkpoint sets: PSNR-best at ``checkpoint_dir``
+    and combined-loss-best in the ``loss_best/`` subfolder. ``kind="loss"``
+    selects the latter; anything else (incl. None) → the PSNR-best root.
+    """
+    if (kind or "").strip().lower() == "loss":
+        return os.path.join(checkpoint_dir, "loss_best")
+    return checkpoint_dir
+
+
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
                              n_pairs: int) -> str:
     """Shell command that generates ``n_pairs`` synthetic *validate* pairs
@@ -2746,7 +2758,9 @@ def create_app() -> Flask:
 
     @app.route("/inference/generate-reconstruct", methods=["POST"])
     def inference_generate_reconstruct():
-        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
+        ckpt_dir = _ckpt_dir_for_kind(
+            request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR),
+            request.form.get("ckpt_kind"))
         nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
         asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
         try:
@@ -2782,7 +2796,9 @@ def create_app() -> Flask:
             return jsonify({"error": f"ra={ra} out of range [0, 360)"}), 400
         if not (-90.0 <= dec <= 90.0):
             return jsonify({"error": f"dec={dec} out of range [-90, 90]"}), 400
-        ckpt_dir = request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
+        ckpt_dir = _ckpt_dir_for_kind(
+            request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR),
+            request.form.get("ckpt_kind"))
         nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
         size = int(request.form.get("cutout_size", 512))
         if not (32 <= size <= 4096):

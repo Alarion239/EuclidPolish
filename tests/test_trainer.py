@@ -505,6 +505,30 @@ class TestMultiSourceValidationLogging:
         # a copy of the synthetic eval).
         assert rows[0]["psnr_stretched_hst"] != rows[0]["psnr_stretched"]
 
+    def test_second_track_saves_loss_best_checkpoints(
+        self, tiny_model, tmp_path,
+    ):
+        """The combined-loss save-best track writes its OWN checkpoint set
+        under ``loss_best/`` (distinct from the PSNR checkpoints at the root)
+        and logs a finite ``combined_loss`` per eval."""
+        import tensorflow as tf
+        ckpt_dir = str(tmp_path / "ckpt_two_track")
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        # save-every so both tracks fire each eval regardless of the metric.
+        trainer.train(
+            _train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+            steps=2, evaluate_every=1, save_best_only=False, validate_images=4,
+        )
+        # PSNR-best checkpoints at the root; loss-best in the subfolder.
+        assert tf.train.latest_checkpoint(ckpt_dir) is not None
+        assert tf.train.latest_checkpoint(
+            os.path.join(ckpt_dir, "loss_best")) is not None
+        rows = self._read_log(ckpt_dir)
+        assert rows, "no training-log rows"
+        for r in rows:
+            assert r["combined_loss"] != ""
+            assert np.isfinite(float(r["combined_loss"]))
+
     def test_savebest_keys_on_composite_score(
         self, tiny_model, tmp_path, tmp_psf_path,
     ):

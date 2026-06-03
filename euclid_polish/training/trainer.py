@@ -71,6 +71,10 @@ TRAINING_LOG_COLUMNS  = (
     # the per-source metrics; see ``save_best_weights``). Logged so the
     # decision is auditable from the CSV alone.
     "save_best_score",
+    # The combined LOSS the SECOND save-best track keys on (lower = better;
+    # same lane weights as ``save_best_score``). Its checkpoints live in the
+    # ``loss_best/`` subdir; /inference can load PSNR-best or loss-best.
+    "combined_loss",
     # "1" on the single pre-training row written when a run resumes: the
     # restored checkpoint's score measured under THIS run's validation
     # setup. It seeds the save-best threshold (no force-save) and the log
@@ -90,6 +94,26 @@ GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
 # to this ceiling — "≥ this = essentially exact" — so it stays finite and on
 # the same scale as the other PSNRs.
 ANCHOR_PSNR_MAX_DB = 80.0
+
+
+def _combined_loss(loss_syn, loss_hst, loss_anchor, weights) -> float:
+    """Weighted blend of the per-lane *losses* (lower = better), keyed on the
+    SAME ``(w_syn, w_hst, w_anchor)`` the PSNR save-best composite uses.
+
+    The second save-best track minimises this. Inactive lanes (value ``""``)
+    are skipped; all-zero weights fall back to the equal-weight mean of the
+    active lanes (mirrors the PSNR composite's "don't freeze on all-zero").
+    Returns ``+inf`` if no lane is active (nothing to score this eval).
+    """
+    parts = []
+    for w, v in zip(weights, (loss_syn, loss_hst, loss_anchor)):
+        if v != "" and v is not None:
+            parts.append((float(w), float(v)))
+    if not parts:
+        return float("inf")
+    if all(w == 0 for w, _ in parts):
+        return sum(v for _, v in parts) / len(parts)
+    return sum(w * v for w, v in parts)
 
 
 class Trainer:
@@ -162,12 +186,24 @@ class Trainer:
         self.checkpoint = tf.train.Checkpoint(
             step=tf.Variable(0),
             psnr=tf.Variable(-1.0),
+            best_loss=tf.Variable(float("inf")),
             optimizer=Adam(learning_rate),
             model=model,
         )
         self.checkpoint_manager = tf.train.CheckpointManager(
             checkpoint=self.checkpoint,
             directory=checkpoint_dir,
+            max_to_keep=3,
+        )
+        # Second save-best track, keyed on the combined LOSS (lower = better)
+        # with the SAME lane weights as the PSNR composite. Its own checkpoint
+        # set lives in a ``loss_best/`` subdir so the two never collide and
+        # the mirror pulls both; /inference can load from either. Wraps the
+        # SAME checkpoint object — only the save *trigger* and directory
+        # differ. ``best_loss`` is the persisted lowest-combined-loss bar.
+        self.loss_checkpoint_manager = tf.train.CheckpointManager(
+            checkpoint=self.checkpoint,
+            directory=os.path.join(checkpoint_dir, "loss_best"),
             max_to_keep=3,
         )
 
@@ -399,6 +435,9 @@ class Trainer:
                     "psnr_raw_hst":       b["psnr_raw_hst"],
                     "anchor_val_psnr":    b["anchor_val_psnr"],
                     "save_best_score":    b["save_best_score"],
+                    # No training window at baseline → no combined loss bar to
+                    # seed; the loss track keeps its restored ``best_loss``.
+                    "combined_loss":      "",
                     "is_baseline":        "1",
                 }
                 train_log.append(base_row)
@@ -409,6 +448,7 @@ class Trainer:
                 )
             else:
                 ckpt.psnr.assign(float("-inf"))
+                ckpt.best_loss.assign(float("inf"))
                 tqdm.write(
                     "  ▏resume baseline disabled — save-best threshold reset; "
                     "this run overwrites the previous best on its first eval"
@@ -497,6 +537,10 @@ class Trainer:
                 psnr_raw_hst    = v["psnr_raw_hst"]
                 anchor_val_psnr = v["anchor_val_psnr"]
                 save_best_score = v["save_best_score"]
+                # Second save-best key: combined LOSS over the eval window
+                # (lower = better), same lane weights as the PSNR composite.
+                combined_loss = _combined_loss(
+                    loss_syn, loss_hst, loss_anchor, save_best_weights)
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -543,47 +587,49 @@ class Trainer:
                     "psnr_raw_hst":       psnr_raw_hst,
                     "anchor_val_psnr":    anchor_val_psnr,
                     "save_best_score":    save_best_score,
+                    "combined_loss":      combined_loss,
                     "is_baseline":        "",
                 }
                 train_log.append(row)
 
-                # save-best on the composite score (see save_best_weights).
-                # ``ckpt.psnr`` is the checkpointed best-score threshold —
-                # the name predates the composite; it now holds whatever
-                # save_best_weights blends, not the bare synthetic PSNR.
-                # On a resume it was seeded by the baseline eval above, so
-                # we only save on a genuine improvement over the restored
-                # checkpoint's measured score — no force-save churn.
-                should_save = (
-                    not save_best_only              # save-every mode
-                    or save_best_score > ckpt.psnr  # genuine improvement
-                )
+                # TWO independent save-best tracks, each with its own
+                # checkpoint set. ``ckpt.psnr`` / ``ckpt.best_loss`` are the
+                # checkpointed bars (seeded by the baseline eval on resume).
+                #   - PSNR track  (higher = better) → ``ckpt_mgr`` (root dir)
+                #   - LOSS track  (lower  = better) → ``loss_mgr`` (loss_best/)
+                # ``save_best_only=False`` (save-every) makes both fire each
+                # eval. The combined loss is +inf when no lane is active, so
+                # the loss track simply never triggers in that degenerate case.
+                psnr_improved = (
+                    not save_best_only or save_best_score > ckpt.psnr)
+                loss_improved = (
+                    not save_best_only or combined_loss < float(ckpt.best_loss))
 
-                # Emit this evaluate's metrics to the structured event
-                # stream BEFORE the save branch's ``continue`` so every
-                # eval (saved or not) reaches the WebUI. Pass a copy with
-                # the ``saved`` flag so the events stream — not the .out
-                # log — carries loss/PSNR/checkpoint progress. ``total``
-                # lets the consumer show step N/total without a step event.
+                # Emit this evaluate's metrics to the structured event stream
+                # BEFORE any ``continue`` so every eval reaches the WebUI.
+                # ``saved`` is true if EITHER track saved a checkpoint.
                 if eval_callback is not None:
                     eval_callback({**row, "total": int(steps),
-                                   "saved": bool(should_save)})
+                                   "saved": bool(psnr_improved or loss_improved)})
 
-                if not should_save:
-                    self.now = time.perf_counter()
-                    continue
-
-                # ``.assign`` keeps ckpt.psnr a tf.Variable (so it stays
-                # checkpoint-tracked across resumes and exposes .numpy());
-                # the prior ``ckpt.psnr = <tensor>`` replaced the Variable
-                # with a bare tensor and silently dropped that tracking.
-                ckpt.psnr.assign(save_best_score)
-                ckpt_mgr.save()
-                tqdm.write(
-                    f"  ✓ Checkpoint saved [best so far] "
-                    f"(score={save_best_score:.3f}; "
-                    f"PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
-                )
+                # ``.assign`` keeps the bars tf.Variables (checkpoint-tracked
+                # across resumes, expose .numpy()) rather than replacing them
+                # with bare tensors.
+                if psnr_improved:
+                    ckpt.psnr.assign(save_best_score)
+                    ckpt_mgr.save()
+                    tqdm.write(
+                        f"  ✓ Checkpoint saved [best PSNR] "
+                        f"(score={save_best_score:.3f}; "
+                        f"PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
+                    )
+                if loss_improved and np.isfinite(combined_loss):
+                    ckpt.best_loss.assign(combined_loss)
+                    self.loss_checkpoint_manager.save()
+                    tqdm.write(
+                        f"  ✓ Checkpoint saved [best LOSS] → loss_best/ "
+                        f"(combined_loss={combined_loss:.5f})"
+                    )
 
                 self.now = time.perf_counter()
 
