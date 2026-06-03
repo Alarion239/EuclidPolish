@@ -46,10 +46,15 @@ def evaluate(model, dataset):
     """
     psnr_str_list = []
     psnr_raw_list = []
+    mae_str_list  = []
 
     for lr, hr in dataset:
         sr = model(lr)
         psnr_str_list.append(tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL_STRETCHED)[0])
+        # Validation MAE in asinh space — the held-out analogue of the
+        # MeanAbsoluteError training loss (same model output + stretch),
+        # computed here for free since we already forward ``lr``.
+        mae_str_list.append(tf.reduce_mean(tf.abs(hr - sr)))
 
         hr_e = _to_electrons(hr)
         sr_e = _to_electrons(sr)
@@ -58,6 +63,7 @@ def evaluate(model, dataset):
     return {
         "psnr_stretched": tf.reduce_mean(psnr_str_list),
         "psnr_raw":       tf.reduce_mean(psnr_raw_list),
+        "mae_stretched":  tf.reduce_mean(mae_str_list),
     }
 
 

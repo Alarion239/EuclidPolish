@@ -71,9 +71,11 @@ TRAINING_LOG_COLUMNS  = (
     # the per-source metrics; see ``save_best_weights``). Logged so the
     # decision is auditable from the CSV alone.
     "save_best_score",
-    # The combined LOSS the SECOND save-best track keys on (lower = better;
-    # same lane weights as ``save_best_score``). Its checkpoints live in the
-    # ``loss_best/`` subdir; /inference can load PSNR-best or loss-best.
+    # The combined VALIDATION loss the SECOND save-best track keys on (lower
+    # = better; same lanes/weights as ``save_best_score``, but on the held-out
+    # MAEs gathered in _validate alongside PSNR — NOT the training window).
+    # Its checkpoints live in ``loss_best/``; /inference loads PSNR- or
+    # loss-best.
     "combined_loss",
     # "1" on the single pre-training row written when a run resumes: the
     # restored checkpoint's score measured under THIS run's validation
@@ -233,6 +235,12 @@ class Trainer:
         metrics  = self.evaluate(valid_dataset.take(validate_images))
         psnr_str = float(metrics["psnr_stretched"].numpy())
         psnr_raw = float(metrics["psnr_raw"].numpy())
+        # Per-lane VALIDATION MAE (asinh space), gathered alongside PSNR from
+        # the same forward pass. ``""`` for an unwired lane so the loss
+        # composite skips it — exactly like the PSNR composite.
+        mae_syn: float          = float(metrics["mae_stretched"].numpy())
+        mae_hst:    object      = ""
+        mae_anchor: object      = ""
 
         psnr_str_hst:    object = ""
         psnr_raw_hst:    object = ""
@@ -247,11 +255,15 @@ class Trainer:
             if not np.isfinite(psnr_str_hst):
                 psnr_str_hst = ""
                 psnr_raw_hst = ""
+            else:
+                mae_hst = float(hm["mae_stretched"].numpy())
         if anchor_valid_dataset is not None:
-            anchor_val_psnr = float(self.evaluate_anchor(
-                anchor_valid_dataset.take(validate_images)))
+            anchor_val_psnr, _anchor_mae = self.evaluate_anchor(
+                anchor_valid_dataset.take(validate_images))
             if not np.isfinite(anchor_val_psnr):
                 anchor_val_psnr = ""
+            else:
+                mae_anchor = float(_anchor_mae)
 
         # Composite (higher = better). Synthetic always in; HST/anchor join
         # only when wired. All-zero weights would freeze save-best, so fall
@@ -266,6 +278,12 @@ class Trainer:
             if anchor_val_psnr != "":
                 save_best_score += w_anchor * float(anchor_val_psnr)
 
+        # Combined VALIDATION loss (lower = better) — the second save-best
+        # key, same weights/lanes as ``save_best_score`` but on the held-out
+        # MAEs computed above.
+        combined_loss = _combined_loss(
+            mae_syn, mae_hst, mae_anchor, save_best_weights)
+
         return {
             "psnr_str":        psnr_str,
             "psnr_raw":        psnr_raw,
@@ -273,6 +291,7 @@ class Trainer:
             "psnr_raw_hst":    psnr_raw_hst,
             "anchor_val_psnr": anchor_val_psnr,
             "save_best_score": save_best_score,
+            "combined_loss":   combined_loss,
         }
 
     def train(
@@ -417,6 +436,10 @@ class Trainer:
                     validate_images, save_best_weights,
                 )
                 ckpt.psnr.assign(b["save_best_score"])
+                # Seed BOTH bars from the restored checkpoint's measured
+                # held-out metrics, so neither track force-saves on resume.
+                if np.isfinite(b["combined_loss"]):
+                    ckpt.best_loss.assign(float(b["combined_loss"]))
                 base_row = {
                     "step":               int(start_step),
                     "wall_time":          time.time(),
@@ -435,9 +458,7 @@ class Trainer:
                     "psnr_raw_hst":       b["psnr_raw_hst"],
                     "anchor_val_psnr":    b["anchor_val_psnr"],
                     "save_best_score":    b["save_best_score"],
-                    # No training window at baseline → no combined loss bar to
-                    # seed; the loss track keeps its restored ``best_loss``.
-                    "combined_loss":      "",
+                    "combined_loss":      b["combined_loss"],
                     "is_baseline":        "1",
                 }
                 train_log.append(base_row)
@@ -537,10 +558,11 @@ class Trainer:
                 psnr_raw_hst    = v["psnr_raw_hst"]
                 anchor_val_psnr = v["anchor_val_psnr"]
                 save_best_score = v["save_best_score"]
-                # Second save-best key: combined LOSS over the eval window
-                # (lower = better), same lane weights as the PSNR composite.
-                combined_loss = _combined_loss(
-                    loss_syn, loss_hst, loss_anchor, save_best_weights)
+                # Second save-best key: combined VALIDATION loss (lower =
+                # better), same lanes/weights as the PSNR composite, computed
+                # on the held-out images in _validate (NOT the training
+                # window) — the held-out analogue of the optimised loss.
+                combined_loss = v["combined_loss"]
 
                 duration = time.perf_counter() - self.now
                 pbar.set_postfix(
@@ -779,8 +801,8 @@ class Trainer:
         """
         return evaluate(self.checkpoint.model, dataset)
 
-    def evaluate_anchor(self, anchor_dataset) -> float:
-        """Mean star-anchor PSNR (dB) over the masked star pixels.
+    def evaluate_anchor(self, anchor_dataset) -> "tuple[float, float]":
+        """Mean star-anchor ``(PSNR_dB, MAE)`` over the masked star pixels.
 
         Scores SR only where the sparse HR delta-target is non-zero (the
         star pixel = catalog VIS flux), in eval mode without gradients::
@@ -795,8 +817,10 @@ class Trainer:
         the model places the right flux at the star. Operator-free (no PSF).
         Because the target is a single pixel, a near-exact match would send
         the raw PSNR → +∞; each star's PSNR is therefore clipped to
-        ``ANCHOR_PSNR_MAX_DB`` so the metric stays finite and bounded.
-        Returns ``nan`` when no image in the set carries a star.
+        ``ANCHOR_PSNR_MAX_DB`` so the metric stays finite and bounded. The
+        second value is the masked validation MAE at the star pixel(s) — the
+        held-out analogue of the anchor training loss, for the combined-loss
+        save-best track. Returns ``(nan, nan)`` when no image carries a star.
 
         Parameters
         ----------
@@ -807,22 +831,30 @@ class Trainer:
         saw = False
         peak2   = tf.constant(float(Config.PSNR_PEAK_STRETCHED) ** 2, dtype=tf.float32)
         ln10    = tf.constant(2.302585092994046, dtype=tf.float32)
+        mae_running = Mean()
         max_psnr = tf.constant(ANCHOR_PSNR_MAX_DB, dtype=tf.float32)
         for lr, hr in anchor_dataset:
             sr   = self.checkpoint.model(lr, training=False)
             mask = tf.cast(hr > 0, sr.dtype)
             cnt  = tf.reduce_sum(mask, axis=[1, 2, 3])
             sse  = tf.reduce_sum(mask * (sr - hr) ** 2, axis=[1, 2, 3])
+            # Masked MAE at the star pixel(s) — the validation analogue of
+            # the star-anchor training loss (same mask, asinh space).
+            sae  = tf.reduce_sum(mask * tf.abs(sr - hr), axis=[1, 2, 3])
             valid = cnt > 0
             mse  = sse / tf.maximum(cnt, 1.0)
+            mae  = sae / tf.maximum(cnt, 1.0)
             psnr = 10.0 * tf.math.log(peak2 / tf.maximum(mse, 1e-12)) / ln10
             # Clip per-star so one nailed pixel can't spike the metric to ~140 dB.
             psnr = tf.minimum(psnr, max_psnr)
             psnr = tf.boolean_mask(psnr, valid)
             if int(tf.size(psnr)) > 0:
                 running(tf.reduce_mean(psnr))
+                mae_running(tf.reduce_mean(tf.boolean_mask(mae, valid)))
                 saw = True
-        return float(running.result().numpy()) if saw else float("nan")
+        if not saw:
+            return float("nan"), float("nan")
+        return float(running.result().numpy()), float(mae_running.result().numpy())
 
     def evaluate_hst(self, hst_dataset) -> dict:
         """HST-source validation through the forward op (SR=sky-consistent).
@@ -846,9 +878,10 @@ class Trainer:
         """
         if self.hst_forward_op is None:
             nan = tf.constant(float("nan"), dtype=tf.float32)
-            return {"psnr_stretched": nan, "psnr_raw": nan}
+            return {"psnr_stretched": nan, "psnr_raw": nan, "mae_stretched": nan}
         str_mean = Mean()
         raw_mean = Mean()
+        mae_mean = Mean()
         max_str = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=tf.float32)
         max_raw = tf.constant(float(Config.PSNR_PEAK_E), dtype=tf.float32)
         for lr, hr in hst_dataset:
@@ -858,11 +891,15 @@ class Trainer:
             hconv_str = asinh_stretch_hr(hconv_lin)
             str_mean(tf.reduce_mean(
                 tf.image.psnr(hr, hconv_str, max_val=max_str)))
+            # Validation MAE in asinh space, on the SAME forward-consistent
+            # quantity the HST lane optimises (H⊛SR vs observed HST).
+            mae_mean(tf.reduce_mean(tf.abs(hr - hconv_str)))
             hr_lin = inverse_asinh_stretch_hr(hr)
             raw_mean(tf.reduce_mean(
                 tf.image.psnr(hr_lin, hconv_lin, max_val=max_raw)))
         return {"psnr_stretched": str_mean.result(),
-                "psnr_raw": raw_mean.result()}
+                "psnr_raw": raw_mean.result(),
+                "mae_stretched": mae_mean.result()}
 
     def restore(self):
         """Restore model from checkpoint if available."""

@@ -417,9 +417,9 @@ class TestEvaluateAnchor:
         within the cap."""
         from euclid_polish.training.trainer import ANCHOR_PSNR_MAX_DB
         ds = _anchor_valid_dataset(n=3, batch_size=2)
-        val = tiny_trainer.evaluate_anchor(ds)
-        assert isinstance(val, float)
-        assert np.isfinite(val)
+        val, mae = tiny_trainer.evaluate_anchor(ds)
+        assert isinstance(val, float) and isinstance(mae, float)
+        assert np.isfinite(val) and np.isfinite(mae) and mae >= 0.0
         assert val <= ANCHOR_PSNR_MAX_DB + 1e-4
 
     def test_exact_match_is_capped_not_inf(self, tiny_trainer):
@@ -437,7 +437,7 @@ class TestEvaluateAnchor:
             # so the mask keeps it) → that pixel's MSE is 0.
             hr[b, r, c, 0] = max(float(flat[r, c]), 1e-3)
         ds = tf.data.Dataset.from_tensor_slices((lr, hr)).batch(1)
-        val = tiny_trainer.evaluate_anchor(ds)
+        val, _mae = tiny_trainer.evaluate_anchor(ds)
         assert np.isfinite(val)
         assert val <= ANCHOR_PSNR_MAX_DB + 1e-4
 
@@ -446,7 +446,8 @@ class TestEvaluateAnchor:
         lr = np.zeros((2, 8, 8, 4), dtype=np.float32)
         hr = np.zeros((2, 16, 16, 1), dtype=np.float32)
         ds = tf.data.Dataset.from_tensor_slices((lr, hr)).batch(1)
-        assert np.isnan(tiny_trainer.evaluate_anchor(ds))
+        val, mae = tiny_trainer.evaluate_anchor(ds)
+        assert np.isnan(val) and np.isnan(mae)
 
 
 class TestMultiSourceValidationLogging:
