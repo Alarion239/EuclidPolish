@@ -27,6 +27,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.euclid import auth
 from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.euclid.cutout_integrity import validate_all_cutouts
 from euclid_polish.euclid.downloader import (
     DownloadConfig, EuclidCutoutDownloader,
 )
@@ -124,6 +125,16 @@ def main() -> int:
         print(f"  {name:5s}  +{r['downloaded']:4d}  "
               f"valid={r['valid']}  corrupted={r['corrupted']}  "
               f"failed={r.get('failed', 0)}")
+
+    # Integrity pass: open every cutout just downloaded and (re)derive the
+    # catalog's per-(band, size) validity, so downstream tasks can trust
+    # "valid in all 4 bands" without re-opening every file themselves.
+    reporter.set_stage("validating cutouts (integrity)")
+    integ = validate_all_cutouts(cat, cat.load(), band_names, reporter=reporter)
+    print(f"\nIntegrity: checked {integ['checked']} cutouts, "
+          f"{integ['unopenable']} unopenable → "
+          f"{integ['valid_all_bands']} stars valid in all "
+          f"{integ['n_bands']} bands")
     return 0
 
 
