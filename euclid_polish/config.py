@@ -478,6 +478,13 @@ class Config:
     DEFAULT_CHECKPOINT_DIR       = os.environ.get(
         "EUCLID_POLISH_CKPT_DIR", "./ckpt/wdsr",
     )
+    # Experiment-tracking store (the "lab notebook"). Lives at the repo
+    # root by default and is intentionally NOT in git — it is mirrored to
+    # persistent FASRC holylabs storage instead (see euclid_polish.tracking).
+    # Each campaign records the git commit it was created at as metadata.
+    TRACKING_DIR                 = os.environ.get(
+        "EUCLID_POLISH_TRACKING_DIR", "./tracking",
+    )
     # 192 HR / 96 LR (was 96/48). The WDSR-B receptive field is ~69 LR px;
     # a 48-px LR crop clipped it, so the model could never see context beyond
     # ~46 px and large objects (bright stars, extended galaxies) never fit in

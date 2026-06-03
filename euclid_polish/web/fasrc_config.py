@@ -36,6 +36,10 @@ class FasrcConfig:
     data_dir:           str = "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/data"
     ckpt_dir:           str = "/n/netscratch/lconnor_lab/Lab/abelotserkovtsev/EuclidPolish/ckpt/wdsr"
     logs_subdir:        str = "logs"     # relative to repo_path
+    # Persistent holylabs mirror for the experiment-tracking store. Blank
+    # → "<repo_path>/tracking" (holylabs, NOT netscratch — netscratch is
+    # purged). The local ./tracking folder is rsync'd up to here.
+    tracking_remote_dir: str = ""
 
     # ── Local mirror for auto-pulled checkpoints ───────────────────────────
     local_ckpt_mirror:  str = ""         # blank → DEFAULT_CHECKPOINT_DIR

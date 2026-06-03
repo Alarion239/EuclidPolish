@@ -30,6 +30,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from euclid_polish.observability import JobLog, JobRecord
+from euclid_polish.tracking import default_store
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.job_status import fold_events
 from euclid_polish.web.sacct import fetch_sacct_stats
@@ -460,6 +461,25 @@ def submit_sbatch_script(
         ))
     except Exception:
         # The CSV log is a side channel; never let it fail the submit.
+        pass
+
+    # Record the submission in the active tracking campaign's job log so the
+    # "lab notebook" captures every job + its params (req: all FASRC jobs
+    # logged with parameters). Best-effort: a missing campaign falls back to
+    # tracking/unassigned_fasrc_jobs.jsonl, and any failure is swallowed so
+    # tracking never breaks a submit.
+    try:
+        default_store().log_fasrc_job({
+            "jobid":       slurm_id,
+            "step_id":     step_id or "",
+            "label":       label,
+            "params":      params,
+            "script_path": remote_script,
+            "log_path":    log_path,
+            "err_path":    err_path,
+            "events_path": events_path or "",
+        })
+    except Exception:
         pass
 
     payload: Dict[str, Any] = {

@@ -102,6 +102,12 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         Config, "VIS_STAR_POSITIONS",
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
+    # Isolate the experiment-tracking store: submit handlers now log every
+    # FASRC job into the active campaign (or tracking/unassigned_*.jsonl),
+    # which would otherwise create a real ./tracking folder in the repo.
+    monkeypatch.setattr(
+        Config, "TRACKING_DIR", str(pkg_tmp / "tracking"), raising=False,
+    )
 
     # Isolate the FASRC job stores (sqlite DB + CSV job log) so NO test ever
     # writes into the real ``~/.euclid_polish/{fasrc_jobs.db,

@@ -266,6 +266,35 @@ class SSHSession:
                 r.stdout.decode("utf-8", errors="replace"),
                 r.stderr.decode("utf-8", errors="replace"))
 
+    def rsync_push(self, local_path: str, remote_dir: str,
+                   extra_args: Optional[List[str]] = None,
+                   timeout: int = 900) -> Tuple[int, str, str]:
+        """Mirror the *contents* of ``local_path`` → ``remote_dir`` (holylabs).
+
+        The inverse of :meth:`rsync_pull`: pushes a local directory up
+        through the ControlMaster (no fresh auth). The remote parent is
+        created first (``mkdir -p``) so the very first sync into a clean
+        holylabs path works. A trailing slash is forced on the source so
+        the directory's contents land *inside* ``remote_dir`` rather than
+        nested one level deeper.
+        """
+        if not self.is_connected():
+            raise SSHError("not connected")
+        # Create the destination up front — rsync won't mkdir more than the
+        # final component, and holylabs may not have the tree yet.
+        self.run(f"mkdir -p {shlex.quote(remote_dir)}", timeout=30)
+        ssh_cmd = f"ssh -S {shlex.quote(self.cfg.socket)}"
+        args = ["rsync", "-az", "--partial",
+                "-e", ssh_cmd,
+                *(extra_args or []),
+                local_path.rstrip("/") + "/",
+                f"{self.cfg.target}:{remote_dir.rstrip('/')}/"]
+        with self._lock:
+            r = subprocess.run(args, capture_output=True, timeout=timeout)
+        return (r.returncode,
+                r.stdout.decode("utf-8", errors="replace"),
+                r.stderr.decode("utf-8", errors="replace"))
+
 
 # ---------------------------------------------------------------------------
 # Process-global state
