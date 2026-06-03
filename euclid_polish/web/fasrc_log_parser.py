@@ -156,6 +156,9 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
         "psnr_raw_hst":       _opt_f("psnr_raw_hst"),
         "anchor_val_psnr":    _opt_f("anchor_val_psnr"),
         "save_best_score":    _opt_f("save_best_score"),
+        # Combined validation loss (second save-best track, lower better);
+        # plotted on the save-best score panel's twin axis.
+        "combined_loss":      _opt_f("combined_loss"),
         # Resume-baseline flag ("1" on the one bar-to-beat row) — passed
         # through so the dashboard plot can draw the dashed baseline line.
         "is_baseline":        str(rec.get("is_baseline", "") or ""),

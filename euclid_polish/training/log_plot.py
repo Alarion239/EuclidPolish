@@ -127,6 +127,9 @@ def plot_training_records(
     anc_x, anc_y     = _opt_series("anchor_val_psnr")
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
+    # Combined validation loss (lower better) — overlaid on the save-best
+    # score panel via a twin y-axis (different scale).
+    cl_x, cl_y = _opt_series("combined_loss")
 
     # Per-lane training losses (lower better). Colours match the PSNR lines.
     loss_data = []
@@ -262,7 +265,39 @@ def plot_training_records(
             "Overall save-best score (drives checkpoint selection)",
             fontsize=9, loc="left",
         )
-        ax_score.legend(loc="best", framealpha=0.9, fontsize=9)
+
+        # ── Combined validation loss on a twin y-axis. The score is on a
+        #    dB-like scale (~tens) and the loss is ~1e-3, so they cannot
+        #    share an axis. Mirror of the score line: the dotted running
+        #    *minimum* is the save-best-loss threshold (lower better), vs
+        #    the score's running maximum above. ──
+        ax_cl = None
+        if cl_x.size:
+            ax_cl = ax_score.twinx()
+            ax_cl.plot(cl_x, cl_y, color="tab:orange", lw=1.5,
+                       label="combined val loss")
+            running_min = np.minimum.accumulate(cl_y)
+            ax_cl.plot(cl_x, running_min, color="darkorange", lw=1.2, ls="--",
+                       drawstyle="steps-post", label="loss best so far")
+            sx, sy = _smoothed(cl_x, cl_y)
+            if sx is not None:
+                ax_cl.plot(sx, sy, color="tab:orange", lw=2.6,
+                           label="combined val loss (MA)")
+            b_loss = _baseline_val("combined_loss")
+            if b_loss is not None:
+                ax_cl.axhline(b_loss, color="chocolate", lw=1.3, ls=":",
+                              alpha=0.85, label="loss baseline (bar to beat)")
+            ax_cl.set_yscale("log")
+            ax_cl.set_ylabel("Combined val loss  ·  lower better (log)",
+                             color="tab:orange")
+            ax_cl.tick_params(axis="y", labelcolor="tab:orange")
+
+        # One legend covering both axes (the twin draws none of its own).
+        h1, l1 = ax_score.get_legend_handles_labels()
+        h2, l2 = (ax_cl.get_legend_handles_labels() if ax_cl is not None
+                  else ([], []))
+        ax_score.legend(h1 + h2, l1 + l2, loc="best", framealpha=0.9,
+                        fontsize=8)
 
     # X-label on the bottom-most axes only (shared x when stacked).
     axmap[panels[-1]].set_xlabel("Step")
