@@ -16,7 +16,15 @@
 </div>
 
 <section class="card">
-  <h3>Checkpoints on disk</h3>
+  <h3>Checkpoints on disk
+    {% if checkpoints.files %}
+    <button class="tk-track-btn" style="float:right;"
+            data-track-kind="model"
+            data-track-ckpt="{{ checkpoints.dir }}"
+            data-track-title="Back up checkpoint + training history"
+            data-track-label="{{ checkpoints.dir }} — checkpoints + training_log.csv + loss_best/">📌 track model</button>
+    {% endif %}
+  </h3>
   {% if checkpoints.files %}
     <table>
       <tr><th>File</th><th>Size</th></tr>

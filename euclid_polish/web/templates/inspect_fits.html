@@ -15,6 +15,12 @@
     <p style="margin-top: 12px;">
       <a class="chip" href="{{ url_for('inspect_fits_download', fits=rel) }}"
          download>⬇ Download FITS</a>
+      <button class="tk-track-btn" style="margin-left:8px;"
+              data-track-kind="fits"
+              data-track-path="{{ rel }}"
+              data-track-name="{{ file.basename }}"
+              data-track-label="{{ file.basename }} — {{ rel }}"
+              data-track-title="Back up &amp; track this FITS">📌 track</button>
     </p>
   </section>
 

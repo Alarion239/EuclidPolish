@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+{% block title %}Tracking · EuclidPolish{% endblock %}
+
+{% macro commit_badge(c) -%}
+  {%- if c -%}
+    <code title="{{ c.hash }}">{{ c.short }}</code>
+    <span class="muted">({{ c.branch }}{{ ' +dirty' if c.dirty else '' }})</span>
+  {%- else -%}<span class="muted">—</span>{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<h2>📌 Tracking <span class="muted" style="font-size:.6em;">experiment lab notebook</span></h2>
+
+<section class="card">
+  <dl class="kv">
+    <dt>Local store</dt><dd><code>{{ state.tracking_dir }}</code> <span class="muted">(gitignored)</span></dd>
+    <dt>holylabs mirror</dt><dd><code>{{ state.remote_dir }}</code></dd>
+    <dt>FASRC</dt><dd>
+      <span class="tag tag-{{ 'ok' if state.ssh_connected else 'warn' }}">
+        {{ 'connected' if state.ssh_connected else 'offline' }}
+      </span>
+      <button id="btn-sync" type="button" class="secondary" style="margin-left:8px;">Sync now → holylabs</button>
+      <span id="sync-msg" class="muted" style="margin-left:8px;"></span>
+    </dd>
+  </dl>
+</section>
+
+{% if not state.active %}
+<section class="card">
+  <h3>Start a campaign</h3>
+  <p class="muted">A campaign is a titled folder that collects every backup, note,
+    and FASRC job from a stretch of work. It records the git commit it was created at.</p>
+  <form id="new-form" onsubmit="event.preventDefault(); startCampaign();">
+    <label style="display:block; margin:6px 0;">Title
+      <input type="text" id="new-title" placeholder="e.g. anchor-loss sweep"
+             style="width:100%; padding:6px; border:1px solid #2c3446; border-radius:4px; background:#0f131d; color:#e6ecf6;">
+    </label>
+    <label style="display:block; margin:6px 0;">Description (optional)
+      <input type="text" id="new-desc" placeholder="what you're trying"
+             style="width:100%; padding:6px; border:1px solid #2c3446; border-radius:4px; background:#0f131d; color:#e6ecf6;">
+    </label>
+    <button type="submit">Create campaign</button>
+    <span id="new-msg" class="muted" style="margin-left:8px;"></span>
+  </form>
+</section>
+{% else %}
+
+<section class="card" id="campaign-card">
+  <h3>{{ state.active.title }}
+    <span class="tag tag-ok">active</span>
+  </h3>
+  <dl class="kv">
+    <dt>Created</dt><dd>{{ state.active.created_at }} at {{ commit_badge(state.active.created_commit) }}</dd>
+    {% if state.active.description %}<dt>Description</dt><dd>{{ state.active.description }}</dd>{% endif %}
+    <dt>Slug</dt><dd><code>{{ state.active.slug }}</code></dd>
+  </dl>
+  <div style="margin-top:10px;">
+    <button id="btn-save" type="button">Save &amp; start new…</button>
+    <span class="muted" style="margin-left:6px;">freezes this campaign → <code>archive/{{ state.active.slug }}</code>, stamps the current commit.</span>
+  </div>
+  <div id="save-msg" class="muted" style="margin-top:8px;"></div>
+</section>
+
+<section class="card">
+  <h3>Notebook <span class="muted" style="font-size:.7em;">log.md</span>
+    <button id="btn-edit-log" type="button" class="secondary" style="float:right;">Edit full log</button>
+  </h3>
+  <div id="md-rendered" class="md-rendered"></div>
+  <div id="md-editor" style="display:none;">
+    <textarea id="md-text" class="tk-textarea" rows="16" style="font-family:ui-monospace,monospace;"></textarea>
+    <div style="margin-top:8px;">
+      <button id="btn-save-log" type="button">Save log</button>
+      <button id="btn-cancel-log" type="button" class="secondary">Cancel</button>
+    </div>
+  </div>
+  <form id="note-form" onsubmit="event.preventDefault(); addNote();" style="margin-top:12px;">
+    <label class="muted" style="display:block; margin-bottom:4px;">Add a timestamped note</label>
+    <textarea id="note-text" class="tk-textarea" rows="2" placeholder="what happened / what you observed"></textarea>
+    <div style="margin-top:6px;"><button type="submit">Append note</button>
+      <span id="note-msg" class="muted" style="margin-left:8px;"></span></div>
+  </form>
+</section>
+
+<section class="card">
+  <h3>Model backups <span class="tag">{{ state.backups.models|length }}</span></h3>
+  {% if state.backups.models %}
+  <table>
+    <tr><th>Name</th><th>Comment</th><th>Commit</th><th>Size</th><th>When</th></tr>
+    {% for m in state.backups.models %}
+    <tr><td><code>{{ m.name }}</code></td><td>{{ m.comment }}</td>
+        <td>{{ commit_badge(m.commit) }}</td>
+        <td class="muted">{{ (m.size_bytes / 1048576)|round(1) }} MB</td>
+        <td class="muted">{{ m.created_at }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">no model backups yet — use 📌 track on the Training page.</p>{% endif %}
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h3>FITS backups <span class="tag">{{ state.backups.fits|length }}</span></h3>
+    {% if state.backups.fits %}
+    <table>
+      <tr><th>Name</th><th>Comment</th><th>Commit</th><th>Size</th></tr>
+      {% for f in state.backups.fits %}
+      <tr><td><code>{{ f.name }}</code></td><td>{{ f.comment }}</td>
+          <td>{{ commit_badge(f.commit) }}</td>
+          <td class="muted">{{ (f.size_bytes / 1048576)|round(2) }} MB</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">none yet — 📌 track on Inference / Inspect.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Image backups <span class="tag">{{ state.backups.images|length }}</span></h3>
+    {% if state.backups.images %}
+    <table>
+      <tr><th>Name</th><th>Comment</th><th>Commit</th><th>Size</th></tr>
+      {% for im in state.backups.images %}
+      <tr><td><code>{{ im.name }}</code></td><td>{{ im.comment }}</td>
+          <td>{{ commit_badge(im.commit) }}</td>
+          <td class="muted">{{ (im.size_bytes / 1024)|round(0) }} KB</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">none yet.</p>{% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h3>FASRC jobs <span class="tag">{{ state.jobs|length }}</span>
+    <span class="muted" style="font-size:.7em;">auto-logged on submit</span></h3>
+  {% if state.jobs %}
+  <table>
+    <tr><th>When</th><th>Job ID</th><th>Step</th><th>Label</th><th>Params</th></tr>
+    {% for j in state.jobs %}
+    <tr>
+      <td class="muted">{{ j.logged_at }}</td>
+      <td><code>{{ j.jobid }}</code></td>
+      <td>{{ j.step_id or '—' }}</td>
+      <td>{{ j.label or '' }}</td>
+      <td><details><summary class="muted">params</summary>
+        <pre class="job-log" style="max-width:420px;">{{ j.params | tojson(indent=2) }}</pre></details></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">no FASRC jobs logged in this campaign yet.</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h3>Archived campaigns <span class="tag">{{ state.archived|length }}</span></h3>
+  {% if state.archived %}
+  <table>
+    <tr><th>Title</th><th>Folder</th><th>Saved</th><th>Created commit</th><th>Saved commit</th></tr>
+    {% for c in state.archived %}
+    <tr><td>{{ c.title }}</td><td><code>archive/{{ c._dir }}</code></td>
+        <td class="muted">{{ c.saved_at }}</td>
+        <td>{{ commit_badge(c.created_commit) }}</td>
+        <td>{{ commit_badge(c.saved_commit) }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">none saved yet.</p>{% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .md-rendered { background:#0f131d; border:1px solid #2c3446; border-radius:6px;
+                 padding:12px 16px; max-height:380px; overflow:auto; }
+  .md-rendered h1,.md-rendered h2,.md-rendered h3 { margin:.6em 0 .3em; }
+  .md-rendered h1 { font-size:1.3em; } .md-rendered h2 { font-size:1.12em; }
+  .md-rendered h3 { font-size:1em; }
+  .md-rendered code { background:#1b2233; padding:1px 4px; border-radius:3px; }
+  .md-rendered pre { background:#1b2233; padding:8px 10px; border-radius:5px; overflow:auto; }
+  .md-rendered blockquote { border-left:3px solid #2c3446; margin:.4em 0; padding-left:10px; color:#9aa6ba; }
+  .md-rendered hr { border:none; border-top:1px solid #2c3446; }
+</style>
+<script>
+const LOG_MD = {{ (state.log_md or '') | tojson }};
+
+async function postForm(url, body) {
+  const r = await fetch(url, { method:'POST', body: new URLSearchParams(body || {}) });
+  let data; try { data = await r.json(); } catch { data = {}; }
+  return { ok: r.ok && data.ok !== false, data };
+}
+
+// ── tiny markdown renderer (headings, bold/italic/code, lists, hr, quote) ──
+function renderMd(src) {
+  const esc = polishUI.escapeHtml;
+  const inline = t => esc(t)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  const lines = (src || '').split('\n');
+  let html = '', inList = false, inCode = false, code = '';
+  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+  for (const ln of lines) {
+    if (ln.trim().startsWith('```')) {
+      if (inCode) { html += '<pre>' + esc(code) + '</pre>'; code = ''; inCode = false; }
+      else { closeList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { code += ln + '\n'; continue; }
+    let m;
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { closeList(); html += '<hr>'; }
+    else if ((m = ln.match(/^(#{1,6})\s+(.*)$/))) { closeList(); const n = m[1].length; html += `<h${n}>${inline(m[2])}</h${n}>`; }
+    else if ((m = ln.match(/^\s*[-*]\s+(.*)$/))) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${inline(m[1])}</li>`; }
+    else if ((m = ln.match(/^\s*>\s?(.*)$/))) { closeList(); html += `<blockquote>${inline(m[1])}</blockquote>`; }
+    else if (ln.trim() === '') { closeList(); }
+    else { closeList(); html += `<p>${inline(ln)}</p>`; }
+  }
+  closeList();
+  if (inCode) html += '<pre>' + esc(code) + '</pre>';
+  return html || '<p class="muted">empty</p>';
+}
+
+const mdRendered = document.getElementById('md-rendered');
+if (mdRendered) mdRendered.innerHTML = renderMd(LOG_MD);
+
+// ── sync now ───────────────────────────────────────────────────────────────
+document.getElementById('btn-sync').onclick = async () => {
+  const msg = document.getElementById('sync-msg');
+  msg.textContent = 'rsync → holylabs…';
+  const { ok, data } = await postForm('/api/tracking/sync');
+  msg.textContent = ok ? '✓ mirrored' : ('✗ ' + (data.error || 'failed'));
+};
+
+// ── start campaign ──────────────────────────────────────────────────────────
+async function startCampaign() {
+  const title = document.getElementById('new-title').value.trim();
+  const desc  = document.getElementById('new-desc').value.trim();
+  const msg = document.getElementById('new-msg');
+  if (!title) { msg.textContent = 'title required'; return; }
+  msg.textContent = 'creating…';
+  const { ok, data } = await postForm('/api/tracking/new', { title, description: desc });
+  if (ok) location.reload(); else msg.textContent = '✗ ' + (data.error || 'failed');
+}
+
+// ── save campaign ───────────────────────────────────────────────────────────
+const saveBtn = document.getElementById('btn-save');
+if (saveBtn) saveBtn.onclick = async () => {
+  if (!confirm('Save this campaign? It will be frozen and moved to archive/, and you can start a fresh one.')) return;
+  const msg = document.getElementById('save-msg');
+  msg.textContent = 'saving…';
+  const { ok, data } = await postForm('/api/tracking/save');
+  if (ok) location.reload(); else msg.textContent = '✗ ' + (data.error || 'failed');
+};
+
+// ── add note ────────────────────────────────────────────────────────────────
+async function addNote() {
+  const text = document.getElementById('note-text').value;
+  const msg = document.getElementById('note-msg');
+  if (!text.trim()) { msg.textContent = 'empty'; return; }
+  msg.textContent = 'saving…';
+  const { ok, data } = await postForm('/api/tracking/log', { text, mode: 'append' });
+  if (ok) { document.getElementById('md-rendered').innerHTML = renderMd(data.log_md);
+            document.getElementById('note-text').value = ''; msg.textContent = '✓ added'; }
+  else msg.textContent = '✗ ' + (data.error || 'failed');
+}
+
+// ── edit full log ───────────────────────────────────────────────────────────
+const editBtn = document.getElementById('btn-edit-log');
+if (editBtn) {
+  const editor = document.getElementById('md-editor');
+  const rendered = document.getElementById('md-rendered');
+  editBtn.onclick = () => {
+    document.getElementById('md-text').value = LOG_MD;
+    editor.style.display = 'block'; rendered.style.display = 'none';
+  };
+  document.getElementById('btn-cancel-log').onclick = () => {
+    editor.style.display = 'none'; rendered.style.display = 'block';
+  };
+  document.getElementById('btn-save-log').onclick = async () => {
+    const text = document.getElementById('md-text').value;
+    const { ok, data } = await postForm('/api/tracking/log', { text, mode: 'replace' });
+    if (ok) location.reload(); else alert(data.error || 'failed');
+  };
+}
+</script>
+{% endblock %}

@@ -12,6 +12,10 @@
 
 {% block viz %}
 {% if recon_pngs %}
+<style>
+  .thumb-wrap { position: relative; display: inline-block; }
+  .thumb-track { position: absolute; top: 6px; left: 6px; z-index: 3; }
+</style>
 <div class="gallery">
   {% for p in recon_pngs[:24] %}
     <div class="thumb-wrap">
@@ -30,6 +34,12 @@
            href="{{ url_for('inspect_fits_download', fits='data/vis/' ~ p.fits_rel) }}"
            download
            title="Download SR plane as FITS">⬇ FITS</a>
+        <button class="tk-track-btn thumb-track"
+                data-track-kind="fits"
+                data-track-path="data/vis/{{ p.fits_rel }}"
+                data-track-name="{{ p.name }}"
+                data-track-label="{{ p.name }} — SR reconstruction (FITS)"
+                title="Back up &amp; track this SR FITS">📌</button>
       {% else %}
         <a class="thumb"
            href="{{ url_for('serve_vis', relpath=p.rel) }}"
@@ -40,6 +50,12 @@
                alt="{{ p.name }}">
           <span class="thumb-label">{{ p.name }}</span>
         </a>
+        <button class="tk-track-btn thumb-track"
+                data-track-kind="image"
+                data-track-path="data/vis/{{ p.rel }}"
+                data-track-name="{{ p.name }}"
+                data-track-label="{{ p.name }} — reconstruction (PNG)"
+                title="Back up &amp; track this image">📌</button>
       {% endif %}
     </div>
   {% endfor %}
@@ -77,8 +93,14 @@
             </a>
             <a href="{{ url_for('inspect_fits_download', fits='data/euclid_inference/' ~ f.rel) }}"
                download
-               style="margin-right:14px;"
+               style="margin-right:6px;"
                title="Download FITS">⬇</a>
+            <button class="tk-track-btn"
+                    data-track-kind="fits"
+                    data-track-path="data/euclid_inference/{{ f.rel }}"
+                    data-track-name="{{ run.tag }}_{{ f.name }}"
+                    data-track-label="{{ run.label or run.tag }} · {{ f.name }}"
+                    title="Back up &amp; track this FITS">📌</button>
           {% endfor %}
         </td>
       </tr>

@@ -55,6 +55,12 @@
                target="_blank"
                style="font-size: 11px;"
                title="Inspect FITS header + download">🔬 inspect</a>
+            <button class="tk-track-btn" style="margin-left:4px;"
+                    data-track-kind="fits"
+                    data-track-path="{{ b.path }}"
+                    data-track-name="euclid_psf_{{ b.name }}"
+                    data-track-label="{{ b.name }} empirical ePSF"
+                    title="Back up &amp; track this ePSF FITS">📌</button>
           {% else %}
             <span class="muted">—</span>
           {% endif %}

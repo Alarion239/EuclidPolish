@@ -70,6 +70,9 @@ is_allowed_remote_path, run_remote_python,
 )
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY, StepResources
 from euclid_polish.web.job_status import JobStatusFetcher
+from euclid_polish.tracking import TrackingError
+from euclid_polish.tracking import default_store as tracking_default_store
+from euclid_polish.tracking import sync as tracking_sync
 import io as _io
 from euclid_polish.training.log_plot import plot_training_records
 import traceback
@@ -1418,6 +1421,46 @@ def _resolve_inspectable_fits(raw_path: str) -> str:
     abort(403)
 
 
+def _resolve_trackable_file(raw_path: str) -> str:
+    """Validate a file the user wants to back up into the tracking store.
+
+    Same allow-listing as :func:`_resolve_inspectable_fits` (so a crafted
+    ``../../etc/passwd`` can't be copied out of the data tree) but without
+    the FITS-extension constraint, since images (PNG) are trackable too.
+    Aborts 400 (empty), 403 (outside roots), or 404 (missing).
+    """
+    if not raw_path:
+        abort(400)
+    p = raw_path if os.path.isabs(raw_path) else os.path.normpath(
+        os.path.join(os.getcwd(), raw_path)
+    )
+    real = os.path.realpath(p)
+    if not os.path.isfile(real):
+        abort(404)
+    for root in _inspectable_roots():
+        if real == root or real.startswith(root + os.sep):
+            return real
+    abort(403)
+
+
+def _resolve_trackable_ckpt(raw_path: str) -> str:
+    """Validate a checkpoint *directory* for a model backup.
+
+    Constrained to live under the checkpoint root (``./ckpt`` by default)
+    so the model-backup endpoint can't be pointed at an arbitrary tree.
+    Aborts 403 (outside the ckpt root) or 404 (not a directory).
+    """
+    ckpt_root = os.path.realpath(
+        os.path.dirname(os.path.realpath(Config.DEFAULT_CHECKPOINT_DIR))
+    )
+    real = os.path.realpath(raw_path)
+    if not os.path.isdir(real):
+        abort(404)
+    if real == ckpt_root or real.startswith(ckpt_root + os.sep):
+        return real
+    abort(403)
+
+
 def _read_fits_header_rows(path: str) -> List[Dict[str, Any]]:
     """Return one row per HDU with its header laid out for the table view.
 
@@ -1902,6 +1945,9 @@ def create_app() -> Flask:
         "/api/fasrc/",            # connect/settings/login/etc.
         "/static/",
         "/api/status",
+        "/tracking",             # lab notebook is local-first; works offline
+        "/api/tracking/",        # (only /api/tracking/sync needs SSH, and it
+                                 #  degrades gracefully when disconnected)
     )
 
     @app.before_request
@@ -3631,6 +3677,125 @@ def create_app() -> Flask:
         out = git_ops.fetch()
         code = 200 if out.get("ok") else 400
         return jsonify(out), code
+
+    # =========================================================================
+    # Tracking tab — the experiment "lab notebook". Titled campaigns collect
+    # model/FITS/image backups (each with a comment + git-commit stamp), a
+    # markdown log, and every FASRC job's parameters. The local store is
+    # gitignored and mirrored to persistent holylabs storage on each backup.
+    # See euclid_polish.tracking.
+    # =========================================================================
+
+    def _tracking_remote_dir() -> str:
+        cfg = fasrc_config.load()
+        return tracking_sync.remote_tracking_dir(
+            cfg.repo_path, cfg.tracking_remote_dir,
+        )
+
+    def _tracking_try_sync(store) -> Dict[str, Any]:
+        """Best-effort push of the store → holylabs; never raises."""
+        try:
+            return tracking_sync.push(
+                STATE.ssh, _tracking_remote_dir(), local_root=store.root,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def _tracking_state() -> Dict[str, Any]:
+        store = tracking_default_store()
+        listing = store.list_campaigns()
+        return {
+            "active":        listing["active"],
+            "archived":      listing["archived"],
+            "backups":       store.list_backups(),
+            "jobs":          store.read_fasrc_jobs(),
+            "log_md":        store.read_log() if listing["active"] else "",
+            "remote_dir":    _tracking_remote_dir(),
+            "tracking_dir":  store.root,
+            "ssh_connected": bool(STATE.ssh and STATE.ssh.is_connected()),
+        }
+
+    @app.route("/tracking")
+    def tracking_page():
+        return render_template("tracking.html", state=_tracking_state())
+
+    @app.route("/api/tracking/state")
+    def api_tracking_state():
+        return jsonify(_tracking_state())
+
+    @app.route("/api/tracking/new", methods=["POST"])
+    def api_tracking_new():
+        title = request.form.get("title", "").strip()
+        desc = request.form.get("description", "").strip()
+        if not title:
+            return jsonify({"ok": False, "error": "title is required"}), 400
+        try:
+            meta = tracking_default_store().create_campaign(title, desc)
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "metadata": meta})
+
+    @app.route("/api/tracking/save", methods=["POST"])
+    def api_tracking_save():
+        try:
+            res = tracking_default_store().save_campaign()
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        sync = _tracking_try_sync(tracking_default_store())
+        return jsonify({"ok": True, "archive_path": res["archive_path"],
+                        "metadata": res["metadata"], "sync": sync})
+
+    @app.route("/api/tracking/log", methods=["POST"])
+    def api_tracking_log():
+        text = request.form.get("text", "")
+        mode = request.form.get("mode", "append")
+        store = tracking_default_store()
+        try:
+            if mode == "replace":
+                store.write_log(text)
+            elif text.strip():
+                store.append_log(text)
+            else:
+                return jsonify({"ok": False, "error": "empty note"}), 400
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "log_md": store.read_log()})
+
+    @app.route("/api/tracking/backup", methods=["POST"])
+    def api_tracking_backup():
+        kind = request.form.get("kind", "").strip()
+        comment = request.form.get("comment", "").strip()
+        name = (request.form.get("name") or "").strip() or None
+        store = tracking_default_store()
+        try:
+            if kind == "model":
+                raw = (request.form.get("ckpt_dir") or "").strip() \
+                    or Config.DEFAULT_CHECKPOINT_DIR
+                rec = store.backup_model(
+                    _resolve_trackable_ckpt(raw), comment, name,
+                )
+            elif kind == "fits":
+                rec = store.backup_fits(
+                    _resolve_trackable_file(request.form.get("path", "")),
+                    comment, name,
+                )
+            elif kind == "image":
+                rec = store.backup_image(
+                    _resolve_trackable_file(request.form.get("path", "")),
+                    comment, name,
+                )
+            else:
+                return jsonify({"ok": False,
+                                "error": f"unknown kind {kind!r}"}), 400
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": True, "record": rec,
+                        "sync": _tracking_try_sync(store)})
+
+    @app.route("/api/tracking/sync", methods=["POST"])
+    def api_tracking_sync():
+        res = _tracking_try_sync(tracking_default_store())
+        return jsonify(res), (200 if res.get("ok") else 400)
 
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,

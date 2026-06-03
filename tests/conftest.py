@@ -73,6 +73,9 @@ class _SessionNullSSH:
     def rsync_pull(self, *_a, **_kw):
         return (0, "", "")
 
+    def rsync_push(self, *_a, **_kw):
+        return (0, "", "")
+
 
 @_pytest.fixture(autouse=True, scope="function")
 def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):

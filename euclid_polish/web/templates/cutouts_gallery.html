@@ -29,17 +29,27 @@
 </section>
 
 {% if files %}
+<style>.thumb-wrap { position: relative; display: inline-block; }
+       .thumb-track { position: absolute; top: 6px; left: 6px; z-index: 3; }</style>
 <div class="gallery">
   {% for fname in files %}
-    <a class="thumb"
-       href="{{ url_for('inspect_fits_page', fits='data/euclid_stars/cutouts/' ~ band.name ~ '/' ~ fname) }}"
-       target="_blank"
-       title="Inspect FITS header + download">
-      <img loading="lazy"
-           src="{{ url_for('cutout_image', band_name=band.name, filename=fname, output_dir=output_dir, size=220) }}"
-           alt="{{ fname }}">
-      <span class="thumb-label">{{ fname }}</span>
-    </a>
+    <div class="thumb-wrap">
+      <a class="thumb"
+         href="{{ url_for('inspect_fits_page', fits='data/euclid_stars/cutouts/' ~ band.name ~ '/' ~ fname) }}"
+         target="_blank"
+         title="Inspect FITS header + download">
+        <img loading="lazy"
+             src="{{ url_for('cutout_image', band_name=band.name, filename=fname, output_dir=output_dir, size=220) }}"
+             alt="{{ fname }}">
+        <span class="thumb-label">{{ fname }}</span>
+      </a>
+      <button class="tk-track-btn thumb-track"
+              data-track-kind="fits"
+              data-track-path="data/euclid_stars/cutouts/{{ band.name }}/{{ fname }}"
+              data-track-name="{{ fname }}"
+              data-track-label="{{ band.name }} cutout · {{ fname }}"
+              title="Back up &amp; track this cutout FITS">📌</button>
+    </div>
   {% endfor %}
 </div>
 {% else %}
