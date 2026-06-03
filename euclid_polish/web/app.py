@@ -142,6 +142,47 @@ def _fasrc_catalog_dir(force: bool = True) -> Optional[str]:
     return os.path.dirname(res.local_path)
 
 
+def _valid_4band_stars(force: bool = False):
+    """Stars valid in ALL 4 bands at ONE common cutout size, from the FASRC
+    ``stars.csv``. Returns ``(size, [star_id, ...])`` (ids sorted) for the
+    size with the most such stars, or ``(None, [])`` when there's no catalog
+    or none qualify. ``force`` re-pulls the catalog; navigation passes False
+    so it reads the already-cached copy instead of rsync-ing per image."""
+    cat_dir = _fasrc_catalog_dir(force=force)
+    if cat_dir is None:
+        return None, []
+    cat = StarCatalog(cat_dir)
+    if not cat.exists():
+        return None, []
+    band_names = [b.name for b in Config.BANDS]
+    by_size: Dict[int, List[int]] = {}
+    for s in cat.load().get("stars", []):
+        valid = s.get("valid", {})
+        if not isinstance(valid, dict):
+            continue
+        # Sizes valid in EVERY band = intersection of each band's valid sizes;
+        # any band with no valid size disqualifies the star.
+        per_band: List[set] = []
+        for bn in band_names:
+            sizes = {int(k) for k, v in (valid.get(bn) or {}).items() if v}
+            if not sizes:
+                per_band = None
+                break
+            per_band.append(sizes)
+        if per_band is None:
+            continue
+        try:
+            sid = int(s["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        for sz in set.intersection(*per_band):
+            by_size.setdefault(sz, []).append(sid)
+    if not by_size:
+        return None, []
+    best = max(by_size, key=lambda sz: len(by_size[sz]))
+    return best, sorted(by_size[best])
+
+
 def _catalog_status() -> Dict[str, Any]:
     cat_dir = _fasrc_catalog_dir()
     if cat_dir is None:
@@ -2044,6 +2085,52 @@ def create_app() -> Flask:
         png = _render_fits_to_png(fits_path, band, size=size)
         return send_file(io.BytesIO(png), mimetype="image/png",
                          max_age=3600)
+
+    # ---------------- Star cutouts gallery (lazy-pulled from FASRC) -------
+    #
+    # Same navigator as /sky, but one real-Euclid star per index: only stars
+    # valid in ALL 4 bands, each band's cutout pulled from FASRC + cached on
+    # first view (no bulk download). Index → the i-th valid star.
+    @app.route("/star-cutouts")
+    def star_cutouts_page():
+        size, ids = _valid_4band_stars(force=True)
+        return render_template(
+            "star_cutouts.html",
+            n_valid=len(ids),
+            cutout_size=size,
+        )
+
+    @app.route("/api/star-cutouts/totals")
+    def api_star_cutouts_totals():
+        size, ids = _valid_4band_stars(force=True)
+        return jsonify({"count": len(ids), "size": size})
+
+    @app.route("/view/star-cutout")
+    def view_star_cutout():
+        band = request.args.get("band", "VIS")
+        try:
+            idx = int(request.args.get("i", 0))
+        except ValueError:
+            idx = 0
+        try:
+            band_cfg = Config.get_band(band)
+        except Exception:
+            abort(404)
+        # Read the cached catalog (force=False) — the page load already
+        # pulled it; don't rsync stars.csv on every image step.
+        size, ids = _valid_4band_stars(force=False)
+        if not ids or size is None:
+            abort(404)
+        idx = max(0, min(idx, len(ids) - 1))
+        sid = ids[idx]
+        cfg = fasrc_config.load()
+        remote = (f"{cfg.data_dir}/euclid_stars/cutouts/{band}/"
+                  f"star_{sid:04d}_{int(size)}.fits")
+        res = _fasrc_fetcher.fetch_one_file(remote)   # lazy pull + cache
+        if not res.ok or not res.local_path or not os.path.isfile(res.local_path):
+            abort(404)
+        png = _render_fits_to_png(res.local_path, band_cfg)
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
     @app.route("/hst-psf")
