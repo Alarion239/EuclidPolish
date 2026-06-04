@@ -127,7 +127,7 @@ def test_dashboard_renders(client):
 def test_catalog_page_renders(client):
     r = client.get("/catalog")
     assert r.status_code == 200
-    assert b"Star catalog" in r.data
+    assert b"sky positions" in r.data
 
 
 def test_psfs_page_renders(client):

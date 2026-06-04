@@ -64,7 +64,7 @@ a:hover { text-decoration: underline; }
 .content h2 { margin-top: 0; }
 
 .grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  display: grid; grid-template-columns: 1fr;
   gap: 18px;
 }
 
@@ -229,7 +229,7 @@ button.secondary:hover { background: #565e64; }
   padding-top: 20px;
   border-top: 1px solid #e2e5ea;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 480px));
+  grid-template-columns: 1fr;
   gap: 16px 20px;
   align-items: start;
   justify-content: start;
