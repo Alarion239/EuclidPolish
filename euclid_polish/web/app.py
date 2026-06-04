@@ -2919,8 +2919,10 @@ def create_app() -> Flask:
         out_png  = os.path.join(Config.VIS_DIR, "training_log.png")
         if log_path is None:
             abort(404)
-        # Render if missing or stale.
-        if (not os.path.exists(out_png)
+        # Render if missing, stale, or explicitly forced (``?force=1`` — used
+        # by the "Visualize" button so the PNG is current before tracking).
+        force = request.args.get("force") in ("1", "true", "yes")
+        if (force or not os.path.exists(out_png)
                 or os.path.getmtime(log_path) > os.path.getmtime(out_png)):
             os.makedirs(Config.VIS_DIR, exist_ok=True)
             plot_training_log(log_path, out_png)
@@ -3642,6 +3644,17 @@ def create_app() -> Flask:
                 rec = store.backup_model(
                     _resolve_trackable_ckpt(raw), comment, name,
                 )
+                # Bundle a rendered training-log plot into the backup so the
+                # visualization travels with the checkpoint ("saved on the
+                # checkpoint"). Best-effort — never fail the backup over it.
+                try:
+                    bdir = store.model_backup_dir("current", rec["name"])
+                    csv = os.path.join(bdir, "training_log.csv")
+                    if os.path.isfile(csv):
+                        plot_training_log(
+                            csv, os.path.join(bdir, "training_log.png"))
+                except Exception:
+                    pass
             elif kind == "fits":
                 rec = store.backup_fits(
                     _resolve_trackable_file(request.form.get("path", "")),

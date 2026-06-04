@@ -167,3 +167,35 @@ def test_timetravel_restore_unknown_campaign(client):
 def test_timetravel_stop_unknown(client):
     r = client.post("/api/tracking/timetravel/stop", data={"short": "zzz"})
     assert r.status_code == 400
+
+
+def test_backup_model_bundles_training_log_plot(client, tmp_path, monkeypatch):
+    # A tmp checkpoint dir (under its own ckpt root) with a plottable CSV.
+    ckpt = tmp_path / "ckpt" / "wdsr"
+    ckpt.mkdir(parents=True)
+    (ckpt / "checkpoint").write_text('model_checkpoint_path: "ckpt-5"\n')
+    (ckpt / "ckpt-5.index").write_bytes(b"i")
+    (ckpt / "ckpt-5.data-00000-of-00001").write_bytes(b"w")
+    header = ("step,wall_time,loss,loss_syn,loss_hst,loss_anchor,"
+              "psnr_stretched,psnr_raw,gnorm_avg,gnorm_max,clip_norm,"
+              "duration_s,psnr_stretched_hst,psnr_raw_hst,anchor_val_psnr,"
+              "save_best_score,combined_loss,is_baseline")
+    rows = "\n".join(
+        f"{s},178051{s},0.04,0.04,,,46.{s},39.{s},1.4,160.0,5.0,135.0,,,,"
+        f"46.{s},0.003,"
+        for s in (1000, 2000, 3000))
+    (ckpt / "training_log.csv").write_text(header + "\n" + rows + "\n")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
+
+    client.post("/api/tracking/new", data={"title": "plots"})
+    r = client.post("/api/tracking/backup",
+                    data={"kind": "model", "comment": "with plot",
+                          "name": "m1"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()["ok"]
+
+    from euclid_polish.tracking import default_store
+    bdir = default_store().model_backup_dir("current", "m1")
+    assert os.path.isfile(os.path.join(bdir, "training_log.csv"))
+    # The rendered plot is bundled alongside the checkpoint.
+    assert os.path.isfile(os.path.join(bdir, "training_log.png"))

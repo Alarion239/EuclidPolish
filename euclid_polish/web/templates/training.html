@@ -6,6 +6,12 @@
 <div class="toolbar">
   <span class="toolbar-label">View</span>
   <a class="chip active" data-group="view" data-value="log">training log</a>
+  <button id="btn-viz-log" type="button" class="chip"
+          title="Re-render the training-log plot from the latest training_log.csv">🔄 Visualize</button>
+  {% if checkpoints.files %}
+  <button id="btn-track-log" type="button" class="tk-track-btn" style="margin-left:8px;"
+          title="Render the plot fresh, then back it up &amp; track it as an image">📌 track plot</button>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -73,11 +79,44 @@
 
 {% block scripts %}
 <script>
+const _TT_CKPT = "./ckpt/wdsr";
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
-  buildUrl:  (sel) => `/view/training-log?checkpoint_dir=./ckpt/wdsr`,
+  buildUrl:  (sel) => `/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`,
   initial:   { view: "log" },
 });
+
+// "Visualize" — force a fresh server-side re-render, then reload the image.
+const _vizBtn = document.getElementById("btn-viz-log");
+if (_vizBtn) _vizBtn.onclick = async () => {
+  _vizBtn.disabled = true;
+  try {
+    await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
+                + `&force=1&_t=${Date.now()}`);
+  } catch (e) { /* ignore — refresh below still shows what's there */ }
+  polishUI.viz.refresh();
+  _vizBtn.disabled = false;
+};
+
+// "📌 track plot" — render the plot fresh so the PNG on disk is current,
+// then open the track modal pointed at it (image backup → tracking store).
+const _trkBtn = document.getElementById("btn-track-log");
+if (_trkBtn) _trkBtn.onclick = async () => {
+  _trkBtn.disabled = true;
+  try {
+    await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
+                + `&force=1&_t=${Date.now()}`);
+  } catch (e) { /* the modal will surface a missing-file error if any */ }
+  polishUI.viz.refresh();
+  _trkBtn.disabled = false;
+  polishUI.track.open({
+    kind:  "image",
+    path:  "data/vis/training_log.png",
+    name:  "training_log",
+    title: "Back up & track the training-log plot",
+    label: `training-log plot (${_TT_CKPT})`,
+  });
+};
 </script>
 {% endblock %}
