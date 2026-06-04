@@ -56,6 +56,61 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     assert r.status_code == 200
 
 
+def test_delete_model_wipes_local_keeps_tracking(client, tmp_path, monkeypatch):
+    ckpt = tmp_path / "ckpt" / "wdsr"
+    ckpt.mkdir(parents=True)
+    (ckpt / "ckpt-5.index").write_bytes(b"x")
+    (ckpt / "training_log.csv").write_text("step\n1\n")
+    (ckpt / "loss_best").mkdir()
+    (ckpt / "loss_best" / "ckpt-1.index").write_bytes(b"y")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
+    # A tracking store with content that must NOT be touched.
+    trk = tmp_path / "tracking" / "current"
+    trk.mkdir(parents=True)
+    (trk / "keep.txt").write_text("important")
+    monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
+
+    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()["results"]["local"]["ok"] is True
+    # ckpt dir recreated empty; tracking untouched
+    assert ckpt.is_dir() and list(ckpt.iterdir()) == []
+    assert (trk / "keep.txt").read_text() == "important"
+
+
+def test_delete_model_requires_confirm(client, tmp_path, monkeypatch):
+    ckpt = tmp_path / "ckpt" / "wdsr"
+    ckpt.mkdir(parents=True)
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
+    r = client.post("/api/fasrc/delete-model", data={})
+    assert r.status_code == 400
+
+
+def test_delete_model_refused_when_job_active(client, tmp_path, monkeypatch):
+    ckpt = tmp_path / "ckpt" / "wdsr"
+    ckpt.mkdir(parents=True)
+    (ckpt / "ckpt-5.index").write_bytes(b"x")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
+    from euclid_polish.web import fasrc_jobs
+    fasrc_jobs.DB.insert("12345", label="t", params={}, script_path="s",
+                         log_path="l", err_path="e")  # inserts as PENDING
+    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
+    assert r.status_code == 400
+    assert "cancel" in r.get_json()["error"].lower()
+    assert (ckpt / "ckpt-5.index").exists()      # nothing deleted
+
+
+def test_delete_model_refuses_unsafe_local_path(client, tmp_path, monkeypatch):
+    # A path without "ckpt" must be refused so we can't wipe an arbitrary dir.
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "f.bin").write_bytes(b"x")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(weights))
+    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
+    assert r.get_json()["results"]["local"]["ok"] is False
+    assert (weights / "f.bin").exists()          # untouched
+
+
 # ---------------------------------------------------------------------------
 # Pages render
 # ---------------------------------------------------------------------------

@@ -24,6 +24,11 @@
 <section class="card">
   <h3>Checkpoints on disk
     {% if checkpoints.files %}
+    <button id="btn-delete-model" type="button"
+            style="float:right; margin-left:8px; cursor:pointer; border-radius:6px;
+                   font-size:0.78em; padding:2px 7px; line-height:1.4;
+                   background:#5a2230; border:1px solid #7a3340; color:#f0c0c0;"
+            title="Erase the current model (local + FASRC) so you can train a fresh one. Tracking backups are NOT touched.">🗑️ delete model</button>
     <button class="tk-track-btn" style="float:right;"
             data-track-kind="model"
             data-track-ckpt="{{ checkpoints.dir }}"
@@ -97,6 +102,34 @@ if (_vizBtn) _vizBtn.onclick = async () => {
   } catch (e) { /* ignore — refresh below still shows what's there */ }
   polishUI.viz.refresh();
   _vizBtn.disabled = false;
+};
+
+// "🗑️ delete model" — wipe the checkpoint dir on FASRC + local for a fresh
+// start. Tracking backups are untouched. Refused while a job is active.
+const _delBtn = document.getElementById("btn-delete-model");
+if (_delBtn) _delBtn.onclick = async () => {
+  if (!confirm("Delete the CURRENT model checkpoints on BOTH FASRC and local?\n\n"
+      + "This erases ckpt/wdsr (checkpoints, training_log.csv, loss_best/) so you "
+      + "can train a fresh model.\nYour Tracking backups are NOT touched. "
+      + "This cannot be undone.")) return;
+  _delBtn.disabled = true;
+  const orig = _delBtn.textContent; _delBtn.textContent = "deleting…";
+  try {
+    const r = await fetch("/api/fasrc/delete-model", {
+      method: "POST", body: new URLSearchParams({ confirm: "yes" }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 400 && d.error) { alert("✗ " + d.error); return; }
+    const loc = (d.results && d.results.local) || {};
+    const rem = (d.results && d.results.remote) || {};
+    alert("local: " + (loc.ok ? "✓ deleted" : "✗ " + (loc.error || "failed"))
+        + "\nFASRC: " + (rem.ok ? "✓ deleted" : "✗ " + (rem.error || "failed")));
+  } catch (e) {
+    alert("network error: " + e);
+  } finally {
+    _delBtn.disabled = false; _delBtn.textContent = orig;
+    location.reload();
+  }
 };
 
 // "📌 track plot" — render the plot fresh so the PNG on disk is current,
