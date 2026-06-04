@@ -364,19 +364,19 @@ class Config:
     PSNR_PEAK_STRETCHED          = math.asinh(PSNR_PEAK_E / STRETCH_SCALE_E)
 
     # Star magnitude distribution (probability thresholds and ranges).
-    # The bright bin is widened toward brighter (mag 13) and given a higher
-    # weight so the network sees BIG stars — brighter point sources spread
-    # more flux above the noise through the PSF, so their wings (and the
-    # diffraction structure the model must reconstruct) extend much further.
-    # Without these, the brightest synthetic star was only mag 16.
-    STAR_MAG_PROB_FAINT          = 0.65     # below → faint bin
-    STAR_MAG_PROB_MID            = 0.88     # below → mid bin (bright bin = 12%)
+    # Three bins: faint (70%, mag 22–25), mid (25%, mag 18–22), bright
+    # (5%, mag 16–18). Reverted to these (pre-665d41d) values: the mag-13
+    # "BIG stars" experiment deposited single-pixel deltas up to ~2.3e8 e,
+    # which are an ill-posed (unrecoverable) target that only taught the
+    # model to blur. Keep the brightest synthetic star at mag 16.
+    STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
+    STAR_MAG_PROB_MID            = 0.95     # below → mid bin (bright bin = 5%)
     STAR_MAG_FAINT_BASE          = 22.0
     STAR_MAG_FAINT_RANGE         = 3.0
     STAR_MAG_MID_BASE            = 18.0
     STAR_MAG_MID_RANGE           = 4.0
-    STAR_MAG_BRIGHT_BASE         = 13.0     # was 16.0 — add genuinely big stars
-    STAR_MAG_BRIGHT_RANGE        = 3.0      # 13–16
+    STAR_MAG_BRIGHT_BASE         = 16.0     # 16–18
+    STAR_MAG_BRIGHT_RANGE        = 2.0
 
     # Donut-galaxy (toy gravitational-lens ring) defaults.
     # Sized so the central hole is blurred by the Euclid VIS PSF (FWHM ≈ 0.14"):
