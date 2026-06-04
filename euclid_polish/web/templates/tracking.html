@@ -85,12 +85,14 @@
   <h3>Model backups <span class="tag">{{ state.backups.models|length }}</span></h3>
   {% if state.backups.models %}
   <table>
-    <tr><th>Name</th><th>Comment</th><th>Commit</th><th>Size</th><th>When</th></tr>
+    <tr><th>Name</th><th>Comment</th><th>Commit</th><th>Size</th><th>When</th><th></th></tr>
     {% for m in state.backups.models %}
     <tr><td><code>{{ m.name }}</code></td><td>{{ m.comment }}</td>
         <td>{{ commit_badge(m.commit) }}</td>
         <td class="muted">{{ (m.size_bytes / 1048576)|round(1) }} MB</td>
-        <td class="muted">{{ m.created_at }}</td></tr>
+        <td class="muted">{{ m.created_at }}</td>
+        <td><button class="tk-track-btn" onclick="timeTravel('current', '{{ m.name }}')"
+                title="Re-run this model's exact code + checkpoint in an isolated sandbox">⏱ time-travel</button></td></tr>
     {% endfor %}
   </table>
   {% else %}<p class="muted">no model backups yet — use 📌 track on the Training page.</p>{% endif %}
@@ -148,15 +150,59 @@
 {% endif %}
 
 <section class="card">
+  <h3>⏱ Time-travel sandboxes <span class="tag">{{ state.sandboxes|length }}</span>
+    <span class="muted" style="font-size:.7em;">re-run old code, isolated</span></h3>
+  <p class="muted" style="margin-top:0;">Each sandbox is a git worktree at a backup's commit with its own
+    data/ckpt (inputs symlinked read-only, outputs isolated). Launching one starts the <strong>old code</strong>
+    as a second WebUI — your live server &amp; data are untouched.</p>
+  <label style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+    <input type="checkbox" id="tt-remote">
+    Also prepare a <strong>FASRC</strong> sandbox (remote worktree + netscratch) so cluster jobs stay isolated
+    {% if not state.ssh_connected %}<span class="muted">— needs FASRC connection</span>{% endif %}
+  </label>
+  <div id="tt-msg" class="muted" style="min-height:1.2em;"></div>
+  {% if state.sandboxes %}
+  <table>
+    <tr><th>Commit</th><th>Source</th><th>Status</th><th>FASRC</th><th>Created</th><th></th></tr>
+    {% for s in state.sandboxes %}
+    <tr>
+      <td><code>{{ s.short }}</code></td>
+      <td class="muted">{{ s.source.campaign or '?' }}{% if s.source.model %} · {{ s.source.model }}{% endif %}</td>
+      <td>{% if s.running %}<span class="tag tag-ok">running</span>
+          <a href="{{ s.url }}" target="_blank">open ↗</a>
+          {% else %}<span class="muted">stopped</span>{% endif %}</td>
+      <td>{% if s.remote and s.remote.ok %}<span class="tag tag-ok">ready</span>
+          {% elif s.remote %}<span class="tag tag-warn" title="{{ s.remote.error }}">failed</span>
+          {% else %}<span class="muted">local only</span>{% endif %}</td>
+      <td class="muted">{{ s.created_at }}</td>
+      <td>
+        {% if s.running %}<button class="tk-track-btn" onclick="ttAction('stop','{{ s.short }}')">stop</button>
+        {% else %}<button class="tk-track-btn" onclick="ttAction('open','{{ s.short }}')">open</button>{% endif %}
+        <button class="tk-track-btn" onclick="ttRemove('{{ s.short }}')">remove</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">none yet — hit ⏱ on a model backup or an archived campaign below.</p>{% endif %}
+</section>
+
+<section class="card">
   <h3>Archived campaigns <span class="tag">{{ state.archived|length }}</span></h3>
   {% if state.archived %}
   <table>
-    <tr><th>Title</th><th>Folder</th><th>Saved</th><th>Created commit</th><th>Saved commit</th></tr>
+    <tr><th>Title</th><th>Folder</th><th>Saved</th><th>Saved commit</th><th>Time-travel</th></tr>
     {% for c in state.archived %}
     <tr><td>{{ c.title }}</td><td><code>archive/{{ c._dir }}</code></td>
         <td class="muted">{{ c.saved_at }}</td>
-        <td>{{ commit_badge(c.created_commit) }}</td>
-        <td>{{ commit_badge(c.saved_commit) }}</td></tr>
+        <td>{{ commit_badge(c.saved_commit) }}</td>
+        <td>
+          <button class="tk-track-btn" onclick="timeTravel('{{ c._dir }}', '')"
+                  title="Restore the code at this campaign's saved commit">⏱ campaign</button>
+          {% for m in c.models %}
+          <button class="tk-track-btn" onclick="timeTravel('{{ c._dir }}', '{{ m.name }}')"
+                  title="Restore {{ m.name }} — exact code + checkpoint">⏱ {{ m.name }}</button>
+          {% endfor %}
+        </td></tr>
     {% endfor %}
   </table>
   {% else %}<p class="muted">none saved yet.</p>{% endif %}
@@ -257,6 +303,43 @@ async function addNote() {
   if (ok) { document.getElementById('md-rendered').innerHTML = renderMd(data.log_md);
             document.getElementById('note-text').value = ''; msg.textContent = '✓ added'; }
   else msg.textContent = '✗ ' + (data.error || 'failed');
+}
+
+// ── time-travel ─────────────────────────────────────────────────────────────
+async function timeTravel(campaign, model) {
+  const remote = document.getElementById('tt-remote')?.checked ? '1' : '';
+  const what = model ? `model "${model}"` : `campaign "${campaign}"`;
+  if (!confirm(`Time-travel to ${what}?\n\nThis checks out its commit in a sandbox worktree with isolated `
+      + `data/ckpt, then launches the OLD code as a second WebUI on another port. `
+      + `Your live server and data are untouched.`)) return;
+  const msg = document.getElementById('tt-msg');
+  msg.style.color = ''; msg.textContent = 'preparing sandbox + booting old code (imports TensorFlow — ~15–20s)…';
+  const { ok, data } = await postForm('/api/tracking/timetravel/restore', { campaign, model, remote });
+  if (ok && data.url) {
+    let t = `✓ sandbox ${data.short} → `;
+    msg.innerHTML = t + `<a href="${data.url}" target="_blank"><strong>${data.url}</strong> open ↗</a>`;
+    if (data.remote && !data.remote.ok)
+      msg.innerHTML += ` <span style="color:#e8c275;">· FASRC: ${polishUI.escapeHtml(data.remote.error)}</span>`;
+    if (data.warning)
+      msg.innerHTML += `<div style="color:#e8c275; font-size:.85em;">⚠ ${polishUI.escapeHtml(data.warning)}</div>`;
+    setTimeout(() => location.reload(), 3000);
+  } else {
+    msg.style.color = '#e89393';
+    msg.textContent = '✗ ' + (data.error || (data.spawn && data.spawn.error) || 'failed');
+  }
+}
+async function ttAction(action, short) {
+  const msg = document.getElementById('tt-msg');
+  msg.style.color = ''; msg.textContent = action + 'ing ' + short + '…';
+  const { ok, data } = await postForm('/api/tracking/timetravel/' + action, { short });
+  if (ok) location.reload();
+  else { msg.style.color = '#e89393'; msg.textContent = '✗ ' + (data.error || 'failed'); }
+}
+async function ttRemove(short) {
+  if (!confirm('Remove sandbox ' + short + '? Stops its server, drops the worktree, deletes its folder.')) return;
+  const { ok, data } = await postForm('/api/tracking/timetravel/remove', { short });
+  if (ok) location.reload();
+  else alert(data.error || 'failed');
 }
 
 // ── edit full log ───────────────────────────────────────────────────────────

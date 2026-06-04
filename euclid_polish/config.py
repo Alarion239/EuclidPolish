@@ -485,6 +485,12 @@ class Config:
     TRACKING_DIR                 = os.environ.get(
         "EUCLID_POLISH_TRACKING_DIR", "./tracking",
     )
+    # Time-travel sandboxes: each is a git worktree at a backup's commit
+    # plus isolated data/ckpt folders, so old code can be re-run without
+    # touching live work. Gitignored. See euclid_polish.tracking.timetravel.
+    TIMETRAVEL_DIR               = os.environ.get(
+        "EUCLID_POLISH_TIMETRAVEL_DIR", "./.timetravel",
+    )
     # 192 HR / 96 LR (was 96/48). The WDSR-B receptive field is ~69 LR px;
     # a 48-px LR crop clipped it, so the model could never see context beyond
     # ~46 px and large objects (bright stars, extended galaxies) never fit in

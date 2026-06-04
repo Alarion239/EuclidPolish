@@ -145,6 +145,24 @@ def _commit_str(commit: Optional[Dict[str, Any]]) -> str:
     return s
 
 
+def dirty_warning(commit: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Reproducibility warning for a just-stamped commit, or ``None`` if clean.
+
+    We never auto-commit — capturing the exact state is the user's call.
+    Time-travel checks out the recorded *commit*, so anything uncommitted
+    won't be reproduced; this is the warning surfaced at backup/save time.
+    """
+    if commit is None:
+        return ("not a git repository (or git unavailable) — this backup "
+                "cannot be reproduced by time-travel.")
+    if commit.get("dirty"):
+        return ("working tree has uncommitted changes — they will NOT be "
+                "captured. Time-travel restores commit "
+                f"{commit.get('short', '?')} only. Commit everything you want "
+                "included for this to be exactly reproducible.")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # the store
 # ---------------------------------------------------------------------------
@@ -366,14 +384,17 @@ class TrackingStore:
             return meta
 
     def list_backups(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Enumerate ``{models, fits, images}`` backups with their metadata."""
+        """Enumerate the active campaign's ``{models, fits, images}`` backups."""
+        if not self.has_current():
+            return {"models": [], "fits": [], "images": []}
+        return self._backups_in(self.current_dir)
+
+    def _backups_in(self, campaign_dir: str) -> Dict[str, List[Dict[str, Any]]]:
         out: Dict[str, List[Dict[str, Any]]] = {
             "models": [], "fits": [], "images": [],
         }
-        if not self.has_current():
-            return out
         # Models: one sub-dir each, meta.json inside.
-        models_dir = os.path.join(self.current_dir, "models")
+        models_dir = os.path.join(campaign_dir, "models")
         if os.path.isdir(models_dir):
             for name in sorted(os.listdir(models_dir)):
                 meta = _read_json(os.path.join(models_dir, name, "meta.json"))
@@ -381,7 +402,7 @@ class TrackingStore:
                     out["models"].append(meta)
         # Files: sidecar *.meta.json next to each stored artifact.
         for sub in ("fits", "images"):
-            d = os.path.join(self.current_dir, sub)
+            d = os.path.join(campaign_dir, sub)
             if not os.path.isdir(d):
                 continue
             for fn in sorted(os.listdir(d)):
@@ -389,10 +410,44 @@ class TrackingStore:
                     meta = _read_json(os.path.join(d, fn))
                     if meta:
                         out[sub].append(meta)
-        out["models"].sort(key=lambda m: m.get("created_at") or "", reverse=True)
-        out["fits"].sort(key=lambda m: m.get("created_at") or "", reverse=True)
-        out["images"].sort(key=lambda m: m.get("created_at") or "", reverse=True)
+        for k in out:
+            out[k].sort(key=lambda m: m.get("created_at") or "", reverse=True)
         return out
+
+    # ---- campaign/backup resolution (used by time-travel) ----------------
+
+    def campaign_dir(self, name: Optional[str]) -> str:
+        """Abs dir for ``"current"`` or an archived campaign ``name``.
+
+        ``name`` is basename-sanitised so it can't escape the archive dir.
+        Raises :class:`TrackingError` if no such campaign exists.
+        """
+        if not name or name == "current":
+            d = self.current_dir
+        else:
+            d = os.path.join(self.archive_dir, os.path.basename(name))
+        if not os.path.isfile(os.path.join(d, "metadata.json")):
+            raise TrackingError(f"no campaign {name!r}")
+        return d
+
+    def campaign_meta(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
+        return _read_json(os.path.join(self.campaign_dir(name), "metadata.json"))
+
+    def backups_in(self, name: Optional[str]) -> Dict[str, List[Dict[str, Any]]]:
+        return self._backups_in(self.campaign_dir(name))
+
+    def model_backup_dir(self, name: Optional[str], model: str) -> str:
+        """Abs dir of model backup ``model`` within campaign ``name``."""
+        d = os.path.join(self.campaign_dir(name), "models",
+                         os.path.basename(model))
+        if not os.path.isdir(d):
+            raise TrackingError(f"no model backup {model!r} in {name!r}")
+        return d
+
+    def model_backup_meta(self, name: Optional[str],
+                          model: str) -> Optional[Dict[str, Any]]:
+        return _read_json(os.path.join(self.model_backup_dir(name, model),
+                                       "meta.json"))
 
     # --------------------------- FASRC jobs -------------------------------
 

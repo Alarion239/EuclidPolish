@@ -111,6 +111,11 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(
         Config, "TRACKING_DIR", str(pkg_tmp / "tracking"), raising=False,
     )
+    # Same for time-travel sandboxes — never create a real git worktree
+    # under ./.timetravel during a test run.
+    monkeypatch.setattr(
+        Config, "TIMETRAVEL_DIR", str(pkg_tmp / "timetravel"), raising=False,
+    )
 
     # Isolate the FASRC job stores (sqlite DB + CSV job log) so NO test ever
     # writes into the real ``~/.euclid_polish/{fasrc_jobs.db,

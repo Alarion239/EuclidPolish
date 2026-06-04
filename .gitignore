@@ -25,6 +25,9 @@ data/*
 # Experiment-tracking store: mirrored to FASRC holylabs, never committed.
 /tracking/
 
+# Time-travel sandboxes (git worktrees + isolated data/ckpt). Disposable.
+/.timetravel/
+
 # Vendored reference code (heavy data examples)
 scripts/polish-pub/
 

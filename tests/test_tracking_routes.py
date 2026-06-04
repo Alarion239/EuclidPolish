@@ -119,3 +119,51 @@ def test_backup_unknown_kind(client):
     client.post("/api/tracking/new", data={"title": "bk"})
     r = client.post("/api/tracking/backup", data={"kind": "bogus"})
     assert r.status_code == 400
+
+
+# --------------------------------------------------------------------------
+# time-travel routes (heavy git/worktree/server bits stubbed)
+# --------------------------------------------------------------------------
+
+def test_timetravel_restore_route(client, monkeypatch):
+    import json
+    import os
+    from euclid_polish.tracking import default_store
+    from euclid_polish.tracking import timetravel as tt
+
+    store = default_store()
+    store.create_campaign("tt")
+    mdir = os.path.join(store.current_dir, "models", "m1")
+    os.makedirs(mdir)
+    json.dump({"name": "m1", "kind": "model",
+               "commit": {"hash": "abc123", "short": "abc123",
+                          "branch": "main", "dirty": False}},
+              open(os.path.join(mdir, "meta.json"), "w"))
+
+    monkeypatch.setattr(tt, "prepare_local_sandbox",
+                        lambda commit, **k: {"short": "abc123", "home": "/tmp/x",
+                                             "root": "/tmp/x"})
+    monkeypatch.setattr(tt, "write_home_fasrc_config",
+                        lambda short, cfg: "/tmp/x/fasrc.json")
+    monkeypatch.setattr(tt, "spawn_server",
+                        lambda short, **k: {"ok": True, "port": 8766, "pid": 1,
+                                            "url": "http://127.0.0.1:8766/"})
+
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "current", "model": "m1"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    j = r.get_json()
+    assert j["ok"] and j["short"] == "abc123"
+    assert j["url"].endswith("8766/")
+    assert j["warning"] is None        # commit was clean
+
+
+def test_timetravel_restore_unknown_campaign(client):
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "does-not-exist"})
+    assert r.status_code == 400
+
+
+def test_timetravel_stop_unknown(client):
+    r = client.post("/api/tracking/timetravel/stop", data={"short": "zzz"})
+    assert r.status_code == 400

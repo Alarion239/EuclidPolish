@@ -10,6 +10,7 @@ from euclid_polish.tracking.store import (
     TrackingError,
     TrackingStore,
     default_store,
+    dirty_warning,
     git_commit_info,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "TrackingError",
     "TrackingStore",
     "default_store",
+    "dirty_warning",
     "git_commit_info",
 ]

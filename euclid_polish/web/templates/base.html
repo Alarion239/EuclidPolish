@@ -340,7 +340,16 @@
         else if (data.sync && data.sync.error) m += ' · holylabs: ' + data.sync.error;
         msgEl.style.color = '#9fd0a6';
         msgEl.textContent = m;
-        setTimeout(close, 1500);
+        if (data.warning) {
+          // Non-blocking reproducibility warning (dirty tree / no repo).
+          const w = document.createElement('div');
+          w.style.cssText = 'color:#e8c275; margin-top:6px; font-size:.82em;';
+          w.textContent = '⚠ ' + data.warning;
+          msgEl.appendChild(w);
+          setTimeout(close, 4500);   // longer so the warning is read
+        } else {
+          setTimeout(close, 1500);
+        }
       } catch (e) {
         msgEl.style.color = '#e89393';
         msgEl.textContent = 'network error: ' + e;
