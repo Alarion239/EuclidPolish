@@ -175,16 +175,12 @@ class Config:
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
-    # Stars are deliberately OVER-represented vs the real Wide-Survey sky
-    # (~1.389/arcmin²): point sources are the only thing that teaches the
-    # network to invert the PSF, and at the real density a 192px HR train
-    # crop (0.0256 arcmin²) lands a star only ~3.5% of the time — the net
-    # never sees one and learns to blur, not deconvolve. At 100/arcmin² a
-    # crop averages ~2.6 stars (~92% contain ≥1), so deconvolution gets a
-    # constant gradient. This is a TRAINING-SIGNAL knob, not sky realism;
-    # the magnitudes stay physical (real 13–25 VIS range, per-band colours,
-    # flux via each band's sim_zeropoint_e), only the COUNT is inflated.
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 10.0   # EXPERIMENT: 10 stars/arcmin² (10× fewer than the original 100)
+    # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real
+    # Wide-Survey stellar density). The 10/arcmin² inflation was paired with
+    # the 192px crop to guarantee point sources per crop; with the crop back
+    # at 96 and densities matched to the baseline, this is a clean apples-to-
+    # apples comparison against the run that climbed 55→65 dB.
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389/arcmin²
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument
@@ -475,11 +471,11 @@ class Config:
 
     # Training defaults
     DEFAULT_TRAIN_STEPS          = 100_000
-    # 4 (was 16): the HR crop was enlarged 96 -> 192 (see DEFAULT_HR_CROP_SIZE),
-    # a 4x activation-area increase. Dropping the batch 4x keeps per-step memory
-    # roughly constant (16*48^2 == 4*96^2 LR pixels) and matches the original
-    # POLISH default (batch=4).
-    DEFAULT_BATCH_SIZE           = 4
+    # 16: reverted alongside the 96px HR crop to match the 5dece6f ("worked")
+    # baseline. (Was dropped to 4 only to offset the 192px crop's 4x activation
+    # area.) Note: FASRC runs pass the batch explicitly via the WebUI/CLI, so
+    # this default mainly affects local runs and config coherence.
+    DEFAULT_BATCH_SIZE           = 16
     DEFAULT_EVALUATE_EVERY       = 1000
     DEFAULT_VALIDATE_IMAGES      = 100
     DEFAULT_NUM_RES_BLOCKS       = 32
@@ -499,12 +495,11 @@ class Config:
     TIMETRAVEL_DIR               = os.environ.get(
         "EUCLID_POLISH_TIMETRAVEL_DIR", "./.timetravel",
     )
-    # 192 HR / 96 LR (was 96/48). The WDSR-B receptive field is ~69 LR px;
-    # a 48-px LR crop clipped it, so the model could never see context beyond
-    # ~46 px and large objects (bright stars, extended galaxies) never fit in
-    # one crop. 96 LR px now exceeds the RF and admits big sources. Paired with
-    # the 4x smaller default batch so training memory stays ~constant.
-    DEFAULT_HR_CROP_SIZE         = 192
+    # 96 HR / 48 LR — reverted to the 5dece6f ("worked") field of view to make
+    # a clean apples-to-apples comparison against the run that climbed 55→65 dB.
+    # (The 192/96 enlargement was to admit the ~69 LR-px WDSR-B receptive field;
+    # restore it once this FOV-matched baseline is confirmed to climb again.)
+    DEFAULT_HR_CROP_SIZE         = 96
 
     # Reconstruction output
     VIS_RECONSTRUCTION_DIR       = os.path.join(DATA_DIR, "vis/reconstruction")
@@ -542,12 +537,11 @@ class Config:
     LENS_COSMOLOGY_OMEGA_M  = 0.3
     LENS_COSMOLOGY_OMEGA_L  = 0.7
 
-    # 512² HR field at 0.05"/pix = 0.182 arcmin² → 1.65/arcmin² yields ~0.30
-    # lenses per field on average (10× fewer than the previous 16.5). Still
-    # well above the Collett 2015 observed-sky density (~1 per 100 arcmin² at
-    # Euclid VIS depth), so the network still sees lensed examples while the
-    # scenes look far less lens-crowded. Drop to 1e-2 for fully realistic sky.
-    LENS_DENSITY_ARCMIN2    = 1.65
+    # Reverted to the 5dece6f ("worked") density: 16.5/arcmin² → ~3 lenses per
+    # 512² HR field. Well above the Collett 2015 observed-sky density (~1 per
+    # 100 arcmin² at Euclid VIS depth); a training-signal knob, not sky realism.
+    # Drop to 1e-2 for fully realistic sky.
+    LENS_DENSITY_ARCMIN2    = 16.5
     LENS_Z_LENS_MIN         = 0.20
     LENS_Z_LENS_MAX         = 1.20
     LENS_Z_SOURCE_OFFSET    = 0.30      # minimum z_s - z_l
