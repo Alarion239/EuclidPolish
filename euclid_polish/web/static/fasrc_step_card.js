@@ -675,7 +675,16 @@ large cutout don't leak across train/validate."></label>`;
         method: 'POST', body,
       });
       const data = await resp.json();
-      if (data.ok) {
+      if (data.ok && data.queued) {
+        // A job is already running — this one was queued locally. It will
+        // be submitted automatically when the running job succeeds (and
+        // not at all if it fails). Shown on the FASRC Current Submission
+        // tab's queue list.
+        const n = (data.queue && data.queue.count) || 0;
+        statusEl.innerHTML = `<span class="badge badge-pending">queued</span>
+          <span class="muted">behind the running job — position ${n}.
+          See the queue on the Current Submission tab.</span>`;
+      } else if (data.ok) {
         statusEl.innerHTML = _liveStatusMarkup(data.jobid);
         const cardEl = statusEl.querySelector(".job-status-card");
         if (cardEl && window.JobStatusCard) {

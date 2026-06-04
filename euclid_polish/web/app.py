@@ -107,7 +107,7 @@ from euclid_polish.euclid.psf_library import (
 )
 from euclid_polish.euclid.types import PSF
 from euclid_polish.web import (
-    fasrc_config, fasrc_jobs, fasrc_log_parser, git_ops,
+    fasrc_config, fasrc_jobs, fasrc_log_parser, fasrc_queue, git_ops,
 )
 from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.jobs import REGISTRY
@@ -4208,6 +4208,107 @@ def create_app() -> Flask:
             ),
         }), 400
 
+    # ---- local submission queue (one cluster job at a time, fail-stops) ----
+    #
+    # When a job is submitted while another is still active it is queued
+    # locally instead of sbatch'd. On the active job's SUCCESS the next is
+    # submitted; on FAILURE (incl OOM) the queue halts. See fasrc_queue.
+
+    def _spec_label(kind, step_ref, form):
+        explicit = (form.get("label") or "").strip()
+        if explicit:
+            return explicit
+        try:
+            step = STEP_REGISTRY.get(step_ref)
+        except KeyError:
+            step = None
+        if kind == "synthetic":
+            steps = form.get("steps") or fasrc_config.load().steps
+            return f"{step.label if step else 'synthetic'}: {steps} steps"
+        return f"HST · {step.label}" if step else f"step {step_ref}"
+
+    def _build_and_submit(kind, step_ref, form):
+        """Render + sbatch a job from a stored spec → (slurm_id, payload)."""
+        cfg = fasrc_config.load()
+        if kind == "synthetic":
+            try:
+                step = STEP_REGISTRY.get(step_ref)
+            except KeyError:
+                step = STEP_REGISTRY.get("synthetic_generate")
+                step_ref = "synthetic_generate"
+            resources = StepResources.from_form(form, step.defaults)
+            params = {
+                "n_train":     int(form.get("n_train",    cfg.n_train)),
+                "n_valid":     int(form.get("n_valid",    cfg.n_valid)),
+                "image_size":  int(form.get("image_size", cfg.image_size)),
+                "batch_size":  int(form.get("batch_size", cfg.batch_size)),
+                "steps":       int(form.get("steps",      cfg.steps)),
+                "extra_flags": (form.get("extra_flags", "") or "").strip(),
+            }
+            params.update(resources.to_dict())
+            label = _spec_label(kind, step_ref, form)
+            built = step.build_sbatch_body(
+                params=params, resources=resources, cfg=cfg, label=label)
+            return fasrc_jobs.submit_sbatch_script(
+                STATE.ssh, cfg=cfg, built=built, label=label,
+                params=params, step_id=step.step_id)
+        # HST pipeline step
+        step = STEP_REGISTRY.get(step_ref)
+        form2 = dict(form)
+        if step.fixed_cpus is not None:
+            form2["n_cpus"] = str(step.fixed_cpus)
+        resources = StepResources.from_form_strict(form2)
+        if step.fixed_cpus is not None:
+            resources.n_cpus = int(step.fixed_cpus)
+        label = _spec_label(kind, step_ref, form2)
+        built = step.build_sbatch_body(
+            params=form2, resources=resources, cfg=cfg, label=label)
+        params_for_db = dict(form2)
+        params_for_db.update(resources.to_dict())
+        params_for_db["step_id"] = step_ref
+        return fasrc_jobs.submit_sbatch_script(
+            STATE.ssh, cfg=cfg, built=built, label=label,
+            params=params_for_db, step_id=step_ref)
+
+    def _submit_spec_now(spec):
+        return _build_and_submit(spec["kind"], spec["step"], spec["form"])
+
+    def _queue_tick():
+        """Promote/halt the local queue — call after every squeue reconcile."""
+        try:
+            fasrc_queue.QUEUE.tick(
+                fasrc_jobs.DB, fasrc_jobs.JOBLOG, STATE.ssh, _submit_spec_now)
+        except Exception:
+            traceback.print_exc()
+
+    def _submit_or_queue(kind, step_ref, form):
+        """Submit immediately if the single lane is free, else enqueue."""
+        label = _spec_label(kind, step_ref, form)
+        spec = {"kind": kind, "step": step_ref, "form": form}
+        if fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB):
+            fasrc_queue.QUEUE.enqueue(spec, label)
+            return jsonify({"ok": True, "queued": True, "label": label,
+                            "queue": fasrc_queue.QUEUE.public()})
+        # Lane free → a fresh submit also clears any prior halt (resume).
+        if fasrc_queue.QUEUE.halted:
+            fasrc_queue.QUEUE.resume()
+        slurm_id, payload = _submit_spec_now(spec)
+        if slurm_id is None:
+            return jsonify(payload), 500
+        fasrc_queue.QUEUE.on_direct_submit(slurm_id)
+        payload["queue"] = fasrc_queue.QUEUE.public()
+        return jsonify(payload)
+
+    @app.route("/api/fasrc/queue/clear", methods=["POST"])
+    def api_fasrc_queue_clear():
+        return jsonify({"ok": True, "queue": fasrc_queue.QUEUE.clear()})
+
+    @app.route("/api/fasrc/queue/remove", methods=["POST"])
+    def api_fasrc_queue_remove():
+        item_id = (request.form.get("id") or "").strip()
+        return jsonify({"ok": True,
+                        "queue": fasrc_queue.QUEUE.remove(item_id)})
+
     @app.route("/api/fasrc/submit", methods=["POST"])
     def api_fasrc_submit():
         """``run_pipeline.py`` submission (API path).
@@ -4258,20 +4359,10 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
         params.update(resources.to_dict())
 
-        label = f.get("label", "").strip() or (
-            f"{step.label}: {params['steps']} steps on "
-            f"{params['n_train']}+{params['n_valid']} fields"
-        )
-        built = step.build_sbatch_body(
-            params=params, resources=resources, cfg=cfg, label=label,
-        )
-        slurm_id, payload = fasrc_jobs.submit_sbatch_script(
-            STATE.ssh, cfg=cfg, built=built, label=label,
-            params=params, step_id=step.step_id,
-        )
-        if slurm_id is None:
-            return jsonify(payload), 500
-        return jsonify(payload)
+        # Validation above (resources + params) has passed; hand off to the
+        # local queue: submit now if the lane is free, else enqueue. The
+        # sbatch body is (re)built from the form by _build_and_submit.
+        return _submit_or_queue("synthetic", step_name, f.to_dict())
 
     # =========================================================================
     # HST pipeline (FASRC submissions for the 5-step HST → Euclid workflow)
@@ -4418,25 +4509,9 @@ def create_app() -> Flask:
 
         # All form values are passed as ``params``; the step picks out
         # what it needs (e.g. ``n_tiles``, ``hst_fraction``).
-        label = (form.get("label", "").strip()
-                 or f"HST pipeline · {step.label}")
-        built = step.build_sbatch_body(
-            params=form,
-            resources=resources,
-            cfg=cfg_loaded,
-            label=label,
-        )
-
-        params_for_db = dict(form)
-        params_for_db.update(resources.to_dict())
-        params_for_db["step_id"] = step_id
-        slurm_id, payload = fasrc_jobs.submit_sbatch_script(
-            STATE.ssh, cfg=cfg_loaded, built=built, label=label,
-            params=params_for_db, step_id=step_id,
-        )
-        if slurm_id is None:
-            return jsonify(payload), 500
-        return jsonify(payload)
+        # Validation above (step, confirm, resources) has passed; hand off
+        # to the local queue: submit now if the lane is free, else enqueue.
+        return _submit_or_queue("hst", step_id, form)
 
     @app.route("/api/fasrc/refresh-accounting", methods=["POST"])
     def api_fasrc_refresh_accounting():
@@ -4606,6 +4681,11 @@ def create_app() -> Flask:
         if rc_q == 0:
             squeue_rows = fasrc_jobs.parse_squeue(out_q)
             fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=STATE.ssh)
+            # Advance the local queue (promote on success / halt on failure)
+            # off the same reconcile that just refreshed job states.
+            _queue_tick()
+
+        queue_public = fasrc_queue.QUEUE.public()
 
         # Pick the newest still-live row. ``list_recent`` orders by
         # submitted_at DESC, so the first matching row IS the newest.
@@ -4615,7 +4695,7 @@ def create_app() -> Flask:
             None,
         )
         if current_row is None:
-            return jsonify({"ok": True, "current": None})
+            return jsonify({"ok": True, "current": None, "queue": queue_public})
 
         # Merge live squeue fields into the row so the UI sees the
         # current ``start_time`` (PENDING jobs only), ``reason`` (why
@@ -4640,6 +4720,7 @@ def create_app() -> Flask:
                 "job":    current_row,
                 "status": status.to_dict(),
             },
+            "queue":   queue_public,
         })
 
     @app.route("/api/fasrc/jobs/<jobid>/status")
@@ -4995,6 +5076,13 @@ def create_app() -> Flask:
             f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=10,
         )
+        # Drive the local submit queue off this poll too — this endpoint is
+        # the global ~3 s heartbeat, so the queue promotes/halts even when
+        # the user isn't on the Current-Submission tab.
+        if rc == 0:
+            fasrc_jobs.reconcile_with_squeue(
+                fasrc_jobs.parse_squeue(sq_out), ssh=STATE.ssh)
+            _queue_tick()
         running_rows = []
         if rc == 0:
             for row in fasrc_jobs.parse_squeue(sq_out):

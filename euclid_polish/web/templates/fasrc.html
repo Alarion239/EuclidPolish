@@ -80,6 +80,23 @@
        ======================================================= -->
   <section class="tab-panel" data-tab="current">
 
+    <!-- Local submission queue: jobs waiting behind the running one.
+         Single-lane + fail-stop — if the running job fails (incl OOM) the
+         queue halts and nothing else is submitted. Populated by the
+         current-submission poll's ``queue`` field. -->
+    <div id="cs-queue-card" class="card" style="display:none;">
+      <h3 style="margin-top:0;">⏳ Queue
+        <span id="cs-queue-count" class="tag">0</span>
+        <button id="cs-queue-clear" type="button" class="secondary"
+                style="float:right; padding:2px 8px;"
+                title="Drop all queued jobs and clear any halt">clear</button>
+      </h3>
+      <div id="cs-queue-halt" class="tag tag-warn"
+           style="display:none; margin-bottom:8px;"></div>
+      <ol id="cs-queue-list" class="hint"
+          style="margin:0; padding-left:22px;"></ol>
+    </div>
+
     <!-- Empty state: no PENDING/RUNNING job in the DB. -->
     <div id="cs-empty-panel">
       <section class="card">
@@ -486,6 +503,37 @@ function _csHideLive() {
   __CS_JOBID = null;
 }
 
+// Render the local submission queue (just the list of job names) +
+// a halt notice if the running job failed and stopped the queue.
+function _renderQueue(q) {
+  const card = $('cs-queue-card');
+  if (!card) return;
+  const names  = (q && q.names) || [];
+  const halted = q && q.halted;
+  if (!names.length && !halted) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  $('cs-queue-count').textContent = names.length;
+  $('cs-queue-list').innerHTML = names.length
+    ? names.map(n => `<li>${polishUI.escapeHtml(n)}</li>`).join('')
+    : '<li class="muted">(no jobs queued)</li>';
+  const halt = $('cs-queue-halt');
+  if (halted) {
+    halt.style.display = 'block';
+    halt.textContent = '⛔ ' + (q.halted_reason || 'queue halted after a failure');
+  } else {
+    halt.style.display = 'none';
+  }
+}
+
+// Wire the "clear" button once.
+(function () {
+  const btn = document.getElementById('cs-queue-clear');
+  if (btn) btn.onclick = async () => {
+    await api('/api/fasrc/queue/clear', { method: 'POST' });
+    refreshCurrentSubmission();
+  };
+})();
+
 // Load the per-run training-curves PNG (synthetic PSNR ┃ HST PSNR ┃
 // cycle-run PSNR). ended_at=0 → the endpoint uses now() as the upper
 // bound, so an in-flight run's window grows each poll. A 404 (no
@@ -549,8 +597,10 @@ async function refreshCurrentSubmission() {
   const r = await api('/api/fasrc/current-submission');
   if (!r.ok) {
     _csHideLive();
+    _renderQueue(null);
     return;
   }
+  _renderQueue(r.data.queue);
   const current = r.data.current;
   if (!current) {
     _csHideLive();

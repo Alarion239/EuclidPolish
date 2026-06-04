@@ -185,6 +185,28 @@ def test_submit_invokes_sbatch_with_the_built_script(fake_remote, client):
     assert argv[0].endswith(".sh")
 
 
+def test_second_submit_is_queued_while_first_runs(fake_remote, client):
+    base = {"confirm": "yes",
+            "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
+            "n_train": 100, "n_valid": 5, "image_size": 60, "batch_size": 4,
+            "steps": 1000, "extra_flags": ""}
+    # First submit goes straight to the cluster (lane is free).
+    r1 = client.post("/api/fasrc/submit", data={**base, "label": "first"})
+    d1 = r1.get_json()
+    assert d1["ok"] is True and d1.get("jobid") == "99999"
+    assert not d1.get("queued")
+
+    # Second submit, while 99999 is PENDING in the DB → queued locally, no
+    # new sbatch. The response carries the queue (list of names).
+    r2 = client.post("/api/fasrc/submit", data={**base, "label": "second"})
+    d2 = r2.get_json()
+    assert d2["ok"] is True and d2.get("queued") is True
+    assert d2["queue"]["names"] == ["second"]
+    # Only one sbatch invocation happened (the queued one wasn't submitted).
+    argv = fake_remote["sbatch_log"].read_text().strip()
+    assert argv.count(".sh") <= 1
+
+
 def test_submit_records_job_in_sqlite(fake_remote, client):
     client.post("/api/fasrc/submit", data={
         "confirm": "yes",

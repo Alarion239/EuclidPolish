@@ -136,6 +136,15 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         _fasrc_jobs.JobDB(path=str(pkg_tmp / "fasrc_jobs.db")),
         raising=False,
     )
+    # Isolate the local submission queue too — submit routes now route
+    # through it, so without this a test submit would mutate the real
+    # ``~/.euclid_polish/fasrc_queue.json``.
+    from euclid_polish.web import fasrc_queue as _fasrc_queue
+    monkeypatch.setattr(
+        _fasrc_queue, "QUEUE",
+        _fasrc_queue.JobQueue(path=str(pkg_tmp / "fasrc_queue.json")),
+        raising=False,
+    )
     yield
     # Drain background REGISTRY jobs a route spawned during the test (e.g.
     # /psfs/visualize writes psf_<band>.png to Config.VIS_PSF_DIR in a
