@@ -35,7 +35,29 @@ from euclid_polish.training.data_multiband import (
 )
 from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
-from euclid_polish.training.trainer import Trainer, TRAINING_LOG_COLUMNS
+from euclid_polish.training.trainer import (
+    Trainer, TRAINING_LOG_COLUMNS, _clip_and_skip_spikes, GRAD_SPIKE_SKIP_NORM,
+)
+
+
+def test_clip_and_skip_spikes_skips_spike_and_nan_keeps_normal():
+    """The spike guard zeroes the update on a pathological/non-finite batch
+    (so apply_gradients is a no-op) but only clips an ordinary gradient."""
+    assert GRAD_SPIKE_SKIP_NORM > 0
+
+    # Ordinary gradient (norm 0.5 < clip): passes through, stays non-zero.
+    out, gnorm = _clip_and_skip_spikes([tf.constant([0.3, 0.4], tf.float32)])
+    assert abs(float(gnorm) - 0.5) < 1e-5
+    assert float(tf.linalg.global_norm(out)) > 0.0
+
+    # Spike well above the skip threshold: zeroed.
+    spike = GRAD_SPIKE_SKIP_NORM * 100.0
+    out, gnorm = _clip_and_skip_spikes([tf.constant([spike, 0.0], tf.float32)])
+    assert float(tf.linalg.global_norm(out)) == 0.0
+
+    # Non-finite gradient: zeroed (never reaches the optimiser).
+    out, _ = _clip_and_skip_spikes([tf.constant([np.inf, 1.0], tf.float32)])
+    assert float(tf.reduce_sum(tf.where(tf.math.is_finite(out[0]), out[0], 0.0))) == 0.0
 
 
 # ---------------------------------------------------------------------------

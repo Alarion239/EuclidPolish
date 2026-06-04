@@ -453,6 +453,15 @@ class Config:
     # Gradient clipping by global L2 norm. Bounds the worst-case update so a
     # bad-batch spike can't corrupt weights. Set to math.inf to disable.
     GRAD_CLIP_NORM               = 5.0
+    # Spike guard: SKIP the optimiser step entirely when the PRE-clip global
+    # grad norm is non-finite or exceeds this. Steady-state norm is ~0.5 and
+    # clipping caps the applied step at GRAD_CLIP_NORM, yet a single
+    # pathological batch (e.g. a very bright star once the model has climbed
+    # and its activations grew) was observed to spike the pre-clip norm to
+    # ~4e4 and eject the model from the climbing basin into the background-
+    # collapse (loss 0.004 → 6.5, PSNR 54 → 46, no recovery). Skipping that
+    # one batch keeps the model on the improving trajectory. 0 disables.
+    GRAD_SPIKE_SKIP_NORM         = 50.0
 
     # Non-negativity regularisation on SR (the model's deconvolved-sky
     # output). Surface brightness is physically >= 0, but the WDSR head is

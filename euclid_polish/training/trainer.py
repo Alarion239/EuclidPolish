@@ -88,6 +88,29 @@ TRAINING_LOG_COLUMNS  = (
 # Direction-preserving; has no effect when natural gradient norm < clip
 # value. Set ``Config.GRAD_CLIP_NORM = math.inf`` to disable.
 GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
+# Spike guard: skip the optimiser step when the pre-clip global norm is
+# non-finite or above this — see ``Config.GRAD_SPIKE_SKIP_NORM``.
+GRAD_SPIKE_SKIP_NORM = float(Config.GRAD_SPIKE_SKIP_NORM)
+
+
+def _clip_and_skip_spikes(gradients):
+    """Clip ``gradients`` to ``GRAD_CLIP_NORM`` and, on a spike, zero them.
+
+    Returns ``(gradients, gnorm)`` where ``gnorm`` is the PRE-clip global
+    norm (for logging). When ``GRAD_SPIKE_SKIP_NORM > 0`` and the pre-clip
+    norm is non-finite or exceeds it, every gradient is multiplied by 0 so
+    ``apply_gradients`` becomes a no-op for that batch — a single
+    pathological batch can't corrupt the weights. The branch resolves at
+    trace time (Python constant), so this stays a single @tf.function graph.
+    """
+    gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
+    if GRAD_SPIKE_SKIP_NORM > 0:
+        keep = tf.cast(
+            tf.math.is_finite(gnorm) & (gnorm <= GRAD_SPIKE_SKIP_NORM),
+            tf.float32,
+        )
+        gradients = [g * keep for g in gradients]
+    return gradients, gnorm
 
 # Cap on the per-star anchor PSNR. The anchor target is a single delta
 # pixel, so a model that nails that one pixel drives its MSE → 0 and the
@@ -677,7 +700,7 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
+        gradients, gnorm = _clip_and_skip_spikes(gradients)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
@@ -778,7 +801,7 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
+        gradients, gnorm = _clip_and_skip_spikes(gradients)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
