@@ -199,3 +199,51 @@ def test_runs_handles_ssh_disconnected(client, tmp_repo):
     assert r.status_code == 400
     r = client.get("/api/fasrc/runs/log?path=/anything.out&lines=100")
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Log viewer pagination (page counted from the END; page 0 = newest)
+# ---------------------------------------------------------------------------
+
+def _lines(a, b):
+    return "\n".join(f"L{i}" for i in range(a, b + 1)) + "\n"
+
+
+def test_log_pagination_newest_page(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    path = f"{log_dir}/run.out"
+    # 120-line file, page_size 50 → page 0 = lines 71–120 (the newest block).
+    web_app.STATE.ssh = StubSSH([(0, "120\n", ""), (0, _lines(71, 120), "")])
+    r = client.get(f"/api/fasrc/runs/log?path={path}&page=0&page_size=50")
+    d = r.get_json()
+    assert d["ok"] and d["total_lines"] == 120
+    assert (d["start_line"], d["end_line"]) == (71, 120)
+    assert d["has_older"] is True and d["has_newer"] is False
+    assert "L71" in d["content"] and "L120" in d["content"]
+
+
+def test_log_pagination_middle_and_first_page(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    path = f"{log_dir}/run.out"
+    # page 1 → lines 21–70 (older block, both neighbours exist).
+    web_app.STATE.ssh = StubSSH([(0, "120\n", ""), (0, _lines(21, 70), "")])
+    d = client.get(f"/api/fasrc/runs/log?path={path}&page=1&page_size=50").get_json()
+    assert (d["start_line"], d["end_line"]) == (21, 70)
+    assert d["has_older"] is True and d["has_newer"] is True
+
+    # page 2 → the very first lines 1–20; no older page left.
+    web_app.STATE.ssh = StubSSH([(0, "120\n", ""), (0, _lines(1, 20), "")])
+    d = client.get(f"/api/fasrc/runs/log?path={path}&page=2&page_size=50").get_json()
+    assert (d["start_line"], d["end_line"]) == (1, 20)
+    assert d["has_older"] is False and d["has_newer"] is True
+    assert "L1" in d["content"]
+
+
+def test_log_pagination_past_beginning_is_empty(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    path = f"{log_dir}/run.out"
+    # page 3 is before the start → empty content, only wc -l is called (no sed).
+    web_app.STATE.ssh = StubSSH([(0, "120\n", "")])
+    d = client.get(f"/api/fasrc/runs/log?path={path}&page=3&page_size=50").get_json()
+    assert d["content"] == "" and (d["start_line"], d["end_line"]) == (0, 0)
+    assert d["has_older"] is False and d["has_newer"] is True

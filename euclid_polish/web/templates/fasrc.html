@@ -305,6 +305,19 @@
       <pre id="logs-viewer-content" class="job-log"
            style="max-height:540px;">(loading…)</pre>
 
+      <!-- Pager: walk back through older log windows up to the very first
+           lines. page 0 = newest; "← older" goes back in time. -->
+      <div id="logs-pager"
+           style="margin-top:8px; display:none; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="btn-logs-older"  type="button" class="secondary"
+                style="padding:2px 10px;">← older</button>
+        <button id="btn-logs-newer"  type="button" class="secondary"
+                style="padding:2px 10px;">newer →</button>
+        <button id="btn-logs-newest" type="button" class="secondary"
+                style="padding:2px 10px;">newest ⤓</button>
+        <span id="logs-pageinfo" class="muted" style="font-size:12px;"></span>
+      </div>
+
       <!-- Pull the remote ckpt dir into the local mirror via rsync.
            Same machinery as the auto-mirror's "Sync now" button — runs
            rsync once and copies new/updated files into the configured
@@ -950,7 +963,8 @@ $('btn-bootstrap').onclick = async () => {
 /* ============================================================
    Logs tab — listing + viewer (.out / .err)
 ============================================================ */
-const LOGS_STATE = { selected: null, which: 'out' };
+const LOGS_PAGE_SIZE = 1000;   // lines per page in the log viewer
+const LOGS_STATE = { selected: null, which: 'out', page: 0 };
 
 function fmtTimeAgo(epoch) {
   if (!epoch) return '—';
@@ -1051,27 +1065,52 @@ async function openLogViewer() {
   $('btn-show-err').disabled = !sel.err;
   if (!path) {
     $('logs-viewer-content').textContent = '(no ' + LOGS_STATE.which + ' file)';
+    $('logs-pager').style.display = 'none';
     return;
   }
-  const lines = parseInt($('logs-lines')?.value, 10) || 1000;
+  LOGS_STATE.page = 0;            // always (re)open at the newest page
+  await loadLogPage();
+}
+
+// Fetch + render the current page (LOGS_STATE.page) of the selected log,
+// then update the pager controls. page 0 = newest; higher = older.
+async function loadLogPage() {
+  const sel = LOGS_STATE.selected;
+  if (!sel) return;
+  const path = LOGS_STATE.which === 'err' ? sel.err : sel.out;
+  if (!path) return;
   $('logs-viewer-content').textContent = 'loading…';
   const url = '/api/fasrc/runs/log?path=' + encodeURIComponent(path)
-            + '&lines=' + lines;
+            + '&page=' + LOGS_STATE.page + '&page_size=' + LOGS_PAGE_SIZE;
   const { ok, data } = await api(url);
+  const pre = $('logs-viewer-content');
   if (!ok) {
-    $('logs-viewer-content').textContent =
-      'failed: ' + ((data && data.error) || 'unknown');
+    pre.textContent = 'failed: ' + ((data && data.error) || 'unknown');
+    $('logs-pager').style.display = 'none';
     return;
   }
-  $('logs-viewer-content').textContent = data.content || '(empty)';
+  pre.textContent = data.content || '(empty)';
+  // Pager state.
+  $('logs-pager').style.display = 'flex';
+  const total = data.total_lines || 0;
+  $('logs-pageinfo').textContent = total
+    ? `lines ${data.start_line}–${data.end_line} of ${total}`
+      + (LOGS_STATE.page === 0 ? '  (newest)' : '')
+    : '(empty file)';
+  $('btn-logs-older').disabled  = !data.has_older;
+  $('btn-logs-newer').disabled  = !data.has_newer;
+  $('btn-logs-newest').disabled = !data.has_newer;
+  // Newest page → scroll to the latest line; older pages → start at the top.
+  pre.scrollTop = (LOGS_STATE.page === 0) ? pre.scrollHeight : 0;
 }
 
 $('btn-logs-refresh').onclick = refreshLogs;
 $('btn-show-out').onclick   = () => { LOGS_STATE.which = 'out'; openLogViewer(); };
 $('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer(); };
 $('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
-const _logsLinesEl = $('logs-lines');
-if (_logsLinesEl) _logsLinesEl.onchange = () => { if (LOGS_STATE.selected) openLogViewer(); };
+$('btn-logs-older').onclick  = () => { LOGS_STATE.page += 1; loadLogPage(); };
+$('btn-logs-newer').onclick  = () => { LOGS_STATE.page = Math.max(0, LOGS_STATE.page - 1); loadLogPage(); };
+$('btn-logs-newest').onclick = () => { LOGS_STATE.page = 0; loadLogPage(); };
 
 // Rsync pull from the remote ckpt dir to the configured local mirror.
 // Uses the auto-mirror's "trigger" endpoint, so the same rsync flags

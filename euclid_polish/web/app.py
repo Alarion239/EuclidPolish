@@ -4985,6 +4985,52 @@ def create_app() -> Flask:
         if ".." in path.split("/"):
             return jsonify({"ok": False, "error": "bad path"}), 400
 
+        # ---- paginated mode -------------------------------------------------
+        # ``page`` counts windows of ``page_size`` lines from the END of the
+        # file: page 0 = the newest lines, page 1 = the previous block, … up
+        # to the very first lines. Lets the user walk all the way back.
+        page_param = request.args.get("page")
+        if page_param is not None:
+            try:
+                page = max(0, int(page_param))
+            except ValueError:
+                page = 0
+            try:
+                page_size = int(request.args.get("page_size", lines))
+            except ValueError:
+                page_size = lines
+            page_size = max(50, min(page_size, 10_000))
+            rc, out_wc, _e = STATE.ssh.run(
+                f"[ -f {shlex.quote(path)} ] && wc -l < {shlex.quote(path)} "
+                f"|| echo 0", timeout=15)
+            try:
+                total = int((out_wc or "0").strip().split()[0])
+            except (ValueError, IndexError):
+                total = 0
+            end_line = total - page * page_size
+            start_line = max(1, end_line - page_size + 1)
+            if total <= 0 or end_line < 1:
+                content, start_line, end_line = "", 0, 0
+            else:
+                # sed window; ``Nq`` quits after the last wanted line so we
+                # don't scan the whole file for early pages.
+                rc2, content, _e2 = STATE.ssh.run(
+                    f"sed -n '{start_line},{end_line}p;{end_line}q' "
+                    f"{shlex.quote(path)} 2>/dev/null || true", timeout=20)
+            return jsonify({
+                "ok":          True,
+                "path":        path,
+                "page":        page,
+                "page_size":   page_size,
+                "total_lines": total,
+                "start_line":  start_line,
+                "end_line":    end_line,
+                "has_older":   start_line > 1,
+                "has_newer":   page > 0,
+                "content":     content,
+            })
+
+        # ---- legacy tail mode (no ``page``) --------------------------------
         cmd = (
             f"{{ [ -f {shlex.quote(path)} ] && "
             f"  tail -n {lines} {shlex.quote(path)} 2>/dev/null || true ; "
