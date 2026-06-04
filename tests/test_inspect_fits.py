@@ -11,15 +11,17 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.web.app import (
-    _export_sky_record_fits,
+from euclid_polish.web.app import create_app
+from euclid_polish.web.helpers.fits_render import (
     _fits_file_info,
-    _inspectable_roots,
     _read_fits_header_rows,
+)
+from euclid_polish.web.helpers.paths import (
+    _inspectable_roots,
     _resolve_inspectable_fits,
     _safe_relpath,
-    create_app,
 )
+from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
 
 
 # ---------------------------------------------------------------------------

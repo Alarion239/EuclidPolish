@@ -719,7 +719,7 @@ def test_record_count_handles_truncated_tfrecord(tmp_path):
     raised ``DataLossError``, the response 500'd, and every count
     (including the valid validate files) silently became 0 in the UI.
     """
-    from euclid_polish.web.app import _record_count
+    from euclid_polish.web.helpers.status import _record_count
 
     # ``_record_count(name)`` reads ``<dir>/<name>.tfrecord``; write a
     # garbage-bytes shard at that exact path so TF rejects the header.
