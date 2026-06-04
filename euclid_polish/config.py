@@ -462,7 +462,15 @@ class Config:
     # validation negative-pixel fraction. A penalty makes negatives
     # rare/small, not impossible — clamp the delivered product for a hard
     # guarantee.
-    NONNEG_SR_WEIGHT             = 1.0
+    #
+    # DISABLED (default 0): forcing SR >= 0 forbids the negative ringing
+    # lobes that deconvolution/sharpening produces around bright sources,
+    # which steered the model into a smooth, non-negative (blurry) basin.
+    # With λ=1 the training log showed loss == loss_syn to 8 decimals (the
+    # penalty was already ~0), so removing it only frees the solution space
+    # — it does not change the loss number on its own. Pass a positive
+    # ``--nonneg-sr-weight`` (or the WebUI field) to re-enable per run.
+    NONNEG_SR_WEIGHT             = 0.0
 
 
     # Training defaults
