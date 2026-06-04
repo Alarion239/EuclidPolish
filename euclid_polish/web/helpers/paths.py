@@ -2,9 +2,27 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
+from euclid_polish.web import fasrc_config
+from euclid_polish.web.fasrc_fetcher import _local_path_for
 from flask import abort
 from typing import List
 import os
+
+
+def _sky_records_remote_dir() -> str:
+    cfg = fasrc_config.load()
+    return f"{cfg.data_dir}/images/records_v2"
+
+
+def _sky_records_local_dir() -> str:
+    """Local cache dir mirroring the remote synthetic records dir.
+
+    Same convention as :func:`fasrc_fetcher._local_path_for`, so the
+    viewer reads exactly what ``/api/sky/sync`` (fetch_one_file)
+    writes. The synthetic generator runs on FASRC, so the preview
+    renders the synced shards — not a stale local copy."""
+    any_path = f"{_sky_records_remote_dir()}/clean_validate.tfrecord"
+    return os.path.dirname(_local_path_for(any_path))
 
 
 def _inspectable_roots() -> List[str]:

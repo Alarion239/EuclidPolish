@@ -17,6 +17,7 @@ import io
 import os
 import threading as _t
 from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
+from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
 from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_sky_record_png
 from euclid_polish.web.helpers.status import _fasrc_catalog_dir, _list_vis_pngs, _record_count, _resolve_training_log
 
@@ -35,20 +36,6 @@ def register(app):
         band = request.args.get("band", "all")
         png = _render_psf_panel_png(None if band == "all" else band)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    def _sky_records_remote_dir() -> str:
-        cfg = fasrc_config.load()
-        return f"{cfg.data_dir}/images/records_v2"
-
-    def _sky_records_local_dir() -> str:
-        """Local cache dir mirroring the remote synthetic records dir.
-
-        Same convention as :func:`fasrc_fetcher._local_path_for`, so the
-        viewer reads exactly what ``/api/sky/sync`` (fetch_one_file)
-        writes. The synthetic generator runs on FASRC, so the preview
-        renders the synced shards — not a stale local copy."""
-        any_path = f"{_sky_records_remote_dir()}/clean_validate.tfrecord"
-        return os.path.dirname(_local_path_for(any_path))
 
     @app.route("/view/sky")
     def view_sky():

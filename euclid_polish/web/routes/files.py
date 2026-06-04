@@ -14,7 +14,7 @@ from flask import url_for
 import io
 import os
 from euclid_polish.web.helpers.fits_render import _fits_file_info, _read_fits_header_rows, _render_fits_to_png_adaptive
-from euclid_polish.web.helpers.paths import _inspectable_roots, _resolve_inspectable_fits, _safe_relpath
+from euclid_polish.web.helpers.paths import _inspectable_roots, _resolve_inspectable_fits, _safe_relpath, _sky_records_local_dir
 from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
 from euclid_polish.web.helpers.status import _catalog_status, _checkpoints_status, _psf_status, _tfrecords_status
 

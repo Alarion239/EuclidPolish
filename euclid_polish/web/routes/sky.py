@@ -12,6 +12,7 @@ from flask import request
 from typing import Any
 from typing import Dict
 from typing import List
+from euclid_polish.web.helpers.forms import _parse_asinh_scale
 from euclid_polish.web.helpers.jobs_impl import _job_roundtrip_inspect
 
 

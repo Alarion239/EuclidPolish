@@ -11,6 +11,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 import os
+from euclid_polish.web.helpers.forms import _parse_asinh_scale
 from euclid_polish.web.helpers.jobs_impl import _job_generate_reconstruct, _job_reconstruct_euclid_cutout
 from euclid_polish.web.helpers.status import _checkpoints_status, _ckpt_dir_for_kind, _tfrecords_status
 
@@ -109,19 +110,6 @@ def register(app):
             euclid_runs=euclid_runs,
             default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
         )
-
-    def _parse_asinh_scale(raw: str) -> Optional[float]:
-        """Form parser for the asinh-scale knob. Empty string / 0 / bad
-        input → None, which makes plot_reconstruction fall back to
-        Config.STRETCH_SCALE_E (1000 e⁻, the training default)."""
-        raw = (raw or "").strip()
-        if not raw:
-            return None
-        try:
-            val = float(raw)
-        except ValueError:
-            return None
-        return val if val > 0 else None
 
     @app.route("/inference/generate-reconstruct", methods=["POST"])
     def inference_generate_reconstruct():
