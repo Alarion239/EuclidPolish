@@ -184,7 +184,7 @@ class Config:
     # constant gradient. This is a TRAINING-SIGNAL knob, not sky realism;
     # the magnitudes stay physical (real 13–25 VIS range, per-band colours,
     # flux via each band's sim_zeropoint_e), only the COUNT is inflated.
-    DEFAULT_STAR_DENSITY_ARCMIN2 = 0.0   # stars disabled (was 100 stars / arcmin²)
+    DEFAULT_STAR_DENSITY_ARCMIN2 = 10.0   # EXPERIMENT: 10 stars/arcmin² (10× fewer than the original 100)
     DEFAULT_NIMAGES              = 100
 
     # VIS instrument

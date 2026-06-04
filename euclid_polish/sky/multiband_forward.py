@@ -69,7 +69,10 @@ class MultiBandForwardConfig:
     # (blending rolls would superimpose spikes). With ``randomize_psf`` off,
     # the field-mean PSF is used (deterministic — matches the old single-PSF
     # forward when K=1).
-    randomize_psf: bool = True
+    # EXPERIMENT (temporary): forced OFF — always apply the 0th/mean PSF
+    # (average of all stars), with NO roll rotation and NO random cluster
+    # sampling. Restore to True to re-enable position-dependent PSFs.
+    randomize_psf: bool = False
     psf_unrotated_prob: float = 0.3
 
     def __post_init__(self) -> None:
