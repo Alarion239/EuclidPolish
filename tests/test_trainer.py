@@ -36,28 +36,41 @@ from euclid_polish.training.data_multiband import (
 from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import (
-    Trainer, TRAINING_LOG_COLUMNS, _clip_and_skip_spikes, GRAD_SPIKE_SKIP_NORM,
+    Trainer, TRAINING_LOG_COLUMNS, _clip_and_skip_spikes,
+    GRAD_SPIKE_SKIP_NORM, GRAD_SPIKE_SKIP_WARMUP_STEPS,
 )
 
 
 def test_clip_and_skip_spikes_skips_spike_and_nan_keeps_normal():
-    """The spike guard zeroes the update on a pathological/non-finite batch
-    (so apply_gradients is a no-op) but only clips an ordinary gradient."""
+    """After warmup the spike guard zeroes the update on a pathological /
+    non-finite batch (so apply_gradients is a no-op) but only clips an
+    ordinary gradient."""
     assert GRAD_SPIKE_SKIP_NORM > 0
+    post = GRAD_SPIKE_SKIP_WARMUP_STEPS + 1   # guard active
 
     # Ordinary gradient (norm 0.5 < clip): passes through, stays non-zero.
-    out, gnorm = _clip_and_skip_spikes([tf.constant([0.3, 0.4], tf.float32)])
+    out, gnorm = _clip_and_skip_spikes([tf.constant([0.3, 0.4], tf.float32)], post)
     assert abs(float(gnorm) - 0.5) < 1e-5
     assert float(tf.linalg.global_norm(out)) > 0.0
 
     # Spike well above the skip threshold: zeroed.
     spike = GRAD_SPIKE_SKIP_NORM * 100.0
-    out, gnorm = _clip_and_skip_spikes([tf.constant([spike, 0.0], tf.float32)])
+    out, _ = _clip_and_skip_spikes([tf.constant([spike, 0.0], tf.float32)], post)
     assert float(tf.linalg.global_norm(out)) == 0.0
 
     # Non-finite gradient: zeroed (never reaches the optimiser).
-    out, _ = _clip_and_skip_spikes([tf.constant([np.inf, 1.0], tf.float32)])
+    out, _ = _clip_and_skip_spikes([tf.constant([np.inf, 1.0], tf.float32)], post)
     assert float(tf.reduce_sum(tf.where(tf.math.is_finite(out[0]), out[0], 0.0))) == 0.0
+
+
+def test_clip_and_skip_spikes_inert_during_warmup():
+    """Before warmup the guard is inert — a large early gradient is clipped
+    but NOT skipped, so the model still learns through the warmup."""
+    spike = GRAD_SPIKE_SKIP_NORM * 100.0
+    pre = max(0, GRAD_SPIKE_SKIP_WARMUP_STEPS - 1)   # guard not yet active
+    out, _ = _clip_and_skip_spikes([tf.constant([spike, 0.0], tf.float32)], pre)
+    # clipped to GRAD_CLIP_NORM, but non-zero (the update is applied).
+    assert float(tf.linalg.global_norm(out)) > 0.0
 
 
 # ---------------------------------------------------------------------------

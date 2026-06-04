@@ -89,26 +89,33 @@ TRAINING_LOG_COLUMNS  = (
 # value. Set ``Config.GRAD_CLIP_NORM = math.inf`` to disable.
 GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
 # Spike guard: skip the optimiser step when the pre-clip global norm is
-# non-finite or above this — see ``Config.GRAD_SPIKE_SKIP_NORM``.
+# non-finite or above this — see ``Config.GRAD_SPIKE_SKIP_NORM``. Active only
+# after ``GRAD_SPIKE_SKIP_WARMUP_STEPS`` so the legitimately-large early
+# gradients aren't skipped.
 GRAD_SPIKE_SKIP_NORM = float(Config.GRAD_SPIKE_SKIP_NORM)
+GRAD_SPIKE_SKIP_WARMUP_STEPS = int(Config.GRAD_SPIKE_SKIP_WARMUP_STEPS)
 
 
-def _clip_and_skip_spikes(gradients):
-    """Clip ``gradients`` to ``GRAD_CLIP_NORM`` and, on a spike, zero them.
+def _clip_and_skip_spikes(gradients, step):
+    """Clip ``gradients`` to ``GRAD_CLIP_NORM`` and, after warmup, zero spikes.
 
     Returns ``(gradients, gnorm)`` where ``gnorm`` is the PRE-clip global
-    norm (for logging). When ``GRAD_SPIKE_SKIP_NORM > 0`` and the pre-clip
-    norm is non-finite or exceeds it, every gradient is multiplied by 0 so
-    ``apply_gradients`` becomes a no-op for that batch — a single
-    pathological batch can't corrupt the weights. The branch resolves at
-    trace time (Python constant), so this stays a single @tf.function graph.
+    norm (for logging). Once ``step >= GRAD_SPIKE_SKIP_WARMUP_STEPS`` and the
+    pre-clip norm is non-finite or exceeds ``GRAD_SPIKE_SKIP_NORM``, every
+    gradient is multiplied by 0 so ``apply_gradients`` becomes a no-op for
+    that batch — a single pathological batch can't corrupt the weights.
+    Before warmup the guard is inert (early gradients are legitimately
+    large). ``step`` is the optimiser's iteration tensor, so the gate is
+    evaluated in-graph with no retracing. The ``if`` resolves at trace time
+    (Python constants), keeping a single @tf.function graph.
     """
     gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
     if GRAD_SPIKE_SKIP_NORM > 0:
-        keep = tf.cast(
-            tf.math.is_finite(gnorm) & (gnorm <= GRAD_SPIKE_SKIP_NORM),
-            tf.float32,
-        )
+        spike  = tf.logical_or(tf.logical_not(tf.math.is_finite(gnorm)),
+                               gnorm > GRAD_SPIKE_SKIP_NORM)
+        active = tf.cast(step, tf.int64) >= tf.constant(
+            GRAD_SPIKE_SKIP_WARMUP_STEPS, tf.int64)
+        keep = tf.cast(tf.logical_not(tf.logical_and(active, spike)), tf.float32)
         gradients = [g * keep for g in gradients]
     return gradients, gnorm
 
@@ -700,7 +707,8 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = _clip_and_skip_spikes(gradients)
+        gradients, gnorm = _clip_and_skip_spikes(
+            gradients, self.checkpoint.optimizer.iterations)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
@@ -801,7 +809,8 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = _clip_and_skip_spikes(gradients)
+        gradients, gnorm = _clip_and_skip_spikes(
+            gradients, self.checkpoint.optimizer.iterations)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )

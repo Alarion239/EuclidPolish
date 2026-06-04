@@ -462,6 +462,12 @@ class Config:
     # collapse (loss 0.004 → 6.5, PSNR 54 → 46, no recovery). Skipping that
     # one batch keeps the model on the improving trajectory. 0 disables.
     GRAD_SPIKE_SKIP_NORM         = 50.0
+    # The guard is OFF for the first this-many optimiser steps: early-training
+    # gradients are legitimately large (the model is far from converged), so a
+    # flat cutoff from step 0 would skip the whole warmup and the model would
+    # never get going. The damaging spikes are a late-onset effect (~step 6k,
+    # once the model is confident), so warming up past them is safe.
+    GRAD_SPIKE_SKIP_WARMUP_STEPS = 2000
 
     # Non-negativity regularisation on SR (the model's deconvolved-sky
     # output). Surface brightness is physically >= 0, but the WDSR head is
