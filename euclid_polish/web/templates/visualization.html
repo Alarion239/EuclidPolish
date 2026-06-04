@@ -36,50 +36,8 @@
 {% endif %}
 {% else %}
 <div class="viz-area">
-  <div class="placeholder">No PNGs yet. Use the actions on the right to generate some.</div>
+  <div class="placeholder">No PNGs yet — generated figures from across the
+    pipeline land here under <code>data/vis/</code>.</div>
 </div>
 {% endif %}
-{% endblock %}
-
-{% block actions %}
-<section class="card">
-  <h3>Star positions</h3>
-  <form id="stars-form" action="/visualization/star-positions">
-    <button type="submit">Plot positions</button>
-  </form>
-  <div id="stars-status"></div>
-</section>
-
-<section class="card">
-  <h3>Render PSF panel</h3>
-  <form id="psf-form" action="/psfs/visualize">
-    <label>Band
-      <select name="band">
-        <option value="">all bands</option>
-        {% for name in ['VIS', 'Y_E', 'J_E', 'H_E'] %}
-          <option value="{{ name }}">{{ name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">Render</button>
-  </form>
-  <div id="psf-status"></div>
-</section>
-{% endblock %}
-
-{% block scripts %}
-<script>
-function bindRun(formId, statusId) {
-  const f = document.getElementById(formId);
-  if (!f) return;
-  f.addEventListener("submit", (e) => {
-    e.preventDefault();
-    polishUI.run(f, document.getElementById(statusId), {
-      onDone: () => setTimeout(() => location.reload(), 1500),
-    });
-  });
-}
-bindRun("stars-form", "stars-status");
-bindRun("psf-form",   "psf-status");
-</script>
 {% endblock %}

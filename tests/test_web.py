@@ -68,7 +68,6 @@ def test_visualization_page_renders(client):
     assert r.status_code == 200
     # The gallery is the central viz pane on /visualization.
     assert b"data/vis/" in r.data
-    assert b"Render PSF panel" in r.data
 
 
 def test_cutouts_page_renders(client):
@@ -217,25 +216,12 @@ def test_euclid_auth_status_reports_presence(client, monkeypatch):
     assert body["present"] is True and body["user"] == "alice"
 
 
-def test_post_psfs_visualize_returns_job_id(client):
-    r = client.post("/psfs/visualize", data={"band": "VIS"})
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
 def test_post_inference_generate_reconstruct_returns_job_id(client):
     # Spawns a background job and returns its id even without a live FASRC
     # connection — the job itself fails fast ("not connected") in that case.
     r = client.post("/inference/generate-reconstruct", data={
         "checkpoint_dir": "/tmp/nope", "hr_image_size": 510, "n_pairs": 1,
     })
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
-def test_post_viz_star_positions_returns_job_id(client):
-    r = client.post("/visualization/star-positions",
-                    data={"output_dir": "/tmp"})
     assert r.status_code == 200
     assert "job_id" in r.get_json()
 

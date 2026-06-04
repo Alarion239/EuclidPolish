@@ -82,13 +82,11 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     """Redirect every ``Config.*`` path that test runs are known to
     write to → a per-test tmp directory.
 
-    Background: ``_job_viz_psf`` writes ``psf_<band>.png`` to
-    ``Config.VIS_PSF_DIR``; ``_job_viz_star_positions`` writes to
-    ``Config.VIS_STAR_POSITIONS``. Tests like
-    ``test_post_psfs_visualize_returns_job_id`` POST to the endpoint
-    just to check that the HTTP response contains a ``job_id`` — but
-    the background thread the endpoint spawns goes ahead and writes
-    the PNG anyway, overwriting whatever the live pipeline last wrote.
+    Background: the CLI visualization commands write ``psf_<band>.png``
+    to ``Config.VIS_PSF_DIR`` and a star-position plot to
+    ``Config.VIS_STAR_POSITIONS``; web routes that spawn background jobs
+    (e.g. inference reconstruct) can likewise write under ``data/`` from
+    a daemon thread after the HTTP response has returned.
 
     Forcing these to tmp paths per test means the live ``data/`` tree
     is never mutated by a unit test even when the production code
@@ -147,7 +145,7 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     )
     yield
     # Drain background REGISTRY jobs a route spawned during the test (e.g.
-    # /psfs/visualize writes psf_<band>.png to Config.VIS_PSF_DIR in a
+    # an inference reconstruct that writes PNGs/FITS under ./data in a
     # daemon thread). They must finish while the redirects above are still
     # active — this fixture's teardown runs BEFORE its ``monkeypatch``
     # dependency reverts the paths — otherwise a late write lands in the

@@ -38,7 +38,6 @@ from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from scipy import signal as scipy_signal
 from euclid_polish.sky.multiband_forward import MultiBandForward
-from euclid_polish.visualization.methods import draw_star_positions
 import matplotlib
 import matplotlib.pyplot as plt
 from astropy.visualization import (
@@ -1013,45 +1012,6 @@ def _job_roundtrip_inspect(
         "residual_std":   residual_std,
         "local_bundle":   local,
     }
-
-
-def _job_viz_star_positions(cap, output_dir: str) -> Dict[str, Any]:
-    cat = StarCatalog(output_dir)
-    data = cat.load()
-    out = Config.VIS_STAR_POSITIONS
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    draw_star_positions(data["stars"], out)
-    print(f"wrote {out}")
-    return {"path": out}
-
-
-def _job_viz_psf(cap, band_name: str | None, psf_dir: str) -> Dict[str, Any]:
-    """Render the four-band PSF inspection panel (or one band)."""
-    matplotlib.use("Agg")
-
-    psfs = load_all_band_psfs(target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                              psf_dir=psf_dir)
-    bands = [band_name] if band_name else list(psfs.keys())
-    n = len(bands)
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
-    if n == 1:
-        axes = [axes]
-    for ax, name in zip(axes, bands):
-        psf = psfs[name]
-        d = np.clip(psf.data, 1e-8, None)
-        ax.imshow(np.log10(d), cmap="viridis", origin="lower",
-                  interpolation="nearest")
-        ax.set_title(f"{name}  shape={psf.data.shape}  "
-                     f"@ {psf.pixel_scale:.3f}\"/pix")
-        ax.set_xticks([]); ax.set_yticks([])
-    out = os.path.join(Config.VIS_PSF_DIR,
-                       f"psf_{band_name or 'all'}.png")
-    os.makedirs(Config.VIS_PSF_DIR, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(out, dpi=110, bbox_inches="tight")
-    plt.close(fig)
-    print(f"wrote {out}")
-    return {"path": out}
 
 
 # ---------------------------------------------------------------------------
@@ -2623,16 +2583,6 @@ def create_app() -> Flask:
             results[band.name] = entry
         return jsonify({"ok": any_ok, "files": results})
 
-    @app.route("/psfs/visualize", methods=["POST"])
-    def psfs_visualize():
-        band_name = request.form.get("band") or None
-        psf_dir   = request.form.get("psf_dir", Config.EUCLID_PSF_DIR)
-        job_id = REGISTRY.spawn(
-            label=f"render PSF panel ({band_name or 'all bands'})",
-            target=lambda cap: _job_viz_psf(cap, band_name, psf_dir),
-        )
-        return jsonify({"job_id": job_id})
-
     # ---------------- Sky generation + forward ----------------
     @app.route("/sky")
     def sky_page():
@@ -2913,15 +2863,6 @@ def create_app() -> Flask:
     def visualization_page():
         return render_template("visualization.html",
                                pngs=_list_vis_pngs())
-
-    @app.route("/visualization/star-positions", methods=["POST"])
-    def visualization_star_positions():
-        out = request.form.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
-        job_id = REGISTRY.spawn(
-            label="plot star positions",
-            target=lambda cap: _job_viz_star_positions(cap, out),
-        )
-        return jsonify({"job_id": job_id})
 
     # ---------------- Live view renderers (PNG) ----------------
     @app.route("/view/psfs")
