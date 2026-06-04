@@ -2916,7 +2916,12 @@ def create_app() -> Flask:
     def view_training_log():
         ckpt = request.args.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
         log_path = _resolve_training_log(ckpt)
-        out_png  = os.path.join(Config.VIS_DIR, "training_log.png")
+        # ABSOLUTE path: Config.VIS_DIR is "./data/vis" (relative), but Flask's
+        # send_file() resolves a *relative* path against app.root_path
+        # (euclid_polish/web/), not the CWD — so a relative out_png renders to
+        # one dir and is served from another → 500. abspath pins both to CWD.
+        out_png  = os.path.abspath(
+            os.path.join(Config.VIS_DIR, "training_log.png"))
         if log_path is None:
             abort(404)
         # Render if missing, stale, or explicitly forced (``?force=1`` — used
@@ -2924,7 +2929,7 @@ def create_app() -> Flask:
         force = request.args.get("force") in ("1", "true", "yes")
         if (force or not os.path.exists(out_png)
                 or os.path.getmtime(log_path) > os.path.getmtime(out_png)):
-            os.makedirs(Config.VIS_DIR, exist_ok=True)
+            os.makedirs(os.path.dirname(out_png), exist_ok=True)
             # Render to a private temp file, then publish atomically. The PNG
             # is a single shared path the page polls + the Visualize/track
             # buttons force-render; without the temp+rename a concurrent read

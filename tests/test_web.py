@@ -31,7 +31,10 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     ckpt = tmp_path / "ckpt" / "wdsr"
     ckpt.mkdir(parents=True)
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
-    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    # RELATIVE VIS_DIR (like the real "./data/vis"): exercises the bug where
+    # Flask's send_file resolves a relative path against app.root_path
+    # (euclid_polish/web/) instead of the CWD → a 500 on a file that exists.
+    monkeypatch.setattr(Config, "VIS_DIR", os.path.relpath(str(tmp_path / "vis")))
     header = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
               "save_best_score,combined_loss,is_baseline\n")
 
