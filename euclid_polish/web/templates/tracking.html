@@ -33,11 +33,11 @@
   <form id="new-form" onsubmit="event.preventDefault(); startCampaign();">
     <label style="display:block; margin:6px 0;">Title
       <input type="text" id="new-title" placeholder="e.g. anchor-loss sweep"
-             style="width:100%; padding:6px; border:1px solid #2c3446; border-radius:4px; background:#0f131d; color:#e6ecf6;">
+             style="width:100%; padding:6px; border:1px solid #cdd2db; border-radius:4px; background:#fff; color:#1a1a1a;">
     </label>
     <label style="display:block; margin:6px 0;">Description (optional)
       <input type="text" id="new-desc" placeholder="what you're trying"
-             style="width:100%; padding:6px; border:1px solid #2c3446; border-radius:4px; background:#0f131d; color:#e6ecf6;">
+             style="width:100%; padding:6px; border:1px solid #cdd2db; border-radius:4px; background:#fff; color:#1a1a1a;">
     </label>
     <button type="submit">Create campaign</button>
     <span id="new-msg" class="muted" style="margin-left:8px;"></span>
@@ -211,15 +211,15 @@
 
 {% block scripts %}
 <style>
-  .md-rendered { background:#0f131d; border:1px solid #2c3446; border-radius:6px;
+  .md-rendered { background:#f3f5f8; border:1px solid #e2e5ea; border-radius:6px;
                  padding:12px 16px; max-height:380px; overflow:auto; }
   .md-rendered h1,.md-rendered h2,.md-rendered h3 { margin:.6em 0 .3em; }
   .md-rendered h1 { font-size:1.3em; } .md-rendered h2 { font-size:1.12em; }
   .md-rendered h3 { font-size:1em; }
-  .md-rendered code { background:#1b2233; padding:1px 4px; border-radius:3px; }
-  .md-rendered pre { background:#1b2233; padding:8px 10px; border-radius:5px; overflow:auto; }
-  .md-rendered blockquote { border-left:3px solid #2c3446; margin:.4em 0; padding-left:10px; color:#9aa6ba; }
-  .md-rendered hr { border:none; border-top:1px solid #2c3446; }
+  .md-rendered code { background:#e9edf3; padding:1px 4px; border-radius:3px; }
+  .md-rendered pre { background:#e9edf3; padding:8px 10px; border-radius:5px; overflow:auto; }
+  .md-rendered blockquote { border-left:3px solid #d6dde8; margin:.4em 0; padding-left:10px; color:#666; }
+  .md-rendered hr { border:none; border-top:1px solid #e2e5ea; }
 </style>
 <script>
 const LOG_MD = {{ (state.log_md or '') | tojson }};
@@ -319,12 +319,12 @@ async function timeTravel(campaign, model) {
     let t = `✓ sandbox ${data.short} → `;
     msg.innerHTML = t + `<a href="${data.url}" target="_blank"><strong>${data.url}</strong> open ↗</a>`;
     if (data.remote && !data.remote.ok)
-      msg.innerHTML += ` <span style="color:#e8c275;">· FASRC: ${polishUI.escapeHtml(data.remote.error)}</span>`;
+      msg.innerHTML += ` <span style="color:#826200;">· FASRC: ${polishUI.escapeHtml(data.remote.error)}</span>`;
     if (data.warning)
-      msg.innerHTML += `<div style="color:#e8c275; font-size:.85em;">⚠ ${polishUI.escapeHtml(data.warning)}</div>`;
+      msg.innerHTML += `<div style="color:#826200; font-size:.85em;">⚠ ${polishUI.escapeHtml(data.warning)}</div>`;
     setTimeout(() => location.reload(), 3000);
   } else {
-    msg.style.color = '#e89393';
+    msg.style.color = '#b03a3a';
     msg.textContent = '✗ ' + (data.error || (data.spawn && data.spawn.error) || 'failed');
   }
 }
@@ -333,7 +333,7 @@ async function ttAction(action, short) {
   msg.style.color = ''; msg.textContent = action + 'ing ' + short + '…';
   const { ok, data } = await postForm('/api/tracking/timetravel/' + action, { short });
   if (ok) location.reload();
-  else { msg.style.color = '#e89393'; msg.textContent = '✗ ' + (data.error || 'failed'); }
+  else { msg.style.color = '#b03a3a'; msg.textContent = '✗ ' + (data.error || 'failed'); }
 }
 async function ttRemove(short) {
   if (!confirm('Remove sandbox ' + short + '? Stops its server, drops the worktree, deletes its folder.')) return;

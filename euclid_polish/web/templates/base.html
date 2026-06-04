@@ -7,36 +7,37 @@
   <style>
     /* ── Tracking: "📌 track" buttons + comment modal ──────────────── */
     .tk-track-btn {
-      cursor: pointer; border: 1px solid #3a4255;
-      background: #222a3a; color: #cdd6e6; border-radius: 6px;
+      cursor: pointer; border: 1px solid #d6dde8;
+      background: #eef2f9; color: #2a3a55; border-radius: 6px;
       font-size: 0.78em; padding: 2px 7px; line-height: 1.4;
     }
-    .tk-track-btn:hover { background: #2c3852; color: #fff; }
+    .tk-track-btn:hover { background: #dfe6f3; border-color: #2a5db0; }
     .tk-overlay {
       display: none; position: fixed; inset: 0; z-index: 1000;
-      background: rgba(6, 9, 16, 0.62); align-items: center; justify-content: center;
+      background: rgba(6, 9, 16, 0.45); align-items: center; justify-content: center;
     }
     .tk-modal {
-      background: #161b27; border: 1px solid #2c3446; border-radius: 10px;
-      width: min(540px, 92vw); padding: 20px 22px; box-shadow: 0 18px 60px rgba(0,0,0,.5);
+      background: #fff; border: 1px solid #e2e5ea; border-radius: 10px;
+      color: #1a1a1a;
+      width: min(540px, 92vw); padding: 20px 22px; box-shadow: 0 18px 60px rgba(0,0,0,.25);
     }
     .tk-modal .tk-title { margin: 0 0 6px; font-size: 1.12em; }
-    .tk-hint { margin: 0 0 14px; color: #8b97ad; font-size: 0.86em; word-break: break-all; }
-    .tk-label { display: block; margin: 10px 0 4px; font-size: 0.82em; color: #aab4c6; }
+    .tk-hint { margin: 0 0 14px; color: #888; font-size: 0.86em; word-break: break-all; }
+    .tk-label { display: block; margin: 10px 0 4px; font-size: 0.82em; color: #555; }
     .tk-input, .tk-textarea {
-      width: 100%; box-sizing: border-box; background: #0f131d; color: #e6ecf6;
-      border: 1px solid #2c3446; border-radius: 6px; padding: 8px 10px; font: inherit;
+      width: 100%; box-sizing: border-box; background: #fff; color: #1a1a1a;
+      border: 1px solid #cdd2db; border-radius: 6px; padding: 8px 10px; font: inherit;
     }
     .tk-textarea { resize: vertical; }
-    .tk-msg { min-height: 1.2em; margin: 10px 0 2px; font-size: 0.85em; color: #9fd0a6; }
+    .tk-msg { min-height: 1.2em; margin: 10px 0 2px; font-size: 0.85em; color: #14600c; }
     .tk-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
     .tk-btn {
-      cursor: pointer; border: 1px solid #3a4255; background: #222a3a; color: #cdd6e6;
+      cursor: pointer; border: 1px solid #cdd2db; background: #f3f5f8; color: #2a3a55;
       border-radius: 6px; padding: 7px 14px; font: inherit;
     }
-    .tk-btn:hover { background: #2c3852; }
-    .tk-btn-primary { background: #2f6df0; border-color: #2f6df0; color: #fff; }
-    .tk-btn-primary:hover { background: #4480ff; }
+    .tk-btn:hover { background: #e6ebf3; }
+    .tk-btn-primary { background: #2a5db0; border-color: #2a5db0; color: #fff; }
+    .tk-btn-primary:hover { background: #1f4a96; }
     .tk-btn:disabled { opacity: .55; cursor: default; }
   </style>
 </head>
@@ -330,7 +331,7 @@
         const r = await fetch('/api/tracking/backup', { method: 'POST', body });
         const data = await r.json().catch(() => ({}));
         if (!r.ok || !data.ok) {
-          msgEl.style.color = '#e89393';
+          msgEl.style.color = '#b03a3a';
           msgEl.textContent = 'error: ' + (data.error || ('HTTP ' + r.status));
           okBtn.disabled = false;
           return;
@@ -338,12 +339,12 @@
         let m = '✓ tracked as ' + (data.record && data.record.name);
         if (data.sync && data.sync.ok)        m += ' · mirrored to holylabs';
         else if (data.sync && data.sync.error) m += ' · holylabs: ' + data.sync.error;
-        msgEl.style.color = '#9fd0a6';
+        msgEl.style.color = '#14600c';
         msgEl.textContent = m;
         if (data.warning) {
           // Non-blocking reproducibility warning (dirty tree / no repo).
           const w = document.createElement('div');
-          w.style.cssText = 'color:#e8c275; margin-top:6px; font-size:.82em;';
+          w.style.cssText = 'color:#826200; margin-top:6px; font-size:.82em;';
           w.textContent = '⚠ ' + data.warning;
           msgEl.appendChild(w);
           setTimeout(close, 4500);   // longer so the warning is read
@@ -351,7 +352,7 @@
           setTimeout(close, 1500);
         }
       } catch (e) {
-        msgEl.style.color = '#e89393';
+        msgEl.style.color = '#b03a3a';
         msgEl.textContent = 'network error: ' + e;
         okBtn.disabled = false;
       }

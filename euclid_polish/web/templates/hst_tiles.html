@@ -45,10 +45,10 @@
       <button id="btn-tile-refresh" style="margin-left: 8px;">🎲 Refresh cutout</button>
     </p>
     <div style="margin-top: 12px; text-align: center;
-                background: #11141e; padding: 8px; border-radius: 4px;">
+                background: #f3f5f8; padding: 8px; border-radius: 4px;">
       <img id="tile-cutout-img" alt="random cutout"
            style="max-width: 100%; image-rendering: pixelated;
-                  background: #11141e;">
+                  background: #f3f5f8;">
       <div class="muted" id="tile-cutout-status" style="margin-top: 6px; min-height: 14px;">
         loading…
       </div>
@@ -58,7 +58,7 @@
   <section class="card">
     <h3>FITS header</h3>
     <div id="tile-header-pane" style="max-height: 520px; overflow-y: auto;
-                                       background: #11141e; padding: 8px;
+                                       background: #f3f5f8; padding: 8px;
                                        border-radius: 4px; font-family: monospace;
                                        font-size: 11px;">
       <p class="muted">loading…</p>
@@ -81,10 +81,10 @@ function _renderHeader(payload) {
   let html = '';
   for (const hdu of payload.hdus || []) {
     html += `<div style="margin-bottom: 14px;">`;
-    html += `<div style="color:#aab; padding: 4px 6px; background: #1d2535;
+    html += `<div style="color:#2a3a55; padding: 4px 6px; background: #e9edf3;
                          margin-bottom: 4px; border-radius: 3px;">
                <b>HDU ${hdu.index} · ${polishUI.escapeHtml(hdu.name)}</b>
-               <span style="color:#7a8194; font-weight: normal;">
+               <span style="color:#666; font-weight: normal;">
                  ${polishUI.escapeHtml(hdu.kind)}
                  ${hdu.shape ? '· shape=' + JSON.stringify(hdu.shape) : ''}
                  ${hdu.dtype ? '· dtype=' + polishUI.escapeHtml(hdu.dtype) : ''}
@@ -92,10 +92,10 @@ function _renderHeader(payload) {
              </div>`;
     html += `<table style="width:100%; border-collapse: collapse;">`;
     for (const [k, v, c] of hdu.cards) {
-      html += `<tr style="border-bottom: 1px solid #1a1f2c;">
-                 <td style="padding: 1px 6px; color: #dbe; width: 25%;">${polishUI.escapeHtml(k)}</td>
-                 <td style="padding: 1px 6px; color: #ace; width: 40%;">${polishUI.escapeHtml(v)}</td>
-                 <td style="padding: 1px 6px; color: #7a8194;">${polishUI.escapeHtml(c)}</td>
+      html += `<tr style="border-bottom: 1px solid #e2e5ea;">
+                 <td style="padding: 1px 6px; color: #2a3a55; width: 25%;">${polishUI.escapeHtml(k)}</td>
+                 <td style="padding: 1px 6px; color: #1f4a96; width: 40%;">${polishUI.escapeHtml(v)}</td>
+                 <td style="padding: 1px 6px; color: #666;">${polishUI.escapeHtml(c)}</td>
                </tr>`;
     }
     html += `</table></div>`;

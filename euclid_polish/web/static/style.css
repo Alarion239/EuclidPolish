@@ -227,7 +227,7 @@ button.secondary:hover { background: #565e64; }
 .actions-pane {
   margin-top: 28px;
   padding-top: 20px;
-  border-top: 1px solid #232838;
+  border-top: 1px solid #e2e5ea;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 480px));
   gap: 16px 20px;
