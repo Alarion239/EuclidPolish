@@ -247,3 +247,50 @@ def test_log_pagination_past_beginning_is_empty(client, tmp_repo):
     d = client.get(f"/api/fasrc/runs/log?path={path}&page=3&page_size=50").get_json()
     assert d["content"] == "" and (d["start_line"], d["end_line"]) == (0, 0)
     assert d["has_older"] is False and d["has_newer"] is True
+
+
+# ---------------------------------------------------------------------------
+# Runs LIST pagination (page back through the full job history)
+# ---------------------------------------------------------------------------
+
+def _runs_find(n, log_dir):
+    """Fake `find -printf '%T@\\t%s\\t%p'` output for n runs (mtime = index)."""
+    rows = []
+    for i in range(1, n + 1):
+        stem = f"euclid-{i:04d}"
+        rows.append(f"{float(i)}\t{100+i}\t{log_dir}/{stem}.out")
+        rows.append(f"{float(i)}\t{10+i}\t{log_dir}/{stem}.err")
+    return "\n".join(rows) + "\n"
+
+
+def test_runs_list_pagination_newest_page(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    find_out = _runs_find(250, str(log_dir))
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, find_out, "")])  # squeue, find
+    d = client.get("/api/fasrc/runs?page=0&page_size=100").get_json()
+    assert d["ok"] and d["total_runs"] == 250
+    assert len(d["runs"]) == 100
+    assert (d["start_index"], d["end_index"]) == (1, 100)
+    assert d["has_older"] is True and d["has_newer"] is False
+    assert d["runs"][0]["name"] == "euclid-0250"     # newest first
+
+
+def test_runs_list_pagination_oldest_page(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    find_out = _runs_find(250, str(log_dir))
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, find_out, "")])
+    d = client.get("/api/fasrc/runs?page=2&page_size=100").get_json()
+    assert len(d["runs"]) == 50                       # runs 201–250
+    assert (d["start_index"], d["end_index"]) == (201, 250)
+    assert d["has_older"] is False and d["has_newer"] is True
+    assert d["runs"][-1]["name"] == "euclid-0001"     # the very first run
+
+
+def test_runs_list_pagination_past_end_empty(client, tmp_repo):
+    repo, log_dir, _ = tmp_repo
+    find_out = _runs_find(250, str(log_dir))
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, find_out, "")])
+    d = client.get("/api/fasrc/runs?page=3&page_size=100").get_json()
+    assert d["runs"] == [] and d["total_runs"] == 250
+    assert (d["start_index"], d["end_index"]) == (0, 0)
+    assert d["has_older"] is False and d["has_newer"] is True

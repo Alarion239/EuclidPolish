@@ -4763,7 +4763,7 @@ def create_app() -> Flask:
             f"find {shlex.quote(log_dir)} -maxdepth 2 -type f "
             f"\\( -name '*.out' -o -name '*.err' \\) "
             f"-printf '%T@\\t%s\\t%p\\n' 2>/dev/null "
-            f"| sort -rn -k1,1 | head -240 ; }}; exit 0"
+            f"| sort -rn -k1,1 | head -20000 ; }}; exit 0"
         )
         rc, out, _err = STATE.ssh.run(cmd, timeout=15)
         files: Dict[str, Dict[str, Any]] = {}     # keyed by base name
@@ -4791,8 +4791,10 @@ def create_app() -> Flask:
                 rec["mtime"] = max(rec["mtime"], mtime)
 
         # 2. Overlay JobDB rows (gives us jobid + state + label + params).
+        #    Large limit so older runs (later pages) still get their
+        #    jobid/state/label, not just the most recent 120.
         db_by_name: Dict[str, Dict[str, Any]] = {}
-        for row in fasrc_jobs.DB.list_recent(120):
+        for row in fasrc_jobs.DB.list_recent(5000):
             lp = row.get("log_path") or ""
             base = os.path.basename(lp)
             stem = base[:-4] if base.endswith(".out") else base
@@ -4848,7 +4850,33 @@ def create_app() -> Flask:
                 "params":       params,
             })
         runs.sort(key=lambda r: r["mtime"], reverse=True)
-        return jsonify({"ok": True, "log_dir": log_dir, "runs": runs[:100]})
+
+        # Paginate runs (newest first). page 0 = newest; older pages walk
+        # back through the full history up to the very first run.
+        try:
+            page = max(0, int(request.args.get("page", 0)))
+        except ValueError:
+            page = 0
+        try:
+            page_size = int(request.args.get("page_size", 100))
+        except ValueError:
+            page_size = 100
+        page_size = max(10, min(page_size, 500))
+        total = len(runs)
+        start = page * page_size
+        page_runs = runs[start:start + page_size]
+        return jsonify({
+            "ok":          True,
+            "log_dir":     log_dir,
+            "runs":        page_runs,
+            "total_runs":  total,
+            "page":        page,
+            "page_size":   page_size,
+            "start_index": (start + 1) if page_runs else 0,
+            "end_index":   (start + len(page_runs)) if page_runs else 0,
+            "has_older":   start + page_size < total,
+            "has_newer":   page > 0,
+        })
 
     @app.route("/api/fasrc/runs/ckpt-bundle.tar")
     def api_fasrc_runs_ckpt_bundle():

@@ -287,6 +287,18 @@
                 style="float:right;">↻ Refresh</button>
       </h3>
       <div id="logs-list"><span class="muted">loading…</span></div>
+      <!-- Pager: walk back through older runs up to the very first job.
+           page 0 = newest; "← older runs" goes back in time. -->
+      <div id="logs-list-pager"
+           style="margin-top:8px; display:none; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="btn-runs-older"  type="button" class="secondary"
+                style="padding:2px 10px;">← older runs</button>
+        <button id="btn-runs-newer"  type="button" class="secondary"
+                style="padding:2px 10px;">newer runs →</button>
+        <button id="btn-runs-newest" type="button" class="secondary"
+                style="padding:2px 10px;">newest ⤓</button>
+        <span id="runs-pageinfo" class="muted" style="font-size:12px;"></span>
+      </div>
     </section>
 
     <section class="card" id="logs-viewer" style="display:none;">
@@ -965,6 +977,8 @@ $('btn-bootstrap').onclick = async () => {
 ============================================================ */
 const LOGS_PAGE_SIZE = 1000;   // lines per page in the log viewer
 const LOGS_STATE = { selected: null, which: 'out', page: 0 };
+const LOGS_LIST_PAGE_SIZE = 100;        // runs per page in the runs list
+const LOGS_LIST_STATE = { page: 0 };    // 0 = newest runs
 
 function fmtTimeAgo(epoch) {
   if (!epoch) return '—';
@@ -979,17 +993,36 @@ function fmtDate(epoch) {
   return new Date(epoch*1000).toLocaleString();
 }
 
+function _renderRunsPager(data) {
+  const pgr = $('logs-list-pager');
+  if (!pgr) return;
+  const total = (data && data.total_runs) || 0;
+  pgr.style.display = 'flex';
+  $('runs-pageinfo').textContent = total
+    ? `runs ${data.start_index || 0}–${data.end_index || 0} of ${total}`
+      + (LOGS_LIST_STATE.page === 0 ? '  (newest)' : '')
+    : '';
+  $('btn-runs-older').disabled  = !(data && data.has_older);
+  $('btn-runs-newer').disabled  = !(data && data.has_newer);
+  $('btn-runs-newest').disabled = !(data && data.has_newer);
+}
+
 async function refreshLogs() {
-  const { ok, data } = await api('/api/fasrc/runs');
+  const { ok, data } = await api('/api/fasrc/runs?page=' + LOGS_LIST_STATE.page
+                                 + '&page_size=' + LOGS_LIST_PAGE_SIZE);
   if (data && data.log_dir && $('logs-dir')) $('logs-dir').textContent = data.log_dir;
   if (!ok) {
     const err = (data && data.error) ? data.error : 'request failed';
     $('logs-list').innerHTML = `<p class="muted">${escapeHtml(err)}</p>`;
+    $('logs-list-pager').style.display = 'none';
     return;
   }
   const runs = data.runs || [];
   if (runs.length === 0) {
-    $('logs-list').innerHTML = '<p class="muted">no runs found</p>';
+    // Past the end (or genuinely empty) — keep the pager so "newer" works.
+    $('logs-list').innerHTML = '<p class="muted">'
+      + (LOGS_LIST_STATE.page > 0 ? 'no older runs' : 'no runs found') + '</p>';
+    _renderRunsPager(data);
     return;
   }
   // Build the table. Each row carries its out_path / err_path / name in
@@ -1048,6 +1081,7 @@ async function refreshLogs() {
       openLogViewer();
     });
   });
+  _renderRunsPager(data);
 }
 
 async function openLogViewer() {
@@ -1105,6 +1139,9 @@ async function loadLogPage() {
 }
 
 $('btn-logs-refresh').onclick = refreshLogs;
+$('btn-runs-older').onclick  = () => { LOGS_LIST_STATE.page += 1; refreshLogs(); };
+$('btn-runs-newer').onclick  = () => { LOGS_LIST_STATE.page = Math.max(0, LOGS_LIST_STATE.page - 1); refreshLogs(); };
+$('btn-runs-newest').onclick = () => { LOGS_LIST_STATE.page = 0; refreshLogs(); };
 $('btn-show-out').onclick   = () => { LOGS_STATE.which = 'out'; openLogViewer(); };
 $('btn-show-err').onclick   = () => { LOGS_STATE.which = 'err'; openLogViewer(); };
 $('btn-logs-close').onclick = () => { $('logs-viewer').style.display = 'none'; };
