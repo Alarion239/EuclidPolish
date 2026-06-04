@@ -238,7 +238,7 @@ class Config:
         n_exposures             = N_EXPOSURES,
         read_noise_e            = READ_NOISE_E,
         dark_e_per_s_per_pix    = DARK_E_PER_S_PER_PIX,
-        asinh_stretch_scale_e   = 1000.0,
+        asinh_stretch_scale_e   = 100.0,
         # VIS CR rejection via across-dither image differencing kills ~98%
         # of hits before they reach the science image (0.02 ≈ 1/50).
         cr_rate_factor          = 0.02,
@@ -266,7 +266,7 @@ class Config:
         n_exposures             = 4,
         read_noise_e            = 7.5,
         dark_e_per_s_per_pix    = 0.01,
-        asinh_stretch_scale_e   = 1000.0,
+        asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_Y",
         detector_pixel_um       = 18.0,
@@ -284,7 +284,7 @@ class Config:
         n_exposures             = 4,
         read_noise_e            = 7.5,
         dark_e_per_s_per_pix    = 0.01,
-        asinh_stretch_scale_e   = 1000.0,
+        asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_J",
         detector_pixel_um       = 18.0,
@@ -302,7 +302,7 @@ class Config:
         n_exposures             = 4,
         read_noise_e            = 7.5,
         dark_e_per_s_per_pix    = 0.01,
-        asinh_stretch_scale_e   = 1000.0,
+        asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_H",
         detector_pixel_um       = 18.0,
@@ -346,7 +346,12 @@ class Config:
     # Stretch scale used to compress the dynamic range of pixel values before
     # the network sees them: stretched = asinh(x / STRETCH_SCALE_E). Linear for
     # |x| ≪ scale, log-like for |x| ≫ scale; signed; smooth inverse (sinh).
-    STRETCH_SCALE_E              = 1000.0   # e⁻ — knee between linear and log regimes
+    # Elbow lowered 1000 → 100: at 1000 the asinh-MAE hid the source flux by
+    # ~23000× (the "predict 0" collapse cost only ~6e-4), and the loss mass sat
+    # in the rare bright cores. At 100 the knee is a few× the noise floor, the
+    # collapse costs ~6× more, and the loss weight shifts onto the faint
+    # extended galaxy structure we actually want to reconstruct.
+    STRETCH_SCALE_E              = 100.0   # e⁻ — knee between linear and log regimes
     # Clip on the asinh-space value before the inverse sinh, so a runaway SR
     # output can't overflow when un-stretched: sinh(20)·STRETCH_SCALE_E ≈ 2.4e8 e⁻.
     SINH_STRETCH_CLIP            = 20.0
