@@ -26,12 +26,22 @@
     {% endif %}
   </h3>
   {% if checkpoints.files %}
-    <table>
-      <tr><th>File</th><th>Size</th></tr>
-      {% for f in checkpoints.files %}
-        <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
-      {% endfor %}
-    </table>
+    {# Grouped by folder so the root (save-best-score / PSNR) track and the
+       loss_best/ (combined-loss) sub-track each show with their location. #}
+    {% for folder, items in checkpoints.files | groupby('folder') %}
+      <h4 style="margin:12px 0 4px;">📁 <code>{{ folder }}/</code>
+        <span class="muted" style="font-weight:normal; font-size:.85em;">
+          {{ items | length }} files
+          {% if '/loss_best' in folder %}· combined-loss best
+          {% else %}· save-best-score / PSNR best{% endif %}</span>
+      </h4>
+      <table>
+        <tr><th>File</th><th>Size</th></tr>
+        {% for f in items %}
+          <tr><td><code>{{ f.name }}</code></td><td>{{ f.size_mb }} MB</td></tr>
+        {% endfor %}
+      </table>
+    {% endfor %}
   {% else %}
     <p class="muted">empty — train first.</p>
   {% endif %}
