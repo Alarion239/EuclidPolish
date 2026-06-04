@@ -26,6 +26,33 @@ def client():
         yield c
 
 
+def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
+    """An empty/header-only training log must 404 (placeholder), never 500."""
+    ckpt = tmp_path / "ckpt" / "wdsr"
+    ckpt.mkdir(parents=True)
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    header = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
+              "save_best_score,combined_loss,is_baseline\n")
+
+    # header-only (no data rows yet) → 404, not a 500 traceback
+    (ckpt / "training_log.csv").write_text(header)
+    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
+    assert r.status_code == 404
+
+    # once a data row exists → 200 PNG
+    (ckpt / "training_log.csv").write_text(
+        header + "1000,1.0,0.04,46.6,39.9,46.6,0.003,\n")
+    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
+    assert r.status_code == 200
+    assert r.content_type.startswith("image/png")
+
+    # a later transient truncation still serves the last good render (no 500)
+    (ckpt / "training_log.csv").write_text(header)
+    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
+    assert r.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # Pages render
 # ---------------------------------------------------------------------------

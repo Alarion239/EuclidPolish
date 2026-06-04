@@ -2925,7 +2925,30 @@ def create_app() -> Flask:
         if (force or not os.path.exists(out_png)
                 or os.path.getmtime(log_path) > os.path.getmtime(out_png)):
             os.makedirs(Config.VIS_DIR, exist_ok=True)
-            plot_training_log(log_path, out_png)
+            # Render to a private temp file, then publish atomically. The PNG
+            # is a single shared path the page polls + the Visualize/track
+            # buttons force-render; without the temp+rename a concurrent read
+            # could send_file() a half-written (or briefly absent) file.
+            # Keep a ``.png`` suffix so matplotlib infers the format from the
+            # temp path; the pid/thread infix keeps concurrent renders apart.
+            tmp_png = f"{out_png}.tmp-{os.getpid()}-{_t.get_ident()}.png"
+            try:
+                plot_training_log(log_path, tmp_png)
+                os.replace(tmp_png, out_png)
+            except Exception as e:
+                # Empty / header-only / mid-write log → there's nothing to
+                # plot yet. Don't 500: serve the last good render if we have
+                # one, otherwise 404 so the page shows its placeholder.
+                if os.path.exists(tmp_png):
+                    try:
+                        os.remove(tmp_png)
+                    except OSError:
+                        pass
+                if not os.path.exists(out_png):
+                    print(f"  ⚠ training-log plot skipped: {type(e).__name__}: {e}")
+                    abort(404)
+        if not os.path.exists(out_png):
+            abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 
     @app.route("/api/sky/totals")

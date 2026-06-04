@@ -18,7 +18,7 @@
 {% block viz %}
 <div class="viz-area">
   <img id="viz-img" alt="training log">
-  <div class="placeholder">No <code>training_log.jsonl</code> yet — train a model first.</div>
+  <div class="placeholder">No <code>training_log.csv</code> yet — train a model first.</div>
 </div>
 
 <section class="card">
@@ -104,12 +104,18 @@ if (_vizBtn) _vizBtn.onclick = async () => {
 const _trkBtn = document.getElementById("btn-track-log");
 if (_trkBtn) _trkBtn.onclick = async () => {
   _trkBtn.disabled = true;
+  let rendered = false;
   try {
-    await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
+    const r = await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
                 + `&force=1&_t=${Date.now()}`);
-  } catch (e) { /* the modal will surface a missing-file error if any */ }
+    rendered = r.ok;
+  } catch (e) { /* network blip — treat as not rendered */ }
   polishUI.viz.refresh();
   _trkBtn.disabled = false;
+  if (!rendered) {
+    alert("No training-log plot to track yet — the log is empty or hasn't been written.");
+    return;
+  }
   polishUI.track.open({
     kind:  "image",
     path:  "data/vis/training_log.png",
