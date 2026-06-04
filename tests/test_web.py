@@ -66,9 +66,9 @@ def test_sky_page_renders(client):
 def test_visualization_page_renders(client):
     r = client.get("/visualization")
     assert r.status_code == 200
-    assert b"Quick lens demo" in r.data
     # The gallery is the central viz pane on /visualization.
     assert b"data/vis/" in r.data
+    assert b"Render PSF panel" in r.data
 
 
 def test_cutouts_page_renders(client):

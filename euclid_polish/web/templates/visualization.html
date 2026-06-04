@@ -43,15 +43,6 @@
 
 {% block actions %}
 <section class="card">
-  <h3>Quick lens demo</h3>
-  <form id="demo-form" action="/visualization/demo">
-    <label>Lenses to force <input type="number" name="n_lenses" value="3" min="0" max="10"></label>
-    <button type="submit">Generate demo</button>
-  </form>
-  <div id="demo-status"></div>
-</section>
-
-<section class="card">
   <h3>Star positions</h3>
   <form id="stars-form" action="/visualization/star-positions">
     <button type="submit">Plot positions</button>
@@ -88,7 +79,6 @@ function bindRun(formId, statusId) {
     });
   });
 }
-bindRun("demo-form",  "demo-status");
 bindRun("stars-form", "stars-status");
 bindRun("psf-form",   "psf-status");
 </script>

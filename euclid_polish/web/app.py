@@ -12,16 +12,9 @@ from __future__ import annotations
 # whenever a job called ``plt.figure``.
 import matplotlib  # noqa: E402  (must precede any other matplotlib user)
 
-from euclid_polish.sky.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.multiband_generator import (
-MultiBandGeneratorConfig, MultiBandSimulator,
-)
 from euclid_polish.sky.tfrecord import open_multiband_writer
 import tensorflow as tf
 from euclid_polish.euclid.psf_library import load_all_band_psfs
-from euclid_polish.sky.multiband_forward import (
-MultiBandForward, MultiBandForwardConfig,
-)
 from euclid_polish.sky.tfrecord import (
 open_multiband_writer, tfrecord_path,
 )
@@ -48,7 +41,6 @@ from euclid_polish.sky.multiband_forward import MultiBandForward
 from euclid_polish.visualization.methods import draw_star_positions
 import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from astropy.visualization import (
 AsinhStretch, ImageNormalize, MinMaxInterval,
 )
@@ -103,7 +95,7 @@ from flask import (
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.psf_library import (
-    load_all_band_psfs, load_all_band_psf_sets, psf_inventory, psf_path_for_band,
+    load_all_band_psfs, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.euclid.types import PSF
 from euclid_polish.web import (
@@ -319,13 +311,32 @@ def _tfrecords_status(records_dir: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _checkpoints_status() -> Dict[str, Any]:
-    out = {"dir": Config.DEFAULT_CHECKPOINT_DIR, "files": []}
-    if os.path.isdir(Config.DEFAULT_CHECKPOINT_DIR):
-        for fname in sorted(os.listdir(Config.DEFAULT_CHECKPOINT_DIR)):
-            full = os.path.join(Config.DEFAULT_CHECKPOINT_DIR, fname)
-            if os.path.isfile(full):
-                size_mb = os.path.getsize(full) / 1e6
-                out["files"].append({"name": fname, "size_mb": round(size_mb, 1)})
+    """Every checkpoint file on disk, recursing into sub-tracks.
+
+    Walks the whole checkpoint dir (not just the top level) so the second
+    save-best track under ``loss_best/`` is listed alongside the root
+    (save-best-score / PSNR) track. Each entry carries the ``folder`` it
+    lives in so the UI can group + show locations.
+    """
+    ckpt_dir = Config.DEFAULT_CHECKPOINT_DIR
+    out: Dict[str, Any] = {"dir": ckpt_dir, "files": []}
+    if os.path.isdir(ckpt_dir):
+        for dirpath, _dirs, files in os.walk(ckpt_dir):
+            subdir = os.path.relpath(dirpath, ckpt_dir)
+            subdir = "" if subdir == "." else subdir
+            for fname in sorted(files):
+                full = os.path.join(dirpath, fname)
+                if os.path.isfile(full):
+                    rel = os.path.join(subdir, fname) if subdir else fname
+                    out["files"].append({
+                        "name":    fname,
+                        "rel":     rel,                       # loss_best/ckpt-11.index
+                        "subdir":  subdir,                    # "" (root) or "loss_best"
+                        "folder":  os.path.normpath(dirpath),  # ckpt/wdsr/loss_best
+                        "size_mb": round(os.path.getsize(full) / 1e6, 1),
+                    })
+    # Root track first, then sub-tracks; files sorted within each folder.
+    out["files"].sort(key=lambda f: (f["subdir"], f["name"]))
     return out
 
 
@@ -1041,92 +1052,6 @@ def _job_viz_psf(cap, band_name: str | None, psf_dir: str) -> Dict[str, Any]:
     plt.close(fig)
     print(f"wrote {out}")
     return {"path": out}
-
-
-def _job_demo_lens(cap, n_lenses: int) -> Dict[str, Any]:
-    """Quick end-to-end demo: generate one field, run forward, save PNGs."""
-    matplotlib.use("Agg")
-
-    out_dir = os.path.join(Config.VIS_DIR, "web_demo")
-    os.makedirs(out_dir, exist_ok=True)
-    cat = open_cosmos2025()
-    sim = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=510),
-    )
-
-    rng = np.random.default_rng()
-    sky, meta = sim.simulate_field(rng, n_lenses=n_lenses)
-    print(f"generated 510² field: {meta['n_galaxies']} gal, "
-          f"{meta['n_stars']} stars, {meta['n_lenses']} lenses")
-    psf_sets = load_all_band_psf_sets()
-    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
-                           config=MultiBandForwardConfig(add_noise=True))
-    lr, hr = fwd.process(sky, rng=np.random.default_rng(42))
-
-    bands = Config.LR_INPUT_BAND_NAMES
-    lens_positions = [(L["x_pix"], L["y_pix"]) for L in meta["lenses"]]
-    lens_theta_E   = [L["theta_E_arcsec"] for L in meta["lenses"]]
-
-    def _save_panel(data_4ch, title, fname, *, scale_per_band=True, lens_px_scale=0.05):
-        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-        for ax, k in zip(axes.flat, range(4)):
-            scale = Config.get_band(bands[k]).asinh_stretch_scale_e
-            stretched = np.arcsinh(data_4ch[..., k] / scale)
-            lo, hi = np.percentile(stretched, [1.0, 99.7])
-            ax.imshow(stretched, cmap="gray_r", origin="lower",
-                      vmin=lo, vmax=hi, interpolation="nearest")
-            ax.set_title(f"{bands[k]}", fontsize=11)
-            ax.set_xticks([]); ax.set_yticks([])
-            for (xp, yp), te in zip(lens_positions, lens_theta_E):
-                ax.add_patch(mpatches.Circle(
-                    (xp / (lens_px_scale / 0.05), yp / (lens_px_scale / 0.05)),
-                    te / lens_px_scale,
-                    fill=False, ec="red", lw=1.0, ls="--",
-                ))
-        fig.suptitle(title, fontsize=12)
-        fig.tight_layout()
-        out = os.path.join(out_dir, fname)
-        fig.savefig(out, dpi=110, bbox_inches="tight")
-        plt.close(fig)
-        print(f"  ✓ wrote {out}")
-        return out
-
-    hr_path = _save_panel(sky.data, "HR clean 510² (0.05\"/pix)",
-                          "demo_hr.png", lens_px_scale=0.05)
-    lr_path = _save_panel(lr.data,  "LR dirty 255² (0.10\"/pix, +Poisson+read)",
-                          "demo_lr.png", lens_px_scale=0.10)
-
-    # Also persist the underlying 4-band cubes as FITS so each panel's
-    # raw pixels are inspectable via the universal /inspect view. One
-    # FITS per (kind, band) — matches the per-band slicing the rest of
-    # the UI uses for sky records.
-    def _save_cube_per_band(data_4ch, kind: str, px_scale_arcsec: float) -> None:
-        for k, band_name in enumerate(bands):
-            plane = np.ascontiguousarray(
-                np.asarray(data_4ch[..., k], dtype=np.float32),
-            )
-            hdu = _fits.PrimaryHDU(plane)
-            hdu.header["OBJECT"] = (f"EuclidPolish demo {kind} {band_name}",
-                                    "panel label")
-            hdu.header["KIND"]   = (kind, "hr | lr")
-            hdu.header["BAND"]   = (band_name, "band name")
-            hdu.header["NLENS"]  = (int(meta["n_lenses"]),
-                                     "number of injected lenses")
-            hdu.header["NGAL"]   = (int(meta["n_galaxies"]),
-                                     "number of galaxies in the field")
-            hdu.header["BUNIT"]  = ("e-", "electrons (raw)")
-            hdu.header["CDELT1"] = (-px_scale_arcsec / 3600.0,
-                                     "pixel scale (degrees)")
-            hdu.header["CDELT2"] = ( px_scale_arcsec / 3600.0,
-                                     "pixel scale (degrees)")
-            out = os.path.join(out_dir, f"demo_{kind}_{band_name}.fits")
-            hdu.writeto(out, overwrite=True)
-            print(f"  ✓ wrote {out}")
-    _save_cube_per_band(sky.data, "hr", 0.05)
-    _save_cube_per_band(lr.data,  "lr", 0.10)
-
-    return {"hr": hr_path, "lr": lr_path,
-            "n_lenses": meta["n_lenses"], "n_galaxies": meta["n_galaxies"]}
 
 
 # ---------------------------------------------------------------------------
@@ -2988,15 +2913,6 @@ def create_app() -> Flask:
     def visualization_page():
         return render_template("visualization.html",
                                pngs=_list_vis_pngs())
-
-    @app.route("/visualization/demo", methods=["POST"])
-    def visualization_demo():
-        n_lenses = int(request.form.get("n_lenses", 3))
-        job_id = REGISTRY.spawn(
-            label=f"demo: 510² field with {n_lenses} lenses",
-            target=lambda cap: _job_demo_lens(cap, n_lenses),
-        )
-        return jsonify({"job_id": job_id})
 
     @app.route("/visualization/star-positions", methods=["POST"])
     def visualization_star_positions():
