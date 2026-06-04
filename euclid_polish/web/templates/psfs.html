@@ -1,6 +1,5 @@
 {% extends "base_split.html" %}
 {% block title %}PSFs · EuclidPolish{% endblock %}
-{% block heading %}PSFs{% endblock %}
 
 {% block toolbar %}
 <div class="toolbar">
@@ -78,9 +77,6 @@
   <div id="psf-sync-status" class="hint"></div>
 </section>
 
-<section class="card">
-  <h3>Extract empirical ePSFs (FASRC)</h3>
-</section>
 {% with step_id="extract_euclid_psf" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% endblock %}
 

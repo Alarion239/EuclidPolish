@@ -1,6 +1,5 @@
 {% extends "base_split.html" %}
 {% block title %}Catalog · EuclidPolish{% endblock %}
-{% block heading %}Star catalog{% endblock %}
 
 {% block toolbar %}
 <div class="toolbar">
@@ -72,9 +71,6 @@
   <div id="auth-status"></div>
 </section>
 
-<section class="card">
-  <h3>Query catalog (brightest N)</h3>
-</section>
 {% with step_id="euclid_query", on_submitted_js="(jobid) => { document.getElementById('catalog-submit-note').innerHTML = '✓ Submitted SLURM job ' + jobid + ' — track &amp; cancel on the FASRC page; reload here once it finishes.'; }" %}
   {% include "_step_card_mount.html" %}
 {% endwith %}

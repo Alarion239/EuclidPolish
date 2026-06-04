@@ -1,6 +1,5 @@
 {% extends "base_split.html" %}
 {% block title %}Cutouts · EuclidPolish{% endblock %}
-{% block heading %}Euclid cutouts{% endblock %}
 
 {% block toolbar %}
 <div class="toolbar">
@@ -72,19 +71,8 @@
 </section>
 
 {% if catalog.present %}
-<section class="card">
-  <h3>Download cutouts (FASRC)</h3>
-</section>
 {% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
-
-<section class="card">
-  <h3>Verify photometry scale (read-only)</h3>
-</section>
 {% with step_id="euclid_verify_photometry" %}{% include "_step_card_mount.html" %}{% endwith %}
-
-<section class="card">
-  <h3>Build star-anchor TFRecords</h3>
-</section>
 {% with step_id="euclid_star_anchor_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% else %}
 <section class="card">
