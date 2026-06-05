@@ -26,12 +26,27 @@ from euclid_polish.sky.tng_galaxy import (
 BAND = Config.BAND_VIS
 HR_SCALE = Config.DEFAULT_PIXEL_SCALE  # 0.05"
 
-# A real galaxy folder ships in the repo's data/ for an end-to-end check.
-_GAL_DIR = os.path.join(Config.TNG_SKIRT_DIR, "167396")
-_HAS_LOCAL = os.path.isdir(_GAL_DIR) and os.path.isfile(
-    tng_fits_path(_GAL_DIR, "167396", 1, "VIS"))
+# Real galaxy folders ship in the repo's data/ for an end-to-end check.
+# Discover every subhalo folder that has a complete O1 VIS frame so the sweep
+# covers all locally-downloaded galaxies, not just one.
+def _local_galaxies():
+    root = Config.TNG_SKIRT_DIR
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for gid in sorted(os.listdir(root)):
+        gdir = os.path.join(root, gid)
+        if os.path.isdir(gdir) and os.path.isfile(
+                tng_fits_path(gdir, gid, 1, "VIS")):
+            out.append((gdir, gid))
+    return out
+
+
+_LOCAL = _local_galaxies()
+_GAL_DIR, _GAL_ID = (_LOCAL[0] if _LOCAL else (os.path.join(
+    Config.TNG_SKIRT_DIR, "167396"), "167396"))
 _needs_local = pytest.mark.skipif(
-    not _HAS_LOCAL, reason="local TNG sample (data/tng_skirt/167396) absent")
+    not _LOCAL, reason="no local TNG sample under data/tng_skirt/")
 
 
 # ----------------------------- photometry --------------------------------
@@ -113,7 +128,7 @@ def test_rotate_quarter_conserves_flux_and_wraps():
 
 @_needs_local
 def test_load_tng_frame_native_float32():
-    arr = load_tng_frame(tng_fits_path(_GAL_DIR, "167396", 1, "VIS"))
+    arr = load_tng_frame(tng_fits_path(_GAL_DIR, _GAL_ID, 1, "VIS"))
     assert arr.dtype == np.float32 and arr.shape == (1600, 1600)
     assert arr.dtype.byteorder in ("=", "|")     # native endianness
     assert np.isfinite(arr).all()
@@ -121,7 +136,7 @@ def test_load_tng_frame_native_float32():
 
 @_needs_local
 def test_prepare_tng_galaxy_shape_and_order():
-    stamp, meta = prepare_tng_galaxy(_GAL_DIR, "167396", 1, rebin_factor=4)
+    stamp, meta = prepare_tng_galaxy(_GAL_DIR, _GAL_ID, 1, rebin_factor=4)
     assert stamp.shape == (400, 400, 4) and stamp.dtype == np.float32
     assert meta["bands"] == Config.LR_INPUT_BAND_NAMES
     assert set(meta["flux_e_per_band"]) == set(Config.LR_INPUT_BAND_NAMES)
@@ -131,8 +146,8 @@ def test_prepare_tng_galaxy_shape_and_order():
 @_needs_local
 def test_rebin_acts_as_distance_knob():
     # Coarser rebin (fixed HR scale) ⇒ fainter total flux ∝ 1/factor².
-    _, m2 = prepare_tng_galaxy(_GAL_DIR, "167396", 1, rebin_factor=2)
-    _, m4 = prepare_tng_galaxy(_GAL_DIR, "167396", 1, rebin_factor=4)
+    _, m2 = prepare_tng_galaxy(_GAL_DIR, _GAL_ID, 1, rebin_factor=2)
+    _, m4 = prepare_tng_galaxy(_GAL_DIR, _GAL_ID, 1, rebin_factor=4)
     f2 = m2["flux_e_per_band"]["VIS"]
     f4 = m4["flux_e_per_band"]["VIS"]
     assert f4 == pytest.approx(f2 / 4.0, rel=0.02)
@@ -140,7 +155,28 @@ def test_rebin_acts_as_distance_knob():
 
 @_needs_local
 def test_rotation_preserves_total_electrons():
-    s0, _ = prepare_tng_galaxy(_GAL_DIR, "167396", 1, rebin_factor=4, rot_k=0)
-    s1, _ = prepare_tng_galaxy(_GAL_DIR, "167396", 1, rebin_factor=4, rot_k=1)
+    s0, _ = prepare_tng_galaxy(_GAL_DIR, _GAL_ID, 1, rebin_factor=4, rot_k=0)
+    s1, _ = prepare_tng_galaxy(_GAL_DIR, _GAL_ID, 1, rebin_factor=4, rot_k=1)
     assert s1.sum() == pytest.approx(s0.sum(), rel=1e-5)
     assert s1.shape == s0.shape
+
+
+@_needs_local
+@pytest.mark.parametrize("gdir,gid", _LOCAL, ids=[g for _d, g in _LOCAL])
+def test_all_local_galaxies_all_orientations(gdir, gid):
+    # Every downloaded galaxy, every orientation with a full band set, both
+    # rebin factors → a clean, finite, non-negative, positive-flux stamp.
+    ran = 0
+    for o in range(1, 6):
+        if not all(os.path.isfile(tng_fits_path(gdir, gid, o, b))
+                   for b in ("VIS", "Y", "J", "H")):
+            continue
+        for f in (2, 4):
+            stamp, meta = prepare_tng_galaxy(gdir, gid, o, rebin_factor=f,
+                                             rot_k=o)
+            assert stamp.shape == (1600 // f, 1600 // f, 4)
+            assert np.isfinite(stamp).all()
+            assert (stamp >= 0).all()
+            assert meta["flux_e_per_band"]["VIS"] > 0
+            ran += 1
+    assert ran > 0, f"no complete orientations for TNG{gid}"
