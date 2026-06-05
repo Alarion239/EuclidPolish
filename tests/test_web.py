@@ -301,6 +301,82 @@ def test_euclid_auth_status_reports_presence(client, monkeypatch):
     assert body["present"] is True and body["user"] == "alice"
 
 
+def test_tng_auth_save_writes_remote_token(client, monkeypatch):
+    """Saving the TNG token writes ~/.tng_api_key on FASRC via a quoted
+    heredoc (token as stdin, not argv), mode 600. Nothing is stored locally."""
+    from euclid_polish.web import remote as web_remote
+    captured = {}
+
+    class _CapSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60):
+            captured["cmd"] = cmd
+            return (0, "", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _CapSSH())
+    r = client.post("/tng-auth/save", data={"tng_token": "abc123DEADBEEF"})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True and d["chars"] == len("abc123DEADBEEF")
+    cmd = captured["cmd"]
+    assert "abc123DEADBEEF" in cmd
+    assert ".tng_api_key" in cmd
+    assert "umask 077" in cmd and "chmod 600" in cmd
+    # Heredoc terminator present so the token lands as file content.
+    assert "__TNG_KEY_EOF__" in cmd
+    # The token must never reach the response payload.
+    assert "abc123DEADBEEF" not in r.get_data(as_text=True)
+
+
+def test_tng_auth_save_rejects_blank(client, monkeypatch):
+    from euclid_polish.web import remote as web_remote
+
+    class _OkSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60): return (0, "", "")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _OkSSH())
+    r = client.post("/tng-auth/save", data={"tng_token": "   "})
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False
+
+
+def test_tng_auth_save_requires_connection(client, monkeypatch):
+    """No FASRC connection → the request is refused and NOTHING is written.
+
+    The global SSH gate (``_enforce_ssh_gate`` before_request) redirects a
+    disconnected request to /connection-error (302); the endpoint's own
+    ``is_connected`` guard is belt-and-suspenders behind it. Either way the
+    token must never be written — the stub's ``run`` raises if touched."""
+    from euclid_polish.web import remote as web_remote
+
+    class _Down:
+        def is_connected(self): return False
+        def run(self, cmd, timeout=60):
+            raise AssertionError("must not run without a connection")
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _Down())
+    r = client.post("/tng-auth/save", data={"tng_token": "x"})
+    # Refused — never a successful save (no write happened: the stub would
+    # have raised). 302 = gate redirect, 400 = endpoint guard.
+    assert r.status_code in (302, 400)
+
+
+def test_tng_auth_status_reports_presence_without_leaking_token(client, monkeypatch):
+    from euclid_polish.web import remote as web_remote
+
+    class _PresentSSH:
+        def is_connected(self): return True
+        def run(self, cmd, timeout=60): return (0, "39\n", "")   # wc -c output
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _PresentSSH())
+    r = client.get("/tng-auth/status")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["present"] is True and body["chars"] == 39
+    assert "token" not in body and "tng_token" not in body
+
+
 def test_post_inference_generate_reconstruct_returns_job_id(client):
     # Spawns a background job and returns its id even without a live FASRC
     # connection — the job itself fails fast ("not connected") in that case.

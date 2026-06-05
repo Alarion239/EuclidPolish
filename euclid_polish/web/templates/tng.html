@@ -3,23 +3,34 @@
 {% block content %}
 
 <section class="card">
+  <h3>TNG API token <span id="tng-token-badge"></span></h3>
+  <p class="muted" style="margin-top: 0;">
+    Saved to <code>~/.tng_api_key</code> on FASRC (mode 600) — the same file the
+    download job reads on the compute node. Requires an active FASRC
+    connection. The token is sent over the SSH channel as file content, never as
+    a command argument, never to the job database, and never stored on this
+    machine. Get the token from
+    <a href="https://www.tng-project.org/users/profile/" target="_blank"
+       rel="noopener">tng-project.org → API Token</a>.
+  </p>
+  <form id="tng-token-form" action="/tng-auth/save" autocomplete="off">
+    <label>API token
+      <input type="password" name="tng_token" autocomplete="off"
+             placeholder="paste your tng-project.org API token"></label>
+    <button type="submit">Save token to FASRC</button>
+  </form>
+  <div id="tng-token-status"></div>
+</section>
+
+<section class="card">
   <h3>Download TNG50 SKIRT atlas</h3>
   <p class="muted" style="margin-top: 0;">
     Bulk-fetch the full IllustrisTNG <b>TNG50-1 SKIRT atlas</b> (~1153 galaxies)
     as dusty Euclid cutouts — <b>VIS + NISP&nbsp;Y/J/H</b>, 5 orientations each
-    (20 FITS/galaxy) — into
-    <code>{{ tng_dir }}</code> on netscratch. Runs as a CPU SLURM job with one
-    download thread per allocated CPU. Each finished galaxy gets a
-    <code>.done</code> marker, so a re-submit after a time-limit only fills the
-    gaps.
-  </p>
-  <p class="muted" style="margin-top: 0;">
-    <b>API token (one-time, on FASRC):</b>
-    <code>echo 'YOUR_TOKEN' &gt; ~/.tng_api_key &amp;&amp; chmod 600 ~/.tng_api_key</code>
-    — get the token from
-    <a href="https://www.tng-project.org/users/profile/" target="_blank"
-       rel="noopener">tng-project.org → API Token</a>.
-    The token is read on the compute node; it never passes through this form.
+    (20 FITS/galaxy) — into <code>{{ tng_dir }}</code> on netscratch. Runs as a
+    CPU SLURM job with one download thread per allocated CPU. Each finished
+    galaxy gets a <code>.done</code> marker, so a re-submit after a time-limit
+    only fills the gaps. Set your API token above first.
   </p>
 
   {% if n_done is not none %}
@@ -36,5 +47,44 @@
 
   {% with step_id="download_tng_skirt" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
+
+<script>
+// ── TNG API token ───────────────────────────────────────────────────
+async function refreshTngTokenStatus() {
+  const badge = document.getElementById("tng-token-badge");
+  if (!badge) return;
+  try {
+    const r = await fetch("/tng-auth/status");
+    const d = await r.json();
+    if (!d.connected) {
+      badge.innerHTML = '<span class="badge badge-running">FASRC not connected</span>';
+    } else if (d.present) {
+      badge.innerHTML = `<span class="badge badge-done">✓ saved (${d.chars} chars)</span>`;
+    } else {
+      badge.innerHTML = '<span class="badge badge-running">not set</span>';
+    }
+  } catch (e) { /* leave blank */ }
+}
+const tngForm = document.getElementById("tng-token-form");
+if (tngForm) {
+  tngForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const statusEl = document.getElementById("tng-token-status");
+    statusEl.innerHTML = "saving…";
+    try {
+      const r = await fetch("/tng-auth/save", { method: "POST", body: new FormData(tngForm) });
+      const d = await r.json();
+      statusEl.innerHTML = d.ok
+        ? `<p>✓ token saved to FASRC (${d.chars} chars).</p>`
+        : `<p>✗ ${d.error || "failed"}</p>`;
+      if (d.ok) tngForm.reset();
+    } catch (err) {
+      statusEl.innerHTML = `<p>✗ ${err}</p>`;
+    }
+    refreshTngTokenStatus();
+  });
+  refreshTngTokenStatus();
+}
+</script>
 
 {% endblock %}
