@@ -69,7 +69,7 @@ def register(app):
                 files = []
                 for name in ("original_stack.fits",
                              "VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
-                             "SR.fits", "SR_forward.fits", "residual.fits"):
+                             "SR.fits"):
                     f = os.path.join(d, name)
                     if os.path.isfile(f):
                         rel = os.path.relpath(f, Config.EUCLID_INFERENCE_DIR)
@@ -102,12 +102,42 @@ def register(app):
                     })
             euclid_runs.sort(key=lambda d: d["mtime"], reverse=True)
 
+        # Synthetic reconstruction runs: per-scene inspectable FITS set
+        # (original_stack + SR + HR), the same downloadable/inspectable
+        # outputs the real-Euclid cutouts produce.
+        synthetic_runs: list[Dict[str, Any]] = []
+        sroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic")
+        if os.path.isdir(sroot):
+            for tag in os.listdir(sroot):
+                d = os.path.join(sroot, tag)
+                if not os.path.isdir(d):
+                    continue
+                files = []
+                for name in ("original_stack.fits", "SR.fits", "HR.fits"):
+                    f = os.path.join(d, name)
+                    if os.path.isfile(f):
+                        files.append({
+                            "name":    name,
+                            "rel":     os.path.relpath(f, Config.EUCLID_INFERENCE_DIR),
+                            "size_kb": int(os.path.getsize(f) / 1024),
+                        })
+                if files:
+                    synthetic_runs.append({
+                        "tag":   tag,
+                        "label": tag,
+                        "files": files,
+                        "mtime": max(os.path.getmtime(os.path.join(d, x["name"]))
+                                     for x in files),
+                    })
+            synthetic_runs.sort(key=lambda d: d["mtime"], reverse=True)
+
         return render_template(
             "inference.html",
             checkpoints=_checkpoints_status(),
             tfrecords=_tfrecords_status(),
             recon_pngs=recon_pngs,
             euclid_runs=euclid_runs,
+            synthetic_runs=synthetic_runs,
             default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
         )
 

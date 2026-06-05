@@ -964,3 +964,26 @@ def test_hst_status_omits_deleted_two_stage_chain_keys(client, monkeypatch):
         assert gone not in artifacts, (
             f"deleted artifact key '{gone}' is still in the probe map"
         )
+
+
+def test_inference_lists_synthetic_runs_and_drops_deprecated(client, tmp_path, monkeypatch):
+    inf = tmp_path / "euclid_inference"
+    cut = inf / "cutouts" / "latest"; cut.mkdir(parents=True)
+    for n in ("original_stack.fits", "SR.fits", "SR_forward.fits", "residual.fits"):
+        (cut / n).write_bytes(b"x")          # deprecated present ON DISK
+    syn = inf / "synthetic" / "gensynth_510px_idx0000"; syn.mkdir(parents=True)
+    for n in ("original_stack.fits", "SR.fits", "HR.fits"):
+        (syn / n).write_bytes(b"x")
+    monkeypatch.setattr(Config, "EUCLID_INFERENCE_DIR", str(inf))
+
+    body = client.get("/inference").get_data(as_text=True)
+    # synthetic run is listed with its inspectable FITS set
+    assert "Synthetic reconstructions" in body
+    assert "gensynth_510px_idx0000" in body
+    assert "synthetic/gensynth_510px_idx0000/SR.fits" in body
+    assert "HR.fits" in body
+    # the real-Euclid run still shows the kept files
+    assert "cutouts/latest/SR.fits" in body
+    # deprecated files are NOT listed anywhere, though they exist on disk
+    assert "SR_forward.fits" not in body
+    assert "residual.fits" not in body

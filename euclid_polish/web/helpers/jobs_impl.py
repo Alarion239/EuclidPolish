@@ -193,7 +193,7 @@ def _job_generate_reconstruct(
                                 predicted_dirty=predicted,
                                 residual=residual)
 
-            def _write_fits(name: str, data2d, label: str) -> None:
+            def _write_fits(path: str, data2d, label: str) -> None:
                 if data2d is None:
                     return
                 arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
@@ -206,13 +206,39 @@ def _job_generate_reconstruct(
                 hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
                                         "asinh stretch knee used for the plot")
                 hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
-                hdu.writeto(os.path.join(out_dir, name), overwrite=True)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                hdu.writeto(path, overwrite=True)
 
-            _write_fits(stem + ".fits",           sr_data,   "SR")
-            _write_fits(stem + "_lr.fits",        lr_data,   "LR dirty")
-            _write_fits(stem + "_hr.fits",        hr_data,   "HR clean")
-            _write_fits(stem + "_srforward.fits", predicted, "VIS PSF (x) SR + 2x rebin")
-            _write_fits(stem + "_residual.fits",  residual,  "LR - forward(SR)")
+            # SR FITS next to the PNG — the /inference gallery links to this.
+            _write_fits(os.path.join(out_dir, stem + ".fits"), sr_data, "SR")
+
+            # Inspectable per-scene FITS set, mirroring the real-Euclid cutout
+            # outputs so each synthetic scene can be inspected/downloaded as
+            # FITS on /inference: the 4-band LR cube + SR (+ HR clean, the
+            # ground truth that only the synthetic path has).
+            syn_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic", stem)
+            os.makedirs(syn_dir, exist_ok=True)
+            if lr_cube_for_color is not None:
+                stack = np.moveaxis(np.ascontiguousarray(
+                    np.asarray(lr_cube_for_color, dtype=np.float32)), -1, 0)
+                sh = _fits.Header()
+                sh["OBJECT"] = "EuclidPolish synthetic LR stack (electrons)"
+                sh["BUNIT"]  = "electron"
+                sh["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
+                                "NAXIS3 plane order (band 0 = VIS)")
+                sh["IDX"]    = (int(lr_img.index), "scene index")
+                _fits.PrimaryHDU(stack, header=sh).writeto(
+                    os.path.join(syn_dir, "original_stack.fits"),
+                    overwrite=True, output_verify="silentfix")
+            _write_fits(os.path.join(syn_dir, "SR.fits"), sr_data, "SR")
+            _write_fits(os.path.join(syn_dir, "HR.fits"), hr_data, "HR clean")
+            # Purge superseded / deprecated per-scene flat FITS from old runs.
+            for _stale in (stem + "_lr.fits", stem + "_hr.fits",
+                           stem + "_srforward.fits", stem + "_residual.fits"):
+                try:
+                    os.remove(os.path.join(out_dir, _stale))
+                except OSError:
+                    pass
             out_paths.append(out)
             cap.tick(k + 2, total, f"reconstructed scene {lr_img.index}")
             print(f"  ✓ {out}")
@@ -433,17 +459,15 @@ def _job_reconstruct_euclid_cutout(
     sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
 
-    if predicted_dirty is not None and residual is not None:
-        pd_path = os.path.join(cache_dir, "SR_forward.fits")
-        ph = fits.PrimaryHDU(predicted_dirty)
-        # FITS header values must be plain ASCII — no unicode math symbols.
-        ph.header["OBJECT"] = "VIS-PSF conv SR + 2x rebin (predicted LR)"
-        ph.writeto(pd_path, overwrite=True)
-        res_path = os.path.join(cache_dir, "residual.fits")
-        rh = fits.PrimaryHDU(residual)
-        rh.header["OBJECT"] = "Dirty(VIS) - VIS-PSF conv SR + 2x rebin"
-        rh.writeto(res_path, overwrite=True)
-        print(f"  ✓ saved SR_forward + residual → {cache_dir}")
+    # SR_forward.fits / residual.fits were the round-trip self-check outputs;
+    # they are deprecated and no longer written. Purge any stale copies so a
+    # re-run leaves a clean directory. (predicted_dirty/residual are still
+    # used below for the PNG panel + residual_std.)
+    for _stale in ("SR_forward.fits", "residual.fits"):
+        try:
+            os.remove(os.path.join(cache_dir, _stale))
+        except OSError:
+            pass
 
     out_dir = Config.VIS_RECONSTRUCTION_DIR
     os.makedirs(out_dir, exist_ok=True)

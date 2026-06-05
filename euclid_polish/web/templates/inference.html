@@ -118,6 +118,48 @@
 </style>
 {% endif %}
 
+{% if synthetic_runs %}
+<section class="card">
+  <h3>Synthetic reconstructions <span class="muted" style="font-size:12px;
+      font-weight:normal;">(inspectable FITS under
+      <code>data/euclid_inference/synthetic/</code> — same set as the real-Euclid
+      cutouts: 4-band <code>original_stack</code> + <code>SR</code> + clean
+      <code>HR</code>)</span></h3>
+  <table style="width:100%; font-size:12px;">
+    <tr><th style="text-align:left;">Scene</th>
+        <th style="text-align:left;">Files</th></tr>
+    {% for run in synthetic_runs[:30] %}
+      <tr style="border-top:1px solid #e2e5ea;">
+        <td style="vertical-align:top; padding:4px 8px 4px 0;
+                   white-space:nowrap;"><code>{{ run.label or run.tag }}</code></td>
+        <td style="vertical-align:top; padding:4px 0;">
+          {% for f in run.files %}
+            <a href="{{ url_for('inspect_fits_page', fits='data/euclid_inference/' ~ f.rel) }}"
+               target="_blank"
+               style="margin-right:6px;
+                      {{ 'font-weight:600;' if f.name == 'SR.fits' else '' }}"
+               title="Inspect FITS header">
+              🔬 {{ f.name }}
+              <span class="muted">({{ f.size_kb }}KB)</span>
+            </a>
+            <a href="{{ url_for('inspect_fits_download', fits='data/euclid_inference/' ~ f.rel) }}"
+               download
+               style="margin-right:6px;"
+               title="Download FITS">⬇</a>
+            <button class="tk-track-btn"
+                    data-track-kind="fits"
+                    data-track-path="data/euclid_inference/{{ f.rel }}"
+                    data-track-name="{{ run.tag }}_{{ f.name }}"
+                    data-track-label="{{ run.label or run.tag }} · {{ f.name }}"
+                    title="Back up &amp; track this FITS">📌</button>
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
 <section class="card">
   <h3>Checkpoints</h3>
   {% if checkpoints.files %}
