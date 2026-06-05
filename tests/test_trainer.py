@@ -573,6 +573,18 @@ class TestMultiSourceValidationLogging:
             assert r["combined_loss"] != ""
             assert np.isfinite(float(r["combined_loss"]))
 
+    def test_step_based_loop_ends_exactly_at_steps(self, tiny_model, tmp_path):
+        """The honest step-based loop runs until ckpt.step == steps (it counts
+        *actual* forward steps, so a rollback would re-train rather than
+        overshoot the counter)."""
+        ckpt_dir = str(tmp_path / "ckpt_steps")
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        trainer.train(
+            _train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+            steps=5, evaluate_every=5, save_best_only=False, validate_images=2,
+        )
+        assert int(trainer.checkpoint.step.numpy()) == 5
+
     def test_savebest_keys_on_composite_score(
         self, tiny_model, tmp_path, tmp_psf_path,
     ):

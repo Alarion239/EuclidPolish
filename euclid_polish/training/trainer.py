@@ -455,7 +455,6 @@ class Trainer:
         ckpt = self.checkpoint
 
         start_step = int(ckpt.step.numpy())
-        remaining = steps - start_step
 
         os.makedirs(ckpt_mgr.directory, exist_ok=True)
         # The structured, resume-continuous metrics CSV lives with the
@@ -531,10 +530,16 @@ class Trainer:
                     "this run overwrites the previous best on its first eval"
                 )
 
+        # Honest, step-based loop: a rollback rewinds the model AND ckpt.step to
+        # the restored checkpoint, and the run keeps going until the model has
+        # done ``steps`` *actual* forward steps — rolled-back steps don't count
+        # toward progress. The training dataset repeats infinitely, so iterate
+        # it directly and stop on the step count; the progress bar is driven
+        # manually (its position moves backwards on a rollback, and the rate/ETA
+        # in job_status skips the negative interval rather than going negative).
         pbar = tqdm(
-            train_dataset.take(remaining),
-            total=remaining,
-            initial=0,
+            total=steps,
+            initial=start_step,
             desc="Training",
             unit="step",
             ncols=120,
@@ -544,9 +549,11 @@ class Trainer:
         n_rollbacks = 0   # rollbacks since the last LR halving
         n_halvings  = 0   # LR halvings this run (divergence guard)
 
-        for batch in pbar:
+        for batch in train_dataset:
+            if int(ckpt.step.numpy()) >= steps:
+                break
             ckpt.step.assign_add(1)
-            step = ckpt.step.numpy()
+            step = int(ckpt.step.numpy())
             # Follow the LR schedule (× the guard's halving scale). No-op for a
             # constant LR with no halvings yet; assigns in place otherwise.
             if self._lr_schedule is not None or self._lr_scale != 1.0:
@@ -582,13 +589,30 @@ class Trainer:
                 if warn_callback is not None:
                     warn_callback(msg)
                 if ckpt_mgr.latest_checkpoint:
-                    # ``restore`` rewinds ckpt.step AND the optimiser LR; keep
-                    # the step monotonic (so the eval cadence / log don't replay
-                    # steps) and re-assert the intended (possibly halved) LR.
+                    # ``restore`` rewinds the model, ckpt.step AND the optimiser
+                    # LR to the checkpoint. We KEEP the rewound step (honest: the
+                    # run re-trains the rolled-back steps so it still does
+                    # ``steps`` real forward steps), and re-assert the intended
+                    # (possibly halved) LR.
                     self.checkpoint.restore(
                         ckpt_mgr.latest_checkpoint).expect_partial()
-                    ckpt.step.assign(step)
-                    self._apply_lr(step)
+                step = int(ckpt.step.numpy())   # rewound model step
+                self._apply_lr(step)
+                # Move the progress bar back to the model's real step. The
+                # rate/ETA in job_status skips the negative interval (it never
+                # folds Δsteps ≤ 0), so this doesn't poison speed/ETA.
+                pbar.n = max(0, step)
+                pbar.refresh()
+                if step_callback is not None:
+                    step_callback(step, int(steps))
+                # Discard the current eval window — its samples came from the
+                # now rolled-back model state, so they'd skew the next mean.
+                loss_mean.reset_state()
+                loss_syn_mean.reset_state()
+                loss_hst_mean.reset_state()
+                loss_anchor_mean.reset_state()
+                gnorm_mean.reset_state()
+                gnorm_max.assign(0.0)
                 # Repeated divergence ⇒ the LR is too hot ⇒ HALVE it and keep
                 # going, rather than aborting. Give up only after too many
                 # halvings (LR cut to a useless fraction of the original).
@@ -613,6 +637,8 @@ class Trainer:
                             warn_callback(abort)
                         break
                 continue   # skip metric accumulation / eval for the spiked step
+
+            pbar.update(1)   # normal forward step (model advanced by 1)
 
             if lane_loss is not None:
                 # ``lane_loss`` = (syn, hst, anchor) unweighted mean losses
