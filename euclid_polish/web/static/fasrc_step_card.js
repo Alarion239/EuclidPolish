@@ -160,12 +160,16 @@ large cutout don't leak across train/validate."></label>`;
             <input type="number" name="output_size" value="0" min="0" max="4096"
                    title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
       case 'download_tng_skirt':
-        // Mirrors TngSkirtAtlasDownloadStep.build_command (limit,
+        // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153
-        // galaxies) as dusty Euclid VIS+NISP FITS, 5 orientations each, one
-        // thread per allocated CPU. The TNG API token is read on the node
-        // from $TNG_API_KEY or ~/.tng_api_key — never sent through this form.
+        // galaxies) as dusty Euclid VIS+NISP FITS, 5 orientations each, in a
+        // thread pool. The TNG API token is read on the node from
+        // $TNG_API_KEY or ~/.tng_api_key — never sent through this form.
         return `
+          <label>Parallel workers <span class="muted">(blank = 1 per CPU)</span>
+            <input type="number" name="workers" value="" min="1" max="256"
+                   placeholder="= CPUs"
+                   title="Concurrent galaxy downloads in flight (thread pool). Blank = one per allocated CPU. Downloads are network-I/O bound, so a single CPU can drive many transfers — set this ABOVE the CPU count (e.g. 32) to saturate the network without allocating more cores."></label>
           <label>Limit galaxies <span class="muted">(blank = all ~1153)</span>
             <input type="number" name="limit" value="" min="1" max="2000"
                    placeholder="all"
@@ -175,10 +179,10 @@ large cutout don't leak across train/validate."></label>`;
             <input type="checkbox" name="keep_archive" value="1">
             Keep source .tar.gz archives</label>
           <span class="muted" style="flex-basis:100%; font-size:12px;">
-            Downloads run one thread per allocated CPU (set CPUs below).
-            Provide your TNG API token on FASRC once:
-            <code>echo TOKEN &gt; ~/.tng_api_key</code>. Finished galaxies get a
-            <code>.done</code> marker, so re-submitting only fills the gaps.</span>`;
+            Downloads run in a thread pool (set Workers above; blank = one per
+            allocated CPU). Set your TNG API token in the field above first.
+            Finished galaxies get a <code>.done</code> marker, so re-submitting
+            only fills the gaps.</span>`;
       case 'euclid_query':
         // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
         // snr_min). Writes stars.csv. Run first, then download, then verify.

@@ -197,6 +197,23 @@ class TestRegistry:
         assert "--limit" not in argv2
         assert "--keep-archive" not in argv2
 
+    def test_tng_skirt_step_explicit_workers_override_cpus(self):
+        """A form-supplied worker count is used verbatim and is decoupled from
+        the CPU allocation (downloads are I/O-bound → more threads than cores
+        is fine)."""
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command({"n_cpus": 8, "workers": 32})
+        assert argv[argv.index("--workers") + 1] == "32"
+
+    def test_tng_skirt_step_workers_fallback_to_cpus(self):
+        """Blank / 0 / missing workers → fall back to the allocated CPU count."""
+        step = REGISTRY.get("download_tng_skirt")
+        for params in ({"n_cpus": 12, "workers": ""},
+                       {"n_cpus": 12, "workers": "0"},
+                       {"n_cpus": 12}):
+            argv = step.build_command(params)
+            assert argv[argv.index("--workers") + 1] == "12", params
+
     def test_tng_skirt_step_is_cpu_only(self):
         step = REGISTRY.get("download_tng_skirt")
         assert step.needs_gpu is False
@@ -594,6 +611,64 @@ class TestFixedCpusEnforcement:
         assert j["ok"]
         # The recorded sbatch params reflect the override.
         assert j["params"]["n_cpus"] == 1
+
+    def test_tng_workers_field_reaches_sbatch_script(self, monkeypatch):
+        """End-to-end: POST a workers value to the TNG submit endpoint and
+        confirm the rendered sbatch body (written via the heredoc) carries
+        ``--workers 32`` — decoupled from the 8 allocated CPUs. This proves the
+        new form field flows form → build_command → script."""
+        from euclid_polish.web.app import create_app
+        stub = self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        r = client.post(
+            "/api/fasrc/hst/download_tng_skirt/submit",
+            data={
+                "confirm": "yes",
+                "n_cpus": "8",      # allocation
+                "n_gpus": "0",
+                "workers": "32",    # independent worker count
+                "memory": "32G",
+                "time_limit": "1-00:00:00",
+                "partition": "shared",
+            },
+        )
+        j = r.get_json()
+        assert r.status_code == 200 and j["ok"]
+        # The CPU allocation stays at 8 …
+        assert j["params"]["n_cpus"] == 8
+        # … but the rendered script asks for 32 download workers. The sbatch
+        # body is written via a captured ``cat > … <<EOF`` command.
+        writes = [c for c in stub.calls if "--workers" in c]
+        assert writes, "no sbatch write captured containing --workers"
+        assert any("32" in c for c in writes)
+        # And NOT the CPU count: 'workers 8' must not appear as the value.
+        assert not any("--workers '8'" in c or "--workers 8\n" in c
+                       for c in writes)
+
+    def test_tng_workers_blank_falls_back_to_cpus_in_script(self, monkeypatch):
+        """Blank workers field → the script is rendered with --workers = the
+        allocated CPU count (8 here)."""
+        from euclid_polish.web.app import create_app
+        stub = self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        r = client.post(
+            "/api/fasrc/hst/download_tng_skirt/submit",
+            data={
+                "confirm": "yes",
+                "n_cpus": "8", "n_gpus": "0",
+                "workers": "",                 # blank → fall back
+                "memory": "32G", "time_limit": "1-00:00:00",
+                "partition": "shared",
+            },
+        )
+        j = r.get_json()
+        assert r.status_code == 200 and j["ok"]
+        writes = [c for c in stub.calls if "--workers" in c]
+        assert writes, "no sbatch write captured containing --workers"
+        # 8 appears as the worker count somewhere in the rendered body.
+        assert any("8" in c for c in writes)
 
     def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch):
         from euclid_polish.web.app import create_app

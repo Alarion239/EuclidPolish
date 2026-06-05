@@ -652,11 +652,18 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
-        # One download thread per allocated CPU (the work is network bound).
-        n_cpus = int(params.get("n_cpus", 16) or 16)
+        # Workers default to one download thread per allocated CPU, but the
+        # form can set them independently: the work is network-I/O bound, so a
+        # single CPU drives many concurrent transfers — running more workers
+        # than CPUs is the cheaper way to saturate the link without allocating
+        # extra cores. Blank/0 in the form → fall back to the CPU count.
+        n_cpus  = int(params.get("n_cpus", 16) or 16)
+        workers = int(params.get("workers", 0) or 0)
+        if workers <= 0:
+            workers = n_cpus
         cmd = [
             "scripts/fasrc_download_tng_skirt_atlas.py",
-            "--workers", str(max(1, n_cpus)),
+            "--workers", str(max(1, workers)),
         ]
         # Optional cap on galaxies (blank/0 → all ~1153; small N for a test).
         limit = int(params.get("limit", 0) or 0)
