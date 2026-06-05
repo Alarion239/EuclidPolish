@@ -96,6 +96,7 @@ GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
 GRAD_SPIKE_SKIP_NORM = float(Config.GRAD_SPIKE_SKIP_NORM)
 GRAD_SPIKE_SKIP_WARMUP_STEPS = int(Config.GRAD_SPIKE_SKIP_WARMUP_STEPS)
 GRAD_SPIKE_MAX_ROLLBACKS = int(Config.GRAD_SPIKE_MAX_ROLLBACKS)
+GRAD_SPIKE_MAX_LR_HALVINGS = int(Config.GRAD_SPIKE_MAX_LR_HALVINGS)
 
 
 def _is_grad_spike(gnorm, step) -> bool:
@@ -207,6 +208,18 @@ class Trainer:
         self.hst_loss_weight         = float(hst_loss_weight)
         self.star_anchor_loss_weight = float(star_anchor_loss_weight)
         self.nonneg_sr_weight        = float(nonneg_sr_weight)
+        # Build Adam with a CONSTANT, settable learning rate so the divergence
+        # guard can halve it on repeated rollbacks (an Adam built with a
+        # LearningRateSchedule is not settable). A passed schedule is kept and
+        # applied MANUALLY each step via ``_apply_lr`` (sampled at the loop's
+        # step), scaled by ``self._lr_scale`` which the guard halves.
+        if isinstance(learning_rate, (int, float)):
+            self._lr_schedule = None
+            self._initial_lr  = float(learning_rate)
+        else:                                  # a LearningRateSchedule (callable)
+            self._lr_schedule = learning_rate
+            self._initial_lr  = float(learning_rate(tf.constant(0, tf.int64)))
+        self._lr_scale = 1.0                   # halved by the divergence guard
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -214,7 +227,7 @@ class Trainer:
             step=tf.Variable(0),
             psnr=tf.Variable(-1.0),
             best_loss=tf.Variable(float("inf")),
-            optimizer=Adam(learning_rate),
+            optimizer=Adam(self._initial_lr),
             model=model,
         )
         self.checkpoint_manager = tf.train.CheckpointManager(
@@ -240,6 +253,23 @@ class Trainer:
     def model(self):
         """Get the model."""
         return self.checkpoint.model
+
+    def _apply_lr(self, step) -> float:
+        """Set the optimiser LR for ``step`` = base schedule value × the
+        divergence guard's halving scale, and return it.
+
+        The optimiser was built with a constant LR, whose backing variable
+        assigns in place, so the traced train step picks up the new value with
+        no retracing. Called every step when a schedule is active (to follow
+        the decay) and after every rollback/halving (a restore can reset the
+        optimiser LR, so re-assert the intended value)."""
+        if self._lr_schedule is not None:
+            base = float(self._lr_schedule(tf.constant(int(step), tf.int64)))
+        else:
+            base = self._initial_lr
+        lr = base * self._lr_scale
+        self.checkpoint.optimizer.learning_rate = lr
+        return lr
 
     def _validate(
         self, valid_dataset, hst_valid_dataset, anchor_valid_dataset,
@@ -511,11 +541,16 @@ class Trainer:
         )
 
         self.now = time.perf_counter()
-        n_rollbacks = 0   # gradient-spike checkpoint rollbacks this run
+        n_rollbacks = 0   # rollbacks since the last LR halving
+        n_halvings  = 0   # LR halvings this run (divergence guard)
 
         for batch in pbar:
             ckpt.step.assign_add(1)
             step = ckpt.step.numpy()
+            # Follow the LR schedule (× the guard's halving scale). No-op for a
+            # constant LR with no halvings yet; assigns in place otherwise.
+            if self._lr_schedule is not None or self._lr_scale != 1.0:
+                self._apply_lr(step)
             # Dispatch on ``lane_counts``. When None (the pure-supervised
             # path used by run_pipeline.py / cli/main.py / the web
             # inference helpers and every validation stream), batches are
@@ -538,7 +573,6 @@ class Trainer:
             # the model toward the collapse basin; skipping it only FREEZES a
             # diverged model, so instead restore the last good checkpoint
             # (model + optimiser state) and continue from before the spike.
-            # Repeated divergence ⇒ the LR is too hot ⇒ abort with a message.
             if _is_grad_spike(gnorm, step):
                 n_rollbacks += 1
                 msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step {step}"
@@ -548,20 +582,36 @@ class Trainer:
                 if warn_callback is not None:
                     warn_callback(msg)
                 if ckpt_mgr.latest_checkpoint:
-                    # ``restore`` rewinds ckpt.step too; keep it monotonic so
-                    # the eval cadence / log don't replay already-logged steps.
+                    # ``restore`` rewinds ckpt.step AND the optimiser LR; keep
+                    # the step monotonic (so the eval cadence / log don't replay
+                    # steps) and re-assert the intended (possibly halved) LR.
                     self.checkpoint.restore(
                         ckpt_mgr.latest_checkpoint).expect_partial()
                     ckpt.step.assign(step)
+                    self._apply_lr(step)
+                # Repeated divergence ⇒ the LR is too hot ⇒ HALVE it and keep
+                # going, rather than aborting. Give up only after too many
+                # halvings (LR cut to a useless fraction of the original).
                 if n_rollbacks > GRAD_SPIKE_MAX_ROLLBACKS:
-                    abort = (f"✗ {n_rollbacks} gradient-spike rollbacks — "
-                             f"aborting. Lower the learning rate (the loss "
-                             f"scale makes the current LR too hot once the "
-                             f"model is confident).")
-                    tqdm.write("  " + abort)
+                    n_halvings += 1
+                    self._lr_scale *= 0.5
+                    n_rollbacks = 0
+                    new_lr = self._apply_lr(step)
+                    hmsg = (f"↓ {GRAD_SPIKE_MAX_ROLLBACKS} rollbacks — halved "
+                            f"learning rate to {new_lr:.3g} "
+                            f"(halving {n_halvings}/{GRAD_SPIKE_MAX_LR_HALVINGS})"
+                            f" and continuing")
+                    tqdm.write("  " + hmsg)
                     if warn_callback is not None:
-                        warn_callback(abort)
-                    break
+                        warn_callback(hmsg)
+                    if n_halvings > GRAD_SPIKE_MAX_LR_HALVINGS:
+                        abort = (f"✗ {n_halvings} LR halvings and still "
+                                 f"diverging — aborting. The setup is unstable; "
+                                 f"check the data/loss scale.")
+                        tqdm.write("  " + abort)
+                        if warn_callback is not None:
+                            warn_callback(abort)
+                        break
                 continue   # skip metric accumulation / eval for the spiked step
 
             if lane_loss is not None:

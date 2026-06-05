@@ -61,6 +61,26 @@ def test_is_grad_spike_inert_during_warmup():
     assert not _is_grad_spike(spike, 1)
 
 
+def test_apply_lr_follows_schedule_and_halves(tmp_path):
+    """The optimiser is built with a settable constant LR; ``_apply_lr``
+    follows a passed schedule (× the guard's halving scale)."""
+    from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+    from euclid_polish.training.models.wdsr import wdsr
+
+    m = wdsr(scale=2, num_res_blocks=1, nchan_in=4, nchan_out=1)
+    sch = PiecewiseConstantDecay(boundaries=[100], values=[1e-3, 5e-4])
+    tr = Trainer(model=m, learning_rate=sch, checkpoint_dir=str(tmp_path))
+
+    assert tr._lr_schedule is not None
+    assert abs(tr._apply_lr(10) - 1e-3) < 1e-9       # pre-boundary
+    assert abs(tr._apply_lr(150) - 5e-4) < 1e-9      # post-boundary (follows schedule)
+
+    tr._lr_scale *= 0.5                              # guard halves
+    assert abs(tr._apply_lr(10) - 5e-4) < 1e-9       # 1e-3 × 0.5
+    # the optimiser actually picked up the halved value
+    assert abs(float(tr.checkpoint.optimizer.learning_rate) - 5e-4) < 1e-9
+
+
 # ---------------------------------------------------------------------------
 # Helpers — tiny synthetic PSF + tiny model so tests stay fast on CPU
 # ---------------------------------------------------------------------------

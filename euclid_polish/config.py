@@ -471,9 +471,12 @@ class Config:
     # On a post-warmup spike the trainer RESTORES the last checkpoint (model +
     # optimiser state) instead of skipping — skipping only freezes a diverged
     # model (it can't recover), whereas a restore continues from before the
-    # spike. Repeated divergence means the LR is too hot, so after this many
-    # rollbacks the run aborts with a clear message rather than thrashing.
+    # spike. After this many rollbacks the LR is clearly too hot, so the
+    # trainer HALVES the learning rate and keeps going (instead of aborting).
     GRAD_SPIKE_MAX_ROLLBACKS     = 5
+    # …but don't halve forever: after this many halvings (LR cut to 1/2^N of
+    # the original) it's hopeless, so abort with a clear message.
+    GRAD_SPIKE_MAX_LR_HALVINGS   = 8
 
     # Non-negativity regularisation on SR (the model's deconvolved-sky
     # output). Surface brightness is physically >= 0, but the WDSR head is
