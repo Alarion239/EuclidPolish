@@ -29,9 +29,10 @@ atlas files don't sit in RAM. Running with no selection defaults to --list.
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import re
 import sys
+from urllib.parse import urljoin
 
 import requests
 
@@ -53,15 +54,6 @@ def _request(url: str, key: str, *, stream: bool = False) -> requests.Response:
         sys.exit(f"HTTP {r.status_code} — API key rejected/forbidden for {url}")
     r.raise_for_status()
     return r
-
-
-def _get_json(url: str, key: str):
-    r = _request(url, key)
-    ctype = r.headers.get("content-type", "")
-    if "application/json" not in ctype:
-        sys.exit(f"Expected JSON from {url} but got {ctype!r}. "
-                 "Use a direct file URL / --name instead.")
-    return r.json()
 
 
 def _candidate_files(listing):
@@ -86,6 +78,35 @@ def _candidate_files(listing):
                         or v.get("path"))
                 out.append((name, v.get("url"),
                             v.get("size") or v.get("bytes")))
+    return out
+
+
+def _list_atlas(key: str):
+    """Return [(name, url, size)] of the .hdf5 galaxy files under skirt_atlas.
+
+    The endpoint is Django-REST-framework's *browsable API* (HTML), the same
+    page ``wget -r -A hdf5`` crawls. We try JSON first (cleaner), then fall
+    back to scraping ``href="...hdf5"`` links out of the HTML — so we can
+    pick ONE file instead of downloading the whole atlas.
+    """
+    # 1) JSON if the server will give it.
+    r = _request(SKIRT_ATLAS + "?format=json", key)
+    if "application/json" in r.headers.get("content-type", ""):
+        try:
+            files = _candidate_files(r.json())
+            if files:
+                return files
+        except ValueError:
+            pass
+    # 2) Scrape the browsable-API HTML for .hdf5 links.
+    html = _request(SKIRT_ATLAS, key).text
+    seen, out = set(), []
+    for href in re.findall(r'href=["\']([^"\']+\.hdf5)["\']', html):
+        name = href.rstrip("/").split("/")[-1]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append((name, urljoin(SKIRT_ATLAS, href), None))
     return out
 
 
@@ -144,19 +165,18 @@ def main() -> int:
         _download(url, key, args.out_dir)
         return 0
 
-    # --- skirt_atlas listing ---
-    listing = _get_json(SKIRT_ATLAS, key)
-    files = _candidate_files(listing)
+    # --- skirt_atlas listing (HTML browsable API or JSON) ---
+    files = _list_atlas(key)
 
     if args.list or (not args.name and args.index is None):
-        print(f"files/skirt_atlas/ — {len(files)} entries:\n")
+        print(f"files/skirt_atlas/ — {len(files)} .hdf5 files:\n")
         for i, (name, url, size) in enumerate(files):
             sz = f"  ({int(size)/1e6:.0f} MB)" if size else ""
             print(f"  [{i}] {name}{sz}")
         if not files:
-            print("  (couldn't parse entries — raw JSON below)\n")
-            print(json.dumps(listing, indent=2)[:4000])
-        print("\nRe-run with --name <file> or --index N to download one.")
+            print("  (no .hdf5 links found — the listing may need a different\n"
+                  "   format; open the URL in a browser to inspect.)")
+        print("\nRe-run with --name <file> or --index N to download just one.")
         return 0
 
     # --- resolve the chosen entry → download ---
