@@ -18,9 +18,10 @@ __pycache__/
 # Reference papers / PDFs — keep in a separate docs share, not source control
 *.pdf
 
-# Data: only data/euclid_psf/ is tracked; everything else is generated/local.
-data/*
-!data/euclid_psf/
+# Checkpoints + data (incl. PSFs): large artifacts synced to/from FASRC
+# out-of-band, never committed.
+/ckpt/
+/data/
 
 # Experiment-tracking store: mirrored to FASRC holylabs, never committed.
 /tracking/
