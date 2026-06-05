@@ -128,10 +128,18 @@ def _list_atlas(key: str):
 
 
 _TAR_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
+# Keep only the Euclid-band renders: TNG<id>_O<orient>_Euclid_<band>.fits
+# (covers both the dusty and the *_nodust variants). Everything else in the
+# atlas tarball — 2MASS / SDSS / GALEX / dustmass — is dropped.
+_KEEP_RE = re.compile(r"(?:^|/)TNG\d+_O\d+_Euclid_[^/]*\.fits$", re.IGNORECASE)
 
 
-def _extract(archive: str, *, remove: bool) -> None:
-    """Unpack a tar archive into a sibling dir named after it; safe filter."""
+def _extract(archive: str, *, remove: bool, euclid_only: bool = True) -> None:
+    """Unpack a tar archive into a sibling dir named after it; safe filter.
+
+    With ``euclid_only`` (default) only the ``TNG*_O?_Euclid_*.fits`` members
+    are written — the other-survey FITS are never extracted, so a ~2 GB galaxy
+    tarball lands as ~40 Euclid frames instead of 240 files."""
     import tarfile
     if not archive.endswith(_TAR_SUFFIXES):
         return
@@ -142,12 +150,21 @@ def _extract(archive: str, *, remove: bool) -> None:
             break
     os.makedirs(dest, exist_ok=True)
     with tarfile.open(archive) as tf:
+        members = None
+        if euclid_only:
+            members = [m for m in tf.getmembers()
+                       if m.isfile() and _KEEP_RE.search(m.name)]
+            if not members:
+                print("  ⚠ no TNG*_O?_Euclid_*.fits members matched — "
+                      "extracting everything instead")
+                members = None
         try:
-            tf.extractall(dest, filter="data")   # py3.12+: blocks path escapes
+            tf.extractall(dest, members=members, filter="data")  # py3.12 safe
         except TypeError:
-            tf.extractall(dest)                   # older pythons
+            tf.extractall(dest, members=members)                 # older pythons
     n = sum(len(fs) for _dp, _d, fs in os.walk(dest))
-    print(f"  ✓ unpacked → {dest}/  ({n} files)")
+    kept = "Euclid FITS" if euclid_only else "files"
+    print(f"  ✓ unpacked {n} {kept} → {dest}/")
     if remove:
         try:
             os.remove(archive)
@@ -157,7 +174,8 @@ def _extract(archive: str, *, remove: bool) -> None:
 
 
 def _download(url: str, key: str, out_dir: str, *,
-              extract: bool = True, keep_archive: bool = False) -> str:
+              extract: bool = True, keep_archive: bool = False,
+              euclid_only: bool = True) -> str:
     r = _request(url, key, stream=True)         # follows redirects → data host
     cd = r.headers.get("content-disposition", "")
     if "filename=" in cd:
@@ -180,7 +198,7 @@ def _download(url: str, key: str, out_dir: str, *,
             print(f"\r  {bar}", end="", flush=True)
     print(f"\n  ✓ saved {path} ({done:,} bytes)")
     if extract:
-        _extract(path, remove=not keep_archive)
+        _extract(path, remove=not keep_archive, euclid_only=euclid_only)
     return path
 
 
@@ -208,9 +226,12 @@ def main() -> int:
                    help="don't auto-unpack a downloaded .tar.gz")
     p.add_argument("--keep-archive", action="store_true",
                    help="keep the .tar.gz after unpacking (default: delete it)")
+    p.add_argument("--all-bands", action="store_true",
+                   help="extract every FITS, not just TNG*_O?_Euclid_*.fits")
     args = p.parse_args()
     key = _key(args)
-    dl = dict(extract=not args.no_extract, keep_archive=args.keep_archive)
+    dl = dict(extract=not args.no_extract, keep_archive=args.keep_archive,
+              euclid_only=not args.all_bands)
 
     # --- per-subhalo broadband image (documented endpoint) ---
     if args.subhalo is not None:
