@@ -27,6 +27,7 @@ The split is by fixed *position* (static Python-int slices), not a
 per-example ``tf.where`` mask — so there is no branching and each lane's
 conv is a single batched op over its block.
 """
+import math
 import os
 import time
 
@@ -88,36 +89,30 @@ TRAINING_LOG_COLUMNS  = (
 # Direction-preserving; has no effect when natural gradient norm < clip
 # value. Set ``Config.GRAD_CLIP_NORM = math.inf`` to disable.
 GRAD_CLIP_NORM = float(Config.GRAD_CLIP_NORM)
-# Spike guard: skip the optimiser step when the pre-clip global norm is
-# non-finite or above this — see ``Config.GRAD_SPIKE_SKIP_NORM``. Active only
-# after ``GRAD_SPIKE_SKIP_WARMUP_STEPS`` so the legitimately-large early
-# gradients aren't skipped.
+# Spike guard: a post-warmup gradient spike triggers a checkpoint ROLLBACK
+# (handled in the train loop, eager) rather than an in-graph skip — skipping a
+# diverged model only freezes it; restoring continues from the last good state.
+# See ``Config.GRAD_SPIKE_*``.
 GRAD_SPIKE_SKIP_NORM = float(Config.GRAD_SPIKE_SKIP_NORM)
 GRAD_SPIKE_SKIP_WARMUP_STEPS = int(Config.GRAD_SPIKE_SKIP_WARMUP_STEPS)
+GRAD_SPIKE_MAX_ROLLBACKS = int(Config.GRAD_SPIKE_MAX_ROLLBACKS)
 
 
-def _clip_and_skip_spikes(gradients, step):
-    """Clip ``gradients`` to ``GRAD_CLIP_NORM`` and, after warmup, zero spikes.
+def _is_grad_spike(gnorm, step) -> bool:
+    """True iff this step is a post-warmup gradient spike worth rolling back.
 
-    Returns ``(gradients, gnorm)`` where ``gnorm`` is the PRE-clip global
-    norm (for logging). Once ``step >= GRAD_SPIKE_SKIP_WARMUP_STEPS`` and the
-    pre-clip norm is non-finite or exceeds ``GRAD_SPIKE_SKIP_NORM``, every
-    gradient is multiplied by 0 so ``apply_gradients`` becomes a no-op for
-    that batch — a single pathological batch can't corrupt the weights.
-    Before warmup the guard is inert (early gradients are legitimately
-    large). ``step`` is the optimiser's iteration tensor, so the gate is
-    evaluated in-graph with no retracing. The ``if`` resolves at trace time
-    (Python constants), keeping a single @tf.function graph.
+    A spike is a PRE-clip global grad norm that is non-finite or exceeds
+    ``GRAD_SPIKE_SKIP_NORM`` (steady-state is ~0.5). Inert for the first
+    ``GRAD_SPIKE_SKIP_WARMUP_STEPS`` steps, where early-training gradients are
+    legitimately large, and when the threshold is ``0`` (disabled). Evaluated
+    eagerly in the train loop (``gnorm``/``step`` are already materialised
+    there) so the rollback — restoring the last checkpoint — can run outside
+    the @tf.function graph.
     """
-    gradients, gnorm = tf.clip_by_global_norm(gradients, clip_norm=GRAD_CLIP_NORM)
-    if GRAD_SPIKE_SKIP_NORM > 0:
-        spike  = tf.logical_or(tf.logical_not(tf.math.is_finite(gnorm)),
-                               gnorm > GRAD_SPIKE_SKIP_NORM)
-        active = tf.cast(step, tf.int64) >= tf.constant(
-            GRAD_SPIKE_SKIP_WARMUP_STEPS, tf.int64)
-        keep = tf.cast(tf.logical_not(tf.logical_and(active, spike)), tf.float32)
-        gradients = [g * keep for g in gradients]
-    return gradients, gnorm
+    if GRAD_SPIKE_SKIP_NORM <= 0 or int(step) <= GRAD_SPIKE_SKIP_WARMUP_STEPS:
+        return False
+    g = float(gnorm)
+    return (not math.isfinite(g)) or g > GRAD_SPIKE_SKIP_NORM
 
 # Cap on the per-star anchor PSNR. The anchor target is a single delta
 # pixel, so a model that nails that one pixel drives its MSE → 0 and the
@@ -335,6 +330,7 @@ class Trainer:
         step_callback=None,
         step_callback_every=50,
         eval_callback=None,
+        warn_callback=None,
         hst_valid_dataset=None,
         anchor_valid_dataset=None,
         save_best_weights=(1.0, 1.0, 0.0),
@@ -515,6 +511,7 @@ class Trainer:
         )
 
         self.now = time.perf_counter()
+        n_rollbacks = 0   # gradient-spike checkpoint rollbacks this run
 
         for batch in pbar:
             ckpt.step.assign_add(1)
@@ -531,6 +528,43 @@ class Trainer:
             lr, hr = batch
             if lane_counts is not None:
                 loss, gnorm, lane_loss = self.train_step_sky(lr, hr, *lane_counts)
+            else:
+                loss, gnorm = self.train_step(lr, hr)
+                lane_loss = None
+
+            # Divergence rollback (checked BEFORE accumulation so the spike's
+            # huge values never poison the window means or trigger an eval). A
+            # post-warmup spike means a bad batch / Adam-v→0 step is dragging
+            # the model toward the collapse basin; skipping it only FREEZES a
+            # diverged model, so instead restore the last good checkpoint
+            # (model + optimiser state) and continue from before the spike.
+            # Repeated divergence ⇒ the LR is too hot ⇒ abort with a message.
+            if _is_grad_spike(gnorm, step):
+                n_rollbacks += 1
+                msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step {step}"
+                       f" — restored last checkpoint "
+                       f"(rollback {n_rollbacks}/{GRAD_SPIKE_MAX_ROLLBACKS})")
+                tqdm.write("  " + msg)
+                if warn_callback is not None:
+                    warn_callback(msg)
+                if ckpt_mgr.latest_checkpoint:
+                    # ``restore`` rewinds ckpt.step too; keep it monotonic so
+                    # the eval cadence / log don't replay already-logged steps.
+                    self.checkpoint.restore(
+                        ckpt_mgr.latest_checkpoint).expect_partial()
+                    ckpt.step.assign(step)
+                if n_rollbacks > GRAD_SPIKE_MAX_ROLLBACKS:
+                    abort = (f"✗ {n_rollbacks} gradient-spike rollbacks — "
+                             f"aborting. Lower the learning rate (the loss "
+                             f"scale makes the current LR too hot once the "
+                             f"model is confident).")
+                    tqdm.write("  " + abort)
+                    if warn_callback is not None:
+                        warn_callback(abort)
+                    break
+                continue   # skip metric accumulation / eval for the spiked step
+
+            if lane_loss is not None:
                 # ``lane_loss`` = (syn, hst, anchor) unweighted mean losses
                 # (0.0 for off lanes). Accumulate only the active lanes so a
                 # disabled lane's column stays blank, not a misleading 0.
@@ -540,7 +574,6 @@ class Trainer:
                 if active_anchor:
                     loss_anchor_mean(lane_loss[2])
             else:
-                loss, gnorm = self.train_step(lr, hr)
                 loss_syn_mean(loss)          # pure-supervised = synthetic only
             loss_mean(loss)
             gnorm_mean(gnorm)
@@ -707,8 +740,8 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = _clip_and_skip_spikes(
-            gradients, self.checkpoint.optimizer.iterations)
+        gradients, gnorm = tf.clip_by_global_norm(
+            gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )
@@ -809,8 +842,8 @@ class Trainer:
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = _clip_and_skip_spikes(
-            gradients, self.checkpoint.optimizer.iterations)
+        gradients, gnorm = tf.clip_by_global_norm(
+            gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables)
         )

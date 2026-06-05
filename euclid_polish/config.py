@@ -468,6 +468,12 @@ class Config:
     # never get going. The damaging spikes are a late-onset effect (~step 6k,
     # once the model is confident), so warming up past them is safe.
     GRAD_SPIKE_SKIP_WARMUP_STEPS = 2000
+    # On a post-warmup spike the trainer RESTORES the last checkpoint (model +
+    # optimiser state) instead of skipping — skipping only freezes a diverged
+    # model (it can't recover), whereas a restore continues from before the
+    # spike. Repeated divergence means the LR is too hot, so after this many
+    # rollbacks the run aborts with a clear message rather than thrashing.
+    GRAD_SPIKE_MAX_ROLLBACKS     = 5
 
     # Non-negativity regularisation on SR (the model's deconvolved-sky
     # output). Surface brightness is physically >= 0, but the WDSR head is

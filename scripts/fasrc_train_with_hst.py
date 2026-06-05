@@ -298,6 +298,7 @@ def main() -> int:
             save_best_only=True,
             step_callback=_on_train_step,
             eval_callback=_on_eval,
+            warn_callback=reporter.warn,
             hst_valid_dataset=hst_valid_dataset,
             anchor_valid_dataset=anchor_valid_dataset,
             save_best_weights=(
