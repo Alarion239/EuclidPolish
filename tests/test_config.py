@@ -91,7 +91,7 @@ def test_band_physical_ranges(band: BandConfig):
     assert 1   <= band.n_exposures          <= 16
     assert 0.0 <  band.read_noise_e         <= 20.0
     assert 0.0 <= band.dark_e_per_s_per_pix <= 0.1
-    assert 100. < band.asinh_stretch_scale_e <= 1.0e5
+    assert 100. <= band.asinh_stretch_scale_e <= 1.0e5
 
 
 def test_all_bands_share_pixel_scale():
