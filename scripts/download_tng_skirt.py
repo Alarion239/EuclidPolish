@@ -72,13 +72,30 @@ def _candidate_files(listing):
     elif isinstance(listing, list):
         for v in listing:
             if isinstance(v, str):
-                out.append((v, None, None))
+                # The skirt_atlas listing is a flat list of full file URLs.
+                if v.startswith(("http://", "https://")):
+                    out.append((_name_from_url(v), v, None))
+                else:
+                    out.append((v, None, None))
             elif isinstance(v, dict):
                 name = (v.get("name") or v.get("file") or v.get("filename")
                         or v.get("path"))
                 out.append((name, v.get("url"),
                             v.get("size") or v.get("bytes")))
     return out
+
+
+def _name_from_url(url: str) -> str:
+    """Unique, readable filename for a skirt_atlas URL, e.g.
+    .../subhalos/665976/skirt/skirt_atlas.tar.gz → ``665976.tar.gz``.
+    (Each subhalo's file is literally named ``skirt_atlas.tar.gz`` on the API
+    side, so we key on the subhalo id to avoid collisions.)"""
+    m = re.search(r"/subhalos/(\d+)/", url)
+    last = url.rstrip("/").split("/")[-1] or "download"
+    if m:
+        ext = last.split(".", 1)[1] if "." in last else "tar.gz"
+        return f"{m.group(1)}.{ext}"
+    return last
 
 
 def _list_atlas(key: str):
@@ -110,13 +127,43 @@ def _list_atlas(key: str):
     return out
 
 
-def _download(url: str, key: str, out_dir: str) -> str:
-    r = _request(url, key, stream=True)
+_TAR_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
+
+
+def _extract(archive: str, *, remove: bool) -> None:
+    """Unpack a tar archive into a sibling dir named after it; safe filter."""
+    import tarfile
+    if not archive.endswith(_TAR_SUFFIXES):
+        return
+    dest = archive
+    for suf in _TAR_SUFFIXES:
+        if dest.endswith(suf):
+            dest = dest[: -len(suf)]
+            break
+    os.makedirs(dest, exist_ok=True)
+    with tarfile.open(archive) as tf:
+        try:
+            tf.extractall(dest, filter="data")   # py3.12+: blocks path escapes
+        except TypeError:
+            tf.extractall(dest)                   # older pythons
+    n = sum(len(fs) for _dp, _d, fs in os.walk(dest))
+    print(f"  ✓ unpacked → {dest}/  ({n} files)")
+    if remove:
+        try:
+            os.remove(archive)
+            print(f"  ✓ removed {os.path.basename(archive)}")
+        except OSError:
+            pass
+
+
+def _download(url: str, key: str, out_dir: str, *,
+              extract: bool = True, keep_archive: bool = False) -> str:
+    r = _request(url, key, stream=True)         # follows redirects → data host
     cd = r.headers.get("content-disposition", "")
     if "filename=" in cd:
         name = cd.split("filename=")[1].strip().strip('";')
     else:
-        name = url.rstrip("/").split("/")[-1] or "tng_download.bin"
+        name = _name_from_url(url)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name)
     total = int(r.headers.get("content-length", 0))
@@ -132,6 +179,8 @@ def _download(url: str, key: str, out_dir: str) -> str:
                    if total else f"{done/1e6:.0f} MB")
             print(f"\r  {bar}", end="", flush=True)
     print(f"\n  ✓ saved {path} ({done:,} bytes)")
+    if extract:
+        _extract(path, remove=not keep_archive)
     return path
 
 
@@ -155,28 +204,32 @@ def main() -> int:
                    help="snapshot number for --subhalo (default 99 = z=0)")
     p.add_argument("--survey", default="sdss",
                    help="survey for --subhalo broadband (sdss | pogs)")
+    p.add_argument("--no-extract", action="store_true",
+                   help="don't auto-unpack a downloaded .tar.gz")
+    p.add_argument("--keep-archive", action="store_true",
+                   help="keep the .tar.gz after unpacking (default: delete it)")
     args = p.parse_args()
     key = _key(args)
+    dl = dict(extract=not args.no_extract, keep_archive=args.keep_archive)
 
     # --- per-subhalo broadband image (documented endpoint) ---
     if args.subhalo is not None:
         url = (f"{BASE}TNG50-1/snapshots/{args.snapshot}/subhalos/"
                f"{args.subhalo}/skirt/broadband_{args.survey}.fits")
-        _download(url, key, args.out_dir)
+        _download(url, key, args.out_dir, **dl)
         return 0
 
     # --- skirt_atlas listing (HTML browsable API or JSON) ---
     files = _list_atlas(key)
 
     if args.list or (not args.name and args.index is None):
-        print(f"files/skirt_atlas/ — {len(files)} .hdf5 files:\n")
+        print(f"files/skirt_atlas/ — {len(files)} entries:\n")
         for i, (name, url, size) in enumerate(files):
             sz = f"  ({int(size)/1e6:.0f} MB)" if size else ""
             print(f"  [{i}] {name}{sz}")
         if not files:
-            print("  (no .hdf5 links found — the listing may need a different\n"
-                  "   format; open the URL in a browser to inspect.)")
-        print("\nRe-run with --name <file> or --index N to download just one.")
+            print("  (no entries parsed — open the URL in a browser to inspect.)")
+        print("\nRe-run with --index N (or --name <file>) to download just one.")
         return 0
 
     # --- resolve the chosen entry → download ---
@@ -191,9 +244,9 @@ def main() -> int:
         chosen = files[args.index]
 
     name, url, _size = chosen
-    if not url:                      # listing gave only names → build the URL
+    if not url:                      # listing gave only a name → build the URL
         url = SKIRT_ATLAS + name
-    _download(url, key, args.out_dir)
+    _download(url, key, args.out_dir, **dl)
     return 0
 
 
