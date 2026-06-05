@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}TNG atlas · EuclidPolish{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h3>Download TNG50 SKIRT atlas</h3>
+  <p class="muted" style="margin-top: 0;">
+    Bulk-fetch the full IllustrisTNG <b>TNG50-1 SKIRT atlas</b> (~1153 galaxies)
+    as dusty Euclid cutouts — <b>VIS + NISP&nbsp;Y/J/H</b>, 5 orientations each
+    (20 FITS/galaxy) — into
+    <code>{{ tng_dir }}</code> on netscratch. Runs as a CPU SLURM job with one
+    download thread per allocated CPU. Each finished galaxy gets a
+    <code>.done</code> marker, so a re-submit after a time-limit only fills the
+    gaps.
+  </p>
+  <p class="muted" style="margin-top: 0;">
+    <b>API token (one-time, on FASRC):</b>
+    <code>echo 'YOUR_TOKEN' &gt; ~/.tng_api_key &amp;&amp; chmod 600 ~/.tng_api_key</code>
+    — get the token from
+    <a href="https://www.tng-project.org/users/profile/" target="_blank"
+       rel="noopener">tng-project.org → API Token</a>.
+    The token is read on the compute node; it never passes through this form.
+  </p>
+
+  {% if n_done is not none %}
+    <p class="muted" style="margin-top: 0;">
+      On FASRC now:
+      <b>{{ n_done }}</b> galax{{ 'y' if n_done == 1 else 'ies' }} complete
+      (counted by <code>.done</code> markers under <code>{{ tng_dir }}</code>).
+    </p>
+  {% elif list_err %}
+    <p class="muted" style="margin-top: 0;">
+      Could not list <code>{{ tng_dir }}</code>: {{ list_err }}
+    </p>
+  {% endif %}
+
+  {% with step_id="download_tng_skirt" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+{% endblock %}

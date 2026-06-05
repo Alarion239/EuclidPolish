@@ -627,6 +627,48 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         return cmd
 
 
+class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
+    """Bulk-download the whole IllustrisTNG TNG50-1 SKIRT atlas (~1153 galaxies).
+
+    Each galaxy is rendered as Euclid VIS + NISP (Y/J/H) FITS from 5
+    orientations; we keep only the dusty frames (20 FITS/galaxy) into
+    ``$DATA_DIR/tng_skirt/<subhalo_id>/``. Network-I/O bound, so it runs one
+    download thread per allocated CPU. The TNG API token is read on the node
+    from ``$TNG_API_KEY`` or ``~/.tng_api_key`` — never from the form.
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="download_tng_skirt",
+            label="Download TNG50 SKIRT atlas (all galaxies, Euclid bands)",
+            defaults=StepResources(
+                # ~1153 multi-GB tarballs streamed, filtered to ~20 FITS each.
+                # I/O bound → many threads; generous wall-clock for the full set
+                # (re-submittable — finished galaxies carry a .done marker).
+                partition="shared", n_cpus=16, n_gpus=0,
+                memory="32G", time_limit="1-00:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        # One download thread per allocated CPU (the work is network bound).
+        n_cpus = int(params.get("n_cpus", 16) or 16)
+        cmd = [
+            "scripts/fasrc_download_tng_skirt_atlas.py",
+            "--workers", str(max(1, n_cpus)),
+        ]
+        # Optional cap on galaxies (blank/0 → all ~1153; small N for a test).
+        limit = int(params.get("limit", 0) or 0)
+        if limit > 0:
+            cmd += ["--limit", str(limit)]
+        # Keep each .tar.gz alongside its FITS (default: delete to save disk).
+        if str(params.get("keep_archive", "")).strip() in (
+                "1", "true", "True", "on", "yes"):
+            cmd += ["--keep-archive"]
+        return cmd
+
+
 class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
@@ -838,6 +880,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
+    TngSkirtAtlasDownloadStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,

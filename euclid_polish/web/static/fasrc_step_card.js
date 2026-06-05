@@ -159,6 +159,26 @@ large cutout don't leak across train/validate."></label>`;
           <label>Output PSF size (oversampled px)
             <input type="number" name="output_size" value="0" min="0" max="4096"
                    title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
+      case 'download_tng_skirt':
+        // Mirrors TngSkirtAtlasDownloadStep.build_command (limit,
+        // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153
+        // galaxies) as dusty Euclid VIS+NISP FITS, 5 orientations each, one
+        // thread per allocated CPU. The TNG API token is read on the node
+        // from $TNG_API_KEY or ~/.tng_api_key — never sent through this form.
+        return `
+          <label>Limit galaxies <span class="muted">(blank = all ~1153)</span>
+            <input type="number" name="limit" value="" min="1" max="2000"
+                   placeholder="all"
+                   title="Only download the first N atlas entries. Blank/0 = the full ~1153-galaxy atlas. Use a small value (e.g. 5) for a smoke test before committing the full multi-hour run."></label>
+          <label class="checkbox-field"
+                 title="Keep each galaxy's source .tar.gz next to its extracted FITS. Default OFF — the archive is deleted after the ~20 Euclid frames are extracted, so transient disk stays bounded by (workers × tarball size) instead of the full multi-TB atlas.">
+            <input type="checkbox" name="keep_archive" value="1">
+            Keep source .tar.gz archives</label>
+          <span class="muted" style="flex-basis:100%; font-size:12px;">
+            Downloads run one thread per allocated CPU (set CPUs below).
+            Provide your TNG API token on FASRC once:
+            <code>echo TOKEN &gt; ~/.tng_api_key</code>. Finished galaxies get a
+            <code>.done</code> marker, so re-submitting only fills the gaps.</span>`;
       case 'euclid_query':
         // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
         // snr_min). Writes stars.csv. Run first, then download, then verify.
@@ -362,6 +382,7 @@ large cutout don't leak across train/validate."></label>`;
       extract_euclid_psf:      'euclid_psf',
       euclid_star_anchor_tfrecords: 'star_anchor_records',
       synthetic_generate:      'synthetic_records',
+      download_tng_skirt:      'tng_skirt',
     }[step.step_id];
     const status = artifactStatus[produces];
     let statusBadge = '';

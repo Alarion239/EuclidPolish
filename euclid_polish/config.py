@@ -790,6 +790,24 @@ class Config:
         ROUNDTRIP_RECORDS_SUBDIR: str = "images/records_v2_euclid_roundtrip"
 
     @dataclass(frozen=True)
+    class Tng:
+        """IllustrisTNG TNG50-1 SKIRT-atlas synthetic-galaxy download layout.
+
+        The atlas renders each subhalo as Euclid VIS + NISP (Y/J/H) FITS
+        cutouts from 5 viewing orientations (``O1``…``O5``). We keep only the
+        dusty frames (``TNG<id>_O<k>_Euclid_<band>.fits``); each galaxy lands
+        in its own ``<SKIRT_SUBDIR>/<subhalo_id>/`` folder with a ``.done``
+        marker so a re-run skips finished galaxies.
+        """
+        SKIRT_SUBDIR: str  = "tng_skirt"
+        # Single-line file (in the user's shared FASRC home) holding the
+        # personal IllustrisTNG API token; mirrors the ~/.euclid_credentials
+        # convention so the secret never rides through the WebUI form / DB.
+        API_KEY_FILE: str  = "~/.tng_api_key"
+        # Per-galaxy completion sentinel written after a successful extract.
+        DONE_MARKER: str   = ".done"
+
+    @dataclass(frozen=True)
     class Color:
         """Visualization color constants (euclid_polish/visualization/color.py).
 
@@ -816,6 +834,7 @@ class Config:
     EUCLID_SKY_DIR         = os.path.join(DATA_DIR, EuclidSky.SKY_SUBDIR)
     EUCLID_SKY_CUTOUTS_DIR = os.path.join(EUCLID_SKY_DIR, EuclidSky.CUTOUTS_SUBDIR)
     ROUNDTRIP_RECORDS_DIR  = os.path.join(DATA_DIR, EuclidSky.ROUNDTRIP_RECORDS_SUBDIR)
+    TNG_SKIRT_DIR          = os.path.join(DATA_DIR, Tng.SKIRT_SUBDIR)
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
 
     @classmethod

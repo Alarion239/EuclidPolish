@@ -71,6 +71,7 @@ class TestRegistry:
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
+            "download_tng_skirt",
             "synthetic_generate",
         }
 
@@ -169,6 +170,38 @@ class TestRegistry:
         argv = step.build_command({"snr_min": "0", "limit": ""})
         assert "--snr-min" not in argv
         assert "--limit" not in argv
+
+    def test_tng_skirt_step_default_command(self):
+        """The atlas downloader runs the bulk script, ties --workers to the
+        allocated CPU count, and (with no overrides) downloads the whole atlas
+        — no --limit, no --keep-archive."""
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command({"n_cpus": 16})
+        assert argv[0] == "scripts/fasrc_download_tng_skirt_atlas.py"
+        assert argv[argv.index("--workers") + 1] == "16"
+        assert "--limit" not in argv
+        assert "--keep-archive" not in argv
+
+    def test_tng_skirt_step_optional_flags(self):
+        """A galaxy cap and the keep-archive checkbox reach the script; a
+        blank/0 limit is dropped so the default (all galaxies) holds."""
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command(
+            {"n_cpus": 8, "limit": 5, "keep_archive": "1"})
+        assert argv[argv.index("--workers") + 1] == "8"
+        assert argv[argv.index("--limit") + 1] == "5"
+        assert "--keep-archive" in argv
+        # Blank limit + unchecked box → neither flag.
+        argv2 = step.build_command(
+            {"n_cpus": 8, "limit": "", "keep_archive": ""})
+        assert "--limit" not in argv2
+        assert "--keep-archive" not in argv2
+
+    def test_tng_skirt_step_is_cpu_only(self):
+        step = REGISTRY.get("download_tng_skirt")
+        assert step.needs_gpu is False
+        assert step.defaults.n_gpus == 0
+        assert step.fixed_cpus is None      # CPU count is user-editable
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)

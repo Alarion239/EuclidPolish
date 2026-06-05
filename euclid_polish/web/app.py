@@ -32,7 +32,7 @@ from euclid_polish.web.helpers.status import (
 )
 from euclid_polish.web.routes import (
     auth, catalog, cutouts, fasrc, files, git, hst, hstpairs, model,
-    psfs, sky, tracking, views,
+    psfs, sky, tng, tracking, views,
 )
 
 
@@ -179,6 +179,7 @@ def create_app() -> Flask:
     hst.register(app)
     psfs.register(app)
     sky.register(app)
+    tng.register(app)
     model.register(app)
     views.register(app)
     hstpairs.register(app)
