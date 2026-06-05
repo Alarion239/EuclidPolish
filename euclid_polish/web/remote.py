@@ -3,6 +3,10 @@
 Single responsibility: open an SSH ControlMaster socket to the FASRC
 login node using public-key authentication, then reuse the multiplexed
 socket for every subsequent command (``run`` / ``stream`` / ``rsync``).
+ControlMaster carries many channels over the one socket concurrently, so
+commands run in parallel (bounded by ``SSHConfig.max_concurrency``) — a
+long transfer or the periodic training-status poll no longer blocks small
+interactive tasks. No second connection is needed for parallelism.
 
 There is no interactive auth, no password, no OTP, no Bitwarden. If
 your key isn't installed on FASRC the connect will fail with whatever
@@ -41,6 +45,15 @@ class SSHConfig:
     host:            str
     socket:          str = "/tmp/euclid-polish-fasrc.sock"
     control_persist: str = "8h"
+    # Max number of commands allowed to run *concurrently* over the one
+    # ControlMaster socket. ControlMaster multiplexes many channels at
+    # once, so we don't need a second connection to run small tasks while
+    # a job is being monitored/transferred — we just stop serialising
+    # everything behind one lock. Capped below sshd's default
+    # ``MaxSessions`` (10), leaving headroom for a couple of long-lived
+    # log streams (which don't consume a permit) and keeping us a good
+    # citizen on the shared FASRC login node.
+    max_concurrency: int = 6
 
     @property
     def target(self) -> str:
@@ -66,7 +79,16 @@ class SSHSession:
 
     def __init__(self, cfg: SSHConfig) -> None:
         self.cfg = cfg
-        self._lock = threading.Lock()
+        # Bounded-concurrency gate. This used to be a single
+        # ``threading.Lock`` that serialised *every* run/rsync, so a long
+        # transfer or the periodic training-status poll blocked all other
+        # commands — making small interactive tasks feel frozen while a
+        # job was being monitored. ControlMaster multiplexes many channels
+        # over the one socket, so instead we allow up to
+        # ``cfg.max_concurrency`` commands to run at once. BoundedSemaphore
+        # (not plain Semaphore) raises on an over-release, surfacing any
+        # acquire/release bug instead of silently inflating the limit.
+        self._sem = threading.BoundedSemaphore(cfg.max_concurrency)
         # Per-instance is_connected() cache so each SSHSession has its
         # own (test isolation; otherwise a class-level tuple leaks).
         self._connected_cache: tuple[float, bool] = (0.0, False)
@@ -202,7 +224,7 @@ class SSHSession:
         """
         if not self.is_connected():
             raise SSHError("not connected")
-        with self._lock:
+        with self._sem:
             r = subprocess.run(
                 ["ssh", "-S", self.cfg.socket, self.cfg.target, cmd],
                 capture_output=True, timeout=timeout,
@@ -223,6 +245,12 @@ class SSHSession:
 
         The caller is responsible for terminating the generator (close it
         to send SIGTERM to the remote process).
+
+        Deliberately does **not** acquire the concurrency semaphore: a
+        log stream is long-lived (often open for the whole job) and would
+        otherwise tie up a permit for minutes/hours. It opens its own
+        multiplexed channel; ``max_concurrency`` is sized to leave room
+        for a couple of these alongside the permit-taking run/rsync calls.
         """
         if not self.is_connected():
             raise SSHError("not connected")
@@ -260,7 +288,7 @@ class SSHSession:
                 *(extra_args or []),
                 f"{self.cfg.target}:{remote_path}",
                 local_dir.rstrip("/") + "/"]
-        with self._lock:
+        with self._sem:
             r = subprocess.run(args, capture_output=True, timeout=timeout)
         return (r.returncode,
                 r.stdout.decode("utf-8", errors="replace"),
@@ -289,7 +317,7 @@ class SSHSession:
                 *(extra_args or []),
                 local_path.rstrip("/") + "/",
                 f"{self.cfg.target}:{remote_dir.rstrip('/')}/"]
-        with self._lock:
+        with self._sem:
             r = subprocess.run(args, capture_output=True, timeout=timeout)
         return (r.returncode,
                 r.stdout.decode("utf-8", errors="replace"),
