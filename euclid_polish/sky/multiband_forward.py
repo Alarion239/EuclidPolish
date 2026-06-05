@@ -69,11 +69,14 @@ class MultiBandForwardConfig:
     # (blending rolls would superimpose spikes). With ``randomize_psf`` off,
     # the field-mean PSF is used (deterministic — matches the old single-PSF
     # forward when K=1).
-    # EXPERIMENT (temporary): forced OFF — always apply the 0th/mean PSF
-    # (average of all stars), with NO roll rotation and NO random cluster
-    # sampling. Restore to True to re-enable position-dependent PSFs.
-    randomize_psf: bool = False
-    psf_unrotated_prob: float = 0.3
+    # EXPERIMENT: random PSF selection ON, rotation OFF — each scene draws a
+    # random (star-count-weighted) cluster PSF and applies it WITHOUT any
+    # roll rotation (psf_unrotated_prob=1.0 → draw_sample always returns
+    # angle=None, so apply_sample never rotates). Set randomize_psf=False to
+    # go back to the deterministic field-mean PSF; lower psf_unrotated_prob
+    # (<1.0) to re-introduce roll-rotation augmentation.
+    randomize_psf: bool = True
+    psf_unrotated_prob: float = 1.0
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
