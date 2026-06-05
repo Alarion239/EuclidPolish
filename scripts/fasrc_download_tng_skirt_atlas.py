@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import multiprocessing
 import os
 import sys
 import tarfile
@@ -125,27 +126,29 @@ def _stream_to_file(url: str, key: str, dest_path: str) -> int:
 
 
 def _extract_euclid(archive: str, dest_dir: str) -> int:
-    """Extract only ``TNG*_O?_Euclid_<band>.fits`` members into ``dest_dir``.
+    """Stream-extract only ``TNG*_O?_Euclid_<band>.fits`` members in ONE pass.
 
-    Quiet (no prints — many run concurrently) and returns the count written.
-    Falls back to extracting everything only if no Euclid member matched.
+    Opened in streaming mode (``r|gz``) so the gzip stream is inflated exactly
+    once. The previous random-access path (``getmembers()`` then
+    ``extractall``) decompressed each multi-GB archive ~twice — first to
+    enumerate members, then again to seek back to them — which is pure wasted
+    CPU on data we mostly discard. Quiet (no prints — many run concurrently);
+    returns the count of Euclid FITS written. Members are flattened to their
+    basename so each lands directly in ``<dest_dir>/<name>.fits``.
     """
     os.makedirs(dest_dir, exist_ok=True)
-    with tarfile.open(archive) as tf:
-        members = [m for m in tf.getmembers()
-                   if m.isfile() and _KEEP_RE.search(m.name)]
-        used_fallback = not members
-        if used_fallback:
-            members = [m for m in tf.getmembers() if m.isfile()]
-        # Flatten: drop the archive's internal directory structure so every
-        # FITS lands directly in <dest_dir>/<basename>.fits.
-        for m in members:
-            m.name = os.path.basename(m.name)
-        try:
-            tf.extractall(dest_dir, members=members, filter="data")  # py3.12+
-        except TypeError:
-            tf.extractall(dest_dir, members=members)                 # older
-    return sum(1 for f in os.listdir(dest_dir) if f.lower().endswith(".fits"))
+    n = 0
+    with tarfile.open(archive, "r|gz") as tf:     # streaming → single inflate
+        for m in tf:
+            if not (m.isfile() and _KEEP_RE.search(m.name)):
+                continue
+            m.name = os.path.basename(m.name)      # flatten
+            try:
+                tf.extract(m, dest_dir, filter="data")   # py3.12+
+            except TypeError:
+                tf.extract(m, dest_dir)                   # older pythons
+            n += 1
+    return n
 
 
 def _download_one(
@@ -159,15 +162,21 @@ def _download_one(
     """Fetch + extract one atlas galaxy. Returns a status dict for the tally.
 
     ``{"status": "written"|"cached"|"failed", "id": str, "n_fits": int,
-       "errors": [str]}``. The tarball is streamed to a private temp dir and
-    removed after extraction (unless ``--keep-archive``), so transient disk is
-    bounded by ``workers × tarball_size`` — never the whole 2-3 TB atlas.
+       "bytes": int, "dl_secs": float, "ex_secs": float, "errors": [str]}``.
+    The per-phase timings let the parent report aggregate MB/s and an
+    "effective concurrency" factor (worker-seconds / wall) so we can SEE
+    whether the job is network- or CPU-bound. The tarball is streamed to a
+    private temp dir and removed after extraction (unless ``--keep-archive``),
+    so transient disk is bounded by ``workers × tarball_size`` — never the
+    whole 2-3 TB atlas.
     """
     gid = _galaxy_id_from_name(name)
     galaxy_dir = os.path.join(out_dir, gid)
     done_marker = os.path.join(galaxy_dir, Config.Tng.DONE_MARKER)
+    base = {"id": gid, "n_fits": 0, "bytes": 0,
+            "dl_secs": 0.0, "ex_secs": 0.0, "errors": []}
     if os.path.isfile(done_marker):
-        return {"status": "cached", "id": gid, "n_fits": 0, "errors": []}
+        return {**base, "status": "cached"}
 
     if not url:                        # listing gave only a name → build the URL
         url = SKIRT_ATLAS + name
@@ -176,21 +185,25 @@ def _download_one(
     archive = os.path.join(tmp_dir, name if name.endswith(_TAR_SUFFIXES)
                            else f"{gid}.tar.gz")
     try:
-        _stream_to_file(url, key, archive)
+        t0 = time.perf_counter()
+        nbytes = _stream_to_file(url, key, archive)
+        t1 = time.perf_counter()
         n_fits = _extract_euclid(archive, galaxy_dir)
+        t2 = time.perf_counter()
+        timings = {"bytes": nbytes, "dl_secs": t1 - t0, "ex_secs": t2 - t1}
         if n_fits == 0:
-            return {"status": "failed", "id": gid, "n_fits": 0,
+            return {**base, **timings, "status": "failed",
                     "errors": ["no FITS extracted from archive"]}
         if keep_archive:
             os.replace(archive, os.path.join(galaxy_dir, os.path.basename(archive)))
         # Sentinel last: its presence means the galaxy is fully materialised.
         with open(done_marker, "w", encoding="utf-8") as f:
             f.write(f"{n_fits} fits\n")
-        return {"status": "written", "id": gid, "n_fits": n_fits, "errors": []}
+        return {**base, **timings, "status": "written", "n_fits": n_fits}
     except SystemExit as e:            # _request aborts on 401/403 (bad key)
-        return {"status": "failed", "id": gid, "n_fits": 0, "errors": [str(e)]}
+        return {**base, "status": "failed", "errors": [str(e)]}
     except Exception as e:
-        return {"status": "failed", "id": gid, "n_fits": 0,
+        return {**base, "status": "failed",
                 "errors": [f"{type(e).__name__}: {e}"]}
     finally:
         try:
@@ -215,8 +228,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help=f"Root for the per-galaxy folders. Default: "
                         f"{Config.TNG_SKIRT_DIR}")
     p.add_argument("--workers", type=int, default=16,
-                   help="Concurrent galaxy downloads in flight (one thread "
-                        "each). Tie to the allocated CPU count. Default 16.")
+                   help="Concurrent galaxy downloads in flight. Default 16. "
+                        "May exceed the CPU count (downloads are I/O-bound).")
+    p.add_argument("--executor", choices=("process", "thread"), default="process",
+                   help="Parallelism backend. 'process' (default) gives true "
+                        "multi-core download+extract with no GIL contention — "
+                        "threads cap extraction at ~2 cores and starve each "
+                        "other's download loops. 'thread' is lighter and fine "
+                        "when purely network-bound.")
     p.add_argument("--limit", type=int, default=0,
                    help="Only download the first N atlas entries (0 = all "
                         "~1153). Use a small value for a smoke test.")
@@ -246,7 +265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("  IllustrisTNG TNG50-1 SKIRT atlas — bulk Euclid-frame download")
     print("=" * 64)
     print(f"  out dir   = {out_dir}")
-    print(f"  workers   = {args.workers}")
+    print(f"  workers   = {args.workers}  ({args.executor})")
     print(f"  bands     = VIS + NISP Y/J/H (dusty), 5 orientations / galaxy")
 
     reporter.set_stage("listing atlas")
@@ -272,12 +291,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     t0 = time.perf_counter()
-    reporter.set_stage("downloading galaxies")
+    reporter.set_stage(f"downloading ({args.executor}, {args.workers} workers)")
+
+    # Process pool = true multi-core (no GIL); fork (Linux default) lets each
+    # worker inherit the already-imported modules for free. Fall back to the
+    # platform default start method if fork is unavailable (non-Linux).
+    if args.executor == "process":
+        Executor = concurrent.futures.ProcessPoolExecutor
+        pool_kwargs = {"max_workers": max(1, args.workers)}
+        try:
+            pool_kwargs["mp_context"] = multiprocessing.get_context("fork")
+        except ValueError:
+            pass
+    else:
+        Executor = concurrent.futures.ThreadPoolExecutor
+        pool_kwargs = {"max_workers": max(1, args.workers)}
 
     n_written = n_cached = n_failed = n_fits_total = 0
+    bytes_total = 0
+    dl_secs_total = ex_secs_total = 0.0
     completed = 0
-    with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, args.workers)) as pool:
+    with Executor(**pool_kwargs) as pool:
         fut_to_id = {
             pool.submit(
                 _download_one,
@@ -289,31 +323,62 @@ def main(argv: Optional[List[str]] = None) -> int:
         for fut in concurrent.futures.as_completed(fut_to_id):
             gid = fut_to_id[fut]
             completed += 1
-            reporter.set_step(completed, n_total, f"TNG{gid}")
             try:
                 res = fut.result()
             except Exception as e:
                 n_failed += 1
+                reporter.set_step(completed, n_total, f"TNG{gid}")
                 reporter.warn(f"galaxy {gid} crashed: {type(e).__name__}: {e}")
                 continue
             status = res["status"]
             if status == "written":
                 n_written += 1
                 n_fits_total += res["n_fits"]
+                bytes_total   += res.get("bytes", 0)
+                dl_secs_total += res.get("dl_secs", 0.0)
+                ex_secs_total += res.get("ex_secs", 0.0)
             elif status == "cached":
                 n_cached += 1
             else:
                 n_failed += 1
                 for err in res["errors"]:
                     reporter.warn(f"galaxy {gid} failed: {err}")
+            # Live aggregate throughput + ETA, surfaced in the WebUI step label.
+            elapsed = time.perf_counter() - t0
+            mbps = (bytes_total / 1e6 / elapsed) if elapsed > 0 else 0.0
+            rate = (n_written / elapsed) if (n_written and elapsed > 0) else 0.0
+            eta_min = ((n_total - completed) / rate / 60.0) if rate > 0 else 0.0
+            reporter.set_step(
+                completed, n_total,
+                f"TNG{gid} · {mbps:.0f} MB/s · ETA {eta_min:.0f}m")
+            if completed % 25 == 0 or completed == n_total:
+                print(f"  [{completed}/{n_total}] {bytes_total/1e9:.1f} GB · "
+                      f"{mbps:.0f} MB/s agg · ETA {eta_min:.0f} min · "
+                      f"written={n_written} cached={n_cached} failed={n_failed}",
+                      flush=True)
 
     runtime = time.perf_counter() - t0
     print()
     print("=" * 64)
-    print(f"Summary  ({runtime / 60:.1f} min):")
+    print(f"Summary  ({runtime / 60:.1f} min wall):")
     print(f"  galaxies written = {n_written}  ({n_fits_total} Euclid FITS)")
     print(f"  galaxies cached  = {n_cached}  (already had .done; skipped)")
     print(f"  galaxies failed  = {n_failed}")
+    agg_mbps = (bytes_total / 1e6 / runtime) if runtime > 0 else 0.0
+    print(f"  downloaded       = {bytes_total / 1e9:.2f} GB "
+          f"@ {agg_mbps:.0f} MB/s aggregate")
+    if n_written:
+        print(f"  per galaxy       = {bytes_total / 1e6 / n_written:.0f} MB · "
+              f"download {dl_secs_total / n_written:.1f}s · "
+              f"extract {ex_secs_total / n_written:.1f}s (mean)")
+    # Effective concurrency = sum of per-galaxy worker-seconds ÷ wall-seconds.
+    # ≈ the number of galaxies actually being processed in parallel. If this is
+    # ~= workers, you're fully parallel; if it's ~2-4 with 32 workers, a
+    # bottleneck (GIL under threads, or a network/server cap) is serialising.
+    if runtime > 0:
+        eff = (dl_secs_total + ex_secs_total) / runtime
+        print(f"  effective concurrency ≈ {eff:.1f}x  "
+              f"(of {args.workers} {args.executor} workers)")
     print(f"  out dir          = {out_dir}")
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
     # Non-zero exit only if *everything* failed (so a few flaky galaxies on a

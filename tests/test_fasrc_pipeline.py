@@ -214,6 +214,25 @@ class TestRegistry:
             argv = step.build_command(params)
             assert argv[argv.index("--workers") + 1] == "12", params
 
+    def test_tng_skirt_step_executor_default_is_process(self):
+        """No executor in the form → the script runs the (true multi-core)
+        process pool."""
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command({"n_cpus": 16})
+        assert argv[argv.index("--executor") + 1] == "process"
+
+    def test_tng_skirt_step_executor_thread_passes_through(self):
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command({"n_cpus": 16, "executor": "thread"})
+        assert argv[argv.index("--executor") + 1] == "thread"
+
+    def test_tng_skirt_step_executor_garbage_dropped(self):
+        """An unrecognised executor value is not forwarded (the script keeps
+        its own default)."""
+        step = REGISTRY.get("download_tng_skirt")
+        argv = step.build_command({"n_cpus": 16, "executor": "magic"})
+        assert "--executor" not in argv
+
     def test_tng_skirt_step_is_cpu_only(self):
         step = REGISTRY.get("download_tng_skirt")
         assert step.needs_gpu is False

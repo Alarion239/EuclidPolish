@@ -665,6 +665,11 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
             "scripts/fasrc_download_tng_skirt_atlas.py",
             "--workers", str(max(1, workers)),
         ]
+        # Parallelism backend: 'process' (default) is true multi-core; 'thread'
+        # is lighter but GIL-capped on extraction. Only emit a recognised value.
+        executor = str(params.get("executor", "process")).strip().lower()
+        if executor in ("process", "thread"):
+            cmd += ["--executor", executor]
         # Optional cap on galaxies (blank/0 → all ~1153; small N for a test).
         limit = int(params.get("limit", 0) or 0)
         if limit > 0:
