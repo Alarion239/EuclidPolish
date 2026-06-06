@@ -49,27 +49,28 @@
 </section>
 
 <section class="card">
-  <h3>Galaxy infographics <span class="muted" style="font-size:13px;">(FASRC jobs)</span></h3>
+  <h3>Galaxy infographics</h3>
   <p class="muted" style="margin-top:0;">
-    Each infographic is a resource-allocated SLURM job that renders on a compute
-    node and writes its artifact to <code>{{ tng_dir }}/_infographics/</code>.
-    Submit a job below (set its resources in the card), watch it on the live
-    status bar, then <b>Load latest result</b> once it completes. Covers the
-    {{ n_done if n_done is not none else '—' }} galaxies downloaded so far.
+    Covers the {{ n_done if n_done is not none else '—' }} galaxies downloaded
+    so far. The <b>histogram</b> renders locally (just the galaxy id list is
+    pulled from FASRC; properties come from the TNG API). The <b>image grid</b>
+    and <b>stacked FITS</b> need the FITS pixels, so they stay resource-allocated
+    FASRC jobs that write to <code>{{ tng_dir }}/_infographics/</code> — submit,
+    watch the live status bar, then load the result.
   </p>
 </section>
 
-<!-- 1. Property histograms job -->
+<!-- 1. Property histograms (rendered locally) -->
 <section class="card">
-  <h3>📊 Property histograms</h3>
+  <h3>📊 Property histograms <span class="muted" style="font-size:13px;">(rendered locally)</span></h3>
   <p class="muted" style="margin-top:0;">
-    SFR · stellar mass · halo mass (M<sub>200c</sub>) · effective radius. The
-    job queries the TNG API once per new galaxy (cached to
-    <code>tng_properties.csv</code>), then plots.
+    SFR · stellar mass · halo mass (M<sub>200c</sub>) · effective radius. Drawn
+    on this machine: the galaxy id list is pulled from FASRC, properties come
+    from the TNG API (5 bulk requests, cached locally under
+    <code>data/_tng_infographics/</code>). Set your TNG token above first.
   </p>
-  {% with step_id="tng_histograms" %}{% include "_step_card_mount.html" %}{% endwith %}
-  <div style="margin-top:10px;">
-    <button id="tng-hist-load" type="button">🖼 Load latest histograms</button>
+  <div>
+    <button id="tng-hist-load" type="button">📊 Render histograms</button>
     <span id="tng-hist-status" class="muted" style="margin-left:8px;"></span>
     <div style="margin-top:8px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
       <img id="tng-hist-img" alt="property histograms"
@@ -149,12 +150,12 @@ if (tngForm) {
   refreshTngTokenStatus();
 }
 
-// ── Infographic results ─────────────────────────────────────────────
-// The jobs (tng_histograms / tng_grid / tng_stack) write their artifact on
-// FASRC; these buttons fetch the latest one. On error (e.g. job not run yet)
-// the route returns a JSON body we surface instead of a broken image.
-async function _loadResultImg(url, imgEl, statusEl) {
-  statusEl.textContent = "fetching latest result from FASRC…";
+// ── Infographics ────────────────────────────────────────────────────
+// Histogram renders locally (/tng/histograms.png); grid loads the latest
+// FASRC job artifact (/tng/result/grid.png). On error the route returns a JSON
+// body we surface instead of a broken image.
+async function _loadResultImg(url, imgEl, statusEl, msg) {
+  statusEl.textContent = msg || "loading…";
   imgEl.style.display = "none";
   try {
     const r = await fetch(url);
@@ -176,9 +177,10 @@ async function _loadResultImg(url, imgEl, statusEl) {
 const histLoad = document.getElementById("tng-hist-load");
 if (histLoad) {
   histLoad.addEventListener("click", () => _loadResultImg(
-    `/tng/result/histograms.png?_t=${Date.now()}`,
+    `/tng/histograms.png?_t=${Date.now()}`,
     document.getElementById("tng-hist-img"),
-    document.getElementById("tng-hist-status")));
+    document.getElementById("tng-hist-status"),
+    "rendering histograms locally (pulling ids + TNG API)…"));
 }
 
 const gridLoad = document.getElementById("tng-grid-load");
@@ -186,7 +188,8 @@ if (gridLoad) {
   gridLoad.addEventListener("click", () => _loadResultImg(
     `/tng/result/grid.png?_t=${Date.now()}`,
     document.getElementById("tng-grid-img"),
-    document.getElementById("tng-grid-status")));
+    document.getElementById("tng-grid-status"),
+    "fetching latest grid from FASRC…"));
 }
 
 const stackLoad = document.getElementById("tng-stack-load");

@@ -1,51 +1,39 @@
 #!/usr/bin/env python
-"""Render TNG50 SKIRT-atlas infographics on FASRC, streamed to the WebUI.
+"""Render TNG50 SKIRT-atlas image infographics on FASRC for the WebUI.
 
-Runs on a FASRC login node (invoked over SSH by ``run_remote_python``), where
-the downloaded galaxies and the TNG API key both live. Like
-``scripts/fasrc_inspect_tile.py`` it writes **binary bytes to stdout** (PNG or
-FITS) so the route can ``send_file`` them straight to the browser; all chatter
-goes to stderr so the byte stream stays clean.
-
-Galaxies are self-enumerated from the download tree — every
-``<tng_dir>/<subhalo_id>/`` that holds a ``.done`` marker (written by
-``scripts/fasrc_download_tng_skirt_atlas.py``). Three modes:
-
-  ``--mode histograms``
-      2×2 matplotlib panel of SFR / stellar mass / halo mass / effective radius
-      for the downloaded galaxies. Properties come from the TNG **group-catalog
-      field-subset** endpoint — five bulk requests (SubhaloSFR / SubhaloMassType
-      / SubhaloHalfmassRadType / SubhaloGrNr / Group_M_Crit200), each an array
-      over all subhalos that we index by id — so the whole atlas costs 5
-      requests, not ~2 per galaxy. Cached to ``<tng_dir>/tng_properties.csv``
-      (+ the raw arrays under ``_groupcat/``). Falls back to per-galaxy
-      ``info.json`` (bounded by ``--max-new``) only if the bulk fetch fails.
+Runs on a FASRC node (as the ``tng_grid`` / ``tng_stack`` SLURM jobs, or by
+hand), where the downloaded galaxy FITS live. Like
+``scripts/fasrc_inspect_tile.py`` it writes bytes to stdout, or — with
+``--save`` — to the standard artifact path the WebUI then fetches.
 
   ``--mode grid --band {VIS|Y|J|H|RGB} --downsample {1|2|4} --seed S``
       A 5×5 PNG grid: 5 seeded-random galaxies (rows) × their 5 viewpoints
       (cols). Single Euclid band (asinh-grayscale) or an ``make_lupton_rgb``
-      RGB composite from VIS+NISP. ``block_mean`` downsamples ×1/×2/×4.
+      RGB from VIS+NISP. ``block_mean`` downsamples ×1/×2/×4.
 
   ``--mode stack --band B [--id N] [--seed S]``
       Bundle the 5 viewpoint frames of one band for a galaxy (random if no id)
       into one multi-extension FITS (PrimaryHDU + ImageHDU O1..O5) → stdout.
 
-The TNG API uses Planck-2015 cosmology; masses are converted code→Msun
-(``×1e10/h``) and lengths code→kpc (``/h`` at z=0). Field names are matched
-loosely (raw SubFind ``SubhaloSFR``/``SubhaloMassType_4`` *and* the cleaned
-``sfr``/``mass_stars`` forms) so the parse survives either API representation.
+  ``--mode histograms``
+      2×2 property panel (SFR / stellar mass / halo mass / effective radius).
+      The WebUI renders this **locally** (no FITS needed — just the galaxy id
+      list + the TNG API); this CLI mode is kept for debugging on the node.
+      The property + plotting logic lives in ``euclid_polish.tng.properties``.
+
+Galaxies are self-enumerated from the download tree — every
+``<tng_dir>/<subhalo_id>/`` that holds a ``.done`` marker.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import io
 import os
 import random
 import sys
 import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")                       # headless, before pyplot
@@ -65,17 +53,19 @@ from euclid_polish.sky.tng_galaxy import (
     load_tng_frame,
     tng_fits_path,
 )
+from euclid_polish.tng.properties import (
+    _fig_to_png,
+    load_api_key,
+    placeholder_png,
+    render_histograms_for_ids,
+)
 
-API_BASE = "https://www.tng-project.org/api/TNG50-1/snapshots/99"
-H_LITTLE = 0.6774                            # TNG (Planck15) dimensionless Hubble
 ORIENTATIONS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 GRID_GALAXIES = 5
 # RGB channels as FITS band tokens (R, G, B) = (H, J, VIS), matching
 # Config.Color.RGB_SCHEMES["vis_nisp"] = (H_E, J_E, VIS).
 RGB_FITS_BANDS: Tuple[str, str, str] = ("H", "J", "VIS")
 SINGLE_BANDS = tuple(TNG_FITS_BANDS)         # ("VIS", "Y", "J", "H")
-PROPERTIES_CSV = "tng_properties.csv"
-_CSV_FIELDS = ("id", "sfr", "mass_stars", "m_halo", "reff")
 
 # Where a SLURM job writes its rendered artifact (under the download root),
 # keyed by mode. Fixed names → each job overwrites the previous result, which
@@ -124,340 +114,18 @@ def pick_ids(ids: List[str], k: int, seed: int) -> List[str]:
     return rng.sample(pool, k)
 
 
-# ---------------------------------------------------------------------------
-# TNG API → per-galaxy properties (cached)
-# ---------------------------------------------------------------------------
-
-def load_api_key(path: Optional[str] = None) -> str:
-    """Resolve the TNG token: $TNG_API_KEY, else the (expanded) key file."""
-    env = os.environ.get("TNG_API_KEY", "").strip()
-    if env:
-        return env
-    p = os.path.expanduser(path or Config.Tng.API_KEY_FILE)
-    if os.path.isfile(p):
-        with open(p, "r", encoding="utf-8") as f:
-            return f.readline().strip()
-    return ""
-
-
-def _get_json(url: str, key: str, timeout: int = 10) -> dict:
-    import requests
-    r = requests.get(url, headers={"api-key": key}, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def _pick(d: dict, *keys: str):
-    """First present, non-null value among ``keys`` (else None)."""
-    for k in keys:
-        if isinstance(d, dict) and d.get(k) is not None:
-            return d[k]
-    return None
-
-
-def _mass_type_stars(d: dict) -> Optional[float]:
-    """Stellar mass (code units) from either the flattened ``*_4`` field or a
-    ``SubhaloMassType`` list (particle type 4 = stars)."""
-    flat = _pick(d, "SubhaloMassType_4", "mass_stars")
-    if flat is not None:
-        return float(flat)
-    lst = _pick(d, "SubhaloMassType", "mass_type")
-    if isinstance(lst, (list, tuple)) and len(lst) > 4:
-        return float(lst[4])
-    return None
-
-
-def _halfmassrad_stars(d: dict) -> Optional[float]:
-    flat = _pick(d, "SubhaloHalfmassRadType_4", "halfmassrad_stars")
-    if flat is not None:
-        return float(flat)
-    lst = _pick(d, "SubhaloHalfmassRadType", "halfmassrad_type")
-    if isinstance(lst, (list, tuple)) and len(lst) > 4:
-        return float(lst[4])
-    return None
-
-
-def parse_subhalo(sub: dict) -> Dict[str, float]:
-    """Map a subhalo info dict → physical SFR / stellar mass / effective radius.
-
-    Masses code→Msun (×1e10/h), lengths code→kpc (/h at z=0). Missing → NaN.
-    Halo mass is filled separately (needs the parent-group call).
-    """
-    out = {"sfr": float("nan"), "mass_stars": float("nan"),
-           "m_halo": float("nan"), "reff": float("nan")}
-    sfr = _pick(sub, "SubhaloSFR", "sfr")
-    if sfr is not None:
-        out["sfr"] = float(sfr)
-    ms = _mass_type_stars(sub)
-    if ms is not None:
-        out["mass_stars"] = ms * 1e10 / H_LITTLE
-    re = _halfmassrad_stars(sub)
-    if re is not None:
-        out["reff"] = re / H_LITTLE
-    return out
-
-
-def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 10
-                     ) -> Dict[str, float]:
-    """Query the TNG API for one galaxy's properties (NaN-filled on failure)."""
-    out = {"sfr": float("nan"), "mass_stars": float("nan"),
-           "m_halo": float("nan"), "reff": float("nan")}
-    try:
-        sub = _get_json(f"{API_BASE}/subhalos/{subhalo_id}/info.json",
-                        key, timeout=timeout)
-    except Exception:
-        return out
-    out.update(parse_subhalo(sub))
-    grnr = _pick(sub, "SubhaloGrNr", "grnr")
-    if grnr is not None:
-        try:
-            halo = _get_json(f"{API_BASE}/halos/{int(grnr)}/info.json",
-                             key, timeout=timeout)
-            mh = _pick(halo, "Group_M_Crit200", "m_crit200", "mass_crit200",
-                       "GroupMass", "mass")
-            if mh is not None:
-                out["m_halo"] = float(mh) * 1e10 / H_LITTLE
-        except Exception:
-            pass
-    return out
-
-
-# --- bulk group-catalog fetch (a handful of requests for the whole atlas) ---
-#
-# The subhalo search returns only id+mass+url and has no id-list filter, so
-# per-galaxy info.json would be ~2 requests × N galaxies. Instead the
-# group-catalog *field-subset* endpoint returns one field as an array over ALL
-# subhalos/groups (indexed by id) — but only ONE field per request. So five
-# requests cover the entire atlas regardless of galaxy count, and the snapshot
-# is static so the downloaded arrays cache forever.
-
-GROUPCAT_SUBDIR = "_groupcat"
-_GROUPCAT_URL = "https://www.tng-project.org/api/TNG50-1/files/groupcat-99/"
-_FIELD_REQUESTS = (
-    ("Subhalo", "SubhaloSFR"),
-    ("Subhalo", "SubhaloMassType"),
-    ("Subhalo", "SubhaloHalfmassRadType"),
-    ("Subhalo", "SubhaloGrNr"),
-    ("Group",   "Group_M_Crit200"),
-)
-
-
-def _read_field_array(path: str, field: str) -> np.ndarray:
-    """Read a field array from a groupcat-subset download (HDF5, else numpy).
-
-    The subset HDF5 layout isn't contractually fixed, so we walk it and pick the
-    dataset whose basename matches ``field`` (else the largest dataset)."""
-    import h5py
-    try:
-        found: Dict[str, np.ndarray] = {}
-        with h5py.File(path, "r") as f:
-            f.visititems(lambda n, o: found.__setitem__(n, o[()])
-                         if isinstance(o, h5py.Dataset) else None)
-        if found:
-            for name, arr in found.items():
-                if name.split("/")[-1] == field:
-                    return np.asarray(arr)
-            return np.asarray(max(found.values(),
-                                  key=lambda a: getattr(a, "size", 0)))
-    except (OSError, ValueError):
-        pass
-    return np.asarray(np.load(path, allow_pickle=False))
-
-
-def _download_field(objtype: str, field: str, key: str,
-                    cache_dir: str) -> np.ndarray:
-    import requests
-    path = os.path.join(cache_dir, f"{objtype}_{field}.hdf5")
-    if not (os.path.isfile(path) and os.path.getsize(path) > 0):
-        url = f"{_GROUPCAT_URL}?{objtype}={field}"
-        r = requests.get(url, headers={"api-key": key}, timeout=180)
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            f.write(r.content)
-    return _read_field_array(path, field)
-
-
-def bulk_fetch_fields(key: str, cache_dir: str, *, reporter=None
-                      ) -> Dict[str, np.ndarray]:
-    """Download (once, cached) the per-field group-catalog arrays — 5 requests
-    total, covering every subhalo/group in the snapshot."""
-    os.makedirs(cache_dir, exist_ok=True)
-    arrays: Dict[str, np.ndarray] = {}
-    for i, (objtype, field) in enumerate(_FIELD_REQUESTS, 1):
-        if reporter is not None:
-            reporter.set_step(i, len(_FIELD_REQUESTS), field)
-        arrays[field] = _download_field(objtype, field, key, cache_dir)
-    return arrays
-
-
-def _row_stars(row) -> float:
-    """Particle-type-4 (stars) element of a MassType / HalfmassRadType row."""
-    a = np.asarray(row)
-    return float(a[..., 4]) if (a.ndim >= 1 and a.shape[-1] > 4) else float(a)
-
-
-def properties_from_arrays(arrays: Dict[str, np.ndarray],
-                           ids: List[str]) -> Dict[str, Dict[str, float]]:
-    """Index the bulk field arrays by subhalo id → physical properties (masses
-    code→Msun ×1e10/h, lengths code→kpc /h). Halo mass via SubhaloGrNr →
-    Group_M_Crit200."""
-    sfr  = arrays.get("SubhaloSFR")
-    mt   = arrays.get("SubhaloMassType")
-    hr   = arrays.get("SubhaloHalfmassRadType")
-    grnr = arrays.get("SubhaloGrNr")
-    m200 = arrays.get("Group_M_Crit200")
-    props: Dict[str, Dict[str, float]] = {}
-    for gid in ids:
-        try:
-            i = int(gid)
-        except (TypeError, ValueError):
-            continue
-        p = {"sfr": float("nan"), "mass_stars": float("nan"),
-             "m_halo": float("nan"), "reff": float("nan")}
-        if sfr is not None and 0 <= i < len(sfr):
-            p["sfr"] = float(sfr[i])
-        if mt is not None and 0 <= i < len(mt):
-            p["mass_stars"] = _row_stars(mt[i]) * 1e10 / H_LITTLE
-        if hr is not None and 0 <= i < len(hr):
-            p["reff"] = _row_stars(hr[i]) / H_LITTLE
-        if grnr is not None and m200 is not None and 0 <= i < len(grnr):
-            g = int(grnr[i])
-            if 0 <= g < len(m200):
-                p["m_halo"] = float(m200[g]) * 1e10 / H_LITTLE
-        props[gid] = p
-    return props
-
-
-def _read_cache(path: str) -> Dict[str, Dict[str, float]]:
-    if not os.path.isfile(path):
-        return {}
-    rows: Dict[str, Dict[str, float]] = {}
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            gid = str(row.get("id", "")).strip()
-            if not gid:
-                continue
-            rows[gid] = {k: float(row.get(k, "nan") or "nan")
-                         for k in _CSV_FIELDS if k != "id"}
-    return rows
-
-
-def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
-        w.writeheader()
-        for gid in sorted(rows, key=lambda s: (int(s) if s.isdigit() else 1 << 62, s)):
-            r = rows[gid]
-            w.writerow({"id": gid, **{k: r.get(k, float("nan"))
-                                      for k in _CSV_FIELDS if k != "id"}})
-    os.replace(tmp, path)
-
-
-def gather_properties(tng_dir: str, ids: List[str], key: str, *,
-                      max_new: int = 120, reporter=None
-                      ) -> Dict[str, Dict[str, float]]:
-    """Return {id: props} for ``ids``, caching to ``tng_properties.csv``.
-
-    Preferred path: 5 bulk group-catalog requests resolve EVERY missing galaxy
-    at once (independent of count). If that fails, fall back to per-galaxy
-    info.json queries bounded by ``max_new``. ``reporter`` (optional) drives the
-    live job progress bar.
-    """
-    cache_path = os.path.join(tng_dir, PROPERTIES_CSV)
-    cache = _read_cache(cache_path)
-    missing = [g for g in ids if g not in cache]
-    if key and missing:
-        try:
-            if reporter is not None:
-                reporter.set_stage("fetching TNG group catalog (5 bulk requests)")
-            arrays = bulk_fetch_fields(
-                key, os.path.join(tng_dir, GROUPCAT_SUBDIR), reporter=reporter)
-            cache.update(properties_from_arrays(arrays, missing))
-            _write_cache(cache_path, cache)
-            missing = []
-        except Exception as e:                       # noqa: BLE001 — degrade
-            sys.stderr.write(
-                f"bulk groupcat fetch failed ({type(e).__name__}: {e}); "
-                "falling back to per-galaxy queries\n")
-            if reporter is not None:
-                reporter.set_stage("querying TNG API (per-galaxy fallback)")
-            todo = missing[:max_new] if max_new > 0 else []
-            for n, gid in enumerate(todo, 1):
-                cache[gid] = fetch_properties(gid, key)
-                if reporter is not None:
-                    reporter.set_step(n, len(todo), f"TNG{gid}")
-            if todo:
-                _write_cache(cache_path, cache)
-    n_have = sum(1 for g in ids if g in cache)
-    sys.stderr.write(f"properties: {len(ids)} galaxies, {n_have} resolved\n")
-    return {g: cache[g] for g in ids if g in cache}
-
-
-# ---------------------------------------------------------------------------
-# Rendering — histograms / grid / stack (each returns bytes)
-# ---------------------------------------------------------------------------
-
-def _fig_to_png(fig) -> bytes:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-    plt.close(fig)
-    return buf.getvalue()
-
-
-def _placeholder_png(message: str) -> bytes:
-    fig, ax = plt.subplots(figsize=(7, 2.2))
-    ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=13,
-            wrap=True)
-    ax.axis("off")
-    return _fig_to_png(fig)
-
-
 def render_histograms(tng_dir: str, *, api_key: str = "",
                       max_new: int = 120, reporter=None) -> bytes:
-    ids = list_downloaded_ids(tng_dir)
-    if not ids:
-        return _placeholder_png("No galaxies downloaded yet.")
-    props = gather_properties(tng_dir, ids, api_key,
-                              max_new=max_new, reporter=reporter)
-    if not props:
-        return _placeholder_png(
-            f"{len(ids)} galaxies downloaded — properties not cached yet.\n"
-            "Set the TNG API token and re-render.")
+    """Enumerate the locally-downloaded galaxies, then plot (CLI/debug path —
+    the WebUI renders histograms locally via euclid_polish.tng.properties)."""
+    return render_histograms_for_ids(
+        tng_dir, list_downloaded_ids(tng_dir), api_key,
+        max_new=max_new, reporter=reporter)
 
-    def col(name: str) -> np.ndarray:
-        v = np.array([props[g].get(name, np.nan) for g in props], dtype=float)
-        return v[np.isfinite(v)]
 
-    panels = [
-        ("sfr",        "Star formation rate",  "log$_{10}$ SFR [M$_\\odot$/yr]", True),
-        ("mass_stars", "Stellar mass",         "log$_{10}$ M$_\\star$ [M$_\\odot$]", True),
-        ("m_halo",     "Halo mass (M$_{200c}$)", "log$_{10}$ M$_{200c}$ [M$_\\odot$]", True),
-        ("reff",       "Effective radius",     "R$_{1/2,\\star}$ [kpc]", False),
-    ]
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
-    n_used = len(props)
-    for ax, (key, title, xlabel, logx) in zip(axes.ravel(), panels):
-        vals = col(key)
-        if logx:
-            vals = vals[vals > 0]
-            vals = np.log10(vals) if vals.size else vals
-        if vals.size:
-            ax.hist(vals, bins=min(30, max(5, vals.size // 3)),
-                    color="#3b6ea5", edgecolor="white", linewidth=0.4)
-            ax.set_title(f"{title}  (n={vals.size})", fontsize=11)
-        else:
-            ax.set_title(f"{title}  (no data)", fontsize=11)
-            ax.text(0.5, 0.5, "no values", ha="center", va="center",
-                    transform=ax.transAxes, color="#999")
-        ax.set_xlabel(xlabel, fontsize=10)
-        ax.set_ylabel("count", fontsize=10)
-        ax.grid(alpha=0.25)
-    fig.suptitle(f"TNG50-1 downloaded galaxies — {n_used} with properties",
-                 fontsize=13)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    return _fig_to_png(fig)
-
+# ---------------------------------------------------------------------------
+# Image grid + stacked FITS (need the FITS pixels → these stay FASRC jobs)
+# ---------------------------------------------------------------------------
 
 def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
     """Asinh stretch (scale = 90th pct of positive flux) + [0.5, 99.5] clip."""
@@ -504,7 +172,7 @@ def render_cell(gdir: str, gid: str, orient: int, band: str,
 def render_grid(tng_dir: str, band: str, downsample: int, seed: int) -> bytes:
     ids = pick_ids(list_downloaded_ids(tng_dir), GRID_GALAXIES, seed)
     if not ids:
-        return _placeholder_png("No galaxies downloaded yet.")
+        return placeholder_png("No galaxies downloaded yet.")
     nrows = len(ids)
     fig, axes = plt.subplots(nrows, len(ORIENTATIONS),
                              figsize=(len(ORIENTATIONS) * 2.1, nrows * 2.1),
@@ -585,7 +253,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--id", default="",
                    help="Subhalo id for stack mode (blank → seeded random).")
     p.add_argument("--max-new", type=int, default=120,
-                   help="Max new TNG-API galaxy queries per histogram render.")
+                   help="Max new TNG-API galaxy queries (histograms fallback).")
     p.add_argument("--api-key-file", default=Config.Tng.API_KEY_FILE)
     # Output target. Default (neither given) → bytes to stdout (interactive).
     # SLURM jobs pass --save to write the standard artifact path that the

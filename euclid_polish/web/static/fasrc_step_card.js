@@ -191,15 +191,6 @@ large cutout don't leak across train/validate."></label>`;
             Set your TNG API token in the field above first. Finished galaxies
             get a <code>.done</code> marker, so re-submitting only fills the
             gaps.</span>`;
-      case 'tng_histograms':
-        // Mirrors TngHistogramsStep.build_command (max_new). Renders the
-        // SFR / stellar-mass / halo-mass / effective-radius histograms. The
-        // job resolves all galaxies in 5 bulk group-catalog requests; max_new
-        // only bounds the per-galaxy fallback if that bulk fetch fails.
-        return `
-          <label>Fallback query cap <span class="muted">(only if bulk fails)</span>
-            <input type="number" name="max_new" value="2000" min="1" max="100000"
-                   title="Properties normally come from 5 bulk group-catalog requests (whole atlas at once, cached). This caps the per-galaxy info.json fallback used only if that bulk fetch errors."></label>`;
       case 'tng_grid':
         // Mirrors TngGridStep.build_command (band, downsample, seed).
         return `

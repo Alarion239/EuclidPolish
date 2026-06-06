@@ -399,15 +399,20 @@ def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     return captured
 
 
-def test_tng_result_histograms_serves_png(client, tmp_path, monkeypatch):
-    p = tmp_path / "histograms.png"
-    p.write_bytes(_PNG_MAGIC + b"data")
-    cap = _stub_fetch(monkeypatch, local_path=str(p))
-    r = client.get("/tng/result/histograms.png")
+def test_tng_histograms_png_renders_locally(client, monkeypatch):
+    """Histograms render in-process (not a job): the route calls the local
+    render with the FASRC id list + key and streams the PNG."""
+    from euclid_polish.web.routes import tng as tng_routes
+    seen = {}
+
+    def fake_render(work, ids, key, **kw):
+        seen["work"] = work
+        return _PNG_MAGIC + b"hist"
+    monkeypatch.setattr(tng_routes, "render_histograms_for_ids", fake_render)
+    r = client.get("/tng/histograms.png")
     assert r.status_code == 200 and r.mimetype == "image/png"
     assert r.data.startswith(_PNG_MAGIC)
-    assert cap["remote"].endswith("/_infographics/histograms.png")
-    assert cap["kw"].get("force") is True          # bypass the TTL cache
+    assert "_tng_infographics" in seen["work"]      # local cache dir
 
 
 def test_tng_result_grid_serves_png(client, tmp_path, monkeypatch):

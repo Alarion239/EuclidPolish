@@ -72,7 +72,7 @@ class TestRegistry:
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
-            "tng_histograms", "tng_grid", "tng_stack",
+            "tng_grid", "tng_stack",
             "synthetic_generate",
         }
 
@@ -241,10 +241,11 @@ class TestRegistry:
         assert step.fixed_cpus is None      # CPU count is user-editable
 
     def test_tng_infographic_steps_run_the_script_and_save(self):
-        """All three infographic jobs invoke the render script with --save (so
-        they write the standard artifact path the /tng page fetches)."""
-        for sid, mode in (("tng_histograms", "histograms"),
-                          ("tng_grid", "grid"), ("tng_stack", "stack")):
+        """The image-infographic jobs invoke the render script with --save (so
+        they write the standard artifact path the /tng page fetches). The
+        histogram is NOT a job — it renders locally."""
+        assert "tng_histograms" not in REGISTRY.by_id
+        for sid, mode in (("tng_grid", "grid"), ("tng_stack", "stack")):
             step = REGISTRY.get(sid)
             argv = step.build_command({})
             assert argv[0] == "scripts/fasrc_tng_infographic.py"

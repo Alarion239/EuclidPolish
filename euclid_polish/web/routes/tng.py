@@ -10,21 +10,26 @@ stored mode-600, and is the exact file the download job reads on the node.
 """
 from __future__ import annotations
 
+import io
 import os
+import shlex
 
 from flask import jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
+from euclid_polish.tng.properties import render_histograms_for_ids
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_fetcher import fetch_one_file, list_remote_dir
 from euclid_polish.web.remote import STATE
 
-# Job-rendered infographic artifacts on FASRC (written by
-# scripts/fasrc_tng_infographic.py --save). Mirrors INFOGRAPHIC_SUBDIR /
-# OUTPUT_NAMES in that script.
+# Job-rendered image infographics on FASRC (written by
+# scripts/fasrc_tng_infographic.py --save, grid/stack only). The histogram is
+# rendered LOCALLY (see /tng/histograms.png) — it needs no FITS, just the id
+# list pulled from FASRC + the TNG API.
 _INFOGRAPHIC_SUBDIR = "_infographics"
-_INFOGRAPHIC_NAMES = {"histograms": "histograms.png", "grid": "grid.png",
-                      "stack": "stack.fits"}
+_INFOGRAPHIC_NAMES = {"grid": "grid.png", "stack": "stack.fits"}
+# Local working dir for the histogram's property cache (CSV + groupcat arrays).
+_LOCAL_TNG_DIR = os.path.join(Config.DATA_DIR, "_tng_infographics")
 
 # Remote path of the token file, matching the script's default
 # (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``). Quoted so a literal
@@ -101,12 +106,60 @@ def register(app):
             n = 0
         return jsonify({"present": n > 0, "connected": True, "chars": n})
 
-    # ---------------- Galaxy infographic results (job artifacts) ----------
-    # The infographics are produced by the FASRC jobs ``tng_histograms`` /
-    # ``tng_grid`` / ``tng_stack`` (resource-allocated step cards), which write
-    # their artifact to ``tng_skirt/_infographics/<name>`` on the node. These
-    # routes fetch the latest such artifact for display / download — they do
-    # NOT render anything (that's the job's work).
+    # ---------------- Histogram (rendered LOCALLY) ------------------------
+    # The histogram needs no FITS — only the downloaded-galaxy id list (a tiny
+    # SSH `find`) plus the TNG API. So we pull just the ids from FASRC and
+    # render the plot in this process; nothing heavy is transferred.
+
+    def _downloaded_ids() -> list:
+        """Subhalo ids of finished galaxies on FASRC (dirs holding a .done)."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return []
+        cfg = fasrc_config.load()
+        tng_dir = f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}"
+        cmd = (f"find {shlex.quote(tng_dir)} -mindepth 2 -maxdepth 2 "
+               f"-name {shlex.quote(Config.Tng.DONE_MARKER)} -printf '%h\\n' "
+               "2>/dev/null | head -n 20000")
+        try:
+            rc, out, _err = STATE.ssh.run(cmd, timeout=20)
+        except Exception:
+            return []
+        if rc != 0 or not out:
+            return []
+        ids = {os.path.basename(ln.strip()) for ln in out.splitlines()
+               if ln.strip()}
+        try:
+            return sorted(ids, key=int)
+        except ValueError:
+            return sorted(ids)
+
+    def _tng_api_key() -> str:
+        """TNG token for the local API call: local $TNG_API_KEY, else read the
+        key saved on FASRC (the token form's file) over SSH. In-memory only."""
+        env = os.environ.get("TNG_API_KEY", "").strip()
+        if env:
+            return env
+        if STATE.ssh and STATE.ssh.is_connected():
+            try:
+                rc, out, _err = STATE.ssh.run(
+                    f"cat {_TNG_KEY_REMOTE} 2>/dev/null", timeout=10)
+                if rc == 0 and out:
+                    return out.splitlines()[0].strip()
+            except Exception:
+                pass
+        return ""
+
+    @app.route("/tng/histograms.png")
+    def tng_histograms_png():
+        os.makedirs(_LOCAL_TNG_DIR, exist_ok=True)
+        png = render_histograms_for_ids(
+            _LOCAL_TNG_DIR, _downloaded_ids(), _tng_api_key())
+        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+
+    # ---------------- Image infographic results (grid/stack job artifacts) -
+    # The grid + stacked-FITS jobs (``tng_grid`` / ``tng_stack`` step cards)
+    # write their artifact to ``tng_skirt/_infographics/<name>`` on the node;
+    # these routes fetch the latest one for display / download.
 
     def _artifact_remote(kind: str) -> str:
         cfg = fasrc_config.load()
@@ -130,10 +183,6 @@ def register(app):
         return send_file(result.local_path, mimetype=mimetype, max_age=0,
                          as_attachment=as_attachment,
                          download_name=download_name)
-
-    @app.route("/tng/result/histograms.png")
-    def tng_result_histograms():
-        return _serve_artifact("histograms", "image/png")
 
     @app.route("/tng/result/grid.png")
     def tng_result_grid():

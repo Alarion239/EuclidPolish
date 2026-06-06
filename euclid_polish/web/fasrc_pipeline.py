@@ -681,37 +681,6 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         return cmd
 
 
-class TngHistogramsStep(FASRCPipelineStep):
-    """Render the TNG property histograms (SFR / stellar mass / halo mass /
-    effective radius) for the downloaded galaxies as a CPU job.
-
-    The work is the TNG-API property fetch (one call per new galaxy, cached to
-    ``tng_skirt/tng_properties.csv``); the job writes ``_infographics/
-    histograms.png`` which the /tng page then loads.
-    """
-
-    def __init__(self):
-        super().__init__(
-            step_id="tng_histograms",
-            label="TNG infographic — property histograms",
-            defaults=StepResources(
-                partition="shared", n_cpus=2, n_gpus=0,
-                memory="8G", time_limit="2:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        # Default high so a job fetches the whole catalogue in one go (no
-        # login-node timeout to dodge any more); cached across runs.
-        max_new = int(params.get("max_new", 2000) or 2000)
-        return [
-            "scripts/fasrc_tng_infographic.py",
-            "--mode", "histograms", "--save",
-            "--max-new", str(max_new),
-        ]
-
-
 def _tng_seed(params: Dict[str, Any]) -> int:
     """Form seed → int. Blank → -1 (re-roll the random pick each submit)."""
     raw = str(params.get("seed", "")).strip()
@@ -997,7 +966,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
     TngSkirtAtlasDownloadStep,
-    TngHistogramsStep,
     TngGridStep,
     TngStackStep,
     EuclidStarAnchorTFRecordStep,
