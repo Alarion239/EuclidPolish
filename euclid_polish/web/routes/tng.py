@@ -10,9 +10,11 @@ stored mode-600, and is the exact file the download job reads on the node.
 """
 from __future__ import annotations
 
+import glob
 import io
 import os
 import shlex
+import time
 
 from flask import jsonify, render_template, request, send_file
 
@@ -30,6 +32,42 @@ _INFOGRAPHIC_SUBDIR = "_infographics"
 _INFOGRAPHIC_NAMES = {"grid": "grid.png", "stack": "stack.fits"}
 # Local working dir for the histogram's property cache (CSV + groupcat arrays).
 _LOCAL_TNG_DIR = os.path.join(Config.DATA_DIR, "_tng_infographics")
+
+# TNG Atlas images (the FASRC-pulled grid + the histogram drawn from the
+# FASRC-pulled id list) are also archived under here so they appear in the
+# Visualization gallery (data/vis/) and get the 📌-track button. ``os.walk``
+# in ``_list_vis_pngs`` recurses, so a ``tng/`` subdir shows up automatically.
+_VIS_TNG_DIR = os.path.join(Config.VIS_DIR, "tng")
+
+
+def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
+    """Best-effort copy of a TNG Atlas image into ``data/vis/tng/``.
+
+    Saves a timestamped ``tng_<kind>_<YYYYmmdd-HHMMSS>.png`` so every
+    distinct pulled image is kept. Skips the write when the most recent
+    archived image of this kind is byte-identical, so reloading the same
+    result doesn't pile up duplicates. Never raises — archiving must not
+    break serving the image to the page.
+    """
+    try:
+        os.makedirs(_VIS_TNG_DIR, exist_ok=True)
+        prior = sorted(glob.glob(os.path.join(_VIS_TNG_DIR, f"tng_{kind}_*.png")))
+        if prior:
+            try:
+                with open(prior[-1], "rb") as fh:
+                    if fh.read() == png_bytes:
+                        return  # unchanged since last pull — already archived
+            except OSError:
+                pass
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(_VIS_TNG_DIR, f"tng_{kind}_{ts}.png")
+        if os.path.exists(path):  # >1 save in the same second
+            path = os.path.join(
+                _VIS_TNG_DIR, f"tng_{kind}_{ts}_{int(time.time() * 1000) % 1000:03d}.png")
+        with open(path, "wb") as fh:
+            fh.write(png_bytes)
+    except Exception:
+        pass
 
 # Remote path of the token file, matching the script's default
 # (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``). Quoted so a literal
@@ -152,8 +190,12 @@ def register(app):
     @app.route("/tng/histograms.png")
     def tng_histograms_png():
         os.makedirs(_LOCAL_TNG_DIR, exist_ok=True)
-        png = render_histograms_for_ids(
-            _LOCAL_TNG_DIR, _downloaded_ids(), _tng_api_key())
+        ids = _downloaded_ids()
+        png = render_histograms_for_ids(_LOCAL_TNG_DIR, ids, _tng_api_key())
+        # Archive to the Visualization gallery — but only when there are real
+        # galaxies behind it, so we don't save empty-state placeholders.
+        if ids:
+            _archive_png_to_vis("histograms", png)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     # ---------------- Image infographic results (grid/stack job artifacts) -
@@ -180,6 +222,14 @@ def register(app):
             if result.error:
                 hint += f" [{result.error}]"
             return jsonify({"ok": False, "error": hint}), 404
+        # Archive the FASRC-pulled grid image into the Visualization gallery.
+        # The stack is a FITS download (not a gallery image), so it's skipped.
+        if kind == "grid":
+            try:
+                with open(result.local_path, "rb") as fh:
+                    _archive_png_to_vis("grid", fh.read())
+            except OSError:
+                pass
         return send_file(result.local_path, mimetype=mimetype, max_age=0,
                          as_attachment=as_attachment,
                          download_name=download_name)
