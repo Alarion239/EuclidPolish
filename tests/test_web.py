@@ -384,81 +384,60 @@ def test_tng_auth_status_reports_presence_without_leaking_token(client, monkeypa
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def _stub_remote_python(monkeypatch, payload, *, rc=0, err=""):
-    """Capture argv and return canned (rc, bytes, err) from run_remote_python."""
+def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
+    """Make routes/tng.fetch_one_file return a canned FetchResult + capture
+    the (remote_path, kwargs) the route asked for."""
     from euclid_polish.web.routes import tng as tng_routes
+    from euclid_polish.web.fasrc_fetcher import FetchResult
     captured = {}
 
-    def fake(script, args, *, binary=False, timeout=30):
-        captured["script"] = script
-        captured["args"] = args
-        captured["binary"] = binary
-        return rc, payload, err
-    monkeypatch.setattr(tng_routes, "run_remote_python", fake)
+    def fake(remote, **kw):
+        captured["remote"] = remote
+        captured["kw"] = kw
+        return FetchResult(ok=ok, local_path=local_path, error=error)
+    monkeypatch.setattr(tng_routes, "fetch_one_file", fake)
     return captured
 
 
-def test_tng_histograms_png_streams_image(client, monkeypatch):
-    cap = _stub_remote_python(monkeypatch, _PNG_MAGIC + b"data")
-    r = client.get("/tng/histograms.png")
-    assert r.status_code == 200
-    assert r.mimetype == "image/png"
-    assert r.data.startswith(_PNG_MAGIC)
-    assert cap["script"] == "scripts/fasrc_tng_infographic.py"
-    assert "--mode" in cap["args"] and "histograms" in cap["args"]
-    assert cap["binary"] is True
-
-
-def test_tng_grid_png_sanitizes_params(client, monkeypatch):
-    cap = _stub_remote_python(monkeypatch, _PNG_MAGIC + b"x")
-    # Bad band + bad downsample must be coerced to VIS / 1.
-    r = client.get("/tng/grid.png?band=ZZZ&downsample=7&seed=5")
+def test_tng_result_histograms_serves_png(client, tmp_path, monkeypatch):
+    p = tmp_path / "histograms.png"
+    p.write_bytes(_PNG_MAGIC + b"data")
+    cap = _stub_fetch(monkeypatch, local_path=str(p))
+    r = client.get("/tng/result/histograms.png")
     assert r.status_code == 200 and r.mimetype == "image/png"
-    a = cap["args"]
-    assert a[a.index("--band") + 1] == "VIS"
-    assert a[a.index("--downsample") + 1] == "1"
-    assert a[a.index("--seed") + 1] == "5"
+    assert r.data.startswith(_PNG_MAGIC)
+    assert cap["remote"].endswith("/_infographics/histograms.png")
+    assert cap["kw"].get("force") is True          # bypass the TTL cache
 
 
-def test_tng_grid_png_passes_valid_params(client, monkeypatch):
-    cap = _stub_remote_python(monkeypatch, _PNG_MAGIC)
-    r = client.get("/tng/grid.png?band=rgb&downsample=4&seed=99")
-    assert r.status_code == 200
-    a = cap["args"]
-    assert a[a.index("--band") + 1] == "RGB"      # upper-cased
-    assert a[a.index("--downsample") + 1] == "4"
+def test_tng_result_grid_serves_png(client, tmp_path, monkeypatch):
+    p = tmp_path / "grid.png"
+    p.write_bytes(_PNG_MAGIC + b"x")
+    cap = _stub_fetch(monkeypatch, local_path=str(p))
+    r = client.get("/tng/result/grid.png")
+    assert r.status_code == 200 and r.mimetype == "image/png"
+    assert cap["remote"].endswith("/_infographics/grid.png")
 
 
-def test_tng_stack_fits_is_attachment_not_capped(client, monkeypatch):
-    # A payload larger than the 50 MB fetch cap to prove the cap doesn't apply
-    # (the route streams the bytes directly, never via fetch_one_file).
-    big = b"SIMPLE  =" + b"\x00" * (51 * 1024 * 1024)
-    cap = _stub_remote_python(monkeypatch, big)
-    r = client.get("/tng/stack.fits?band=VIS&id=167396")
-    assert r.status_code == 200
-    assert r.mimetype == "application/fits"
-    assert "attachment" in r.headers.get("Content-Disposition", "")
-    assert "TNG167396_VIS_stack.fits" in r.headers.get("Content-Disposition", "")
-    assert len(r.data) == len(big)                # full file, not truncated
-    a = cap["args"]
-    assert a[a.index("--id") + 1] == "167396"
-    assert a[a.index("--band") + 1] == "VIS"
+def test_tng_result_stack_is_attachment_with_large_cap(client, tmp_path, monkeypatch):
+    p = tmp_path / "stack.fits"
+    p.write_bytes(b"SIMPLE  =" + b"\x00" * 1024)
+    cap = _stub_fetch(monkeypatch, local_path=str(p))
+    r = client.get("/tng/result/stack.fits")
+    assert r.status_code == 200 and r.mimetype == "application/fits"
+    cd = r.headers.get("Content-Disposition", "")
+    assert "attachment" in cd and "TNG_stack.fits" in cd
+    assert cap["remote"].endswith("/_infographics/stack.fits")
+    # Must request the larger-than-50 MB cap so the ~51 MB stack isn't refused.
+    assert cap["kw"].get("max_bytes") == Config.WebFetch.MAX_PSF_PULL_BYTES
 
 
-def test_tng_stack_fits_random_when_no_id(client, monkeypatch):
-    cap = _stub_remote_python(monkeypatch, b"SIMPLE  =")
-    r = client.get("/tng/stack.fits?band=H")
-    assert r.status_code == 200
-    assert "--id" not in cap["args"]              # random pick on the node
-    assert "TNGrandom_H_stack.fits" in r.headers.get("Content-Disposition", "")
-
-
-def test_tng_infographic_render_failure_returns_502(client, monkeypatch):
-    _stub_remote_python(monkeypatch, b"", rc=1, err="boom on node")
-    r = client.get("/tng/histograms.png")
-    assert r.status_code == 502
+def test_tng_result_missing_returns_404(client, monkeypatch):
+    _stub_fetch(monkeypatch, ok=False, local_path=None, error="not found")
+    r = client.get("/tng/result/grid.png")
+    assert r.status_code == 404
     assert r.get_json()["ok"] is False
-    assert "boom" in r.get_json()["error"]
+    assert "submit the job" in r.get_json()["error"]
 
 
 def test_post_inference_generate_reconstruct_returns_job_id(client):

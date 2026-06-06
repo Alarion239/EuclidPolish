@@ -55,6 +55,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.tng_galaxy import (
     TNG_FITS_BANDS,
     block_mean,
@@ -72,6 +73,21 @@ RGB_FITS_BANDS: Tuple[str, str, str] = ("H", "J", "VIS")
 SINGLE_BANDS = tuple(TNG_FITS_BANDS)         # ("VIS", "Y", "J", "H")
 PROPERTIES_CSV = "tng_properties.csv"
 _CSV_FIELDS = ("id", "sfr", "mass_stars", "m_halo", "reff")
+
+# Where a SLURM job writes its rendered artifact (under the download root),
+# keyed by mode. Fixed names → each job overwrites the previous result, which
+# the WebUI then fetches via the matching /tng/result/<…> route.
+INFOGRAPHIC_SUBDIR = "_infographics"
+OUTPUT_NAMES = {
+    "histograms": "histograms.png",
+    "grid":       "grid.png",
+    "stack":      "stack.fits",
+}
+
+
+def default_output_path(tng_dir: str, mode: str) -> str:
+    """Standard artifact path for a job-rendered infographic of ``mode``."""
+    return os.path.join(tng_dir, INFOGRAPHIC_SUBDIR, OUTPUT_NAMES[mode])
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +109,9 @@ def list_downloaded_ids(tng_dir: str) -> List[str]:
 
 
 def pick_ids(ids: List[str], k: int, seed: int) -> List[str]:
-    """Deterministic seeded pick of up to ``k`` ids (shuffled if fewer)."""
-    rng = random.Random(seed)
+    """Pick up to ``k`` ids. ``seed >= 0`` is reproducible; ``seed < 0`` draws a
+    fresh random subset each call (so a re-submitted grid/stack job re-rolls)."""
+    rng = random.Random(seed if seed >= 0 else None)
     pool = list(ids)
     if not pool:
         return []
@@ -229,20 +246,26 @@ def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
 
 
 def gather_properties(tng_dir: str, ids: List[str], key: str, *,
-                      max_new: int = 120) -> Dict[str, Dict[str, float]]:
+                      max_new: int = 120, reporter=None
+                      ) -> Dict[str, Dict[str, float]]:
     """Return {id: props} for ``ids``, querying+caching only the missing ones.
 
-    Bounded by ``max_new`` per call so the SSH request stays short; repeated
-    renders fill in the rest of the catalogue over time.
+    Bounded by ``max_new`` per call. ``reporter`` (optional) drives the live
+    job progress bar while the (serial) TNG-API queries run.
     """
     cache_path = os.path.join(tng_dir, PROPERTIES_CSV)
     cache = _read_cache(cache_path)
     missing = [g for g in ids if g not in cache]
+    todo = missing[:max_new] if max_new > 0 else []
     n_query = 0
-    if key and missing and max_new > 0:
-        for gid in missing[:max_new]:
+    if key and todo:
+        if reporter is not None:
+            reporter.set_stage("querying TNG API")
+        for gid in todo:
             cache[gid] = fetch_properties(gid, key)
             n_query += 1
+            if reporter is not None:
+                reporter.set_step(n_query, len(todo), f"TNG{gid}")
         _write_cache(cache_path, cache)
     sys.stderr.write(
         f"properties: {len(ids)} galaxies, {len(missing)} uncached, "
@@ -270,11 +293,12 @@ def _placeholder_png(message: str) -> bytes:
 
 
 def render_histograms(tng_dir: str, *, api_key: str = "",
-                      max_new: int = 120) -> bytes:
+                      max_new: int = 120, reporter=None) -> bytes:
     ids = list_downloaded_ids(tng_dir)
     if not ids:
         return _placeholder_png("No galaxies downloaded yet.")
-    props = gather_properties(tng_dir, ids, api_key, max_new=max_new)
+    props = gather_properties(tng_dir, ids, api_key,
+                              max_new=max_new, reporter=reporter)
     if not props:
         return _placeholder_png(
             f"{len(ids)} galaxies downloaded — properties not cached yet.\n"
@@ -442,6 +466,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--max-new", type=int, default=120,
                    help="Max new TNG-API galaxy queries per histogram render.")
     p.add_argument("--api-key-file", default=Config.Tng.API_KEY_FILE)
+    # Output target. Default (neither given) → bytes to stdout (interactive).
+    # SLURM jobs pass --save to write the standard artifact path that the
+    # WebUI's /tng/result/<…> route then fetches; --out overrides the path.
+    p.add_argument("--out", default="",
+                   help="Write the rendered bytes to this file instead of stdout.")
+    p.add_argument("--save", action="store_true",
+                   help="Write to the standard artifact path for this mode "
+                        "(<tng-dir>/_infographics/<name>) — used by the jobs.")
     return p.parse_args(argv)
 
 
@@ -450,10 +482,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     warnings.filterwarnings("ignore")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
     args = parse_args(argv)
+    reporter = Reporter.from_env()
 
     if args.mode == "histograms":
         key = load_api_key(args.api_key_file)
-        out = render_histograms(args.tng_dir, api_key=key, max_new=args.max_new)
+        out = render_histograms(args.tng_dir, api_key=key,
+                                max_new=args.max_new, reporter=reporter)
     elif args.mode == "grid":
         band = args.band.upper()
         if band not in (*SINGLE_BANDS, "RGB"):
@@ -481,8 +515,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stderr.write(f"unknown mode {args.mode!r}\n")
         return 1
 
-    sys.stdout.buffer.write(out)
-    sys.stdout.buffer.flush()
+    out_path = args.out or (default_output_path(args.tng_dir, args.mode)
+                            if args.save else "")
+    if out_path:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(out)
+        sys.stderr.write(f"wrote {len(out)} bytes → {out_path}\n")
+    else:
+        sys.stdout.buffer.write(out)
+        sys.stdout.buffer.flush()
     return 0
 
 

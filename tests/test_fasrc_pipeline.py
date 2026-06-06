@@ -72,6 +72,7 @@ class TestRegistry:
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
+            "tng_histograms", "tng_grid", "tng_stack",
             "synthetic_generate",
         }
 
@@ -238,6 +239,45 @@ class TestRegistry:
         assert step.needs_gpu is False
         assert step.defaults.n_gpus == 0
         assert step.fixed_cpus is None      # CPU count is user-editable
+
+    def test_tng_infographic_steps_run_the_script_and_save(self):
+        """All three infographic jobs invoke the render script with --save (so
+        they write the standard artifact path the /tng page fetches)."""
+        for sid, mode in (("tng_histograms", "histograms"),
+                          ("tng_grid", "grid"), ("tng_stack", "stack")):
+            step = REGISTRY.get(sid)
+            argv = step.build_command({})
+            assert argv[0] == "scripts/fasrc_tng_infographic.py"
+            assert argv[argv.index("--mode") + 1] == mode
+            assert "--save" in argv
+            assert step.needs_gpu is False and step.defaults.n_gpus == 0
+
+    def test_tng_grid_step_band_and_downsample(self):
+        step = REGISTRY.get("tng_grid")
+        argv = step.build_command({"band": "rgb", "downsample": 4, "seed": 7})
+        assert argv[argv.index("--band") + 1] == "RGB"          # upper-cased
+        assert argv[argv.index("--downsample") + 1] == "4"
+        assert argv[argv.index("--seed") + 1] == "7"
+        # Bad values coerced to safe defaults.
+        argv2 = step.build_command({"band": "ZZ", "downsample": 9})
+        assert argv2[argv2.index("--band") + 1] == "VIS"
+        assert argv2[argv2.index("--downsample") + 1] == "1"
+
+    def test_tng_grid_step_blank_seed_is_random(self):
+        """Blank seed → -1, so a re-submitted grid job re-rolls the 5 galaxies."""
+        step = REGISTRY.get("tng_grid")
+        argv = step.build_command({"band": "VIS", "seed": ""})
+        assert argv[argv.index("--seed") + 1] == "-1"
+
+    def test_tng_stack_step_id_and_band(self):
+        step = REGISTRY.get("tng_stack")
+        argv = step.build_command({"band": "h", "galaxy_id": "167396"})
+        assert argv[argv.index("--band") + 1] == "H"
+        assert argv[argv.index("--id") + 1] == "167396"
+        # No id → random pick on the node (no --id flag).
+        argv2 = step.build_command({"band": "VIS"})
+        assert "--id" not in argv2
+        assert argv2[argv2.index("--seed") + 1] == "-1"
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)

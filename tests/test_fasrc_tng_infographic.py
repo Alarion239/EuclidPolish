@@ -258,3 +258,47 @@ def test_main_rejects_rgb_for_stack(tmp_path):
 def test_main_stack_no_galaxies(tmp_path):
     rc = mod.main(["--mode", "stack", "--tng-dir", str(tmp_path), "--band", "VIS"])
     assert rc == 3
+
+
+# ---------------------------------------------------------------------------
+# job artifact output (--save / --out)
+# ---------------------------------------------------------------------------
+
+def test_default_output_path():
+    p = mod.default_output_path("/data/tng_skirt", "grid")
+    assert p == os.path.join("/data/tng_skirt", "_infographics", "grid.png")
+    assert mod.default_output_path("/d", "stack").endswith("_infographics/stack.fits")
+
+
+def test_main_save_writes_standard_artifact(tmp_path):
+    """--save (what the SLURM jobs pass) writes the standard artifact path
+    instead of streaming to stdout."""
+    tng = str(tmp_path)
+    for g in ("111", "222"):
+        _make_galaxy(tng, g)
+    rc = mod.main(["--mode", "grid", "--tng-dir", tng, "--band", "VIS",
+                   "--seed", "1", "--save"])
+    assert rc == 0
+    out = mod.default_output_path(tng, "grid")
+    assert os.path.isfile(out)
+    with open(out, "rb") as f:
+        assert f.read(8) == b"\x89PNG\r\n\x1a\n"
+
+
+def test_main_out_writes_explicit_path_and_stack(tmp_path):
+    tng = str(tmp_path / "tng")
+    os.makedirs(tng)
+    _make_galaxy(tng, "111")
+    dest = str(tmp_path / "sub" / "mystack.fits")     # parent created on demand
+    rc = mod.main(["--mode", "stack", "--tng-dir", tng, "--band", "VIS",
+                   "--id", "111", "--out", dest])
+    assert rc == 0 and os.path.isfile(dest)
+    with fits.open(dest) as hdul:
+        assert len(hdul) == 6
+
+
+def test_pick_ids_negative_seed_is_random(monkeypatch):
+    """seed < 0 → fresh random pick (so a re-submitted grid/stack re-rolls)."""
+    ids = [str(i) for i in range(40)]
+    picks = {tuple(mod.pick_ids(ids, 5, -1)) for _ in range(8)}
+    assert len(picks) > 1                              # not all identical

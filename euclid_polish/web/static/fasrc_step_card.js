@@ -191,6 +191,49 @@ large cutout don't leak across train/validate."></label>`;
             Set your TNG API token in the field above first. Finished galaxies
             get a <code>.done</code> marker, so re-submitting only fills the
             gaps.</span>`;
+      case 'tng_histograms':
+        // Mirrors TngHistogramsStep.build_command (max_new). Renders the
+        // SFR / stellar-mass / halo-mass / effective-radius histograms; the
+        // job queries the TNG API once per new galaxy (then cached).
+        return `
+          <label>Max new API queries <span class="muted">(per run; cached after)</span>
+            <input type="number" name="max_new" value="2000" min="1" max="100000"
+                   title="Galaxies fetched from the TNG API this run (one call each, cached to tng_properties.csv). 2000 covers the whole atlas; lower it for a quick partial pass."></label>`;
+      case 'tng_grid':
+        // Mirrors TngGridStep.build_command (band, downsample, seed).
+        return `
+          <label>Band
+            <select name="band">
+              <option value="VIS">VIS</option>
+              <option value="Y">NISP Y</option>
+              <option value="J">NISP J</option>
+              <option value="H">NISP H</option>
+              <option value="RGB">RGB (VIS+NISP, Lupton)</option>
+            </select></label>
+          <label>Downsample
+            <select name="downsample"
+                    title="×1 = 1600², ×2 = 800², ×4 = 400² (block-mean).">
+              <option value="1">×1</option>
+              <option value="2">×2</option>
+              <option value="4">×4</option>
+            </select></label>
+          <label>Seed <span class="muted">(blank = random 5)</span>
+            <input type="number" name="seed" value="" placeholder="random"
+                   title="Fix the random galaxy pick for reproducibility; blank re-rolls 5 random galaxies each submit."></label>`;
+      case 'tng_stack':
+        // Mirrors TngStackStep.build_command (band, galaxy_id, seed).
+        return `
+          <label>Galaxy id <span class="muted">(blank = random)</span>
+            <input type="text" name="galaxy_id" value="" placeholder="random"
+                   inputmode="numeric"
+                   title="Subhalo id (folder name under tng_skirt). Blank → a random downloaded galaxy."></label>
+          <label>Band
+            <select name="band">
+              <option value="VIS">VIS</option>
+              <option value="Y">NISP Y</option>
+              <option value="J">NISP J</option>
+              <option value="H">NISP H</option>
+            </select></label>`;
       case 'euclid_query':
         // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
         // snr_min). Writes stars.csv. Run first, then download, then verify.

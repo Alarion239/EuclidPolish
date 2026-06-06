@@ -49,75 +49,66 @@
 </section>
 
 <section class="card">
-  <h3>Galaxy infographics <span class="muted" style="font-size:13px;">(rendered on FASRC)</span></h3>
+  <h3>Galaxy infographics <span class="muted" style="font-size:13px;">(FASRC jobs)</span></h3>
   <p class="muted" style="margin-top:0;">
-    Read-only views of the galaxies already downloaded
-    ({{ n_done if n_done is not none else '—' }} on FASRC). Rendering runs on the
-    node where the FITS live; nothing is pulled to this machine except the final
-    PNG. Histogram properties come from the TNG API (cached on FASRC).
+    Each infographic is a resource-allocated SLURM job that renders on a compute
+    node and writes its artifact to <code>{{ tng_dir }}/_infographics/</code>.
+    Submit a job below (set its resources in the card), watch it on the live
+    status bar, then <b>Load latest result</b> once it completes. Covers the
+    {{ n_done if n_done is not none else '—' }} galaxies downloaded so far.
   </p>
+</section>
 
-  <!-- 1. Property histograms -->
-  <fieldset>
-    <legend>Property histograms</legend>
-    <p class="muted" style="margin-top:0;">
-      SFR · stellar mass · halo mass (M<sub>200c</sub>) · effective radius, for
-      the downloaded galaxies. First render queries the TNG API once per new
-      galaxy (then cached), so it can take a moment.
-    </p>
-    <button id="tng-hist-btn" type="button">📊 Render histograms</button>
-    <div id="tng-hist-status" class="muted" style="margin-top:6px;min-height:14px;"></div>
-    <div style="margin-top:10px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
+<!-- 1. Property histograms job -->
+<section class="card">
+  <h3>📊 Property histograms</h3>
+  <p class="muted" style="margin-top:0;">
+    SFR · stellar mass · halo mass (M<sub>200c</sub>) · effective radius. The
+    job queries the TNG API once per new galaxy (cached to
+    <code>tng_properties.csv</code>), then plots.
+  </p>
+  {% with step_id="tng_histograms" %}{% include "_step_card_mount.html" %}{% endwith %}
+  <div style="margin-top:10px;">
+    <button id="tng-hist-load" type="button">🖼 Load latest histograms</button>
+    <span id="tng-hist-status" class="muted" style="margin-left:8px;"></span>
+    <div style="margin-top:8px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
       <img id="tng-hist-img" alt="property histograms"
            style="max-width:100%;display:none;">
     </div>
-  </fieldset>
+  </div>
+</section>
 
-  <!-- 2. 5×5 image grid -->
-  <fieldset style="margin-top:14px;">
-    <legend>Image grid — 5 random galaxies × 5 viewpoints</legend>
-    <div class="form-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
-      <label>Band
-        <select id="tng-grid-band">
-          <option value="VIS">VIS</option>
-          <option value="Y">NISP Y</option>
-          <option value="J">NISP J</option>
-          <option value="H">NISP H</option>
-          <option value="RGB">RGB (VIS+NISP, Lupton)</option>
-        </select></label>
-      <label>Downsample: <span id="tng-grid-dslabel">×1</span>
-        <input type="range" id="tng-grid-ds" min="1" max="3" step="1" value="1"
-               title="×1 = 1600², ×2 = 800², ×4 = 400² (block-mean)."></label>
-      <button id="tng-grid-btn" type="button">🎲 Draw 5 random</button>
-    </div>
-    <div id="tng-grid-status" class="muted" style="margin-top:6px;min-height:14px;"></div>
-    <div style="margin-top:10px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
+<!-- 2. 5×5 image grid job -->
+<section class="card">
+  <h3>🎲 5×5 image grid</h3>
+  <p class="muted" style="margin-top:0;">
+    5 random galaxies × 5 viewpoints. Pick band (VIS / NISP / RGB) and downsample
+    in the job form; a blank seed re-rolls 5 random galaxies each submit.
+  </p>
+  {% with step_id="tng_grid" %}{% include "_step_card_mount.html" %}{% endwith %}
+  <div style="margin-top:10px;">
+    <button id="tng-grid-load" type="button">🖼 Load latest grid</button>
+    <span id="tng-grid-status" class="muted" style="margin-left:8px;"></span>
+    <div style="margin-top:8px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
       <img id="tng-grid-img" alt="5×5 galaxy grid"
            style="max-width:100%;image-rendering:pixelated;display:none;">
     </div>
-  </fieldset>
+  </div>
+</section>
 
-  <!-- 3. Stacked-FITS download -->
-  <fieldset style="margin-top:14px;">
-    <legend>Download stacked FITS (5 viewpoints of one band)</legend>
-    <p class="muted" style="margin-top:0;">
-      Bundles the 5 viewpoint frames into one multi-extension FITS
-      (~51&nbsp;MB; the 50&nbsp;MB UI fetch cap doesn't apply to this download).
-    </p>
-    <div class="form-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
-      <label>Galaxy id <span class="muted">(blank = random)</span>
-        <input type="text" id="tng-stack-id" placeholder="e.g. 167396"
-               inputmode="numeric" pattern="[0-9]*"></label>
-      <label>Band
-        <select id="tng-stack-band">
-          <option value="VIS">VIS</option>
-          <option value="Y">NISP Y</option>
-          <option value="J">NISP J</option>
-          <option value="H">NISP H</option>
-        </select></label>
-      <button id="tng-stack-btn" type="button">⬇️ Download stacked FITS</button>
-    </div>
-  </fieldset>
+<!-- 3. Stacked-FITS job -->
+<section class="card">
+  <h3>⬇️ Stacked FITS (5 viewpoints of one band)</h3>
+  <p class="muted" style="margin-top:0;">
+    Bundles the 5 viewpoint frames into one multi-extension FITS (~51&nbsp;MB).
+    Run the job, then download the latest result (the 50&nbsp;MB UI cap doesn't
+    apply to this download).
+  </p>
+  {% with step_id="tng_stack" %}{% include "_step_card_mount.html" %}{% endwith %}
+  <div style="margin-top:10px;">
+    <button id="tng-stack-load" type="button">⬇️ Download latest stacked FITS</button>
+    <span id="tng-stack-status" class="muted" style="margin-left:8px;"></span>
+  </div>
 </section>
 
 <script>
@@ -158,11 +149,12 @@ if (tngForm) {
   refreshTngTokenStatus();
 }
 
-// ── Infographics ────────────────────────────────────────────────────
-// Each loads a PNG rendered on FASRC; on error the route returns a JSON
-// body, so we surface that instead of a broken image.
-async function _loadRenderedImg(url, imgEl, statusEl, label) {
-  statusEl.textContent = `rendering ${label} on FASRC…`;
+// ── Infographic results ─────────────────────────────────────────────
+// The jobs (tng_histograms / tng_grid / tng_stack) write their artifact on
+// FASRC; these buttons fetch the latest one. On error (e.g. job not run yet)
+// the route returns a JSON body we surface instead of a broken image.
+async function _loadResultImg(url, imgEl, statusEl) {
+  statusEl.textContent = "fetching latest result from FASRC…";
   imgEl.style.display = "none";
   try {
     const r = await fetch(url);
@@ -181,45 +173,44 @@ async function _loadRenderedImg(url, imgEl, statusEl, label) {
   }
 }
 
-const histBtn = document.getElementById("tng-hist-btn");
-if (histBtn) {
-  histBtn.addEventListener("click", () => _loadRenderedImg(
-    `/tng/histograms.png?_t=${Date.now()}`,
+const histLoad = document.getElementById("tng-hist-load");
+if (histLoad) {
+  histLoad.addEventListener("click", () => _loadResultImg(
+    `/tng/result/histograms.png?_t=${Date.now()}`,
     document.getElementById("tng-hist-img"),
-    document.getElementById("tng-hist-status"), "histograms"));
+    document.getElementById("tng-hist-status")));
 }
 
-const dsSlider = document.getElementById("tng-grid-ds");
-const DS_MAP = { 1: 1, 2: 2, 3: 4 };
-if (dsSlider) {
-  const lbl = document.getElementById("tng-grid-dslabel");
-  dsSlider.addEventListener("input", () => {
-    lbl.textContent = `×${DS_MAP[dsSlider.value] || 1}`;
-  });
-}
-const gridBtn = document.getElementById("tng-grid-btn");
-if (gridBtn) {
-  gridBtn.addEventListener("click", () => {
-    const band = document.getElementById("tng-grid-band").value;
-    const ds = DS_MAP[dsSlider.value] || 1;
-    const seed = Math.floor(Math.random() * 1e9);
-    _loadRenderedImg(
-      `/tng/grid.png?band=${band}&downsample=${ds}&seed=${seed}`,
-      document.getElementById("tng-grid-img"),
-      document.getElementById("tng-grid-status"), "grid");
-  });
+const gridLoad = document.getElementById("tng-grid-load");
+if (gridLoad) {
+  gridLoad.addEventListener("click", () => _loadResultImg(
+    `/tng/result/grid.png?_t=${Date.now()}`,
+    document.getElementById("tng-grid-img"),
+    document.getElementById("tng-grid-status")));
 }
 
-const stackBtn = document.getElementById("tng-stack-btn");
-if (stackBtn) {
-  stackBtn.addEventListener("click", () => {
-    const id = document.getElementById("tng-stack-id").value.trim();
-    const band = document.getElementById("tng-stack-band").value;
-    const seed = Math.floor(Math.random() * 1e9);
-    const params = new URLSearchParams({ band, seed: String(seed) });
-    if (id) params.set("id", id);
-    // Navigate so the browser handles the file download (Content-Disposition).
-    window.location = `/tng/stack.fits?${params.toString()}`;
+const stackLoad = document.getElementById("tng-stack-load");
+if (stackLoad) {
+  stackLoad.addEventListener("click", async () => {
+    const statusEl = document.getElementById("tng-stack-status");
+    statusEl.textContent = "fetching latest stacked FITS from FASRC…";
+    try {
+      const r = await fetch(`/tng/result/stack.fits?_t=${Date.now()}`);
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) {}
+        statusEl.textContent = `✗ ${msg}`;
+        return;
+      }
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "TNG_stack.fits";
+      document.body.appendChild(a); a.click(); a.remove();
+      statusEl.textContent = `✓ downloaded (${(blob.size / 1e6).toFixed(0)} MB)`;
+    } catch (err) {
+      statusEl.textContent = `✗ ${err}`;
+    }
   });
 }
 </script>

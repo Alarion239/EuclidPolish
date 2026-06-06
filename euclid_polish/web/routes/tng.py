@@ -10,17 +10,21 @@ stored mode-600, and is the exact file the download job reads on the node.
 """
 from __future__ import annotations
 
-import io
 import os
 
-from flask import Response, jsonify, render_template, request, send_file
+from flask import jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
-from euclid_polish.web.fasrc_fetcher import list_remote_dir, run_remote_python
+from euclid_polish.web.fasrc_fetcher import fetch_one_file, list_remote_dir
 from euclid_polish.web.remote import STATE
 
-_INFOGRAPHIC_SCRIPT = "scripts/fasrc_tng_infographic.py"
+# Job-rendered infographic artifacts on FASRC (written by
+# scripts/fasrc_tng_infographic.py --save). Mirrors INFOGRAPHIC_SUBDIR /
+# OUTPUT_NAMES in that script.
+_INFOGRAPHIC_SUBDIR = "_infographics"
+_INFOGRAPHIC_NAMES = {"histograms": "histograms.png", "grid": "grid.png",
+                      "stack": "stack.fits"}
 
 # Remote path of the token file, matching the script's default
 # (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``). Quoted so a literal
@@ -97,82 +101,49 @@ def register(app):
             n = 0
         return jsonify({"present": n > 0, "connected": True, "chars": n})
 
-    # ---------------- Galaxy infographics (rendered on FASRC) -------------
-    # Each route shells out to scripts/fasrc_tng_infographic.py on the node
-    # (where the FITS + API key live) and streams the bytes back — the same
-    # pattern as the HST-tiles cutout renderer. No FITS is pulled local.
+    # ---------------- Galaxy infographic results (job artifacts) ----------
+    # The infographics are produced by the FASRC jobs ``tng_histograms`` /
+    # ``tng_grid`` / ``tng_stack`` (resource-allocated step cards), which write
+    # their artifact to ``tng_skirt/_infographics/<name>`` on the node. These
+    # routes fetch the latest such artifact for display / download — they do
+    # NOT render anything (that's the job's work).
 
-    def _remote_tng_dir() -> str:
+    def _artifact_remote(kind: str) -> str:
         cfg = fasrc_config.load()
-        return f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}"
+        return (f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}/"
+                f"{_INFOGRAPHIC_SUBDIR}/{_INFOGRAPHIC_NAMES[kind]}")
 
-    @app.route("/tng/histograms.png")
-    def tng_histograms_png():
-        rc, out, err = run_remote_python(
-            _INFOGRAPHIC_SCRIPT,
-            ["--mode", "histograms", "--tng-dir", _remote_tng_dir()],
-            binary=True, timeout=300,
-        )
-        if rc != 0 or not out:
-            return jsonify({"ok": False,
-                            "error": (err or "render failed").strip()[:500]}), 502
-        return send_file(io.BytesIO(out), mimetype="image/png", max_age=0)
+    def _serve_artifact(kind: str, mimetype: str, *, as_attachment=False,
+                        download_name=None, max_bytes=None):
+        # force=True so a freshly-rendered job result isn't masked by the
+        # fetcher's TTL cache. The PNGs are tiny; the FITS needs the larger cap.
+        kw = {"force": True}
+        if max_bytes is not None:
+            kw["max_bytes"] = max_bytes
+        result = fetch_one_file(_artifact_remote(kind), **kw)
+        if not result.ok or not result.local_path:
+            hint = ("no result yet — submit the job above, then load the result "
+                    "once it completes.")
+            if result.error:
+                hint += f" [{result.error}]"
+            return jsonify({"ok": False, "error": hint}), 404
+        return send_file(result.local_path, mimetype=mimetype, max_age=0,
+                         as_attachment=as_attachment,
+                         download_name=download_name)
 
-    @app.route("/tng/grid.png")
-    def tng_grid_png():
-        band = (request.args.get("band", "VIS") or "VIS").upper()
-        if band not in ("VIS", "Y", "J", "H", "RGB"):
-            band = "VIS"
-        try:
-            downsample = int(request.args.get("downsample", "1"))
-        except (TypeError, ValueError):
-            downsample = 1
-        if downsample not in (1, 2, 4):
-            downsample = 1
-        try:
-            seed = int(request.args.get("seed", "0"))
-        except (TypeError, ValueError):
-            seed = 0
-        rc, out, err = run_remote_python(
-            _INFOGRAPHIC_SCRIPT,
-            ["--mode", "grid", "--tng-dir", _remote_tng_dir(),
-             "--band", band, "--downsample", str(downsample),
-             "--seed", str(seed)],
-            binary=True, timeout=120,
-        )
-        if rc != 0 or not out:
-            return jsonify({"ok": False,
-                            "error": (err or "render failed").strip()[:500]}), 502
-        return send_file(io.BytesIO(out), mimetype="image/png", max_age=0)
+    @app.route("/tng/result/histograms.png")
+    def tng_result_histograms():
+        return _serve_artifact("histograms", "image/png")
 
-    @app.route("/tng/stack.fits")
-    def tng_stack_fits():
-        band = (request.args.get("band", "VIS") or "VIS").upper()
-        if band not in ("VIS", "Y", "J", "H"):
-            band = "VIS"
-        gid = (request.args.get("id", "") or "").strip()
-        try:
-            seed = int(request.args.get("seed", "0"))
-        except (TypeError, ValueError):
-            seed = 0
-        argv = ["--mode", "stack", "--tng-dir", _remote_tng_dir(),
-                "--band", band, "--seed", str(seed)]
-        if gid:
-            argv += ["--id", gid]
-        # Streamed straight through as a Response (NOT via the fetcher), so the
-        # 50 MB pull cap never applies to the ~51 MB 5-frame stack. Mirrors the
-        # /api/fasrc/runs/checkpoint.tar download route.
-        rc, out, err = run_remote_python(
-            _INFOGRAPHIC_SCRIPT, argv, binary=True, timeout=180,
-        )
-        if rc != 0 or not out:
-            return jsonify({"ok": False,
-                            "error": (err or "stack failed").strip()[:500]}), 502
-        fname = f"TNG{gid or 'random'}_{band}_stack.fits"
-        return Response(
-            out, mimetype="application/fits",
-            headers={
-                "Content-Disposition": f'attachment; filename="{fname}"',
-                "Content-Length": str(len(out)),
-            },
-        )
+    @app.route("/tng/result/grid.png")
+    def tng_result_grid():
+        return _serve_artifact("grid", "image/png")
+
+    @app.route("/tng/result/stack.fits")
+    def tng_result_stack():
+        # ~51 MB — pull with the larger cap (the default 50 MB cap is too
+        # small) and hand it to the browser as a download.
+        return _serve_artifact(
+            "stack", "application/fits", as_attachment=True,
+            download_name="TNG_stack.fits",
+            max_bytes=Config.WebFetch.MAX_PSF_PULL_BYTES)

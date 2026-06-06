@@ -681,6 +681,110 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         return cmd
 
 
+class TngHistogramsStep(FASRCPipelineStep):
+    """Render the TNG property histograms (SFR / stellar mass / halo mass /
+    effective radius) for the downloaded galaxies as a CPU job.
+
+    The work is the TNG-API property fetch (one call per new galaxy, cached to
+    ``tng_skirt/tng_properties.csv``); the job writes ``_infographics/
+    histograms.png`` which the /tng page then loads.
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="tng_histograms",
+            label="TNG infographic — property histograms",
+            defaults=StepResources(
+                partition="shared", n_cpus=2, n_gpus=0,
+                memory="8G", time_limit="2:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        # Default high so a job fetches the whole catalogue in one go (no
+        # login-node timeout to dodge any more); cached across runs.
+        max_new = int(params.get("max_new", 2000) or 2000)
+        return [
+            "scripts/fasrc_tng_infographic.py",
+            "--mode", "histograms", "--save",
+            "--max-new", str(max_new),
+        ]
+
+
+def _tng_seed(params: Dict[str, Any]) -> int:
+    """Form seed → int. Blank → -1 (re-roll the random pick each submit)."""
+    raw = str(params.get("seed", "")).strip()
+    try:
+        return int(raw) if raw else -1
+    except ValueError:
+        return -1
+
+
+class TngGridStep(FASRCPipelineStep):
+    """Render the 5×5 (random galaxies × viewpoints) image grid as a CPU job →
+    ``_infographics/grid.png``. Band ∈ VIS/Y/J/H/RGB; downsample ×1/×2/×4."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="tng_grid",
+            label="TNG infographic — 5×5 image grid",
+            defaults=StepResources(
+                # RGB loads up to 5×5×3 frames of 1600² (~0.8 GB) + Lupton
+                # intermediates; 16 G is comfortable headroom.
+                partition="shared", n_cpus=2, n_gpus=0,
+                memory="16G", time_limit="0:30:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        band = str(params.get("band", "VIS") or "VIS").upper()
+        if band not in ("VIS", "Y", "J", "H", "RGB"):
+            band = "VIS"
+        downsample = int(params.get("downsample", 1) or 1)
+        if downsample not in (1, 2, 4):
+            downsample = 1
+        return [
+            "scripts/fasrc_tng_infographic.py",
+            "--mode", "grid", "--save",
+            "--band", band,
+            "--downsample", str(downsample),
+            "--seed", str(_tng_seed(params)),
+        ]
+
+
+class TngStackStep(FASRCPipelineStep):
+    """Bundle one band's 5 viewpoint frames of a galaxy (random if no id) into a
+    multi-extension FITS as a CPU job → ``_infographics/stack.fits``."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="tng_stack",
+            label="TNG infographic — stacked FITS (5 viewpoints)",
+            defaults=StepResources(
+                partition="shared", n_cpus=1, n_gpus=0,
+                memory="8G", time_limit="0:20:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        band = str(params.get("band", "VIS") or "VIS").upper()
+        if band not in ("VIS", "Y", "J", "H"):
+            band = "VIS"
+        cmd = [
+            "scripts/fasrc_tng_infographic.py",
+            "--mode", "stack", "--save",
+            "--band", band,
+            "--seed", str(_tng_seed(params)),
+        ]
+        gid = str(params.get("galaxy_id", "")).strip()
+        if gid:
+            cmd += ["--id", gid]
+        return cmd
+
+
 class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
@@ -893,6 +997,9 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
     TngSkirtAtlasDownloadStep,
+    TngHistogramsStep,
+    TngGridStep,
+    TngStackStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,
