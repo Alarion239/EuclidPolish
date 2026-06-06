@@ -991,6 +991,15 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
+        # Proportion of galaxies drawn as real TNG50 stamps vs Sersic profiles.
+        # Emit only when > 0 so a default submit stays byte-identical.
+        try:
+            tng_frac = float(params.get("tng_fraction") or 0.0)
+        except (TypeError, ValueError):
+            tng_frac = 0.0
+        tng_frac = min(1.0, max(0.0, tng_frac))
+        if tng_frac > 0.0:
+            cmd += ["--tng-fraction", f"{tng_frac:g}"]
         return cmd
 
 

@@ -288,7 +288,14 @@ large cutout don't leak across train/validate."></label>`;
             <input type="number" name="n_valid" value="100" min="1" max="5000"></label>
           <label>HR image size (px)
             <input type="number" name="image_size" value="252" step="2" min="60" max="2048"
-                   title="HR scene side in 0.05″/pix pixels. Forward-modelled to 0.10″ LR (and 0.30″→Lanczos for NISP)."></label>`;
+                   title="HR scene side in 0.05″/pix pixels. Forward-modelled to 0.10″ LR (and 0.30″→Lanczos for NISP)."></label>
+          <label style="flex-basis:100%;">TNG galaxy fraction
+            <output class="muted" style="margin-left:6px;">0.00</output>
+            <span class="muted">(0 = all Sérsic)</span>
+            <input type="range" name="tng_fraction" min="0" max="1" step="0.05" value="0"
+                   style="width:100%;"
+                   oninput="this.parentNode.querySelector('output').value=(+this.value).toFixed(2)"
+                   title="Proportion of galaxies drawn as real TNG50 SKIRT stamps instead of analytic Sérsic profiles. Each is a random downloaded galaxy, random orientation, downsampled ×1/×2/×3/×4. 0 = all Sérsic; needs TNG galaxies downloaded under data/tng_skirt/."></label>`;
       case 'train':
         return _hstTrainFields();
       default:

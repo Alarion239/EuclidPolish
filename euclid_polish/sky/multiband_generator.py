@@ -21,8 +21,9 @@ offsets live in :attr:`Config.STAR_BAND_OFFSETS_MAG`.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -32,6 +33,7 @@ from euclid_polish.sky.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas,
 )
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
+from euclid_polish.sky.tng_galaxy import list_tng_galaxies, sample_tng_stamp
 from euclid_polish.sky.types import MultiBandSkyImage
 
 from dataclasses import replace
@@ -57,6 +59,12 @@ class MultiBandGeneratorConfig:
     gal_density_arcmin2:      float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
+    # Fraction of galaxies drawn as real TNG50 SKIRT stamps instead of analytic
+    # Sersic profiles (per galaxy). 0 keeps generation exactly as before; each
+    # injected galaxy is a random downloaded one, random orientation,
+    # downsampled ×1/×2/×3/×4.
+    tng_fraction:             float = 0.0
+    tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -66,6 +74,8 @@ class MultiBandGeneratorConfig:
         if min(self.gal_density_arcmin2, self.star_density_arcmin2,
                self.lens_density_arcmin2) < 0:
             return False, "densities must be non-negative"
+        if not (0.0 <= self.tng_fraction <= 1.0):
+            return False, "tng_fraction must be in [0, 1]"
         return True, None
 
 
@@ -108,6 +118,24 @@ def _deposit_star(
         canvas_4ch[iy, ix, k] += np.float32(flux_k)
 
 
+def _composite_stamp(canvas_4ch: np.ndarray, stamp: np.ndarray,
+                     x0: float, y0: float) -> None:
+    """Add a ``(Hs,Ws,C)`` stamp centred at ``(x0,y0)`` onto the canvas, clipped
+    to the canvas bounds. The stamp may be larger than the field (TNG stamps
+    often are) — only the overlapping region is added."""
+    H, W = canvas_4ch.shape[:2]
+    Hs, Ws = stamp.shape[:2]
+    i0 = int(round(y0)) - Hs // 2
+    j0 = int(round(x0)) - Ws // 2
+    ci_lo, ci_hi = max(0, i0), min(H, i0 + Hs)
+    cj_lo, cj_hi = max(0, j0), min(W, j0 + Ws)
+    if ci_lo >= ci_hi or cj_lo >= cj_hi:
+        return
+    si_lo, sj_lo = ci_lo - i0, cj_lo - j0
+    canvas_4ch[ci_lo:ci_hi, cj_lo:cj_hi, :] += \
+        stamp[si_lo:si_lo + (ci_hi - ci_lo), sj_lo:sj_lo + (cj_hi - cj_lo), :]
+
+
 # ---------------------------------------------------------------------------
 # Multi-band simulator
 # ---------------------------------------------------------------------------
@@ -134,6 +162,17 @@ class MultiBandSimulator:
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
         self.lens_population = lens_population or LensPopulation(catalog)
+        # Load the injectable TNG galaxy list once (only when enabled, so the
+        # default path does no filesystem work).
+        self.tng_galaxies: List[Tuple[str, str]] = (
+            list_tng_galaxies(self.config.tng_galaxy_dir)
+            if self.config.tng_fraction > 0.0 else []
+        )
+        if self.config.tng_fraction > 0.0 and not self.tng_galaxies:
+            sys.stderr.write(
+                f"[generator] tng_fraction={self.config.tng_fraction} but no "
+                f"downloaded galaxies under {self.config.tng_galaxy_dir} — "
+                "falling back to all-Sersic.\n")
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -145,10 +184,37 @@ class MultiBandSimulator:
         return float(rng.uniform(0.0, N - 1)), float(rng.uniform(0.0, N - 1))
 
     # ------------------------------------------------------------------ #
+    def _add_tng_galaxy(
+        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+    ) -> Optional[dict]:
+        """Inject a random downloaded TNG galaxy (random orientation + ×1/×2/×3/
+        ×4 downsample + quarter-rotation), centred at a random field position
+        and clipped to the canvas. Returns None if the stamp can't be loaded."""
+        res = sample_tng_stamp(self.tng_galaxies, rng,
+                               pixel_scale_arcsec=self.config.pixel_scale)
+        if res is None:
+            return None
+        stamp, tmeta = res
+        x_pix, y_pix = self._random_pix(rng)
+        _composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
+        return {
+            "type": "galaxy",
+            "render": "tng",
+            "x_pix": float(x_pix),
+            "y_pix": float(y_pix),
+            "subhalo_id":   tmeta["subhalo_id"],
+            "orientation":  tmeta["orientation"],
+            "rebin_factor": tmeta["rebin_factor"],
+            "rot_k":        tmeta["rot_k"],
+            "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
+                                for b in Config.LR_INPUT_BAND_NAMES],
+        }
+
     def _add_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> dict:
-        """Render one galaxy via Sersic B+D from the COSMOS catalog row.
+        """Render one galaxy. With probability ``config.tng_fraction`` it's a
+        real TNG50 stamp; otherwise a Sersic B+D from the COSMOS catalog row.
 
         Geometry band-independent; per-band fluxes from the catalog
         drive the photometry. Each Sersic component is rendered once and
@@ -156,6 +222,15 @@ class MultiBandSimulator:
         Sersic evaluations by ``NUM_LR_CHANNELS=4×`` without changing
         the result.
         """
+        cfg = self.config
+        # Short-circuit on tng_fraction==0 so the default path consumes no extra
+        # RNG and stays byte-identical to the all-Sersic generator.
+        if (cfg.tng_fraction > 0.0 and self.tng_galaxies
+                and rng.random() < cfg.tng_fraction):
+            rec = self._add_tng_galaxy(canvas_4ch, rng)
+            if rec is not None:
+                return rec
+            # TNG load failed → don't waste the slot, fall through to Sersic.
         g = self.catalog.sample_galaxy(rng)
         x_pix, y_pix = self._random_pix(rng)
         add_sersic_to_bands(

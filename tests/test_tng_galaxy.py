@@ -17,11 +17,14 @@ from euclid_polish.euclid.photometry import (
 )
 from euclid_polish.sky.tng_galaxy import (
     block_mean,
+    list_tng_galaxies,
     load_tng_frame,
     prepare_tng_galaxy,
     rotate_quarter,
+    sample_tng_stamp,
     tng_fits_path,
 )
+from astropy.io import fits as _fits
 
 BAND = Config.BAND_VIS
 HR_SCALE = Config.DEFAULT_PIXEL_SCALE  # 0.05"
@@ -180,3 +183,49 @@ def test_all_local_galaxies_all_orientations(gdir, gid):
             assert meta["flux_e_per_band"]["VIS"] > 0
             ran += 1
     assert ran > 0, f"no complete orientations for TNG{gid}"
+
+
+# ---------------------------------------------------------------------------
+# Enumeration + random sampling (for injection into synthetic scenes)
+# ---------------------------------------------------------------------------
+
+def _write_fake_galaxy(tng_dir, gid, *, size=24, done=True):
+    """A tiny stand-in galaxy: 5 orientations × 4 bands of MJy/sr frames with a
+    bright core, plus a .done marker. ``size`` is divisible by 1/2/3/4."""
+    d = os.path.join(tng_dir, gid)
+    os.makedirs(d, exist_ok=True)
+    for o in (1, 2, 3, 4, 5):
+        for b in ("VIS", "Y", "J", "H"):
+            arr = np.zeros((size, size), dtype=">f4")
+            arr[size // 2 - 2:size // 2 + 2, size // 2 - 2:size // 2 + 2] = 500.0
+            _fits.PrimaryHDU(arr).writeto(
+                os.path.join(d, f"TNG{gid}_O{o}_Euclid_{b}.fits"), overwrite=True)
+    if done:
+        open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+
+
+def test_list_tng_galaxies(tmp_path):
+    tng = str(tmp_path)
+    _write_fake_galaxy(tng, "111")
+    _write_fake_galaxy(tng, "222")
+    _write_fake_galaxy(tng, "333", done=False)        # no .done → excluded
+    gals = list_tng_galaxies(tng)
+    assert [g[1] for g in gals] == ["111", "222"]     # numeric sort
+    assert all(os.path.isdir(g[0]) for g in gals)
+    assert list_tng_galaxies(str(tmp_path / "nope")) == []
+
+
+def test_sample_tng_stamp(tmp_path):
+    tng = str(tmp_path)
+    _write_fake_galaxy(tng, "111")
+    gals = list_tng_galaxies(tng)
+    res = sample_tng_stamp(gals, np.random.default_rng(0))
+    assert res is not None
+    stamp, meta = res
+    assert stamp.ndim == 3 and stamp.shape[2] == 4 and stamp.dtype == np.float32
+    assert meta["subhalo_id"] == "111"
+    assert meta["orientation"] in (1, 2, 3, 4, 5)
+    assert meta["rebin_factor"] in (1, 2, 3, 4)
+    assert meta["rot_k"] in (0, 1, 2, 3)
+    # empty pool → None
+    assert sample_tng_stamp([], np.random.default_rng(0)) is None

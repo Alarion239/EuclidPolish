@@ -171,3 +171,60 @@ def prepare_tng_galaxy(
         "bands": tuple(Config.LR_INPUT_BAND_NAMES),
     }
     return stamp, meta
+
+
+# ---------------------------------------------------------------------------
+# Enumeration + random sampling (for injection into synthetic scenes)
+# ---------------------------------------------------------------------------
+
+N_ORIENTATIONS = 5                              # SKIRT viewpoints O1..O5
+DOWNSAMPLE_CHOICES: Tuple[int, ...] = (1, 2, 3, 4)
+
+
+def list_tng_galaxies(tng_dir: str) -> List[Tuple[str, str]]:
+    """List ``(galaxy_dir, subhalo_id)`` for downloaded galaxies ready to inject.
+
+    A galaxy qualifies if its folder holds a ``.done`` marker AND the VIS O1
+    frame exists, so :func:`prepare_tng_galaxy` won't choke on a partial dir."""
+    if not os.path.isdir(tng_dir):
+        return []
+    out: List[Tuple[str, str]] = []
+    for gid in os.listdir(tng_dir):
+        gdir = os.path.join(tng_dir, gid)
+        if (os.path.isfile(os.path.join(gdir, Config.Tng.DONE_MARKER))
+                and os.path.isfile(tng_fits_path(gdir, gid, 1, "VIS"))):
+            out.append((gdir, gid))
+    try:
+        return sorted(out, key=lambda t: int(t[1]))
+    except ValueError:
+        return sorted(out)
+
+
+def sample_tng_stamp(
+    galaxies: List[Tuple[str, str]],
+    rng: np.random.Generator,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    downsample_choices: Tuple[int, ...] = DOWNSAMPLE_CHOICES,
+) -> Optional[Tuple[np.ndarray, dict]]:
+    """Pick a random galaxy / orientation / downsample / quarter-rotation and
+    return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
+    load).
+
+    The downsample factor is drawn from ``downsample_choices`` (default
+    ×1/×2/×3/×4); coarser = smaller and fainter, like a more distant galaxy.
+    """
+    if not galaxies:
+        return None
+    gdir, gid = galaxies[int(rng.integers(0, len(galaxies)))]
+    orientation = int(rng.integers(1, N_ORIENTATIONS + 1))      # O1..O5
+    rebin = int(downsample_choices[int(rng.integers(0, len(downsample_choices)))])
+    rot_k = int(rng.integers(0, 4))
+    try:
+        return prepare_tng_galaxy(
+            gdir, gid, orientation,
+            rebin_factor=rebin, rot_k=rot_k,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+        )
+    except Exception:
+        return None

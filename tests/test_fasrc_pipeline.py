@@ -310,6 +310,18 @@ class TestRegistry:
         assert "--id" not in argv
         assert argv[argv.index("--seed") + 1] == "-1"
 
+    def test_synthetic_generate_tng_fraction_flag(self):
+        """The synthetic generator forwards a TNG fraction; 0/blank is omitted
+        so a default submit stays byte-identical."""
+        step = REGISTRY.get("synthetic_generate")
+        base = {"n_train": 10, "n_valid": 2, "image_size": 252,
+                "batch_size": 4, "steps": 100}
+        argv = step.build_command({**base, "tng_fraction": "0.3"})
+        assert argv[argv.index("--tng-fraction") + 1] == "0.3"
+        assert "--tng-fraction" not in step.build_command(base)
+        assert "--tng-fraction" not in step.build_command(
+            {**base, "tng_fraction": "0"})
+
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
         assert isinstance(REGISTRY.get("download"), HSTDownloadStep)

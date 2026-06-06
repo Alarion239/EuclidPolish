@@ -118,6 +118,12 @@ def parse_args() -> argparse.Namespace:
                          "Requires both generate and convolve (i.e. neither "
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
+    ap.add_argument("--tng-fraction", type=float, default=0.0,
+                    help="Fraction of synthetic galaxies drawn as real TNG50 "
+                         "SKIRT stamps (random galaxy + orientation, downsampled "
+                         "×1/×2/×3/×4) instead of analytic Sersic profiles. "
+                         "0 = all Sersic (unchanged). Needs TNG galaxies "
+                         "downloaded under $DATA_DIR/tng_skirt/.")
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
@@ -141,7 +147,8 @@ def step_generate(args: argparse.Namespace) -> None:
     _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
     cfg = MultiBandGeneratorConfig(image_size=args.image_size,
-                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+                                   tng_fraction=args.tng_fraction)
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
@@ -324,7 +331,8 @@ _W_RECORDS_DIR = ""
 
 
 def _gen_init_worker(catalog_path, image_size, psf_dir,
-                     require_empirical_psf, records_dir) -> None:
+                     require_empirical_psf, records_dir,
+                     tng_fraction=0.0) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
     memmapped and only the filtered columns are held, so each worker's copy
@@ -333,7 +341,8 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     cat = open_cosmos2025(path=catalog_path)
     _W_SIM = MultiBandSimulator(
         cat, MultiBandGeneratorConfig(image_size=image_size,
-                                      pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+                                      pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+                                      tng_fraction=tng_fraction),
     )
     psf_sets = load_all_band_psf_sets(
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
@@ -387,7 +396,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         with ProcessPoolExecutor(
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(args.catalog, args.image_size, args.psf_dir,
-                      args.require_empirical_psf, args.records_dir),
+                      args.require_empirical_psf, args.records_dir,
+                      args.tng_fraction),
         ) as pool:
             futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
             for fut in as_completed(futs):
