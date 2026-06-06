@@ -108,13 +108,16 @@ def parse_subhalo(sub: dict) -> Dict[str, float]:
     re = _pick(sub, "halfmassrad_stars", "SubhaloHalfmassRadType_4")
     if re is not None:
         out["reff"] = float(re) / H_LITTLE
-    mlog = _pick(sub, "mass_log_msun")
-    if mlog is not None:
-        out["m_halo"] = 10.0 ** float(mlog)
-    else:                                   # fallback: total mass in code units
-        mtot = _pick(sub, "mass", "SubhaloMass")
-        if mtot is not None:
-            out["m_halo"] = float(mtot) * 1e10 / H_LITTLE
+    # Total bound mass. Prefer the *documented* raw field ``mass`` (SubhaloMass,
+    # code units 1e10 M☉/h) over the handy-but-undocumented ``mass_log_msun``;
+    # both give the same physical value (verified mass*1e10/h == 10**log).
+    mtot = _pick(sub, "mass", "SubhaloMass")
+    if mtot is not None:
+        out["m_halo"] = float(mtot) * 1e10 / H_LITTLE
+    else:
+        mlog = _pick(sub, "mass_log_msun")
+        if mlog is not None:
+            out["m_halo"] = 10.0 ** float(mlog)
     return out
 
 

@@ -40,20 +40,26 @@ def test_load_api_key_env_then_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_parse_subhalo_format_json():
-    sub = {"sfr": 1.5, "mass_stars": 2.0, "halfmassrad_stars": 3.0,
-           "mass_log_msun": 12.0}
+    # Documented fields only (mass = SubhaloMass, code units → ×1e10/h M⊙).
+    sub = {"sfr": 1.5, "mass_stars": 2.0, "halfmassrad_stars": 3.0, "mass": 5.0}
     p = P.parse_subhalo(sub)
     assert p["sfr"] == pytest.approx(1.5)
     assert p["mass_stars"] == pytest.approx(2.0 * 1e10 / P.H_LITTLE)
     assert p["reff"] == pytest.approx(3.0 / P.H_LITTLE)
-    # total mass comes straight from mass_log_msun (already log10 Msun).
-    assert p["m_halo"] == pytest.approx(10.0 ** 12.0)
-
-
-def test_parse_subhalo_mass_fallback_when_no_log():
-    sub = {"sfr": 0.0, "mass_stars": 1.0, "halfmassrad_stars": 1.0, "mass": 5.0}
-    p = P.parse_subhalo(sub)
     assert p["m_halo"] == pytest.approx(5.0 * 1e10 / P.H_LITTLE)
+
+
+def test_parse_subhalo_prefers_documented_mass_over_log():
+    # Both present (as the live API returns): the documented raw ``mass`` wins.
+    sub = {"mass": 5.0, "mass_log_msun": 99.0}     # 99 is absurd → must be ignored
+    assert P.parse_subhalo(sub)["m_halo"] == pytest.approx(5.0 * 1e10 / P.H_LITTLE)
+
+
+def test_parse_subhalo_mass_log_fallback():
+    # Only the undocumented convenience field present → still works.
+    sub = {"sfr": 0.0, "mass_stars": 1.0, "halfmassrad_stars": 1.0,
+           "mass_log_msun": 12.0}
+    assert P.parse_subhalo(sub)["m_halo"] == pytest.approx(10.0 ** 12.0)
 
 
 def test_parse_subhalo_missing_fields_are_nan():
