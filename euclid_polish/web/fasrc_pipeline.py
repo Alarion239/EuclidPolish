@@ -681,18 +681,44 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         return cmd
 
 
-def _tng_seed(params: Dict[str, Any]) -> int:
-    """Form seed → int. Blank → -1 (re-roll the random pick each submit)."""
-    raw = str(params.get("seed", "")).strip()
+# Galaxy-selection modes for the grid/stack (mirrors euclid_polish.tng.selection
+# .MODES). The pick happens *locally* (where the histogram property cache lives)
+# and the chosen ids ride to the FASRC job via --ids/--id.
+_TNG_MODES = ("random", "most_massive", "least_massive", "most_star_forming",
+              "least_star_forming", "biggest_radius", "smallest_radius")
+
+
+def _tng_mode(params: Dict[str, Any]) -> str:
+    m = str(params.get("mode", "random")).strip().lower()
+    return m if m in _TNG_MODES else "random"
+
+
+def _tng_temperature(params: Dict[str, Any]) -> float:
     try:
-        return int(raw) if raw else -1
-    except ValueError:
-        return -1
+        t = float(params.get("temperature", 0.3))
+    except (TypeError, ValueError):
+        t = 0.3
+    return min(1.0, max(0.0, t))
+
+
+def _tng_note(mode: str, temperature: float) -> str:
+    pretty = mode.replace("_", " ")
+    return pretty if mode == "random" else f"{pretty} · T={temperature:.2f}"
+
+
+def _tng_select(mode: str, n: int, temperature: float) -> List[str]:
+    """Select ``n`` galaxy ids locally by mode (empty if no property cache)."""
+    # Lazy import: keeps matplotlib (pulled via tng.properties) out of the
+    # pipeline module's import path. Resolved at call time so tests can patch.
+    from euclid_polish.tng.selection import pick_by_mode
+    return pick_by_mode(mode, n, temperature=temperature)
 
 
 class TngGridStep(FASRCPipelineStep):
-    """Render the 5×5 (random galaxies × viewpoints) image grid as a CPU job →
-    ``_infographics/grid.png``. Band ∈ VIS/Y/J/H/RGB; downsample ×1/×2/×4."""
+    """Render the 5×5 (galaxies × viewpoints) image grid as a CPU job →
+    ``_infographics/grid.png``. Band ∈ VIS/Y/J/H/RGB; downsample ×1/×2/×4. The
+    5 galaxies are chosen by ``mode`` (random, or the most/least extreme in
+    stellar mass / SFR / radius) with a temperature-weighted draw."""
 
     def __init__(self):
         super().__init__(
@@ -714,18 +740,28 @@ class TngGridStep(FASRCPipelineStep):
         downsample = int(params.get("downsample", 1) or 1)
         if downsample not in (1, 2, 4):
             downsample = 1
-        return [
+        mode = _tng_mode(params)
+        temperature = _tng_temperature(params)
+        cmd = [
             "scripts/fasrc_tng_infographic.py",
             "--mode", "grid", "--save",
             "--band", band,
             "--downsample", str(downsample),
-            "--seed", str(_tng_seed(params)),
         ]
+        ids = _tng_select(mode, 5, temperature)
+        if ids:
+            cmd += ["--ids", ",".join(ids), "--note", _tng_note(mode, temperature)]
+        else:
+            # No local property cache yet → random pick on the node. (Render the
+            # histograms first to enable the most/least modes.)
+            cmd += ["--seed", "-1"]
+        return cmd
 
 
 class TngStackStep(FASRCPipelineStep):
-    """Bundle one band's 5 viewpoint frames of a galaxy (random if no id) into a
-    multi-extension FITS as a CPU job → ``_infographics/stack.fits``."""
+    """Bundle one band's 5 viewpoint frames of a galaxy into a multi-extension
+    FITS → ``_infographics/stack.fits``. The galaxy is an explicit id, else
+    chosen by ``mode`` (temperature-weighted) like the grid."""
 
     def __init__(self):
         super().__init__(
@@ -746,11 +782,19 @@ class TngStackStep(FASRCPipelineStep):
             "scripts/fasrc_tng_infographic.py",
             "--mode", "stack", "--save",
             "--band", band,
-            "--seed", str(_tng_seed(params)),
         ]
         gid = str(params.get("galaxy_id", "")).strip()
         if gid:
             cmd += ["--id", gid]
+            return cmd
+        # No explicit id → pick one by mode (temperature-weighted).
+        mode = _tng_mode(params)
+        temperature = _tng_temperature(params)
+        ids = _tng_select(mode, 1, temperature)
+        if ids:
+            cmd += ["--id", ids[0]]
+        else:
+            cmd += ["--seed", "-1"]      # no cache → random pick on the node
         return cmd
 
 

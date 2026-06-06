@@ -90,6 +90,25 @@ def test_render_grid_no_galaxies_is_placeholder(tmp_path):
     assert mod.render_grid(str(tmp_path), "VIS", 1, 0)[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+def test_render_grid_explicit_ids(tmp_path):
+    """Explicit ids (chosen by the selection mode) are rendered; a missing id
+    just gives blank cells, no crash."""
+    tng = str(tmp_path)
+    for g in ("111", "222", "333"):
+        _make_galaxy(tng, g)
+    png = mod.render_grid(tng, "VIS", 1, 0, ids=["111", "999"],
+                          note="most massive · T=0.30")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_main_grid_with_ids(tmp_path):
+    tng = str(tmp_path)
+    _make_galaxy(tng, "111")
+    rc = mod.main(["--mode", "grid", "--tng-dir", tng, "--band", "VIS",
+                   "--ids", "111", "--note", "most massive", "--save"])
+    assert rc == 0 and os.path.isfile(mod.default_output_path(tng, "grid"))
+
+
 def test_render_cell_missing_file_returns_none(tmp_path):
     tng = str(tmp_path)
     _make_galaxy(tng, "111", bands=("VIS",))      # only VIS present

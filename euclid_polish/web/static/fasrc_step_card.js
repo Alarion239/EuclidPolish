@@ -192,7 +192,9 @@ large cutout don't leak across train/validate."></label>`;
             get a <code>.done</code> marker, so re-submitting only fills the
             gaps.</span>`;
       case 'tng_grid':
-        // Mirrors TngGridStep.build_command (band, downsample, seed).
+        // Mirrors TngGridStep.build_command (band, downsample, mode,
+        // temperature). The 5 galaxies are selected locally from the histogram
+        // property cache; the most/least modes need histograms rendered first.
         return `
           <label>Band
             <select name="band">
@@ -209,23 +211,23 @@ large cutout don't leak across train/validate."></label>`;
               <option value="2">×2</option>
               <option value="4">×4</option>
             </select></label>
-          <label>Seed <span class="muted">(blank = random 5)</span>
-            <input type="number" name="seed" value="" placeholder="random"
-                   title="Fix the random galaxy pick for reproducibility; blank re-rolls 5 random galaxies each submit."></label>`;
+          ${_tngModeFields()}`;
       case 'tng_stack':
-        // Mirrors TngStackStep.build_command (band, galaxy_id, seed).
+        // Mirrors TngStackStep.build_command (band, galaxy_id, mode,
+        // temperature). Explicit id wins; otherwise the galaxy is picked by mode.
         return `
-          <label>Galaxy id <span class="muted">(blank = random)</span>
-            <input type="text" name="galaxy_id" value="" placeholder="random"
+          <label>Galaxy id <span class="muted">(blank = pick by Mode)</span>
+            <input type="text" name="galaxy_id" value="" placeholder="by Mode"
                    inputmode="numeric"
-                   title="Subhalo id (folder name under tng_skirt). Blank → a random downloaded galaxy."></label>
+                   title="Subhalo id (folder name under tng_skirt). Blank → choose by the Mode below."></label>
           <label>Band
             <select name="band">
               <option value="VIS">VIS</option>
               <option value="Y">NISP Y</option>
               <option value="J">NISP J</option>
               <option value="H">NISP H</option>
-            </select></label>`;
+            </select></label>
+          ${_tngModeFields()}`;
       case 'euclid_query':
         // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
         // snr_min). Writes stars.csv. Run first, then download, then verify.
@@ -292,6 +294,25 @@ large cutout don't leak across train/validate."></label>`;
       default:
         return '';
     }
+  }
+
+  function _tngModeFields() {
+    // Shared galaxy-selection controls for the TNG grid + stack cards.
+    return `
+      <label>Mode
+        <select name="mode"
+                title="Which galaxies to show. Random samples uniformly; the most/least modes rank by stellar mass / SFR / effective radius from the histogram property cache (render the histograms first). Re-submit to re-roll.">
+          <option value="random">Random</option>
+          <option value="most_massive">Most massive (stellar)</option>
+          <option value="least_massive">Least massive (stellar)</option>
+          <option value="most_star_forming">Most star-forming</option>
+          <option value="least_star_forming">Least star-forming</option>
+          <option value="biggest_radius">Biggest radius</option>
+          <option value="smallest_radius">Smallest radius</option>
+        </select></label>
+      <label>Temperature <span class="muted">(0 = exact extreme)</span>
+        <input type="number" name="temperature" value="0.3" min="0" max="1" step="0.05"
+               title="For the most/least modes: 0 picks the deterministic extreme; higher temperatures randomly sample from a broader set of the top galaxies, weighted toward the extreme (not a fixed top-N). Ignored for Random."></label>`;
   }
 
   function _tfrecordsFields() {

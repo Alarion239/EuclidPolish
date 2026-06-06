@@ -240,10 +240,13 @@ class TestRegistry:
         assert step.defaults.n_gpus == 0
         assert step.fixed_cpus is None      # CPU count is user-editable
 
-    def test_tng_infographic_steps_run_the_script_and_save(self):
+    _PICK = "euclid_polish.tng.selection.pick_by_mode"
+
+    def test_tng_infographic_steps_run_the_script_and_save(self, monkeypatch):
         """The image-infographic jobs invoke the render script with --save (so
         they write the standard artifact path the /tng page fetches). The
         histogram is NOT a job — it renders locally."""
+        monkeypatch.setattr(self._PICK, lambda *a, **k: [])
         assert "tng_histograms" not in REGISTRY.by_id
         for sid, mode in (("tng_grid", "grid"), ("tng_stack", "stack")):
             step = REGISTRY.get(sid)
@@ -253,32 +256,59 @@ class TestRegistry:
             assert "--save" in argv
             assert step.needs_gpu is False and step.defaults.n_gpus == 0
 
-    def test_tng_grid_step_band_and_downsample(self):
+    def test_tng_grid_step_band_and_downsample(self, monkeypatch):
+        monkeypatch.setattr(self._PICK, lambda *a, **k: [])   # no cache
         step = REGISTRY.get("tng_grid")
-        argv = step.build_command({"band": "rgb", "downsample": 4, "seed": 7})
-        assert argv[argv.index("--band") + 1] == "RGB"          # upper-cased
+        argv = step.build_command({"band": "rgb", "downsample": 4})
+        assert argv[argv.index("--band") + 1] == "RGB"        # upper-cased
         assert argv[argv.index("--downsample") + 1] == "4"
-        assert argv[argv.index("--seed") + 1] == "7"
+        assert argv[argv.index("--seed") + 1] == "-1"         # random fallback
         # Bad values coerced to safe defaults.
         argv2 = step.build_command({"band": "ZZ", "downsample": 9})
         assert argv2[argv2.index("--band") + 1] == "VIS"
         assert argv2[argv2.index("--downsample") + 1] == "1"
 
-    def test_tng_grid_step_blank_seed_is_random(self):
-        """Blank seed → -1, so a re-submitted grid job re-rolls the 5 galaxies."""
-        step = REGISTRY.get("tng_grid")
-        argv = step.build_command({"band": "VIS", "seed": ""})
-        assert argv[argv.index("--seed") + 1] == "-1"
+    def test_tng_grid_step_mode_selects_ids_with_temperature(self, monkeypatch):
+        """The grid picks galaxies locally by mode+temperature and passes them
+        as --ids (plus a human note) — no --seed."""
+        seen = {}
 
-    def test_tng_stack_step_id_and_band(self):
-        step = REGISTRY.get("tng_stack")
-        argv = step.build_command({"band": "h", "galaxy_id": "167396"})
+        def fake(mode, n, *, temperature=0.3, rng=None):
+            seen.update(mode=mode, n=n, temperature=temperature)
+            return ["167396", "504560", "275546", "1", "2"]
+        monkeypatch.setattr(self._PICK, fake)
+        argv = REGISTRY.get("tng_grid").build_command(
+            {"band": "VIS", "mode": "most_massive", "temperature": "0.5"})
+        assert seen == {"mode": "most_massive", "n": 5, "temperature": 0.5}
+        assert argv[argv.index("--ids") + 1] == "167396,504560,275546,1,2"
+        assert "most massive" in argv[argv.index("--note") + 1]
+        assert "--seed" not in argv
+
+    def test_tng_grid_step_unknown_mode_coerced_to_random(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(
+            self._PICK, lambda mode, n, **k: seen.update(mode=mode) or [])
+        REGISTRY.get("tng_grid").build_command({"mode": "bogus"})
+        assert seen["mode"] == "random"
+
+    def test_tng_stack_step_explicit_id_wins(self):
+        argv = REGISTRY.get("tng_stack").build_command(
+            {"band": "h", "galaxy_id": "167396"})
         assert argv[argv.index("--band") + 1] == "H"
         assert argv[argv.index("--id") + 1] == "167396"
-        # No id → random pick on the node (no --id flag).
-        argv2 = step.build_command({"band": "VIS"})
-        assert "--id" not in argv2
-        assert argv2[argv2.index("--seed") + 1] == "-1"
+        assert "--seed" not in argv
+
+    def test_tng_stack_step_mode_picks_one(self, monkeypatch):
+        monkeypatch.setattr(self._PICK, lambda *a, **k: ["999"])
+        argv = REGISTRY.get("tng_stack").build_command(
+            {"band": "VIS", "mode": "biggest_radius"})
+        assert argv[argv.index("--id") + 1] == "999"
+
+    def test_tng_stack_step_no_cache_falls_back_to_random(self, monkeypatch):
+        monkeypatch.setattr(self._PICK, lambda *a, **k: [])
+        argv = REGISTRY.get("tng_stack").build_command({"band": "VIS"})
+        assert "--id" not in argv
+        assert argv[argv.index("--seed") + 1] == "-1"
 
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)

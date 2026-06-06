@@ -169,15 +169,19 @@ def render_cell(gdir: str, gid: str, orient: int, band: str,
     return None if a is None else _grayscale_norm(a)
 
 
-def render_grid(tng_dir: str, band: str, downsample: int, seed: int) -> bytes:
-    ids = pick_ids(list_downloaded_ids(tng_dir), GRID_GALAXIES, seed)
-    if not ids:
+def render_grid(tng_dir: str, band: str, downsample: int, seed: int, *,
+                ids: Optional[List[str]] = None, note: str = "") -> bytes:
+    # Explicit ids (chosen locally by the selection mode) win; otherwise pick a
+    # seeded-random set on the node.
+    chosen = (list(ids)[:GRID_GALAXIES] if ids
+              else pick_ids(list_downloaded_ids(tng_dir), GRID_GALAXIES, seed))
+    if not chosen:
         return placeholder_png("No galaxies downloaded yet.")
-    nrows = len(ids)
+    nrows = len(chosen)
     fig, axes = plt.subplots(nrows, len(ORIENTATIONS),
                              figsize=(len(ORIENTATIONS) * 2.1, nrows * 2.1),
                              squeeze=False)
-    for r, gid in enumerate(ids):
+    for r, gid in enumerate(chosen):
         gdir = os.path.join(tng_dir, gid)
         for c, orient in enumerate(ORIENTATIONS):
             ax = axes[r][c]
@@ -195,7 +199,10 @@ def render_grid(tng_dir: str, band: str, downsample: int, seed: int) -> bytes:
                 ax.set_title(f"O{orient}", fontsize=10)
             if c == 0:
                 ax.set_ylabel(f"TNG{gid}", fontsize=9)
-    fig.suptitle(f"TNG50-1 — {band} — downsample ×{downsample}", fontsize=12)
+    title = f"TNG50-1 — {band} — downsample ×{downsample}"
+    if note:
+        title += f"  ·  {note}"
+    fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     return _fig_to_png(fig)
 
@@ -250,6 +257,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--downsample", type=int, default=1, choices=(1, 2, 4))
     p.add_argument("--seed", type=int, default=0,
                    help="Seed for the random galaxy pick (grid / random stack).")
+    p.add_argument("--ids", default="",
+                   help="Comma-separated subhalo ids to render in the grid "
+                        "(chosen locally by selection mode); overrides --seed.")
+    p.add_argument("--note", default="",
+                   help="Free-text note appended to the grid title (e.g. the "
+                        "selection mode).")
     p.add_argument("--id", default="",
                    help="Subhalo id for stack mode (blank → seeded random).")
     p.add_argument("--workers", type=int, default=16,
@@ -282,7 +295,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if band not in (*SINGLE_BANDS, "RGB"):
             sys.stderr.write(f"bad band {band!r}\n")
             return 2
-        out = render_grid(args.tng_dir, band, args.downsample, args.seed)
+        ids = [s.strip() for s in args.ids.split(",") if s.strip()] or None
+        out = render_grid(args.tng_dir, band, args.downsample, args.seed,
+                          ids=ids, note=args.note)
     elif args.mode == "stack":
         band = args.band.upper()
         if band not in SINGLE_BANDS:
