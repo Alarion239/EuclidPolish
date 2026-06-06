@@ -10,25 +10,37 @@
 {% endblock %}
 
 {% block viz %}
+<style>
+  .thumb-wrap { position: relative; display: inline-block; }
+  .thumb-track { position: absolute; top: 6px; left: 6px; z-index: 3; }
+</style>
 {% if pngs %}
 <div class="gallery">
   {% for p in pngs[:60] %}
-    {% if p.inspect_fits %}
-      <a class="thumb"
-         href="{{ url_for('inspect_fits_page', fits=p.inspect_fits) }}"
-         target="_blank"
-         title="Inspect sidecar FITS">
-        <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
-        <span class="thumb-label">{{ p.rel }}</span>
-        <span class="muted">{{ p.size_kb }} KB · 🔬 FITS</span>
-      </a>
-    {% else %}
-      <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}" target="_blank">
-        <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
-        <span class="thumb-label">{{ p.rel }}</span>
-        <span class="muted">{{ p.size_kb }} KB</span>
-      </a>
-    {% endif %}
+    <div class="thumb-wrap">
+      {% if p.inspect_fits %}
+        <a class="thumb"
+           href="{{ url_for('inspect_fits_page', fits=p.inspect_fits) }}"
+           target="_blank"
+           title="Inspect sidecar FITS">
+          <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
+          <span class="thumb-label">{{ p.rel }}</span>
+          <span class="muted">{{ p.size_kb }} KB · 🔬 FITS</span>
+        </a>
+      {% else %}
+        <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}" target="_blank">
+          <img src="{{ url_for('serve_vis', relpath=p.rel) }}" alt="{{ p.rel }}" loading="lazy">
+          <span class="thumb-label">{{ p.rel }}</span>
+          <span class="muted">{{ p.size_kb }} KB</span>
+        </a>
+      {% endif %}
+      <button class="tk-track-btn thumb-track"
+              data-track-kind="image"
+              data-track-path="data/vis/{{ p.rel }}"
+              data-track-name="{{ p.rel.split('/')|last|replace('.png','')|replace('.PNG','') }}"
+              data-track-label="{{ p.rel }} — visualization (PNG)"
+              title="Back up &amp; track this image">📌</button>
+    </div>
   {% endfor %}
 </div>
 {% if pngs | length > 60 %}
