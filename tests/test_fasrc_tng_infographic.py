@@ -132,12 +132,17 @@ def test_cache_round_trip(tmp_path):
     assert back["22"]["mass_stars"] == pytest.approx(5.0)
 
 
+def _raise(*a, **k):
+    raise RuntimeError("no network in tests")
+
+
 def test_gather_properties_queries_only_missing(tmp_path, monkeypatch):
     tng = str(tmp_path)
-    # Pre-seed cache with 111 only; 222 is missing → one query.
+    # Pre-seed cache with 111 only; 222 is missing → one fallback query.
     mod._write_cache(os.path.join(tng, mod.PROPERTIES_CSV),
                      {"111": {"sfr": 1.0, "mass_stars": 2.0,
                               "m_halo": 3.0, "reff": 4.0}})
+    monkeypatch.setattr(mod, "bulk_fetch_fields", _raise)   # force fallback
     calls = []
 
     def fake_fetch(gid, key, timeout=10):
@@ -147,17 +152,97 @@ def test_gather_properties_queries_only_missing(tmp_path, monkeypatch):
     out = mod.gather_properties(tng, ["111", "222"], "key", max_new=10)
     assert calls == ["222"]                       # 111 served from cache
     assert set(out) == {"111", "222"}
-    # 222 now persisted to the cache CSV.
     assert "222" in mod._read_cache(os.path.join(tng, mod.PROPERTIES_CSV))
 
 
 def test_gather_properties_max_new_zero_skips_network(tmp_path, monkeypatch):
     tng = str(tmp_path)
+    monkeypatch.setattr(mod, "bulk_fetch_fields", _raise)   # force fallback
     monkeypatch.setattr(mod, "fetch_properties",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("should not query")))
     out = mod.gather_properties(tng, ["111"], "key", max_new=0)
     assert out == {}                              # nothing cached, none queried
+
+
+# ---------------------------------------------------------------------------
+# bulk group-catalog fetch (5 requests for the whole atlas)
+# ---------------------------------------------------------------------------
+
+def _bulk_arrays():
+    return {
+        "SubhaloSFR": np.array([0.0, 1.5, 2.5, 9.9], dtype="f4"),
+        "SubhaloMassType": np.tile(
+            np.array([0, 0, 0, 0, 2.0, 0], dtype="f4"), (4, 1)),
+        "SubhaloHalfmassRadType": np.tile(
+            np.array([0, 0, 0, 0, 3.0, 0], dtype="f4"), (4, 1)),
+        "SubhaloGrNr": np.array([0, 0, 1, 1], dtype="i8"),
+        "Group_M_Crit200": np.array([10.0, 20.0], dtype="f4"),
+    }
+
+
+def test_row_stars():
+    assert mod._row_stars([0, 0, 0, 0, 5.0, 0]) == 5.0
+    assert mod._row_stars(7.0) == 7.0
+
+
+def test_properties_from_arrays_indexing_and_units():
+    props = mod.properties_from_arrays(_bulk_arrays(), ["1", "2"])
+    assert props["1"]["sfr"] == pytest.approx(1.5)
+    assert props["1"]["mass_stars"] == pytest.approx(2.0 * 1e10 / mod.H_LITTLE)
+    assert props["1"]["reff"] == pytest.approx(3.0 / mod.H_LITTLE)
+    # subhalo 1 → group 0 → M_Crit200 = 10 ; subhalo 2 → group 1 → 20
+    assert props["1"]["m_halo"] == pytest.approx(10.0 * 1e10 / mod.H_LITTLE)
+    assert props["2"]["m_halo"] == pytest.approx(20.0 * 1e10 / mod.H_LITTLE)
+
+
+def test_properties_from_arrays_out_of_range_is_nan():
+    props = mod.properties_from_arrays(_bulk_arrays(), ["999"])
+    assert all(np.isnan(v) for v in props["999"].values())
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_read_field_array_roundtrip(tmp_path, nested):
+    import h5py
+    p = str(tmp_path / "f.hdf5")
+    with h5py.File(p, "w") as f:
+        target = f.create_group("Subhalo") if nested else f
+        target.create_dataset("SubhaloSFR", data=np.arange(5, dtype="f4"))
+    arr = mod._read_field_array(p, "SubhaloSFR")
+    assert list(arr) == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_gather_properties_uses_bulk_then_cache(tmp_path, monkeypatch):
+    tng = str(tmp_path)
+    calls = {"bulk": 0}
+
+    def fake_bulk(key, cache_dir, *, reporter=None):
+        calls["bulk"] += 1
+        return _bulk_arrays()
+    monkeypatch.setattr(mod, "bulk_fetch_fields", fake_bulk)
+    monkeypatch.setattr(mod, "fetch_properties",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("bulk path must not hit per-galaxy")))
+    out = mod.gather_properties(tng, ["1", "2", "3"], "key")
+    assert calls["bulk"] == 1 and set(out) == {"1", "2", "3"}
+    assert out["2"]["sfr"] == pytest.approx(2.5)
+    # Second call: everything cached → bulk not called again.
+    monkeypatch.setattr(mod, "bulk_fetch_fields", _raise)
+    out2 = mod.gather_properties(tng, ["1", "2", "3"], "key")
+    assert set(out2) == {"1", "2", "3"}
+
+
+def test_gather_properties_bulk_failure_falls_back(tmp_path, monkeypatch):
+    tng = str(tmp_path)
+    monkeypatch.setattr(mod, "bulk_fetch_fields", _raise)
+    calls = []
+
+    def fake_fetch(gid, key, timeout=10):
+        calls.append(gid)
+        return {"sfr": 1.0, "mass_stars": 1.0, "m_halo": 1.0, "reff": 1.0}
+    monkeypatch.setattr(mod, "fetch_properties", fake_fetch)
+    out = mod.gather_properties(tng, ["1", "2"], "key", max_new=10)
+    assert calls == ["1", "2"] and set(out) == {"1", "2"}
 
 
 # ---------------------------------------------------------------------------

@@ -13,10 +13,13 @@ Galaxies are self-enumerated from the download tree — every
 
   ``--mode histograms``
       2×2 matplotlib panel of SFR / stellar mass / halo mass / effective radius
-      for the downloaded galaxies. Per-galaxy properties come from the TNG API
-      (``…/subhalos/{id}/info.json`` + the parent halo's ``Group_M_Crit200``)
-      and are cached to ``<tng_dir>/tng_properties.csv`` so only new galaxies
-      hit the network; ``--max-new`` bounds the queries per call.
+      for the downloaded galaxies. Properties come from the TNG **group-catalog
+      field-subset** endpoint — five bulk requests (SubhaloSFR / SubhaloMassType
+      / SubhaloHalfmassRadType / SubhaloGrNr / Group_M_Crit200), each an array
+      over all subhalos that we index by id — so the whole atlas costs 5
+      requests, not ~2 per galaxy. Cached to ``<tng_dir>/tng_properties.csv``
+      (+ the raw arrays under ``_groupcat/``). Falls back to per-galaxy
+      ``info.json`` (bounded by ``--max-new``) only if the bulk fetch fails.
 
   ``--mode grid --band {VIS|Y|J|H|RGB} --downsample {1|2|4} --seed S``
       A 5×5 PNG grid: 5 seeded-random galaxies (rows) × their 5 viewpoints
@@ -219,6 +222,112 @@ def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 10
     return out
 
 
+# --- bulk group-catalog fetch (a handful of requests for the whole atlas) ---
+#
+# The subhalo search returns only id+mass+url and has no id-list filter, so
+# per-galaxy info.json would be ~2 requests × N galaxies. Instead the
+# group-catalog *field-subset* endpoint returns one field as an array over ALL
+# subhalos/groups (indexed by id) — but only ONE field per request. So five
+# requests cover the entire atlas regardless of galaxy count, and the snapshot
+# is static so the downloaded arrays cache forever.
+
+GROUPCAT_SUBDIR = "_groupcat"
+_GROUPCAT_URL = "https://www.tng-project.org/api/TNG50-1/files/groupcat-99/"
+_FIELD_REQUESTS = (
+    ("Subhalo", "SubhaloSFR"),
+    ("Subhalo", "SubhaloMassType"),
+    ("Subhalo", "SubhaloHalfmassRadType"),
+    ("Subhalo", "SubhaloGrNr"),
+    ("Group",   "Group_M_Crit200"),
+)
+
+
+def _read_field_array(path: str, field: str) -> np.ndarray:
+    """Read a field array from a groupcat-subset download (HDF5, else numpy).
+
+    The subset HDF5 layout isn't contractually fixed, so we walk it and pick the
+    dataset whose basename matches ``field`` (else the largest dataset)."""
+    import h5py
+    try:
+        found: Dict[str, np.ndarray] = {}
+        with h5py.File(path, "r") as f:
+            f.visititems(lambda n, o: found.__setitem__(n, o[()])
+                         if isinstance(o, h5py.Dataset) else None)
+        if found:
+            for name, arr in found.items():
+                if name.split("/")[-1] == field:
+                    return np.asarray(arr)
+            return np.asarray(max(found.values(),
+                                  key=lambda a: getattr(a, "size", 0)))
+    except (OSError, ValueError):
+        pass
+    return np.asarray(np.load(path, allow_pickle=False))
+
+
+def _download_field(objtype: str, field: str, key: str,
+                    cache_dir: str) -> np.ndarray:
+    import requests
+    path = os.path.join(cache_dir, f"{objtype}_{field}.hdf5")
+    if not (os.path.isfile(path) and os.path.getsize(path) > 0):
+        url = f"{_GROUPCAT_URL}?{objtype}={field}"
+        r = requests.get(url, headers={"api-key": key}, timeout=180)
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(r.content)
+    return _read_field_array(path, field)
+
+
+def bulk_fetch_fields(key: str, cache_dir: str, *, reporter=None
+                      ) -> Dict[str, np.ndarray]:
+    """Download (once, cached) the per-field group-catalog arrays — 5 requests
+    total, covering every subhalo/group in the snapshot."""
+    os.makedirs(cache_dir, exist_ok=True)
+    arrays: Dict[str, np.ndarray] = {}
+    for i, (objtype, field) in enumerate(_FIELD_REQUESTS, 1):
+        if reporter is not None:
+            reporter.set_step(i, len(_FIELD_REQUESTS), field)
+        arrays[field] = _download_field(objtype, field, key, cache_dir)
+    return arrays
+
+
+def _row_stars(row) -> float:
+    """Particle-type-4 (stars) element of a MassType / HalfmassRadType row."""
+    a = np.asarray(row)
+    return float(a[..., 4]) if (a.ndim >= 1 and a.shape[-1] > 4) else float(a)
+
+
+def properties_from_arrays(arrays: Dict[str, np.ndarray],
+                           ids: List[str]) -> Dict[str, Dict[str, float]]:
+    """Index the bulk field arrays by subhalo id → physical properties (masses
+    code→Msun ×1e10/h, lengths code→kpc /h). Halo mass via SubhaloGrNr →
+    Group_M_Crit200."""
+    sfr  = arrays.get("SubhaloSFR")
+    mt   = arrays.get("SubhaloMassType")
+    hr   = arrays.get("SubhaloHalfmassRadType")
+    grnr = arrays.get("SubhaloGrNr")
+    m200 = arrays.get("Group_M_Crit200")
+    props: Dict[str, Dict[str, float]] = {}
+    for gid in ids:
+        try:
+            i = int(gid)
+        except (TypeError, ValueError):
+            continue
+        p = {"sfr": float("nan"), "mass_stars": float("nan"),
+             "m_halo": float("nan"), "reff": float("nan")}
+        if sfr is not None and 0 <= i < len(sfr):
+            p["sfr"] = float(sfr[i])
+        if mt is not None and 0 <= i < len(mt):
+            p["mass_stars"] = _row_stars(mt[i]) * 1e10 / H_LITTLE
+        if hr is not None and 0 <= i < len(hr):
+            p["reff"] = _row_stars(hr[i]) / H_LITTLE
+        if grnr is not None and m200 is not None and 0 <= i < len(grnr):
+            g = int(grnr[i])
+            if 0 <= g < len(m200):
+                p["m_halo"] = float(m200[g]) * 1e10 / H_LITTLE
+        props[gid] = p
+    return props
+
+
 def _read_cache(path: str) -> Dict[str, Dict[str, float]]:
     if not os.path.isfile(path):
         return {}
@@ -248,28 +357,40 @@ def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
 def gather_properties(tng_dir: str, ids: List[str], key: str, *,
                       max_new: int = 120, reporter=None
                       ) -> Dict[str, Dict[str, float]]:
-    """Return {id: props} for ``ids``, querying+caching only the missing ones.
+    """Return {id: props} for ``ids``, caching to ``tng_properties.csv``.
 
-    Bounded by ``max_new`` per call. ``reporter`` (optional) drives the live
-    job progress bar while the (serial) TNG-API queries run.
+    Preferred path: 5 bulk group-catalog requests resolve EVERY missing galaxy
+    at once (independent of count). If that fails, fall back to per-galaxy
+    info.json queries bounded by ``max_new``. ``reporter`` (optional) drives the
+    live job progress bar.
     """
     cache_path = os.path.join(tng_dir, PROPERTIES_CSV)
     cache = _read_cache(cache_path)
     missing = [g for g in ids if g not in cache]
-    todo = missing[:max_new] if max_new > 0 else []
-    n_query = 0
-    if key and todo:
-        if reporter is not None:
-            reporter.set_stage("querying TNG API")
-        for gid in todo:
-            cache[gid] = fetch_properties(gid, key)
-            n_query += 1
+    if key and missing:
+        try:
             if reporter is not None:
-                reporter.set_step(n_query, len(todo), f"TNG{gid}")
-        _write_cache(cache_path, cache)
-    sys.stderr.write(
-        f"properties: {len(ids)} galaxies, {len(missing)} uncached, "
-        f"{n_query} queried this call\n")
+                reporter.set_stage("fetching TNG group catalog (5 bulk requests)")
+            arrays = bulk_fetch_fields(
+                key, os.path.join(tng_dir, GROUPCAT_SUBDIR), reporter=reporter)
+            cache.update(properties_from_arrays(arrays, missing))
+            _write_cache(cache_path, cache)
+            missing = []
+        except Exception as e:                       # noqa: BLE001 — degrade
+            sys.stderr.write(
+                f"bulk groupcat fetch failed ({type(e).__name__}: {e}); "
+                "falling back to per-galaxy queries\n")
+            if reporter is not None:
+                reporter.set_stage("querying TNG API (per-galaxy fallback)")
+            todo = missing[:max_new] if max_new > 0 else []
+            for n, gid in enumerate(todo, 1):
+                cache[gid] = fetch_properties(gid, key)
+                if reporter is not None:
+                    reporter.set_step(n, len(todo), f"TNG{gid}")
+            if todo:
+                _write_cache(cache_path, cache)
+    n_have = sum(1 for g in ids if g in cache)
+    sys.stderr.write(f"properties: {len(ids)} galaxies, {n_have} resolved\n")
     return {g: cache[g] for g in ids if g in cache}
 
 

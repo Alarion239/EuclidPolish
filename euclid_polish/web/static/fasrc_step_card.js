@@ -193,12 +193,13 @@ large cutout don't leak across train/validate."></label>`;
             gaps.</span>`;
       case 'tng_histograms':
         // Mirrors TngHistogramsStep.build_command (max_new). Renders the
-        // SFR / stellar-mass / halo-mass / effective-radius histograms; the
-        // job queries the TNG API once per new galaxy (then cached).
+        // SFR / stellar-mass / halo-mass / effective-radius histograms. The
+        // job resolves all galaxies in 5 bulk group-catalog requests; max_new
+        // only bounds the per-galaxy fallback if that bulk fetch fails.
         return `
-          <label>Max new API queries <span class="muted">(per run; cached after)</span>
+          <label>Fallback query cap <span class="muted">(only if bulk fails)</span>
             <input type="number" name="max_new" value="2000" min="1" max="100000"
-                   title="Galaxies fetched from the TNG API this run (one call each, cached to tng_properties.csv). 2000 covers the whole atlas; lower it for a quick partial pass."></label>`;
+                   title="Properties normally come from 5 bulk group-catalog requests (whole atlas at once, cached). This caps the per-galaxy info.json fallback used only if that bulk fetch errors."></label>`;
       case 'tng_grid':
         // Mirrors TngGridStep.build_command (band, downsample, seed).
         return `
