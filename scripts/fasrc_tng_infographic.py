@@ -115,12 +115,12 @@ def pick_ids(ids: List[str], k: int, seed: int) -> List[str]:
 
 
 def render_histograms(tng_dir: str, *, api_key: str = "",
-                      max_new: int = 120, reporter=None) -> bytes:
+                      max_workers: int = 16, reporter=None) -> bytes:
     """Enumerate the locally-downloaded galaxies, then plot (CLI/debug path —
     the WebUI renders histograms locally via euclid_polish.tng.properties)."""
     return render_histograms_for_ids(
         tng_dir, list_downloaded_ids(tng_dir), api_key,
-        max_new=max_new, reporter=reporter)
+        max_workers=max_workers, reporter=reporter)
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +252,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Seed for the random galaxy pick (grid / random stack).")
     p.add_argument("--id", default="",
                    help="Subhalo id for stack mode (blank → seeded random).")
-    p.add_argument("--max-new", type=int, default=120,
-                   help="Max new TNG-API galaxy queries (histograms fallback).")
+    p.add_argument("--workers", type=int, default=16,
+                   help="Concurrent TNG-API requests for the histogram fetch.")
     p.add_argument("--api-key-file", default=Config.Tng.API_KEY_FILE)
     # Output target. Default (neither given) → bytes to stdout (interactive).
     # SLURM jobs pass --save to write the standard artifact path that the
@@ -276,7 +276,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.mode == "histograms":
         key = load_api_key(args.api_key_file)
         out = render_histograms(args.tng_dir, api_key=key,
-                                max_new=args.max_new, reporter=reporter)
+                                max_workers=args.workers, reporter=reporter)
     elif args.mode == "grid":
         band = args.band.upper()
         if band not in (*SINGLE_BANDS, "RGB"):

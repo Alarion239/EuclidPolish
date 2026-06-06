@@ -5,16 +5,26 @@ supplies the downloaded-galaxy id list (pulled from FASRC), and this module
 fetches the physical properties from the public TNG API and draws the plot —
 no FITS pixels are involved, so nothing heavy is transferred.
 
-Properties come from the group-catalog **field-subset** endpoint: each request
-returns one field as an array over ALL subhalos/groups (indexed by id), and the
-API allows only one field per request, so five bulk requests
-(SubhaloSFR / SubhaloMassType / SubhaloHalfmassRadType / SubhaloGrNr /
-Group_M_Crit200) resolve the entire atlas regardless of galaxy count. The
-snapshot is static, so the downloaded arrays — and the derived per-galaxy CSV —
-cache forever. A per-galaxy ``info.json`` path is kept only as a fallback.
+Per galaxy we make ONE request to the cleaned subhalo endpoint
+``/subhalos/{id}/?format=json`` (~0.4 s). It already carries everything we
+need as flat scalars:
 
-Masses are converted code→Msun (``×1e10/h``) and lengths code→kpc (``/h`` at
-z=0), matching the raw SubFind units these fields carry.
+  * ``sfr``               → star-formation rate [M☉/yr]
+  * ``mass_stars``        → stellar mass (code units → ×1e10/h M☉)
+  * ``halfmassrad_stars`` → effective radius (code units → /h kpc)
+  * ``mass_log_msun``     → total bound mass, already log₁₀ M☉ (used as the
+                            "halo mass" proxy — for the atlas's central
+                            galaxies it tracks the FoF halo mass, and avoids a
+                            separate group call)
+
+Why not the obvious alternatives (measured against the live API, TNG50-1 z=0,
+5.7M subhalos): ``/subhalos/{id}/info.json`` does heavy server-side field
+flattening and takes ~15 s each; the group-catalog field-subset endpoint
+``files/groupcat-99/?Subhalo=<field>`` 504-times-out (the server can't build a
+field over 5.7M objects in its gateway window); and the full group catalog is
+~50 GB across 680 chunks. So a parallel pass of the fast per-galaxy endpoint —
+cached to ``tng_properties.csv`` — is the practical path: ~30 s for the whole
+atlas, then instant.
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ import csv
 import io
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import matplotlib
@@ -36,16 +47,9 @@ API_BASE = "https://www.tng-project.org/api/TNG50-1/snapshots/99"
 H_LITTLE = 0.6774                            # TNG (Planck15) dimensionless Hubble
 PROPERTIES_CSV = "tng_properties.csv"
 _CSV_FIELDS = ("id", "sfr", "mass_stars", "m_halo", "reff")
-
-GROUPCAT_SUBDIR = "_groupcat"
-_GROUPCAT_URL = "https://www.tng-project.org/api/TNG50-1/files/groupcat-99/"
-_FIELD_REQUESTS = (
-    ("Subhalo", "SubhaloSFR"),
-    ("Subhalo", "SubhaloMassType"),
-    ("Subhalo", "SubhaloHalfmassRadType"),
-    ("Subhalo", "SubhaloGrNr"),
-    ("Group",   "Group_M_Crit200"),
-)
+_NAN_PROPS = {"sfr": float("nan"), "mass_stars": float("nan"),
+              "m_halo": float("nan"), "reff": float("nan")}
+DEFAULT_WORKERS = 16                         # concurrent TNG-API requests
 
 
 # ---------------------------------------------------------------------------
@@ -65,11 +69,13 @@ def load_api_key(path: Optional[str] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-galaxy info.json fallback
+# Per-galaxy property fetch (one fast ?format=json request)
 # ---------------------------------------------------------------------------
 
-def _get_json(url: str, key: str, timeout: int = 10) -> dict:
+def _get_json(url: str, key: str, timeout: int = 30) -> dict:
     import requests
+    # requests follows the API's 302 and keeps the custom ``api-key`` header
+    # across the redirect (only Authorization is stripped on host change).
     r = requests.get(url, headers={"api-key": key}, timeout=timeout)
     r.raise_for_status()
     return r.json()
@@ -83,161 +89,44 @@ def _pick(d: dict, *keys: str):
     return None
 
 
-def _mass_type_stars(d: dict) -> Optional[float]:
-    """Stellar mass (code units) from either the flattened ``*_4`` field or a
-    ``SubhaloMassType`` list (particle type 4 = stars)."""
-    flat = _pick(d, "SubhaloMassType_4", "mass_stars")
-    if flat is not None:
-        return float(flat)
-    lst = _pick(d, "SubhaloMassType", "mass_type")
-    if isinstance(lst, (list, tuple)) and len(lst) > 4:
-        return float(lst[4])
-    return None
-
-
-def _halfmassrad_stars(d: dict) -> Optional[float]:
-    flat = _pick(d, "SubhaloHalfmassRadType_4", "halfmassrad_stars")
-    if flat is not None:
-        return float(flat)
-    lst = _pick(d, "SubhaloHalfmassRadType", "halfmassrad_type")
-    if isinstance(lst, (list, tuple)) and len(lst) > 4:
-        return float(lst[4])
-    return None
-
-
 def parse_subhalo(sub: dict) -> Dict[str, float]:
-    """Map a subhalo info dict → physical SFR / stellar mass / effective radius.
+    """Map a ``/subhalos/{id}/?format=json`` dict → physical properties.
 
-    Masses code→Msun (×1e10/h), lengths code→kpc (/h at z=0). Missing → NaN.
-    Halo mass is filled separately (needs the parent-group call).
+    Masses: code units → M☉ (×1e10/h); ``mass_log_msun`` is already log₁₀ M☉.
+    Lengths: code units → kpc (/h at z=0). Missing → NaN. "Halo mass" uses the
+    subhalo's total bound mass (``mass_log_msun``), which for central galaxies
+    tracks the FoF halo mass — getting the true Group_M_Crit200 would need a
+    separate ~15 s call per galaxy.
     """
-    out = {"sfr": float("nan"), "mass_stars": float("nan"),
-           "m_halo": float("nan"), "reff": float("nan")}
-    sfr = _pick(sub, "SubhaloSFR", "sfr")
+    out = dict(_NAN_PROPS)
+    sfr = _pick(sub, "sfr", "SubhaloSFR")
     if sfr is not None:
         out["sfr"] = float(sfr)
-    ms = _mass_type_stars(sub)
+    ms = _pick(sub, "mass_stars", "SubhaloMassType_4")
     if ms is not None:
-        out["mass_stars"] = ms * 1e10 / H_LITTLE
-    re = _halfmassrad_stars(sub)
+        out["mass_stars"] = float(ms) * 1e10 / H_LITTLE
+    re = _pick(sub, "halfmassrad_stars", "SubhaloHalfmassRadType_4")
     if re is not None:
-        out["reff"] = re / H_LITTLE
+        out["reff"] = float(re) / H_LITTLE
+    mlog = _pick(sub, "mass_log_msun")
+    if mlog is not None:
+        out["m_halo"] = 10.0 ** float(mlog)
+    else:                                   # fallback: total mass in code units
+        mtot = _pick(sub, "mass", "SubhaloMass")
+        if mtot is not None:
+            out["m_halo"] = float(mtot) * 1e10 / H_LITTLE
     return out
 
 
-def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 10
+def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 30
                      ) -> Dict[str, float]:
-    """Query the TNG API for one galaxy's properties (NaN-filled on failure)."""
-    out = {"sfr": float("nan"), "mass_stars": float("nan"),
-           "m_halo": float("nan"), "reff": float("nan")}
+    """One TNG-API call for a galaxy's properties (NaN-filled on failure)."""
     try:
-        sub = _get_json(f"{API_BASE}/subhalos/{subhalo_id}/info.json",
+        sub = _get_json(f"{API_BASE}/subhalos/{subhalo_id}/?format=json",
                         key, timeout=timeout)
     except Exception:
-        return out
-    out.update(parse_subhalo(sub))
-    grnr = _pick(sub, "SubhaloGrNr", "grnr")
-    if grnr is not None:
-        try:
-            halo = _get_json(f"{API_BASE}/halos/{int(grnr)}/info.json",
-                             key, timeout=timeout)
-            mh = _pick(halo, "Group_M_Crit200", "m_crit200", "mass_crit200",
-                       "GroupMass", "mass")
-            if mh is not None:
-                out["m_halo"] = float(mh) * 1e10 / H_LITTLE
-        except Exception:
-            pass
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Bulk group-catalog fetch (5 requests for the whole atlas)
-# ---------------------------------------------------------------------------
-
-def _read_field_array(path: str, field: str) -> np.ndarray:
-    """Read a field array from a groupcat-subset download (HDF5, else numpy).
-
-    The subset HDF5 layout isn't contractually fixed, so we walk it and pick the
-    dataset whose basename matches ``field`` (else the largest dataset)."""
-    import h5py
-    try:
-        found: Dict[str, np.ndarray] = {}
-        with h5py.File(path, "r") as f:
-            f.visititems(lambda n, o: found.__setitem__(n, o[()])
-                         if isinstance(o, h5py.Dataset) else None)
-        if found:
-            for name, arr in found.items():
-                if name.split("/")[-1] == field:
-                    return np.asarray(arr)
-            return np.asarray(max(found.values(),
-                                  key=lambda a: getattr(a, "size", 0)))
-    except (OSError, ValueError):
-        pass
-    return np.asarray(np.load(path, allow_pickle=False))
-
-
-def _download_field(objtype: str, field: str, key: str,
-                    cache_dir: str) -> np.ndarray:
-    import requests
-    path = os.path.join(cache_dir, f"{objtype}_{field}.hdf5")
-    if not (os.path.isfile(path) and os.path.getsize(path) > 0):
-        url = f"{_GROUPCAT_URL}?{objtype}={field}"
-        r = requests.get(url, headers={"api-key": key}, timeout=180)
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            f.write(r.content)
-    return _read_field_array(path, field)
-
-
-def bulk_fetch_fields(key: str, cache_dir: str, *, reporter=None
-                      ) -> Dict[str, np.ndarray]:
-    """Download (once, cached) the per-field group-catalog arrays — 5 requests
-    total, covering every subhalo/group in the snapshot."""
-    os.makedirs(cache_dir, exist_ok=True)
-    arrays: Dict[str, np.ndarray] = {}
-    for i, (objtype, field) in enumerate(_FIELD_REQUESTS, 1):
-        if reporter is not None:
-            reporter.set_step(i, len(_FIELD_REQUESTS), field)
-        arrays[field] = _download_field(objtype, field, key, cache_dir)
-    return arrays
-
-
-def _row_stars(row) -> float:
-    """Particle-type-4 (stars) element of a MassType / HalfmassRadType row."""
-    a = np.asarray(row)
-    return float(a[..., 4]) if (a.ndim >= 1 and a.shape[-1] > 4) else float(a)
-
-
-def properties_from_arrays(arrays: Dict[str, np.ndarray],
-                           ids: List[str]) -> Dict[str, Dict[str, float]]:
-    """Index the bulk field arrays by subhalo id → physical properties (masses
-    code→Msun ×1e10/h, lengths code→kpc /h). Halo mass via SubhaloGrNr →
-    Group_M_Crit200."""
-    sfr  = arrays.get("SubhaloSFR")
-    mt   = arrays.get("SubhaloMassType")
-    hr   = arrays.get("SubhaloHalfmassRadType")
-    grnr = arrays.get("SubhaloGrNr")
-    m200 = arrays.get("Group_M_Crit200")
-    props: Dict[str, Dict[str, float]] = {}
-    for gid in ids:
-        try:
-            i = int(gid)
-        except (TypeError, ValueError):
-            continue
-        p = {"sfr": float("nan"), "mass_stars": float("nan"),
-             "m_halo": float("nan"), "reff": float("nan")}
-        if sfr is not None and 0 <= i < len(sfr):
-            p["sfr"] = float(sfr[i])
-        if mt is not None and 0 <= i < len(mt):
-            p["mass_stars"] = _row_stars(mt[i]) * 1e10 / H_LITTLE
-        if hr is not None and 0 <= i < len(hr):
-            p["reff"] = _row_stars(hr[i]) / H_LITTLE
-        if grnr is not None and m200 is not None and 0 <= i < len(grnr):
-            g = int(grnr[i])
-            if 0 <= g < len(m200):
-                p["m_halo"] = float(m200[g]) * 1e10 / H_LITTLE
-        props[gid] = p
-    return props
+        return dict(_NAN_PROPS)
+    return parse_subhalo(sub)
 
 
 # ---------------------------------------------------------------------------
@@ -272,40 +161,33 @@ def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
 
 
 def gather_properties(work_dir: str, ids: List[str], key: str, *,
-                      max_new: int = 120, reporter=None
+                      max_workers: int = DEFAULT_WORKERS, reporter=None
                       ) -> Dict[str, Dict[str, float]]:
     """Return {id: props} for ``ids``, caching to ``work_dir/tng_properties.csv``.
 
-    Preferred path: 5 bulk group-catalog requests resolve EVERY missing galaxy
-    at once (independent of count). If that fails, fall back to per-galaxy
-    info.json queries bounded by ``max_new``. ``reporter`` (optional) drives a
-    live progress bar.
+    Only missing galaxies are fetched, and they're fetched **concurrently** (the
+    TNG API is ~0.4 s/request, so ~30 s for the whole atlas; cached afterwards).
+    ``reporter`` (optional) drives a live progress bar.
     """
     cache_path = os.path.join(work_dir, PROPERTIES_CSV)
     cache = _read_cache(cache_path)
     missing = [g for g in ids if g not in cache]
     if key and missing:
-        try:
-            if reporter is not None:
-                reporter.set_stage("fetching TNG group catalog (5 bulk requests)")
-            arrays = bulk_fetch_fields(
-                key, os.path.join(work_dir, GROUPCAT_SUBDIR), reporter=reporter)
-            cache.update(properties_from_arrays(arrays, missing))
-            _write_cache(cache_path, cache)
-            missing = []
-        except Exception as e:                       # noqa: BLE001 — degrade
-            sys.stderr.write(
-                f"bulk groupcat fetch failed ({type(e).__name__}: {e}); "
-                "falling back to per-galaxy queries\n")
-            if reporter is not None:
-                reporter.set_stage("querying TNG API (per-galaxy fallback)")
-            todo = missing[:max_new] if max_new > 0 else []
-            for n, gid in enumerate(todo, 1):
-                cache[gid] = fetch_properties(gid, key)
+        if reporter is not None:
+            reporter.set_stage(f"querying TNG API ({len(missing)} galaxies)")
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+            futs = {pool.submit(fetch_properties, g, key): g for g in missing}
+            for fut in as_completed(futs):
+                gid = futs[fut]
+                try:
+                    cache[gid] = fut.result()
+                except Exception:
+                    cache[gid] = dict(_NAN_PROPS)
+                done += 1
                 if reporter is not None:
-                    reporter.set_step(n, len(todo), f"TNG{gid}")
-            if todo:
-                _write_cache(cache_path, cache)
+                    reporter.set_step(done, len(missing), f"TNG{gid}")
+        _write_cache(cache_path, cache)
     n_have = sum(1 for g in ids if g in cache)
     sys.stderr.write(f"properties: {len(ids)} galaxies, {n_have} resolved\n")
     return {g: cache[g] for g in ids if g in cache}
@@ -330,7 +212,7 @@ def placeholder_png(message: str) -> bytes:
 
 
 def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
-    """2×2 PNG: SFR / stellar mass / halo mass / effective radius."""
+    """2×2 PNG: SFR / stellar mass / total mass / effective radius."""
     if not props:
         return placeholder_png("No galaxy properties to plot.")
 
@@ -341,7 +223,7 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
     panels = [
         ("sfr",        "Star formation rate",  "log$_{10}$ SFR [M$_\\odot$/yr]", True),
         ("mass_stars", "Stellar mass",         "log$_{10}$ M$_\\star$ [M$_\\odot$]", True),
-        ("m_halo",     "Halo mass (M$_{200c}$)", "log$_{10}$ M$_{200c}$ [M$_\\odot$]", True),
+        ("m_halo",     "Total mass (bound)",   "log$_{10}$ M [M$_\\odot$]", True),
         ("reff",       "Effective radius",     "R$_{1/2,\\star}$ [kpc]", False),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
@@ -368,12 +250,13 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
 
 
 def render_histograms_for_ids(work_dir: str, ids: List[str], key: str, *,
-                              max_new: int = 120, reporter=None) -> bytes:
-    """End-to-end: ids → properties (cached) → 2×2 histogram PNG."""
+                              max_workers: int = DEFAULT_WORKERS,
+                              reporter=None) -> bytes:
+    """End-to-end: ids → properties (cached, concurrent) → 2×2 histogram PNG."""
     if not ids:
         return placeholder_png("No galaxies downloaded yet.")
     props = gather_properties(work_dir, ids, key,
-                              max_new=max_new, reporter=reporter)
+                              max_workers=max_workers, reporter=reporter)
     if not props:
         return placeholder_png(
             f"{len(ids)} galaxies downloaded — properties not available yet.\n"

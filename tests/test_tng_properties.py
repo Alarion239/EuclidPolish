@@ -1,9 +1,8 @@
 """Unit tests for euclid_polish.tng.properties.
 
-Network-free: the TNG-API getters are monkeypatched. Covers API field parsing
-+ unit conversion, the bulk group-catalog path (5 field arrays → per-galaxy
-props), the property cache round-trip, the bulk→cache→fallback flow, and the
-histogram PNG rendering.
+Network-free: the TNG-API getter is monkeypatched. Covers the cleaned
+``?format=json`` field parsing + unit conversion, the concurrent per-galaxy
+fetch (only-missing + cache), and the histogram PNG rendering.
 """
 
 from __future__ import annotations
@@ -15,21 +14,11 @@ import pytest
 
 from euclid_polish.tng import properties as P
 
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 
 def _raise(*a, **k):
     raise RuntimeError("no network in tests")
-
-
-def _bulk_arrays():
-    return {
-        "SubhaloSFR": np.array([0.0, 1.5, 2.5, 9.9], dtype="f4"),
-        "SubhaloMassType": np.tile(
-            np.array([0, 0, 0, 0, 2.0, 0], dtype="f4"), (4, 1)),
-        "SubhaloHalfmassRadType": np.tile(
-            np.array([0, 0, 0, 0, 3.0, 0], dtype="f4"), (4, 1)),
-        "SubhaloGrNr": np.array([0, 0, 1, 1], dtype="i8"),
-        "Group_M_Crit200": np.array([10.0, 20.0], dtype="f4"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -47,84 +36,54 @@ def test_load_api_key_env_then_file(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# per-galaxy info.json parsing (fallback path)
+# parsing + unit conversion (?format=json cleaned fields)
 # ---------------------------------------------------------------------------
 
-def test_parse_subhalo_raw_fields():
-    sub = {"SubhaloSFR": 1.5, "SubhaloMassType_4": 2.0,
-           "SubhaloHalfmassRadType_4": 3.0, "SubhaloGrNr": 7}
+def test_parse_subhalo_format_json():
+    sub = {"sfr": 1.5, "mass_stars": 2.0, "halfmassrad_stars": 3.0,
+           "mass_log_msun": 12.0}
     p = P.parse_subhalo(sub)
     assert p["sfr"] == pytest.approx(1.5)
     assert p["mass_stars"] == pytest.approx(2.0 * 1e10 / P.H_LITTLE)
     assert p["reff"] == pytest.approx(3.0 / P.H_LITTLE)
+    # total mass comes straight from mass_log_msun (already log10 Msun).
+    assert p["m_halo"] == pytest.approx(10.0 ** 12.0)
 
 
-def test_parse_subhalo_list_fallback():
-    sub = {"SubhaloSFR": 1.0,
-           "SubhaloMassType": [0, 0, 0, 0, 5.0, 0],
-           "SubhaloHalfmassRadType": [0, 0, 0, 0, 4.0, 0]}
+def test_parse_subhalo_mass_fallback_when_no_log():
+    sub = {"sfr": 0.0, "mass_stars": 1.0, "halfmassrad_stars": 1.0, "mass": 5.0}
     p = P.parse_subhalo(sub)
-    assert p["mass_stars"] == pytest.approx(5.0 * 1e10 / P.H_LITTLE)
-    assert p["reff"] == pytest.approx(4.0 / P.H_LITTLE)
+    assert p["m_halo"] == pytest.approx(5.0 * 1e10 / P.H_LITTLE)
 
 
-def test_fetch_properties_fills_halo_mass(monkeypatch):
-    def fake_get(url, key, timeout=10):
-        if "/subhalos/" in url:
-            return {"SubhaloSFR": 2.0, "SubhaloMassType_4": 1.0,
-                    "SubhaloHalfmassRadType_4": 1.0, "SubhaloGrNr": 99}
-        if "/halos/99/" in url:
-            return {"Group_M_Crit200": 50.0}
-        raise AssertionError(f"unexpected url {url}")
+def test_parse_subhalo_missing_fields_are_nan():
+    p = P.parse_subhalo({})
+    assert all(np.isnan(v) for v in p.values())
+
+
+def test_fetch_properties_single_fast_call(monkeypatch):
+    calls = []
+
+    def fake_get(url, key, timeout=30):
+        calls.append(url)
+        return {"sfr": 2.0, "mass_stars": 1.0, "halfmassrad_stars": 1.0,
+                "mass_log_msun": 13.0}
     monkeypatch.setattr(P, "_get_json", fake_get)
     p = P.fetch_properties("123", "key")
+    # ONE request, to the cleaned (fast) endpoint — not info.json, no halo call.
+    assert len(calls) == 1
+    assert "?format=json" in calls[0] and "info.json" not in calls[0]
     assert p["sfr"] == pytest.approx(2.0)
-    assert p["m_halo"] == pytest.approx(50.0 * 1e10 / P.H_LITTLE)
+    assert p["m_halo"] == pytest.approx(10.0 ** 13.0)
 
 
 def test_fetch_properties_network_failure_is_nan(monkeypatch):
     monkeypatch.setattr(P, "_get_json", _raise)
-    p = P.fetch_properties("123", "key")
-    assert all(np.isnan(v) for v in p.values())
+    assert all(np.isnan(v) for v in P.fetch_properties("123", "key").values())
 
 
 # ---------------------------------------------------------------------------
-# bulk group-catalog fetch
-# ---------------------------------------------------------------------------
-
-def test_row_stars():
-    assert P._row_stars([0, 0, 0, 0, 5.0, 0]) == 5.0
-    assert P._row_stars(7.0) == 7.0
-
-
-def test_properties_from_arrays_indexing_and_units():
-    props = P.properties_from_arrays(_bulk_arrays(), ["1", "2"])
-    assert props["1"]["sfr"] == pytest.approx(1.5)
-    assert props["1"]["mass_stars"] == pytest.approx(2.0 * 1e10 / P.H_LITTLE)
-    assert props["1"]["reff"] == pytest.approx(3.0 / P.H_LITTLE)
-    # subhalo 1 → group 0 → M_Crit200 = 10 ; subhalo 2 → group 1 → 20
-    assert props["1"]["m_halo"] == pytest.approx(10.0 * 1e10 / P.H_LITTLE)
-    assert props["2"]["m_halo"] == pytest.approx(20.0 * 1e10 / P.H_LITTLE)
-
-
-def test_properties_from_arrays_out_of_range_is_nan():
-    props = P.properties_from_arrays(_bulk_arrays(), ["999"])
-    assert all(np.isnan(v) for v in props["999"].values())
-
-
-@pytest.mark.parametrize("nested", [False, True])
-def test_read_field_array_roundtrip(tmp_path, nested):
-    import h5py
-    p = str(tmp_path / "f.hdf5")
-    with h5py.File(p, "w") as f:
-        target = f.create_group("Subhalo") if nested else f
-        target.create_dataset("SubhaloSFR", data=np.arange(5, dtype="f4"))
-    arr = P._read_field_array(p, "SubhaloSFR")
-    assert list(arr) == [0.0, 1.0, 2.0, 3.0, 4.0]
-
-
-# ---------------------------------------------------------------------------
-# cache + gather
+# cache + concurrent gather
 # ---------------------------------------------------------------------------
 
 def test_cache_round_trip(tmp_path):
@@ -139,55 +98,36 @@ def test_cache_round_trip(tmp_path):
     assert back["22"]["mass_stars"] == pytest.approx(5.0)
 
 
-def test_gather_uses_bulk_then_cache(tmp_path, monkeypatch):
-    work = str(tmp_path)
-    calls = {"bulk": 0}
-
-    def fake_bulk(key, cache_dir, *, reporter=None):
-        calls["bulk"] += 1
-        return _bulk_arrays()
-    monkeypatch.setattr(P, "bulk_fetch_fields", fake_bulk)
-    monkeypatch.setattr(P, "fetch_properties",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("bulk path must not hit per-galaxy")))
-    out = P.gather_properties(work, ["1", "2", "3"], "key")
-    assert calls["bulk"] == 1 and set(out) == {"1", "2", "3"}
-    assert out["2"]["sfr"] == pytest.approx(2.5)
-    # Second call: cached → bulk not called again.
-    monkeypatch.setattr(P, "bulk_fetch_fields", _raise)
-    out2 = P.gather_properties(work, ["1", "2", "3"], "key")
-    assert set(out2) == {"1", "2", "3"}
-
-
-def test_gather_only_queries_missing_on_fallback(tmp_path, monkeypatch):
+def test_gather_queries_only_missing_concurrently(tmp_path, monkeypatch):
     work = str(tmp_path)
     P._write_cache(os.path.join(work, P.PROPERTIES_CSV),
                    {"111": {"sfr": 1.0, "mass_stars": 2.0,
                             "m_halo": 3.0, "reff": 4.0}})
-    monkeypatch.setattr(P, "bulk_fetch_fields", _raise)   # force fallback
     calls = []
-    monkeypatch.setattr(P, "fetch_properties",
-                        lambda gid, key, timeout=10: calls.append(gid) or
-                        {"sfr": 9.0, "mass_stars": 9.0, "m_halo": 9.0, "reff": 9.0})
-    out = P.gather_properties(work, ["111", "222"], "key", max_new=10)
-    assert calls == ["222"] and set(out) == {"111", "222"}
+
+    def fake_fetch(gid, key, timeout=30):
+        calls.append(gid)
+        return {"sfr": 9.0, "mass_stars": 9.0, "m_halo": 9.0, "reff": 9.0}
+    monkeypatch.setattr(P, "fetch_properties", fake_fetch)
+    out = P.gather_properties(work, ["111", "222", "333"], "key")
+    # 111 served from cache; only the missing two queried (concurrent → set).
+    assert set(calls) == {"222", "333"}
+    assert set(out) == {"111", "222", "333"}
+    assert "222" in P._read_cache(os.path.join(work, P.PROPERTIES_CSV))
+    # Second call: all cached → no fetch.
+    monkeypatch.setattr(P, "fetch_properties", _raise)
+    out2 = P.gather_properties(work, ["111", "222", "333"], "key")
+    assert set(out2) == {"111", "222", "333"}
 
 
-def test_gather_max_new_zero_skips_network(tmp_path, monkeypatch):
-    monkeypatch.setattr(P, "bulk_fetch_fields", _raise)
-    monkeypatch.setattr(P, "fetch_properties",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("should not query")))
-    out = P.gather_properties(str(tmp_path), ["111"], "key", max_new=0)
-    assert out == {}
+def test_gather_no_key_skips_network(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "fetch_properties", _raise)
+    assert P.gather_properties(str(tmp_path), ["1"], "") == {}
 
 
 # ---------------------------------------------------------------------------
 # rendering
 # ---------------------------------------------------------------------------
-
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-
 
 def test_plot_histograms_returns_png():
     props = {g: {"sfr": 1.0 + i, "mass_stars": 10 ** (10 + i),
@@ -203,8 +143,7 @@ def test_render_histograms_for_ids_from_cache(tmp_path):
         {g: {"sfr": 1.0 + i, "mass_stars": 10 ** (10 + i),
              "m_halo": 10 ** (12 + i), "reff": 2.0 + i}
          for i, g in enumerate(("1", "2", "3"))})
-    # key="" → no network; reads the seeded cache.
-    png = P.render_histograms_for_ids(work, ["1", "2", "3"], "", max_new=0)
+    png = P.render_histograms_for_ids(work, ["1", "2", "3"], "")  # key="" → cache
     assert png[:8] == _PNG_MAGIC
 
 

@@ -64,10 +64,11 @@
 <section class="card">
   <h3>📊 Property histograms <span class="muted" style="font-size:13px;">(rendered locally)</span></h3>
   <p class="muted" style="margin-top:0;">
-    SFR · stellar mass · halo mass (M<sub>200c</sub>) · effective radius. Drawn
-    on this machine: the galaxy id list is pulled from FASRC, properties come
-    from the TNG API (5 bulk requests, cached locally under
-    <code>data/_tng_infographics/</code>). Set your TNG token above first.
+    SFR · stellar mass · total mass · effective radius. Drawn on this machine:
+    the galaxy id list is pulled from FASRC, properties come from the TNG API
+    (one fast request per galaxy, fetched in parallel, then cached locally under
+    <code>data/_tng_infographics/</code> — ~30&nbsp;s for the whole atlas the
+    first time, instant after). Set your TNG token above first.
   </p>
   <div>
     <button id="tng-hist-load" type="button">📊 Render histograms</button>
