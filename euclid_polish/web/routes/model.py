@@ -162,10 +162,16 @@ def register(app):
         except (TypeError, ValueError):
             n_pairs = 1
         n_pairs = max(1, min(8, n_pairs))
+        try:
+            tng_fraction = float(request.form.get("tng_fraction", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            tng_fraction = 0.0
+        tng_fraction = min(1.0, max(0.0, tng_fraction))
         job_id = REGISTRY.spawn(
             label=f"gen+reconstruct {n_pairs}×{hr_size}px (FASRC login-node gen)",
             target=lambda cap: _job_generate_reconstruct(
                 cap, ckpt_dir, nrb, hr_size, n_pairs, asinh_scale=asinh,
+                tng_fraction=tng_fraction,
             ),
         )
         return jsonify({"job_id": job_id})

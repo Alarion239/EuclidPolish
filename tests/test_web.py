@@ -450,9 +450,25 @@ def test_post_inference_generate_reconstruct_returns_job_id(client):
     # connection — the job itself fails fast ("not connected") in that case.
     r = client.post("/inference/generate-reconstruct", data={
         "checkpoint_dir": "/tmp/nope", "hr_image_size": 510, "n_pairs": 1,
+        "tng_fraction": "0.2",          # accepted (TNG injection in inference)
     })
     assert r.status_code == 200
     assert "job_id" in r.get_json()
+
+
+def test_login_node_generate_cmd_injects_tng_fraction():
+    """The inference login-node generation forwards --tng-fraction to
+    run_pipeline.py only when > 0, so the synthetic scenes include TNG galaxies."""
+    from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
+    from euclid_polish.web.fasrc_config import FasrcConfig
+    cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
+    base = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2)
+    assert "scripts/run_pipeline.py" in base
+    assert "--tng-fraction" not in base
+    withtng = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2, tng_fraction=0.3)
+    assert "--tng-fraction 0.3" in withtng
+    assert "--tng-fraction" not in _login_node_generate_cmd(
+        cfg, "/n/tmp", 510, 2, tng_fraction=0.0)
 
 
 # ---------------------------------------------------------------------------

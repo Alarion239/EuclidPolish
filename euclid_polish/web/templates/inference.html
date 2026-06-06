@@ -209,6 +209,13 @@
     <label>asinh scale (e⁻)
       <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
              title="Brightness knee for the asinh panels. Smaller = brighter faint sources; larger = compresses bright sources more. 1000 e⁻ matches the training default."></label>
+    <label style="flex-basis:100%;" title="Proportion of scene galaxies drawn as real TNG50 SKIRT stamps instead of analytic Sérsic profiles. Each is a random downloaded galaxy, random orientation, downsampled ×1/×2/×3/×4. 0 = all Sérsic. Uses the TNG galaxies on FASRC.">
+      TNG galaxy fraction
+      <output class="muted" style="margin-left:6px;">0.00</output>
+      <span class="muted">(0 = all Sérsic)</span>
+      <input type="range" name="tng_fraction" min="0" max="1" step="0.05" value="0"
+             style="width:100%;"
+             oninput="this.parentNode.querySelector('output').value=(+this.value).toFixed(2)"></label>
     <button type="submit">Generate &amp; Reconstruct</button>
   </form>
   <div id="gen-recon-status"></div>
