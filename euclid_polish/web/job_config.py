@@ -18,6 +18,8 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict
 
+from euclid_polish.config import Config
+
 CONFIG_DIR = os.path.expanduser("~/.euclid_polish")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "job_config.json")
 
@@ -30,7 +32,11 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
                                 "stars_per_psf": "stars_per_psf"},
     "synthetic_generate":      {"n_train": "n_train",
                                 "n_valid": "n_valid",
-                                "image_size": "hr_image_size"},
+                                "image_size": "hr_image_size",
+                                "star_density_arcmin2": "star_density_arcmin2",
+                                "star_mag_slope": "star_mag_slope",
+                                "star_mag_bright": "star_mag_bright",
+                                "star_mag_faint": "star_mag_faint"},
 }
 
 
@@ -54,6 +60,12 @@ class JobConfig:
     hr_image_size: int = 510
     # Brightness knee (e⁻) for the asinh display panels in inference.
     asinh_scale:   float = 1000.0
+    # Star field: surface density (stars/arcmin²) + the smooth magnitude
+    # distribution dN/dm ∝ 10^(slope·m) over [bright, faint] VIS mag.
+    star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
+    star_mag_slope:       float = Config.STAR_MAG_SLOPE
+    star_mag_bright:      float = Config.STAR_MAG_BRIGHT
+    star_mag_faint:       float = Config.STAR_MAG_FAINT
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

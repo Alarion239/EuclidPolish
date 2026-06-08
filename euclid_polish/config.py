@@ -370,11 +370,13 @@ class Config:
     # the high-Galactic-latitude star-count slope d log N/dm — Euclid observes far
     # from the plane, where it is shallow (~0.14–0.35 in the optical/NIR; e.g.
     # ~0.14 in 18<I<21.5, arXiv:0704.1182). 0.20 ≈ the effective slope the old
-    # bins encoded. The bright cap (16) is deliberate: brighter single-pixel
-    # stellar deltas (≳2e8 e⁻ by mag 13) are an ill-posed, unrecoverable SR target
-    # that only teaches the model to blur. Faint limit ≈ the VIS noise floor.
+    # bins encoded. STAR_MAG_BRIGHT is the brightest star drawn: it was capped at
+    # 16 to avoid ill-posed saturated deltas, but real fields contain a few bright
+    # stars, so it now extends to 12 (the power law keeps them rare — a few per
+    # many stamps). Faint limit ≈ the VIS noise floor. All three are tunable per
+    # run (web /config; MultiBandGeneratorConfig.star_mag_*).
     STAR_MAG_SLOPE               = 0.20     # d log N / dm (high Galactic latitude)
-    STAR_MAG_BRIGHT              = 16.0     # bright cap (brightest synthetic star)
+    STAR_MAG_BRIGHT              = 12.0     # brightest synthetic star (was a 16 cap)
     STAR_MAG_FAINT               = 25.0     # faint limit (≈ VIS 5σ point-source)
 
     # Donut-galaxy (toy gravitational-lens ring) defaults.

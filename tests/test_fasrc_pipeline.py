@@ -322,6 +322,24 @@ class TestRegistry:
         assert "--tng-fraction" not in step.build_command(
             {**base, "tng_fraction": "0"})
 
+    def test_synthetic_generate_star_field_flags(self):
+        """Star field knobs from /config reach run_pipeline; absent → omitted."""
+        step = REGISTRY.get("synthetic_generate")
+        base = {"n_train": 10, "n_valid": 2, "image_size": 252,
+                "batch_size": 4, "steps": 100}
+        argv = step.build_command({
+            **base, "star_density_arcmin2": "3", "star_mag_slope": "0.25",
+            "star_mag_bright": "10", "star_mag_faint": "24"})
+        assert argv[argv.index("--star-density-arcmin2") + 1] == "3"
+        assert argv[argv.index("--star-mag-slope") + 1] == "0.25"
+        assert argv[argv.index("--star-mag-bright") + 1] == "10"
+        assert argv[argv.index("--star-mag-faint") + 1] == "24"
+        # absent → no flags
+        plain = step.build_command(base)
+        for flag in ("--star-density-arcmin2", "--star-mag-slope",
+                     "--star-mag-bright", "--star-mag-faint"):
+            assert flag not in plain
+
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
         assert isinstance(REGISTRY.get("download"), HSTDownloadStep)

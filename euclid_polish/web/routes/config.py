@@ -32,6 +32,10 @@ def register(app):
             "n_valid":       request.form.get("n_valid"),
             "hr_image_size": request.form.get("hr_image_size"),
             "asinh_scale":   request.form.get("asinh_scale"),
+            "star_density_arcmin2": request.form.get("star_density_arcmin2"),
+            "star_mag_slope":       request.form.get("star_mag_slope"),
+            "star_mag_bright":      request.form.get("star_mag_bright"),
+            "star_mag_faint":       request.form.get("star_mag_faint"),
         })
         note = None
         try:

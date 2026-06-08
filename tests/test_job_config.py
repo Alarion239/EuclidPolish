@@ -67,3 +67,23 @@ def test_config_page_renders(client, cfg_path):
     r = client.get("/config")
     assert r.status_code == 200
     assert b"Universal job config" in r.data
+    assert b"Star field" in r.data
+
+
+def test_star_field_defaults_and_update(cfg_path):
+    from euclid_polish.config import Config
+    c = job_config.load()
+    assert c.star_mag_bright == Config.STAR_MAG_BRIGHT      # default from Config
+    assert c.star_density_arcmin2 == Config.DEFAULT_STAR_DENSITY_ARCMIN2
+    c = job_config.update({"star_mag_bright": "9.5", "star_mag_slope": "0.3",
+                           "star_density_arcmin2": "4.2", "star_mag_faint": "24"})
+    assert c.star_mag_bright == 9.5 and c.star_mag_slope == 0.3
+    assert c.star_density_arcmin2 == 4.2 and c.star_mag_faint == 24.0
+    assert job_config.load().star_mag_bright == 9.5        # persisted
+
+
+def test_star_field_mapped_for_synthetic_generate():
+    m = job_config.FASRC_STEP_PARAMS["synthetic_generate"]
+    for k in ("star_density_arcmin2", "star_mag_slope",
+              "star_mag_bright", "star_mag_faint"):
+        assert m[k] == k

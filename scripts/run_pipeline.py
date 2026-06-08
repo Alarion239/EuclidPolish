@@ -124,6 +124,16 @@ def parse_args() -> argparse.Namespace:
                          "×1/×2/×3/×4) instead of analytic Sersic profiles. "
                          "0 = all Sersic (unchanged). Needs TNG galaxies "
                          "downloaded under $DATA_DIR/tng_skirt/.")
+    ap.add_argument("--star-density-arcmin2", type=float,
+                    default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
+                    help="Stellar surface density (stars/arcmin²).")
+    ap.add_argument("--star-mag-slope", type=float, default=Config.STAR_MAG_SLOPE,
+                    help="Star-count slope α in dN/dm ∝ 10^(α·m) "
+                         "(high-Galactic-latitude value ~0.14–0.35).")
+    ap.add_argument("--star-mag-bright", type=float, default=Config.STAR_MAG_BRIGHT,
+                    help="Brightest synthetic star (VIS mag).")
+    ap.add_argument("--star-mag-faint", type=float, default=Config.STAR_MAG_FAINT,
+                    help="Faintest synthetic star (VIS mag).")
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
@@ -150,7 +160,11 @@ def step_generate(args: argparse.Namespace) -> None:
 
     cfg = MultiBandGeneratorConfig(image_size=args.image_size,
                                    pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                   tng_fraction=args.tng_fraction)
+                                   tng_fraction=args.tng_fraction,
+                                   star_density_arcmin2=args.star_density_arcmin2,
+                                   star_mag_slope=args.star_mag_slope,
+                                   star_mag_bright=args.star_mag_bright,
+                                   star_mag_faint=args.star_mag_faint)
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
@@ -334,7 +348,11 @@ _W_RECORDS_DIR = ""
 
 def _gen_init_worker(catalog_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
-                     tng_fraction=0.0) -> None:
+                     tng_fraction=0.0,
+                     star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
+                     star_mag_slope=Config.STAR_MAG_SLOPE,
+                     star_mag_bright=Config.STAR_MAG_BRIGHT,
+                     star_mag_faint=Config.STAR_MAG_FAINT) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
     memmapped and only the filtered columns are held, so each worker's copy
@@ -344,7 +362,11 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     _W_SIM = MultiBandSimulator(
         cat, MultiBandGeneratorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                      tng_fraction=tng_fraction),
+                                      tng_fraction=tng_fraction,
+                                      star_density_arcmin2=star_density_arcmin2,
+                                      star_mag_slope=star_mag_slope,
+                                      star_mag_bright=star_mag_bright,
+                                      star_mag_faint=star_mag_faint),
     )
     psf_sets = load_all_band_psf_sets(
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
@@ -404,7 +426,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(catalog_path, args.image_size, args.psf_dir,
                       args.require_empirical_psf, args.records_dir,
-                      args.tng_fraction),
+                      args.tng_fraction, args.star_density_arcmin2,
+                      args.star_mag_slope, args.star_mag_bright,
+                      args.star_mag_faint),
         ) as pool:
             futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
             for fut in as_completed(futs):

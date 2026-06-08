@@ -1000,6 +1000,18 @@ class SyntheticGenerateStep(RunPipelineStep):
         tng_frac = min(1.0, max(0.0, tng_frac))
         if tng_frac > 0.0:
             cmd += ["--tng-fraction", f"{tng_frac:g}"]
+        # Star field knobs (from /config). Emit only when supplied so a default
+        # submit stays unchanged.
+        for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),
+                            ("star_mag_slope",       "--star-mag-slope"),
+                            ("star_mag_bright",      "--star-mag-bright"),
+                            ("star_mag_faint",       "--star-mag-faint")):
+            val = params.get(param)
+            if val not in (None, ""):
+                try:
+                    cmd += [flag, f"{float(val):g}"]
+                except (TypeError, ValueError):
+                    pass
         return cmd
 
 
