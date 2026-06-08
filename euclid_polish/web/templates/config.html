@@ -78,6 +78,28 @@
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Strong lenses</legend>
+      <div class="form-row">
+        <label title="Strong-lens surface density (lenses/arcmin²). Number per scene is Poisson(density × field area). This is a training-augmentation density (far above the real sky rate) so the network sees lenses often. Default 16.5 ≈ 0.7 lenses per 252² stamp.">
+          Lens density (/arcmin²)
+          <input type="number" name="lens_density_arcmin2" value="{{ cfg.lens_density_arcmin2 }}"
+                 min="0" step="any" required>
+        </label>
+        <label title="Minimum lens velocity dispersion (km/s). σ_v² sets the Einstein radius θ_E via the SIS law. The default range [150,350] gives θ_E ~ 0.3–2.0″ (median ~0.8″).">
+          σ_v min (km/s)
+          <input type="number" name="lens_sigma_v_min_kms" value="{{ cfg.lens_sigma_v_min_kms }}"
+                 min="50" max="600" step="any" required>
+        </label>
+        <label title="Maximum lens velocity dispersion (km/s). Raise it for bigger Einstein radii (θ_E ∝ σ_v²). θ_E is still clamped to 0.10–3.5″ in the sampler.">
+          σ_v max (km/s)
+          <input type="number" name="lens_sigma_v_max_kms" value="{{ cfg.lens_sigma_v_max_kms }}"
+                 min="50" max="600" step="any" required>
+        </label>
+      </div>
+      <p class="hint">→ <code>/sky</code> (synthetic generation): θ_E from the SIS law, σ_v uniform in [min, max].</p>
+    </fieldset>
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
       <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Inference display</legend>
       <div class="form-row">
         <label title="Brightness knee (e⁻) for the asinh display panels. Smaller = brighter faint sources; larger compresses bright sources more.">

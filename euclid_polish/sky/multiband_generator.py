@@ -76,6 +76,11 @@ class MultiBandGeneratorConfig:
     # the lens core comfortably inside θ_E; lower it for even more compact lenses.
     # Applies to both the TNG-stamp and the Sersic lens light.
     lens_light_re_factor:     float = 0.7
+    # Lens velocity-dispersion range (km/s) — uniform σ_v draw that sets the
+    # Einstein radius via the SIS law θ_E ∝ σ_v² (D_ls/D_s). [150,350] gives
+    # θ_E ~ 0.3-2.0". Widening/raising this shifts the θ_E distribution.
+    lens_sigma_v_min_kms:     float = Config.LENS_SIGMA_V_MIN_KMS
+    lens_sigma_v_max_kms:     float = Config.LENS_SIGMA_V_MAX_KMS
     # Fraction of galaxies drawn as real TNG50 SKIRT stamps instead of analytic
     # Sersic profiles (per galaxy). 0 keeps generation exactly as before.
     tng_fraction:             float = 0.0
@@ -112,6 +117,9 @@ class MultiBandGeneratorConfig:
             return False, "big_galaxy_density_arcmin2 must be ≥ 0"
         if self.lens_light_re_factor <= 0.0:
             return False, "lens_light_re_factor must be > 0"
+        if not (0.0 < self.lens_sigma_v_min_kms < self.lens_sigma_v_max_kms):
+            return False, ("lens_sigma_v_min_kms must be in "
+                           "(0, lens_sigma_v_max_kms)")
         if self.star_mag_bright >= self.star_mag_faint:
             return False, "star_mag_bright must be < star_mag_faint"
         lo, hi = self.tng_big_re_arcsec
@@ -195,7 +203,10 @@ class MultiBandSimulator:
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
-        self.lens_population = lens_population or LensPopulation(catalog)
+        self.lens_population = lens_population or LensPopulation(
+            catalog,
+            sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
+            sigma_v_max_kms=self.config.lens_sigma_v_max_kms)
         # Load the injectable TNG galaxy list once (only when enabled, so the
         # default path does no filesystem work).
         self.tng_galaxies: List[Tuple[str, str]] = (

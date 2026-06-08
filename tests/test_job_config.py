@@ -68,6 +68,22 @@ def test_config_page_renders(client, cfg_path):
     assert r.status_code == 200
     assert b"Universal job config" in r.data
     assert b"Star field" in r.data
+    assert b"Strong lenses" in r.data
+
+
+def test_lens_field_defaults_update_and_mapping(cfg_path):
+    from euclid_polish.config import Config
+    c = job_config.load()
+    assert c.lens_density_arcmin2 == Config.LENS_DENSITY_ARCMIN2
+    assert c.lens_sigma_v_min_kms == Config.LENS_SIGMA_V_MIN_KMS
+    c = job_config.update({"lens_density_arcmin2": "8", "lens_sigma_v_min_kms": "180",
+                           "lens_sigma_v_max_kms": "400"})
+    assert c.lens_density_arcmin2 == 8.0 and c.lens_sigma_v_min_kms == 180.0
+    assert c.lens_sigma_v_max_kms == 400.0
+    assert job_config.load().lens_density_arcmin2 == 8.0      # persisted
+    m = job_config.FASRC_STEP_PARAMS["synthetic_generate"]
+    for k in ("lens_density_arcmin2", "lens_sigma_v_min_kms", "lens_sigma_v_max_kms"):
+        assert m[k] == k
 
 
 def test_star_field_defaults_and_update(cfg_path):

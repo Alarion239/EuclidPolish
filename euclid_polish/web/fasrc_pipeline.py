@@ -1005,7 +1005,10 @@ class SyntheticGenerateStep(RunPipelineStep):
         for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),
                             ("star_mag_slope",       "--star-mag-slope"),
                             ("star_mag_bright",      "--star-mag-bright"),
-                            ("star_mag_faint",       "--star-mag-faint")):
+                            ("star_mag_faint",       "--star-mag-faint"),
+                            ("lens_density_arcmin2", "--lens-density-arcmin2"),
+                            ("lens_sigma_v_min_kms", "--lens-sigma-v-min-kms"),
+                            ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms")):
             val = params.get(param)
             if val not in (None, ""):
                 try:

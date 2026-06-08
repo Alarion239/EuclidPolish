@@ -340,6 +340,22 @@ class TestRegistry:
                      "--star-mag-bright", "--star-mag-faint"):
             assert flag not in plain
 
+    def test_synthetic_generate_lens_field_flags(self):
+        """Lens density + σ_v range from /config reach run_pipeline."""
+        step = REGISTRY.get("synthetic_generate")
+        base = {"n_train": 10, "n_valid": 2, "image_size": 252,
+                "batch_size": 4, "steps": 100}
+        argv = step.build_command({
+            **base, "lens_density_arcmin2": "8", "lens_sigma_v_min_kms": "180",
+            "lens_sigma_v_max_kms": "400"})
+        assert argv[argv.index("--lens-density-arcmin2") + 1] == "8"
+        assert argv[argv.index("--lens-sigma-v-min-kms") + 1] == "180"
+        assert argv[argv.index("--lens-sigma-v-max-kms") + 1] == "400"
+        plain = step.build_command(base)
+        for flag in ("--lens-density-arcmin2", "--lens-sigma-v-min-kms",
+                     "--lens-sigma-v-max-kms"):
+            assert flag not in plain
+
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
         assert isinstance(REGISTRY.get("download"), HSTDownloadStep)

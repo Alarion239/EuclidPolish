@@ -63,6 +63,23 @@ def test_sample_returns_valid_lens(stub_population: LensPopulation):
     assert 0.0 < lp.lens_q <= 1.0
 
 
+def test_sigma_v_range_is_configurable():
+    # A custom σ_v range is honoured by the sampler (σ_v sets θ_E).
+    cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
+    pop = LensPopulation(cat, sigma_v_min_kms=200.0, sigma_v_max_kms=300.0)
+    assert pop.sigma_v_min_kms == 200.0 and pop.sigma_v_max_kms == 300.0
+    rng = np.random.default_rng(0)
+    svs = [pop._sample_sigma_v(rng) for _ in range(2000)]
+    assert min(svs) >= 200.0 and max(svs) <= 300.0
+    # Larger σ_v → larger Einstein radii: compare median θ_E across two ranges.
+    lo = LensPopulation(cat, sigma_v_min_kms=150.0, sigma_v_max_kms=200.0)
+    hi = LensPopulation(cat, sigma_v_min_kms=300.0, sigma_v_max_kms=350.0)
+    rng = np.random.default_rng(1)
+    th_lo = [lo.sample(rng).theta_E_arcsec for _ in range(800)]
+    th_hi = [hi.sample(rng).theta_E_arcsec for _ in range(800)]
+    assert np.median(th_hi) > np.median(th_lo)
+
+
 def test_sample_reproducible_with_same_seed(stub_population: LensPopulation):
     a = stub_population.sample(np.random.default_rng(123))
     b = stub_population.sample(np.random.default_rng(123))

@@ -145,20 +145,25 @@ class LensPopulation:
     ``RuntimeError`` — the caller can retry a few times.
     """
 
-    def __init__(self, catalog: CosmosCatalog):
+    def __init__(
+        self, catalog: CosmosCatalog, *,
+        sigma_v_min_kms: float = Config.LENS_SIGMA_V_MIN_KMS,
+        sigma_v_max_kms: float = Config.LENS_SIGMA_V_MAX_KMS,
+    ):
         self.catalog = catalog
+        self.sigma_v_min_kms = float(sigma_v_min_kms)
+        self.sigma_v_max_kms = float(sigma_v_max_kms)
 
     def _sample_sigma_v(self, rng: np.random.Generator) -> float:
         """Velocity dispersion — uniform in σ_v over the truncation range.
 
         Collett 2015 uses a Schechter-like distribution; for our simulation
         the precise functional form doesn't matter as long as the *range*
-        of θ_E we produce is realistic. Uniform σ_v ∈ [150, 350] km/s gives
-        θ_E ∈ roughly [0.3″, 2.0″] at typical lens redshifts.
+        of θ_E we produce is realistic. Uniform σ_v ∈ [min, max] km/s (default
+        [150, 350]) gives θ_E ∈ roughly [0.3″, 2.0″] at typical lens redshifts
+        — σ_v² sets θ_E via the SIS law, so this is the knob on the θ_E spread.
         """
-        return float(rng.uniform(
-            Config.LENS_SIGMA_V_MIN_KMS, Config.LENS_SIGMA_V_MAX_KMS,
-        ))
+        return float(rng.uniform(self.sigma_v_min_kms, self.sigma_v_max_kms))
 
     def _sample_shear(self, rng: np.random.Generator) -> Tuple[float, float]:
         s = Config.LENS_EXT_SHEAR_SIGMA

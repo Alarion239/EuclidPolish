@@ -36,6 +36,9 @@ def register(app):
             "star_mag_slope":       request.form.get("star_mag_slope"),
             "star_mag_bright":      request.form.get("star_mag_bright"),
             "star_mag_faint":       request.form.get("star_mag_faint"),
+            "lens_density_arcmin2": request.form.get("lens_density_arcmin2"),
+            "lens_sigma_v_min_kms": request.form.get("lens_sigma_v_min_kms"),
+            "lens_sigma_v_max_kms": request.form.get("lens_sigma_v_max_kms"),
         })
         note = None
         try:
