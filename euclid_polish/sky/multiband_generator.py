@@ -21,6 +21,7 @@ offsets live in :attr:`Config.STAR_BAND_OFFSETS_MAG`.
 
 from __future__ import annotations
 
+import math
 import sys
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -62,6 +63,11 @@ class MultiBandGeneratorConfig:
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
     gal_density_arcmin2:      float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
+    # Smooth stellar magnitude distribution: dN/dm ∝ 10^(slope·m) over
+    # [bright, faint] — the high-Galactic-latitude star-count law.
+    star_mag_slope:           float = Config.STAR_MAG_SLOPE
+    star_mag_bright:          float = Config.STAR_MAG_BRIGHT
+    star_mag_faint:           float = Config.STAR_MAG_FAINT
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
     # Keep the foreground lens-galaxy light compact: cap its effective radius at
     # this multiple of the Einstein radius θ_E. Real lens ellipticals have
@@ -106,6 +112,8 @@ class MultiBandGeneratorConfig:
             return False, "big_galaxy_density_arcmin2 must be ≥ 0"
         if self.lens_light_re_factor <= 0.0:
             return False, "lens_light_re_factor must be > 0"
+        if self.star_mag_bright >= self.star_mag_faint:
+            return False, "star_mag_bright must be < star_mag_faint"
         lo, hi = self.tng_big_re_arcsec
         if not (0.0 < lo <= hi):
             return False, "tng_big_re_arcsec must be (lo, hi) with 0 < lo ≤ hi"
@@ -116,19 +124,30 @@ class MultiBandGeneratorConfig:
 # Stars (point sources with fixed colour)
 # ---------------------------------------------------------------------------
 
-def _sample_star_mag(rng: np.random.Generator) -> float:
-    """Sample one VIS magnitude from a three-bin (faint/mid/bright) prior.
+def _sample_star_mag(
+    rng: np.random.Generator, *,
+    slope: float, m_bright: float, m_faint: float,
+) -> float:
+    """Sample one VIS magnitude from the differential stellar number-count law
+    ``dN/dm ∝ 10^(slope · m)`` over ``[m_bright, m_faint]``, by inverse-CDF.
 
-    Thresholds and ranges come from ``Config.STAR_MAG_*``; the three bins
-    are an empirical fit to the observed Wide-Survey stellar density per
-    magnitude — most stars are faint, a fat tail extends bright.
+    A single smooth, monotonic distribution (replacing the old 3-bin prior):
+    most stars sit near the faint limit, with a thin tail to the bright cap.
+    ``slope`` is the high-Galactic-latitude star-count slope ``d log N / dm``
+    (~0.14–0.35 in the optical/NIR; Euclid observes away from the plane). The
+    inverse-CDF uses ``log1p``/``expm1`` for numerical stability; ``slope→0``
+    degenerates to uniform.
     """
+    span = float(m_faint) - float(m_bright)
+    if span <= 0.0:
+        return float(m_bright)
+    beta = float(slope) * math.log(10.0)
     u = rng.random()
-    if u < Config.STAR_MAG_PROB_FAINT:
-        return Config.STAR_MAG_FAINT_BASE  + Config.STAR_MAG_FAINT_RANGE  * rng.random()
-    if u < Config.STAR_MAG_PROB_MID:
-        return Config.STAR_MAG_MID_BASE    + Config.STAR_MAG_MID_RANGE    * rng.random()
-    return Config.STAR_MAG_BRIGHT_BASE     + Config.STAR_MAG_BRIGHT_RANGE * rng.random()
+    if abs(beta) < 1e-9:
+        t = u * span                                  # flat counts → uniform
+    else:
+        t = math.log1p(u * math.expm1(beta * span)) / beta
+    return float(m_bright + t)
 
 
 def _deposit_star(
@@ -315,7 +334,10 @@ class MultiBandSimulator:
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> dict:
         x_pix, y_pix = self._random_pix(rng)
-        mag = _sample_star_mag(rng)
+        cfg = self.config
+        mag = _sample_star_mag(
+            rng, slope=cfg.star_mag_slope,
+            m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint)
         _deposit_star(canvas_4ch, x_pix, y_pix, mag)
         return {
             "type": "star",

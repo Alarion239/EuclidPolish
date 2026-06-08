@@ -187,6 +187,37 @@ def test_composite_stamp_clipping():
     assert c4.sum() == pytest.approx(8 * 8 * 4)
 
 
+def test_star_mag_smooth_power_law():
+    from euclid_polish.sky.multiband_generator import _sample_star_mag
+    rng = np.random.default_rng(0)
+    mags = np.array([_sample_star_mag(rng, slope=0.2, m_bright=16.0, m_faint=25.0)
+                     for _ in range(200_000)])
+    assert mags.min() >= 16.0 - 1e-9 and mags.max() <= 25.0 + 1e-9
+    # Monotonic rise toward faint: more stars per mag at the faint end.
+    assert np.mean((mags >= 24) & (mags < 25)) > np.mean((mags >= 16) & (mags < 17))
+    # Recovered differential slope d log10(N)/dm ≈ 0.2.
+    counts, edges = np.histogram(mags, bins=np.arange(16, 25.01, 1.0))
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    A = np.vstack([centers, np.ones_like(centers)]).T
+    slope = np.linalg.lstsq(A, np.log10(counts), rcond=None)[0][0]
+    assert abs(slope - 0.2) < 0.03
+
+
+def test_star_mag_slope_zero_is_uniform():
+    from euclid_polish.sky.multiband_generator import _sample_star_mag
+    rng = np.random.default_rng(1)
+    mags = np.array([_sample_star_mag(rng, slope=0.0, m_bright=18.0, m_faint=24.0)
+                     for _ in range(100_000)])
+    assert abs(np.mean(mags) - 21.0) < 0.05        # uniform → midpoint
+
+
+def test_invalid_star_mag_range_rejected():
+    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
+    with pytest.raises(ValueError, match="star_mag_bright"):
+        MultiBandSimulator(cat, MultiBandGeneratorConfig(
+            star_mag_bright=25.0, star_mag_faint=20.0))
+
+
 def test_invalid_tng_fraction_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="tng_fraction"):

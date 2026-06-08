@@ -364,20 +364,18 @@ class Config:
     PSNR_PEAK_E                  = 10 ** (-0.4 * (PSNR_PEAK_MAG - SIM_VIS_ZEROPOINT_E))
     PSNR_PEAK_STRETCHED          = math.asinh(PSNR_PEAK_E / STRETCH_SCALE_E)
 
-    # Star magnitude distribution (probability thresholds and ranges).
-    # Three bins: faint (70%, mag 22–25), mid (25%, mag 18–22), bright
-    # (5%, mag 16–18). Reverted to these (pre-665d41d) values: the mag-13
-    # "BIG stars" experiment deposited single-pixel deltas up to ~2.3e8 e,
-    # which are an ill-posed (unrecoverable) target that only taught the
-    # model to blur. Keep the brightest synthetic star at mag 16.
-    STAR_MAG_PROB_FAINT          = 0.70     # below → faint bin
-    STAR_MAG_PROB_MID            = 0.95     # below → mid bin (bright bin = 5%)
-    STAR_MAG_FAINT_BASE          = 22.0
-    STAR_MAG_FAINT_RANGE         = 3.0
-    STAR_MAG_MID_BASE            = 18.0
-    STAR_MAG_MID_RANGE           = 4.0
-    STAR_MAG_BRIGHT_BASE         = 16.0     # 16–18
-    STAR_MAG_BRIGHT_RANGE        = 2.0
+    # Star magnitude distribution: the standard differential stellar number-count
+    # law  dN/dm ∝ 10^(STAR_MAG_SLOPE · m)  over [STAR_MAG_BRIGHT, STAR_MAG_FAINT],
+    # sampled smoothly by inverse-CDF (replaces the old 3-bin prior). The slope is
+    # the high-Galactic-latitude star-count slope d log N/dm — Euclid observes far
+    # from the plane, where it is shallow (~0.14–0.35 in the optical/NIR; e.g.
+    # ~0.14 in 18<I<21.5, arXiv:0704.1182). 0.20 ≈ the effective slope the old
+    # bins encoded. The bright cap (16) is deliberate: brighter single-pixel
+    # stellar deltas (≳2e8 e⁻ by mag 13) are an ill-posed, unrecoverable SR target
+    # that only teaches the model to blur. Faint limit ≈ the VIS noise floor.
+    STAR_MAG_SLOPE               = 0.20     # d log N / dm (high Galactic latitude)
+    STAR_MAG_BRIGHT              = 16.0     # bright cap (brightest synthetic star)
+    STAR_MAG_FAINT               = 25.0     # faint limit (≈ VIS 5σ point-source)
 
     # Donut-galaxy (toy gravitational-lens ring) defaults.
     # Sized so the central hole is blurred by the Euclid VIS PSF (FWHM ≈ 0.14"):
