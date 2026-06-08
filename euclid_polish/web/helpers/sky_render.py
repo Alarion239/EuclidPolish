@@ -363,12 +363,11 @@ def _render_saturation_view(stars):
             continue
 
         bins = np.linspace(min(combined), max(combined), 30)
-        ax.hist(valid_mags, bins=bins, color="#2e9e4f", alpha=0.6,
+        ax.hist([valid_mags, invalid_mags], bins=bins, stacked=True,
+                color=["#2e9e4f", "#d1453b"],
                 edgecolor="white", linewidth=0.4,
-                label=f"valid (N={len(valid_mags)})")
-        ax.hist(invalid_mags, bins=bins, color="#d1453b", alpha=0.6,
-                edgecolor="white", linewidth=0.4,
-                label=f"invalid/saturated (N={len(invalid_mags)})")
+                label=[f"valid (N={len(valid_mags)})",
+                       f"invalid/saturated (N={len(invalid_mags)})"])
 
         cutoff = _saturation_cutoff(valid_mags, invalid_mags, bins)
         if cutoff is not None:
