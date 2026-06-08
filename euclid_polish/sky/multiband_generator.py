@@ -73,14 +73,16 @@ class MultiBandGeneratorConfig:
     # Sersic population by construction. When False, the legacy flat
     # ×1/×2/×3/×4 draw is used.
     tng_realistic_sizes:      bool  = True
-    # Rare, continuous big-galaxy tail mixed into the size draw (COSMOS is a deep
-    # field and lacks big resolved galaxies the network should still learn).
-    # NOTE these are big in *half-light radius*; because real galaxies have a
-    # bright compact bulge + an extended disk, their actual on-sky FOOTPRINT is
-    # several × R_e (the de Vaucouleurs wings sprawl), so even a ~1-4" R_e tail
-    # galaxy can fill a 25" stamp. Hence the tail is kept rare (size range
-    # preserved, frequency low) — see tng_big_re_arcsec for the max size.
-    tng_big_fraction:         float = 0.015
+    # Genuinely big galaxies are their OWN population at a fixed sky surface
+    # density — INDEPENDENT of tng_fraction (which only governs the small
+    # field-galaxy TNG/Sersic mix). They are always rendered as real TNG stamps
+    # at a large size (R_e log-uniform over ``tng_big_re_arcsec``). The default
+    # density ≈ 1 big galaxy per 15 stamps of 512² @ 0.05″/px (0.182 arcmin²);
+    # the count per field is Poisson(density · area). Set to 0 to disable.
+    # NOTE these are big in *half-light radius*; because a bright compact bulge +
+    # extended disk has an on-sky FOOTPRINT several × R_e (de Vaucouleurs wings),
+    # even a ~1-4" R_e galaxy can fill a 25" stamp — so they are kept rare.
+    big_galaxy_density_arcmin2: float = 0.37
     tng_big_re_arcsec:        Tuple[float, float] = (1.0, 4.0)
 
     def validate(self) -> Tuple[bool, Optional[str]]:
@@ -93,8 +95,8 @@ class MultiBandGeneratorConfig:
             return False, "densities must be non-negative"
         if not (0.0 <= self.tng_fraction <= 1.0):
             return False, "tng_fraction must be in [0, 1]"
-        if not (0.0 <= self.tng_big_fraction <= 1.0):
-            return False, "tng_big_fraction must be in [0, 1]"
+        if self.big_galaxy_density_arcmin2 < 0.0:
+            return False, "big_galaxy_density_arcmin2 must be ≥ 0"
         lo, hi = self.tng_big_re_arcsec
         if not (0.0 < lo <= hi):
             return False, "tng_big_re_arcsec must be (lo, hi) with 0 < lo ≤ hi"
@@ -183,10 +185,10 @@ class MultiBandSimulator:
         self.tng_size_model: Optional[CosmosSizeSampler] = None
         if (self.config.tng_fraction > 0.0
                 and self.config.tng_realistic_sizes and self.tng_galaxies):
+            # Small field galaxies: pure COSMOS-anchored sizes (no big tail —
+            # big galaxies are a separate fixed-density population, below).
             self.tng_size_model = CosmosSizeSampler(
-                self.catalog.effective_re_arcsec,
-                big_fraction=self.config.tng_big_fraction,
-                big_range=self.config.tng_big_re_arcsec,
+                self.catalog.effective_re_arcsec, big_fraction=0.0,
             )
 
     # ------------------------------------------------------------------ #
@@ -201,18 +203,19 @@ class MultiBandSimulator:
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+        *, target_re_arcsec: Optional[float] = None,
     ) -> Optional[dict]:
         """Inject a random downloaded TNG galaxy (random orientation +
         realistic-size downsample + quarter-rotation), centred at a random field
         position and clipped to the canvas. Returns None if the stamp can't be
         loaded.
 
-        With ``tng_realistic_sizes`` the downsample factor is chosen so the
-        galaxy's apparent half-light radius is drawn from the COSMOS catalog's
-        own size distribution (:class:`CosmosSizeSampler`) — matching the Sersic
-        population, with a rare big tail."""
-        target_re = (self.tng_size_model.sample(rng)
-                     if self.tng_size_model is not None else None)
+        ``target_re_arcsec`` overrides the apparent half-light radius; when None
+        it is drawn from the COSMOS catalog's own size distribution
+        (:class:`CosmosSizeSampler`), matching the Sersic field population."""
+        target_re = target_re_arcsec
+        if target_re is None and self.tng_size_model is not None:
+            target_re = self.tng_size_model.sample(rng)
         res = sample_tng_stamp(self.tng_galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
                                target_re_arcsec=target_re)
@@ -224,6 +227,7 @@ class MultiBandSimulator:
         return {
             "type": "galaxy",
             "render": "tng",
+            "big": False,
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
             "subhalo_id":   tmeta["subhalo_id"],
@@ -235,6 +239,20 @@ class MultiBandSimulator:
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
         }
+
+    def _add_big_galaxy(
+        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+    ) -> Optional[dict]:
+        """Inject one genuinely big galaxy — always a real TNG stamp, sized to a
+        large apparent half-light radius drawn log-uniformly over
+        ``tng_big_re_arcsec``. This is the fixed-density population that is
+        independent of ``tng_fraction``."""
+        lo, hi = self.config.tng_big_re_arcsec
+        target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+        rec = self._add_tng_galaxy(canvas_4ch, rng, target_re_arcsec=target)
+        if rec is not None:
+            rec["big"] = True
+        return rec
 
     def _add_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
@@ -274,6 +292,7 @@ class MultiBandSimulator:
         return {
             "type": "galaxy",
             "render": "sersic",
+            "big": False,
             "catalog_id": g.catalog_id,
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
@@ -365,6 +384,7 @@ class MultiBandSimulator:
         n_galaxies: Optional[int] = None,
         n_stars:    Optional[int] = None,
         n_lenses:   Optional[int] = None,
+        n_big:      Optional[int] = None,
     ) -> Tuple[MultiBandSkyImage, dict]:
         """Render one clean HR field in 4 bands.
 
@@ -384,12 +404,24 @@ class MultiBandSimulator:
             n_stars    = int(rng.poisson(cfg.star_density_arcmin2 * area))
         if n_lenses is None:
             n_lenses   = int(rng.poisson(cfg.lens_density_arcmin2 * area))
+        # Big galaxies: a fixed-density population, independent of tng_fraction.
+        # Gated on TNG being enabled so tng_fraction==0 stays the pure-Sersic
+        # baseline (no extra RNG drawn → byte-identical).
+        big_enabled = (cfg.tng_fraction > 0.0 and bool(self.tng_galaxies)
+                       and cfg.big_galaxy_density_arcmin2 > 0.0)
+        if n_big is None:
+            n_big = (int(rng.poisson(cfg.big_galaxy_density_arcmin2 * area))
+                     if big_enabled else 0)
 
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
 
         galaxies, stars, lenses = [], [], []
         for _ in range(n_galaxies):
             galaxies.append(self._add_galaxy(canvas, rng))
+        for _ in range(n_big):
+            rec = self._add_big_galaxy(canvas, rng)
+            if rec is not None:
+                galaxies.append(rec)
         for _ in range(n_stars):
             stars.append(self._add_star(canvas, rng))
         for _ in range(n_lenses):
@@ -397,12 +429,15 @@ class MultiBandSimulator:
             if rec is not None:
                 lenses.append(rec)
 
+        n_big_rendered = sum(1 for g in galaxies if g.get("big"))
         meta = {
             "field_area_arcmin2":     float(area),
             "galaxy_density_arcmin2": float(cfg.gal_density_arcmin2),
             "star_density_arcmin2":   float(cfg.star_density_arcmin2),
             "lens_density_arcmin2":   float(cfg.lens_density_arcmin2),
+            "big_galaxy_density_arcmin2": float(cfg.big_galaxy_density_arcmin2),
             "n_galaxies": len(galaxies),
+            "n_big_galaxies": int(n_big_rendered),
             "n_stars":    len(stars),
             "n_lenses":   len(lenses),
             "galaxies":   galaxies,

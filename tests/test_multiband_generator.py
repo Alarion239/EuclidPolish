@@ -195,10 +195,54 @@ def test_invalid_tng_fraction_rejected():
 
 def test_invalid_tng_big_params_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
-    with pytest.raises(ValueError, match="tng_big_fraction"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_big_fraction=1.5))
+    with pytest.raises(ValueError, match="big_galaxy_density"):
+        MultiBandSimulator(cat, MultiBandGeneratorConfig(big_galaxy_density_arcmin2=-1.0))
     with pytest.raises(ValueError, match="tng_big_re_arcsec"):
         MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_big_re_arcsec=(2.0, 1.0)))
+
+
+def test_big_galaxies_independent_of_tng_fraction(tmp_path):
+    # The big-galaxy population is a fixed count (here forced via n_big),
+    # always TNG, flagged "big" — and identical whatever tng_fraction is.
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111", size=240)
+    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
+    for tf in (0.1, 1.0):
+        sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+            image_size=128, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            tng_fraction=tf, tng_galaxy_dir=tng))
+        _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
+                                        n_stars=0, n_lenses=0, n_big=3)
+        big = [g for g in meta["galaxies"] if g.get("big")]
+        assert len(big) == 3 and meta["n_big_galaxies"] == 3
+        assert all(g["render"] == "tng" for g in big)
+
+
+def test_big_galaxy_density_drives_count(tmp_path):
+    # A high surface density yields several big galaxies via the Poisson draw.
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111", size=240)
+    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
+    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+        image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        tng_fraction=1.0, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=50.0))
+    _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
+                                    n_stars=0, n_lenses=0)
+    assert meta["n_big_galaxies"] >= 1     # area≈0.182 arcmin² × 50 ≈ 9 expected
+
+
+def test_big_galaxies_off_when_tng_disabled(tmp_path):
+    # tng_fraction=0 stays the pure-Sersic baseline: no big galaxies even with a
+    # huge density set.
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111", size=240)
+    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
+    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+        image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        tng_fraction=0.0, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=100.0))
+    _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
+                                    n_stars=0, n_lenses=0)
+    assert meta["n_big_galaxies"] == 0
 
 
 def test_tng_lens_components_when_enabled(tmp_path):
