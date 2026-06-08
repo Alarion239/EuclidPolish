@@ -231,6 +231,27 @@ def test_big_galaxy_density_drives_count(tmp_path):
     assert meta["n_big_galaxies"] >= 1     # area≈0.182 arcmin² × 50 ≈ 9 expected
 
 
+def test_lens_light_capped_at_theta_e():
+    # Lens light effective radius is capped at lens_light_re_factor × θ_E so the
+    # lens stays compact relative to the source arcs.
+    cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
+    factor = 0.8
+    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+        image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        lens_light_re_factor=factor, tng_fraction=0.0))
+    _img, meta = sim.simulate_field(np.random.default_rng(1), n_galaxies=0,
+                                    n_stars=0, n_lenses=8)
+    assert meta["n_lenses"] >= 1
+    for L in meta["lenses"]:
+        assert L["lens_light_re_arcsec"] <= factor * L["theta_E_arcsec"] + 1e-6
+
+
+def test_invalid_lens_light_re_factor_rejected():
+    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
+    with pytest.raises(ValueError, match="lens_light_re_factor"):
+        MultiBandSimulator(cat, MultiBandGeneratorConfig(lens_light_re_factor=0.0))
+
+
 def test_big_galaxies_off_when_tng_disabled(tmp_path):
     # tng_fraction=0 stays the pure-Sersic baseline: no big galaxies even with a
     # huge density set.

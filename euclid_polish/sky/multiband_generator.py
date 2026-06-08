@@ -63,6 +63,13 @@ class MultiBandGeneratorConfig:
     gal_density_arcmin2:      float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
+    # Keep the foreground lens-galaxy light compact: cap its effective radius at
+    # this multiple of the Einstein radius θ_E. Real lens ellipticals have
+    # R_e ~ θ_E, but the on-sky footprint runs several × R_e (extended wings), so
+    # an uncapped lens sprawls over (and dwarfs) the lensed source arcs. 0.7 keeps
+    # the lens core comfortably inside θ_E; lower it for even more compact lenses.
+    # Applies to both the TNG-stamp and the Sersic lens light.
+    lens_light_re_factor:     float = 0.7
     # Fraction of galaxies drawn as real TNG50 SKIRT stamps instead of analytic
     # Sersic profiles (per galaxy). 0 keeps generation exactly as before.
     tng_fraction:             float = 0.0
@@ -97,6 +104,8 @@ class MultiBandGeneratorConfig:
             return False, "tng_fraction must be in [0, 1]"
         if self.big_galaxy_density_arcmin2 < 0.0:
             return False, "big_galaxy_density_arcmin2 must be ≥ 0"
+        if self.lens_light_re_factor <= 0.0:
+            return False, "lens_light_re_factor must be > 0"
         lo, hi = self.tng_big_re_arcsec
         if not (0.0 < lo <= hi):
             return False, "tng_big_re_arcsec must be (lo, hi) with 0 < lo ≤ hi"
@@ -315,22 +324,28 @@ class MultiBandSimulator:
             "mag_vis": float(mag),
         }
 
-    def _tng_stamp_for_galaxy(
-        self, g, rng: np.random.Generator,
-    ) -> Optional[np.ndarray]:
-        """A TNG stamp sized to galaxy ``g``'s circularized effective radius —
-        the size the Sersic it replaces would have. None if TNG is unavailable
-        or the stamp can't load."""
-        if self.tng_size_model is None or not self.tng_galaxies:
-            return None
-        eff = float(circularized_effective_radius_arcsec(
+    @staticmethod
+    def _galaxy_effective_re(g) -> float:
+        """Galaxy ``g``'s circularized combined bulge+disk half-light radius."""
+        return float(circularized_effective_radius_arcsec(
             np.array([g.bulge_r_e_arcsec]), np.array([g.bulge_axis_ratio]),
             np.array([g.bulge_flux_e[0]]),
             np.array([g.disk_r_e_arcsec]), np.array([g.disk_axis_ratio]),
             np.array([g.disk_flux_e[0]]))[0])
+
+    def _tng_stamp_for_galaxy(
+        self, g, rng: np.random.Generator,
+        *, target_re_arcsec: Optional[float] = None,
+    ) -> Optional[np.ndarray]:
+        """A TNG stamp sized to ``target_re_arcsec`` (default: galaxy ``g``'s
+        circularized effective radius). None if TNG is unavailable / can't load."""
+        if self.tng_size_model is None or not self.tng_galaxies:
+            return None
+        target = (target_re_arcsec if target_re_arcsec is not None
+                  else self._galaxy_effective_re(g))
         res = sample_tng_stamp(
             self.tng_galaxies, rng, pixel_scale_arcsec=self.config.pixel_scale,
-            target_re_arcsec=eff)
+            target_re_arcsec=target)
         return res[0] if res is not None else None
 
     def _add_lens(
@@ -343,6 +358,21 @@ class MultiBandSimulator:
         x_pix, y_pix = self._random_pix(rng)
         lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
         cfg = self.config
+
+        # Keep the lens light compact: cap its effective radius at
+        # lens_light_re_factor × θ_E so it doesn't sprawl over the source arcs.
+        lens_eff = self._galaxy_effective_re(lp.lens_galaxy)
+        lens_cap = cfg.lens_light_re_factor * float(lp.theta_E_arcsec)
+        lens_re = min(lens_eff, lens_cap) if lens_eff > 0 else lens_cap
+        lens_scale = (lens_re / lens_eff) if lens_eff > 0 else 1.0
+        # For the Sersic lens light, shrink the rendered component radii to match.
+        lp_render = lp
+        if lens_scale < 1.0:
+            lg = lp.lens_galaxy
+            lp_render = replace(lp, lens_galaxy=replace(
+                lg, bulge_r_e_arcsec=lg.bulge_r_e_arcsec * lens_scale,
+                disk_r_e_arcsec=lg.disk_r_e_arcsec * lens_scale))
+
         # Lens light and lensed source are each, independently, a real TNG stamp
         # with probability tng_fraction (same proportion as field galaxies);
         # otherwise an analytic B+D Sersic. tng_fraction==0 draws no extra RNG.
@@ -351,7 +381,8 @@ class MultiBandSimulator:
         use_tng = (cfg.tng_fraction > 0.0 and self.tng_size_model is not None
                    and bool(self.tng_galaxies))
         if use_tng and rng.random() < cfg.tng_fraction:
-            lens_light_stamp = self._tng_stamp_for_galaxy(lp.lens_galaxy, rng)
+            lens_light_stamp = self._tng_stamp_for_galaxy(
+                lp.lens_galaxy, rng, target_re_arcsec=lens_re)
             if lens_light_stamp is not None:
                 lens_render = "tng"
         if use_tng and rng.random() < cfg.tng_fraction:
@@ -361,7 +392,7 @@ class MultiBandSimulator:
         # Fast path: render the lens once into the 4-channel canvas (geometry
         # is band-independent; only per-band fluxes differ).
         render_lens_to_multiband_canvas(
-            canvas_4ch, params=lp, pixel_scale=cfg.pixel_scale,
+            canvas_4ch, params=lp_render, pixel_scale=cfg.pixel_scale,
             lens_light_stamp=lens_light_stamp, source_stamp=source_stamp,
         )
         return {
@@ -373,6 +404,7 @@ class MultiBandSimulator:
             "theta_E_arcsec": float(lp.theta_E_arcsec),
             "sigma_v_proxy_q": float(lp.lens_q),
             "lens_light_render": lens_render,
+            "lens_light_re_arcsec": float(lens_re),
             "source_render": source_render,
         }
 
