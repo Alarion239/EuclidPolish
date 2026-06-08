@@ -13,14 +13,40 @@ import os
 import numpy as np
 import pytest
 
+import time
+
 from euclid_polish.config import Config
+from euclid_polish.sky import cosmos2025 as P
 from euclid_polish.sky.cosmos2025 import (
     Cosmos2025Catalog,
     CosmosCatalog,
     GalaxyParams,
+    ensure_prefiltered_catalog,
     open_cosmos2025,
 )
 from tests._tiny_catalog import TinyCosmosCatalog
+
+
+def _tiny_real_catalog(n: int = 6) -> Cosmos2025Catalog:
+    """A real Cosmos2025Catalog with hand-set filtered arrays (no FITS read),
+    via ``__new__`` — just enough to exercise (de)serialisation + sampling."""
+    rng = np.random.default_rng(0)
+    obj = Cosmos2025Catalog.__new__(Cosmos2025Catalog)
+    obj.catalog_id      = np.arange(n, dtype=np.int64)
+    obj.ra_deg          = rng.uniform(150.0, 151.0, n)
+    obj.dec_deg         = rng.uniform(2.0, 3.0, n)
+    obj.z_phot          = rng.uniform(0.2, 2.0, n)
+    obj.angle_rad       = rng.uniform(0.0, np.pi, n)
+    obj.disk_re_arcsec  = rng.uniform(0.1, 0.5, n)
+    obj.bulge_re_arcsec = rng.uniform(0.05, 0.3, n)
+    obj.disk_q          = rng.uniform(0.3, 1.0, n)
+    obj.bulge_q         = rng.uniform(0.3, 1.0, n)
+    obj.bulge_flux_e    = rng.uniform(1.0, 100.0, (n, Config.NUM_LR_CHANNELS))
+    obj.disk_flux_e     = rng.uniform(1.0, 100.0, (n, Config.NUM_LR_CHANNELS))
+    obj.max_mag = 25.0
+    obj.max_bd_chi2 = 10.0
+    obj.path = "<in-memory>"
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +211,62 @@ def test_real_catalog_source_beyond_lens(real_catalog: Cosmos2025Catalog):
     rng = np.random.default_rng(0)
     s = real_catalog.sample_source_galaxy(rng, z_lens=0.5)
     assert s.z_phot >= 0.5 + Config.LENS_Z_SOURCE_OFFSET
+
+
+# ---------------------------------------------------------------------------
+# Pre-filtered .npz round-trip + cache (the worker fast-load path)
+# ---------------------------------------------------------------------------
+
+def test_filtered_npz_round_trip(tmp_path):
+    cat = _tiny_real_catalog(7)
+    p = str(tmp_path / "filtered.npz")
+    cat.save_filtered_npz(p)
+    back = Cosmos2025Catalog.from_filtered_npz(p, verbose=False)
+    assert len(back) == 7
+    for k in P._FILTERED_ARRAYS:
+        assert np.allclose(getattr(back, k), getattr(cat, k))
+    assert back.max_mag == 25.0 and back.max_bd_chi2 == 10.0
+    # Full sampling API works off the reloaded arrays.
+    g = back.sample_galaxy(np.random.default_rng(0))
+    assert isinstance(g, GalaxyParams)
+    assert np.isfinite(back.typical_band_electron_ratios()).all()
+
+
+def test_open_cosmos2025_reads_npz(tmp_path):
+    cat = _tiny_real_catalog(4)
+    p = str(tmp_path / "filtered.npz")
+    cat.save_filtered_npz(p)
+    back = open_cosmos2025(path=p, verbose=False)
+    assert isinstance(back, Cosmos2025Catalog) and len(back) == 4
+
+
+def test_ensure_prefiltered_passthrough_npz(tmp_path):
+    p = str(tmp_path / "already.npz")
+    open(p, "w").close()
+    assert ensure_prefiltered_catalog(p) == p           # no rebuild
+
+
+def test_ensure_prefiltered_builds_caches_and_invalidates(tmp_path, monkeypatch):
+    fits_path = str(tmp_path / "cosmos2025.fits")
+    open(fits_path, "w").close()                         # dummy source (mtime only)
+    real = _tiny_real_catalog(6)
+    calls = {"n": 0}
+
+    def fake_ctor(path, max_mag=25.0, max_bd_chi2=10.0, verbose=True):
+        calls["n"] += 1
+        return real
+    monkeypatch.setattr(P, "Cosmos2025Catalog", fake_ctor)
+
+    npz1 = ensure_prefiltered_catalog(fits_path, verbose=False)
+    assert npz1.endswith(".npz") and os.path.isfile(npz1) and calls["n"] == 1
+    with np.load(npz1) as d:
+        assert int(d["catalog_id"].size) == 6 and "bulge_flux_e" in d
+
+    # Fresh cache → no rebuild.
+    assert ensure_prefiltered_catalog(fits_path, verbose=False) == npz1
+    assert calls["n"] == 1
+
+    # Source FITS newer than the cache → rebuild.
+    os.utime(fits_path, (time.time() + 10, time.time() + 10))
+    ensure_prefiltered_catalog(fits_path, verbose=False)
+    assert calls["n"] == 2

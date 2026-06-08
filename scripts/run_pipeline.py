@@ -51,7 +51,7 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psf_sets
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
-from euclid_polish.sky.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
 from euclid_polish.sky.multiband_forward import (
     MultiBandForward, MultiBandForwardConfig,
 )
@@ -143,7 +143,9 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    cat = open_cosmos2025(path=args.catalog)
+    # Pre-filter the 10 GB master FITS to a small cached .npz once, then load
+    # that — instant on repeat runs (and shared by the parallel path).
+    cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
     _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
     cfg = MultiBandGeneratorConfig(image_size=args.image_size,
@@ -369,6 +371,11 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     os.makedirs(args.records_dir, exist_ok=True)
     workers = max(1, int(args.gen_workers))
 
+    # Pre-filter the 10 GB master FITS to a small cached .npz ONCE (in the
+    # parent), so each per-subset, per-worker pool initializer reloads a few-MB
+    # file in milliseconds instead of re-parsing 784k rows every time.
+    catalog_path = ensure_prefiltered_catalog(args.catalog)
+
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:
             continue
@@ -395,7 +402,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         t0 = time.perf_counter()
         with ProcessPoolExecutor(
             max_workers=workers, initializer=_gen_init_worker,
-            initargs=(args.catalog, args.image_size, args.psf_dir,
+            initargs=(catalog_path, args.image_size, args.psf_dir,
                       args.require_empirical_psf, args.records_dir,
                       args.tng_fraction),
         ) as pool:

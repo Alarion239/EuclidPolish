@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
@@ -31,6 +32,17 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
+
+#: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample —
+#: everything ``_row_to_params`` / the lens+source samplers read. Persisting just
+#: these (post-quality-cut) gives a few-MB ``.npz`` that loads ~100× faster than
+#: re-parsing the 10 GB master FITS, which matters when every parallel worker
+#: rebuilds the catalog.
+_FILTERED_ARRAYS = (
+    "catalog_id", "ra_deg", "dec_deg", "z_phot", "angle_rad",
+    "disk_re_arcsec", "bulge_re_arcsec", "disk_q", "bulge_q",
+    "bulge_flux_e", "disk_flux_e",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +372,92 @@ class Cosmos2025Catalog(CosmosCatalog):
             raise RuntimeError(f"No source galaxies with z > {z_min}")
         return self._row_to_params(int(rng.choice(cand)))
 
+    # ------------------------------------------------------------------ #
+    # Fast (de)serialisation of the *filtered* catalog
+    # ------------------------------------------------------------------ #
+    def save_filtered_npz(self, path: str) -> None:
+        """Persist the post-quality-cut arrays to a compact ``.npz`` so workers
+        can reload the catalog without re-parsing the 10 GB master FITS."""
+        np.savez(
+            path,
+            max_mag=np.float64(self.max_mag),
+            max_bd_chi2=np.float64(self.max_bd_chi2),
+            **{k: getattr(self, k) for k in _FILTERED_ARRAYS},
+        )
+
+    @classmethod
+    def from_filtered_npz(cls, path: str, *, verbose: bool = True
+                          ) -> "Cosmos2025Catalog":
+        """Reconstruct a catalog from a :meth:`save_filtered_npz` file — no
+        FITS read, no quality cuts (already applied). Bypasses ``__init__``."""
+        obj = cls.__new__(cls)        # skip the heavy FITS-reading __init__
+        with np.load(path) as data:
+            for k in _FILTERED_ARRAYS:
+                setattr(obj, k, data[k])
+            obj.max_mag = float(data["max_mag"])
+            obj.max_bd_chi2 = float(data["max_bd_chi2"])
+        obj.path = path
+        if verbose:
+            print(f"[cosmos2025] loaded {len(obj)} pre-filtered galaxies "
+                  f"from {path}")
+        return obj
+
+
+# ---------------------------------------------------------------------------
+# Pre-filtered catalog cache (built once, read by every worker)
+# ---------------------------------------------------------------------------
+
+def _filtered_cache_path(fits_path: str, max_mag: float, max_bd_chi2: float,
+                         cache_dir: Optional[str] = None) -> str:
+    base = cache_dir or os.path.dirname(os.path.abspath(fits_path)) or "."
+    stem = os.path.splitext(os.path.basename(fits_path))[0]
+    return os.path.join(base, f"{stem}.filtered_mag{max_mag:g}_chi{max_bd_chi2:g}.npz")
+
+
+def ensure_prefiltered_catalog(
+    fits_path: Optional[str] = None, *,
+    max_mag: float = 25.0, max_bd_chi2: float = 10.0,
+    cache_dir: Optional[str] = None, verbose: bool = True,
+) -> str:
+    """Return a path to a small ``.npz`` holding the *filtered* COSMOS2025
+    catalog, building it from the master FITS only when no fresh cache exists.
+
+    The full 10 GB FITS is read **once** (here, in the parent) instead of once
+    per parallel worker per subset; workers then reload the few-MB ``.npz`` in
+    milliseconds. The cache is keyed by the cut parameters and invalidated when
+    the source FITS is newer. If ``fits_path`` is already a ``.npz`` it is
+    returned unchanged.
+    """
+    p = fits_path or Config.COSMOS2025_CATALOG_PATH
+    if str(p).endswith(".npz"):
+        return p
+    if not os.path.isfile(p):
+        raise FileNotFoundError(
+            f"COSMOS2025 catalog not found at {p}. Place the master catalog "
+            f"there (Shuntov+ 2025) or set Config.COSMOS2025_CATALOG_PATH.")
+    npz = _filtered_cache_path(p, max_mag, max_bd_chi2, cache_dir)
+    if os.path.isfile(npz) and os.path.getmtime(npz) >= os.path.getmtime(p):
+        return npz                                  # fresh cache → reuse
+    cat = Cosmos2025Catalog(path=p, max_mag=max_mag,
+                            max_bd_chi2=max_bd_chi2, verbose=verbose)
+    try:
+        npz = _atomic_save_filtered(cat, npz)
+    except OSError:                                  # cache dir not writable
+        npz = _atomic_save_filtered(
+            cat, _filtered_cache_path(p, max_mag, max_bd_chi2,
+                                      tempfile.gettempdir()))
+    if verbose:
+        print(f"[cosmos2025] pre-filtered {len(cat)} galaxies → {npz}")
+    return npz
+
+
+def _atomic_save_filtered(cat: "Cosmos2025Catalog", npz: str) -> str:
+    os.makedirs(os.path.dirname(npz) or ".", exist_ok=True)
+    tmp = npz + ".tmp.npz"
+    cat.save_filtered_npz(tmp)
+    os.replace(tmp, npz)
+    return npz
+
 
 # ---------------------------------------------------------------------------
 # Convenience factory
@@ -375,6 +473,9 @@ def open_cosmos2025(
     on disk, this raises :class:`FileNotFoundError` rather than falling
     back to a synthetic catalog — the pipeline relies on real photometry
     and morphology and must not be run without it.
+
+    A ``.npz`` path is read as a pre-filtered catalog
+    (:meth:`Cosmos2025Catalog.from_filtered_npz`) — the fast path workers use.
     """
     p = path or Config.COSMOS2025_CATALOG_PATH
     if not os.path.isfile(p):
@@ -383,4 +484,7 @@ def open_cosmos2025(
             f"catalog there (Shuntov+ 2025, arXiv:2506.03243) or set "
             f"Config.COSMOS2025_CATALOG_PATH to its location."
         )
+    if str(p).endswith(".npz"):
+        return Cosmos2025Catalog.from_filtered_npz(
+            p, verbose=bool(kwargs.get("verbose", True)))
     return Cosmos2025Catalog(path=p, **kwargs)
