@@ -68,6 +68,20 @@
     {% endfor %}
   </table>
 </section>
+
+<section class="card" id="psf-clusters-card" style="display:none;">
+  <h3>PSF clusters
+    <span class="muted" style="font-size:13px;">(local sky positions + angular diameter)</span>
+  </h3>
+  <p class="muted" style="margin-top:0;">
+    Each ePSF is built from one spatial cluster of stars (the PSF varies across
+    the focal plane). Cluster centres are read from the ePSF FITS; membership and
+    angular diameter are reconstructed by assigning each catalog star valid in all
+    four bands to its nearest cluster centre. <code>×</code> = cluster centre,
+    <code>Ø</code> = angular diameter (arcmin).
+  </p>
+  <img id="psf-clusters-img" alt="PSF clusters" style="max-width:100%; display:block;">
+</section>
 {% endblock %}
 
 {% block actions %}
@@ -95,6 +109,18 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   e.preventDefault();
   polishUI.viz.set(chip.dataset.group, chip.dataset.value);
 });
+
+// ── PSF cluster map: self-gating — only show once the ePSF is on disk ──
+(function () {
+  const card = document.getElementById("psf-clusters-card");
+  const img  = document.getElementById("psf-clusters-img");
+  if (!card || !img) return;
+  const url = "/view/psf-clusters?_t=" + Date.now();
+  const probe = new Image();
+  probe.onload  = () => { img.src = url; card.style.display = ""; };
+  probe.onerror = () => { card.style.display = "none"; };
+  probe.src = url;
+})();
 
 // ── Manual ePSF synchronisation (rsync the band FITS from FASRC) ──────
 const psfSyncBtn = document.getElementById("psf-sync-btn");

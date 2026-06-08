@@ -4,6 +4,7 @@ from __future__ import annotations
 from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.euclid.psf_library import psf_path_for_band
 from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
 from euclid_polish.visualization.color import calibrated_rgb_panel
@@ -11,6 +12,7 @@ from euclid_polish.visualization.methods import plot_star_positions
 from flask import abort
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
 import io
 import matplotlib
@@ -390,6 +392,134 @@ def _render_saturation_view(stars):
                  "dashed line = suggested oversaturation cutoff", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     return fig
+
+
+def _great_circle_arcmin(ra1, dec1, ra2, dec2):
+    """Great-circle separation in arcmin (haversine). Degrees in; ``ra2`` /
+    ``dec2`` may be arrays (broadcast against scalar ``ra1`` / ``dec1``)."""
+    r1, d1 = np.radians(ra1), np.radians(dec1)
+    r2, d2 = np.radians(ra2), np.radians(dec2)
+    a = (np.sin((d2 - d1) / 2.0) ** 2
+         + np.cos(d1) * np.cos(d2) * np.sin((r2 - r1) / 2.0) ** 2)
+    return np.degrees(2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))) * 60.0
+
+
+def _render_psf_clusters_png(output_dir: Optional[str]) -> bytes:
+    """Local sky map of the ePSF-extraction clusters + per-cluster diameter.
+
+    Cluster centroids are read from the VIS ePSF FITS (the spatial clustering
+    is shared across bands). Membership + angular diameter are reconstructed
+    by assigning each catalog star valid in all four bands to its nearest
+    centroid — exactly the Voronoi assignment K-Means used at extraction.
+    Far-apart fields get their own panel (zoomed local view, not full sky).
+
+    Aborts 404 when the VIS ePSF FITS isn't on disk (PSFs not extracted /
+    downloaded yet) — the page hides the panel in that case. A missing
+    catalog degrades to a centroids-only map (diameters shown as "—").
+    """
+    matplotlib.use("Agg")
+
+    psf_path = psf_path_for_band(Config.BAND_VIS)
+    if not os.path.isfile(psf_path):
+        abort(404)
+    cra, cdec = [], []
+    with fits.open(psf_path) as hdul:
+        for hdu in hdul[1:]:                       # HDU0 = mean PSF
+            ra = hdu.header.get("RA")
+            dec = hdu.header.get("DEC")
+            if ra is not None and dec is not None:
+                cra.append(float(ra)); cdec.append(float(dec))
+    if not cra:
+        abort(404)
+    cra, cdec = np.asarray(cra), np.asarray(cdec)
+    n_clusters = len(cra)
+
+    # Catalog stars valid in all four bands → nearest-centroid assignment.
+    sra, sdec = [], []
+    cat = StarCatalog(output_dir) if output_dir else None
+    if cat is not None and cat.exists():
+        band_names = [b.name for b in Config.BANDS]
+        for s in cat.load().get("stars", []):
+            ra, dec = s.get("ra"), s.get("dec")
+            if ra is None or dec is None or not (np.isfinite(ra) and np.isfinite(dec)):
+                continue
+            if all(StarCatalog.is_valid(s, band=bn) for bn in band_names):
+                sra.append(float(ra)); sdec.append(float(dec))
+    sra, sdec = np.asarray(sra), np.asarray(sdec)
+    if len(sra):
+        labels = np.array([int(np.argmin(_great_circle_arcmin(r, d, cra, cdec)))
+                           for r, d in zip(sra, sdec)])
+    else:
+        labels = np.zeros(0, dtype=int)
+
+    # Per-cluster member count + angular diameter (max pairwise separation).
+    diam: List[Optional[float]] = [None] * n_clusters
+    for k in range(n_clusters):
+        mem = np.where(labels == k)[0]
+        if len(mem) >= 2:
+            mr, md = sra[mem], sdec[mem]
+            diam[k] = max(float(_great_circle_arcmin(mr[i], md[i], mr, md).max())
+                          for i in range(len(mem)))
+
+    # Group centroids into spatially-disjoint regions (connected components
+    # under a 2° link) so far-apart fields each get their own zoomed panel.
+    LINK_ARCMIN = 120.0
+    region = [-1] * n_clusters
+    n_regions = 0
+    for i in range(n_clusters):
+        if region[i] != -1:
+            continue
+        stack, region[i] = [i], n_regions
+        while stack:
+            u = stack.pop()
+            du = _great_circle_arcmin(cra[u], cdec[u], cra, cdec)
+            for v in range(n_clusters):
+                if region[v] == -1 and v != u and du[v] <= LINK_ARCMIN:
+                    region[v] = n_regions
+                    stack.append(v)
+        n_regions += 1
+
+    cmap = plt.get_cmap("tab20")
+    ncols = min(n_regions, 2)
+    nrows = (n_regions + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7.5 * ncols, 5.4 * nrows),
+                             squeeze=False)
+    axes = axes.ravel()
+    for r in range(n_regions):
+        ax = axes[r]
+        ks = [k for k in range(n_clusters) if region[k] == r]
+        dec0 = float(np.mean(cdec[ks]))
+        for k in ks:
+            col = cmap(k % 20)
+            mem = np.where(labels == k)[0]
+            if len(mem):
+                ax.scatter(sra[mem], sdec[mem], s=6, color=col, alpha=0.55,
+                           linewidths=0)
+            ax.scatter([cra[k]], [cdec[k]], marker="x", s=70, color="black",
+                       linewidths=1.5, zorder=5)
+            lbl = f"{k}\nØ{diam[k]:.1f}'" if diam[k] is not None else f"{k}\nØ—"
+            ax.annotate(lbl, (cra[k], cdec[k]), textcoords="offset points",
+                        xytext=(5, 4), fontsize=7, zorder=6)
+        ax.set_xlabel("RA (deg)"); ax.set_ylabel("Dec (deg)")
+        ax.set_aspect(1.0 / max(0.05, np.cos(np.radians(dec0))))
+        ax.invert_xaxis()                          # RA increases to the left
+        ax.set_title(f"region {r + 1}: {len(ks)} cluster(s)")
+        ax.grid(alpha=0.2)
+    for ax in axes[n_regions:]:
+        ax.set_visible(False)
+
+    ds = [d for d in diam if d is not None]
+    summary = (f"{n_clusters} ePSF clusters in {n_regions} region(s)"
+               + (f"; angular diameter {min(ds):.1f}–{max(ds):.1f}′ "
+                  f"(median {float(np.median(ds)):.1f}′)"
+                  if ds else "; download the catalog to get diameters"))
+    fig.suptitle("PSF extraction clusters — " + summary, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
