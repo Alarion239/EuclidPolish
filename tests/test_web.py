@@ -115,13 +115,11 @@ def test_delete_model_refuses_unsafe_local_path(client, tmp_path, monkeypatch):
 # Pages render
 # ---------------------------------------------------------------------------
 
-def test_dashboard_renders(client):
+def test_root_redirects_to_fasrc_hub(client):
+    # The status dashboard was removed; "/" now redirects to the FASRC hub.
     r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert "EuclidPolish" in body
-    assert "Dashboard" in body
-    assert "Catalog" in body and "PSFs" in body
+    assert r.status_code in (301, 302)
+    assert "/fasrc" in r.headers["Location"]
 
 
 def test_catalog_page_renders(client):

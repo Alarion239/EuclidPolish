@@ -48,7 +48,7 @@
       <p class="brand-sub">localhost UI</p>
       <ul class="nav-list">
         {# Sidebar order follows the pipeline workflow:
-             1. Setup (Dashboard + remote connection).
+             1. Setup (config + remote connection).
              2. Euclid source data → Euclid PSF.
              3. HST source data → HST PSF.
              4. Combined / pair generation.
@@ -59,7 +59,6 @@
         <li><a href="{{ url_for('config_page') }}">⚙️ Config</a></li>
 
         {# 1. Setup #}
-        <li><a href="{{ url_for('index') }}">📊 Dashboard</a></li>
         <li><a href="{{ url_for('fasrc_page') }}">🟦 FASRC</a></li>
 
         {# 2. Euclid pipeline: query stars → download cutouts → extract PSFs #}

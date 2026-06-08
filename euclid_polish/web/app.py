@@ -4,7 +4,7 @@ Flask app factory for the EuclidPolish web UI.
 Routes live in :mod:`euclid_polish.web.routes` (one module per group, each
 exposing ``register(app)``); shared helpers live in
 :mod:`euclid_polish.web.helpers`. This module just wires them together and
-owns the FASRC SSH gate + dashboard.
+owns the FASRC SSH gate + the root redirect.
 """
 from __future__ import annotations
 
@@ -27,9 +27,6 @@ from flask import (
 
 from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession, STATE
-from euclid_polish.web.helpers.status import (
-    _catalog_status, _checkpoints_status, _psf_status, _tfrecords_status,
-)
 from euclid_polish.web.routes import (
     auth, catalog, config, cutouts, fasrc, files, git, hst, hstpairs, model,
     psfs, sky, tng, tracking, views,
@@ -143,7 +140,7 @@ def create_app() -> Flask:
             err = _try_startup_ssh_connect()
             app.config["FASRC_STARTUP_ERROR"] = err
             if err is None:
-                # Connected — bounce to the dashboard.
+                # Connected — bounce to the FASRC hub.
                 return redirect(url_for("index"))
             # Fall through to re-render the page with the new error.
 
@@ -163,16 +160,14 @@ def create_app() -> Flask:
             return jsonify({"ok": True})
         return jsonify({"ok": False, "error": err}), 502
 
-    # ---------------- Dashboard ----------------
+    # ---------------- Root ----------------
     @app.route("/")
     def index():
-        return render_template(
-            "index.html",
-            catalog=_catalog_status(),
-            psfs=_psf_status(),
-            tfrecords=_tfrecords_status(),
-            checkpoints=_checkpoints_status(),
-        )
+        # The status dashboard was removed; the FASRC tab is the hub. Keep
+        # this endpoint named ``index`` so existing ``url_for("index")``
+        # call sites (e.g. the connection-error bounce) still resolve, and
+        # the root URL lands somewhere useful instead of 404ing.
+        return redirect(url_for("fasrc_page"))
 
     # ---- modular route groups (extracted from this file) ----
     config.register(app)
