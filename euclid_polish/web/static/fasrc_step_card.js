@@ -134,31 +134,26 @@ large cutout don't leak across train/validate."></label>`;
         // workers). One shared angular field; each band fetches its own
         // native pixel count for the same footprint.
         return `
-          <label>VIS cutout (px)
-            <input type="number" name="vis_pixels" value="512" min="32" max="4096" step="32"
-                   title="Cutout side in 0.10″/pix VIS pixels. NISP bands fetch the same angular footprint at their own native pixel count."></label>
           <label>Parallel workers
             <input type="number" name="workers" value="8" min="1" max="32"
-                   title="Concurrent per-band downloads from the Euclid archive."></label>`;
+                   title="Concurrent per-band downloads from the Euclid archive."></label>
+          <p class="hint" style="flex-basis:100%;">VIS cutout (px) is set on the
+             <a href="/config">⚙️ Config</a> tab and sent with this job.</p>`;
       case 'extract_euclid_psf':
         // Mirrors EuclidPSFExtractStep.build_command (stars_per_psf,
         // vis_pixels, num_stars cap, output_size). Extracts ALL four bands
         // in one job; each band's good stars are spatially clustered into
         // groups of 'stars per PSF' → one ePSF per cluster.
         return `
-          <label>Stars per PSF (N)
-            <input type="number" name="stars_per_psf" value="100" min="10" max="2000"
-                   title="Each band's good stars are K-Means++ clustered by sky position into K=round(n_good/N) groups, one ePSF per cluster (the PSF varies across the field). 3000 good stars at N=100 → ~30 PSFs. Generation draws a random convex blend of the K kernels."></label>
           <label>Max stars per band <span class="muted">(blank = all)</span>
             <input type="number" name="num_stars" value="" min="10" max="100000"
                    placeholder="all"
                    title="Optional cap on stars considered per band before clustering. Blank/0 = use ALL good cutouts (recommended — that's how you get many PSFs)."></label>
-          <label>VIS cutout (px)
-            <input type="number" name="vis_pixels" value="512" min="32" max="4096" step="32"
-                   title="Shared angular field (in VIS px) used to pick each band's native cutout size — must match what was downloaded."></label>
           <label>Output PSF size (oversampled px)
             <input type="number" name="output_size" value="0" min="0" max="4096"
-                   title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>`;
+                   title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>
+          <p class="hint" style="flex-basis:100%;">Stars per PSF (N) and VIS cutout (px)
+             are set on the <a href="/config">⚙️ Config</a> tab and sent with this job.</p>`;
       case 'download_tng_skirt':
         // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153
@@ -282,13 +277,9 @@ large cutout don't leak across train/validate."></label>`;
         // reads n_train / n_valid / image_size). Renders synthetic clean HR
         // scenes + forward-models to dirty Euclid LR.
         return `
-          <label>Train scenes
-            <input type="number" name="n_train" value="6400" min="1" max="50000"></label>
-          <label>Validate scenes
-            <input type="number" name="n_valid" value="100" min="1" max="5000"></label>
-          <label>HR image size (px)
-            <input type="number" name="image_size" value="252" step="2" min="60" max="2048"
-                   title="HR scene side in 0.05″/pix pixels. Forward-modelled to 0.10″ LR (and 0.30″→Lanczos for NISP)."></label>
+          <p class="hint" style="flex-basis:100%;">Train scenes, Validate scenes and
+             HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
+             with this job.</p>
           <label style="flex-basis:100%;">TNG galaxy fraction
             <output class="muted" style="margin-left:6px;">0.00</output>
             <span class="muted">(0 = all Sérsic)</span>

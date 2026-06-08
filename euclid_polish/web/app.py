@@ -31,7 +31,7 @@ from euclid_polish.web.helpers.status import (
     _catalog_status, _checkpoints_status, _psf_status, _tfrecords_status,
 )
 from euclid_polish.web.routes import (
-    auth, catalog, cutouts, fasrc, files, git, hst, hstpairs, model,
+    auth, catalog, config, cutouts, fasrc, files, git, hst, hstpairs, model,
     psfs, sky, tng, tracking, views,
 )
 
@@ -110,6 +110,8 @@ def create_app() -> Flask:
         "/tracking",             # lab notebook is local-first; works offline
         "/api/tracking/",        # (only /api/tracking/sync needs SSH, and it
                                  #  degrades gracefully when disconnected)
+        "/config",               # universal job-config tab is local-first
+        "/api/config",           # (persists to ~/.euclid_polish; no SSH)
     )
 
     @app.before_request
@@ -173,6 +175,7 @@ def create_app() -> Flask:
         )
 
     # ---- modular route groups (extracted from this file) ----
+    config.register(app)
     catalog.register(app)
     auth.register(app)
     cutouts.register(app)

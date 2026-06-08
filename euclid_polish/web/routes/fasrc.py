@@ -7,6 +7,7 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_jobs
 from euclid_polish.web import fasrc_log_parser
 from euclid_polish.web import fasrc_queue
+from euclid_polish.web import job_config
 from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.fasrc_pipeline import StepResources
@@ -634,6 +635,15 @@ def register(app):
         # for a single-threaded job.
         if step.fixed_cpus is not None:
             resources.n_cpus = int(step.fixed_cpus)
+
+        # Inject the universal job-config values for this step. These fields
+        # were removed from the step cards and now live on the /config tab, so
+        # the form never carries them — we supply them here, server-side.
+        inject = job_config.FASRC_STEP_PARAMS.get(step_id)
+        if inject:
+            jc = job_config.load()
+            for param_name, attr in inject.items():
+                form[param_name] = str(getattr(jc, attr))
 
         # All form values are passed as ``params``; the step picks out
         # what it needs (e.g. ``n_tiles``, ``hst_fraction``).

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
+from euclid_polish.web import job_config
 from euclid_polish.web.jobs import REGISTRY
 from flask import jsonify
 from flask import render_template
@@ -143,15 +144,16 @@ def register(app):
 
     @app.route("/inference/generate-reconstruct", methods=["POST"])
     def inference_generate_reconstruct():
+        # Checkpoint dir + residual blocks are delegated to defaults (their
+        # fields were removed from the page); HR size + asinh come from the
+        # universal /config tab. Only ckpt_kind / n_pairs / tng_fraction
+        # remain page-level.
+        jc = job_config.load()
         ckpt_dir = _ckpt_dir_for_kind(
-            request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR),
-            request.form.get("ckpt_kind"))
-        nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
-        asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
-        try:
-            hr_size = int(request.form.get("hr_image_size", 510))
-        except (TypeError, ValueError):
-            return jsonify({"error": "hr_image_size must be an integer"}), 400
+            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"))
+        nrb = Config.DEFAULT_NUM_RES_BLOCKS
+        asinh = _parse_asinh_scale(str(jc.asinh_scale))
+        hr_size = jc.hr_image_size
         # The generator rebins NISP ×6, so the HR side must be a multiple of
         # 6. Clamp to a sane range and round to the nearest multiple.
         hr_size = max(60, min(2048, hr_size))
@@ -187,14 +189,16 @@ def register(app):
             return jsonify({"error": f"ra={ra} out of range [0, 360)"}), 400
         if not (-90.0 <= dec <= 90.0):
             return jsonify({"error": f"dec={dec} out of range [-90, 90]"}), 400
+        # Checkpoint dir + residual blocks delegated to defaults; asinh comes
+        # from the universal /config tab. ckpt_kind / cutout_size stay
+        # page-level (cutout_size is a real-cutout knob, not delegated).
         ckpt_dir = _ckpt_dir_for_kind(
-            request.form.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR),
-            request.form.get("ckpt_kind"))
-        nrb = int(request.form.get("num_res_blocks", Config.DEFAULT_NUM_RES_BLOCKS))
+            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"))
+        nrb = Config.DEFAULT_NUM_RES_BLOCKS
         size = int(request.form.get("cutout_size", 512))
         if not (32 <= size <= 4096):
             return jsonify({"error": f"cutout_size={size} out of range [32, 4096]"}), 400
-        asinh = _parse_asinh_scale(request.form.get("asinh_scale", ""))
+        asinh = _parse_asinh_scale(str(job_config.load().asinh_scale))
         # HTML checkbox: present in form data → ``"on"`` (or whatever
         # ``value=`` was set to); absent if unchecked. Parse truthy.
         show_all = request.form.get("show_all_bands", "").lower() in (

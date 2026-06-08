@@ -191,24 +191,16 @@
 <section class="card">
   <h3>Generate + Reconstruct (synthetic)</h3>
   <form id="gen-recon-form" action="/inference/generate-reconstruct">
-    <label>Checkpoint dir
-      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
     <label>Checkpoint
       <select name="ckpt_kind">
         <option value="psnr">PSNR-best</option>
         <option value="loss">Loss-best (loss_best/)</option>
       </select></label>
-    <label>Residual blocks
-      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
-    <label title="HR scene side in 0.05″/pix pixels. Rounded to a multiple of 6 (the NISP rebin factor); the LR pair is half this at 0.10″/pix.">
-      HR image size (px)
-      <input type="number" name="hr_image_size" value="510" min="60" max="2048" step="6"></label>
     <label title="Number of independent scenes to generate + reconstruct in one run.">
       Number of pairs
       <input type="number" name="n_pairs" value="1" min="1" max="8"></label>
-    <label>asinh scale (e⁻)
-      <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
-             title="Brightness knee for the asinh panels. Smaller = brighter faint sources; larger = compresses bright sources more. 1000 e⁻ matches the training default."></label>
+    <p class="hint" style="flex-basis:100%;">HR image size + asinh scale come from the
+       <a href="/config">⚙️ Config</a> tab; residual blocks + checkpoint dir use defaults.</p>
     <label style="flex-basis:100%;" title="Proportion of scene galaxies drawn as real TNG50 SKIRT stamps instead of analytic Sérsic profiles. Each is a random downloaded galaxy, random orientation, downsampled ×1/×2/×3/×4. 0 = all Sérsic. Uses the TNG galaxies on FASRC.">
       TNG galaxy fraction
       <output class="muted" style="margin-left:6px;">0.00</output>
@@ -230,19 +222,13 @@
       <input type="text" name="dec" value="64.8873" size="12" required></label>
     <label>Cutout size (VIS px)
       <input type="number" name="cutout_size" value="512" min="64" max="2048"></label>
-    <label title="Brightness knee for the asinh panels. For real Euclid cutouts the source-to-sky ratio differs from the simulator's; try 10-100 e⁻ to bring up faint extended emission, or 10000+ to compress bright stars.">
-      asinh scale (e⁻)
-      <input type="number" name="asinh_scale" value="1000" min="0.01" step="any"
-             style="width:90px;"></label>
-    <label>Checkpoint dir
-      <input type="text" name="checkpoint_dir" value="./ckpt/wdsr" size="22"></label>
     <label>Checkpoint
       <select name="ckpt_kind">
         <option value="psnr">PSNR-best</option>
         <option value="loss">Loss-best (loss_best/)</option>
       </select></label>
-    <label>Residual blocks
-      <input type="number" name="num_res_blocks" value="{{ default_num_res_blocks }}"></label>
+    <p class="hint" style="flex-basis:100%;">asinh scale comes from the
+       <a href="/config">⚙️ Config</a> tab; residual blocks + checkpoint dir use defaults.</p>
     <label style="display:flex; align-items:center; gap:6px;"
            title="Show each of the four LR bands (VIS, Y_E, J_E, H_E) as its own grayscale panel alongside SR, instead of the color composite. Useful for diagnosing per-band artefacts (saturation, NISP persistence, etc.).">
       <input type="checkbox" name="show_all_bands" value="1"

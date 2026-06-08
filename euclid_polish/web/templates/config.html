@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Config · EuclidPolish{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h3>⚙️ Universal job config</h3>
+  <p class="muted" style="margin-top:0;">
+    Shared knobs used across the pipeline. Set them once here — they persist
+    across reloads/relaunches (<code>~/.euclid_polish/job_config.json</code>)
+    and are sent automatically with the relevant jobs, so the individual
+    pages no longer carry these fields.
+  </p>
+
+  <form id="cfg-form" onsubmit="event.preventDefault(); saveConfig();">
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Cutouts &amp; PSF</legend>
+      <div class="form-row">
+        <label title="VIS cutout side in 0.10″/pix pixels. Must be odd (true centre pixel). Used by the Euclid cutout download AND the ePSF extraction, so they always match.">
+          VIS cutout (px) · must be odd
+          <input type="number" name="vis_pixels" value="{{ cfg.vis_pixels }}"
+                 min="31" max="4095" step="2" required>
+        </label>
+        <label title="Good stars per ePSF cluster — the PSF varies across the field, so stars are clustered into groups of N, one ePSF each.">
+          Stars per PSF (N)
+          <input type="number" name="stars_per_psf" value="{{ cfg.stars_per_psf }}"
+                 min="10" max="2000" required>
+        </label>
+      </div>
+      <p class="hint">→ <code>/cutouts</code> (download) and <code>/psfs</code> (extract).</p>
+    </fieldset>
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Synthetic scenes &amp; HR size</legend>
+      <div class="form-row">
+        <label>Train scenes
+          <input type="number" name="n_train" value="{{ cfg.n_train }}"
+                 min="1" max="50000" required>
+        </label>
+        <label>Validate scenes
+          <input type="number" name="n_valid" value="{{ cfg.n_valid }}"
+                 min="1" max="5000" required>
+        </label>
+        <label title="HR scene side in 0.05″/pix pixels. Kept a multiple of 6 (the NISP rebin factor). Feeds both synthetic generation and inference.">
+          HR image size (px)
+          <input type="number" name="hr_image_size" value="{{ cfg.hr_image_size }}"
+                 min="60" max="2048" step="6" required>
+        </label>
+      </div>
+      <p class="hint">→ <code>/sky</code> (generate) and <code>/inference</code> (HR size).</p>
+    </fieldset>
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Inference display</legend>
+      <div class="form-row">
+        <label title="Brightness knee (e⁻) for the asinh display panels. Smaller = brighter faint sources; larger compresses bright sources more.">
+          asinh scale (e⁻)
+          <input type="number" name="asinh_scale" value="{{ cfg.asinh_scale }}"
+                 min="0.01" step="any" required>
+        </label>
+      </div>
+      <p class="hint">→ <code>/inference</code> (both reconstruction forms).</p>
+    </fieldset>
+
+    <div style="margin-top:12px;">
+      <button type="submit">Save config</button>
+      <span id="cfg-msg" class="muted" style="margin-left:10px;"></span>
+    </div>
+  </form>
+</section>
+
+<script>
+async function saveConfig() {
+  const form = document.getElementById("cfg-form");
+  const msg = document.getElementById("cfg-msg");
+  msg.style.color = ""; msg.textContent = "saving…";
+  try {
+    const r = await fetch("/api/config/save", { method: "POST", body: new FormData(form) });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      msg.style.color = "#b03a3a";
+      msg.textContent = "✗ " + (d.error || ("HTTP " + r.status));
+      return;
+    }
+    // Reflect any server-side coercion (e.g. VIS cutout forced odd).
+    for (const [k, v] of Object.entries(d.config)) {
+      const el = form.querySelector(`[name="${k}"]`);
+      if (el) el.value = v;
+    }
+    msg.style.color = "#14600c";
+    msg.textContent = "✓ saved" + (d.note ? " — " + d.note : "");
+  } catch (e) {
+    msg.style.color = "#b03a3a";
+    msg.textContent = "✗ " + e;
+  }
+}
+</script>
+{% endblock %}
