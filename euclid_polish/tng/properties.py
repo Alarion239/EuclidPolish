@@ -150,6 +150,18 @@ def _read_cache(path: str) -> Dict[str, Dict[str, float]]:
     return rows
 
 
+def _is_failed_row(props: Dict[str, float]) -> bool:
+    """True for a cache row left by a *fully-failed* fetch (every property NaN).
+
+    A transient API timeout / rate-limit during the concurrent sweep caches an
+    all-NaN row; without re-querying it would stay NaN forever, since the cache
+    otherwise only fetches ids it has never seen. A *quenched* galaxy (SFR == 0
+    but masses/radius present) is NOT failed — it is real data and kept as-is.
+    """
+    vals = [props.get(k, float("nan")) for k in _CSV_FIELDS if k != "id"]
+    return not any(np.isfinite(v) for v in vals)
+
+
 def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
@@ -174,7 +186,10 @@ def gather_properties(work_dir: str, ids: List[str], key: str, *,
     """
     cache_path = os.path.join(work_dir, PROPERTIES_CSV)
     cache = _read_cache(cache_path)
-    missing = [g for g in ids if g not in cache]
+    # Re-query ids never seen AND ids whose cached row is an all-NaN fetch
+    # failure (so a transient API error during the first sweep is retried,
+    # not frozen forever). Resolved rows — including quenched SFR==0 — are kept.
+    missing = [g for g in ids if g not in cache or _is_failed_row(cache[g])]
     if key and missing:
         if reporter is not None:
             reporter.set_stage(f"querying TNG API ({len(missing)} galaxies)")
@@ -214,6 +229,59 @@ def placeholder_png(message: str) -> bytes:
     return _fig_to_png(fig)
 
 
+def sfr_population(props: Dict[str, Dict[str, float]]):
+    """Split the SFR column into ``(log10 star-forming, n_quenched, n_missing)``.
+
+    ``n_quenched`` = galaxies with SFR **== 0** exactly (quenched / gas-poor —
+    real data, common for the atlas's massive z=0 galaxies, not a fetch miss).
+    ``n_missing`` = NaN (fetch never resolved). The log-SFR histogram can only
+    show the star-forming ones, so the other two are surfaced as counts rather
+    than silently dropped by ``log10`` / the finite filter.
+    """
+    v = np.array([props[g].get("sfr", np.nan) for g in props], dtype=float)
+    finite = v[np.isfinite(v)]
+    pos = finite[finite > 0]
+    n_quenched = int(np.count_nonzero(finite == 0))
+    n_missing = int(np.count_nonzero(~np.isfinite(v)))
+    return (np.log10(pos) if pos.size else pos), n_quenched, n_missing
+
+
+def _plot_sfr_panel(ax, props: Dict[str, Dict[str, float]],
+                    title: str, xlabel: str) -> None:
+    """SFR panel: log-histogram of star-forming galaxies + an explicit
+    'quenched (SFR=0)' bar, so the panel reconciles with the download count
+    instead of silently hiding the SFR==0 population under ``log10``."""
+    logv, n_quenched, n_missing = sfr_population(props)
+    if logv.size:
+        ax.hist(logv, bins=min(30, max(5, logv.size // 3)),
+                color="#3b6ea5", edgecolor="white", linewidth=0.4,
+                label=f"star-forming (n={logv.size})")
+    if n_quenched:
+        # A distinct red bar just left of the star-forming distribution.
+        if logv.size:
+            lo, hi = float(logv.min()), float(logv.max())
+            span = (hi - lo) or 1.0
+            xq, width = lo - 0.13 * span, 0.07 * span
+        else:
+            xq, width = -1.0, 0.2
+        ax.bar([xq], [n_quenched], width=width, color="#b03a3a",
+               edgecolor="white", linewidth=0.4, align="center",
+               label=f"quenched, SFR=0 (n={n_quenched})")
+    bits = []
+    if logv.size:
+        bits.append(f"{logv.size} SF")
+    if n_quenched:
+        bits.append(f"{n_quenched} quenched")
+    if n_missing:
+        bits.append(f"{n_missing} no data")
+    ax.set_title(f"{title}  ({', '.join(bits) or 'no data'})", fontsize=11)
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel("count", fontsize=10)
+    ax.grid(alpha=0.25)
+    if logv.size or n_quenched:
+        ax.legend(fontsize=8, loc="upper right")
+
+
 def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
     """2×2 PNG: SFR / stellar mass / total mass / effective radius."""
     if not props:
@@ -231,6 +299,9 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
     ]
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
     for ax, (key, title, xlabel, logx) in zip(axes.ravel(), panels):
+        if key == "sfr":
+            _plot_sfr_panel(ax, props, title, xlabel)
+            continue
         vals = col(key)
         if logx:
             vals = vals[vals > 0]
@@ -246,8 +317,7 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
         ax.set_xlabel(xlabel, fontsize=10)
         ax.set_ylabel("count", fontsize=10)
         ax.grid(alpha=0.25)
-    fig.suptitle(f"TNG50-1 downloaded galaxies — {len(props)} with properties",
-                 fontsize=13)
+    fig.suptitle(f"TNG50-1 downloaded galaxies — n={len(props)}", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     return _fig_to_png(fig)
 

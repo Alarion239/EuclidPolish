@@ -131,6 +131,44 @@ def test_gather_no_key_skips_network(tmp_path, monkeypatch):
     assert P.gather_properties(str(tmp_path), ["1"], "") == {}
 
 
+def test_gather_retries_all_nan_rows(tmp_path, monkeypatch):
+    """An all-NaN cache row (a failed fetch) is re-queried; resolved/quenched
+    rows are served from cache untouched."""
+    work = str(tmp_path)
+    nan = float("nan")
+    P._write_cache(os.path.join(work, P.PROPERTIES_CSV), {
+        "ok":       {"sfr": 1.0, "mass_stars": 2.0, "m_halo": 3.0, "reff": 4.0},
+        "quenched": {"sfr": 0.0, "mass_stars": 2.0, "m_halo": 3.0, "reff": 4.0},
+        "failed":   {"sfr": nan, "mass_stars": nan, "m_halo": nan, "reff": nan},
+    })
+    calls = []
+
+    def fake_fetch(gid, key, timeout=30):
+        calls.append(gid)
+        return {"sfr": 5.0, "mass_stars": 5.0, "m_halo": 5.0, "reff": 5.0}
+    monkeypatch.setattr(P, "fetch_properties", fake_fetch)
+    out = P.gather_properties(work, ["ok", "quenched", "failed"], "key")
+    # only the all-NaN row is retried — quenched (SFR=0) is real data, kept.
+    assert calls == ["failed"]
+    assert out["failed"]["sfr"] == pytest.approx(5.0)
+    assert out["quenched"]["sfr"] == pytest.approx(0.0)
+    # now persisted as resolved → a second gather does not re-fetch it.
+    monkeypatch.setattr(P, "fetch_properties", _raise)
+    out2 = P.gather_properties(work, ["ok", "quenched", "failed"], "key")
+    assert out2["failed"]["sfr"] == pytest.approx(5.0)
+
+
+def test_is_failed_row():
+    nan = float("nan")
+    assert P._is_failed_row({"sfr": nan, "mass_stars": nan,
+                             "m_halo": nan, "reff": nan})
+    # quenched (SFR=0 but masses present) is NOT a failure
+    assert not P._is_failed_row({"sfr": 0.0, "mass_stars": 2.0,
+                                 "m_halo": 3.0, "reff": 4.0})
+    assert not P._is_failed_row({"sfr": 1.0, "mass_stars": 2.0,
+                                 "m_halo": 3.0, "reff": 4.0})
+
+
 # ---------------------------------------------------------------------------
 # rendering
 # ---------------------------------------------------------------------------
@@ -139,6 +177,32 @@ def test_plot_histograms_returns_png():
     props = {g: {"sfr": 1.0 + i, "mass_stars": 10 ** (10 + i),
                  "m_halo": 10 ** (12 + i), "reff": 2.0 + i}
              for i, g in enumerate(("1", "2", "3"))}
+    assert P.plot_histograms(props)[:8] == _PNG_MAGIC
+
+
+def test_sfr_population_splits_quenched_and_missing():
+    nan = float("nan")
+    props = {
+        "a": {"sfr": 1.0},     # log10 = 0
+        "b": {"sfr": 10.0},    # log10 = 1
+        "c": {"sfr": 0.0},     # quenched
+        "d": {"sfr": 0.0},     # quenched
+        "e": {"sfr": nan},     # missing
+    }
+    logv, n_quenched, n_missing = P.sfr_population(props)
+    assert logv.size == 2
+    assert np.allclose(np.sort(logv), [0.0, 1.0])
+    assert n_quenched == 2
+    assert n_missing == 1
+
+
+def test_plot_histograms_with_quenched_and_missing():
+    nan = float("nan")
+    props = {
+        "1": {"sfr": 1.0, "mass_stars": 1e10, "m_halo": 1e12, "reff": 2.0},
+        "2": {"sfr": 0.0, "mass_stars": 2e10, "m_halo": 2e12, "reff": 3.0},
+        "3": {"sfr": nan, "mass_stars": nan, "m_halo": nan, "reff": nan},
+    }
     assert P.plot_histograms(props)[:8] == _PNG_MAGIC
 
 
