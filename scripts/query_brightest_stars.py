@@ -1,11 +1,10 @@
 #!/usr/bin/env python
-"""Query the N brightest Euclid stars + tally cutout integrity.
+"""Query the N brightest Euclid stars.
 
 Non-interactive CLI wrapper around
 :meth:`euclid_polish.euclid.catalog.StarCatalog.query_brightest_stars`.
-Sorts ``mer_catalogue`` by VIS flux server-side (ESA Euclid archive),
-writes the result into ``$DATA_DIR/euclid_stars/stars.csv``, then scans
-any cutouts already on disk for per-band valid/corrupted counts.
+Sorts ``mer_catalogue`` by VIS flux server-side (ESA Euclid archive) and
+writes the result into ``$DATA_DIR/euclid_stars/stars.csv``.
 
 It is designed to run on the **FASRC login node** (driven over SSH from
 the laptop web UI) so the catalog lands on the shared netscratch
@@ -22,11 +21,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import sys
 import time
-from typing import Any, Dict, Optional
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -34,7 +31,6 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.validator import FitsValidator
 from euclid_polish.observability.reporter import Reporter
 
 
@@ -56,37 +52,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", default=Config.DEFAULT_OUTPUT_DIR,
                    help="Star catalog root (stars.csv + cutouts/ live here).")
     return p.parse_args()
-
-
-def _integrity_tally(output_dir: str, reporter: Reporter) -> Dict[str, Any]:
-    """Per-band valid/corrupted FITS counts under ``output_dir/cutouts``.
-
-    Mirrors the old web ``_job_check_integrity``: a chunk on disk is the
-    only place corruption shows up, so we re-scan whatever cutouts exist.
-    A fresh catalog (no downloads yet) reports every band ``absent``.
-    """
-    validator = FitsValidator()
-    cutout_root = os.path.join(output_dir, "cutouts")
-    summary: Dict[str, Dict[str, Any]] = {}
-    for name in Config.LR_INPUT_BAND_NAMES:
-        band_dir = Config.cutout_dir_for_band(name, root=cutout_root)
-        if not os.path.isdir(band_dir):
-            summary[name] = {"valid": 0, "corrupted": 0, "absent": True}
-            print(f"{name}: (no cutouts on disk yet)")
-            continue
-        files = glob.glob(os.path.join(band_dir, "*.fits"))
-        ok = bad = 0
-        for f in files:
-            is_valid, _ = validator.validate_basic_integrity(f)
-            if is_valid:
-                ok += 1
-            else:
-                bad += 1
-        summary[name] = {"valid": ok, "corrupted": bad, "absent": False}
-        if bad:
-            reporter.warn(f"{name}: {bad} corrupted cutout(s)")
-        print(f"{name}: valid={ok}, corrupted={bad}, total={len(files)}")
-    return summary
 
 
 def main() -> int:
@@ -114,12 +79,6 @@ def main() -> int:
     print(result["message"])
     if "Query failed" in str(result.get("message", "")):
         reporter.error(str(result["message"]))
-
-    reporter.set_stage("integrity tally")
-    try:
-        result["integrity"] = _integrity_tally(args.output_dir, reporter)
-    except Exception as e:  # never let an integrity hiccup fail the query
-        print(f"integrity tally skipped: {type(e).__name__}: {e}")
 
     print(f"\nRUNTIME_SECONDS={time.perf_counter() - t0:.1f}")
     return 0
