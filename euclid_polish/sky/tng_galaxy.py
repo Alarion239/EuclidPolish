@@ -288,6 +288,25 @@ def list_tng_galaxies(tng_dir: str) -> List[Tuple[str, str]]:
 _HALFLIGHT_PX_CACHE: Dict[Tuple[str, str, int], float] = {}
 
 
+def composite_stamp(canvas_4ch: np.ndarray, stamp: np.ndarray,
+                    x0: float, y0: float) -> None:
+    """Add a ``(Hs,Ws,C)`` stamp centred at ``(x0,y0)`` onto the canvas, clipped
+    to the canvas bounds. The stamp may be larger than the field — only the
+    overlapping region is added. Shared by field-galaxy injection and TNG lens
+    light."""
+    H, W = canvas_4ch.shape[:2]
+    Hs, Ws = stamp.shape[:2]
+    i0 = int(round(y0)) - Hs // 2
+    j0 = int(round(x0)) - Ws // 2
+    ci_lo, ci_hi = max(0, i0), min(H, i0 + Hs)
+    cj_lo, cj_hi = max(0, j0), min(W, j0 + Ws)
+    if ci_lo >= ci_hi or cj_lo >= cj_hi:
+        return
+    si_lo, sj_lo = ci_lo - i0, cj_lo - j0
+    canvas_4ch[ci_lo:ci_hi, cj_lo:cj_hi, :] += \
+        stamp[si_lo:si_lo + (ci_hi - ci_lo), sj_lo:sj_lo + (cj_hi - cj_lo), :]
+
+
 def native_halflight_px(
     galaxy_dir: str, subhalo_id: int | str, orientation: int,
     *, fits_band: str = "VIS",

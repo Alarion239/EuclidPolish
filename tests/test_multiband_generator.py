@@ -168,22 +168,22 @@ def test_tng_fraction_zero_is_byte_identical_to_default():
 
 
 def test_composite_stamp_clipping():
-    from euclid_polish.sky.multiband_generator import _composite_stamp
+    from euclid_polish.sky.tng_galaxy import composite_stamp
     # centred fully inside → full flux
     c = np.zeros((10, 10, 4), np.float32)
-    _composite_stamp(c, np.ones((4, 4, 4), np.float32), x0=5, y0=5)
+    composite_stamp(c, np.ones((4, 4, 4), np.float32), x0=5, y0=5)
     assert c.sum() == pytest.approx(4 * 4 * 4)
     # at a corner → only a quadrant lands
     c2 = np.zeros((10, 10, 4), np.float32)
-    _composite_stamp(c2, np.ones((6, 6, 4), np.float32), x0=0, y0=0)
+    composite_stamp(c2, np.ones((6, 6, 4), np.float32), x0=0, y0=0)
     assert 0 < c2.sum() < 6 * 6 * 4
     # fully off-canvas → no-op
     c3 = np.zeros((10, 10, 4), np.float32)
-    _composite_stamp(c3, np.ones((4, 4, 4), np.float32), x0=100, y0=100)
+    composite_stamp(c3, np.ones((4, 4, 4), np.float32), x0=100, y0=100)
     assert c3.sum() == 0
     # stamp larger than the canvas → fills it (central crop)
     c4 = np.zeros((8, 8, 4), np.float32)
-    _composite_stamp(c4, np.ones((20, 20, 4), np.float32), x0=4, y0=4)
+    composite_stamp(c4, np.ones((20, 20, 4), np.float32), x0=4, y0=4)
     assert c4.sum() == pytest.approx(8 * 8 * 4)
 
 
@@ -191,3 +191,44 @@ def test_invalid_tng_fraction_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="tng_fraction"):
         MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_fraction=1.5))
+
+
+def test_invalid_tng_big_params_rejected():
+    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
+    with pytest.raises(ValueError, match="tng_big_fraction"):
+        MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_big_fraction=1.5))
+    with pytest.raises(ValueError, match="tng_big_re_arcsec"):
+        MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_big_re_arcsec=(2.0, 1.0)))
+
+
+def test_tng_lens_components_when_enabled(tmp_path):
+    # With TNG on, the lens light AND lensed source are real TNG stamps at the
+    # same tng_fraction proportion as field galaxies.
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111", size=240)
+    cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
+    cfg = MultiBandGeneratorConfig(
+        image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        tng_fraction=1.0, tng_galaxy_dir=tng)
+    sim = MultiBandSimulator(cat, cfg)
+    img, meta = sim.simulate_field(np.random.default_rng(3),
+                                   n_galaxies=0, n_stars=0, n_lenses=4)
+    assert meta["n_lenses"] >= 1
+    for L in meta["lenses"]:
+        assert L["lens_light_render"] == "tng"
+        assert L["source_render"] == "tng"
+    assert img.data.sum() > 0
+
+
+def test_tng_zero_lens_components_are_sersic(tmp_path):
+    # tng_fraction=0 → lens components stay analytic Sersic.
+    cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
+    cfg = MultiBandGeneratorConfig(image_size=96,
+                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+                                   tng_fraction=0.0)
+    sim = MultiBandSimulator(cat, cfg)
+    _img, meta = sim.simulate_field(np.random.default_rng(3),
+                                    n_galaxies=0, n_stars=0, n_lenses=4)
+    for L in meta["lenses"]:
+        assert L["lens_light_render"] == "sersic"
+        assert L["source_render"] == "sersic"

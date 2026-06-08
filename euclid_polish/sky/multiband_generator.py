@@ -33,8 +33,11 @@ from euclid_polish.sky.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas,
 )
 from euclid_polish.sky.apparent_size import CosmosSizeSampler
+from euclid_polish.sky.cosmos2025 import circularized_effective_radius_arcsec
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
-from euclid_polish.sky.tng_galaxy import list_tng_galaxies, sample_tng_stamp
+from euclid_polish.sky.tng_galaxy import (
+    composite_stamp, list_tng_galaxies, sample_tng_stamp,
+)
 from euclid_polish.sky.types import MultiBandSkyImage
 
 from dataclasses import replace
@@ -132,24 +135,6 @@ def _deposit_star(
         canvas_4ch[iy, ix, k] += np.float32(flux_k)
 
 
-def _composite_stamp(canvas_4ch: np.ndarray, stamp: np.ndarray,
-                     x0: float, y0: float) -> None:
-    """Add a ``(Hs,Ws,C)`` stamp centred at ``(x0,y0)`` onto the canvas, clipped
-    to the canvas bounds. The stamp may be larger than the field (TNG stamps
-    often are) — only the overlapping region is added."""
-    H, W = canvas_4ch.shape[:2]
-    Hs, Ws = stamp.shape[:2]
-    i0 = int(round(y0)) - Hs // 2
-    j0 = int(round(x0)) - Ws // 2
-    ci_lo, ci_hi = max(0, i0), min(H, i0 + Hs)
-    cj_lo, cj_hi = max(0, j0), min(W, j0 + Ws)
-    if ci_lo >= ci_hi or cj_lo >= cj_hi:
-        return
-    si_lo, sj_lo = ci_lo - i0, cj_lo - j0
-    canvas_4ch[ci_lo:ci_hi, cj_lo:cj_hi, :] += \
-        stamp[si_lo:si_lo + (ci_hi - ci_lo), sj_lo:sj_lo + (cj_hi - cj_lo), :]
-
-
 # ---------------------------------------------------------------------------
 # Multi-band simulator
 # ---------------------------------------------------------------------------
@@ -230,7 +215,7 @@ class MultiBandSimulator:
             return None
         stamp, tmeta = res
         x_pix, y_pix = self._random_pix(rng)
-        _composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
+        composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
         return {
             "type": "galaxy",
             "render": "tng",
@@ -306,6 +291,24 @@ class MultiBandSimulator:
             "mag_vis": float(mag),
         }
 
+    def _tng_stamp_for_galaxy(
+        self, g, rng: np.random.Generator,
+    ) -> Optional[np.ndarray]:
+        """A TNG stamp sized to galaxy ``g``'s circularized effective radius —
+        the size the Sersic it replaces would have. None if TNG is unavailable
+        or the stamp can't load."""
+        if self.tng_size_model is None or not self.tng_galaxies:
+            return None
+        eff = float(circularized_effective_radius_arcsec(
+            np.array([g.bulge_r_e_arcsec]), np.array([g.bulge_axis_ratio]),
+            np.array([g.bulge_flux_e[0]]),
+            np.array([g.disk_r_e_arcsec]), np.array([g.disk_axis_ratio]),
+            np.array([g.disk_flux_e[0]]))[0])
+        res = sample_tng_stamp(
+            self.tng_galaxies, rng, pixel_scale_arcsec=self.config.pixel_scale,
+            target_re_arcsec=eff)
+        return res[0] if res is not None else None
+
     def _add_lens(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> Optional[dict]:
@@ -315,10 +318,27 @@ class MultiBandSimulator:
             return None
         x_pix, y_pix = self._random_pix(rng)
         lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
+        cfg = self.config
+        # Lens light and lensed source are each, independently, a real TNG stamp
+        # with probability tng_fraction (same proportion as field galaxies);
+        # otherwise an analytic B+D Sersic. tng_fraction==0 draws no extra RNG.
+        lens_light_stamp = source_stamp = None
+        lens_render = source_render = "sersic"
+        use_tng = (cfg.tng_fraction > 0.0 and self.tng_size_model is not None
+                   and bool(self.tng_galaxies))
+        if use_tng and rng.random() < cfg.tng_fraction:
+            lens_light_stamp = self._tng_stamp_for_galaxy(lp.lens_galaxy, rng)
+            if lens_light_stamp is not None:
+                lens_render = "tng"
+        if use_tng and rng.random() < cfg.tng_fraction:
+            source_stamp = self._tng_stamp_for_galaxy(lp.source_galaxy, rng)
+            if source_stamp is not None:
+                source_render = "tng"
         # Fast path: render the lens once into the 4-channel canvas (geometry
         # is band-independent; only per-band fluxes differ).
         render_lens_to_multiband_canvas(
-            canvas_4ch, params=lp, pixel_scale=self.config.pixel_scale,
+            canvas_4ch, params=lp, pixel_scale=cfg.pixel_scale,
+            lens_light_stamp=lens_light_stamp, source_stamp=source_stamp,
         )
         return {
             "type": "lens",
@@ -328,6 +348,8 @@ class MultiBandSimulator:
             "z_source": float(lp.z_source),
             "theta_E_arcsec": float(lp.theta_E_arcsec),
             "sigma_v_proxy_q": float(lp.lens_q),
+            "lens_light_render": lens_render,
+            "source_render": source_render,
         }
 
     # ------------------------------------------------------------------ #

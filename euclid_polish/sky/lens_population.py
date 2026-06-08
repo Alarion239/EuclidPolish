@@ -37,8 +37,10 @@ from euclid_polish.sky.profiles import (
     draw_sersic,
     evaluate_sersic_at_coords,
 )
+from euclid_polish.sky.tng_galaxy import composite_stamp
 
 from scipy.integrate import trapezoid
+from scipy.ndimage import map_coordinates
 from lenstronomy.LensModel.lens_model import LensModel
 
 
@@ -263,11 +265,35 @@ def _build_lenstronomy_lens(params: LensParams):
     return lens_model, [kwargs_sie, kwargs_shear]
 
 
+def _lensed_source_from_stamp(
+    stamp: np.ndarray, dx: np.ndarray, dy: np.ndarray, pixel_scale: float,
+) -> np.ndarray:
+    """Lensed image of a TNG **source stamp**: bilinear-sample the ``(Hs,Ws,4)``
+    source-plane stamp (centred at the source, ``pixel_scale`` arcsec/px) at the
+    ray-shot source-plane coords ``(dx, dy)`` [arcsec] for every image pixel.
+
+    The stamp is electrons-per-pixel at the same pixel scale as the image, so
+    sampling conserves surface brightness and the magnification falls out of the
+    geometry (many image pixels mapping to one source region) automatically."""
+    Hs, Ws = stamp.shape[:2]
+    col = dx / pixel_scale + (Ws - 1) / 2.0
+    row = dy / pixel_scale + (Hs - 1) / 2.0
+    coords = np.stack([row.ravel(), col.ravel()])
+    out = np.empty(dx.shape + (stamp.shape[2],), dtype=np.float32)
+    for c in range(stamp.shape[2]):
+        out[..., c] = map_coordinates(
+            np.asarray(stamp[..., c], dtype=np.float32), coords,
+            order=1, mode="constant", cval=0.0).reshape(dx.shape)
+    return out
+
+
 def render_lens_to_multiband_canvas(
     canvas_4ch: np.ndarray,
     *,
     params: LensParams,
     pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
+    lens_light_stamp: Optional[np.ndarray] = None,
+    source_stamp: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Add one lens system to a 4-channel canvas in a single pass.
 
@@ -283,6 +309,13 @@ def render_lens_to_multiband_canvas(
     params      : :class:`LensParams` instance (already placed with
                   ``centre_x_pix`` / ``centre_y_pix`` if non-zero).
     pixel_scale : arcsec/pixel of ``canvas_4ch``.
+    lens_light_stamp : optional ``(Hs,Ws,4)`` TNG stamp — when given, the
+                  foreground lens-galaxy light is this real-morphology stamp
+                  (composited at the lens centre) instead of the analytic B+D
+                  Sersic.
+    source_stamp : optional ``(Hs,Ws,4)`` TNG stamp — when given, the lensed
+                  background source is this real-morphology stamp (ray-shot +
+                  bilinear-sampled) instead of the analytic B+D Sersic.
 
     Returns the updated canvas.
     """
@@ -290,20 +323,23 @@ def render_lens_to_multiband_canvas(
     cx_pix = params.centre_x_pix if params.centre_x_pix != 0 else W / 2.0
     cy_pix = params.centre_y_pix if params.centre_y_pix != 0 else H / 2.0
 
-    # --- 1. Lens galaxy's own light (B+D, shared geometry across bands) ---
+    # --- 1. Lens galaxy's own light: real TNG stamp or analytic B+D Sersic ---
     lg = params.lens_galaxy
-    add_sersic_to_bands(
-        canvas_4ch, flux_per_band=lg.bulge_flux_e, n=4.0,
-        r_e=lg.bulge_r_e_arcsec, q=lg.bulge_axis_ratio,
-        theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
-        pixel_scale=pixel_scale,
-    )
-    add_sersic_to_bands(
-        canvas_4ch, flux_per_band=lg.disk_flux_e, n=1.0,
-        r_e=lg.disk_r_e_arcsec, q=lg.disk_axis_ratio,
-        theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
-        pixel_scale=pixel_scale,
-    )
+    if lens_light_stamp is not None:
+        composite_stamp(canvas_4ch, lens_light_stamp, cx_pix, cy_pix)
+    else:
+        add_sersic_to_bands(
+            canvas_4ch, flux_per_band=lg.bulge_flux_e, n=4.0,
+            r_e=lg.bulge_r_e_arcsec, q=lg.bulge_axis_ratio,
+            theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
+            pixel_scale=pixel_scale,
+        )
+        add_sersic_to_bands(
+            canvas_4ch, flux_per_band=lg.disk_flux_e, n=1.0,
+            r_e=lg.disk_r_e_arcsec, q=lg.disk_axis_ratio,
+            theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
+            pixel_scale=pixel_scale,
+        )
 
     # --- 2. Ray-shooting (band-independent) ---
     lens_model, kw = _build_lenstronomy_lens(params)
@@ -316,11 +352,16 @@ def render_lens_to_multiband_canvas(
     src_x = src_x_flat.reshape(H, W)
     src_y = src_y_flat.reshape(H, W)
 
-    # --- 3. Lensed source: evaluate Sersic at ray-shot coords ONCE at unit
-    #        flux, then scale per band. The morphology is band-independent. ---
+    # --- 3. Lensed source: real TNG stamp (ray-shot + sampled) or B+D Sersic
+    #        evaluated at the ray-shot coords. Morphology band-independent for
+    #        Sersic; per-band for the TNG stamp. ---
     sg = params.source_galaxy
     dx = src_x - params.src_dx_arcsec
     dy = src_y - params.src_dy_arcsec
+
+    if source_stamp is not None:
+        canvas_4ch += _lensed_source_from_stamp(source_stamp, dx, dy, pixel_scale)
+        return canvas_4ch
 
     bulge_unit = evaluate_sersic_at_coords(
         dx, dy, flux=1.0, n=4.0,

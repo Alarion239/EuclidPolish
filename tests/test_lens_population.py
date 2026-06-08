@@ -14,6 +14,7 @@ from euclid_polish.sky.lens_population import (
     LensPopulation,
     einstein_radius_sis,
     render_lens_to_canvas,
+    render_lens_to_multiband_canvas,
 )
 
 
@@ -134,3 +135,49 @@ def test_render_lens_in_all_four_bands(stub_population: LensPopulation):
         c = np.zeros((H, W), dtype=np.float32)
         render_lens_to_canvas(c, params=lp, band_index=k)
         assert c.sum() > 0, f"band {Config.LR_INPUT_BAND_NAMES[k]} empty"
+
+
+# ---------------------------------------------------------------------------
+# TNG stamps as lens components (source + lens light)
+# ---------------------------------------------------------------------------
+
+def _bright_stamp(n=80, core=8, val=50.0):
+    """A small 4-band stamp with an off-centre bright clump (clearly not a
+    smooth symmetric Sersic), at the HR pixel scale."""
+    s = np.zeros((n, n, Config.NUM_LR_CHANNELS), np.float32)
+    c = n // 2
+    s[c - core:c + core, c - core:c + core, :] = val          # central blob
+    s[c + 4:c + 4 + core, c + 6:c + 6 + core, :] += 2.0 * val  # asymmetric clump
+    return s
+
+
+def test_lensed_source_stamp_is_magnified(stub_population: LensPopulation):
+    # A compact source stamp behind the lens must be magnified: the lensed
+    # image carries MORE flux than the same stamp dropped in unlensed.
+    rng = np.random.default_rng(7)
+    lp = stub_population.sample(rng)
+    lp = LensParams(**{**lp.__dict__, "centre_x_pix": 64.0, "centre_y_pix": 64.0,
+                       "src_dx_arcsec": 0.0, "src_dy_arcsec": 0.0})
+    src = _bright_stamp()
+    canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), np.float32)
+    render_lens_to_multiband_canvas(canvas, params=lp, source_stamp=src)
+    lensed_flux = canvas.sum()
+    assert lensed_flux > 0
+    # Unlensed reference: the same stamp composited directly.
+    from euclid_polish.sky.tng_galaxy import composite_stamp
+    ref = np.zeros_like(canvas)
+    composite_stamp(ref, src, 64.0, 64.0)
+    assert lensed_flux > 1.05 * ref.sum()      # genuine magnification (μ>1)
+
+
+def test_lens_light_stamp_replaces_sersic(stub_population: LensPopulation):
+    # With a lens-light stamp, the foreground light is the stamp (no Sersic).
+    rng = np.random.default_rng(8)
+    lp = stub_population.sample(rng)
+    lp = LensParams(**{**lp.__dict__, "centre_x_pix": 64.0, "centre_y_pix": 64.0})
+    stamp = _bright_stamp(core=6, val=30.0)
+    canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), np.float32)
+    render_lens_to_multiband_canvas(canvas, params=lp, lens_light_stamp=stamp)
+    assert canvas.sum() > 0
+    # Central region carries the composited stamp's flux.
+    assert canvas[58:70, 58:70, :].sum() > 0
