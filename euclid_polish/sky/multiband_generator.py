@@ -75,7 +75,12 @@ class MultiBandGeneratorConfig:
     tng_realistic_sizes:      bool  = True
     # Rare, continuous big-galaxy tail mixed into the size draw (COSMOS is a deep
     # field and lacks big resolved galaxies the network should still learn).
-    tng_big_fraction:         float = 0.05
+    # NOTE these are big in *half-light radius*; because real galaxies have a
+    # bright compact bulge + an extended disk, their actual on-sky FOOTPRINT is
+    # several × R_e (the de Vaucouleurs wings sprawl), so even a ~1-4" R_e tail
+    # galaxy can fill a 25" stamp. Hence the tail is kept rare (size range
+    # preserved, frequency low) — see tng_big_re_arcsec for the max size.
+    tng_big_fraction:         float = 0.015
     tng_big_re_arcsec:        Tuple[float, float] = (1.0, 4.0)
 
     def validate(self) -> Tuple[bool, Optional[str]]:
