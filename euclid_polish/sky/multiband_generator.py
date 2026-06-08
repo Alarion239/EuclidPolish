@@ -32,6 +32,7 @@ from euclid_polish.sky.cosmos2025 import CosmosCatalog
 from euclid_polish.sky.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas,
 )
+from euclid_polish.sky.apparent_size import ApparentSizeModel
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
 from euclid_polish.sky.tng_galaxy import list_tng_galaxies, sample_tng_stamp
 from euclid_polish.sky.types import MultiBandSkyImage
@@ -60,11 +61,14 @@ class MultiBandGeneratorConfig:
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
     # Fraction of galaxies drawn as real TNG50 SKIRT stamps instead of analytic
-    # Sersic profiles (per galaxy). 0 keeps generation exactly as before; each
-    # injected galaxy is a random downloaded one, random orientation,
-    # downsampled ×1/×2/×3/×4.
+    # Sersic profiles (per galaxy). 0 keeps generation exactly as before.
     tng_fraction:             float = 0.0
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
+    # When True, each injected TNG galaxy is downsampled so its apparent angular
+    # half-light radius follows the realistic, literature-tuned distribution
+    # (:class:`ApparentSizeModel`) — mostly small, big galaxies rare. When
+    # False, the legacy flat ×1/×2/×3/×4 draw is used.
+    tng_realistic_sizes:      bool  = True
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -173,6 +177,13 @@ class MultiBandSimulator:
                 f"[generator] tng_fraction={self.config.tng_fraction} but no "
                 f"downloaded galaxies under {self.config.tng_galaxy_dir} — "
                 "falling back to all-Sersic.\n")
+        # Realistic apparent-size sampler for TNG injection (built only when
+        # needed; its construction precomputes a Planck15 d_A spline).
+        self.tng_size_model: Optional[ApparentSizeModel] = (
+            ApparentSizeModel()
+            if (self.config.tng_fraction > 0.0
+                and self.config.tng_realistic_sizes) else None
+        )
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -187,11 +198,19 @@ class MultiBandSimulator:
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> Optional[dict]:
-        """Inject a random downloaded TNG galaxy (random orientation + ×1/×2/×3/
-        ×4 downsample + quarter-rotation), centred at a random field position
-        and clipped to the canvas. Returns None if the stamp can't be loaded."""
+        """Inject a random downloaded TNG galaxy (random orientation +
+        realistic-size downsample + quarter-rotation), centred at a random field
+        position and clipped to the canvas. Returns None if the stamp can't be
+        loaded.
+
+        With ``tng_realistic_sizes`` the downsample factor is chosen so the
+        galaxy's apparent half-light radius follows
+        :class:`ApparentSizeModel` — mostly small, big galaxies rare."""
+        target_re = (self.tng_size_model.sample(rng)
+                     if self.tng_size_model is not None else None)
         res = sample_tng_stamp(self.tng_galaxies, rng,
-                               pixel_scale_arcsec=self.config.pixel_scale)
+                               pixel_scale_arcsec=self.config.pixel_scale,
+                               target_re_arcsec=target_re)
         if res is None:
             return None
         stamp, tmeta = res
@@ -206,6 +225,8 @@ class MultiBandSimulator:
             "orientation":  tmeta["orientation"],
             "rebin_factor": tmeta["rebin_factor"],
             "rot_k":        tmeta["rot_k"],
+            "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
+            "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
         }

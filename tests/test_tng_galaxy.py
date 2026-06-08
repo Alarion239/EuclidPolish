@@ -19,7 +19,9 @@ from euclid_polish.sky.tng_galaxy import (
     block_mean,
     list_tng_galaxies,
     load_tng_frame,
+    measure_halflight_radius_px,
     prepare_tng_galaxy,
+    rebin_for_target_size,
     rotate_quarter,
     sample_tng_stamp,
     tng_fits_path,
@@ -229,3 +231,58 @@ def test_sample_tng_stamp(tmp_path):
     assert meta["rot_k"] in (0, 1, 2, 3)
     # empty pool → None
     assert sample_tng_stamp([], np.random.default_rng(0)) is None
+
+
+# --------------------- half-light radius / target sizing -------------------
+
+def test_measure_halflight_radius_top_hat():
+    # A filled disk of radius R has half-light radius R/√2.
+    n = 201
+    yy, xx = np.ogrid[:n, :n]
+    r = np.hypot(yy - n // 2, xx - n // 2)
+    R = 40.0
+    frame = (r <= R).astype(np.float32)
+    re = measure_halflight_radius_px(frame)
+    assert abs(re - R / np.sqrt(2.0)) < 1.5      # ≈ 28.3 px
+
+
+def test_measure_halflight_radius_empty_is_nan():
+    assert math.isnan(measure_halflight_radius_px(np.zeros((10, 10))))
+    # negatives don't count as light
+    assert math.isnan(measure_halflight_radius_px(-np.ones((10, 10))))
+
+
+def test_rebin_for_target_size_geometry():
+    # apparent = hr_scale · re_native / F  →  F = hr_scale · re_native / target.
+    # re_native=200 px, hr=0.05″, target=0.5″ → F = 0.05·200/0.5 = 20.
+    f = rebin_for_target_size(200.0, 0.5, 0.05)
+    assert f == 20
+    # Bigger target ⇒ smaller F (more resolved). target=2″ → F=5.
+    assert rebin_for_target_size(200.0, 2.0, 0.05) == 5
+    # Never upsamples below native, never exceeds f_max, never < 1.
+    assert rebin_for_target_size(10.0, 50.0, 0.05) == 1     # F<1 → clip 1
+    assert rebin_for_target_size(1e6, 0.01, 0.05, f_max=64) == 64
+    assert rebin_for_target_size(0.0, 0.5, 0.05) == 1       # unmeasurable
+    assert rebin_for_target_size(200.0, 0.0, 0.05) == 1
+
+
+def test_rebin_stochastic_rounding_is_unbiased():
+    # F target = 2.7 → stochastic rounds to 2 (30%) or 3 (70%); mean ≈ 2.7.
+    rng = np.random.default_rng(0)
+    # choose re_native/target/hr so hr·re/target = 2.7
+    fs = [rebin_for_target_size(54.0, 1.0, 0.05, rng=rng) for _ in range(4000)]
+    assert set(fs) <= {2, 3}
+    assert abs(np.mean(fs) - 2.7) < 0.05
+
+
+def test_sample_tng_stamp_with_target_size_records_meta(tmp_path):
+    # A bigger target apparent size ⇒ a smaller (more resolved) rebin factor.
+    tng = str(tmp_path)
+    _write_fake_galaxy(tng, "111", size=240)        # measurable core
+    gals = list_tng_galaxies(tng)
+    res = sample_tng_stamp(gals, np.random.default_rng(0), target_re_arcsec=1.0)
+    assert res is not None
+    _stamp, meta = res
+    assert "target_re_arcsec" in meta and meta["target_re_arcsec"] == 1.0
+    assert "apparent_re_arcsec" in meta and "native_halflight_px" in meta
+    assert meta["rebin_factor"] >= 1

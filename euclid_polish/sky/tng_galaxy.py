@@ -108,6 +108,86 @@ def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
     return np.rot90(np.asarray(arr), k=int(k) % 4)
 
 
+# ---------------------------------------------------------------------------
+# Half-light radius (for sizing a stamp to a target apparent angular size)
+# ---------------------------------------------------------------------------
+
+#: Cache of the integer radius-from-centre grid, keyed by frame shape — the
+#: atlas frames are all the same size, so this is computed once per shape.
+_RADIUS_INT_GRID: Dict[Tuple[int, int], np.ndarray] = {}
+
+
+def _radius_int_grid(shape: Tuple[int, int]) -> np.ndarray:
+    grid = _RADIUS_INT_GRID.get(shape)
+    if grid is None:
+        H, W = shape
+        cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+        yy = np.arange(H, dtype=np.float64)[:, None] - cy
+        xx = np.arange(W, dtype=np.float64)[None, :] - cx
+        grid = np.sqrt(yy * yy + xx * xx).astype(np.int64)
+        _RADIUS_INT_GRID[shape] = grid
+    return grid
+
+
+def measure_halflight_radius_px(frame: np.ndarray, *, frac: float = 0.5) -> float:
+    """Half-light radius (pixels) of ``frame`` via a curve of growth about the
+    frame centre — SKIRT centres each subhalo, so the geometric centre is the
+    light centre. Only positive flux counts; an empty/negative frame → NaN.
+
+    Returns the (sub-pixel, linearly interpolated) radius enclosing ``frac`` of
+    the total positive flux.
+    """
+    a = np.asarray(frame, dtype=np.float64)
+    a = np.where(np.isfinite(a) & (a > 0.0), a, 0.0)
+    total = float(a.sum())
+    if total <= 0.0:
+        return float("nan")
+    rint = _radius_int_grid(a.shape)
+    prof = np.bincount(rint.ravel(), weights=a.ravel())
+    cum = np.cumsum(prof)
+    target = frac * total
+    idx = int(np.searchsorted(cum, target))
+    if idx <= 0:
+        return 0.5
+    c0, c1 = cum[idx - 1], cum[idx]
+    sub = (target - c0) / (c1 - c0) if c1 > c0 else 0.0
+    return float(idx - 1 + sub)
+
+
+def rebin_for_target_size(
+    re_native_px: float,
+    target_re_arcsec: float,
+    hr_pixel_scale: float,
+    *,
+    rng: Optional[np.random.Generator] = None,
+    f_max: int = 64,
+) -> int:
+    """Integer block-mean factor that places a stamp of native half-light radius
+    ``re_native_px`` at apparent half-light radius ``target_re_arcsec`` on the
+    ``hr_pixel_scale`` grid.
+
+    Geometry: after a block-mean of ``F`` the half-light radius is
+    ``re_native_px / F`` *output* pixels, each spanning ``hr_pixel_scale``
+    arcsec, so ``apparent = hr_pixel_scale · re_native_px / F`` →
+    ``F = hr_pixel_scale · re_native_px / target``. Clipped to ``[1, f_max]``
+    (can't upsample below native; cap keeps the stamp from collapsing to a few
+    pixels). With an ``rng`` the non-integer factor is **stochastically rounded**
+    so the *mean* apparent size is unbiased even where integer granularity is
+    coarse (the rare big galaxies, F≈2–4).
+    """
+    if not (re_native_px > 0.0) or not (target_re_arcsec > 0.0):
+        return 1
+    f = hr_pixel_scale * re_native_px / target_re_arcsec
+    f = min(max(f, 1.0), float(f_max))
+    lo = int(np.floor(f))
+    rem = f - lo
+    if rng is not None and rem > 0.0:
+        f_int = lo + (1 if rng.random() < rem else 0)
+    else:
+        f_int = int(round(f))
+    return max(1, f_int)
+
+
 def surface_brightness_to_electrons(arr_mjy_sr: np.ndarray, band: BandConfig,
                                     pixel_scale_arcsec: float) -> np.ndarray:
     """MJy/sr → electrons-per-pixel over ``band``'s stack at the HR pixel
@@ -200,31 +280,88 @@ def list_tng_galaxies(tng_dir: str) -> List[Tuple[str, str]]:
         return sorted(out)
 
 
+#: Per-(dir, galaxy, orientation) native VIS half-light radius cache (pixels).
+#: Filled lazily the first time a galaxy is sized; one entry per orientation, so
+#: repeat draws skip the FITS read + curve-of-growth entirely. Keyed on the
+#: directory too, so distinct galaxy sets (e.g. test fixtures reusing ids) never
+#: alias.
+_HALFLIGHT_PX_CACHE: Dict[Tuple[str, str, int], float] = {}
+
+
+def native_halflight_px(
+    galaxy_dir: str, subhalo_id: int | str, orientation: int,
+    *, fits_band: str = "VIS",
+) -> float:
+    """Cached native half-light radius (px) of one galaxy/orientation's VIS
+    frame. NaN if the frame can't be read or carries no flux."""
+    key = (str(galaxy_dir), str(subhalo_id), int(orientation))
+    cached = _HALFLIGHT_PX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        frame = load_tng_frame(
+            tng_fits_path(galaxy_dir, subhalo_id, orientation, fits_band))
+        re_px = measure_halflight_radius_px(frame)
+    except Exception:
+        re_px = float("nan")
+    _HALFLIGHT_PX_CACHE[key] = re_px
+    return re_px
+
+
 def sample_tng_stamp(
     galaxies: List[Tuple[str, str]],
     rng: np.random.Generator,
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     downsample_choices: Tuple[int, ...] = DOWNSAMPLE_CHOICES,
+    target_re_arcsec: Optional[float] = None,
+    f_max: int = 64,
 ) -> Optional[Tuple[np.ndarray, dict]]:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
     load).
 
-    The downsample factor is drawn from ``downsample_choices`` (default
-    ×1/×2/×3/×4); coarser = smaller and fainter, like a more distant galaxy.
+    Sizing:
+
+    * ``target_re_arcsec`` given → the galaxy is downsampled so its **apparent
+      half-light radius** matches that target (via :func:`rebin_for_target_size`
+      on the measured native size), giving a realistic, mostly-small angular
+      size with occasional big resolved galaxies. ``meta`` then also carries
+      ``target_re_arcsec`` / ``native_halflight_px`` / ``apparent_re_arcsec``.
+    * otherwise → legacy uniform draw from ``downsample_choices`` (×1/×2/×3/×4);
+      coarser = smaller and fainter, like a more distant galaxy.
     """
     if not galaxies:
         return None
     gdir, gid = galaxies[int(rng.integers(0, len(galaxies)))]
     orientation = int(rng.integers(1, N_ORIENTATIONS + 1))      # O1..O5
-    rebin = int(downsample_choices[int(rng.integers(0, len(downsample_choices)))])
     rot_k = int(rng.integers(0, 4))
+
+    re_px: Optional[float] = None
+    if target_re_arcsec is not None and target_re_arcsec > 0.0:
+        re_px = native_halflight_px(gdir, gid, orientation)
+        if re_px is not None and np.isfinite(re_px) and re_px > 0.0:
+            rebin = rebin_for_target_size(
+                re_px, target_re_arcsec, pixel_scale_arcsec,
+                rng=rng, f_max=f_max)
+        else:                                       # unmeasurable → safe default
+            rebin = int(downsample_choices[
+                int(rng.integers(0, len(downsample_choices)))])
+    else:
+        rebin = int(downsample_choices[
+            int(rng.integers(0, len(downsample_choices)))])
+
     try:
-        return prepare_tng_galaxy(
+        stamp, meta = prepare_tng_galaxy(
             gdir, gid, orientation,
             rebin_factor=rebin, rot_k=rot_k,
             pixel_scale_arcsec=pixel_scale_arcsec,
         )
     except Exception:
         return None
+    if target_re_arcsec is not None and re_px is not None and np.isfinite(re_px):
+        meta["target_re_arcsec"] = float(target_re_arcsec)
+        meta["native_halflight_px"] = float(re_px)
+        meta["apparent_re_arcsec"] = float(
+            pixel_scale_arcsec * re_px / rebin)
+    return stamp, meta
