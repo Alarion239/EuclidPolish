@@ -638,12 +638,10 @@ def register(app):
 
         # Inject the universal job-config values for this step. These fields
         # were removed from the step cards and now live on the /config tab, so
-        # the form never carries them — we supply them here, server-side.
-        inject = job_config.FASRC_STEP_PARAMS.get(step_id)
-        if inject:
-            jc = job_config.load()
-            for param_name, attr in inject.items():
-                form[param_name] = str(getattr(jc, attr))
+        # the form never carries them — we supply them here, server-side
+        # (including computed params like the locked ePSF output size).
+        for param_name, value in job_config.fasrc_params_for(step_id).items():
+            form[param_name] = value
 
         # All form values are passed as ``params``; the step picks out
         # what it needs (e.g. ``n_tiles``, ``hst_fraction``).

@@ -149,11 +149,9 @@ large cutout don't leak across train/validate."></label>`;
             <input type="number" name="num_stars" value="" min="10" max="100000"
                    placeholder="all"
                    title="Optional cap on stars considered per band before clustering. Blank/0 = use ALL good cutouts (recommended — that's how you get many PSFs)."></label>
-          <label>Output PSF size (oversampled px)
-            <input type="number" name="output_size" value="0" min="0" max="4096"
-                   title="Final ePSF side in oversampled px. 0 → photutils' default (cutout_size × oversampling + 1). Even values are bumped down to odd."></label>
           <p class="hint" style="flex-basis:100%;">Stars per PSF (N) and VIS cutout (px)
-             are set on the <a href="/config">⚙️ Config</a> tab and sent with this job.</p>`;
+             are set on the <a href="/config">⚙️ Config</a> tab and sent with this job.
+             Output ePSF size is locked to 2·(VIS cutout)+1 oversampled px.</p>`;
       case 'download_tng_skirt':
         // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153

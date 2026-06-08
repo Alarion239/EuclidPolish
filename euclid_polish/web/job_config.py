@@ -43,6 +43,24 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
 }
 
 
+def fasrc_params_for(step_id: str) -> Dict[str, str]:
+    """All job-config-derived params to inject into a FASRC step's form.
+
+    Includes the direct ``FASRC_STEP_PARAMS`` mappings plus any *computed*
+    params (currently the locked ePSF output size).
+    """
+    cfg = load()
+    out = {param: str(getattr(cfg, attr))
+           for param, attr in FASRC_STEP_PARAMS.get(step_id, {}).items()}
+    if step_id == "extract_euclid_psf":
+        # Output ePSF side (oversampled px) is locked to 2·(VIS cutout) + 1 —
+        # the photutils convention ``cutout_size × oversampling + 1`` (with
+        # oversampling = 2). The ``+1`` keeps it odd so the kernel has a true
+        # centre sample. The field is removed from the form.
+        out["output_size"] = str(2 * int(cfg.vis_pixels) + 1)
+    return out
+
+
 def _ensure_odd(n: int) -> int:
     """VIS cutout side must be odd (so the stamp has a true centre pixel)."""
     return n if n % 2 == 1 else n + 1
