@@ -311,8 +311,91 @@ def _render_sky_record_pair_png(subset: str, band: str, index: int,
     return buf.getvalue()
 
 
+def _saturation_cutoff(valid_mags, invalid_mags, bins):
+    """Suggested oversaturation cutoff: the faint edge of the bright regime
+    where the invalid (saturated) fraction is still ≥ 50%.
+
+    Stars brighter than the returned magnitude are predominantly rejected.
+    Returns ``None`` when no bin crosses 50% invalid (no clear cutoff).
+    """
+    v_counts, _ = np.histogram(valid_mags, bins=bins)
+    i_counts, _ = np.histogram(invalid_mags, bins=bins)
+    cutoff = None
+    for k in range(len(bins) - 1):
+        total = v_counts[k] + i_counts[k]
+        if total == 0:
+            continue
+        if i_counts[k] / total >= 0.5:
+            # right (fainter) edge of this still-saturated bin
+            cutoff = float(bins[k + 1])
+    return cutoff
+
+
+def _render_saturation_view(stars):
+    """2×2 grid (one panel per band) of VIS-magnitude histograms split into
+    valid (green) and invalid/saturated (red), with a suggested per-band
+    oversaturation cutoff line."""
+    band_names = [b.name for b in Config.BANDS]
+    n = len(band_names)
+    ncols = 2
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 4.0 * nrows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, name in zip(axes, band_names):
+        valid_mags, invalid_mags = [], []
+        for s in stars:
+            m = s.get("magnitude")
+            if m is None or not np.isfinite(m):
+                continue
+            if StarCatalog.is_valid(s, band=name):
+                valid_mags.append(float(m))
+            elif StarCatalog.is_corrupted(s, band=name):
+                invalid_mags.append(float(m))     # disjoint from valid
+
+        combined = valid_mags + invalid_mags
+        if not combined:
+            ax.set_title(f"{name}")
+            ax.text(0.5, 0.5, "no processed stars in this band",
+                    ha="center", va="center", color="#888",
+                    transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
+
+        bins = np.linspace(min(combined), max(combined), 30)
+        ax.hist(valid_mags, bins=bins, color="#2e9e4f", alpha=0.6,
+                edgecolor="white", linewidth=0.4,
+                label=f"valid (N={len(valid_mags)})")
+        ax.hist(invalid_mags, bins=bins, color="#d1453b", alpha=0.6,
+                edgecolor="white", linewidth=0.4,
+                label=f"invalid/saturated (N={len(invalid_mags)})")
+
+        cutoff = _saturation_cutoff(valid_mags, invalid_mags, bins)
+        if cutoff is not None:
+            ax.axvline(cutoff, ls="--", lw=1.4, color="#222")
+            ax.annotate(f"cutoff ≈ {cutoff:.2f}", xy=(cutoff, 0.96),
+                        xycoords=("data", "axes fraction"),
+                        xytext=(4, -4), textcoords="offset points",
+                        ha="left", va="top", fontsize=9, color="#222")
+
+        ax.set_title(name)
+        ax.set_xlabel("VIS magnitude (AB)  · brighter ←")
+        ax.set_ylabel("count")
+        ax.legend(fontsize=8, loc="upper right")
+
+    # Blank any unused panels (e.g. if BANDS isn't a multiple of ncols).
+    for ax in axes[n:]:
+        ax.set_visible(False)
+
+    fig.suptitle("Per-band saturation — valid (green) vs invalid/saturated (red); "
+                 "dashed line = suggested oversaturation cutoff", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    return fig
+
+
 def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
-    """Render a catalog visualization: positions or magnitude histogram."""
+    """Render a catalog visualization: positions, magnitude histogram, or
+    per-band saturation (valid vs invalid)."""
     matplotlib.use("Agg")
 
     cat = StarCatalog(output_dir)
@@ -333,6 +416,8 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
         ax.set_title(f"Catalog mag distribution  "
                      f"(median = {float(np.median(mags)):.2f})")
         fig.tight_layout()
+    elif view == "saturation":
+        fig = _render_saturation_view(stars)
     else:
         abort(400)
     buf = io.BytesIO()

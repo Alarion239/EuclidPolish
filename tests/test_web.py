@@ -140,10 +140,10 @@ def test_psfs_page_renders(client):
 def test_sky_page_renders(client):
     r = client.get("/sky")
     assert r.status_code == 200
-    # Synthetic generation is now a FASRC step card (mounted by step_id),
+    # Synthetic generation is a FASRC step card (mounted by step_id),
     # not the old local generate/forward forms.
-    assert b"Synthetic training pairs" in r.data
     assert b"synthetic_generate" in r.data
+    assert b"Records on FASRC" in r.data
 
 
 def test_visualization_page_renders(client):
