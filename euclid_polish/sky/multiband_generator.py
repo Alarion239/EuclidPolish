@@ -32,7 +32,7 @@ from euclid_polish.sky.cosmos2025 import CosmosCatalog
 from euclid_polish.sky.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas,
 )
-from euclid_polish.sky.apparent_size import ApparentSizeModel
+from euclid_polish.sky.apparent_size import CosmosSizeSampler
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
 from euclid_polish.sky.tng_galaxy import list_tng_galaxies, sample_tng_stamp
 from euclid_polish.sky.types import MultiBandSkyImage
@@ -65,10 +65,15 @@ class MultiBandGeneratorConfig:
     tng_fraction:             float = 0.0
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     # When True, each injected TNG galaxy is downsampled so its apparent angular
-    # half-light radius follows the realistic, literature-tuned distribution
-    # (:class:`ApparentSizeModel`) — mostly small, big galaxies rare. When
-    # False, the legacy flat ×1/×2/×3/×4 draw is used.
+    # half-light radius is drawn from the COSMOS catalog's own effective-radius
+    # distribution (:class:`CosmosSizeSampler`) — so TNG galaxies match the
+    # Sersic population by construction. When False, the legacy flat
+    # ×1/×2/×3/×4 draw is used.
     tng_realistic_sizes:      bool  = True
+    # Rare, continuous big-galaxy tail mixed into the size draw (COSMOS is a deep
+    # field and lacks big resolved galaxies the network should still learn).
+    tng_big_fraction:         float = 0.05
+    tng_big_re_arcsec:        Tuple[float, float] = (1.0, 4.0)
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -80,6 +85,11 @@ class MultiBandGeneratorConfig:
             return False, "densities must be non-negative"
         if not (0.0 <= self.tng_fraction <= 1.0):
             return False, "tng_fraction must be in [0, 1]"
+        if not (0.0 <= self.tng_big_fraction <= 1.0):
+            return False, "tng_big_fraction must be in [0, 1]"
+        lo, hi = self.tng_big_re_arcsec
+        if not (0.0 < lo <= hi):
+            return False, "tng_big_re_arcsec must be (lo, hi) with 0 < lo ≤ hi"
         return True, None
 
 
@@ -177,13 +187,17 @@ class MultiBandSimulator:
                 f"[generator] tng_fraction={self.config.tng_fraction} but no "
                 f"downloaded galaxies under {self.config.tng_galaxy_dir} — "
                 "falling back to all-Sersic.\n")
-        # Realistic apparent-size sampler for TNG injection (built only when
-        # needed; its construction precomputes a Planck15 d_A spline).
-        self.tng_size_model: Optional[ApparentSizeModel] = (
-            ApparentSizeModel()
-            if (self.config.tng_fraction > 0.0
-                and self.config.tng_realistic_sizes) else None
-        )
+        # Realistic apparent-size sampler for TNG injection: drawn from the
+        # COSMOS catalog's own effective-radius distribution (+ rare big tail),
+        # so TNG galaxies match the Sersic population by construction.
+        self.tng_size_model: Optional[CosmosSizeSampler] = None
+        if (self.config.tng_fraction > 0.0
+                and self.config.tng_realistic_sizes and self.tng_galaxies):
+            self.tng_size_model = CosmosSizeSampler(
+                self.catalog.effective_re_arcsec,
+                big_fraction=self.config.tng_big_fraction,
+                big_range=self.config.tng_big_re_arcsec,
+            )
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -204,8 +218,9 @@ class MultiBandSimulator:
         loaded.
 
         With ``tng_realistic_sizes`` the downsample factor is chosen so the
-        galaxy's apparent half-light radius follows
-        :class:`ApparentSizeModel` — mostly small, big galaxies rare."""
+        galaxy's apparent half-light radius is drawn from the COSMOS catalog's
+        own size distribution (:class:`CosmosSizeSampler`) — matching the Sersic
+        population, with a rare big tail."""
         target_re = (self.tng_size_model.sample(rng)
                      if self.tng_size_model is not None else None)
         res = sample_tng_stamp(self.tng_galaxies, rng,

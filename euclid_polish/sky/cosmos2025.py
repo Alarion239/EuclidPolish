@@ -30,6 +30,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
+from scipy.special import gammainc, gammaincinv
 
 from euclid_polish.config import Config
 
@@ -114,6 +115,21 @@ class CosmosCatalog(ABC):
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         """Return parameters for one randomly drawn foreground galaxy."""
 
+    @property
+    def effective_re_arcsec(self) -> np.ndarray:
+        """Per-galaxy circularized combined bulge+disk half-light radius (arcsec),
+        in VIS — the realistic on-sky size of each catalog galaxy. Computed once
+        and cached. Used to size injected TNG stamps so they match the catalog's
+        own size distribution. Requires the geometry/flux arrays every concrete
+        catalog exposes (``bulge_re_arcsec``/``disk_re_arcsec``/``*_q``/``*_flux_e``)."""
+        cached = getattr(self, "_effective_re_arcsec", None)
+        if cached is None:
+            cached = circularized_effective_radius_arcsec(
+                self.bulge_re_arcsec, self.bulge_q, self.bulge_flux_e[:, 0],
+                self.disk_re_arcsec,  self.disk_q,  self.disk_flux_e[:, 0])
+            self._effective_re_arcsec = cached
+        return cached
+
     def typical_band_electron_ratios(self) -> np.ndarray:
         """Median per-source ``e_band / e_VIS`` after the catalog's
         quality cuts.
@@ -173,6 +189,55 @@ def _mag_to_electrons_per_stack(mag_ab: np.ndarray, band: "BandConfig") -> np.nd
     stack zeropoint.
     """
     return 10.0 ** (-0.4 * (mag_ab - band.sim_zeropoint_e))
+
+
+def circularized_effective_radius_arcsec(
+    bulge_re: np.ndarray, bulge_q: np.ndarray, bulge_flux: np.ndarray,
+    disk_re: np.ndarray, disk_q: np.ndarray, disk_flux: np.ndarray,
+    *, n_bulge: float = 4.0, n_disk: float = 1.0, n_iter: int = 60,
+) -> np.ndarray:
+    """Per-galaxy **circularized** half-light radius (arcsec) of the combined
+    bulge(n=4)+disk(n=1) profile — the size at which the network actually *sees*
+    a COSMOS galaxy, and the like-for-like match to the circular curve-of-growth
+    radius we measure on TNG stamps.
+
+    It is smaller than either component's catalog radius for two reasons:
+    (1) the catalog stores **major-axis** half-light radii — the circularized
+    radius (circle with the half-light ellipse's area) is ``re·√q``; and
+    (2) the **combined** half-light radius of a compact bulge + extended disk is
+    pulled inward by the bulge, well below the disk radius for bulge-dominated
+    galaxies. The combined curve of growth
+
+        f_b·P(2n_b, b_{n_b}·(R/re_b)^{1/n_b}) + f_d·P(2n_d, b_{n_d}·(R/re_d)^{1/n_d})
+
+    (``P`` the regularised lower incomplete gamma; ``re`` circularised) is solved
+    for the ``R`` enclosing half the total bulge+disk flux by vectorised
+    bisection. Fluxes are the per-band electron counts (pass VIS for the SR band).
+    """
+    reb = np.asarray(bulge_re, float) * np.sqrt(np.clip(np.asarray(bulge_q, float), 1e-3, 1.0))
+    red = np.asarray(disk_re,  float) * np.sqrt(np.clip(np.asarray(disk_q,  float), 1e-3, 1.0))
+    reb = np.where(reb > 0, reb, 1e-6)
+    red = np.where(red > 0, red, 1e-6)
+    fb = np.clip(np.asarray(bulge_flux, float), 0.0, None)
+    fd = np.clip(np.asarray(disk_flux,  float), 0.0, None)
+    ftot = fb + fd
+    ftot = np.where(ftot > 0, ftot, 1.0)
+    bnb = gammaincinv(2.0 * n_bulge, 0.5)
+    bnd = gammaincinv(2.0 * n_disk, 0.5)
+
+    def enclosed(R: np.ndarray) -> np.ndarray:
+        pb = gammainc(2.0 * n_bulge, bnb * (R / reb) ** (1.0 / n_bulge))
+        pd = gammainc(2.0 * n_disk,  bnd * (R / red) ** (1.0 / n_disk))
+        return (fb * pb + fd * pd) / ftot
+
+    lo = np.full(reb.shape, 1e-4, dtype=float)
+    hi = np.full(reb.shape, 60.0, dtype=float)
+    for _ in range(int(n_iter)):
+        mid = 0.5 * (lo + hi)
+        over = enclosed(mid) > 0.5
+        hi = np.where(over, mid, hi)
+        lo = np.where(over, lo, mid)
+    return 0.5 * (lo + hi)
 
 
 # ---------------------------------------------------------------------------

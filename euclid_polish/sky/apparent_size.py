@@ -122,3 +122,59 @@ class ApparentSizeModel:
             r_phys / kpc_per_arcsec, self.theta_min_arcsec, self.theta_max_arcsec
         )
         return float(theta[0]) if scalar else theta
+
+
+class CosmosSizeSampler:
+    """Draw TNG target apparent half-light radii from the COSMOS catalog's *own*
+    effective-radius distribution, so injected TNG galaxies match the Sérsic
+    population **by construction** — no calibration, guaranteed agreement.
+
+    COSMOS is a deep field, so it has essentially no big, resolved galaxies; a
+    small, continuous **big tail** is mixed in (log-uniform over ``big_range``,
+    probability ``big_fraction``) so the network still sees real large-galaxy
+    structure occasionally.
+
+    Parameters
+    ----------
+    effective_re_arcsec
+        Per-galaxy circularized combined bulge+disk half-light radii (arcsec),
+        e.g. ``catalog.effective_re_arcsec``.
+    big_fraction
+        Probability a draw comes from the big tail instead of the catalog.
+    big_range
+        ``(lo, hi)`` arcsec for the log-uniform big tail (lo overlaps the
+        catalog's upper end so the combined distribution stays continuous).
+    floor_arcsec
+        Drop catalog radii at/below this (degenerate, sub-pixel) before sampling.
+    """
+
+    def __init__(
+        self,
+        effective_re_arcsec: np.ndarray,
+        *,
+        big_fraction: float = 0.05,
+        big_range: tuple = (1.0, 4.0),
+        floor_arcsec: float = 0.02,
+    ):
+        re = np.asarray(effective_re_arcsec, dtype=float)
+        re = re[np.isfinite(re) & (re > float(floor_arcsec))]
+        if re.size == 0:
+            raise ValueError("no usable COSMOS effective radii to sample from")
+        self._re = re
+        self.big_fraction = float(np.clip(big_fraction, 0.0, 1.0))
+        self.big_lo, self.big_hi = float(big_range[0]), float(big_range[1])
+        if not (0.0 < self.big_lo <= self.big_hi):
+            raise ValueError(f"invalid big_range {big_range}")
+
+    def sample(self, rng: np.random.Generator, size: Optional[int] = None
+               ) -> Union[float, np.ndarray]:
+        scalar = size is None
+        n = 1 if scalar else int(size)
+        out = self._re[rng.integers(0, self._re.size, n)].astype(float)
+        if self.big_fraction > 0.0:
+            big = rng.random(n) < self.big_fraction
+            nb = int(big.sum())
+            if nb:
+                out[big] = np.exp(rng.uniform(
+                    np.log(self.big_lo), np.log(self.big_hi), nb))
+        return float(out[0]) if scalar else out

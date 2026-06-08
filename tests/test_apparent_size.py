@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from euclid_polish.sky.apparent_size import ApparentSizeModel
+from euclid_polish.sky.apparent_size import ApparentSizeModel, CosmosSizeSampler
 
 
 def test_scalar_and_array_shapes():
@@ -67,3 +67,47 @@ def test_invalid_params_raise():
         ApparentSizeModel(r0_kpc=0.0)
     with pytest.raises(ValueError):
         ApparentSizeModel(theta_min_arcsec=2.0, theta_max_arcsec=1.0)
+
+
+# ---------------------------------------------------------------------------
+# CosmosSizeSampler (catalog-anchored)
+# ---------------------------------------------------------------------------
+
+def test_cosmos_sampler_draws_from_catalog_no_big():
+    re = np.array([0.10, 0.12, 0.15, 0.20, 0.30])
+    s = CosmosSizeSampler(re, big_fraction=0.0)
+    draws = s.sample(np.random.default_rng(0), size=5000)
+    # Every draw is one of the catalog values (no big tail).
+    assert np.all(np.isin(np.round(draws, 6), np.round(re, 6)))
+    assert draws.max() <= re.max() + 1e-9
+
+
+def test_cosmos_sampler_big_tail_fraction_and_continuity():
+    re = np.array([0.08, 0.12, 0.18, 0.25, 0.4])
+    s = CosmosSizeSampler(re, big_fraction=0.1, big_range=(1.0, 4.0))
+    draws = s.sample(np.random.default_rng(1), size=200000)
+    frac_big = np.mean(draws >= 1.0)
+    assert 0.07 < frac_big < 0.13                  # ~10% big
+    assert draws.max() <= 4.0 + 1e-9
+    # bulk still matches the (small) catalog median
+    assert np.median(draws[draws < 1.0]) < 0.5
+
+
+def test_cosmos_sampler_floor_and_scalar():
+    re = np.array([0.001, 0.0, 0.15, 0.25])        # tiny/zero dropped by floor
+    s = CosmosSizeSampler(re, big_fraction=0.0, floor_arcsec=0.02)
+    assert isinstance(s.sample(np.random.default_rng(0)), float)
+    draws = s.sample(np.random.default_rng(0), size=1000)
+    assert draws.min() >= 0.15 - 1e-9
+
+
+def test_cosmos_sampler_determinism_and_invalid():
+    re = np.array([0.1, 0.2, 0.3])
+    s = CosmosSizeSampler(re, big_fraction=0.2)
+    a = s.sample(np.random.default_rng(5), size=100)
+    b = s.sample(np.random.default_rng(5), size=100)
+    assert np.array_equal(a, b)
+    with pytest.raises(ValueError):
+        CosmosSizeSampler(np.array([]), big_fraction=0.0)
+    with pytest.raises(ValueError):
+        CosmosSizeSampler(re, big_range=(4.0, 1.0))

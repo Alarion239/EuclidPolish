@@ -21,6 +21,7 @@ from euclid_polish.sky.cosmos2025 import (
     Cosmos2025Catalog,
     CosmosCatalog,
     GalaxyParams,
+    circularized_effective_radius_arcsec,
     ensure_prefiltered_catalog,
     open_cosmos2025,
 )
@@ -60,6 +61,32 @@ def cat() -> TinyCosmosCatalog:
 
 def test_tiny_length_matches_request(cat: TinyCosmosCatalog):
     assert len(cat) == 2_000
+
+
+def test_effective_radius_single_component_limit():
+    # Disk-only (zero bulge flux) → combined R_e = circularized disk radius
+    # = disk_re·√q.  (P(2, b1·R/re_circ)=0.5 ⇒ R=re_circ for n=1.)
+    re_d = np.array([0.30, 0.50]); q_d = np.array([0.25, 1.0])
+    out = circularized_effective_radius_arcsec(
+        np.array([0.1, 0.1]), np.array([0.8, 0.8]), np.array([0.0, 0.0]),  # bulge flux 0
+        re_d, q_d, np.array([10.0, 10.0]))
+    assert np.allclose(out, re_d * np.sqrt(q_d), rtol=2e-3)
+
+
+def test_effective_radius_combined_below_disk():
+    # A bright compact bulge pulls the combined half-light radius below the disk.
+    out = circularized_effective_radius_arcsec(
+        np.array([0.05]), np.array([1.0]), np.array([100.0]),   # dominant bulge
+        np.array([0.5]),  np.array([1.0]), np.array([10.0]))    # faint extended disk
+    assert out[0] < 0.5            # well below the disk major-axis radius
+    assert out[0] > 0.05 * 0.9     # but at least near the bulge scale
+
+
+def test_catalog_effective_re_property(cat: TinyCosmosCatalog):
+    re = cat.effective_re_arcsec
+    assert re.shape == (len(cat),)
+    assert np.all(np.isfinite(re)) and np.all(re > 0)
+    assert cat.effective_re_arcsec is cat.effective_re_arcsec   # cached
 
 
 def test_tiny_sample_galaxy_returns_params(cat: TinyCosmosCatalog):
