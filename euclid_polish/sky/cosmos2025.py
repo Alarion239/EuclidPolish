@@ -30,9 +30,14 @@ from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
+from astropy.cosmology import Planck15 as _COSMO
+import astropy.units as u
 from scipy.special import gammainc, gammaincinv
 
 from euclid_polish.config import Config
+
+#: Radians subtended by 1 arcsec — for the arcsec → proper-kpc conversion.
+_RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0
 
 #: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample —
 #: everything ``_row_to_params`` / the lens+source samplers read. Persisting just
@@ -106,6 +111,7 @@ class CosmosCatalog(ABC):
     # checkers don't trip over ``self.bulge_flux_e`` in the base method.
     bulge_flux_e: np.ndarray
     disk_flux_e:  np.ndarray
+    z_phot:       np.ndarray
 
     @abstractmethod
     def __len__(self) -> int:
@@ -114,6 +120,47 @@ class CosmosCatalog(ABC):
     @abstractmethod
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         """Return parameters for one randomly drawn foreground galaxy."""
+
+    @abstractmethod
+    def _row_to_params(self, i: int) -> GalaxyParams:
+        """Build :class:`GalaxyParams` from filtered-array row ``i``."""
+
+    def sample_lens_galaxy(
+        self, rng: np.random.Generator, z_lens_range: Tuple[float, float],
+    ) -> GalaxyParams:
+        """Draw a foreground lens galaxy uniformly within ``z_lens_range``."""
+        lo, hi = z_lens_range
+        mask = (self.z_phot >= lo) & (self.z_phot <= hi)
+        cand = np.flatnonzero(mask)
+        if cand.size == 0:
+            raise RuntimeError(f"No galaxies in z range {z_lens_range}")
+        return self._row_to_params(int(rng.choice(cand)))
+
+    def sample_source_galaxy(
+        self, rng: np.random.Generator, z_lens: float,
+    ) -> GalaxyParams:
+        """Draw a background source galaxy for a lens at ``z_lens``.
+
+        Candidates must sit behind the lens (``z ≥ z_lens + offset``), within
+        ``LENS_Z_SOURCE_MAX``, and — crucially — be **physically small**. A real
+        lensed source is a compact background galaxy; capping the *physical*
+        half-light radius (``LENS_SOURCE_MAX_PHYS_RE_KPC``) rather than the
+        angular one means the rendered angular size ``r_phys / d_A(z)`` shrinks
+        with distance, so a more distant source naturally appears smaller —
+        instead of an unphysically large nearby galaxy being lensed."""
+        z_min = z_lens + Config.LENS_Z_SOURCE_OFFSET
+        z_max = Config.LENS_Z_SOURCE_MAX
+        mask = (self.z_phot >= z_min) & (self.z_phot <= z_max)
+        re_cap_kpc = float(Config.LENS_SOURCE_MAX_PHYS_RE_KPC)
+        if re_cap_kpc > 0.0:
+            mask &= self.effective_re_kpc <= re_cap_kpc
+        cand = np.flatnonzero(mask)
+        if cand.size == 0:
+            raise RuntimeError(
+                f"No source galaxies with z > {z_min} and "
+                f"physical R_e ≤ {re_cap_kpc} kpc"
+            )
+        return self._row_to_params(int(rng.choice(cand)))
 
     @property
     def effective_re_arcsec(self) -> np.ndarray:
@@ -128,6 +175,26 @@ class CosmosCatalog(ABC):
                 self.bulge_re_arcsec, self.bulge_q, self.bulge_flux_e[:, 0],
                 self.disk_re_arcsec,  self.disk_q,  self.disk_flux_e[:, 0])
             self._effective_re_arcsec = cached
+        return cached
+
+    @property
+    def effective_re_kpc(self) -> np.ndarray:
+        """Per-galaxy **physical** circularized half-light radius (proper kpc).
+
+        ``r_phys = θ_e · d_A(z)`` — the angular size :attr:`effective_re_arcsec`
+        times the proper kpc subtended by 1 arcsec at the galaxy's redshift
+        (Planck15 angular-diameter distance, the same cosmology the apparent-size
+        model uses). This is the redshift-independent intrinsic size, used to cap
+        the lensed-source population to physically small galaxies. Computed once
+        and cached."""
+        cached = getattr(self, "_effective_re_kpc", None)
+        if cached is None:
+            kpc_per_arcsec = (
+                _COSMO.angular_diameter_distance(self.z_phot).to(u.kpc).value
+                * _RAD_PER_ARCSEC
+            )
+            cached = self.effective_re_arcsec * kpc_per_arcsec
+            self._effective_re_kpc = cached
         return cached
 
     def typical_band_electron_ratios(self) -> np.ndarray:
@@ -160,22 +227,6 @@ class CosmosCatalog(ABC):
         med = np.nanmedian(per_source_ratio[finite_rows], axis=0)
         med[0] = 1.0       # snap VIS-vs-itself to exactly 1
         return med.astype(np.float32)
-
-    @abstractmethod
-    def sample_lens_galaxy(
-        self, rng: np.random.Generator, z_lens_range: Tuple[float, float],
-    ) -> GalaxyParams:
-        """Return parameters for a galaxy plausibly acting as a strong lens.
-
-        Filters to ``z_phot`` in ``z_lens_range`` (typically Collett's
-        ``LENS_Z_LENS_*`` window).
-        """
-
-    @abstractmethod
-    def sample_source_galaxy(
-        self, rng: np.random.Generator, z_lens: float,
-    ) -> GalaxyParams:
-        """Return parameters for a background source at ``z_phot > z_lens + offset``."""
 
 
 # ---------------------------------------------------------------------------
@@ -416,26 +467,9 @@ class Cosmos2025Catalog(CosmosCatalog):
         idx = int(rng.integers(0, len(self)))
         return self._row_to_params(idx)
 
-    def sample_lens_galaxy(
-        self, rng: np.random.Generator, z_lens_range: Tuple[float, float],
-    ) -> GalaxyParams:
-        lo, hi = z_lens_range
-        mask = (self.z_phot >= lo) & (self.z_phot <= hi)
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(f"No galaxies in z range {z_lens_range}")
-        return self._row_to_params(int(rng.choice(cand)))
-
-    def sample_source_galaxy(
-        self, rng: np.random.Generator, z_lens: float,
-    ) -> GalaxyParams:
-        z_min = z_lens + Config.LENS_Z_SOURCE_OFFSET
-        z_max = Config.LENS_Z_SOURCE_MAX
-        mask = (self.z_phot >= z_min) & (self.z_phot <= z_max)
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(f"No source galaxies with z > {z_min}")
-        return self._row_to_params(int(rng.choice(cand)))
+    # ``sample_lens_galaxy`` / ``sample_source_galaxy`` are inherited from
+    # :class:`CosmosCatalog` so the real and stub catalogs share one
+    # implementation (and the same source size cut).
 
     # ------------------------------------------------------------------ #
     # Fast (de)serialisation of the *filtered* catalog

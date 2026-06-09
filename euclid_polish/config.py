@@ -566,6 +566,17 @@ class Config:
     LENS_Z_LENS_MAX         = 1.20
     LENS_Z_SOURCE_OFFSET    = 0.30      # minimum z_s - z_l
     LENS_Z_SOURCE_MAX       = 3.50
+    # Physical half-light-radius cap on the lensed *source* galaxy (kpc).
+    # Sources are drawn from COSMOS by redshift only; without a size cut a
+    # genuinely large, nearby-ish galaxy can be selected and rendered at its
+    # full catalog angular size, producing an unphysically big lensed source.
+    # A *physical* ceiling (vs. an angular one) is the right cut: at fixed
+    # physical size the rendered angular size is r_phys / D_A(z_source), so a
+    # more distant source automatically appears smaller — exactly the regime
+    # real strong-lensing sources occupy (compact, high-z star-forming
+    # galaxies, r_e ~ 1–4 kpc). Loosen to keep more big galaxies; tighten for
+    # only the most compact sources. Set ≤0 to disable the cut.
+    LENS_SOURCE_MAX_PHYS_RE_KPC = 5.0
     LENS_SIGMA_V_MIN_KMS    = 150.0     # velocity-dispersion truncation
     LENS_SIGMA_V_MAX_KMS    = 350.0
     LENS_AXIS_RATIO_MIN     = 0.50      # lens-galaxy axis ratio q

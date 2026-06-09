@@ -11,7 +11,6 @@ production package.
 from __future__ import annotations
 
 import math
-from typing import Tuple
 
 import numpy as np
 
@@ -79,22 +78,5 @@ class TinyCosmosCatalog(CosmosCatalog):
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         return self._row_to_params(int(rng.integers(0, len(self))))
 
-    def sample_lens_galaxy(
-        self, rng: np.random.Generator, z_lens_range: Tuple[float, float],
-    ) -> GalaxyParams:
-        lo, hi = z_lens_range
-        mask = (self.z_phot >= lo) & (self.z_phot <= hi)
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(f"No galaxies in z range {z_lens_range}")
-        return self._row_to_params(int(rng.choice(cand)))
-
-    def sample_source_galaxy(
-        self, rng: np.random.Generator, z_lens: float,
-    ) -> GalaxyParams:
-        z_min = z_lens + Config.LENS_Z_SOURCE_OFFSET
-        mask = self.z_phot >= z_min
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(f"No source galaxies with z > {z_min}")
-        return self._row_to_params(int(rng.choice(cand)))
+    # ``sample_lens_galaxy`` / ``sample_source_galaxy`` (incl. the source
+    # physical-size cut) are inherited from :class:`CosmosCatalog`.
