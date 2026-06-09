@@ -7,9 +7,14 @@ pixel count via :meth:`BandConfig.cutout_size_for_arcsec`, and runs the
 downloader once per band. Each band's catalog flags are tracked
 independently under the shared ``stars.csv``.
 
+By default all bands download concurrently (``--band-workers`` = up to one
+thread per band); pass ``--band-workers 1`` for the old one-band-at-a-time
+behaviour. Total concurrency is ``band-workers × workers``.
+
 Usage:
     python scripts/download_all_bands.py
     python scripts/download_all_bands.py --vis-pixels 512 --workers 8
+    python scripts/download_all_bands.py --band-workers 1   # sequential
     python scripts/download_all_bands.py --bands VIS,Y_E --vis-pixels 256
 """
 
@@ -18,7 +23,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -43,11 +50,113 @@ def parse_args() -> argparse.Namespace:
                          "uses its own native pixel count covering the same "
                          "angular field.")
     ap.add_argument("--workers", type=int, default=8,
-                    help="Parallel downloads per band")
+                    help="Parallel cutout downloads within a single band")
+    ap.add_argument("--band-workers", type=int, default=4,
+                    help="How many bands to download concurrently (1 = the old "
+                         "sequential behaviour). Total concurrency = "
+                         "band-workers × workers.")
     ap.add_argument("--bands",
                     default=",".join(b.name for b in Config.BANDS),
                     help="Comma-separated band list")
     return ap.parse_args()
+
+
+def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
+                       progress_cb, show_progress):
+    """Download every cutout for one band. Returns the downloader result dict.
+
+    Self-contained (own ``DownloadConfig`` + ``EuclidCutoutDownloader``) so it is
+    safe to run several of these concurrently — each band writes to its own
+    ``cutouts/<band>/`` directory and tracks distinct per-(band, size) catalog
+    flags, and ``StarCatalog.save`` is atomic.
+    """
+    band = Config.get_band(band_name)
+    native = band.cutout_size_for_arcsec(arcsec)
+    print(f"=== {band_name}  (instrument={band.archive_instrument}"
+          f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
+          f"native_size={native} px) ===", flush=True)
+    cfg = DownloadConfig.for_band(
+        band_name, cutout_size_vis_pixels=vis_pixels, max_workers=workers,
+    )
+    downloader = EuclidCutoutDownloader(cat, cfg)
+    t_band = time.perf_counter()
+    result = downloader.download(show_progress=show_progress, progress_cb=progress_cb)
+    print(f"  → {band_name}: downloaded={result['downloaded']}, "
+          f"valid={result['valid']}, corrupted={result['corrupted']}, "
+          f"failed={result.get('failed', 0)}  "
+          f"[{time.perf_counter() - t_band:.0f}s]\n", flush=True)
+    return result
+
+
+def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
+              band_workers, logged_in):
+    """Download all bands, sequentially or several at once.
+
+    ``band_workers == 1`` keeps the old one-band-at-a-time path (with a TAP
+    re-login between bands). ``band_workers > 1`` runs that many bands
+    concurrently through a thread pool, aggregating their per-cutout progress
+    into one combined bar. Returns ``{band_name: result_dict}``.
+    """
+    summary: dict[str, dict] = {}
+    n_bands = len(band_names)
+    band_workers = max(1, min(n_bands, band_workers))
+
+    if band_workers > 1:
+        reporter.set_stage(
+            f"downloading {n_bands} bands ({band_workers} at a time)")
+        print(f"Parallel download: {band_workers} bands at once × {workers} "
+              f"cutout-workers = up to {band_workers * workers} concurrent "
+              f"requests\n", flush=True)
+        # Lock-protected per-band (cur, tot) so the combined bar is a clean sum
+        # across whichever bands are in flight; tqdm is off to avoid garble.
+        prog: dict[str, tuple[int, int]] = {}
+        lock = threading.Lock()
+
+        def make_cb(bn):
+            def cb(cur, tot, lbl):
+                with lock:
+                    prog[bn] = (cur, tot)
+                    g_cur = sum(c for c, _ in prog.values())
+                    g_tot = sum(t for _, t in prog.values())
+                reporter.set_step(g_cur, max(g_tot, 1), f"{bn} {lbl}")
+            return cb
+
+        with ThreadPoolExecutor(max_workers=band_workers) as pool:
+            futs = {
+                pool.submit(_download_one_band, bn, cat=cat,
+                            vis_pixels=vis_pixels, workers=workers, arcsec=arcsec,
+                            progress_cb=make_cb(bn), show_progress=False): bn
+                for bn in band_names
+            }
+            for fut in as_completed(futs):
+                bn = futs[fut]
+                try:
+                    summary[bn] = fut.result()
+                except Exception as e:                       # noqa: BLE001
+                    reporter.warn(f"{bn}: band download failed: {e}")
+                    print(f"  ✗ {bn}: {type(e).__name__}: {e}", flush=True)
+                    summary[bn] = {"downloaded": 0, "valid": 0,
+                                   "corrupted": 0, "failed": 0}
+    else:
+        for i, bn in enumerate(band_names):
+            reporter.set_stage(f"downloading {bn} ({i + 1}/{n_bands})")
+            # Refresh the TAP session before each band — a long band (VIS can
+            # take ~1h) lets the session lapse, which made the next band's
+            # mosaic query return None and fail.
+            if logged_in and i > 0:
+                auth.login(allow_interactive=False)
+            cb = (lambda cur, tot, lbl, _b=bn:
+                  reporter.set_step(cur, tot, f"{_b} {lbl}"))
+            summary[bn] = _download_one_band(
+                bn, cat=cat, vis_pixels=vis_pixels, workers=workers,
+                arcsec=arcsec, progress_cb=cb, show_progress=True)
+
+    for bn, r in summary.items():
+        if r.get("corrupted", 0) or r.get("failed", 0):
+            reporter.warn(f"{bn}: corrupted={r.get('corrupted', 0)}, "
+                          f"failed={r.get('failed', 0)}")
+    reporter.set_step(n_bands, n_bands, "done")
+    return summary
 
 
 def main() -> int:
@@ -59,7 +168,8 @@ def main() -> int:
     print(f"angular field   = {arcsec:.2f}\"  (= {args.vis_pixels} VIS px)")
     print(f"bands           = {band_names}")
     print(f"output dir      = {args.output_dir}")
-    print(f"workers / band  = {args.workers}\n")
+    print(f"workers / band  = {args.workers}")
+    print(f"bands in parallel = {max(1, min(len(band_names), args.band_workers))}\n")
 
     cat = StarCatalog(args.output_dir)
     if not cat.exists():
@@ -81,49 +191,12 @@ def main() -> int:
         )
         print("⚠️  proceeding unauthenticated (public data only)")
 
-    summary: dict[str, dict] = {}
-    n_bands = len(band_names)
     t0 = time.perf_counter()
-    for i, band_name in enumerate(band_names):
-        band = Config.get_band(band_name)
-        native = band.cutout_size_for_arcsec(arcsec)
-        # One stage per band; the per-cutout progress_cb below drives the
-        # step bar (current/total within the band).
-        reporter.set_stage(f"downloading {band_name} ({i + 1}/{n_bands})")
-        print(f"=== {band_name}  (instrument={band.archive_instrument}"
-              f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
-              f"native_size={native} px) ===")
-        # Refresh the TAP session before each band — a long band (VIS can take
-        # ~1h) lets the session lapse, which made the next band's mosaic query
-        # return None and fail. Re-login is idempotent + cheap.
-        if logged_in and i > 0:
-            auth.login(allow_interactive=False)
-        cfg = DownloadConfig.for_band(
-            band_name,
-            cutout_size_vis_pixels=args.vis_pixels,
-            max_workers=args.workers,
-        )
-        downloader = EuclidCutoutDownloader(cat, cfg)
-        t_band = time.perf_counter()
-        # Per-cutout progress → WebUI bar (resets per band; stage names the
-        # band). Emitting every cutout is cheap (JSONL append) and the
-        # stderr echo is rate-limited inside Reporter.set_step.
-        result = downloader.download(
-            show_progress=True,
-            progress_cb=lambda cur, tot, lbl, _b=band_name:
-                reporter.set_step(cur, tot, f"{_b} {lbl}"),
-        )
-        summary[band_name] = result
-        if result.get("corrupted", 0) or result.get("failed", 0):
-            reporter.warn(
-                f"{band_name}: corrupted={result.get('corrupted', 0)}, "
-                f"failed={result.get('failed', 0)}"
-            )
-        print(f"  → {band_name}: downloaded={result['downloaded']}, "
-              f"valid={result['valid']}, corrupted={result['corrupted']}, "
-              f"failed={result.get('failed', 0)}  "
-              f"[{time.perf_counter() - t_band:.0f}s]\n")
-    reporter.set_step(n_bands, n_bands, "done")
+    summary = run_bands(
+        band_names, cat=cat, vis_pixels=args.vis_pixels, workers=args.workers,
+        arcsec=arcsec, reporter=reporter, band_workers=args.band_workers,
+        logged_in=logged_in,
+    )
 
     print("=" * 50)
     print(f"Summary  ({(time.perf_counter() - t0) / 60:.1f} min total):")

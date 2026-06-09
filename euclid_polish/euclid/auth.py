@@ -11,6 +11,7 @@ from __future__ import annotations
 import getpass
 import os
 import stat
+import threading
 from typing import Optional
 
 from astroquery.esa.euclid import Euclid
@@ -21,6 +22,9 @@ from euclid_polish.euclid.validator import validate_file_exists
 
 _is_logged_in: bool = False
 _login_user: Optional[str] = None
+#: Serialise logins so concurrent re-auth (parallel band downloads refreshing an
+#: expired TAP session) don't race on the astroquery session.
+_login_lock = threading.Lock()
 
 
 def is_authenticated() -> bool:
@@ -120,19 +124,24 @@ def login(credentials_file: Optional[str] = None, allow_interactive: bool = True
       2. ``login_with_file(credentials_file or Config.DEFAULT_CREDENTIALS_FILE)``
          if such a file exists on disk
       3. ``login_interactive()`` if ``allow_interactive``
-    """
-    if login_from_env():
-        return True
 
-    path = credentials_file or Config.DEFAULT_CREDENTIALS_FILE
-    expanded = os.path.expanduser(path)
-    if os.path.exists(expanded):
-        if login_with_file(expanded):
+    Serialised by ``_login_lock`` so concurrent re-authentication (e.g. parallel
+    band downloads each refreshing an expired TAP session) doesn't corrupt the
+    shared astroquery session.
+    """
+    with _login_lock:
+        if login_from_env():
             return True
 
-    if allow_interactive:
-        return login_interactive()
-    return False
+        path = credentials_file or Config.DEFAULT_CREDENTIALS_FILE
+        expanded = os.path.expanduser(path)
+        if os.path.exists(expanded):
+            if login_with_file(expanded):
+                return True
+
+        if allow_interactive:
+            return login_interactive()
+        return False
 
 
 def logout() -> bool:
