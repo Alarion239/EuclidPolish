@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from astropy.io import fits
+from astropy.visualization import make_lupton_rgb
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,31 @@ def load_fits(path: str, hdu: Optional[int]) -> np.ndarray:
     return data
 
 
+def load_band(path: str, ident: str) -> np.ndarray:
+    """Load one 2-D band by EXTNAME (e.g. ``H``) or integer HDU index."""
+    with fits.open(path) as hl:
+        try:
+            data = hl[int(ident)].data          # numeric → HDU index
+        except (ValueError, TypeError):
+            data = hl[ident].data               # string → EXTNAME
+    if data is None:
+        raise ValueError(f"band '{ident}' has no data in {path}")
+    data = np.asarray(data, dtype=np.float32)
+    while data.ndim > 2:
+        data = data[0]
+    return data
+
+
+def lupton_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray, *,
+               q: float, stretch_pct: float) -> np.ndarray:
+    """Asinh Lupton RGB (uint8 H,W,3), stretch auto-set from a flux percentile
+    of the three channels — same recipe as fasrc_tng_infographic."""
+    r, g, b = (np.clip(c, 0.0, None) for c in (r, g, b))
+    ref = float(np.percentile(np.concatenate([r.ravel(), g.ravel(), b.ravel()]),
+                              stretch_pct))
+    return make_lupton_rgb(r, g, b, Q=q, stretch=max(ref, 1e-12))
+
+
 def center_crop(arr: np.ndarray, size: int) -> np.ndarray:
     h, w = arr.shape
     size = min(size, h, w)
@@ -132,10 +158,44 @@ def main() -> None:
                    help="invert (dark sources on white — ink-saving for print)")
     p.add_argument("--ref", default=None,
                    help="FITS whose stretch (scale + lo/hi) all panels reuse")
+    p.add_argument("--rgb", action="store_true",
+                   help="composite a 3-colour image from a multi-band FITS")
+    p.add_argument("--rgb-bands", default="H,J,VIS",
+                   help="EXTNAMEs (or HDU indices) mapped to R,G,B "
+                        "(default redder->R: H,J,VIS)")
+    p.add_argument("--rgb-q", type=float, default=8.0, help="Lupton Q")
+    p.add_argument("--rgb-stretch-pct", type=float, default=99.5,
+                   help="flux percentile that sets the Lupton stretch")
+    p.add_argument("--name", default=None,
+                   help="output filename stem (default: input stem)")
     args = p.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     clip = (args.clip[0], args.clip[1])
+
+    # ---- RGB mode: one multi-band FITS -> one 3-colour PNG -------------------
+    if args.rgb:
+        path = args.fits[0]
+        rid, gid, bid = [s.strip() for s in args.rgb_bands.split(",")]
+        chans = []
+        for ident in (rid, gid, bid):
+            c = load_band(path, ident)
+            if args.crop:
+                c = center_crop(c, args.crop)
+            chans.append(block_mean(c, args.downsample))
+        rgb = lupton_rgb(*chans, q=args.rgb_q, stretch_pct=args.rgb_stretch_pct)
+        stem = args.name or os.path.splitext(os.path.basename(path))[0]
+        out_path = os.path.join(args.out, stem + ".png")
+        dpi = 100
+        fig = plt.figure(figsize=(args.px / dpi, args.px / dpi), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.imshow(rgb, origin="lower", interpolation="nearest")
+        ax.set_axis_off()
+        fig.savefig(out_path, dpi=dpi, pad_inches=0)
+        plt.close(fig)
+        print(f"  {path}  ->  {out_path}  RGB({rid},{gid},{bid})  "
+              f"[{rgb.shape[0]}x{rgb.shape[1]}]")
+        return
 
     ref_scale = ref_lohi = None
     if args.ref:

@@ -173,7 +173,9 @@ def main() -> None:
                     np.concatenate(farrs), scale_pct=args.scale_pct,
                     clip=(args.clip[0], args.clip[1]))
         for f in args.inputs:
-            if f.lower().endswith((".fits", ".fit")):
+            if f.lower() in ("blank", "-", "none"):  # empty placeholder cell
+                cells.append((np.zeros((8, 8), dtype=np.float32), "lower", False))
+            elif f.lower().endswith((".fits", ".fit")):
                 arr = _prep_fits_cell(_load_fits_2d(f, args.hdu), args, scale, lohi)
                 cells.append((arr, "lower", False))
             else:                                   # already-rendered image
