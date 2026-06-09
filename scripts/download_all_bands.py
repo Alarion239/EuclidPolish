@@ -71,7 +71,8 @@ def main() -> int:
     # EUCLID_USER/EUCLID_PASSWORD env, then ~/.euclid_credentials (written
     # by the WebUI "Euclid archive login" form). Non-interactive on FASRC.
     reporter.set_stage("authenticating with Euclid archive")
-    if auth.login(allow_interactive=False):
+    logged_in = auth.login(allow_interactive=False)
+    if logged_in:
         print(f"✓ Euclid archive login OK (user={auth.current_user()})")
     else:
         reporter.warn(
@@ -92,6 +93,11 @@ def main() -> int:
         print(f"=== {band_name}  (instrument={band.archive_instrument}"
               f"{('/' + band.archive_filter) if band.archive_filter else ''}, "
               f"native_size={native} px) ===")
+        # Refresh the TAP session before each band — a long band (VIS can take
+        # ~1h) lets the session lapse, which made the next band's mosaic query
+        # return None and fail. Re-login is idempotent + cheap.
+        if logged_in and i > 0:
+            auth.login(allow_interactive=False)
         cfg = DownloadConfig.for_band(
             band_name,
             cutout_size_vis_pixels=args.vis_pixels,

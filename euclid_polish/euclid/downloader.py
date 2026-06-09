@@ -7,6 +7,7 @@ Euclid VIS cutouts from the Euclid archive.
 
 import os
 import glob
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
@@ -17,9 +18,38 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from tqdm import tqdm
 
+from euclid_polish.euclid.auth import login as _euclid_relogin
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
 from euclid_polish.config import Config
+
+
+def _query_mosaic_tiles(query: str, *, retries: int = 2):
+    """Run a ``sedm.mosaic_product`` ADQL query, tolerant of a dropped session.
+
+    ``Euclid.launch_job_async`` can return ``None`` (e.g. the TAP session expired
+    after a long download) — calling ``.get_results()`` on it then raised a
+    confusing ``AttributeError: 'NoneType'``. This guards that, and **retries
+    after re-authenticating**, so a session that lapsed between bands self-heals.
+
+    Returns ``(results_or_None, error_message)``."""
+    last = ""
+    for attempt in range(max(1, retries)):
+        try:
+            job = Euclid.launch_job_async(query)
+            results = job.get_results() if job is not None else None
+            if results is not None:
+                return results, ""
+            last = "launch_job_async returned None (TAP session expired?)"
+        except Exception as e:                       # noqa: BLE001 — surfaced below
+            last = f"{type(e).__name__}: {e}"
+        if attempt + 1 < retries:
+            try:
+                _euclid_relogin(allow_interactive=False)   # refresh the session
+            except Exception:                        # noqa: BLE001
+                pass
+            time.sleep(3.0)
+    return None, last
 
 
 def core_is_saturated(data: np.ndarray, core_size: int) -> bool:
@@ -278,15 +308,14 @@ class EuclidCutoutDownloader:
             "FROM sedm.mosaic_product "
             f"WHERE {' AND '.join(where_parts)}"
         )
-        try:
-            job = Euclid.launch_job_async(query)
-            mosaics = job.get_results()
-        except Exception as e:
-            print(f"  Mosaic lookup failed: {type(e).__name__}: {e}")
+        mosaics, err = _query_mosaic_tiles(query)
+        if mosaics is None:
+            print(f"  Mosaic lookup failed: {err}")
             return {}
-
-        if mosaics is None or len(mosaics) == 0:
-            print("  Mosaic lookup returned 0 VIS tiles")
+        if len(mosaics) == 0:
+            print(f"  Mosaic lookup returned 0 tiles for "
+                  f"instrument={self.config.instrument} "
+                  f"filter={self.config.filter_name or '-'}")
             return {}
 
         mosaic_coords = SkyCoord(
@@ -638,11 +667,10 @@ def fetch_cutout_at(
         "FROM sedm.mosaic_product "
         f"WHERE {' AND '.join(where)}"
     )
-    try:
-        mosaics = Euclid.launch_job_async(query).get_results()
-    except Exception as e:
-        return False, f"mosaic lookup failed: {type(e).__name__}: {e}"
-    if mosaics is None or len(mosaics) == 0:
+    mosaics, err = _query_mosaic_tiles(query)
+    if mosaics is None:
+        return False, f"mosaic lookup failed: {err}"
+    if len(mosaics) == 0:
         return False, "no mosaic tiles matched the band query"
 
     star_coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame="icrs")
