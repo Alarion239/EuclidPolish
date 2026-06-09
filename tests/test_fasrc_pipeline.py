@@ -72,7 +72,7 @@ class TestRegistry:
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
-            "tng_grid", "tng_stack",
+            "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
         }
 

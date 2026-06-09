@@ -29,7 +29,7 @@ from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession, STATE
 from euclid_polish.web.routes import (
     auth, catalog, config, cutouts, fasrc, files, git, hst, hstpairs, model,
-    psfs, sky, tng, tracking, views,
+    poster, psfs, sky, tng, tracking, views,
 )
 
 
@@ -178,6 +178,7 @@ def create_app() -> Flask:
     psfs.register(app)
     sky.register(app)
     tng.register(app)
+    poster.register(app)
     model.register(app)
     views.register(app)
     hstpairs.register(app)

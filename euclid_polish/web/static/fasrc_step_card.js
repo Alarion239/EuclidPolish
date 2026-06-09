@@ -227,6 +227,27 @@ large cutout don't leak across train/validate."></label>`;
               <option value="H">NISP H</option>
             </select></label>
           ${_tngModeFields()}`;
+      case 'poster_cutout':
+        // Mirrors PosterCutoutStep.build_command (mode, image_size, seed).
+        // The Mode toggle picks which random object to generate; a blank seed
+        // re-rolls a fresh random object each submit.
+        return `
+          <label>Mode
+            <select name="mode"
+                    title="Which random object to render as a clean 4-band cutout. Sérsic = analytic bulge+disk galaxy; Star = point source; Lens = SIE+shear gravitational lens; TNG = real TNG50 SKIRT galaxy (needs the atlas downloaded).">
+              <option value="sersic">Sérsic galaxy</option>
+              <option value="star">Star (point source)</option>
+              <option value="lens">Gravitational lens</option>
+              <option value="tng">TNG50 galaxy</option>
+            </select></label>
+          <label>HR image size (px) <span class="muted">(blank = 256)</span>
+            <input type="number" name="image_size" value="" min="32" max="1024" step="2"
+                   placeholder="256"
+                   title="HR field side in 0.05″/pix pixels. Blank = the 256² default."></label>
+          <label>Seed <span class="muted">(blank = random)</span>
+            <input type="number" name="seed" value="" min="0"
+                   placeholder="random"
+                   title="RNG seed for a reproducible object. Blank → a fresh random object each submit."></label>`;
       case 'euclid_query':
         // Mirrors EuclidQueryStep.build_command (num_stars, mag window,
         // snr_min). Writes stars.csv. Run first, then download, then verify.

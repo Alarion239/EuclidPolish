@@ -802,6 +802,43 @@ class TngStackStep(FASRCPipelineStep):
         return cmd
 
 
+class PosterCutoutStep(FASRCPipelineStep):
+    """Generate ONE random object (Sérsic galaxy / star / lens / TNG galaxy) as
+    a clean 4-band HR FITS → ``_poster/poster_cutout.fits`` (+ a preview PNG).
+    For the poster — the idealised, PSF-free, noise-free ground-truth object.
+    Needs the real COSMOS2025 catalog (and, for ``tng``, the downloaded SKIRT
+    atlas), which is why it runs on the node. Blank seed re-rolls each submit."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="poster_cutout",
+            label="Poster — random object cutout (clean 4-band FITS)",
+            defaults=StepResources(
+                # The first run pre-filters the 10 GB COSMOS2025 master FITS to a
+                # cached .npz (the memory driver); after that it's a single cheap
+                # scene. 48 G covers the prefilter; repeat runs use a fraction.
+                partition="shared", n_cpus=2, n_gpus=0,
+                memory="48G", time_limit="0:45:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        mode = str(params.get("mode", "sersic") or "sersic").lower()
+        if mode not in ("sersic", "star", "lens", "tng"):
+            mode = "sersic"
+        cmd = [
+            "scripts/fasrc_poster_cutout.py",
+            "--mode", mode, "--save",
+        ]
+        size = str(params.get("image_size", "")).strip()
+        if size not in ("", "0"):
+            cmd += ["--image-size", str(int(float(size)))]
+        seed = str(params.get("seed", "")).strip()
+        cmd += ["--seed", seed if seed != "" else "-1"]
+        return cmd
+
+
 class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
     def __init__(self):
         super().__init__(
@@ -1040,6 +1077,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,
+    PosterCutoutStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,

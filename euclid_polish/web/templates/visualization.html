@@ -52,3 +52,97 @@
 </div>
 {% endif %}
 {% endblock %}
+
+{% block actions %}
+<!-- Poster cutouts: generate ONE random object as a clean 4-band FITS. -->
+<section class="card">
+  <h3>🎯 Poster cutout — random object (clean 4-band FITS)</h3>
+  <p class="muted" style="margin-top:0;">
+    Generate a single random object as a <b>clean</b> (PSF-free, noise-free)
+    Euclid cutout in all four bands (<b>VIS · Y · J · H</b>) on the HR
+    0.05″/pix grid — the idealised ground-truth scene. Toggle the
+    <b>Mode</b> to pick the object kind, then submit; a blank seed re-rolls a
+    fresh random object each time. Runs as a FASRC job (it needs the real
+    COSMOS2025 catalog on the node; <b>TNG</b> mode also needs the SKIRT atlas
+    downloaded). Writes <code>poster_cutout.fits</code> +
+    <code>poster_cutout.png</code> to <code>_poster/</code> — load the preview,
+    then download the FITS.
+  </p>
+  <ul class="muted" style="margin-top:0;">
+    <li><b>Sérsic galaxy</b> — analytic bulge+disk from a random COSMOS row.</li>
+    <li><b>Star</b> — a single point source (fixed G-type colour).</li>
+    <li><b>Gravitational lens</b> — SIE + external shear lensing a source galaxy.</li>
+    <li><b>TNG50 galaxy</b> — a real TNG50 SKIRT stamp (random galaxy + viewpoint).</li>
+  </ul>
+  {% with step_id="poster_cutout" %}{% include "_step_card_mount.html" %}{% endwith %}
+  <div style="margin-top:10px;">
+    <button id="poster-load" type="button">🖼 Load latest preview</button>
+    <button id="poster-download" type="button">⬇️ Download latest FITS</button>
+    <span id="poster-status" class="muted" style="margin-left:8px;"></span>
+    <div style="margin-top:8px;text-align:center;background:#f3f5f8;border-radius:4px;padding:8px;">
+      <img id="poster-img" alt="poster cutout preview"
+           style="max-width:100%;display:none;">
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load the latest poster-cutout preview PNG (FASRC job artifact). On error the
+// route returns a JSON body we surface instead of a broken image.
+async function _posterLoadImg(url, imgEl, statusEl, msg) {
+  statusEl.textContent = msg || "loading…";
+  imgEl.style.display = "none";
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      let m = `HTTP ${r.status}`;
+      try { const j = await r.json(); if (j && j.error) m = j.error; } catch (e) {}
+      statusEl.textContent = `✗ ${m}`;
+      return;
+    }
+    const blob = await r.blob();
+    imgEl.src = URL.createObjectURL(blob);
+    imgEl.style.display = "";
+    statusEl.textContent = "";
+  } catch (err) {
+    statusEl.textContent = `✗ ${err}`;
+  }
+}
+
+const posterLoad = document.getElementById("poster-load");
+if (posterLoad) {
+  posterLoad.addEventListener("click", () => _posterLoadImg(
+    `/poster/result/cutout.png?_t=${Date.now()}`,
+    document.getElementById("poster-img"),
+    document.getElementById("poster-status"),
+    "fetching latest cutout preview from FASRC…"));
+}
+
+const posterDownload = document.getElementById("poster-download");
+if (posterDownload) {
+  posterDownload.addEventListener("click", async () => {
+    const statusEl = document.getElementById("poster-status");
+    statusEl.textContent = "fetching latest cutout FITS from FASRC…";
+    try {
+      const r = await fetch(`/poster/result/cutout.fits?_t=${Date.now()}`);
+      if (!r.ok) {
+        let m = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j && j.error) m = j.error; } catch (e) {}
+        statusEl.textContent = `✗ ${m}`;
+        return;
+      }
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "poster_cutout.fits";
+      document.body.appendChild(a); a.click(); a.remove();
+      statusEl.textContent = `✓ downloaded (${(blob.size / 1e3).toFixed(0)} KB)`;
+    } catch (err) {
+      statusEl.textContent = `✗ ${err}`;
+    }
+  });
+}
+</script>
+{% endblock %}
