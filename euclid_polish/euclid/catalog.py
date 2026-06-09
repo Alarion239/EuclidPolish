@@ -27,6 +27,7 @@ with ``scripts/convert_stars_json_to_csv.py``.
 
 import os
 import re
+import shutil
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -162,10 +163,17 @@ class StarCatalog:
             return {"stars": [], "next_id": 0}
         try:
             df = pd.read_csv(self.catalog_path)
-        except pd.errors.EmptyDataError:
-            # File exists but is empty / has no header (e.g. truncated or a
-            # half-written catalog). Treat it as an empty catalog rather than
-            # 500-ing every page that reads the summary.
+        except (pd.errors.EmptyDataError, pd.errors.ParserError):
+            # File exists but is empty / truncated / half-written (e.g. an
+            # OOM-killed download interrupted a non-atomic write). Preserve the
+            # bytes to ``.corrupt`` for forensics/recovery before treating it as
+            # empty — otherwise the next save would silently overwrite a corrupt
+            # catalog with a fresh small batch and orphan every on-disk cutout.
+            try:
+                if os.path.getsize(self.catalog_path) > 0:
+                    shutil.copy2(self.catalog_path, self.catalog_path + ".corrupt")
+            except OSError:
+                pass
             return {"stars": [], "next_id": 0}
         # ``df.iterrows`` yields Series objects with NaN for missing flag
         # columns; ``to_dict`` keeps those as floats and ``_row_to_star``
@@ -187,7 +195,18 @@ class StarCatalog:
             df = pd.DataFrame(columns=list(_BASE_COLS))
         flag_cols = sorted(c for c in df.columns if c not in _BASE_COLS)
         df = df.reindex(columns=list(_BASE_COLS) + flag_cols)
-        df.to_csv(self.catalog_path, index=False)
+        # Atomic write: render to a temp file then rename. ``to_csv`` is NOT
+        # atomic, so a crash/OOM mid-write would otherwise truncate the live
+        # catalog — the index of which on-disk cutouts exist. A one-deep ``.bak``
+        # of the prior good catalog gives an immediate recovery copy.
+        tmp = self.catalog_path + ".tmp"
+        df.to_csv(tmp, index=False)
+        if os.path.exists(self.catalog_path):
+            try:
+                shutil.copy2(self.catalog_path, self.catalog_path + ".bak")
+            except OSError:
+                pass
+        os.replace(tmp, self.catalog_path)
 
     # ── per-(band, size) flag primitives ──────────────────────────────────
     #

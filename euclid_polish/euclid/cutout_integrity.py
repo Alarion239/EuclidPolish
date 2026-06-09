@@ -41,6 +41,86 @@ def cutout_openable(path: str) -> bool:
         return False
 
 
+def _radec_from_header(path: str):
+    """Recover ``(ra, dec)`` from a cutout's WCS reference (CRVAL1/2), the star
+    position the downloader centred on. ``(None, None)`` if unreadable."""
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            h = hdul[0].header
+        ra, dec = float(h["CRVAL1"]), float(h["CRVAL2"])
+        if np.isfinite(ra) and np.isfinite(dec):
+            return ra, dec
+    except Exception:
+        pass
+    return None, None
+
+
+def rebuild_catalog_from_cutouts(
+    cat: StarCatalog,
+    band_names: Optional[List[str]] = None,
+    *,
+    reporter: Any = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Recover a corrupted/incomplete catalog from the cutouts already on disk.
+
+    Scans ``<output_dir>/cutouts/<band>/star_<id>_<size>.fits`` and **adds any
+    star id present on disk but missing from the catalog** — recovering its sky
+    position from the FITS WCS (``CRVAL1/2``); magnitude/PSF flux are not stored
+    in the cutouts, so they come back NaN (re-queryable later). Existing rows
+    keep their metadata. It then re-derives every per-``(band,size)`` validity
+    flag via :func:`validate_all_cutouts` and persists (atomically).
+
+    Use after an OOM-killed download truncated ``stars.csv``: the cutout FITS are
+    the durable record, this rebuilds the index over them. Returns a summary."""
+    if band_names is None:
+        band_names = [b.name for b in Config.BANDS]
+    catalog = cat.load()
+    by_id = {int(s["id"]): s for s in catalog.get("stars", [])
+             if s.get("id") is not None}
+    cutouts_root = os.path.join(cat.output_dir, Config.CUTOUTS_SUBDIR)
+
+    id_to_path: Dict[int, str] = {}
+    for bn in band_names:
+        band_dir = Config.cutout_dir_for_band(bn, root=cutouts_root)
+        for path in glob.glob(os.path.join(band_dir, "star_[0-9]*_*.fits")):
+            m = _FNAME_RE.search(os.path.basename(path))
+            if m:
+                id_to_path.setdefault(int(m.group(1)), path)
+
+    on_disk = sorted(id_to_path)
+    missing = [sid for sid in on_disk if sid not in by_id]
+    no_radec = 0
+    for sid in missing:
+        ra, dec = _radec_from_header(id_to_path[sid])
+        if ra is None:
+            no_radec += 1
+        catalog["stars"].append({
+            "id":        sid,
+            "ra":        ra if ra is not None else float("nan"),
+            "dec":       dec if dec is not None else float("nan"),
+            "magnitude": float("nan"),
+        })
+    ids = [int(s["id"]) for s in catalog["stars"] if s.get("id") is not None]
+    catalog["next_id"] = (max(ids) + 1) if ids else 0
+
+    summary: Dict[str, Any] = {
+        "ids_on_disk":        len(on_disk),
+        "already_in_catalog": len(on_disk) - len(missing),
+        "recovered":          len(missing),
+        "missing_radec":      no_radec,
+        "catalog_before":     len(by_id),
+        "catalog_after":      len(catalog["stars"]),
+        "dry_run":            bool(dry_run),
+    }
+    if dry_run:
+        return summary
+    res = validate_all_cutouts(cat, catalog, band_names, reporter=reporter)
+    summary["validated_cutouts"] = res["checked"]
+    summary["valid_all_bands"] = res["valid_all_bands"]
+    return summary
+
+
 def validate_all_cutouts(
     cat: StarCatalog,
     catalog: Dict[str, Any],
