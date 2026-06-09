@@ -107,7 +107,7 @@ def _fake_args(tmp_path, **over):
         num_stars=None, cutout_size=64, vis_pixels=None, output_size=None,
         psf_dir=str(tmp_path / "psf"), stars_per_psf=100, min_stars_per_psf=50,
         stars_csv=str(tmp_path / "stars.csv"), max_procs=1,
-        bands="VIS,Y_E")
+        bands="VIS,Y_E", cache_dir=None, keep_cache=False)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -227,3 +227,70 @@ def test_main_clusters_only_all_band_common_stars(tmp_path, monkeypatch):
     from euclid_polish.psf import PSFSet
     vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
     assert vis.n == 1 and vis.n_stars == [2]
+
+
+def test_resume_reuses_cached_epsfs(tmp_path, monkeypatch):
+    """A time-limited job that is re-submitted resumes: cached (band, cluster)
+    ePSFs are reused and only the missing one is rebuilt."""
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
+    calls = {"n": 0}
+
+    def fake_build(payload):
+        calls["n"] += 1
+        return PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
+                   pixel_scale=payload[1])
+    monkeypatch.setattr(gen, "_build_cluster_psf", fake_build)
+    # keep the cache after the (successful) first run so we can resume
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E",
+                                           max_procs=1, keep_cache=True))
+
+    # Run 1 — builds all 4 (2 bands × 2 clusters); cache retained.
+    assert gen.main() == 0
+    assert calls["n"] == 4
+    cache = tmp_path / "psf" / ".epsf_cache"
+    cached = sorted(p.name for p in cache.glob("*_PSF*.fits"))
+    assert len(cached) == 4
+
+    # Simulate a stop that left one ePSF unbuilt: drop one cache slot.
+    (cache / cached[0]).unlink()
+
+    # Run 2 — only the missing one is rebuilt; both bands' FITS still written
+    # with consistent numbering.
+    calls["n"] = 0
+    assert gen.main() == 0
+    assert calls["n"] == 1                          # resumed, not restarted
+
+    from euclid_polish.psf import PSFSet
+    vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
+    y_e = PSFSet.from_fits(str(tmp_path / "psf" / Config.get_band("Y_E").psf_fits_filename))
+    assert vis.n == y_e.n == 2
+
+
+def test_changed_inputs_invalidate_cache(tmp_path, monkeypatch):
+    """If the clustering/params change, the stale cache is dropped (no reuse of
+    a kernel that no longer matches its (band, cluster) slot)."""
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
+    calls = {"n": 0}
+
+    def fake_build(payload):
+        calls["n"] += 1
+        return PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
+                   pixel_scale=payload[1])
+    monkeypatch.setattr(gen, "_build_cluster_psf", fake_build)
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E",
+                                           max_procs=1, keep_cache=True))
+    assert gen.main() == 0
+    assert calls["n"] == 4
+
+    # Re-cluster differently → signature changes → cache invalidated → rebuild.
+    monkeypatch.setattr(gen, "cluster_star_indices",
+                        lambda ids, pos, spp, min_stars=50: [[0, 1, 2, 3, 4, 5]])
+    calls["n"] = 0
+    assert gen.main() == 0
+    assert calls["n"] == 2                          # 1 cluster × 2 bands, fresh

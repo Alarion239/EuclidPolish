@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
+import json
 import math
 import os
 import sys
@@ -235,7 +237,52 @@ def parse_args() -> argparse.Namespace:
                          "built across all these workers, so a 30-cluster band "
                          "uses every CPU instead of one. The FASRC step passes "
                          "the CPU count you choose in the web form.")
+    ap.add_argument("--cache-dir", default=None,
+                    help="Where to checkpoint each (band, cluster) ePSF as it "
+                         "is built. Default <psf-dir>/.epsf_cache. A job that "
+                         "hits its SLURM time limit can be re-submitted and "
+                         "resumes — it skips the ePSFs already in the cache and "
+                         "builds only the rest, then merges. Also keeps peak RAM "
+                         "low (kernels are flushed to disk, not accumulated).")
+    ap.add_argument("--keep-cache", action="store_true",
+                    help="Keep the per-cluster cache after a fully successful "
+                         "run (default: delete it once every band's final FITS "
+                         "is written, to reclaim disk).")
     return ap.parse_args()
+
+
+def _prepare_cache(cache_dir: str, signature: dict, reporter: Reporter) -> None:
+    """Make the cache dir ready and invalidate it if the inputs changed.
+
+    The cache is keyed implicitly on ``signature`` (cluster membership +
+    extraction params). If a stored signature differs (params changed, more
+    cutouts downloaded, different clustering), any stale ``*_PSF*.fits`` are
+    cleared so we never reuse a kernel that no longer corresponds to its
+    (band, cluster) slot. A matching signature → resume from what's there.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    sig_path = os.path.join(cache_dir, "signature.json")
+    old = None
+    if os.path.isfile(sig_path):
+        try:
+            with open(sig_path) as f:
+                old = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            old = None
+    if old != signature:
+        for f in glob.glob(os.path.join(cache_dir, "*_PSF*.fits")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        with open(sig_path, "w") as f:
+            json.dump(signature, f, indent=2, sort_keys=True)
+        if old is not None:
+            print("  cache: inputs changed → cleared stale ePSF cache")
+    else:
+        n = len(glob.glob(os.path.join(cache_dir, "*_PSF*.fits")))
+        if n:
+            print(f"  cache: resuming — {n} ePSF(s) already built")
 
 
 def load_accepted_band(
@@ -395,6 +442,25 @@ def main() -> int:
     print(f"{n_clusters} shared cluster(s) (target {args.stars_per_psf}/PSF, "
           f"min {args.min_stars_per_psf}): sizes {star_counts}\n")
 
+    # ── Per-(band, cluster) ePSF cache → resumable + low-memory. Each kernel
+    # is flushed to disk the moment it's built (so a re-submitted, time-limited
+    # job skips what's done), and the final per-band FITS is merged from the
+    # cache — we never hold all K×B kernels in RAM at once.
+    cache_dir = args.cache_dir or os.path.join(args.psf_dir, ".epsf_cache")
+    signature = {
+        "version": 1,
+        "bands": present,
+        "output_size": args.output_size,
+        "stars_per_psf": int(args.stars_per_psf),
+        "min_stars_per_psf": int(args.min_stars_per_psf),
+        "clusters": [sorted(int(i) for i in c) for c in clusters],
+        "accepted_per_band": {b: len(band_data[b]["accepted"]) for b in present},
+    }
+    _prepare_cache(cache_dir, signature, reporter)
+
+    def _cache_path(band_name: str, ci: int) -> str:
+        return os.path.join(cache_dir, f"{band_name}_PSF{ci:03d}.fits")
+
     # Drop the now-unused (non-common) stamps to save memory.
     used = set().union(*clusters)
     for b in present:
@@ -404,23 +470,28 @@ def main() -> int:
     # Phase 2 — build EVERY (band, cluster) ePSF in ONE pool of ``n_workers``
     # (all allocated CPUs in parallel), submitted in band order. One monotonic
     # bar over all PSFs.
-    tasks = [(bn, ci, (band_data[bn]["cfg"], band_data[bn]["scale"],
-                       [band_data[bn]["accepted"][i] for i in clusters[ci]]))
-             for bn in present for ci in range(n_clusters)]
-    total = len(tasks)
-    reporter.set_stage(f"building {total} ePSF(s) on {n_workers} worker(s)")
-    results = {bn: {} for bn in present}         # band -> {cluster_idx: PSF}
-    done = 0
-    reporter.set_step(0, total, "building ePSFs")
+    all_pairs = [(bn, ci) for bn in present for ci in range(n_clusters)]
+    todo = [(bn, ci) for bn, ci in all_pairs
+            if not os.path.isfile(_cache_path(bn, ci))]
+    total = len(all_pairs)
+    done = total - len(todo)                       # cached ones are already done
+    reporter.set_stage(f"building {len(todo)} ePSF(s) ({done} cached) "
+                       f"on {n_workers} worker(s)")
+    reporter.set_step(done, total, "building ePSFs")
 
-    def _record(band_name: str, ci: int, psf) -> None:
+    def _flush(band_name: str, ci: int, psf) -> None:
+        """Write the kernel to its cache slot and free the RAM."""
         nonlocal done
         if psf is not None:
-            results[band_name][ci] = psf
+            psf.save(cache_dir, os.path.basename(_cache_path(band_name, ci)))
         done += 1
         reporter.set_step(done, total, f"{band_name}: PSF {ci}")
-        print(f"[{done}/{total}] {band_name} PSF {ci}", flush=True)
+        print(f"[{done}/{total}] {band_name} PSF {ci}"
+              f"{'' if psf is not None else ' (FAILED)'}", flush=True)
 
+    tasks = [(bn, ci, (band_data[bn]["cfg"], band_data[bn]["scale"],
+                       [band_data[bn]["accepted"][i] for i in clusters[ci]]))
+             for bn, ci in todo]
     if n_workers <= 1:
         for band_name, ci, payload in tasks:
             try:
@@ -429,7 +500,7 @@ def main() -> int:
                 reporter.warn(f"{band_name} cluster {ci} failed: "
                               f"{type(e).__name__}: {e}")
                 psf = None
-            _record(band_name, ci, psf)
+            _flush(band_name, ci, psf)
     else:
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
             futmap = {pool.submit(_build_cluster_psf, payload): (bn, ci)
@@ -442,23 +513,28 @@ def main() -> int:
                     reporter.warn(f"{band_name} cluster {ci} failed: "
                                   f"{type(e).__name__}: {e}")
                     psf = None
-                _record(band_name, ci, psf)
+                _flush(band_name, ci, psf)
 
     # Phase 3 — a cluster survives only if EVERY present band built it, so the
     # saved PSFSets keep identical numbering (cluster ci ↔ same stars in all
     # bands). Save one PSFSet per band over the surviving clusters.
     print("=" * 50)
+    # A cluster survives only if EVERY present band has it cached (built), so
+    # the saved PSFSets keep identical numbering across bands.
     survive = [ci for ci in range(n_clusters)
-               if all(ci in results[bn] for bn in present)]
+               if all(os.path.isfile(_cache_path(bn, ci)) for bn in present)]
     if len(survive) < n_clusters:
         print(f"  ⚠️  dropped {n_clusters - len(survive)} cluster(s) that failed "
               f"in ≥1 band (kept numbering consistent across bands)")
+    reporter.set_stage("merging cached ePSFs → per-band FITS")
     succeeded = []
     for band in bands:
         if band.name not in present:
             succeeded.append((band.name, False))
             continue
-        psfs = [results[band.name][ci] for ci in survive]
+        # Read this band's surviving kernels back from the cache (only one
+        # band's worth of kernels is ever in RAM here).
+        psfs = [PSF.from_fits(_cache_path(band.name, ci)) for ci in survive]
         if not psfs:
             reporter.error(f"{band.name}: no clusters survived in every band")
             print(f"  ✗ {band.name}: no clusters survived in every band")
@@ -480,6 +556,28 @@ def main() -> int:
     n_ok = sum(1 for _, ok in succeeded if ok)
     print(f"\n{n_ok}/{len(succeeded)} bands extracted; missing bands will "
           "use Gaussian fallback in the forward model.")
+
+    # Reclaim the cache once every requested band's final FITS is written.
+    # On a partial run we keep it so the next submit resumes.
+    all_done = n_ok == len(succeeded)
+    if all_done and not args.keep_cache:
+        for f in glob.glob(os.path.join(cache_dir, "*_PSF*.fits")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        for extra in (os.path.join(cache_dir, "signature.json"),):
+            try:
+                os.remove(extra)
+            except OSError:
+                pass
+        try:
+            os.rmdir(cache_dir)
+        except OSError:
+            pass
+        print("  cache: cleared (all bands done).")
+    elif not all_done:
+        print(f"  cache: kept at {cache_dir} — re-submit to resume the rest.")
     return 0
 
 
