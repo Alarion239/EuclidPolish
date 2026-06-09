@@ -57,8 +57,9 @@
       \parbox[c][#1][c]{#1}{\centering\textcolor{gray!60}{\small #3}}}}}
 
 % --- Pipeline panel widths (set relative to the pipeline column linewidth) ----
-\newlength{\bigpanel}   % the three big stage images
-\newlength{\ingpanel}   % the three ingredient thumbnails
+\newlength{\imgs}     % side of a single square panel (rows 1-2)
+\newlength{\lanegap}  % horizontal gap between the left and right lane
+\newlength{\fullw}    % rows 3-4 span both lanes: \fullw = 2\imgs + \lanegap
 
 %==============================================================================
 %  Title
@@ -88,7 +89,13 @@
   % ---- swap these paths for your own thoughtfully-chosen renders ----
   % Render with: python3 scripts/poster_render.py <your.fits> --out fig/poster
   \def\figdir{fig/poster}
-  \vspace{10mm}
+  \vspace{6mm}
+  % Pipeline geometry: two vertical guide lines bound the figure. Rows 1-2 hold
+  % two equal squares (\imgs) left/right-aligned to the guides; rows 3-4 hold one
+  % image spanning both guides (\fullw = 2\imgs + \lanegap).
+  \setlength{\imgs}{0.26\linewidth}
+  \setlength{\lanegap}{0.04\linewidth}
+  \setlength{\fullw}{2\imgs}\addtolength{\fullw}{\lanegap}
   \begin{tikzpicture}[
       >={Stealth[length=11mm, width=8mm]},
       panel/.style={inner sep=0pt, outer sep=0pt},
@@ -100,40 +107,37 @@
                   inner sep=5pt, rounded corners=4pt},
       node distance=10mm]
 
-    % Each multi-panel stage is now a SINGLE composite image built by
-    % scripts/poster_grid.py (no hand-stacking of cells in LaTeX).
+    % Each multi-panel stage is a SINGLE composite image built by
+    % scripts/poster_grid.py (no hand-stacking of cells in LaTeX). The left
+    % lane is west-aligned to x=0; the right lane is east-aligned to the right
+    % guide; rows 3-4 span both guides.
 
-    % Two lanes share a fixed horizontal offset so same-row panels are the
-    % SAME size and line up. \lanesep = centre-to-centre of the left/right lane.
-    \def\lanesep{0.42\linewidth}
-
-    % ===== ROW 1: ingredients (left) + star-cluster map (right), equal size =====
-    \node[panel] (ing)
-        {\panelimg{0.31\linewidth}{\figdir/ingredients_grid.png}{ingredients grid}};
+    % ===== ROW 1: ingredients (left) + star-cluster map (right) =====
+    \node[panel, anchor=north west] (ing) at (0,0)
+        {\panelimg{\imgs}{\figdir/ingredients_grid.png}{ingredients grid}};
     \node[ptitle] at ([yshift=4mm]ing.north) {\large Ingredients};
-    \node[panel] (cmap) at ([xshift=\lanesep]ing)
-        {\panelimg{0.31\linewidth}{\figdir/cluster_map.png}{star-cluster map}};
+    \node[panel, anchor=north west] (cmap) at ([xshift=\lanegap]ing.north east)
+        {\panelimg{\imgs}{\figdir/cluster_map.png}{star-cluster map}};
     \node[ptitle] at ([yshift=4mm]cmap.north) {\large Star clusters};
 
-    % ===== ROW 2: clean field (left) + per-band PSF grid (right), equal size =====
-    \node[panel, anchor=north] (clean) at ([yshift=-26mm]ing.south)
-        {\panelimg{0.36\linewidth}{\figdir/clean_field.png}{clean synthetic field}};
-    \node[ptitle, anchor=east, text width=0.15\linewidth] at ([xshift=-4mm]clean.west)
+    % ===== ROW 2: clean field (left) + per-band PSF grid (right) =====
+    \node[panel, anchor=north west] (clean) at ([yshift=-22mm]ing.south west)
+        {\panelimg{\imgs}{\figdir/clean_field.png}{clean synthetic field}};
+    \node[ptitle, anchor=east, text width=0.13\linewidth] at ([xshift=-4mm]clean.west)
         {Synthetic\\ field\\[2pt]{\small\color{gray!75} Hubble-res\\ ground truth}};
-    \node[panel, anchor=north] (psf) at ([yshift=-26mm]cmap.south)
-        {\panelimg{0.36\linewidth}{\figdir/psf_grid.png}{per-band PSFs}};
+    \node[panel, anchor=north west] (psf) at ([yshift=-22mm]cmap.south west)
+        {\panelimg{\imgs}{\figdir/psf_grid.png}{per-band PSFs}};
 
-    % ===== ROW 3: mock-Euclid dirty grid (bigger, fed by clean + PSFs) =====
-    \coordinate (mid) at ($(clean)!0.5!(psf)$);
-    \node[panel, anchor=north] (dirty) at ([yshift=-32mm]clean.south-|mid)
-        {\panelimg{0.46\linewidth}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
-    \node[ptitle, anchor=east, text width=0.15\linewidth] at ([xshift=-4mm]dirty.west)
+    % ===== ROW 3: mock-Euclid dirty grid spans BOTH guides =====
+    \node[panel, anchor=north west] (dirty) at ([yshift=-28mm]clean.south west)
+        {\panelimg{\fullw}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
+    \node[ptitle, anchor=east, text width=0.13\linewidth] at ([xshift=-4mm]dirty.west)
         {Mock\\ Euclid\\[2pt]{\small\color{gray!75} 4 bands,\\ noisy}};
 
-    % ===== ROW 4: single super-resolved image =====
-    \node[panel, anchor=north] (sr) at ([yshift=-28mm]dirty.south-|mid)
-        {\panelimg{0.42\linewidth}{\figdir/sr_field.png}{super-resolved}};
-    \node[ptitle, anchor=north, text width=0.45\linewidth] at ([yshift=-3mm]sr.south)
+    % ===== ROW 4: super-resolved image spans BOTH guides =====
+    \node[panel, anchor=north west] (sr) at ([yshift=-24mm]dirty.south west)
+        {\panelimg{\fullw}{\figdir/sr_field.png}{super-resolved}};
+    \node[ptitle, anchor=north] at ([yshift=-3mm]sr.south)
         {Super-Resolved {\small\color{gray!75}(VIS, 0.05$''$/pix)}};
 
     % ===== FLOW ARROWS =====
