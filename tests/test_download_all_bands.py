@@ -46,7 +46,7 @@ def _ok(band):
 
 def _fake_one_band_recorder(seen, lock):
     def fake(band_name, *, cat, vis_pixels, workers, arcsec, progress_cb,
-             show_progress):
+             show_progress, retry_failed=False):
         with lock:
             seen.append((band_name, show_progress))
         # Drive the progress callback so the combined-bar aggregation runs.
@@ -145,6 +145,27 @@ def test_one_band_failing_does_not_sink_the_rest(monkeypatch):
                               "corrupted": 0, "failed": 0}
     assert summary["VIS"]["downloaded"] == 3
     assert any("J_E" in w for w in rep.warnings)
+
+
+def test_retry_failed_forwarded_to_each_band(monkeypatch):
+    seen = []
+
+    def fake(band_name, *, retry_failed, **k):
+        seen.append((band_name, retry_failed))
+        return _ok(band_name)
+    monkeypatch.setattr(dab, "_download_one_band", fake)
+
+    # Parallel mode.
+    dab.run_bands(BANDS, cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+                  reporter=_FakeReporter(), band_workers=4, logged_in=True,
+                  retry_failed=True)
+    assert all(rf is True for _, rf in seen)
+
+    # Sequential mode (default retry_failed=False when omitted).
+    seen.clear()
+    dab.run_bands(["VIS"], cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+                  reporter=_FakeReporter(), band_workers=1, logged_in=True)
+    assert seen == [("VIS", False)]
 
 
 def test_warns_on_corrupted_or_failed(monkeypatch):

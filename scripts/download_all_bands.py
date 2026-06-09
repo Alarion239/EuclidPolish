@@ -58,11 +58,15 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--bands",
                     default=",".join(b.name for b in Config.BANDS),
                     help="Comma-separated band list")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="Clear each band's download_failed flags first, so "
+                         "stars wrongly flagged by a transient TAP/session "
+                         "error get re-attempted (truly uncovered ones re-flag).")
     return ap.parse_args()
 
 
 def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
-                       progress_cb, show_progress):
+                       progress_cb, show_progress, retry_failed=False):
     """Download every cutout for one band. Returns the downloader result dict.
 
     Self-contained (own ``DownloadConfig`` + ``EuclidCutoutDownloader``) so it is
@@ -80,7 +84,8 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
     )
     downloader = EuclidCutoutDownloader(cat, cfg)
     t_band = time.perf_counter()
-    result = downloader.download(show_progress=show_progress, progress_cb=progress_cb)
+    result = downloader.download(show_progress=show_progress,
+                                 progress_cb=progress_cb, retry_failed=retry_failed)
     print(f"  → {band_name}: downloaded={result['downloaded']}, "
           f"valid={result['valid']}, corrupted={result['corrupted']}, "
           f"failed={result.get('failed', 0)}  "
@@ -89,7 +94,7 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
 
 
 def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
-              band_workers, logged_in):
+              band_workers, logged_in, retry_failed=False):
     """Download all bands, sequentially or several at once.
 
     ``band_workers == 1`` keeps the old one-band-at-a-time path (with a TAP
@@ -125,7 +130,8 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
             futs = {
                 pool.submit(_download_one_band, bn, cat=cat,
                             vis_pixels=vis_pixels, workers=workers, arcsec=arcsec,
-                            progress_cb=make_cb(bn), show_progress=False): bn
+                            progress_cb=make_cb(bn), show_progress=False,
+                            retry_failed=retry_failed): bn
                 for bn in band_names
             }
             for fut in as_completed(futs):
@@ -149,7 +155,8 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
                   reporter.set_step(cur, tot, f"{_b} {lbl}"))
             summary[bn] = _download_one_band(
                 bn, cat=cat, vis_pixels=vis_pixels, workers=workers,
-                arcsec=arcsec, progress_cb=cb, show_progress=True)
+                arcsec=arcsec, progress_cb=cb, show_progress=True,
+                retry_failed=retry_failed)
 
     for bn, r in summary.items():
         if r.get("corrupted", 0) or r.get("failed", 0):
@@ -195,7 +202,7 @@ def main() -> int:
     summary = run_bands(
         band_names, cat=cat, vis_pixels=args.vis_pixels, workers=args.workers,
         arcsec=arcsec, reporter=reporter, band_workers=args.band_workers,
-        logged_in=logged_in,
+        logged_in=logged_in, retry_failed=args.retry_failed,
     )
 
     print("=" * 50)

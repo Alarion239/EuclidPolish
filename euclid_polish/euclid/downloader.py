@@ -252,7 +252,12 @@ class EuclidCutoutDownloader:
         star_positions: Dict[int, List[Tuple[float, float, int, str]]] = {}
         corrupted_files: List[Tuple[int, Optional[int], str]] = []
 
-        fits_files = glob.glob(os.path.join(self.cutout_dir, "star_[0-9][0-9][0-9][0-9]_*.fits"))
+        # ``star_{id:04d}_{size}.fits`` — ``:04d`` is a *minimum* width, so
+        # IDs ≥ 10000 render with 5+ digits. The old fixed-4-digit glob
+        # ``star_[0-9][0-9][0-9][0-9]_*`` silently skipped every such file, so
+        # cutouts for stars ≥ 10000 were never matched on disk and got
+        # re-downloaded on every run. ``[0-9]*`` matches any digit count.
+        fits_files = glob.glob(os.path.join(self.cutout_dir, "star_[0-9]*_*.fits"))
 
         for filepath in fits_files:
             filename = os.path.basename(filepath)
@@ -426,6 +431,7 @@ class EuclidCutoutDownloader:
         star_ids: Optional[List[int]] = None,
         show_progress: bool = True,
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
+        retry_failed: bool = False,
     ) -> dict:
         """
         Download cutouts for stars in the catalog.
@@ -440,6 +446,10 @@ class EuclidCutoutDownloader:
             Called as ``progress_cb(current, total, label)`` after each
             cutout finishes — used to drive the WebUI progress bar via the
             structured Reporter (the FASRC job has no terminal for tqdm).
+        retry_failed : bool
+            Clear this band's ``download_failed`` flags before computing what's
+            pending, so stars wrongly flagged by a transient TAP/session error
+            get re-attempted. Genuinely uncovered stars simply re-flag.
 
         Returns:
         --------
@@ -449,6 +459,18 @@ class EuclidCutoutDownloader:
         catalog = self.catalog.load()
         stars = catalog['stars']
         cutout_size = self.config.cutout_size
+
+        # Optionally un-stick stars wrongly flagged ``download_failed`` by a
+        # transient resolution error, so they re-enter the pending set below.
+        if retry_failed:
+            n_cleared = 0
+            for s in stars:
+                if StarCatalog.is_download_failed(s, cutout_size, band=self.band):
+                    StarCatalog.clear_download_failed(s, cutout_size, band=self.band)
+                    n_cleared += 1
+            if n_cleared:
+                print(f"  retry-failed: cleared {n_cleared} download_failed "
+                      f"flags for {self.band} (size {cutout_size})")
 
         # Scan existing FITS files (size-aware)
         existing_fits, corrupted_disk_files = self.get_existing_cutouts()
@@ -513,10 +535,22 @@ class EuclidCutoutDownloader:
             corrupted_count = len([
                 s for s in stars if StarCatalog.is_corrupted(s, cutout_size, band=self.band)
             ])
+            # ``failed`` was omitted here, so a band whose stars are all stuck
+            # as ``download_failed`` reported ``failed=0`` — looking like "all
+            # done / nothing to do" when really ~everything was flagged failed.
+            failed_count = len([
+                s for s in stars
+                if StarCatalog.is_download_failed(s, cutout_size, band=self.band)
+            ])
+            if failed_count:
+                print(f"  {self.band}: nothing pending, but {failed_count} stars "
+                      f"are flagged download_failed — rerun with --retry-failed "
+                      f"to re-attempt them.")
             return {
                 'downloaded': 0,
                 'valid': valid_count,
                 'corrupted': corrupted_count,
+                'failed': failed_count,
                 'cutout_size': cutout_size,
                 'band': self.band,
             }

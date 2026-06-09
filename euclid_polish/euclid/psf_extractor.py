@@ -124,7 +124,9 @@ class PSFExtractor:
             List of (index, filepath) tuples sorted by index.
         """
         if cutout_size is not None:
-            pattern = f"star_[0-9][0-9][0-9][0-9]_{cutout_size}.fits"
+            # ``[0-9]*`` (not a fixed 4 brackets) so 5+ digit IDs (stars
+            # ≥ 10000, rendered by ``{id:04d}``) are not silently skipped.
+            pattern = f"star_[0-9]*_{cutout_size}.fits"
         else:
             pattern = "*.fits"
         fits_files = glob.glob(os.path.join(cutout_dir, pattern))

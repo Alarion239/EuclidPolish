@@ -303,6 +303,17 @@ class StarCatalog:
         StarCatalog._write_flag(star, "download_failed", band, size, True)
 
     @staticmethod
+    def clear_download_failed(star: Dict[str, Any], size: int,
+                              band: str = "VIS") -> None:
+        """Drop a ``download_failed`` flag so the star is retried.
+
+        ``download_failed`` is meant for "no VIS tile covers this star", but a
+        transient TAP/session error during mosaic resolution marks *every*
+        pending star failed too. ``--retry-failed`` clears these so genuinely
+        coverable stars get another attempt (truly uncovered ones re-flag)."""
+        StarCatalog._write_flag(star, "download_failed", band, size, False)
+
+    @staticmethod
     def valid_sizes(star: Dict[str, Any], band: str = "VIS") -> List[int]:
         band_slot = star.get("valid", {}).get(band, {})
         if not isinstance(band_slot, dict):
