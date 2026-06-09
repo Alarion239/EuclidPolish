@@ -92,7 +92,7 @@
   \begin{tikzpicture}[
       >={Stealth[length=11mm, width=8mm]},
       panel/.style={inner sep=0pt, outer sep=0pt},
-      ptitle/.style={font=\bfseries, text=white, align=center, inner sep=0pt},
+      ptitle/.style={font=\bfseries, text=black, align=center, inner sep=0pt},
       psub/.style={font=\small, text=gray!75, inner sep=1pt},
       band/.style={font=\footnotesize\bfseries, text=white, inner sep=1.5pt},
       flow/.style={->, line width=2.6pt, gray!70},
@@ -103,36 +103,36 @@
     % Each multi-panel stage is now a SINGLE composite image built by
     % scripts/poster_grid.py (no hand-stacking of cells in LaTeX).
 
-    % ===== ROW 1 LEFT: ingredients (2x2 composite) =====
-    \node[panel] (ing)
-        {\panelimg{0.36\linewidth}{\figdir/ingredients_grid.png}{ingredients grid}};
-    \node[ptitle] at ([yshift=4mm]ing.north) {\large Ingredients};
+    % Two lanes share a fixed horizontal offset so same-row panels are the
+    % SAME size and line up. \lanesep = centre-to-centre of the left/right lane.
+    \def\lanesep{0.42\linewidth}
 
-    % ===== ROW 1 RIGHT: star-cluster map =====
-    \node[panel, anchor=west] (cmap) at ([xshift=16mm]ing.east|-ing)
-        {\panelimg{0.26\linewidth}{\figdir/cluster_map.png}{star-cluster map}};
+    % ===== ROW 1: ingredients (left) + star-cluster map (right), equal size =====
+    \node[panel] (ing)
+        {\panelimg{0.31\linewidth}{\figdir/ingredients_grid.png}{ingredients grid}};
+    \node[ptitle] at ([yshift=4mm]ing.north) {\large Ingredients};
+    \node[panel] (cmap) at ([xshift=\lanesep]ing)
+        {\panelimg{0.31\linewidth}{\figdir/cluster_map.png}{star-cluster map}};
     \node[ptitle] at ([yshift=4mm]cmap.north) {\large Star clusters};
 
-    % ===== ROW 2 LEFT: clean synthetic field =====
+    % ===== ROW 2: clean field (left) + per-band PSF grid (right), equal size =====
     \node[panel, anchor=north] (clean) at ([yshift=-26mm]ing.south)
-        {\panelimg{0.40\linewidth}{\figdir/clean_field.png}{clean synthetic field}};
+        {\panelimg{0.36\linewidth}{\figdir/clean_field.png}{clean synthetic field}};
     \node[ptitle, anchor=east, text width=0.15\linewidth] at ([xshift=-4mm]clean.west)
         {Synthetic\\ field\\[2pt]{\small\color{gray!75} Hubble-res\\ ground truth}};
-
-    % ===== ROW 2 RIGHT: per-band PSF grid (2x2 composite) =====
     \node[panel, anchor=north] (psf) at ([yshift=-26mm]cmap.south)
-        {\panelimg{0.30\linewidth}{\figdir/psf_grid.png}{per-band PSFs}};
+        {\panelimg{0.36\linewidth}{\figdir/psf_grid.png}{per-band PSFs}};
 
-    % ===== ROW 3: mock-Euclid dirty grid (2x2 composite, fed by clean + PSFs) =====
+    % ===== ROW 3: mock-Euclid dirty grid (bigger, fed by clean + PSFs) =====
     \coordinate (mid) at ($(clean)!0.5!(psf)$);
     \node[panel, anchor=north] (dirty) at ([yshift=-32mm]clean.south-|mid)
-        {\panelimg{0.34\linewidth}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
+        {\panelimg{0.46\linewidth}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
     \node[ptitle, anchor=east, text width=0.15\linewidth] at ([xshift=-4mm]dirty.west)
         {Mock\\ Euclid\\[2pt]{\small\color{gray!75} 4 bands,\\ noisy}};
 
     % ===== ROW 4: single super-resolved image =====
     \node[panel, anchor=north] (sr) at ([yshift=-28mm]dirty.south-|mid)
-        {\panelimg{0.40\linewidth}{\figdir/sr_field.png}{super-resolved}};
+        {\panelimg{0.42\linewidth}{\figdir/sr_field.png}{super-resolved}};
     \node[ptitle, anchor=north, text width=0.45\linewidth] at ([yshift=-3mm]sr.south)
         {Super-Resolved {\small\color{gray!75}(VIS, 0.05$''$/pix)}};
 
