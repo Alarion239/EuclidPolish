@@ -10,10 +10,9 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 
 from scripts.measure_star_saturation import (
-    load_cutout_electrons, measure_core_saturation, scan_stars,
+    _adu_to_e_factor, load_cutout_electrons, measure_core_saturation, scan_stars,
 )
 
 _SIZE = 64
@@ -45,7 +44,7 @@ def test_load_cutout_applies_magzero_conversion(tmp_path):
     band = Config.BAND_VIS
     # MAGZERO 2.5 below the stack zeropoint → factor 10× (ADU/s → e⁻).
     magzero = band.sim_zeropoint_e - 2.5
-    assert adu_per_s_to_electrons_factor(magzero, band) == pytest.approx(10.0)
+    assert _adu_to_e_factor(magzero, band) == pytest.approx(10.0)
     arr = np.zeros((16, 16), dtype=np.float32)
     arr[8, 8] = 7.0
     p = str(tmp_path / "c.fits")

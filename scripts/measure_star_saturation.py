@@ -5,21 +5,20 @@ model's dirty image uses).
 
 For each star in ``stars.csv`` (brightest first) and each band it:
   1. loads the cutout, reads ``MAGZERO`` from the header and converts ADU/s →
-     electrons via :func:`euclid.photometry.adu_per_s_to_electrons` (the same
-     path the model input uses);
+     electrons (``e⁻ = pix · 10**((sim_zeropoint_e − MAGZERO)/2.5)`` — the same
+     calibration the model input uses);
   2. measures, in a central window: the **peak** pixel (e⁻), the **flat-top**
-     size (pixels within 1% of the peak — a saturated core clips to a flat
-     plateau), and any **non-finite** (NaN / MER-flagged) core pixels.
+     size (pixels within 1% of the peak — a saturated core clips to a plateau),
+     and any **non-finite** (NaN / MER-flagged) core pixels.
 
-It then aggregates by VIS magnitude so you can read off:
-  * the **empirical saturation ceiling** per band — where the peak stops growing
-    with brightness (the value to clip synthetic saturation to), and
-  * whether MER **masks** saturated cores (NaN), in which case the synthetic
-    saturation should set NaN instead of a flat value.
+It aggregates by VIS magnitude so you can read off the **empirical saturation
+ceiling** per band (the value to clip synthetic saturation to) and whether MER
+**masks** saturated cores (NaN). Reports only — changes nothing.
 
-Reports only — changes nothing. Run on FASRC where the cutouts live:
+Imports ONLY ``euclid_polish.config`` (no astroquery / network), so it runs on an
+offline compute node. Run on FASRC where the cutouts live:
 
-    python scripts/measure_star_saturation.py --n 600 --size 512
+    python scripts/measure_star_saturation.py --n 600 --size 255
     python scripts/measure_star_saturation.py --output-dir $DATA_DIR/euclid_stars
 """
 
@@ -27,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import glob
+import math
 import os
 import re
 import sys
@@ -40,10 +39,18 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons
+from euclid_polish.config import Config            # config-only: no astroquery
 
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
+
+
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _adu_to_e_factor(magzero: float, band) -> float:
+    """Archive ADU/s → electrons-over-stack (inlined photometry, no imports)."""
+    return 10.0 ** ((band.sim_zeropoint_e - float(magzero)) / 2.5)
 
 
 def load_cutout_electrons(path: str, band) -> Tuple[np.ndarray, float]:
@@ -51,7 +58,7 @@ def load_cutout_electrons(path: str, band) -> Tuple[np.ndarray, float]:
     with fits.open(path, memmap=False) as hdul:
         arr = np.asarray(hdul[0].data, dtype=np.float64)
         magzero = float(hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
-    return adu_per_s_to_electrons(arr, magzero, band).astype(np.float64), magzero
+    return arr * _adu_to_e_factor(magzero, band), magzero
 
 
 def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
@@ -72,12 +79,25 @@ def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
             "flattop_px": flattop, "nan_core_px": int((~finite).sum())}
 
 
-def _find_cutout(band_dir: str, sid: int, size: int) -> Optional[str]:
-    path = os.path.join(band_dir, f"star_{sid:04d}_{size}.fits")
-    if os.path.isfile(path):
-        return path
-    cands = glob.glob(os.path.join(band_dir, f"star_{sid:04d}_*.fits"))
-    return max(cands) if cands else None       # largest size available
+def _index_band_dir(band_dir: str, size: int) -> Dict[int, str]:
+    """One ``os.listdir`` → ``{star_id: path}`` (exact ``size``, else largest).
+
+    Avoids a per-star ``glob`` over a 10k+-file directory on netscratch."""
+    out: Dict[int, Tuple[int, str]] = {}
+    try:
+        names = os.listdir(band_dir)
+    except OSError:
+        return {}
+    for name in names:
+        m = _FNAME_RE.search(name)
+        if not m:
+            continue
+        sid, sz = int(m.group(1)), int(m.group(2))
+        rank = (1 << 30) if sz == size else sz      # exact size always wins
+        prev = out.get(sid)
+        if prev is None or rank > prev[0]:
+            out[sid] = (rank, os.path.join(band_dir, name))
+    return {sid: p for sid, (_, p) in out.items()}
 
 
 def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
@@ -87,19 +107,24 @@ def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
     bands = [Config.get_band(bn) for bn in Config.LR_INPUT_BAND_NAMES]
     with open(stars_csv, newline="") as fh:
         rows = [r for r in csv.DictReader(fh) if r.get("magnitude")]
-    # brightest first — those are the ones that saturate
-    rows.sort(key=lambda r: float(r["magnitude"]))
+    rows.sort(key=lambda r: float(r["magnitude"]))      # brightest first
     rows = rows[:n]
 
+    # Index each band's directory ONCE (not per star).
+    index: Dict[str, Dict[int, str]] = {}
+    for b in bands:
+        bd = Config.cutout_dir_for_band(b.name, root=cutouts_root)
+        index[b.name] = _index_band_dir(bd, size)
+        _log(f"  indexed {b.name}: {len(index[b.name])} cutouts under {bd}")
+
     out: Dict[str, List[dict]] = {b.name: [] for b in bands}
-    for row in rows:
+    for i, row in enumerate(rows):
         try:
             sid, mag = int(row["id"]), float(row["magnitude"])
         except (KeyError, TypeError, ValueError):
             continue
         for b in bands:
-            band_dir = Config.cutout_dir_for_band(b.name, root=cutouts_root)
-            path = _find_cutout(band_dir, sid, size)
+            path = index[b.name].get(sid)
             if path is None:
                 continue
             try:
@@ -109,7 +134,21 @@ def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
             rec = measure_core_saturation(img_e, window_px=window_px)
             rec["mag"] = mag
             out[b.name].append(rec)
+        if (i + 1) % 100 == 0:
+            _log(f"  scanned {i + 1}/{len(rows)} stars...")
     return out
+
+
+def model_clip_e(band) -> float:
+    """The model's current well-depth clip for ``band`` (inlined to avoid the
+    sky.saturation import, which pulls astroquery)."""
+    sigma = Config.STAR_SATURATION_FWHM_ARCSEC / 2.3548200450309493
+    pix = getattr(band, "native_detector_scale_arcsec", None) or band.pixel_scale_lr_arcsec
+    f_peak = math.erf(pix / (2.0 * math.sqrt(2.0) * sigma)) ** 2
+    calib = Config.STAR_SATURATION_CALIB_MAG[band.name]
+    offset = Config.STAR_BAND_OFFSETS_MAG.get(band.name, 0.0)
+    e_total = 10.0 ** (-0.4 * (calib + offset - band.sim_zeropoint_e))
+    return e_total * f_peak
 
 
 _MAG_BINS = [(-99, 13), (13, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 99)]
@@ -132,16 +171,14 @@ def _summarize_band(recs: List[dict]) -> None:
         pk = peaks[m][np.isfinite(peaks[m])]
         med_pk = np.median(pk) if pk.size else float("nan")
         max_pk = np.max(pk) if pk.size else float("nan")
-        nanf = 100.0 * np.mean(nans[m] > 0)
         label = f"{lo if lo > -99 else ''}-{hi if hi < 99 else ''}"
         print(f"    {label:>9} {int(m.sum()):>4} {med_pk:12.4g} {max_pk:12.4g} "
-              f"{np.median(flats[m]):11.1f} {nanf:8.0f}%")
-    # ceiling = plateau peak of the brightest stars (where it stops growing)
+              f"{np.median(flats[m]):11.1f} {100.0*np.mean(nans[m] > 0):8.0f}%")
     bright = peaks[(mags < 15) & np.isfinite(peaks)]
     ceiling = np.median(bright) if bright.size else float("nan")
     print(f"    → empirical ceiling (median peak, mag<15): {ceiling:.4g} e⁻   "
           f"| global max peak: {np.nanmax(peaks):.4g} e⁻   "
-          f"| NaN-core stars: {100.0*np.mean(nans>0):.0f}%")
+          f"| NaN-core stars: {100.0*np.mean(nans > 0):.0f}%")
 
 
 def main() -> int:
@@ -161,22 +198,19 @@ def main() -> int:
     args = ap.parse_args()
 
     stars_csv = args.stars_csv or os.path.join(args.output_dir, Config.CATALOG_FILE)
-    from euclid_polish.sky.saturation import StarSaturationModel
-    model = StarSaturationModel()
-
-    print(f"Scanning up to {args.n} brightest stars from {stars_csv}")
-    print("Electron scale = electrons-over-stack (model dirty-image units).\n")
+    _log(f"Scanning up to {args.n} brightest stars from {stars_csv}")
+    _log("Electron scale = electrons-over-stack (model dirty-image units).")
     data = scan_stars(stars_csv, args.output_dir, size=args.size, n=args.n,
                       window_px=args.window)
     for bn in Config.LR_INPUT_BAND_NAMES:
         band = Config.get_band(bn)
-        clip = model.well_depth_e(band)
-        print(f"\n=== {bn}  (model clip = {clip:.4g} e⁻) ===")
+        print(f"\n=== {bn}  (model clip = {model_clip_e(band):.4g} e⁻) ===",
+              flush=True)
         _summarize_band(data[bn])
     print("\nInterpret: 'empirical ceiling' is the real saturation level to clip "
           "synthetic\nsaturation to (per band, same e⁻-over-stack units). A high "
           "'nan_core%' for\nbright stars means MER masks saturated cores → the "
-          "synthetic model should set\nNaN there instead of a flat value.")
+          "synthetic model should set\nNaN there instead of a flat value.", flush=True)
     return 0
 
 
