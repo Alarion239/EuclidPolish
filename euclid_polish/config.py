@@ -123,17 +123,12 @@ class Config:
     # ``./data`` behavior for local checkouts.
     DATA_DIR = os.environ.get("EUCLID_POLISH_DATA_DIR", "./data")
 
-    DEFAULT_COSMOS_CATALOG_DIR = os.path.join(DATA_DIR, "COSMOS")           # historical alias kept for path-rewriting tools
-    COSMOS2025_DIR             = os.path.join(DATA_DIR, "COSMOS2025")
     COSMOS2025_CATALOG_PATH    = os.path.join(DATA_DIR, "COSMOS2025/cosmos2025.fits")
     COSMOS2025_HDU_PHOTOMETRY = 1       # PHOTOMETRY HOTCOLD AND SE++
     COSMOS2025_HDU_LEPHARE    = 2       # LEPHARE photo-z + physical params
     COSMOS2025_HDU_BD         = 6       # B+D bulge+disk decomposition
     DEFAULT_OUTPUT_DIR        = os.path.join(DATA_DIR, "euclid_stars")
-    CLEAN_DATA_DIR            = os.path.join(DATA_DIR, "clean_data")
-    DIRTY_DATA_DIR            = os.path.join(DATA_DIR, "dirty_data")
     EUCLID_PSF_DIR            = os.path.join(DATA_DIR, "euclid_psf")
-    EUCLID_NISP_CUTOUTS_DIR   = os.path.join(DATA_DIR, "euclid_nisp_stars")   # NISP stamps for ePSF
     CATALOG_FILE = "stars.csv"
     CUTOUTS_SUBDIR = "cutouts"
 
@@ -151,8 +146,6 @@ class Config:
     # Default values for command-line arguments
     DEFAULT_CUTOUT_SIZE = 512
     DEFAULT_MAGNITUDE_LIMIT = 20.0
-    DEFAULT_RADIUS = 0.5
-    DEFAULT_NUM_STARS = 5
 
     # Coordinate ranges
     RA_MIN = 265.0
@@ -163,10 +156,6 @@ class Config:
     # Visual output constants
     SUCCESS_PREFIX = "✓"
     ERROR_PREFIX = "✗"
-    PENDING_PREFIX = "⏳"
-    CORRUPTED_PREFIX = "🔴"
-    FAILED_PREFIX = "❌"
-    INFO_PREFIX = "📊"
 
     # Header formatting
     HEADER_WIDTH = 60
@@ -362,7 +351,6 @@ class Config:
 
     # PSF convolution / model normalization defaults
     DEFAULT_REBIN_FACTOR         = 2
-    DEFAULT_ADD_NOISE            = True
     # Stretch scale used to compress the dynamic range of pixel values before
     # the network sees them: stretched = asinh(x / STRETCH_SCALE_E). Linear for
     # |x| ≪ scale, log-like for |x| ≫ scale; signed; smooth inverse (sinh).
@@ -644,19 +632,6 @@ class Config:
 
     RECORDS_DIR_V2          = os.path.join(DATA_DIR, "images/records_v2")
     TFRECORD_SCHEMA_VERSION = 2
-
-    # ---------------------------------------------------------------------
-    # NISP cutout/ePSF extraction
-    # ---------------------------------------------------------------------
-    #
-    # NISP stamps for ePSF construction. One subdirectory per band; same
-    # geometry as ``EUCLID_PSF_DIR`` / ``DEFAULT_OUTPUT_DIR`` for VIS.
-
-    NISP_DEFAULT_PSF_SIZE = 127         # native NISP grid (0.30" / 2 oversample)
-    # Cutout size for NISP star stamps. NISP PSF FWHM is ~3× VIS FWHM but on
-    # ~3× larger pixels — the *pixel* count needed is similar to VIS to cover
-    # the wings. Round to odd so the stamp has a true centre pixel.
-    NISP_DEFAULT_CUTOUT_SIZE = 255
 
     # ---------------------------------------------------------------------
     # Per-band PSF kernel sizing
