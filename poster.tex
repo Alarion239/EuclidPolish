@@ -6,7 +6,8 @@
 %  Layout: LEFT COLUMN = vertical pipeline infographic (top->bottom);
 %          RIGHT = two text columns.
 %
-%  Compile with pdflatex (or lualatex). This is a self-contained FRAME:
+%  Compile: pdflatex poster -> biber poster -> pdflatex poster -> pdflatex poster
+%  (references come from references.bib via biblatex). Notes:
 %   - figure placeholders are fixed-size boxes (replace \figbox with
 %     \includegraphics once images are available)
 %   - references are a short manual list (swap for biblatex + references.bib
@@ -25,6 +26,13 @@
 \usepackage{graphicx}
 \usepackage{lmodern}
 \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
+
+% --- Bibliography (biblatex + biber) -----------------------------------------
+% Compile: pdflatex poster -> biber poster -> pdflatex poster -> pdflatex poster
+\usepackage[backend=biber, style=authoryear, sorting=nyt, maxbibnames=2,
+            giveninits=true, doi=false, isbn=false, url=false]{biblatex}
+\addbibresource{references.bib}
+\renewcommand*{\bibfont}{\footnotesize}
 
 % --- Theme & colours ---------------------------------------------------------
 \usetheme{Default}
@@ -150,15 +158,8 @@
   % References + Acknowledgements live under the pipeline (back-matter, uses the
   % space below the figure so the single text column carries only the body).
   \block{References}{
-    \small
-    \begin{itemize}\setlength\itemsep{2pt}
-      \item Connor et al.\ (2022), \emph{POLISH}; Wu et al.\ (2026), \emph{POLISH++}.
-      \item Yu et al.\ (2018) --- \emph{WDSR}.
-      \item Collett (2015), ApJ 811, 20 --- strong-lens population.
-      \item Shuntov et al.\ (2025) --- COSMOS2025 / COSMOS-Web catalog.
-      \item Cropper et al.\ (2014); Scaramella et al.\ (2022); Romelli et al.\ (2025) --- Euclid.
-      \item Acevedo Barroso et al.\ (2025); Treu (2010); ESA Euclid Q1 (2025).
-    \end{itemize}
+    \nocite{*}% list every entry in references.bib, not only those cited inline
+    \printbibliography[heading=none]
   }
 
   \block{Acknowledgements}{
@@ -184,7 +185,7 @@
     to recover this missing population by improving the identification of strong
     gravitational lenses in \textbf{Euclid} surveys, the first wide-area
     space-based optical survey. We build on \textbf{POLISH}
-    (Connor et al.\ 2022) and \textbf{POLISH++} (Wu et al.\ 2026) architectures,
+    \parencite{Connor2022} and \textbf{POLISH++} \parencite{Wu2026} architectures,
     originally developed for radio astronomy: they are deep convolutional neural
     networks with a global residual connection. We adapt POLISH to increase the
     resolution of Euclid images to the level of higher-quality \textbf{Hubble}
@@ -234,8 +235,9 @@
     Paired \emph{clean} (high-res) / \emph{dirty} (Euclid-like) data:
     \begin{enumerate}
       \item \textbf{Simulate} a Hubble-resolution sky --- S\'ersic (COSMOS2025)
-            and TNG50 galaxies, stars, and \textsc{LensPop} lenses --- with our
-            own vectorised renderer (no GalSim).
+            and TNG50 galaxies, stars, and \textsc{LensPop}
+            \parencite{Collett2015_ApJ81120} lenses --- with our own vectorised
+            renderer (not GalSim, \cite{Rowe2015GalSim}).
       \item \textbf{Degrade} to mock Euclid: per-band, position-dependent ePSF
             $\circledast$ $+$ Poisson/read noise $+$ detector artifacts, across
             VIS $+$ NISP\,(Y/J/H).
