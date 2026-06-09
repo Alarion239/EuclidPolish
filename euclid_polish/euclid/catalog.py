@@ -160,7 +160,13 @@ class StarCatalog:
         """
         if not self.exists():
             return {"stars": [], "next_id": 0}
-        df = pd.read_csv(self.catalog_path)
+        try:
+            df = pd.read_csv(self.catalog_path)
+        except pd.errors.EmptyDataError:
+            # File exists but is empty / has no header (e.g. truncated or a
+            # half-written catalog). Treat it as an empty catalog rather than
+            # 500-ing every page that reads the summary.
+            return {"stars": [], "next_id": 0}
         # ``df.iterrows`` yields Series objects with NaN for missing flag
         # columns; ``to_dict`` keeps those as floats and ``_row_to_star``
         # drops them.
