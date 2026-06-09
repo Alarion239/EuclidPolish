@@ -43,6 +43,9 @@ from euclid_polish.psf.psf_set import PSFSet, PSFSample
 # of ``from euclid_polish.sky.multiband_forward import apply_band_noise``
 # continue to work via this re-export.
 from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
+from euclid_polish.sky.saturation import (
+    StarSaturationModel, apply_star_saturation,
+)
 from euclid_polish.euclid.psf_library import (
     make_gaussian_psf, psf_side_pixels_for_band,
 )
@@ -58,6 +61,7 @@ from euclid_polish.sky.types import MultiBandSkyImage
 class MultiBandForwardConfig:
     add_noise: bool = True
     add_artifacts: bool = True       # cosmic rays + hot pixels
+    add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "lanczos3" or "cubic"
     nisp_resample_factor: int = Config.NISP_LR_TO_VIS_LR_RATIO  # 3
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
@@ -154,6 +158,9 @@ class MultiBandForward:
                 sets[band.name] = PSFSet.from_psfs(
                     [default_psf_for_band(band, self.config.hr_pixel_scale)])
         self._psf_sets = sets
+        # Bright-star saturation model (per-band well depths precomputed once).
+        self._sat_model = (StarSaturationModel()
+                           if self.config.add_saturation else None)
         # Sanity-check PSF pixel scales (every member of every set).
         for band_name, pset in self._psf_sets.items():
             for psf in pset.psfs:
@@ -326,6 +333,19 @@ class MultiBandForward:
                     "Check rebin / resample factors."
                 )
         lr_stack = np.stack(lr_channels, axis=-1)
+
+        # Bright-star detector saturation: clip a blocky region per saturating
+        # (star, band) onto the dirty LR image. Independent per band; the clean
+        # HR target is untouched. The value-preserving NISP resample means the
+        # native well depth is the right clip level on this shared 0.10″ grid.
+        if self._sat_model is not None:
+            stars = (getattr(hr_4ch, "metadata", None) or {}).get("stars", [])
+            if stars:
+                hr_to_lr = self.config.hr_pixel_scale / self.target_lr_pixel_scale_arcsec
+                apply_star_saturation(
+                    lr_stack, stars, self._sat_model, rng,
+                    hr_to_lr_scale=hr_to_lr,
+                    band_names=Config.LR_INPUT_BAND_NAMES)
 
         # HR target: VIS only (clean, no noise applied), trimmed to the same
         # spatial extent the LR pipeline saw.
