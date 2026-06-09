@@ -24,7 +24,7 @@
 \usepackage{amsmath, amssymb}
 \usepackage{graphicx}
 \usepackage{lmodern}
-\usetikzlibrary{positioning, arrows.meta, fit, backgrounds}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
 
 % --- Theme & colours ---------------------------------------------------------
 \usetheme{Default}
@@ -55,7 +55,7 @@
 %==============================================================================
 %  Title
 %==============================================================================
-\title{\parbox{0.9\linewidth}{\centering Finding Gravitational Lenses from
+\title{\parbox{0.95\linewidth}{\centering Finding Gravitational Lenses from
         Super-Resolved Euclid Images}}
 \author{Aleksandr Belotserkovtsev}
 \institute{Center for Astrophysics \,$|$\, Harvard \& Smithsonian \\[4pt]
@@ -63,7 +63,8 @@
            AGEL Collaboration}
 
 \begin{document}
-\maketitle
+% Title bar spans the full paper width (margin=0mm makes \paperwidth edge-to-edge).
+\maketitle[width=\paperwidth, roundedcorners=0, linewidth=0pt, innersep=20pt]
 
 %==============================================================================
 %  Single row, three columns:
@@ -119,16 +120,24 @@
         {Super-Resolved\\[3pt]{\small\color{gray!75} model reconstruction}};
 
     % -- DOWNWARD FLOW ARROWS --------------------------------------------
-    \draw[flow] (tng.south)   -- (gt.north)    node[opl] {\textsc{GalSim} render};
-    \draw[flow] (gt.south)    -- (dirty.north) node[opl] {Euclid PSF $\circledast$ \,$+$\, noise};
+    \draw[flow] (tng.south)   -- (gt.north);
+    \draw[flow] (gt.south)    -- (dirty.north) node[opl, pos=0.74] {$+$ noise};
     \draw[flow] (dirty.south) -- (sr.north)    node[opl] {POLISH\texttt{++} CNN};
+
+    % -- PSF convolution shown as an image feeding the clean->dirty step --
+    \coordinate (psfhit) at ($(gt.south)!0.5!(dirty.north)$);
+    \node[panel, anchor=west] (psf) at ([xshift=10mm]gt.east|-psfhit)
+        {\panelimg{0.16\linewidth}{\figdir/psf_vis.png}{Euclid VIS PSF}};
+    \node[psub] at (psf.north) [anchor=south, yshift=0.5mm]
+        {\colorbox{black!78}{Euclid VIS PSF $\circledast$}};
+    \draw[flow] (psf.west) -- (psfhit);
   \end{tikzpicture}
 
   \vspace{3mm}
-  {\small\textcolor{gray!75}{Lens arcs, TNG50 galaxies and stars are combined with
-  \textsc{GalSim} into a Hubble-resolution synthetic field, degraded by the
-  measured Euclid PSF and instrumental noise into a realistic mock observation,
-  then reconstructed by the super-resolution network.}}
+  {\small\textcolor{gray!75}{Lens arcs, TNG50 galaxies and stars are combined into a
+  Hubble-resolution synthetic field, degraded by the measured Euclid PSF and
+  instrumental noise into a realistic mock observation, then reconstructed by the
+  super-resolution network.}}
   }
 
   %========================= COLUMN 2 — TEXT =================================
