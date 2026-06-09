@@ -204,8 +204,8 @@ class Config:
     VIS_AB_ZP_E_PER_S            = 25.50    # m_AB of source giving 1 e⁻/s
 
     # Simulator zeropoint: m_AB of a source contributing 1 e⁻ over the full
-    # stacked integration. Used by clean_generator.py to convert magnitude →
-    # expected electrons-per-pixel for a synthetic point source.
+    # stacked integration. Used by sky/multiband_generator.py to convert
+    # magnitude → expected electrons over the stack for each source class.
     SIM_VIS_ZEROPOINT_E          = VIS_AB_ZP_E_PER_S + 2.5 * math.log10(T_TOTAL_S)
 
     # Sky surface brightness in e⁻/s/arcsec², derived from VIS_AB_ZP_E_PER_S.
@@ -399,23 +399,6 @@ class Config:
     STAR_MAG_BRIGHT              = 12.0     # brightest synthetic star (was a 16 cap)
     STAR_MAG_FAINT               = 25.0     # faint limit (≈ VIS 5σ point-source)
 
-    # Donut-galaxy (toy gravitational-lens ring) defaults.
-    # Sized so the central hole is blurred by the Euclid VIS PSF (FWHM ≈ 0.14"):
-    # at the small end the hole vanishes into a fuzzy blob; at the large end
-    # the ring/arc structure survives but the hole is partially filled in.
-    DEFAULT_DONUT_DENSITY_ARCMIN2 = 60.0   # ≈2.7 donuts per 256² HR field at 0.05"/pix
-    DONUT_RADIUS_ARCSEC_MIN       = 0.06   # ring radius lower bound (arcsec)
-    DONUT_RADIUS_ARCSEC_MAX       = 0.20   # ring radius upper bound (arcsec)
-    DONUT_THICKNESS_FRAC          = 0.15   # σ_thickness / radius (Gaussian thickness)
-    DONUT_MAG_MIN                 = 22.5   # bright end of donut magnitude range
-    DONUT_MAG_MAX                 = 25.5   # faint end (~4× fainter than 21–24 default)
-    DONUT_ELLIPTICITY_MAX         = 0.40   # |g_total| upper bound for random shear
-    DONUT_STAMP_PIX               = 64     # numpy stamp side at HR pixel scale (3.2")
-
-    # GalSim numerical parameters
-    GALSIM_MAX_FFT_SIZE          = 16384
-    GALSIM_FOLDING_THRESHOLD     = 1e-4
-    GALSIM_MAXK_THRESHOLD        = 1e-2
 
     # ---------------------------------------------------------------------
     # Sersic-rasterisation knobs (used by ``euclid_polish.sky.profiles``)

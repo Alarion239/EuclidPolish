@@ -1,37 +1,31 @@
-"""TF-graph Euclid VIS forward operator for round-trip training.
+"""TF-graph forward operator that maps the model's deconvolved sky → an image.
 
-The numpy/scipy forward model in
-:class:`euclid_polish.sky.multiband_forward.MultiBandForward` runs as an
-*offline* preprocessing step — it turns clean HR scenes into the dirty
-LR records the dataloader streams. That's fine for supervised training
-where M never sees its own output passed through it.
+The model emits a single deconvolved VIS sky ``SR``; each non-synthetic
+training lane scores ``SR`` by passing it through its instrument's forward
+operator *inside* the gradient tape, so the operator has to be a TF-graph op
+differentiable with respect to its input. This module provides that as a Keras
+layer:
 
-The round-trip loss path needs ``Conv(M(LR))`` evaluated *inside* the
-gradient tape, so ``Conv`` has to be a TF-graph op whose output is
-differentiable with respect to its input. This module provides that as
-a Keras layer:
-
-  * Constant (non-trainable) VIS PSF loaded from the same FITS the
-    synthetic forward already uses (``$DATA_DIR/euclid_psf/euclid_psf_VIS.fits``).
-  * ``tf.nn.conv2d`` with the PSF as a fixed kernel (flipped so it acts
-    as a true convolution, matching ``scipy.signal.fftconvolve``;
-    for the near-symmetric Euclid PSF the flip is a precaution, but it
-    keeps the layer correct if a future PSF develops asymmetry).
+  * Constant (non-trainable) PSF loaded from FITS. ``EuclidVISForwardOp`` uses
+    the VIS ePSF (``$DATA_DIR/euclid_psf/euclid_psf_VIS.fits``); the
+    :class:`HSTForwardOp` subclass uses the HST F814W PSF with ``rebin_factor=1``.
+  * PSF convolution evaluated in the **Fourier domain** (``tf.signal.rfft2d`` /
+    ``irfft2d``), matching ``scipy.signal.fftconvolve(..., mode='same')`` — far
+    cheaper than a spatial ``conv2d`` for the ~1023² PSF.
   * Stride-N sum-rebin via ``avg_pool2d × N²``, mirroring
     :meth:`MultiBandForward.sum_rebin`.
-  * **No noise.** Noise is a non-differentiable sampling step that
-    would inject stochastic gradient noise unrelated to the model's
-    output; the round-trip loss is defined on the deterministic image
-    formation only.
+  * **No noise.** Noise is a non-differentiable sampling step; the operator is
+    defined on the deterministic image formation only.
+
+In the current trainer the operator applied in training is :class:`HSTForwardOp`
+(the HST lane, ``H ⊛ SR``). :class:`EuclidVISForwardOp` is retained for the
+``/inference`` "forward(SR)" diagnostic panel.
 
 The numerical contract with the numpy path is tested in
-``tests/test_forward_op.py``: applying this layer to a known HR input
-must match :meth:`MultiBandForward._process_one_band` for VIS to
-within float32 round-off across the bulk of the array (boundary pixels
-diverge slightly because ``tf.nn.conv2d`` uses zero-padding while
-``scipy.signal.fftconvolve(mode='same')`` does the same — they agree
-to round-off; the test crops a sentinel border to make the comparison
-robust to the kernel size).
+``tests/test_forward_op.py``: applying this layer to a known HR input must match
+:meth:`MultiBandForward._process_one_band` for VIS to within float32 round-off
+across the bulk of the array (the test crops a sentinel border to stay robust to
+boundary effects).
 """
 
 from __future__ import annotations
@@ -112,8 +106,8 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
 
     ``call(hr_vis_linear)`` → ``lr_vis_linear``:
 
-    1. PSF convolution on the HR grid (``tf.nn.conv2d`` with the VIS
-       empirical PSF as a fixed kernel, ``padding='SAME'`` so the
+    1. PSF convolution on the HR grid (Fourier-domain ``tf.signal.rfft2d``
+       with the VIS empirical PSF as a fixed kernel, ``mode='same'`` so the
        output keeps the HR shape).
     2. ``rebin_factor × rebin_factor`` sum-rebin via average-pool×area.
 

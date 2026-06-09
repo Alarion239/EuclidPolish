@@ -267,8 +267,8 @@ def load_all_band_psf_sets(
     """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
 
     Ready to pass to :class:`euclid_polish.sky.multiband_forward.MultiBandForward`
-    as ``psf_sets_by_band`` so generation draws a random convex blend of each
-    band's cluster PSFs per scene.
+    as ``psf_sets_by_band`` so generation draws one random cluster PSF per scene
+    (optionally roll-rotated; no blending).
     """
     return {
         band.name: load_band_psf_set(

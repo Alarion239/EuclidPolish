@@ -1,7 +1,7 @@
 """
 Multi-band clean-HR scene generator.
 
-Replaces the GalSim/donut path with a self-contained renderer that uses:
+A self-contained renderer (no GalSim) that uses:
 
   * :mod:`euclid_polish.sky.profiles` for Sersic rasterisation (galaxies,
     bulge+disk, lens galaxy light, lensed source light)
@@ -9,6 +9,10 @@ Replaces the GalSim/donut path with a self-contained renderer that uses:
     catalog
   * :mod:`euclid_polish.sky.lens_population` for the lens-population priors
     and lensed-source ray-shooting
+
+The default path is fully analytic; when ``tng_fraction > 0`` a fraction of
+galaxies (and lens/source light) is replaced by real TNG50 SKIRT stamps via
+:mod:`euclid_polish.sky.tng_galaxy`.
 
 The output of :meth:`MultiBandSimulator.simulate_field` is a single
 :class:`MultiBandSkyImage` with ``data`` of shape ``(H, W, 4)`` in **raw

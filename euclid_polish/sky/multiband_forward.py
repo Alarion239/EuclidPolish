@@ -1,21 +1,22 @@
 """
 Multi-band forward model: HR clean (4 channels) → LR dirty (4 channels) + HR-VIS target.
 
-Pipeline per band on the HR canvas (0.05″ HR pixel scale, electrons):
+All four bands are delivered by the Euclid MER archive on a common 0.10″/pix
+grid, so every band is modelled the same way (there is no native-0.30″ NISP
+stage in the forward path). Pipeline per band on the HR canvas (0.05″ HR pixel
+scale, electrons):
 
-  VIS:
+  VIS / Y_E / J_E / H_E:
     HR (0.05″, e⁻)
-      → fftconvolve with VIS PSF
-      → sum-rebin 2× → 0.10″
-      → Poisson(sky + signal) − sky + read_noise · √N_exp
+      → fftconvolve with the band PSF sample (real ePSF / Gaussian fallback)
+      → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
+      → Poisson(sky + signal) − sky + read_noise · √N_exp  (+ optional artifacts)
       → LR (0.10″, e⁻)
 
-  Y_E / J_E / H_E:
-    HR (0.05″, e⁻)
-      → fftconvolve with band PSF (Gaussian fallback / real ePSF)
-      → sum-rebin 6× → 0.30″ (NISP native)
-      → Poisson(sky + signal) − sky + read_noise · √N_exp
-      → 3× Lanczos-3 upsample → 0.10″ (matches VIS LR grid + MER mosaic)
+A Lanczos-3 resample-to-VIS-LR stage exists (sky/resample.py) but is dormant
+under the current uniform-0.10″ band configuration (its factor evaluates to 1);
+it would only re-activate if a band's LR pixel scale were restored to 0.30″.
+Bright-star saturation is then applied to the assembled dirty LR stack.
 
 The HR clean target stays VIS-only (the simulator already produces all four
 channels at HR, but only channel 0 is kept as the network's target).
@@ -142,7 +143,8 @@ class MultiBandForward:
         psf_sets_by_band : dict mapping band name → :class:`PSFSet` (the
                        position-dependent ensemble). Takes priority over
                        ``psfs_by_band`` for any band present in both. This is
-                       the path that enables per-scene random PSF blending.
+                       the path that enables the per-scene random cluster pick
+                       (one kernel per scene; no blending).
         config       : :class:`MultiBandForwardConfig`.
         """
         self.config = config or MultiBandForwardConfig()

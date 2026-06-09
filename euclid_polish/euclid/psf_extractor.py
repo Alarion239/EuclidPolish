@@ -424,7 +424,7 @@ class PSFExtractor:
         cluster's model; :meth:`to_psf` uses ``self.epsf``.
 
         ``pixel_scale`` is the oversampled-grid scale (native /
-        oversampling) — e.g. 0.10/4 = 0.025″/pix for VIS at ovs=4.
+        oversampling) — e.g. 0.10/2 = 0.05″/pix for VIS at the default ovs=2.
         """
         oversamp_val = (
             epsf.oversampling[0]

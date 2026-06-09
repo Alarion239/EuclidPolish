@@ -392,14 +392,14 @@ class MultiBandEuclidDataset:
 
 
 def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:
-    """LR-only validation stream from a ``dirty_{subset}.tfrecord``.
+    """LR-only stream from a ``dirty_{subset}.tfrecord``.
 
-    Round-trip records carry no HR side, so the supervised
+    For records that carry no HR side, the supervised
     :func:`MultiBandEuclidDataset.dataset` builder doesn't fit them. This
     standalone helper reads the dirty file, applies the same per-band
     asinh stretch the training path uses, batches, and prefetches — no
-    shuffle, no repeat. Yields LR tensors only, shape ``[B, H, W, 4]``,
-    suitable for :meth:`Trainer.evaluate_roundtrip`.
+    shuffle, no repeat. Yields LR tensors only, shape ``[B, H, W, 4]``
+    (e.g. for feeding real cutouts through the model at evaluation time).
     """
     n_lr = Config.NUM_LR_CHANNELS
 

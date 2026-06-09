@@ -247,8 +247,8 @@ class PSF:
         its peak at (510, 511) of a 1023² stamp — 1 pixel y-offset
         from the geometric centre (511, 511). Before this method
         existed every loader path silently propagated that offset
-        into the trained transition model. Call ``.recentred()`` on
-        load and the offset is gone.
+        into the forward operator (and thus the trained model's PSF).
+        Call ``.recentred()`` on load and the offset is gone.
         """
         H, W = self.data.shape
         cy_geo = (H - 1) / 2.0
