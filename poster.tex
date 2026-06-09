@@ -144,18 +144,29 @@
   \column{0.27}
 
   \block{Abstract}{
-    Strong gravitational lensing lets us study distant magnified galaxies
-    otherwise too faint to see, the mass distribution of the foreground
-    deflector, dark matter, and the geometry of the Universe. Lenses with
-    \emph{small Einstein radii} are especially valuable --- yet when the radius
-    is too small, the lens cannot be visually separated from the source in
-    low-resolution, wide-area surveys, leaving them underrepresented. We adapt
-    the \textbf{POLISH} (Connor et al.\ 2022) and \textbf{POLISH++}
-    (Wu et al.\ 2026) deep-CNN super-resolution architectures --- originally
-    built for radio astronomy --- to raise \textbf{Euclid} imaging toward
-    \textbf{Hubble}-level resolution. Our preliminary results show the model
-    both super-resolves \emph{and} denoises real Euclid data --- a promising
-    first step toward recovering the missing small-radius lens population.
+    Strong gravitational lensing yields systems that are valuable because they
+    allow for studies of distant magnified galaxies that would otherwise be too
+    faint to see, the mass distribution of the foreground galaxy or cluster,
+    dark matter, and even the geometry of the Universe. In particular, lenses
+    with \emph{small Einstein radii} (the angular distance between the lens and
+    the source) are especially valuable, since they constrain the dark-matter
+    halo profile. However, when this radius is too small, the lens cannot be
+    visually separated from the source in low spatial resolution, wide-area
+    surveys, which causes underrepresentation of lenses with small Einstein
+    radii in studies. Recent advances in super-resolution techniques offer a way
+    to recover this missing population by improving the identification of strong
+    gravitational lenses in \textbf{Euclid} surveys, the first wide-area
+    space-based optical survey. We build on \textbf{POLISH}
+    (Connor et al.\ 2022) and \textbf{POLISH++} (Wu et al.\ 2026) architectures,
+    originally developed for radio astronomy: they are deep convolutional neural
+    networks with a global residual connection. We adapt POLISH to increase the
+    resolution of Euclid images to the level of higher-quality \textbf{Hubble}
+    images, training on synthetic Euclid-like images built from simulated
+    galaxies, with Hubble imaging as the high-resolution reference. Our
+    preliminary results show that, applied to real Euclid data, the model both
+    super-resolves \emph{and} denoises, revealing structure that is blurred or
+    buried in the originals --- a promising first step toward recovering the
+    missing small-radius lenses.
   }
 
   \block{Background \& Motivation}{
