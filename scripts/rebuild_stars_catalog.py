@@ -24,7 +24,14 @@ Run it on FASRC pointing at the star output dir, e.g.::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+# Run-from-anywhere: put the repo root on sys.path so ``euclid_polish`` imports
+# without an editable install (matches the other scripts/*.py).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
