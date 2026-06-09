@@ -7,6 +7,7 @@ Euclid VIS cutouts from the Euclid archive.
 
 import os
 import glob
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Tuple, Optional, Dict, Any
@@ -24,6 +25,15 @@ from euclid_polish.euclid.validator import FitsValidator, angular_separation_arc
 from euclid_polish.config import Config
 
 
+#: Serialises the TAP mosaic-tile query across threads. ``astroquery``'s
+#: ``Euclid`` is a process-wide singleton wrapping one TAP session; firing
+#: several ``launch_job_async`` jobs at once (parallel band downloads each
+#: resolving their tiles) shares that session's connection/job state and is not
+#: thread-safe. The query is ~50 s vs a ~20 min download phase, so serialising
+#: it costs nothing while removing the race.
+_TAP_QUERY_LOCK = threading.Lock()
+
+
 def _query_mosaic_tiles(query: str, *, retries: int = 2):
     """Run a ``sedm.mosaic_product`` ADQL query, tolerant of a dropped session.
 
@@ -32,12 +42,16 @@ def _query_mosaic_tiles(query: str, *, retries: int = 2):
     confusing ``AttributeError: 'NoneType'``. This guards that, and **retries
     after re-authenticating**, so a session that lapsed between bands self-heals.
 
+    The TAP call is serialised by ``_TAP_QUERY_LOCK`` so concurrent band
+    downloads don't run several async jobs on the shared session at once.
+
     Returns ``(results_or_None, error_message)``."""
     last = ""
     for attempt in range(max(1, retries)):
         try:
-            job = Euclid.launch_job_async(query)
-            results = job.get_results() if job is not None else None
+            with _TAP_QUERY_LOCK:
+                job = Euclid.launch_job_async(query)
+                results = job.get_results() if job is not None else None
             if results is not None:
                 return results, ""
             last = "launch_job_async returned None (TAP session expired?)"

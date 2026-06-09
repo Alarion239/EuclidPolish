@@ -28,6 +28,8 @@ with ``scripts/convert_stars_json_to_csv.py``.
 import os
 import re
 import shutil
+import tempfile
+import threading
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -144,6 +146,14 @@ class StarCatalog:
 
     DEFAULT_BAND = "VIS"
 
+    #: Serialises ``save`` across threads. Parallel band downloads share one
+    #: ``stars.csv``; without this, two ``save`` calls racing on the same temp
+    #: file truncated the catalog, and a later band then read a short catalog
+    #: and decided it had nothing left to download (silent ``downloaded=0``).
+    #: Process-wide (class attribute) because separate ``StarCatalog`` instances
+    #: for different bands point at the same file.
+    _save_lock = threading.Lock()
+
     def __init__(self, output_dir: str = Config.DEFAULT_OUTPUT_DIR):
         self.output_dir = output_dir
         self.catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
@@ -195,18 +205,32 @@ class StarCatalog:
             df = pd.DataFrame(columns=list(_BASE_COLS))
         flag_cols = sorted(c for c in df.columns if c not in _BASE_COLS)
         df = df.reindex(columns=list(_BASE_COLS) + flag_cols)
-        # Atomic write: render to a temp file then rename. ``to_csv`` is NOT
-        # atomic, so a crash/OOM mid-write would otherwise truncate the live
-        # catalog — the index of which on-disk cutouts exist. A one-deep ``.bak``
-        # of the prior good catalog gives an immediate recovery copy.
-        tmp = self.catalog_path + ".tmp"
-        df.to_csv(tmp, index=False)
-        if os.path.exists(self.catalog_path):
+        # Atomic write: render to a *uniquely named* temp file then rename.
+        # ``to_csv`` is NOT atomic, so a crash/OOM mid-write would otherwise
+        # truncate the live catalog — the index of which on-disk cutouts exist.
+        # A one-deep ``.bak`` of the prior good catalog gives an immediate
+        # recovery copy. The unique temp name + ``_save_lock`` make concurrent
+        # saves (parallel band downloads) safe: a shared ``stars.csv.tmp`` used
+        # to be written by two bands at once, producing a truncated catalog.
+        with self._save_lock:
+            fd, tmp = tempfile.mkstemp(
+                dir=self.output_dir, prefix=Config.CATALOG_FILE + ".",
+                suffix=".tmp")
+            os.close(fd)
             try:
-                shutil.copy2(self.catalog_path, self.catalog_path + ".bak")
-            except OSError:
-                pass
-        os.replace(tmp, self.catalog_path)
+                df.to_csv(tmp, index=False)
+                if os.path.exists(self.catalog_path):
+                    try:
+                        shutil.copy2(self.catalog_path, self.catalog_path + ".bak")
+                    except OSError:
+                        pass
+                os.replace(tmp, self.catalog_path)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     # ── per-(band, size) flag primitives ──────────────────────────────────
     #
