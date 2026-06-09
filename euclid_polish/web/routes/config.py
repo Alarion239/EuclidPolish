@@ -27,7 +27,6 @@ def register(app):
         before = job_config.load().vis_pixels
         cfg = job_config.update({
             "vis_pixels":    request.form.get("vis_pixels"),
-            "stars_per_psf": request.form.get("stars_per_psf"),
             "n_train":       request.form.get("n_train"),
             "n_valid":       request.form.get("n_valid"),
             "hr_image_size": request.form.get("hr_image_size"),

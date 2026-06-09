@@ -606,13 +606,17 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         vis_pixels    = int(params.get("vis_pixels", 512))
         stars_per_psf = int(params.get("stars_per_psf", 100))
+        # Minimum cluster size: clusters smaller than this are merged into a
+        # neighbour, so no ePSF is built from fewer than ``min_stars`` stars.
+        min_stars     = int(params.get("min_stars_per_psf", 50) or 50)
         # Use every allocated CPU to build cluster PSFs in parallel.
         n_cpus = int(params.get("n_cpus", 8) or 8)
         cmd = [
             "scripts/extract_all_band_psfs.py",
-            "--vis-pixels",    str(vis_pixels),
-            "--stars-per-psf", str(stars_per_psf),
-            "--max-procs",     str(n_cpus),
+            "--vis-pixels",        str(vis_pixels),
+            "--stars-per-psf",     str(stars_per_psf),
+            "--min-stars-per-psf", str(min_stars),
+            "--max-procs",         str(n_cpus),
         ]
         # Optional cap on total stars considered per band (blank/0 → all good
         # cutouts, then clustered into groups of stars_per_psf).

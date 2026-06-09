@@ -21,13 +21,10 @@
           <input type="number" name="vis_pixels" value="{{ cfg.vis_pixels }}"
                  min="31" max="4095" step="2" required>
         </label>
-        <label title="Good stars per ePSF cluster — the PSF varies across the field, so stars are clustered into groups of N, one ePSF each.">
-          Stars per PSF (N)
-          <input type="number" name="stars_per_psf" value="{{ cfg.stars_per_psf }}"
-                 min="10" max="2000" required>
-        </label>
       </div>
-      <p class="hint">→ <code>/cutouts</code> (download) and <code>/psfs</code> (extract).</p>
+      <p class="hint">→ <code>/cutouts</code> (download) and <code>/psfs</code> (extract).
+        The PSF clustering knobs (stars per PSF, minimum per cluster) live on the
+        <code>/psfs</code> extract card.</p>
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">

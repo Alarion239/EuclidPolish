@@ -385,6 +385,20 @@ class TestRegistry:
         argv = step.build_command({"n_cpus": 16})
         assert argv[argv.index("--max-procs") + 1] == "16"
 
+    def test_euclid_psf_extract_clustering_params(self):
+        """Average + minimum stars per cluster come from the step form and are
+        forwarded to the extraction script (they live on the /psfs card now,
+        not the universal Config tab)."""
+        step = REGISTRY.get("extract_euclid_psf")
+        argv = step.build_command({
+            "stars_per_psf": "120", "min_stars_per_psf": "30", "n_cpus": "8",
+        })
+        assert argv[argv.index("--stars-per-psf") + 1] == "120"
+        assert argv[argv.index("--min-stars-per-psf") + 1] == "30"
+        # min defaults to 50 when the form omits it
+        argv2 = step.build_command({"stars_per_psf": "100", "n_cpus": "8"})
+        assert argv2[argv2.index("--min-stars-per-psf") + 1] == "50"
+
     def test_other_steps_do_not_lock_cpus(self):
         """Only the HST ePSF step (single-threaded → 1 CPU) still pins CPUs;
         the all-band Euclid ePSF now lets the user choose."""

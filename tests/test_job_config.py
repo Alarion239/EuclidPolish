@@ -43,15 +43,14 @@ def test_update_persists_and_forces_odd(cfg_path):
 
 def test_blank_fields_are_ignored(cfg_path):
     job_config.update({"n_valid": "42"})
-    c = job_config.update({"n_valid": "", "stars_per_psf": "77"})
+    c = job_config.update({"n_valid": "", "n_train": "77"})
     assert c.n_valid == 42                  # blank didn't wipe it
-    assert c.stars_per_psf == 77
+    assert c.n_train == 77
 
 
 def test_save_endpoint_round_trips(client, cfg_path):
     r = client.post("/api/config/save", data={
         "vis_pixels": "300",               # even → coerced
-        "stars_per_psf": "150",
         "n_train": "8000", "n_valid": "200",
         "hr_image_size": "510", "asinh_scale": "500",
     })
@@ -59,7 +58,7 @@ def test_save_endpoint_round_trips(client, cfg_path):
     d = r.get_json()
     assert d["ok"] is True
     assert d["config"]["vis_pixels"] == 301
-    assert d["config"]["stars_per_psf"] == 150
+    assert d["config"]["n_train"] == 8000
     assert d["note"] and "odd" in d["note"]
 
 

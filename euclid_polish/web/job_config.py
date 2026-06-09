@@ -28,8 +28,7 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "job_config.json")
 # longer render the fields. Keyed by step_id → {param_name: jobconfig_attr}.
 FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
     "download_euclid_cutouts": {"vis_pixels": "vis_pixels"},
-    "extract_euclid_psf":      {"vis_pixels": "vis_pixels",
-                                "stars_per_psf": "stars_per_psf"},
+    "extract_euclid_psf":      {"vis_pixels": "vis_pixels"},
     "synthetic_generate":      {"n_train": "n_train",
                                 "n_valid": "n_valid",
                                 "image_size": "hr_image_size",
@@ -71,8 +70,8 @@ class JobConfig:
     # VIS cutout side in 0.10″/pix pixels. Shared by the Euclid cutout
     # download and the ePSF extraction (so they always match). Must be odd.
     vis_pixels:    int = 511
-    # Good stars per ePSF cluster (PSF varies across the field).
-    stars_per_psf: int = 100
+    # (stars_per_psf / min_stars_per_psf are PSF-extraction-specific and live
+    #  on the /psfs extract step card, not here.)
     # Synthetic scene counts for generation (/sky).
     n_train:       int = 6400
     n_valid:       int = 100
