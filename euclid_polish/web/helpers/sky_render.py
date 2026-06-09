@@ -4,7 +4,6 @@ from __future__ import annotations
 from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.psf_library import psf_path_for_band
 from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
 from euclid_polish.visualization.color import calibrated_rgb_panel
@@ -404,23 +403,26 @@ def _great_circle_arcmin(ra1, dec1, ra2, dec2):
     return np.degrees(2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))) * 60.0
 
 
-def _render_psf_clusters_png(output_dir: Optional[str]) -> bytes:
+def _render_psf_clusters_png(output_dir: Optional[str],
+                             psf_path: Optional[str]) -> bytes:
     """Local sky map of the ePSF-extraction clusters + per-cluster diameter.
 
-    Cluster centroids are read from the VIS ePSF FITS (the spatial clustering
-    is shared across bands). Membership + angular diameter are reconstructed
-    by assigning each catalog star valid in all four bands to its nearest
-    centroid — exactly the Voronoi assignment K-Means used at extraction.
-    Far-apart fields get their own panel (zoomed local view, not full sky).
+    ``psf_path`` is the VIS ePSF FITS to read cluster centroids from — pass
+    the *same* synced copy the rest of the /psfs page reads (the FASRC cache),
+    so the plot tracks a freshly-synced ePSF rather than a stale local file.
+    The spatial clustering is shared across bands, so VIS centroids suffice.
+    Membership + angular diameter are reconstructed by assigning each catalog
+    star valid in all four bands to its nearest centroid — exactly the Voronoi
+    assignment K-Means used at extraction. Far-apart fields get their own
+    panel (zoomed local view, not full sky).
 
     Aborts 404 when the VIS ePSF FITS isn't on disk (PSFs not extracted /
-    downloaded yet) — the page hides the panel in that case. A missing
-    catalog degrades to a centroids-only map (diameters shown as "—").
+    synced yet) — the page hides the panel in that case. A missing catalog
+    degrades to a centroids-only map (diameters shown as "—").
     """
     matplotlib.use("Agg")
 
-    psf_path = psf_path_for_band(Config.BAND_VIS)
-    if not os.path.isfile(psf_path):
+    if not psf_path or not os.path.isfile(psf_path):
         abort(404)
     cra, cdec = [], []
     with fits.open(psf_path) as hdul:

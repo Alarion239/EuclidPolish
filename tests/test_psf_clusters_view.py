@@ -35,10 +35,9 @@ _CENTROIDS = [(150.0, 2.0), (150.3, 2.1), (151.0, 2.5), (60.0, -45.0)]
 
 
 @pytest.fixture
-def psf_file(tmp_path, monkeypatch):
+def psf_file(tmp_path):
     p = tmp_path / "euclid_psf_VIS.fits"
     _write_psf_fits(str(p), _CENTROIDS)
-    monkeypatch.setattr(sky_render, "psf_path_for_band", lambda band: str(p))
     return p
 
 
@@ -53,7 +52,7 @@ def test_great_circle_arcmin_known_value():
 
 def test_centroids_only_render(psf_file):
     # No catalog → centroids-only map still renders.
-    assert _is_png(sky_render._render_psf_clusters_png(None))
+    assert _is_png(sky_render._render_psf_clusters_png(None, str(psf_file)))
 
 
 def test_render_with_catalog_diameters(psf_file, tmp_path):
@@ -73,11 +72,12 @@ def test_render_with_catalog_diameters(psf_file, tmp_path):
     cat_dir = tmp_path / "cat"
     cat_dir.mkdir()
     StarCatalog(str(cat_dir)).save({"stars": stars})
-    assert _is_png(sky_render._render_psf_clusters_png(str(cat_dir)))
+    assert _is_png(sky_render._render_psf_clusters_png(str(cat_dir), str(psf_file)))
 
 
-def test_404_when_psf_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(sky_render, "psf_path_for_band",
-                        lambda band: str(tmp_path / "nope.fits"))
+def test_404_when_psf_missing(tmp_path):
+    # Missing ePSF path (not synced) or None → 404 so the page hides the panel.
     with pytest.raises(NotFound):
-        sky_render._render_psf_clusters_png(None)
+        sky_render._render_psf_clusters_png(None, str(tmp_path / "nope.fits"))
+    with pytest.raises(NotFound):
+        sky_render._render_psf_clusters_png(None, None)
