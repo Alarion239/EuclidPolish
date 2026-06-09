@@ -294,3 +294,82 @@ def test_changed_inputs_invalidate_cache(tmp_path, monkeypatch):
     calls["n"] = 0
     assert gen.main() == 0
     assert calls["n"] == 2                          # 1 cluster × 2 bands, fresh
+
+
+# ---------------------------------------------------------------------------
+# Parallel build path: chunked, worker-recycled, resilient to a broken pool.
+# Real subprocesses can't see monkeypatches (spawn), so we drive the SAME
+# control flow through a synchronous in-process fake executor.
+# ---------------------------------------------------------------------------
+
+class _SyncFuture:
+    def __init__(self, fn, *args):
+        try:
+            self._val, self._exc = fn(*args), None
+        except BaseException as e:                  # capture, re-raise on result()
+            self._val, self._exc = None, e
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._val
+
+
+class _SyncPool:
+    def __init__(self, *a, **k):                    # accepts max_tasks_per_child
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def submit(self, fn, *args):
+        return _SyncFuture(fn, *args)
+
+
+def _use_sync_pool(monkeypatch):
+    monkeypatch.setattr(gen, "ProcessPoolExecutor", _SyncPool)
+    monkeypatch.setattr(gen, "as_completed", lambda futs: list(futs))
+
+
+def test_parallel_path_builds_all_bands(tmp_path, monkeypatch):
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
+    monkeypatch.setattr(gen, "_build_cluster_psf",
+                        lambda payload: PSF(np.full((5, 5), 1.0 / 25, np.float32),
+                                            pixel_scale=payload[1]))
+    _use_sync_pool(monkeypatch)
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=4))
+    assert gen.main() == 0
+    from euclid_polish.psf import PSFSet
+    vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
+    assert vis.n == 2
+
+
+def test_parallel_path_resumes_after_pool_break(tmp_path, monkeypatch):
+    """A worker death (BrokenProcessPool) doesn't lose the run: the lost task is
+    retried in a fresh pool and every cluster still survives."""
+    from concurrent.futures.process import BrokenProcessPool
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
+    calls = {"n": 0}
+
+    def flaky(payload):
+        calls["n"] += 1
+        if calls["n"] == 1:                          # first build "kills" the pool
+            raise BrokenProcessPool("simulated worker death")
+        return PSF(np.full((5, 5), 1.0 / 25, np.float32), pixel_scale=payload[1])
+    monkeypatch.setattr(gen, "_build_cluster_psf", flaky)
+    _use_sync_pool(monkeypatch)
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=4))
+    assert gen.main() == 0
+    from euclid_polish.psf import PSFSet
+    vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
+    y_e = PSFSet.from_fits(str(tmp_path / "psf" / Config.get_band("Y_E").psf_fits_filename))
+    assert vis.n == y_e.n == 2                        # the failed one was retried

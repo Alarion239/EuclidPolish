@@ -467,53 +467,90 @@ def main() -> int:
         band_data[b]["accepted"] = {i: band_data[b]["accepted"][i]
                                     for i in used if i in band_data[b]["accepted"]}
 
-    # Phase 2 — build EVERY (band, cluster) ePSF in ONE pool of ``n_workers``
-    # (all allocated CPUs in parallel), submitted in band order. One monotonic
-    # bar over all PSFs.
+    # Phase 2 — build only the not-yet-cached (band, cluster) ePSFs, flushing
+    # each to the cache the instant it's built. Resilient + memory-bounded:
+    #   * workers are recycled after each build (max_tasks_per_child=1) so a
+    #     worker can't accumulate RAM across PSFs and OOM the job — the big
+    #     511×511 ePSF builds were exhausting a worker, killing it, and (since
+    #     one dead worker breaks the whole pool) dumping the entire batch;
+    #   * builds run in chunks, so we never pickle every payload at once;
+    #   * if the pool still breaks (worker OOM-killed / crashes), we rebuild it
+    #     and resume from the on-disk cache — a single death no longer loses the
+    #     run; only the in-flight kernels are retried.
     all_pairs = [(bn, ci) for bn in present for ci in range(n_clusters)]
-    todo = [(bn, ci) for bn, ci in all_pairs
-            if not os.path.isfile(_cache_path(bn, ci))]
+    pending = [(bn, ci) for bn, ci in all_pairs
+               if not os.path.isfile(_cache_path(bn, ci))]
     total = len(all_pairs)
-    done = total - len(todo)                       # cached ones are already done
-    reporter.set_stage(f"building {len(todo)} ePSF(s) ({done} cached) "
+    done = total - len(pending)                    # cached ones already built
+    reporter.set_stage(f"building {len(pending)} ePSF(s) ({done} cached) "
                        f"on {n_workers} worker(s)")
     reporter.set_step(done, total, "building ePSFs")
 
     def _flush(band_name: str, ci: int, psf) -> None:
-        """Write the kernel to its cache slot and free the RAM."""
+        """Write a built kernel to its cache slot and free the RAM. Only
+        successes advance the bar; failures are left to be retried."""
         nonlocal done
-        if psf is not None:
+        ok = psf is not None
+        if ok:
             psf.save(cache_dir, os.path.basename(_cache_path(band_name, ci)))
-        done += 1
+            done += 1
         reporter.set_step(done, total, f"{band_name}: PSF {ci}")
         print(f"[{done}/{total}] {band_name} PSF {ci}"
-              f"{'' if psf is not None else ' (FAILED)'}", flush=True)
+              f"{'' if ok else ' (FAILED, will retry)'}", flush=True)
 
-    tasks = [(bn, ci, (band_data[bn]["cfg"], band_data[bn]["scale"],
-                       [band_data[bn]["accepted"][i] for i in clusters[ci]]))
-             for bn, ci in todo]
+    def _payload(bn: str, ci: int):
+        return (band_data[bn]["cfg"], band_data[bn]["scale"],
+                [band_data[bn]["accepted"][i] for i in clusters[ci]])
+
     if n_workers <= 1:
-        for band_name, ci, payload in tasks:
+        for bn, ci in pending:
             try:
-                psf = _build_cluster_psf(payload)
+                psf = _build_cluster_psf(_payload(bn, ci))
             except Exception as e:
-                reporter.warn(f"{band_name} cluster {ci} failed: "
+                reporter.warn(f"{bn} cluster {ci} failed: "
                               f"{type(e).__name__}: {e}")
                 psf = None
-            _flush(band_name, ci, psf)
+            _flush(bn, ci, psf)
     else:
-        with ProcessPoolExecutor(max_workers=n_workers) as pool:
-            futmap = {pool.submit(_build_cluster_psf, payload): (bn, ci)
-                      for bn, ci, payload in tasks}
-            for fut in as_completed(futmap):
-                band_name, ci = futmap[fut]
-                try:
-                    psf = fut.result()
-                except Exception as e:
-                    reporter.warn(f"{band_name} cluster {ci} failed: "
-                                  f"{type(e).__name__}: {e}")
-                    psf = None
-                _flush(band_name, ci, psf)
+        chunk = max(n_workers, 4 * n_workers)      # bound in-flight payloads
+        stalls = 0
+        while pending:
+            before = len(pending)
+            batch = pending[:chunk]
+            try:
+                # Recycle each worker after one build so memory can't grow.
+                pool = ProcessPoolExecutor(max_workers=n_workers,
+                                           max_tasks_per_child=1)
+            except TypeError:                      # Python < 3.11
+                pool = ProcessPoolExecutor(max_workers=n_workers)
+            with pool:
+                futmap = {pool.submit(_build_cluster_psf, _payload(bn, ci)): (bn, ci)
+                          for bn, ci in batch}
+                for fut in as_completed(futmap):
+                    bn, ci = futmap[fut]
+                    try:
+                        psf = fut.result()
+                    except Exception as e:         # incl. BrokenProcessPool
+                        reporter.warn(f"{bn} cluster {ci} failed: "
+                                      f"{type(e).__name__}: {e}")
+                        psf = None
+                    _flush(bn, ci, psf)
+            # Re-derive what's left from the cache: successes (flushed) drop
+            # out; a broken pool's lost tasks stay and get retried in a fresh
+            # pool next round.
+            pending = [(bn, ci) for bn, ci in pending
+                       if not os.path.isfile(_cache_path(bn, ci))]
+            if len(pending) >= before:
+                stalls += 1
+                reporter.warn(f"ePSF build made no progress (attempt {stalls}) "
+                              "— the worker pool likely OOM-died")
+                if stalls >= 2:
+                    reporter.error("giving up on the remaining ePSF(s) after "
+                                   "repeated pool failures; lower the CPU count, "
+                                   "raise --mem, or reduce the output size")
+                    break
+            else:
+                stalls = 0
 
     # Phase 3 — a cluster survives only if EVERY present band built it, so the
     # saved PSFSets keep identical numbering (cluster ci ↔ same stars in all
