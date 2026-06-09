@@ -79,10 +79,8 @@ def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
             "flattop_px": flattop, "nan_core_px": int((~finite).sum())}
 
 
-def _index_band_dir(band_dir: str, size: int) -> Dict[int, str]:
-    """One ``os.listdir`` → ``{star_id: path}`` (exact ``size``, else largest).
-
-    Avoids a per-star ``glob`` over a 10k+-file directory on netscratch."""
+def _index_dir(band_dir: str, size: int) -> Dict[int, str]:
+    """One ``os.listdir`` → ``{star_id: path}`` (exact ``size``, else largest)."""
     out: Dict[int, Tuple[int, str]] = {}
     try:
         names = os.listdir(band_dir)
@@ -100,42 +98,112 @@ def _index_band_dir(band_dir: str, size: int) -> Dict[int, str]:
     return {sid: p for sid, (_, p) in out.items()}
 
 
+def _discover_band_dirs(output_dir: str, bands, size: int
+                        ) -> Dict[str, Tuple[str, Dict[int, str]]]:
+    """Resolve each band → (dir, {sid: path}). Tries the canonical
+    ``<output_dir>/cutouts/<band>`` first; if any band's dir is empty, falls back
+    to a bounded walk that finds *any* directory holding ``star_<id>_<size>.fits``
+    and maps it to a band by the dir name (band name, archive filter, or prefix).
+    """
+    cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
+    result: Dict[str, Tuple[str, Dict[int, str]]] = {}
+    need_walk = False
+    for b in bands:
+        d = Config.cutout_dir_for_band(b.name, root=cutouts_root)
+        idx = _index_dir(d, size)
+        result[b.name] = (d, idx)
+        need_walk = need_walk or not idx
+    if not need_walk:
+        return result
+
+    _log(f"  canonical dirs empty for some bands — walking {output_dir} ...")
+    discovered: Dict[str, Tuple[str, Dict[int, str]]] = {}
+    base_depth = output_dir.rstrip(os.sep).count(os.sep)
+    for root, dirs, files in os.walk(output_dir):
+        if root.count(os.sep) - base_depth > 4:
+            dirs[:] = []
+            continue
+        idx: Dict[int, Tuple[int, str]] = {}
+        for name in files:
+            m = _FNAME_RE.search(name)
+            if not m:
+                continue
+            sid, sz = int(m.group(1)), int(m.group(2))
+            rank = (1 << 30) if sz == size else sz
+            prev = idx.get(sid)
+            if prev is None or rank > prev[0]:
+                idx[sid] = (rank, os.path.join(root, name))
+        if idx:
+            discovered[os.path.basename(root)] = (
+                root, {s: p for s, (_, p) in idx.items()})
+    if discovered:
+        print("Discovered star-cutout directories (name: count):", flush=True)
+        for name, (d, idx) in sorted(discovered.items()):
+            print(f"  {name}: {len(idx)}  ({d})", flush=True)
+    else:
+        print(f"NO star_<id>_<size>.fits found anywhere under {output_dir}",
+              flush=True)
+    # map each band to a discovered dir
+    for b in bands:
+        if result[b.name][1]:
+            continue
+        for key in (b.name, getattr(b, "archive_filter", "") or "",
+                    b.name.split("_")[0]):
+            if key and key in discovered:
+                result[b.name] = discovered[key]
+                break
+    return result
+
+
+def _mag_by_id(stars_csv: str) -> Dict[int, float]:
+    """``{star_id: VIS magnitude}`` for catalog rows with a finite magnitude."""
+    out: Dict[int, float] = {}
+    try:
+        with open(stars_csv, newline="") as fh:
+            for r in csv.DictReader(fh):
+                try:
+                    mid, mg = int(r["id"]), float(r["magnitude"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(mg):
+                    out[mid] = mg
+    except OSError:
+        pass
+    return out
+
+
 def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
                window_px: int = 51) -> Dict[str, List[dict]]:
-    """Per band → list of {mag, peak_e, central_e, flattop_px, nan_core_px}."""
-    cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
-    bands = [Config.get_band(bn) for bn in Config.LR_INPUT_BAND_NAMES]
-    with open(stars_csv, newline="") as fh:
-        rows = [r for r in csv.DictReader(fh) if r.get("magnitude")]
-    rows.sort(key=lambda r: float(r["magnitude"]))      # brightest first
-    rows = rows[:n]
+    """Per band → list of {mag, peak_e, central_e, flattop_px, nan_core_px}.
 
-    # Index each band's directory ONCE (not per star).
-    index: Dict[str, Dict[int, str]] = {}
-    for b in bands:
-        bd = Config.cutout_dir_for_band(b.name, root=cutouts_root)
-        index[b.name] = _index_band_dir(bd, size)
-        _log(f"  indexed {b.name}: {len(index[b.name])} cutouts under {bd}")
+    Driven by the cutout FILES on disk (robust to a desynced ``stars.csv``):
+    scan up to ``n`` cutouts per band — brightest first when a catalog magnitude
+    is available, else by id — annotating each with its catalog magnitude if the
+    id matches."""
+    bands = [Config.get_band(bn) for bn in Config.LR_INPUT_BAND_NAMES]
+    mag_by_id = _mag_by_id(stars_csv)
+    print(f"  catalog: {len(mag_by_id)} stars with a finite magnitude", flush=True)
+    resolved = _discover_band_dirs(output_dir, bands, size)
 
     out: Dict[str, List[dict]] = {b.name: [] for b in bands}
-    for i, row in enumerate(rows):
-        try:
-            sid, mag = int(row["id"]), float(row["magnitude"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        for b in bands:
-            path = index[b.name].get(sid)
-            if path is None:
-                continue
+    for b in bands:
+        d, index = resolved[b.name]
+        with_mag = sorted((s for s in index if s in mag_by_id),
+                          key=lambda s: mag_by_id[s])          # brightest first
+        without = sorted(s for s in index if s not in mag_by_id)
+        order = (with_mag + without)[:n]
+        print(f"  {b.name:4s} -> {len(index):6d} cutouts ({len(with_mag)} w/ mag); "
+              f"scanning {len(order)}   {d}", flush=True)
+        for i, sid in enumerate(order):
             try:
-                img_e, _ = load_cutout_electrons(path, b)
+                img_e, _ = load_cutout_electrons(index[sid], b)
             except Exception:
                 continue
             rec = measure_core_saturation(img_e, window_px=window_px)
-            rec["mag"] = mag
+            rec["mag"] = mag_by_id.get(sid, float("nan"))
             out[b.name].append(rec)
-        if (i + 1) % 100 == 0:
-            _log(f"  scanned {i + 1}/{len(rows)} stars...")
+            if (i + 1) % 200 == 0:
+                _log(f"    {b.name} {i + 1}/{len(order)}...")
     return out
 
 
@@ -158,27 +226,41 @@ def _summarize_band(recs: List[dict]) -> None:
     if not recs:
         print("    (no cutouts found)")
         return
-    mags = np.array([r["mag"] for r in recs])
-    peaks = np.array([r["peak_e"] for r in recs])
-    flats = np.array([r["flattop_px"] for r in recs])
-    nans = np.array([r["nan_core_px"] for r in recs])
-    print(f"    {'mag bin':>9} {'n':>4} {'med_peak_e':>12} {'max_peak_e':>12} "
-          f"{'med_flat_px':>11} {'nan_core%':>9}")
-    for lo, hi in _MAG_BINS:
-        m = (mags >= lo) & (mags < hi)
-        if not m.any():
-            continue
-        pk = peaks[m][np.isfinite(peaks[m])]
-        med_pk = np.median(pk) if pk.size else float("nan")
-        max_pk = np.max(pk) if pk.size else float("nan")
-        label = f"{lo if lo > -99 else ''}-{hi if hi < 99 else ''}"
-        print(f"    {label:>9} {int(m.sum()):>4} {med_pk:12.4g} {max_pk:12.4g} "
-              f"{np.median(flats[m]):11.1f} {100.0*np.mean(nans[m] > 0):8.0f}%")
-    bright = peaks[(mags < 15) & np.isfinite(peaks)]
-    ceiling = np.median(bright) if bright.size else float("nan")
-    print(f"    → empirical ceiling (median peak, mag<15): {ceiling:.4g} e⁻   "
-          f"| global max peak: {np.nanmax(peaks):.4g} e⁻   "
-          f"| NaN-core stars: {100.0*np.mean(nans > 0):.0f}%")
+    mags = np.array([r["mag"] for r in recs], dtype=float)
+    peaks = np.array([r["peak_e"] for r in recs], dtype=float)
+    flats = np.array([r["flattop_px"] for r in recs], dtype=float)
+    nans = np.array([r["nan_core_px"] for r in recs], dtype=float)
+    fin = np.isfinite(peaks)
+    pk = peaks[fin]
+    if pk.size == 0:
+        print("    (all peaks non-finite)")
+        return
+
+    # Peak-electron distribution (works with or without catalog magnitudes).
+    qs = {q: np.percentile(pk, q) for q in (50, 90, 99, 100)}
+    print(f"    scanned {len(recs)} cutouts | peak e⁻  "
+          f"P50={qs[50]:.4g}  P90={qs[90]:.4g}  P99={qs[99]:.4g}  "
+          f"max={qs[100]:.4g}")
+    # The brightest cutouts plateau at the saturation level → ceiling.
+    k = max(5, pk.size // 20)                 # top ~5%
+    top_idx = np.argsort(peaks)[-k:]
+    print(f"    → SATURATION CEILING (median of top ~5% peaks): "
+          f"{np.median(peaks[top_idx]):.4g} e⁻")
+    print(f"      top-peak cutouts: median flat-top = {np.median(flats[top_idx]):.0f} px, "
+          f"NaN-core = {100.0*np.mean(nans[top_idx] > 0):.0f}%")
+
+    # Magnitude-binned view, only if the catalog magnitudes matched.
+    if np.isfinite(mags).sum() >= 10:
+        print(f"    by VIS magnitude: {'mag bin':>9} {'n':>4} {'med_peak_e':>12} "
+              f"{'med_flat_px':>11} {'nan_core%':>9}")
+        for lo, hi in _MAG_BINS:
+            m = np.isfinite(mags) & (mags >= lo) & (mags < hi) & fin
+            if not m.any():
+                continue
+            label = f"{lo if lo > -99 else ''}-{hi if hi < 99 else ''}"
+            print(f"      {label:>16} {int(m.sum()):>4} "
+                  f"{np.median(peaks[m]):12.4g} {np.median(flats[m]):11.1f} "
+                  f"{100.0*np.mean(nans[m] > 0):8.0f}%")
 
 
 def main() -> int:

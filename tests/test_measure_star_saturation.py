@@ -12,7 +12,8 @@ from astropy.io import fits
 from euclid_polish.config import Config
 
 from scripts.measure_star_saturation import (
-    _adu_to_e_factor, load_cutout_electrons, measure_core_saturation, scan_stars,
+    _adu_to_e_factor, _summarize_band, load_cutout_electrons,
+    measure_core_saturation, scan_stars,
 )
 
 _SIZE = 64
@@ -82,5 +83,31 @@ def test_scan_stars_reads_per_band(tmp_path):
     assert by_mag[12]["flattop_px"] == 25
     assert by_mag[21]["peak_e"] == pytest.approx(3.0e2)   # faint, unsaturated
     assert by_mag[21]["flattop_px"] == 1
+    _summarize_band(vis)                                  # runs without error
     # NISP bands have no cutouts here → no records, no crash
     assert data["H_E"] == []
+
+
+def test_scan_is_cutout_driven_despite_catalog_id_mismatch(tmp_path):
+    """The real failure mode: stars.csv ids don't match the cutout ids (the OOM
+    reset the catalog). The scan must still read the cutout FILES that exist —
+    mag annotated NaN — so the saturation ceiling is still measured."""
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, Config.CUTOUTS_SUBDIR)
+    band = Config.BAND_VIS
+    vis_dir = Config.cutout_dir_for_band("VIS", root=cutouts)
+    sat = np.zeros((_SIZE, _SIZE), np.float32); sat[30:35, 30:35] = 8.0e5
+    faint = np.zeros((_SIZE, _SIZE), np.float32); faint[_SIZE // 2, _SIZE // 2] = 3.0e2
+    _write_cutout(os.path.join(vis_dir, f"star_1000_{_SIZE}.fits"), sat, band.sim_zeropoint_e)
+    _write_cutout(os.path.join(vis_dir, f"star_1001_{_SIZE}.fits"), faint, band.sim_zeropoint_e)
+    # stars.csv points at DIFFERENT ids (1, 2) — desynced catalog.
+    stars_csv = os.path.join(root, Config.CATALOG_FILE)
+    with open(stars_csv, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["id", "ra", "dec", "magnitude"])
+        w.writerow([1, 150.0, 2.0, 12.0]); w.writerow([2, 150.1, 2.1, 21.0])
+
+    vis = scan_stars(stars_csv, root, size=_SIZE, n=10)["VIS"]
+    assert len(vis) == 2                                  # cutouts read despite mismatch
+    assert max(r["peak_e"] for r in vis) == pytest.approx(8.0e5)   # ceiling found
+    assert all(np.isnan(r["mag"]) for r in vis)          # no catalog mag matched
