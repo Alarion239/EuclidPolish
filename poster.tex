@@ -1,0 +1,262 @@
+%==============================================================================
+%  Scientific poster — 36 x 48 in (portrait) — tikzposter
+%  "Finding Gravitational Lenses from Super-Resolved Euclid Images"
+%  Aleksandr Belotserkovtsev
+%
+%  Layout: LEFT COLUMN = vertical pipeline infographic (top->bottom);
+%          RIGHT = two text columns.
+%
+%  Compile with pdflatex (or lualatex). This is a self-contained FRAME:
+%   - figure placeholders are fixed-size boxes (replace \figbox with
+%     \includegraphics once images are available)
+%   - references are a short manual list (swap for biblatex + references.bib
+%     if you prefer automatic citations)
+%==============================================================================
+\documentclass[25pt, a0paper, portrait,
+               margin=0mm, innermargin=15mm,
+               blockverticalspace=15mm, colspace=18mm, subcolspace=8mm]{tikzposter}
+
+% --- Custom paper size: 36 x 48 inches (overrides a0paper above) -------------
+\geometry{paperwidth=36in, paperheight=48in}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{lmodern}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds}
+
+% --- Theme & colours ---------------------------------------------------------
+\usetheme{Default}
+\usecolorstyle[colorPalette=BlueGrayOrange]{Denmark}
+
+% --- Figure placeholder: \figbox{height}{label} ------------------------------
+% Replace with \includegraphics[width=\linewidth]{file} when assets are ready.
+\newcommand{\figbox}[2]{%
+  \begin{center}%
+  \setlength{\fboxsep}{0pt}%
+  \fcolorbox{gray!55}{gray!12}{%
+    \parbox[c][#1][c]{0.96\linewidth}{\centering\textcolor{gray!65}{\Large #2}}}%
+  \end{center}}
+
+% --- Pipeline panel: \panelimg{width}{file}{fallback label} ------------------
+% Uses the rendered image if present, else a sized gray placeholder. Render
+% panels with:  python3 scripts/poster_render.py <your.fits> --out fig/poster
+\newcommand{\panelimg}[3]{%
+  \IfFileExists{#2}{\includegraphics[width=#1]{#2}}{%
+    \setlength{\fboxsep}{0pt}%
+    \fcolorbox{gray!55}{black!88}{%
+      \parbox[c][#1][c]{#1}{\centering\textcolor{gray!60}{\small #3}}}}}
+
+% --- Pipeline panel widths (set relative to the pipeline column linewidth) ----
+\newlength{\bigpanel}   % the three big stage images
+\newlength{\ingpanel}   % the three ingredient thumbnails
+
+%==============================================================================
+%  Title
+%==============================================================================
+\title{\parbox{0.9\linewidth}{\centering Finding Gravitational Lenses from
+        Super-Resolved Euclid Images}}
+\author{Aleksandr Belotserkovtsev}
+\institute{Center for Astrophysics \,$|$\, Harvard \& Smithsonian \\[4pt]
+           \normalsize Mentors: Asst.\ Prof.\ L.\ Connor \quad Dr.\ Barone \quad
+           AGEL Collaboration}
+
+\begin{document}
+\maketitle
+
+%==============================================================================
+%  Single row, three columns:
+%    col 1 (0.46) = vertical PIPELINE infographic  (the "huge" figure)
+%    col 2 (0.27) = text  |  col 3 (0.27) = text
+%==============================================================================
+\begin{columns}
+
+  %========================= COLUMN 1 — PIPELINE ==============================
+  \column{0.46}
+  \block{The Pipeline: From Synthetic Universes to Super-Resolved Euclid}{%
+  \centering
+  % ---- swap these paths for your own thoughtfully-chosen renders ----
+  % Render with: python3 scripts/poster_render.py <your.fits> --out fig/poster
+  \def\figdir{fig/poster}
+  \setlength{\bigpanel}{0.62\linewidth}   % big stage images
+  \setlength{\ingpanel}{0.29\linewidth}   % ingredient thumbnails
+  \begin{tikzpicture}[
+      >={Stealth[length=12mm, width=9mm]},
+      panel/.style={inner sep=0pt, outer sep=0pt},
+      ptitle/.style={font=\bfseries, text=white, align=left, inner sep=0pt},
+      psub/.style={font=\small, text=gray!75, inner sep=1pt},
+      flow/.style={->, line width=3pt, gray!70},
+      opl/.style={midway, font=\small\bfseries, text=white, fill=black!78,
+                  inner sep=5pt, rounded corners=4pt},
+      node distance=10mm]
+
+    % -- INGREDIENTS (three thumbnails in a row) -------------------------
+    \node[panel] (tng) {\panelimg{\ingpanel}{\figdir/ingredient_tng.png}{TNG galaxies}};
+    \node[panel, left=5mm of tng]  (lens) {\panelimg{\ingpanel}{\figdir/ingredient_lens.png}{lens arc}};
+    \node[panel, right=5mm of tng] (star) {\panelimg{\ingpanel}{\figdir/ingredient_stars.png}{stars / PSFs}};
+    \node[ptitle, align=center, above=3mm of tng] {\large Ingredients};
+    \node[psub] at (lens.south) {\colorbox{black!78}{LensPop arcs}};
+    \node[psub] at (tng.south)  {\colorbox{black!78}{TNG50 galaxies}};
+    \node[psub] at (star.south) {\colorbox{black!78}{Gaia stars}};
+
+    % -- CLEAN SYNTHETIC FIELD (ground truth) ----------------------------
+    \node[panel, below=26mm of tng] (gt)
+        {\panelimg{\bigpanel}{\figdir/clean_field.png}{clean synthetic field (GT)}};
+    \node[ptitle, text width=0.30\linewidth, anchor=west] at ([xshift=5mm]gt.east)
+        {Synthetic Field\\[3pt]{\small\color{gray!75} Hubble-resolution ground truth}};
+
+    % -- MOCK / DIRTY EUCLID ---------------------------------------------
+    \node[panel, below=26mm of gt] (dirty)
+        {\panelimg{\bigpanel}{\figdir/dirty_field.png}{dirty Euclid field}};
+    \node[ptitle, text width=0.30\linewidth, anchor=west] at ([xshift=5mm]dirty.east)
+        {Mock Euclid\\[3pt]{\small\color{gray!75} blurred $+$ noisy, $\sim3\times$ coarser}};
+
+    % -- SUPER-RESOLVED --------------------------------------------------
+    \node[panel, below=26mm of dirty] (sr)
+        {\panelimg{\bigpanel}{\figdir/sr_field.png}{super-resolved output}};
+    \node[ptitle, text width=0.30\linewidth, anchor=west] at ([xshift=5mm]sr.east)
+        {Super-Resolved\\[3pt]{\small\color{gray!75} model reconstruction}};
+
+    % -- DOWNWARD FLOW ARROWS --------------------------------------------
+    \draw[flow] (tng.south)   -- (gt.north)    node[opl] {\textsc{GalSim} render};
+    \draw[flow] (gt.south)    -- (dirty.north) node[opl] {Euclid PSF $\circledast$ \,$+$\, noise};
+    \draw[flow] (dirty.south) -- (sr.north)    node[opl] {POLISH\texttt{++} CNN};
+  \end{tikzpicture}
+
+  \vspace{3mm}
+  {\small\textcolor{gray!75}{Lens arcs, TNG50 galaxies and stars are combined with
+  \textsc{GalSim} into a Hubble-resolution synthetic field, degraded by the
+  measured Euclid PSF and instrumental noise into a realistic mock observation,
+  then reconstructed by the super-resolution network.}}
+  }
+
+  %========================= COLUMN 2 — TEXT =================================
+  \column{0.27}
+
+  \block{Abstract}{
+    Strong gravitational lensing lets us study distant magnified galaxies
+    otherwise too faint to see, the mass distribution of the foreground
+    deflector, dark matter, and the geometry of the Universe. Lenses with
+    \emph{small Einstein radii} are especially valuable --- yet when the radius
+    is too small, the lens cannot be visually separated from the source in
+    low-resolution, wide-area surveys, leaving them underrepresented. We adapt
+    the \textbf{POLISH} (Connor et al.\ 2022) and \textbf{POLISH++}
+    (Wu et al.\ 2026) deep-CNN super-resolution architectures --- originally
+    built for radio astronomy --- to raise \textbf{Euclid} imaging toward
+    \textbf{Hubble}-level resolution. Our preliminary results show the model
+    both super-resolves \emph{and} denoises real Euclid data --- a promising
+    first step toward recovering the missing small-radius lens population.
+  }
+
+  \block{Background \& Motivation}{
+    \textbf{Strong gravitational lensing} occurs when a massive foreground
+    deflector (galaxy or cluster) bends light from a background source strongly
+    enough to form multiple images or arcs.
+    \vspace{0.5em}
+
+    The \emph{Einstein radius} $\theta_E$ --- the angular separation between lens
+    and source --- characterizes each system. Small $\theta_E$ systems:
+    \begin{itemize}
+      \item tightly constrain the dark-matter halo profile;
+      \item correspond to higher-redshift, fundamentally different deflectors and
+            sources;
+      \item are \textbf{systematically missed} when $\theta_E$ falls below the
+            resolution of wide-area surveys.
+    \end{itemize}
+    \vspace{0.5em}
+    \figbox{14cm}{[ Figure: lensing geometry --- deflector bends source into an arc ]}
+    \vspace{0.3em}
+    {\small Replace placeholder with \texttt{gravilensing.jpg}.}
+  }
+
+  \block{Objectives}{
+    Test whether a \textbf{super-resolution} machine-learning model can improve
+    identification of strong lenses in \textbf{Euclid} surveys --- the first
+    wide-area, \emph{space-based} optical survey.
+    \begin{itemize}
+      \item Space-based PSF is stable (no time/wavelength atmospheric blurring),
+            making ML reconstruction realistic.
+      \item Push lower-quality Euclid images toward Hubble-level detail across a
+            far larger sky area than targeted Hubble pointings.
+      \item Deliver outputs usable within existing lens-finding workflows
+            (e.g.\ the AGEL collaboration).
+    \end{itemize}
+  }
+
+  \block{Data \& Methods}{
+    Paired \emph{clean} (high-res) / \emph{dirty} (Euclid-like) datasets:
+    \begin{enumerate}
+      \item \textbf{Simulate ground truth} --- COSMOS galaxies ($\sim 3\times$
+            Euclid resolution) augmented with synthetic lenses from
+            \textsc{LensPop}.
+      \item \textbf{Make mock Euclid} --- apply Euclid PSF, instrumental noise,
+            and observational effects with \textsc{GalSim}.
+      \item \textbf{Train} POLISH / POLISH++ for multi-band optical data on
+            Harvard's \textsc{Cannon} cluster; tune channels, kernels, patch
+            sizes, network depth, and lens fraction.
+    \end{enumerate}
+  }
+
+  %========================= COLUMN 3 — TEXT =================================
+  \column{0.27}
+
+  \block{Model Architecture}{
+    POLISH / POLISH++ are deep \textbf{convolutional neural networks} with a
+    \textbf{global residual connection}, learning the mapping from dirty Euclid
+    observations to clean high-resolution images.
+    \vspace{0.5em}
+    \figbox{16cm}{[ Figure: POLISH CNN --- conv blocks + global residual skip ]}
+  }
+
+  \block{Preliminary Results}{
+    Applied to \textbf{real Euclid data}, the model both
+    \textbf{super-resolves and denoises}, recovering structure that is blurred or
+    buried in the originals.
+    \vspace{0.5em}
+    \begin{tikzfigure}
+      \begin{minipage}{0.47\linewidth}
+        \figbox{12cm}{[ Euclid input ]}
+      \end{minipage}\hfill
+      \begin{minipage}{0.47\linewidth}
+        \figbox{12cm}{[ Super-resolved output ]}
+      \end{minipage}
+    \end{tikzfigure}
+    \vspace{0.3em}
+    Evaluation uses image-similarity metrics and changes in lens-detection
+    outcomes, benchmarked against Hubble imaging of the same targets.
+  }
+
+  \block{Significance \& Next Steps}{
+    \begin{itemize}
+      \item Applies cutting-edge computer-vision super-resolution to optical
+            astronomy --- not for precise photometry, but to flag lens
+            \emph{candidates} for follow-up.
+      \item Targets the underrepresented \textbf{small-$\theta_E$} population,
+            highly valuable for cosmology and galaxy evolution.
+      \item Deliverables: open-source simulation code, trained weights, an
+            end-to-end super-resolution pipeline, and a paper.
+    \end{itemize}
+  }
+
+  \block{References}{
+    \small
+    \begin{itemize}\setlength\itemsep{2pt}
+      \item Connor et al.\ (2022), \emph{POLISH}.
+      \item Wu et al.\ (2026), \emph{POLISH++}.
+      \item Collett (2015), ApJ 811, 20 --- \textsc{LensPop}.
+      \item Rowe et al.\ (2015) --- \textsc{GalSim}.
+      \item Scoville et al.\ (2007) --- COSMOS.
+      \item Acevedo Barroso et al.\ (2025); Treu (2010); ESA Euclid Q1 (2025).
+    \end{itemize}
+  }
+
+  \block{Acknowledgements}{
+    \small Conducted with mentorship from the Center for Astrophysics
+    $|$ Harvard \& Smithsonian and the AGEL collaboration.
+    \\[4pt]\textbf{Contact:} abelotserkovtsev@college.harvard.edu
+  }
+
+\end{columns}
+
+\end{document}
