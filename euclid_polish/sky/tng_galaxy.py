@@ -341,6 +341,47 @@ def native_halflight_px(
     return re_px
 
 
+def truncate_below_sb(
+    stamp: np.ndarray,
+    pixel_scale_arcsec: float,
+    sb_cut_mag_arcsec2: float,
+) -> np.ndarray:
+    """Zero pixels fainter than ``sb_cut_mag_arcsec2`` (AB, per band) and
+    crop to the surviving footprint, kept square and centred so the galaxy
+    stays at the stamp centre.
+
+    The SKIRT box is 160 kpc with nonzero light everywhere; on a noiseless
+    clean field that makes every stamp look enormous, while the outskirts
+    sit far below anything Euclid can detect. Modifies per-band channels in
+    place and returns the (possibly smaller) cropped view.
+    """
+    if not (sb_cut_mag_arcsec2 > 0.0):
+        return stamp
+    pix2 = pixel_scale_arcsec ** 2
+    keep = np.zeros(stamp.shape[:2], dtype=bool)
+    for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
+        zp = Config.get_band(name).sim_zeropoint_e
+        thr = 10.0 ** (-0.4 * (sb_cut_mag_arcsec2 - zp)) * pix2  # e⁻/pixel
+        ch = stamp[..., k]
+        ch[ch < thr] = 0.0
+        keep |= ch > 0.0
+    if not keep.any():
+        return stamp
+    # Crop at the radius enclosing 99.5% of the surviving (band-summed)
+    # flux — a max-radius crop would let one faint outlying satellite blob
+    # hold the whole 160 kpc box open.
+    total = stamp.sum(axis=2, dtype=np.float64)
+    H, W = total.shape
+    rint = _radius_int_grid((H, W))
+    prof = np.bincount(rint.ravel(), weights=total.ravel())
+    cum = np.cumsum(prof)
+    r = int(np.searchsorted(cum, 0.995 * cum[-1])) + 4
+    cy, cx = int(round((H - 1) / 2.0)), int(round((W - 1) / 2.0))
+    y0, y1 = max(0, cy - r), min(H, cy + r + 1)
+    x0, x1 = max(0, cx - r), min(W, cx + r + 1)
+    return stamp[y0:y1, x0:x1]
+
+
 def tng_stamp_at_redshift(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -351,6 +392,7 @@ def tng_stamp_at_redshift(
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     rot_k: Optional[int] = None,
     f_max: int = 64,
+    sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
 ) -> Tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
@@ -362,7 +404,9 @@ def tng_stamp_at_redshift(
       apparent size is unbiased);
     * Tolman (1+z)⁻³ surface-brightness dimming;
     * a randomized spectral drift across the four bands, anchored on the
-      stamp's own 4-point SED (``rng=None`` → deterministic drift only).
+      stamp's own 4-point SED (``rng=None`` → deterministic drift only);
+    * outskirts fainter than ``sb_cut_mag_arcsec2`` are truncated and the
+      stamp cropped (:func:`truncate_below_sb`).
 
     Raises on unreadable frames, like :func:`prepare_tng_galaxy`.
     """
@@ -387,10 +431,13 @@ def tng_stamp_at_redshift(
     ]
     factors, dmeta = band_drift_factors(sed_fnu, z, rng)
     stamp *= np.asarray(factors, dtype=np.float32)[None, None, :]
+    stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
     meta["flux_e_per_band"] = {
-        b: float(meta["flux_e_per_band"][b] * factors[k])
+        b: float(stamp[..., k].sum())
         for k, b in enumerate(Config.LR_INPUT_BAND_NAMES)
     }
+    meta["shape"] = tuple(stamp.shape)
+    meta["sb_cut_mag_arcsec2"] = float(sb_cut_mag_arcsec2)
     meta["z"] = float(z)
     meta["rebin_factor_continuous"] = float(f_cont)
     meta["redshift_band_factors"] = [float(f) for f in factors]

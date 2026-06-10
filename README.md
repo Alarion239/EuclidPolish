@@ -123,6 +123,10 @@ That single draw sets everything:
   (≈3 at z = 0.5, capped at ≈4.3 by the D_A turnover near z ≈ 1.6). No separate
   "big galaxy" population is needed: nearby draws produce the resolved giants.
 - **Tolman dimming** — surface brightness × (1+z)⁻³ (per-frequency intensity).
+- **Surface-brightness truncation** — the SKIRT box carries faint light over all
+  160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
+  zeroed and the stamp cropped, so apparent sizes are the detectable isophotal
+  ones (`TNG_SB_TRUNCATE_MAG_ARCSEC2`).
 - **Spectral drift** — observed band b samples the rest SED at λ_b/(1+z): a
   deterministic part interpolates the stamp's own 4-point SED, and a stochastic
   tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the

@@ -245,6 +245,33 @@ def test_tng_stamp_at_redshift_size_and_dimming(tmp_path):
         rel=1e-6)
 
 
+def test_tng_stamp_sb_truncation_crops_faint_outskirts(tmp_path):
+    from astropy.io import fits
+    from euclid_polish.sky.tng_galaxy import tng_stamp_at_redshift
+    # Bright 4-px core + a whole box of ultra-faint "outskirts": the wings
+    # sit far below the mu=28 cut, so the stamp must crop to the core.
+    tng = str(tmp_path / "tng")
+    d = os.path.join(tng, "777")
+    os.makedirs(d)
+    for o in (1,):
+        for b in ("VIS", "Y", "J", "H"):
+            arr = np.full((96, 96), 1e-12, dtype=">f4")     # faint everywhere
+            arr[46:50, 46:50] = 500.0                       # bright core
+            fits.PrimaryHDU(arr).writeto(
+                os.path.join(d, f"TNG777_O{o}_Euclid_{b}.fits"))
+    open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+
+    stamp, meta = tng_stamp_at_redshift(d, "777", 1, 0.5, rng=None)
+    full = 96 // meta["rebin_factor"]
+    assert stamp.shape[0] < full                  # cropped below the full box
+    assert stamp.shape == meta["shape"]
+    assert meta["flux_e_per_band"]["VIS"] > 0     # the core survives
+    # Disabling the cut keeps the full box.
+    stamp_full, _ = tng_stamp_at_redshift(d, "777", 1, 0.5, rng=None,
+                                          sb_cut_mag_arcsec2=0.0)
+    assert stamp_full.shape[0] == full
+
+
 def test_sample_tng_stamp_z_mode(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")

@@ -616,6 +616,15 @@ class Config:
     TNG_Z0    = 0.65
     TNG_Z_MIN = 0.10
     TNG_Z_MAX = 2.50
+    # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
+    # AB, per band). The SKIRT frames carry nonzero light over the whole
+    # 160 kpc box, so without a cut every stamp visually fills the field in
+    # the noiseless clean target even though the outskirts are far below
+    # anything Euclid can detect. 28.0 ≈ the VIS stack's 1σ per arcsec²
+    # (per-pixel 1σ ≈ 25.5; deep-stacking LSB limit ~29.5, Borlaff+ 2022),
+    # so everything plausibly recoverable survives. The stamp is cropped to
+    # the surviving footprint. ≤ 0 disables.
+    TNG_SB_TRUNCATE_MAG_ARCSEC2 = 28.0
     # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
     # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread
     # with redshift (the rest-UV extrapolation uncertainty). The parametric-k
