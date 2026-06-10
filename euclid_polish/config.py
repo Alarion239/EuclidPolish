@@ -588,6 +588,47 @@ class Config:
     LENS_SOURCE_OFFSET_FRAC = 0.7       # source impact parameter in units of θ_E
 
     # ---------------------------------------------------------------------
+    # TNG redshift realism (sky/redshift_model.py)
+    # ---------------------------------------------------------------------
+    #
+    # When the generator's ``tng_redshift_mode`` is on, each injected TNG
+    # stamp gets one redshift draw that sets its angular size (rebin factor
+    # via D_A), Tolman dimming, and a randomized red-leaning spectral drift;
+    # TNG-lit lens galaxies additionally derive σ_v from the subhalo's
+    # stellar mass (Faber–Jackson) instead of the uniform prior.
+
+    # Field n(z) ∝ z² exp(-(z/TNG_Z0)^1.5), truncated to [TNG_Z_MIN, TNG_Z_MAX].
+    # z0=0.65 puts the median near z≈0.9 (Euclid-photometric-sample depth);
+    # z_min=0.10 is where the 100 pc native pixel matches the 0.05″ HR grid.
+    TNG_Z0    = 0.65
+    TNG_Z_MIN = 0.10
+    TNG_Z_MAX = 2.50
+    # The guaranteed-resolved "big galaxy" population draws z uniformly in
+    # [TNG_Z_MIN, TNG_BIG_Z_MAX] — close enough to stay big on the sky.
+    TNG_BIG_Z_MAX = 0.35
+    # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
+    # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread
+    # with redshift (the rest-UV extrapolation uncertainty). The parametric-k
+    # fallback is the mean red tilt used when a stamp's own SED is unusable.
+    TNG_DRIFT_SIGMA0       = 0.15
+    TNG_DRIFT_SIGMA_SLOPE  = 0.35
+    TNG_DRIFT_PARAMETRIC_K = 1.0
+    # Faber–Jackson σ_v(M*): σ = σ_ref (M*/M_ref)^slope, lognormal scatter
+    # (dex), clipped. σ_ref=200 km/s at M*=1e11 M☉ with slope 0.30 tracks
+    # the observed early-type relation (e.g. Zahid+ 2016).
+    LENS_FJ_SIGMA_REF_KMS  = 200.0
+    LENS_FJ_MSTAR_REF_MSUN = 1.0e11
+    LENS_FJ_SLOPE          = 0.30
+    LENS_FJ_SCATTER_DEX    = 0.07
+    LENS_SIGMA_V_CLIP_KMS  = (100.0, 400.0)
+    # Visibility constraint for TNG-lit lenses: require θ_E ≥ ratio × the
+    # lens galaxy's apparent half-light radius, else the arcs sit buried
+    # inside the foreground light. (The Sersic path instead *shrinks* its
+    # analytic light to 0.7·θ_E — a real stamp's size is set by physics, so
+    # rejection is the only honest option.)
+    LENS_THETA_E_MIN_RE_RATIO = 1.2
+
+    # ---------------------------------------------------------------------
     # Detector artifacts (cosmic rays + hot pixels + masked-trail streaks)
     # ---------------------------------------------------------------------
     # CR rate at Euclid's L2 orbit, integrated across the full GCR

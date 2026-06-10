@@ -37,9 +37,12 @@ from euclid_polish.sky.profiles import (
     draw_sersic,
     evaluate_sersic_at_coords,
 )
+from euclid_polish.sky.redshift_model import (
+    angular_diameter_distance,
+    comoving_distance_mpc,
+)
 from euclid_polish.sky.tng_galaxy import composite_stamp
 
-from scipy.integrate import trapezoid
 from scipy.ndimage import map_coordinates
 from lenstronomy.LensModel.lens_model import LensModel
 
@@ -85,37 +88,11 @@ class LensParams:
 # Cosmological distance helpers (flat ΛCDM, Collett-2015 cosmology)
 # ---------------------------------------------------------------------------
 
-def _comoving_distance_mpc(
-    z: float,
-    *,
-    H0: float = Config.LENS_COSMOLOGY_H0,
-    Omega_m: float = Config.LENS_COSMOLOGY_OMEGA_M,
-    Omega_L: float = Config.LENS_COSMOLOGY_OMEGA_L,
-    n_int: int = 1024,
-) -> float:
-    """Line-of-sight comoving distance (Mpc) via Simpson rule.
-
-    No external cosmology dependency — we only need distance ratios for θ_E.
-    """
-    c_kms = 299_792.458
-    DH = c_kms / H0       # Hubble distance, Mpc
-    zs = np.linspace(0.0, z, n_int + 1)
-    E = np.sqrt(Omega_m * (1.0 + zs) ** 3 + Omega_L)
-    integrand = 1.0 / E
-    # ``np.trapz`` was removed in NumPy 2.0; use ``scipy.integrate.trapezoid``
-    # for forward compatibility.
-    return DH * float(trapezoid(integrand, zs))
-
-
-def _angular_diameter_distance(z1: float, z2: Optional[float] = None) -> float:
-    """Angular-diameter distance D_A (Mpc).
-
-    If ``z2`` is ``None``: from observer (z=0) to z1. Otherwise from z1 to z2
-    in a flat cosmology, using the identity D_A(z1,z2) = (D_C(z2) - D_C(z1)) / (1+z2).
-    """
-    if z2 is None:
-        return _comoving_distance_mpc(z1) / (1.0 + z1)
-    return (_comoving_distance_mpc(z2) - _comoving_distance_mpc(z1)) / (1.0 + z2)
+# The distance helpers moved to :mod:`euclid_polish.sky.redshift_model`
+# (shared with the TNG redshift model); the historical private names stay
+# importable from here.
+_comoving_distance_mpc = comoving_distance_mpc
+_angular_diameter_distance = angular_diameter_distance
 
 
 def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> float:
@@ -189,8 +166,14 @@ class LensPopulation:
         rng: np.random.Generator,
         *,
         max_retries: int = 16,
+        sigma_v_kms: Optional[float] = None,
     ) -> LensParams:
-        """Sample one fully populated :class:`LensParams`."""
+        """Sample one fully populated :class:`LensParams`.
+
+        ``sigma_v_kms`` overrides the uniform σ_v prior — used when the lens
+        galaxy is a TNG stamp whose σ_v is derived from the subhalo's stellar
+        mass, so the deflector strength matches the light on the canvas.
+        """
         last_error: Optional[Exception] = None
         for _ in range(max_retries):
             try:
@@ -199,7 +182,8 @@ class LensPopulation:
                 )
                 src_gal  = self.catalog.sample_source_galaxy(rng, lens_gal.z_phot)
 
-                sigma_v = self._sample_sigma_v(rng)
+                sigma_v = (sigma_v_kms if sigma_v_kms is not None
+                           else self._sample_sigma_v(rng))
                 theta_E = einstein_radius_sis(
                     sigma_v_kms=sigma_v,
                     z_lens=lens_gal.z_phot,

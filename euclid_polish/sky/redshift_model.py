@@ -1,0 +1,331 @@
+"""Redshift realism for TNG SKIRT stamps: one z draw drives everything.
+
+The SKIRT atlas frames are *intrinsic* (z = 0) physical images — 100 pc/pixel
+surface brightness in MJy/sr with no assumed distance. To place one at
+redshift ``z`` we derive every observable from that single draw:
+
+1. **Angular size** — a native pixel subtends ``100 pc / D_A(z)``, so the
+   block-mean factor that lands the stamp on the 0.05″ HR grid is
+   ``F(z) = θ_pix_HR[rad] · D_A(z) / 100 pc`` (:func:`rebin_factor_for_redshift`).
+   Because D_A turns over at z ≈ 1.6, F never exceeds ≈ 4.3 — distant
+   galaxies stop shrinking, as on the real sky.
+2. **Tolman dimming** — per-frequency surface brightness dims as
+   ``I_ν,obs(ν_obs) = I_ν,em(ν_em) / (1+z)³`` (:func:`tolman_dimming_factor`).
+3. **Spectral drift** — observed band b samples the rest-frame SED at
+   ``λ_b / (1+z)``. With only four bands a true K-correction is impossible,
+   so :func:`band_drift_factors` combines (a) a deterministic part that
+   log-log-interpolates the stamp's *own* 4-point SED at the blueshifted
+   wavelengths, and (b) a stochastic tilt ``exp(ε · ln(λ_b/λ_H))`` with
+   ``ε ~ N(0, σ(z))`` anchored at H (the band least exposed to the rest-UV
+   extrapolation). The mean drift is therefore the stamp's own colour
+   response; the randomness covers the SED diversity the four points can't
+   see — biased red on average for red continua, but crossing through the
+   true (and occasionally bluer) colours.
+
+The same module derives the lens **velocity dispersion from the TNG mass
+catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
+TNG-lit lens galaxy bends light according to the mass of the very subhalo
+whose photons are on the canvas.
+
+The cosmological-distance helpers (flat ΛCDM, Collett-2015 parameters) live
+here and are re-exported by :mod:`euclid_polish.sky.lens_population`, which
+historically owned them.
+"""
+
+from __future__ import annotations
+
+import csv
+import math
+import os
+from typing import Dict, Optional, Sequence, Tuple
+
+import numpy as np
+from scipy.integrate import trapezoid
+
+from euclid_polish.config import Config
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+#: SKIRT atlas native pixel pitch (physical).
+TNG_NATIVE_PC_PER_PIXEL = 100.0
+
+#: Pivot wavelengths (µm) of the four Euclid bands, in
+#: ``Config.LR_INPUT_BAND_NAMES`` order (VIS, Y_E, J_E, H_E) — monotonically
+#: increasing, which the drift interpolation relies on.
+PIVOT_WAVELENGTH_UM: Tuple[float, ...] = (0.715, 1.081, 1.367, 1.773)
+
+_ARCSEC_TO_RAD = math.pi / (180.0 * 3600.0)
+_PC_PER_MPC = 1.0e6
+
+
+# ---------------------------------------------------------------------------
+# Cosmological distances (flat ΛCDM, Collett-2015 cosmology)
+# ---------------------------------------------------------------------------
+
+def comoving_distance_mpc(
+    z: float,
+    *,
+    H0: float = Config.LENS_COSMOLOGY_H0,
+    Omega_m: float = Config.LENS_COSMOLOGY_OMEGA_M,
+    Omega_L: float = Config.LENS_COSMOLOGY_OMEGA_L,
+    n_int: int = 1024,
+) -> float:
+    """Line-of-sight comoving distance (Mpc) via Simpson rule.
+
+    No external cosmology dependency — the simulation only needs distances
+    and distance ratios.
+    """
+    c_kms = 299_792.458
+    DH = c_kms / H0       # Hubble distance, Mpc
+    zs = np.linspace(0.0, z, n_int + 1)
+    E = np.sqrt(Omega_m * (1.0 + zs) ** 3 + Omega_L)
+    integrand = 1.0 / E
+    return DH * float(trapezoid(integrand, zs))
+
+
+def angular_diameter_distance(z1: float, z2: Optional[float] = None) -> float:
+    """Angular-diameter distance D_A (Mpc).
+
+    If ``z2`` is ``None``: from observer (z=0) to z1. Otherwise from z1 to z2
+    in a flat cosmology, via D_A(z1,z2) = (D_C(z2) - D_C(z1)) / (1+z2).
+    """
+    if z2 is None:
+        return comoving_distance_mpc(z1) / (1.0 + z1)
+    return (comoving_distance_mpc(z2) - comoving_distance_mpc(z1)) / (1.0 + z2)
+
+
+def physical_pc_to_arcsec(length_pc: float, z: float) -> float:
+    """Apparent angular size (arcsec) of a physical length at redshift ``z``."""
+    da_pc = angular_diameter_distance(z) * _PC_PER_MPC
+    if da_pc <= 0.0:
+        return float("inf")
+    return float(length_pc / da_pc / _ARCSEC_TO_RAD)
+
+
+# ---------------------------------------------------------------------------
+# 0) Downsample factor from redshift
+# ---------------------------------------------------------------------------
+
+def rebin_factor_for_redshift(
+    z: float,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    native_pc_per_pixel: float = TNG_NATIVE_PC_PER_PIXEL,
+) -> float:
+    """Continuous block-mean factor placing a 100 pc/px stamp at redshift ``z``
+    on the ``pixel_scale_arcsec`` grid.
+
+    One output pixel must span ``F`` native pixels = ``F · 100 pc``, and that
+    length must subtend ``pixel_scale_arcsec`` at D_A(z):
+    ``F = θ_HR[rad] · D_A(z) / 100 pc``. Floored at 1 (we cannot upsample
+    below the native grid — galaxies closer than z ≈ 0.10 render slightly
+    smaller than physical). The caller stochastically rounds to an integer.
+    """
+    da_pc = angular_diameter_distance(z) * _PC_PER_MPC
+    f = pixel_scale_arcsec * _ARCSEC_TO_RAD * da_pc / native_pc_per_pixel
+    return max(1.0, float(f))
+
+
+# ---------------------------------------------------------------------------
+# Field redshift distribution
+# ---------------------------------------------------------------------------
+
+#: Inverse-CDF grids keyed by (z0, z_min, z_max); built once per parameter set.
+_ZCDF_CACHE: Dict[Tuple[float, float, float], Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _z_inverse_cdf_grid(z0: float, z_min: float, z_max: float,
+                        n: int = 2048) -> Tuple[np.ndarray, np.ndarray]:
+    key = (float(z0), float(z_min), float(z_max))
+    grid = _ZCDF_CACHE.get(key)
+    if grid is None:
+        zs = np.linspace(z_min, z_max, n)
+        pdf = zs ** 2 * np.exp(-((zs / z0) ** 1.5))
+        cdf = np.cumsum(pdf)
+        cdf -= cdf[0]
+        cdf /= cdf[-1]
+        grid = (cdf, zs)
+        _ZCDF_CACHE[key] = grid
+    return grid
+
+
+def sample_galaxy_redshift(
+    rng: np.random.Generator,
+    *,
+    z0: float = Config.TNG_Z0,
+    z_min: float = Config.TNG_Z_MIN,
+    z_max: float = Config.TNG_Z_MAX,
+) -> float:
+    """Draw one redshift from the standard survey form
+    ``n(z) ∝ z² exp(-(z/z0)^1.5)`` truncated to ``[z_min, z_max]``.
+
+    With the default ``z0 = 0.65`` the median lands near z ≈ 0.9 — a
+    Euclid-photometric-sample-like depth. ``z_min = 0.10`` is where the
+    100 pc native pixel matches the 0.05″ HR grid (rebin factor 1).
+    Sampling is by inverse CDF on a cached grid.
+    """
+    cdf, zs = _z_inverse_cdf_grid(z0, z_min, z_max)
+    return float(np.interp(rng.random(), cdf, zs))
+
+
+# ---------------------------------------------------------------------------
+# 2) Photometric response to redshift: dimming + randomized spectral drift
+# ---------------------------------------------------------------------------
+
+def tolman_dimming_factor(z: float) -> float:
+    """Cosmological surface-brightness dimming for per-frequency intensity.
+
+    ``I_ν,obs(ν_obs) = I_ν,em((1+z)·ν_obs) / (1+z)³`` — the (1+z)³ here; the
+    band-shift part is :func:`band_drift_factors`' job. The SKIRT frames are
+    MJy/sr (per-frequency), so the two factors together are the complete
+    photometric response.
+    """
+    return float((1.0 + z) ** -3)
+
+
+def band_drift_factors(
+    sed_fnu: Sequence[float],
+    z: float,
+    rng: Optional[np.random.Generator] = None,
+    *,
+    sigma0: float = Config.TNG_DRIFT_SIGMA0,
+    sigma_slope: float = Config.TNG_DRIFT_SIGMA_SLOPE,
+    parametric_k: float = Config.TNG_DRIFT_PARAMETRIC_K,
+    include_dimming: bool = True,
+    max_lnln_slope: float = 6.0,
+    ratio_clip: Tuple[float, float] = (1e-2, 1e2),
+) -> Tuple[np.ndarray, dict]:
+    """Multiplicative per-band factors modelling redshift ``z``'s photometry.
+
+    Parameters
+    ----------
+    sed_fnu : 4 relative rest-frame f_ν values in ``LR_INPUT_BAND_NAMES``
+        order — the stamp's own integrated band fluxes (any common scale).
+    z       : assigned redshift (the SKIRT frames are intrinsic, z = 0).
+    rng     : drives the stochastic tilt; ``None`` → deterministic part only
+        (so z = 0 with no rng returns exactly ones).
+
+    Three multiplicative pieces per band b:
+
+    * **Deterministic drift** — the stamp's 4-point SED, interpolated
+      log-log at the blueshifted wavelength ``λ_b/(1+z)``; below the bluest
+      point the edge slope is continued (clamped to ``±max_lnln_slope``).
+      If the SED is unusable (non-positive / non-finite) the parametric form
+      ``exp(k·ln(1+z)·ln(λ_b/λ_H))`` stands in — a pure red-leaning tilt.
+    * **Stochastic tilt** — ``exp(ε · ln(λ_b/λ_H))`` with
+      ``ε ~ N(0, σ0 + σ1·ln(1+z))``: anchored at H, strongest on VIS, and
+      symmetric about the deterministic prediction, so draws scatter both
+      redder and bluer than the stamp's own colour response.
+    * **Tolman dimming** ``(1+z)⁻³`` (skippable for tests).
+
+    Returns ``(factors[4] float64, meta)`` with meta recording the mode,
+    the tilt ε, and the dimming applied.
+    """
+    lam = np.asarray(PIVOT_WAVELENGTH_UM, dtype=np.float64)
+    ln_lam = np.log(lam)
+    x = ln_lam - ln_lam[-1]                       # ln(λ_b / λ_H)  ≤ 0
+    lnz1 = math.log1p(z)
+
+    sed = np.asarray(sed_fnu, dtype=np.float64)
+    usable = sed.shape == lam.shape and bool(
+        np.all(np.isfinite(sed)) and np.all(sed > 0.0))
+    if usable:
+        ln_s = np.log(sed)
+        ln_q = ln_lam - lnz1                      # blueshifted query points
+        ln_interp = np.interp(ln_q, ln_lam, ln_s)
+        # np.interp clamps below the bluest point — continue the edge slope
+        # instead (clamped: the rest-UV is exactly where 4 points say least).
+        below = ln_q < ln_lam[0]
+        if np.any(below):
+            slope = (ln_s[1] - ln_s[0]) / (ln_lam[1] - ln_lam[0])
+            slope = float(np.clip(slope, -max_lnln_slope, max_lnln_slope))
+            ln_interp[below] = ln_s[0] + slope * (ln_q[below] - ln_lam[0])
+        ratio = np.exp(ln_interp - ln_s)
+        mode = "sed_interp"
+    else:
+        ratio = np.exp(parametric_k * lnz1 * x)
+        mode = "parametric"
+    ratio = np.clip(ratio, ratio_clip[0], ratio_clip[1])
+
+    eps = 0.0
+    if rng is not None:
+        sigma = sigma0 + sigma_slope * lnz1
+        eps = float(rng.normal(0.0, sigma))
+    tilt = np.exp(eps * x)
+
+    dimming = tolman_dimming_factor(z) if include_dimming else 1.0
+    factors = dimming * ratio * tilt
+    meta = {"drift_mode": mode, "drift_eps": float(eps),
+            "dimming": float(dimming)}
+    return factors, meta
+
+
+# ---------------------------------------------------------------------------
+# 1) Lens velocity dispersion from the TNG mass catalog
+# ---------------------------------------------------------------------------
+
+def default_tng_properties_csv() -> str:
+    """The property cache written by the TNG-infographic render
+    (``euclid_polish.tng.properties.gather_properties``)."""
+    return os.path.join(Config.DATA_DIR, "_tng_infographics",
+                        "tng_properties.csv")
+
+
+#: Per-path property cache: {csv_path: {subhalo_id: {field: value}}}.
+_TNG_PROPS_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+
+def load_tng_properties(csv_path: Optional[str] = None,
+                        ) -> Dict[str, Dict[str, float]]:
+    """Read ``tng_properties.csv`` → ``{subhalo_id: {sfr, mass_stars, m_halo,
+    reff}}`` (floats, NaN where missing). Missing file → empty dict. Cached
+    per path — the generator looks masses up per lens draw.
+    """
+    path = csv_path or default_tng_properties_csv()
+    cached = _TNG_PROPS_CACHE.get(path)
+    if cached is not None:
+        return cached
+    rows: Dict[str, Dict[str, float]] = {}
+    if os.path.isfile(path):
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                gid = str(row.get("id", "")).strip()
+                if not gid:
+                    continue
+                props: Dict[str, float] = {}
+                for k, v in row.items():
+                    if k == "id":
+                        continue
+                    try:
+                        props[k] = float(v)
+                    except (TypeError, ValueError):
+                        props[k] = float("nan")
+                rows[gid] = props
+    _TNG_PROPS_CACHE[path] = rows
+    return rows
+
+
+def sigma_v_from_stellar_mass(
+    mstar_msun: float,
+    rng: Optional[np.random.Generator] = None,
+    *,
+    sigma_ref_kms: float = Config.LENS_FJ_SIGMA_REF_KMS,
+    mstar_ref_msun: float = Config.LENS_FJ_MSTAR_REF_MSUN,
+    slope: float = Config.LENS_FJ_SLOPE,
+    scatter_dex: float = Config.LENS_FJ_SCATTER_DEX,
+    clip_kms: Tuple[float, float] = Config.LENS_SIGMA_V_CLIP_KMS,
+) -> float:
+    """Velocity dispersion (km/s) from stellar mass via Faber–Jackson:
+    ``σ = σ_ref · (M*/M_ref)^slope`` with lognormal scatter, clipped to
+    ``clip_kms``. NaN/non-positive mass → NaN (caller falls back to the
+    uniform σ_v prior).
+    """
+    if not (isinstance(mstar_msun, (int, float)) and math.isfinite(mstar_msun)
+            and mstar_msun > 0.0):
+        return float("nan")
+    sigma = sigma_ref_kms * (mstar_msun / mstar_ref_msun) ** slope
+    if rng is not None and scatter_dex > 0.0:
+        sigma *= 10.0 ** rng.normal(0.0, scatter_dex)
+    return float(min(max(sigma, clip_kms[0]), clip_kms[1]))

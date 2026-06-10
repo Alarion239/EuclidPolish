@@ -38,7 +38,16 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.photometry import mjy_per_sr_to_electrons
+from euclid_polish.euclid.photometry import (
+    mjy_per_sr_to_electrons,
+    mjy_per_sr_to_electrons_factor,
+)
+from euclid_polish.sky.redshift_model import (
+    TNG_NATIVE_PC_PER_PIXEL,
+    band_drift_factors,
+    physical_pc_to_arcsec,
+    rebin_factor_for_redshift,
+)
 
 # FITS band token (in the filename) → simulation BandConfig. The atlas frames
 # are named with the short Euclid band labels; the model's bands carry the
@@ -327,6 +336,74 @@ def native_halflight_px(
     return re_px
 
 
+def tng_stamp_at_redshift(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    z: float,
+    rng: Optional[np.random.Generator] = None,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    rot_k: Optional[int] = None,
+    f_max: int = 64,
+) -> Tuple[np.ndarray, dict]:
+    """Build one TNG stamp **as it would appear at redshift ``z``**.
+
+    A single ``z`` drives all three observables (see
+    :mod:`euclid_polish.sky.redshift_model`):
+
+    * the block-mean factor comes from the angular size of the 100 pc native
+      pixel at D_A(z) (stochastically rounded with ``rng`` so the mean
+      apparent size is unbiased);
+    * Tolman (1+z)⁻³ surface-brightness dimming;
+    * a randomized spectral drift across the four bands, anchored on the
+      stamp's own 4-point SED (``rng=None`` → deterministic drift only).
+
+    Raises on unreadable frames, like :func:`prepare_tng_galaxy`.
+    """
+    f_cont = min(float(f_max), rebin_factor_for_redshift(
+        z, pixel_scale_arcsec=pixel_scale_arcsec))
+    lo = int(np.floor(f_cont))
+    rem = f_cont - lo
+    if rng is not None and rem > 0.0:
+        rebin = lo + (1 if rng.random() < rem else 0)
+    else:
+        rebin = int(round(f_cont))
+    rebin = max(1, rebin)
+    if rot_k is None:
+        rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+
+    stamp, meta = prepare_tng_galaxy(
+        galaxy_dir, subhalo_id, orientation,
+        rebin_factor=rebin, rot_k=rot_k,
+        pixel_scale_arcsec=pixel_scale_arcsec,
+    )
+    # The stamp's own rest-frame 4-point SED in relative f_ν: undo each
+    # band's linear MJy/sr → electrons factor so the zeropoints/integration
+    # don't masquerade as colour.
+    sed_fnu = [
+        meta["flux_e_per_band"][b]
+        / mjy_per_sr_to_electrons_factor(Config.get_band(b), pixel_scale_arcsec)
+        for b in Config.LR_INPUT_BAND_NAMES
+    ]
+    factors, dmeta = band_drift_factors(sed_fnu, z, rng)
+    stamp *= np.asarray(factors, dtype=np.float32)[None, None, :]
+    meta["flux_e_per_band"] = {
+        b: float(meta["flux_e_per_band"][b] * factors[k])
+        for k, b in enumerate(Config.LR_INPUT_BAND_NAMES)
+    }
+    meta["z"] = float(z)
+    meta["rebin_factor_continuous"] = float(f_cont)
+    meta["redshift_band_factors"] = [float(f) for f in factors]
+    meta.update(dmeta)
+    re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
+    if np.isfinite(re_px) and re_px > 0.0:
+        meta["native_halflight_px"] = float(re_px)
+        meta["apparent_re_arcsec"] = physical_pc_to_arcsec(
+            re_px * TNG_NATIVE_PC_PER_PIXEL, z)
+    return stamp, meta
+
+
 def sample_tng_stamp(
     galaxies: List[Tuple[str, str]],
     rng: np.random.Generator,
@@ -334,14 +411,19 @@ def sample_tng_stamp(
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     downsample_choices: Tuple[int, ...] = DOWNSAMPLE_CHOICES,
     target_re_arcsec: Optional[float] = None,
+    z: Optional[float] = None,
     f_max: int = 64,
 ) -> Optional[Tuple[np.ndarray, dict]]:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
     load).
 
-    Sizing:
+    Sizing (first match wins):
 
+    * ``z`` given → full redshift treatment via :func:`tng_stamp_at_redshift`:
+      the downsample follows from D_A(z), and (1+z)⁻³ dimming + the randomized
+      spectral drift are applied. ``meta`` carries ``z`` and the per-band
+      factors.
     * ``target_re_arcsec`` given → the galaxy is downsampled so its **apparent
       half-light radius** matches that target (via :func:`rebin_for_target_size`
       on the measured native size), giving a realistic, mostly-small angular
@@ -354,6 +436,15 @@ def sample_tng_stamp(
         return None
     gdir, gid = galaxies[int(rng.integers(0, len(galaxies)))]
     orientation = int(rng.integers(1, N_ORIENTATIONS + 1))      # O1..O5
+
+    if z is not None:
+        try:
+            return tng_stamp_at_redshift(
+                gdir, gid, orientation, z, rng,
+                pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max)
+        except Exception:
+            return None
+
     rot_k = int(rng.integers(0, 4))
 
     re_px: Optional[float] = None

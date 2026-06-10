@@ -124,6 +124,13 @@ def parse_args() -> argparse.Namespace:
                          "×1/×2/×3/×4) instead of analytic Sersic profiles. "
                          "0 = all Sersic (unchanged). Needs TNG galaxies "
                          "downloaded under $DATA_DIR/tng_skirt/.")
+    ap.add_argument("--tng-redshift-mode", action="store_true",
+                    help="Physical-redshift treatment of TNG stamps: one z "
+                         "draw per stamp sets its downsample factor (via "
+                         "D_A), (1+z)^-3 dimming, and a randomized red-"
+                         "leaning spectral drift; TNG-lit lenses take σ_v "
+                         "from the subhalo stellar mass (tng_properties.csv) "
+                         "and require θ_E ≥ κ × apparent R_e.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -170,6 +177,7 @@ def step_generate(args: argparse.Namespace) -> None:
     cfg = MultiBandGeneratorConfig(image_size=args.image_size,
                                    pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                                    tng_fraction=args.tng_fraction,
+                                   tng_redshift_mode=args.tng_redshift_mode,
                                    star_density_arcmin2=args.star_density_arcmin2,
                                    star_mag_slope=args.star_mag_slope,
                                    star_mag_bright=args.star_mag_bright,
@@ -361,6 +369,7 @@ _W_RECORDS_DIR = ""
 def _gen_init_worker(catalog_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
                      tng_fraction=0.0,
+                     tng_redshift_mode=False,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                      star_mag_slope=Config.STAR_MAG_SLOPE,
                      star_mag_bright=Config.STAR_MAG_BRIGHT,
@@ -378,6 +387,7 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
         cat, MultiBandGeneratorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                                       tng_fraction=tng_fraction,
+                                      tng_redshift_mode=tng_redshift_mode,
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
@@ -444,7 +454,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(catalog_path, args.image_size, args.psf_dir,
                       args.require_empirical_psf, args.records_dir,
-                      args.tng_fraction, args.star_density_arcmin2,
+                      args.tng_fraction, args.tng_redshift_mode,
+                      args.star_density_arcmin2,
                       args.star_mag_slope, args.star_mag_bright,
                       args.star_mag_faint, args.lens_density_arcmin2,
                       args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms),
