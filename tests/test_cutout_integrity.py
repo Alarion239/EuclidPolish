@@ -16,7 +16,8 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.cutout_integrity import (
-    cutout_openable, rebuild_catalog_from_cutouts, validate_all_cutouts,
+    cutout_openable, purge_incomplete_cutouts, rebuild_catalog_from_cutouts,
+    validate_all_cutouts,
 )
 
 _SIZE = 16
@@ -85,6 +86,123 @@ def test_validate_flags_openable_and_corrupt(tmp_path):
     assert set(StarCatalog.valid_bands(by_id[0])) >= set(band_names)
     assert "VIS" not in StarCatalog.valid_bands(by_id[2])
     assert set(StarCatalog.valid_bands(by_id[2])) == set(band_names) - {"VIS"}
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: delete cutouts of any star not valid in all bands
+# ---------------------------------------------------------------------------
+
+def _all_paths(cutouts: str) -> set:
+    import glob as _glob
+    out = set()
+    for bn in [b.name for b in Config.BANDS]:
+        d = Config.cutout_dir_for_band(bn, root=cutouts)
+        out |= set(_glob.glob(os.path.join(d, "star_*.fits")))
+    return out
+
+
+def test_purge_deletes_incomplete_keeps_complete(tmp_path):
+    root = tmp_path / "euclid_stars"
+    cutouts = str(root / "cutouts")
+    band_names = [b.name for b in Config.BANDS]
+
+    # 3 stars: 0 & 2 complete in all bands; star 1 has a corrupt VIS cutout.
+    for bn in band_names:
+        d = Config.cutout_dir_for_band(bn, root=cutouts)
+        os.makedirs(d, exist_ok=True)
+        for sid in range(3):
+            _write_good(os.path.join(d, f"star_{sid:04d}_{_SIZE}.fits"))
+    vis_dir = Config.cutout_dir_for_band("VIS", root=cutouts)
+    with open(os.path.join(vis_dir, f"star_0001_{_SIZE}.fits"), "wb") as fh:
+        fh.write(b"garbage, not a fits")
+
+    cat = StarCatalog(str(root))
+    cat.save({"stars": [{"id": i, "ra": 150.0 + i * 1e-3, "dec": 2.0 + i * 1e-3}
+                        for i in range(3)], "next_id": 3})
+    validate_all_cutouts(cat, cat.load(), band_names)   # set flags from disk
+
+    s = purge_incomplete_cutouts(cat, cat.load(), band_names)
+    assert s["complete_stars"] == 2          # stars 0 and 2
+    assert s["incomplete_stars"] == 1        # star 1
+    assert s["deleted_files"] == len(band_names)   # all 4 of star 1's cutouts
+    assert s["dropped_rows"] == 1
+
+    # Star 1 is gone from disk and catalog; 0 and 2 keep every band's cutout.
+    remaining = _all_paths(cutouts)
+    assert not any("star_0001_" in p for p in remaining)
+    assert sum("star_0000_" in p for p in remaining) == len(band_names)
+    assert sum("star_0002_" in p for p in remaining) == len(band_names)
+    assert {int(st["id"]) for st in cat.load()["stars"]} == {0, 2}
+
+
+def test_purge_missing_band_is_incomplete(tmp_path):
+    root = tmp_path / "euclid_stars"
+    cutouts = str(root / "cutouts")
+    band_names = [b.name for b in Config.BANDS]
+
+    # Star 0 complete; star 1 only ever downloaded in VIS (others never arrived).
+    for bn in band_names:
+        d = Config.cutout_dir_for_band(bn, root=cutouts)
+        os.makedirs(d, exist_ok=True)
+        _write_good(os.path.join(d, f"star_0000_{_SIZE}.fits"))
+    _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
+                             f"star_0001_{_SIZE}.fits"))
+
+    cat = StarCatalog(str(root))
+    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
+                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
+    validate_all_cutouts(cat, cat.load(), band_names)
+
+    s = purge_incomplete_cutouts(cat, cat.load(), band_names)
+    assert s["complete_stars"] == 1 and s["incomplete_stars"] == 1
+    assert s["deleted_files"] == 1           # star 1's lone VIS cutout
+    remaining = _all_paths(cutouts)
+    assert not any("star_0001_" in p for p in remaining)
+    assert {int(st["id"]) for st in cat.load()["stars"]} == {0}
+
+
+def test_purge_dry_run_touches_nothing(tmp_path):
+    root = tmp_path / "euclid_stars"
+    cutouts = str(root / "cutouts")
+    band_names = [b.name for b in Config.BANDS]
+    for bn in band_names:
+        d = Config.cutout_dir_for_band(bn, root=cutouts)
+        os.makedirs(d, exist_ok=True)
+        _write_good(os.path.join(d, f"star_0000_{_SIZE}.fits"))
+    _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
+                             f"star_0001_{_SIZE}.fits"))
+    cat = StarCatalog(str(root))
+    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
+                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
+    validate_all_cutouts(cat, cat.load(), band_names)
+
+    before = _all_paths(cutouts)
+    s = purge_incomplete_cutouts(cat, cat.load(), band_names, dry_run=True)
+    assert s["dry_run"] is True and s["deleted_files"] == 1 and s["dropped_rows"] == 0
+    assert _all_paths(cutouts) == before                       # nothing deleted
+    assert len(cat.load()["stars"]) == 2                       # catalog intact
+
+
+def test_purge_keep_catalog_rows(tmp_path):
+    root = tmp_path / "euclid_stars"
+    cutouts = str(root / "cutouts")
+    band_names = [b.name for b in Config.BANDS]
+    for bn in band_names:
+        d = Config.cutout_dir_for_band(bn, root=cutouts)
+        os.makedirs(d, exist_ok=True)
+        _write_good(os.path.join(d, f"star_0000_{_SIZE}.fits"))
+    _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
+                             f"star_0001_{_SIZE}.fits"))
+    cat = StarCatalog(str(root))
+    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
+                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
+    validate_all_cutouts(cat, cat.load(), band_names)
+
+    s = purge_incomplete_cutouts(cat, cat.load(), band_names,
+                                 drop_catalog_rows=False)
+    assert s["deleted_files"] == 1 and s["dropped_rows"] == 0
+    assert not any("star_0001_" in p for p in _all_paths(cutouts))   # files gone
+    assert {int(st["id"]) for st in cat.load()["stars"]} == {0, 1}   # rows kept
 
 
 # ---------------------------------------------------------------------------

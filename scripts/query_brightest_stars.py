@@ -49,6 +49,11 @@ def parse_args() -> argparse.Namespace:
                    help="Keep only well-measured stars: PSF "
                         "flux_vis_psf / fluxerr_vis_psf ≥ this (e.g. 50). "
                         "Off by default.")
+    p.add_argument("--allow-masked", action="store_true",
+                   help="Drop the default det_quality_flag=0 cut and keep "
+                        "stars touched by any mask (saturation, blending, "
+                        "bright-star masks, …). By default only mask-free "
+                        "stars are kept — the clean set for ePSF construction.")
     p.add_argument("--output-dir", default=Config.DEFAULT_OUTPUT_DIR,
                    help="Star catalog root (stars.csv + cutouts/ live here).")
     return p.parse_args()
@@ -75,6 +80,7 @@ def main() -> int:
         magnitude_limit=args.magnitude_limit,
         magnitude_min=args.magnitude_min,
         snr_min=args.snr_min,
+        require_unmasked=not args.allow_masked,
     )
     print(result["message"])
     if "Query failed" in str(result.get("message", "")):

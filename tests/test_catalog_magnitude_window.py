@@ -103,3 +103,18 @@ def test_no_magnitude_min_omits_upper_bound(tmp_path, captured_query):
     q = captured_query["query"]
     # No '< <number>' clause for flux_vis_psf when magnitude_min unset.
     assert re.search(r"flux_vis_psf\s*<\s*[0-9]", q) is None, q
+
+
+def test_unmasked_cut_on_by_default(tmp_path, captured_query):
+    """Mask-free (``det_quality_flag = 0``) is the default — the clean point
+    sources wanted for ePSF construction (no saturation/blending/bright-star
+    masks)."""
+    cat = StarCatalog(str(tmp_path))
+    cat.query_brightest_stars(num_stars=10)
+    assert re.search(r"det_quality_flag\s*=\s*0", captured_query["query"])
+
+
+def test_allow_masked_drops_the_cut(tmp_path, captured_query):
+    cat = StarCatalog(str(tmp_path))
+    cat.query_brightest_stars(num_stars=10, require_unmasked=False)
+    assert "det_quality_flag" not in captured_query["query"]

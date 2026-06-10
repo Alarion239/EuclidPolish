@@ -179,3 +179,93 @@ def validate_all_cutouts(
         "valid_all_bands":  valid_all,
         "n_bands":          len(band_names),
     }
+
+
+def purge_incomplete_cutouts(
+    cat: StarCatalog,
+    catalog: Dict[str, Any],
+    band_names: Optional[List[str]] = None,
+    *,
+    dry_run: bool = False,
+    drop_catalog_rows: bool = True,
+    reporter: Any = None,
+) -> Dict[str, Any]:
+    """Delete every cutout of any star that is **not valid in all bands**.
+
+    A star is *complete* iff it has a valid cutout in **every** band of
+    ``band_names`` (any size — the same ``want <= valid_bands`` test
+    :func:`validate_all_cutouts` reports as ``valid_all_bands``). A star that
+    is valid in only some bands — or missing a band entirely — is useless to
+    the 4-channel pipeline / ePSF, so **all** of its cutout FITS are removed
+    from disk (every band, every size). Complete stars are left untouched.
+
+    Validity is read from the catalog flags, so run :func:`validate_all_cutouts`
+    first if the on-disk files may have changed since the flags were written.
+
+    With ``drop_catalog_rows`` (default), purged stars are also removed from
+    the catalog so it stays consistent with disk; otherwise the rows are kept
+    (their now-absent cutouts will simply read back as missing on the next
+    integrity pass). ``dry_run`` reports what *would* be deleted, touching
+    neither disk nor catalog.
+
+    Returns ``{"n_bands", "complete_stars", "incomplete_stars",
+    "deleted_files", "failed_deletes", "dropped_rows", "dry_run"}``.
+    """
+    if band_names is None:
+        band_names = [b.name for b in Config.BANDS]
+    want = set(band_names)
+    stars = catalog.get("stars", [])
+    cutouts_root = os.path.join(cat.output_dir, Config.CUTOUTS_SUBDIR)
+
+    # Stars complete across every band are keepers; everything else is purged.
+    purge_ids = {int(s["id"]) for s in stars
+                 if s.get("id") is not None
+                 and not (want <= set(StarCatalog.valid_bands(s)))}
+    complete_count = sum(1 for s in stars
+                         if s.get("id") is not None
+                         and want <= set(StarCatalog.valid_bands(s)))
+
+    # Map every on-disk cutout to its star id, robust to id zero-padding
+    # (filenames are ``star_<id>_<size>.fits`` with ``:04d`` *minimum* width).
+    id_to_paths: Dict[int, List[str]] = {}
+    for bn in band_names:
+        band_dir = Config.cutout_dir_for_band(bn, root=cutouts_root)
+        for path in glob.glob(os.path.join(band_dir, "star_[0-9]*_*.fits")):
+            m = _FNAME_RE.search(os.path.basename(path))
+            if m:
+                id_to_paths.setdefault(int(m.group(1)), []).append(path)
+
+    deleted = failed = 0
+    targets = sorted(purge_ids)
+    for i, sid in enumerate(targets):
+        for path in id_to_paths.get(sid, []):
+            if dry_run:
+                deleted += 1
+                continue
+            try:
+                os.remove(path)
+                deleted += 1
+            except OSError:
+                failed += 1
+        if reporter is not None and targets and (i % 200 == 0 or i == len(targets) - 1):
+            reporter.set_step(i + 1, len(targets), f"purge star {sid:04d}")
+
+    dropped = 0
+    if not dry_run and drop_catalog_rows and purge_ids:
+        catalog["stars"] = [s for s in stars
+                            if not (s.get("id") is not None
+                                    and int(s["id"]) in purge_ids)]
+        ids = [int(s["id"]) for s in catalog["stars"] if s.get("id") is not None]
+        catalog["next_id"] = (max(ids) + 1) if ids else 0
+        cat.save(catalog)
+        dropped = len(purge_ids)
+
+    return {
+        "n_bands":          len(band_names),
+        "complete_stars":   complete_count,
+        "incomplete_stars": len(purge_ids),
+        "deleted_files":    deleted,
+        "failed_deletes":   failed,
+        "dropped_rows":     dropped,
+        "dry_run":          bool(dry_run),
+    }

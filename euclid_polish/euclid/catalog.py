@@ -414,12 +414,20 @@ class StarCatalog:
     def _query_bright_stars(self, ra: float, dec: float, radius: float,
                             magnitude_limit: float,
                             num_stars: Optional[int] = None,
-                            magnitude_min: Optional[float] = None
+                            magnitude_min: Optional[float] = None,
+                            require_unmasked: bool = True
                             ) -> List[Dict[str, Any]]:
         """ADQL cone query on ``mer_catalogue`` (legacy synchronous path).
 
         Uses ``flux_vis_psf`` (TPHOT PSF flux, µJy) + ``fluxerr_vis_psf`` like
-        the async path; magnitudes are proper AB (``Config.AB_ZP_UJY``)."""
+        the async path; magnitudes are proper AB (``Config.AB_ZP_UJY``).
+
+        ``require_unmasked`` adds ``det_quality_flag = 0`` — the MER
+        "clean point source" cut that rejects any source touched by *any* mask
+        (saturation, blending, neighbour contamination, bad pixels, near a CCD
+        border, inside the VIS or NIR bright-star masks, inside an extended-
+        object area, or skipped by the deblender). Wanted for ePSF stars."""
+        unmasked_clause = "\n          AND det_quality_flag = 0" if require_unmasked else ""
         query = f"""
         SELECT TOP 100000
             right_ascension, declination, flux_vis_psf, fluxerr_vis_psf
@@ -429,7 +437,7 @@ class StarCatalog:
             CIRCLE('ICRS', {ra}, {dec}, {radius})
         ) = 1
           AND flux_vis_psf IS NOT NULL
-          AND flux_vis_psf > 0
+          AND flux_vis_psf > 0{unmasked_clause}
         """
         try:
             job = Euclid.launch_job(query)
@@ -466,10 +474,13 @@ class StarCatalog:
     def query_euclid_catalog(self, ra: float, dec: float, radius: float,
                              magnitude_limit: float,
                              num_stars: Optional[int] = None,
-                             magnitude_min: Optional[float] = None
+                             magnitude_min: Optional[float] = None,
+                             require_unmasked: bool = True
                              ) -> Dict[str, Any]:
         """Cone query + dedupe + persist. Faint-end cap is mandatory;
-        ``magnitude_min`` adds a bright-end cutoff to skip saturating stars."""
+        ``magnitude_min`` adds a bright-end cutoff to skip saturating stars.
+        ``require_unmasked`` (default on) keeps only mask-free stars
+        (``det_quality_flag = 0``) — see :meth:`_query_bright_stars`."""
         if (magnitude_min is not None
                 and magnitude_min >= magnitude_limit):
             raise ValueError(
@@ -503,6 +514,7 @@ class StarCatalog:
             magnitude_limit=magnitude_limit,
             num_stars=num_to_add,
             magnitude_min=magnitude_min,
+            require_unmasked=require_unmasked,
         )
         if not new_stars:
             return {
@@ -552,6 +564,7 @@ class StarCatalog:
                               magnitude_limit: Optional[float] = None,
                               magnitude_min: Optional[float] = None,
                               snr_min: Optional[float] = None,
+                              require_unmasked: bool = True,
                               ) -> Dict[str, Any]:
         """Server-side TOP-N query sorted by VIS **PSF** flux (descending).
 
@@ -561,6 +574,12 @@ class StarCatalog:
         flux + error are stored so the star-anchor delta uses the physical
         flux directly (and a zeropoint tweak never needs a re-query).
         ``snr_min`` keeps only well-measured stars (``flux/fluxerr ≥ snr_min``).
+        ``require_unmasked`` (default on) keeps only mask-free stars via
+        ``det_quality_flag = 0`` — the MER "clean point source" cut rejecting
+        any source touched by *any* mask (saturation, blending, neighbour
+        contamination, bad pixels, CCD border, VIS/NIR bright-star masks,
+        extended-object area, or deblender-skip). The clean cut we want for
+        ePSF construction.
         """
         if num_stars <= 0:
             raise ValueError("num_stars must be positive")
@@ -590,6 +609,8 @@ class StarCatalog:
             where_clauses.append(f"flux_vis_psf < {flux_max}")
         if snr_min is not None and snr_min > 0:
             where_clauses.append(f"flux_vis_psf > {float(snr_min)} * fluxerr_vis_psf")
+        if require_unmasked:
+            where_clauses.append("det_quality_flag = 0")
         if all(cone_given):
             where_clauses.append(
                 f"CONTAINS(POINT('ICRS', right_ascension, declination), "

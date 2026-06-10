@@ -798,6 +798,12 @@ class InteractiveCLI:
                 return
             mag_min_val = float(mag_min)
 
+        require_unmasked = confirm(
+            "Require mask-free stars (det_quality_flag=0 — no saturation, "
+            "blending, or bright-star masks; recommended for ePSF)?",
+            default=True,
+        ).ask()
+
         if not auth.is_authenticated():
             print("\n⚠️  Not logged in: async job results are still fetched now, but")
             print("    the job record is garbage-collected after 72h on the server.")
@@ -816,6 +822,7 @@ class InteractiveCLI:
                 radius=radius_val,
                 magnitude_limit=mag_val,
                 magnitude_min=mag_min_val,
+                require_unmasked=require_unmasked,
             )
             print(f"\n{result['message']}")
             if result.get('skipped', 0) > 0:
