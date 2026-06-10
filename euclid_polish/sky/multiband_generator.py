@@ -500,7 +500,7 @@ class MultiBandSimulator:
         return res[0] if res is not None else None
 
     def _sample_tng_lens_system(
-        self, rng: np.random.Generator, *, max_tries: int = 12,
+        self, rng: np.random.Generator, *, max_tries: int = 32,
     ) -> Optional[tuple]:
         """Pick a TNG subhalo as the deflector of one lens system.
 
@@ -538,7 +538,7 @@ class MultiBandSimulator:
 
     def _add_lens_pure(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-        *, max_tries: int = 12,
+        *, max_tries: int = 32,
     ) -> Optional[dict]:
         """Catalog-free lens system: TNG deflector + TNG source.
 
