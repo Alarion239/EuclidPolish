@@ -13,7 +13,10 @@ Four modes (one object per mode, chosen at random):
 
   --mode sersic   a single analytic Sérsic bulge+disk galaxy (COSMOS row)
   --mode star     a single point source (PSF-free delta; fixed G-type colour)
-  --mode lens     a gravitational lens system (SIE + shear, lensed source)
+  --mode lens     a gravitational lens system — SIE + shear deflection with a
+                  real TNG50 deflector and lensed source, the same pure-TNG
+                  lens model the main training pipeline uses (needs the TNG
+                  atlas downloaded)
   --mode tng      a single real TNG50 SKIRT galaxy stamp
 
 Outputs (under ``$EUCLID_POLISH_DATA_DIR/_poster/``, fixed names so each run
@@ -43,6 +46,13 @@ from astropy.io import fits
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# Make ``euclid_polish`` importable when run as a bare script (``python
+# scripts/fasrc_poster_cutout.py``) and not just via ``python -m`` — the same
+# bootstrap every other script under scripts/ uses.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
 from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
@@ -131,19 +141,27 @@ def generate_cutout(
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
 
-    # TNG mode draws real stamps (tng_fraction=1 → every galaxy slot is a TNG
-    # stamp); the other modes stay pure-Sérsic/analytic (tng_fraction=0).
+    # Pure-TNG mode (tng_fraction=1) makes every galaxy / lens-light / lensed
+    # source a real TNG50 stamp — exactly how the main training pipeline runs
+    # (fasrc_pipeline defaults tng_fraction=1.0). Both `tng` and `lens` modes
+    # use it so the poster object matches the training scenes: in particular,
+    # `lens` then goes through MultiBandSimulator._add_lens_pure (TNG deflector
+    # + TNG lensed source, SIE+shear geometry), the same lens model the
+    # pipeline produces — not the legacy analytic-Sérsic catalog path. The
+    # `sersic`/`star` modes stay analytic (tng_fraction=0).
+    pure_tng_mode = mode in ("tng", "lens")
     cfg = MultiBandGeneratorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=(1.0 if mode == "tng" else 0.0),
+        tng_fraction=(1.0 if pure_tng_mode else 0.0),
     )
     cat = open_cosmos2025(path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
     sim = MultiBandSimulator(cat, cfg)
-    if mode == "tng" and not sim.tng_galaxies:
+    if pure_tng_mode and not sim.tng_galaxies:
         raise RuntimeError(
             f"no downloaded TNG galaxies under {cfg.tng_galaxy_dir} — run the "
-            "TNG atlas download first, or pick another mode.")
+            f"TNG atlas download first ('{mode}' uses pure-TNG mode to match "
+            "the training pipeline), or pick another mode.")
 
     # Centre the single object: _random_pix is the sole source of source
     # positions, so overriding it places every object at the field centre.
