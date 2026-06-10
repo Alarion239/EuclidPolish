@@ -32,11 +32,8 @@
                    font-size:0.78em; padding:2px 7px; line-height:1.4;
                    background:#5a2230; border:1px solid #7a3340; color:#f0c0c0;"
             title="Erase the current model (local + FASRC) so you can train a fresh one. Tracking backups are NOT touched.">🗑️ delete model</button>
-    <button class="tk-track-btn" style="float:right;"
-            data-track-kind="model"
-            data-track-ckpt="{{ checkpoints.dir }}"
-            data-track-title="Back up checkpoint + training history"
-            data-track-label="{{ checkpoints.dir }} — checkpoints + training_log.csv + loss_best/">📌 track model</button>
+    <button id="btn-track-model" type="button" class="tk-track-btn" style="float:right;"
+            title="Back up the current checkpoint dir (checkpoints + training_log.csv + loss_best/). Respects the VIS-only toggle.">📌 track model</button>
     {% endif %}
   </h3>
   {% if checkpoints.files %}
@@ -144,6 +141,21 @@ if (_delBtn) _delBtn.onclick = async () => {
     _delBtn.disabled = false; _delBtn.textContent = orig;
     location.reload();
   }
+};
+
+// "📌 track model" — back up the selected checkpoint dir (4-channel base or
+// the VIS-only "-vis" sibling, per the toggle). Explicit handler so it follows
+// _ttCkpt() instead of a hardcoded data-attr.
+const _trkModelBtn = document.getElementById("btn-track-model");
+if (_trkModelBtn) _trkModelBtn.onclick = () => {
+  const dir = _ttCkpt();
+  polishUI.track.open({
+    kind:     "model",
+    ckpt_dir: dir,
+    name:     _visLogOn() ? "wdsr-vis" : "wdsr",
+    title:    "Back up & track the checkpoint",
+    label:    `${dir} — checkpoints + training_log.csv + loss_best/`,
+  });
 };
 
 // "📌 track plot" — render the plot fresh so the PNG on disk is current,

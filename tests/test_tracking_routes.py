@@ -199,3 +199,32 @@ def test_backup_model_bundles_training_log_plot(client, tmp_path, monkeypatch):
     assert os.path.isfile(os.path.join(bdir, "training_log.csv"))
     # The rendered plot is bundled alongside the checkpoint.
     assert os.path.isfile(os.path.join(bdir, "training_log.png"))
+
+
+def test_backup_model_accepts_vis_only_sibling(client, tmp_path, monkeypatch):
+    """Tracking the VIS-only model must back up the sibling ``-vis`` dir when
+    the request passes it as ``ckpt_dir`` (the training page sends this when
+    the VIS-only toggle is on)."""
+    base = tmp_path / "ckpt" / "wdsr"
+    visd = tmp_path / "ckpt" / "wdsr-vis"
+    base.mkdir(parents=True)
+    visd.mkdir(parents=True)
+    # Only the -vis dir has checkpoint files — we're backing that one up.
+    (visd / "checkpoint").write_text('model_checkpoint_path: "ckpt-7"\n')
+    (visd / "ckpt-7.index").write_bytes(b"i")
+    (visd / "ckpt-7.data-00000-of-00001").write_bytes(b"w")
+    (visd / "training_log.csv").write_text("step\n7\n")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(base))
+
+    client.post("/api/tracking/new", data={"title": "visbk"})
+    r = client.post("/api/tracking/backup",
+                    data={"kind": "model", "comment": "vis model",
+                          "name": "mvis", "ckpt_dir": str(visd)})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()["ok"]
+
+    from euclid_polish.tracking import default_store
+    bdir = default_store().model_backup_dir("current", "mvis")
+    # The -vis checkpoint files made it into the backup.
+    assert os.path.isfile(os.path.join(bdir, "ckpt-7.index"))
+    assert os.path.isfile(os.path.join(bdir, "training_log.csv"))
