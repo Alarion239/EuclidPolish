@@ -130,6 +130,14 @@ def parse_args() -> argparse.Namespace:
                         "convolves via an explicit FFT (O(N log N)), so the "
                         "full PSF — wings and all — is exact and fast. Set a "
                         "positive value only to ablate the PSF wings.")
+    p.add_argument("--vis-only", action="store_true",
+                   help="Feed the model VIS only (1 input channel) instead of "
+                        "the full VIS+NISP stack (4 channels). Records still "
+                        "store all 4 bands — the loader slices to VIS in-graph "
+                        "and the model is built with 1 input channel. The "
+                        "checkpoint dir gets a '-vis' suffix so a 1-channel "
+                        "model never collides with (or overwrites) the "
+                        "4-channel checkpoints.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -137,10 +145,21 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
+
+    # VIS-only input: 1 LR channel instead of VIS+NISP (4). Isolate the
+    # checkpoints under a '-vis' suffix so a 1-channel model never tries to
+    # restore — or overwrite — the incompatible 4-channel checkpoints sharing
+    # the configured ckpt dir.
+    nchan_lr = 1 if args.vis_only else Config.NUM_LR_CHANNELS
+    if args.vis_only:
+        args.ckpt_dir = args.ckpt_dir.rstrip("/") + "-vis"
+
     print("=" * 64)
     print(f"  WDSR training with HST + star-anchor mix")
     print("=" * 64)
     print(f"  steps              = {args.steps}")
+    print(f"  LR input           = "
+          f"{'VIS only (1 ch)' if args.vis_only else 'VIS+NISP (4 ch)'}")
     print(f"  batch layout       = syn {args.n_syn} / hst {args.n_hst} / "
           f"anchor {args.n_anchor}  "
           f"(batch {args.n_syn + args.n_hst + args.n_anchor})")
@@ -185,16 +204,19 @@ def main() -> int:
             records_dir=args.records_syn,
             hst_records_dir=args.records_hst if use_hst else None,
             anchor_records_dir=args.records_anchor if use_anchor else None,
+            vis_only=args.vis_only,
         ).dataset_fixed_layout(n_syn, n_hst, n_anchor, random_transform=True)
     else:
         print(f"      pure-synthetic batch: {batch_size}")
         train_dataset = MultiBandEuclidDataset(
             subset="train",
             records_dir=args.records_syn,
+            vis_only=args.vis_only,
         ).dataset(batch_size=batch_size, random_transform=True)
     valid_dataset = MultiBandEuclidDataset(
         subset="validate",
         records_dir=args.records_syn,
+        vis_only=args.vis_only,
     ).dataset(batch_size=batch_size, random_transform=False,
               repeat_count=1)
 
@@ -210,6 +232,7 @@ def main() -> int:
             hst_valid_dataset = MultiBandEuclidDataset(
                 subset="validate",
                 records_dir=args.records_hst,
+                vis_only=args.vis_only,
             ).dataset(batch_size=batch_size,
                       random_transform=False, repeat_count=1)
         except FileNotFoundError:
@@ -222,6 +245,7 @@ def main() -> int:
             subset="validate",
             records_dir=args.records_syn,
             anchor_records_dir=args.records_anchor,
+            vis_only=args.vis_only,
         ).anchor_dataset(batch_size=batch_size, random_transform=False,
                          repeat_count=1)
         if anchor_valid_dataset is None:
@@ -233,7 +257,7 @@ def main() -> int:
     scale = Config.DEFAULT_REBIN_FACTOR
     model = wdsr(
         scale=scale, num_res_blocks=args.num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+        nchan_in=nchan_lr, nchan_out=Config.NUM_HR_CHANNELS,
     )
     # Learning rate: a constant when ``--learning-rate`` is given, else the
     # two-phase decay (1e-3 → 5e-4 at the half-way step). Adam accepts a

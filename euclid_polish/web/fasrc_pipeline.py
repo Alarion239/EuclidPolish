@@ -906,6 +906,11 @@ class HSTTrainStep(FASRCPipelineStep):
         # callers that omit it keep the default too.
         overwrite_best      = str(params.get("overwrite_best", "")).strip() \
             in ("1", "true", "True", "on", "yes")
+        # Checkbox: feed VIS only (1 channel) instead of VIS+NISP (4). The
+        # training script slices the data and builds a 1-channel model, and
+        # isolates the checkpoints under a '-vis' suffix.
+        vis_only            = str(params.get("vis_only", "")).strip() \
+            in ("1", "true", "True", "on", "yes")
         cmd = [
             "scripts/fasrc_train_with_hst.py",
             "--steps", str(steps),
@@ -928,6 +933,8 @@ class HSTTrainStep(FASRCPipelineStep):
         # (e.g. after an architecture change). Default keeps the baseline.
         if overwrite_best:
             cmd += ["--no-resume-baseline"]
+        if vis_only:
+            cmd += ["--vis-only"]
         # Emit a lane's flags only when its count > 0, so a supervised-only
         # submission stays minimal. ``--forward-op-crop-half`` now belongs to
         # the HST forward op (the anchor lane is operator-free).

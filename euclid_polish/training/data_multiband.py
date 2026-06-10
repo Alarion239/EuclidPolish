@@ -152,6 +152,7 @@ class MultiBandEuclidDataset:
         hst_fraction: float = 0.0,
         anchor_records_dir: Optional[str] = None,
         anchor_fraction: float = 0.0,
+        vis_only: bool = False,
     ):
 
         if subset not in ("train", "validate"):
@@ -173,6 +174,12 @@ class MultiBandEuclidDataset:
         self.subset             = subset
         self.hst_fraction       = float(hst_fraction)
         self.anchor_fraction    = float(anchor_fraction)
+        # VIS-only: feed the model just the VIS channel (index 0) instead of
+        # the full VIS+NISP stack. Records still store all 4 LR channels; we
+        # slice to VIS in-graph after the per-band asinh stretch. Applies to
+        # every lane (syn/HST/anchor) since all route through
+        # ``_build_single_source``.
+        self.vis_only           = bool(vis_only)
 
         self.clean_file, self.dirty_file = self._resolve_pair(
             records_dir, subset,
@@ -238,9 +245,14 @@ class MultiBandEuclidDataset:
         """One (dirty, clean) → (lr, hr) tf.data pipeline, pre-batch."""
         n_lr = Config.NUM_LR_CHANNELS
         n_hr = Config.NUM_HR_CHANNELS
+        vis_only = self.vis_only
 
         def _parse_lr(raw):
-            return asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
+            # Always parse the 4 stored channels and stretch with the
+            # per-band (length-4) scale, then slice VIS (channel 0) when
+            # vis_only so VIS keeps its own asinh knee.
+            lr = asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
+            return lr[..., :1] if vis_only else lr
 
         def _parse_hr(raw):
             return asinh_stretch_hr(parse_record_graph_v2(raw, n_hr))

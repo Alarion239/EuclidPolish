@@ -103,6 +103,25 @@ def test_multiband_dataset_without_augmentation(tmp_path):
     assert hr.shape == (1, 64, 64, 1)
 
 
+def test_vis_only_slices_lr_to_single_channel(tmp_path):
+    """``vis_only=True`` feeds 1 LR channel; HR target is unchanged, and the
+    one channel is exactly VIS (index 0) of the full 4-channel stretch."""
+    rdir = _write_test_records(tmp_path)
+    full = MultiBandEuclidDataset(
+        subset="train", records_dir=rdir,
+    ).dataset(batch_size=1, random_transform=False, repeat_count=1)
+    vis = MultiBandEuclidDataset(
+        subset="train", records_dir=rdir, vis_only=True,
+    ).dataset(batch_size=1, random_transform=False, repeat_count=1)
+    lr4, hr4 = next(iter(full))
+    lr1, hr1 = next(iter(vis))
+    assert lr1.shape == (1, 32, 32, 1)        # VIS only
+    assert hr1.shape == (1, 64, 64, 1)        # HR target unchanged
+    # The retained channel is VIS (channel 0), keeping its own asinh knee.
+    np.testing.assert_allclose(lr1[..., 0].numpy(), lr4[..., 0].numpy(),
+                               rtol=0, atol=0)
+
+
 # ---------------------------------------------------------------------------
 # 3-source mixing (synthetic + HST + star-anchor fixed layout)
 # ---------------------------------------------------------------------------

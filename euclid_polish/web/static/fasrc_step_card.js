@@ -407,7 +407,11 @@ large cutout don't leak across train/validate."></label>`;
       <label class="checkbox-field" style="flex-basis:100%;"
              title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change (e.g. new output head / lane counts), when the old score is meaningless. No effect on a fresh run.">
         <input type="checkbox" name="overwrite_best" value="1">
-        Overwrite previous best (skip resume baseline)</label>`;
+        Overwrite previous best (skip resume baseline)</label>
+      <label class="checkbox-field" style="flex-basis:100%;"
+             title="Feed the model VIS only (1 input channel) instead of the full VIS+NISP stack (4 channels). The TFRecords keep all 4 bands; the loader slices to VIS in-graph and the model is built with 1 input channel. Checkpoints go to a separate '-vis' directory so a 1-channel model never collides with (or overwrites) your 4-channel checkpoints.">
+        <input type="checkbox" name="vis_only" value="1">
+        VIS-only input (1 channel, no NISP)</label>`;
   }
 
   // ── Resource-field markup ──────────────────────────────────────────
