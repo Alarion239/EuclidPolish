@@ -150,7 +150,8 @@ def register(app):
         # remain page-level.
         jc = job_config.load()
         ckpt_dir = _ckpt_dir_for_kind(
-            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"))
+            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"),
+            request.form.get("vis_only"))
         nrb = Config.DEFAULT_NUM_RES_BLOCKS
         asinh = _parse_asinh_scale(str(jc.asinh_scale))
         hr_size = jc.hr_image_size
@@ -193,7 +194,8 @@ def register(app):
         # from the universal /config tab. ckpt_kind / cutout_size stay
         # page-level (cutout_size is a real-cutout knob, not delegated).
         ckpt_dir = _ckpt_dir_for_kind(
-            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"))
+            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"),
+            request.form.get("vis_only"))
         nrb = Config.DEFAULT_NUM_RES_BLOCKS
         size = int(request.form.get("cutout_size", 512))
         if not (32 <= size <= 4096):

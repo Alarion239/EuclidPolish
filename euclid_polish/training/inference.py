@@ -56,6 +56,30 @@ def scaled_wcs_header(vis_header, scale: int):
     return hdr
 
 
+def infer_checkpoint_nchan_in(checkpoint_dir: str) -> Optional[int]:
+    """Number of LR input channels a saved checkpoint's model expects, or None.
+
+    The checkpoint *is* the source of truth for the architecture — a VIS-only
+    run saves a 1-channel WDSR (``ckpt/wdsr-vis``), a normal run a 4-channel
+    one (``ckpt/wdsr``). We read it straight from the stored weight shapes so
+    every consumer loads the right model without needing to know about the
+    ``-vis`` naming convention: the input convolutions are the only kernels
+    whose in-channel dim is the LR channel count (1 or 4); every body kernel
+    is ``num_filters`` (32) wide, so the minimum in-channel dim over all 4-D
+    conv kernels is exactly ``nchan_in``. Returns None if no checkpoint or the
+    shapes can't be read (caller falls back to its explicit value)."""
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        shapes = reader.get_variable_to_shape_map()
+    except Exception:    # pragma: no cover — unreadable ckpt → caller default
+        return None
+    in_dims = [shp[2] for shp in shapes.values() if len(shp) == 4]
+    return int(min(in_dims)) if in_dims else None
+
+
 def load_model_from_checkpoint(
     checkpoint_dir: str,
     scale: int,
@@ -66,15 +90,28 @@ def load_model_from_checkpoint(
 ):
     """Build a WDSR model and restore weights from a TF checkpoint directory.
 
-    For the multi-band pipeline pass ``nchan_in=4, nchan_out=1``. The
-    single-channel signature ``nchan=1`` is still accepted.
+    ``nchan_in`` is normally inferred from the checkpoint itself (see
+    :func:`infer_checkpoint_nchan_in`), so a VIS-only (1-channel) and a
+    standard (4-channel) checkpoint both load correctly with no caller
+    changes. An explicitly passed ``nchan_in`` is honoured only when the
+    checkpoint can't be introspected; if it disagrees with the checkpoint, the
+    checkpoint wins (building a mismatched model would silently leave the input
+    layer at random init under ``expect_partial``).
     """
     if nchan is not None and nchan_in is None:
         nchan_in = nchan
+
+    ckpt_nchan_in = infer_checkpoint_nchan_in(checkpoint_dir)
+    if ckpt_nchan_in is not None:
+        if nchan_in is not None and nchan_in != ckpt_nchan_in:
+            print(f"  note: checkpoint has nchan_in={ckpt_nchan_in} "
+                  f"(requested {nchan_in}); using the checkpoint's.")
+        nchan_in = ckpt_nchan_in
     if nchan_in is None:
         nchan_in = 1
     if nchan_out is None:
-        nchan_out = nchan_in
+        # SR target is always VIS-only; never tie it to the LR channel count.
+        nchan_out = Config.NUM_HR_CHANNELS
 
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
@@ -85,7 +122,7 @@ def load_model_from_checkpoint(
     if latest is None:
         raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
     checkpoint.restore(latest).expect_partial()
-    print(f"Model restored from checkpoint at {latest}.")
+    print(f"Model restored from checkpoint at {latest} (nchan_in={nchan_in}).")
     return model
 
 
@@ -170,6 +207,24 @@ def reconstruct(
     else:
         raise ValueError(
             f"reconstruct(): expected 2D or 3D input, got shape {lr_data.shape}"
+        )
+
+    # Match the cube to what the model expects. A VIS-only (1-channel) model
+    # gets just VIS (channel 0); a 4-channel model gets the full stack. The
+    # LR band order is [VIS, Y_E, J_E, H_E] (VIS first), so ``[..., :n_in]``
+    # selects the right leading channels for either. Callers can therefore
+    # always hand us the full 4-band cube and let the model decide.
+    try:
+        n_in = int(model.inputs[0].shape[-1])
+    except (AttributeError, IndexError, TypeError):
+        n_in = lr_for_model.shape[-1]
+    c = lr_for_model.shape[-1]
+    if c > n_in:
+        lr_for_model = lr_for_model[..., :n_in]
+    elif c < n_in:
+        raise ValueError(
+            f"reconstruct(): model expects {n_in} input channels but the LR "
+            f"input has only {c}"
         )
 
     scale_e = float(Config.STRETCH_SCALE_E)

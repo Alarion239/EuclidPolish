@@ -70,7 +70,7 @@ def main() -> int:
     scale = Config.DEFAULT_REBIN_FACTOR
     model = load_model_from_checkpoint(
         args.ckpt_dir, scale, args.num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
     )
     print(f"loaded checkpoint: {latest}")
     print(f"position: RA={args.ra:.5f}  Dec={args.dec:+.5f}  "

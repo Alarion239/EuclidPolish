@@ -1176,8 +1176,7 @@ class InteractiveCLI:
             print(f"\nLoading model from {checkpoint_dir}...")
             model = load_model_from_checkpoint(
                 checkpoint_dir, scale_val, num_res_blocks_val,
-                nchan_in=Config.NUM_LR_CHANNELS,
-                nchan_out=Config.NUM_HR_CHANNELS,
+                nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
             )
 
             valid_loader = MultiBandEuclidDataset(
@@ -1333,8 +1332,7 @@ class InteractiveCLI:
                 print(f"\nLoading model from checkpoint {ckpt_dir}...")
                 model = load_model_from_checkpoint(
                     ckpt_dir, scale_val, num_res_blocks_val,
-                    nchan_in=Config.NUM_LR_CHANNELS,
-                    nchan_out=Config.NUM_HR_CHANNELS,
+                    nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
                 )
             else:
                 weights_path = input("Path to .h5 weights file: ").strip()

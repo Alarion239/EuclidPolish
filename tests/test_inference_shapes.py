@@ -5,8 +5,13 @@ under the current 4-band WDSR model."""
 from __future__ import annotations
 
 import numpy as np
+import tensorflow as tf
 
-from euclid_polish.training.inference import reconstruct
+from euclid_polish.training.inference import (
+    infer_checkpoint_nchan_in,
+    load_model_from_checkpoint,
+    reconstruct,
+)
 from euclid_polish.training.models.wdsr import wdsr
 
 
@@ -36,3 +41,37 @@ def test_reconstruct_3d_multi_channel_input():
     # LR returned for display is VIS-only (channel 0).
     assert lr_out.shape == (32, 32)
     assert sr_out.shape == (64, 64)
+
+
+def test_reconstruct_slices_4band_cube_for_vis_only_model():
+    """A VIS-only (1-channel) model fed the full 4-band cube must slice to
+    VIS (channel 0) automatically — callers always pass the full cube."""
+    lr = np.random.randn(32, 32, 4).astype(np.float32) * 1000.0
+    lr_out, sr_out = reconstruct(_model(1), lr)
+    assert lr_out.shape == (32, 32)
+    assert sr_out.shape == (64, 64)
+
+
+def test_reconstruct_rejects_too_few_channels():
+    """A 4-channel model fed a 1-channel cube can't be widened — clear error."""
+    lr = np.random.randn(32, 32, 1).astype(np.float32) * 1000.0
+    try:
+        reconstruct(_model(4), lr)
+    except ValueError as e:
+        assert "input channels" in str(e)
+    else:
+        raise AssertionError("expected ValueError for too-few channels")
+
+
+def test_checkpoint_self_describes_channel_count(tmp_path):
+    """``infer_checkpoint_nchan_in`` reads the LR channel count from the saved
+    weights, and ``load_model_from_checkpoint`` rebuilds the matching model
+    without the caller specifying ``nchan_in`` — the basis for loading a
+    VIS-only (1-ch) and a standard (4-ch) checkpoint everywhere alike."""
+    for nin in (1, 4):
+        d = str(tmp_path / f"ckpt{nin}")
+        ck = tf.train.Checkpoint(model=_model(nin))
+        ck.save(d + "/ckpt")
+        assert infer_checkpoint_nchan_in(d) == nin
+        m = load_model_from_checkpoint(d, scale=2, num_res_blocks=2)
+        assert int(m.inputs[0].shape[-1]) == nin

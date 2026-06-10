@@ -155,7 +155,7 @@ def _job_generate_reconstruct(
             raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
         model = load_model_from_checkpoint(
             checkpoint_dir, scale, num_res_blocks,
-            nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+            nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
         )
 
         out_dir = Config.VIS_RECONSTRUCTION_DIR
@@ -331,7 +331,7 @@ def _job_reconstruct_euclid_cutout(
     scale = Config.DEFAULT_REBIN_FACTOR
     model = load_model_from_checkpoint(
         checkpoint_dir, scale, num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
     )
 
     # Single overwrite slot: wipe every previous cutout record (the old
@@ -615,7 +615,7 @@ def _job_roundtrip_inspect(
         cap.tick(2, 4, "running model + round-trip forward")
         model = load_model_from_checkpoint(
             checkpoint_dir, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
-            nchan_in=Config.NUM_LR_CHANNELS, nchan_out=Config.NUM_HR_CHANNELS,
+            nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
         )
         _, sr_data = reconstruct(model, lr_cube)
         try:

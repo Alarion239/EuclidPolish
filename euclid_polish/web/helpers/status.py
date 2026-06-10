@@ -224,9 +224,16 @@ def _checkpoints_status() -> Dict[str, Any]:
     """
     ckpt_dir = Config.DEFAULT_CHECKPOINT_DIR
     out: Dict[str, Any] = {"dir": ckpt_dir, "files": []}
-    if os.path.isdir(ckpt_dir):
-        for dirpath, _dirs, files in os.walk(ckpt_dir):
-            subdir = os.path.relpath(dirpath, ckpt_dir)
+    # The standard 4-channel model lives in ``ckpt_dir``; the VIS-only
+    # (1-channel) model in the sibling ``ckpt_dir-vis``. List both so the UI
+    # shows whichever exist. Each entry's ``variant`` ("" / "vis") +
+    # ``subdir`` (""/"loss_best") locate it unambiguously.
+    roots = [("", ckpt_dir), ("vis", ckpt_dir.rstrip("/") + "-vis")]
+    for variant, root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            subdir = os.path.relpath(dirpath, root)
             subdir = "" if subdir == "." else subdir
             for fname in sorted(files):
                 full = os.path.join(dirpath, fname)
@@ -235,12 +242,13 @@ def _checkpoints_status() -> Dict[str, Any]:
                     out["files"].append({
                         "name":    fname,
                         "rel":     rel,                       # loss_best/ckpt-11.index
+                        "variant": variant,                   # "" (4ch) or "vis"
                         "subdir":  subdir,                    # "" (root) or "loss_best"
                         "folder":  os.path.normpath(dirpath),  # ckpt/wdsr/loss_best
                         "size_mb": round(os.path.getsize(full) / 1e6, 1),
                     })
-    # Root track first, then sub-tracks; files sorted within each folder.
-    out["files"].sort(key=lambda f: (f["subdir"], f["name"]))
+    # 4-channel first, then VIS-only; root track before sub-tracks; sorted.
+    out["files"].sort(key=lambda f: (f["variant"], f["subdir"], f["name"]))
     return out
 
 
@@ -321,16 +329,27 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     return None
 
 
-def _ckpt_dir_for_kind(checkpoint_dir: str, kind: Optional[str]) -> str:
+def _ckpt_dir_for_kind(checkpoint_dir: str, kind: Optional[str],
+                       vis_only: Any = False) -> str:
     """Resolve the inference checkpoint dir for the chosen save-best track.
 
     The trainer keeps two checkpoint sets: PSNR-best at ``checkpoint_dir``
     and combined-loss-best in the ``loss_best/`` subfolder. ``kind="loss"``
     selects the latter; anything else (incl. None) → the PSNR-best root.
+
+    ``vis_only`` (truthy, incl. the form strings "1"/"on"/"true"/"yes")
+    selects the VIS-only (1-channel) model, whose checkpoints live in the
+    sibling ``<checkpoint_dir>-vis`` directory. The ``-vis`` suffix is applied
+    to the *base* before the ``loss_best`` subfolder, so both tracks of the
+    VIS-only model are reachable. The model itself self-describes its channel
+    count on load, so only the path needs steering here.
     """
+    truthy = str(vis_only).strip().lower() in ("1", "on", "true", "yes") \
+        if not isinstance(vis_only, bool) else vis_only
+    base = checkpoint_dir.rstrip("/") + "-vis" if truthy else checkpoint_dir
     if (kind or "").strip().lower() == "loss":
-        return os.path.join(checkpoint_dir, "loss_best")
-    return checkpoint_dir
+        return os.path.join(base, "loss_best")
+    return base
 
 
 def _record_count(name: str, records_dir: Optional[str] = None) -> Optional[int]:

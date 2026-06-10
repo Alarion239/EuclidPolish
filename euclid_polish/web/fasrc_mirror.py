@@ -86,8 +86,11 @@ class Mirror:
             self.status.last_run_at = time.time()
             return
         cfg = fasrc_config.load()
-        remote = cfg.ckpt_dir.rstrip("/") + "/"
-        local  = (cfg.local_ckpt_mirror or Config.DEFAULT_CHECKPOINT_DIR)
+        remote_base = cfg.ckpt_dir.rstrip("/")
+        local_base  = (cfg.local_ckpt_mirror or
+                       Config.DEFAULT_CHECKPOINT_DIR).rstrip("/")
+        remote = remote_base + "/"
+        local  = local_base
         os.makedirs(local, exist_ok=True)
         try:
             rc, out, err = STATE.ssh.rsync_pull(
@@ -106,6 +109,26 @@ class Mirror:
         self.status.last_stdout = out.strip()[-2000:]
         self.status.remote_dir  = remote
         self.status.local_dir   = local
+
+        # Best-effort pull of the VIS-only sibling (1-channel model lives in
+        # ``<ckpt_dir>-vis``). It may not exist — no VIS-only run yet — so its
+        # absence is NOT an error: we only append a note, never touch
+        # ``last_error`` / ``last_rc`` (those stay the authoritative base sync).
+        vis_remote = remote_base + "-vis/"
+        vis_local  = local_base + "-vis"
+        try:
+            os.makedirs(vis_local, exist_ok=True)
+            v_rc, v_out, _v_err = STATE.ssh.rsync_pull(
+                vis_remote, vis_local,
+                extra_args=["--delete-after"],
+                timeout=600,
+            )
+            if v_rc == 0 and v_out.strip():
+                self.status.last_stdout = (
+                    self.status.last_stdout + "\n[-vis] " + v_out.strip()
+                )[-2000:]
+        except Exception:    # pragma: no cover — sibling is optional
+            pass
 
 
 MIRROR = Mirror(period_seconds=60)

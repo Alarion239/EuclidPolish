@@ -196,6 +196,10 @@
         <option value="psnr">PSNR-best</option>
         <option value="loss">Loss-best (loss_best/)</option>
       </select></label>
+    <label style="display:flex; align-items:center; gap:6px;"
+           title="Use the VIS-only (1-channel) model from the sibling '-vis' checkpoint dir instead of the 4-channel VIS+NISP model. The model self-describes its channel count on load and is fed VIS only.">
+      <input type="checkbox" name="vis_only" value="1" style="margin:0;">
+      <span>VIS-only model (-vis)</span></label>
     <label title="Number of independent scenes to generate + reconstruct in one run.">
       Number of pairs
       <input type="number" name="n_pairs" value="1" min="1" max="8"></label>
@@ -227,6 +231,10 @@
         <option value="psnr">PSNR-best</option>
         <option value="loss">Loss-best (loss_best/)</option>
       </select></label>
+    <label style="display:flex; align-items:center; gap:6px;"
+           title="Use the VIS-only (1-channel) model from the sibling '-vis' checkpoint dir instead of the 4-channel VIS+NISP model. The model self-describes its channel count on load and is fed VIS only.">
+      <input type="checkbox" name="vis_only" value="1" style="margin:0;">
+      <span>VIS-only model (-vis)</span></label>
     <p class="hint" style="flex-basis:100%;">asinh scale comes from the
        <a href="/config">⚙️ Config</a> tab; residual blocks + checkpoint dir use defaults.</p>
     <label style="display:flex; align-items:center; gap:6px;"
