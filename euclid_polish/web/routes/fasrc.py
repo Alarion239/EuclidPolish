@@ -1180,8 +1180,14 @@ def register(app):
             return jsonify({"ok": False, "error": "missing started_at"}), 400
 
         cfg = fasrc_config.load()
-        csv_path   = f"{cfg.ckpt_dir}/training_log.csv"
-        jsonl_path = f"{cfg.ckpt_dir}/training_log.jsonl"
+        # VIS-only runs train into the sibling "<ckpt_dir>-vis" dir, so their
+        # training_log.csv lives there. ``vis_only`` steers the remote read.
+        base = cfg.ckpt_dir.rstrip("/")
+        if request.args.get("vis_only", "").strip().lower() in (
+                "1", "on", "true", "yes"):
+            base += "-vis"
+        csv_path   = f"{base}/training_log.csv"
+        jsonl_path = f"{base}/training_log.jsonl"
 
         # Fetch whichever log file exists. Cap to 50k lines (~20 MB) so
         # the SSH payload stays bounded for very long training histories.

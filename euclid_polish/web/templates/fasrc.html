@@ -185,7 +185,11 @@
       <section class="card" id="cs-plot-card" style="display:none;">
         <h3>Training curves
           <span class="muted" id="cs-plot-msg"
-                style="font-weight:normal; font-size:12px;"></span></h3>
+                style="font-weight:normal; font-size:12px;"></span>
+          <label style="float:right; font-weight:normal; font-size:12px; cursor:pointer;"
+                 title="Read the log from the VIS-only model's dir (ckpt_dir-vis) instead of the 4-channel model's.">
+            <input type="checkbox" id="cs-plot-vis" style="margin:0 4px 0 0; vertical-align:middle;">
+            VIS-only</label></h3>
         <p class="hint" style="margin-top:0;">
           Synthetic PSNR ┃ HST PSNR ┃ cycle-run (round-trip) PSNR, this
           run only. Refreshes with the status poll.
@@ -563,15 +567,19 @@ function _renderQueue(q) {
 // cycle-run PSNR). ended_at=0 → the endpoint uses now() as the upper
 // bound, so an in-flight run's window grows each poll. A 404 (no
 // validation rows yet, or a non-training job) hides the card.
+let _lastPlotStart = 0;
 function _refreshCurrentPlot(startedAt) {
+  _lastPlotStart = startedAt || 0;
   const card = $('cs-plot-card');
   const img  = $('cs-plot-img');
   const msg  = $('cs-plot-msg');
   if (!startedAt) { card.style.display = 'none'; return; }
   card.style.display = 'block';
+  const visOnly = $('cs-plot-vis')?.checked ? '&vis_only=1' : '';
   const url = '/api/fasrc/runs/training-plot.png'
             + '?started_at=' + encodeURIComponent(startedAt)
             + '&ended_at=0'
+            + visOnly
             + '&_t=' + Date.now();
   img.onload  = () => { img.style.display = 'block'; msg.textContent = ''; };
   img.onerror = () => {
@@ -580,6 +588,11 @@ function _refreshCurrentPlot(startedAt) {
   };
   img.src = url;
 }
+
+// Re-fetch the plot immediately when the VIS-only toggle flips (don't wait
+// for the next status poll).
+document.getElementById('cs-plot-vis')
+  ?.addEventListener('change', () => _refreshCurrentPlot(_lastPlotStart));
 
 function _fmtIsoLocal(epoch) {
   if (!epoch || isNaN(epoch)) return '—';

@@ -7,6 +7,10 @@
   <a class="chip active" data-group="view" data-value="log">training log</a>
   <button id="btn-viz-log" type="button" class="chip"
           title="Re-render the training-log plot from the latest training_log.csv">🔄 Visualize</button>
+  <label class="chip" style="cursor:pointer;"
+         title="Show the VIS-only (1-channel) model's log from ckpt/wdsr-vis instead of the 4-channel model's.">
+    <input type="checkbox" id="cb-vis-log" style="margin:0 4px 0 0; vertical-align:middle;">
+    VIS-only</label>
   {% if checkpoints.files %}
   <button id="btn-track-log" type="button" class="tk-track-btn" style="margin-left:8px;"
           title="Render the plot fresh, then back it up &amp; track it as an image">📌 track plot</button>
@@ -81,12 +85,25 @@
 
 {% block scripts %}
 <script>
-const _TT_CKPT = "./ckpt/wdsr";
+// Base (4-channel) ckpt dir; the VIS-only toggle points the log reads at the
+// sibling "-vis" dir the 1-channel model trains into.
+const _TT_CKPT_BASE = "./ckpt/wdsr";
+const _visLogOn = () => !!document.getElementById("cb-vis-log")?.checked;
+const _ttCkpt   = () => _visLogOn() ? _TT_CKPT_BASE + "-vis" : _TT_CKPT_BASE;
+// Server renders the VIS-only plot to a distinct filename (see views.py).
+const _ttPngPath = () => "data/vis/" +
+  (_visLogOn() ? "training_log-vis.png" : "training_log.png");
+
 polishUI.viz.bind({
   imgId:     "viz-img",
   toolbarId: null,
-  buildUrl:  (sel) => `/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`,
+  buildUrl:  (sel) => `/view/training-log?checkpoint_dir=${encodeURIComponent(_ttCkpt())}`,
   initial:   { view: "log" },
+});
+
+// Toggle between the 4-channel and VIS-only logs.
+document.getElementById("cb-vis-log")?.addEventListener("change", () => {
+  polishUI.viz.refresh();
 });
 
 // "Visualize" — force a fresh server-side re-render, then reload the image.
@@ -94,7 +111,7 @@ const _vizBtn = document.getElementById("btn-viz-log");
 if (_vizBtn) _vizBtn.onclick = async () => {
   _vizBtn.disabled = true;
   try {
-    await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
+    await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_ttCkpt())}`
                 + `&force=1&_t=${Date.now()}`);
   } catch (e) { /* ignore — refresh below still shows what's there */ }
   polishUI.viz.refresh();
@@ -136,7 +153,7 @@ if (_trkBtn) _trkBtn.onclick = async () => {
   _trkBtn.disabled = true;
   let rendered = false;
   try {
-    const r = await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_TT_CKPT)}`
+    const r = await fetch(`/view/training-log?checkpoint_dir=${encodeURIComponent(_ttCkpt())}`
                 + `&force=1&_t=${Date.now()}`);
     rendered = r.ok;
   } catch (e) { /* network blip — treat as not rendered */ }
@@ -148,10 +165,10 @@ if (_trkBtn) _trkBtn.onclick = async () => {
   }
   polishUI.track.open({
     kind:  "image",
-    path:  "data/vis/training_log.png",
-    name:  "training_log",
+    path:  _ttPngPath(),
+    name:  _visLogOn() ? "training_log-vis" : "training_log",
     title: "Back up & track the training-log plot",
-    label: `training-log plot (${_TT_CKPT})`,
+    label: `training-log plot (${_ttCkpt()})`,
   });
 };
 </script>

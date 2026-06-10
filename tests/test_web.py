@@ -56,6 +56,31 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     assert r.status_code == 200
 
 
+def test_view_training_log_reads_vis_only_dir(client, tmp_path, monkeypatch):
+    """The VIS-only model's log lives in the sibling ``-vis`` dir; the route
+    must serve it AND render it to a distinct PNG so it can't clobber the
+    4-channel plot's cache."""
+    base = tmp_path / "ckpt" / "wdsr"
+    visd = tmp_path / "ckpt" / "wdsr-vis"
+    base.mkdir(parents=True)
+    visd.mkdir(parents=True)
+    vis_out = tmp_path / "vis"
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(base))
+    monkeypatch.setattr(Config, "VIS_DIR", os.path.relpath(str(vis_out)))
+    header = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
+              "save_best_score,combined_loss,is_baseline\n")
+    (base / "training_log.csv").write_text(header + "1000,1.0,0.04,46.6,39.9,46.6,0.003,\n")
+    (visd / "training_log.csv").write_text(header + "1000,1.0,0.09,40.1,33.0,40.1,0.01,\n")
+
+    r4 = client.get(f"/view/training-log?checkpoint_dir={base}&force=1")
+    rv = client.get(f"/view/training-log?checkpoint_dir={visd}&force=1")
+    assert r4.status_code == 200 and r4.content_type.startswith("image/png")
+    assert rv.status_code == 200 and rv.content_type.startswith("image/png")
+    # Distinct output PNGs → no cache collision between the two models.
+    assert (vis_out / "training_log.png").exists()
+    assert (vis_out / "training_log-vis.png").exists()
+
+
 def test_delete_model_wipes_local_keeps_tracking(client, tmp_path, monkeypatch):
     ckpt = tmp_path / "ckpt" / "wdsr"
     ckpt.mkdir(parents=True)

@@ -87,8 +87,14 @@ def register(app):
         # send_file() resolves a *relative* path against app.root_path
         # (euclid_polish/web/), not the CWD — so a relative out_png renders to
         # one dir and is served from another → 500. abspath pins both to CWD.
-        out_png  = os.path.abspath(
-            os.path.join(Config.VIS_DIR, "training_log.png"))
+        # The VIS-only model logs to ``<ckpt>-vis``; give its plot a distinct
+        # filename so it doesn't clobber (or get clobbered by) the 4-channel
+        # plot's cache. The default dir keeps the canonical name for
+        # back-compat (tracking image backups reference it).
+        is_vis = any(part.endswith("-vis")
+                     for part in os.path.normpath(ckpt).split(os.sep))
+        png_name = "training_log-vis.png" if is_vis else "training_log.png"
+        out_png  = os.path.abspath(os.path.join(Config.VIS_DIR, png_name))
         if log_path is None:
             abort(404)
         # Render if missing, stale, or explicitly forced (``?force=1`` — used
