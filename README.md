@@ -17,8 +17,10 @@ band; nothing is normalised to a unit interval before noise is injected.
 
 The light-profile renderer is our own vectorised Sérsic implementation
 (`euclid_polish/sky/profiles.py`); **GalSim is not used.** Real TNG50 SKIRT galaxy
-stamps can be mixed in optionally (`--tng-fraction`), but the default path is fully
-analytic.
+stamps are mixed in via `--tng-fraction`: the CLI default is 0 (fully analytic),
+while the WebUI defaults to `--tng-fraction 1` — **pure-TNG mode**, in which every
+galaxy is a redshift-realistic TNG stamp (§1.5) and the COSMOS catalog is not needed
+at all.
 
 **What the model learns.** The network input is the 4-channel LR stack
 `(VIS, Y_E, J_E, H_E) @ 0.10″/pix`. The output is a single **deconvolved VIS sky** image
@@ -88,8 +90,8 @@ budget — Y/J/H accumulate 4 × 112 s).
 |---|---|---|
 | **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); other bands offset by `Config.STAR_BAND_OFFSETS_MAG` (fixed G-type SED proxy) | `flux_e_B` deposited as a single HR pixel per channel (`multiband_generator.py:_deposit_star`); the PSF is applied later by the forward model |
 | **COSMOS2025 galaxies** (default) | Per-component (bulge / disk), per-band magnitudes from HDU 6 of the master catalog: `mag_model_bulge_hst-f814w` ↦ VIS_E, `mag_model_disk_uvista-y` ↦ Y_E (disk), etc. | Custom vectorised Sérsic2D renderer evaluates the analytic profile with closed-form amplitude from total flux. Bulge fixed at n=4, disk at n=1; geometry shared via `angle_bd`. (`profiles.py`) |
-| **TNG50 galaxies** (optional, `--tng-fraction > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | A fraction of field galaxies (and, separately, lens/source light) is replaced by a real TNG stamp resampled to the HR grid (`sky/tng_galaxy.py`); off by default |
-| **Strong lenses** | Lens galaxy + source galaxy each drawn from COSMOS2025 with redshift cuts (lens z∈[0.20,1.20], source z > z_lens+0.30); per-band fluxes propagate unchanged for the lens light and are magnified by the ray-tracing for the source light | SIE + external-shear mass model from lenstronomy; lens-light + lensed-source-light rendered by our Sérsic implementation (or a TNG stamp) at the ray-shot coordinates. (`lens_population.py`) |
+| **TNG50 galaxies** (`--tng-fraction > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | A fraction of field galaxies (and, separately, lens/source light) is replaced by a real TNG stamp resampled to the HR grid (`sky/tng_galaxy.py`). In redshift mode (§1.5) the stamp's size and photometry follow from its z draw. |
+| **Strong lenses** | Lens galaxy + source galaxy each drawn from COSMOS2025 with redshift cuts (lens z∈[0.20,1.20], source z > z_lens+0.30); in pure-TNG mode the geometry is sampled catalog-free from the same priors and σ_v comes from the deflector subhalo's stellar mass | SIE + external-shear mass model from lenstronomy; lens-light + lensed-source-light rendered by our Sérsic implementation (or a TNG stamp) at the ray-shot coordinates. (`lens_population.py`) |
 
 Our Sérsic amplitude is derived in closed form from the total flux and Sérsic index
 (`sersic_amp_from_flux` in `profiles.py`). Sub-pixel sampling is auto-selected from the
@@ -102,8 +104,29 @@ The COSMOS2025 master catalog (COSMOS-Web v1.1,
 per-component bulge+disk fits and 4-band photometry (HST F814W + UltraVISTA YJH as our
 Euclid bandpass proxies); typically ~few × 10⁵ pass the quality cuts (`type == 0`,
 `flag_star == 0`, `flag_blend == 0`, `warn_flag == 0`, B+D χ² < 10, finite per-band
-fluxes). The catalog is **mandatory** — there is no synthetic-stub fallback; generation
-raises if the master FITS is missing.
+fluxes). For any `tng_fraction < 1` the catalog is **mandatory** — there is no
+synthetic-stub fallback; generation raises if the master FITS is missing. In pure-TNG
+mode (`tng_fraction == 1`) nothing Sérsic is rendered and the catalog is skipped
+entirely.
+
+### 1.5 TNG redshift realism (`tng_redshift_mode`, implied by `--tng-fraction 1`)
+
+The SKIRT atlas frames are intrinsic z = 0 images on a physical 100 pc/pixel grid.
+In redshift mode (`sky/redshift_model.py`) each injected stamp draws one z from
+`n(z) ∝ z² exp(-(z/0.65)^1.5)` on [0.10, 2.5], and that single draw sets everything:
+
+- **Angular size** — the block-mean factor is `F(z) = θ_HR[rad] · D_A(z) / 100 pc`
+  (≈3 at z = 0.5, capped at ≈4.3 by the D_A turnover near z ≈ 1.6). No separate
+  "big galaxy" population is needed: nearby draws produce the resolved giants.
+- **Tolman dimming** — surface brightness × (1+z)⁻³ (per-frequency intensity).
+- **Spectral drift** — observed band b samples the rest SED at λ_b/(1+z): a
+  deterministic part interpolates the stamp's own 4-point SED, and a stochastic
+  tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the
+  colours — red-leaning on average, sometimes bluer.
+- **Lens masses** — a TNG-lit deflector takes σ_v from its subhalo's stellar mass
+  (Faber–Jackson on `data/_tng_infographics/tng_properties.csv`), and the system is
+  rejected unless θ_E ≥ 1.2 × the lens's apparent half-light radius, so the arcs
+  always clear the foreground light.
 
 ### 1.4 Sky background
 
@@ -392,6 +415,10 @@ negative residuals from sky/dark subtraction. Each record carries explicit `chan
 # End-to-end on the synthetic lane (needs the real COSMOS2025 master FITS at
 # Config.COSMOS2025_CATALOG_PATH — there is no stub catalog):
 python scripts/run_pipeline.py --image-size 252 --ntrain 64 --nvalid 16 --steps 1000
+
+# Pure-TNG generation (redshift-realistic stamps, no COSMOS catalog needed;
+# requires the TNG50 SKIRT atlas under $DATA_DIR/tng_skirt/):
+python scripts/run_pipeline.py --tng-fraction 1 --skip-train
 
 # Generate / convolve only (skip training), or train only:
 python scripts/run_pipeline.py --skip-train          # data only

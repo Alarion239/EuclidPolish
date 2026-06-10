@@ -619,10 +619,9 @@ class Config:
     LENS_FJ_SCATTER_DEX    = 0.07
     LENS_SIGMA_V_CLIP_KMS  = (100.0, 400.0)
     # Visibility constraint for TNG-lit lenses: require θ_E ≥ ratio × the
-    # lens galaxy's apparent half-light radius, else the arcs sit buried
-    # inside the foreground light. (The Sersic path instead *shrinks* its
-    # analytic light to 0.7·θ_E — a real stamp's size is set by physics, so
-    # rejection is the only honest option.)
+    # lens galaxy's apparent half-light radius, else the arcs sit inside the
+    # foreground light. (A real stamp can't be shrunk like the Sersic
+    # lens light, so the constraint is enforced by rejection.)
     LENS_THETA_E_MIN_RE_RATIO = 1.2
 
     # ---------------------------------------------------------------------

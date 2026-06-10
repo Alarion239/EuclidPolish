@@ -10,13 +10,13 @@ these are idealized, dust-attenuated intrinsic images.
 
 To place a galaxy into a synthetic field we run three steps (in this order):
 
-1. **Rebin** by an integer factor (2 or 4) with a *block-mean*, which keeps the
-   surface brightness (MJy/sr is intensive) and matches the ``_800``/``_400``
-   prototypes already on disk. Because the output pixel is then mapped to a
-   fixed angular scale (the 0.05″ HR grid), the rebin factor behaves as an
-   effective distance knob: a coarser rebin makes the galaxy both smaller (in
-   pixels) and fainter (total flux ∝ pixel solid angle), as a more distant
-   galaxy would appear.
+1. **Rebin** by an integer factor with a *block-mean*, which keeps the
+   surface brightness (MJy/sr is intensive). Because the output pixel is then
+   mapped to a fixed angular scale (the 0.05″ HR grid), the rebin factor is
+   an effective distance knob: a coarser rebin makes the galaxy both smaller
+   and fainter, as a more distant galaxy would appear. In redshift mode
+   (:func:`tng_stamp_at_redshift`) the factor is literally computed from
+   D_A(z) — see :mod:`euclid_polish.sky.redshift_model`.
 2. **Rotate** by a quarter turn (0/90/180/270°) — exact ``np.rot90``, a free
    orientation augmentation on top of the atlas's 5 physical viewpoints.
 3. **Convert to electrons** over the Euclid stack via
@@ -163,6 +163,19 @@ def measure_halflight_radius_px(frame: np.ndarray, *, frac: float = 0.5) -> floa
     return float(idx - 1 + sub)
 
 
+def stochastic_round_factor(f: float,
+                            rng: Optional[np.random.Generator]) -> int:
+    """Round a continuous rebin factor to an integer ≥ 1. With an ``rng`` the
+    fractional part is a Bernoulli draw, so the *mean* factor is unbiased even
+    where integer granularity is coarse (F ≈ 2–4); without one, plain
+    rounding."""
+    lo = int(np.floor(f))
+    rem = f - lo
+    if rng is not None and rem > 0.0:
+        return max(1, lo + (1 if rng.random() < rem else 0))
+    return max(1, int(round(f)))
+
+
 def rebin_for_target_size(
     re_native_px: float,
     target_re_arcsec: float,
@@ -180,21 +193,13 @@ def rebin_for_target_size(
     arcsec, so ``apparent = hr_pixel_scale · re_native_px / F`` →
     ``F = hr_pixel_scale · re_native_px / target``. Clipped to ``[1, f_max]``
     (can't upsample below native; cap keeps the stamp from collapsing to a few
-    pixels). With an ``rng`` the non-integer factor is **stochastically rounded**
-    so the *mean* apparent size is unbiased even where integer granularity is
-    coarse (the rare big galaxies, F≈2–4).
+    pixels), then rounded via :func:`stochastic_round_factor`.
     """
     if not (re_native_px > 0.0) or not (target_re_arcsec > 0.0):
         return 1
     f = hr_pixel_scale * re_native_px / target_re_arcsec
     f = min(max(f, 1.0), float(f_max))
-    lo = int(np.floor(f))
-    rem = f - lo
-    if rng is not None and rem > 0.0:
-        f_int = lo + (1 if rng.random() < rem else 0)
-    else:
-        f_int = int(round(f))
-    return max(1, f_int)
+    return stochastic_round_factor(f, rng)
 
 
 def surface_brightness_to_electrons(arr_mjy_sr: np.ndarray, band: BandConfig,
@@ -363,13 +368,7 @@ def tng_stamp_at_redshift(
     """
     f_cont = min(float(f_max), rebin_factor_for_redshift(
         z, pixel_scale_arcsec=pixel_scale_arcsec))
-    lo = int(np.floor(f_cont))
-    rem = f_cont - lo
-    if rng is not None and rem > 0.0:
-        rebin = lo + (1 if rng.random() < rem else 0)
-    else:
-        rebin = int(round(f_cont))
-    rebin = max(1, rebin)
+    rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
 

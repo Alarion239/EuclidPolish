@@ -12,7 +12,10 @@ A self-contained renderer (no GalSim) that uses:
 
 The default path is fully analytic; when ``tng_fraction > 0`` a fraction of
 galaxies (and lens/source light) is replaced by real TNG50 SKIRT stamps via
-:mod:`euclid_polish.sky.tng_galaxy`.
+:mod:`euclid_polish.sky.tng_galaxy`. ``tng_fraction == 1`` is **pure-TNG
+mode**: every source is a redshift-realistic stamp
+(:mod:`euclid_polish.sky.redshift_model`), nothing Sersic is rendered, and
+the COSMOS catalog is optional.
 
 The output of :meth:`MultiBandSimulator.simulate_field` is a single
 :class:`MultiBandSkyImage` with ``data`` of shape ``(H, W, 4)`` in **raw
@@ -105,7 +108,8 @@ class MultiBandGeneratorConfig:
     tng_realistic_sizes:      bool  = True
     # Genuinely big galaxies are their OWN population at a fixed sky surface
     # density — INDEPENDENT of tng_fraction (which only governs the small
-    # field-galaxy TNG/Sersic mix). They are always rendered as real TNG stamps
+    # field-galaxy TNG/Sersic mix). Legacy sizing path only: redshift mode has
+    # no separate big population. They are always rendered as real TNG stamps
     # at a large size (R_e log-uniform over ``tng_big_re_arcsec``). The default
     # density ≈ 1 big galaxy per 15 stamps of 512² @ 0.05″/px (0.182 arcmin²);
     # the count per field is Poisson(density · area). Set to 0 to disable.
@@ -114,20 +118,14 @@ class MultiBandGeneratorConfig:
     # even a ~1-4" R_e galaxy can fill a 25" stamp — so they are kept rare.
     big_galaxy_density_arcmin2: float = 0.37
     tng_big_re_arcsec:        Tuple[float, float] = (1.0, 4.0)
-    # Physical-redshift mode for TNG injection: each stamp gets one z draw
-    # from n(z) ∝ z²exp(-(z/z0)^1.5) that sets its downsample factor (via
-    # D_A), Tolman dimming, and a randomized red-leaning spectral drift —
-    # replacing the COSMOS-matched target-size draw. TNG-lit lens galaxies
-    # additionally take σ_v from the subhalo's stellar mass (Faber–Jackson,
-    # ``tng_properties.csv``) and are rejected unless
-    # θ_E ≥ lens_theta_e_min_re_ratio × the lens's apparent half-light
-    # radius, so the arcs land outside the foreground light. False keeps
-    # generation byte-identical to before.
-    # tng_fraction == 1 additionally switches the simulator to PURE-TNG mode:
-    # redshift mode is forced on, the COSMOS catalog becomes optional
-    # (catalog=None is allowed — nothing Sersic is ever rendered), and lens
-    # systems are sampled catalog-free (geometry from the Collett priors,
-    # σ_v from the subhalo mass, both lights real TNG stamps).
+    # Physical-redshift mode for TNG injection: one z draw per stamp sets
+    # its downsample factor (via D_A), Tolman dimming, and a randomized
+    # spectral drift — replacing the COSMOS-matched target-size draw (see
+    # sky/redshift_model.py). TNG-lit lens galaxies take σ_v from the
+    # subhalo's stellar mass and must satisfy θ_E ≥
+    # lens_theta_e_min_re_ratio × apparent half-light radius. False keeps
+    # generation byte-identical to before. Implied by tng_fraction == 1
+    # (pure-TNG mode, see the class docstring).
     tng_redshift_mode:        bool  = False
     # Property catalog for the mass→σ_v mapping; "" → the local cache
     # written by the TNG-infographic render.
@@ -222,6 +220,11 @@ class MultiBandSimulator:
     ``Config.LR_INPUT_BAND_NAMES[k]``. Geometry of every source is
     band-independent; per-band flux normalisations come from the catalog
     (galaxies/lenses) or from the fixed stellar colour (stars).
+
+    ``tng_fraction == 1`` (with downloaded TNG galaxies) is **pure-TNG
+    mode**: redshift mode is forced on, ``catalog`` may be None, lens
+    systems are sampled catalog-free (:func:`sample_lens_geometry`, σ_v
+    from the subhalo mass), and the big-galaxy population is dropped.
     """
 
     def __init__(
@@ -354,9 +357,8 @@ class MultiBandSimulator:
     ) -> Optional[dict]:
         """Inject one genuinely big galaxy — always a real TNG stamp, sized to
         a large apparent half-light radius drawn log-uniformly over
-        ``tng_big_re_arcsec``. Legacy-sizing path only: in redshift mode this
-        population does not exist — the realistic n(z) already produces big
-        nearby galaxies at the rate the sky does."""
+        ``tng_big_re_arcsec``. Legacy path only: redshift mode has no separate
+        big population (see :meth:`simulate_field`)."""
         lo, hi = self.config.tng_big_re_arcsec
         target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
         rec = self._add_tng_galaxy(canvas_4ch, rng, target_re_arcsec=target)
@@ -465,13 +467,11 @@ class MultiBandSimulator:
     ) -> Optional[tuple]:
         """Pick a TNG subhalo as the deflector of one lens system.
 
-        σ_v comes from the subhalo's stellar mass (Faber–Jackson; uniform
-        prior if the catalog row is missing), θ_E from the SIS law at the
-        drawn (z_lens, z_source). Combinations are rejected until
-        θ_E ≥ lens_theta_e_min_re_ratio × the galaxy's apparent half-light
-        radius at z_lens — otherwise the arcs would sit inside the
-        foreground light and the lens would be invisible. Massive subhalos
-        are both bright AND strong deflectors here, by construction.
+        σ_v from the subhalo's stellar mass (Faber–Jackson; uniform prior if
+        the catalog row is missing), θ_E from the SIS law at the drawn
+        (z_lens, z_source). Rejected until θ_E ≥ lens_theta_e_min_re_ratio ×
+        the galaxy's apparent half-light radius at z_lens, so the arcs clear
+        the foreground light.
 
         Returns ``(lp, gdir, gid, orientation, sigma_v, mstar, re_app)`` or
         None when no visible configuration is found.
@@ -503,16 +503,13 @@ class MultiBandSimulator:
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, max_tries: int = 12,
     ) -> Optional[dict]:
-        """Catalog-free lens system: TNG deflector + TNG source, geometry
-        from the Collett priors.
+        """Catalog-free lens system: TNG deflector + TNG source.
 
         Per try: pick a subhalo (σ_v from its stellar mass, uniform prior if
-        unknown), draw (z_l, z_s, θ_E, q, PA, shear, offset) via
-        :func:`sample_lens_geometry`, and accept only when
-        θ_E ≥ κ × the deflector's apparent half-light radius at z_lens —
-        the arcs must clear the foreground light. Both lights are real
-        stamps prepared at their own redshifts (D_A sizing + dimming +
-        drift). Returns None when no visible system materialises."""
+        unknown), draw the geometry via :func:`sample_lens_geometry`, and
+        accept only when θ_E ≥ κ × the deflector's apparent half-light radius
+        at z_lens. Both lights are real stamps prepared at their own
+        redshifts. Returns None when no visible system materialises."""
         cfg = self.config
         kappa = cfg.lens_theta_e_min_re_ratio
         for _ in range(max_tries):

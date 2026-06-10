@@ -120,17 +120,19 @@ def parse_args() -> argparse.Namespace:
                          "the serial two-step path otherwise.")
     ap.add_argument("--tng-fraction", type=float, default=0.0,
                     help="Fraction of synthetic galaxies drawn as real TNG50 "
-                         "SKIRT stamps (random galaxy + orientation, downsampled "
-                         "×1/×2/×3/×4) instead of analytic Sersic profiles. "
-                         "0 = all Sersic (unchanged). Needs TNG galaxies "
-                         "downloaded under $DATA_DIR/tng_skirt/.")
+                         "SKIRT stamps instead of analytic Sersic profiles. "
+                         "0 = all Sersic (unchanged); 1 = pure-TNG mode "
+                         "(implies --tng-redshift-mode and skips the COSMOS "
+                         "catalog entirely). Needs TNG galaxies downloaded "
+                         "under $DATA_DIR/tng_skirt/.")
     ap.add_argument("--tng-redshift-mode", action="store_true",
                     help="Physical-redshift treatment of TNG stamps: one z "
                          "draw per stamp sets its downsample factor (via "
-                         "D_A), (1+z)^-3 dimming, and a randomized red-"
-                         "leaning spectral drift; TNG-lit lenses take σ_v "
-                         "from the subhalo stellar mass (tng_properties.csv) "
-                         "and require θ_E ≥ κ × apparent R_e.")
+                         "D_A), (1+z)^-3 dimming, and a randomized spectral "
+                         "drift; TNG-lit lenses take σ_v from the subhalo "
+                         "stellar mass (tng_properties.csv) and require "
+                         "θ_E ≥ κ × apparent R_e. Implied by "
+                         "--tng-fraction 1.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")

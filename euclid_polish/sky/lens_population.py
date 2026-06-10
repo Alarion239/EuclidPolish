@@ -96,6 +96,11 @@ class LensParams:
 _comoving_distance_mpc = comoving_distance_mpc
 _angular_diameter_distance = angular_diameter_distance
 
+#: Observable Einstein-radius window (arcsec): smaller and the arcs are
+#: unresolved at Euclid resolution; larger is rarer than the simulated sky.
+#: Both samplers rejection-sample θ_E into this window.
+THETA_E_RANGE_ARCSEC = (0.10, 3.5)
+
 
 def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> float:
     """Einstein radius (arcsec) of a Singular Isothermal Sphere.
@@ -191,7 +196,8 @@ class LensPopulation:
                     z_lens=lens_gal.z_phot,
                     z_source=src_gal.z_phot,
                 )
-                if not (0.10 < theta_E < 3.5):
+                if not (THETA_E_RANGE_ARCSEC[0] < theta_E
+                        < THETA_E_RANGE_ARCSEC[1]):
                     continue   # outside the regime where lensing is observable
 
                 # Lens-galaxy axis ratio: prefer the catalog's bulge_q (the
@@ -233,14 +239,12 @@ def sample_lens_geometry(
 ) -> Optional[LensParams]:
     """Catalog-free lens-system geometry from the Collett-2015 priors.
 
-    The pure-TNG path: both the lens light and the source light are real
-    stamps, so no COSMOS galaxy rows are needed — only the geometry.
-    Redshifts come straight from the configured priors
-    (z_l ~ U[LENS_Z_LENS_MIN, MAX]; z_s ~ U[z_l + offset, LENS_Z_SOURCE_MAX]),
-    θ_E from the SIS law at ``sigma_v_kms``, axis ratio uniform over
-    Collett's truncation range, PA uniform. Returns None if no draw lands in
-    the observable θ_E window (``lens_galaxy``/``source_galaxy`` are None —
-    the caller must supply stamps for both lights).
+    The pure-TNG path: both lights are real stamps, so no COSMOS rows are
+    needed — only the geometry. Redshifts and axis ratio come straight from
+    the configured priors, θ_E from the SIS law at ``sigma_v_kms``, PA
+    uniform. ``lens_galaxy``/``source_galaxy`` are None — the caller must
+    supply stamps for both lights. Returns None if no draw lands in the
+    observable θ_E window.
     """
     for _ in range(max_retries):
         z_lens = float(rng.uniform(
@@ -249,7 +253,7 @@ def sample_lens_geometry(
             z_lens + Config.LENS_Z_SOURCE_OFFSET, Config.LENS_Z_SOURCE_MAX))
         theta_E = einstein_radius_sis(
             sigma_v_kms=sigma_v_kms, z_lens=z_lens, z_source=z_source)
-        if not (0.10 < theta_E < 3.5):
+        if not (THETA_E_RANGE_ARCSEC[0] < theta_E < THETA_E_RANGE_ARCSEC[1]):
             continue
         q = float(rng.uniform(
             Config.LENS_AXIS_RATIO_MIN, Config.LENS_AXIS_RATIO_MAX))

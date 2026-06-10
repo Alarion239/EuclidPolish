@@ -12,20 +12,18 @@ redshift ``z`` we derive every observable from that single draw:
 2. **Tolman dimming** — per-frequency surface brightness dims as
    ``I_ν,obs(ν_obs) = I_ν,em(ν_em) / (1+z)³`` (:func:`tolman_dimming_factor`).
 3. **Spectral drift** — observed band b samples the rest-frame SED at
-   ``λ_b / (1+z)``. With only four bands a true K-correction is impossible,
-   so :func:`band_drift_factors` combines (a) a deterministic part that
+   ``λ_b / (1+z)``. A true K-correction is impossible with four bands, so
+   :func:`band_drift_factors` combines (a) a deterministic part that
    log-log-interpolates the stamp's *own* 4-point SED at the blueshifted
    wavelengths, and (b) a stochastic tilt ``exp(ε · ln(λ_b/λ_H))`` with
-   ``ε ~ N(0, σ(z))`` anchored at H (the band least exposed to the rest-UV
-   extrapolation). The mean drift is therefore the stamp's own colour
-   response; the randomness covers the SED diversity the four points can't
-   see — biased red on average for red continua, but crossing through the
-   true (and occasionally bluer) colours.
+   ``ε ~ N(0, σ(z))``, anchored at H (the band least exposed to the rest-UV
+   extrapolation). The randomness covers the SED diversity four points
+   cannot — red-biased on average, but crossing the true (and occasionally
+   bluer) colours.
 
 The same module derives the lens **velocity dispersion from the TNG mass
 catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
-TNG-lit lens galaxy bends light according to the mass of the very subhalo
-whose photons are on the canvas.
+TNG-lit lens galaxy bends light according to its own subhalo's mass.
 
 The cosmological-distance helpers (flat ΛCDM, Collett-2015 parameters) live
 here and are re-exported by :mod:`euclid_polish.sky.lens_population`, which
@@ -199,29 +197,25 @@ def band_drift_factors(
 ) -> Tuple[np.ndarray, dict]:
     """Multiplicative per-band factors modelling redshift ``z``'s photometry.
 
+    Three pieces per band (physics in the module docstring): the
+    deterministic drift — the stamp's own SED log-log-interpolated at
+    ``λ_b/(1+z)``, edge slope continued (clamped to ``±max_lnln_slope``)
+    below the bluest point, the parametric tilt
+    ``exp(k·ln(1+z)·ln(λ_b/λ_H))`` standing in for an unusable SED —
+    times the stochastic tilt ``exp(ε·ln(λ_b/λ_H))`` with
+    ``ε ~ N(0, σ0 + σ1·ln(1+z))``, times Tolman dimming ``(1+z)⁻³``
+    (skippable for tests).
+
     Parameters
     ----------
     sed_fnu : 4 relative rest-frame f_ν values in ``LR_INPUT_BAND_NAMES``
-        order — the stamp's own integrated band fluxes (any common scale).
+        order (any common scale).
     z       : assigned redshift (the SKIRT frames are intrinsic, z = 0).
     rng     : drives the stochastic tilt; ``None`` → deterministic part only
         (so z = 0 with no rng returns exactly ones).
 
-    Three multiplicative pieces per band b:
-
-    * **Deterministic drift** — the stamp's 4-point SED, interpolated
-      log-log at the blueshifted wavelength ``λ_b/(1+z)``; below the bluest
-      point the edge slope is continued (clamped to ``±max_lnln_slope``).
-      If the SED is unusable (non-positive / non-finite) the parametric form
-      ``exp(k·ln(1+z)·ln(λ_b/λ_H))`` stands in — a pure red-leaning tilt.
-    * **Stochastic tilt** — ``exp(ε · ln(λ_b/λ_H))`` with
-      ``ε ~ N(0, σ0 + σ1·ln(1+z))``: anchored at H, strongest on VIS, and
-      symmetric about the deterministic prediction, so draws scatter both
-      redder and bluer than the stamp's own colour response.
-    * **Tolman dimming** ``(1+z)⁻³`` (skippable for tests).
-
-    Returns ``(factors[4] float64, meta)`` with meta recording the mode,
-    the tilt ε, and the dimming applied.
+    Returns ``(factors[4] float64, meta)``; meta records the mode, the tilt
+    ε, and the dimming applied.
     """
     lam = np.asarray(PIVOT_WAVELENGTH_UM, dtype=np.float64)
     ln_lam = np.log(lam)
