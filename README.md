@@ -125,9 +125,16 @@ That single draw sets everything:
 - **Tolman dimming** — surface brightness × (1+z)⁻³ (per-frequency intensity).
 - **Compactness correction** — the atlas frames are z = 0 morphologies, but real
   galaxies at the drawn z were smaller at fixed mass (R_e ∝ (1+z)^−0.75…−1.5,
-  van der Wel+ 2014): an extra flux-conserving squeeze C(z) = (1+z)^β shrinks
-  the stamp and boosts its surface brightness by C²
+  van der Wel+ 2014): an extra flux-conserving squeeze C(z) = C₀(1+z)^β shrinks
+  the stamp and boosts its surface brightness by C². C₀ = 1.3 is measured: the
+  atlas runs 1.24–1.41× the observed z≈0.1 mass–size relation
   (`TNG_COMPACT_C0`/`TNG_COMPACT_BETA`).
+- **Mass rescaling** — the atlas selection is top-heavy (log M★ ≥ 9.8), so each
+  *field* stamp is re-used as a smaller galaxy of similar morphology: mass scale
+  s ~ log-uniform[0.1, 1], flux × s (L ∝ M), size ÷ s^0.25 (the observed
+  mass–size slope) — surface brightness then falls as s^0.5, the Kormendy-like
+  trend. Lens deflectors are never rescaled
+  (`TNG_MASS_RESCALE_MIN`/`TNG_MASS_SIZE_ALPHA`).
 - **Surface-brightness truncation** — the SKIRT box carries faint light over all
   160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
   zeroed and the stamp cropped, so apparent sizes are the detectable isophotal

@@ -308,6 +308,40 @@ def test_tng_stamp_sb_truncation_crops_faint_outskirts(tmp_path):
     assert stamp_full.shape[0] == full
 
 
+def test_mass_rescale_dims_and_shrinks(tmp_path):
+    # mass_scale s: flux x s (L ∝ M), size / s^alpha — a smaller galaxy of
+    # similar morphology, NOT a flux-conserving squeeze.
+    from astropy.io import fits
+    from euclid_polish.sky.tng_galaxy import tng_stamp_at_redshift
+    tng = str(tmp_path / "tng")
+    d = os.path.join(tng, "999")
+    os.makedirs(d)
+    for b in ("VIS", "Y", "J", "H"):
+        arr = np.zeros((96, 96), dtype=">f4")
+        arr[40:56, 40:56] = 300.0
+        fits.PrimaryHDU(arr).writeto(os.path.join(d, f"TNG999_O1_Euclid_{b}.fits"))
+    open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+
+    full, mf = tng_stamp_at_redshift(d, "999", 1, 0.5, rng=None)
+    small, ms = tng_stamp_at_redshift(d, "999", 1, 0.5, rng=None,
+                                      mass_scale=0.25)
+    assert ms["mass_scale"] == 0.25
+    assert ms["rebin_factor"] >= mf["rebin_factor"]
+    assert ms["flux_e_per_band"]["VIS"] == pytest.approx(
+        0.25 * mf["flux_e_per_band"]["VIS"], rel=0.1)
+    with pytest.raises(ValueError, match="mass_scale"):
+        tng_stamp_at_redshift(d, "999", 1, 0.5, rng=None, mass_scale=1.5)
+
+
+def test_z_mode_field_galaxies_draw_mass_scale(tmp_path):
+    sim = _z_mode_sim(tmp_path)
+    _, meta = sim.simulate_field(np.random.default_rng(9), n_galaxies=6,
+                                 n_stars=0, n_lenses=0, n_big=0, n_dwarfs=0)
+    s = [r["mass_scale"] for r in meta["galaxies"]]
+    assert all(Config.TNG_MASS_RESCALE_MIN <= v <= 1.0 for v in s)
+    assert len(set(s)) > 1                      # actually randomized
+
+
 def test_sample_tng_stamp_z_mode(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")

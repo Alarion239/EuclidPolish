@@ -394,8 +394,15 @@ def tng_stamp_at_redshift(
     rot_k: Optional[int] = None,
     f_max: int = 64,
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
+    mass_scale: float = 1.0,
 ) -> Tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
+
+    ``mass_scale`` < 1 re-uses the stamp as a *smaller galaxy of similar
+    morphology*: flux × s (L ∝ M) and an extra size squeeze s^-α along the
+    observed mass-size relation R ∝ M^α — so its surface brightness drops
+    as s^(1-2α), the observed trend. Distinct from the fixed-mass
+    compactness correction, which conserves flux.
 
     A single ``z`` drives all three observables (see
     :mod:`euclid_polish.sky.redshift_model`):
@@ -414,8 +421,11 @@ def tng_stamp_at_redshift(
     Raises on unreadable frames, like :func:`prepare_tng_galaxy`.
     """
     compact = compactness_factor(z)
+    if not (0.0 < mass_scale <= 1.0):
+        raise ValueError(f"mass_scale must be in (0, 1], got {mass_scale}")
+    squeeze = compact * mass_scale ** -Config.TNG_MASS_SIZE_ALPHA
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
-    f_cont = min(float(f_max), f_geo * compact)
+    f_cont = min(float(f_max), f_geo * squeeze)
     rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
@@ -434,14 +444,12 @@ def tng_stamp_at_redshift(
         for b in Config.LR_INPUT_BAND_NAMES
     ]
     factors, dmeta = band_drift_factors(sed_fnu, z, rng)
-    # Flux conservation: the block-mean keeps surface brightness while the
-    # pixel count shrinks, so the total flux must be pinned to the
-    # *continuous geometric* prediction ∝ (native/f_geo)². The boost
-    # (rebin/f_geo)² covers both the compactness squeeze (a more compact
-    # galaxy of the same luminosity is surface-brighter) and the integer
-    # rounding of the rebin factor.
+    # Flux: the block-mean keeps surface brightness while the pixel count
+    # shrinks, so (rebin/f_geo)² pins the total to the *continuous
+    # geometric* prediction (covering the compactness squeeze and the
+    # integer rounding); mass_scale then dims the rescaled galaxy (L ∝ M).
     stamp *= (np.asarray(factors, dtype=np.float32)[None, None, :]
-              * np.float32((rebin / f_geo) ** 2))
+              * np.float32((rebin / f_geo) ** 2 * mass_scale))
     stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
     meta["flux_e_per_band"] = {
         b: float(stamp[..., k].sum())
@@ -452,13 +460,14 @@ def tng_stamp_at_redshift(
     meta["z"] = float(z)
     meta["rebin_factor_continuous"] = float(f_cont)
     meta["compactness"] = float(compact)
+    meta["mass_scale"] = float(mass_scale)
     meta["redshift_band_factors"] = [float(f) for f in factors]
     meta.update(dmeta)
     re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
     if np.isfinite(re_px) and re_px > 0.0:
         meta["native_halflight_px"] = float(re_px)
         meta["apparent_re_arcsec"] = physical_pc_to_arcsec(
-            re_px * TNG_NATIVE_PC_PER_PIXEL, z) / compact
+            re_px * TNG_NATIVE_PC_PER_PIXEL, z) / squeeze
     return stamp, meta
 
 
@@ -470,6 +479,7 @@ def sample_tng_stamp(
     downsample_choices: Tuple[int, ...] = DOWNSAMPLE_CHOICES,
     target_re_arcsec: Optional[float] = None,
     z: Optional[float] = None,
+    mass_scale: float = 1.0,
     f_max: int = 64,
 ) -> Optional[Tuple[np.ndarray, dict]]:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
@@ -499,7 +509,8 @@ def sample_tng_stamp(
         try:
             return tng_stamp_at_redshift(
                 gdir, gid, orientation, z, rng,
-                pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max)
+                pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
+                mass_scale=mass_scale)
         except Exception:
             return None
 

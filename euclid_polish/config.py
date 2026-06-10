@@ -650,6 +650,17 @@ class Config:
     #     TNG's known ~0.1-0.2 dex size excess.
     TNG_COMPACT_C0   = 1.3
     TNG_COMPACT_BETA = 1.0
+    # Mass rescaling: the atlas selection is top-heavy (log M* ≥ 9.8,
+    # median 10.3), so each FIELD stamp is re-used as a smaller galaxy of
+    # similar morphology: mass scale s ~ log-uniform[MIN, 1], flux × s
+    # (L ∝ M), extra size squeeze s^-ALPHA following the observed
+    # mass-size relation R ∝ M^0.25 (van der Wel+ 2014 late types).
+    # Surface brightness then scales as s^(1-2α) = s^0.5 — smaller
+    # galaxies are dimmer per unit area, the observed Kormendy-like trend.
+    # Lens deflectors are never rescaled (real deflectors are massive).
+    # MIN ≥ 1 disables.
+    TNG_MASS_RESCALE_MIN = 0.1
+    TNG_MASS_SIZE_ALPHA  = 0.25
 
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
     # AB, per band). The SKIRT frames carry nonzero light over the whole

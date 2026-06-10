@@ -336,13 +336,22 @@ class MultiBandSimulator:
         distribution (:class:`CosmosSizeSampler`), matching the Sersic field
         population."""
         target_re = target_re_arcsec
+        mass_scale = 1.0
         if z is None and self.config.tng_redshift_mode:
             z = sample_galaxy_redshift(rng)
+            # Re-use the (top-heavy) atlas as a morphology library: each
+            # field stamp becomes a smaller galaxy of similar morphology
+            # with probability-1 log-uniform mass scale (lens deflectors
+            # are never rescaled).
+            s_min = Config.TNG_MASS_RESCALE_MIN
+            if 0.0 < s_min < 1.0:
+                mass_scale = float(10.0 ** rng.uniform(np.log10(s_min), 0.0))
         if z is None and target_re is None and self.tng_size_model is not None:
             target_re = self.tng_size_model.sample(rng)
         res = sample_tng_stamp(self.tng_galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
-                               target_re_arcsec=target_re, z=z)
+                               target_re_arcsec=target_re, z=z,
+                               mass_scale=mass_scale)
         if res is None:
             return None
         stamp, tmeta = res
@@ -359,6 +368,7 @@ class MultiBandSimulator:
             "rebin_factor": tmeta["rebin_factor"],
             "rot_k":        tmeta["rot_k"],
             "z":            float(tmeta.get("z", float("nan"))),
+            "mass_scale":   float(tmeta.get("mass_scale", float("nan"))),
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
