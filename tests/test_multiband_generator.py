@@ -140,7 +140,8 @@ def test_tng_injection_when_enabled(tmp_path):
     g0 = meta["galaxies"][0]
     assert g0["subhalo_id"] in ("111", "222")
     assert g0["orientation"] in (1, 2, 3, 4, 5)
-    assert 1 <= g0["rebin_factor"] <= 5
+    # F(z) <= 4.24 times the compactness correction (1+z) at z <= 2.5.
+    assert 1 <= g0["rebin_factor"] <= 16
     assert Config.TNG_Z_MIN <= g0["z"] <= Config.TNG_Z_MAX
     assert len(g0["flux_e_per_band"]) == 4
 

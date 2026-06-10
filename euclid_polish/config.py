@@ -637,6 +637,16 @@ class Config:
     TNG_DWARF_SERSIC_DENSITY_ARCMIN2 = 102.0
     TNG_DWARF_MAX_RE_ARCSEC          = 0.5
 
+    # Compactness correction C(z) = C0·(1+z)^BETA applied as extra
+    # downsampling on top of the geometric F(z), flux-conserving (surface
+    # brightness × C²). The atlas frames are z = 0 snapshot morphologies,
+    # but real galaxies at the drawn redshifts were more compact at fixed
+    # mass: R_e ∝ (1+z)^-0.75 (late types) to (1+z)^-1.48 (early types),
+    # van der Wel+ 2014 — BETA = 1.0 is the mixed-population middle. C0
+    # absorbs any intrinsic TNG-vs-observed size offset at z = 0.
+    TNG_COMPACT_C0   = 1.0
+    TNG_COMPACT_BETA = 1.0
+
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
     # AB, per band). The SKIRT frames carry nonzero light over the whole
     # 160 kpc box, so without a cut every stamp visually fills the field in

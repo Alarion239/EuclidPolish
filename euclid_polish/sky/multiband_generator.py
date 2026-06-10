@@ -45,6 +45,7 @@ from euclid_polish.sky.cosmos2025 import circularized_effective_radius_arcsec
 from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
 from euclid_polish.sky.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
+    compactness_factor,
     load_tng_properties,
     physical_pc_to_arcsec,
     sample_galaxy_redshift,
@@ -531,7 +532,8 @@ class MultiBandSimulator:
             if not (np.isfinite(re_px) and re_px > 0.0):
                 continue
             re_app = physical_pc_to_arcsec(
-                re_px * TNG_NATIVE_PC_PER_PIXEL, lp.z_lens)
+                re_px * TNG_NATIVE_PC_PER_PIXEL,
+                lp.z_lens) / compactness_factor(lp.z_lens)
             if lp.theta_E_arcsec >= kappa * re_app:
                 return lp, gdir, gid, orientation, sigma_v, mstar, re_app
         return None
@@ -566,7 +568,8 @@ class MultiBandSimulator:
             if not (np.isfinite(re_px) and re_px > 0.0):
                 continue
             re_app = physical_pc_to_arcsec(
-                re_px * TNG_NATIVE_PC_PER_PIXEL, lp.z_lens)
+                re_px * TNG_NATIVE_PC_PER_PIXEL,
+                lp.z_lens) / compactness_factor(lp.z_lens)
             if lp.theta_E_arcsec < kappa * re_app:
                 continue
             try:

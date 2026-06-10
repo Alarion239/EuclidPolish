@@ -123,6 +123,11 @@ That single draw sets everything:
   (≈3 at z = 0.5, capped at ≈4.3 by the D_A turnover near z ≈ 1.6). No separate
   "big galaxy" population is needed: nearby draws produce the resolved giants.
 - **Tolman dimming** — surface brightness × (1+z)⁻³ (per-frequency intensity).
+- **Compactness correction** — the atlas frames are z = 0 morphologies, but real
+  galaxies at the drawn z were smaller at fixed mass (R_e ∝ (1+z)^−0.75…−1.5,
+  van der Wel+ 2014): an extra flux-conserving squeeze C(z) = (1+z)^β shrinks
+  the stamp and boosts its surface brightness by C²
+  (`TNG_COMPACT_C0`/`TNG_COMPACT_BETA`).
 - **Surface-brightness truncation** — the SKIRT box carries faint light over all
   160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
   zeroed and the stamp cropped, so apparent sizes are the detectable isophotal

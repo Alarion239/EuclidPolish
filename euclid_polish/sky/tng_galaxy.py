@@ -45,6 +45,7 @@ from euclid_polish.euclid.photometry import (
 from euclid_polish.sky.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     band_drift_factors,
+    compactness_factor,
     physical_pc_to_arcsec,
     rebin_factor_for_redshift,
 )
@@ -401,7 +402,9 @@ def tng_stamp_at_redshift(
 
     * the block-mean factor comes from the angular size of the 100 pc native
       pixel at D_A(z) (stochastically rounded with ``rng`` so the mean
-      apparent size is unbiased);
+      apparent size is unbiased), times the flux-conserving compactness
+      correction C(z) for the z = 0 atlas morphologies
+      (:func:`~euclid_polish.sky.redshift_model.compactness_factor`);
     * Tolman (1+z)⁻³ surface-brightness dimming;
     * a randomized spectral drift across the four bands, anchored on the
       stamp's own 4-point SED (``rng=None`` → deterministic drift only);
@@ -410,8 +413,9 @@ def tng_stamp_at_redshift(
 
     Raises on unreadable frames, like :func:`prepare_tng_galaxy`.
     """
-    f_cont = min(float(f_max), rebin_factor_for_redshift(
-        z, pixel_scale_arcsec=pixel_scale_arcsec))
+    compact = compactness_factor(z)
+    f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
+    f_cont = min(float(f_max), f_geo * compact)
     rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
@@ -430,7 +434,14 @@ def tng_stamp_at_redshift(
         for b in Config.LR_INPUT_BAND_NAMES
     ]
     factors, dmeta = band_drift_factors(sed_fnu, z, rng)
-    stamp *= np.asarray(factors, dtype=np.float32)[None, None, :]
+    # Flux conservation: the block-mean keeps surface brightness while the
+    # pixel count shrinks, so the total flux must be pinned to the
+    # *continuous geometric* prediction ∝ (native/f_geo)². The boost
+    # (rebin/f_geo)² covers both the compactness squeeze (a more compact
+    # galaxy of the same luminosity is surface-brighter) and the integer
+    # rounding of the rebin factor.
+    stamp *= (np.asarray(factors, dtype=np.float32)[None, None, :]
+              * np.float32((rebin / f_geo) ** 2))
     stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
     meta["flux_e_per_band"] = {
         b: float(stamp[..., k].sum())
@@ -440,13 +451,14 @@ def tng_stamp_at_redshift(
     meta["sb_cut_mag_arcsec2"] = float(sb_cut_mag_arcsec2)
     meta["z"] = float(z)
     meta["rebin_factor_continuous"] = float(f_cont)
+    meta["compactness"] = float(compact)
     meta["redshift_band_factors"] = [float(f) for f in factors]
     meta.update(dmeta)
     re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
     if np.isfinite(re_px) and re_px > 0.0:
         meta["native_halflight_px"] = float(re_px)
         meta["apparent_re_arcsec"] = physical_pc_to_arcsec(
-            re_px * TNG_NATIVE_PC_PER_PIXEL, z)
+            re_px * TNG_NATIVE_PC_PER_PIXEL, z) / compact
     return stamp, meta
 
 

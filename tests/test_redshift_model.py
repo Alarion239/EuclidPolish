@@ -16,6 +16,7 @@ from euclid_polish.sky.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     angular_diameter_distance,
     band_drift_factors,
+    compactness_factor,
     load_tng_properties,
     physical_pc_to_arcsec,
     rebin_factor_for_redshift,
@@ -227,10 +228,12 @@ def test_tng_stamp_at_redshift_size_and_dimming(tmp_path):
 
     z = 0.5
     stamp, meta = tng_stamp_at_redshift(gdir, "111", 1, z, rng=None)
-    expected_rebin = int(round(rebin_factor_for_redshift(z)))
+    expected_rebin = int(round(
+        rebin_factor_for_redshift(z) * compactness_factor(z)))
     assert meta["rebin_factor"] == expected_rebin
     assert stamp.shape == (24 // expected_rebin, 24 // expected_rebin, 4)
     assert meta["z"] == z
+    assert meta["compactness"] == pytest.approx(compactness_factor(z))
     # Flat fake SED (equal MJy/sr in all bands) → in f_ν the four bands are
     # NOT equal (per-band zeropoints differ), but the drift on the stamp's
     # own SED is deterministic with rng=None; every factor must include the
@@ -241,8 +244,41 @@ def test_tng_stamp_at_redshift_size_and_dimming(tmp_path):
     assert meta["dimming"] == pytest.approx(tolman_dimming_factor(z))
     assert meta["apparent_re_arcsec"] == pytest.approx(
         physical_pc_to_arcsec(
-            meta["native_halflight_px"] * TNG_NATIVE_PC_PER_PIXEL, z),
-        rel=1e-6)
+            meta["native_halflight_px"] * TNG_NATIVE_PC_PER_PIXEL, z)
+        / compactness_factor(z), rel=1e-6)
+
+
+def test_compactness_factor_size_evolution():
+    assert compactness_factor(0.0) == pytest.approx(Config.TNG_COMPACT_C0)
+    assert compactness_factor(1.0) == pytest.approx(
+        Config.TNG_COMPACT_C0 * 2.0 ** Config.TNG_COMPACT_BETA)
+    assert compactness_factor(1.0, c0=1.0, beta=0.0) == 1.0
+
+
+def test_compactness_squeeze_conserves_flux(tmp_path):
+    # The squeeze shrinks the stamp but must keep the total flux pinned to
+    # the continuous geometric prediction (SB x C^2 boost): same luminosity,
+    # smaller radius. Fake stamp: bright core only, so truncation is neutral.
+    from astropy.io import fits
+    from unittest import mock
+    tng = str(tmp_path / "tng")
+    d = os.path.join(tng, "888")
+    os.makedirs(d)
+    for b in ("VIS", "Y", "J", "H"):
+        arr = np.zeros((96, 96), dtype=">f4")
+        arr[40:56, 40:56] = 300.0
+        fits.PrimaryHDU(arr).writeto(
+            os.path.join(d, f"TNG888_O1_Euclid_{b}.fits"))
+    open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+
+    z = 0.5
+    squeezed, ms = tng_stamp_at_redshift(d, "888", 1, z, rng=None)
+    with mock.patch("euclid_polish.sky.tng_galaxy.compactness_factor",
+                    lambda z, **k: 1.0):
+        plain, mp = tng_stamp_at_redshift(d, "888", 1, z, rng=None)
+    assert ms["rebin_factor"] > mp["rebin_factor"]      # more compact
+    assert ms["flux_e_per_band"]["VIS"] == pytest.approx(
+        mp["flux_e_per_band"]["VIS"], rel=0.05)          # same total light
 
 
 def test_tng_stamp_sb_truncation_crops_faint_outskirts(tmp_path):

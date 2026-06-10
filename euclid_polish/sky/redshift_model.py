@@ -126,6 +126,21 @@ def rebin_factor_for_redshift(
     return max(1.0, float(f))
 
 
+def compactness_factor(
+    z: float,
+    *,
+    c0: float = Config.TNG_COMPACT_C0,
+    beta: float = Config.TNG_COMPACT_BETA,
+) -> float:
+    """Size-evolution correction ``C(z) = c0·(1+z)^beta`` for the z = 0
+    atlas morphologies: real galaxies at redshift ``z`` were more compact at
+    fixed mass (van der Wel+ 2014). Applied as extra downsampling on top of
+    the geometric F(z), flux-conserving (SB × C²) — z, dimming and drift
+    are untouched.
+    """
+    return float(c0 * (1.0 + z) ** beta)
+
+
 # ---------------------------------------------------------------------------
 # Field redshift distribution
 # ---------------------------------------------------------------------------
