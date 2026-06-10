@@ -639,12 +639,16 @@ class Config:
 
     # Compactness correction C(z) = C0·(1+z)^BETA applied as extra
     # downsampling on top of the geometric F(z), flux-conserving (surface
-    # brightness × C²). The atlas frames are z = 0 snapshot morphologies,
-    # but real galaxies at the drawn redshifts were more compact at fixed
-    # mass: R_e ∝ (1+z)^-0.75 (late types) to (1+z)^-1.48 (early types),
-    # van der Wel+ 2014 — BETA = 1.0 is the mixed-population middle. C0
-    # absorbs any intrinsic TNG-vs-observed size offset at z = 0.
-    TNG_COMPACT_C0   = 1.0
+    # brightness × C²) — a fixed-mass size correction: the stars and the
+    # luminosity stay, only the radius shrinks. Two literature anchors:
+    #   BETA = 1.0 — the z = 0 snapshot morphologies must follow the
+    #     observed size evolution at fixed mass, R_e ∝ (1+z)^-0.75 (late
+    #     types) to (1+z)^-1.48 (early types), van der Wel+ 2014.
+    #   C0 = 1.3 — the atlas half-light radii at fixed mass measure
+    #     1.24-1.41× the observed z≈0.1 late-type relation (Shen+ 2003) in
+    #     every mass bin (vs early types the excess is larger), matching
+    #     TNG's known ~0.1-0.2 dex size excess.
+    TNG_COMPACT_C0   = 1.3
     TNG_COMPACT_BETA = 1.0
 
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
