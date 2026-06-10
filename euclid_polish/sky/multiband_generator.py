@@ -49,6 +49,7 @@ from euclid_polish.sky.redshift_model import (
     load_tng_properties,
     physical_pc_to_arcsec,
     sample_galaxy_redshift,
+    sample_target_logmass,
     sigma_v_from_stellar_mass,
 )
 from euclid_polish.sky.tng_galaxy import (
@@ -296,9 +297,11 @@ class MultiBandSimulator:
                 self.catalog.effective_re_arcsec, big_fraction=0.0,
             )
         # Redshift mode: subhalo properties (stellar mass → σ_v for TNG-lit
-        # lenses). Missing CSV / missing rows degrade gracefully to the
-        # uniform σ_v prior.
+        # lenses, and the atlas mass array for the mass-function-weighted
+        # rescaling of field stamps). Missing CSV / missing rows degrade
+        # gracefully (uniform σ_v prior; log-uniform rescale).
         self.tng_properties: dict = {}
+        self._atlas_logm: Optional[np.ndarray] = None
         if self.config.tng_redshift_mode and self.tng_galaxies:
             self.tng_properties = load_tng_properties(
                 self.config.tng_properties_csv or None)
@@ -306,7 +309,16 @@ class MultiBandSimulator:
                 sys.stderr.write(
                     "[generator] tng_redshift_mode: no usable "
                     "tng_properties.csv — lens σ_v falls back to the "
-                    "uniform prior.\n")
+                    "uniform prior; field rescaling to log-uniform.\n")
+            else:
+                m = np.array([
+                    self.tng_properties.get(str(gid), {}).get(
+                        "mass_stars", float("nan"))
+                    for _, gid in self.tng_galaxies])
+                with np.errstate(invalid="ignore"):
+                    self._atlas_logm = np.where(m > 0, np.log10(m), np.nan)
+                if not np.isfinite(self._atlas_logm).any():
+                    self._atlas_logm = None
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -337,18 +349,13 @@ class MultiBandSimulator:
         population."""
         target_re = target_re_arcsec
         mass_scale = 1.0
+        galaxies = self.tng_galaxies
         if z is None and self.config.tng_redshift_mode:
             z = sample_galaxy_redshift(rng)
-            # Re-use the (top-heavy) atlas as a morphology library: each
-            # field stamp becomes a smaller galaxy of similar morphology
-            # with probability-1 log-uniform mass scale (lens deflectors
-            # are never rescaled).
-            s_min = Config.TNG_MASS_RESCALE_MIN
-            if 0.0 < s_min < 1.0:
-                mass_scale = float(10.0 ** rng.uniform(np.log10(s_min), 0.0))
+            galaxies, mass_scale = self._pick_field_galaxy(rng)
         if z is None and target_re is None and self.tng_size_model is not None:
             target_re = self.tng_size_model.sample(rng)
-        res = sample_tng_stamp(self.tng_galaxies, rng,
+        res = sample_tng_stamp(galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
                                target_re_arcsec=target_re, z=z,
                                mass_scale=mass_scale)
@@ -375,6 +382,37 @@ class MultiBandSimulator:
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
         }
+
+    def _pick_field_galaxy(
+        self, rng: np.random.Generator,
+    ) -> Tuple[List[Tuple[str, str]], float]:
+        """Mass-function-weighted pick for one field stamp.
+
+        Draws the target mass from the real Schechter MF, then matches an
+        atlas galaxy with mass within ×TNG_MASS_WINDOW above it (closest-
+        decade morphology) and rescales it down: the rendered population
+        follows the observed mass distribution by construction — the atlas
+        is a morphology library, not a population sample. Returns
+        ``(candidate galaxy list, mass_scale)``; falls back to a
+        log-uniform rescale over the whole atlas when masses are missing.
+        """
+        if self._atlas_logm is None:
+            s_min = Config.TNG_MASS_RESCALE_MIN
+            if 0.0 < s_min < 1.0:
+                return self.tng_galaxies, float(
+                    10.0 ** rng.uniform(np.log10(s_min), 0.0))
+            return self.tng_galaxies, 1.0
+        lm_t = sample_target_logmass(rng)
+        lm = self._atlas_logm
+        window = (lm >= lm_t) & (lm <= lm_t + np.log10(Config.TNG_MASS_WINDOW))
+        if not window.any():
+            window = lm >= lm_t
+        if not window.any():                       # target above the atlas max
+            idx = int(np.nanargmax(lm))
+            return [self.tng_galaxies[idx]], 1.0
+        idx = int(rng.choice(np.nonzero(window)[0]))
+        mass_scale = min(1.0, 10.0 ** (lm_t - lm[idx]))
+        return [self.tng_galaxies[idx]], float(mass_scale)
 
     def _add_big_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,

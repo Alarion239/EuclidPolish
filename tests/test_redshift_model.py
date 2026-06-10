@@ -21,6 +21,7 @@ from euclid_polish.sky.redshift_model import (
     physical_pc_to_arcsec,
     rebin_factor_for_redshift,
     sample_galaxy_redshift,
+    sample_target_logmass,
     sigma_v_from_stellar_mass,
     tolman_dimming_factor,
 )
@@ -334,12 +335,27 @@ def test_mass_rescale_dims_and_shrinks(tmp_path):
 
 
 def test_z_mode_field_galaxies_draw_mass_scale(tmp_path):
+    # MF-weighted rescaling: the fake atlas holds only 1-2e11 subhalos while
+    # the Schechter target is mostly ~1e9-1e10, so the drawn mass scales are
+    # small and varied.
     sim = _z_mode_sim(tmp_path)
     _, meta = sim.simulate_field(np.random.default_rng(9), n_galaxies=6,
                                  n_stars=0, n_lenses=0, n_big=0, n_dwarfs=0)
     s = [r["mass_scale"] for r in meta["galaxies"]]
-    assert all(Config.TNG_MASS_RESCALE_MIN <= v <= 1.0 for v in s)
+    assert all(0.0 < v <= 1.0 for v in s)
     assert len(set(s)) > 1                      # actually randomized
+    assert min(s) < 0.5                         # small galaxies dominate
+
+
+def test_target_logmass_schechter():
+    rng = np.random.default_rng(5)
+    lm = np.array([sample_target_logmass(rng) for _ in range(6000)])
+    assert lm.min() >= Config.TNG_MF_LOGM_MIN
+    assert lm.max() <= Config.TNG_MF_LOGM_MAX
+    # alpha=-1.2 from logM=9: small galaxies dominate, giants are the tail.
+    assert 9.3 < float(np.median(lm)) < 10.1
+    assert (lm > 10.5).mean() < 0.25
+    assert (lm > 11.0).mean() < 0.08
 
 
 def test_sample_tng_stamp_z_mode(tmp_path):
@@ -358,7 +374,8 @@ def test_sample_tng_stamp_z_mode(tmp_path):
 # Generator integration: redshift mode
 # ---------------------------------------------------------------------------
 
-def _z_mode_sim(tmp_path, *, lens_density=0.0, tng_fraction=1.0):
+def _z_mode_sim(tmp_path, *, lens_density=0.0, tng_fraction=1.0,
+                dwarf_density=0.0):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
@@ -369,7 +386,8 @@ def _z_mode_sim(tmp_path, *, lens_density=0.0, tng_fraction=1.0):
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=lens_density,
         tng_fraction=tng_fraction, tng_galaxy_dir=tng,
-        tng_redshift_mode=True, tng_properties_csv=csv_path)
+        tng_redshift_mode=True, tng_properties_csv=csv_path,
+        tng_dwarf_density_arcmin2=dwarf_density)
     return MultiBandSimulator(cat, cfg)
 
 
@@ -455,9 +473,9 @@ def test_pure_tng_mode_forces_redshift_mode(tmp_path):
 
 
 def test_pure_tng_dwarf_backfill(tmp_path):
-    # With a catalog present, small COSMOS Sersic rows backfill the faint
-    # population the massive-only atlas lacks; TNG keeps the resolved slots.
-    sim = _z_mode_sim(tmp_path)
+    # Optional (default off): with a catalog and the knob > 0, small COSMOS
+    # Sersic rows mix into the faint population alongside the rescaled TNGs.
+    sim = _z_mode_sim(tmp_path, dwarf_density=102.0)
     _, meta = sim.simulate_field(np.random.default_rng(7), n_galaxies=2,
                                  n_stars=0, n_lenses=0, n_big=0, n_dwarfs=6)
     dwarfs = [g for g in meta["galaxies"] if g.get("dwarf")]
@@ -498,7 +516,9 @@ def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):
     # First Poisson draw is the galaxy count.
     assert lams[0] == pytest.approx(
         sim.config.tng_gal_density_arcmin2 * area)
-    assert sim.config.tng_gal_density_arcmin2 < 20.0
+    # The physical density of the rendered (logM >= 9) population — far
+    # below the full COSMOS 111/arcmin² that counts undetectable dwarfs.
+    assert sim.config.tng_gal_density_arcmin2 < 50.0
 
 
 def test_pure_tng_mode_works_without_catalog(tmp_path):

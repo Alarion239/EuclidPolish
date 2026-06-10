@@ -616,25 +616,21 @@ class Config:
     TNG_Z0    = 0.65
     TNG_Z_MIN = 0.10
     TNG_Z_MAX = 2.50
-    # Sky surface density of atlas-like (log M* ≳ 9.8) galaxies, used as the
-    # field-galaxy density in PURE-TNG mode instead of the full COSMOS
-    # density (111/arcmin², which counts the m≈24–26 dwarfs the atlas does
-    # not contain — using it would fill every field with massive galaxies).
-    # Normalization: φ0 ≈ 4e-3 Mpc⁻³ for log M* ≥ 9.8 (Baldry+ 2012), times
+    # Field-galaxy density in PURE-TNG mode: the real sky density of
+    # log M* ≥ TNG_MF_LOGM_MIN galaxies (the mass-function-rescaled TNG
+    # population renders all of them, see TNG_MF_* below). Normalization:
+    # φ0 ≈ 1.5e-2 Mpc⁻³ for log M* ≥ 9 (Baldry+ 2012), times
     # ∫ dV_c/dz/dΩ · exp(-(z/TNG_Z_PHI_SCALE)²) dz over [TNG_Z_MIN,
-    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² → ≈ 9 galaxies/arcmin² (~1.6 per
-    # 510 px field).
-    TNG_GAL_DENSITY_ARCMIN2 = 9.0
-    # Faint-dwarf backfill in pure-TNG mode: the atlas has no low-mass
-    # galaxies, so COSMOS Sersic rows supply the m≈23–26 population the real
-    # sky is peppered with — at the COSMOS total minus the massive subset
-    # TNG now renders (111 − 9 ≈ 102/arcmin²), restricted to rows with
-    # circularized R_e ≤ TNG_DWARF_MAX_RE_ARCSEC so a big COSMOS galaxy
-    # never duplicates TNG's resolved population. At these sizes (≲ 0.5″ →
-    # a few HR pixels, PSF-convolved) morphology is unresolvable, so the
-    # analytic profile is observationally exact. Density ≤ 0 disables
-    # (catalog=None then stays fully catalog-free).
-    TNG_DWARF_SERSIC_DENSITY_ARCMIN2 = 102.0
+    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² → ≈ 33 galaxies/arcmin² (~6 per
+    # 510 px field, of which genuinely big ones are the rare Schechter
+    # tail at low z).
+    TNG_GAL_DENSITY_ARCMIN2 = 33.0
+    # Optional faint-dwarf Sersic backfill (COSMOS rows with circularized
+    # R_e ≤ the cut). Default 0 = OFF: the mass-function-rescaled TNG
+    # population covers the small end with real morphology, and pure-TNG
+    # stays fully catalog-free. Set > 0 (e.g. 102) to mix analytic Sersic
+    # dwarfs back in (then run_pipeline loads COSMOS again).
+    TNG_DWARF_SERSIC_DENSITY_ARCMIN2 = 0.0
     TNG_DWARF_MAX_RE_ARCSEC          = 0.5
 
     # Compactness correction C(z) = C0·(1+z)^BETA applied as extra
@@ -652,13 +648,25 @@ class Config:
     TNG_COMPACT_BETA = 1.0
     # Mass rescaling: the atlas selection is top-heavy (log M* ≥ 9.8,
     # median 10.3), so each FIELD stamp is re-used as a smaller galaxy of
-    # similar morphology: mass scale s ~ log-uniform[MIN, 1], flux × s
-    # (L ∝ M), extra size squeeze s^-ALPHA following the observed
-    # mass-size relation R ∝ M^0.25 (van der Wel+ 2014 late types).
-    # Surface brightness then scales as s^(1-2α) = s^0.5 — smaller
-    # galaxies are dimmer per unit area, the observed Kormendy-like trend.
-    # Lens deflectors are never rescaled (real deflectors are massive).
-    # MIN ≥ 1 disables.
+    # similar morphology — flux × s (L ∝ M) and an extra size squeeze
+    # s^-ALPHA along the observed mass-size relation R ∝ M^0.25 (van der
+    # Wel+ 2014); surface brightness then falls as s^0.5, the Kormendy-
+    # like trend. Lens deflectors are never rescaled.
+    #
+    # The target mass is drawn from the real Schechter mass function
+    # (per dlogM ∝ (M/M*)^(α+1) e^(-M/M*); α=-1.2, logM*=10.97 — Baldry+
+    # 2012 / Muzzin+ 2013) over [LOGM_MIN, LOGM_MAX], then matched to an
+    # atlas galaxy with mass within ×MASS_WINDOW above it (closest-decade
+    # morphology; caps the shrink at s ≥ 1/MASS_WINDOW). The resulting
+    # field population follows the observed mass distribution by
+    # construction: many small galaxies, the giants only in the rare
+    # Schechter tail. If the property CSV is unavailable, falls back to
+    # s ~ log-uniform[RESCALE_MIN, 1] (RESCALE_MIN ≥ 1 disables).
+    TNG_MF_LOGM_STAR     = 10.97
+    TNG_MF_ALPHA         = -1.2
+    TNG_MF_LOGM_MIN      = 9.0
+    TNG_MF_LOGM_MAX      = 12.0
+    TNG_MASS_WINDOW      = 30.0
     TNG_MASS_RESCALE_MIN = 0.1
     TNG_MASS_SIZE_ALPHA  = 0.25
 

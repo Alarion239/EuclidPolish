@@ -129,12 +129,15 @@ That single draw sets everything:
   the stamp and boosts its surface brightness by C². C₀ = 1.3 is measured: the
   atlas runs 1.24–1.41× the observed z≈0.1 mass–size relation
   (`TNG_COMPACT_C0`/`TNG_COMPACT_BETA`).
-- **Mass rescaling** — the atlas selection is top-heavy (log M★ ≥ 9.8), so each
-  *field* stamp is re-used as a smaller galaxy of similar morphology: mass scale
-  s ~ log-uniform[0.1, 1], flux × s (L ∝ M), size ÷ s^0.25 (the observed
-  mass–size slope) — surface brightness then falls as s^0.5, the Kormendy-like
-  trend. Lens deflectors are never rescaled
-  (`TNG_MASS_RESCALE_MIN`/`TNG_MASS_SIZE_ALPHA`).
+- **Mass-function-weighted rescaling** — the atlas is a *morphology library*,
+  not a population sample: each field stamp draws its target mass from the real
+  Schechter mass function (α = −1.2, log M* = 10.97) over [10⁹, 10¹²], matches
+  an atlas galaxy within ×30 in mass, and is rescaled down — flux × s (L ∝ M),
+  size ÷ s^0.25 (the observed mass–size slope), so surface brightness falls as
+  s^0.5 (Kormendy-like). The rendered population follows the observed mass
+  distribution by construction: ~6 galaxies per 510 px field, median
+  R_e ≈ 0.13″, an R_e > 1″ giant in ~1 of 30 fields. Lens deflectors are never
+  rescaled (`TNG_MF_*`, `TNG_MASS_WINDOW`, `TNG_MASS_SIZE_ALPHA`).
 - **Surface-brightness truncation** — the SKIRT box carries faint light over all
   160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
   zeroed and the stamp cropped, so apparent sizes are the detectable isophotal
@@ -144,15 +147,13 @@ That single draw sets everything:
   tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the
   colours — red-leaning on average, sometimes bluer.
 - **Physical number density** — in pure-TNG mode the field-galaxy count follows
-  the real sky density of atlas-like (log M★ ≳ 9.8) galaxies, ≈ 9/arcmin²
+  the real sky density of the rendered (log M★ ≥ 9) population, ≈ 33/arcmin²
   (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
-  111/arcmin² that counts the faint dwarfs the atlas lacks
-  (`TNG_GAL_DENSITY_ARCMIN2`).
-- **Dwarf backfill** — the remaining faint population (≈ 102/arcmin²) comes from
-  small COSMOS Sérsic rows (circularized R_e ≤ 0.5″, where the profile is
-  unresolvable after the PSF anyway): TNG renders the massive/resolved galaxies
-  and all lenses, Sérsic the dwarfs (`TNG_DWARF_SERSIC_DENSITY_ARCMIN2`,
-  `--tng-dwarf-density-arcmin2 0` disables and keeps pure-TNG catalog-free).
+  111/arcmin² that counts undetectable dwarfs (`TNG_GAL_DENSITY_ARCMIN2`).
+- **Optional Sérsic dwarf backfill** — off by default (the MF-rescaled TNG
+  population covers the small end with real morphology, keeping pure-TNG
+  catalog-free); `--tng-dwarf-density-arcmin2 102` mixes small COSMOS Sérsic
+  rows (R_e ≤ 0.5″) back in.
 - **Lens masses** — a TNG-lit deflector takes σ_v from its subhalo's stellar mass
   (Faber–Jackson on `data/_tng_infographics/tng_properties.csv`), and the system is
   rejected unless θ_E ≥ 1.2 × the lens's apparent half-light radius, so the arcs

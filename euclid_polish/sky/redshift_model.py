@@ -210,6 +210,39 @@ def sample_galaxy_redshift(
     return float(np.interp(rng.random(), cdf, zs))
 
 
+#: Inverse-CDF grid for the Schechter mass draw, keyed by its parameters.
+_MFCDF_CACHE: Dict[Tuple, Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def sample_target_logmass(
+    rng: np.random.Generator,
+    *,
+    logm_star: float = Config.TNG_MF_LOGM_STAR,
+    alpha: float = Config.TNG_MF_ALPHA,
+    logm_min: float = Config.TNG_MF_LOGM_MIN,
+    logm_max: float = Config.TNG_MF_LOGM_MAX,
+) -> float:
+    """Draw one log10 stellar mass from the Schechter mass function,
+    ``φ dlogM ∝ (M/M*)^(α+1) e^(-M/M*)`` (Baldry+ 2012 / Muzzin+ 2013),
+    truncated to ``[logm_min, logm_max]``. The mass-rescaled TNG field
+    population follows the observed mass distribution by construction —
+    giants only in the rare exponential tail.
+    """
+    key = (float(logm_star), float(alpha), float(logm_min), float(logm_max))
+    grid = _MFCDF_CACHE.get(key)
+    if grid is None:
+        lm = np.linspace(logm_min, logm_max, 2048)
+        x = 10.0 ** (lm - logm_star)
+        pdf = x ** (alpha + 1.0) * np.exp(-x)
+        cdf = np.cumsum(pdf)
+        cdf -= cdf[0]
+        cdf /= cdf[-1]
+        grid = (cdf, lm)
+        _MFCDF_CACHE[key] = grid
+    cdf, lm = grid
+    return float(np.interp(rng.random(), cdf, lm))
+
+
 # ---------------------------------------------------------------------------
 # 2) Photometric response to redshift: dimming + randomized spectral drift
 # ---------------------------------------------------------------------------
