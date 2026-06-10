@@ -136,6 +136,11 @@ That single draw sets everything:
   (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
   111/arcmin² that counts the faint dwarfs the atlas lacks
   (`TNG_GAL_DENSITY_ARCMIN2`).
+- **Dwarf backfill** — the remaining faint population (≈ 102/arcmin²) comes from
+  small COSMOS Sérsic rows (circularized R_e ≤ 0.5″, where the profile is
+  unresolvable after the PSF anyway): TNG renders the massive/resolved galaxies
+  and all lenses, Sérsic the dwarfs (`TNG_DWARF_SERSIC_DENSITY_ARCMIN2`,
+  `--tng-dwarf-density-arcmin2 0` disables and keeps pure-TNG catalog-free).
 - **Lens masses** — a TNG-lit deflector takes σ_v from its subhalo's stellar mass
   (Faber–Jackson on `data/_tng_infographics/tng_properties.csv`), and the system is
   rejected unless θ_E ≥ 1.2 × the lens's apparent half-light radius, so the arcs

@@ -625,6 +625,17 @@ class Config:
     # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² → ≈ 9 galaxies/arcmin² (~1.6 per
     # 510 px field).
     TNG_GAL_DENSITY_ARCMIN2 = 9.0
+    # Faint-dwarf backfill in pure-TNG mode: the atlas has no low-mass
+    # galaxies, so COSMOS Sersic rows supply the m≈23–26 population the real
+    # sky is peppered with — at the COSMOS total minus the massive subset
+    # TNG now renders (111 − 9 ≈ 102/arcmin²), restricted to rows with
+    # circularized R_e ≤ TNG_DWARF_MAX_RE_ARCSEC so a big COSMOS galaxy
+    # never duplicates TNG's resolved population. At these sizes (≲ 0.5″ →
+    # a few HR pixels, PSF-convolved) morphology is unresolvable, so the
+    # analytic profile is observationally exact. Density ≤ 0 disables
+    # (catalog=None then stays fully catalog-free).
+    TNG_DWARF_SERSIC_DENSITY_ARCMIN2 = 102.0
+    TNG_DWARF_MAX_RE_ARCSEC          = 0.5
 
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
     # AB, per band). The SKIRT frames carry nonzero light over the whole

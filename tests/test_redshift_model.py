@@ -307,7 +307,7 @@ def test_generator_z_mode_field_galaxies(tmp_path):
     sim = _z_mode_sim(tmp_path)
     img, meta = sim.simulate_field(np.random.default_rng(1),
                                    n_galaxies=5, n_stars=0, n_lenses=0,
-                                   n_big=0)
+                                   n_big=0, n_dwarfs=0)
     assert img.data.sum() > 0
     recs = meta["galaxies"]
     assert [r["render"] for r in recs] == ["tng"] * 5
@@ -362,6 +362,31 @@ def test_pure_tng_mode_forces_redshift_mode(tmp_path):
     assert sim.pure_tng
     assert sim.config.tng_redshift_mode
     assert sim.lens_population is None   # catalog-backed priors unused
+
+
+def test_pure_tng_dwarf_backfill(tmp_path):
+    # With a catalog present, small COSMOS Sersic rows backfill the faint
+    # population the massive-only atlas lacks; TNG keeps the resolved slots.
+    sim = _z_mode_sim(tmp_path)
+    _, meta = sim.simulate_field(np.random.default_rng(7), n_galaxies=2,
+                                 n_stars=0, n_lenses=0, n_big=0, n_dwarfs=6)
+    dwarfs = [g for g in meta["galaxies"] if g.get("dwarf")]
+    assert len(dwarfs) == 6 and meta["n_dwarf_galaxies"] == 6
+    assert all(g["render"] == "sersic" for g in dwarfs)
+    assert sum(1 for g in meta["galaxies"] if g["render"] == "tng") == 2
+
+
+def test_pure_tng_dwarfs_need_a_catalog(tmp_path):
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111")
+    cfg = MultiBandGeneratorConfig(
+        image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
+    sim = MultiBandSimulator(None, cfg)
+    # Explicit n_dwarfs is ignored without a catalog (nothing to sample).
+    _, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=1,
+                                 n_stars=0, n_lenses=0, n_dwarfs=5)
+    assert meta["n_dwarf_galaxies"] == 0
 
 
 def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):

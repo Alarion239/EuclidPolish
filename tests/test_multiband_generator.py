@@ -133,7 +133,8 @@ def test_tng_injection_when_enabled(tmp_path):
     assert {g[1] for g in sim.tng_galaxies} == {"111", "222"}
     assert sim.pure_tng and sim.config.tng_redshift_mode
     img, meta = sim.simulate_field(np.random.default_rng(0),
-                                   n_galaxies=4, n_stars=0, n_lenses=0)
+                                   n_galaxies=4, n_stars=0, n_lenses=0,
+                                   n_dwarfs=0)
     assert [g["render"] for g in meta["galaxies"]] == ["tng"] * 4
     assert img.data.sum() > 0
     g0 = meta["galaxies"][0]

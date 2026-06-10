@@ -136,6 +136,10 @@ class MultiBandGeneratorConfig:
     # NOT the full COSMOS density — the atlas has no faint dwarfs, so the
     # full count would fill every field with giants.
     tng_gal_density_arcmin2:  float = Config.TNG_GAL_DENSITY_ARCMIN2
+    # Pure-TNG dwarf backfill: COSMOS Sersic rows (R_e ≤ the cut) supply the
+    # faint small population TNG cannot. Needs a catalog; ≤ 0 disables.
+    tng_dwarf_density_arcmin2: float = Config.TNG_DWARF_SERSIC_DENSITY_ARCMIN2
+    tng_dwarf_max_re_arcsec:   float = Config.TNG_DWARF_MAX_RE_ARCSEC
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -227,9 +231,13 @@ class MultiBandSimulator:
     (galaxies/lenses) or from the fixed stellar colour (stars).
 
     ``tng_fraction == 1`` (with downloaded TNG galaxies) is **pure-TNG
-    mode**: redshift mode is forced on, ``catalog`` may be None, lens
-    systems are sampled catalog-free (:func:`sample_lens_geometry`, σ_v
-    from the subhalo mass), and the big-galaxy population is dropped.
+    mode**: redshift mode is forced on, lens systems are sampled
+    catalog-free (:func:`sample_lens_geometry`, σ_v from the subhalo
+    mass), and the big-galaxy population is dropped. TNG renders the
+    massive population (``tng_gal_density_arcmin2``); small COSMOS Sersic
+    rows backfill the faint dwarfs (``tng_dwarf_density_arcmin2``) when a
+    catalog is supplied — ``catalog=None`` is allowed and renders TNG
+    only.
     """
 
     def __init__(
@@ -400,7 +408,13 @@ class MultiBandSimulator:
             if rec is not None:
                 return rec
             # TNG load failed → don't waste the slot, fall through to Sersic.
-        g = self.catalog.sample_galaxy(rng)
+        return self._render_sersic_galaxy(
+            canvas_4ch, rng, self.catalog.sample_galaxy(rng))
+
+    def _render_sersic_galaxy(
+        self, canvas_4ch: np.ndarray, rng: np.random.Generator, g,
+    ) -> dict:
+        """Rasterise one COSMOS B+D Sersic galaxy at a random field position."""
         x_pix, y_pix = self._random_pix(rng)
         add_sersic_to_bands(
             canvas_4ch, flux_per_band=g.bulge_flux_e, n=4.0,
@@ -426,6 +440,24 @@ class MultiBandSimulator:
             "disk_re_arcsec":  float(g.disk_r_e_arcsec),
             "flux_e_per_band": list(map(float, [g.total_flux_e(k) for k in range(4)])),
         }
+
+    def _add_dwarf_galaxy(
+        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+        *, max_tries: int = 50,
+    ) -> dict:
+        """Pure-TNG dwarf backfill: a *small* COSMOS Sersic galaxy
+        (circularized R_e ≤ ``tng_dwarf_max_re_arcsec`` — bigger rows are
+        TNG's job). At these sizes the profile is unresolvable after the
+        PSF, so the analytic render is observationally exact. Settles for
+        the last draw if no small row shows up."""
+        cut = self.config.tng_dwarf_max_re_arcsec
+        for _ in range(max_tries):
+            g = self.catalog.sample_galaxy(rng)
+            if cut <= 0.0 or self._galaxy_effective_re(g) <= cut:
+                break
+        rec = self._render_sersic_galaxy(canvas_4ch, rng, g)
+        rec["dwarf"] = True
+        return rec
 
     def _add_star(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
@@ -686,6 +718,7 @@ class MultiBandSimulator:
         n_stars:    Optional[int] = None,
         n_lenses:   Optional[int] = None,
         n_big:      Optional[int] = None,
+        n_dwarfs:   Optional[int] = None,
     ) -> Tuple[MultiBandSkyImage, dict]:
         """Render one clean HR field in 4 bands.
 
@@ -723,6 +756,15 @@ class MultiBandSimulator:
         if n_big is None:
             n_big = (int(rng.poisson(cfg.big_galaxy_density_arcmin2 * area))
                      if big_enabled else 0)
+        # Pure-TNG dwarf backfill: small COSMOS Sersic galaxies supply the
+        # faint population the massive-only atlas cannot.
+        dwarf_enabled = (self.pure_tng and self.catalog is not None
+                         and cfg.tng_dwarf_density_arcmin2 > 0.0)
+        if n_dwarfs is None:
+            n_dwarfs = (int(rng.poisson(cfg.tng_dwarf_density_arcmin2 * area))
+                        if dwarf_enabled else 0)
+        elif not dwarf_enabled:
+            n_dwarfs = 0
 
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
 
@@ -735,6 +777,8 @@ class MultiBandSimulator:
             rec = self._add_big_galaxy(canvas, rng)
             if rec is not None:
                 galaxies.append(rec)
+        for _ in range(n_dwarfs):
+            galaxies.append(self._add_dwarf_galaxy(canvas, rng))
         for _ in range(n_stars):
             stars.append(self._add_star(canvas, rng))
         for _ in range(n_lenses):
@@ -753,6 +797,7 @@ class MultiBandSimulator:
             "big_galaxy_density_arcmin2": float(cfg.big_galaxy_density_arcmin2),
             "n_galaxies": len(galaxies),
             "n_big_galaxies": int(n_big_rendered),
+            "n_dwarf_galaxies": sum(1 for g in galaxies if g.get("dwarf")),
             "n_stars":    len(stars),
             "n_lenses":   len(lenses),
             "galaxies":   galaxies,
