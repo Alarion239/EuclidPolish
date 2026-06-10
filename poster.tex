@@ -4,7 +4,7 @@
 %  Aleksandr Belotserkovtsev
 %
 %  Layout: LEFT COLUMN = vertical pipeline infographic (top->bottom);
-%          RIGHT = two text columns.
+%          RIGHT = one text column (abstract -> results).
 %
 %  Compile: pdflatex poster -> biber poster -> pdflatex poster -> pdflatex poster
 %  (references come from references.bib via biblatex). Notes:
@@ -93,15 +93,18 @@
   % Pipeline geometry: two vertical guide lines bound the figure. Rows 1-2 hold
   % two equal squares (\imgs) left/right-aligned to the guides; rows 3-4 hold one
   % image spanning both guides (\fullw = 2\imgs + \lanegap).
-  \setlength{\imgs}{0.26\linewidth}
-  \setlength{\lanegap}{0.04\linewidth}
+  \setlength{\imgs}{0.30\linewidth}
+  \setlength{\lanegap}{0.05\linewidth}
   \setlength{\fullw}{2\imgs}\addtolength{\fullw}{\lanegap}
   \begin{tikzpicture}[
       >={Stealth[length=11mm, width=8mm]},
       panel/.style={inner sep=0pt, outer sep=0pt},
-      ptitle/.style={font=\bfseries, text=black, align=center, inner sep=0pt},
-      psub/.style={font=\small, text=gray!75, inner sep=1pt},
-      band/.style={font=\footnotesize\bfseries, text=white, inner sep=1.5pt},
+      % Side captions: left-lane labels sit LEFT of the image, the star-cluster
+      % and ePSF labels sit RIGHT of it. Big, minimal text.
+      ltitle/.style={font=\LARGE\bfseries, text=black, align=right,
+                     anchor=east, inner sep=0pt},
+      rtitle/.style={font=\LARGE\bfseries, text=black, align=left,
+                     anchor=west, inner sep=0pt},
       flow/.style={->, line width=2.6pt, gray!70},
       opl/.style={font=\small\bfseries, text=white, fill=black!80,
                   inner sep=5pt, rounded corners=4pt},
@@ -115,48 +118,40 @@
     % ===== ROW 1: ingredients (left) + star-cluster map (right) =====
     \node[panel, anchor=north west] (ing) at (0,0)
         {\panelimg{\imgs}{\figdir/ingredients_grid.png}{ingredients grid}};
-    \node[ptitle] at ([yshift=4mm]ing.north) {\large Ingredients};
+    \node[ltitle] at ([xshift=-6mm]ing.west) {Ingredients};
     \node[panel, anchor=north west] (cmap) at ([xshift=\lanegap]ing.north east)
         {\panelimg{\imgs}{\figdir/cluster_map.png}{star-cluster map}};
-    \node[ptitle] at ([yshift=4mm]cmap.north) {\large Star clusters};
+    \node[rtitle] at ([xshift=6mm]cmap.east) {Star\\ clusters};
 
     % ===== ROW 2: clean field (left) + per-band PSF grid (right) =====
     \node[panel, anchor=north west] (clean) at ([yshift=-22mm]ing.south west)
         {\panelimg{\imgs}{\figdir/clean_field.png}{clean synthetic field}};
-    \node[ptitle, anchor=east, text width=0.13\linewidth] at ([xshift=-4mm]clean.west)
-        {Synthetic\\ field\\[2pt]{\small\color{gray!75} Hubble-res\\ ground truth}};
+    \node[ltitle] at ([xshift=-6mm]clean.west)
+        {Synthetic\\ field\\[3pt]{\normalsize\color{gray!75} ground truth}};
     \node[panel, anchor=north west] (psf) at ([yshift=-22mm]cmap.south west)
         {\panelimg{\imgs}{\figdir/psf_grid.png}{per-band PSFs}};
+    \node[rtitle] at ([xshift=6mm]psf.east) {Per-band\\ ePSF};
 
     % ===== ROW 3: mock-Euclid dirty grid spans BOTH guides =====
     \node[panel, anchor=north west] (dirty) at ([yshift=-28mm]clean.south west)
         {\panelimg{\fullw}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
-    \node[ptitle, anchor=east, text width=0.13\linewidth] at ([xshift=-4mm]dirty.west)
-        {Mock\\ Euclid\\[2pt]{\small\color{gray!75} 4 bands,\\ noisy}};
+    \node[ltitle] at ([xshift=-6mm]dirty.west)
+        {Mock\\ Euclid\\[3pt]{\normalsize\color{gray!75} 4 noisy bands}};
 
     % ===== ROW 4: super-resolved image spans BOTH guides =====
     \node[panel, anchor=north west] (sr) at ([yshift=-24mm]dirty.south west)
         {\panelimg{\fullw}{\figdir/sr_field.png}{super-resolved}};
-    \node[ptitle, anchor=north] at ([yshift=-3mm]sr.south)
-        {Super-Resolved {\small\color{gray!75}(VIS, 0.05$''$/pix)}};
+    \node[ltitle] at ([xshift=-6mm]sr.west)
+        {Super-\\ resolved\\[3pt]{\normalsize\color{gray!75} 0.05$''$/pix}};
 
     % ===== FLOW ARROWS =====
     \draw[flow] (ing.south)  -- (clean.north);                      % ingredients -> clean
-    \draw[flow] (cmap.south) -- (psf.north)
-        node[opl, pos=0.5] {\footnotesize per-band ePSF};          % clusters -> PSF grid
+    \draw[flow] (cmap.south) -- (psf.north);                        % clusters -> PSF grid
     \draw[flow] (clean.south) -- (dirty.north);                     % clean -> dirty
     \draw[flow] (psf.south)   -- (dirty.north);                     % PSFs  -> dirty
     \node[opl] at ([yshift=8mm]dirty.north) {$\circledast$ \,$+$\, noise};
     \draw[flow] (dirty.south) -- (sr.north) node[opl, midway] {POLISH\texttt{++} CNN};
   \end{tikzpicture}
-
-  \vspace{3mm}
-  {\small\textcolor{gray!75}{Gravitational lenses, S\'ersic and TNG50 galaxies and
-  stars are assembled into a Hubble-resolution synthetic field. Stars across the
-  survey are clustered by sky position to build a per-band, position-dependent PSF;
-  convolving the clean field with each band's PSF and adding instrumental noise
-  yields the four mock-Euclid bands, which the network reconstructs into a single
-  super-resolved image.}}
   }
 
   % References + Acknowledgements live under the pipeline (back-matter, uses the
@@ -202,52 +197,14 @@
     missing small-radius lenses.
   }
 
-  \block{Background \& Motivation}{
-    \textbf{Strong gravitational lensing} occurs when a massive foreground
-    deflector (galaxy or cluster) bends light from a background source strongly
-    enough to form multiple images or arcs.
+  \block{Background}{
+    A massive foreground galaxy bends the light of a background source into
+    arcs or multiple images; the \emph{Einstein radius} $\theta_E$ sets their
+    angular separation. When $\theta_E$ falls below the survey resolution the
+    arcs blend into the lens light --- those systems are the ones that best
+    constrain dark-matter halos, and the ones wide surveys miss.
     \vspace{0.5em}
-
-    The \emph{Einstein radius} $\theta_E$ --- the angular separation between lens
-    and source --- characterizes each system. Small $\theta_E$ systems:
-    \begin{itemize}
-      \item tightly constrain the dark-matter halo profile;
-      \item correspond to higher-redshift, fundamentally different deflectors and
-            sources;
-      \item are \textbf{systematically missed} when $\theta_E$ falls below the
-            resolution of wide-area surveys.
-    \end{itemize}
-    \vspace{0.5em}
-    \figbox{8cm}{[ lensing geometry --- \texttt{gravilensing.jpg} ]}
-  }
-
-  \block{Objectives}{
-    Test whether a \textbf{super-resolution} machine-learning model can improve
-    identification of strong lenses in \textbf{Euclid} surveys --- the first
-    wide-area, \emph{space-based} optical survey.
-    \begin{itemize}
-      \item Space-based PSF is stable (no time/wavelength atmospheric blurring),
-            making ML reconstruction realistic.
-      \item Push lower-quality Euclid images toward Hubble-level detail across a
-            far larger sky area than targeted Hubble pointings.
-      \item Deliver outputs usable within existing lens-finding workflows
-            (e.g.\ the AGEL collaboration).
-    \end{itemize}
-  }
-
-  \block{Data \& Methods}{
-    Paired \emph{clean} (high-res) / \emph{dirty} (Euclid-like) data:
-    \begin{enumerate}
-      \item \textbf{Simulate} a Hubble-resolution sky --- S\'ersic (COSMOS2025)
-            and TNG50 galaxies, stars, and \textsc{LensPop}
-            \parencite{Collett2015_ApJ81120} lenses --- with our own vectorised
-            renderer (not GalSim, \cite{Rowe2015GalSim}).
-      \item \textbf{Degrade} to mock Euclid: per-band, position-dependent ePSF
-            $\circledast$ $+$ Poisson/read noise $+$ detector artifacts, across
-            VIS $+$ NISP\,(Y/J/H).
-      \item \textbf{Train} WDSR (POLISH++) on Harvard's \textsc{Cannon} cluster;
-            real HST and star cutouts anchor the reconstruction.
-    \end{enumerate}
+    \figbox{8cm}{[ gravitational lens ]}
   }
 
   \block{Model Architecture}{
@@ -256,24 +213,6 @@
     skip}, and $\times2$ pixel-shuffle upsampling. Input $4$ bands
     (VIS\,+\,Y/J/H), output a deconvolved VIS sky. No batch-norm; trained with an
     asinh-stretched L1 loss.
-  }
-
-  \block{Preliminary Results}{
-    Applied to \textbf{real Euclid data}, the model both
-    \textbf{super-resolves and denoises}, recovering structure that is blurred or
-    buried in the originals.
-    \vspace{0.5em}
-    \begin{tikzfigure}
-      \begin{minipage}{0.47\linewidth}
-        \figbox{9cm}{[ Euclid input ]}
-      \end{minipage}\hfill
-      \begin{minipage}{0.47\linewidth}
-        \figbox{9cm}{[ SR output ]}
-      \end{minipage}
-    \end{tikzfigure}
-    \vspace{0.3em}
-    Evaluation uses image-similarity metrics and changes in lens-detection
-    outcomes, benchmarked against Hubble imaging of the same targets.
   }
 
   \block{Significance \& Next Steps}{
@@ -286,6 +225,23 @@
       \item Deliverables: open-source simulation code, trained weights, an
             end-to-end super-resolution pipeline, and a paper.
     \end{itemize}
+  }
+
+  \block{Preliminary Results: Real Euclid Data}{
+    Applied to \textbf{real Euclid cutouts}, the model both
+    \textbf{super-resolves and denoises}, recovering structure that is blurred
+    or buried in the originals.
+    \vspace{0.5em}
+    \begin{tikzfigure}
+      \begin{minipage}{0.47\linewidth}
+        \figbox{9cm}{[ Euclid input ]}
+      \end{minipage}\hfill
+      \begin{minipage}{0.47\linewidth}
+        \figbox{9cm}{[ SR output ]}
+      \end{minipage}
+    \end{tikzfigure}
+    \vspace{0.3em}
+    Benchmarked against Hubble imaging of the same targets.
   }
 
 \end{columns}
