@@ -113,7 +113,11 @@ entirely.
 
 The SKIRT atlas frames are intrinsic z = 0 images on a physical 100 pc/pixel grid.
 In redshift mode (`sky/redshift_model.py`) each injected stamp draws one z from
-`n(z) ∝ z² exp(-(z/0.65)^1.5)` on [0.10, 2.5], and that single draw sets everything:
+`dN/dz ∝ dV_c/dz · exp(-(z/1.5)²)` on [0.10, 2.5] — the comoving volume element
+times the declining number density of massive galaxies (Muzzin+ 2013), the right
+distribution for the atlas's intrinsically luminous population (median z ≈ 1.2;
+a Smail-form `n(z) ∝ z² exp(-(z/0.65)^1.5)` is available via `TNG_Z_FORM`).
+That single draw sets everything:
 
 - **Angular size** — the block-mean factor is `F(z) = θ_HR[rad] · D_A(z) / 100 pc`
   (≈3 at z = 0.5, capped at ≈4.3 by the D_A turnover near z ≈ 1.6). No separate

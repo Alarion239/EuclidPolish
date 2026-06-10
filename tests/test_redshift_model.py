@@ -74,13 +74,29 @@ def test_physical_pc_to_arcsec():
 # Field n(z)
 # ---------------------------------------------------------------------------
 
-def test_redshift_sampler_range_and_median():
+def test_redshift_sampler_volume_form_range_median_and_low_z_tail():
     rng = np.random.default_rng(42)
-    zs = np.array([sample_galaxy_redshift(rng) for _ in range(4000)])
+    zs = np.array([sample_galaxy_redshift(rng) for _ in range(6000)])
     assert zs.min() >= Config.TNG_Z_MIN
     assert zs.max() <= Config.TNG_Z_MAX
-    # n(z) ∝ z² exp(-(z/0.65)^1.5) → median around z≈0.9.
-    assert 0.6 < float(np.median(zs)) < 1.2
+    # dN/dz ∝ dV_c/dz · exp(-(z/1.5)²) → median ≈ 1.15; the atlas's massive
+    # galaxies rarely sit nearby, so arcsec-scale giants stay rare.
+    assert 1.0 < float(np.median(zs)) < 1.35
+    assert (zs < 0.4).mean() < 0.07
+
+
+def test_redshift_sampler_smail_form():
+    rng = np.random.default_rng(42)
+    zs = np.array([sample_galaxy_redshift(rng, form="smail")
+                   for _ in range(4000)])
+    # Full flux-limited population (Smail+ 1995): median ≈ 0.9 — kept as an
+    # option; over-draws low z for the massive-only atlas.
+    assert 0.7 < float(np.median(zs)) < 1.1
+
+
+def test_redshift_sampler_unknown_form_raises():
+    with pytest.raises(ValueError, match="form"):
+        sample_galaxy_redshift(np.random.default_rng(0), form="nope")
 
 
 # ---------------------------------------------------------------------------

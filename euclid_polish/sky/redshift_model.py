@@ -130,17 +130,34 @@ def rebin_factor_for_redshift(
 # Field redshift distribution
 # ---------------------------------------------------------------------------
 
-#: Inverse-CDF grids keyed by (z0, z_min, z_max); built once per parameter set.
-_ZCDF_CACHE: Dict[Tuple[float, float, float], Tuple[np.ndarray, np.ndarray]] = {}
+#: Inverse-CDF grids keyed by the sampler parameters; built once per set.
+_ZCDF_CACHE: Dict[Tuple, Tuple[np.ndarray, np.ndarray]] = {}
 
 
-def _z_inverse_cdf_grid(z0: float, z_min: float, z_max: float,
+def _z_inverse_cdf_grid(form: str, z0: float, phi_scale: float,
+                        z_min: float, z_max: float,
                         n: int = 2048) -> Tuple[np.ndarray, np.ndarray]:
-    key = (float(z0), float(z_min), float(z_max))
+    key = (str(form), float(z0), float(phi_scale), float(z_min), float(z_max))
     grid = _ZCDF_CACHE.get(key)
     if grid is None:
         zs = np.linspace(z_min, z_max, n)
-        pdf = zs ** 2 * np.exp(-((zs / z0) ** 1.5))
+        if form == "smail":
+            pdf = zs ** 2 * np.exp(-((zs / z0) ** 1.5))
+        elif form == "volume":
+            # dV_c/dz ∝ D_C(z)²/E(z) (Hogg 1999, eq. 28), times the declining
+            # comoving number density of massive galaxies.
+            E = np.sqrt(Config.LENS_COSMOLOGY_OMEGA_M * (1.0 + zs) ** 3
+                        + Config.LENS_COSMOLOGY_OMEGA_L)
+            # D_C (Mpc) up to each grid point: the exact value at z_min plus
+            # a cumulative trapezoid of the Hubble distance over the grid.
+            DH = 299_792.458 / Config.LENS_COSMOLOGY_H0
+            dc0 = comoving_distance_mpc(z_min)
+            dz = zs[1] - zs[0]
+            dc = dc0 + DH * np.concatenate(
+                ([0.0], np.cumsum((1.0 / E[1:] + 1.0 / E[:-1]) * 0.5 * dz)))
+            pdf = dc ** 2 / E * np.exp(-((zs / phi_scale) ** 2))
+        else:
+            raise ValueError(f"unknown n(z) form {form!r}")
         cdf = np.cumsum(pdf)
         cdf -= cdf[0]
         cdf /= cdf[-1]
@@ -152,19 +169,29 @@ def _z_inverse_cdf_grid(z0: float, z_min: float, z_max: float,
 def sample_galaxy_redshift(
     rng: np.random.Generator,
     *,
+    form: str = Config.TNG_Z_FORM,
     z0: float = Config.TNG_Z0,
+    phi_scale: float = Config.TNG_Z_PHI_SCALE,
     z_min: float = Config.TNG_Z_MIN,
     z_max: float = Config.TNG_Z_MAX,
 ) -> float:
-    """Draw one redshift from the standard survey form
-    ``n(z) ∝ z² exp(-(z/z0)^1.5)`` truncated to ``[z_min, z_max]``.
+    """Draw one redshift for a TNG stamp, truncated to ``[z_min, z_max]``.
 
-    With the default ``z0 = 0.65`` the median lands near z ≈ 0.9 — a
-    Euclid-photometric-sample-like depth. ``z_min = 0.10`` is where the
-    100 pc native pixel matches the 0.05″ HR grid (rebin factor 1).
-    Sampling is by inverse CDF on a cached grid.
+    ``form="volume"`` (default): ``dN/dz ∝ dV_c/dz · exp(-(z/phi_scale)²)``
+    — the right distribution for the atlas's massive galaxies, which are
+    visible across the whole survey volume: comoving volume element times
+    the Muzzin+ 2013 decline of the log M*≳11 number density. Median
+    z ≈ 1.2; only ~4% of draws land below z = 0.4 (where atlas giants
+    appear arcsec-sized).
+
+    ``form="smail"``: ``n(z) ∝ z² exp(-(z/z0)^1.5)`` — the full
+    flux-limited population (Smail+ 1995; Euclid Red Book median 0.9 with
+    z0 = 0.65). Over-draws low z for the massive-only atlas.
+
+    Sampling is by inverse CDF on a cached grid; ``z_min = 0.10`` is where
+    the 100 pc native pixel matches the 0.05″ HR grid (rebin factor 1).
     """
-    cdf, zs = _z_inverse_cdf_grid(z0, z_min, z_max)
+    cdf, zs = _z_inverse_cdf_grid(form, z0, phi_scale, z_min, z_max)
     return float(np.interp(rng.random(), cdf, zs))
 
 
