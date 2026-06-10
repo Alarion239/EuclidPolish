@@ -332,7 +332,10 @@ class Config:
     # --- Bright-star detector saturation (synthetic LR dirty image) ------------
     # A star saturates a band when its peak detector-pixel electron count exceeds
     # the well depth. We DERIVE the per-band well depth so the 50% points land at
-    # the observed magnitudes: VIS ~14, NISP ~17 (STAR_SATURATION_CALIB_MAG). The
+    # the observed magnitudes (STAR_SATURATION_CALIB_MAG, in VIS mag): VIS 14,
+    # Y_E 17, H_E 16.5, J_E 17.5 → peak-pixel clip levels of ~198k e⁻ (VIS),
+    # ~10.0k/12.3k/5.9k e⁻ (Y_E/H_E/J_E). P=½ at the calib mag, ~0.4% one mag
+    # fainter, ~99.6% one mag brighter (set by STAR_SATURATION_JITTER_DEX). The
     # peak fraction uses an effective FWHM (STAR_SATURATION_FWHM_ARCSEC) at each
     # band's native detector pixel; the recovered wells are ~198k e⁻ (VIS CCD) and
     # ~8-10k e⁻ (NISP H2RG). Onset = Poisson(peak) ≥ well, with a per-star
@@ -343,7 +346,7 @@ class Config:
     # pixel), clipped to the well depth.
     STAR_SATURATION_FWHM_ARCSEC  = 2.0
     STAR_SATURATION_CALIB_MAG    = {"VIS": 14.0, "Y_E": 17.0,
-                                    "J_E": 17.0, "H_E": 17.0}
+                                    "J_E": 17.5, "H_E": 16.5}
     STAR_SATURATION_JITTER_DEX   = 0.15     # log-normal peak jitter (≈1 mag onset)
     STAR_SATURATION_RECT_MIN_PX  = 3
     STAR_SATURATION_RECT_MAX_PX  = 6
