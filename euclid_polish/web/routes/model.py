@@ -165,10 +165,13 @@ def register(app):
         except (TypeError, ValueError):
             n_pairs = 1
         n_pairs = max(1, min(8, n_pairs))
+        # Default 1.0: pure-TNG generation (redshift realism, COSMOS skipped);
+        # an explicit "0" from the form is still honoured.
         try:
-            tng_fraction = float(request.form.get("tng_fraction", 0.0) or 0.0)
+            raw = request.form.get("tng_fraction")
+            tng_fraction = 1.0 if raw in (None, "") else float(raw)
         except (TypeError, ValueError):
-            tng_fraction = 0.0
+            tng_fraction = 1.0
         tng_fraction = min(1.0, max(0.0, tng_fraction))
         job_id = REGISTRY.spawn(
             label=f"gen+reconstruct {n_pairs}×{hr_size}px (FASRC login-node gen)",

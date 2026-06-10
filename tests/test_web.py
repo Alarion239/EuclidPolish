@@ -456,13 +456,14 @@ def test_post_inference_generate_reconstruct_returns_job_id(client):
 
 def test_login_node_generate_cmd_injects_tng_fraction():
     """The inference login-node generation forwards --tng-fraction to
-    run_pipeline.py only when > 0, so the synthetic scenes include TNG galaxies."""
+    run_pipeline.py; the default is 1 (pure-TNG mode) and an explicit 0
+    omits the flag (run_pipeline's default is all-Sersic)."""
     from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     from euclid_polish.web.fasrc_config import FasrcConfig
     cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
     base = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2)
     assert "scripts/run_pipeline.py" in base
-    assert "--tng-fraction" not in base
+    assert "--tng-fraction 1" in base
     withtng = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2, tng_fraction=0.3)
     assert "--tng-fraction 0.3" in withtng
     assert "--tng-fraction" not in _login_node_generate_cmd(

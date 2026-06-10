@@ -35,7 +35,7 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.sky.cosmos2025 import CosmosCatalog
 from euclid_polish.sky.lens_population import (
-    LensPopulation, render_lens_to_multiband_canvas,
+    LensPopulation, render_lens_to_multiband_canvas, sample_lens_geometry,
 )
 from euclid_polish.sky.apparent_size import CosmosSizeSampler
 from euclid_polish.sky.cosmos2025 import circularized_effective_radius_arcsec
@@ -123,14 +123,16 @@ class MultiBandGeneratorConfig:
     # θ_E ≥ lens_theta_e_min_re_ratio × the lens's apparent half-light
     # radius, so the arcs land outside the foreground light. False keeps
     # generation byte-identical to before.
+    # tng_fraction == 1 additionally switches the simulator to PURE-TNG mode:
+    # redshift mode is forced on, the COSMOS catalog becomes optional
+    # (catalog=None is allowed — nothing Sersic is ever rendered), and lens
+    # systems are sampled catalog-free (geometry from the Collett priors,
+    # σ_v from the subhalo mass, both lights real TNG stamps).
     tng_redshift_mode:        bool  = False
     # Property catalog for the mass→σ_v mapping; "" → the local cache
     # written by the TNG-infographic render.
     tng_properties_csv:       str   = ""
     lens_theta_e_min_re_ratio: float = Config.LENS_THETA_E_MIN_RE_RATIO
-    # Big-galaxy population in redshift mode: z ~ U[TNG_Z_MIN, tng_big_z_max]
-    # (close → naturally large on the sky) instead of a target-size draw.
-    tng_big_z_max:            float = Config.TNG_BIG_Z_MAX
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -156,9 +158,6 @@ class MultiBandGeneratorConfig:
             return False, "tng_big_re_arcsec must be (lo, hi) with 0 < lo ≤ hi"
         if self.lens_theta_e_min_re_ratio <= 0.0:
             return False, "lens_theta_e_min_re_ratio must be > 0"
-        if not (Config.TNG_Z_MIN <= self.tng_big_z_max <= Config.TNG_Z_MAX):
-            return False, ("tng_big_z_max must be within "
-                           "[Config.TNG_Z_MIN, Config.TNG_Z_MAX]")
         return True, None
 
 
@@ -227,7 +226,7 @@ class MultiBandSimulator:
 
     def __init__(
         self,
-        catalog: CosmosCatalog,
+        catalog: Optional[CosmosCatalog],
         config: Optional[MultiBandGeneratorConfig] = None,
         *,
         lens_population: Optional[LensPopulation] = None,
@@ -237,10 +236,6 @@ class MultiBandSimulator:
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
-        self.lens_population = lens_population or LensPopulation(
-            catalog,
-            sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
-            sigma_v_max_kms=self.config.lens_sigma_v_max_kms)
         # Load the injectable TNG galaxy list once (only when enabled, so the
         # default path does no filesystem work).
         self.tng_galaxies: List[Tuple[str, str]] = (
@@ -252,11 +247,31 @@ class MultiBandSimulator:
                 f"[generator] tng_fraction={self.config.tng_fraction} but no "
                 f"downloaded galaxies under {self.config.tng_galaxy_dir} — "
                 "falling back to all-Sersic.\n")
+        # Pure-TNG mode: every galaxy / lens light / lensed source is a real
+        # stamp, so redshift mode is mandatory (a stamp's size and photometry
+        # need a z) and the COSMOS catalog is never consulted.
+        self.pure_tng: bool = (self.config.tng_fraction >= 1.0
+                               and bool(self.tng_galaxies))
+        if self.pure_tng and not self.config.tng_redshift_mode:
+            self.config = replace(self.config, tng_redshift_mode=True)
+        if catalog is None and not self.pure_tng:
+            raise ValueError(
+                "catalog=None requires pure-TNG mode: tng_fraction == 1 with "
+                "downloaded TNG galaxies (anything Sersic needs COSMOS rows)")
+        # Catalog-backed lens priors only outside pure mode — the pure path
+        # samples geometry directly (sample_lens_geometry) with σ_v from the
+        # subhalo's stellar mass.
+        self.lens_population = None if self.pure_tng else (
+            lens_population or LensPopulation(
+                catalog,
+                sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
+                sigma_v_max_kms=self.config.lens_sigma_v_max_kms))
         # Realistic apparent-size sampler for TNG injection: drawn from the
         # COSMOS catalog's own effective-radius distribution (+ rare big tail),
         # so TNG galaxies match the Sersic population by construction.
+        # Redshift mode replaces it with the D_A(z) sizing.
         self.tng_size_model: Optional[CosmosSizeSampler] = None
-        if (self.config.tng_fraction > 0.0
+        if (self.catalog is not None and self.config.tng_fraction > 0.0
                 and self.config.tng_realistic_sizes and self.tng_galaxies):
             # Small field galaxies: pure COSMOS-anchored sizes (no big tail —
             # big galaxies are a separate fixed-density population, below).
@@ -337,28 +352,25 @@ class MultiBandSimulator:
     def _add_big_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> Optional[dict]:
-        """Inject one genuinely big galaxy — always a real TNG stamp. In
-        redshift mode it is simply a *nearby* galaxy (z uniform in
-        [TNG_Z_MIN, tng_big_z_max], so D_A keeps it large on the sky);
-        otherwise it is sized to a large apparent half-light radius drawn
-        log-uniformly over ``tng_big_re_arcsec``. This is the fixed-density
-        population that is independent of ``tng_fraction``."""
-        if self.config.tng_redshift_mode:
-            z = float(rng.uniform(Config.TNG_Z_MIN, self.config.tng_big_z_max))
-            rec = self._add_tng_galaxy(canvas_4ch, rng, z=z)
-        else:
-            lo, hi = self.config.tng_big_re_arcsec
-            target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
-            rec = self._add_tng_galaxy(canvas_4ch, rng, target_re_arcsec=target)
+        """Inject one genuinely big galaxy — always a real TNG stamp, sized to
+        a large apparent half-light radius drawn log-uniformly over
+        ``tng_big_re_arcsec``. Legacy-sizing path only: in redshift mode this
+        population does not exist — the realistic n(z) already produces big
+        nearby galaxies at the rate the sky does."""
+        lo, hi = self.config.tng_big_re_arcsec
+        target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+        rec = self._add_tng_galaxy(canvas_4ch, rng, target_re_arcsec=target)
         if rec is not None:
             rec["big"] = True
         return rec
 
     def _add_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-    ) -> dict:
+    ) -> Optional[dict]:
         """Render one galaxy. With probability ``config.tng_fraction`` it's a
         real TNG50 stamp; otherwise a Sersic B+D from the COSMOS catalog row.
+        In pure-TNG mode there is no Sersic fallback (no catalog): a failed
+        stamp load is retried on other draws, then the slot is dropped (None).
 
         Geometry band-independent; per-band fluxes from the catalog
         drive the photometry. Each Sersic component is rendered once and
@@ -367,6 +379,12 @@ class MultiBandSimulator:
         the result.
         """
         cfg = self.config
+        if self.pure_tng:
+            for _ in range(3):
+                rec = self._add_tng_galaxy(canvas_4ch, rng)
+                if rec is not None:
+                    return rec
+            return None
         # Short-circuit on tng_fraction==0 so the default path consumes no extra
         # RNG and stays byte-identical to the all-Sersic generator.
         if (cfg.tng_fraction > 0.0 and self.tng_galaxies
@@ -481,10 +499,83 @@ class MultiBandSimulator:
                 return lp, gdir, gid, orientation, sigma_v, mstar, re_app
         return None
 
+    def _add_lens_pure(
+        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+        *, max_tries: int = 12,
+    ) -> Optional[dict]:
+        """Catalog-free lens system: TNG deflector + TNG source, geometry
+        from the Collett priors.
+
+        Per try: pick a subhalo (σ_v from its stellar mass, uniform prior if
+        unknown), draw (z_l, z_s, θ_E, q, PA, shear, offset) via
+        :func:`sample_lens_geometry`, and accept only when
+        θ_E ≥ κ × the deflector's apparent half-light radius at z_lens —
+        the arcs must clear the foreground light. Both lights are real
+        stamps prepared at their own redshifts (D_A sizing + dimming +
+        drift). Returns None when no visible system materialises."""
+        cfg = self.config
+        kappa = cfg.lens_theta_e_min_re_ratio
+        for _ in range(max_tries):
+            gdir, gid = self.tng_galaxies[
+                int(rng.integers(0, len(self.tng_galaxies)))]
+            orientation = int(rng.integers(1, N_ORIENTATIONS + 1))
+            props = self.tng_properties.get(str(gid), {})
+            mstar = float(props.get("mass_stars", float("nan")))
+            sigma_v = sigma_v_from_stellar_mass(mstar, rng)
+            if not math.isfinite(sigma_v):
+                sigma_v = float(rng.uniform(cfg.lens_sigma_v_min_kms,
+                                            cfg.lens_sigma_v_max_kms))
+            lp = sample_lens_geometry(rng, sigma_v)
+            if lp is None:
+                continue
+            re_px = native_halflight_px(gdir, gid, orientation)
+            if not (np.isfinite(re_px) and re_px > 0.0):
+                continue
+            re_app = physical_pc_to_arcsec(
+                re_px * TNG_NATIVE_PC_PER_PIXEL, lp.z_lens)
+            if lp.theta_E_arcsec < kappa * re_app:
+                continue
+            try:
+                lens_light_stamp, _ = tng_stamp_at_redshift(
+                    gdir, gid, orientation, lp.z_lens, rng,
+                    pixel_scale_arcsec=cfg.pixel_scale)
+            except Exception:
+                continue
+            src = sample_tng_stamp(self.tng_galaxies, rng,
+                                   pixel_scale_arcsec=cfg.pixel_scale,
+                                   z=lp.z_source)
+            if src is None:
+                continue
+            x_pix, y_pix = self._random_pix(rng)
+            lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
+            render_lens_to_multiband_canvas(
+                canvas_4ch, params=lp, pixel_scale=cfg.pixel_scale,
+                lens_light_stamp=lens_light_stamp, source_stamp=src[0],
+            )
+            return {
+                "type": "lens",
+                "x_pix": float(x_pix),
+                "y_pix": float(y_pix),
+                "z_lens": float(lp.z_lens),
+                "z_source": float(lp.z_source),
+                "theta_E_arcsec": float(lp.theta_E_arcsec),
+                "sigma_v_proxy_q": float(lp.lens_q),
+                "sigma_v_kms": float(sigma_v),
+                "lens_mstar_msun": float(mstar),
+                "lens_apparent_re_arcsec": float(re_app),
+                "lens_light_render": "tng",
+                "lens_light_re_arcsec": float(re_app),
+                "source_render": "tng",
+                "lens_subhalo_id": str(gid),
+            }
+        return None
+
     def _add_lens(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> Optional[dict]:
         cfg = self.config
+        if self.pure_tng:
+            return self._add_lens_pure(canvas_4ch, rng)
         # Redshift mode: with probability tng_fraction the deflector is a TNG
         # subhalo — mass-derived σ_v, visibility-constrained θ_E. The gate
         # draws no RNG when the mode is off, keeping the legacy path
@@ -614,9 +705,14 @@ class MultiBandSimulator:
             n_lenses   = int(rng.poisson(cfg.lens_density_arcmin2 * area))
         # Big galaxies: a fixed-density population, independent of tng_fraction.
         # Gated on TNG being enabled so tng_fraction==0 stays the pure-Sersic
-        # baseline (no extra RNG drawn → byte-identical).
+        # baseline (no extra RNG drawn → byte-identical). Redshift mode has no
+        # separate big population at all — the realistic n(z) already yields
+        # big nearby galaxies at the rate the sky does.
+        if cfg.tng_redshift_mode:
+            n_big = 0
         big_enabled = (cfg.tng_fraction > 0.0 and bool(self.tng_galaxies)
-                       and cfg.big_galaxy_density_arcmin2 > 0.0)
+                       and cfg.big_galaxy_density_arcmin2 > 0.0
+                       and not cfg.tng_redshift_mode)
         if n_big is None:
             n_big = (int(rng.poisson(cfg.big_galaxy_density_arcmin2 * area))
                      if big_enabled else 0)
@@ -625,7 +721,9 @@ class MultiBandSimulator:
 
         galaxies, stars, lenses = [], [], []
         for _ in range(n_galaxies):
-            galaxies.append(self._add_galaxy(canvas, rng))
+            rec = self._add_galaxy(canvas, rng)
+            if rec is not None:      # pure-TNG: a failed stamp drops the slot
+                galaxies.append(rec)
         for _ in range(n_big):
             rec = self._add_big_galaxy(canvas, rng)
             if rec is not None:

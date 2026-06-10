@@ -306,12 +306,12 @@ large cutout don't leak across train/validate."></label>`;
              HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
              with this job.</p>
           <label style="flex-basis:100%;">TNG galaxy fraction
-            <output class="muted" style="margin-left:6px;">0.00</output>
-            <span class="muted">(0 = all Sérsic)</span>
-            <input type="range" name="tng_fraction" min="0" max="1" step="0.05" value="0"
+            <output class="muted" style="margin-left:6px;">1.00</output>
+            <span class="muted">(1 = pure TNG with redshift realism; &lt;1 mixes in Sérsic)</span>
+            <input type="range" name="tng_fraction" min="0" max="1" step="0.05" value="1"
                    style="width:100%;"
                    oninput="this.parentNode.querySelector('output').value=(+this.value).toFixed(2)"
-                   title="Proportion of galaxies drawn as real TNG50 SKIRT stamps instead of analytic Sérsic profiles. Each is a random downloaded galaxy, random orientation, downsampled ×1/×2/×3/×4. 0 = all Sérsic; needs TNG galaxies downloaded under data/tng_skirt/."></label>`;
+                   title="Proportion of galaxies drawn as real TNG50 SKIRT stamps instead of analytic Sérsic profiles. 1 = pure-TNG mode: every stamp gets a redshift draw (D_A sizing + dimming + spectral drift), lenses take σ_v from the subhalo mass, and the COSMOS catalog is skipped. <1 mixes in COSMOS Sérsic profiles (legacy path)."></label>`;
       case 'train':
         return _hstTrainFields();
       default:

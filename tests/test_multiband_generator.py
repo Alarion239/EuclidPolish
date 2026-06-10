@@ -119,6 +119,9 @@ def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
 
 
 def test_tng_injection_when_enabled(tmp_path):
+    # tng_fraction=1 is PURE-TNG mode: redshift mode is forced on, so the
+    # downsample factor comes from D_A(z) (1..5 after stochastic rounding)
+    # and every record carries its z.
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
@@ -128,6 +131,7 @@ def test_tng_injection_when_enabled(tmp_path):
         lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
     sim = MultiBandSimulator(cat, cfg)
     assert {g[1] for g in sim.tng_galaxies} == {"111", "222"}
+    assert sim.pure_tng and sim.config.tng_redshift_mode
     img, meta = sim.simulate_field(np.random.default_rng(0),
                                    n_galaxies=4, n_stars=0, n_lenses=0)
     assert [g["render"] for g in meta["galaxies"]] == ["tng"] * 4
@@ -135,7 +139,8 @@ def test_tng_injection_when_enabled(tmp_path):
     g0 = meta["galaxies"][0]
     assert g0["subhalo_id"] in ("111", "222")
     assert g0["orientation"] in (1, 2, 3, 4, 5)
-    assert g0["rebin_factor"] in (1, 2, 3, 4)
+    assert 1 <= g0["rebin_factor"] <= 5
+    assert Config.TNG_Z_MIN <= g0["z"] <= Config.TNG_Z_MAX
     assert len(g0["flux_e_per_band"]) == 4
 
 
@@ -234,11 +239,13 @@ def test_invalid_tng_big_params_rejected():
 
 def test_big_galaxies_independent_of_tng_fraction(tmp_path):
     # The big-galaxy population is a fixed count (here forced via n_big),
-    # always TNG, flagged "big" — and identical whatever tng_fraction is.
+    # always TNG, flagged "big" — and identical for any *fractional*
+    # tng_fraction. (tng_fraction=1 is pure-TNG/redshift mode, which has no
+    # separate big population — covered in test_redshift_model.py.)
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    for tf in (0.1, 1.0):
+    for tf in (0.1, 0.7):
         sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
             image_size=128, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
             tng_fraction=tf, tng_galaxy_dir=tng))
@@ -256,7 +263,7 @@ def test_big_galaxy_density_drives_count(tmp_path):
     cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
     sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
         image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=1.0, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=50.0))
+        tng_fraction=0.5, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=50.0))
     _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
                                     n_stars=0, n_lenses=0)
     assert meta["n_big_galaxies"] >= 1     # area≈0.182 arcmin² × 50 ≈ 9 expected

@@ -169,10 +169,16 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    # Pre-filter the 10 GB master FITS to a small cached .npz once, then load
-    # that — instant on repeat runs (and shared by the parallel path).
-    cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
-    _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
+    # Pure-TNG mode (tng_fraction == 1) never renders a Sersic profile, so
+    # the 10 GB COSMOS master FITS is not needed at all. Otherwise pre-filter
+    # it to a small cached .npz once, then load that — instant on repeat runs
+    # (and shared by the parallel path).
+    if args.tng_fraction >= 1.0:
+        cat = None
+        _log("Catalog: skipped (pure-TNG mode, tng_fraction=1)")
+    else:
+        cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
+        _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
     cfg = MultiBandGeneratorConfig(image_size=args.image_size,
                                    pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -382,7 +388,9 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     memmapped and only the filtered columns are held, so each worker's copy
     is a few MB — no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
-    cat = open_cosmos2025(path=catalog_path)
+    # catalog_path is None in pure-TNG mode (tng_fraction == 1): nothing
+    # Sersic is rendered, so COSMOS never loads.
+    cat = open_cosmos2025(path=catalog_path) if catalog_path else None
     _W_SIM = MultiBandSimulator(
         cat, MultiBandGeneratorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -424,7 +432,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     # Pre-filter the 10 GB master FITS to a small cached .npz ONCE (in the
     # parent), so each per-subset, per-worker pool initializer reloads a few-MB
     # file in milliseconds instead of re-parsing 784k rows every time.
-    catalog_path = ensure_prefiltered_catalog(args.catalog)
+    # Pure-TNG mode needs no catalog at all.
+    catalog_path = (None if args.tng_fraction >= 1.0
+                    else ensure_prefiltered_catalog(args.catalog))
 
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:

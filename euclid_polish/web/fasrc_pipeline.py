@@ -1040,11 +1040,14 @@ class SyntheticGenerateStep(RunPipelineStep):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
         # Proportion of galaxies drawn as real TNG50 stamps vs Sersic profiles.
-        # Emit only when > 0 so a default submit stays byte-identical.
+        # Default 1.0 (pure-TNG mode with redshift realism; COSMOS skipped);
+        # an explicit "0" from the form is honoured and emits no flag (the
+        # run_pipeline default is all-Sersic).
         try:
-            tng_frac = float(params.get("tng_fraction") or 0.0)
+            raw = params.get("tng_fraction")
+            tng_frac = 1.0 if raw in (None, "") else float(raw)
         except (TypeError, ValueError):
-            tng_frac = 0.0
+            tng_frac = 1.0
         tng_frac = min(1.0, max(0.0, tng_frac))
         if tng_frac > 0.0:
             cmd += ["--tng-fraction", f"{tng_frac:g}"]

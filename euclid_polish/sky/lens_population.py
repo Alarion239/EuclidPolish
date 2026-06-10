@@ -75,9 +75,11 @@ class LensParams:
     src_dx_arcsec:    float
     src_dy_arcsec:    float
 
-    # Lens-galaxy and source-galaxy parametric descriptions
-    lens_galaxy:      GalaxyParams
-    source_galaxy:    GalaxyParams
+    # Lens-galaxy and source-galaxy parametric descriptions. None in the
+    # pure-TNG (catalog-free) path, where both lights are real stamps and
+    # no Sersic fallback exists.
+    lens_galaxy:      Optional[GalaxyParams]
+    source_galaxy:    Optional[GalaxyParams]
 
     # Placement on the simulator canvas (HR pixel coords)
     centre_x_pix:     float = 0.0
@@ -223,6 +225,56 @@ class LensPopulation:
         )
 
 
+def sample_lens_geometry(
+    rng: np.random.Generator,
+    sigma_v_kms: float,
+    *,
+    max_retries: int = 16,
+) -> Optional[LensParams]:
+    """Catalog-free lens-system geometry from the Collett-2015 priors.
+
+    The pure-TNG path: both the lens light and the source light are real
+    stamps, so no COSMOS galaxy rows are needed — only the geometry.
+    Redshifts come straight from the configured priors
+    (z_l ~ U[LENS_Z_LENS_MIN, MAX]; z_s ~ U[z_l + offset, LENS_Z_SOURCE_MAX]),
+    θ_E from the SIS law at ``sigma_v_kms``, axis ratio uniform over
+    Collett's truncation range, PA uniform. Returns None if no draw lands in
+    the observable θ_E window (``lens_galaxy``/``source_galaxy`` are None —
+    the caller must supply stamps for both lights).
+    """
+    for _ in range(max_retries):
+        z_lens = float(rng.uniform(
+            Config.LENS_Z_LENS_MIN, Config.LENS_Z_LENS_MAX))
+        z_source = float(rng.uniform(
+            z_lens + Config.LENS_Z_SOURCE_OFFSET, Config.LENS_Z_SOURCE_MAX))
+        theta_E = einstein_radius_sis(
+            sigma_v_kms=sigma_v_kms, z_lens=z_lens, z_source=z_source)
+        if not (0.10 < theta_E < 3.5):
+            continue
+        q = float(rng.uniform(
+            Config.LENS_AXIS_RATIO_MIN, Config.LENS_AXIS_RATIO_MAX))
+        pa = float(rng.uniform(0.0, math.pi))
+        s = Config.LENS_EXT_SHEAR_SIGMA
+        g1, g2 = float(rng.normal(0.0, s)), float(rng.normal(0.0, s))
+        r_max = Config.LENS_SOURCE_OFFSET_FRAC * theta_E
+        r = math.sqrt(rng.uniform()) * r_max
+        phi = rng.uniform(0.0, 2.0 * math.pi)
+        return LensParams(
+            z_lens         = z_lens,
+            z_source       = z_source,
+            theta_E_arcsec = theta_E,
+            lens_q         = q,
+            lens_pa_rad    = pa,
+            shear_gamma1   = g1,
+            shear_gamma2   = g2,
+            src_dx_arcsec  = r * math.cos(phi),
+            src_dy_arcsec  = r * math.sin(phi),
+            lens_galaxy    = None,
+            source_galaxy  = None,
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Lens / source rasterisation
 # ---------------------------------------------------------------------------
@@ -316,7 +368,7 @@ def render_lens_to_multiband_canvas(
     lg = params.lens_galaxy
     if lens_light_stamp is not None:
         composite_stamp(canvas_4ch, lens_light_stamp, cx_pix, cy_pix)
-    else:
+    elif lg is not None:
         add_sersic_to_bands(
             canvas_4ch, flux_per_band=lg.bulge_flux_e, n=4.0,
             r_e=lg.bulge_r_e_arcsec, q=lg.bulge_axis_ratio,
@@ -350,6 +402,9 @@ def render_lens_to_multiband_canvas(
 
     if source_stamp is not None:
         canvas_4ch += _lensed_source_from_stamp(source_stamp, dx, dy, pixel_scale)
+        return canvas_4ch
+    if sg is None:
+        # Catalog-free geometry with no source stamp: nothing to lens.
         return canvas_4ch
 
     bulge_unit = evaluate_sersic_at_coords(

@@ -35,7 +35,7 @@ from euclid_polish.web.helpers.status import _fasrc_psf_dir
 
 
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
-                             n_pairs: int, tng_fraction: float = 0.0) -> str:
+                             n_pairs: int, tng_fraction: float = 1.0) -> str:
     """Shell command that generates ``n_pairs`` synthetic *validate* pairs
     at ``hr_image_size`` on the FASRC **login node** — a plain command, not
     an sbatch job.
@@ -48,8 +48,9 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # Inject real TNG50 galaxies into a fraction of the scene galaxies (random
-    # galaxy/orientation, downsampled ×1/×2/×3/×4); 0 keeps it all-Sersic.
+    # Inject real TNG50 galaxies into a fraction of the scene galaxies.
+    # Default 1 = pure-TNG mode (redshift realism, COSMOS catalog skipped);
+    # 0 keeps it all-Sersic.
     tng_flag = (f" --tng-fraction {float(tng_fraction):g}"
                 if tng_fraction and float(tng_fraction) > 0 else "")
     return textwrap.dedent(f"""
@@ -79,7 +80,7 @@ def _job_generate_reconstruct(
     cap, checkpoint_dir: str, num_res_blocks: int,
     hr_image_size: int, n_pairs: int,
     asinh_scale: Optional[float] = None,
-    tng_fraction: float = 0.0,
+    tng_fraction: float = 1.0,
 ) -> Dict[str, Any]:
     """Generate fresh synthetic pair(s) on the FASRC login node, pull them
     down, run the model locally, and render LR | SR | HR | forward(SR) |

@@ -603,9 +603,6 @@ class Config:
     TNG_Z0    = 0.65
     TNG_Z_MIN = 0.10
     TNG_Z_MAX = 2.50
-    # The guaranteed-resolved "big galaxy" population draws z uniformly in
-    # [TNG_Z_MIN, TNG_BIG_Z_MAX] — close enough to stay big on the sky.
-    TNG_BIG_Z_MAX = 0.35
     # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
     # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread
     # with redshift (the rest-UV extrapolation uncertainty). The parametric-k
