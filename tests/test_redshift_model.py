@@ -364,6 +364,28 @@ def test_pure_tng_mode_forces_redshift_mode(tmp_path):
     assert sim.lens_population is None   # catalog-backed priors unused
 
 
+def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):
+    # The atlas holds only massive galaxies; their sky density (~9/arcmin²)
+    # must drive the Poisson count, not the full COSMOS 111/arcmin² — else
+    # every field fills up with giants.
+    sim = _z_mode_sim(tmp_path)
+    lams = []
+
+    class SpyRng:
+        def __init__(self, rng): self._r = rng
+        def poisson(self, lam):
+            lams.append(float(lam))
+            return self._r.poisson(lam)
+        def __getattr__(self, name): return getattr(self._r, name)
+
+    sim.simulate_field(SpyRng(np.random.default_rng(0)))
+    area = sim._field_area_arcmin2()
+    # First Poisson draw is the galaxy count.
+    assert lams[0] == pytest.approx(
+        sim.config.tng_gal_density_arcmin2 * area)
+    assert sim.config.tng_gal_density_arcmin2 < 20.0
+
+
 def test_pure_tng_mode_works_without_catalog(tmp_path):
     # tng_fraction=1 never renders anything Sersic, so COSMOS is optional:
     # field galaxies, stars AND lens systems all come out of catalog=None.

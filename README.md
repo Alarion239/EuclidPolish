@@ -131,6 +131,11 @@ That single draw sets everything:
   deterministic part interpolates the stamp's own 4-point SED, and a stochastic
   tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the
   colours — red-leaning on average, sometimes bluer.
+- **Physical number density** — in pure-TNG mode the field-galaxy count follows
+  the real sky density of atlas-like (log M★ ≳ 9.8) galaxies, ≈ 9/arcmin²
+  (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
+  111/arcmin² that counts the faint dwarfs the atlas lacks
+  (`TNG_GAL_DENSITY_ARCMIN2`).
 - **Lens masses** — a TNG-lit deflector takes σ_v from its subhalo's stellar mass
   (Faber–Jackson on `data/_tng_infographics/tng_properties.csv`), and the system is
   rejected unless θ_E ≥ 1.2 × the lens's apparent half-light radius, so the arcs

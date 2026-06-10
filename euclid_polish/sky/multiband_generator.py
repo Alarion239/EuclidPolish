@@ -131,6 +131,11 @@ class MultiBandGeneratorConfig:
     # written by the TNG-infographic render.
     tng_properties_csv:       str   = ""
     lens_theta_e_min_re_ratio: float = Config.LENS_THETA_E_MIN_RE_RATIO
+    # Field-galaxy density in PURE-TNG mode: the real sky density of
+    # atlas-like massive galaxies (see Config.TNG_GAL_DENSITY_ARCMIN2),
+    # NOT the full COSMOS density — the atlas has no faint dwarfs, so the
+    # full count would fill every field with giants.
+    tng_gal_density_arcmin2:  float = Config.TNG_GAL_DENSITY_ARCMIN2
 
     def validate(self) -> Tuple[bool, Optional[str]]:
         if self.image_size <= 0:
@@ -138,7 +143,7 @@ class MultiBandGeneratorConfig:
         if self.pixel_scale <= 0:
             return False, "pixel_scale must be positive"
         if min(self.gal_density_arcmin2, self.star_density_arcmin2,
-               self.lens_density_arcmin2) < 0:
+               self.lens_density_arcmin2, self.tng_gal_density_arcmin2) < 0:
             return False, "densities must be non-negative"
         if not (0.0 <= self.tng_fraction <= 1.0):
             return False, "tng_fraction must be in [0, 1]"
@@ -695,7 +700,12 @@ class MultiBandSimulator:
 
         area = self._field_area_arcmin2()
         if n_galaxies is None:
-            n_galaxies = int(rng.poisson(cfg.gal_density_arcmin2  * area))
+            # Pure-TNG mode: every draw is an atlas (massive) galaxy, so the
+            # count follows the massive-galaxy sky density, not the full
+            # COSMOS density.
+            density = (cfg.tng_gal_density_arcmin2 if self.pure_tng
+                       else cfg.gal_density_arcmin2)
+            n_galaxies = int(rng.poisson(density * area))
         if n_stars is None:
             n_stars    = int(rng.poisson(cfg.star_density_arcmin2 * area))
         if n_lenses is None:
@@ -735,7 +745,9 @@ class MultiBandSimulator:
         n_big_rendered = sum(1 for g in galaxies if g.get("big"))
         meta = {
             "field_area_arcmin2":     float(area),
-            "galaxy_density_arcmin2": float(cfg.gal_density_arcmin2),
+            "galaxy_density_arcmin2": float(cfg.tng_gal_density_arcmin2
+                                            if self.pure_tng
+                                            else cfg.gal_density_arcmin2),
             "star_density_arcmin2":   float(cfg.star_density_arcmin2),
             "lens_density_arcmin2":   float(cfg.lens_density_arcmin2),
             "big_galaxy_density_arcmin2": float(cfg.big_galaxy_density_arcmin2),

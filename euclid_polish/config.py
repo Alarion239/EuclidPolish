@@ -616,6 +616,16 @@ class Config:
     TNG_Z0    = 0.65
     TNG_Z_MIN = 0.10
     TNG_Z_MAX = 2.50
+    # Sky surface density of atlas-like (log M* ≳ 9.8) galaxies, used as the
+    # field-galaxy density in PURE-TNG mode instead of the full COSMOS
+    # density (111/arcmin², which counts the m≈24–26 dwarfs the atlas does
+    # not contain — using it would fill every field with massive galaxies).
+    # Normalization: φ0 ≈ 4e-3 Mpc⁻³ for log M* ≥ 9.8 (Baldry+ 2012), times
+    # ∫ dV_c/dz/dΩ · exp(-(z/TNG_Z_PHI_SCALE)²) dz over [TNG_Z_MIN,
+    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² → ≈ 9 galaxies/arcmin² (~1.6 per
+    # 510 px field).
+    TNG_GAL_DENSITY_ARCMIN2 = 9.0
+
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
     # AB, per band). The SKIRT frames carry nonzero light over the whole
     # 160 kpc box, so without a cut every stamp visually fills the field in
