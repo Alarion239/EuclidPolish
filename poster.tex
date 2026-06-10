@@ -14,8 +14,8 @@
 %     if you prefer automatic citations)
 %==============================================================================
 \documentclass[25pt, a0paper, portrait,
-               margin=0mm, innermargin=15mm,
-               blockverticalspace=8mm, colspace=14mm, subcolspace=8mm]{tikzposter}
+               margin=0mm, innermargin=5mm,
+               blockverticalspace=8mm, colspace=10mm, subcolspace=8mm]{tikzposter}
 
 % --- Custom paper size: 36 x 48 inches (overrides a0paper above) -------------
 \geometry{paperwidth=36in, paperheight=48in}
@@ -60,6 +60,8 @@
 \newlength{\imgs}     % side of a single square panel (rows 1-2)
 \newlength{\lanegap}  % horizontal gap between the left and right lane
 \newlength{\fullw}    % rows 3-4 span both lanes: \fullw = 2\imgs + \lanegap
+\newlength{\capw}     % width of each side-caption column (same on both sides,
+                      % so the image block stays centred in the card)
 
 %==============================================================================
 %  Title
@@ -94,17 +96,19 @@
   % two equal squares (\imgs) left/right-aligned to the guides; rows 3-4 hold one
   % image spanning both guides (\fullw = 2\imgs + \lanegap).
   \setlength{\imgs}{0.30\linewidth}
-  \setlength{\lanegap}{0.05\linewidth}
+  \setlength{\lanegap}{0.04\linewidth}
   \setlength{\fullw}{2\imgs}\addtolength{\fullw}{\lanegap}
+  \setlength{\capw}{0.155\linewidth}
   \begin{tikzpicture}[
       >={Stealth[length=11mm, width=8mm]},
       panel/.style={inner sep=0pt, outer sep=0pt},
-      % Side captions: left-lane labels sit LEFT of the image, the star-cluster
-      % and ePSF labels sit RIGHT of it. Big, minimal text.
-      ltitle/.style={font=\LARGE\bfseries, text=black, align=right,
-                     anchor=east, inner sep=0pt},
-      rtitle/.style={font=\LARGE\bfseries, text=black, align=left,
-                     anchor=west, inner sep=0pt},
+      % Two caption columns flank the centred image block: titles + a few
+      % words per stage. Equal text width on both sides keeps the images
+      % centred in the card.
+      lcap/.style={text=black, align=right, anchor=east,
+                   text width=\capw, inner sep=0pt},
+      rcap/.style={text=black, align=left, anchor=west,
+                   text width=\capw, inner sep=0pt},
       flow/.style={->, line width=2.6pt, gray!70},
       opl/.style={font=\small\bfseries, text=white, fill=black!80,
                   inner sep=5pt, rounded corners=4pt},
@@ -114,35 +118,43 @@
     % scripts/poster_grid.py (no hand-stacking of cells in LaTeX). The left
     % lane is west-aligned to x=0; the right lane is east-aligned to the right
     % guide; rows 3-4 span both guides.
+    \def\capt#1#2{{\large\bfseries #1}\\[3pt]{\small\color{gray!75} #2}}
 
     % ===== ROW 1: ingredients (left) + star-cluster map (right) =====
     \node[panel, anchor=north west] (ing) at (0,0)
         {\panelimg{\imgs}{\figdir/ingredients_grid.png}{ingredients grid}};
-    \node[ltitle] at ([xshift=-6mm]ing.west) {Ingredients};
+    \node[lcap] at ([xshift=-6mm]ing.west)
+        {\capt{Ingredients}{TNG50 \& S\'ersic galaxies, stars, SIE lenses ---
+         each at its own redshift}};
     \node[panel, anchor=north west] (cmap) at ([xshift=\lanegap]ing.north east)
         {\panelimg{\imgs}{\figdir/cluster_map.png}{star-cluster map}};
-    \node[rtitle] at ([xshift=6mm]cmap.east) {Star\\ clusters};
+    \node[rcap] at ([xshift=6mm]cmap.east)
+        {\capt{Star\\ clusters}{real survey stars, clustered by sky position}};
 
     % ===== ROW 2: clean field (left) + per-band PSF grid (right) =====
     \node[panel, anchor=north west] (clean) at ([yshift=-22mm]ing.south west)
         {\panelimg{\imgs}{\figdir/clean_field.png}{clean synthetic field}};
-    \node[ltitle] at ([xshift=-6mm]clean.west)
-        {Synthetic\\ field\\[3pt]{\normalsize\color{gray!75} ground truth}};
+    \node[lcap] at ([xshift=-6mm]clean.west)
+        {\capt{Synthetic field}{clean 4-band sky in electrons --- the
+         0.05$''$/pix ground truth}};
     \node[panel, anchor=north west] (psf) at ([yshift=-22mm]cmap.south west)
         {\panelimg{\imgs}{\figdir/psf_grid.png}{per-band PSFs}};
-    \node[rtitle] at ([xshift=6mm]psf.east) {Per-band\\ ePSF};
+    \node[rcap] at ([xshift=6mm]psf.east)
+        {\capt{Per-band ePSF}{empirical PSF per band \& star cluster}};
 
     % ===== ROW 3: mock-Euclid dirty grid spans BOTH guides =====
     \node[panel, anchor=north west] (dirty) at ([yshift=-28mm]clean.south west)
         {\panelimg{\fullw}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
-    \node[ltitle] at ([xshift=-6mm]dirty.west)
-        {Mock\\ Euclid\\[3pt]{\normalsize\color{gray!75} 4 noisy bands}};
+    \node[lcap] at ([xshift=-6mm]dirty.west)
+        {\capt{Mock Euclid}{ePSF convolution, rebin to 0.10$''$/pix, Poisson
+         \& read noise, cosmic rays}};
 
     % ===== ROW 4: super-resolved image spans BOTH guides =====
     \node[panel, anchor=north west] (sr) at ([yshift=-24mm]dirty.south west)
         {\panelimg{\fullw}{\figdir/sr_field.png}{super-resolved}};
-    \node[ltitle] at ([xshift=-6mm]sr.west)
-        {Super-\\ resolved\\[3pt]{\normalsize\color{gray!75} 0.05$''$/pix}};
+    \node[lcap] at ([xshift=-6mm]sr.west)
+        {\capt{Super-resolved}{the network's deconvolved VIS sky at
+         0.05$''$/pix}};
 
     % ===== FLOW ARROWS =====
     \draw[flow] (ing.south)  -- (clean.north);                      % ingredients -> clean
