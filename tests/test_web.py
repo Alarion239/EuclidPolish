@@ -103,6 +103,27 @@ def test_delete_model_wipes_local_keeps_tracking(client, tmp_path, monkeypatch):
     assert (trk / "keep.txt").read_text() == "important"
 
 
+def test_delete_model_vis_only_targets_vis_dir(client, tmp_path, monkeypatch):
+    """``vis_only=1`` must wipe the sibling ``-vis`` dir and leave the
+    4-channel checkpoints untouched."""
+    base = tmp_path / "ckpt" / "wdsr"
+    visd = tmp_path / "ckpt" / "wdsr-vis"
+    base.mkdir(parents=True)
+    visd.mkdir(parents=True)
+    (base / "ckpt-5.index").write_bytes(b"x")          # must survive
+    (visd / "ckpt-9.index").write_bytes(b"v")          # must be deleted
+    (visd / "training_log.csv").write_text("step\n9\n")
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(base))
+
+    r = client.post("/api/fasrc/delete-model",
+                    data={"confirm": "yes", "vis_only": "1"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()["results"]["local"]["ok"] is True
+    # -vis dir recreated empty; the 4-channel dir is untouched.
+    assert visd.is_dir() and list(visd.iterdir()) == []
+    assert (base / "ckpt-5.index").exists()
+
+
 def test_delete_model_requires_confirm(client, tmp_path, monkeypatch):
     ckpt = tmp_path / "ckpt" / "wdsr"
     ckpt.mkdir(parents=True)

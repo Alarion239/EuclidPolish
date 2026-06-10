@@ -119,15 +119,22 @@ if (_vizBtn) _vizBtn.onclick = async () => {
 // start. Tracking backups are untouched. Refused while a job is active.
 const _delBtn = document.getElementById("btn-delete-model");
 if (_delBtn) _delBtn.onclick = async () => {
-  if (!confirm("Delete the CURRENT model checkpoints on BOTH FASRC and local?\n\n"
-      + "This erases ckpt/wdsr (checkpoints, training_log.csv, loss_best/) so you "
+  // Follow the VIS-only toggle: delete ckpt/wdsr-vis when it's on, else the
+  // 4-channel ckpt/wdsr. Name the exact dir in the confirm so it's clear.
+  const visOnly = _visLogOn();
+  const dir = visOnly ? "ckpt/wdsr-vis" : "ckpt/wdsr";
+  if (!confirm(`Delete the ${visOnly ? "VIS-only" : "4-channel"} model `
+      + "checkpoints on BOTH FASRC and local?\n\n"
+      + `This erases ${dir} (checkpoints, training_log.csv, loss_best/) so you `
       + "can train a fresh model.\nYour Tracking backups are NOT touched. "
       + "This cannot be undone.")) return;
   _delBtn.disabled = true;
   const orig = _delBtn.textContent; _delBtn.textContent = "deleting…";
   try {
+    const body = new URLSearchParams({ confirm: "yes" });
+    if (visOnly) body.set("vis_only", "1");
     const r = await fetch("/api/fasrc/delete-model", {
-      method: "POST", body: new URLSearchParams({ confirm: "yes" }),
+      method: "POST", body,
     });
     const d = await r.json().catch(() => ({}));
     if (r.status === 400 && d.error) { alert("✗ " + d.error); return; }

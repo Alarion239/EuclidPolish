@@ -695,9 +695,16 @@ def register(app):
         cfg = fasrc_config.load()
         results: Dict[str, Any] = {}
 
+        # VIS-only model lives in the sibling "<ckpt_dir>-vis" dir; deleting it
+        # must target that dir on both FASRC and local, never the 4-channel one.
+        vis_only = request.form.get("vis_only", "").strip().lower() in (
+            "1", "on", "true", "yes")
+
         # --- FASRC first, so the auto-mirror can't repopulate local from a
         #     still-present remote between the two deletes. ---
         remote = (cfg.ckpt_dir or "").strip()
+        if vis_only and remote:
+            remote = remote.rstrip("/") + "-vis"
         if not (STATE.ssh and STATE.ssh.is_connected()):
             results["remote"] = {"ok": False, "error": "not connected — FASRC "
                 "checkpoints NOT deleted (the mirror would restore local on "
@@ -718,6 +725,8 @@ def register(app):
 
         # --- local ---
         local = Config.DEFAULT_CHECKPOINT_DIR
+        if vis_only:
+            local = local.rstrip("/") + "-vis"
         if not _safe_ckpt(local, require_abs=False):
             results["local"] = {"ok": False,
                                 "error": f"refused unsafe local path {local!r}"}
