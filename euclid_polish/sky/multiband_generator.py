@@ -601,6 +601,15 @@ class MultiBandSimulator:
                 "lens_light_re_arcsec": float(re_app),
                 "source_render": "tng",
                 "lens_subhalo_id": str(gid),
+                # Arc-prominence diagnostics: the deflector's VISIBLE radius
+                # (the μ-truncated stamp's half-size — several × the
+                # half-light radius) and the surviving source flux. A lens
+                # is eye-visible roughly when θ_E clears half the visible
+                # radius AND the source kept enough flux after dimming —
+                # most honest draws don't, just like most real lenses.
+                "lens_visible_r_arcsec": float(
+                    lens_light_stamp.shape[0] * cfg.pixel_scale / 2.0),
+                "source_flux_vis_e": float(src[0][..., 0].sum()),
             }
         return None
 

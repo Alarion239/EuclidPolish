@@ -355,6 +355,26 @@ def test_generator_z_mode_lens_mass_and_visibility(tmp_path):
         assert (r["theta_E_arcsec"]
                 >= kappa * r["lens_apparent_re_arcsec"] - 1e-9)
         assert 0.10 < r["theta_E_arcsec"] < 3.5
+        # Arc-prominence diagnostics for downstream showability cuts.
+        assert r["lens_visible_r_arcsec"] > 0
+        assert r["source_flux_vis_e"] >= 0
+
+
+def test_poster_lens_showability_cut():
+    from scripts.fasrc_poster_cutout import (
+        LENS_MIN_SOURCE_VIS_E, LENS_MIN_THETA_E_VISIBLE_FRAC,
+        _lens_is_showable,
+    )
+    base = {"theta_E_arcsec": 1.5, "lens_visible_r_arcsec": 2.0,
+            "source_flux_vis_e": 5000.0}
+    assert _lens_is_showable(base)
+    # Arcs buried inside the deflector light → rejected.
+    assert not _lens_is_showable({**base, "lens_visible_r_arcsec": 4.0})
+    # Source dimmed into oblivion → rejected.
+    assert not _lens_is_showable({**base, "source_flux_vis_e": 100.0})
+    # Legacy/Sersic records (no diagnostics) pass through unchecked.
+    assert _lens_is_showable({"theta_E_arcsec": 0.4})
+    assert LENS_MIN_THETA_E_VISIBLE_FRAC > 0 and LENS_MIN_SOURCE_VIS_E > 0
 
 
 def test_pure_tng_mode_forces_redshift_mode(tmp_path):

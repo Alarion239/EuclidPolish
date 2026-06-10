@@ -110,6 +110,24 @@ def _counts_for_mode(mode: str) -> Dict[str, int]:
     return base
 
 
+# A poster lens must be *eye-visible*, unlike the honest training population
+# (typical lenses hide their arcs deep inside the deflector light): require
+# θ_E to clear this fraction of the deflector's visible (μ-truncated) radius,
+# and the lensed source to have kept this much VIS flux after cosmological
+# dimming — otherwise the cutout is just a bright galaxy with wings.
+LENS_MIN_THETA_E_VISIBLE_FRAC = 0.5
+LENS_MIN_SOURCE_VIS_E = 1000.0
+
+
+def _lens_is_showable(rec: dict) -> bool:
+    r_vis = rec.get("lens_visible_r_arcsec")
+    src_e = rec.get("source_flux_vis_e")
+    if r_vis is None or src_e is None:      # legacy/Sersic record → no check
+        return True
+    return (rec["theta_E_arcsec"] >= LENS_MIN_THETA_E_VISIBLE_FRAC * r_vis
+            and src_e >= LENS_MIN_SOURCE_VIS_E)
+
+
 def _record_ok(mode: str, meta: dict) -> bool:
     """Did the scene actually contain the requested object?
 
@@ -119,7 +137,8 @@ def _record_ok(mode: str, meta: dict) -> bool:
     if mode == "star":
         return meta["n_stars"] == 1
     if mode == "lens":
-        return meta["n_lenses"] == 1
+        return (meta["n_lenses"] == 1
+                and _lens_is_showable(meta["lenses"][0]))
     if mode == "sersic":
         gals = meta["galaxies"]
         return len(gals) == 1 and gals[0].get("render") == "sersic"
@@ -170,6 +189,8 @@ def generate_cutout(
 
     counts = _counts_for_mode(mode)
     seq = seed if seed >= 0 else int(np.random.SeedSequence().entropy % (2**32))
+    if mode == "lens":
+        max_tries *= 6      # the showability cut rejects most honest draws
     for attempt in range(max_tries):
         used = (seq + attempt) % (2**32)
         rng = np.random.default_rng(used)
