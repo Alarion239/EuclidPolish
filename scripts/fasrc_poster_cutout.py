@@ -18,16 +18,22 @@ Five modes (one object per mode, chosen at random — except ``field``):
                   lens model the main training pipeline uses (needs the TNG
                   atlas downloaded)
   --mode tng      a single real TNG50 SKIRT galaxy stamp
-  --mode field    a full random clean field — Poisson source counts, sources
-                  at random positions: exactly what the main training
-                  pipeline generates (pure-TNG mode)
+  --mode field    a full random field — Poisson source counts, sources at
+                  random positions: exactly what the main training pipeline
+                  generates (pure-TNG mode). Additionally forward-models the
+                  clean scene to a noisy mock-Euclid stack and reconstructs
+                  it with the trained model from ``--ckpt-dir``.
 
 Outputs (under ``$EUCLID_POLISH_DATA_DIR/_poster/``, fixed names so each run
 overwrites the previous result the WebUI then fetches):
 
-  poster_cutout.fits   PrimaryHDU (OBJTYPE/SEED/… header) + one ImageHDU per
-                       band (EXTNAME = VIS / Y_E / J_E / H_E), clean HR e⁻.
-  poster_cutout.png    1×4 asinh-grayscale band montage (preview).
+  poster_cutout.fits        PrimaryHDU (OBJTYPE/SEED/… header) + one ImageHDU
+                            per band (EXTNAME = VIS/Y_E/J_E/H_E), clean HR e⁻.
+  poster_cutout_dirty.fits  (field mode) the forward-modelled mock-Euclid LR
+                            stack, 4 bands @ 0.10″/pix, noisy.
+  poster_cutout_sr.fits     (field mode) the model's super-resolved VIS sky,
+                            0.05″/pix.
+  poster_cutout.png         preview montage (field: clean | dirty | SR VIS).
 
 Usage
 -----
@@ -58,12 +64,22 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.euclid.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.multiband_forward import (
+    MultiBandForward,
+    MultiBandForwardConfig,
+)
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig,
     MultiBandSimulator,
 )
+from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.tng.properties import _fig_to_png
+from euclid_polish.training.inference import (
+    load_model_from_checkpoint,
+    reconstruct,
+)
 
 MODES = ("sersic", "star", "lens", "tng", "field")
 # Output band order matches the generator's channel order.
@@ -72,6 +88,9 @@ BAND_NAMES: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","
 OUTPUT_SUBDIR = "_poster"
 FITS_NAME = "poster_cutout.fits"
 PNG_NAME = "poster_cutout.png"
+# Field mode also writes the forward-modelled and reconstructed companions.
+DIRTY_FITS_NAME = "poster_cutout_dirty.fits"
+SR_FITS_NAME = "poster_cutout_sr.fits"
 
 # ASCII label per mode (safe for FITS headers, which are ASCII-only).
 MODE_LABEL = {
@@ -79,7 +98,7 @@ MODE_LABEL = {
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
-    "field":  "Random clean field",
+    "field":  "Random field (clean+dirty+SR)",
 }
 # Pretty title per mode for the PNG montage (matplotlib renders unicode fine).
 MODE_TITLE = {
@@ -87,7 +106,7 @@ MODE_TITLE = {
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
-    "field":  "Random clean field",
+    "field":  "Random field",
 }
 
 
@@ -291,6 +310,94 @@ def build_cutout_hdul(
     return hdul
 
 
+def forward_and_reconstruct(
+    clean_4ch: np.ndarray, seed: int, *, psf_dir: str, ckpt_dir: str,
+) -> Tuple[np.ndarray, np.ndarray, str]:
+    """Field mode's second half: clean HR → noisy mock-Euclid LR → SR.
+
+    The same forward model and inference path the training pipeline uses
+    (per-band ePSF convolution, sum-rebin to 0.10″, Poisson/read noise and
+    artifacts; then the latest checkpoint in ``ckpt_dir``). Returns
+    ``(dirty_lr_4ch, sr_vis_hr, checkpoint_name)``.
+    """
+    psf_sets = load_all_band_psf_sets(
+        psf_dir=psf_dir, require_empirical=False,
+        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
+                           config=MultiBandForwardConfig(add_noise=True))
+    hr = MultiBandSkyImage(
+        data=np.asarray(clean_4ch, dtype=np.float32),
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=BAND_NAMES, is_clean=True)
+    # Noise RNG decoupled from the scene seed (+1) so re-rolling the scene
+    # never reuses a noise stream.
+    lr, _hr_vis = fwd.process(hr, np.random.default_rng(seed + 1))
+
+    model = load_model_from_checkpoint(
+        ckpt_dir, Config.DEFAULT_REBIN_FACTOR, Config.DEFAULT_NUM_RES_BLOCKS,
+        nchan_out=Config.NUM_HR_CHANNELS)
+    _lr_vis, sr = reconstruct(model, np.asarray(lr.data, dtype=np.float32))
+    # Checkpoint name for provenance, from the TF checkpoint state file
+    # (avoids importing tensorflow at this level just for the name).
+    ckpt_name = os.path.basename(ckpt_dir)
+    state = os.path.join(ckpt_dir, "checkpoint")
+    if os.path.isfile(state):
+        with open(state, "r", encoding="utf-8") as fh:
+            first = fh.readline()
+        if '"' in first:
+            ckpt_name = first.split('"')[1]
+    return (np.asarray(lr.data, dtype=np.float32),
+            np.asarray(sr, dtype=np.float32), ckpt_name)
+
+
+def build_field_companion_hduls(
+    dirty: np.ndarray, sr: np.ndarray, *, seed: int, ckpt_name: str,
+) -> Tuple[fits.HDUList, fits.HDUList]:
+    """HDULs for the field mode's dirty LR stack and SR VIS image."""
+    p = fits.PrimaryHDU()
+    p.header["OBJTYPE"] = ("field", "poster cutout object kind")
+    p.header["SEED"] = (int(seed), "RNG seed of the clean scene")
+    p.header["PIXSCALE"] = (0.10, "arcsec/pixel (LR archive grid)")
+    p.header["CLEAN"] = (False, "forward-modelled: PSF + noise + artifacts")
+    dirty_hdul = fits.HDUList([p])
+    for k, name in enumerate(BAND_NAMES):
+        hdu = fits.ImageHDU(data=np.asarray(dirty[..., k], dtype=np.float32),
+                            name=name)
+        hdu.header["BAND"] = (name, "Euclid band")
+        hdu.header["BUNIT"] = ("electron", "noisy LR flux over the stack")
+        dirty_hdul.append(hdu)
+
+    sp = fits.PrimaryHDU(data=np.asarray(sr, dtype=np.float32))
+    sp.header["OBJTYPE"] = ("field", "poster cutout object kind")
+    sp.header["SEED"] = (int(seed), "RNG seed of the clean scene")
+    sp.header["PIXSCALE"] = (float(Config.DEFAULT_PIXEL_SCALE),
+                             "arcsec/pixel (HR grid)")
+    sp.header["CKPT"] = (ckpt_name, "checkpoint used for the reconstruction")
+    sp.header["BUNIT"] = ("electron", "super-resolved VIS sky")
+    return dirty_hdul, fits.HDUList([sp])
+
+
+def render_field_preview_png(
+    clean: np.ndarray, dirty: np.ndarray, sr: np.ndarray,
+    *, seed: int, source_meta: dict,
+) -> bytes:
+    """Field mode preview: clean VIS | mock-Euclid VIS | super-resolved."""
+    panels = (("clean VIS (0.05″/pix)", clean[..., 0]),
+              ("mock Euclid VIS (0.10″/pix)", dirty[..., 0]),
+              ("super-resolved (0.05″/pix)", sr))
+    fig, axes = plt.subplots(1, 3, figsize=(3 * 3.0, 3.3))
+    for ax, (title, im) in zip(axes, panels):
+        ax.imshow(_grayscale_norm(im), origin="lower", cmap="gray")
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks([]); ax.set_yticks([])
+    fig.suptitle(
+        f"Random field (seed {seed}) — {source_meta.get('n_galaxies', 0)} gal, "
+        f"{source_meta.get('n_stars', 0)} stars, "
+        f"{source_meta.get('n_lenses', 0)} lenses", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    return _fig_to_png(fig)
+
+
 def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
     """Asinh stretch (scale = 90th pct of positive flux) + [0.5, 99.5] clip.
 
@@ -352,6 +459,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help=f"Write {FITS_NAME} + {PNG_NAME} under "
                         f"$EUCLID_POLISH_DATA_DIR/{OUTPUT_SUBDIR}/. Without it, "
                         "the FITS bytes go to stdout.")
+    p.add_argument("--ckpt-dir", default=Config.DEFAULT_CHECKPOINT_DIR,
+                   help="Checkpoint dir for the field-mode reconstruction "
+                        "(default: $EUCLID_POLISH_CKPT_DIR / ./ckpt/wdsr).")
+    p.add_argument("--psf-dir", default=Config.EUCLID_PSF_DIR,
+                   help="Per-band ePSF dir for the field-mode forward model "
+                        "(Gaussian fallback where a band's file is missing).")
     return p.parse_args(argv)
 
 
@@ -369,6 +482,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         data, mode=args.mode, seed=used_seed, image_size=size,
         source_meta=source_meta)
 
+    # Field mode: forward-model + reconstruct, so the result is the full
+    # clean / dirty / SR triplet the pipeline trains on.
+    dirty = sr = None
+    if args.mode == "field":
+        print(f"[poster] forward-modelling + reconstructing "
+              f"(ckpt dir: {args.ckpt_dir}) …")
+        dirty, sr, ckpt_name = forward_and_reconstruct(
+            data, used_seed, psf_dir=args.psf_dir, ckpt_dir=args.ckpt_dir)
+        print(f"[poster] reconstruction used checkpoint {ckpt_name}")
+
     if not args.save:
         buf = io.BytesIO()
         hdul.writeto(buf, overwrite=True)
@@ -380,10 +503,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     fits_path = os.path.join(out_dir, FITS_NAME)
     png_path = os.path.join(out_dir, PNG_NAME)
     hdul.writeto(fits_path, overwrite=True)
-    with open(png_path, "wb") as fh:
-        fh.write(render_preview_png(
-            data, mode=args.mode, seed=used_seed, source_meta=source_meta))
     print(f"[poster] wrote {fits_path}")
+    if args.mode == "field":
+        dirty_hdul, sr_hdul = build_field_companion_hduls(
+            dirty, sr, seed=used_seed, ckpt_name=ckpt_name)
+        dirty_path = os.path.join(out_dir, DIRTY_FITS_NAME)
+        sr_path = os.path.join(out_dir, SR_FITS_NAME)
+        dirty_hdul.writeto(dirty_path, overwrite=True)
+        sr_hdul.writeto(sr_path, overwrite=True)
+        print(f"[poster] wrote {dirty_path}")
+        print(f"[poster] wrote {sr_path}")
+        png = render_field_preview_png(
+            data, dirty, sr, seed=used_seed, source_meta=source_meta)
+    else:
+        png = render_preview_png(
+            data, mode=args.mode, seed=used_seed, source_meta=source_meta)
+    with open(png_path, "wb") as fh:
+        fh.write(png)
     print(f"[poster] wrote {png_path}")
     return 0
 
