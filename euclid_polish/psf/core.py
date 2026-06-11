@@ -171,7 +171,7 @@ class PSF:
     def background_cleaned(
         self,
         *,
-        floor_median_factor: float = Config.PSF_FLOOR_MEDIAN_FACTOR,
+        floor_percentile: float = Config.PSF_FLOOR_PERCENTILE,
         taper_inner_frac: float = Config.PSF_TAPER_INNER_FRAC,
         taper_outer_frac: float = Config.PSF_TAPER_OUTER_FRAC,
     ) -> PSF:
@@ -182,8 +182,8 @@ class PSF:
         visible square far above the Euclid noise. Two cuts (each ≤ 0
         disables it):
 
-        * **floor**: pixels below ``floor_median_factor × median`` are
-          zeroed — the median of a large stamp *is* the noise floor, and
+        * **floor**: pixels at or below the stamp's ``floor_percentile``-th
+          percentile are zeroed — the bulk of a large stamp is noise, and
           real PSF flux sits orders of magnitude above it;
         * **radial taper**: a cosine roll-off takes the kernel smoothly to
           zero between ``taper_inner_frac`` and ``taper_outer_frac`` of the
@@ -191,13 +191,14 @@ class PSF:
 
         The result is re-normalised to sum=1 (flux conservation in the
         forward convolution). Analytic Gaussian kernels pass through
-        essentially unchanged (their stamp median is 0).
+        essentially unchanged (most of their stamp underflows to exactly 0,
+        so the percentile threshold is 0 and the guard skips the cut).
         """
         data = np.asarray(self.data, dtype=np.float64).copy()
-        if floor_median_factor > 0:
-            thr = floor_median_factor * float(np.median(data))
+        if floor_percentile > 0:
+            thr = float(np.percentile(data, floor_percentile))
             if thr > 0:
-                data[data < thr] = 0.0
+                data[data <= thr] = 0.0
         if 0 < taper_inner_frac < taper_outer_frac:
             H, W = data.shape
             half = min(H, W) / 2.0

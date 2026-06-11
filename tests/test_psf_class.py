@@ -398,8 +398,8 @@ def test_background_cleaned_strips_floor_and_corners():
     assert out.total_flux == pytest.approx(1.0, abs=1e-9)
     c = (out.shape[0] - 1) // 2
     assert np.unravel_index(np.argmax(out.data), out.shape) == (c, c)
-    # The uniform pedestal (== the stamp median) is below 2x median -> wiped
-    # outside the core even inside the taper radius.
+    # The uniform pedestal dominates the stamp, so it IS the 90th
+    # percentile -> wiped outside the core even inside the taper radius.
     assert out.data[c, c + 60] == 0.0
 
 
@@ -417,7 +417,7 @@ def test_background_cleaned_noop_on_clean_gaussian_core():
 def test_background_cleaned_disable_flags():
     psf = PSF(data=_noisy_gaussian_kernel(),
               pixel_scale=0.05).with_unit_sum()
-    out = psf.background_cleaned(floor_median_factor=0.0,
+    out = psf.background_cleaned(floor_percentile=0.0,
                                  taper_inner_frac=0.0,
                                  taper_outer_frac=0.0)
     np.testing.assert_allclose(out.data, psf.data, rtol=1e-12)

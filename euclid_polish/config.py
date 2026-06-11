@@ -176,15 +176,15 @@ class Config:
     # applied on load). The EPSFBuilder kernels carry a noise floor across
     # the whole square stamp; convolving a bright star imprints it as a
     # visible square well above the Euclid noise. Two cuts, both ≤ 0 to
-    # disable: pixels below FLOOR_MEDIAN_FACTOR × the kernel median are
-    # zeroed (the median of a 511² stamp is the noise floor — real PSF
-    # pixels sit far above it), and a radial cosine taper takes the kernel
+    # disable: pixels at or below the FLOOR_PERCENTILE-th percentile of the
+    # stamp are zeroed (the bulk of a 511² stamp is noise — real PSF pixels
+    # sit far above it), and a radial cosine taper takes the kernel
     # smoothly to zero between INNER_FRAC and OUTER_FRAC of the half-side
-    # (0.55→0.78 of half-256 ≈ 140→200 px on a 511² stamp), so no square
+    # (0.82→0.98 of half-256 ≈ 210→250 px on a 511² stamp), so no square
     # edge survives. Kernels are re-normalised to sum=1 afterwards.
-    PSF_FLOOR_MEDIAN_FACTOR = 2.0
-    PSF_TAPER_INNER_FRAC    = 0.55
-    PSF_TAPER_OUTER_FRAC    = 0.78
+    PSF_FLOOR_PERCENTILE = 90.0
+    PSF_TAPER_INNER_FRAC = 0.82
+    PSF_TAPER_OUTER_FRAC = 0.98
 
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
