@@ -75,8 +75,7 @@
         Super-Resolved Euclid Images}}
 \author{Aleksandr Belotserkovtsev}
 \institute{Center for Astrophysics \,$|$\, Harvard \& Smithsonian \\[4pt]
-           \normalsize Mentors: Asst.\ Prof.\ L.\ Connor \quad Dr.\ Barone \quad
-           AGEL Collaboration}
+           \Large Mentors: Asst.\ Prof.\ L.\ Connor \quad Dr.\ Barone}
 
 \begin{document}
 % Title bar spans the full paper width (margin=0mm makes \paperwidth edge-to-edge).
@@ -180,7 +179,8 @@
 
   \block{Acknowledgements}{
     \small Conducted with mentorship from the Center for Astrophysics
-    $|$ Harvard \& Smithsonian and the AGEL collaboration.
+    $|$ Harvard \& Smithsonian. Supported by the Harvard College Research
+    Program (HCRP).
     \\[4pt]\textbf{Contact:} abelotserkovtsev@college.harvard.edu
   }
 
@@ -199,11 +199,11 @@
     surveys, which causes underrepresentation of lenses with small Einstein
     radii in studies. Recent advances in super-resolution techniques offer a way
     to recover this missing population by improving the identification of strong
-    gravitational lenses in \textbf{Euclid} surveys, the first wide-area
-    space-based optical survey. Building on \textbf{POLISH}
-    \parencite{Connor2022} and \textbf{POLISH++} \parencite{Wu2026}, originally
+    gravitational lenses in Euclid surveys, the first wide-area
+    space-based optical survey. Building on POLISH
+    \parencite{Connor2022} and POLISH++ \parencite{Wu2026}, originally
     developed for radio astronomy, we increase the resolution of Euclid images
-    to the level of higher-quality \textbf{Hubble} images, training on synthetic
+    to the level of higher-quality Hubble images, training on synthetic
     Euclid-like images built from simulated galaxies paired with a
     high-resolution ground truth, and benchmarked against Hubble imaging. Our
     preliminary results show that, applied to real Euclid data, the model both
@@ -228,31 +228,32 @@
   }
 
   \block{Model Architecture}{
-    \textbf{WDSR-A} (POLISH/POLISH++): a deep \textbf{CNN} with
-    \textbf{32 wide-activation residual blocks} ($\times6$ channel expansion),
-    \textbf{99 weight-normalised convolutions}, a \textbf{global residual
-    skip}, and $\times2$ pixel-shuffle upsampling ---
+    WDSR-A (POLISH/POLISH++): a deep CNN with
+    32 wide-activation residual blocks ($\times6$ channel expansion),
+    99 weight-normalised convolutions, a global residual
+    skip, and $\times2$ pixel-shuffle upsampling ---
     \textbf{599{,}328 trainable parameters}. Input $4$ bands
     (VIS\,+\,Y/J/H) at $0.10''$/pix, output a deconvolved VIS sky at
     $0.05''$/pix. No batch-norm; trained with an asinh-stretched L1 loss.
   }
 
   \block{Preliminary Results: Euclid vs.\ SR vs.\ Hubble}{
-    One real galaxy, three views: the \textbf{Euclid} input, our
-    \textbf{super-resolved} reconstruction, and the \textbf{Hubble} image of
-    the same target. The model both super-resolves and denoises, recovering
-    structure that is blurred or buried in the original.
+    One real galaxy, three views: the Euclid input, the Hubble image of the
+    same target, and our super-resolved reconstruction. The model both
+    super-resolves and denoises, recovering structure that is blurred or
+    buried in the original.
     \vspace{0.5em}
     \begin{tikzfigure}
-      \begin{minipage}{0.32\linewidth}
-        \figbox{0.45\linewidth}{[ Euclid ]}
+      \begin{minipage}{0.48\linewidth}
+        \figbox{0.42\linewidth}{[ Euclid (LR) ]}
       \end{minipage}\hfill
-      \begin{minipage}{0.32\linewidth}
-        \figbox{0.45\linewidth}{[ SR (ours) ]}
-      \end{minipage}\hfill
-      \begin{minipage}{0.32\linewidth}
-        \figbox{0.45\linewidth}{[ Hubble ]}
+      \begin{minipage}{0.48\linewidth}
+        \figbox{0.42\linewidth}{[ Hubble (HR) ]}
       \end{minipage}
+    \end{tikzfigure}
+    \vspace{0.3em}
+    \begin{tikzfigure}
+      \figbox{0.55\linewidth}{[ SR (ours) ]}
     \end{tikzfigure}
   }
 
