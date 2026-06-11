@@ -825,7 +825,7 @@ class PosterCutoutStep(FASRCPipelineStep):
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
         mode = str(params.get("mode", "sersic") or "sersic").lower()
-        if mode not in ("sersic", "star", "lens", "tng"):
+        if mode not in ("sersic", "star", "lens", "tng", "field"):
             mode = "sersic"
         cmd = [
             "scripts/fasrc_poster_cutout.py",

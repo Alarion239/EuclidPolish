@@ -239,6 +239,7 @@ large cutout don't leak across train/validate."></label>`;
               <option value="star">Star (point source)</option>
               <option value="lens">Gravitational lens</option>
               <option value="tng">TNG50 galaxy</option>
+              <option value="field">Random clean field (full scene)</option>
             </select></label>
           <label>HR image size (px) <span class="muted">(blank = 256)</span>
             <input type="number" name="image_size" value="" min="32" max="1024" step="2"

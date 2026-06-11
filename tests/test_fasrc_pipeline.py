@@ -310,6 +310,25 @@ class TestRegistry:
         assert "--id" not in argv
         assert argv[argv.index("--seed") + 1] == "-1"
 
+    def test_poster_cutout_modes(self):
+        """All five modes pass through; unknown modes fall back to sersic."""
+        step = REGISTRY.get("poster_cutout")
+        for mode in ("sersic", "star", "lens", "tng", "field"):
+            argv = step.build_command({"mode": mode})
+            assert argv[argv.index("--mode") + 1] == mode
+        argv = step.build_command({"mode": "bogus"})
+        assert argv[argv.index("--mode") + 1] == "sersic"
+
+    def test_poster_field_mode_helpers(self):
+        """`field` overrides no counts and accepts any non-empty scene."""
+        from scripts.fasrc_poster_cutout import _counts_for_mode, _record_ok
+        assert _counts_for_mode("field") == {}
+        assert _counts_for_mode("tng")["n_galaxies"] == 1
+        meta = {"n_galaxies": 3, "n_stars": 0, "n_lenses": 1}
+        assert _record_ok("field", meta)
+        assert not _record_ok("field",
+                              {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
+
     def test_synthetic_generate_tng_fraction_flag(self):
         """The synthetic generator forwards a TNG fraction. Blank/missing
         defaults to 1 (pure-TNG mode); an explicit 0 is honoured and omits

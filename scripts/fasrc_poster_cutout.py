@@ -9,7 +9,7 @@ single object of the requested kind, centred in the field, and renders the
 ground-truth object, the same clean scene the training generator produces
 before convolution + noise.
 
-Four modes (one object per mode, chosen at random):
+Five modes (one object per mode, chosen at random — except ``field``):
 
   --mode sersic   a single analytic Sérsic bulge+disk galaxy (COSMOS row)
   --mode star     a single point source (PSF-free delta; fixed G-type colour)
@@ -18,6 +18,9 @@ Four modes (one object per mode, chosen at random):
                   lens model the main training pipeline uses (needs the TNG
                   atlas downloaded)
   --mode tng      a single real TNG50 SKIRT galaxy stamp
+  --mode field    a full random clean field — Poisson source counts, sources
+                  at random positions: exactly what the main training
+                  pipeline generates (pure-TNG mode)
 
 Outputs (under ``$EUCLID_POLISH_DATA_DIR/_poster/``, fixed names so each run
 overwrites the previous result the WebUI then fetches):
@@ -62,7 +65,7 @@ from euclid_polish.sky.multiband_generator import (
 )
 from euclid_polish.tng.properties import _fig_to_png
 
-MODES = ("sersic", "star", "lens", "tng")
+MODES = ("sersic", "star", "lens", "tng", "field")
 # Output band order matches the generator's channel order.
 BAND_NAMES: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","H_E")
 
@@ -76,6 +79,7 @@ MODE_LABEL = {
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
+    "field":  "Random clean field",
 }
 # Pretty title per mode for the PNG montage (matplotlib renders unicode fine).
 MODE_TITLE = {
@@ -83,6 +87,7 @@ MODE_TITLE = {
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
+    "field":  "Random clean field",
 }
 
 
@@ -99,7 +104,12 @@ def output_dir() -> str:
 # ---------------------------------------------------------------------------
 
 def _counts_for_mode(mode: str) -> Dict[str, int]:
-    """Explicit per-type source counts: exactly one object, nothing else."""
+    """Explicit per-type source counts: exactly one object, nothing else.
+
+    ``field`` overrides nothing — the simulator draws its Poisson counts
+    exactly as the main training pipeline does."""
+    if mode == "field":
+        return {}
     base = dict(n_galaxies=0, n_stars=0, n_lenses=0, n_big=0)
     if mode in ("sersic", "tng"):
         base["n_galaxies"] = 1
@@ -140,6 +150,10 @@ def _record_ok(mode: str, meta: dict) -> bool:
     if mode == "lens":
         return (meta["n_lenses"] == 1
                 and _lens_is_showable(meta["lenses"][0]))
+    if mode == "field":
+        # Poisson counts can come up all-zero on a tiny field; ask for at
+        # least one rendered source so the preview isn't a blank frame.
+        return (meta["n_galaxies"] + meta["n_stars"] + meta["n_lenses"]) > 0
     if mode == "sersic":
         gals = meta["galaxies"]
         return len(gals) == 1 and gals[0].get("render") == "sersic"
@@ -169,7 +183,7 @@ def generate_cutout(
     # + TNG lensed source, SIE+shear geometry), the same lens model the
     # pipeline produces — not the legacy analytic-Sérsic catalog path. The
     # `sersic`/`star` modes stay analytic (tng_fraction=0).
-    pure_tng_mode = mode in ("tng", "lens")
+    pure_tng_mode = mode in ("tng", "lens", "field")
     cfg = MultiBandGeneratorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -178,7 +192,10 @@ def generate_cutout(
         # _add_lens_pure before any stamp is rendered.
         lens_require_showable=(mode == "lens"),
     )
-    cat = open_cosmos2025(path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
+    # Pure-TNG modes render nothing Sersic (the dwarf backfill defaults to
+    # off), so COSMOS is skipped — same rule as run_pipeline.
+    cat = None if pure_tng_mode else open_cosmos2025(
+        path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
     sim = MultiBandSimulator(cat, cfg)
     if pure_tng_mode and not sim.tng_galaxies:
         raise RuntimeError(
@@ -188,8 +205,10 @@ def generate_cutout(
 
     # Centre the single object: _random_pix is the sole source of source
     # positions, so overriding it places every object at the field centre.
-    centre = ((image_size - 1) / 2.0, (image_size - 1) / 2.0)
-    sim._random_pix = lambda rng: centre  # type: ignore[method-assign]
+    # A full field keeps the simulator's own random placement.
+    if mode != "field":
+        centre = ((image_size - 1) / 2.0, (image_size - 1) / 2.0)
+        sim._random_pix = lambda rng: centre  # type: ignore[method-assign]
 
     counts = _counts_for_mode(mode)
     seq = seed if seed >= 0 else int(np.random.SeedSequence().entropy % (2**32))
@@ -203,9 +222,15 @@ def generate_cutout(
         rng = np.random.default_rng(used)
         img, meta = sim.simulate_field(rng, **counts)
         if _record_ok(mode, meta):
-            recs = {"sersic": meta["galaxies"], "tng": meta["galaxies"],
-                    "star": meta["stars"], "lens": meta["lenses"]}[mode]
-            return np.asarray(img.data, dtype=np.float32), recs[0], used
+            if mode == "field":
+                # Whole-field summary instead of a single object's record.
+                rec = {k: meta[k] for k in
+                       ("field_area_arcmin2", "n_galaxies",
+                        "n_dwarf_galaxies", "n_stars", "n_lenses")}
+            else:
+                rec = {"sersic": meta["galaxies"], "tng": meta["galaxies"],
+                       "star": meta["stars"], "lens": meta["lenses"]}[mode][0]
+            return np.asarray(img.data, dtype=np.float32), rec, used
     raise RuntimeError(
         f"could not generate a '{mode}' object in {max_tries} tries "
         f"(seed base {seq}). Lens/TNG draws can fail; try a different seed.")
@@ -295,6 +320,10 @@ def render_preview_png(
     extra = ""
     if mode == "lens" and "theta_E_arcsec" in source_meta:
         extra = f" — θ_E = {source_meta['theta_E_arcsec']:.2f}″"
+    elif mode == "field":
+        extra = (f" — {source_meta.get('n_galaxies', 0)} gal, "
+                 f"{source_meta.get('n_stars', 0)} stars, "
+                 f"{source_meta.get('n_lenses', 0)} lenses")
     elif mode == "star" and "mag_vis" in source_meta:
         extra = f" — VIS mag {source_meta['mag_vis']:.1f}"
     elif mode == "tng" and "subhalo_id" in source_meta:
