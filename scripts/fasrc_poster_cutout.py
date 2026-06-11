@@ -27,13 +27,13 @@ Five modes (one object per mode, chosen at random — except ``field``):
 Outputs (under ``$EUCLID_POLISH_DATA_DIR/_poster/``, fixed names so each run
 overwrites the previous result the WebUI then fetches):
 
-  poster_cutout.fits        PrimaryHDU (OBJTYPE/SEED/… header) + one ImageHDU
-                            per band (EXTNAME = VIS/Y_E/J_E/H_E), clean HR e⁻.
-  poster_cutout_dirty.fits  (field mode) the forward-modelled mock-Euclid LR
-                            stack, 4 bands @ 0.10″/pix, noisy.
-  poster_cutout_sr.fits     (field mode) the model's super-resolved VIS sky,
-                            0.05″/pix.
-  poster_cutout.png         preview montage (field: clean | dirty | SR VIS).
+  poster_cutout.fits   PrimaryHDU (OBJTYPE/SEED/… header) + one ImageHDU per
+                       band (EXTNAME = VIS/Y_E/J_E/H_E), clean HR e⁻.
+                       Field mode stacks the whole triplet into this ONE
+                       file: CLEAN_VIS…CLEAN_H_E (0.05″), DIRTY_VIS…DIRTY_H_E
+                       (0.10″, noisy), and SR (0.05″, checkpoint in header) —
+                       so a single download carries everything.
+  poster_cutout.png    preview montage (field: clean | dirty | SR VIS).
 
 Usage
 -----
@@ -88,9 +88,12 @@ BAND_NAMES: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","
 OUTPUT_SUBDIR = "_poster"
 FITS_NAME = "poster_cutout.fits"
 PNG_NAME = "poster_cutout.png"
-# Field mode also writes the forward-modelled and reconstructed companions.
-DIRTY_FITS_NAME = "poster_cutout_dirty.fits"
-SR_FITS_NAME = "poster_cutout_sr.fits"
+# Field-mode star density (per arcmin²): a showcase boost so a poster field
+# carries a few point sources (~2 per 510 px field). The TRAINING default
+# stays at the real-sky 1.389/arcmin² — that value is pinned for a
+# controlled comparison (see Config.DEFAULT_STAR_DENSITY_ARCMIN2's note);
+# changing it there is an experiment decision, not a poster one.
+FIELD_STAR_DENSITY_ARCMIN2 = 12.0
 
 # ASCII label per mode (safe for FITS headers, which are ASCII-only).
 MODE_LABEL = {
@@ -210,6 +213,10 @@ def generate_cutout(
         # Poster lenses must be eye-visible: rejected analytically inside
         # _add_lens_pure before any stamp is rendered.
         lens_require_showable=(mode == "lens"),
+        # Field showcase: a few stars per field (training keeps its own
+        # pinned density).
+        star_density_arcmin2=(FIELD_STAR_DENSITY_ARCMIN2 if mode == "field"
+                              else Config.DEFAULT_STAR_DENSITY_ARCMIN2),
     )
     # Pure-TNG modes render nothing Sersic (the dwarf backfill defaults to
     # off), so COSMOS is skipped — same rule as run_pipeline.
@@ -350,31 +357,31 @@ def forward_and_reconstruct(
             np.asarray(sr, dtype=np.float32), ckpt_name)
 
 
-def build_field_companion_hduls(
-    dirty: np.ndarray, sr: np.ndarray, *, seed: int, ckpt_name: str,
-) -> Tuple[fits.HDUList, fits.HDUList]:
-    """HDULs for the field mode's dirty LR stack and SR VIS image."""
-    p = fits.PrimaryHDU()
-    p.header["OBJTYPE"] = ("field", "poster cutout object kind")
-    p.header["SEED"] = (int(seed), "RNG seed of the clean scene")
-    p.header["PIXSCALE"] = (0.10, "arcsec/pixel (LR archive grid)")
-    p.header["CLEAN"] = (False, "forward-modelled: PSF + noise + artifacts")
-    dirty_hdul = fits.HDUList([p])
+def append_field_companions(
+    hdul: fits.HDUList, dirty: np.ndarray, sr: np.ndarray,
+    *, ckpt_name: str,
+) -> None:
+    """Stack the dirty LR bands and the SR image into the field FITS.
+
+    One file holds the whole triplet (CLEAN_* / DIRTY_* / SR extensions),
+    so the WebUI's single "pull latest FITS" fetches everything. The clean
+    band HDUs are renamed with a CLEAN_ prefix for symmetry.
+    """
+    for name in BAND_NAMES:                       # VIS → CLEAN_VIS, …
+        hdul[name].name = f"CLEAN_{name}"
     for k, name in enumerate(BAND_NAMES):
         hdu = fits.ImageHDU(data=np.asarray(dirty[..., k], dtype=np.float32),
-                            name=name)
+                            name=f"DIRTY_{name}")
         hdu.header["BAND"] = (name, "Euclid band")
+        hdu.header["PIXSCALE"] = (0.10, "arcsec/pixel (LR archive grid)")
         hdu.header["BUNIT"] = ("electron", "noisy LR flux over the stack")
-        dirty_hdul.append(hdu)
-
-    sp = fits.PrimaryHDU(data=np.asarray(sr, dtype=np.float32))
-    sp.header["OBJTYPE"] = ("field", "poster cutout object kind")
-    sp.header["SEED"] = (int(seed), "RNG seed of the clean scene")
+        hdul.append(hdu)
+    sp = fits.ImageHDU(data=np.asarray(sr, dtype=np.float32), name="SR")
     sp.header["PIXSCALE"] = (float(Config.DEFAULT_PIXEL_SCALE),
                              "arcsec/pixel (HR grid)")
     sp.header["CKPT"] = (ckpt_name, "checkpoint used for the reconstruction")
     sp.header["BUNIT"] = ("electron", "super-resolved VIS sky")
-    return dirty_hdul, fits.HDUList([sp])
+    hdul.append(sp)
 
 
 def render_field_preview_png(
@@ -491,6 +498,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dirty, sr, ckpt_name = forward_and_reconstruct(
             data, used_seed, psf_dir=args.psf_dir, ckpt_dir=args.ckpt_dir)
         print(f"[poster] reconstruction used checkpoint {ckpt_name}")
+        append_field_companions(hdul, dirty, sr, ckpt_name=ckpt_name)
 
     if not args.save:
         buf = io.BytesIO()
@@ -503,16 +511,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     fits_path = os.path.join(out_dir, FITS_NAME)
     png_path = os.path.join(out_dir, PNG_NAME)
     hdul.writeto(fits_path, overwrite=True)
-    print(f"[poster] wrote {fits_path}")
+    print(f"[poster] wrote {fits_path}"
+          + (" (CLEAN_*/DIRTY_*/SR extensions)" if args.mode == "field" else ""))
     if args.mode == "field":
-        dirty_hdul, sr_hdul = build_field_companion_hduls(
-            dirty, sr, seed=used_seed, ckpt_name=ckpt_name)
-        dirty_path = os.path.join(out_dir, DIRTY_FITS_NAME)
-        sr_path = os.path.join(out_dir, SR_FITS_NAME)
-        dirty_hdul.writeto(dirty_path, overwrite=True)
-        sr_hdul.writeto(sr_path, overwrite=True)
-        print(f"[poster] wrote {dirty_path}")
-        print(f"[poster] wrote {sr_path}")
         png = render_field_preview_png(
             data, dirty, sr, seed=used_seed, source_meta=source_meta)
     else:
