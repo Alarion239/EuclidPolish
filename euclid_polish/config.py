@@ -706,6 +706,15 @@ class Config:
     # foreground light. (A real stamp can't be shrunk like the Sersic
     # lens light, so the constraint is enforced by rejection.)
     LENS_THETA_E_MIN_RE_RATIO = 1.2
+    # "Showable" lens criteria (poster/visualization, NOT the training
+    # population): θ_E must clear this fraction of the deflector's VISIBLE
+    # (μ-truncated) radius, and the lensed source must keep at least this
+    # much VIS flux after cosmological dimming. Enforced analytically
+    # before rendering via the cached native-photometry predictors
+    # (tng_galaxy.predict_visible_radius_arcsec / predict_vis_flux_e),
+    # with a post-render check as backstop.
+    LENS_SHOWABLE_THETA_E_FRAC  = 0.5
+    LENS_SHOWABLE_MIN_SRC_VIS_E = 1000.0
 
     # ---------------------------------------------------------------------
     # Detector artifacts (cosmic rays + hot pixels + masked-trail streaks)

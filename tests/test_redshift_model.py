@@ -460,6 +460,58 @@ def test_generator_z_mode_lens_mass_and_visibility(tmp_path):
         assert r["source_flux_vis_e"] >= 0
 
 
+def test_analytic_showability_predictors(tmp_path):
+    # The pre-render predictors must track the rendered stamp: flux within
+    # ~10% (truncation losses ignored -> slight over-prediction), visible
+    # radius below the rendered half-size (mean-profile approximation ->
+    # permissive, the post-render check is the backstop).
+    from astropy.io import fits
+    from euclid_polish.sky.tng_galaxy import (
+        predict_vis_flux_e, predict_visible_radius_arcsec,
+        tng_stamp_at_redshift,
+    )
+    tng = str(tmp_path / "tng")
+    d = os.path.join(tng, "555")
+    os.makedirs(d)
+    for b in ("VIS", "Y", "J", "H"):
+        arr = np.zeros((96, 96), dtype=">f4")
+        arr[36:60, 36:60] = 200.0
+        fits.PrimaryHDU(arr).writeto(os.path.join(d, f"TNG555_O1_Euclid_{b}.fits"))
+    open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+
+    z = 0.7
+    stamp, meta = tng_stamp_at_redshift(d, "555", 1, z, rng=None)
+    fpred = predict_vis_flux_e(d, "555", 1, z)
+    assert fpred == pytest.approx(meta["flux_e_per_band"]["VIS"], rel=0.1)
+    rpred = predict_visible_radius_arcsec(d, "555", 1, z)
+    assert 0.0 < rpred <= stamp.shape[0] * 0.05 / 2 * 1.2
+
+
+def test_lens_require_showable_smoke(tmp_path):
+    # With the flag on, lens systems are pre-filtered analytically and the
+    # rendered record still satisfies the showable thresholds (the fake
+    # stamps are compact and bright, so the cut is easy to pass).
+    from scripts.fasrc_poster_cutout import _lens_is_showable
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111")
+    csv_path = str(tmp_path / "tng_properties.csv")
+    _write_props_csv(csv_path, [("111", 2.0e11)])
+    cfg = MultiBandGeneratorConfig(
+        image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        lens_density_arcmin2=1.0, tng_fraction=1.0, tng_galaxy_dir=tng,
+        tng_properties_csv=csv_path, lens_require_showable=True)
+    sim = MultiBandSimulator(None, cfg)
+    rng = np.random.default_rng(4)
+    for _ in range(30):
+        _, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0,
+                                     n_lenses=1, n_big=0, n_dwarfs=0)
+        if meta["lenses"]:
+            assert _lens_is_showable(meta["lenses"][0])
+            break
+    else:
+        pytest.fail("no showable lens produced in 30 fields")
+
+
 def test_poster_lens_showability_cut():
     from scripts.fasrc_poster_cutout import (
         LENS_MIN_SOURCE_VIS_E, LENS_MIN_THETA_E_VISIBLE_FRAC,

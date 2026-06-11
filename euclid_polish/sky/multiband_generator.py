@@ -55,7 +55,8 @@ from euclid_polish.sky.redshift_model import (
 )
 from euclid_polish.sky.tng_galaxy import (
     N_ORIENTATIONS, composite_stamp, list_tng_galaxies, native_halflight_px,
-    sample_tng_stamp, tng_stamp_at_redshift,
+    predict_vis_flux_e, predict_visible_radius_arcsec, sample_tng_stamp,
+    tng_stamp_at_redshift,
 )
 from euclid_polish.sky.types import MultiBandSkyImage
 
@@ -134,6 +135,11 @@ class MultiBandGeneratorConfig:
     # written by the TNG-infographic render.
     tng_properties_csv:       str   = ""
     lens_theta_e_min_re_ratio: float = Config.LENS_THETA_E_MIN_RE_RATIO
+    # Poster/visualization only: additionally require lens systems to be
+    # EYE-VISIBLE (θ_E clears the deflector's visible radius, source bright
+    # enough), rejected analytically before any stamp is rendered. Off for
+    # training — the honest population keeps its buried-arc majority.
+    lens_require_showable:    bool  = False
     # Field-galaxy density in PURE-TNG mode: the real sky density of
     # atlas-like massive galaxies (see Config.TNG_GAL_DENSITY_ARCMIN2),
     # NOT the full COSMOS density — the atlas has no faint dwarfs, so the
@@ -630,16 +636,34 @@ class MultiBandSimulator:
                 lp.z_lens) / compactness_factor(lp.z_lens)
             if lp.theta_E_arcsec < kappa * re_app:
                 continue
+            # Source picked explicitly so the showable mode can pre-check
+            # its flux before any stamp is rendered.
+            sgdir, sgid = self.tng_galaxies[
+                int(rng.integers(0, len(self.tng_galaxies)))]
+            sori = int(rng.integers(1, N_ORIENTATIONS + 1))
+            if cfg.lens_require_showable:
+                # Analytic showability — same spirit as the θ_E ≥ κ·R_e
+                # rejection above: scalars only, no rendering. The arcs
+                # must clear the deflector's VISIBLE radius and the source
+                # must survive its cosmological dimming.
+                r_vis = predict_visible_radius_arcsec(
+                    gdir, gid, orientation, lp.z_lens,
+                    pixel_scale_arcsec=cfg.pixel_scale)
+                if (lp.theta_E_arcsec
+                        < Config.LENS_SHOWABLE_THETA_E_FRAC * r_vis):
+                    continue
+                if (predict_vis_flux_e(sgdir, sgid, sori, lp.z_source,
+                                       pixel_scale_arcsec=cfg.pixel_scale)
+                        < Config.LENS_SHOWABLE_MIN_SRC_VIS_E):
+                    continue
             try:
                 lens_light_stamp, _ = tng_stamp_at_redshift(
                     gdir, gid, orientation, lp.z_lens, rng,
                     pixel_scale_arcsec=cfg.pixel_scale)
+                src = tng_stamp_at_redshift(
+                    sgdir, sgid, sori, lp.z_source, rng,
+                    pixel_scale_arcsec=cfg.pixel_scale)
             except Exception:
-                continue
-            src = sample_tng_stamp(self.tng_galaxies, rng,
-                                   pixel_scale_arcsec=cfg.pixel_scale,
-                                   z=lp.z_source)
-            if src is None:
                 continue
             x_pix, y_pix = self._random_pix(rng)
             lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)

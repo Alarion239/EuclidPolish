@@ -471,6 +471,84 @@ def tng_stamp_at_redshift(
     return stamp, meta
 
 
+#: Per-(dir, galaxy, orientation) native photometry cache: the VIS frame's
+#: mean-SB radial profile (MJy/sr per native-pixel radius) + each band's
+#: total MJy/sr sum. One 4-frame read each, then dict lookups — powers the
+#: ANALYTIC lens-showability predictors (no rendering).
+_NATIVE_PHOTOM_CACHE: Dict[Tuple[str, str, int],
+                           Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def native_photometry(galaxy_dir: str, subhalo_id: int | str,
+                      orientation: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Cached ``(vis_sb_profile, band_sums)`` for one atlas frame set."""
+    key = (str(galaxy_dir), str(subhalo_id), int(orientation))
+    cached = _NATIVE_PHOTOM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    sums = []
+    profile = None
+    for fband in TNG_FITS_BANDS:
+        frame = load_tng_frame(
+            tng_fits_path(galaxy_dir, subhalo_id, orientation, fband))
+        sums.append(float(frame.sum()))
+        if fband == "VIS":
+            rint = _radius_int_grid(frame.shape)
+            flux = np.bincount(rint.ravel(), weights=frame.ravel())
+            cnt = np.bincount(rint.ravel()).astype(np.float64)
+            profile = (flux / np.maximum(cnt, 1.0)).astype(np.float64)
+    out = (profile, np.asarray(sums, dtype=np.float64))
+    _NATIVE_PHOTOM_CACHE[key] = out
+    return out
+
+
+def predict_visible_radius_arcsec(
+    galaxy_dir: str, subhalo_id: int | str, orientation: int, z: float,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
+) -> float:
+    """Analytic prediction of a stamp's visible radius at redshift ``z`` —
+    where the dimmed/drifted/compactness-boosted mean VIS surface brightness
+    crosses the truncation threshold. Approximate (mean profile, VIS only,
+    deterministic drift) but cheap: scalars on the cached native profile,
+    no stamp load. Used to reject unshowable lens systems before rendering;
+    a post-render check remains the backstop.
+    """
+    profile, sums = native_photometry(galaxy_dir, subhalo_id, orientation)
+    band = Config.get_band("VIS")
+    factors, _ = band_drift_factors(sums, z, None)        # dimming + drift
+    compact = compactness_factor(z)
+    fac = mjy_per_sr_to_electrons_factor(band, pixel_scale_arcsec)
+    sb_e = profile * fac * factors[0] * compact ** 2      # e⁻/HR-pixel
+    thr = (10.0 ** (-0.4 * (sb_cut_mag_arcsec2 - band.sim_zeropoint_e))
+           * pixel_scale_arcsec ** 2)
+    above = np.nonzero(sb_e >= thr)[0]
+    if above.size == 0:
+        return 0.0
+    return physical_pc_to_arcsec(
+        float(above.max()) * TNG_NATIVE_PC_PER_PIXEL, z) / compact
+
+
+def predict_vis_flux_e(
+    galaxy_dir: str, subhalo_id: int | str, orientation: int, z: float,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    mass_scale: float = 1.0,
+) -> float:
+    """Analytic prediction of a stamp's total VIS flux at redshift ``z``
+    (electrons; truncation losses ignored). The flux-conservation boost makes
+    the total independent of the integer rebin: native sum × conversion ×
+    (dimming · drift) / f_geo² × mass_scale.
+    """
+    _, sums = native_photometry(galaxy_dir, subhalo_id, orientation)
+    factors, _ = band_drift_factors(sums, z, None)
+    f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
+    fac = mjy_per_sr_to_electrons_factor(
+        Config.get_band("VIS"), pixel_scale_arcsec)
+    return float(sums[0] * fac * factors[0] / f_geo ** 2 * mass_scale)
+
+
 def sample_tng_stamp(
     galaxies: List[Tuple[str, str]],
     rng: np.random.Generator,

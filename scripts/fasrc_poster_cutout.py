@@ -111,12 +111,13 @@ def _counts_for_mode(mode: str) -> Dict[str, int]:
 
 
 # A poster lens must be *eye-visible*, unlike the honest training population
-# (typical lenses hide their arcs deep inside the deflector light): require
-# θ_E to clear this fraction of the deflector's visible (μ-truncated) radius,
-# and the lensed source to have kept this much VIS flux after cosmological
-# dimming — otherwise the cutout is just a bright galaxy with wings.
-LENS_MIN_THETA_E_VISIBLE_FRAC = 0.5
-LENS_MIN_SOURCE_VIS_E = 1000.0
+# (typical lenses hide their arcs deep inside the deflector light). The
+# generator rejects unshowable systems ANALYTICALLY before rendering
+# (cfg.lens_require_showable → cached native-photometry predictors); the
+# check below re-verifies the RENDERED record as a backstop, since the
+# predictors approximate (mean VIS profile, deterministic drift).
+LENS_MIN_THETA_E_VISIBLE_FRAC = Config.LENS_SHOWABLE_THETA_E_FRAC
+LENS_MIN_SOURCE_VIS_E = Config.LENS_SHOWABLE_MIN_SRC_VIS_E
 
 
 def _lens_is_showable(rec: dict) -> bool:
@@ -173,6 +174,9 @@ def generate_cutout(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=(1.0 if pure_tng_mode else 0.0),
+        # Poster lenses must be eye-visible: rejected analytically inside
+        # _add_lens_pure before any stamp is rendered.
+        lens_require_showable=(mode == "lens"),
     )
     cat = open_cosmos2025(path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
     sim = MultiBandSimulator(cat, cfg)
@@ -190,7 +194,10 @@ def generate_cutout(
     counts = _counts_for_mode(mode)
     seq = seed if seed >= 0 else int(np.random.SeedSequence().entropy % (2**32))
     if mode == "lens":
-        max_tries *= 6      # the showability cut rejects most honest draws
+        # The analytic pre-rejection handles most of the selection inside
+        # _add_lens_pure; whole-field retries remain only for the rare
+        # post-render backstop failures.
+        max_tries *= 3
     for attempt in range(max_tries):
         used = (seq + attempt) % (2**32)
         rng = np.random.default_rng(used)
