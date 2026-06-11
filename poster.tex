@@ -1,18 +1,3 @@
-%==============================================================================
-%  Scientific poster — 24 x 36 in (portrait) — tikzposter
-%  "Finding Gravitational Lenses from Super-Resolved Euclid Images"
-%  Aleksandr Belotserkovtsev
-%
-%  Layout: LEFT COLUMN = vertical pipeline infographic (top->bottom);
-%          RIGHT = one text column (abstract -> results).
-%
-%  Compile: pdflatex poster -> biber poster -> pdflatex poster -> pdflatex poster
-%  (references come from references.bib via biblatex). Notes:
-%   - figure placeholders are fixed-size boxes (replace \figbox with
-%     \includegraphics once images are available)
-%   - references are a short manual list (swap for biblatex + references.bib
-%     if you prefer automatic citations)
-%==============================================================================
 \documentclass[17pt, a1paper, portrait,
                margin=0mm, innermargin=4mm,
                blockverticalspace=6mm, colspace=7mm, subcolspace=6mm]{tikzposter}
@@ -21,27 +6,43 @@
 % paper option (it ignores \geometry), so the class must be the largest
 % standard size that fits the sheet: a1 (23.4 x 33.1 in) under 24 x 36.
 % The geometry call only sets the true sheet; the small right/bottom
-% slack is absorbed as margin. (The old 36 x 48 poster used a0 the same
-% way.) ---------------------------------------------------------------
+% slack is absorbed as margin. 
+% ---------------------------------------------------------------
 \geometry{paperwidth=24in, paperheight=36in}
 
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{amsmath, amssymb}
 \usepackage{graphicx}
+\usepackage{eso-pic}
 \usepackage{lmodern}
 \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
 
-% --- Bibliography (biblatex + biber) -----------------------------------------
-% Compile: pdflatex poster -> biber poster -> pdflatex poster -> pdflatex poster
-\usepackage[backend=biber, style=authoryear, sorting=nyt, maxbibnames=2,
-            giveninits=true, doi=false, isbn=false, url=false]{biblatex}
-\addbibresource{references.bib}
-\renewcommand*{\bibfont}{\footnotesize}
-
+\usepackage[round]{natbib}
+\usepackage{paralist}             % provides \inparaenum for the inline bib
+\renewcommand{\bibsection}{}      % suppress BibTeX's own "References" heading
+\setlength{\bibsep}{1pt}          % compress vertical gap between entries
+\let\olditem\item
+\renewenvironment{thebibliography}[1]{%
+  % \section*{\refname}  % redundant: the block already provides the heading
+  \let\par\relax\let\newblock\relax
+  \renewcommand{\item}[1][]{\olditem[\textbullet]}%
+  \inparaenum}{\endinparaenum}
+  
 % --- Theme & colours ---------------------------------------------------------
 \usetheme{Default}
 \usecolorstyle[colorPalette=BlueGrayOrange]{Denmark}
+\definecolor{euclidcol}{HTML}{1F6FB2}  % blue
+\definecolor{hubblecol}{HTML}{D9760A}  % orange
+\definecolor{srcol}{HTML}{2E8B57}      % sea green
+
+\newlength{\imgw}
+% \framedimg{<color>}{<file>}: image with a tight colored border, total width = \linewidth
+\newcommand{\framedimg}[2]{%
+  {\setlength{\fboxsep}{0pt}\setlength{\fboxrule}{3pt}%
+   \setlength{\imgw}{\linewidth}\addtolength{\imgw}{-2\fboxrule}%
+   \fcolorbox{#1}{white}{\includegraphics[width=\imgw]{#2}}}%
+}
 
 % --- Figure placeholder: \figbox{height}{label} ------------------------------
 % Replace with \includegraphics[width=\linewidth]{file} when assets are ready.
@@ -75,12 +76,12 @@
         Super-Resolved Euclid Images}}
 \author{Aleksandr Belotserkovtsev}
 \institute{Center for Astrophysics \,$|$\, Harvard \& Smithsonian \\[4pt]
-           \Large Mentors: Asst.\ Prof.\ L.\ Connor \quad Dr.\ Barone}
+           \Large Mentors: Prof.\ Liam Connor \quad Dr. Tania Barone}
 
 \begin{document}
 % Title bar spans the full paper width (margin=0mm makes \paperwidth edge-to-edge).
-\maketitle[width=\paperwidth, roundedcorners=0, linewidth=0pt, innersep=20pt]
-
+\maketitle[width=\paperwidth, roundedcorners=0, linewidth=0pt, innersep=20pt,
+           titletotopverticalspace=0mm, titletoblockverticalspace=6mm]
 %==============================================================================
 %  Single row, three columns:
 %    col 1 (0.46) = vertical PIPELINE infographic  (the "huge" figure)
@@ -128,12 +129,12 @@
     \node[panel, anchor=north west] (ing) at (0,0)
         {\panelimg{\imgs}{\figdir/ingredients_grid.png}{ingredients grid}};
     \node[lcap] at ([xshift=-4mm]ing.west)
-        {\capt{Ingredients}{TNG50 galaxies \& modelled gravitational lenses
+        {\capt{Ingredients}{Simulated galaxies from TNG50 \& modelled gravitational lenses
          (plus stars)}};
     \node[panel, anchor=north west] (cmap) at ([xshift=\lanegap]ing.north east)
         {\panelimg{\imgs}{\figdir/cluster_map.png}{star-cluster map}};
     \node[rcap] at ([xshift=4mm]cmap.east)
-        {\capt{Star\\ clusters}{stars from Euclid catalog, carrying it's point-spread function, clustered}};
+        {\capt{Stars}{We measure the point spread function (PSF) from the Euclid images by averaging over multiple nearby stars}};
 
     % ===== ROW 2: clean field (left) + per-band PSF grid (right) =====
     \node[panel, anchor=north west] (clean) at ([yshift=-15mm]ing.south west)
@@ -169,101 +170,92 @@
     \draw[flow] (dirty.south) -- (sr.north) node[opl, midway] {POLISH\texttt{++} CNN};
   \end{tikzpicture}
   }
-
-  % References + Acknowledgements live under the pipeline (back-matter, uses the
-  % space below the figure so the single text column carries only the body).
-  \block{References}{
-    \nocite{*}% list every entry in references.bib, not only those cited inline
-    \printbibliography[heading=none]
+ \block{Model Architecture}{
+    We use the POLISH/POLISH++ software (Connor+2022, Wu+2026), built on the
+\emph{Wide Activation for Efficient and Accurate Image Super-Resolution}
+(WDSR-B; Yu+2018) architecture --- a deep convolutional neural network (CNN).
+The model stacks \textbf{32} wide-activation residual blocks (each expanding
+the internal feature channels by $\times6$), \textbf{99} weight-normalised
+convolutions, a global residual skip connection, and a $\times2$ pixel-shuffle
+upsampling stage, for \textbf{599{,}328 trainable parameters}. It takes all
+four available Euclid filters as input --- VIS plus the three near-infrared
+bands Y/J/H, each sampled at $0.10''$/pix --- and returns a single deconvolved
+VIS image super-resolved to $0.05''$/pix. Because the sky spans a huge range of
+brightnesses, we first apply an \emph{asinh} stretch to compress the dynamic
+range, then train against an $L_1$ loss (the mean absolute difference between
+the predicted and reference images).
   }
-
-  \block{Acknowledgements}{
-    \small Conducted with mentorship from the Center for Astrophysics
-    $|$ Harvard \& Smithsonian. Supported by the Harvard College Research
-    Program (HCRP).
-    \\[4pt]\textbf{Contact:} abelotserkovtsev@college.harvard.edu
-  }
+  
+  \block{References \& Acknowledgements}{%
+  \begingroup
+  \scriptsize
+  \nocite{*}%
+  \bibliographystyle{plainnat}  
+  \bibliography{references}
+  \endgroup
+  \vspace{3mm}
+  {\scriptsize
+   Conducted with mentorship from the Center for Astrophysics
+   $|$ Harvard \& Smithsonian. Supported by the Harvard College
+   Research Program (HCRP).\\[2pt]
+   \textbf{Contact:} abelotserkovtsev@college.harvard.edu\par}
+}
 
   %========================= COLUMN 2 — TEXT (single) ========================
   \column{0.50}
 
-  \block{Abstract}{
-    Strong gravitational lensing yields systems that are valuable because they
-    allow for studies of distant magnified galaxies that would otherwise be too
-    faint to see, the mass distribution of the foreground galaxy or cluster,
-    dark matter, and even the geometry of the Universe. In particular, lenses
-    with \emph{small Einstein radii} (the angular distance between the lens and
-    the source) are especially valuable, since they constrain the dark-matter
-    halo profile. However, when this radius is too small, the lens cannot be
-    visually separated from the source in low spatial resolution, wide-area
-    surveys, which causes underrepresentation of lenses with small Einstein
-    radii in studies. Recent advances in super-resolution techniques offer a way
-    to recover this missing population by improving the identification of strong
-    gravitational lenses in Euclid surveys, the first wide-area
-    space-based optical survey. Building on POLISH
-    \parencite{Connor2022} and POLISH++ \parencite{Wu2026}, originally
-    developed for radio astronomy, we increase the resolution of Euclid images
-    to the level of higher-quality Hubble images, training on synthetic
-    Euclid-like images built from simulated galaxies paired with a
-    high-resolution ground truth, and benchmarked against Hubble imaging. Our
-    preliminary results show that, applied to real Euclid data, the model both
-    super-resolves \emph{and} denoises, revealing structure that is blurred or
-    buried in the originals --- a promising first step toward recovering the
-    missing small-radius lenses.
+  \block{Summary}{
+    Strong gravitational lensing yields systems that are valuable because they allow for studies of distant magnified galaxies that would otherwise be too faint to see, the mass distribution of the foreground galaxy or cluster, dark matter, and even the geometry of the Universe. 
+    In particular, lenses with \emph{small Einstein radii} (the angular distance between the lens and the source) are especially valuable, since they constrain the dark-matter halo profile. 
+    However, when this radius is too small, the lens cannot be visually separated from the source in low spatial resolution, wide-area surveys, which causes underrepresentation of lenses with small Einstein radii in studies. 
+    Recent advances in super-resolution techniques offer a way to recover this missing population by improving the identification of strong gravitational lenses in Euclid surveys, the first wide-area space-based optical survey. 
+    Building on POLISH \citep{Connor2022} and POLISH++ \citep{Wu2026}, originally developed for radio astronomy, we increase the resolution of Euclid images to the level of higher spatial resolution Hubble images. 
+    We train on synthetic Euclid-like images built from simulated galaxies blurred with the extracted Euclid point spread function, and benchmarked against Hubble images. 
+    Our preliminary results show that, applied to real Euclid data, the model both super-resolves \emph{and} denoises, revealing structure that is blurred or buried in the originals --- a promising first step toward recovering the missing small-radius lenses.
   }
 
-  \block{Background}{
+  \block{Gravitational Lensing}{
     % Text and lens image side by side (plain minipages — a center
     % environment inside a tikzposter block misplaces the image).
-    \begin{minipage}[c]{0.50\linewidth}
+    \begin{minipage}[c]{0.35\linewidth}
       A massive foreground galaxy bends a background source's light into
       arcs separated by the \emph{Einstein radius} $\theta_E$. Below the
-      survey resolution the arcs blend into the lens light --- the systems
-      that best constrain dark-matter halos are exactly the ones wide
-      surveys miss.
+      survey resolution the arcs blend into the lens light, causing the wide
+      surveys to miss the systems that best constrain dark-matter halos.
     \end{minipage}\hfill
-    \begin{minipage}[c]{0.46\linewidth}
+    \begin{minipage}[c]{0.6\linewidth}
       \includegraphics[width=\linewidth]{fig/poster/gravilensing.jpg}
     \end{minipage}
   }
 
-  \block{Model Architecture}{
-    WDSR-A (POLISH/POLISH++): a deep CNN with
-    32 wide-activation residual blocks ($\times6$ channel expansion),
-    99 weight-normalised convolutions, a global residual
-    skip, and $\times2$ pixel-shuffle upsampling ---
-    \textbf{599{,}328 trainable parameters}. Input $4$ bands
-    (VIS\,+\,Y/J/H) at $0.10''$/pix, output a deconvolved VIS sky at
-    $0.05''$/pix. No batch-norm; trained with an asinh-stretched L1 loss.
-  }
+ 
 
-  \block{Preliminary Results: Euclid vs.\ SR vs.\ Hubble}{
-    % 2x2 grid: text | Euclid LR // Hubble HR | our SR. Plain minipages —
-    % center/tikzfigure environments misbehave inside tikzposter blocks.
+  \block{Preliminary Results: Euclid vs.\ Hubble vs.\ Super-Resolved}{
     \begin{minipage}[c]{0.48\linewidth}
-      One real galaxy, three views: the Euclid input, the Hubble image of
-      the same target, and our super-resolved reconstruction. The model
-      both super-resolves and denoises, recovering structure that is
-      blurred or buried in the original.
+      The \textcolor{euclidcol}{\textbf{Euclid}} input, the
+      \textcolor{hubblecol}{\textbf{Hubble}} image of the same target, and our
+      \textcolor{srcol}{\textbf{super-resolved}} reconstruction. The galaxy seems to be
+      well resolved and sharper than both Euclid and Hubble images. The only visible
+      artifacts are black circles, originating from the model assuming that bright spots
+      are caused by point-like stars.
     \end{minipage}\hfill
     \begin{minipage}[c]{0.48\linewidth}
       \centering
-      \includegraphics[width=\linewidth]{fig/poster/result_euclid.png}\\[2pt]
-      {\small Euclid VIS (0.10$''$/pix)}
+      \framedimg{euclidcol}{fig/poster/result_euclid.png}\\[2pt]
+      {\textcolor{euclidcol}{Euclid VIS} (0.10$''$/pix)}
     \end{minipage}
     \par\vspace{4mm}
     \begin{minipage}[t]{0.48\linewidth}
       \centering
-      \includegraphics[width=\linewidth]{fig/poster/result_hubble.png}\\[2pt]
-      {\small Hubble WFPC2 F814W (0.046$''$/pix)}
+      \framedimg{hubblecol}{fig/poster/result_hubble.png}\\[2pt]
+      {\textcolor{hubblecol}{Hubble WFPC2 F814W} (0.046$''$/pix)}
     \end{minipage}\hfill
     \begin{minipage}[t]{0.48\linewidth}
       \centering
-      \includegraphics[width=\linewidth]{fig/poster/result_sr.png}\\[2pt]
-      {\small Super-resolved (ours, 0.05$''$/pix)}
+      \framedimg{srcol}{fig/poster/result_sr.png}\\[2pt]
+      {\textcolor{srcol}{Super-resolved (ours)} (0.05$''$/pix)}
     \end{minipage}
   }
 
 \end{columns}
-
 \end{document}
