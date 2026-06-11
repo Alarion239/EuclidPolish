@@ -88,6 +88,9 @@ def load_euclid_band_psf(
             f"Euclid {band.name} PSF FITS not found: {fits_path}"
         )
     psf = PSF.from_fits(fits_path)
+    # Strip the EPSFBuilder noise floor + square edges before resampling —
+    # same cleaning the PSFSet loading path applies.
+    psf = psf.background_cleaned()
     psf = psf.resampled_to(target_pixel_scale)
     psf = psf.centre_cropped_to(target_side)
     if recentre:

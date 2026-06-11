@@ -172,6 +172,20 @@ class Config:
     DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389/arcmin²
     DEFAULT_NIMAGES              = 100
 
+    # Empirical-ePSF background cleaning (psf/core.PSF.background_cleaned,
+    # applied on load). The EPSFBuilder kernels carry a noise floor across
+    # the whole square stamp; convolving a bright star imprints it as a
+    # visible square well above the Euclid noise. Two cuts, both ≤ 0 to
+    # disable: pixels below FLOOR_MEDIAN_FACTOR × the kernel median are
+    # zeroed (the median of a 511² stamp is the noise floor — real PSF
+    # pixels sit far above it), and a radial cosine taper takes the kernel
+    # smoothly to zero between INNER_FRAC and OUTER_FRAC of the half-side
+    # (0.55→0.78 of half-256 ≈ 140→200 px on a 511² stamp), so no square
+    # edge survives. Kernels are re-normalised to sum=1 afterwards.
+    PSF_FLOOR_MEDIAN_FACTOR = 2.0
+    PSF_TAPER_INNER_FRAC    = 0.55
+    PSF_TAPER_OUTER_FRAC    = 0.78
+
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
     # flux columns (flux_vis_psf, flux_vis_*fwhm_aper, …) are in µJy, and for

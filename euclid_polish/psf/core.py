@@ -168,6 +168,50 @@ class PSF:
         this consolidation."""
         return self.with_unit_sum()
 
+    def background_cleaned(
+        self,
+        *,
+        floor_median_factor: float = Config.PSF_FLOOR_MEDIAN_FACTOR,
+        taper_inner_frac: float = Config.PSF_TAPER_INNER_FRAC,
+        taper_outer_frac: float = Config.PSF_TAPER_OUTER_FRAC,
+    ) -> PSF:
+        """Strip the empirical kernel's noise floor and square edges.
+
+        An EPSFBuilder kernel carries residual stacking noise across the
+        whole square stamp; convolved with a bright star it imprints a
+        visible square far above the Euclid noise. Two cuts (each ≤ 0
+        disables it):
+
+        * **floor**: pixels below ``floor_median_factor × median`` are
+          zeroed — the median of a large stamp *is* the noise floor, and
+          real PSF flux sits orders of magnitude above it;
+        * **radial taper**: a cosine roll-off takes the kernel smoothly to
+          zero between ``taper_inner_frac`` and ``taper_outer_frac`` of the
+          half-side, so no square boundary survives.
+
+        The result is re-normalised to sum=1 (flux conservation in the
+        forward convolution). Analytic Gaussian kernels pass through
+        essentially unchanged (their stamp median is 0).
+        """
+        data = np.asarray(self.data, dtype=np.float64).copy()
+        if floor_median_factor > 0:
+            thr = floor_median_factor * float(np.median(data))
+            if thr > 0:
+                data[data < thr] = 0.0
+        if 0 < taper_inner_frac < taper_outer_frac:
+            H, W = data.shape
+            half = min(H, W) / 2.0
+            r_in, r_out = taper_inner_frac * half, taper_outer_frac * half
+            yy, xx = np.indices(data.shape, dtype=np.float64)
+            rr = np.hypot(yy - (H - 1) / 2.0, xx - (W - 1) / 2.0)
+            w = 0.5 * (1.0 + np.cos(np.pi * np.clip(
+                (rr - r_in) / max(r_out - r_in, 1e-9), 0.0, 1.0)))
+            data *= w
+        s = data.sum()
+        if s > 0:
+            data /= s
+        return replace(self, data=data.astype(self.data.dtype, copy=False))
+
     def resampled_to(self, target_pixel_scale: float) -> PSF:
         """Resample onto a new pixel grid via cubic-spline ``zoom``.
 

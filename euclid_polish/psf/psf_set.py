@@ -237,6 +237,17 @@ class PSFSet:
             oversampling=self.oversampling,
         )
 
+    def background_cleaned(self) -> PSFSet:
+        """Apply :meth:`PSF.background_cleaned` to every member (noise-floor
+        cut + radial taper, Config-tuned)."""
+        return PSFSet(
+            psfs=[p.background_cleaned() for p in self.psfs],
+            pixel_scale=self.pixel_scale,
+            centroids=self.centroids,
+            n_stars=self.n_stars,
+            oversampling=self.oversampling,
+        )
+
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSFSet:
         out = [p.centre_cropped_to(side, renormalise=renormalise)
                for p in self.psfs]

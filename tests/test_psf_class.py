@@ -374,3 +374,50 @@ class TestBackCompatShim:
         row = _gauss(31, 2.0)[15]
         got = estimate_fwhm(row)
         assert got > 0
+
+
+# ---------------------------------------------------------------------------
+# Background cleaning (noise floor + radial taper)
+# ---------------------------------------------------------------------------
+
+def _noisy_gaussian_kernel(n=257, sigma=3.0, pedestal=1e-6):
+    yy, xx = np.indices((n, n), dtype=np.float64)
+    c = (n - 1) / 2.0
+    g = np.exp(-((yy - c) ** 2 + (xx - c) ** 2) / (2 * sigma ** 2))
+    return (g / g.sum() + pedestal)
+
+
+def test_background_cleaned_strips_floor_and_corners():
+    psf = PSF(data=_noisy_gaussian_kernel(),
+              pixel_scale=0.05).with_unit_sum()
+    out = psf.background_cleaned()
+    # Square boundary gone: corners exactly zero, kernel still unit-sum,
+    # centre untouched.
+    assert out.data[:20, :20].max() == 0.0
+    assert out.data[-20:, -20:].max() == 0.0
+    assert out.total_flux == pytest.approx(1.0, abs=1e-9)
+    c = (out.shape[0] - 1) // 2
+    assert np.unravel_index(np.argmax(out.data), out.shape) == (c, c)
+    # The uniform pedestal (== the stamp median) is below 2x median -> wiped
+    # outside the core even inside the taper radius.
+    assert out.data[c, c + 60] == 0.0
+
+
+def test_background_cleaned_noop_on_clean_gaussian_core():
+    # An analytic kernel (median 0 outside the core) keeps its core shape.
+    yy, xx = np.indices((257, 257), dtype=np.float64)
+    c = 128.0
+    g = np.exp(-((yy - c) ** 2 + (xx - c) ** 2) / (2 * 3.0 ** 2))
+    psf = PSF(data=g / g.sum(), pixel_scale=0.05)
+    out = psf.background_cleaned()
+    np.testing.assert_allclose(out.data[118:139, 118:139],
+                               psf.data[118:139, 118:139], rtol=1e-6)
+
+
+def test_background_cleaned_disable_flags():
+    psf = PSF(data=_noisy_gaussian_kernel(),
+              pixel_scale=0.05).with_unit_sum()
+    out = psf.background_cleaned(floor_median_factor=0.0,
+                                 taper_inner_frac=0.0,
+                                 taper_outer_frac=0.0)
+    np.testing.assert_allclose(out.data, psf.data, rtol=1e-12)
