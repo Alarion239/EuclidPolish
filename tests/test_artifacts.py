@@ -84,7 +84,7 @@ def test_cr_count_matches_back_of_envelope_for_vis():
     """
     cfg = ArtifactConfig()
     n = expected_cosmic_ray_count((510, 510), Config.BAND_VIS, cfg)
-    raw   = 5.0 * (12e-4) ** 2 * 510 * 510 * (565 * 4)
+    raw   = 5.0 * (12e-4) ** 2 * 510 * 510 * (560.52 * 4)
     rejection = Config.BAND_VIS.cr_rate_factor
     assert n == pytest.approx(raw * rejection, rel=1e-9)
     # Post-rejection should leave order ~100 hits per 510² stack (not 4000).

@@ -196,11 +196,21 @@ class Config:
     AB_ZP_UJY                    = 23.90
     VIS_PIXEL_SCALE_ARCSEC       = 0.10     # native Euclid VIS pixel scale (arcsec/pixel)
 
-    # Euclid VIS detector parameters (MSSL VIS-PP, Cropper+ 2014, Euclid Q1 docs)
-    EXPOSURE_TIME_S              = 565.0    # single VIS frame duration (s)
+    # Euclid VIS detector parameters, in-flight values (Euclid II. VIS,
+    # Cropper+ 2024, arXiv:2405.13492; Q1 VIS PF, McCracken+ 2025,
+    # arXiv:2503.15303). A nominal science exposure is commanded at 566 s;
+    # shutter motion leaves an effective integration of 560.52 s (the
+    # EXPTIME keyword in calibrated frames). The ROS also takes two 89.52 s
+    # short exposures (dithers 1–2, total 2422 s/pixel in the VIS/MER
+    # stacks); we model the four nominal frames only — a 0.04 mag S/N
+    # difference in the background-limited regime.
+    EXPOSURE_TIME_S              = 560.52   # effective integration per nominal frame (s)
     N_EXPOSURES                  = 4        # Wide Survey dithers per stack
-    T_TOTAL_S                    = N_EXPOSURES * EXPOSURE_TIME_S  # 2260.0 s
-    READ_NOISE_E                 = 4.5      # RMS read noise per exposure (e⁻)
+    T_TOTAL_S                    = N_EXPOSURES * EXPOSURE_TIME_S  # 2242.08 s
+    READ_NOISE_E                 = 3.6      # RMS read noise per exposure (e⁻);
+    #                                         flight chains measure 2.17–4.06 e⁻
+    #                                         (Cropper+ 2024); 4.5 e⁻ was the
+    #                                         requirement ceiling, not typical.
     GAIN_E_PER_ADU               = 3.1      # documentation only; pipeline stays in e⁻
     DARK_E_PER_S_PER_PIX         = 0.001    # dark current (e⁻/pix/s)
     SKY_MAG_AB_ARCSEC2           = 22.35    # typical Wide Survey sky brightness
@@ -251,12 +261,17 @@ class Config:
     # 0.10″/pixel mosaics, so the network input grid (the LR grid) is uniform
     # across all four bands and ePSF oversampling = 2 puts every saved PSF on
     # the same 0.05″/pix HR grid the forward model convolves on.
-    # NISP constants from Schirmer+ 2022 (A&A 662, A92, NISP photometric
-    # system; arXiv:2203.01650) and Euclid Coll. III (Schirmer+ 2025,
-    # A&A 697, A3 NISP Instrument); ROS exposure time from Scaramella+ 2022
-    # (A&A 662, A112). Read noise = effective per-ramp value after MACC
-    # up-the-ramp slope fitting (Kubik+ 2021, arXiv:2104.12752); single
-    # CDS noise is ~13 e⁻ but the ramp fit suppresses it to ~7.5.
+    # NISP zeropoints from Schirmer+ 2022 (A&A 662, A92, NISP photometric
+    # system; arXiv:2203.01650). Detector/exposure values from Euclid III.
+    # The NISP Instrument (Jahnke+ 2024, arXiv:2405.13493):
+    #   - exposure_time_s = 87.2 s is the MACC(4,16,4) integration time
+    #     t_int ("effective time accumulating light; the time relevant for
+    #     science", Table 4). The 112.0 s sometimes quoted is t_exp, the
+    #     planning duration including the reset frame — NOT the
+    #     photon-collecting time.
+    #   - read noise = flight median photo-mode value after MACC slope
+    #     fitting, 5.6–6.7 e⁻ across the 16 detectors (Table 3).
+    #   - dark current ~0.02 e⁻/s/pix (Sect. 4.1.2).
     BAND_Y_E = BandConfig(
         name                    = "Y_E",
         pixel_scale_lr_arcsec   = 0.10,
@@ -265,10 +280,10 @@ class Config:
         psf_fits_filename       = "euclid_psf_Y.fits",
         zeropoint_ab_e_per_s    = 25.04,
         sky_mag_ab_arcsec2      = 22.3,
-        exposure_time_s         = 112.0,
+        exposure_time_s         = 87.2,
         n_exposures             = 4,
-        read_noise_e            = 7.5,
-        dark_e_per_s_per_pix    = 0.01,
+        read_noise_e            = 6.1,
+        dark_e_per_s_per_pix    = 0.02,
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_Y",
@@ -283,10 +298,10 @@ class Config:
         psf_fits_filename       = "euclid_psf_J.fits",
         zeropoint_ab_e_per_s    = 25.26,
         sky_mag_ab_arcsec2      = 22.1,
-        exposure_time_s         = 112.0,
+        exposure_time_s         = 87.2,
         n_exposures             = 4,
-        read_noise_e            = 7.5,
-        dark_e_per_s_per_pix    = 0.01,
+        read_noise_e            = 6.1,
+        dark_e_per_s_per_pix    = 0.02,
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_J",
@@ -301,10 +316,10 @@ class Config:
         psf_fits_filename       = "euclid_psf_H.fits",
         zeropoint_ab_e_per_s    = 25.21,
         sky_mag_ab_arcsec2      = 22.4,
-        exposure_time_s         = 112.0,
+        exposure_time_s         = 87.2,
         n_exposures             = 4,
-        read_noise_e            = 7.5,
-        dark_e_per_s_per_pix    = 0.01,
+        read_noise_e            = 6.1,
+        dark_e_per_s_per_pix    = 0.02,
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_H",

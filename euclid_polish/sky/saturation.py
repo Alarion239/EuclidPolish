@@ -14,7 +14,9 @@ Physics (derived from the project zeropoints, not hand-tuned):
   ``p`` (VIS 0.10″, NISP 0.30″).
 * The per-band **well depth** ``S`` is calibrated so the peak reaches ``S`` at
   the observed 50%-saturation magnitudes (``STAR_SATURATION_CALIB_MAG``: VIS≈14,
-  NISP≈17). This recovers realistic wells: ~198k e⁻ (VIS CCD), ~8–10k e⁻ (NISP).
+  NISP≈17). This recovers a realistic VIS well (~197k e⁻, CCD full well) and
+  effective stack-referred NISP clip levels of ~4.6–9.5k e⁻ (these scale with
+  the 4×87.2 s MACC integration; the physical H2RG well is much larger).
 * A star **saturates** a band when ``Poisson(peak) ≥ S``. A per-star log-normal
   jitter on ``peak`` (sub-pixel position + PSF variation,
   ``STAR_SATURATION_JITTER_DEX``) turns the otherwise razor-sharp onset into a

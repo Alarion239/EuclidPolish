@@ -3,7 +3,7 @@
 
 The stack zero-point ``band.sim_zeropoint_e`` is the AB magnitude of a
 source contributing 1 e⁻ over the band's full integration
-(``Config.sim_zeropoint_e``; VIS ≈ 33.885). Two inputs convert onto this
+(``Config.sim_zeropoint_e``; VIS ≈ 33.88). Two inputs convert onto this
 single scale:
 
   * **Catalog magnitudes** (Euclid MER, AB) → electrons, used to build the

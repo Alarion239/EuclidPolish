@@ -669,7 +669,7 @@ def _hst_to_euclid_hr_cube(
       The rate ratio compensates for the slight sensitivity difference
       between HST F814W (ZP ≈ 25.94 e⁻/s) and Euclid VIS (ZP = 25.50);
       at the same AB magnitude Euclid VIS gives ~0.67× the HST rate.
-      Multiplying by VIS stack time (2260 s) converts rate → total
+      Multiplying by VIS stack time (2242 s) converts rate → total
       electrons over the Euclid stack.
     * **NISP[k]**: ``VIS_HR × typical_band_ratios[k]``. The catalog-
       derived median ratio of ``e_band / e_VIS`` per source already

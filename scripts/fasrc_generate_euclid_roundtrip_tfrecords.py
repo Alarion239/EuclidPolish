@@ -143,11 +143,11 @@ def _load_4band_cube(
     archive **e⁻/s** calibrated to each header's ``MAGZERO`` (≈24.6 for
     VIS). To land on the synthetic/HST/star-anchor **total-electron**
     scale we apply the band's zeropoint factor
-    ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (≈5176 for VIS) — the
+    ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (≈5130 for VIS) — the
     exact conversion ``verify_star_photometry.py`` validates against
     catalogue fluxes (measured/catalog ratio ≈ 1) and the same factor
     the direct-cutout reconstruct uses. This replaces the earlier
-    ``× t_total_s`` (≈2260) approximation, which was ~2.3× too faint
+    ``× t_total_s`` (≈2242) approximation, which was ~2.3× too faint
     because it implicitly assumed the archive ZP equalled
     ``VIS_AB_ZP_E_PER_S=25.50`` rather than the header MAGZERO. With the
     shared asinh stretch (knee 1000 e⁻) the round-trip and supervised
