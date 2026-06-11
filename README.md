@@ -135,9 +135,12 @@ That single draw sets everything:
   an atlas galaxy within ×30 in mass, and is rescaled down — flux × s (L ∝ M),
   size ÷ s^0.25 (the observed mass–size slope), so surface brightness falls as
   s^0.5 (Kormendy-like). The rendered population follows the observed mass
-  distribution by construction: ~6 galaxies per 510 px field, median
-  R_e ≈ 0.13″, an R_e > 1″ giant in ~1 of 30 fields. Lens deflectors are never
-  rescaled (`TNG_MF_*`, `TNG_MASS_WINDOW`, `TNG_MASS_SIZE_ALPHA`).
+  distribution by construction, down to log M★ = 8.5 at 60/arcmin²: ~11 draws
+  per 510 px field, of which ~8 render (median m_VIS ≈ 25.7) — draws predicted
+  fainter than m_VIS = 28 are skipped before the stamp load
+  (`TNG_FAINT_SKIP_MAG_VIS`). An R_e > 1″ giant appears in ~1 of 30 fields.
+  Lens deflectors are never rescaled (`TNG_MF_*`, `TNG_MASS_WINDOW`,
+  `TNG_MASS_SIZE_ALPHA`).
 - **Surface-brightness truncation** — the SKIRT box carries faint light over all
   160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
   zeroed and the stamp cropped, so apparent sizes are the detectable isophotal

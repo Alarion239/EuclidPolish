@@ -619,12 +619,19 @@ class Config:
     # Field-galaxy density in PURE-TNG mode: the real sky density of
     # log M* ≥ TNG_MF_LOGM_MIN galaxies (the mass-function-rescaled TNG
     # population renders all of them, see TNG_MF_* below). Normalization:
-    # φ0 ≈ 1.5e-2 Mpc⁻³ for log M* ≥ 9 (Baldry+ 2012), times
-    # ∫ dV_c/dz/dΩ · exp(-(z/TNG_Z_PHI_SCALE)²) dz over [TNG_Z_MIN,
-    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² → ≈ 33 galaxies/arcmin² (~6 per
-    # 510 px field, of which genuinely big ones are the rare Schechter
-    # tail at low z).
-    TNG_GAL_DENSITY_ARCMIN2 = 33.0
+    # φ0 ≈ 2.3e-2 Mpc⁻³ for log M* ≥ 8.5 (Baldry+ 2012 double Schechter),
+    # times ∫ dV_c/dz/dΩ · exp(-(z/TNG_Z_PHI_SCALE)²) dz over [TNG_Z_MIN,
+    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² ≈ 50, rounded up to 60 because the
+    # Gaussian φ(z) decline is calibrated on massive galaxies and is too
+    # aggressive for dwarfs → ~11 draws per 510 px field, of which the
+    # undetectably faint (see TNG_FAINT_SKIP_MAG_VIS) are skipped.
+    TNG_GAL_DENSITY_ARCMIN2 = 60.0
+    # Skip a field draw (before the expensive 4-band stamp load) when its
+    # predicted VIS magnitude (L ∝ M + luminosity distance, anchored on
+    # measured atlas photometry) is fainter than this — those galaxies
+    # exist but contribute nothing detectable (per-pixel 1σ ≈ 25.5,
+    # per-arcsec² ≈ 28). ≤ 0 disables.
+    TNG_FAINT_SKIP_MAG_VIS = 28.0
     # Optional faint-dwarf Sersic backfill (COSMOS rows with circularized
     # R_e ≤ the cut). Default 0 = OFF: the mass-function-rescaled TNG
     # population covers the small end with real morphology, and pure-TNG
@@ -664,7 +671,7 @@ class Config:
     # s ~ log-uniform[RESCALE_MIN, 1] (RESCALE_MIN ≥ 1 disables).
     TNG_MF_LOGM_STAR     = 10.97
     TNG_MF_ALPHA         = -1.2
-    TNG_MF_LOGM_MIN      = 9.0
+    TNG_MF_LOGM_MIN      = 8.5
     TNG_MF_LOGM_MAX      = 12.0
     TNG_MASS_WINDOW      = 30.0
     TNG_MASS_RESCALE_MIN = 0.1

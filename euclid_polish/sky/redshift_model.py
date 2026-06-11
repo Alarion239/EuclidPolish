@@ -210,6 +210,25 @@ def sample_galaxy_redshift(
     return float(np.interp(rng.random(), cdf, zs))
 
 
+#: VIS-magnitude anchor: atlas subhalo 167396 (log M* = 10.55) measures
+#: m_VIS = 21.36 through the full pipeline at z = 0.5.
+_MAG_ANCHOR_LOGM = 10.55
+_MAG_ANCHOR_Z    = 0.5
+_MAG_ANCHOR_VIS  = 21.36
+
+
+def predicted_vis_mag(logm: float, z: float) -> float:
+    """Coarse VIS magnitude of a ``logm`` galaxy at redshift ``z``:
+    L ∝ M plus the luminosity-distance modulus relative to the measured
+    anchor (no K-correction). Used to skip undetectably faint field draws
+    before the expensive 4-band stamp load.
+    """
+    dl = (1.0 + z) * comoving_distance_mpc(z)
+    dl0 = (1.0 + _MAG_ANCHOR_Z) * comoving_distance_mpc(_MAG_ANCHOR_Z)
+    return (_MAG_ANCHOR_VIS + 2.5 * (_MAG_ANCHOR_LOGM - logm)
+            + 5.0 * math.log10(dl / dl0))
+
+
 #: Inverse-CDF grid for the Schechter mass draw, keyed by its parameters.
 _MFCDF_CACHE: Dict[Tuple, Tuple[np.ndarray, np.ndarray]] = {}
 

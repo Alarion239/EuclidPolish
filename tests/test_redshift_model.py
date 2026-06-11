@@ -19,6 +19,7 @@ from euclid_polish.sky.redshift_model import (
     compactness_factor,
     load_tng_properties,
     physical_pc_to_arcsec,
+    predicted_vis_mag,
     rebin_factor_for_redshift,
     sample_galaxy_redshift,
     sample_target_logmass,
@@ -347,6 +348,14 @@ def test_z_mode_field_galaxies_draw_mass_scale(tmp_path):
     assert min(s) < 0.5                         # small galaxies dominate
 
 
+def test_predicted_vis_mag_faint_skip():
+    # Pinned to the measured pipeline anchor; dwarfs at high z fall beyond
+    # the skip cut, bright nearby ones stay well inside it.
+    assert predicted_vis_mag(10.55, 0.5) == pytest.approx(21.36, abs=0.01)
+    assert predicted_vis_mag(9.0, 2.0) > Config.TNG_FAINT_SKIP_MAG_VIS
+    assert predicted_vis_mag(10.5, 0.3) < 22.0
+
+
 def test_target_logmass_schechter():
     rng = np.random.default_rng(5)
     lm = np.array([sample_target_logmass(rng) for _ in range(6000)])
@@ -398,7 +407,10 @@ def test_generator_z_mode_field_galaxies(tmp_path):
                                    n_big=0, n_dwarfs=0)
     assert img.data.sum() > 0
     recs = meta["galaxies"]
-    assert [r["render"] for r in recs] == ["tng"] * 5
+    # Undetectably faint draws (predicted m_VIS > the skip cut) drop their
+    # slot, so up to 5 render — and every rendered one is a TNG stamp.
+    assert 1 <= len(recs) <= 5
+    assert all(r["render"] == "tng" for r in recs)
     for r in recs:
         assert Config.TNG_Z_MIN <= r["z"] <= Config.TNG_Z_MAX
         assert r["rebin_factor"] >= 1
@@ -481,7 +493,8 @@ def test_pure_tng_dwarf_backfill(tmp_path):
     dwarfs = [g for g in meta["galaxies"] if g.get("dwarf")]
     assert len(dwarfs) == 6 and meta["n_dwarf_galaxies"] == 6
     assert all(g["render"] == "sersic" for g in dwarfs)
-    assert sum(1 for g in meta["galaxies"] if g["render"] == "tng") == 2
+    # TNG slots may drop to the faint skip; the survivors are TNG stamps.
+    assert sum(1 for g in meta["galaxies"] if g["render"] == "tng") <= 2
 
 
 def test_pure_tng_dwarfs_need_a_catalog(tmp_path):
@@ -516,9 +529,9 @@ def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):
     # First Poisson draw is the galaxy count.
     assert lams[0] == pytest.approx(
         sim.config.tng_gal_density_arcmin2 * area)
-    # The physical density of the rendered (logM >= 9) population — far
-    # below the full COSMOS 111/arcmin² that counts undetectable dwarfs.
-    assert sim.config.tng_gal_density_arcmin2 < 50.0
+    # The physical density of the logM >= 8.5 population — below the full
+    # COSMOS 111/arcmin² (undetectable draws are additionally skipped).
+    assert sim.config.tng_gal_density_arcmin2 < Config.DEFAULT_GAL_DENSITY_ARCMIN2
 
 
 def test_pure_tng_mode_works_without_catalog(tmp_path):

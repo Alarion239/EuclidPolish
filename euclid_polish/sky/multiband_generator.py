@@ -48,6 +48,7 @@ from euclid_polish.sky.redshift_model import (
     compactness_factor,
     load_tng_properties,
     physical_pc_to_arcsec,
+    predicted_vis_mag,
     sample_galaxy_redshift,
     sample_target_logmass,
     sigma_v_from_stellar_mass,
@@ -349,10 +350,19 @@ class MultiBandSimulator:
         population."""
         target_re = target_re_arcsec
         mass_scale = 1.0
+        logm_t = float("nan")
         galaxies = self.tng_galaxies
         if z is None and self.config.tng_redshift_mode:
             z = sample_galaxy_redshift(rng)
-            galaxies, mass_scale = self._pick_field_galaxy(rng)
+            galaxies, mass_scale, lm_eff = self._pick_field_galaxy(rng)
+            if lm_eff is not None:
+                logm_t = lm_eff
+                # Undetectably faint at this (mass, z): the galaxy exists
+                # but contributes nothing — drop the slot before paying for
+                # the 4-band stamp load.
+                cut = Config.TNG_FAINT_SKIP_MAG_VIS
+                if cut > 0 and predicted_vis_mag(lm_eff, z) > cut:
+                    return None
         if z is None and target_re is None and self.tng_size_model is not None:
             target_re = self.tng_size_model.sample(rng)
         res = sample_tng_stamp(galaxies, rng,
@@ -376,6 +386,7 @@ class MultiBandSimulator:
             "rot_k":        tmeta["rot_k"],
             "z":            float(tmeta.get("z", float("nan"))),
             "mass_scale":   float(tmeta.get("mass_scale", float("nan"))),
+            "logm_target":  float(logm_t),
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
@@ -385,7 +396,7 @@ class MultiBandSimulator:
 
     def _pick_field_galaxy(
         self, rng: np.random.Generator,
-    ) -> Tuple[List[Tuple[str, str]], float]:
+    ) -> Tuple[List[Tuple[str, str]], float, Optional[float]]:
         """Mass-function-weighted pick for one field stamp.
 
         Draws the target mass from the real Schechter MF, then matches an
@@ -393,15 +404,16 @@ class MultiBandSimulator:
         decade morphology) and rescales it down: the rendered population
         follows the observed mass distribution by construction — the atlas
         is a morphology library, not a population sample. Returns
-        ``(candidate galaxy list, mass_scale)``; falls back to a
-        log-uniform rescale over the whole atlas when masses are missing.
+        ``(candidate galaxy list, mass_scale, target log M or None)``;
+        falls back to a log-uniform rescale over the whole atlas when
+        masses are missing.
         """
         if self._atlas_logm is None:
             s_min = Config.TNG_MASS_RESCALE_MIN
             if 0.0 < s_min < 1.0:
                 return self.tng_galaxies, float(
-                    10.0 ** rng.uniform(np.log10(s_min), 0.0))
-            return self.tng_galaxies, 1.0
+                    10.0 ** rng.uniform(np.log10(s_min), 0.0)), None
+            return self.tng_galaxies, 1.0, None
         lm_t = sample_target_logmass(rng)
         lm = self._atlas_logm
         window = (lm >= lm_t) & (lm <= lm_t + np.log10(Config.TNG_MASS_WINDOW))
@@ -409,10 +421,10 @@ class MultiBandSimulator:
             window = lm >= lm_t
         if not window.any():                       # target above the atlas max
             idx = int(np.nanargmax(lm))
-            return [self.tng_galaxies[idx]], 1.0
+            return [self.tng_galaxies[idx]], 1.0, float(lm[idx])
         idx = int(rng.choice(np.nonzero(window)[0]))
         mass_scale = min(1.0, 10.0 ** (lm_t - lm[idx]))
-        return [self.tng_galaxies[idx]], float(mass_scale)
+        return [self.tng_galaxies[idx]], float(mass_scale), float(lm_t)
 
     def _add_big_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
@@ -433,8 +445,10 @@ class MultiBandSimulator:
     ) -> Optional[dict]:
         """Render one galaxy. With probability ``config.tng_fraction`` it's a
         real TNG50 stamp; otherwise a Sersic B+D from the COSMOS catalog row.
-        In pure-TNG mode there is no Sersic fallback (no catalog): a failed
-        stamp load is retried on other draws, then the slot is dropped (None).
+        In pure-TNG mode there is no Sersic fallback (no catalog) and a None
+        drops the slot WITHOUT retrying: most Nones are undetectably faint
+        draws, and resampling them would inflate the visible count above
+        the physical density.
 
         Geometry band-independent; per-band fluxes from the catalog
         drive the photometry. Each Sersic component is rendered once and
@@ -444,11 +458,7 @@ class MultiBandSimulator:
         """
         cfg = self.config
         if self.pure_tng:
-            for _ in range(3):
-                rec = self._add_tng_galaxy(canvas_4ch, rng)
-                if rec is not None:
-                    return rec
-            return None
+            return self._add_tng_galaxy(canvas_4ch, rng)
         # Short-circuit on tng_fraction==0 so the default path consumes no extra
         # RNG and stays byte-identical to the all-Sersic generator.
         if (cfg.tng_fraction > 0.0 and self.tng_galaxies
