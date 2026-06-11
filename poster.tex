@@ -238,31 +238,30 @@
   }
 
   \block{Preliminary Results: Euclid vs.\ SR vs.\ Hubble}{
-    One real galaxy, three views: the Euclid input, the Hubble image of the
-    same target, and our super-resolved reconstruction. The model both
-    super-resolves and denoises, recovering structure that is blurred or
-    buried in the original.
-    \vspace{0.5em}
-    \begin{tikzfigure}
-      \begin{minipage}{0.48\linewidth}
-        \centering
-        \includegraphics[width=\linewidth]{fig/poster/result_euclid.png}\\[2pt]
-        {\small Euclid VIS (0.10$''$/pix)}
-      \end{minipage}\hfill
-      \begin{minipage}{0.48\linewidth}
-        \centering
-        \includegraphics[width=\linewidth]{fig/poster/result_hubble.png}\\[2pt]
-        {\small Hubble WFPC2 F814W (0.046$''$/pix)}
-      \end{minipage}
-    \end{tikzfigure}
-    \vspace{0.3em}
-    \begin{tikzfigure}
-      \begin{minipage}{0.55\linewidth}
-        \centering
-        \includegraphics[width=\linewidth]{fig/poster/result_sr.png}\\[2pt]
-        {\small Super-resolved (ours, 0.05$''$/pix)}
-      \end{minipage}
-    \end{tikzfigure}
+    % 2x2 grid: text | Euclid LR // Hubble HR | our SR. Plain minipages —
+    % center/tikzfigure environments misbehave inside tikzposter blocks.
+    \begin{minipage}[c]{0.48\linewidth}
+      One real galaxy, three views: the Euclid input, the Hubble image of
+      the same target, and our super-resolved reconstruction. The model
+      both super-resolves and denoises, recovering structure that is
+      blurred or buried in the original.
+    \end{minipage}\hfill
+    \begin{minipage}[c]{0.48\linewidth}
+      \centering
+      \includegraphics[width=\linewidth]{fig/poster/result_euclid.png}\\[2pt]
+      {\small Euclid VIS (0.10$''$/pix)}
+    \end{minipage}
+    \par\vspace{4mm}
+    \begin{minipage}[t]{0.48\linewidth}
+      \centering
+      \includegraphics[width=\linewidth]{fig/poster/result_hubble.png}\\[2pt]
+      {\small Hubble WFPC2 F814W (0.046$''$/pix)}
+    \end{minipage}\hfill
+    \begin{minipage}[t]{0.48\linewidth}
+      \centering
+      \includegraphics[width=\linewidth]{fig/poster/result_sr.png}\\[2pt]
+      {\small Super-resolved (ours, 0.05$''$/pix)}
+    \end{minipage}
   }
 
 \end{columns}
