@@ -1,5 +1,5 @@
 %==============================================================================
-%  Scientific poster — 36 x 48 in (portrait) — tikzposter
+%  Scientific poster — 24 x 36 in (portrait) — tikzposter
 %  "Finding Gravitational Lenses from Super-Resolved Euclid Images"
 %  Aleksandr Belotserkovtsev
 %
@@ -13,12 +13,17 @@
 %   - references are a short manual list (swap for biblatex + references.bib
 %     if you prefer automatic citations)
 %==============================================================================
-\documentclass[25pt, a0paper, portrait,
-               margin=0mm, innermargin=5mm,
-               blockverticalspace=8mm, colspace=10mm, subcolspace=8mm]{tikzposter}
+\documentclass[17pt, a1paper, portrait,
+               margin=0mm, innermargin=4mm,
+               blockverticalspace=6mm, colspace=7mm, subcolspace=6mm]{tikzposter}
 
-% --- Custom paper size: 36 x 48 inches (overrides a0paper above) -------------
-\geometry{paperwidth=36in, paperheight=48in}
+% --- Custom paper size: 24 x 36 inches. tikzposter lays out for the CLASS
+% paper option (it ignores \geometry), so the class must be the largest
+% standard size that fits the sheet: a1 (23.4 x 33.1 in) under 24 x 36.
+% The geometry call only sets the true sheet; the small right/bottom
+% slack is absorbed as margin. (The old 36 x 48 poster used a0 the same
+% way.) ---------------------------------------------------------------
+\geometry{paperwidth=24in, paperheight=36in}
 
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
@@ -91,16 +96,16 @@
   % ---- swap these paths for your own thoughtfully-chosen renders ----
   % Render with: python3 scripts/poster_render.py <your.fits> --out fig/poster
   \def\figdir{fig/poster}
-  \vspace{6mm}
+  \vspace{4mm}
   % Pipeline geometry: two vertical guide lines bound the figure. Rows 1-2 hold
   % two equal squares (\imgs) left/right-aligned to the guides; rows 3-4 hold one
   % image spanning both guides (\fullw = 2\imgs + \lanegap).
-  \setlength{\imgs}{0.30\linewidth}
+  \setlength{\imgs}{0.27\linewidth}
   \setlength{\lanegap}{0.04\linewidth}
   \setlength{\fullw}{2\imgs}\addtolength{\fullw}{\lanegap}
-  \setlength{\capw}{0.155\linewidth}
+  \setlength{\capw}{0.19\linewidth}
   \begin{tikzpicture}[
-      >={Stealth[length=11mm, width=8mm]},
+      >={Stealth[length=8mm, width=6mm]},
       panel/.style={inner sep=0pt, outer sep=0pt},
       % Two caption columns flank the centred image block: titles + a few
       % words per stage. Equal text width on both sides keeps the images
@@ -109,9 +114,9 @@
                    text width=\capw, inner sep=0pt},
       rcap/.style={text=black, align=left, anchor=west,
                    text width=\capw, inner sep=0pt},
-      flow/.style={->, line width=2.6pt, gray!70},
+      flow/.style={->, line width=2pt, gray!70},
       opl/.style={font=\small\bfseries, text=white, fill=black!80,
-                  inner sep=5pt, rounded corners=4pt},
+                  inner sep=4pt, rounded corners=3pt},
       node distance=10mm]
 
     % Each multi-panel stage is a SINGLE composite image built by
@@ -123,36 +128,36 @@
     % ===== ROW 1: ingredients (left) + star-cluster map (right) =====
     \node[panel, anchor=north west] (ing) at (0,0)
         {\panelimg{\imgs}{\figdir/ingredients_grid.png}{ingredients grid}};
-    \node[lcap] at ([xshift=-6mm]ing.west)
-        {\capt{Ingredients}{TNG50 galaxies \& gravitational lenses
+    \node[lcap] at ([xshift=-4mm]ing.west)
+        {\capt{Ingredients}{TNG50 galaxies \& modelled gravitational lenses
          (plus stars)}};
     \node[panel, anchor=north west] (cmap) at ([xshift=\lanegap]ing.north east)
         {\panelimg{\imgs}{\figdir/cluster_map.png}{star-cluster map}};
-    \node[rcap] at ([xshift=6mm]cmap.east)
-        {\capt{Star\\ clusters}{real survey stars, clustered by sky position}};
+    \node[rcap] at ([xshift=4mm]cmap.east)
+        {\capt{Star\\ clusters}{stars from Euclid catalog, carrying it's point-spread function, clustered}};
 
     % ===== ROW 2: clean field (left) + per-band PSF grid (right) =====
-    \node[panel, anchor=north west] (clean) at ([yshift=-22mm]ing.south west)
+    \node[panel, anchor=north west] (clean) at ([yshift=-15mm]ing.south west)
         {\panelimg{\imgs}{\figdir/clean_field.png}{clean synthetic field}};
-    \node[lcap] at ([xshift=-6mm]clean.west)
+    \node[lcap] at ([xshift=-4mm]clean.west)
         {\capt{Synthetic field}{clean 4-band sky in electrons;
          0.05$''$/pix ground truth}};
-    \node[panel, anchor=north west] (psf) at ([yshift=-22mm]cmap.south west)
+    \node[panel, anchor=north west] (psf) at ([yshift=-15mm]cmap.south west)
         {\panelimg{\imgs}{\figdir/psf_grid.png}{per-band PSFs}};
-    \node[rcap] at ([xshift=6mm]psf.east)
-        {\capt{Per-band ePSF}{empirical PSF per band \& star cluster}};
+    \node[rcap] at ([xshift=4mm]psf.east)
+        {\capt{Per-band ePSF}{empirical PSF per band extracted from clustered stars}};
 
     % ===== ROW 3: mock-Euclid dirty grid spans BOTH guides =====
-    \node[panel, anchor=north west] (dirty) at ([yshift=-28mm]clean.south west)
+    \node[panel, anchor=north west] (dirty) at ([yshift=-19mm]clean.south west)
         {\panelimg{\fullw}{\figdir/dirty_grid.png}{mock Euclid (4 bands)}};
-    \node[lcap] at ([xshift=-6mm]dirty.west)
+    \node[lcap] at ([xshift=-4mm]dirty.west)
         {\capt{Mock Euclid}{ePSF convolution, rebin to 0.10$''$/pix, Poisson
          \& read noise, cosmic rays}};
 
     % ===== ROW 4: super-resolved image spans BOTH guides =====
-    \node[panel, anchor=north west] (sr) at ([yshift=-24mm]dirty.south west)
+    \node[panel, anchor=north west] (sr) at ([yshift=-16mm]dirty.south west)
         {\panelimg{\fullw}{\figdir/sr_field.png}{super-resolved}};
-    \node[lcap] at ([xshift=-6mm]sr.west)
+    \node[lcap] at ([xshift=-4mm]sr.west)
         {\capt{Super-resolved}{the network's deconvolved VIS sky at
          0.05$''$/pix}};
 
@@ -161,7 +166,7 @@
     \draw[flow] (cmap.south) -- (psf.north);                        % clusters -> PSF grid
     \draw[flow] (clean.south) -- (dirty.north);                     % clean -> dirty
     \draw[flow] (psf.south)   -- (dirty.north);                     % PSFs  -> dirty
-    \node[opl] at ([yshift=8mm]dirty.north) {$\circledast$ \,$+$\, noise};
+    \node[opl] at ([yshift=6mm]dirty.north) {$\circledast$ \,$+$\, noise};
     \draw[flow] (dirty.south) -- (sr.north) node[opl, midway] {POLISH\texttt{++} CNN};
   \end{tikzpicture}
   }
@@ -195,14 +200,12 @@
     radii in studies. Recent advances in super-resolution techniques offer a way
     to recover this missing population by improving the identification of strong
     gravitational lenses in \textbf{Euclid} surveys, the first wide-area
-    space-based optical survey. We build on \textbf{POLISH}
-    \parencite{Connor2022} and \textbf{POLISH++} \parencite{Wu2026} architectures,
-    originally developed for radio astronomy: they are deep convolutional neural
-    networks with a global residual connection. We adapt POLISH to increase the
-    resolution of Euclid images to the level of higher-quality \textbf{Hubble}
-    images, training on synthetic Euclid-like images built from simulated
-    galaxies paired with a high-resolution ground truth, and benchmarked against
-    Hubble imaging. Our
+    space-based optical survey. Building on \textbf{POLISH}
+    \parencite{Connor2022} and \textbf{POLISH++} \parencite{Wu2026}, originally
+    developed for radio astronomy, we increase the resolution of Euclid images
+    to the level of higher-quality \textbf{Hubble} images, training on synthetic
+    Euclid-like images built from simulated galaxies paired with a
+    high-resolution ground truth, and benchmarked against Hubble imaging. Our
     preliminary results show that, applied to real Euclid data, the model both
     super-resolves \emph{and} denoises, revealing structure that is blurred or
     buried in the originals --- a promising first step toward recovering the
@@ -215,45 +218,38 @@
     angular separation. When $\theta_E$ falls below the survey resolution the
     arcs blend into the lens light --- those systems are the ones that best
     constrain dark-matter halos, and the ones wide surveys miss.
-    \vspace{0.5em}
-    \figbox{8cm}{[ gravitational lens ]}
+    \begin{center}
+      \includegraphics[width=0.95\linewidth]{fig/poster/gravilensing.jpg}
+    \end{center}
   }
 
   \block{Model Architecture}{
-    \textbf{WDSR-A} (POLISH/POLISH++): a deep \textbf{CNN} with wide-activation
-    residual blocks, weight-normalised convolutions, a \textbf{global residual
-    skip}, and $\times2$ pixel-shuffle upsampling. Input $4$ bands
-    (VIS\,+\,Y/J/H), output a deconvolved VIS sky. No batch-norm; trained with an
-    asinh-stretched L1 loss.
+    \textbf{WDSR-A} (POLISH/POLISH++): a deep \textbf{CNN} with
+    \textbf{32 wide-activation residual blocks} ($\times6$ channel expansion),
+    \textbf{99 weight-normalised convolutions}, a \textbf{global residual
+    skip}, and $\times2$ pixel-shuffle upsampling ---
+    \textbf{599{,}328 trainable parameters}. Input $4$ bands
+    (VIS\,+\,Y/J/H) at $0.10''$/pix, output a deconvolved VIS sky at
+    $0.05''$/pix. No batch-norm; trained with an asinh-stretched L1 loss.
   }
 
-  \block{Significance \& Next Steps}{
-    \begin{itemize}
-      \item Applies cutting-edge computer-vision super-resolution to optical
-            astronomy --- not for precise photometry, but to flag lens
-            \emph{candidates} for follow-up.
-      \item Targets the underrepresented \textbf{small-$\theta_E$} population,
-            highly valuable for cosmology and galaxy evolution.
-      \item Deliverables: open-source simulation code, trained weights, an
-            end-to-end super-resolution pipeline, and a paper.
-    \end{itemize}
-  }
-
-  \block{Preliminary Results: Real Euclid Data}{
-    Applied to \textbf{real Euclid cutouts}, the model both
-    \textbf{super-resolves and denoises}, recovering structure that is blurred
-    or buried in the originals.
+  \block{Preliminary Results: Euclid vs.\ SR vs.\ Hubble}{
+    One real galaxy, three views: the \textbf{Euclid} input, our
+    \textbf{super-resolved} reconstruction, and the \textbf{Hubble} image of
+    the same target. The model both super-resolves and denoises, recovering
+    structure that is blurred or buried in the original.
     \vspace{0.5em}
     \begin{tikzfigure}
-      \begin{minipage}{0.47\linewidth}
-        \figbox{9cm}{[ Euclid input ]}
+      \begin{minipage}{0.32\linewidth}
+        \figbox{0.45\linewidth}{[ Euclid ]}
       \end{minipage}\hfill
-      \begin{minipage}{0.47\linewidth}
-        \figbox{9cm}{[ SR output ]}
+      \begin{minipage}{0.32\linewidth}
+        \figbox{0.45\linewidth}{[ SR (ours) ]}
+      \end{minipage}\hfill
+      \begin{minipage}{0.32\linewidth}
+        \figbox{0.45\linewidth}{[ Hubble ]}
       \end{minipage}
     \end{tikzfigure}
-    \vspace{0.3em}
-    Benchmarked against Hubble imaging of the same targets.
   }
 
 \end{columns}
