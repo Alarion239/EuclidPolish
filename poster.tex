@@ -213,14 +213,18 @@
   }
 
   \block{Background}{
-    A massive foreground galaxy bends the light of a background source into
-    arcs or multiple images; the \emph{Einstein radius} $\theta_E$ sets their
-    angular separation. When $\theta_E$ falls below the survey resolution the
-    arcs blend into the lens light --- those systems are the ones that best
-    constrain dark-matter halos, and the ones wide surveys miss.
-    \begin{center}
-      \includegraphics[width=0.95\linewidth]{fig/poster/gravilensing.jpg}
-    \end{center}
+    % Text and lens image side by side (plain minipages — a center
+    % environment inside a tikzposter block misplaces the image).
+    \begin{minipage}[c]{0.50\linewidth}
+      A massive foreground galaxy bends a background source's light into
+      arcs separated by the \emph{Einstein radius} $\theta_E$. Below the
+      survey resolution the arcs blend into the lens light --- the systems
+      that best constrain dark-matter halos are exactly the ones wide
+      surveys miss.
+    \end{minipage}\hfill
+    \begin{minipage}[c]{0.46\linewidth}
+      \includegraphics[width=\linewidth]{fig/poster/gravilensing.jpg}
+    \end{minipage}
   }
 
   \block{Model Architecture}{
