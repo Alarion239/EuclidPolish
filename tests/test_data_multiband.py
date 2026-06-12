@@ -58,12 +58,12 @@ def test_per_band_stretch_uses_correct_scales():
 
 def _write_test_records(tmp_path) -> str:
     rng = np.random.default_rng(0)
-    # Two records each: HR at 0.05" (64x64, 1ch), LR at 0.10" (32x32, 4ch).
+    # Two records each: HR at 0.05" (64x64, 4ch), LR at 0.10" (32x32, 4ch).
     hr_imgs = [
         MultiBandSkyImage(
-            data=(rng.normal(size=(64, 64, 1)) * 100.0).astype(np.float32),
+            data=(rng.normal(size=(64, 64, 4)) * 100.0).astype(np.float32),
             pixel_scale_arcsec=0.05,
-            band_names=("VIS",),
+            band_names=Config.HR_TARGET_BAND_NAMES,
             is_clean=True,
         )
         for _ in range(2)
@@ -89,7 +89,7 @@ def test_multiband_dataset_yields_correct_shapes(tmp_path):
     ).dataset(batch_size=2, random_transform=True, repeat_count=1)
     lr, hr = next(iter(ds))
     assert lr.shape == (2, 8, 8, 4)
-    assert hr.shape == (2, 16, 16, 1)
+    assert hr.shape == (2, 16, 16, 4)
 
 
 def test_multiband_dataset_without_augmentation(tmp_path):
@@ -100,12 +100,13 @@ def test_multiband_dataset_without_augmentation(tmp_path):
     lr, hr = next(iter(ds))
     # Full-size records (no crop)
     assert lr.shape == (1, 32, 32, 4)
-    assert hr.shape == (1, 64, 64, 1)
+    assert hr.shape == (1, 64, 64, 4)
 
 
 def test_vis_only_slices_lr_to_single_channel(tmp_path):
-    """``vis_only=True`` feeds 1 LR channel; HR target is unchanged, and the
-    one channel is exactly VIS (index 0) of the full 4-channel stretch."""
+    """``vis_only=True`` feeds 1 LR channel AND a 1-channel VIS HR target
+    (a VIS-only model has no NISP planes to predict); the retained channel
+    is exactly VIS (index 0) of the full 4-channel stretch."""
     rdir = _write_test_records(tmp_path)
     full = MultiBandEuclidDataset(
         subset="train", records_dir=rdir,
@@ -116,9 +117,11 @@ def test_vis_only_slices_lr_to_single_channel(tmp_path):
     lr4, hr4 = next(iter(full))
     lr1, hr1 = next(iter(vis))
     assert lr1.shape == (1, 32, 32, 1)        # VIS only
-    assert hr1.shape == (1, 64, 64, 1)        # HR target unchanged
+    assert hr1.shape == (1, 64, 64, 1)        # VIS-only HR target
     # The retained channel is VIS (channel 0), keeping its own asinh knee.
     np.testing.assert_allclose(lr1[..., 0].numpy(), lr4[..., 0].numpy(),
+                               rtol=0, atol=0)
+    np.testing.assert_allclose(hr1[..., 0].numpy(), hr4[..., 0].numpy(),
                                rtol=0, atol=0)
 
 
@@ -147,6 +150,28 @@ def _write_anchor_records(tmp_path, subset: str = "train") -> str:
     return str(tmp_path)
 
 
+def _write_hst_records(tmp_path, subset: str = "train") -> str:
+    """Write an HST-lane pair: 4-band dirty LR + 1-channel F814W HR (the
+    observed HST image — the experimental HST lane's record shape)."""
+    rng = np.random.default_rng(3)
+    hr_imgs = [
+        MultiBandSkyImage(
+            data=(rng.normal(size=(64, 64, 1)) * 100.0).astype(np.float32),
+            pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True)
+        for _ in range(2)
+    ]
+    lr_imgs = [
+        MultiBandSkyImage(
+            data=(rng.normal(size=(32, 32, 4)) * 100.0).astype(np.float32),
+            pixel_scale_arcsec=0.10,
+            band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False)
+        for _ in range(2)
+    ]
+    write_multiband_skyimages(hr_imgs, f"hr_{subset}", records_dir=str(tmp_path))
+    write_multiband_skyimages(lr_imgs, f"dirty_{subset}", records_dir=str(tmp_path))
+    return str(tmp_path)
+
+
 def test_dataset_default_is_2tuple(tmp_path):
     """``dataset()`` yields the pure-synthetic ``(lr, hr)`` 2-tuple — the
     pure-supervised path used by run_pipeline.py / cli / web inference and
@@ -159,7 +184,7 @@ def test_dataset_default_is_2tuple(tmp_path):
     assert len(batch) == 2
     lr, hr = batch
     assert lr.shape == (2, 8, 8, 4)
-    assert hr.shape == (2, 16, 16, 1)
+    assert hr.shape == (2, 16, 16, 4)
 
 
 def test_fixed_layout_syn_only_shapes(tmp_path):
@@ -171,7 +196,7 @@ def test_fixed_layout_syn_only_shapes(tmp_path):
     ).dataset_fixed_layout(2, 0, 0, random_transform=True)
     lr, hr = next(iter(ds))
     assert lr.shape == (2, 8, 8, 4)
-    assert hr.shape == (2, 16, 16, 1)
+    assert hr.shape == (2, 16, 16, 4)
 
 
 def test_fixed_layout_three_way_counts(tmp_path):
@@ -181,7 +206,7 @@ def test_fixed_layout_three_way_counts(tmp_path):
     rdir    = _write_test_records(tmp_path)
     hst_dir = tmp_path / "hst_records"
     hst_dir.mkdir()
-    _write_test_records(hst_dir)            # clean_train + dirty_train
+    _write_hst_records(hst_dir)             # 1-channel F814W HR + dirty
     anchor_dir = tmp_path / "anchor_records"
     anchor_dir.mkdir()
     _write_anchor_records(anchor_dir, subset="train")
@@ -196,12 +221,17 @@ def test_fixed_layout_three_way_counts(tmp_path):
     lr, hr = next(iter(ds))
     B = n_syn + n_hst + n_anchor
     assert lr.shape == (B, 8, 8, 4)
-    assert hr.shape == (B, 16, 16, 1)
+    assert hr.shape == (B, 16, 16, 4)
     # The star-anchor lane is the last n_anchor rows; its HR delta survives
     # the crop (records are sized so the centred star is always kept).
     anchor_hr = hr.numpy()[n_syn + n_hst:]
-    assert (anchor_hr > 0).any(), (
+    assert (anchor_hr[..., 0] > 0).any(), (
         "star-anchor HR delta was cropped out — the star pixel must survive"
+    )
+    # The anchor/HST lanes store 1-channel HR — the loader zero-pads the
+    # NISP planes, which must stay outside any ``target > 0`` mask.
+    assert (anchor_hr[..., 1:] == 0).all(), (
+        "zero-padded NISP planes of a 1-channel lane must stay zero"
     )
 
 
@@ -260,13 +290,50 @@ def test_wdsr_trainable_params_nonzero():
     assert n > 1000   # not a degenerate model
 
 
+def test_wdsr_4band_output_shape():
+    """The 4-band model maps a 4-channel LR stack to a 4-channel SR."""
+    model = wdsr(scale=2, nchan_in=4, nchan_out=4, num_res_blocks=2)
+    x = tf.zeros((1, 8, 8, 4), dtype=tf.float32)
+    y = model(x)
+    assert tuple(y.shape) == (1, 16, 16, 4)
+
+
+def test_wdsr_per_band_skip_isolates_bands():
+    """With the trunk's tail conv zeroed, the model output is the skip
+    branch alone — and the per-band skip must route input band k ONLY to
+    output band k (all cross-band paths go through the shared trunk)."""
+    model = wdsr(scale=2, nchan_in=4, nchan_out=4, num_res_blocks=2)
+    for layer in model.layers:
+        inner = getattr(layer, "layer", None)
+        if inner is not None and inner.name == "conv2d_main_scale_2":
+            layer.set_weights([np.zeros_like(w) for w in layer.get_weights()])
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(1, 8, 8, 4)).astype(np.float32)
+    y0 = model(x).numpy()
+    for k in range(4):
+        xk = x.copy()
+        xk[..., k] += 1.0
+        diff = np.abs(model(xk).numpy() - y0).reshape(-1, 4).max(axis=0)
+        assert diff[k] > 1e-7, f"band {k} skip carries no signal"
+        others = [diff[j] for j in range(4) if j != k]
+        assert max(others) < 1e-10, (
+            f"per-band skip leaked band {k} into other output bands: {diff}"
+        )
+
+
+def test_wdsr_per_band_skip_requires_symmetric_channels():
+    with pytest.raises(ValueError, match="per_band_skip"):
+        wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=2,
+             per_band_skip=True)
+
+
 def test_wdsr_runs_one_training_step(tmp_path):
     """A forward+backward pass updates trainable weights."""
     rdir = _write_test_records(tmp_path)
     ds = MultiBandEuclidDataset(
         subset="train", records_dir=rdir, scale=2, hr_patch_size=16,
     ).dataset(batch_size=2, repeat_count=1)
-    model = wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=2)
+    model = wdsr(scale=2, nchan_in=4, nchan_out=4, num_res_blocks=2)
     opt = tf.keras.optimizers.Adam(1e-3)
     loss_fn = tf.keras.losses.MeanAbsoluteError()
     lr, hr = next(iter(ds))

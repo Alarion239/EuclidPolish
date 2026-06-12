@@ -41,7 +41,8 @@ def forward():
 def test_process_returns_correct_shapes(forward: MultiBandForward, hr_field):
     lr, hr = forward.process(hr_field, rng=np.random.default_rng(0))
     assert lr.shape[-1] == 4
-    assert hr.shape[-1] == 1
+    # 4-band training: the HR target keeps every band.
+    assert hr.shape[-1] == 4
     # LR all bands on VIS grid (0.10″/pix); HR is 0.05″/pix.
     assert lr.pixel_scale_arcsec == pytest.approx(Config.BAND_VIS.pixel_scale_lr_arcsec)
     assert hr.pixel_scale_arcsec == pytest.approx(Config.DEFAULT_PIXEL_SCALE)
@@ -53,11 +54,11 @@ def test_process_returns_correct_shapes(forward: MultiBandForward, hr_field):
     assert lr.shape[1] == int(expected_lr_side)
 
 
-def test_hr_target_is_vis_only(forward: MultiBandForward, hr_field):
+def test_hr_target_keeps_all_bands_clean(forward: MultiBandForward, hr_field):
     _, hr = forward.process(hr_field, rng=np.random.default_rng(0))
-    assert hr.band_names == ("VIS",)
-    # Bit-identical to channel 0 of the HR input (no noise on HR target).
-    np.testing.assert_array_equal(hr.data[..., 0], hr_field.data[..., 0])
+    assert hr.band_names == Config.HR_TARGET_BAND_NAMES
+    # Bit-identical to the HR input (no noise on the clean target).
+    np.testing.assert_array_equal(hr.data, hr_field.data)
 
 
 def test_lr_band_names_in_canonical_order(forward: MultiBandForward, hr_field):

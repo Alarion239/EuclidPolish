@@ -5,10 +5,17 @@ Reads v2 TFRecords produced by the new pipeline:
 
   * ``dirty_{subset}.tfrecord`` — (H_lr, W_lr, 4) LR float32 electrons,
     band order :attr:`Config.LR_INPUT_BAND_NAMES`.
-  * ``hr_{subset}.tfrecord`` — (H_hr, W_hr, 1) HR float32 electrons,
-    VIS-only target written by the forward step.
-  * ``clean_{subset}.tfrecord`` — (H_hr, W_hr, 4) full 4-band HR clean
-    record kept for inspection only (not used by the loader).
+  * ``hr_{subset}.tfrecord`` / ``clean_{subset}.tfrecord`` —
+    (H_hr, W_hr, 4) HR float32 electrons, the clean 4-band target
+    (band order :attr:`Config.HR_TARGET_BAND_NAMES` = the LR order).
+    Records written before the 4-band-output change carry 1-channel
+    VIS-only HR and must be regenerated — the in-graph channel assert
+    fails loudly on them.
+
+The EXPERIMENTAL HST / star-anchor lane records keep a 1-channel HR side
+(the observed F814W image / the VIS delta-target); those lanes parse it
+as 1 channel and zero-pad to ``NUM_HR_CHANNELS`` so fixed-layout batches
+concatenate — the trainer compares only channel 0 (VIS) for them.
 
 Each channel is asinh-stretched with its own per-band knee from
 :attr:`BandConfig.asinh_stretch_scale_e` before the network sees it. The
@@ -48,9 +55,10 @@ _LR_STRETCH_SCALE_NP = np.array(
 )  # shape (4,)
 
 _HR_STRETCH_SCALE_NP = np.array(
-    [Config.get_band(Config.HR_TARGET_BAND_NAME).asinh_stretch_scale_e],
+    [Config.get_band(name).asinh_stretch_scale_e
+     for name in Config.HR_TARGET_BAND_NAMES],
     dtype=np.float32,
-)  # shape (1,)
+)  # shape (4,) — one knee per HR target band
 
 
 def _lr_stretch_scale() -> np.ndarray:
@@ -59,7 +67,14 @@ def _lr_stretch_scale() -> np.ndarray:
 
 
 def _hr_stretch_scale() -> np.ndarray:
-    """Length-1 scalar broadcasted against ``(B, H, W, 1)``."""
+    """Length-4 vector of asinh stretch scales, one per HR target band.
+
+    Broadcasting note: a stretched/unstretched tensor with FEWER trailing
+    channels (the 1-channel HST / star-anchor HR sides, or a VIS-only
+    slice) still works — numpy/TF broadcasting aligns trailing dims, so
+    ``(..., 1) / (4,)`` would NOT be valid; those callers slice the scale
+    via :func:`asinh_stretch_hr`'s ``num_channels`` argument instead.
+    """
     return _HR_STRETCH_SCALE_NP
 
 
@@ -68,9 +83,28 @@ def asinh_stretch_lr(x: tf.Tensor) -> tf.Tensor:
     return tf.asinh(x / _lr_stretch_scale())
 
 
-def asinh_stretch_hr(x: tf.Tensor) -> tf.Tensor:
-    """asinh(x / k) for the VIS-only HR target; ``x`` has shape ``(..., 1)``."""
-    return tf.asinh(x / _hr_stretch_scale())
+def _hr_scale_for(x: tf.Tensor, num_channels: "int | None") -> np.ndarray:
+    """The per-band knee vector sliced to ``x``'s channel count.
+
+    The leading HR bands are ``(VIS, Y_E, J_E, H_E)``, so a C-channel
+    tensor (C ≤ 4) always means "the first C bands": full 4-band targets,
+    the 1-channel HST / star-anchor HR sides, and VIS-only slices all
+    resolve correctly. Slicing (instead of relying on broadcasting) is
+    load-bearing — broadcasting ``(..., 1)`` against the length-4 vector
+    would silently widen the tensor to 4 channels.
+    """
+    n = num_channels if num_channels is not None else x.shape[-1]
+    k = _hr_stretch_scale()
+    return k[:int(n)] if n is not None else k
+
+
+def asinh_stretch_hr(x: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
+    """asinh(x / k) per HR band; ``x`` has shape ``(..., C)``, C ≤ 4.
+
+    The knee count follows ``x``'s static channel dim (or an explicit
+    ``num_channels`` when that dim is dynamic).
+    """
+    return tf.asinh(x / _hr_scale_for(x, num_channels))
 
 
 def inverse_asinh_stretch_lr(y: tf.Tensor) -> tf.Tensor:
@@ -78,9 +112,9 @@ def inverse_asinh_stretch_lr(y: tf.Tensor) -> tf.Tensor:
     return tf.sinh(y) * _lr_stretch_scale()
 
 
-def inverse_asinh_stretch_hr(y: tf.Tensor) -> tf.Tensor:
-    """Inverse of :func:`asinh_stretch_hr` (VIS only)."""
-    return tf.sinh(y) * _hr_stretch_scale()
+def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
+    """Inverse of :func:`asinh_stretch_hr` (per-band)."""
+    return tf.sinh(y) * _hr_scale_for(y, num_channels)
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +123,7 @@ def inverse_asinh_stretch_hr(y: tf.Tensor) -> tf.Tensor:
 
 
 class MultiBandEuclidDataset:
-    """Reads paired v2 (clean HR-VIS, dirty LR-4channel) records.
+    """Reads paired v2 (clean 4-band HR, dirty 4-band LR) records.
 
     Up to three data sources feed training. :meth:`dataset` streams the
     primary synthetic source alone as ``(lr, hr)`` 2-tuples (the
@@ -240,11 +274,21 @@ class MultiBandEuclidDataset:
     def _build_single_source(
         self, dirty_file: str, clean_file: str,
         *, random_transform: bool, repeat_count: Optional[int],
-        cache: bool,
+        cache: bool, hr_channels: Optional[int] = None,
     ) -> tf.data.Dataset:
-        """One (dirty, clean) → (lr, hr) tf.data pipeline, pre-batch."""
+        """One (dirty, clean) → (lr, hr) tf.data pipeline, pre-batch.
+
+        ``hr_channels`` is how many channels the HR record stores —
+        default the full :attr:`Config.NUM_HR_CHANNELS` (synthetic 4-band
+        target). The EXPERIMENTAL HST / star-anchor lanes pass ``1``
+        (observed F814W image / VIS delta-target); their HR side is
+        zero-padded back to ``NUM_HR_CHANNELS`` so fixed-layout batches
+        concatenate across lanes — the trainer only compares channel 0
+        (VIS) for those lanes, so the padding never carries gradient.
+        """
         n_lr = Config.NUM_LR_CHANNELS
-        n_hr = Config.NUM_HR_CHANNELS
+        n_hr_total = Config.NUM_HR_CHANNELS
+        n_hr = int(hr_channels) if hr_channels is not None else n_hr_total
         vis_only = self.vis_only
 
         def _parse_lr(raw):
@@ -255,7 +299,19 @@ class MultiBandEuclidDataset:
             return lr[..., :1] if vis_only else lr
 
         def _parse_hr(raw):
-            return asinh_stretch_hr(parse_record_graph_v2(raw, n_hr))
+            hr = asinh_stretch_hr(parse_record_graph_v2(raw, n_hr),
+                                  num_channels=n_hr)
+            if vis_only:
+                # VIS-only model: 1-channel target (channel 0 = VIS).
+                return hr[..., :1]
+            if n_hr < n_hr_total:
+                # EXPERIMENTAL lane record with a 1-channel HR side —
+                # zero-pad (asinh(0) = 0) up to the full band count.
+                pad = tf.zeros(tf.concat(
+                    [tf.shape(hr)[:-1], [n_hr_total - n_hr]], axis=0),
+                    dtype=hr.dtype)
+                return tf.concat([hr, pad], axis=-1)
+            return hr
 
         dirty_ds = tf.data.TFRecordDataset(dirty_file).map(
             _parse_lr, num_parallel_calls=AUTOTUNE,
@@ -306,7 +362,8 @@ class MultiBandEuclidDataset:
         without star-anchor records) is an error — unlike the lenient
         single-source fallback, a fixed layout must get what it asks for.
         Yields ``(lr, hr)`` 2-tuples with ``lr`` ``[B, h, w, 4]`` and
-        ``hr`` ``[B, H, W, 1]`` where ``B = n_syn + n_hst + n_anchor``.
+        ``hr`` ``[B, H, W, 4]`` where ``B = n_syn + n_hst + n_anchor``
+        (the experimental lanes' 1-channel HR sides are zero-padded).
         """
         lanes: list = []
         if n_syn > 0:
@@ -322,10 +379,12 @@ class MultiBandEuclidDataset:
                     "dataset_fixed_layout: n_hst > 0 but no HST records are "
                     "configured (pass hst_records_dir and hst_fraction > 0)"
                 )
+            # EXPERIMENTAL lane: the HST HR side is the 1-channel observed
+            # F814W image (zero-padded to the full band count in-graph).
             hst = self._build_single_source(
                 self.hst_dirty_file, self.hst_clean_file,
                 random_transform=random_transform, repeat_count=repeat_count,
-                cache=True,
+                cache=True, hr_channels=1,
             )
             lanes.append(hst.batch(n_hst, drop_remainder=True))
         if n_anchor > 0:
@@ -334,10 +393,13 @@ class MultiBandEuclidDataset:
                     "dataset_fixed_layout: n_anchor > 0 but no star-anchor "
                     "records are configured (pass anchor_records_dir)"
                 )
+            # EXPERIMENTAL lane: the anchor HR side is the 1-channel VIS
+            # delta-target (zero-padded to the full band count in-graph;
+            # the pad stays outside the trainer's ``target > 0`` mask).
             anc = self._build_single_source(
                 self.anchor_dirty_file, self.anchor_clean_file,
                 random_transform=random_transform, repeat_count=repeat_count,
-                cache=True,
+                cache=True, hr_channels=1,
             )
             lanes.append(anc.batch(n_anchor, drop_remainder=True))
 
@@ -361,6 +423,7 @@ class MultiBandEuclidDataset:
         batch_size: int = Config.DEFAULT_BATCH_SIZE,
         random_transform: bool = True,
         repeat_count: Optional[int] = None,
+        hr_channels: Optional[int] = None,
     ) -> tf.data.Dataset:
         """Build the single-source streaming ``tf.data.Dataset``.
 
@@ -371,11 +434,15 @@ class MultiBandEuclidDataset:
         :meth:`dataset_fixed_layout`, which lays the sources out in fixed
         contiguous blocks for :meth:`Trainer.train_step_sky` instead of
         randomly interleaving them.
+
+        ``hr_channels`` — channel count stored in the HR record; pass 1
+        when pointing this at the EXPERIMENTAL HST records (their HR is
+        the 1-channel observed F814W image, zero-padded in-graph).
         """
         primary = self._build_single_source(
             self.dirty_file, self.clean_file,
             random_transform=random_transform, repeat_count=repeat_count,
-            cache=True,
+            cache=True, hr_channels=hr_channels,
         )
         return primary.batch(batch_size).prefetch(AUTOTUNE)
 
@@ -398,7 +465,7 @@ class MultiBandEuclidDataset:
         ds = self._build_single_source(
             self.anchor_dirty_file, self.anchor_clean_file,
             random_transform=random_transform, repeat_count=repeat_count,
-            cache=False,
+            cache=False, hr_channels=1,
         )
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 

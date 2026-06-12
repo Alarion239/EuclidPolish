@@ -326,13 +326,17 @@ class Config:
         detector_pixel_um       = 18.0,
     )
 
-    # Canonical band ordering for the 4-channel network input
-    # (HR target uses only BAND_VIS; LR input uses all four in this order).
+    # Canonical band ordering for the 4-channel network input AND the
+    # 4-channel HR target (same bands, same order: the model maps the
+    # VIS+NISP LR stack to the deconvolved VIS+NISP sky, band k → band k).
     BANDS = (BAND_VIS, BAND_Y_E, BAND_J_E, BAND_H_E)
     LR_INPUT_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
+    HR_TARGET_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
+    # The single "primary" HR band: channel 0 (VIS). Still the band the
+    # star-anchor delta-targets, the HST lane, and the VIS-only model use.
     HR_TARGET_BAND_NAME = "VIS"
     NUM_LR_CHANNELS = 4
-    NUM_HR_CHANNELS = 1
+    NUM_HR_CHANNELS = 4
 
     # Per-channel cross-band tuning knobs for COSMOS2025-derived bandpasses
     # used as Euclid proxies (UVISTA Y/J/H ≈ NISP Y_E/J_E/H_E, HST F814W ≈ VIS).

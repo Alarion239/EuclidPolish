@@ -8,7 +8,7 @@ Mirrors the three CLI menu steps but drives them sequentially without prompts:
     2. Run the per-band forward model HR → LR (PSF convolution + noise + NISP
        upsample to VIS LR grid). Saved as ``dirty_{train,validate}.tfrecord``,
        4-channel LR at 0.10″/pix.
-    3. Train WDSR (4-channel input, 1-channel VIS HR target).
+    3. Train WDSR (4-channel input, 4-channel VIS+NISP HR target).
 
 Any step can be skipped via ``--skip-{generate,convolve,train}``.
 
@@ -506,7 +506,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: train WDSR (4-channel in, 1-channel out)
+# Step 3: train WDSR (4-channel in, 4-channel out)
 # ---------------------------------------------------------------------------
 
 def step_train(args: argparse.Namespace) -> None:

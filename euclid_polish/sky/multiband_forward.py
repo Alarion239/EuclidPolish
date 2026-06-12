@@ -1,5 +1,5 @@
 """
-Multi-band forward model: HR clean (4 channels) → LR dirty (4 channels) + HR-VIS target.
+Multi-band forward model: HR clean (4 channels) → LR dirty (4 channels) + HR clean target (4 channels).
 
 All four bands are delivered by the Euclid MER archive on a common 0.10″/pix
 grid, so every band is modelled the same way (there is no native-0.30″ NISP
@@ -18,14 +18,16 @@ under the current uniform-0.10″ band configuration (its factor evaluates to 1)
 it would only re-activate if a band's LR pixel scale were restored to 0.30″.
 Bright-star saturation is then applied to the assembled dirty LR stack.
 
-The HR clean target stays VIS-only (the simulator already produces all four
-channels at HR, but only channel 0 is kept as the network's target).
+The HR clean target keeps **all four channels** (4-band training: the model
+super-resolves VIS and the NISP bands jointly; band k of the target is band k
+of the LR input). Historically only channel 0 (VIS) was kept — records written
+before the 4-band change carry 1-channel HR and must be regenerated.
 
 The output of :meth:`MultiBandForward.process_hr_to_lr` is a pair of
 ``MultiBandSkyImage`` objects:
 
   * ``lr``  : (H_lr, W_lr, 4), pixel scale 0.10″, dirty (Poisson+read), e⁻
-  * ``hr``  : (H_hr, W_hr, 1), pixel scale 0.05″, clean (VIS only), e⁻
+  * ``hr``  : (H_hr, W_hr, 4), pixel scale 0.05″, clean (all bands), e⁻
 """
 
 from __future__ import annotations
@@ -285,8 +287,8 @@ class MultiBandForward:
         -------
         lr_4ch : :class:`MultiBandSkyImage` shape (H_lr, W_lr, 4) at 0.10″/pix,
                  e⁻ (can be negative after sky subtraction).
-        hr_1ch : :class:`MultiBandSkyImage` shape (H, W, 1) at 0.05″/pix, e⁻,
-                 VIS only (network HR target).
+        hr_4ch_out : :class:`MultiBandSkyImage` shape (H, W, 4) at 0.05″/pix,
+                 e⁻, clean (no noise) — the network's 4-band HR target.
         """
         if abs(hr_4ch.pixel_scale_arcsec - self.config.hr_pixel_scale) > 1e-4:
             raise ValueError(
@@ -349,9 +351,10 @@ class MultiBandForward:
                     hr_to_lr_scale=hr_to_lr,
                     band_names=Config.LR_INPUT_BAND_NAMES)
 
-        # HR target: VIS only (clean, no noise applied), trimmed to the same
-        # spatial extent the LR pipeline saw.
-        hr_vis = hr_data_trim[..., 0:1].astype(np.float32, copy=True)
+        # HR target: ALL four bands (clean, no noise applied), trimmed to the
+        # same spatial extent the LR pipeline saw. Band k of the target is
+        # band k of the LR input — the model super-resolves VIS+NISP jointly.
+        hr_clean = hr_data_trim.astype(np.float32, copy=True)
 
         lr_img = MultiBandSkyImage(
             data=lr_stack,
@@ -362,9 +365,9 @@ class MultiBandForward:
             subset=hr_4ch.subset,
         )
         hr_img = MultiBandSkyImage(
-            data=hr_vis,
+            data=hr_clean,
             pixel_scale_arcsec=hr_4ch.pixel_scale_arcsec,
-            band_names=(Config.HR_TARGET_BAND_NAME,),
+            band_names=Config.HR_TARGET_BAND_NAMES,
             is_clean=True,
             index=hr_4ch.index,
             subset=hr_4ch.subset,

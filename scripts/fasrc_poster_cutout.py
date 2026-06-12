@@ -76,6 +76,7 @@ from euclid_polish.sky.multiband_generator import (
 )
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.tng.properties import _fig_to_png
+from euclid_polish.visualization.color import calibrated_rgb_panel
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
     reconstruct,
@@ -325,7 +326,9 @@ def forward_and_reconstruct(
     The same forward model and inference path the training pipeline uses
     (per-band ePSF convolution, sum-rebin to 0.10″, Poisson/read noise and
     artifacts; then the latest checkpoint in ``ckpt_dir``). Returns
-    ``(dirty_lr_4ch, sr_vis_hr, checkpoint_name)``.
+    ``(dirty_lr_4ch, sr_hr, checkpoint_name)`` — ``sr_hr`` is the 4-band
+    SR cube for a VIS+NISP-output checkpoint, or the 2-D VIS plane for a
+    legacy single-output one.
     """
     psf_sets = load_all_band_psf_sets(
         psf_dir=psf_dir, require_empirical=False,
@@ -376,7 +379,21 @@ def append_field_companions(
         hdu.header["PIXSCALE"] = (0.10, "arcsec/pixel (LR archive grid)")
         hdu.header["BUNIT"] = ("electron", "noisy LR flux over the stack")
         hdul.append(hdu)
-    sp = fits.ImageHDU(data=np.asarray(sr, dtype=np.float32), name="SR")
+    sr = np.asarray(sr, dtype=np.float32)
+    if sr.ndim == 3:
+        # 4-band SR cube → one SR_<band> extension per band, mirroring
+        # the DIRTY_<band> convention.
+        for k, name in enumerate(BAND_NAMES):
+            sp = fits.ImageHDU(data=np.ascontiguousarray(sr[..., k]),
+                               name=f"SR_{name}")
+            sp.header["BAND"] = (name, "Euclid band")
+            sp.header["PIXSCALE"] = (float(Config.DEFAULT_PIXEL_SCALE),
+                                     "arcsec/pixel (HR grid)")
+            sp.header["CKPT"] = (ckpt_name, "checkpoint used for the reconstruction")
+            sp.header["BUNIT"] = ("electron", "super-resolved sky")
+            hdul.append(sp)
+        return
+    sp = fits.ImageHDU(data=sr, name="SR")
     sp.header["PIXSCALE"] = (float(Config.DEFAULT_PIXEL_SCALE),
                              "arcsec/pixel (HR grid)")
     sp.header["CKPT"] = (ckpt_name, "checkpoint used for the reconstruction")
@@ -388,13 +405,30 @@ def render_field_preview_png(
     clean: np.ndarray, dirty: np.ndarray, sr: np.ndarray,
     *, seed: int, source_meta: dict,
 ) -> bytes:
-    """Field mode preview: clean VIS | mock-Euclid VIS | super-resolved."""
-    panels = (("clean VIS (0.05″/pix)", clean[..., 0]),
+    """Field mode preview: clean VIS | mock-Euclid VIS | super-resolved.
+
+    A 4-band SR cube gets two panels — the VIS plane plus a solar-balanced
+    color composite (the model emits all bands now, so SR has color).
+    """
+    sr = np.asarray(sr, dtype=np.float32)
+    sr_cube = sr if sr.ndim == 3 else None
+    sr_vis  = sr[..., 0] if sr_cube is not None else sr
+    panels = [("clean VIS (0.05″/pix)", clean[..., 0]),
               ("mock Euclid VIS (0.10″/pix)", dirty[..., 0]),
-              ("super-resolved (0.05″/pix)", sr))
-    fig, axes = plt.subplots(1, 3, figsize=(3 * 3.0, 3.3))
-    for ax, (title, im) in zip(axes, panels):
-        ax.imshow(_grayscale_norm(im), origin="lower", cmap="gray")
+              ("super-resolved VIS (0.05″/pix)", sr_vis)]
+    if sr_cube is not None:
+        panels.append(("super-resolved color (4-band)", None))
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(n * 3.0, 3.3))
+    for ax, (title, im) in zip(np.atleast_1d(axes), panels):
+        if im is None:
+            rgb = calibrated_rgb_panel(
+                sr_cube, band_names=BAND_NAMES,
+                scheme="vis_nisp", reference="solar", stretch="asinh",
+                asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e))
+            ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower")
+        else:
+            ax.imshow(_grayscale_norm(im), origin="lower", cmap="gray")
         ax.set_title(title, fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
     fig.suptitle(

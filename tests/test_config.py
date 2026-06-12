@@ -53,7 +53,10 @@ def test_native_detector_scale_vis_vs_nisp():
 
 def test_channel_counts():
     assert Config.NUM_LR_CHANNELS == 4
-    assert Config.NUM_HR_CHANNELS == 1
+    # 4-band training: the HR target carries every band (VIS + NISP),
+    # in the same order as the LR input (band k -> band k).
+    assert Config.NUM_HR_CHANNELS == 4
+    assert Config.HR_TARGET_BAND_NAMES == Config.LR_INPUT_BAND_NAMES
     assert Config.HR_TARGET_BAND_NAME == "VIS"
 
 

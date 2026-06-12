@@ -45,7 +45,7 @@ def test_full_pipeline_round_trip(tmp_path):
 
     records_dir = str(tmp_path)
 
-    # 2. Run forward model (HR 4-ch → LR 4-ch + HR-VIS target).
+    # 2. Run forward model (HR 4-ch → LR 4-ch + HR 4-ch clean target).
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")
     fwd = MultiBandForward(psfs_by_band=psfs,
                            config=MultiBandForwardConfig(add_noise=True))
@@ -66,7 +66,7 @@ def test_full_pipeline_round_trip(tmp_path):
         subset="train", records_dir=records_dir, scale=2, hr_patch_size=16,
     ).dataset(batch_size=2, random_transform=True, repeat_count=1)
 
-    # 5. Train one step on WDSR (4-channel in, 1-channel out).
+    # 5. Train one step on WDSR (4-channel in, 4-channel out).
     model = wdsr(scale=2, num_res_blocks=2,
                  nchan_in=Config.NUM_LR_CHANNELS,
                  nchan_out=Config.NUM_HR_CHANNELS)
@@ -75,7 +75,7 @@ def test_full_pipeline_round_trip(tmp_path):
 
     lr, hr = next(iter(ds))
     assert lr.shape == (2, 8, 8, 4)
-    assert hr.shape == (2, 16, 16, 1)
+    assert hr.shape == (2, 16, 16, 4)
 
     before = [v.numpy().copy() for v in model.trainable_variables[:3]]
     with tf.GradientTape() as tape:

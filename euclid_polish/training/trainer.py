@@ -847,17 +847,22 @@ class Trainer:
         slices below are static Python ints (no per-step ``tf.gather``, no
         retracing): ``[0:n_syn]`` synthetic, then ``n_hst`` HST, then
         ``n_anchor`` star-anchor. Each lane supervises the single sky
-        estimate ``SR``:
+        estimate ``SR`` (4-band since the VIS+NISP-output change):
 
           * synthetic — ``|SR − scene|`` (direct; LR was E⊛scene, so the
-            clean target *is* the sky).
-          * HST       — ``|asinh(H ⊛ SR_lin) − HST_image|`` (no rebin;
-            HST shares SR's 0.05″ grid).
+            clean 4-band target *is* the sky). Supervises every band.
+          * HST       — ``|asinh(H ⊛ SR_VIS) − HST_image|`` (no rebin;
+            HST shares SR's 0.05″ grid). F814W is a VIS analogue only,
+            so this lane supervises SR's channel 0 (VIS) alone — the
+            loader zero-pads the 1-channel HST target and the slice
+            below compares just that channel.
           * star-anchor — masked ``|SR − delta_target|``, evaluated ONLY at
             the star pixels (``delta_target > 0``). The target is a sparse
-            HR image: catalog VIS flux at the star, zero elsewhere.
-            Operator-free — no PSF — so it cannot be poisoned by PSF
-            mismatch; it pins real stars to points of known flux.
+            HR image: catalog VIS flux at the star, zero elsewhere (the
+            zero-padded NISP planes stay outside the mask, so this lane
+            too touches only the VIS channel). Operator-free — no PSF —
+            so it cannot be poisoned by PSF mismatch; it pins real stars
+            to points of known flux.
 
         All comparisons are in asinh space (the stretch the records and
         the model output already use); the HST conv runs in linear space
@@ -898,8 +903,12 @@ class Trainer:
                 i += n_syn
             if n_hst > 0:
                 s = slice(i, i + n_hst)
-                hconv = asinh_stretch_hr(self.hst_forward_op(sr_lin[s]))
-                d = tf.reduce_mean(tf.abs(hconv - hr[s]), axis=[1, 2, 3])
+                # F814W ≈ VIS only: forward-model SR's VIS channel and
+                # compare against the (zero-padded) target's channel 0.
+                hconv = asinh_stretch_hr(
+                    self.hst_forward_op(sr_lin[s][..., :1]))
+                d = tf.reduce_mean(tf.abs(hconv - hr[s][..., :1]),
+                                   axis=[1, 2, 3])
                 per_example.append(self.hst_loss_weight * d)
                 hst_loss = tf.reduce_mean(d)
                 i += n_hst
@@ -1027,15 +1036,19 @@ class Trainer:
         max_raw = tf.constant(float(Config.PSNR_PEAK_E), dtype=tf.float32)
         for lr, hr in hst_dataset:
             sr        = self.checkpoint.model(lr, training=False)
-            sr_lin    = inverse_asinh_stretch_hr(sr)
+            # F814W ≈ VIS only — score SR's channel 0 against the
+            # (possibly zero-padded) HST target's channel 0.
+            sr_vis    = sr[..., :1]
+            hr_vis    = hr[..., :1]
+            sr_lin    = inverse_asinh_stretch_hr(sr_vis)
             hconv_lin = self.hst_forward_op(sr_lin)
             hconv_str = asinh_stretch_hr(hconv_lin)
             str_mean(tf.reduce_mean(
-                tf.image.psnr(hr, hconv_str, max_val=max_str)))
+                tf.image.psnr(hr_vis, hconv_str, max_val=max_str)))
             # Validation MAE in asinh space, on the SAME forward-consistent
             # quantity the HST lane optimises (H⊛SR vs observed HST).
-            mae_mean(tf.reduce_mean(tf.abs(hr - hconv_str)))
-            hr_lin = inverse_asinh_stretch_hr(hr)
+            mae_mean(tf.reduce_mean(tf.abs(hr_vis - hconv_str)))
+            hr_lin = inverse_asinh_stretch_hr(hr_vis)
             raw_mean(tf.reduce_mean(
                 tf.image.psnr(hr_lin, hconv_lin, max_val=max_raw)))
         return {"psnr_stretched": str_mean.result(),

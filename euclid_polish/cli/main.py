@@ -854,7 +854,7 @@ class InteractiveCLI:
                 self._convolve_hr_to_lr()
 
     def _convolve_hr_to_lr(self):
-        """Apply the multi-band forward model: HR 4-channel → LR 4-channel + HR-VIS target."""
+        """Apply the multi-band forward model: HR 4-channel → LR 4-channel + HR 4-channel clean target."""
         psf_dir = input(
             f"PSF directory (default {Config.EUCLID_PSF_DIR}): "
         ).strip() or Config.EUCLID_PSF_DIR
@@ -901,7 +901,7 @@ class InteractiveCLI:
         total = sum(n for _, _, n in subsets_to_run)
         print(f"  Noise: per-band Poisson + Gaussian read for VIS / Y_E / J_E / H_E")
         print(f"  NISP→VIS-LR resample: {Config.NISP_RESAMPLE_KERNEL}")
-        print(f"  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS,) @ 0.05\"/pix")
+        print(f"  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS, Y_E, J_E, H_E) @ 0.05\"/pix")
 
         if not confirm(f"\nRun forward model on {total} images?", default=True).ask():
             return
@@ -938,7 +938,7 @@ class InteractiveCLI:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → "
-                  f"clean_{subset}.tfrecord (HR-VIS) + dirty_{subset}.tfrecord (LR 4-ch)")
+                  f"clean_{subset}.tfrecord (HR 4-ch) + dirty_{subset}.tfrecord (LR 4-ch)")
 
     def _generate_clean_data(self):
         """Generate 4-band clean HR sky data using the COSMOS2025 catalog."""
@@ -1054,7 +1054,7 @@ class InteractiveCLI:
                 self._plot_training_log()
 
     def _train_model(self):
-        """Train WDSR model on multi-band (4-channel LR → 1-channel VIS HR) data."""
+        """Train WDSR model on multi-band (4-channel LR → 4-channel VIS+NISP HR) data."""
         scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
         num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
         checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR

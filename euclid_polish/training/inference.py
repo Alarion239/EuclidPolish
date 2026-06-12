@@ -56,18 +56,22 @@ def scaled_wcs_header(vis_header, scale: int):
     return hdr
 
 
-def infer_checkpoint_nchan_in(checkpoint_dir: str) -> Optional[int]:
+def infer_checkpoint_nchan_in(
+    checkpoint_dir: str, skip_kernel_size: int = 5,
+) -> Optional[int]:
     """Number of LR input channels a saved checkpoint's model expects, or None.
 
     The checkpoint *is* the source of truth for the architecture — a VIS-only
     run saves a 1-channel WDSR (``ckpt/wdsr-vis``), a normal run a 4-channel
-    one (``ckpt/wdsr``). We read it straight from the stored weight shapes so
-    every consumer loads the right model without needing to know about the
-    ``-vis`` naming convention: the input convolutions are the only kernels
-    whose in-channel dim is the LR channel count (1 or 4); every body kernel
-    is ``num_filters`` (32) wide, so the minimum in-channel dim over all 4-D
-    conv kernels is exactly ``nchan_in``. Returns None if no checkpoint or the
-    shapes can't be read (caller falls back to its explicit value)."""
+    one (``ckpt/wdsr``). We read it straight from the stored weight shapes:
+    excluding the ``skip_kernel_size``-sided skip-branch kernels (the 4-band
+    model's PER-BAND skip convs have in-dim 1 regardless of ``nchan_in``, so
+    they would poison a min over everything), the input conv is the only
+    kernel whose in-channel dim is the LR channel count (1 or 4); every body
+    kernel is ``num_filters`` (32) wide or wider, so the minimum in-channel
+    dim over the remaining 4-D conv kernels is exactly ``nchan_in``.
+    Returns None if no checkpoint or the shapes can't be read (caller falls
+    back to its explicit value)."""
     latest = tf.train.latest_checkpoint(checkpoint_dir)
     if latest is None:
         return None
@@ -76,8 +80,50 @@ def infer_checkpoint_nchan_in(checkpoint_dir: str) -> Optional[int]:
         shapes = reader.get_variable_to_shape_map()
     except Exception:    # pragma: no cover — unreadable ckpt → caller default
         return None
-    in_dims = [shp[2] for shp in shapes.values() if len(shp) == 4]
+    in_dims = [shp[2] for shp in shapes.values()
+               if len(shp) == 4
+               and not (shp[0] == skip_kernel_size
+                        and shp[1] == skip_kernel_size)]
     return int(min(in_dims)) if in_dims else None
+
+
+def infer_checkpoint_nchan_out(
+    checkpoint_dir: str, scale: int, nchan_in: int,
+    skip_kernel_size: int = 5,
+) -> Optional[int]:
+    """Number of SR output channels a saved checkpoint's model emits, or None.
+
+    Discriminates via the skip-branch conv kernels — the only
+    ``skip_kernel_size``-sided (default 5×5) kernels in the model:
+
+      * dense (legacy) skip — ONE kernel ``(5, 5, nchan_in, nchan_out·scale²)``
+        → ``nchan_out = out_dim / scale²``. Covers the historical
+        4-in/1-out checkpoints and every VIS-only (1→1) model.
+      * per-band skip (the 4-band model) — per-band kernels
+        ``(5, 5, 1, scale²)`` with ``nchan_in > 1`` → ``nchan_out = nchan_in``.
+
+    Returns None if no checkpoint / unreadable / no 5×5 kernel found
+    (caller falls back to its default).
+    """
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        shapes = reader.get_variable_to_shape_map()
+    except Exception:    # pragma: no cover — unreadable ckpt → caller default
+        return None
+    skip_kernels = {
+        tuple(shp) for shp in shapes.values()
+        if len(shp) == 4 and shp[0] == skip_kernel_size
+        and shp[1] == skip_kernel_size
+    }
+    for shp in skip_kernels:
+        if shp[2] == nchan_in:                 # dense skip (legacy / 1-ch)
+            return int(shp[3] // scale ** 2)
+    if any(shp[2] == 1 for shp in skip_kernels):
+        return int(nchan_in)                   # per-band skip: out == in
+    return None
 
 
 def load_model_from_checkpoint(
@@ -109,9 +155,23 @@ def load_model_from_checkpoint(
         nchan_in = ckpt_nchan_in
     if nchan_in is None:
         nchan_in = 1
+
+    # Output channels likewise come from the checkpoint: a 4-band
+    # (VIS+NISP → VIS+NISP, per-band skip) model and a legacy 4-in/1-out
+    # or VIS-only model all load with no caller changes. The skip-branch
+    # structure differs between the two (per-band vs dense), so building
+    # the wrong one would mis-restore — the checkpoint wins over any
+    # explicitly passed value.
+    ckpt_nchan_out = infer_checkpoint_nchan_out(
+        checkpoint_dir, scale=scale, nchan_in=nchan_in)
+    if ckpt_nchan_out is not None:
+        if nchan_out is not None and nchan_out != ckpt_nchan_out:
+            print(f"  note: checkpoint has nchan_out={ckpt_nchan_out} "
+                  f"(requested {nchan_out}); using the checkpoint's.")
+        nchan_out = ckpt_nchan_out
     if nchan_out is None:
-        # SR target is always VIS-only; never tie it to the LR channel count.
-        nchan_out = Config.NUM_HR_CHANNELS
+        # New-style default: band k in → band k out.
+        nchan_out = nchan_in
 
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
@@ -122,7 +182,8 @@ def load_model_from_checkpoint(
     if latest is None:
         raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
     checkpoint.restore(latest).expect_partial()
-    print(f"Model restored from checkpoint at {latest} (nchan_in={nchan_in}).")
+    print(f"Model restored from checkpoint at {latest} "
+          f"(nchan_in={nchan_in}, nchan_out={nchan_out}).")
     return model
 
 
@@ -180,9 +241,12 @@ def reconstruct(
     Returns
     -------
     lr_data : ndarray, shape (H, W)
-        The input LR image (2-D, raw electrons).
-    sr_data : ndarray, shape (H', W')
-        The super-resolved output (2-D, raw electrons).
+        The input LR image (2-D VIS plane, raw electrons).
+    sr_data : ndarray, shape (H', W') or (H', W', C)
+        The super-resolved output in raw electrons. 2-D for a
+        single-output (VIS-only / legacy) model; a (H', W', 4) cube for
+        the 4-band VIS+NISP model — channel 0 is VIS, so legacy callers
+        can take ``sr[..., 0]`` (or pass the cube on for color panels).
     """
     if isinstance(lr_input, str):
         if lr_input.endswith(".npy"):
@@ -236,8 +300,9 @@ def reconstruct(
     sr_stretched = resolve_single(model, tf.constant(lr_stretched)).numpy().astype(np.float32)
     sr_stretched = np.clip(sr_stretched, -20.0, 20.0)
     sr_data = (np.sinh(sr_stretched.astype(np.float64)) * scale_e).astype(np.float32)
-    # SR is always single-channel per the model spec (nchan_out=1); squeeze
-    # the channel axis for the 2-D visualizers downstream.
+    # Single-output models: squeeze the channel axis for the 2-D
+    # visualizers downstream. The 4-band model keeps its (H, W, 4) cube —
+    # callers slice channel 0 for VIS or feed the cube to color panels.
     if sr_data.ndim == 3 and sr_data.shape[-1] == 1:
         sr_data = sr_data[..., 0]
     # LR returned for display: if the caller passed a multi-channel cube,
@@ -388,9 +453,11 @@ def plot_reconstruction(
 
     Color composites: pass ``lr_cube`` and/or ``hr_cube`` to render a
     Lupton RGB (solar-balanced) of the dirty LR and clean HR inputs.
-    SR is *not* colorized — the model emits only VIS — so its slot in
-    the color row stays empty as a deliberate "SR has no color info"
-    visual cue.
+    Since the 4-band-output change SR is colorized too: when ``sr_data``
+    is a 4-band cube its panels render as the same solar-balanced RGB,
+    directly comparable to the HR color panel. The residual / metric
+    panels stay on the VIS channel (channel 0) so the numbers remain
+    comparable with historical single-band runs.
     """
     # Asinh-stretch knee used in every "asinh" panel of this plot. The
     # caller can override per-run from the UI (especially useful on
@@ -400,6 +467,27 @@ def plot_reconstruction(
     # unchanged for everyone who doesn't pass the parameter.
     shared_scale = float(asinh_scale) if asinh_scale and asinh_scale > 0 \
                    else float(Config.STRETCH_SCALE_E)
+
+    # 4-band SR (the VIS+NISP model): keep the cube for color panels and
+    # use the VIS plane (channel 0) for every residual / metric panel.
+    _nbands = len(Config.LR_INPUT_BAND_NAMES)
+    sr_cube = (np.asarray(sr_data)
+               if (np.asarray(sr_data).ndim == 3
+                   and np.asarray(sr_data).shape[-1] == _nbands)
+               else None)
+    sr_vis = sr_cube[..., 0] if sr_cube is not None else np.asarray(sr_data)
+
+    def _add_sr_panel(vis_obj, stretch):
+        """SR panel — color when the 4-band cube exists, else grayscale."""
+        if sr_cube is not None:
+            vis_obj.add_rgb_scale_panel(
+                sr_cube, stretch=stretch, asinh_scale=shared_scale,
+                title_suffix="\nReconstruction (SR)")
+        else:
+            kw = {"asinh_scale": shared_scale} if stretch == "asinh" else {}
+            vis_obj.add_scale_panel(sr_vis, stretch=stretch,
+                                    title_suffix="\nReconstruction (SR)",
+                                    cmap="gray", **kw)
 
     if hr_data is None:
         # Real-Euclid inference flow: no HR truth available. Two layout
@@ -418,19 +506,21 @@ def plot_reconstruction(
                     and lr_cube.shape[-1] == nbands)
 
         if show_all_bands and has_cube:
-            vis = BaseVisualizer(rows=2, cols=nbands + 1,
-                                 figsize=(6 * (nbands + 1), 12), vmax=vmax)
-            # Row 1 — linear per-band + SR.
+            # Third row for the per-band SR planes when the model emits
+            # all four bands.
+            nrows = 3 if sr_cube is not None else 2
+            vis = BaseVisualizer(rows=nrows, cols=nbands + 1,
+                                 figsize=(6 * (nbands + 1), 6 * nrows),
+                                 vmax=vmax)
+            # Row 1 — linear per-band LR + SR (color when 4-band).
             for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
                 vis.add_scale_panel(
                     lr_cube[..., k], stretch="linear",
                     title_suffix=f"\nDirty (LR · {name})",
                     cmap="gray",
                 )
-            vis.add_scale_panel(sr_data, stretch="linear",
-                                title_suffix="\nReconstruction (SR)",
-                                cmap="gray")
-            # Row 2 — asinh per-band + SR.
+            _add_sr_panel(vis, "linear")
+            # Row 2 — asinh per-band LR + SR (color when 4-band).
             for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
                 vis.add_scale_panel(
                     lr_cube[..., k], stretch="asinh",
@@ -438,10 +528,16 @@ def plot_reconstruction(
                     title_suffix=f"\nDirty (LR · {name})",
                     cmap="gray",
                 )
-            vis.add_scale_panel(sr_data, stretch="asinh",
-                                asinh_scale=shared_scale,
-                                title_suffix="\nReconstruction (SR)",
-                                cmap="gray")
+            _add_sr_panel(vis, "asinh")
+            # Row 3 — per-band SR planes (asinh), one per output band.
+            if sr_cube is not None:
+                for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
+                    vis.add_scale_panel(
+                        sr_cube[..., k], stretch="asinh",
+                        asinh_scale=shared_scale,
+                        title_suffix=f"\nSR · {name}",
+                        cmap="gray",
+                    )
             plt.suptitle("Super-Resolution Reconstruction (per-band view)",
                          fontsize=16)
             vis.save_figure(output_path)
@@ -464,9 +560,7 @@ def plot_reconstruction(
         vis.add_scale_panel(lr_data, stretch="linear",
                             title_suffix="\nDirty (LR, VIS)",
                             cmap="gray")
-        vis.add_scale_panel(sr_data, stretch="linear",
-                            title_suffix="\nReconstruction (SR)",
-                            cmap="gray")
+        _add_sr_panel(vis, "linear")
         if has_predicted:
             vis.add_scale_panel(
                 predicted_dirty, stretch="linear",
@@ -485,9 +579,7 @@ def plot_reconstruction(
                             asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR, VIS)",
                             cmap="gray")
-        vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
-                            title_suffix="\nReconstruction (SR)",
-                            cmap="gray")
+        _add_sr_panel(vis, "asinh")
         if has_predicted:
             vis.add_scale_panel(
                 predicted_dirty, stretch="asinh", asinh_scale=shared_scale,
@@ -505,16 +597,18 @@ def plot_reconstruction(
 
     # Pre-compute residuals & noise floors (used as denominator clamps in
     # the rel-err panels so they don't blow up at sky-floor pixels).
+    # Residual / metric panels compare the VIS planes (channel 0) so the
+    # numbers stay comparable with historical single-band runs.
     hr_stretched       = np.arcsinh(hr_data / shared_scale).astype(np.float32)
-    sr_stretched       = np.arcsinh(sr_data / shared_scale).astype(np.float32)
-    residual_e         = (hr_data - sr_data).astype(np.float32)
+    sr_stretched       = np.arcsinh(sr_vis / shared_scale).astype(np.float32)
+    residual_e         = (hr_data - sr_vis).astype(np.float32)
     residual_stretched = (hr_stretched - sr_stretched).astype(np.float32)
     floor_e            = _noise_floor_lr_std_e()
     floor_str          = float(np.arcsinh(floor_e / shared_scale))
 
-    # 3 × 5 layout. LR / HR cells render in colour when we have the
-    # full 4-band cube available; SR cells are always grayscale because
-    # the model emits only VIS.
+    # 3 × 5 layout. SR / HR cells render in colour when their 4-band
+    # cubes are available — directly comparable composites since the
+    # 4-band model emits every band.
     vis = BaseVisualizer(rows=3, cols=5, figsize=(45, 24), vmax=vmax)
 
     nbands = len(Config.LR_INPUT_BAND_NAMES)
@@ -531,9 +625,7 @@ def plot_reconstruction(
     vis.add_scale_panel(lr_data, stretch="linear",
                         title_suffix="\nDirty (LR, VIS)",
                         cmap="gray")
-    vis.add_scale_panel(sr_data, stretch="linear",
-                        title_suffix="\nReconstruction (SR)",
-                        cmap="gray")
+    _add_sr_panel(vis, "linear")
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="linear",
                                 title_suffix="\nTrue Sky (HR)")
@@ -550,9 +642,7 @@ def plot_reconstruction(
     vis.add_scale_panel(lr_data, stretch="asinh", asinh_scale=shared_scale,
                         title_suffix="\nDirty (LR, VIS)",
                         cmap="gray")
-    vis.add_scale_panel(sr_data, stretch="asinh", asinh_scale=shared_scale,
-                        title_suffix="\nReconstruction (SR)",
-                        cmap="gray")
+    _add_sr_panel(vis, "asinh")
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
                                 asinh_scale=shared_scale,
@@ -571,9 +661,9 @@ def plot_reconstruction(
         "stats": _image_stats(lr_data),
         "include_data_stats": False,
     })
-    vis.add_statistics_panel(sr_data, {
-        "title": "SR (model output):",
-        "stats": _image_stats(sr_data),
+    vis.add_statistics_panel(sr_vis, {
+        "title": "SR (model output, VIS):",
+        "stats": _image_stats(sr_vis),
         "include_data_stats": False,
     })
     vis.add_statistics_panel(hr_data, {

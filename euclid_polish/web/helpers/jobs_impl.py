@@ -182,6 +182,12 @@ def _job_generate_reconstruct(
             if lr_img.index in hr_by_idx:
                 raw = hr_by_idx[lr_img.index].data
                 hr_data = raw[..., 0] if raw.ndim == 3 else raw
+                # The hr record is 4-band since the VIS+NISP-output
+                # change — it can back the color panel when the clean
+                # record is absent.
+                if (hr_cube_for_color is None and raw.ndim == 3
+                        and raw.shape[-1] == Config.NUM_LR_CHANNELS):
+                    hr_cube_for_color = raw
             elif hr_cube_for_color is not None:
                 hr_data = hr_cube_for_color[..., 0]
 
@@ -207,8 +213,19 @@ def _job_generate_reconstruct(
                 if data2d is None:
                     return
                 arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
+                band_note = "VIS"
+                if arr.ndim == 3:
+                    # 4-band cube (the VIS+NISP model) → NAXIS3 plane per
+                    # band, same convention as original_stack.fits.
+                    arr = np.ascontiguousarray(np.moveaxis(arr, -1, 0))
+                    band_note = "4-band"
                 hdu = _fits.PrimaryHDU(arr)
-                hdu.header["OBJECT"] = (f"EuclidPolish {label} (VIS)", "panel label")
+                if band_note == "4-band":
+                    hdu.header["BANDS"] = (
+                        ",".join(Config.LR_INPUT_BAND_NAMES),
+                        "NAXIS3 plane order (band 0 = VIS)")
+                hdu.header["OBJECT"] = (f"EuclidPolish {label} ({band_note})",
+                                        "panel label")
                 hdu.header["IDX"]    = (int(lr_img.index), "scene index")
                 hdu.header["HRSIZE"] = (int(hr_image_size), "HR side px (0.05in/px)")
                 hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "checkpoint dir")
@@ -279,7 +296,13 @@ def _forward_model_sr_residual(
     generate+reconstruct path passes the FASRC-pulled PSF dir so the
     forward op uses the *same* PSF the checkpoint trained against (and
     that the login-node generation used), not the local committed copy.
+
+    ``sr_data`` may be the 4-band SR cube (the VIS+NISP model) — only
+    its VIS plane (channel 0) is round-tripped here.
     """
+    sr_data = np.asarray(sr_data)
+    if sr_data.ndim == 3:
+        sr_data = sr_data[..., 0]
     psfs = load_all_band_psfs(
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         **({"psf_dir": psf_dir} if psf_dir else {}),
@@ -452,12 +475,22 @@ def _job_reconstruct_euclid_cutout(
         residual = None
 
     # Save SR with the 2× magnified VIS WCS so it overlays the stacked
-    # original on-sky (0.05″/pix vs 0.10″/pix).
+    # original on-sky (0.05″/pix vs 0.10″/pix). A 4-band SR cube is
+    # written one plane per band (NAXIS3), same convention as the
+    # original_stack file.
     sr_fits_path = os.path.join(cache_dir, "SR.fits")
     sr_hdr = (_clean_hdr(scaled_wcs_header(vis_header, scale))
               if vis_header is not None else fits.Header())
-    sr_hdu = fits.PrimaryHDU(sr_data.astype(np.float32), header=sr_hdr)
-    sr_hdu.header["OBJECT"]   = "Euclid SR (WDSR VIS)"
+    sr_arr = np.asarray(sr_data, dtype=np.float32)
+    sr_is_cube = sr_arr.ndim == 3
+    if sr_is_cube:
+        sr_arr = np.ascontiguousarray(np.moveaxis(sr_arr, -1, 0))
+    sr_hdu = fits.PrimaryHDU(sr_arr, header=sr_hdr)
+    sr_hdu.header["OBJECT"]   = ("Euclid SR (WDSR, 4-band)" if sr_is_cube
+                                 else "Euclid SR (WDSR VIS)")
+    if sr_is_cube:
+        sr_hdu.header["BANDS"] = (",".join(Config.LR_INPUT_BAND_NAMES),
+                                  "NAXIS3 plane order (band 0 = VIS)")
     sr_hdu.header["BUNIT"]    = "electron"
     sr_hdu.header["RA"]       = (float(ra),  "Input RA (deg)")
     sr_hdu.header["DEC"]      = (float(dec), "Input Dec (deg)")

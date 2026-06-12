@@ -37,14 +37,12 @@ def _export_sky_record_fits(
     if kind not in ("clean", "dirty", "hr"):
         abort(400)
     band_names = list(Config.LR_INPUT_BAND_NAMES)
-    if kind == "hr":
-        if band != "VIS":
-            abort(400)
-        band_idx = 0
-    else:
-        if band not in band_names:
-            abort(400)
-        band_idx = band_names.index(band)
+    # ``hr`` records are 4-band since the VIS+NISP-output change, so any
+    # band is selectable; a legacy 1-channel record (pre-change) simply
+    # 404s below for bands beyond channel 0.
+    if band not in band_names:
+        abort(400)
+    band_idx = band_names.index(band)
     try:
         idx = int(index)
     except (TypeError, ValueError):
@@ -115,12 +113,13 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     ``kind`` ∈ {"clean", "dirty", "hr"}
       • ``clean`` → 4-band HR clean record
       • ``dirty`` → 4-band LR dirty record (PSF + noise + artifacts)
-      • ``hr``    → 1-band VIS HR target (the network's training output)
+      • ``hr``    → 4-band HR target (the network's training output;
+        legacy pre-4-band records carry 1 VIS channel)
     ``band``:
       * one of ``Config.LR_INPUT_BAND_NAMES`` → grayscale asinh of that band
       * ``"color"`` → 4-band Lupton RGB (solar-balanced). Requires the
-        record to carry all four bands — clean/dirty only. For the
-        VIS-only ``hr`` record, ``color`` falls back to VIS grayscale.
+        record to carry all four bands; a legacy 1-channel ``hr``
+        record falls back to VIS grayscale.
     """
     matplotlib.use("Agg")
 

@@ -146,11 +146,13 @@ def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
 
-    # VIS-only input: 1 LR channel instead of VIS+NISP (4). Isolate the
-    # checkpoints under a '-vis' suffix so a 1-channel model never tries to
-    # restore — or overwrite — the incompatible 4-channel checkpoints sharing
-    # the configured ckpt dir.
+    # VIS-only: 1 LR channel in AND 1 HR channel out (a VIS-only model has
+    # no NISP planes to predict); the default is the full 4-band map
+    # (VIS+NISP → VIS+NISP). Isolate VIS-only checkpoints under a '-vis'
+    # suffix so a 1-channel model never tries to restore — or overwrite —
+    # the incompatible 4-channel checkpoints sharing the configured dir.
     nchan_lr = 1 if args.vis_only else Config.NUM_LR_CHANNELS
+    nchan_hr = 1 if args.vis_only else Config.NUM_HR_CHANNELS
     if args.vis_only:
         args.ckpt_dir = args.ckpt_dir.rstrip("/") + "-vis"
 
@@ -160,6 +162,8 @@ def main() -> int:
     print(f"  steps              = {args.steps}")
     print(f"  LR input           = "
           f"{'VIS only (1 ch)' if args.vis_only else 'VIS+NISP (4 ch)'}")
+    print(f"  SR output          = "
+          f"{'VIS only (1 ch)' if args.vis_only else 'VIS+NISP (4 ch, per-band residual skip)'}")
     print(f"  batch layout       = syn {args.n_syn} / hst {args.n_hst} / "
           f"anchor {args.n_anchor}  "
           f"(batch {args.n_syn + args.n_hst + args.n_anchor})")
@@ -234,7 +238,8 @@ def main() -> int:
                 records_dir=args.records_hst,
                 vis_only=args.vis_only,
             ).dataset(batch_size=batch_size,
-                      random_transform=False, repeat_count=1)
+                      random_transform=False, repeat_count=1,
+                      hr_channels=1)
         except FileNotFoundError:
             print("  note: no HST validate split found — "
                   "skipping HST validation logging")
@@ -257,7 +262,7 @@ def main() -> int:
     scale = Config.DEFAULT_REBIN_FACTOR
     model = wdsr(
         scale=scale, num_res_blocks=args.num_res_blocks,
-        nchan_in=nchan_lr, nchan_out=Config.NUM_HR_CHANNELS,
+        nchan_in=nchan_lr, nchan_out=nchan_hr,
     )
     # Learning rate: a constant when ``--learning-rate`` is given, else the
     # two-phase decay (1e-3 → 5e-4 at the half-way step). Adam accepts a

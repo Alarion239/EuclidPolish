@@ -143,10 +143,19 @@ def main() -> int:
 
     sr_header = (_clean(scaled_wcs_header(vis_header, scale))
                  if vis_header is not None else fits.Header())
-    sr_header["OBJECT"] = "Euclid SR VIS (WDSR)"
+    sr = np.asarray(sr, dtype=np.float32)
+    if sr.ndim == 3:
+        # 4-band SR cube → one plane per band (same convention as the
+        # original_stack file).
+        sr = np.ascontiguousarray(np.moveaxis(sr, -1, 0))
+        sr_header["OBJECT"] = "Euclid SR (WDSR, 4-band)"
+        sr_header["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
+                               "NAXIS3 plane order (band 0 = VIS)")
+    else:
+        sr_header["OBJECT"] = "Euclid SR VIS (WDSR)"
     sr_header["BUNIT"]  = "electron"
     sr_path = os.path.join(args.out_dir, "SR.fits")
-    fits.PrimaryHDU(sr.astype(np.float32), header=sr_header).writeto(
+    fits.PrimaryHDU(sr, header=sr_header).writeto(
         sr_path, overwrite=True, output_verify="silentfix")
     print(f"wrote {stack_path}  ({stack.shape}, 0.10\"/pix, "
           f"bands={Config.LR_INPUT_BAND_NAMES})")
