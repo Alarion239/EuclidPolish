@@ -4,9 +4,11 @@
 {% block toolbar %}
 <div class="toolbar">
   <span class="toolbar-label">Type</span>
+  {# No separate "HR target" chip: since the 4-band-output change the hr
+     record is the clean 4-band sky (trimmed to the rebin multiple), so
+     the clean view shows the training target. #}
   <a class="chip" data-group="kind" data-value="clean">clean (4-band)</a>
   <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
-  <a class="chip" data-group="kind" data-value="hr">HR target (4-band)</a>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
   <a class="chip" data-group="subset" data-value="validate">validate</a>
