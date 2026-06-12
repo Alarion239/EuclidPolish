@@ -184,13 +184,13 @@ def test_run_pipeline_step_banner_says_web_submitted():
     assert "Web-submitted job:" in body
 
 
-def test_hst_pipeline_step_banner_says_hst_pipeline():
-    """HST-pipeline steps share the ``HST pipeline step:`` banner."""
+def test_pipeline_step_banner_names_the_step():
+    """Pipeline steps share the ``Pipeline step:`` banner."""
     body = REGISTRY.get("kernel").build_sbatch_body(
         params={}, resources=StepResources(), cfg=FasrcConfig(),
         label="diff kernel",
     )["body"]
-    assert "HST pipeline step: kernel" in body
+    assert "Pipeline step: kernel" in body
 
 
 def test_step_id_marker_is_emitted_for_history_tracking():

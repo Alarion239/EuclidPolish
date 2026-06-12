@@ -25,7 +25,7 @@ from flask import (
     Flask, jsonify, redirect, render_template, request, url_for,
 )
 
-from euclid_polish.web import fasrc_config, fasrc_jobs
+from euclid_polish.web import experimental, fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession, STATE
 from euclid_polish.web.routes import (
     auth, catalog, config, cutouts, fasrc, files, git, hst, hstpairs, model,
@@ -87,6 +87,16 @@ def create_app() -> Flask:
         template_folder=os.path.join(here, "templates"),
         static_folder=os.path.join(here, "static"),
     )
+
+    # EXPERIMENTAL lanes (HST / star-anchor / round-trip supervision):
+    # features for the future, disabled for now. Templates read this
+    # global to hide their nav links and step-card mounts — see
+    # euclid_polish.web.experimental. A context processor (not a bare
+    # jinja_env global) so the flag is read per-request and tests can
+    # flip it.
+    @app.context_processor
+    def _inject_experimental_flags():
+        return {"experimental_lanes": experimental.EXPERIMENTAL_LANES_ENABLED}
 
     # ---------------------------------------------------------------- #
     # Auto-connect to FASRC on launch. If we can't connect, every

@@ -465,17 +465,63 @@ class TestSbatchRendering:
         assert "RUNTIME_SECONDS" in body
         assert "STEP_ID=kernel" in body
 
-    def test_paths_use_step_id_and_timestamp(self, cfg):
+    def test_paths_use_job_name_and_timestamp(self, cfg):
         step = REGISTRY.get("download")
         out = step.build_sbatch_body(
             params={"n_tiles": 5},
             resources=step.defaults, cfg=cfg, label="x",
         )
-        assert "hst-download-" in out["name"]
+        assert out["name"].startswith("hst-tiles-")
         assert out["script"].startswith("logs/hst_pipeline/")
         assert out["script"].endswith(".sh")
         assert out["out"].endswith(".out")
         assert out["err"].endswith(".err")
+
+    def test_job_names_are_simple_and_stable(self, cfg):
+        """Every step's SLURM job name is its explicit ``job_name`` —
+        simple, informative, and decoupled from step ids / pipeline
+        prefixes, so squeue/sacct read sensibly and the names survive
+        feature reshuffles."""
+        expected = {
+            "train":                        "train",
+            "synthetic_generate":           "synthetic-data",
+            "euclid_query":                 "star-catalog",
+            "euclid_verify_photometry":     "verify-photometry",
+            "download_euclid_cutouts":      "star-cutouts",
+            "extract_euclid_psf":           "euclid-psf",
+            "download_tng_skirt":           "tng-atlas",
+            "tng_grid":                     "tng-grid",
+            "tng_stack":                    "tng-stack",
+            "poster_cutout":                "poster-cutout",
+            # Experimental-lane steps keep sane names for when they return.
+            "download":                     "hst-tiles",
+            "extract_psf":                  "hst-psf",
+            "kernel":                       "diff-kernel",
+            "tfrecords":                    "hst-tfrecords",
+            "euclid_sky_download":          "sky-cutouts",
+            "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
+            "euclid_star_anchor_tfrecords": "anchor-tfrecords",
+        }
+        for step in REGISTRY.all():
+            assert step.job_name == expected[step.step_id], (
+                f"{step.step_id}: job_name {step.job_name!r}"
+            )
+            out = step.build_sbatch_body(
+                params={}, resources=step.defaults, cfg=cfg, label="x",
+            )
+            # name = <job_name>-<timestamp>; no legacy hst-/euclid- prefix
+            # bolted onto the step id.
+            assert out["name"].startswith(f"{step.job_name}-")
+            assert f"--job-name={step.job_name}-" in out["body"]
+
+    def test_experimental_steps_flagged(self):
+        experimental_ids = {s.step_id for s in REGISTRY.all()
+                            if s.experimental}
+        assert experimental_ids == {
+            "download", "extract_psf", "kernel", "tfrecords",
+            "euclid_sky_download", "euclid_roundtrip_tfrecords",
+            "euclid_star_anchor_tfrecords",
+        }
 
     def test_gpu_step_emits_gres_line(self, cfg):
         step = REGISTRY.get("train")
@@ -759,7 +805,8 @@ class TestFixedCpusEnforcement:
         monkeypatch.setattr(remote.STATE, "ssh", stub)
         return stub
 
-    def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch):
+    def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch,
+                                                  experimental_lanes_on):
         from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
@@ -841,7 +888,8 @@ class TestFixedCpusEnforcement:
         # 8 appears as the worker count somewhere in the rendered body.
         assert any("8" in c for c in writes)
 
-    def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch):
+    def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch,
+                                            experimental_lanes_on):
         from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
@@ -867,7 +915,8 @@ class TestFixedCpusEnforcement:
         # tfrecords has no fixed_cpus → user's 20 should be honoured.
         assert j["params"]["n_cpus"] == 20
 
-    def test_submit_rejected_without_confirm_token(self, monkeypatch):
+    def test_submit_rejected_without_confirm_token(self, monkeypatch,
+                                                   experimental_lanes_on):
         """The server-side confirmation guard must refuse any POST that
         lacks ``confirm=yes`` — no SLURM script gets written, no sbatch
         gets called, no job ID is returned. This is the load-bearing
@@ -903,7 +952,8 @@ class TestFixedCpusEnforcement:
         # assertion that the guard short-circuited before doing any work.
         assert stub.calls == []
 
-    def test_submit_rejected_with_invalid_confirm_value(self, monkeypatch):
+    def test_submit_rejected_with_invalid_confirm_value(self, monkeypatch,
+                                                        experimental_lanes_on):
         """Token values other than 'yes' / 'true' / '1' (case-insensitive)
         must also be rejected, so a typo or stray default can't sneak
         a submission through."""

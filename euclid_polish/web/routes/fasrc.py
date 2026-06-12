@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from euclid_polish.config import Config
 from euclid_polish.training.log_plot import plot_training_records
+from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_jobs
 from euclid_polish.web import fasrc_log_parser
@@ -354,7 +355,7 @@ def register(app):
         if kind == "synthetic":
             steps = form.get("steps") or fasrc_config.load().steps
             return f"{step.label if step else 'synthetic'}: {steps} steps"
-        return f"HST · {step.label}" if step else f"step {step_ref}"
+        return step.label if step else f"step {step_ref}"
 
     def _build_and_submit(kind, step_ref, form):
         """Render + sbatch a job from a stored spec → (slurm_id, payload)."""
@@ -494,7 +495,8 @@ def register(app):
         return _submit_or_queue("synthetic", step_name, f.to_dict())
 
     # =========================================================================
-    # HST pipeline (FASRC submissions for the 5-step HST → Euclid workflow)
+    # Pipeline steps (generic FASRC submissions; URL prefix /api/fasrc/hst/
+    # is historical — it serves every registered step, not just HST ones)
     # =========================================================================
 
     @app.route("/api/fasrc/hst/status")
@@ -510,6 +512,11 @@ def register(app):
 
         steps_payload = []
         for step in STEP_REGISTRY.all():
+            # EXPERIMENTAL lanes (HST / star-anchor / round-trip): their
+            # steps are hidden from the UI while the feature flag is off —
+            # see euclid_polish.web.experimental.
+            if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
+                continue
             steps_payload.append({
                 "step_id":     step.step_id,
                 "label":       step.label,
@@ -548,15 +555,7 @@ def register(app):
         }
         if ssh_ok:
             paths = {
-                "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
-                "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
-                "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
-                "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
-                "euclid_sky":
-                    f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
-                "roundtrip_records":
-                    f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
                 "euclid_cutouts":
                     f"{cfg_loaded.data_dir}/euclid_stars/cutouts/VIS",
                 "euclid_psf":
@@ -564,6 +563,20 @@ def register(app):
                 "synthetic_records":
                     f"{cfg_loaded.data_dir}/images/records_v2/clean_train.tfrecord",
             }
+            # EXPERIMENTAL-lane artifacts (HST / round-trip): only probed
+            # when the lanes are enabled — no point spending SSH time on
+            # features the UI hides.
+            if experimental.EXPERIMENTAL_LANES_ENABLED:
+                paths.update({
+                    "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
+                    "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
+                    "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
+                    "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
+                    "euclid_sky":
+                        f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
+                    "roundtrip_records":
+                        f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
+                })
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
                 for k, p in paths.items()
@@ -610,6 +623,13 @@ def register(app):
             step = STEP_REGISTRY.get(step_id)
         except KeyError:
             return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
+        # EXPERIMENTAL-lane steps (HST / star-anchor / round-trip) are
+        # disabled for now — refuse the submit so a stale tab can't launch
+        # one. See euclid_polish.web.experimental.
+        if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
+            return jsonify({"ok": False, "error":
+                            f"step {step_id!r} is experimental and currently "
+                            "disabled"}), 404
 
         cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()

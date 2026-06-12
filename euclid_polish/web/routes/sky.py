@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
+from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_fetcher import list_remote_dir
 from euclid_polish.web.jobs import REGISTRY
@@ -40,6 +41,15 @@ def register(app):
         return render_template("sky.html",
                                records_dir=records_dir,
                                tfrecords=tfrecords)
+
+    # ------------------------------------------------------------------ #
+    # EXPERIMENTAL — round-trip lane (real-Euclid self-supervision).
+    # Kept for future work, disabled for now: the page + inspect routes
+    # below are only registered when the experimental-lanes flag is on.
+    # See euclid_polish.web.experimental.
+    # ------------------------------------------------------------------ #
+    if not experimental.EXPERIMENTAL_LANES_ENABLED:
+        return
 
     @app.route("/roundtrip")
     def roundtrip_page():

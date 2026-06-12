@@ -73,7 +73,11 @@
 {% if catalog.present %}
 {% with step_id="download_euclid_cutouts" %}{% include "_step_card_mount.html" %}{% endwith %}
 {% with step_id="euclid_verify_photometry" %}{% include "_step_card_mount.html" %}{% endwith %}
+{# EXPERIMENTAL (star-anchor supervision lane) — disabled for now; see
+   euclid_polish/web/experimental.py. #}
+{% if experimental_lanes %}
 {% with step_id="euclid_star_anchor_tfrecords" %}{% include "_step_card_mount.html" %}{% endwith %}
+{% endif %}
 {% else %}
 <section class="card">
   <a class="chip" href="{{ url_for('catalog_page') }}">⭐ Open catalog</a>

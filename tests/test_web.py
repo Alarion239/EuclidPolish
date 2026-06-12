@@ -26,6 +26,19 @@ def client():
         yield c
 
 
+@pytest.fixture
+def lanes_client(experimental_lanes_on):
+    """Client with the EXPERIMENTAL supervision lanes enabled.
+
+    The HST / star-anchor / round-trip lane surfaces are disabled by
+    default (see euclid_polish/web/experimental.py); tests that exercise
+    those pages/steps build their app behind the flag."""
+    app = create_app()
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
+
+
 def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     """An empty/header-only training log must 404 (placeholder), never 500."""
     ckpt = tmp_path / "ckpt" / "wdsr"
@@ -226,6 +239,18 @@ def test_inference_page_renders(client):
     r = client.get("/inference")
     assert r.status_code == 200
     assert b"Reconstruct" in r.data
+
+
+def test_no_experimental_lane_traces_in_ui(client):
+    """With the experimental lanes disabled (default), no lane surface
+    may be visible anywhere: no nav links to the HST / round-trip pages
+    and no star-anchor step card on /cutouts."""
+    body = client.get("/training").data.decode()
+    for label in ("HST tiles", "HST cutouts", "HST PSF",
+                  "HST Catalog", "Round-trip"):
+        assert label not in body, f"nav still shows '{label}'"
+    cutouts = client.get("/cutouts").data.decode()
+    assert "euclid_star_anchor_tfrecords" not in cutouts
 
 
 # ---------------------------------------------------------------------------
@@ -748,8 +773,8 @@ def test_api_sky_totals_returns_json(client):
 # /hst-pairs (HST Catalog) — same viewer as /sky over FASRC-cached records
 # ---------------------------------------------------------------------------
 
-def test_hst_pairs_page_renders(client):
-    r = client.get("/hst-pairs")
+def test_hst_pairs_page_renders(lanes_client):
+    r = lanes_client.get("/hst-pairs")
     assert r.status_code == 200
     body = r.data.decode()
     assert "HST Catalog" in body
@@ -766,29 +791,29 @@ def test_hst_pairs_page_renders(client):
 
 
 def test_view_hst_pair_pair_kind_404_when_not_synced(
-        client, tmp_path, monkeypatch):
+        lanes_client, tmp_path, monkeypatch):
     """The triptych path reads three shards (clean/dirty/hr); when
     none are cached, it must 404 — not 500 — same as single-image
     kinds. Regression on the multi-shard composite path."""
     from euclid_polish.web import fasrc_fetcher as ff
     monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
-    r = client.get("/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0")
+    r = lanes_client.get("/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0")
     assert r.status_code == 404
 
 
-def test_view_hst_pair_pair_kind_rejects_bad_band(client):
+def test_view_hst_pair_pair_kind_rejects_bad_band(lanes_client):
     """Invalid band string must still 400 even on the triptych path."""
-    r = client.get("/view/hst-pair?subset=validate&kind=pair&band=BOGUS&i=0")
+    r = lanes_client.get("/view/hst-pair?subset=validate&kind=pair&band=BOGUS&i=0")
     assert r.status_code == 400
 
 
-def test_view_hst_pair_pair_kind_rejects_bad_subset(client):
-    r = client.get("/view/hst-pair?subset=foo&kind=pair&band=VIS&i=0")
+def test_view_hst_pair_pair_kind_rejects_bad_subset(lanes_client):
+    r = lanes_client.get("/view/hst-pair?subset=foo&kind=pair&band=VIS&i=0")
     assert r.status_code == 400
 
 
 def test_view_hst_pair_pair_kind_renders_real_png(
-        client, tmp_path, monkeypatch):
+        lanes_client, tmp_path, monkeypatch):
     """End-to-end: write synthetic clean/dirty/hr shards into a tmp
     cache dir, request the triptych for idx=0, and assert the response
     is a real PNG. Catches any composite-layout / matplotlib bug that
@@ -852,7 +877,7 @@ def test_view_hst_pair_pair_kind_renders_real_png(
             tfrecord_path(local_dir, f"{kind}_validate")
         ), f"failed to write {kind}_validate.tfrecord"
 
-    r = client.get(
+    r = lanes_client.get(
         "/view/hst-pair?subset=validate&kind=pair&band=VIS&i=0"
     )
     assert r.status_code == 200, (
@@ -866,22 +891,22 @@ def test_view_hst_pair_pair_kind_renders_real_png(
     )
 
 
-def test_view_hst_pair_invalid_subset_400(client):
-    r = client.get("/view/hst-pair?subset=foo&kind=clean&band=VIS&i=0")
+def test_view_hst_pair_invalid_subset_400(lanes_client):
+    r = lanes_client.get("/view/hst-pair?subset=foo&kind=clean&band=VIS&i=0")
     assert r.status_code == 400
 
 
-def test_view_hst_pair_invalid_kind_400(client):
-    r = client.get("/view/hst-pair?subset=validate&kind=foo&band=VIS&i=0")
+def test_view_hst_pair_invalid_kind_400(lanes_client):
+    r = lanes_client.get("/view/hst-pair?subset=validate&kind=foo&band=VIS&i=0")
     assert r.status_code == 400
 
 
-def test_view_hst_pair_invalid_band_400(client):
-    r = client.get("/view/hst-pair?subset=validate&kind=clean&band=BOGUS&i=0")
+def test_view_hst_pair_invalid_band_400(lanes_client):
+    r = lanes_client.get("/view/hst-pair?subset=validate&kind=clean&band=BOGUS&i=0")
     assert r.status_code == 400
 
 
-def test_view_hst_pair_404_when_not_synced(client, tmp_path, monkeypatch):
+def test_view_hst_pair_404_when_not_synced(lanes_client, tmp_path, monkeypatch):
     """No local cache file → ``_render_sky_record_png`` aborts 404.
 
     Re-point the FASRC cache dir at an empty tmp dir so this test
@@ -890,12 +915,12 @@ def test_view_hst_pair_404_when_not_synced(client, tmp_path, monkeypatch):
     this — my own ``data/_fasrc_cache/`` had real validate files)."""
     from euclid_polish.web import fasrc_fetcher as ff
     monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
-    r = client.get("/view/hst-pair?subset=validate&kind=clean&band=VIS&i=0")
+    r = lanes_client.get("/view/hst-pair?subset=validate&kind=clean&band=VIS&i=0")
     assert r.status_code == 404
 
 
-def test_api_hst_pairs_totals_returns_json_with_all_six_files(client):
-    r = client.get("/api/hst-pairs/totals")
+def test_api_hst_pairs_totals_returns_json_with_all_six_files(lanes_client):
+    r = lanes_client.get("/api/hst-pairs/totals")
     assert r.status_code == 200
     body = r.get_json()
     # Every key must be present even when the cache is empty so the JS
@@ -936,8 +961,8 @@ def test_record_count_handles_truncated_tfrecord(tmp_path):
     assert _record_count("does_not_exist", records_dir=str(tmp_path)) == 0
 
 
-def test_api_hst_pairs_status_lists_cache_dir(client):
-    r = client.get("/api/hst-pairs/status")
+def test_api_hst_pairs_status_lists_cache_dir(lanes_client):
+    r = lanes_client.get("/api/hst-pairs/status")
     assert r.status_code == 200
     body = r.get_json()
     assert "dir" in body and "files" in body
@@ -946,7 +971,7 @@ def test_api_hst_pairs_status_lists_cache_dir(client):
     assert "_fasrc_cache" in body["dir"]
 
 
-def test_api_hst_pairs_sync_defaults_to_validate_only(client, monkeypatch):
+def test_api_hst_pairs_sync_defaults_to_validate_only(lanes_client, monkeypatch):
     """No ``include_train`` form arg → only the three validate files
     are requested. This guards the "don't accidentally pull 25 GB"
     invariant — if a refactor flips the default, this test catches it."""
@@ -966,7 +991,7 @@ def test_api_hst_pairs_sync_defaults_to_validate_only(client, monkeypatch):
     monkeypatch.setattr(
         "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
     )
-    r = client.post("/api/hst-pairs/sync")
+    r = lanes_client.post("/api/hst-pairs/sync")
     assert r.status_code == 200
     data = r.get_json()
     assert data["include_train"] is False
@@ -983,7 +1008,7 @@ def test_api_hst_pairs_sync_defaults_to_validate_only(client, monkeypatch):
         assert max_bytes is not None and max_bytes > 50 * 1024 * 1024
 
 
-def test_api_hst_pairs_sync_include_train_pulls_six_files(client, monkeypatch):
+def test_api_hst_pairs_sync_include_train_pulls_six_files(lanes_client, monkeypatch):
     """``include_train=true`` adds the three train files on top."""
     requested: list = []
 
@@ -1001,7 +1026,7 @@ def test_api_hst_pairs_sync_include_train_pulls_six_files(client, monkeypatch):
     monkeypatch.setattr(
         "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
     )
-    r = client.post("/api/hst-pairs/sync",
+    r = lanes_client.post("/api/hst-pairs/sync",
                     data={"include_train": "true"})
     assert r.status_code == 200
     data = r.get_json()
@@ -1014,7 +1039,7 @@ def test_api_hst_pairs_sync_include_train_pulls_six_files(client, monkeypatch):
     }
 
 
-def test_api_hst_pairs_sync_surfaces_fetch_errors_per_file(client, monkeypatch):
+def test_api_hst_pairs_sync_surfaces_fetch_errors_per_file(lanes_client, monkeypatch):
     """If one file fails, the response still lists it (ok=False, error
     set) so the UI can show partial-success status."""
     class _OK:
@@ -1040,7 +1065,7 @@ def test_api_hst_pairs_sync_surfaces_fetch_errors_per_file(client, monkeypatch):
     monkeypatch.setattr(
         "euclid_polish.web.fasrc_fetcher.fetch_one_file", _fake_fetch,
     )
-    r = client.post("/api/hst-pairs/sync")
+    r = lanes_client.post("/api/hst-pairs/sync")
     assert r.status_code == 200
     data = r.get_json()
     # Overall ok=True as long as ANY file succeeded — partial success
@@ -1106,7 +1131,36 @@ def test_serve_vis_unknown_file_404(client):
 # the wiring on the *server* side so the UI's JS dispatch (form fields
 # + status badges) can rely on them being there.
 
-def test_hst_status_exposes_roundtrip_steps_and_artifacts(client):
+def test_hst_status_hides_experimental_lane_steps_by_default(client):
+    """The EXPERIMENTAL lanes (HST / star-anchor / round-trip) are
+    disabled for now — none of their steps may surface in the step
+    listing, so the UI renders no card for them anywhere."""
+    r = client.get("/api/fasrc/hst/status")
+    assert r.status_code == 200
+    step_ids = {s["step_id"] for s in r.get_json()["steps"]}
+    for gated in ("download", "extract_psf", "kernel", "tfrecords",
+                  "euclid_sky_download", "euclid_roundtrip_tfrecords",
+                  "euclid_star_anchor_tfrecords"):
+        assert gated not in step_ids, (
+            f"experimental step '{gated}' leaked into the UI listing"
+        )
+    # The active pipeline is untouched.
+    for kept in ("train", "synthetic_generate", "euclid_query",
+                 "download_euclid_cutouts", "extract_euclid_psf"):
+        assert kept in step_ids
+
+
+def test_experimental_step_submit_refused_by_default(client):
+    """Submitting a disabled experimental step (e.g. from a stale tab)
+    must be refused before anything reaches FASRC."""
+    r = client.post("/api/fasrc/hst/euclid_star_anchor_tfrecords/submit",
+                    data={"confirm": "yes"})
+    assert r.status_code == 404
+    assert "experimental" in r.get_json()["error"]
+
+
+def test_hst_status_exposes_roundtrip_steps_and_artifacts(lanes_client):
+    client = lanes_client
     r = client.get("/api/fasrc/hst/status")
     assert r.status_code == 200
     body = r.get_json()

@@ -228,11 +228,25 @@ class TestRoutesRegistered:
         assert "/fasrc/file/download" in urls
         assert "/connection-error" in urls
         assert "/api/connection/retry" in urls
+        # EXPERIMENTAL-lane pages (HST supervision) are disabled by
+        # default — none of their routes may exist in a stock app.
+        for gated in ("/hst-psf", "/hst-cutouts", "/hst-tiles",
+                      "/hst-pairs", "/roundtrip",
+                      "/fasrc/tile/header", "/fasrc/tile/cutout.png"):
+            assert gated not in urls, f"{gated} should be hidden by default"
+
+    def test_experimental_lane_routes_register_when_enabled(
+            self, experimental_lanes_on):
+        from euclid_polish.web.app import create_app
+        app = create_app()
+        urls = {str(r) for r in app.url_map.iter_rules()}
         assert "/hst-psf" in urls
         assert "/hst-cutouts" in urls
         assert "/hst-psf/preview.png" in urls
         assert "/hst-cutouts/preview.png" in urls
         assert "/hst-tiles" in urls
+        assert "/hst-pairs" in urls
+        assert "/roundtrip" in urls
         assert "/fasrc/tile/header" in urls
         assert "/fasrc/tile/cutout.png" in urls
 
@@ -244,7 +258,9 @@ class TestRoutesRegistered:
 class TestTileInspectorRoutes:
 
     @pytest.fixture
-    def client(self):
+    def client(self, experimental_lanes_on):
+        # The tile inspector belongs to the EXPERIMENTAL HST lane —
+        # enable the flag before building the app so its routes exist.
         from euclid_polish.web.app import create_app
         return create_app().test_client()
 

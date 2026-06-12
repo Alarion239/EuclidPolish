@@ -1,4 +1,10 @@
-"""hstpairs routes for the EuclidPolish web UI (extracted from app.py)."""
+"""hstpairs routes for the EuclidPolish web UI (extracted from app.py).
+
+EXPERIMENTAL — the HST Catalog page views the HST supervision lane's
+TFRecord pairs, an experimental feature kept for future work and
+disabled for now: ``register`` below is a no-op unless
+``euclid_polish.web.experimental.EXPERIMENTAL_LANES_ENABLED`` is True.
+"""
 from __future__ import annotations
 
 from astropy.io import fits
@@ -7,6 +13,7 @@ from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
@@ -30,6 +37,10 @@ from euclid_polish.web.helpers.status import _record_count, _tfrecords_status
 
 
 def register(app):
+    # EXPERIMENTAL lane — disabled for now. Attribute read at call time
+    # so tests can flip the flag before app creation.
+    if not experimental.EXPERIMENTAL_LANES_ENABLED:
+        return
 
     # =========================================================================
     # HST Catalog — same viewer as /sky but pointed at the FASRC-cached HST

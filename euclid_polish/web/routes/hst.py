@@ -1,9 +1,18 @@
-"""hst routes for the EuclidPolish web UI (extracted from app.py)."""
+"""hst routes for the EuclidPolish web UI (extracted from app.py).
+
+EXPERIMENTAL — these pages (HST tiles / HST cutouts / HST PSF) belong to
+the HST supervision lane, an experimental feature kept for future work
+and disabled for now: ``register`` below is a no-op unless
+``euclid_polish.web.experimental.EXPERIMENTAL_LANES_ENABLED`` is True,
+so none of the routes (or the nav links pointing at them, gated in
+base.html) exist in the running app.
+"""
 from __future__ import annotations
 
 from astropy.io import fits
 from astropy.io import fits as _fits
 from euclid_polish.config import Config
+from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
@@ -31,6 +40,10 @@ from euclid_polish.web.helpers.paths import _safe_relpath
 
 
 def register(app):
+    # EXPERIMENTAL lane — disabled for now. Attribute read at call time
+    # so tests can flip the flag before app creation.
+    if not experimental.EXPERIMENTAL_LANES_ENABLED:
+        return
 
     # ---------------- HST PSF page (mirrors /psfs but reads from FASRC) ----
     @app.route("/hst-psf")

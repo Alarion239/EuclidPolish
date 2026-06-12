@@ -1,19 +1,25 @@
 """
-FASRC pipeline-step abstraction for the HST → Euclid SR workflow.
+FASRC pipeline-step abstraction for every web-submitted cluster job.
 
-Five jobs (download HLSP tiles → extract HST PSF → compute the
-differential kernel → write HST-derived TFRecords → train) all share
-the same submission shape — write an sbatch script, ``sbatch`` it
-through the ControlMaster SSH, register in :class:`JobDB`. The only
-things that differ per job are:
+All jobs (data downloads, PSF extraction, TFRecord generation,
+training, …) share the same submission shape — write an sbatch script,
+``sbatch`` it through the ControlMaster SSH, register in
+:class:`JobDB`. The only things that differ per job are:
 
   * default SLURM resources (gpu vs cpu, runtime, memory)
   * the remote script to invoke + its CLI flags
 
 This module factors all of that into one abstract base class
 (:class:`FASRCPipelineStep`) with one concrete subclass per job.
-Adding a sixth step (e.g. "ingest JWST F814W") is then a 30-line
+Adding a new step (e.g. "ingest JWST F814W") is then a 30-line
 delta — no Flask, web template, or sbatch-template duplication.
+
+Steps marked ``experimental=True`` belong to the EXPERIMENTAL
+supervision lanes (HST / star-anchor / round-trip) — features for the
+future, disabled for now. They stay registered (so build_command unit
+tests and a future re-enable keep working) but are hidden from the
+WebUI step listing and refused by the submit endpoint while
+``euclid_polish.web.experimental.EXPERIMENTAL_LANES_ENABLED`` is False.
 
 The companion in :mod:`euclid_polish.web.fasrc_jobs` (the existing
 training-only sbatch builder) remains untouched for backwards
@@ -151,6 +157,18 @@ class FASRCPipelineStep(ABC):
     #: work is single-threaded and asking SLURM for extra cores just
     #: wastes the allocation — see HSTPSFExtractStep.
     fixed_cpus: Optional[int] = None
+    #: Simple, stable SLURM job name (what the user sees in squeue/sacct
+    #: and the log filenames). Describes WHAT the job does, independent of
+    #: any pipeline grouping, so it survives feature reshuffles. Falls back
+    #: to ``step_id`` when unset; the timestamp suffix keeps log paths
+    #: unique per submission.
+    job_name:  Optional[str] = None
+    #: EXPERIMENTAL-lane step (HST / star-anchor / round-trip supervision).
+    #: While ``experimental.EXPERIMENTAL_LANES_ENABLED`` is False these
+    #: steps are hidden from the WebUI step listing and refused by the
+    #: submit endpoint — experimental features for the future, disabled
+    #: for now. The step classes stay registered so nothing else breaks.
+    experimental: bool = False
 
     @abstractmethod
     def build_command(self, params: Dict[str, Any]) -> List[str]:
@@ -164,21 +182,20 @@ class FASRCPipelineStep(ABC):
 
     # ------------------------------------------------------------------ #
 
-    #: Subclasses override these class-level constants to control where
-    #: their log files land and how the job name is shaped. HST steps
-    #: live under ``logs/hst_pipeline``; legacy training presets live
-    #: under ``logs/jobs``. Declared as ``ClassVar`` so the dataclass
-    #: machinery doesn't promote them to per-instance fields.
+    #: Subclasses override this class-level constant to control where
+    #: their log files land. Pipeline steps live under
+    #: ``logs/hst_pipeline``; legacy training presets live under
+    #: ``logs/jobs``. Declared as ``ClassVar`` so the dataclass
+    #: machinery doesn't promote it to a per-instance field.
     log_dir_prefix:  ClassVar[str] = "logs/hst_pipeline"
-    job_name_prefix: ClassVar[str] = "hst"
 
     def banner_line(self, label: str) -> str:
         """First echo line of the sbatch banner.
 
         Overrideable so each step family stays grep-searchable in the logs
-        (``HST pipeline step:`` vs ``Web-submitted job:`` etc.).
+        (``Pipeline step:`` vs ``Web-submitted job:`` etc.).
         """
-        return f"HST pipeline step: {self.step_id} — {label}"
+        return f"Pipeline step: {self.step_id} — {label}"
 
     def build_sbatch_body(
         self,
@@ -197,7 +214,7 @@ class FASRCPipelineStep(ABC):
         """
         log_dir   = relative_log_dir or self.log_dir_prefix
         ts        = time.strftime("%Y%m%d-%H%M%S")
-        job_name  = f"{self.job_name_prefix}-{self.step_id}-{ts}"
+        job_name  = f"{self.job_name or self.step_id}-{ts}"
         return render_sbatch_body(
             job_name=job_name,
             relative_log_dir=log_dir,
@@ -369,10 +386,14 @@ def render_sbatch_body(
 # ---------------------------------------------------------------------------
 
 class HSTDownloadStep(FASRCPipelineStep):
+    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="download",
             label="1. Download COSMOS HLSP tiles",
+            job_name="hst-tiles",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=2, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -389,10 +410,14 @@ class HSTDownloadStep(FASRCPipelineStep):
 
 
 class HSTPSFExtractStep(FASRCPipelineStep):
+    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="extract_psf",
             label="2. Extract HST F814W ePSF",
+            job_name="hst-psf",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 # Peak ≈ a materialised ~500 MB HLSP tile + working copies
@@ -419,10 +444,14 @@ class HSTPSFExtractStep(FASRCPipelineStep):
 
 
 class DifferentialKernelStep(FASRCPipelineStep):
+    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="kernel",
             label="3. Build differential kernel A = E / H",
+            job_name="diff-kernel",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="4G", time_limit="0:05:00",
@@ -439,10 +468,14 @@ class DifferentialKernelStep(FASRCPipelineStep):
 
 
 class HSTTFRecordStep(FASRCPipelineStep):
+    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="tfrecords",
             label="4. Generate HST → Euclid TFRecord pairs",
+            job_name="hst-tfrecords",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
                 memory="64G", time_limit="0:10:00",
@@ -469,10 +502,14 @@ class HSTTFRecordStep(FASRCPipelineStep):
 
 
 class EuclidSkyDownloadStep(FASRCPipelineStep):
+    """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="euclid_sky_download",
             label="5a. Download real Euclid sky cutouts (round-trip)",
+            job_name="sky-cutouts",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 memory="16G", time_limit="2:00:00",
@@ -497,10 +534,14 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
 
 
 class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
+    """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="euclid_roundtrip_tfrecords",
             label="5b. Stack + chop Euclid sky cutouts into round-trip TFRecords",
+            job_name="roundtrip-tfrecords",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -525,6 +566,7 @@ class EuclidQueryStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_query",
             label="Query Euclid catalog (brightest N)",
+            job_name="star-catalog",
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="4G", time_limit="30:00",
@@ -552,6 +594,7 @@ class EuclidVerifyPhotometryStep(FASRCPipelineStep):
         super().__init__(
             step_id="euclid_verify_photometry",
             label="Verify photometry scale",
+            job_name="verify-photometry",
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="8G", time_limit="30:00",
@@ -571,6 +614,7 @@ class EuclidCutoutDownloadStep(FASRCPipelineStep):
         super().__init__(
             step_id="download_euclid_cutouts",
             label="Download Euclid star cutouts (all bands)",
+            job_name="star-cutouts",
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 memory="16G", time_limit="2:00:00",
@@ -593,6 +637,7 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         super().__init__(
             step_id="extract_euclid_psf",
             label="Extract Euclid ePSFs (all 4 bands)",
+            job_name="euclid-psf",
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 # One band's stars held in memory + n_cpus EPSFBuilders (each
@@ -645,6 +690,7 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         super().__init__(
             step_id="download_tng_skirt",
             label="Download TNG50 SKIRT atlas (all galaxies, Euclid bands)",
+            job_name="tng-atlas",
             defaults=StepResources(
                 # ~1153 multi-GB tarballs streamed, filtered to ~20 FITS each.
                 # I/O bound → many threads; generous wall-clock for the full set
@@ -728,6 +774,7 @@ class TngGridStep(FASRCPipelineStep):
         super().__init__(
             step_id="tng_grid",
             label="TNG infographic — 5×5 image grid",
+            job_name="tng-grid",
             defaults=StepResources(
                 # RGB loads up to 5×5×3 frames of 1600² (~0.8 GB) + Lupton
                 # intermediates; 16 G is comfortable headroom.
@@ -771,6 +818,7 @@ class TngStackStep(FASRCPipelineStep):
         super().__init__(
             step_id="tng_stack",
             label="TNG infographic — stacked FITS (5 viewpoints)",
+            job_name="tng-stack",
             defaults=StepResources(
                 partition="shared", n_cpus=1, n_gpus=0,
                 memory="8G", time_limit="0:20:00",
@@ -813,6 +861,7 @@ class PosterCutoutStep(FASRCPipelineStep):
         super().__init__(
             step_id="poster_cutout",
             label="Poster — random object cutout (clean 4-band FITS)",
+            job_name="poster-cutout",
             defaults=StepResources(
                 # The first run pre-filters the 10 GB COSMOS2025 master FITS to a
                 # cached .npz (the memory driver); after that it's a single cheap
@@ -840,10 +889,14 @@ class PosterCutoutStep(FASRCPipelineStep):
 
 
 class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
+    """EXPERIMENTAL (star-anchor lane) — disabled for now, kept for future work."""
+
     def __init__(self):
         super().__init__(
             step_id="euclid_star_anchor_tfrecords",
             label="Build star-anchor TFRecords (real Euclid stars → delta targets)",
+            job_name="anchor-tfrecords",
+            experimental=True,
             defaults=StepResources(
                 partition="shared", n_cpus=4, n_gpus=0,
                 memory="16G", time_limit="1:00:00",
@@ -873,10 +926,19 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
 
 
 class HSTTrainStep(FASRCPipelineStep):
+    """The WDSR training job.
+
+    The HST / star-anchor lane knobs (``n_hst`` / ``n_anchor`` / lane
+    weights) are EXPERIMENTAL and currently hidden from the WebUI form
+    (see :mod:`euclid_polish.web.experimental`); an unsubmitted knob
+    defaults to 0, so the emitted command stays synthetic-only.
+    """
+
     def __init__(self):
         super().__init__(
             step_id="train",
-            label="6. Train WDSR with HST + star-anchor mix",
+            label="Train WDSR (synthetic supervision)",
+            job_name="train",
             defaults=StepResources(
                 partition="gpu", n_cpus=4, n_gpus=1,
                 memory="32G", time_limit="24:00:00",
@@ -981,7 +1043,6 @@ class RunPipelineStep(FASRCPipelineStep):
     needs_train_knobs: bool = True
 
     log_dir_prefix:  ClassVar[str] = "logs/jobs"
-    job_name_prefix: ClassVar[str] = "euclid"
 
     def banner_line(self, label: str) -> str:
         return f"Web-submitted job: {label}"
@@ -1022,6 +1083,7 @@ class SyntheticGenerateStep(RunPipelineStep):
         super().__init__(
             step_id="synthetic_generate",
             label="Generate synthetic training pairs (CPU)",
+            job_name="synthetic-data",
             defaults=StepResources(
                 partition="shared", n_cpus=16, n_gpus=0,
                 memory="64G", time_limit="6:00:00",
@@ -1109,7 +1171,7 @@ class StepRegistry:
     def get(self, step_id: str) -> FASRCPipelineStep:
         s = self.by_id.get(step_id)
         if s is None:
-            raise KeyError(f"unknown HST pipeline step: {step_id!r}")
+            raise KeyError(f"unknown pipeline step: {step_id!r}")
         return s
 
     def all(self) -> List[FASRCPipelineStep]:

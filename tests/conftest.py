@@ -162,6 +162,20 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         pass
 
 
+@_pytest.fixture
+def experimental_lanes_on(monkeypatch):
+    """Enable the EXPERIMENTAL supervision lanes (HST / star-anchor /
+    round-trip) for one test.
+
+    Their WebUI surfaces are disabled by default (see
+    ``euclid_polish.web.experimental``); route registration reads the
+    flag at ``create_app()`` time, so request this fixture BEFORE
+    building the app in tests that exercise the lane pages/steps."""
+    from euclid_polish.web import experimental
+    monkeypatch.setattr(experimental, "EXPERIMENTAL_LANES_ENABLED", True)
+    yield
+
+
 @_pytest.fixture(autouse=True, scope="function")
 def _safe_default_ssh_state(monkeypatch):
     """Set ``STATE.ssh`` to the no-op stub before each test, unless the

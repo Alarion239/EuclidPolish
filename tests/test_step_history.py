@@ -189,7 +189,11 @@ class TestHistoryEndpoint:
 
 class TestSubmitRejectsBlankResources:
 
-    def test_blank_resources_400(self, app):
+    def test_blank_resources_400(self, app, experimental_lanes_on):
+        # ``extract_psf`` belongs to the EXPERIMENTAL HST lane (its
+        # submit is refused while disabled), but it's the only step
+        # with a server-locked CPU count — enable the lanes so this
+        # test keeps covering the fixed-cpus injection path.
         flask_app, _ = app
         r = flask_app.test_client().post(
             "/api/fasrc/hst/extract_psf/submit",

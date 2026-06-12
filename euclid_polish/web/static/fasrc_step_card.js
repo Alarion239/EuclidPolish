@@ -35,6 +35,14 @@
 (function (window) {
   "use strict";
 
+  // EXPERIMENTAL lanes (HST / star-anchor / round-trip supervision) —
+  // features for the future, disabled for now. Mirrors the Python flag in
+  // euclid_polish/web/experimental.py; keep the two in sync. While false,
+  // the training card hides the per-lane knobs (n_hst / n_anchor / lane
+  // loss + save-best weights / forward-op crop) so the submitted command
+  // stays synthetic-only (the backend defaults every hidden knob to off).
+  const EXPERIMENTAL_LANES = false;
+
   const RESOURCE_FIELDS = ['partition', 'n_cpus', 'n_gpus', 'memory', 'time_limit'];
 
   function escapeHtml(s) {
@@ -69,6 +77,12 @@
   // the cheapest DRY win.)
 
   function taskFields(step) {
+    // NOTE: the cases for the EXPERIMENTAL-lane steps (download,
+    // extract_psf, kernel, tfrecords, euclid_sky_download,
+    // euclid_roundtrip_tfrecords, euclid_star_anchor_tfrecords) are
+    // unreachable while EXPERIMENTAL_LANES is false — those steps are
+    // omitted from /api/fasrc/hst/status and their page mounts are gone.
+    // Kept so re-enabling the lanes restores the cards unchanged.
     switch (step.step_id) {
       case 'download':
         return `
@@ -364,26 +378,18 @@ large cutout don't leak across train/validate."></label>`;
   }
 
   function _hstTrainFields() {
-    return `
-      <label>Training steps
-        <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
-      <label># synthetic / batch
-        <input type="number" name="n_syn" value="4" min="1" max="256"
-               title="Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_anchor] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge."></label>
+    // EXPERIMENTAL-lane knobs (HST / star-anchor supervision) — disabled
+    // for now, kept for future work. While EXPERIMENTAL_LANES is false
+    // none of these reach the form; the backend defaults every one of
+    // them to "lane off", so the submitted training job is synthetic-only.
+    const laneBatchFields = !EXPERIMENTAL_LANES ? '' : `
       <label># HST / batch
         <input type="number" name="n_hst" value="0" min="0" max="256"
                title="HST examples per batch — the SR=sky lane |asinh(H⊛SR) − HST_image|. 0 disables it. Needs the HST records (records_v2_hst) + the F814W ePSF. A whole integer, so no rounding surprises: e.g. 1 HST per 4 synthetic = 20% HST."></label>
       <label># star-anchor / batch
         <input type="number" name="n_anchor" value="0" min="0" max="256"
-               title="Star-anchor examples per batch — operator-free masked |SR − delta| at the catalog star pixel (pins real Euclid stars to points of known flux; no PSF). 0 disables it. Needs the star-anchor records (records_v2_star_anchor)."></label>
-      <label>Learning rate
-        <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
-               placeholder="blank = 1e-3→5e-4 schedule"
-               title="Constant Adam LR for the whole run (e.g. 0.001). Leave blank for the default two-phase schedule 1e-3 → 5e-4 at steps//2. Constant is simpler for an exploratory restart; the decay gives a slightly sharper final result. Scale up with a larger batch."></label>
-      <label>SR non-negativity λ
-        <input type="number" name="nonneg_sr_weight" value="" step="0.5" min="0" max="100"
-               placeholder="blank = config default"
-               title="Weight of the SR non-negativity penalty λ·mean(relu(-SR)) added to the loss. SR is the model's single sky output, so this constrains all three lanes toward physical (≥0) flux at once. Blank = the config default (1.0); 0 disables. Tune by watching the negative-pixel fraction — raise if negatives persist, lower if it flattens faint structure."></label>
+               title="Star-anchor examples per batch — operator-free masked |SR − delta| at the catalog star pixel (pins real Euclid stars to points of known flux; no PSF). 0 disables it. Needs the star-anchor records (records_v2_star_anchor)."></label>`;
+    const laneWeightFields = !EXPERIMENTAL_LANES ? '' : `
       <label>Loss weight · synthetic
         <input type="number" name="synthetic_loss_weight" value="1" step="0.5" min="0" max="100"
                title="Per-example TRAINING-loss multiplier for synthetic records. 1 = default; raise to up-weight that source's gradient, 0 to ablate (kept in the batch mix but zero gradient)."></label>
@@ -404,9 +410,26 @@ large cutout don't leak across train/validate."></label>`;
                title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
       <label>Save-best w·star-anchor
         <input type="number" name="save_best_w_anchor" value="0" step="0.5" min="0" max="100"
-               title="Weight of the star-anchor PSNR (dB, ADDED — higher is better) in the composite save-best score. Masked to the star pixel; on the same dB scale as the other two PSNRs. Default 0 = monitored only."></label>
+               title="Weight of the star-anchor PSNR (dB, ADDED — higher is better) in the composite save-best score. Masked to the star pixel; on the same dB scale as the other two PSNRs. Default 0 = monitored only."></label>`;
+    const nSynTitle = EXPERIMENTAL_LANES
+      ? 'Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_anchor] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge.'
+      : 'Examples per batch (|SR − scene| on synthetic pairs). Must be ≥ 1. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge.';
+    return `
+      <label>Training steps
+        <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
+      <label>${EXPERIMENTAL_LANES ? '# synthetic / batch' : 'Batch size'}
+        <input type="number" name="n_syn" value="4" min="1" max="256"
+               title="${nSynTitle}"></label>${laneBatchFields}
+      <label>Learning rate
+        <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
+               placeholder="blank = 1e-3→5e-4 schedule"
+               title="Constant Adam LR for the whole run (e.g. 0.001). Leave blank for the default two-phase schedule 1e-3 → 5e-4 at steps//2. Constant is simpler for an exploratory restart; the decay gives a slightly sharper final result. Scale up with a larger batch."></label>
+      <label>SR non-negativity λ
+        <input type="number" name="nonneg_sr_weight" value="" step="0.5" min="0" max="100"
+               placeholder="blank = config default"
+               title="Weight of the SR non-negativity penalty λ·mean(relu(-SR)) added to the loss, constraining the sky estimate toward physical (≥0) flux. Blank = the config default (1.0); 0 disables. Tune by watching the negative-pixel fraction — raise if negatives persist, lower if it flattens faint structure."></label>${laneWeightFields}
       <label class="checkbox-field" style="flex-basis:100%;"
-             title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change (e.g. new output head / lane counts), when the old score is meaningless. No effect on a fresh run.">
+             title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change, when the old score is meaningless. No effect on a fresh run.">
         <input type="checkbox" name="overwrite_best" value="1">
         Overwrite previous best (skip resume baseline)</label>
       <label class="checkbox-field" style="flex-basis:100%;"
@@ -753,17 +776,18 @@ large cutout don't leak across train/validate."></label>`;
         `Change Partition to "gpu" (or "gpu_test" for short jobs) ` +
         `before submitting.\n`;
     }
-    // Fixed-layout batch sanity for the train step: the synthetic lane
-    // must have ≥1 row (it's always on) and the total batch must be ≥1.
+    // Batch sanity for the train step: the synthetic batch must be ≥1.
+    // (With EXPERIMENTAL_LANES off the hidden HST / star-anchor counts
+    // never reach the form and parse to 0 here.)
     if (stepId === 'train') {
       const nSyn = parseInt(body.get('n_syn') ?? '0', 10) || 0;
       const nHst = parseInt(body.get('n_hst') ?? '0', 10) || 0;
       const nAnchor = parseInt(body.get('n_anchor') ?? '0', 10) || 0;
       if (nSyn < 1) {
         warning +=
-          `\n⚠️  WARNING: # synthetic = ${nSyn}, but the synthetic lane is ` +
-          `always required (≥ 1). The job aborts at startup.\n`;
-      } else {
+          `\n⚠️  WARNING: batch size = ${nSyn}, but it must be ≥ 1. ` +
+          `The job aborts at startup.\n`;
+      } else if (EXPERIMENTAL_LANES) {
         // Friendly confirmation of the resulting batch composition.
         const batch = nSyn + nHst + nAnchor;
         warning +=
