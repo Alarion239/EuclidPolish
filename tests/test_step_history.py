@@ -204,8 +204,11 @@ class TestSubmitRejectsBlankResources:
         assert body["ok"] is False
         assert "resource field" in body["error"]
         # The error message must name the fields the user needs to fill.
-        # ``n_cpus`` is server-locked for extract_psf (the step's CPU count is
-        # fixed and the server injects it before validation), so it isn't in
-        # the list of fields the user is asked to supply.
-        for f in ("partition", "n_gpus", "memory", "time_limit"):
+        # ``n_cpus`` is server-locked for extract_psf (the step's CPU count
+        # is fixed) and ``partition`` is fixed per job type — both are
+        # injected server-side before validation, so neither is in the
+        # list of fields the user is asked to supply.
+        for f in ("n_gpus", "memory", "time_limit"):
             assert f in body["error"]
+        assert "partition" not in body["error"]
+        assert "n_cpus" not in body["error"]

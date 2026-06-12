@@ -367,6 +367,8 @@ def register(app):
                 step = STEP_REGISTRY.get("synthetic_generate")
                 step_ref = "synthetic_generate"
             resources = StepResources.from_form(form, step.defaults)
+            # Partition is fixed per job type — never taken from the form.
+            resources.partition = step.defaults.partition
             params = {
                 "n_train":     int(form.get("n_train",    cfg.n_train)),
                 "n_valid":     int(form.get("n_valid",    cfg.n_valid)),
@@ -382,9 +384,12 @@ def register(app):
             return fasrc_jobs.submit_sbatch_script(
                 STATE.ssh, cfg=cfg, built=built, label=label,
                 params=params, step_id=step.step_id)
-        # HST pipeline step
+        # Pipeline step
         step = STEP_REGISTRY.get(step_ref)
         form2 = dict(form)
+        # Partition is fixed per job type — force the step's value even on
+        # queued specs built from an older form.
+        form2["partition"] = step.defaults.partition
         if step.fixed_cpus is not None:
             form2["n_cpus"] = str(step.fixed_cpus)
         resources = StepResources.from_form_strict(form2)
@@ -637,6 +642,12 @@ def register(app):
         confirm_err = _require_confirm(form)
         if confirm_err is not None:
             return confirm_err
+
+        # The partition is determined by the job type (gpu for training,
+        # shared for everything else) — it is not a form question. Force
+        # the step's partition regardless of what the form sent, BEFORE
+        # the strict parse (which requires the field).
+        form["partition"] = step.defaults.partition
 
         # A step with a locked CPU count renders the field as read-only
         # text, so the form may not carry ``n_cpus`` at all. Inject the

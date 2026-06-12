@@ -440,13 +440,25 @@ large cutout don't leak across train/validate."></label>`;
 
   // ── Resource-field markup ──────────────────────────────────────────
   //
-  // Resource inputs start EMPTY. Either the history-driven prefill
-  // (fetchHistoryAndPrefill) fills them from a past matching successful
-  // run, or the user types values explicitly. The submit route rejects
-  // blanks via StepResources.from_form_strict — no silent fallback.
+  // Editable resource inputs start EMPTY. Either the history-driven
+  // prefill (fetchHistoryAndPrefill) fills them from a past matching
+  // successful run, or the user types values explicitly. The submit
+  // route rejects blanks via StepResources.from_form_strict — no silent
+  // fallback. Partition (and a locked CPU/GPU count where applicable)
+  // is NOT a question: it's fixed per job type and injected/forced
+  // server-side.
 
   function resourceFields(step) {
     const d = step.defaults;
+    // The partition is determined by the job, not asked: each step runs
+    // on exactly one partition (gpu for training, shared for everything
+    // else). A hidden input keeps the strict server parse satisfied and
+    // the server forces the step's partition regardless of what a stale
+    // form might send.
+    const partitionField = `
+      <input type="hidden" name="partition" value="${d.partition}">
+      <span class="muted" title="the partition is fixed per job type">
+        Partition: <b>${d.partition}</b></span>`;
     // Locked CPU steps still emit ``n_cpus`` via a hidden input (same as
     // the GPU field below) — otherwise the value is never submitted and
     // StepResources.from_form_strict rejects the missing required field.
@@ -456,19 +468,16 @@ large cutout don't leak across train/validate."></label>`;
       : `<label>CPUs
           <input type="number" name="n_cpus" min="1" max="64"
                  placeholder="e.g. ${d.n_cpus}"></label>`;
-    // GPU field is hidden + locked to 0 for CPU-only steps. The form
-    // still emits ``n_gpus=0`` via a hidden input so StepResources.from
-    // _form_strict doesn't reject the submission for the missing field.
+    // GPU count is only a question on GPU-partition jobs (training);
+    // CPU/shared-partition jobs emit a hidden ``n_gpus=0`` with no
+    // visible field at all.
     const gpuField = step.needs_gpu
       ? `<label>GPUs
           <input type="number" name="n_gpus" min="0" max="8"
                  placeholder="e.g. ${d.n_gpus}"></label>`
-      : `<input type="hidden" name="n_gpus" value="0">
-         <span class="muted" title="this step is CPU-only">GPUs: <b>0</b> (locked)</span>`;
+      : `<input type="hidden" name="n_gpus" value="0">`;
     return `
-      <label>Partition
-        <input type="text" name="partition" size="8"
-               placeholder="e.g. ${d.partition}"></label>
+      ${partitionField}
       ${cpuField}
       ${gpuField}
       <label>Memory
@@ -763,19 +772,9 @@ large cutout don't leak across train/validate."></label>`;
       if (v == null || v === '') continue;
       summary.push(`  ${k} = ${v}`);
     }
-    const n_gpus_val   = parseInt(body.get('n_gpus') ?? '0', 10);
-    const partition_val = (body.get('partition') ?? '').trim();
-    const cpuOnlyPartitions = ['shared', 'serial_requeue', 'test'];
+    // (The old GPUs-on-a-CPU-partition warning is gone: the partition is
+    // no longer user-editable — it's fixed per job type server-side.)
     let warning = '';
-    if (n_gpus_val > 0 && cpuOnlyPartitions.includes(partition_val)) {
-      warning =
-        `\n⚠️  WARNING: you asked for ${n_gpus_val} GPU(s) on the ` +
-        `"${partition_val}" partition, which is CPU-only on FASRC. ` +
-        `sbatch will reject this with "Requested node configuration ` +
-        `is not available".\n` +
-        `Change Partition to "gpu" (or "gpu_test" for short jobs) ` +
-        `before submitting.\n`;
-    }
     // Batch sanity for the train step: the synthetic batch must be ≥1.
     // (With EXPERIMENTAL_LANES off the hidden HST / star-anchor counts
     // never reach the form and parse to 0 here.)

@@ -888,6 +888,51 @@ class TestFixedCpusEnforcement:
         # 8 appears as the worker count somewhere in the rendered body.
         assert any("8" in c for c in writes)
 
+    def test_partition_forced_to_step_default(self, monkeypatch,
+                                              experimental_lanes_on):
+        """The partition is determined by the job type — a form-supplied
+        value (stale tab, manual POST) is overridden by the step's
+        partition before anything reaches sbatch."""
+        from euclid_polish.web.app import create_app
+        self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        r = client.post(
+            "/api/fasrc/hst/tfrecords/submit",
+            data={
+                "confirm": "yes",
+                "partition": "gpu",          # wrong on purpose
+                "n_cpus": "16", "n_gpus": "0",
+                "n_train": "100", "n_valid": "10", "image_size": "256",
+                "memory": "64G", "time_limit": "1:00:00",
+            },
+        )
+        j = r.get_json()
+        assert r.status_code == 200 and j["ok"]
+        assert j["params"]["partition"] == "shared"   # the step's partition
+
+    def test_partition_not_required_in_form(self, monkeypatch,
+                                            experimental_lanes_on):
+        """With the partition question removed from the cards, a form
+        without the field must still submit — the server injects the
+        step's partition before the strict resource parse."""
+        from euclid_polish.web.app import create_app
+        self._stub_ssh(monkeypatch)
+        app = create_app()
+        client = app.test_client()
+        r = client.post(
+            "/api/fasrc/hst/tfrecords/submit",
+            data={
+                "confirm": "yes",            # NO partition field at all
+                "n_cpus": "16", "n_gpus": "0",
+                "n_train": "100", "n_valid": "10", "image_size": "256",
+                "memory": "64G", "time_limit": "1:00:00",
+            },
+        )
+        j = r.get_json()
+        assert r.status_code == 200 and j["ok"]
+        assert j["params"]["partition"] == "shared"
+
     def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch,
                                             experimental_lanes_on):
         from euclid_polish.web.app import create_app
