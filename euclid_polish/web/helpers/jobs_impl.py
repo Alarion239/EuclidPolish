@@ -193,14 +193,22 @@ def _job_generate_reconstruct(
                 print(f"  ⚠ forward(SR) failed: {e}")
 
             stem = f"gensynth_{hr_image_size}px_idx{lr_img.index:04d}"
-            out = os.path.join(out_dir, stem + ".png")
-            plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
-                                output_path=out,
-                                lr_cube=lr_cube_for_color,
-                                hr_cube=hr_cube_for_color,
-                                asinh_scale=asinh_scale,
-                                predicted_dirty=predicted,
-                                residual=residual)
+            # TWO colored reconstructions per scene — the same LR | SR | HR
+            # figure rendered once per color regime: "eye" (physical
+            # blackbody-T colors, absolute) and "solar" (solar-balanced
+            # adaptive windows). Both land in the gallery side by side.
+            scene_pngs = []
+            for regime, mode in (("eye", "eye"), ("solar", "calibrated")):
+                out = os.path.join(out_dir, f"{stem}_{regime}.png")
+                plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
+                                    output_path=out,
+                                    lr_cube=lr_cube_for_color,
+                                    hr_cube=hr_cube_for_color,
+                                    asinh_scale=asinh_scale,
+                                    predicted_dirty=predicted,
+                                    residual=residual,
+                                    rgb_mode=mode)
+                scene_pngs.append(out)
 
             def _write_fits(path: str, data2d, label: str) -> None:
                 if data2d is None:
@@ -252,16 +260,19 @@ def _job_generate_reconstruct(
                     overwrite=True, output_verify="silentfix")
             _write_fits(os.path.join(syn_dir, "SR.fits"), sr_data, "SR")
             _write_fits(os.path.join(syn_dir, "HR.fits"), hr_data, "HR clean")
-            # Purge superseded / deprecated per-scene flat FITS from old runs.
+            # Purge superseded / deprecated per-scene flat FITS + the old
+            # single-regime PNG naming from previous runs.
             for _stale in (stem + "_lr.fits", stem + "_hr.fits",
-                           stem + "_srforward.fits", stem + "_residual.fits"):
+                           stem + "_srforward.fits", stem + "_residual.fits",
+                           stem + ".png"):
                 try:
                     os.remove(os.path.join(out_dir, _stale))
                 except OSError:
                     pass
-            out_paths.append(out)
+            out_paths.extend(scene_pngs)
             cap.tick(k + 2, total, f"reconstructed scene {lr_img.index}")
-            print(f"  ✓ {out}")
+            for out in scene_pngs:
+                print(f"  ✓ {out}")
         return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
     finally:
         # Best-effort cleanup: remote throwaway dir + local temp pull.
@@ -514,18 +525,26 @@ def _job_reconstruct_euclid_cutout(
             os.remove(stale)
         except OSError:
             pass
-    out_path = os.path.join(out_dir, "euclid_latest.png")
-    plot_reconstruction(lr_vis, sr_data, hr_data=None,
-                        output_path=out_path, lr_cube=lr_cube,
-                        asinh_scale=asinh_scale,
-                        show_all_bands=show_all_bands,
-                        predicted_dirty=predicted_dirty,
-                        residual=residual)
+    # TWO colored LR → SR renders — the same figure once per color regime:
+    # "eye" (physical blackbody-T colors, absolute) and "solar"
+    # (solar-balanced adaptive windows). Both appear in the gallery.
+    out_pngs = []
+    for regime, mode in (("eye", "eye"), ("solar", "calibrated")):
+        out_path = os.path.join(out_dir, f"euclid_latest_{regime}.png")
+        plot_reconstruction(lr_vis, sr_data, hr_data=None,
+                            output_path=out_path, lr_cube=lr_cube,
+                            asinh_scale=asinh_scale,
+                            show_all_bands=show_all_bands,
+                            predicted_dirty=predicted_dirty,
+                            residual=residual,
+                            rgb_mode=mode)
+        out_pngs.append(out_path)
+        print(f"  ✓ {out_path}")
     cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 3,
-             len(Config.LR_INPUT_BAND_NAMES) + 3, "saved PNG")
-    print(f"  ✓ {out_path}")
+             len(Config.LR_INPUT_BAND_NAMES) + 3, "saved PNGs")
     return {
-        "output_path":  out_path,
+        "output_path":  out_pngs[0],
+        "output_paths": out_pngs,
         "cache_dir":    cache_dir,
         "sr_fits_path": sr_fits_path,
         "ra":           ra,

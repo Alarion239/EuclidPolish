@@ -1274,3 +1274,31 @@ def test_inference_lists_synthetic_runs_and_drops_deprecated(client, tmp_path, m
     # deprecated files are NOT listed anywhere, though they exist on disk
     assert "SR_forward.fits" not in body
     assert "residual.fits" not in body
+
+
+def test_inference_gallery_links_fits_for_regime_pair(client, tmp_path, monkeypatch):
+    """The synthetic job writes one SR FITS per scene but TWO PNGs
+    (…_eye.png / …_solar.png); both gallery thumbnails must link the
+    shared sidecar FITS."""
+    rdir = tmp_path / "vis" / "reconstruction"
+    rdir.mkdir(parents=True)
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    monkeypatch.setattr(Config, "VIS_RECONSTRUCTION_DIR", str(rdir))
+    stem = "gensynth_510px_idx0001"
+    minimal_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\rIDATx\x9cc\xfc\xcf\xc0\x00\x00\x00\x03\x00\x01\x9b\xc8"
+        b"\x9d\xed\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    for regime in ("eye", "solar"):
+        (rdir / f"{stem}_{regime}.png").write_bytes(minimal_png)
+    (rdir / f"{stem}.fits").write_bytes(b"SIMPLE  =                    T")
+
+    r = client.get("/inference")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Both regime PNGs are in the gallery and both link the one FITS.
+    assert f"{stem}_eye.png" in body
+    assert f"{stem}_solar.png" in body
+    assert body.count(f"{stem}.fits") >= 2

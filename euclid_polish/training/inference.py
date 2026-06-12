@@ -433,6 +433,7 @@ def plot_reconstruction(
     show_all_bands: bool = False,
     predicted_dirty: Optional[np.ndarray] = None,
     residual: Optional[np.ndarray] = None,
+    rgb_mode: str = "eye",
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -451,16 +452,30 @@ def plot_reconstruction(
     When HR is missing, falls back to a 2 × 3 LR/SR layout (raw + asinh
     + optional LR color).
 
-    Color composites: SR and HR render in the PHYSICAL "eye" mode
-    (per-pixel blackbody color temperature → CIE Planckian-locus hue,
-    absolute luminance keyed to the asinh knee — see
-    :func:`euclid_polish.visualization.color.eye_rgb`). The transform is
-    image-independent, so an SR-vs-HR hue difference is a reconstruction
-    error, never a rendering artifact; a blackbody-T legend strip under
-    the asinh HR (or SR) panel translates hue back to SED temperature.
-    The residual / metric panels stay on the VIS channel (channel 0) so
+    Color composites: SR and HR render in the regime picked by
+    ``rgb_mode``:
+
+      * ``"eye"`` (default) — the PHYSICAL mode (per-pixel blackbody
+        color temperature → CIE Planckian-locus hue, absolute luminance
+        keyed to the asinh knee — see
+        :func:`euclid_polish.visualization.color.eye_rgb`). The
+        transform is image-independent, so an SR-vs-HR hue difference is
+        a reconstruction error, never a rendering artifact; a
+        blackbody-T legend strip under the asinh HR (or SR) panel
+        translates hue back to SED temperature.
+      * ``"calibrated"`` — the solar-balanced adaptive mode (per-image
+        [p1, p99.5] windows), the depth-adaptive rendering the /sky
+        record viewer's "solar" chip uses.
+
+    Inference jobs render the SAME figure once per regime so both
+    color readings sit side-by-side in the gallery. The residual /
+    metric panels stay on the VIS channel (channel 0) regardless, so
     the numbers remain comparable with historical single-band runs.
     """
+    if rgb_mode not in ("eye", "calibrated"):
+        raise ValueError(
+            f"rgb_mode must be 'eye' or 'calibrated'; got {rgb_mode!r}"
+        )
     # Asinh-stretch knee used in every "asinh" panel of this plot. The
     # caller can override per-run from the UI (especially useful on
     # real Euclid cutouts where the source-to-sky brightness ratio is
@@ -479,16 +494,21 @@ def plot_reconstruction(
                else None)
     sr_vis = sr_cube[..., 0] if sr_cube is not None else np.asarray(sr_data)
 
+    # Regime tag in the figure title so the eye / solar renders of the
+    # same scene are distinguishable in the gallery.
+    regime_note = ("" if sr_cube is None else
+                   (" — eye color" if rgb_mode == "eye" else " — solar color"))
+
     def _add_sr_panel(vis_obj, stretch, temp_legend=False):
-        """SR panel — physical "eye" color when the 4-band cube exists
-        (per-pixel blackbody T → Planckian-locus hue, absolute luminance
-        keyed to the asinh knee), else grayscale. The eye transform is
-        image-independent, so SR and HR hues are directly comparable."""
+        """SR panel — color in the requested ``rgb_mode`` when the 4-band
+        cube exists, else grayscale. The blackbody-T legend only applies
+        to the eye regime."""
         if sr_cube is not None:
             vis_obj.add_rgb_scale_panel(
                 sr_cube, stretch=stretch, asinh_scale=shared_scale,
                 title_suffix="\nReconstruction (SR)",
-                rgb_mode="eye", temp_legend=temp_legend)
+                rgb_mode=rgb_mode,
+                temp_legend=temp_legend and rgb_mode == "eye")
         else:
             kw = {"asinh_scale": shared_scale} if stretch == "asinh" else {}
             vis_obj.add_scale_panel(sr_vis, stretch=stretch,
@@ -544,8 +564,8 @@ def plot_reconstruction(
                         title_suffix=f"\nSR · {name}",
                         cmap="gray",
                     )
-            plt.suptitle("Super-Resolution Reconstruction (per-band view)",
-                         fontsize=16)
+            plt.suptitle("Super-Resolution Reconstruction (per-band view)"
+                         + regime_note, fontsize=16)
             vis.save_figure(output_path)
             return
 
@@ -597,7 +617,8 @@ def plot_reconstruction(
                 residual, stretch="asinh", asinh_scale=shared_scale,
                 title_suffix="\nResidual = Dirty − Predicted",
             )
-        plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
+        plt.suptitle("Super-Resolution Reconstruction" + regime_note,
+                     fontsize=16)
         vis.save_figure(output_path)
         return
 
@@ -635,7 +656,7 @@ def plot_reconstruction(
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="linear",
                                 title_suffix="\nTrue Sky (HR)",
-                                rgb_mode="eye")
+                                rgb_mode=rgb_mode)
     else:
         vis.add_scale_panel(hr_data, stretch="linear",
                             title_suffix="\nTrue Sky (HR)")
@@ -651,12 +672,13 @@ def plot_reconstruction(
                         cmap="gray")
     _add_sr_panel(vis, "asinh")
     if hr_color:
-        # Temperature legend on the asinh HR panel — one hue ↔ T_eff
-        # dictionary serves every eye panel in the figure.
+        # Temperature legend on the asinh HR panel (eye regime only) —
+        # one hue ↔ T_eff dictionary serves every eye panel.
         vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
                                 asinh_scale=shared_scale,
                                 title_suffix="\nTrue Sky (HR)",
-                                rgb_mode="eye", temp_legend=True)
+                                rgb_mode=rgb_mode,
+                                temp_legend=(rgb_mode == "eye"))
     else:
         vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nTrue Sky (HR)")
@@ -693,5 +715,6 @@ def plot_reconstruction(
         "include_data_stats": False,
     })
 
-    plt.suptitle("Super-Resolution Reconstruction", fontsize=16)
+    plt.suptitle("Super-Resolution Reconstruction" + regime_note,
+                 fontsize=16)
     vis.save_figure(output_path)

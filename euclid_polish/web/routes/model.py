@@ -45,9 +45,16 @@ def register(app):
                 except OSError:
                     continue
                 rel = os.path.relpath(full, Config.VIS_DIR)
-                # Synthetic path saves PNG + same-stem FITS in this dir.
+                # Synthetic path saves one SR FITS per scene next to the
+                # PNGs. PNGs come in color-regime pairs ("…_eye.png" /
+                # "…_solar.png") sharing one FITS — strip the regime
+                # suffix before looking the sidecar up.
                 fits_rel = None
                 stem = os.path.splitext(fname)[0]
+                for suffix in ("_eye", "_solar"):
+                    if stem.endswith(suffix):
+                        stem = stem[: -len(suffix)]
+                        break
                 fits_local = os.path.join(rdir, f"{stem}.fits")
                 if os.path.isfile(fits_local):
                     fits_rel = os.path.relpath(fits_local, Config.VIS_DIR)
