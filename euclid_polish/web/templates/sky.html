@@ -6,7 +6,7 @@
   <span class="toolbar-label">Type</span>
   <a class="chip" data-group="kind" data-value="clean">clean (4-band)</a>
   <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
-  <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
+  <a class="chip" data-group="kind" data-value="hr">HR target (4-band)</a>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
   <a class="chip" data-group="subset" data-value="validate">validate</a>
@@ -15,7 +15,12 @@
     <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
   {% endfor %}
   <a class="chip" data-group="band" data-value="color"
-     title="4-band Lupton RGB (solar-balanced; clean/dirty only)">🎨 color</a>
+     title="4-band color composite (pick the rendering with the mode chips)">🎨 color</a>
+  <span class="toolbar-label">Color mode</span>
+  <a class="chip" data-group="cmode" data-value="calibrated"
+     title="Solar-balanced, per-image [p1, p99.5] adaptive windows — auto-adapts to each record's depth (good for browsing).">🎨 solar</a>
+  <a class="chip" data-group="cmode" data-value="eye"
+     title="PHYSICAL mode: per-pixel blackbody temperature → CIE Planckian-locus hue, absolute brightness — colors read like the night sky (Sun-like ≈ white, cool ≈ orange, hot ≈ blue) and are directly comparable across records. Shows a blackbody-T legend.">👁 eye</a>
   <span class="toolbar-label">Index</span>
   <button class="chip" id="idx-prev">‹</button>
   <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
@@ -114,9 +119,11 @@ polishUI.viz.bind({
   buildUrl:  (sel) => {
     // Side-effect: keep the inspect link in sync with the viewer state.
     setTimeout(updateInspectLink, 0);
-    return `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`;
+    return `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}`
+         + `&i=${sel.i}&cmode=${sel.cmode}`;
   },
-  initial:   { kind: "clean", subset: "validate", band: "VIS", i: 0 },
+  initial:   { kind: "clean", subset: "validate", band: "VIS", i: 0,
+               cmode: "calibrated" },
 });
 updateInspectLink();
 

@@ -6,7 +6,9 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.visualization.color import (
+    calibrated_rgb_panel, eye_rgb, planck_color_strip,
+)
 from euclid_polish.visualization.methods import plot_star_positions
 from flask import abort
 from typing import Any
@@ -100,7 +102,8 @@ def _export_sky_record_fits(
 
 def _render_sky_record_png(subset: str, kind: str, band: str,
                            index: int,
-                           records_dir: Optional[str] = None) -> bytes:
+                           records_dir: Optional[str] = None,
+                           color_mode: str = "calibrated") -> bytes:
     """Render one image from the multi-band TFRecords.
 
     ``records_dir`` defaults to ``Config.RECORDS_DIR_V2`` (the locally-
@@ -117,9 +120,17 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         legacy pre-4-band records carry 1 VIS channel)
     ``band``:
       * one of ``Config.LR_INPUT_BAND_NAMES`` → grayscale asinh of that band
-      * ``"color"`` → 4-band Lupton RGB (solar-balanced). Requires the
-        record to carry all four bands; a legacy 1-channel ``hr``
-        record falls back to VIS grayscale.
+      * ``"color"`` → 4-band composite. Requires the record to carry all
+        four bands; a legacy 1-channel ``hr`` record falls back to VIS
+        grayscale.
+    ``color_mode`` (color band only):
+      * ``"calibrated"`` (default) — solar-balanced, per-image
+        ``[p1, p99.5]`` adaptive windows (good for browsing arbitrary
+        depths).
+      * ``"eye"`` — the PHYSICAL mode: per-pixel blackbody temperature →
+        CIE Planckian-locus hue, absolute luminance — reads like the
+        night sky and is comparable across records; drawn with the
+        blackbody-T legend strip.
     """
     matplotlib.use("Agg")
 
@@ -128,6 +139,8 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     if kind not in ("clean", "dirty", "hr"):
         abort(400)
     if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
+        abort(400)
+    if color_mode not in ("calibrated", "eye"):
         abort(400)
     name = f"{kind}_{subset}"
     path = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
@@ -142,27 +155,54 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
     data = img.data
 
     if band == "color" and data.shape[-1] >= len(Config.LR_INPUT_BAND_NAMES):
-        # 4-band solar-balanced RGB with per-channel [p1, p99.5]
-        # normalisation — same dynamic-range convention as the
-        # grayscale single-band panels in the rest of the sky tab.
-        # ``clean`` records live on the HR grid (band-independent
-        # asinh-stretch knee unspecified) — use the VIS knee as the
-        # shared reference, matching how the rest of the UI treats HR.
-        rgb = calibrated_rgb_panel(
-            data, band_names=Config.LR_INPUT_BAND_NAMES,
-            scheme="vis_nisp", reference="solar",
-            stretch="asinh",
-            asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
-        )
+        if color_mode == "eye":
+            # PHYSICAL mode: blackbody T → Planckian-locus hue, absolute
+            # luminance keyed to the training stretch knee — colors read
+            # like the night sky and are comparable across records.
+            rgb = eye_rgb(
+                data, band_names=Config.LR_INPUT_BAND_NAMES,
+                stretch="asinh",
+                asinh_scale_e=float(Config.STRETCH_SCALE_E),
+            )
+            mode_note = "eye (Planck T)"
+        else:
+            # 4-band solar-balanced RGB with per-channel [p1, p99.5]
+            # normalisation — same dynamic-range convention as the
+            # grayscale single-band panels in the rest of the sky tab.
+            # ``clean`` records live on the HR grid (band-independent
+            # asinh-stretch knee unspecified) — use the VIS knee as the
+            # shared reference, matching how the rest of the UI treats HR.
+            rgb = calibrated_rgb_panel(
+                data, band_names=Config.LR_INPUT_BAND_NAMES,
+                scheme="vis_nisp", reference="solar",
+                stretch="asinh",
+                asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
+            )
+            mode_note = "solar"
         fig, ax = plt.subplots(figsize=(6.5, 6.5))
         ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
                   interpolation="nearest")
         ax.set_title(
-            f"{kind} {subset} · color (4-band, solar) · idx {img.index}  "
+            f"{kind} {subset} · color (4-band, {mode_note}) · idx {img.index}  "
             f"({data.shape[0]}×{data.shape[1]} @ "
             f"{img.pixel_scale_arcsec:.3f}\"/pix)", fontsize=10,
         )
         ax.set_xticks([]); ax.set_yticks([])
+        if color_mode == "eye":
+            # Hue ↔ blackbody-temperature legend strip.
+            strip, temps = planck_color_strip()
+            lax = ax.inset_axes([0.0, -0.085, 1.0, 0.03])
+            lax.imshow(strip, aspect="auto", origin="lower",
+                       extent=[0, len(temps) - 1, 0, 1])
+            log_t = np.log(temps)
+            ticks_k = [3000, 4000, 6000, 10000, 20000]
+            lax.set_xticks([
+                float(np.interp(np.log(t), log_t, np.arange(len(temps))))
+                for t in ticks_k
+            ])
+            lax.set_xticklabels([f"{t // 1000}k" for t in ticks_k], fontsize=7)
+            lax.set_yticks([])
+            lax.set_xlabel("blackbody T (K)", fontsize=8, labelpad=1)
         fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")

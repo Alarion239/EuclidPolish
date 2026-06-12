@@ -57,6 +57,9 @@ def register(app):
         subset = request.args.get("subset", "validate")
         kind   = request.args.get("kind",   "clean")
         band   = request.args.get("band",   "VIS")
+        # Color-composite mode: "calibrated" (adaptive solar) or "eye"
+        # (physical blackbody-T colors). Only meaningful for band=color.
+        cmode  = request.args.get("cmode",  "calibrated")
         try:
             idx = int(request.args.get("i", 0))
         except ValueError:
@@ -65,6 +68,7 @@ def register(app):
         # /api/sky/sync), not the local data dir.
         png = _render_sky_record_png(
             subset, kind, band, idx, records_dir=_sky_records_local_dir(),
+            color_mode=cmode,
         )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 

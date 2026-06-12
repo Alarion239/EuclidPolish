@@ -757,6 +757,40 @@ def test_view_sky_invalid_kind_400(client):
     assert r.status_code == 400
 
 
+def test_view_sky_invalid_color_mode_400(client):
+    r = client.get("/view/sky?subset=train&kind=clean&band=color&i=0&cmode=BOGUS")
+    assert r.status_code == 400
+
+
+def test_view_sky_renders_color_modes(client, tmp_path, monkeypatch):
+    """The /sky color view renders both composite modes: 'calibrated'
+    (adaptive solar) and 'eye' (physical blackbody-T colors with the
+    temperature legend)."""
+    import numpy as np
+    from euclid_polish.sky.tfrecord import write_multiband_skyimages
+    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.web.helpers import paths as web_paths
+
+    rng = np.random.default_rng(0)
+    img = MultiBandSkyImage(
+        data=(np.abs(rng.normal(size=(24, 24, 4))) * 500.0).astype(np.float32),
+        pixel_scale_arcsec=0.05,
+        band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
+    write_multiband_skyimages([img], "clean_validate",
+                              records_dir=str(tmp_path))
+    monkeypatch.setattr(web_paths, "_sky_records_local_dir",
+                        lambda: str(tmp_path))
+    # The route imported the helper by name; patch its reference too.
+    from euclid_polish.web.routes import views as views_mod
+    monkeypatch.setattr(views_mod, "_sky_records_local_dir",
+                        lambda: str(tmp_path))
+    for cmode in ("calibrated", "eye"):
+        r = client.get(f"/view/sky?subset=validate&kind=clean&band=color"
+                       f"&i=0&cmode={cmode}")
+        assert r.status_code == 200, cmode
+        assert r.data[:8] == b"\x89PNG\r\n\x1a\n", cmode
+
+
 def test_view_sky_invalid_band_400(client):
     r = client.get("/view/sky?subset=train&kind=clean&band=BOGUS&i=0")
     assert r.status_code == 400
