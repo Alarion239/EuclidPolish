@@ -35,7 +35,7 @@ from euclid_polish.web.helpers.status import _fasrc_psf_dir
 
 
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
-                             n_pairs: int, tng_fraction: float = 1.0) -> str:
+                             n_pairs: int) -> str:
     """Shell command that generates ``n_pairs`` synthetic *validate* pairs
     at ``hr_image_size`` on the FASRC **login node** — a plain command, not
     an sbatch job.
@@ -48,11 +48,8 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # Inject real TNG50 galaxies into a fraction of the scene galaxies.
-    # Default 1 = pure-TNG mode (redshift realism, COSMOS catalog skipped);
-    # 0 keeps it all-Sersic.
-    tng_flag = (f" --tng-fraction {float(tng_fraction):g}"
-                if tng_fraction and float(tng_fraction) > 0 else "")
+    # Always pure-TNG mode (redshift realism, COSMOS catalog skipped).
+    tng_flag = " --tng-fraction 1"
     return textwrap.dedent(f"""
         set -e
         export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
@@ -80,7 +77,6 @@ def _job_generate_reconstruct(
     cap, checkpoint_dir: str, num_res_blocks: int,
     hr_image_size: int, n_pairs: int,
     asinh_scale: Optional[float] = None,
-    tng_fraction: float = 1.0,
 ) -> Dict[str, Any]:
     """Generate fresh synthetic pair(s) on the FASRC login node, pull them
     down, run the model locally, and render LR | SR | HR | forward(SR) |
@@ -112,16 +108,13 @@ def _job_generate_reconstruct(
     # 2. Generate on the login node into a throwaway dir.
     remote_tmp = f"{cfg.data_dir}/_inference_gen/{uuid.uuid4().hex}"
     local_tmp = os.path.join(Config.DATA_DIR, "_inference_gen", uuid.uuid4().hex)
-    _tng_note = (f", {tng_fraction:g} TNG" if tng_fraction and tng_fraction > 0
-                 else "")
     cap.tick(1, total,
-             f"generating {n_pairs} pair(s) @ {hr_image_size}px{_tng_note} "
+             f"generating {n_pairs} pair(s) @ {hr_image_size}px, TNG "
              "on FASRC login node")
     print(f"  login-node generate → {remote_tmp}")
     try:
         rc, out, err = STATE.ssh.run(
-            _login_node_generate_cmd(cfg, remote_tmp, hr_image_size, n_pairs,
-                                     tng_fraction=tng_fraction),
+            _login_node_generate_cmd(cfg, remote_tmp, hr_image_size, n_pairs),
             timeout=900,
         )
         if rc != 0:

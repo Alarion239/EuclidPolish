@@ -146,8 +146,7 @@ def register(app):
     def inference_generate_reconstruct():
         # Checkpoint dir + residual blocks are delegated to defaults (their
         # fields were removed from the page); HR size + asinh come from the
-        # universal /config tab. Only ckpt_kind / n_pairs / tng_fraction
-        # remain page-level.
+        # universal /config tab. Only ckpt_kind / n_pairs remain page-level.
         jc = job_config.load()
         ckpt_dir = _ckpt_dir_for_kind(
             Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"),
@@ -165,19 +164,11 @@ def register(app):
         except (TypeError, ValueError):
             n_pairs = 1
         n_pairs = max(1, min(8, n_pairs))
-        # Default 1.0: pure-TNG generation (redshift realism, COSMOS skipped);
-        # an explicit "0" from the form is still honoured.
-        try:
-            raw = request.form.get("tng_fraction")
-            tng_fraction = 1.0 if raw in (None, "") else float(raw)
-        except (TypeError, ValueError):
-            tng_fraction = 1.0
-        tng_fraction = min(1.0, max(0.0, tng_fraction))
+        # Always pure-TNG generation (redshift realism, COSMOS skipped).
         job_id = REGISTRY.spawn(
             label=f"gen+reconstruct {n_pairs}×{hr_size}px (FASRC login-node gen)",
             target=lambda cap: _job_generate_reconstruct(
                 cap, ckpt_dir, nrb, hr_size, n_pairs, asinh_scale=asinh,
-                tng_fraction=tng_fraction,
             ),
         )
         return jsonify({"job_id": job_id})

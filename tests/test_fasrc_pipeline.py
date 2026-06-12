@@ -330,18 +330,13 @@ class TestRegistry:
                               {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
 
     def test_synthetic_generate_tng_fraction_flag(self):
-        """The synthetic generator forwards a TNG fraction. Blank/missing
-        defaults to 1 (pure-TNG mode); an explicit 0 is honoured and omits
-        the flag (run_pipeline's default is all-Sersic)."""
+        """The synthetic generator always runs pure-TNG mode: --tng-fraction 1
+        regardless of params (the UI control was removed; we always use 1)."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100}
-        argv = step.build_command({**base, "tng_fraction": "0.3"})
-        assert argv[argv.index("--tng-fraction") + 1] == "0.3"
-        argv_default = step.build_command(base)
-        assert argv_default[argv_default.index("--tng-fraction") + 1] == "1"
-        assert "--tng-fraction" not in step.build_command(
-            {**base, "tng_fraction": "0"})
+        argv = step.build_command(base)
+        assert argv[argv.index("--tng-fraction") + 1] == "1"
 
     def test_synthetic_generate_star_field_flags(self):
         """Star field knobs from /config reach run_pipeline; absent → omitted."""
