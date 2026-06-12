@@ -126,3 +126,34 @@ def test_baseline_row_draws_without_error(tmp_path):
     n, last = plot_training_records(records, out)
     assert n == 4 and last == 5300
     assert os.path.getsize(out) > 0
+
+
+def test_per_band_psnr_columns_render_band_panel(tmp_path):
+    """Rows carrying ≥ 2 per-band PSNR columns (the 4-band model) add the
+    per-band panel; the joint PSNR stays the save-best driver."""
+    records = []
+    for s in (0, 100, 200):
+        r = _base_row(s)
+        r["psnr_vis"] = 30.0 + s * 0.01
+        r["psnr_y_e"] = 24.0 + s * 0.01
+        r["psnr_j_e"] = 23.0 + s * 0.01
+        r["psnr_h_e"] = 22.0 + s * 0.01
+        records.append(r)
+    out = str(tmp_path / "bands.png")
+    n, last = plot_training_records(records, out)
+    assert n == 3 and last == 200
+    assert os.path.getsize(out) > 0
+
+
+def test_single_band_psnr_column_skips_band_panel(tmp_path):
+    """A VIS-only run logs just psnr_vis — that duplicates the joint
+    metric, so no separate band panel is drawn (and nothing crashes)."""
+    records = []
+    for s in (0, 100):
+        r = _base_row(s)
+        r["psnr_vis"] = 30.0 + s * 0.01
+        records.append(r)
+    out = str(tmp_path / "one_band.png")
+    n, last = plot_training_records(records, out)
+    assert n == 2 and last == 100
+    assert os.path.getsize(out) > 0

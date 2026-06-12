@@ -38,15 +38,26 @@ def evaluate(model, dataset):
     Returns
     -------
     dict
-        ``psnr_stretched``: mean PSNR in asinh space
-                           (max_val ≈ asinh(mag17_e / k) ≈ 9.34).
-                           Loss-aligned, used for save-best decisions.
-        ``psnr_raw``:       mean PSNR in raw electrons
+        ``psnr_stretched``: mean JOINT PSNR in asinh space — the MSE is
+                           pooled over all H×W×C pixels (all bands for
+                           the 4-band model), max_val ≈
+                           asinh(mag17_e / k) ≈ 9.34. Loss-aligned, used
+                           for save-best decisions.
+        ``psnr_raw``:       mean joint PSNR in raw electrons
                            (max_val = mag-17 star ≈ 5.68×10⁶ e⁻).
+        ``psnr_band_stretched``: ``(C,)`` tensor of per-band stretched
+                           PSNRs (channel k of HR vs channel k of SR) —
+                           MONITORING ONLY, never feeds save-best. Lets
+                           the training log show whether VIS and the
+                           noisier NISP channels improve independently
+                           of the NISP-dominated joint number.
     """
-    psnr_str_list = []
-    psnr_raw_list = []
-    mae_str_list  = []
+    psnr_str_list  = []
+    psnr_raw_list  = []
+    mae_str_list   = []
+    psnr_band_list = []
+    ln10  = tf.constant(2.302585092994046, dtype=tf.float32)
+    peak2 = _PSNR_MAX_VAL_STRETCHED ** 2
 
     for lr, hr in dataset:
         sr = model(lr)
@@ -55,6 +66,13 @@ def evaluate(model, dataset):
         # MeanAbsoluteError training loss (same model output + stretch),
         # computed here for free since we already forward ``lr``.
         mae_str_list.append(tf.reduce_mean(tf.abs(hr - sr)))
+        # Per-band PSNR: MSE over H×W only, one value per channel. Same
+        # stretched peak as the joint metric (all bands share the asinh
+        # knee, so the stretched values live on one scale).
+        mse_band = tf.reduce_mean(tf.square(hr - sr), axis=[1, 2])      # (B, C)
+        psnr_band = 10.0 * tf.math.log(
+            peak2 / tf.maximum(mse_band, 1e-12)) / ln10
+        psnr_band_list.append(psnr_band[0])
 
         hr_e = _to_electrons(hr)
         sr_e = _to_electrons(sr)
@@ -64,6 +82,8 @@ def evaluate(model, dataset):
         "psnr_stretched": tf.reduce_mean(psnr_str_list),
         "psnr_raw":       tf.reduce_mean(psnr_raw_list),
         "mae_stretched":  tf.reduce_mean(mae_str_list),
+        "psnr_band_stretched": tf.reduce_mean(
+            tf.stack(psnr_band_list), axis=0),                          # (C,)
     }
 
 

@@ -829,3 +829,58 @@ class TestNonNegPenalty:
         loss, gnorm, _ = trainer_with_both_ops.train_step_sky(lr, hr, 1, 1, 2)
         assert np.isfinite(float(loss.numpy()))
         assert np.isfinite(float(gnorm.numpy()))
+
+
+# ---------------------------------------------------------------------------
+# Per-band PSNR logging (monitoring only — save-best stays on the joint PSNR)
+# ---------------------------------------------------------------------------
+
+class TestPerBandPSNRLogging:
+
+    def _read_log(self, ckpt_dir: str):
+        import csv
+        with open(os.path.join(ckpt_dir, "training_log.csv"), newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    def _pairs_4band(self, n=4, lr_side=8, hr_side=16, seed=2, batch_size=2,
+                     repeat=True):
+        rng = np.random.default_rng(seed)
+        lr = rng.normal(size=(n, lr_side, lr_side, 4)).astype(np.float32)
+        hr = rng.normal(size=(n, hr_side, hr_side, 4)).astype(np.float32)
+        ds = tf.data.Dataset.from_tensor_slices((lr, hr)).batch(batch_size)
+        return ds.repeat() if repeat else ds
+
+    def test_4band_run_logs_one_psnr_per_band(self, tmp_path):
+        """A 4-band model fills every psnr_<band> column with a finite dB
+        value; the joint psnr_stretched still drives save-best."""
+        from euclid_polish.training.trainer import PER_BAND_PSNR_COLUMNS
+        ckpt_dir = str(tmp_path / "ckpt_band")
+        model = wdsr(scale=2, nchan_in=4, nchan_out=4,
+                     num_res_blocks=1, num_filters=4)
+        t = Trainer(model, checkpoint_dir=ckpt_dir)
+        t.train(self._pairs_4band(), self._pairs_4band(repeat=False, seed=10),
+                steps=1, evaluate_every=1, save_best_only=True,
+                validate_images=2)
+        rows = self._read_log(ckpt_dir)
+        assert rows
+        for col in PER_BAND_PSNR_COLUMNS:
+            v = rows[-1][col]
+            assert v not in ("", None), f"{col} not logged"
+            assert np.isfinite(float(v)), f"{col} = {v!r}"
+        # Joint metric still present and used for the save-best score.
+        assert np.isfinite(float(rows[-1]["psnr_stretched"]))
+        assert np.isfinite(float(rows[-1]["save_best_score"]))
+
+    def test_vis_only_run_leaves_nisp_columns_blank(self, tmp_path):
+        """A 1-channel (VIS-only) model logs psnr_vis and leaves the NISP
+        band columns blank — not 0, not NaN."""
+        from euclid_polish.training.trainer import PER_BAND_PSNR_COLUMNS
+        ckpt_dir = str(tmp_path / "ckpt_vis")
+        t = Trainer(_tiny_wdsr(), checkpoint_dir=ckpt_dir)
+        t.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                steps=1, evaluate_every=1, save_best_only=True,
+                validate_images=2)
+        rows = self._read_log(ckpt_dir)
+        assert np.isfinite(float(rows[-1][PER_BAND_PSNR_COLUMNS[0]]))
+        for col in PER_BAND_PSNR_COLUMNS[1:]:
+            assert rows[-1][col] == "", f"{col} should be blank for VIS-only"

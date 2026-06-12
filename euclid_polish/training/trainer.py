@@ -54,6 +54,12 @@ from euclid_polish.training.models.common import evaluate
 # ``euclid_polish.observability.training_log.TrainingLog`` (schema +
 # append + resume rotation); the trainer just builds rows.
 TRAINING_LOG_FILENAME = "training_log.csv"
+# Per-band validation PSNR columns (4-band model; a VIS-only run fills just
+# the first). MONITORING ONLY — save-best keys on the joint ``psnr_stretched``;
+# these exist so the log shows VIS and the noisier NISP channels separately.
+PER_BAND_PSNR_COLUMNS = tuple(
+    f"psnr_{name.lower()}" for name in Config.HR_TARGET_BAND_NAMES
+)
 TRAINING_LOG_COLUMNS  = (
     "step", "wall_time",
     # ``loss`` is the optimised composite (mean over the eval window of the
@@ -62,6 +68,7 @@ TRAINING_LOG_COLUMNS  = (
     # each mode, no log-parsing. Empty when a lane is off this run.
     "loss", "loss_syn", "loss_hst", "loss_anchor",
     "psnr_stretched", "psnr_raw",
+    *PER_BAND_PSNR_COLUMNS,
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
     # Multi-source validation (additive). Empty string when the
     # corresponding source dataset isn't wired for this run, so old
@@ -290,6 +297,14 @@ class Trainer:
         metrics  = self.evaluate(valid_dataset.take(validate_images))
         psnr_str = float(metrics["psnr_stretched"].numpy())
         psnr_raw = float(metrics["psnr_raw"].numpy())
+        # Per-band PSNRs (monitoring only — never feeds save-best). Mapped
+        # positionally onto PER_BAND_PSNR_COLUMNS; a VIS-only model has one
+        # channel, so the NISP columns stay "" (blank in the CSV).
+        band_vals = metrics.get("psnr_band_stretched")
+        psnr_bands: dict = {col: "" for col in PER_BAND_PSNR_COLUMNS}
+        if band_vals is not None:
+            for col, v in zip(PER_BAND_PSNR_COLUMNS, band_vals.numpy()):
+                psnr_bands[col] = float(v)
         # Per-lane VALIDATION MAE (asinh space), gathered alongside PSNR from
         # the same forward pass. ``""`` for an unwired lane so the loss
         # composite skips it — exactly like the PSNR composite.
@@ -342,6 +357,7 @@ class Trainer:
         return {
             "psnr_str":        psnr_str,
             "psnr_raw":        psnr_raw,
+            "psnr_bands":      psnr_bands,
             "psnr_str_hst":    psnr_str_hst,
             "psnr_raw_hst":    psnr_raw_hst,
             "anchor_val_psnr": anchor_val_psnr,
@@ -505,6 +521,7 @@ class Trainer:
                     "loss_anchor":        "",
                     "psnr_stretched":     b["psnr_str"],
                     "psnr_raw":           b["psnr_raw"],
+                    **b["psnr_bands"],
                     "gnorm_avg":          "",
                     "gnorm_max":          "",
                     "clip_norm":          float(GRAD_CLIP_NORM),
@@ -740,6 +757,7 @@ class Trainer:
                     "loss_anchor":    loss_anchor,
                     "psnr_stretched": psnr_str,
                     "psnr_raw":       psnr_raw,
+                    **v["psnr_bands"],
                     "gnorm_avg":      float(gnorm_avg.numpy()),
                     "gnorm_max":      float(gnorm_peak),
                     "clip_norm":      float(GRAD_CLIP_NORM),

@@ -8,19 +8,33 @@ from typing import List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from euclid_polish.training.trainer import TRAINING_LOG_FILENAME
+from euclid_polish.training.trainer import (
+    PER_BAND_PSNR_COLUMNS, TRAINING_LOG_FILENAME,
+)
 
 
 _NUMERIC_LOG_COLS = {
     "step", "wall_time",
     "loss", "loss_syn", "loss_hst", "loss_anchor",
     "psnr_stretched", "psnr_raw",
+    # Per-band validation PSNRs (psnr_vis / psnr_y_e / psnr_j_e /
+    # psnr_h_e) — monitoring only; save-best stays on the joint PSNR.
+    *PER_BAND_PSNR_COLUMNS,
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
     # Multi-source validation columns (empty in synthetic-only / older
     # runs — read_training_log skips empty cells, so those rows simply
     # won't carry the key and the corresponding panel is omitted).
     "psnr_stretched_hst", "psnr_raw_hst", "anchor_val_psnr",
     "save_best_score",
+}
+
+# Wavelength-ordered display colors for the per-band panel: VIS (optical)
+# renders blue, the NISP bands shade toward red with wavelength.
+_BAND_PLOT_COLORS = {
+    "psnr_vis": "tab:blue",
+    "psnr_y_e": "tab:olive",
+    "psnr_j_e": "tab:orange",
+    "psnr_h_e": "tab:red",
 }
 
 
@@ -127,6 +141,18 @@ def plot_training_records(
     anc_x, anc_y     = _opt_series("anchor_val_psnr")
     score_x, score_y = _opt_series("save_best_score")
     has_score = score_x.size > 0
+    # Per-band PSNR series (4-band runs; VIS-only / older logs carry none
+    # or just psnr_vis — the panel renders whatever is there).
+    band_data = []
+    for col in PER_BAND_PSNR_COLUMNS:
+        bx, by = _opt_series(col)
+        if bx.size:
+            label = col.replace("psnr_", "").upper()       # psnr_y_e → Y_E
+            band_data.append((bx, by, _BAND_PLOT_COLORS.get(col, "gray"),
+                              label, col))
+    # One band == the joint metric (VIS-only model) — a separate panel
+    # would just duplicate the synthetic PSNR line, so require ≥ 2.
+    has_bands = len(band_data) >= 2
     # Combined validation loss (lower better) — overlaid on the save-best
     # score panel via a twin y-axis (different scale).
     cl_x, cl_y = _opt_series("combined_loss")
@@ -166,12 +192,13 @@ def plot_training_records(
             return x[smooth_window - 1:], np.convolve(y, k, mode="valid")
         return None, None
 
-    # Stacked panels (shared x): PSNR always; per-lane Loss when logged;
-    # the composite save-best score when logged. Older / single-metric runs
-    # collapse to just the PSNR graph.
-    panels = ["psnr"] + (["loss"] if has_loss else []) + (
-        ["score"] if has_score else [])
-    ratios = {"psnr": 3, "loss": 2, "score": 2}
+    # Stacked panels (shared x): PSNR always; per-band PSNR when ≥ 2 bands
+    # are logged; per-lane Loss when logged; the composite save-best score
+    # when logged. Older / single-metric runs collapse to just the PSNR
+    # graph.
+    panels = ["psnr"] + (["bands"] if has_bands else []) + (
+        ["loss"] if has_loss else []) + (["score"] if has_score else [])
+    ratios = {"psnr": 3, "bands": 2, "loss": 2, "score": 2}
     if len(panels) == 1:
         fig, ax0 = plt.subplots(figsize=(11, 6))
         axmap = {"psnr": ax0}
@@ -183,6 +210,7 @@ def plot_training_records(
         )
         axmap = {p: ax for p, ax in zip(panels, np.atleast_1d(axs))}
     ax_psnr  = axmap["psnr"]
+    ax_bands = axmap.get("bands")
     ax_loss  = axmap.get("loss")
     ax_score = axmap.get("score")
 
@@ -228,6 +256,30 @@ def plot_training_records(
 
     ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
     ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
+
+    # ── Per-band validation PSNR (4-band model). MONITORING ONLY — the
+    #    joint PSNR above is what save-best keys on; this panel shows
+    #    whether VIS and the noisier NISP channels improve independently
+    #    of the NISP-dominated joint number. Colors follow wavelength
+    #    (VIS blue → H_E red); per-band resume baselines drawn dotted. ──
+    if ax_bands is not None:
+        for bx, by, bcolor, blabel, bcol in band_data:
+            ax_bands.plot(bx, by, color=bcolor, lw=1.4, alpha=0.9,
+                          label=f"{blabel} PSNR")
+            sx, sy = _smoothed(bx, by)
+            if sx is not None:
+                ax_bands.plot(sx, sy, color=bcolor, lw=2.4,
+                              label=f"{blabel} PSNR (MA)")
+            b_band = _baseline_val(bcol)
+            if b_band is not None:
+                ax_bands.axhline(b_band, color=bcolor, lw=1.0, ls=":",
+                                 alpha=0.6)
+        ax_bands.set_ylabel("PSNR (dB)  ·  per band")
+        ax_bands.legend(loc="best", framealpha=0.9, fontsize=8, ncol=2)
+        ax_bands.set_title(
+            "Per-band validation PSNR (monitoring only — save-best uses "
+            "the joint PSNR)", fontsize=9, loc="left",
+        )
 
     # ── Per-lane training loss (lower is better; log scale spans the lanes'
     #    ~1e-3–1 range). One line per active lane, colour-matched to PSNR. ──
