@@ -27,7 +27,9 @@ from euclid_polish.config import Config
 from typing import Dict, Any, Tuple
 
 from euclid_polish.config import Config as _Cfg
-from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.visualization.color import (
+    calibrated_rgb_panel, eye_rgb, planck_color_strip,
+)
 
 
 def _percentile_bounds(
@@ -221,37 +223,75 @@ class BaseVisualizer:
         stretch: str = "asinh",
         asinh_scale: float | None = None,
         title_suffix: str = "",
+        rgb_mode: str = "calibrated",
+        temp_legend: bool = False,
     ) -> None:
         """Color version of :meth:`add_scale_panel` for 4-band cubes.
 
-        Per-band flux-calibrated, then linear or asinh-stretched,
-        then per-channel ``[p1, p99.5]`` normalised — so the panel's
-        title-line ``[p1, p99.5]`` colour-range carries the same
-        meaning as in the grayscale panel. The display itself is a
-        true colour composite, not a viridis lookup.
+        ``rgb_mode``:
+
+          * ``"calibrated"`` (default) — solar-balanced per-channel
+            stretch with per-image ``[p1, p99.5]`` windows, matching the
+            grayscale panels' adaptive dynamic-range convention.
+          * ``"eye"`` — the PHYSICAL mode: per-pixel blackbody color
+            temperature → CIE Planckian-locus chromaticity → sRGB, with
+            an ABSOLUTE luminance transfer keyed to ``asinh_scale``
+            (no per-image normalisation). Same (SED, brightness) →
+            same color in every image, so hues are directly comparable
+            across panels/scenes/runs — and read like the night sky
+            (Sun-like ≈ white, cool ≈ orange, hot ≈ blue).
+
+        ``temp_legend`` (eye mode only) draws a small blackbody-T → hue
+        strip under the image so the hue can be read back as a physical
+        SED temperature.
         """
-        # Imported lazily to avoid a hard dep cycle if someone imports
-        # BaseVisualizer without the color module.
         if band_names is None:
             band_names = _Cfg.LR_INPUT_BAND_NAMES
         scale = float(asinh_scale) if asinh_scale is not None \
             else float(_Cfg.STRETCH_SCALE_E)
-        rgb = calibrated_rgb_panel(
-            cube, band_names=band_names,
-            scheme="vis_nisp", reference="solar",
-            stretch=stretch, asinh_scale_e=scale,
-        )
+        if rgb_mode == "eye":
+            rgb = eye_rgb(cube, band_names=band_names,
+                          stretch=stretch, asinh_scale_e=scale)
+            title = (f"eye color (Planck T · {stretch}, "
+                     f"knee={scale:.3g} e⁻){title_suffix}")
+        elif rgb_mode == "calibrated":
+            rgb = calibrated_rgb_panel(
+                cube, band_names=band_names,
+                scheme="vis_nisp", reference="solar",
+                stretch=stretch, asinh_scale_e=scale,
+            )
+            if stretch == "linear":
+                title = f"linear (4-band solar) [p1, p99.5]{title_suffix}"
+            else:
+                title = (f"asinh (scale={scale:.3g}, 4-band solar) "
+                         f"[p1, p99.5]{title_suffix}")
+        else:
+            raise ValueError(
+                f"rgb_mode must be 'calibrated' or 'eye'; got {rgb_mode!r}"
+            )
         ax = self._fig.add_subplot(self._next_gs_position())
         ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
                   interpolation="nearest")
-        if stretch == "linear":
-            title = f"linear (4-band solar) [p1, p99.5]{title_suffix}"
-        else:
-            title = (f"asinh (scale={scale:.3g}, 4-band solar) "
-                     f"[p1, p99.5]{title_suffix}")
         ax.set_title(title, fontsize=12)
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
+        if temp_legend and rgb_mode == "eye":
+            # Blackbody-temperature legend: the hue ↔ T_eff dictionary
+            # for reading physics back out of the panel.
+            strip, temps = planck_color_strip()
+            lax = ax.inset_axes([0.0, -0.22, 1.0, 0.045])
+            lax.imshow(strip, aspect="auto", origin="lower",
+                       extent=[0, len(temps) - 1, 0, 1])
+            ticks_k = [3000, 4000, 6000, 10000, 20000]
+            log_t = np.log(temps)
+            lax.set_xticks([
+                float(np.interp(np.log(t), log_t, np.arange(len(temps))))
+                for t in ticks_k
+            ])
+            lax.set_xticklabels([f"{t // 1000}k" for t in ticks_k],
+                                fontsize=7)
+            lax.set_yticks([])
+            lax.set_xlabel("blackbody T (K)", fontsize=8, labelpad=1)
 
     def add_diverging_panel(
         self,

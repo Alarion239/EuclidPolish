@@ -451,13 +451,15 @@ def plot_reconstruction(
     When HR is missing, falls back to a 2 × 3 LR/SR layout (raw + asinh
     + optional LR color).
 
-    Color composites: pass ``lr_cube`` and/or ``hr_cube`` to render a
-    Lupton RGB (solar-balanced) of the dirty LR and clean HR inputs.
-    Since the 4-band-output change SR is colorized too: when ``sr_data``
-    is a 4-band cube its panels render as the same solar-balanced RGB,
-    directly comparable to the HR color panel. The residual / metric
-    panels stay on the VIS channel (channel 0) so the numbers remain
-    comparable with historical single-band runs.
+    Color composites: SR and HR render in the PHYSICAL "eye" mode
+    (per-pixel blackbody color temperature → CIE Planckian-locus hue,
+    absolute luminance keyed to the asinh knee — see
+    :func:`euclid_polish.visualization.color.eye_rgb`). The transform is
+    image-independent, so an SR-vs-HR hue difference is a reconstruction
+    error, never a rendering artifact; a blackbody-T legend strip under
+    the asinh HR (or SR) panel translates hue back to SED temperature.
+    The residual / metric panels stay on the VIS channel (channel 0) so
+    the numbers remain comparable with historical single-band runs.
     """
     # Asinh-stretch knee used in every "asinh" panel of this plot. The
     # caller can override per-run from the UI (especially useful on
@@ -477,12 +479,16 @@ def plot_reconstruction(
                else None)
     sr_vis = sr_cube[..., 0] if sr_cube is not None else np.asarray(sr_data)
 
-    def _add_sr_panel(vis_obj, stretch):
-        """SR panel — color when the 4-band cube exists, else grayscale."""
+    def _add_sr_panel(vis_obj, stretch, temp_legend=False):
+        """SR panel — physical "eye" color when the 4-band cube exists
+        (per-pixel blackbody T → Planckian-locus hue, absolute luminance
+        keyed to the asinh knee), else grayscale. The eye transform is
+        image-independent, so SR and HR hues are directly comparable."""
         if sr_cube is not None:
             vis_obj.add_rgb_scale_panel(
                 sr_cube, stretch=stretch, asinh_scale=shared_scale,
-                title_suffix="\nReconstruction (SR)")
+                title_suffix="\nReconstruction (SR)",
+                rgb_mode="eye", temp_legend=temp_legend)
         else:
             kw = {"asinh_scale": shared_scale} if stretch == "asinh" else {}
             vis_obj.add_scale_panel(sr_vis, stretch=stretch,
@@ -528,7 +534,7 @@ def plot_reconstruction(
                     title_suffix=f"\nDirty (LR · {name})",
                     cmap="gray",
                 )
-            _add_sr_panel(vis, "asinh")
+            _add_sr_panel(vis, "asinh", temp_legend=True)
             # Row 3 — per-band SR planes (asinh), one per output band.
             if sr_cube is not None:
                 for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
@@ -579,7 +585,7 @@ def plot_reconstruction(
                             asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR, VIS)",
                             cmap="gray")
-        _add_sr_panel(vis, "asinh")
+        _add_sr_panel(vis, "asinh", temp_legend=True)
         if has_predicted:
             vis.add_scale_panel(
                 predicted_dirty, stretch="asinh", asinh_scale=shared_scale,
@@ -628,7 +634,8 @@ def plot_reconstruction(
     _add_sr_panel(vis, "linear")
     if hr_color:
         vis.add_rgb_scale_panel(hr_cube, stretch="linear",
-                                title_suffix="\nTrue Sky (HR)")
+                                title_suffix="\nTrue Sky (HR)",
+                                rgb_mode="eye")
     else:
         vis.add_scale_panel(hr_data, stretch="linear",
                             title_suffix="\nTrue Sky (HR)")
@@ -644,9 +651,12 @@ def plot_reconstruction(
                         cmap="gray")
     _add_sr_panel(vis, "asinh")
     if hr_color:
+        # Temperature legend on the asinh HR panel — one hue ↔ T_eff
+        # dictionary serves every eye panel in the figure.
         vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
                                 asinh_scale=shared_scale,
-                                title_suffix="\nTrue Sky (HR)")
+                                title_suffix="\nTrue Sky (HR)",
+                                rgb_mode="eye", temp_legend=True)
     else:
         vis.add_scale_panel(hr_data, stretch="asinh", asinh_scale=shared_scale,
                             title_suffix="\nTrue Sky (HR)")

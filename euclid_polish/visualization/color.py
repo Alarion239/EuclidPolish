@@ -21,6 +21,13 @@ The fix is a two-step calibration before mixing:
 
 After calibration, three bands feed the Lupton 2004 asinh stretch
 (:func:`lupton_rgb`) and the result is clipped to ``[0, 1]``.
+
+A third renderer, :func:`eye_rgb`, is the PHYSICAL mode: per-pixel
+blackbody color-temperature fit → CIE Planckian-locus chromaticity →
+sRGB, with an absolute (image-independent) luminance transfer — every
+pixel renders with the hue the dark-adapted eye would assign to a star
+of that SED temperature, and the same source renders identically in
+every image. :func:`planck_color_strip` provides the hue ↔ T legend.
 """
 
 from __future__ import annotations
@@ -222,6 +229,214 @@ def calibrated_rgb_panel(
             hi = lo + 1.0
         out.append(np.clip((c - lo) / (hi - lo), 0.0, 1.0).astype(np.float32))
     return np.stack(out, axis=-1)
+
+
+# ---------------------------------------------------------------------------
+# "Eye" physical color mode — what a (very NIR-sensitive) eye would see
+# ---------------------------------------------------------------------------
+#
+# The Euclid bands span 0.55–2.0 μm, mostly invisible to a human eye, so
+# "true color" cannot be read off the pixels directly. What CAN be made
+# rigorous is the chain
+#
+#     band fluxes → SED shape → blackbody color temperature T
+#                 → CIE Planckian-locus chromaticity → sRGB hue,
+#
+# i.e. render every pixel with the color a blackbody of the *fitted*
+# temperature would have to the dark-adapted eye: the Sun (~5800 K)
+# renders near-white (slightly warm vs the D65 display white point),
+# cool/red SEDs render orange like Betelgeuse, hot ones blue-white like
+# Rigel — the actual night-sky experience.
+#
+# Crucially the mapping is ABSOLUTE: a pixel's RGB is a pure function of
+# its physical (SED, surface brightness), with no per-image percentile
+# windows — the same source renders the same color in every cutout, every
+# panel, every training run, so an SR-vs-HR hue difference is evidence of
+# a reconstruction error, never a rendering artifact.
+
+# Planckian-locus chromaticity approximation (Kim et al. 2002 / CIE),
+# valid for 1667 K ≤ T ≤ 25000 K — clamp outside.
+_EYE_T_MIN = 1667.0
+_EYE_T_MAX = 25000.0
+
+
+def _planck_fnu(wavelength_um: np.ndarray, T: float) -> np.ndarray:
+    """Blackbody f_ν (arbitrary normalisation) at ``wavelength_um`` for ``T``.
+
+    ``B_ν ∝ ν³ / (exp(hν/kT) − 1)``; with ν = c/λ the exponent is
+    ``h·c / (λ·k·T) = 14387.77 μm·K / (λ·T)`` (second radiation constant).
+    """
+    lam = np.asarray(wavelength_um, dtype=np.float64)
+    x = 14387.77 / (lam * float(T))
+    # expm1 keeps precision for the long-wavelength (small-x) limit.
+    return (1.0 / lam) ** 3 / np.expm1(x)
+
+
+def _planckian_xy(T: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """CIE 1931 (x, y) chromaticity of a blackbody at ``T`` (K).
+
+    Cubic-in-1/T fits to the Planckian locus (Kim et al. 2002), the
+    standard approximation; inputs are clamped to [1667, 25000] K.
+    """
+    T = np.clip(np.asarray(T, dtype=np.float64), _EYE_T_MIN, _EYE_T_MAX)
+    u = 1e3 / T          # kK⁻¹
+    x = np.where(
+        T <= 4000.0,
+        -0.2661239 * u ** 3 - 0.2343589 * u ** 2 + 0.8776956 * u + 0.179910,
+        -3.0258469 * u ** 3 + 2.1070379 * u ** 2 + 0.2226347 * u + 0.240390,
+    )
+    y_low  = -1.1063814 * x ** 3 - 1.34811020 * x ** 2 + 2.18555832 * x - 0.20219683
+    y_mid  = -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+    y_high =  3.0817580 * x ** 3 - 5.87338670 * x ** 2 + 3.75112997 * x - 0.37001483
+    y = np.where(T <= 2222.0, y_low, np.where(T <= 4000.0, y_mid, y_high))
+    return x, y
+
+
+def _xy_to_linear_srgb(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """(x, y) chromaticity → linear sRGB (D65), normalised so max channel = 1.
+
+    The max-channel normalisation keeps only the *hue/saturation* of the
+    chromaticity — luminance is applied separately by the caller — and
+    doubles as the hue-preserving gamut clip (negative out-of-gamut
+    channels are clipped to 0 before normalising).
+    """
+    Y = np.ones_like(x)
+    X = x / y
+    Z = (1.0 - x - y) / y
+    r = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
+    g = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
+    b = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
+    rgb = np.stack([r, g, b], axis=-1)
+    rgb = np.clip(rgb, 0.0, None)
+    peak = np.max(rgb, axis=-1, keepdims=True)
+    return rgb / np.maximum(peak, 1e-12)
+
+
+def _srgb_gamma_encode(c: np.ndarray) -> np.ndarray:
+    """Linear-light → sRGB-encoded, the standard piecewise transfer."""
+    c = np.clip(c, 0.0, 1.0)
+    return np.where(c <= 0.0031308,
+                    12.92 * c,
+                    1.055 * np.power(c, 1.0 / 2.4) - 0.055).astype(np.float32)
+
+
+def _eye_t_grid(n: int = 96) -> np.ndarray:
+    """Log-spaced color-temperature grid spanning the locus fit's validity."""
+    return np.geomspace(_EYE_T_MIN, _EYE_T_MAX, int(n))
+
+
+def fit_color_temperature(
+    cube_calibrated: np.ndarray,
+    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    t_grid_n: int = 96,
+) -> np.ndarray:
+    """Per-pixel blackbody color temperature (K) from AB-calibrated fluxes.
+
+    For each grid temperature the model SED is the Planck f_ν sampled at
+    the bands' pivot wavelengths (``Config.Color.PIVOT_WAVELENGTH_UM``),
+    unit-normalised; the per-pixel best T maximises the projection
+    ``f · P̂(T)`` (equivalent to least squares over a free positive
+    amplitude). Noise-dominated pixels with no positive projection get
+    6500 K — display-white, and their luminance is ~0 anyway.
+
+    Runs the grid as a Python loop over ~``t_grid_n`` temperatures with
+    two (H, W) running maps, so memory stays flat for large cutouts.
+    """
+    cube = np.asarray(cube_calibrated, dtype=np.float64)
+    lam = np.array([Config.Color.PIVOT_WAVELENGTH_UM[n] for n in band_names])
+    ts = _eye_t_grid(t_grid_n)
+    best_score = np.full(cube.shape[:-1], -np.inf)
+    best_t = np.full(cube.shape[:-1], 6500.0)
+    for T in ts:
+        p = _planck_fnu(lam, T)
+        p = p / np.linalg.norm(p)
+        score = cube @ p
+        sel = score > best_score
+        best_score = np.where(sel, score, best_score)
+        best_t = np.where(sel, T, best_t)
+    return np.where(best_score > 0.0, best_t, 6500.0)
+
+
+def eye_rgb(
+    cube: np.ndarray,
+    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    *,
+    stretch: str = "asinh",
+    asinh_scale_e: float = 1000.0,
+    white_e: "float | None" = None,
+    t_grid_n: int = 96,
+) -> np.ndarray:
+    """Physical "eye" rendering of a 4-band cube → sRGB in ``[0, 1]``.
+
+    Per pixel:
+
+      1. AB-calibrate the bands (:func:`_ab_flux_norm` — instrument out).
+      2. Fit a blackbody color temperature to the calibrated SED
+         (:func:`fit_color_temperature`).
+      3. Chromaticity = the CIE Planckian locus at that T, rendered in
+         sRGB/D65 — the hue the dark-adapted eye assigns to a star of
+         that temperature (Sun ≈ near-white, M star orange, B star blue).
+      4. Luminance = the broadband calibrated intensity through an
+         ABSOLUTE transfer (no per-image normalisation):
+
+           * ``stretch="asinh"``  → ``asinh(I/knee) / asinh(white/knee)``
+           * ``stretch="linear"`` → ``I / white``
+
+         with ``knee`` ↔ ``asinh_scale_e`` electrons and ``white`` ↔
+         ``white_e`` electrons, both VIS-equivalent over the stack
+         (``white_e`` defaults to ``1000 × asinh_scale_e``). Pixels at
+         ``white_e`` render at full brightness; brighter pixels clip
+         hue-preservingly.
+
+    Same (SED, surface brightness) → same RGB, in every image: colors
+    are directly comparable across LR/SR/HR panels, scenes, and runs.
+    """
+    if stretch not in ("linear", "asinh"):
+        raise ValueError(f"stretch must be 'linear' or 'asinh'; got {stretch!r}")
+    if cube.ndim != 3 or cube.shape[-1] != len(band_names):
+        raise ValueError(
+            f"cube must be (H, W, {len(band_names)}); got shape {cube.shape}"
+        )
+    calibrated = np.stack(
+        [cube[..., k].astype(np.float64) * _ab_flux_norm(name)
+         for k, name in enumerate(band_names)], axis=-1)
+
+    # Chromaticity from the fitted color temperature.
+    t_map = fit_color_temperature(calibrated, band_names, t_grid_n=t_grid_n)
+    x, y = _planckian_xy(t_map)
+    hue = _xy_to_linear_srgb(x, y)                      # (H, W, 3), max=1
+
+    # Absolute luminance transfer in VIS-equivalent electrons.
+    knee_cal  = float(asinh_scale_e) * _ab_flux_norm("VIS")
+    white_e   = float(white_e) if white_e else 1000.0 * float(asinh_scale_e)
+    white_cal = white_e * _ab_flux_norm("VIS")
+    intensity = np.maximum(calibrated.mean(axis=-1), 0.0)
+    if stretch == "asinh":
+        lum = np.arcsinh(intensity / knee_cal) / np.arcsinh(white_cal / knee_cal)
+    else:
+        lum = intensity / white_cal
+    lum = np.clip(lum, 0.0, 1.0)[..., None]
+
+    return _srgb_gamma_encode(hue * lum)
+
+
+def planck_color_strip(
+    n: int = 256,
+    t_min: float = 2500.0,
+    t_max: float = 20000.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Legend strip for the eye mode: ``(strip, temps)``.
+
+    ``strip`` is a ``(1, n, 3)`` sRGB image of the Planckian-locus hues
+    at full luminance, rendered through the SAME chromaticity pipeline
+    the eye mode uses; ``temps`` are the n corresponding temperatures
+    (K, log-spaced) for axis ticks. Read it as "a pixel of this hue has
+    an SED like a blackbody of this temperature".
+    """
+    temps = np.geomspace(float(t_min), float(t_max), int(n))
+    x, y = _planckian_xy(temps)
+    hue = _xy_to_linear_srgb(x, y)
+    return _srgb_gamma_encode(hue)[None, :, :], temps
 
 
 def lupton_rgb(

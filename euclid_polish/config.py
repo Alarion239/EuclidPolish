@@ -978,6 +978,16 @@ class Config:
             "nisp_only": ("H_E", "J_E", "Y_E"),   # NIR-only, VIS-free
             "h_y_vis":   ("H_E", "Y_E", "VIS"),   # wider green-channel spacing
         }
+        # Pivot wavelengths (μm) of the four bands — the Planck-spectrum
+        # sampling points for the "eye" physical color mode's per-pixel
+        # color-temperature fit. VIS: Euclid Collaboration (Cropper+24);
+        # NISP Y/J/H: Schirmer+22 Table 4.
+        PIVOT_WAVELENGTH_UM: ClassVar[Dict[str, float]] = {
+            "VIS": 0.715,
+            "Y_E": 1.081,
+            "J_E": 1.367,
+            "H_E": 1.771,
+        }
 
     # --- derived full paths (join the nested names onto DATA_DIR) ---
     HLSP_DIR               = os.path.join(DATA_DIR, HST.HLSP_DIR_NAME)

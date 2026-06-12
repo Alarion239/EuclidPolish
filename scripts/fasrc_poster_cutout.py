@@ -76,7 +76,7 @@ from euclid_polish.sky.multiband_generator import (
 )
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.tng.properties import _fig_to_png
-from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.visualization.color import eye_rgb
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
     reconstruct,
@@ -407,8 +407,9 @@ def render_field_preview_png(
 ) -> bytes:
     """Field mode preview: clean VIS | mock-Euclid VIS | super-resolved.
 
-    A 4-band SR cube gets two panels — the VIS plane plus a solar-balanced
-    color composite (the model emits all bands now, so SR has color).
+    A 4-band SR cube gets two panels — the VIS plane plus the physical
+    "eye" color composite (per-pixel blackbody T → Planckian-locus hue;
+    the model emits all bands now, so SR has color).
     """
     sr = np.asarray(sr, dtype=np.float32)
     sr_cube = sr if sr.ndim == 3 else None
@@ -417,15 +418,13 @@ def render_field_preview_png(
               ("mock Euclid VIS (0.10″/pix)", dirty[..., 0]),
               ("super-resolved VIS (0.05″/pix)", sr_vis)]
     if sr_cube is not None:
-        panels.append(("super-resolved color (4-band)", None))
+        panels.append(("super-resolved eye color (4-band)", None))
     n = len(panels)
     fig, axes = plt.subplots(1, n, figsize=(n * 3.0, 3.3))
     for ax, (title, im) in zip(np.atleast_1d(axes), panels):
         if im is None:
-            rgb = calibrated_rgb_panel(
-                sr_cube, band_names=BAND_NAMES,
-                scheme="vis_nisp", reference="solar", stretch="asinh",
-                asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e))
+            rgb = eye_rgb(sr_cube, band_names=BAND_NAMES, stretch="asinh",
+                          asinh_scale_e=float(Config.STRETCH_SCALE_E))
             ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower")
         else:
             ax.imshow(_grayscale_norm(im), origin="lower", cmap="gray")
