@@ -32,6 +32,7 @@ import json
 import os
 import shlex
 import shutil
+import tempfile
 import threading as _t
 import time
 import traceback
@@ -1256,15 +1257,26 @@ def register(app):
                             "error": f"no training-log rows in window "
                                      f"[{started_at:.0f}, {ended_at:.0f}]"}), 404
 
-        # Render in-memory.
-        tmp_png = os.path.join(Config.VIS_DIR, "tmp_training_plot.png")
-        os.makedirs(Config.VIS_DIR, exist_ok=True)
-        plot_training_records(
-            rows, tmp_png,
-            title_suffix=f"\n(this run only: {len(rows)} evals)",
-        )
-        with open(tmp_png, "rb") as fh:
-            data = fh.read()
+        # Render to a throwaway tempfile OUTSIDE data/vis — this is a
+        # per-request scratch render (the page re-polls it every minute),
+        # and a stable path under data/ used to trip the test suite's
+        # data-dir immutability guard whenever a live WebUI overwrote it
+        # mid-pytest-run.
+        fd, tmp_png = tempfile.mkstemp(suffix=".png",
+                                       prefix="euclid_training_plot_")
+        os.close(fd)
+        try:
+            plot_training_records(
+                rows, tmp_png,
+                title_suffix=f"\n(this run only: {len(rows)} evals)",
+            )
+            with open(tmp_png, "rb") as fh:
+                data = fh.read()
+        finally:
+            try:
+                os.unlink(tmp_png)
+            except OSError:
+                pass
         return Response(data, mimetype="image/png",
                         headers={"Cache-Control": "no-cache"})
 

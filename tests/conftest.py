@@ -103,6 +103,16 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
         Config, "VIS_STAR_POSITIONS",
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
+    # The fasrc training-plot route renders ``tmp_training_plot.png`` into
+    # ``Config.VIS_DIR``; without this redirect a test that exercises it
+    # overwrites the live WebUI's copy under ./data/vis and trips the
+    # session-teardown immutability guard. Routes read ``Config.VIS_DIR``
+    # at request time, so writing AND serving (/vis/...) stay consistent;
+    # tests that need a specific VIS_DIR monkeypatch it themselves (their
+    # setattr runs after this autouse fixture and wins).
+    vis_dir = str(pkg_tmp / "vis")
+    os.makedirs(vis_dir, exist_ok=True)
+    monkeypatch.setattr(Config, "VIS_DIR", vis_dir, raising=False)
     # Isolate the experiment-tracking store: submit handlers now log every
     # FASRC job into the active campaign (or tracking/unassigned_*.jsonl),
     # which would otherwise create a real ./tracking folder in the repo.
@@ -259,6 +269,13 @@ def _protect_real_data_dir():
             if "_fasrc_cache" in root.split(os.sep):
                 continue
             for f in files:
+                # Scratch render of the live WebUI's per-run training plot.
+                # The route now renders to a tempfile outside data/, but a
+                # server started before that fix still rewrites this path
+                # every status poll — i.e. a process OUTSIDE pytest mutates
+                # it mid-suite, which is noise, not a test violation.
+                if f == "tmp_training_plot.png":
+                    continue
                 p = os.path.join(root, f)
                 try:
                     st = os.stat(p)
