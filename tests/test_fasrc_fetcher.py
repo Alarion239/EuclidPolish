@@ -168,6 +168,64 @@ class TestCacheEviction:
         assert not f1.exists()
         assert f2.exists()
 
+    def test_evict_lru_never_deletes_protected_path(self, tmp_path, monkeypatch):
+        """A ``protect``-ed file is never evicted, even when it's the oldest
+        and the cache is over budget — the cache just stays over budget."""
+        from euclid_polish.web import fasrc_fetcher as ff
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
+        oldest = tmp_path / "oldest"   # would normally be evicted first
+        other  = tmp_path / "other"
+        oldest.write_bytes(b"x" * 1000)
+        other.write_bytes(b"y" * 1000)
+        os.utime(str(oldest), (1_000_000, 1_000_000))
+        os.utime(str(other), (2_000_000, 2_000_000))
+        ff._evict_lru_until_under(500, protect={str(oldest)})
+        # Protected oldest survives; the unprotected newer file is evicted.
+        assert oldest.exists()
+        assert not other.exists()
+
+
+class TestFetchSelfEvictionRegression:
+    """Regression: a large pull that pushed the cache over budget used to
+    evict the file it had JUST fetched (the rsync ``-t`` gave it the remote's
+    old mtime, so the LRU saw it as the stalest file) and then crash
+    ``stat``-ing the now-missing file — breaking the "never raises" contract
+    and failing every gen+reconstruct that needed the 374 MB FASRC ePSF."""
+
+    def test_fetch_over_cap_keeps_just_pulled_file(self, tmp_path, monkeypatch):
+        from euclid_polish.web import fasrc_fetcher as ff
+        from euclid_polish.web import remote as remote_module
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
+        # Tiny cache budget so any pull trips the eviction path.
+        monkeypatch.setattr(Config.WebFetch, "MAX_CACHE_BYTES", 500)
+
+        remote = "/n/netscratch/foo/euclid_psf/euclid_psf_VIS.fits"
+
+        class _FakeSSH:
+            def rsync_pull(self_inner, remote_path, local_dir, **kw):
+                dest = os.path.join(local_dir, os.path.basename(remote_path))
+                os.makedirs(local_dir, exist_ok=True)
+                with open(dest, "wb") as fh:
+                    fh.write(b"z" * 2000)        # 2 KB ≫ the 500 B cap
+                # Simulate the OLD ``-t`` behaviour explicitly: stamp the
+                # freshly-pulled file with an ancient mtime. Even so, the
+                # fetcher must not evict it.
+                os.utime(dest, (1_000_000, 1_000_000))
+                return 0, "", ""
+
+        monkeypatch.setattr(ff, "_remote_size_bytes", lambda p: (True, 2000, None))
+        monkeypatch.setattr(remote_module.STATE, "ssh", _FakeSSH())
+
+        # Must NOT raise (old code raised FileNotFoundError on getsize) and
+        # must report success with the file still present.
+        res = ff.fetch_one_file(
+            remote, force=True,
+            max_bytes=Config.WebFetch.MAX_PSF_PULL_BYTES)
+        assert res.ok is True, res.error
+        assert res.local_path and os.path.isfile(res.local_path)
+        assert res.size_bytes == 2000
+
 
 # ---------------------------------------------------------------------------
 # Connection gate

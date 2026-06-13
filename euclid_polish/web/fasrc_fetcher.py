@@ -170,8 +170,18 @@ def cache_size_bytes() -> int:
     return sum(s for _p, s, _t in _cache_files())
 
 
-def _evict_lru_until_under(limit: int) -> int:
-    """Delete oldest cached files until total size ≤ ``limit``. Returns bytes freed."""
+def _evict_lru_until_under(limit: int, protect: "Optional[set]" = None) -> int:
+    """Delete oldest cached files until total size ≤ ``limit``. Returns bytes freed.
+
+    ``protect`` is a set of absolute paths that must never be evicted —
+    pass the file a fetch just pulled so the eviction can't delete the
+    very file the caller is about to ``stat`` (which previously raised
+    a ``FileNotFoundError`` and broke the "never raises" contract). The
+    protected file still counts toward ``total``, so if it alone exceeds
+    ``limit`` the cache simply stays over budget for this call rather
+    than corrupting the fetch.
+    """
+    protect = {os.path.abspath(p) for p in (protect or ())}
     items = _cache_files()
     items.sort(key=lambda x: x[2])    # oldest first
     total = sum(s for _p, s, _t in items)
@@ -179,6 +189,8 @@ def _evict_lru_until_under(limit: int) -> int:
     for path, size, _t in items:
         if total <= limit:
             break
+        if os.path.abspath(path) in protect:
+            continue
         try:
             os.remove(path)
         except OSError:
@@ -284,9 +296,16 @@ def fetch_one_file(
             rc, _out, err = STATE.ssh.rsync_pull(
                 remote_path,
                 os.path.dirname(local),
-                # ``-t`` preserves mtime so the cache-TTL math is meaningful;
-                # ``--inplace`` avoids the temp-file rename for big-but-allowed files.
-                extra_args=["-t", "--inplace"],
+                # NO ``-t``: we deliberately let the local copy take the
+                # *fetch* time as its mtime, not the remote's. The cache
+                # is keyed on "how long ago did WE pull this" for both the
+                # TTL freshness check AND the LRU eviction order — using the
+                # remote mtime made a file pulled from an old remote look
+                # instantly stale (defeating the TTL) and look like the
+                # least-recently-used file (so the LRU evicted the file we
+                # had just fetched, then crashed stat-ing it). ``--inplace``
+                # avoids the temp-file rename for big-but-allowed files.
+                extra_args=["--inplace"],
                 timeout=120,
             )
         except Exception as e:
@@ -303,13 +322,23 @@ def fetch_one_file(
             )
 
         # Background cleanup: keep cache below the cap. Cheap; only walks
-        # the cache subtree.
+        # the cache subtree. ``protect`` the file we just pulled so the
+        # eviction can never delete it out from under the ``getsize`` below
+        # (it now also has a fresh mtime, so it's the LAST eviction
+        # candidate anyway — belt and suspenders).
         if cache_size_bytes() > Config.WebFetch.MAX_CACHE_BYTES:
-            _evict_lru_until_under(Config.WebFetch.MAX_CACHE_BYTES)
+            _evict_lru_until_under(Config.WebFetch.MAX_CACHE_BYTES,
+                                   protect={local})
 
+        # Defensive ``getsize``: honour the "never raises" contract even if
+        # a concurrent pull/eviction removed the file in the gap above.
+        try:
+            size_bytes = os.path.getsize(local)
+        except OSError:
+            size_bytes = remote_size if remote_size is not None else None
         return FetchResult(
             ok=True, local_path=local, from_cache=False,
-            size_bytes=os.path.getsize(local),
+            size_bytes=size_bytes,
         )
 
 
