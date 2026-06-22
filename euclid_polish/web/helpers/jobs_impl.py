@@ -10,6 +10,7 @@ from euclid_polish.euclid.psf_library import load_all_band_psfs
 from euclid_polish.sky.multiband_forward import MultiBandForward
 from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.training.inference import _noise_floor_lr_std_e
 from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.inference import plot_reconstruction
 from euclid_polish.training.inference import reconstruct
@@ -19,6 +20,7 @@ from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.remote import STATE
 from scipy import signal as scipy_signal
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import Optional
 from typing import Tuple
@@ -328,49 +330,77 @@ def _forward_model_sr_residual(
     return predicted, residual
 
 
-def _job_reconstruct_euclid_cutout(
-    cap,
+def _cutout_residual_metrics(residual: Optional[np.ndarray]) -> Dict[str, Any]:
+    """Self-consistency metrics from the forward-model residual (electrons).
+
+    Real targets have no HR ground truth, so quality is judged by how well
+    ``forward(SR)`` reproduces the observed dirty LR. ``residual`` is
+    ``lr_vis - forward(SR)`` in electrons (see :func:`_forward_model_sr_residual`).
+    ``residual_chi`` normalises the residual scatter by the analytical
+    per-pixel noise floor — ≈1 means the reconstruction is self-consistent to
+    the noise; ≫1 flags over/under-reconstruction.
+    """
+    if residual is None:
+        return {
+            "residual_mean_e":    None,
+            "residual_std_e":     None,
+            "residual_mae_e":     None,
+            "residual_rmse_e":    None,
+            "residual_max_abs_e": None,
+            "residual_chi":       None,
+        }
+    finite = residual[np.isfinite(residual)].astype(np.float64)
+    std = float(np.std(finite))
+    floor = _noise_floor_lr_std_e()
+    return {
+        "residual_mean_e":    float(np.mean(finite)),
+        "residual_std_e":     std,
+        "residual_mae_e":     float(np.mean(np.abs(finite))),
+        "residual_rmse_e":    float(np.sqrt(np.mean(finite ** 2))),
+        "residual_max_abs_e": float(np.abs(finite).max()),
+        "residual_chi":       (std / floor) if floor > 0 else None,
+    }
+
+
+def reconstruct_cutout_at(
+    model,
     ra: float,
     dec: float,
-    checkpoint_dir: str,
-    num_res_blocks: int,
     cutout_size_vis_pixels: int,
+    out_dir: str,
+    *,
     asinh_scale: Optional[float] = None,
     show_all_bands: bool = False,
+    checkpoint_dir: str = "",
+    render: bool = True,
+    progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Dict[str, Any]:
-    """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
+    """Fetch a 4-band real Euclid cutout at ``(ra, dec)``, run SR, write outputs.
 
-    Unlike ``_job_generate_reconstruct`` (which renders a synthetic scene),
-    this fetches a real cutout at ``(ra, dec)`` for every band, converts
-    each from the archive's ADU s⁻¹ units to electrons-over-the-stack (so
-    the model sees the same scale it was trained on), stacks the four
-    bands into ``(H, W, 4)``, and runs the model.
+    This is the per-object body shared by the single-position WebUI job
+    (:func:`_job_reconstruct_euclid_cutout`) and the batch catalog evaluator
+    (``scripts/fasrc_eval_catalog.py``). It fetches each band, converts the
+    archive's ADU s⁻¹ to electrons-over-the-stack via the per-band ``MAGZERO``
+    (so the model sees the same scale it trained on), stacks to ``(H, W, 4)``,
+    runs ``reconstruct``, forward-models the SR for a self-consistency
+    residual, and writes ``original_stack.fits`` + ``SR.fits`` (and, when
+    ``render``, ``eye.png`` + ``solar.png``) into ``out_dir``.
 
-    The downloaded FITS files (one per band) plus the super-resolved
-    VIS output are written to a single ``Config.EUCLID_INFERENCE_DIR/
-    cutouts/latest/`` slot that is wiped at the start of every call, so
-    each run *replaces* the previous records rather than accumulating one
-    directory per position. The input RA/Dec/size are preserved in the
-    SR FITS header for provenance.
+    ``out_dir`` is created if absent and used as-is — callers that want a
+    single overwrite slot must wipe it themselves. ``progress`` is an optional
+    ``(done, total, label)`` callback (e.g. wrapping a job's ``cap.tick``).
+
+    Returns a dict with the output paths, per-band info, and the
+    forward-model residual metrics.
     """
-
-    if not tf.train.latest_checkpoint(checkpoint_dir):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
     scale = Config.DEFAULT_REBIN_FACTOR
-    model = load_model_from_checkpoint(
-        checkpoint_dir, scale, num_res_blocks,
-        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-    )
+    band_names = Config.LR_INPUT_BAND_NAMES
+    total = len(band_names) + 3
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Single overwrite slot: wipe every previous cutout record (the old
-    # per-position directories included) so each call replaces the prior
-    # run rather than accumulating one directory per position. The input
-    # RA/Dec/size live in the SR FITS header for provenance.
-    cutouts_root = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
-    if os.path.isdir(cutouts_root):
-        shutil.rmtree(cutouts_root)
-    cache_dir = os.path.join(cutouts_root, "latest")
-    os.makedirs(cache_dir, exist_ok=True)
+    def _tick(done: int, label: str) -> None:
+        if progress is not None:
+            progress(done, total, label)
 
     # Fetch each band; per-band MAGZERO from each header drives the
     # per-band ADU/s → electrons conversion so the model sees the same
@@ -378,11 +408,10 @@ def _job_reconstruct_euclid_cutout(
     bands_data: Dict[str, np.ndarray] = {}
     bands_info: Dict[str, Dict[str, Any]] = {}
     vis_header = None
-    for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
-        cap.tick(k, len(Config.LR_INPUT_BAND_NAMES) + 2,
-                 f"downloading {band_name} cutout")
+    for k, band_name in enumerate(band_names):
+        _tick(k, f"downloading {band_name} cutout")
         band = Config.get_band(band_name)
-        outf = os.path.join(cache_dir, f"{band_name}.fits")
+        outf = os.path.join(out_dir, f"{band_name}.fits")
         ok, err = fetch_cutout_at(
             ra=ra, dec=dec, band_name=band_name, output_file=outf,
             cutout_size_vis_pixels=cutout_size_vis_pixels,
@@ -394,8 +423,7 @@ def _job_reconstruct_euclid_cutout(
             header = hdul[0].header
         if band_name == "VIS":
             vis_header = header.copy()
-        magzero = float(header.get("MAGZERO",
-                                   band.sim_zeropoint_e))
+        magzero = float(header.get("MAGZERO", band.sim_zeropoint_e))
         # Single source of truth for archive ADU/s → electrons-over-stack.
         adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
         data_e = (arr * adu_to_e).astype(np.float32)
@@ -414,7 +442,7 @@ def _job_reconstruct_euclid_cutout(
     # All four cutouts must land on the same VIS-LR grid (the MER mosaic
     # pipeline delivers every band at 0.10″/pix). Anything else is a bug
     # in the archive query we should not silently paper over.
-    shapes = {n: bands_data[n].shape for n in Config.LR_INPUT_BAND_NAMES}
+    shapes = {n: bands_data[n].shape for n in band_names}
     base_shape = shapes["VIS"]
     if any(s != base_shape for s in shapes.values()):
         raise RuntimeError(
@@ -422,11 +450,8 @@ def _job_reconstruct_euclid_cutout(
             "the same VIS LR grid (0.10″/pix)."
         )
 
-    lr_cube = np.stack(
-        [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
-    )   # (H, W, 4)
-    cap.tick(len(Config.LR_INPUT_BAND_NAMES),
-             len(Config.LR_INPUT_BAND_NAMES) + 3, "running model")
+    lr_cube = np.stack([bands_data[n] for n in band_names], axis=-1)  # (H,W,4)
+    _tick(len(band_names), "running model")
     _, sr_data = reconstruct(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
@@ -444,15 +469,13 @@ def _job_reconstruct_euclid_cutout(
 
     # Stacked 4-band original (electrons): one image plane per band in
     # LR_INPUT_BAND_NAMES order (band 0 = VIS), carrying the VIS WCS so it
-    # overlays the SR on-sky — the same downloadable output the standalone
-    # infer_euclid_cutout.py script produces.
+    # overlays the SR on-sky.
     stack = np.moveaxis(lr_cube, -1, 0).astype(np.float32)   # (4, H, W)
     stack_hdr = _clean_hdr(vis_header)
     stack_hdr["OBJECT"] = "Euclid LR stack (electrons)"
     stack_hdr["BUNIT"]  = "electron"
-    stack_hdr["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
-                           "NAXIS3 plane order")
-    stack_path = os.path.join(cache_dir, "original_stack.fits")
+    stack_hdr["BANDS"]  = (",".join(band_names), "NAXIS3 plane order")
+    stack_path = os.path.join(out_dir, "original_stack.fits")
     fits.PrimaryHDU(stack, header=stack_hdr).writeto(
         stack_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved stacked original → {stack_path}")
@@ -464,10 +487,7 @@ def _job_reconstruct_euclid_cutout(
     # to SR should produce something close to the actual dirty LR; the
     # residual flags pixel-level over- or under-reconstruction.
     # ────────────────────────────────────────────────────────────────
-
-    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 1,
-             len(Config.LR_INPUT_BAND_NAMES) + 3,
-             "forward-modelling SR for residual")
+    _tick(len(band_names) + 1, "forward-modelling SR for residual")
     try:
         predicted_dirty, residual = _forward_model_sr_residual(sr_data, lr_vis)
         print(f"  ✓ residual stats: mean={residual.mean():.3g}, "
@@ -482,7 +502,7 @@ def _job_reconstruct_euclid_cutout(
     # original on-sky (0.05″/pix vs 0.10″/pix). A 4-band SR cube is
     # written one plane per band (NAXIS3), same convention as the
     # original_stack file.
-    sr_fits_path = os.path.join(cache_dir, "SR.fits")
+    sr_fits_path = os.path.join(out_dir, "SR.fits")
     sr_hdr = (_clean_hdr(scaled_wcs_header(vis_header, scale))
               if vis_header is not None else fits.Header())
     sr_arr = np.asarray(sr_data, dtype=np.float32)
@@ -493,7 +513,7 @@ def _job_reconstruct_euclid_cutout(
     sr_hdu.header["OBJECT"]   = ("Euclid SR (WDSR, 4-band)" if sr_is_cube
                                  else "Euclid SR (WDSR VIS)")
     if sr_is_cube:
-        sr_hdu.header["BANDS"] = (",".join(Config.LR_INPUT_BAND_NAMES),
+        sr_hdu.header["BANDS"] = (",".join(band_names),
                                   "NAXIS3 plane order (band 0 = VIS)")
     sr_hdu.header["BUNIT"]    = "electron"
     sr_hdu.header["RA"]       = (float(ra),  "Input RA (deg)")
@@ -506,15 +526,89 @@ def _job_reconstruct_euclid_cutout(
     sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
 
-    # SR_forward.fits / residual.fits were the round-trip self-check outputs;
-    # they are deprecated and no longer written. Purge any stale copies so a
-    # re-run leaves a clean directory. (predicted_dirty/residual are still
-    # used below for the PNG panel + residual_std.)
-    for _stale in ("SR_forward.fits", "residual.fits"):
-        try:
-            os.remove(os.path.join(cache_dir, _stale))
-        except OSError:
-            pass
+    # TWO colored LR → SR renders — the same figure once per color regime:
+    # "eye" (physical blackbody-T colors, absolute) and "solar"
+    # (solar-balanced adaptive windows).
+    png_paths: list[str] = []
+    if render:
+        for regime, mode in (("eye", "eye"), ("solar", "calibrated")):
+            out_path = os.path.join(out_dir, f"{regime}.png")
+            plot_reconstruction(lr_vis, sr_data, hr_data=None,
+                                output_path=out_path, lr_cube=lr_cube,
+                                asinh_scale=asinh_scale,
+                                show_all_bands=show_all_bands,
+                                predicted_dirty=predicted_dirty,
+                                residual=residual,
+                                rgb_mode=mode)
+            png_paths.append(out_path)
+            print(f"  ✓ {out_path}")
+    _tick(total, "saved outputs")
+
+    metrics = _cutout_residual_metrics(residual)
+    # Flux conservation: a faithful reconstruction, pushed back through the
+    # forward op, should preserve the observed VIS flux (ratio ≈ 1).
+    if predicted_dirty is not None:
+        lr_sum = float(np.sum(lr_vis))
+        metrics["flux_ratio_fwd_over_lr"] = (
+            float(np.sum(predicted_dirty)) / lr_sum if lr_sum != 0 else None
+        )
+    else:
+        metrics["flux_ratio_fwd_over_lr"] = None
+
+    return {
+        "out_dir":      out_dir,
+        "png_paths":    png_paths,
+        "sr_fits_path": sr_fits_path,
+        "stack_fits_path": stack_path,
+        "ra":           float(ra),
+        "dec":          float(dec),
+        "cutout_size":  int(cutout_size_vis_pixels),
+        "bands":        bands_info,
+        "metrics":      metrics,
+    }
+
+
+def _job_reconstruct_euclid_cutout(
+    cap,
+    ra: float,
+    dec: float,
+    checkpoint_dir: str,
+    num_res_blocks: int,
+    cutout_size_vis_pixels: int,
+    asinh_scale: Optional[float] = None,
+    show_all_bands: bool = False,
+) -> Dict[str, Any]:
+    """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
+
+    Thin wrapper over :func:`reconstruct_cutout_at`: it loads the model, wipes
+    the single ``Config.EUCLID_INFERENCE_DIR/cutouts/latest/`` overwrite slot
+    (so each run *replaces* the previous record), runs the shared per-object
+    body into it, then copies the two color renders to the gallery's fixed
+    ``euclid_latest_{eye,solar}.png`` names. The input RA/Dec/size are
+    preserved in the SR FITS header for provenance.
+    """
+    if not tf.train.latest_checkpoint(checkpoint_dir):
+        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
+    scale = Config.DEFAULT_REBIN_FACTOR
+    model = load_model_from_checkpoint(
+        checkpoint_dir, scale, num_res_blocks,
+        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
+    )
+
+    # Single overwrite slot: wipe every previous cutout record so each call
+    # replaces the prior run rather than accumulating one directory per
+    # position.
+    cutouts_root = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
+    if os.path.isdir(cutouts_root):
+        shutil.rmtree(cutouts_root)
+    cache_dir = os.path.join(cutouts_root, "latest")
+
+    res = reconstruct_cutout_at(
+        model, ra, dec, cutout_size_vis_pixels, cache_dir,
+        asinh_scale=asinh_scale, show_all_bands=show_all_bands,
+        checkpoint_dir=checkpoint_dir,
+        progress=lambda done, total, label: cap.tick(done, total, label),
+    )
 
     out_dir = Config.VIS_RECONSTRUCTION_DIR
     os.makedirs(out_dir, exist_ok=True)
@@ -525,33 +619,22 @@ def _job_reconstruct_euclid_cutout(
             os.remove(stale)
         except OSError:
             pass
-    # TWO colored LR → SR renders — the same figure once per color regime:
-    # "eye" (physical blackbody-T colors, absolute) and "solar"
-    # (solar-balanced adaptive windows). Both appear in the gallery.
     out_pngs = []
-    for regime, mode in (("eye", "eye"), ("solar", "calibrated")):
-        out_path = os.path.join(out_dir, f"euclid_latest_{regime}.png")
-        plot_reconstruction(lr_vis, sr_data, hr_data=None,
-                            output_path=out_path, lr_cube=lr_cube,
-                            asinh_scale=asinh_scale,
-                            show_all_bands=show_all_bands,
-                            predicted_dirty=predicted_dirty,
-                            residual=residual,
-                            rgb_mode=mode)
-        out_pngs.append(out_path)
-        print(f"  ✓ {out_path}")
-    cap.tick(len(Config.LR_INPUT_BAND_NAMES) + 3,
-             len(Config.LR_INPUT_BAND_NAMES) + 3, "saved PNGs")
+    for regime, src in zip(("eye", "solar"), res["png_paths"]):
+        dst = os.path.join(out_dir, f"euclid_latest_{regime}.png")
+        shutil.copyfile(src, dst)
+        out_pngs.append(dst)
+
     return {
-        "output_path":  out_pngs[0],
+        "output_path":  out_pngs[0] if out_pngs else None,
         "output_paths": out_pngs,
         "cache_dir":    cache_dir,
-        "sr_fits_path": sr_fits_path,
+        "sr_fits_path": res["sr_fits_path"],
         "ra":           ra,
         "dec":          dec,
         "cutout_size":  cutout_size_vis_pixels,
-        "bands":        bands_info,
-        "residual_std": float(residual.std()) if residual is not None else None,
+        "bands":        res["bands"],
+        "residual_std": res["metrics"]["residual_std_e"],
     }
 
 

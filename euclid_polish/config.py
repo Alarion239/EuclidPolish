@@ -567,6 +567,14 @@ class Config:
     # without re-downloading.
     EUCLID_INFERENCE_DIR         = os.path.join(DATA_DIR, "euclid_inference")
 
+    # Catalog-based evaluation. ``EVAL_CATALOG_DIR`` holds normalized
+    # ``id,ra,dec[,grade]`` CSVs (e.g. the Natalie Lines Euclid Q1 strong-lens
+    # catalog at ``lens_catalog/lenses.csv``). ``EVAL_RESULTS_DIR`` holds one
+    # sub-directory per evaluation run, each with one sub-directory per object
+    # (band FITS + SR.fits + eye/solar PNGs) plus a ``manifest.csv``.
+    EVAL_CATALOG_DIR             = os.path.join(DATA_DIR, "eval_catalogs")
+    EVAL_RESULTS_DIR             = os.path.join(DATA_DIR, "eval_results")
+
     # PSF extraction defaults
     DEFAULT_PSF_SIZE = 255
     DEFAULT_PSF_FWHM = 3.0

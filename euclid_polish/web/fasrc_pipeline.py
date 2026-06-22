@@ -169,6 +169,11 @@ class FASRCPipelineStep(ABC):
     #: submit endpoint — experimental features for the future, disabled
     #: for now. The step classes stay registered so nothing else breaks.
     experimental: bool = False
+    #: Conda env to activate for this step. ``None`` uses the cluster default
+    #: (``cfg.conda_env_path``). Set to an absolute env path or a named env
+    #: when a step needs an isolated environment — e.g. the PyTorch-based
+    #: Zoobot morphology step, which would clash with the main TensorFlow env.
+    conda_env: Optional[str] = None
 
     @abstractmethod
     def build_command(self, params: Dict[str, Any]) -> List[str]:
@@ -224,6 +229,7 @@ class FASRCPipelineStep(ABC):
             cmd_argv=self.build_command(params),
             banner_line=self.banner_line(label),
             step_id=self.step_id,
+            conda_env_path=self.conda_env,
         )
 
 
@@ -241,6 +247,7 @@ def render_sbatch_body(
     cmd_argv:         List[str],
     banner_line:      str,
     step_id:          Optional[str] = None,
+    conda_env_path:   Optional[str] = None,
 ) -> Dict[str, str]:
     """Render an sbatch script body + the relative log paths.
 
@@ -359,7 +366,7 @@ def render_sbatch_body(
             source "$CONDA_BASE/etc/profile.d/mamba.sh"
           fi
         fi
-        mamba activate {shlex.quote(cfg.conda_env_path)}
+        mamba activate {shlex.quote(conda_env_path or cfg.conda_env_path)}
 
         echo "Python:  $(which python)"
         python -u {cmd_line}
@@ -673,6 +680,61 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         output_size = int(params.get("output_size", 0) or 0)
         if output_size > 0:
             cmd += ["--output-size", str(output_size)]
+        return cmd
+
+
+class CatalogEvalStep(FASRCPipelineStep):
+    """Run the model over a catalog of real sky targets and aggregate results.
+
+    Re-fetches a 4-band Euclid cutout at every catalog (RA, Dec), runs SR,
+    writes per-object FITS + eye/solar renders + a forward-model
+    self-consistency residual, and a run-level ``manifest.csv``. The headline
+    use is the Natalie Lines Euclid Q1 strong-lens catalog (thin arcs /
+    Einstein rings are a hard test of the deconvolution), but any
+    ``id,ra,dec[,grade]`` CSV works. GPU-optional — SR inference runs on CPU
+    fine for a few hundred objects; bump ``n_gpus`` for larger catalogs.
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="eval_catalog",
+            label="Evaluate model over a catalog (lenses)",
+            job_name="eval-catalog",
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="32G", time_limit="8:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/fasrc_eval_catalog.py",
+            "--run-name",   str(params.get("run_name", "lenses") or "lenses"),
+            "--cutout-size", str(int(params.get("cutout_size", 256) or 256)),
+        ]
+        # Optional catalog override; otherwise the script defaults to the
+        # normalized lens catalog under Config.EVAL_CATALOG_DIR.
+        catalog = params.get("catalog")
+        if catalog not in (None, ""):
+            cmd += ["--catalog", str(catalog)]
+        grade = params.get("grade")
+        if grade not in (None, ""):
+            cmd += ["--grade", str(grade)]
+        max_n = int(params.get("max_n", 0) or 0)
+        if max_n > 0:
+            cmd += ["--max-n", str(max_n)]
+        asinh = params.get("asinh_scale")
+        if asinh not in (None, ""):
+            try:
+                cmd += ["--asinh-scale", f"{float(asinh):g}"]
+            except (TypeError, ValueError):
+                pass
+        nrb = int(params.get("num_res_blocks", 0) or 0)
+        if nrb > 0:
+            cmd += ["--num-res-blocks", str(nrb)]
+        if str(params.get("no_render", "")).lower() in ("1", "true", "on", "yes"):
+            cmd += ["--no-render"]
         return cmd
 
 
@@ -1136,6 +1198,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
+    CatalogEvalStep,
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,
