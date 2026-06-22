@@ -1,9 +1,9 @@
 """Tests for the catalog-based evaluation pipeline.
 
-Covers the generic catalog reader, the ``eval_catalog`` FASRC step's
-``build_command`` argv, the shared per-object ``reconstruct_cutout_at`` helper
-(driven with stubbed download + model so no network / TF weights are needed),
-and the read-only ``/evaluation`` routes.
+Covers the generic catalog reader, the local catalog runner (auto-fetch /
+early-out), the shared per-object ``reconstruct_cutout_at`` helper (driven with
+stubbed download + model so no network / TF weights are needed), and the
+``/evaluation`` routes including the local run-eval / run-zoobot jobs.
 """
 
 from __future__ import annotations
@@ -72,37 +72,40 @@ class TestReadEvalCatalog:
 
 
 # --------------------------------------------------------------------------- #
-# FASRC step
+# Catalog runner (local; auto-fetch + early-out paths, no model needed)
 # --------------------------------------------------------------------------- #
 
-class TestCatalogEvalStep:
-    def test_registered(self):
-        step = REGISTRY.get("eval_catalog")
-        assert step.job_name == "eval-catalog"
-        assert step.conda_env is None        # uses cluster default env
-        assert not step.experimental
+class TestRunCatalogEval:
+    def test_not_a_fasrc_step(self):
+        # Catalog eval runs locally now, not as a FASRC pipeline step.
+        with pytest.raises(KeyError):
+            REGISTRY.get("eval_catalog")
 
-    def test_build_command_minimal(self):
-        argv = REGISTRY.get("eval_catalog").build_command({})
-        assert argv[0] == "scripts/fasrc_eval_catalog.py"
-        assert "--run-name" in argv and "--cutout-size" in argv
-        # No optional flags when params are absent.
-        assert "--grade" not in argv and "--max-n" not in argv
+    def test_autofetch_then_empty_returns_cleanly(self, tmp_path, monkeypatch):
+        from euclid_polish.eval import catalog_runner
+        from euclid_polish.euclid import lens_catalog
+        monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
+        called = {}
 
-    def test_build_command_full(self):
-        argv = REGISTRY.get("eval_catalog").build_command({
-            "run_name": "lensesA", "grade": "A", "cutout_size": 128,
-            "max_n": 30, "asinh_scale": 100, "num_res_blocks": 32,
-            "catalog": "data/eval_catalogs/lens_catalog/lenses.csv",
-        })
-        assert argv[argv.index("--run-name") + 1] == "lensesA"
-        assert argv[argv.index("--cutout-size") + 1] == "128"
-        assert argv[argv.index("--grade") + 1] == "A"
-        assert argv[argv.index("--max-n") + 1] == "30"
-        assert argv[argv.index("--num-res-blocks") + 1] == "32"
-        assert argv[argv.index("--catalog") + 1].endswith("lenses.csv")
-        # Rendering is local; the cluster job never gets a render flag.
-        assert "--no-render" not in argv and "--render" not in argv
+        def fake_fetch(out_csv=None, **k):
+            called["out"] = out_csv
+            os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+            with open(out_csv, "w") as f:
+                f.write("id,ra,dec\n")          # header only → 0 objects
+            return out_csv, 0
+        monkeypatch.setattr(lens_catalog, "fetch", fake_fetch)
+        logs = []
+        res = catalog_runner.run_catalog_eval(
+            out_dir=str(tmp_path / "out"), catalog_path=None,
+            log=logs.append)
+        assert res["n"] == 0 and called["out"].endswith("lenses.csv")
+
+    def test_explicit_missing_catalog_raises(self, tmp_path):
+        from euclid_polish.eval import catalog_runner
+        with pytest.raises(FileNotFoundError):
+            catalog_runner.run_catalog_eval(
+                out_dir=str(tmp_path / "out"),
+                catalog_path=str(tmp_path / "nope.csv"))
 
 
 # --------------------------------------------------------------------------- #
@@ -175,10 +178,10 @@ class TestEvaluationRoutes:
         r = client.get("/evaluation")
         assert r.status_code == 200
         body = r.get_data(as_text=True)
-        # Both eval step cards are mounted (real submit flow + live status),
-        # plus the catalog-fetch + results controls.
-        assert "step-mount-eval_catalog" in body
-        assert "step-mount-eval_zoobot_morphology" in body
+        # Local run forms (eval + zoobot) + the catalog-fetch + results
+        # controls are present (no FASRC step cards).
+        assert "runEvalBtn" in body and "runZoobotBtn" in body
+        assert "jobPanel" in body
         assert "fetchCatBtn" in body and "runSelect" in body
 
     def test_runs_api_empty(self, client):
@@ -402,64 +405,51 @@ class TestLensCatalogModule:
         assert got == out and n == 1
 
 
-class TestBatchAutoFetchCatalog:
-    """The batch script must be self-sufficient on FASRC: if the default lens
-    catalog isn't present on the node, fetch it; an explicit missing path errors."""
+class TestLocalRunRoutes:
+    """The eval + zoobot jobs run locally via /api/evaluation/run-*."""
 
-    def _load_main(self):
-        import importlib
-        import sys
-        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        spath = os.path.join(repo, "scripts")
-        if spath not in sys.path:
-            sys.path.insert(0, spath)
-        return importlib.import_module("fasrc_eval_catalog")
+    @pytest.fixture
+    def client(self):
+        from euclid_polish.web.app import create_app
+        app = create_app()
+        app.config.update(TESTING=True)
+        return app.test_client()
 
-    def test_default_catalog_autofetched_when_missing(self, tmp_path, monkeypatch):
-        mod = self._load_main()
-        monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
+    def test_run_eval_spawns_local_job(self, client, tmp_path, monkeypatch):
+        from euclid_polish.eval import catalog_runner
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        # Don't actually run the model — stub the runner.
+        monkeypatch.setattr(catalog_runner, "run_catalog_eval",
+                            lambda **k: {"n": 0})
+        r = client.post("/api/evaluation/run-eval",
+                        data={"run_name": "lensesA", "grade": "A", "max_n": "3"})
+        assert r.status_code == 200 and r.get_json()["job_id"]
 
-        from euclid_polish.euclid import lens_catalog
-        called = {}
+    def test_run_eval_rejects_bad_run(self, client):
+        r = client.post("/api/evaluation/run-eval", data={"run_name": "../x"})
+        assert r.status_code == 400
 
-        def fake_fetch(out_csv=None, **k):
-            called["out"] = out_csv
-            os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-            with open(out_csv, "w") as f:
-                f.write("id,ra,dec\n")          # header only → 0 objects
-            return out_csv, 0
+    def test_run_zoobot_env_missing_hint(self, client, tmp_path, monkeypatch):
+        from euclid_polish.web.routes import evaluation as evmod
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
+        monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
+        r = client.post("/api/evaluation/run-zoobot", data={"run": "run1"})
+        assert r.status_code == 400
+        assert "Zoobot env not found" in r.get_json()["error"]
 
-        monkeypatch.setattr(lens_catalog, "fetch", fake_fetch)
-        rc = mod.main(["--out", str(tmp_path / "res" / "t"), "--run-name", "t"])
-        assert rc == 0                           # 0 objects → clean early return
-        assert called["out"].endswith("lenses.csv")
-        assert os.path.isfile(called["out"])
+    def test_run_zoobot_spawns_job(self, client, tmp_path, monkeypatch):
+        from euclid_polish.web.routes import evaluation as evmod
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
+        monkeypatch.setattr(evmod, "_zoobot_python", lambda: "/fake/python")
+        monkeypatch.setattr(evmod, "_spawn_subprocess_job",
+                            lambda label, cmd, result: "job1")
+        r = client.post("/api/evaluation/run-zoobot", data={"run": "run1"})
+        assert r.status_code == 200 and r.get_json()["job_id"] == "job1"
 
-    def test_explicit_missing_catalog_errors(self, tmp_path):
-        mod = self._load_main()
-        with pytest.raises(FileNotFoundError):
-            mod.main(["--catalog", str(tmp_path / "nope.csv")])
-
-
-class TestZoobotMorphologyStep:
-    def test_registered_on_gpu_in_isolated_env(self):
-        step = REGISTRY.get("eval_zoobot_morphology")
-        assert step.job_name == "eval-zoobot"
-        assert step.needs_gpu and step.defaults.n_gpus == 1
-        # Activates the isolated (named) Zoobot env, not the main TF env.
-        assert step.conda_env == "EuclidPolishZoobot"
-
-    def test_build_command_representation_default(self):
-        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
-            {"run_name": "lenses"})
-        assert argv[0] == "scripts/zoobot_morphology.py"
-        assert argv[argv.index("--run-name") + 1] == "lenses"
-        assert "--tree-checkpoint" not in argv      # representation mode
-
-    def test_build_command_votes_mode(self):
-        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
-            {"run_name": "syn", "tree_checkpoint": "/p/tree.ckpt",
-             "schema": "gz_evo_v1_public"})
-        assert argv[argv.index("--tree-checkpoint") + 1] == "/p/tree.ckpt"
-        assert argv[argv.index("--schema") + 1] == "gz_evo_v1_public"
+    def test_run_zoobot_missing_run_404(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(Config.EVAL_RESULTS_DIR, exist_ok=True)
+        assert client.post("/api/evaluation/run-zoobot",
+                           data={"run": "nope"}).status_code == 404

@@ -16,14 +16,63 @@ from __future__ import annotations
 
 import csv
 import os
-from typing import Any, Dict, List
+import re
+import subprocess
+from typing import Any, Dict, List, Optional
 
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
-from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
+
+#: Repo root (…/euclid_polish/web/routes/evaluation.py → up 4).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+
+#: STEP: cur/tot — emitted by the eval scripts via Reporter; we parse it from a
+#: subprocess job's output to drive the local progress bar.
+_STEP_RE = re.compile(r"STEP:\s*([\d,]+)\s*/\s*([\d,]+)")
+
+
+def _zoobot_python() -> Optional[str]:
+    """Locate the isolated EuclidPolishZoobot env's Python (torch is not in the
+    main env). ``EUCLID_POLISH_ZOOBOT_PYTHON`` overrides; else probe the usual
+    conda locations. Returns the interpreter path or ``None``."""
+    override = os.environ.get("EUCLID_POLISH_ZOOBOT_PYTHON")
+    if override and os.path.exists(override):
+        return override
+    for base in ("~/miniforge3", "~/mambaforge", "~/miniconda3", "~/anaconda3",
+                 "/opt/miniforge3", "/opt/anaconda3", "/opt/miniconda3"):
+        cand = os.path.expanduser(
+            os.path.join(base, "envs", "EuclidPolishZoobot", "bin", "python"))
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def _spawn_subprocess_job(label: str, cmd: list, result: dict):
+    """Spawn a local background job running ``cmd``; stream stdout to the job
+    log and parse ``STEP: cur/tot`` lines into the progress bar. Returns the
+    job id. Raises (→ job 'failed') on non-zero exit."""
+    def _run(cap):
+        cap.write("$ " + " ".join(cmd) + "\n")
+        proc = subprocess.Popen(
+            cmd, cwd=_REPO_ROOT, env=os.environ.copy(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1)
+        for line in proc.stdout:
+            cap.write(line)
+            m = _STEP_RE.search(line)
+            if m:
+                cap.tick(int(m.group(1).replace(",", "")),
+                         int(m.group(2).replace(",", "")), "")
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"{os.path.basename(cmd[1])} exited {rc}")
+        return result
+    return JOB_REGISTRY.spawn(label, _run)
 
 
 def _list_catalogs() -> List[Dict[str, Any]]:
@@ -163,16 +212,79 @@ def register(app):
 
     @app.route("/evaluation")
     def evaluation_page():
-        step = STEP_REGISTRY.get("eval_catalog")
         return render_template(
             "evaluation.html",
-            step=step,
-            defaults=step.defaults.to_dict(),
             catalogs=_list_catalogs(),
             runs=_list_runs(),
+            default_cutout=256,
             default_asinh=float(Config.STRETCH_SCALE_E),
             default_clip=_DEFAULT_CLIP,
         )
+
+    @app.route("/api/evaluation/run-eval", methods=["POST"])
+    def api_evaluation_run_eval():
+        """Run the SR model over a catalog LOCALLY as a background job.
+
+        In-process (TF is in the WebUI env): loads the local checkpoint, loops
+        the catalog writing per-object FITS + manifest, reporting progress to
+        the job's bar + log. Returns a job id to poll via ``/api/jobs/<id>``.
+        """
+        f = request.form
+        run = (f.get("run_name") or "run").strip() or "run"
+        if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
+            return jsonify({"ok": False, "error": "bad run name"}), 400
+        grade = (f.get("grade") or "").strip() or None
+        try:
+            max_n = int(f.get("max_n", 0) or 0)
+            cutout = int(f.get("cutout_size", 256) or 256)
+        except ValueError:
+            return jsonify({"ok": False, "error": "max_n / cutout must be ints"}), 400
+        catalog = (f.get("catalog") or "").strip() or None
+        if catalog:
+            catalog = os.path.join(Config.DATA_DIR, catalog)
+        out_dir = os.path.join(Config.EVAL_RESULTS_DIR, run)
+
+        from euclid_polish.eval import catalog_runner
+
+        def _run(cap):
+            return catalog_runner.run_catalog_eval(
+                out_dir=out_dir, catalog_path=catalog, grade=grade,
+                max_n=(max_n or None), cutout_size=cutout,
+                on_progress=lambda i, n, lbl: cap.tick(i, n, lbl),
+                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"),
+            )
+        job_id = JOB_REGISTRY.spawn(f"eval: {run}", _run)
+        return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/evaluation/run-zoobot", methods=["POST"])
+    def api_evaluation_run_zoobot():
+        """Score Zoobot morphology for a run LOCALLY (CPU) as a background job.
+
+        Zoobot is PyTorch (separate env), so this runs scripts/zoobot_morphology.py
+        in the EuclidPolishZoobot env as a subprocess, streaming its output to
+        the job log. Returns a job id, or 400 with an install hint if the env
+        is missing.
+        """
+        f = request.form
+        run = (f.get("run") or "").strip()
+        if not run or os.sep in run or (os.altsep and os.altsep in run) \
+                or run in (".", ".."):
+            return jsonify({"ok": False, "error": "bad run name"}), 400
+        if not os.path.isdir(os.path.join(Config.EVAL_RESULTS_DIR, run)):
+            return jsonify({"ok": False, "error": f"run {run!r} not found"}), 404
+        py = _zoobot_python()
+        if py is None:
+            return jsonify({"ok": False, "error": (
+                "Zoobot env not found. Create it once with "
+                "`mamba env create -f environment-zoobot.yml`, or set "
+                "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
+        cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
+               "--run-name", run, "--device", "cpu"]
+        tree_ckpt = (f.get("tree_checkpoint") or "").strip()
+        if tree_ckpt:
+            cmd += ["--tree-checkpoint", tree_ckpt]
+        job_id = _spawn_subprocess_job(f"zoobot: {run}", cmd, {"run": run})
+        return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/runs")
     def api_evaluation_runs():

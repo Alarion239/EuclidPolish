@@ -688,114 +688,10 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         return cmd
 
 
-class CatalogEvalStep(FASRCPipelineStep):
-    """Run the model over a catalog of real sky targets and aggregate results.
-
-    Re-fetches a 4-band Euclid cutout at every catalog (RA, Dec), runs SR,
-    writes per-object FITS + eye/solar renders + a forward-model
-    self-consistency residual, and a run-level ``manifest.csv``. The headline
-    use is the Natalie Lines Euclid Q1 strong-lens catalog (thin arcs /
-    Einstein rings are a hard test of the deconvolution), but any
-    ``id,ra,dec[,grade]`` CSV works. GPU-optional — SR inference runs on CPU
-    fine for a few hundred objects; bump ``n_gpus`` for larger catalogs.
-    """
-
-    def __init__(self):
-        super().__init__(
-            step_id="eval_catalog",
-            label="Evaluate model over a catalog (lenses)",
-            job_name="eval-catalog",
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="32G", time_limit="8:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        cmd = [
-            "scripts/fasrc_eval_catalog.py",
-            "--run-name",   str(params.get("run_name", "lenses") or "lenses"),
-            "--cutout-size", str(int(params.get("cutout_size", 256) or 256)),
-        ]
-        # Optional catalog override; otherwise the script defaults to the
-        # normalized lens catalog under Config.EVAL_CATALOG_DIR.
-        catalog = params.get("catalog")
-        if catalog not in (None, ""):
-            cmd += ["--catalog", str(catalog)]
-        grade = params.get("grade")
-        if grade not in (None, ""):
-            cmd += ["--grade", str(grade)]
-        max_n = int(params.get("max_n", 0) or 0)
-        if max_n > 0:
-            cmd += ["--max-n", str(max_n)]
-        asinh = params.get("asinh_scale")
-        if asinh not in (None, ""):
-            try:
-                cmd += ["--asinh-scale", f"{float(asinh):g}"]
-            except (TypeError, ValueError):
-                pass
-        nrb = int(params.get("num_res_blocks", 0) or 0)
-        if nrb > 0:
-            cmd += ["--num-res-blocks", str(nrb)]
-        # PNG rendering happens locally from the pulled FITS; the cluster job
-        # only runs the model. (Opt in to cluster-side rendering with --render.)
-        return cmd
-
-
-#: The isolated Zoobot env on FASRC. Created once with
-#: ``mamba env create -f environment-zoobot.yml`` (a NAMED env in the user's
-#: ~/.conda/envs), so the sbatch prologue activates it by name.
-ZOOBOT_CONDA_ENV = "EuclidPolishZoobot"
-
-
-class ZoobotMorphologyStep(FASRCPipelineStep):
-    """Score before/after galaxy morphology with Zoobot on an eval run.
-
-    Runs the Galaxy-Zoo model (Walmsley et al.; Euclid-validated) on the VIS
-    plane of an eval run's per-object FITS and measures how the morphology
-    vector moves from the dirty LR (before) to the SR (after), plus — when HR
-    is present (synthetic) — whether SR moved it toward HR. Writes
-    ``morphology_manifest.csv`` into the run dir, which the gallery merges.
-
-    Zoobot is PyTorch and clashes with the main TensorFlow env, so this runs in
-    the isolated :data:`ZOOBOT_CONDA_ENV` on a GPU node. The eval-catalog run
-    (whose FITS this scores) must already exist on the cluster.
-    """
-
-    def __init__(self):
-        super().__init__(
-            step_id="eval_zoobot_morphology",
-            label="Zoobot morphology before/after (eval run)",
-            job_name="eval-zoobot",
-            defaults=StepResources(
-                partition="gpu", n_cpus=8, n_gpus=1,
-                memory="32G", time_limit="4:00:00",
-            ),
-            needs_gpu=True,
-            conda_env=ZOOBOT_CONDA_ENV,
-        )
-
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
-        cmd = [
-            "scripts/zoobot_morphology.py",
-            "--run-name", str(params.get("run_name", "lenses") or "lenses"),
-            "--device",   "auto",
-        ]
-        tree_ckpt = params.get("tree_checkpoint")
-        if tree_ckpt not in (None, ""):
-            cmd += ["--tree-checkpoint", str(tree_ckpt)]
-            schema = params.get("schema")
-            if schema not in (None, ""):
-                cmd += ["--schema", str(schema)]
-        else:
-            model_name = params.get("model_name")
-            if model_name not in (None, ""):
-                cmd += ["--model-name", str(model_name)]
-        png_size = int(params.get("png_size", 0) or 0)
-        if png_size > 0:
-            cmd += ["--png-size", str(png_size)]
-        return cmd
+# NOTE: catalog evaluation and Zoobot morphology are NOT FASRC steps — they
+# run LOCALLY as background jobs (the SR model in-process, Zoobot in its own
+# torch env). See euclid_polish/web/routes/evaluation.py and the /evaluation
+# page's local "Run evaluation" / "Run Zoobot" forms.
 
 
 class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
@@ -1258,8 +1154,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
-    CatalogEvalStep,
-    ZoobotMorphologyStep,
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,

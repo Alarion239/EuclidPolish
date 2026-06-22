@@ -149,18 +149,58 @@
   <span id="fetchCatMsg" class="muted" style="margin-left:8px;"></span>
 </section>
 
-{# Mounted FASRC step cards: catalog eval (model inference → FITS) and Zoobot
-   morphology (GPU node). Both submit through the normal FASRC flow with live
-   job status; Sync the results down afterwards. #}
-{% with step_id="eval_catalog",
-        on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
-  {% include "_step_card_mount.html" %}
-{% endwith %}
+{# Local jobs: both run on this machine (the SR model in-process, Zoobot in its
+   own torch env) with a live progress bar + log below. No cluster needed. #}
+<section class="card" style="grid-column: 1 / -1;">
+  <h3>Run evaluation <span class="muted" style="font-weight:normal;">— SR model over a catalog, locally</span></h3>
+  <div class="form-row">
+    <label>Run name
+      <input type="text" id="evRun" value="lenses-A" pattern="[A-Za-z0-9._-]+"></label>
+    <label>Grade
+      <select id="evGrade">
+        <option value="">all</option>
+        <option value="A" selected>A</option>
+        <option value="B">B</option>
+        <option value="C">C</option>
+      </select></label>
+    <label>Max objects <span class="muted">(0 = all)</span>
+      <input type="number" id="evMaxN" value="20" min="0" max="5000"></label>
+    <label>Cutout size (VIS px)
+      <input type="number" id="evCutout" value="{{ default_cutout }}" min="32" max="4096" step="32"></label>
+    <label>Catalog <span class="muted">(blank = lens catalog)</span>
+      <input type="text" id="evCatalog" value=""
+             placeholder="eval_catalogs/lens_catalog/lenses.csv"></label>
+  </div>
+  <div style="margin-top:10px;">
+    <button id="runEvalBtn" type="button">▶ Run evaluation</button>
+    <span class="hint" style="margin-left:8px;">Loads the local checkpoint, fetches
+      cutouts, writes per-object FITS + manifest into <code>data/eval_results/&lt;run&gt;/</code>.</span>
+  </div>
+</section>
 
-{% with step_id="eval_zoobot_morphology",
-        on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
-  {% include "_step_card_mount.html" %}
-{% endwith %}
+<section class="card" style="grid-column: 1 / -1;">
+  <h3>Run Zoobot morphology <span class="muted" style="font-weight:normal;">— before/after, locally (CPU)</span></h3>
+  <div class="form-row">
+    <label>Run <span class="muted">(an existing eval run)</span>
+      <input type="text" id="zbRun" value="lenses-A" pattern="[A-Za-z0-9._-]+"></label>
+    <label>Tree checkpoint <span class="muted">(blank = representation mode)</span>
+      <input type="text" id="zbTree" value="" placeholder="representation mode"></label>
+  </div>
+  <div style="margin-top:10px;">
+    <button id="runZoobotBtn" type="button">🦋 Run Zoobot</button>
+    <span class="hint" style="margin-left:8px;">Runs in the
+      <code>EuclidPolishZoobot</code> env on CPU; writes the morphology Δ into
+      the run, shown in the gallery.</span>
+  </div>
+</section>
+
+{# Shared live progress + log panel for whichever local job is running. #}
+<section class="card" id="jobPanel" style="grid-column: 1 / -1; display:none;">
+  <h3 id="jobTitle">Job</h3>
+  <div class="job-bar"><progress id="jobBar" value="0" max="100"></progress>
+    <span id="jobBarLabel" class="bar-label">…</span></div>
+  <pre id="jobLog" class="job-log" style="max-height:280px;"></pre>
+</section>
 
 <script>
 (function () {
@@ -313,6 +353,65 @@
   $('clipInput').addEventListener('change', () => {
     const v = parseFloat($('clipInput').value);
     if (!isNaN(v)) { clipPct = Math.min(100, Math.max(90, v)); loadRun(); }
+  });
+
+  // ── Local jobs (eval + zoobot): live progress bar + log, polled from
+  //    /api/jobs/<id> until the background job finishes. ──────────────────
+  let jobPoll = null;
+  function trackJob(jobId, title, onDone) {
+    $('jobPanel').style.display = '';
+    $('jobTitle').textContent = title;
+    $('jobLog').textContent = '';
+    const bar = $('jobBar');
+    if (jobPoll) clearInterval(jobPoll);
+    jobPoll = setInterval(async () => {
+      let j;
+      try { j = await (await fetch('/api/jobs/' + jobId)).json(); }
+      catch (e) { return; }
+      const p = j.progress || {};
+      if (p.total > 0) { bar.removeAttribute('value'); bar.value = p.pct; bar.max = 100; }
+      $('jobBarLabel').textContent =
+        (p.total > 0 ? p.current + '/' + p.total + ' (' + p.pct + '%) ' : '')
+        + (p.label || j.status);
+      $('jobLog').textContent = j.log || '';
+      $('jobLog').scrollTop = $('jobLog').scrollHeight;
+      if (j.status === 'done' || j.status === 'failed') {
+        clearInterval(jobPoll); jobPoll = null;
+        $('jobBarLabel').textContent =
+          (j.status === 'done' ? '✓ done' : '✗ failed — see log above');
+        if (j.status === 'done' && onDone) onDone();
+      }
+    }, 1200);
+  }
+  async function startJob(url, body, title, btn, onDone) {
+    const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ starting…';
+    try {
+      const r = await fetch(url, { method: 'POST', body });
+      const j = await r.json();
+      if (!j.ok) { $('runMsg').textContent = '✗ ' + (j.error || r.status); return; }
+      trackJob(j.job_id, title, onDone);
+    } catch (e) { $('runMsg').textContent = '✗ ' + e; }
+    finally { btn.disabled = false; btn.textContent = label; }
+  }
+
+  $('runEvalBtn').addEventListener('click', () => {
+    const fd = new FormData();
+    fd.set('run_name', $('evRun').value);
+    fd.set('grade', $('evGrade').value);
+    fd.set('max_n', $('evMaxN').value);
+    fd.set('cutout_size', $('evCutout').value);
+    fd.set('catalog', $('evCatalog').value);
+    startJob('/api/evaluation/run-eval', fd,
+             'Evaluation: ' + $('evRun').value, $('runEvalBtn'),
+             () => { $('zbRun').value = $('evRun').value; refreshRuns(); });
+  });
+
+  $('runZoobotBtn').addEventListener('click', () => {
+    const fd = new FormData();
+    fd.set('run', $('zbRun').value);
+    fd.set('tree_checkpoint', $('zbTree').value);
+    startJob('/api/evaluation/run-zoobot', fd,
+             'Zoobot: ' + $('zbRun').value, $('runZoobotBtn'), () => loadRun());
   });
 
   // ── Interactive lightbox ────────────────────────────────────────────────
