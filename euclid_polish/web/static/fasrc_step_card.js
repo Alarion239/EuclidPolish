@@ -199,9 +199,10 @@ large cutout don't leak across train/validate."></label>`;
             <input type="text" name="catalog" value=""
                    placeholder="eval_catalogs/lens_catalog/lenses.csv"
                    title="Path (relative to the data dir) to a normalized id,ra,dec[,grade] CSV. Blank uses the default lens catalog."></label>
-          <p class="hint" style="flex-basis:100%;">Fetch the lens catalog with the
-             <b>Fetch lens catalog</b> button above (or
-             <code>scripts/fetch_lens_catalog.py</code>) first.</p>`;
+          <p class="hint" style="flex-basis:100%;">The default lens catalog is
+             fetched automatically on the cluster if missing. The
+             <b>Fetch lens catalog</b> button above also populates it locally
+             for browsing.</p>`;
       case 'eval_zoobot_morphology':
         // Mirrors ZoobotMorphologyStep.build_command (run_name, tree_checkpoint,
         // schema, png_size). Scores Zoobot morphology before/after SR on an

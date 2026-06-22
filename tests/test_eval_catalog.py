@@ -337,6 +337,46 @@ class TestLensCatalogModule:
         assert got == out and n == 1
 
 
+class TestBatchAutoFetchCatalog:
+    """The batch script must be self-sufficient on FASRC: if the default lens
+    catalog isn't present on the node, fetch it; an explicit missing path errors."""
+
+    def _load_main(self):
+        import importlib
+        import sys
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spath = os.path.join(repo, "scripts")
+        if spath not in sys.path:
+            sys.path.insert(0, spath)
+        return importlib.import_module("fasrc_eval_catalog")
+
+    def test_default_catalog_autofetched_when_missing(self, tmp_path, monkeypatch):
+        mod = self._load_main()
+        monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+
+        from euclid_polish.euclid import lens_catalog
+        called = {}
+
+        def fake_fetch(out_csv=None, **k):
+            called["out"] = out_csv
+            os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+            with open(out_csv, "w") as f:
+                f.write("id,ra,dec\n")          # header only → 0 objects
+            return out_csv, 0
+
+        monkeypatch.setattr(lens_catalog, "fetch", fake_fetch)
+        rc = mod.main(["--out", str(tmp_path / "res" / "t"), "--run-name", "t"])
+        assert rc == 0                           # 0 objects → clean early return
+        assert called["out"].endswith("lenses.csv")
+        assert os.path.isfile(called["out"])
+
+    def test_explicit_missing_catalog_errors(self, tmp_path):
+        mod = self._load_main()
+        with pytest.raises(FileNotFoundError):
+            mod.main(["--catalog", str(tmp_path / "nope.csv")])
+
+
 class TestZoobotMorphologyStep:
     def test_registered_isolated_env(self):
         step = REGISTRY.get("eval_zoobot_morphology")

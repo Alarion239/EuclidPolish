@@ -118,6 +118,19 @@ def main(argv=None) -> int:
         Config.EVAL_CATALOG_DIR, "lens_catalog", "lenses.csv")
     out_dir = args.out or os.path.join(Config.EVAL_RESULTS_DIR, args.run_name)
 
+    # Make the job self-sufficient on the cluster: if the *default* lens
+    # catalog isn't present on this node (it's only fetched into the local
+    # data dir by the WebUI button / CLI, which doesn't reach FASRC), pull and
+    # normalize it from Zenodo here. An explicitly-passed --catalog that's
+    # missing is a user error, so we don't silently substitute the default.
+    if not os.path.isfile(catalog):
+        if args.catalog:
+            raise FileNotFoundError(f"catalog not found: {catalog}")
+        from euclid_polish.euclid import lens_catalog
+        reporter.set_stage("fetching lens catalog")
+        print(f"catalog {catalog} not found — fetching from Zenodo…")
+        lens_catalog.fetch(catalog)
+
     rows = read_eval_catalog(catalog, grade=args.grade,
                              max_n=(args.max_n or None))
     n = len(rows)
