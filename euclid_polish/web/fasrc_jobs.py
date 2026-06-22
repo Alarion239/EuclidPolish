@@ -127,12 +127,17 @@ class JobDB:
 
     def update_state(self, jobid: str, *, state: str,
                      started_at: Optional[float] = None,
-                     ended_at: Optional[float] = None) -> None:
+                     ended_at: Optional[float] = None,
+                     clear_ended: bool = False) -> None:
         sets, args = ["state = ?", "last_seen = ?"], [state, time.time()]
         if started_at is not None:
             sets.append("started_at = COALESCE(started_at, ?)")
             args.append(started_at)
-        if ended_at is not None:
+        if clear_ended:
+            # Resurrecting a wrongly-finalised job back to a live state — drop
+            # the stale ended_at so the row reads as genuinely in-flight.
+            sets.append("ended_at = NULL")
+        elif ended_at is not None:
             sets.append("ended_at = ?")
             args.append(ended_at)
         args.append(jobid)
@@ -539,6 +544,21 @@ TERMINAL_STATES = frozenset({
     "COMPLETED", "DONE", "FAILED", "CANCELLED", "TIMEOUT", "UNKNOWN",
 })
 
+#: Terminal states reconcile assigns *speculatively* from "absent from squeue"
+#: (as opposed to the authoritative FAILED/CANCELLED/TIMEOUT/COMPLETED reported
+#: by squeue/sacct). These are revocable: if such a job reappears in squeue
+#: alive, squeue is the live source of truth and we un-finalise it. Without
+#: this, a job that briefly vanished from one squeue snapshot (a controller
+#: hiccup, a slow/empty squeue) stays terminal forever — the DB-driven
+#: "current submission" view drops it while the squeue-driven sidebar still
+#: shows it RUNNING.
+SPECULATIVE_TERMINAL = frozenset({"DONE", "UNKNOWN"})
+
+#: Grace period (seconds) before a submitted-but-never-seen-in-squeue job is
+#: flagged UNKNOWN. ``sbatch`` returns before the controller reliably lists the
+#: job, so a fresh job briefly absent from squeue is normal, not lost.
+SUBMIT_GRACE_S = 120.0
+
 
 def sync_pending_on_connect(
     ssh: Any,
@@ -699,10 +719,21 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
     for stored in db_rows:
         jobid = stored["jobid"]
         cur   = stored.get("state") or ""
+        live  = live_state.get(jobid)
+        alive = live in ("RUNNING", "PENDING")
+
         if cur in TERMINAL_STATES:
-            continue
+            # A speculatively-finalised job (DONE/UNKNOWN, assigned from a
+            # prior "absent from squeue" pass) that is alive again in squeue
+            # was finalised in error — squeue is the live truth, so fall
+            # through and re-sync it. Authoritative terminal states stay put.
+            if not (cur in SPECULATIVE_TERMINAL and alive):
+                continue
+            resurrecting = True
+        else:
+            resurrecting = False
+
         if jobid in live_state:
-            live = live_state[jobid]
             if live == "RUNNING":
                 target_db.update_state(
                     jobid, state="RUNNING",
@@ -710,9 +741,11 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
                         next((r.get("time") for r in squeue_rows
                               if r["jobid"] == jobid), "")
                     ),
+                    clear_ended=resurrecting,
                 )
             else:
-                target_db.update_state(jobid, state=live)
+                target_db.update_state(jobid, state=live,
+                                       clear_ended=resurrecting)
             if live != cur:
                 changes[jobid] = live
                 if live in TERMINAL_STATES:
@@ -726,6 +759,13 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
             changes[jobid] = "DONE"
             just_finalised.append(jobid)
         else:
+            # A job we never saw start may simply not be in squeue *yet*
+            # (sbatch returns before the controller reliably lists it). Only
+            # flag UNKNOWN once it's been missing well past submission, so a
+            # fresh submission isn't killed in the UI the instant it lands.
+            submitted = stored.get("submitted_at") or 0.0
+            if (time.time() - submitted) < SUBMIT_GRACE_S:
+                continue
             target_db.update_state(jobid, state="UNKNOWN",
                                    ended_at=time.time())
             changes[jobid] = "UNKNOWN"

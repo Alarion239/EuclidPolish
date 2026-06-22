@@ -50,19 +50,67 @@ def test_reconcile_marks_finished_runs_done(db):
     assert row["ended_at"] is not None
 
 
-def test_reconcile_marks_never_started_jobs_unknown(db):
-    """A job that was inserted PENDING and disappeared from squeue
-    without ever being seen as RUNNING (no started_at) is the failure
-    mode the user hit: we don't know what happened, so flag UNKNOWN
-    instead of leaving the row PENDING forever."""
-    db.insert("200", label="lost", params={},
+def test_reconcile_keeps_fresh_pending_job_during_grace(db):
+    """A *just-submitted* job that isn't in squeue yet must NOT be flagged
+    UNKNOWN — sbatch returns before the controller reliably lists the job, so
+    a brief absence right after submit is normal, not lost. (Marking it
+    terminal here is the bug that made the sidebar and current-submission
+    views disagree.)"""
+    db.insert("200", label="fresh", params={},
               script_path=".", log_path=".", err_path=".")
-    # Still PENDING, no started_at, not in squeue.
+    # Still PENDING, no started_at, not in squeue, submitted just now.
     changes = fasrc_jobs.reconcile_with_squeue([], db=db)
-    assert changes == {"200": "UNKNOWN"}
-    row = db.get("200")
+    assert "200" not in changes
+    assert db.get("200")["state"] == "PENDING"
+
+
+def test_reconcile_marks_long_missing_never_started_job_unknown(db):
+    """Once a never-seen-in-squeue job has been missing well past the submit
+    grace window, flag it UNKNOWN so it doesn't sit PENDING forever."""
+    db.insert("201", label="lost", params={},
+              script_path=".", log_path=".", err_path=".")
+    # Backdate submitted_at past the grace window.
+    with db._conn() as c:
+        c.execute("UPDATE fasrc_jobs SET submitted_at = ? WHERE jobid = ?",
+                  (time.time() - fasrc_jobs.SUBMIT_GRACE_S - 10, "201"))
+    changes = fasrc_jobs.reconcile_with_squeue([], db=db)
+    assert changes == {"201": "UNKNOWN"}
+    row = db.get("201")
     assert row["state"] == "UNKNOWN"
     assert row["ended_at"] is not None
+
+
+def test_reconcile_resurrects_speculatively_finalised_running_job(db):
+    """The reported inconsistency: a job wrongly marked DONE (e.g. one
+    transient empty squeue while it was actually still running) must flip back
+    to RUNNING when squeue shows it alive again. Otherwise the squeue-driven
+    sidebar shows it RUNNING while the DB-driven current-submission view has
+    permanently dropped it (reconcile skips terminal rows)."""
+    db.insert("500", label="flap", params={},
+              script_path=".", log_path=".", err_path=".")
+    db.update_state("500", state="RUNNING", started_at=time.time() - 60)
+    # Transient empty squeue → speculatively finalised DONE.
+    assert fasrc_jobs.reconcile_with_squeue([], db=db) == {"500": "DONE"}
+    assert db.get("500")["state"] == "DONE"
+    # squeue shows it alive again → it was finalised in error; resurrect.
+    rows = [{"jobid": "500", "state": "RUNNING", "time": "1:00"}]
+    changes = fasrc_jobs.reconcile_with_squeue(rows, db=db)
+    assert changes == {"500": "RUNNING"}
+    row = db.get("500")
+    assert row["state"] == "RUNNING"
+    assert row["ended_at"] is None          # cleared on resurrection
+
+
+def test_reconcile_does_not_resurrect_authoritative_terminal(db):
+    """A FAILED/CANCELLED/COMPLETED job (authoritative, from squeue/sacct) is
+    NOT resurrected even if a stale squeue snapshot still lists the jobid."""
+    db.insert("600", label="failed", params={},
+              script_path=".", log_path=".", err_path=".")
+    db.update_state("600", state="FAILED", ended_at=time.time() - 10)
+    rows = [{"jobid": "600", "state": "RUNNING", "time": "0:10"}]
+    changes = fasrc_jobs.reconcile_with_squeue(rows, db=db)
+    assert "600" not in changes
+    assert db.get("600")["state"] == "FAILED"
 
 
 def test_reconcile_leaves_terminal_rows_alone(db):
