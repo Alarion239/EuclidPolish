@@ -384,9 +384,10 @@ def eye_rgb(
 
          with ``knee`` ↔ ``asinh_scale_e`` electrons and ``white`` ↔
          ``white_e`` electrons, both VIS-equivalent over the stack
-         (``white_e`` defaults to ``1000 × asinh_scale_e``). Pixels at
-         ``white_e`` render at full brightness; brighter pixels clip
-         hue-preservingly.
+         (``white_e`` defaults to ``30 × asinh_scale_e`` — a typical
+         bright-source level, so ordinary flux renders bright rather
+         than near-black). Pixels at ``white_e`` render at full
+         brightness; brighter pixels clip hue-preservingly.
 
     Same (SED, surface brightness) → same RGB, in every image: colors
     are directly comparable across LR/SR/HR panels, scenes, and runs.
@@ -406,9 +407,17 @@ def eye_rgb(
     x, y = _planckian_xy(t_map)
     hue = _xy_to_linear_srgb(x, y)                      # (H, W, 3), max=1
 
-    # Absolute luminance transfer in VIS-equivalent electrons.
+    # Absolute luminance transfer in VIS-equivalent electrons. The white
+    # point ``white_e`` (electrons → full brightness) defaults to 30× the
+    # asinh knee: with the knee at the faint/noise level, ~30× sits at a
+    # typical bright-source surface brightness, so ordinary galaxy flux
+    # renders at a natural brightness rather than crushed near black.
+    # (The old 1000× default put the white point so high that everything
+    # but the brightest cores looked dim.) Brighter cores still clip
+    # hue-preservingly. Override ``white_e`` to re-anchor the absolute
+    # scale; it stays image-independent so colours remain comparable.
     knee_cal  = float(asinh_scale_e) * _ab_flux_norm("VIS")
-    white_e   = float(white_e) if white_e else 1000.0 * float(asinh_scale_e)
+    white_e   = float(white_e) if white_e else 30.0 * float(asinh_scale_e)
     white_cal = white_e * _ab_flux_norm("VIS")
     intensity = np.maximum(calibrated.mean(axis=-1), 0.0)
     if stretch == "asinh":

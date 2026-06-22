@@ -241,9 +241,9 @@ class BaseVisualizer:
             across panels/scenes/runs — and read like the night sky
             (Sun-like ≈ white, cool ≈ orange, hot ≈ blue).
 
-        ``temp_legend`` (eye mode only) draws a small blackbody-T → hue
-        strip under the image so the hue can be read back as a physical
-        SED temperature.
+        ``temp_legend`` (eye mode only) draws a slim blackbody-T → hue
+        colorbar to the RIGHT of the image so the hue can be read back as
+        a physical SED temperature.
         """
         if band_names is None:
             band_names = _Cfg.LR_INPUT_BAND_NAMES
@@ -277,21 +277,28 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         if temp_legend and rgb_mode == "eye":
             # Blackbody-temperature legend: the hue ↔ T_eff dictionary
-            # for reading physics back out of the panel.
+            # for reading physics back out of the panel. Drawn as a slim
+            # VERTICAL colorbar to the right of the image (cool at the
+            # bottom, hot at the top), like a standard matplotlib cbar.
             strip, temps = planck_color_strip()
-            lax = ax.inset_axes([0.0, -0.22, 1.0, 0.045])
-            lax.imshow(strip, aspect="auto", origin="lower",
-                       extent=[0, len(temps) - 1, 0, 1])
+            # planck_color_strip returns (1, n, 3); transpose to a column
+            # (n, 1, 3) so the bar runs vertically with origin="lower".
+            strip_col = np.transpose(strip, (1, 0, 2))
+            lax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
+            lax.imshow(strip_col, aspect="auto", origin="lower",
+                       extent=[0, 1, 0, len(temps) - 1])
             ticks_k = [3000, 4000, 6000, 10000, 20000]
             log_t = np.log(temps)
-            lax.set_xticks([
+            lax.set_yticks([
                 float(np.interp(np.log(t), log_t, np.arange(len(temps))))
                 for t in ticks_k
             ])
-            lax.set_xticklabels([f"{t // 1000}k" for t in ticks_k],
+            lax.set_yticklabels([f"{t // 1000}k" for t in ticks_k],
                                 fontsize=7)
-            lax.set_yticks([])
-            lax.set_xlabel("blackbody T (K)", fontsize=8, labelpad=1)
+            lax.yaxis.tick_right()
+            lax.yaxis.set_label_position("right")
+            lax.set_xticks([])
+            lax.set_ylabel("blackbody T (K)", fontsize=8, labelpad=2)
 
     def add_diverging_panel(
         self,
