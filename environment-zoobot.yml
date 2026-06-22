@@ -1,16 +1,23 @@
-# Isolated PyTorch environment for the LOCAL Zoobot morphology evaluation.
+# Isolated PyTorch environment for the Zoobot morphology evaluation.
 #
 # Zoobot is PyTorch-based and would clash with the main EuclidPolishEnv
 # (TensorFlow). Keep it in its OWN env — do NOT merge into environment.yml.
 #
-# Create it locally (the WebUI "Run Zoobot" button shells out to this env's
-# Python; scripts/zoobot_morphology.py runs on your machine, device=auto picks
-# Apple MPS / CUDA / CPU):
+# Create it ON FASRC, once (the `eval_zoobot_morphology` step activates it by
+# name on a GPU node):
 #
-#   mamba env create -f environment-zoobot.yml      # → env "EuclidPolishZoobot"
+#   module load python
+#   mamba env create -f environment-zoobot.yml         # → env "EuclidPolishZoobot"
 #
-# If the env lands somewhere the WebUI can't guess, point it at the interpreter:
-#   export EUCLID_POLISH_ZOOBOT_PYTHON=$(conda run -n EuclidPolishZoobot which python)
+# IMPORTANT — to actually use the FASRC GPU, install the CUDA torch build (the
+# default "zoobot[pytorch]" below is a CPU wheel). After creating the env:
+#
+#   mamba run -n EuclidPolishZoobot pip install --force-reinstall \
+#       "zoobot[pytorch-cu121]>=2.0"
+#
+# (or pin the index: pip install torch --index-url
+#  https://download.pytorch.org/whl/cu121). On a CPU-only run, the default wheel
+# is fine — just submit the step to a non-GPU partition.
 name: EuclidPolishZoobot
 channels:
   - conda-forge
@@ -25,7 +32,6 @@ dependencies:
   - pip:
       # zoobot pulls in torch, lightning, timm and galaxy-datasets (which
       # provides CatalogDataModule + the inference transforms the predict
-      # helper expects). The default torch wheel is CPU/MPS — fine for the
-      # handful-to-hundreds of galaxies a typical eval run has. On a CUDA box,
-      # swap to "zoobot[pytorch-cu121]>=2.0" for the GPU build.
+      # helper expects). This is the CPU wheel; see the CUDA note above to use
+      # the FASRC GPU.
       - "zoobot[pytorch]>=2.0"

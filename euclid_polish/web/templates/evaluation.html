@@ -84,8 +84,6 @@
           title="rsync eval_results/ down from FASRC (the ckpt mirror doesn't cover it)">⬇ Sync from FASRC</button>
   <button id="rerenderBtn" class="secondary" type="button"
           title="re-render this run's PNGs locally from the FITS with the current plotting code">🎨 Re-render</button>
-  <button id="zoobotBtn" class="secondary" type="button"
-          title="score galaxy morphology before/after SR with Zoobot, locally (needs the EuclidPolishZoobot env)">🦋 Run Zoobot</button>
   <button id="reloadBtn" class="secondary" type="button">↻ Reload</button>
   <span id="runMsg" class="muted"></span>
 </div>
@@ -151,10 +149,15 @@
   <span id="fetchCatMsg" class="muted" style="margin-left:8px;"></span>
 </section>
 
-{# Mounted FASRC step card: the catalog eval (model inference → FITS) is the one
-   cluster job. Morphology scoring (Zoobot) runs LOCALLY via the gallery's
-   "Run Zoobot" button, not as a FASRC step. #}
+{# Mounted FASRC step cards: catalog eval (model inference → FITS) and Zoobot
+   morphology (GPU node). Both submit through the normal FASRC flow with live
+   job status; Sync the results down afterwards. #}
 {% with step_id="eval_catalog",
+        on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
+  {% include "_step_card_mount.html" %}
+{% endwith %}
+
+{% with step_id="eval_zoobot_morphology",
         on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
   {% include "_step_card_mount.html" %}
 {% endwith %}
@@ -386,52 +389,6 @@
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeLightbox();
-  });
-
-  // Run Zoobot morphology scoring locally on the selected run. Spawns a local
-  // background job (subprocess in the EuclidPolishZoobot env) and polls it;
-  // when done, the morphology_manifest.csv is written and the gallery reloads
-  // to show the morph Δ per tile.
-  $('zoobotBtn').addEventListener('click', async () => {
-    const run = $('runSelect').value;
-    const btn = $('zoobotBtn'), msg = $('runMsg');
-    if (!run) { msg.textContent = 'select a run first'; return; }
-    const label = btn.textContent;
-    btn.disabled = true; btn.textContent = '⏳ Zoobot…';
-    msg.textContent = 'starting Zoobot (first run downloads the model)…';
-    let jobId;
-    try {
-      const fd = new FormData(); fd.set('run', run);
-      const r = await fetch('/api/evaluation/zoobot', { method: 'POST', body: fd });
-      const j = await r.json();
-      if (!j.ok) {
-        msg.textContent = '✗ ' + (j.error || 'failed');
-        btn.disabled = false; btn.textContent = label; return;
-      }
-      jobId = j.job_id;
-    } catch (e) {
-      msg.textContent = '✗ ' + e; btn.disabled = false; btn.textContent = label; return;
-    }
-    // Poll the local job until it finishes.
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch('/api/jobs/' + jobId);
-        const j = await r.json();
-        const p = j.progress || {};
-        if (j.status === 'running') {
-          msg.textContent = 'Zoobot running' + (p.label ? ' · ' + p.label : '') + '…';
-        } else if (j.status === 'done') {
-          clearInterval(poll);
-          btn.disabled = false; btn.textContent = label;
-          msg.textContent = '✓ Zoobot done — morphology Δ added';
-          loadRun();
-        } else if (j.status === 'failed') {
-          clearInterval(poll);
-          btn.disabled = false; btn.textContent = label;
-          msg.textContent = '✗ Zoobot failed — see Live jobs log';
-        }
-      } catch (e) { /* transient; keep polling */ }
-    }, 2500);
   });
 
   // Re-render this run's PNGs locally from the FITS with the current plotting

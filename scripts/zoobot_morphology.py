@@ -9,13 +9,13 @@ input (**before**) to the super-resolved image (**after**). When an HR ground
 truth is present (synthetic targets), it also measures whether SR moves the
 vector *toward* HR — the cleanest check that SR improves morphology recovery.
 
-This runs **locally** (not on FASRC): you pull an eval run's FITS down with the
-"Sync from FASRC" button, then score morphology on your own machine. Zoobot is
-PyTorch and clashes with this repo's TensorFlow stack, so it runs in the
-isolated env from ``environment-zoobot.yml`` — the WebUI "Run Zoobot" button
-shells out to that env's Python for you, or run this directly (below). The pure
-image-prep / metric helpers live in ``euclid_polish.eval.zoobot_morph`` and are
-tested in the main env.
+Zoobot is PyTorch and clashes with this repo's TensorFlow stack, so it runs in
+the isolated ``EuclidPolishZoobot`` env (``environment-zoobot.yml``). The WebUI
+submits it as the ``eval_zoobot_morphology`` FASRC step on a GPU node; you can
+also run it directly (below). It writes ``morphology_manifest.csv`` into the
+run dir, which the WebUI gallery merges once you Sync the results down. The
+pure image-prep / metric helpers live in ``euclid_polish.eval.zoobot_morph``
+and are tested in the main env.
 
 Two model modes:
 
@@ -26,7 +26,7 @@ Two model modes:
   ``FinetuneableZoobotTree``; compares Galaxy-Zoo vote fractions named by a
   ``zoobot.shared.schemas`` schema (``--schema``).
 
-Usage (locally, in the EuclidPolishZoobot env; ``auto`` picks MPS/CUDA/CPU)::
+Usage (in the EuclidPolishZoobot env; ``auto`` picks CUDA on a GPU node)::
 
     conda run -n EuclidPolishZoobot python scripts/zoobot_morphology.py \
         --run-dir data/eval_results/lenses

@@ -16,39 +16,14 @@ from __future__ import annotations
 
 import csv
 import os
-import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
-from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
-
-#: Repo root (…/euclid_polish/web/routes/evaluation.py → up 4).
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
-
-def _zoobot_python() -> Optional[str]:
-    """Locate the isolated Zoobot env's Python interpreter for local runs.
-
-    Honours ``EUCLID_POLISH_ZOOBOT_PYTHON`` first, else probes the usual conda
-    locations for an ``EuclidPolishZoobot`` env. Returns the interpreter path,
-    or ``None`` when the env hasn't been created yet.
-    """
-    override = os.environ.get("EUCLID_POLISH_ZOOBOT_PYTHON")
-    if override and os.path.exists(override):
-        return override
-    for base in ("~/miniforge3", "~/mambaforge", "~/miniconda3", "~/anaconda3",
-                 "/opt/miniforge3", "/opt/anaconda3", "/opt/miniconda3"):
-        cand = os.path.expanduser(
-            os.path.join(base, "envs", "EuclidPolishZoobot", "bin", "python"))
-        if os.path.exists(cand):
-            return cand
-    return None
 
 
 def _list_catalogs() -> List[Dict[str, Any]]:
@@ -303,53 +278,6 @@ def register(app):
                     except OSError:
                         pass
         return jsonify({"ok": True, "removed": removed})
-
-    @app.route("/api/evaluation/zoobot", methods=["POST"])
-    def api_evaluation_zoobot():
-        """Score Zoobot morphology for a run LOCALLY (background subprocess).
-
-        Runs ``scripts/zoobot_morphology.py`` in the isolated EuclidPolishZoobot
-        env on this machine (the model is light enough for CPU/MPS), reading the
-        run's pulled FITS and writing ``morphology_manifest.csv`` back into the
-        run dir — which the gallery then merges per object. Returns a local
-        job id to poll via ``/api/jobs/<id>``.
-        """
-        run = (request.form.get("run") or request.args.get("run") or "").strip()
-        if not run or os.sep in run or (os.altsep and os.altsep in run) \
-                or run in (".", ".."):
-            abort(400)
-        run_dir = os.path.abspath(os.path.join(Config.EVAL_RESULTS_DIR, run))
-        if not os.path.isdir(run_dir):
-            abort(404)
-
-        py = _zoobot_python()
-        if py is None:
-            return jsonify({"ok": False, "error": (
-                "Zoobot env not found. Create it once with "
-                "`mamba env create -f environment-zoobot.yml`, or set "
-                "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
-
-        tree_ckpt = (request.form.get("tree_checkpoint") or "").strip()
-        cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
-               "--run-dir", run_dir, "--device", "auto"]
-        if tree_ckpt:
-            cmd += ["--tree-checkpoint", tree_ckpt]
-
-        def _run(cap):
-            cap.write("running: " + " ".join(cmd) + "\n")
-            proc = subprocess.Popen(
-                cmd, cwd=_REPO_ROOT, env=os.environ.copy(),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for line in proc.stdout:           # stream model progress to the job log
-                cap.write(line)
-            rc = proc.wait()
-            if rc != 0:
-                raise RuntimeError(f"zoobot_morphology.py exited {rc}")
-            return {"run": run,
-                    "manifest": os.path.join(run_dir, "morphology_manifest.csv")}
-
-        job_id = JOB_REGISTRY.spawn(f"zoobot: {run}", _run)
-        return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/eval-files/<path:relpath>")
     def serve_eval_files(relpath: str):

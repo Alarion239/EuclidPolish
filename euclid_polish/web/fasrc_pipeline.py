@@ -738,10 +738,59 @@ class CatalogEvalStep(FASRCPipelineStep):
         return cmd
 
 
-# NOTE: Zoobot morphology scoring is NOT a FASRC step — it runs LOCALLY in an
-# isolated PyTorch env (the model is light enough for CPU/MPS, and keeping it
-# local means no cluster conda-env to build). See scripts/zoobot_morphology.py
-# and the WebUI "Run Zoobot" button (euclid_polish/web/routes/evaluation.py).
+#: The isolated Zoobot env on FASRC. Created once with
+#: ``mamba env create -f environment-zoobot.yml`` (a NAMED env in the user's
+#: ~/.conda/envs), so the sbatch prologue activates it by name.
+ZOOBOT_CONDA_ENV = "EuclidPolishZoobot"
+
+
+class ZoobotMorphologyStep(FASRCPipelineStep):
+    """Score before/after galaxy morphology with Zoobot on an eval run.
+
+    Runs the Galaxy-Zoo model (Walmsley et al.; Euclid-validated) on the VIS
+    plane of an eval run's per-object FITS and measures how the morphology
+    vector moves from the dirty LR (before) to the SR (after), plus — when HR
+    is present (synthetic) — whether SR moved it toward HR. Writes
+    ``morphology_manifest.csv`` into the run dir, which the gallery merges.
+
+    Zoobot is PyTorch and clashes with the main TensorFlow env, so this runs in
+    the isolated :data:`ZOOBOT_CONDA_ENV` on a GPU node. The eval-catalog run
+    (whose FITS this scores) must already exist on the cluster.
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="eval_zoobot_morphology",
+            label="Zoobot morphology before/after (eval run)",
+            job_name="eval-zoobot",
+            defaults=StepResources(
+                partition="gpu", n_cpus=8, n_gpus=1,
+                memory="32G", time_limit="4:00:00",
+            ),
+            needs_gpu=True,
+            conda_env=ZOOBOT_CONDA_ENV,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/zoobot_morphology.py",
+            "--run-name", str(params.get("run_name", "lenses") or "lenses"),
+            "--device",   "auto",
+        ]
+        tree_ckpt = params.get("tree_checkpoint")
+        if tree_ckpt not in (None, ""):
+            cmd += ["--tree-checkpoint", str(tree_ckpt)]
+            schema = params.get("schema")
+            if schema not in (None, ""):
+                cmd += ["--schema", str(schema)]
+        else:
+            model_name = params.get("model_name")
+            if model_name not in (None, ""):
+                cmd += ["--model-name", str(model_name)]
+        png_size = int(params.get("png_size", 0) or 0)
+        if png_size > 0:
+            cmd += ["--png-size", str(png_size)]
+        return cmd
 
 
 class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
@@ -1205,6 +1254,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
     CatalogEvalStep,
+    ZoobotMorphologyStep,
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,
