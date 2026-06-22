@@ -213,6 +213,28 @@ class TestEvaluationRoutes:
         assert r.status_code == 200 and r.mimetype == "image/png"
         assert os.path.isfile(os.path.join(obj, "eye.png"))
 
+    def test_render_clip_caches_per_clip(self, client, tmp_path, monkeypatch):
+        # The "Dirty clip %ile" control: ?clip=99.9 renders to its own cache
+        # file so different clips coexist; the default clip uses the plain name.
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
+        os.makedirs(obj, exist_ok=True)
+        h = w = 16
+        sr = np.ones((4, 2 * h, 2 * w), dtype=np.float32)
+        sr[0, 12:20, 12:20] = 50.0
+        fits.PrimaryHDU(sr, header=fits.Header({"ASINH": 100.0})).writeto(
+            os.path.join(obj, "SR.fits"))
+        stack = np.ones((4, h, w), dtype=np.float32)
+        stack[0, 6:10, 6:10] = 50.0
+        fits.PrimaryHDU(stack).writeto(os.path.join(obj, "original_stack.fits"))
+
+        r = client.get("/eval-files/run1/lensA/eye.png?clip=99.9")
+        assert r.status_code == 200 and r.mimetype == "image/png"
+        assert os.path.isfile(os.path.join(obj, "eye__c99.9.png"))
+        # Default clip keeps the plain filename.
+        assert client.get("/eval-files/run1/lensA/eye.png").status_code == 200
+        assert os.path.isfile(os.path.join(obj, "eye.png"))
+
     def test_rerender_drops_cached_pngs(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")

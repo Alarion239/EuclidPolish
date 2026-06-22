@@ -85,25 +85,26 @@ def _read_manifest(run_dir: str) -> List[Dict[str, Any]]:
     return rows
 
 
-#: Gallery PNG filename → plot_reconstruction rgb_mode. Rendering is done
-#: LOCALLY from the per-object FITS (FASRC only runs the model + writes FITS),
-#: so changing the plotting code is picked up by a re-render with no cluster
-#: round-trip.
-_REGIME_BY_PNG = {"eye.png": "eye", "solar.png": "calibrated"}
+#: Gallery PNG prefix → plot_reconstruction rgb_mode. Rendering is done LOCALLY
+#: from the per-object FITS (FASRC only runs the model + writes FITS), so
+#: changing the plotting code (or the clip) is picked up by a re-render with no
+#: cluster round-trip.
+_REGIME_BY_PREFIX = {"eye": "eye", "solar": "calibrated"}
+
+#: Default upper-clip percentile for the dirty LR panel.
+_DEFAULT_CLIP = 99.5
 
 
-def _render_object_png(obj_dir: str, png_name: str) -> str | None:
-    """Render an object's ``eye.png`` / ``solar.png`` from its FITS.
+def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
+                       hi_percentile: float | None = None) -> str | None:
+    """Render an object's eye/solar PNG from its FITS.
 
     Reads ``original_stack.fits`` (4-band LR cube) + ``SR.fits`` (SR cube) in
     ``obj_dir`` and runs the shared ``plot_reconstruction`` — the same renderer
-    the local inference page uses — writing the PNG next to the FITS. Returns
-    the PNG path, or ``None`` when the inputs are missing / the name isn't a
-    known regime.
+    the local inference page uses — writing to ``out_png``. ``hi_percentile``
+    raises the dirty-panel clip so a bright central galaxy isn't saturated.
+    Returns ``out_png``, or ``None`` when the FITS inputs are missing.
     """
-    rgb_mode = _REGIME_BY_PNG.get(os.path.basename(png_name).lower())
-    if rgb_mode is None:
-        return None
     sr_fits = os.path.join(obj_dir, "SR.fits")
     stack_fits = os.path.join(obj_dir, "original_stack.fits")
     if not (os.path.isfile(sr_fits) and os.path.isfile(stack_fits)):
@@ -123,11 +124,10 @@ def _render_object_png(obj_dir: str, png_name: str) -> str | None:
     lr_cube = np.moveaxis(stack, 0, -1) if stack.ndim == 3 else stack
     lr_vis = lr_cube[..., 0] if lr_cube.ndim == 3 else lr_cube
     sr_data = np.moveaxis(sr, 0, -1) if sr.ndim == 3 else sr
-    out_png = os.path.join(obj_dir, os.path.basename(png_name))
     plot_reconstruction(
         lr_vis, sr_data, hr_data=None, output_path=out_png,
         lr_cube=lr_cube if lr_cube.ndim == 3 else None,
-        asinh_scale=asinh, rgb_mode=rgb_mode,
+        asinh_scale=asinh, rgb_mode=rgb_mode, dirty_hi_pct=hi_percentile,
     )
     return out_png
 
@@ -262,7 +262,10 @@ def register(app):
         removed = 0
         for dirpath, _dirs, files in os.walk(rd):
             for fn in files:
-                if fn.lower() in ("eye.png", "solar.png"):
+                low = fn.lower()
+                # eye.png / solar.png and their per-clip caches (eye__c99.9.png).
+                if low.endswith(".png") and (low.startswith("eye")
+                                             or low.startswith("solar")):
                     try:
                         os.remove(os.path.join(dirpath, fn))
                         removed += 1
@@ -286,13 +289,27 @@ def register(app):
             abort(403)
         lower = full.lower()
         if lower.endswith(".png"):
+            obj_dir = os.path.dirname(full)
+            prefix = os.path.basename(full).split(".")[0].split("__")[0].lower()
+            rgb_mode = _REGIME_BY_PREFIX.get(prefix)
+            # Optional upper-clip percentile (the gallery's "Clip" control).
+            # Each clip caches to its own filename (e.g. eye__c99.9.png) so
+            # different clips coexist and the browser caches per clip URL.
+            try:
+                clip = float(request.args.get("clip", "")) if rgb_mode else None
+            except ValueError:
+                clip = None
+            if rgb_mode is not None and clip is not None \
+                    and abs(clip - _DEFAULT_CLIP) > 1e-6:
+                cache = os.path.join(obj_dir, f"{prefix}__c{clip:g}.png")
+            else:
+                cache = full
             fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-            if fresh or not os.path.isfile(full):
-                _render_object_png(os.path.dirname(full),
-                                   os.path.basename(full))
-            if not os.path.isfile(full):
+            if rgb_mode is not None and (fresh or not os.path.isfile(cache)):
+                _render_object_png(obj_dir, rgb_mode, cache, hi_percentile=clip)
+            if not os.path.isfile(cache):
                 abort(404)
-            return send_file(full, mimetype="image/png", max_age=0)
+            return send_file(cache, mimetype="image/png", max_age=0)
         if not os.path.isfile(full):
             abort(404)
         mt = ("application/fits" if lower.endswith(".fits")

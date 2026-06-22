@@ -141,6 +141,7 @@ class BaseVisualizer:
         log_scale: bool | None = None,    # legacy — prefer ``stretch``
         cmap: str = "viridis",
         colorbar_inset: bool = False,
+        hi_percentile: float | None = None,
     ) -> None:
         """Add an intensity panel.
 
@@ -150,6 +151,13 @@ class BaseVisualizer:
         the image filling its full grid cell, so a grayscale panel sits the
         same on-screen size as a neighbouring colour (RGB) panel that has no
         colorbar — used for the LR-vs-SR side-by-side cutout view.
+
+        ``hi_percentile``: upper percentile for the colour-bound clip (default
+        99.5). Raising it toward 100 lowers the displayed contrast ceiling so a
+        bright compact source (e.g. a lens's central galaxy) stops saturating
+        to flat white and its internal structure becomes visible. Applies in
+        every stretch (the bound is taken in the post-stretch display space for
+        asinh / log10).
 
         Parameters
         ----------
@@ -172,11 +180,12 @@ class BaseVisualizer:
             stretch = "log10" if log_scale else stretch
 
         ax = self._fig.add_subplot(self._next_gs_position())
+        _hi = hi_percentile if hi_percentile is not None else 99.5
 
         if stretch == "log10":
             fp16_min = float(np.finfo(np.float16).smallest_subnormal)
             display = np.log10(np.maximum(data, fp16_min))
-            vmin, vmax = _percentile_bounds(display)
+            vmin, vmax = _percentile_bounds(display, hi=_hi)
             title = f"log10{title_suffix}"
             cbar_label = f"log10({colorbar_label})"
             im = ax.imshow(display, cmap=cmap, origin="lower",
@@ -184,17 +193,17 @@ class BaseVisualizer:
         elif stretch == "asinh":
             scale = asinh_scale if asinh_scale is not None else _asinh_scale(data)
             display = np.arcsinh(data / scale)
-            vmin, vmax = _percentile_bounds(display)
+            vmin, vmax = _percentile_bounds(display, hi=_hi)
             title = f"asinh (scale={scale:.3g}){title_suffix}"
             cbar_label = f"asinh({colorbar_label} / {scale:.3g})"
             im = ax.imshow(display, cmap=cmap, origin="lower",
                            interpolation="nearest", vmin=vmin, vmax=vmax)
         elif stretch == "linear":
             if self.vmin is None or self.vmax is None:
-                vmin, vmax = _percentile_bounds(data)
+                vmin, vmax = _percentile_bounds(data, hi=_hi)
             else:
                 vmin, vmax = self.vmin, self.vmax
-            title = f"linear [p1, p99.5]{title_suffix}" if self.vmax is None \
+            title = f"linear [p1, p{_hi:g}]{title_suffix}" if self.vmax is None \
                 else f"linear [{vmin:.3g}, {vmax:.3g}]{title_suffix}"
             cbar_label = colorbar_label
             im = ax.imshow(data, cmap=cmap, origin="lower",

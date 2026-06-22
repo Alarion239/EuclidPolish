@@ -49,6 +49,12 @@
     <span class="chip active" data-regime="eye">eye</span>
     <span class="chip" data-regime="solar">solar</span>
   </div>
+  <div class="toolbar-group">
+    <span class="toolbar-label" title="upper clip percentile for the dirty LR panel — raise toward 100 to stop the bright central galaxy saturating and reveal its internal (lens) structure">Dirty clip %ile</span>
+    <input id="clipInput" type="number" value="99.5" min="90" max="100"
+           step="0.05" style="width:78px;"
+           title="Higher = less saturation on the bright central galaxy (more internal detail). 99.5 default; try 99.9 / 99.99.">
+  </div>
   <button id="syncBtn" class="secondary" type="button"
           title="rsync eval_results/ down from FASRC (the ckpt mirror doesn't cover it)">⬇ Sync from FASRC</button>
   <button id="rerenderBtn" class="secondary" type="button"
@@ -114,6 +120,7 @@
   let sortKey = 'grade';
   let regime = 'eye';
   let cacheBust = 0;   // bumped on Re-render to bust browser image cache
+  let clipPct = 99.5;  // dirty-panel upper clip; raise toward 100 to de-saturate
 
   function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
   function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
@@ -174,8 +181,11 @@
     const base = '/eval-files/' + encodeURIComponent(run) + '/';
     gal.innerHTML = ok.map(r => {
       const sub = encodeURIComponent(r.out_subdir);
+      const q = [];
+      if (Math.abs(clipPct - 99.5) > 1e-6) q.push('clip=' + clipPct);
+      if (cacheBust) q.push('t=' + cacheBust);
       const img = base + sub + '/' + regime + '.png'
-                + (cacheBust ? '?t=' + cacheBust : '');
+                + (q.length ? '?' + q.join('&') : '');
       const srFits = base + sub + '/SR.fits';
       const flux = num(r.flux_ratio_sr_over_lr);
       let morph = '';
@@ -240,6 +250,10 @@
     }));
   $('reloadBtn').addEventListener('click', refreshRuns);
   $('runSelect').addEventListener('change', loadRun);
+  $('clipInput').addEventListener('change', () => {
+    const v = parseFloat($('clipInput').value);
+    if (!isNaN(v)) { clipPct = Math.min(100, Math.max(90, v)); loadRun(); }
+  });
 
   // Re-render this run's PNGs locally from the FITS with the current plotting
   // code (drops the cached PNGs server-side, then busts the browser cache).

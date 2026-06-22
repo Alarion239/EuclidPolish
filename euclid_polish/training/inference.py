@@ -434,6 +434,7 @@ def plot_reconstruction(
     predicted_dirty: Optional[np.ndarray] = None,
     residual: Optional[np.ndarray] = None,
     rgb_mode: str = "eye",
+    dirty_hi_pct: float | None = None,
 ) -> None:
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
@@ -590,10 +591,13 @@ def plot_reconstruction(
         vis = BaseVisualizer(rows=2, cols=cols, figsize=(9 * cols, 18),
                              vmax=vmax)
 
-        # Row 1 — linear.
+        # Row 1 — linear. ``dirty_hi_pct`` lets the caller raise the upper clip
+        # so a bright central galaxy stops saturating and its internal (lens)
+        # structure shows.
         vis.add_scale_panel(lr_data, stretch="linear",
                             title_suffix="\nDirty (LR, VIS)",
-                            cmap="gray", colorbar_inset=True)
+                            cmap="gray", colorbar_inset=True,
+                            hi_percentile=dirty_hi_pct)
         _add_sr_panel(vis, "linear")
         if has_predicted:
             vis.add_scale_panel(
@@ -612,7 +616,8 @@ def plot_reconstruction(
         vis.add_scale_panel(lr_data, stretch="asinh",
                             asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR, VIS)",
-                            cmap="gray", colorbar_inset=True)
+                            cmap="gray", colorbar_inset=True,
+                            hi_percentile=dirty_hi_pct)
         _add_sr_panel(vis, "asinh", temp_legend=True)
         if has_predicted:
             vis.add_scale_panel(
