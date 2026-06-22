@@ -2,8 +2,8 @@
 
 These functions deliberately avoid any PyTorch / Zoobot import so they can be
 unit-tested in the main (TensorFlow) environment. The model-driven half — which
-runs Zoobot in its own isolated PyTorch env — lives in
-``scripts/fasrc_zoobot_morphology.py`` and calls into here for everything except
+runs Zoobot locally in its own isolated PyTorch env — lives in
+``scripts/zoobot_morphology.py`` and calls into here for everything except
 the forward pass.
 
 The morphology evaluation compares the model's effect on the VIS plane:

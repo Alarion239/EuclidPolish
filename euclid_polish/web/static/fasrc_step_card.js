@@ -203,27 +203,6 @@ large cutout don't leak across train/validate."></label>`;
              fetched automatically on the cluster if missing. The
              <b>Fetch lens catalog</b> button above also populates it locally
              for browsing.</p>`;
-      case 'eval_zoobot_morphology':
-        // Mirrors ZoobotMorphologyStep.build_command (run_name, tree_checkpoint,
-        // schema, png_size). Scores Zoobot morphology before/after SR on an
-        // existing catalog-eval run. Runs in the isolated PyTorch env.
-        return `
-          <label>Run name
-            <input type="text" name="run_name" value="lenses" pattern="[A-Za-z0-9._-]+"
-                   title="Which eval run (sub-dir of data/eval_results/) to score. It must already contain per-object SR.fits from a catalog-eval run."></label>
-          <label>Tree checkpoint <span class="muted">(blank = representation mode)</span>
-            <input type="text" name="tree_checkpoint" value=""
-                   placeholder="representation mode"
-                   title="Path to a FinetuneableZoobotTree checkpoint → Galaxy-Zoo vote-fraction mode. Blank uses a published encoder and compares representation embeddings (works off-the-shelf)."></label>
-          <label>Schema <span class="muted">(votes mode)</span>
-            <input type="text" name="schema" value="gz_evo_v1_public"
-                   title="zoobot.shared.schemas schema name that names the vote-fraction output columns (only used in votes mode)."></label>
-          <label>PNG size
-            <input type="number" name="png_size" value="424" min="64" max="1024" step="8"
-                   title="Rendered VIS image size fed to Zoobot."></label>
-          <p class="hint" style="flex-basis:100%;">Runs in the isolated PyTorch env
-             (<code>environment-zoobot.yml</code>); needs a GPU. Run a catalog
-             eval first so there are SR images to score.</p>`;
       case 'download_tng_skirt':
         // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153

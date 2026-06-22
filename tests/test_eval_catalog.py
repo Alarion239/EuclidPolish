@@ -175,11 +175,11 @@ class TestEvaluationRoutes:
         r = client.get("/evaluation")
         assert r.status_code == 200
         body = r.get_data(as_text=True)
-        # Both eval step cards are mounted (real submit flow + live status),
-        # and the catalog-fetch + results controls are present.
+        # The catalog eval step card is mounted (real submit flow + live
+        # status), plus the catalog-fetch + results + Run-Zoobot controls.
         assert "step-mount-eval_catalog" in body
-        assert "step-mount-eval_zoobot_morphology" in body
         assert "fetchCatBtn" in body and "runSelect" in body
+        assert "zoobotBtn" in body
 
     def test_runs_api_empty(self, client):
         r = client.get("/api/evaluation/runs")
@@ -253,6 +253,39 @@ class TestEvaluationRoutes:
     def test_rerender_rejects_traversal(self, client):
         assert client.post("/api/evaluation/rerender",
                            data={"run": "../etc"}).status_code == 400
+
+    def test_zoobot_env_missing_reports_hint(self, client, tmp_path, monkeypatch):
+        from euclid_polish.web.routes import evaluation as evmod
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
+        monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
+        r = client.post("/api/evaluation/zoobot", data={"run": "run1"})
+        assert r.status_code == 400
+        assert "Zoobot env not found" in r.get_json()["error"]
+
+    def test_zoobot_spawns_local_job(self, client, tmp_path, monkeypatch):
+        from euclid_polish.web.routes import evaluation as evmod
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
+        monkeypatch.setattr(evmod, "_zoobot_python", lambda: "/fake/python")
+        # Don't actually launch a subprocess — capture the spawn.
+        captured = {}
+
+        def fake_spawn(label, target):
+            captured["label"] = label
+            return "job123"
+        monkeypatch.setattr(evmod.JOB_REGISTRY, "spawn", fake_spawn)
+        r = client.post("/api/evaluation/zoobot", data={"run": "run1"})
+        assert r.status_code == 200 and r.get_json()["job_id"] == "job123"
+        assert captured["label"] == "zoobot: run1"
+
+    def test_zoobot_rejects_traversal_and_missing(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(Config.EVAL_RESULTS_DIR, exist_ok=True)
+        assert client.post("/api/evaluation/zoobot",
+                           data={"run": "../etc"}).status_code == 400
+        assert client.post("/api/evaluation/zoobot",
+                           data={"run": "nope"}).status_code == 404
 
     def test_fetch_catalog_endpoint(self, client, monkeypatch):
         # Stub the (network) fetch so the route is exercised offline.
@@ -441,25 +474,9 @@ class TestBatchAutoFetchCatalog:
             mod.main(["--catalog", str(tmp_path / "nope.csv")])
 
 
-class TestZoobotMorphologyStep:
-    def test_registered_isolated_env(self):
-        step = REGISTRY.get("eval_zoobot_morphology")
-        assert step.job_name == "eval-zoobot"
-        assert step.needs_gpu and step.defaults.n_gpus == 1
-        # Must run in an isolated (non-default) conda env to avoid the
-        # PyTorch/TensorFlow clash.
-        assert step.conda_env and "zoobot" in step.conda_env
-
-    def test_build_command_representation_default(self):
-        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
-            {"run_name": "lenses"})
-        assert argv[0] == "scripts/fasrc_zoobot_morphology.py"
-        assert argv[argv.index("--run-name") + 1] == "lenses"
-        assert "--tree-checkpoint" not in argv     # representation mode
-
-    def test_build_command_votes_mode(self):
-        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
-            {"run_name": "syn", "tree_checkpoint": "/p/tree.ckpt",
-             "schema": "gz_evo_v1_public"})
-        assert argv[argv.index("--tree-checkpoint") + 1] == "/p/tree.ckpt"
-        assert argv[argv.index("--schema") + 1] == "gz_evo_v1_public"
+class TestZoobotIsLocalNotAFasrcStep:
+    def test_no_zoobot_fasrc_step(self):
+        # Zoobot morphology runs locally (via the WebUI button), so it must NOT
+        # be registered as a FASRC pipeline step.
+        with pytest.raises(KeyError):
+            REGISTRY.get("eval_zoobot_morphology")

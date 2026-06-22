@@ -71,7 +71,7 @@ class TestRegistry:
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
             "euclid_star_anchor_tfrecords",
-            "eval_catalog", "eval_zoobot_morphology",
+            "eval_catalog",
             "download_tng_skirt",
             "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
@@ -383,11 +383,11 @@ class TestRegistry:
             REGISTRY.get("nonexistent")
 
     def test_gpu_steps_are_the_expected_set(self):
-        """GPU steps: the HST/WDSR trainer and the Zoobot morphology eval
-        (PyTorch). Everything else (download, kernel, PSF extract, synthetic
-        generate, catalog eval, …) is CPU."""
+        """The only GPU step is the HST/WDSR trainer; everything else
+        (download, kernel, PSF extract, synthetic generate, catalog eval, …)
+        is CPU. (Zoobot morphology runs locally, not as a FASRC step.)"""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train", "eval_zoobot_morphology"}
+        assert gpu_steps == {"train"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -487,7 +487,6 @@ class TestSbatchRendering:
             "download_euclid_cutouts":      "star-cutouts",
             "extract_euclid_psf":           "euclid-psf",
             "eval_catalog":                 "eval-catalog",
-            "eval_zoobot_morphology":       "eval-zoobot",
             "download_tng_skirt":           "tng-atlas",
             "tng_grid":                     "tng-grid",
             "tng_stack":                    "tng-stack",

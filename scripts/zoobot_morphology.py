@@ -9,11 +9,13 @@ input (**before**) to the super-resolved image (**after**). When an HR ground
 truth is present (synthetic targets), it also measures whether SR moves the
 vector *toward* HR — the cleanest check that SR improves morphology recovery.
 
-Zoobot is PyTorch and clashes with this repo's TensorFlow stack, so this script
-is meant to run in the isolated env from ``environment-zoobot.yml`` (the
-``eval_zoobot_morphology`` FASRC step activates it via the step's
-``conda_env``). The pure image-prep / metric helpers live in
-``euclid_polish.eval.zoobot_morph`` and are tested in the main env.
+This runs **locally** (not on FASRC): you pull an eval run's FITS down with the
+"Sync from FASRC" button, then score morphology on your own machine. Zoobot is
+PyTorch and clashes with this repo's TensorFlow stack, so it runs in the
+isolated env from ``environment-zoobot.yml`` — the WebUI "Run Zoobot" button
+shells out to that env's Python for you, or run this directly (below). The pure
+image-prep / metric helpers live in ``euclid_polish.eval.zoobot_morph`` and are
+tested in the main env.
 
 Two model modes:
 
@@ -24,10 +26,10 @@ Two model modes:
   ``FinetuneableZoobotTree``; compares Galaxy-Zoo vote fractions named by a
   ``zoobot.shared.schemas`` schema (``--schema``).
 
-Usage (on FASRC, in the zoobot env)::
+Usage (locally, in the EuclidPolishZoobot env; ``auto`` picks MPS/CUDA/CPU)::
 
-    python scripts/fasrc_zoobot_morphology.py \
-        --run-dir data/eval_results/lenses --device gpu
+    conda run -n EuclidPolishZoobot python scripts/zoobot_morphology.py \
+        --run-dir data/eval_results/lenses
 """
 
 from __future__ import annotations
@@ -68,8 +70,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--schema", default="gz_evo_v1_public",
                    help="zoobot.shared.schemas schema name (vote mode); names "
                         "the output vote-fraction columns")
-    p.add_argument("--device", default="gpu", choices=["gpu", "cpu", "auto"],
-                   help="Lightning accelerator")
+    p.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu", "mps"],
+                   help="Lightning accelerator (auto picks MPS/CUDA/CPU)")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--png-size", type=int, default=424,
