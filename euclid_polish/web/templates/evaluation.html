@@ -26,6 +26,31 @@
   .grade-pill { font-weight: 700; }
   .eval-empty { color: #888; font-size: 13px; padding: 40px 20px;
                 text-align: center; }
+  /* Interactive lightbox */
+  .lb-overlay { position: fixed; inset: 0; background: rgba(12,14,20,.82);
+                display: none; align-items: center; justify-content: center;
+                z-index: 1000; }
+  .lb-overlay.open { display: flex; }
+  .lb-panel { background: #fff; border-radius: 8px; max-width: 96vw;
+              max-height: 95vh; overflow: auto; padding: 12px 16px 16px;
+              box-shadow: 0 12px 48px rgba(0,0,0,.45); }
+  .lb-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+             flex-wrap: wrap; }
+  .lb-title { font-weight: 600; }
+  .lb-close { margin-left: auto; }
+  .lb-img-wrap { position: relative; min-height: 60px; }
+  .lb-img { display: block; max-width: 90vw; max-height: 68vh; height: auto;
+            border-radius: 4px; }
+  .lb-img-wrap.rendering::after { content: "rendering…"; position: absolute;
+    top: 8px; left: 8px; background: rgba(42,93,176,.92); color: #fff;
+    font-size: 12px; padding: 2px 9px; border-radius: 10px; }
+  .lb-controls { display: grid; grid-template-columns: max-content 1fr max-content;
+    gap: 10px 12px; align-items: center; margin-top: 12px; font-size: 13px;
+    max-width: 560px; }
+  .lb-controls input[type=range] { width: 100%; }
+  .lb-controls .val { font-family: "JetBrains Mono", Menlo, monospace;
+    color: #2a3a55; white-space: nowrap; }
+  .eval-thumb .lb-open { cursor: zoom-in; display: block; }
 </style>
 
 <div class="eval-controls">
@@ -78,6 +103,32 @@
 <div id="gallery" class="gallery">
   <div class="eval-empty">Select a run to view results.</div>
 </div>
+
+{# Interactive detail view — click any tile to open. Two sliders re-render the
+   PNG server-side (faithful eye/solar colour) from the FITS, debounced. #}
+<div id="lightbox" class="lb-overlay">
+  <div class="lb-panel">
+    <div class="lb-head">
+      <span class="lb-title" id="lbTitle"></span>
+      <span class="chip active" id="lbEye">eye</span>
+      <span class="chip" id="lbSolar">solar</span>
+      <a class="chip" id="lbFits" href="#" title="download the SR FITS">⬇ SR.fits</a>
+      <a class="chip" id="lbFull" href="#" target="_blank">open PNG</a>
+      <button class="secondary lb-close" id="lbClose" type="button">✕ close</button>
+    </div>
+    <div class="lb-img-wrap" id="lbWrap">
+      <img id="lbImg" class="lb-img" alt="">
+    </div>
+    <div class="lb-controls">
+      <label for="lbAsinh">asinh knee</label>
+      <input type="range" id="lbAsinh" min="0" max="1000" step="1">
+      <span class="val" id="lbAsinhVal"></span>
+      <label for="lbClip">dirty clip %ile</label>
+      <input type="range" id="lbClip" min="90" max="100" step="0.05">
+      <span class="val" id="lbClipVal"></span>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block actions %}
@@ -121,6 +172,14 @@
   let regime = 'eye';
   let cacheBust = 0;   // bumped on Re-render to bust browser image cache
   let clipPct = 99.5;  // dirty-panel upper clip; raise toward 100 to de-saturate
+
+  // Interactive viewer defaults (from the server config).
+  const DEFAULT_ASINH = {{ default_asinh }};
+  const DEFAULT_CLIP = {{ default_clip }};
+  // asinh knee slider is log-mapped over [A_MIN, A_MAX] electrons.
+  const A_MIN = 5, A_MAX = 5000;
+  const sliderToAsinh = s => A_MIN * Math.pow(A_MAX / A_MIN, s / 1000);
+  const asinhToSlider = a => 1000 * Math.log(a / A_MIN) / Math.log(A_MAX / A_MIN);
 
   function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
   function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
@@ -205,7 +264,8 @@
           + esc(r.grade) + '</span>' : '';
       return ''
         + '<div class="thumb eval-thumb">'
-        +   '<a href="' + img + '" target="_blank" title="open full render">'
+        +   '<a href="#" class="lb-open" data-sub="' + esc(r.out_subdir) + '"'
+        +     ' data-id="' + esc(r.id) + '" title="open interactive viewer">'
         +     '<img loading="lazy" src="' + img + '" alt="' + esc(r.id) + '">'
         +   '</a>'
         +   '<div class="meta">'
@@ -253,6 +313,82 @@
   $('clipInput').addEventListener('change', () => {
     const v = parseFloat($('clipInput').value);
     if (!isNaN(v)) { clipPct = Math.min(100, Math.max(90, v)); loadRun(); }
+  });
+
+  // ── Interactive lightbox ────────────────────────────────────────────────
+  let lbRun = '', lbSub = '', lbRegime = 'eye';
+  let lbAsinh = DEFAULT_ASINH, lbClip = DEFAULT_CLIP, lbTimer = null;
+
+  function lbUrl() {
+    const q = [];
+    if (Math.abs(lbClip - DEFAULT_CLIP) > 1e-6) q.push('clip=' + lbClip);
+    if (Math.abs(lbAsinh - DEFAULT_ASINH) > 1e-3)
+      q.push('asinh=' + lbAsinh.toFixed(2));
+    return '/eval-files/' + encodeURIComponent(lbRun) + '/'
+         + encodeURIComponent(lbSub) + '/' + lbRegime + '.png'
+         + (q.length ? '?' + q.join('&') : '');
+  }
+  function lbRender() {
+    const wrap = $('lbWrap'), im = $('lbImg'), url = lbUrl();
+    wrap.classList.add('rendering');
+    im.onload = im.onerror = () => wrap.classList.remove('rendering');
+    im.src = url;
+    $('lbFull').href = url;
+    $('lbFits').href = '/eval-files/' + encodeURIComponent(lbRun) + '/'
+                     + encodeURIComponent(lbSub) + '/SR.fits';
+  }
+  // Slider drags fire fast; debounce so we only render once the user settles
+  // (each render is a server-side matplotlib pass of ~0.5–1.5 s).
+  const lbSchedule = () => { clearTimeout(lbTimer); lbTimer = setTimeout(lbRender, 260); };
+
+  function openLightbox(sub, id) {
+    if (!$('runSelect').value) return;
+    lbRun = $('runSelect').value; lbSub = sub; lbRegime = regime;
+    lbAsinh = DEFAULT_ASINH; lbClip = clipPct;   // seed from the gallery's clip
+    $('lbTitle').textContent = id;
+    $('lbAsinh').value = asinhToSlider(lbAsinh);
+    $('lbAsinhVal').textContent = Math.round(lbAsinh) + ' e⁻';
+    $('lbClip').value = lbClip;
+    $('lbClipVal').textContent = lbClip.toFixed(2) + ' %ile';
+    $('lbEye').classList.toggle('active', lbRegime === 'eye');
+    $('lbSolar').classList.toggle('active', lbRegime === 'solar');
+    $('lightbox').classList.add('open');
+    lbRender();
+  }
+  const closeLightbox = () => $('lightbox').classList.remove('open');
+
+  $('gallery').addEventListener('click', (e) => {
+    const a = e.target.closest('.lb-open');
+    if (!a) return;
+    e.preventDefault();
+    openLightbox(a.dataset.sub, a.dataset.id);
+  });
+  $('lbAsinh').addEventListener('input', () => {
+    lbAsinh = sliderToAsinh(parseFloat($('lbAsinh').value));
+    $('lbAsinhVal').textContent = Math.round(lbAsinh) + ' e⁻';
+    lbSchedule();
+  });
+  $('lbClip').addEventListener('input', () => {
+    lbClip = parseFloat($('lbClip').value);
+    $('lbClipVal').textContent = lbClip.toFixed(2) + ' %ile';
+    lbSchedule();
+  });
+  $('lbEye').addEventListener('click', () => {
+    lbRegime = 'eye';
+    $('lbEye').classList.add('active'); $('lbSolar').classList.remove('active');
+    lbRender();
+  });
+  $('lbSolar').addEventListener('click', () => {
+    lbRegime = 'solar';
+    $('lbSolar').classList.add('active'); $('lbEye').classList.remove('active');
+    lbRender();
+  });
+  $('lbClose').addEventListener('click', closeLightbox);
+  $('lightbox').addEventListener('click', (e) => {
+    if (e.target.id === 'lightbox') closeLightbox();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeLightbox();
   });
 
   // Re-render this run's PNGs locally from the FITS with the current plotting

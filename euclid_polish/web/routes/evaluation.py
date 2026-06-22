@@ -96,14 +96,17 @@ _DEFAULT_CLIP = 99.5
 
 
 def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
-                       hi_percentile: float | None = None) -> str | None:
+                       hi_percentile: float | None = None,
+                       asinh_scale: float | None = None) -> str | None:
     """Render an object's eye/solar PNG from its FITS.
 
     Reads ``original_stack.fits`` (4-band LR cube) + ``SR.fits`` (SR cube) in
     ``obj_dir`` and runs the shared ``plot_reconstruction`` — the same renderer
     the local inference page uses — writing to ``out_png``. ``hi_percentile``
-    raises the dirty-panel clip so a bright central galaxy isn't saturated.
-    Returns ``out_png``, or ``None`` when the FITS inputs are missing.
+    raises the dirty-panel clip so a bright central galaxy isn't saturated;
+    ``asinh_scale`` overrides the asinh knee (``None`` → the SR FITS header's
+    ASINH). These are the two knobs the interactive viewer drives. Returns
+    ``out_png``, or ``None`` when the FITS inputs are missing.
     """
     sr_fits = os.path.join(obj_dir, "SR.fits")
     stack_fits = os.path.join(obj_dir, "original_stack.fits")
@@ -117,7 +120,7 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
 
     with fits.open(sr_fits) as h:
         sr = np.asarray(h[0].data, dtype=np.float32)
-        asinh = float(h[0].header.get("ASINH", Config.STRETCH_SCALE_E))
+        header_asinh = float(h[0].header.get("ASINH", Config.STRETCH_SCALE_E))
     with fits.open(stack_fits) as h:
         stack = np.asarray(h[0].data, dtype=np.float32)   # (4, H, W) or (H, W)
 
@@ -127,7 +130,8 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     plot_reconstruction(
         lr_vis, sr_data, hr_data=None, output_path=out_png,
         lr_cube=lr_cube if lr_cube.ndim == 3 else None,
-        asinh_scale=asinh, rgb_mode=rgb_mode, dirty_hi_pct=hi_percentile,
+        asinh_scale=(asinh_scale if asinh_scale is not None else header_asinh),
+        rgb_mode=rgb_mode, dirty_hi_pct=hi_percentile,
     )
     return out_png
 
@@ -166,6 +170,8 @@ def register(app):
             defaults=step.defaults.to_dict(),
             catalogs=_list_catalogs(),
             runs=_list_runs(),
+            default_asinh=float(Config.STRETCH_SCALE_E),
+            default_clip=_DEFAULT_CLIP,
         )
 
     @app.route("/api/evaluation/runs")
@@ -292,21 +298,32 @@ def register(app):
             obj_dir = os.path.dirname(full)
             prefix = os.path.basename(full).split(".")[0].split("__")[0].lower()
             rgb_mode = _REGIME_BY_PREFIX.get(prefix)
-            # Optional upper-clip percentile (the gallery's "Clip" control).
-            # Each clip caches to its own filename (e.g. eye__c99.9.png) so
-            # different clips coexist and the browser caches per clip URL.
-            try:
-                clip = float(request.args.get("clip", "")) if rgb_mode else None
-            except ValueError:
-                clip = None
-            if rgb_mode is not None and clip is not None \
-                    and abs(clip - _DEFAULT_CLIP) > 1e-6:
-                cache = os.path.join(obj_dir, f"{prefix}__c{clip:g}.png")
-            else:
-                cache = full
+
+            # The two interactive knobs: upper-clip percentile and asinh knee.
+            # Each (clip, asinh) combination caches to its own filename
+            # (e.g. eye__c99.9__a120.png) so settings coexist and the browser
+            # caches per URL; a slider revisit is then instant.
+            def _farg(name):
+                try:
+                    v = request.args.get(name, "")
+                    return float(v) if v else None
+                except ValueError:
+                    return None
+            clip = _farg("clip") if rgb_mode else None
+            asinh = _farg("asinh") if rgb_mode else None
+
+            suffix = ""
+            if clip is not None and abs(clip - _DEFAULT_CLIP) > 1e-6:
+                suffix += f"__c{clip:g}"
+            if asinh is not None and asinh > 0:
+                suffix += f"__a{asinh:g}"
+            cache = (os.path.join(obj_dir, f"{prefix}{suffix}.png")
+                     if suffix else full)
+
             fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
             if rgb_mode is not None and (fresh or not os.path.isfile(cache)):
-                _render_object_png(obj_dir, rgb_mode, cache, hi_percentile=clip)
+                _render_object_png(obj_dir, rgb_mode, cache,
+                                   hi_percentile=clip, asinh_scale=asinh)
             if not os.path.isfile(cache):
                 abort(404)
             return send_file(cache, mimetype="image/png", max_age=0)

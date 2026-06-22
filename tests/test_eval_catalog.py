@@ -234,6 +234,11 @@ class TestEvaluationRoutes:
         # Default clip keeps the plain filename.
         assert client.get("/eval-files/run1/lensA/eye.png").status_code == 200
         assert os.path.isfile(os.path.join(obj, "eye.png"))
+        # The interactive viewer also drives the asinh knee; clip+asinh cache
+        # to a combined per-setting filename.
+        r = client.get("/eval-files/run1/lensA/eye.png?clip=99.9&asinh=300")
+        assert r.status_code == 200
+        assert os.path.isfile(os.path.join(obj, "eye__c99.9__a300.png"))
 
     def test_rerender_drops_cached_pngs(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
