@@ -172,6 +172,57 @@ large cutout don't leak across train/validate."></label>`;
           <p class="hint" style="flex-basis:100%;">VIS cutout (px) is set on the
              <a href="/config">⚙️ Config</a> tab; output ePSF size is locked to
              2·(VIS cutout)+1 oversampled px.</p>`;
+      case 'eval_catalog':
+        // Mirrors CatalogEvalStep.build_command (run_name, grade, max_n,
+        // cutout_size, catalog). Re-fetches a 4-band cutout per catalog
+        // (RA, Dec), runs SR, and writes per-object FITS + renders + a
+        // forward-model self-consistency residual into data/eval_results/.
+        return `
+          <label>Run name
+            <input type="text" name="run_name" value="lenses" pattern="[A-Za-z0-9._-]+"
+                   title="Output sub-directory under data/eval_results/. Re-using a name overwrites that run's objects."></label>
+          <label>Grade filter <span class="muted">(blank = all)</span>
+            <select name="grade"
+                    title="Keep only catalog rows with this grade. The Euclid Q1 lens catalog grades candidates A (best) / B / C.">
+              <option value="">all</option>
+              <option value="A" selected>A</option>
+              <option value="B">B</option>
+              <option value="C">C</option>
+            </select></label>
+          <label>Max objects <span class="muted">(0 = all)</span>
+            <input type="number" name="max_n" value="20" min="0" max="5000"
+                   title="Cap the number of objects (after the grade filter). Start small (e.g. 20) for a smoke test before the full catalog."></label>
+          <label>Cutout size (VIS px)
+            <input type="number" name="cutout_size" value="256" min="32" max="4096" step="32"
+                   title="Side length of the VIS cutout in 0.10″/pix pixels fetched per target."></label>
+          <label>Catalog <span class="muted">(blank = default lens catalog)</span>
+            <input type="text" name="catalog" value=""
+                   placeholder="eval_catalogs/lens_catalog/lenses.csv"
+                   title="Path (relative to the data dir) to a normalized id,ra,dec[,grade] CSV. Blank uses the default lens catalog."></label>
+          <p class="hint" style="flex-basis:100%;">Fetch the lens catalog with the
+             <b>Fetch lens catalog</b> button above (or
+             <code>scripts/fetch_lens_catalog.py</code>) first.</p>`;
+      case 'eval_zoobot_morphology':
+        // Mirrors ZoobotMorphologyStep.build_command (run_name, tree_checkpoint,
+        // schema, png_size). Scores Zoobot morphology before/after SR on an
+        // existing catalog-eval run. Runs in the isolated PyTorch env.
+        return `
+          <label>Run name
+            <input type="text" name="run_name" value="lenses" pattern="[A-Za-z0-9._-]+"
+                   title="Which eval run (sub-dir of data/eval_results/) to score. It must already contain per-object SR.fits from a catalog-eval run."></label>
+          <label>Tree checkpoint <span class="muted">(blank = representation mode)</span>
+            <input type="text" name="tree_checkpoint" value=""
+                   placeholder="representation mode"
+                   title="Path to a FinetuneableZoobotTree checkpoint → Galaxy-Zoo vote-fraction mode. Blank uses a published encoder and compares representation embeddings (works off-the-shelf)."></label>
+          <label>Schema <span class="muted">(votes mode)</span>
+            <input type="text" name="schema" value="gz_evo_v1_public"
+                   title="zoobot.shared.schemas schema name that names the vote-fraction output columns (only used in votes mode)."></label>
+          <label>PNG size
+            <input type="number" name="png_size" value="424" min="64" max="1024" step="8"
+                   title="Rendered VIS image size fed to Zoobot."></label>
+          <p class="hint" style="flex-basis:100%;">Runs in the isolated PyTorch env
+             (<code>environment-zoobot.yml</code>); needs a GPU. Run a catalog
+             eval first so there are SR images to score.</p>`;
       case 'download_tng_skirt':
         // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153

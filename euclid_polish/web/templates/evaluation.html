@@ -4,216 +4,252 @@
 {% block toolbar %}
 <div class="toolbar">
   <span class="toolbar-label">Catalog evaluation</span>
-  <span class="muted">Run the model over a catalog (lens stress test) on FASRC,
-    then review eye/solar renders + the forward-model self-consistency
-    residual.</span>
+  <span class="muted">Run the model over a catalog of real targets (lens stress
+    test), review the renders, and score morphology before/after with Zoobot.</span>
 </div>
 {% endblock %}
 
 {% block viz %}
 <style>
-  .eval-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-               gap: 10px 14px; max-width: 880px; margin-bottom: 8px; }
-  .eval-form label { display: flex; flex-direction: column; font-size: 12px; gap: 3px; }
-  .eval-form input, .eval-form select { padding: 4px 6px; }
-  .eval-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; flex-wrap: wrap; }
-  .eval-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-                  gap: 12px; margin-top: 8px; }
-  .eval-card { border: 1px solid var(--border, #333); border-radius: 6px; padding: 6px;
-               background: var(--panel, #1b1b1b); }
-  .eval-card img { width: 100%; height: auto; border-radius: 4px; display: block; }
-  .eval-card .meta { font-size: 11px; margin-top: 4px; line-height: 1.4; }
-  .eval-card .gradeA { color: #6f6; } .eval-card .gradeB { color: #fd6; }
-  .eval-card .gradeC { color: #f96; }
-  .chi-good { color: #6f6; } .chi-warn { color: #fd6; } .chi-bad { color: #f96; }
-  .eval-msg { font-size: 12px; margin-left: 8px; }
-  .muted { opacity: .7; }
+  /* Scoped to the evaluation page; relies on the shared light theme. */
+  .eval-controls { display: flex; align-items: center; gap: 10px 16px;
+                   flex-wrap: wrap; margin-bottom: 14px; }
+  .eval-controls .toolbar-group { gap: 6px; }
+  .eval-legend { font-size: 12px; color: #555; margin: 0 0 14px; }
+  .eval-legend code { color: #2a3a55; }
+  .eval-thumb .meta { font-size: 11.5px; margin-top: 6px; line-height: 1.5;
+                      color: #333; }
+  .eval-thumb .meta b { color: #1a1a1a; }
+  .metric-good { color: #14600c; font-weight: 600; }
+  .metric-warn { color: #826200; font-weight: 600; }
+  .metric-bad  { color: #b03a3a; font-weight: 600; }
+  .grade-pill { font-weight: 700; }
+  .eval-empty { color: #888; font-size: 13px; padding: 40px 20px;
+                text-align: center; }
 </style>
 
-<details open>
-  <summary><b>Submit a run</b> (queues a FASRC <code>eval-catalog</code> job)</summary>
-  <form id="evalForm" class="eval-form" style="margin-top:10px;">
-    <label>Catalog
-      <select name="catalog">
-        <option value="">(default lens catalog)</option>
-        {% for c in catalogs %}
-          <option value="{{ c.data_rel }}">{{ c.rel }} ({{ c.rows }} rows)</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Run name
-      <input type="text" name="run_name" value="lenses" pattern="[A-Za-z0-9._-]+">
-    </label>
-    <label>Grade filter
-      <select name="grade">
-        <option value="">(all)</option>
-        <option value="A">A</option><option value="B">B</option>
-        <option value="C">C</option>
-      </select>
-    </label>
-    <label>Max objects (0 = all)
-      <input type="number" name="max_n" value="20" min="0">
-    </label>
-    <label>Cutout size (VIS px)
-      <input type="number" name="cutout_size" value="256" min="32" max="4096">
-    </label>
-    <label>Partition
-      <input type="text" name="partition" value="{{ defaults.partition }}">
-    </label>
-    <label>CPUs
-      <input type="number" name="n_cpus" value="{{ defaults.n_cpus }}" min="1">
-    </label>
-    <label>GPUs
-      <input type="number" name="n_gpus" value="{{ defaults.n_gpus }}" min="0">
-    </label>
-    <label>Memory
-      <input type="text" name="memory" value="{{ defaults.memory }}">
-    </label>
-    <label>Time limit
-      <input type="text" name="time_limit" value="{{ defaults.time_limit }}">
-    </label>
-  </form>
-  <div class="eval-row">
-    <button id="evalSubmit" type="button">Submit eval job</button>
-    <span id="evalMsg" class="eval-msg muted"></span>
-  </div>
-</details>
-
-<hr>
-
-<div class="eval-row">
-  <label>Run:
+<div class="eval-controls">
+  <div class="toolbar-group">
+    <span class="toolbar-label">Run</span>
     <select id="runSelect">
-      {% if not runs %}<option value="">(no runs yet)</option>{% endif %}
+      {% if not runs %}<option value="">no runs yet</option>{% endif %}
       {% for r in runs %}
-        <option value="{{ r.name }}">{{ r.name }} — {{ r.n_ok }}/{{ r.n }} ok</option>
+        <option value="{{ r.name }}">{{ r.name }} · {{ r.n_ok }}/{{ r.n }} ok</option>
       {% endfor %}
     </select>
-  </label>
-  <label>Sort:
-    <select id="sortSelect">
-      <option value="residual_chi">residual χ (self-consistency)</option>
-      <option value="residual_std_e">residual std (e⁻)</option>
-      <option value="grade">grade</option>
-      <option value="id">id</option>
-    </select>
-  </label>
-  <label>Color:
-    <select id="regimeSelect">
-      <option value="eye">eye</option>
-      <option value="solar">solar</option>
-    </select>
-  </label>
-  <button id="reloadBtn" type="button">Reload</button>
-  <span id="runMsg" class="muted eval-msg"></span>
+  </div>
+  <div class="toolbar-group">
+    <span class="toolbar-label">Sort</span>
+    <span class="chip active" data-sort="residual_chi">self-consistency χ</span>
+    <span class="chip" data-sort="residual_std_e">residual σ</span>
+    <span class="chip" data-sort="grade">grade</span>
+    <span class="chip" data-sort="id">id</span>
+  </div>
+  <div class="toolbar-group">
+    <span class="toolbar-label">Color</span>
+    <span class="chip active" data-regime="eye">eye</span>
+    <span class="chip" data-regime="solar">solar</span>
+  </div>
+  <button id="reloadBtn" class="secondary" type="button">↻ Reload</button>
+  <span id="runMsg" class="muted"></span>
 </div>
 
-<div id="gallery" class="eval-gallery"></div>
+<p class="eval-legend">
+  Each tile shows the colour render (LR&nbsp;→&nbsp;SR&nbsp;→ forward-model
+  residual). <b>χ</b> = residual scatter ÷ expected noise — near&nbsp;1 means the
+  SR is self-consistent with the observation;
+  <span class="metric-bad">≫&nbsp;1</span> flags over/under-reconstruction.
+  <b>flux fwd/LR</b> should sit near 1 (flux conservation). When a Zoobot run is
+  present, <b>morph&nbsp;Δ</b> shows how far morphology moved, and — for
+  synthetic targets with HR — whether SR moved it <i>toward</i> the truth.
+</p>
+
+<div id="gallery" class="gallery">
+  <div class="eval-empty">Select a run to view results.</div>
+</div>
+{% endblock %}
+
+{% block actions %}
+<section class="card" style="grid-column: 1 / -1;">
+  <h3>Lens catalog</h3>
+  {% if catalogs %}
+    <div class="kv" style="margin-bottom:8px;">
+      {% for c in catalogs %}
+        <dt>{{ c.rel }}</dt><dd>{{ c.rows }} rows</dd>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="hint">No catalog yet — fetch the Natalie Lines Euclid Q1 strong-lens
+      catalog (Zenodo 15025832) to populate
+      <code>data/eval_catalogs/lens_catalog/lenses.csv</code>.</p>
+  {% endif %}
+  <button id="fetchCatBtn" type="button">⬇ Fetch lens catalog</button>
+  <span id="fetchCatMsg" class="muted" style="margin-left:8px;"></span>
+</section>
+
+{# Mounted FASRC step cards: real submit flow (confirm dialog, resource prefill
+   from history, AND live job status), identical to every other pipeline page.
+   on_submitted_js refreshes the run list after a successful submit. #}
+{% with step_id="eval_catalog",
+        on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
+  {% include "_step_card_mount.html" %}
+{% endwith %}
+
+{% with step_id="eval_zoobot_morphology",
+        on_submitted_js="(jobid, payload) => window.evalRefreshRuns && window.evalRefreshRuns()" %}
+  {% include "_step_card_mount.html" %}
+{% endwith %}
 
 <script>
-const RESULTS_PREFIX = "/eval-files/";
+(function () {
+  const esc = (window.polishUI && polishUI.escapeHtml)
+    ? polishUI.escapeHtml : (s => String(s));
+  const $ = (id) => document.getElementById(id);
 
-async function submitEval() {
-  const msg = document.getElementById('evalMsg');
-  const form = document.getElementById('evalForm');
-  const fd = new FormData(form);
-  fd.set('confirm', 'yes');         // server requires the explicit-confirm token
-  fd.set('label', 'eval: ' + (fd.get('run_name') || 'run'));
-  msg.textContent = 'submitting…'; msg.className = 'eval-msg muted';
-  try {
-    const r = await fetch('/api/fasrc/hst/{{ step.step_id }}/submit',
-                          { method: 'POST', body: fd });
-    const j = await r.json();
-    if (j.ok) {
-      msg.textContent = 'queued/submitted ✓ (see FASRC tab for progress)';
-      msg.className = 'eval-msg';
-    } else {
-      msg.textContent = 'error: ' + (j.error || r.status);
-      msg.className = 'eval-msg chi-bad';
-    }
-  } catch (e) {
-    msg.textContent = 'request failed: ' + e;
-    msg.className = 'eval-msg chi-bad';
+  let sortKey = 'residual_chi';
+  let regime = 'eye';
+
+  function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
+  function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
+  function chiClass(v) {
+    if (v == null || isNaN(v)) return '';
+    if (v < 2) return 'metric-good';
+    if (v < 5) return 'metric-warn';
+    return 'metric-bad';
   }
-}
+  function gradeClass(g) {
+    return ({A: 'tag-ok', B: 'tag-warn', C: 'tag-warn'})[g] || 'tag';
+  }
 
-function chiClass(v) {
-  if (v == null || isNaN(v)) return '';
-  if (v < 2) return 'chi-good';
-  if (v < 5) return 'chi-warn';
-  return 'chi-bad';
-}
-function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
-function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
+  async function loadRun() {
+    const run = $('runSelect').value;
+    const gal = $('gallery');
+    const msg = $('runMsg');
+    if (!run) {
+      gal.innerHTML = '<div class="eval-empty">No run selected.</div>';
+      msg.textContent = ''; return;
+    }
+    gal.classList.add('viz-loading');
+    msg.textContent = 'loading…';
+    let rows;
+    try {
+      const r = await fetch('/api/evaluation/runs?run=' + encodeURIComponent(run));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      rows = (await r.json()).rows || [];
+    } catch (e) {
+      gal.classList.remove('viz-loading');
+      gal.innerHTML = '<div class="eval-empty">Failed to load: ' + esc(e.message) + '</div>';
+      msg.textContent = ''; return;
+    }
+    gal.classList.remove('viz-loading');
 
-async function loadRun() {
-  const run = document.getElementById('runSelect').value;
-  const sortKey = document.getElementById('sortSelect').value;
-  const regime = document.getElementById('regimeSelect').value;
-  const gal = document.getElementById('gallery');
-  const msg = document.getElementById('runMsg');
-  gal.innerHTML = '';
-  if (!run) { msg.textContent = 'no run selected'; return; }
-  msg.textContent = 'loading…';
-  let rows;
-  try {
-    const r = await fetch('/api/evaluation/runs?run=' + encodeURIComponent(run));
-    const j = await r.json();
-    rows = j.rows || [];
-  } catch (e) { msg.textContent = 'load failed: ' + e; return; }
+    const ok = rows.filter(r => String(r.ok).toLowerCase() === 'true');
+    ok.sort((a, b) => {
+      if (sortKey === 'grade' || sortKey === 'id')
+        return String(a[sortKey]).localeCompare(String(b[sortKey]));
+      const av = num(a[sortKey]), bv = num(b[sortKey]);
+      if (av == null) return 1; if (bv == null) return -1;
+      return bv - av;                    // numeric → worst (largest) first
+    });
+    const skipped = rows.length - ok.length;
+    msg.textContent = ok.length + ' shown'
+      + (skipped > 0 ? ' · ' + skipped + ' skipped (no coverage)' : '');
 
-  const ok = rows.filter(r => String(r.ok).toLowerCase() === 'true');
-  ok.sort((a, b) => {
-    if (sortKey === 'grade' || sortKey === 'id')
-      return String(a[sortKey]).localeCompare(String(b[sortKey]));
-    const av = num(a[sortKey]), bv = num(b[sortKey]);
-    if (av == null) return 1; if (bv == null) return -1;
-    return bv - av;            // numeric: worst (largest) first
-  });
-  msg.textContent = ok.length + ' ok / ' + rows.length + ' total';
+    if (!ok.length) {
+      gal.innerHTML = '<div class="eval-empty">No successful objects in this run yet.</div>';
+      return;
+    }
 
-  for (const r of ok) {
-    const sub = r.out_subdir;
-    const img = RESULTS_PREFIX + encodeURIComponent(run) + '/' +
-                encodeURIComponent(sub) + '/' + regime + '.png';
-    const srFits = RESULTS_PREFIX + encodeURIComponent(run) + '/' +
-                   encodeURIComponent(sub) + '/SR.fits';
-    const chi = num(r.residual_chi);
-    let morphLine = '';
-    if (r.morph) {
-      const m = r.morph;
-      let extra = '';
-      if (m.closer_to_ref !== undefined && m.closer_to_ref !== '') {
-        const closer = String(m.closer_to_ref).toLowerCase() === 'true';
-        extra = ' · toward HR: <span class="' + (closer ? 'chi-good' : 'chi-bad') +
-                '">' + (closer ? 'yes' : 'no') + '</span>';
+    const base = '/eval-files/' + encodeURIComponent(run) + '/';
+    gal.innerHTML = ok.map(r => {
+      const sub = encodeURIComponent(r.out_subdir);
+      const img = base + sub + '/' + regime + '.png';
+      const srFits = base + sub + '/SR.fits';
+      const chi = num(r.residual_chi);
+      let morph = '';
+      if (r.morph) {
+        const m = r.morph;
+        let toward = '';
+        if (m.closer_to_ref !== undefined && m.closer_to_ref !== '') {
+          const c = String(m.closer_to_ref).toLowerCase() === 'true';
+          toward = ' · toward HR: <span class="' + (c ? 'metric-good' : 'metric-bad')
+                   + '">' + (c ? 'yes' : 'no') + '</span>';
+        }
+        morph = '<br>morph Δ (' + esc(m.mode || '?') + '): '
+                + fmt(m.l2_before_after) + toward;
       }
-      morphLine = '<br>morph Δ (' + (m.mode || '?') + '): ' +
-                  fmt(m.l2_before_after) + extra;
-    }
-    const card = document.createElement('div');
-    card.className = 'eval-card';
-    card.innerHTML =
-      '<a href="' + img + '" target="_blank"><img loading="lazy" src="' + img +
-        '" alt="' + r.id + '"></a>' +
-      '<div class="meta">' +
-        '<b>' + r.id + '</b> ' +
-        (r.grade ? '<span class="grade' + r.grade + '">[' + r.grade + ']</span>' : '') +
-        '<br>χ: <span class="' + chiClass(chi) + '">' + fmt(r.residual_chi) + '</span>' +
-        ' · resid σ: ' + fmt(r.residual_std_e) + ' e⁻' +
-        '<br>flux fwd/LR: ' + fmt(r.flux_ratio_fwd_over_lr) +
-        ' · <a href="' + srFits + '">⬇ SR.fits</a>' +
-        morphLine +
-      '</div>';
-    gal.appendChild(card);
+      const gradeTag = r.grade
+        ? ' <span class="tag ' + gradeClass(r.grade) + ' grade-pill">'
+          + esc(r.grade) + '</span>' : '';
+      return ''
+        + '<div class="thumb eval-thumb">'
+        +   '<a href="' + img + '" target="_blank" title="open full render">'
+        +     '<img loading="lazy" src="' + img + '" alt="' + esc(r.id) + '">'
+        +   '</a>'
+        +   '<div class="meta">'
+        +     '<b>' + esc(r.id) + '</b>' + gradeTag
+        +     '<br>χ: <span class="' + chiClass(chi) + '">' + fmt(r.residual_chi)
+        +       '</span> · σ: ' + fmt(r.residual_std_e) + ' e⁻'
+        +     '<br>flux fwd/LR: ' + fmt(r.flux_ratio_fwd_over_lr)
+        +       ' · <a href="' + srFits + '">⬇ SR.fits</a>'
+        +     morph
+        +   '</div>'
+        + '</div>';
+    }).join('');
   }
-}
 
-document.getElementById('evalSubmit').addEventListener('click', submitEval);
-document.getElementById('reloadBtn').addEventListener('click', loadRun);
-document.getElementById('runSelect').addEventListener('change', loadRun);
-document.getElementById('sortSelect').addEventListener('change', loadRun);
-document.getElementById('regimeSelect').addEventListener('change', loadRun);
-loadRun();
+  // Refresh the run dropdown (after a submit completes / on demand), keeping
+  // the current selection if it still exists.
+  async function refreshRuns() {
+    try {
+      const r = await fetch('/api/evaluation/runs');
+      const runs = (await r.json()).runs || [];
+      const sel = $('runSelect');
+      const cur = sel.value;
+      sel.innerHTML = runs.length
+        ? runs.map(x => '<option value="' + esc(x.name) + '">' + esc(x.name)
+            + ' · ' + x.n_ok + '/' + x.n + ' ok</option>').join('')
+        : '<option value="">no runs yet</option>';
+      if (runs.some(x => x.name === cur)) sel.value = cur;
+      loadRun();
+    } catch (e) { /* non-fatal */ }
+  }
+  window.evalRefreshRuns = refreshRuns;
+
+  // Sort / regime chips.
+  document.querySelectorAll('.chip[data-sort]').forEach(c =>
+    c.addEventListener('click', () => {
+      document.querySelectorAll('.chip[data-sort]').forEach(x => x.classList.remove('active'));
+      c.classList.add('active'); sortKey = c.dataset.sort; loadRun();
+    }));
+  document.querySelectorAll('.chip[data-regime]').forEach(c =>
+    c.addEventListener('click', () => {
+      document.querySelectorAll('.chip[data-regime]').forEach(x => x.classList.remove('active'));
+      c.classList.add('active'); regime = c.dataset.regime; loadRun();
+    }));
+  $('reloadBtn').addEventListener('click', refreshRuns);
+  $('runSelect').addEventListener('change', loadRun);
+
+  // Catalog fetch.
+  $('fetchCatBtn').addEventListener('click', async () => {
+    const btn = $('fetchCatBtn'), msg = $('fetchCatMsg');
+    btn.disabled = true; msg.textContent = 'downloading from Zenodo…';
+    try {
+      const r = await fetch('/api/evaluation/fetch-catalog', { method: 'POST' });
+      const j = await r.json();
+      if (j.ok) {
+        msg.innerHTML = '✓ ' + j.rows + ' lenses → <code>' + esc(j.rel) + '</code>'
+          + ' — reloading…';
+        setTimeout(() => location.reload(), 900);
+      } else {
+        msg.textContent = 'error: ' + (j.error || r.status);
+      }
+    } catch (e) {
+      msg.textContent = 'request failed: ' + e;
+    } finally { btn.disabled = false; }
+  });
+
+  loadRun();
+})();
 </script>
 {% endblock %}

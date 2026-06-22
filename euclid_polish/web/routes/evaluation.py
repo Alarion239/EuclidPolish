@@ -25,14 +25,20 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 
 
 def _list_catalogs() -> List[Dict[str, Any]]:
-    """List normalized evaluation catalogs (``*.csv``) under EVAL_CATALOG_DIR."""
+    """List normalized evaluation catalogs (``*.csv``) under EVAL_CATALOG_DIR.
+
+    Skips the raw Zenodo download (``q1_discovery_engine_lens_catalog.csv``) so
+    only the normalized ``id,ra,dec`` catalogs the pipeline consumes are shown.
+    """
+    from euclid_polish.euclid.lens_catalog import SOURCE_CSV
+
     root = Config.EVAL_CATALOG_DIR
     out: List[Dict[str, Any]] = []
     if not os.path.isdir(root):
         return out
     for dirpath, _dirs, files in os.walk(root):
         for fn in sorted(files):
-            if not fn.endswith(".csv"):
+            if not fn.endswith(".csv") or fn == SOURCE_CSV:
                 continue
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root)
@@ -127,6 +133,28 @@ def register(app):
                 abort(404)
             return jsonify({"run": run, "rows": _read_manifest(rd)})
         return jsonify({"runs": _list_runs()})
+
+    @app.route("/api/evaluation/fetch-catalog", methods=["POST"])
+    def api_evaluation_fetch_catalog():
+        """Download + normalize the Euclid Q1 strong-lens catalog (Zenodo).
+
+        Pulls the ~0.4 MB discovery CSV and writes the normalized
+        ``lens_catalog/lenses.csv`` so the page is self-sufficient (no CLI
+        step needed). Network failures surface as a 502 with the message.
+        """
+        from euclid_polish.euclid import lens_catalog
+
+        try:
+            out_csv, n = lens_catalog.fetch()
+        except Exception as e:  # noqa: BLE001 — report any fetch failure to the UI
+            return jsonify({"ok": False,
+                            "error": f"{type(e).__name__}: {e}"}), 502
+        return jsonify({
+            "ok":   True,
+            "rows": n,
+            "path": out_csv,
+            "rel":  os.path.relpath(out_csv, Config.EVAL_CATALOG_DIR),
+        })
 
     @app.route("/eval-files/<path:relpath>")
     def serve_eval_files(relpath: str):

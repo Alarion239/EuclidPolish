@@ -173,8 +173,11 @@ class TestEvaluationRoutes:
         r = client.get("/evaluation")
         assert r.status_code == 200
         body = r.get_data(as_text=True)
-        assert "evalForm" in body
-        assert "/api/fasrc/hst/eval_catalog/submit" in body
+        # Both eval step cards are mounted (real submit flow + live status),
+        # and the catalog-fetch + results controls are present.
+        assert "step-mount-eval_catalog" in body
+        assert "step-mount-eval_zoobot_morphology" in body
+        assert "fetchCatBtn" in body and "runSelect" in body
 
     def test_runs_api_empty(self, client):
         r = client.get("/api/evaluation/runs")
@@ -186,6 +189,30 @@ class TestEvaluationRoutes:
 
     def test_eval_files_traversal_blocked(self, client):
         assert client.get("/eval-files/../../etc/passwd").status_code == 403
+
+    def test_fetch_catalog_endpoint(self, client, monkeypatch):
+        # Stub the (network) fetch so the route is exercised offline.
+        from euclid_polish.euclid import lens_catalog
+
+        monkeypatch.setattr(
+            lens_catalog, "fetch",
+            lambda *a, **k: (os.path.join(Config.EVAL_CATALOG_DIR,
+                                          "lens_catalog", "lenses.csv"), 309))
+        r = client.post("/api/evaluation/fetch-catalog")
+        assert r.status_code == 200
+        j = r.get_json()
+        assert j["ok"] and j["rows"] == 309
+        assert j["rel"].endswith("lenses.csv")
+
+    def test_fetch_catalog_endpoint_reports_failure(self, client, monkeypatch):
+        from euclid_polish.euclid import lens_catalog
+
+        def boom(*a, **k):
+            raise RuntimeError("zenodo down")
+        monkeypatch.setattr(lens_catalog, "fetch", boom)
+        r = client.post("/api/evaluation/fetch-catalog")
+        assert r.status_code == 502
+        assert "zenodo down" in r.get_json()["error"]
 
     def test_runs_api_reads_manifest(self, client, tmp_path, monkeypatch):
         # Redirect the results dir to a tmp tree so we don't touch real data/.
@@ -278,6 +305,36 @@ class TestZoobotMorphHelpers:
             text = f.read()
         assert "id," in text.splitlines()[0]
         assert "closer_to_ref" in text
+
+
+class TestLensCatalogModule:
+    def test_normalize_grade_filter(self, tmp_path):
+        from euclid_polish.euclid import lens_catalog
+
+        raw = tmp_path / "raw.csv"
+        raw.write_text(
+            "subset,id_str,right_ascension,declination,grade\n"
+            "discovery_engine,a,1.0,2.0,A\n"
+            "gz_euclid,b,3.0,4.0,B\n"
+            "discovery_engine,c,5.0,6.0,A\n")
+        out = str(tmp_path / "lenses.csv")
+        n = lens_catalog.normalize(str(raw), out, grade="A")
+        assert n == 2
+        rows = read_eval_catalog(out)
+        assert [r["id"] for r in rows] == ["a", "c"]
+        assert rows[0]["extra"]["subset"] == "discovery_engine"
+
+    def test_fetch_uses_source_without_network(self, tmp_path):
+        # source= short-circuits the download, so this never touches the net.
+        from euclid_polish.euclid import lens_catalog
+
+        raw = tmp_path / "raw.csv"
+        raw.write_text(
+            "subset,id_str,right_ascension,declination,grade\n"
+            "discovery_engine,a,1.0,2.0,A\n")
+        out = str(tmp_path / "out.csv")
+        got, n = lens_catalog.fetch(out, source=str(raw))
+        assert got == out and n == 1
 
 
 class TestZoobotMorphologyStep:
