@@ -52,12 +52,29 @@ def _list_catalogs() -> List[Dict[str, Any]]:
     return out
 
 
-def _read_manifest(run_dir: str) -> List[Dict[str, str]]:
-    path = os.path.join(run_dir, "manifest.csv")
+def _read_csv(path: str) -> List[Dict[str, str]]:
     if not os.path.isfile(path):
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _read_manifest(run_dir: str) -> List[Dict[str, Any]]:
+    """Manifest rows for a run, with Zoobot morphology deltas merged in by id.
+
+    When ``morphology_manifest.csv`` (from the Zoobot step) is present, each
+    object's row gets a ``morph`` dict so the gallery can show the before/after
+    morphology delta alongside the pixel-level residual.
+    """
+    rows = _read_csv(os.path.join(run_dir, "manifest.csv"))
+    morph = {m.get("id"): m
+             for m in _read_csv(os.path.join(run_dir, "morphology_manifest.csv"))}
+    if morph:
+        for r in rows:
+            m = morph.get(r.get("id"))
+            if m:
+                r["morph"] = m
+    return rows
 
 
 def _list_runs() -> List[Dict[str, Any]]:

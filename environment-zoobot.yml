@@ -1,0 +1,30 @@
+# Isolated PyTorch environment for the Zoobot morphology evaluation step.
+#
+# Zoobot is PyTorch-based and would clash with the main EuclidPolishEnv
+# (TensorFlow). Keep it in its OWN env — do NOT merge into environment.yml.
+#
+# Create on FASRC (holylabs, beside the main conda-env so the step's
+# ``conda_env`` path resolves):
+#
+#   module load python cuda
+#   mamba env create -f environment-zoobot.yml \
+#       -p /n/holylabs/lconnor_lab/Lab/abelotserkovtsev/conda-env-zoobot
+#
+# The ``eval_zoobot_morphology`` FASRC step activates this env via its
+# ``conda_env`` attribute (see euclid_polish/web/fasrc_pipeline.py).
+name: EuclidPolishZoobot
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - astropy
+  - pillow
+  - pip:
+      # zoobot pulls in torch, lightning, timm and galaxy-datasets (which
+      # provides CatalogDataModule + the inference transforms the predict
+      # helper expects). Install the CUDA build of torch on the GPU node.
+      - "zoobot[pytorch-cu121]>=2.0"

@@ -738,6 +738,62 @@ class CatalogEvalStep(FASRCPipelineStep):
         return cmd
 
 
+#: Isolated PyTorch env for the Zoobot step (built from environment-zoobot.yml,
+#: beside the main conda-env on holylabs). Edit if your install path differs.
+ZOOBOT_CONDA_ENV = "/n/holylabs/lconnor_lab/Lab/abelotserkovtsev/conda-env-zoobot"
+
+
+class ZoobotMorphologyStep(FASRCPipelineStep):
+    """Score before/after galaxy morphology with Zoobot on an eval run.
+
+    Runs the Galaxy-Zoo deep-learning model (Walmsley et al.; Euclid-validated)
+    on the VIS plane of an eval run's per-object outputs and measures how the
+    morphology vector moves from the dirty LR (before) to the SR (after), plus
+    — when HR ground truth is present (synthetic) — whether SR moves it toward
+    HR. A semantic SR-fidelity metric complementing the pixel-level residual.
+
+    Zoobot is PyTorch and clashes with the main TensorFlow env, so this step
+    activates the isolated :data:`ZOOBOT_CONDA_ENV`. GPU-backed.
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="eval_zoobot_morphology",
+            label="Zoobot morphology before/after (eval run)",
+            job_name="eval-zoobot",
+            defaults=StepResources(
+                partition="gpu", n_cpus=8, n_gpus=1,
+                memory="32G", time_limit="4:00:00",
+            ),
+            needs_gpu=True,
+            conda_env=ZOOBOT_CONDA_ENV,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/fasrc_zoobot_morphology.py",
+            "--run-name", str(params.get("run_name", "lenses") or "lenses"),
+            "--device",   "gpu",
+        ]
+        run_dir = params.get("run_dir")
+        if run_dir not in (None, ""):
+            cmd += ["--run-dir", str(run_dir)]
+        tree_ckpt = params.get("tree_checkpoint")
+        if tree_ckpt not in (None, ""):
+            cmd += ["--tree-checkpoint", str(tree_ckpt)]
+            schema = params.get("schema")
+            if schema not in (None, ""):
+                cmd += ["--schema", str(schema)]
+        else:
+            model_name = params.get("model_name")
+            if model_name not in (None, ""):
+                cmd += ["--model-name", str(model_name)]
+        png_size = int(params.get("png_size", 0) or 0)
+        if png_size > 0:
+            cmd += ["--png-size", str(png_size)]
+        return cmd
+
+
 class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
     """Bulk-download the whole IllustrisTNG TNG50-1 SKIRT atlas (~1153 galaxies).
 
@@ -1199,6 +1255,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
     CatalogEvalStep,
+    ZoobotMorphologyStep,
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,

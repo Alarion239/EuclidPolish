@@ -200,3 +200,105 @@ class TestEvaluationRoutes:
         assert r.status_code == 200
         rows = r.get_json()["rows"]
         assert rows and rows[0]["id"] == "lensA"
+
+
+# --------------------------------------------------------------------------- #
+# Zoobot morphology helpers (pure — no torch / zoobot)
+# --------------------------------------------------------------------------- #
+
+def _write_cube(path, value=1.0, bands=4, h=8, w=8):
+    cube = np.full((bands, h, w), value, dtype=np.float32)
+    fits.PrimaryHDU(cube).writeto(path, overwrite=True)
+
+
+class TestZoobotMorphHelpers:
+    def test_discover_objects(self, tmp_path):
+        from euclid_polish.eval import zoobot_morph as zm
+
+        run = tmp_path / "run"
+        # obj1: full set (before/after/hr); obj2: after only; bad: no SR.
+        for name, files in {
+            "obj1": ("SR.fits", "original_stack.fits", "HR.fits"),
+            "obj2": ("SR.fits",),
+            "bad":  ("original_stack.fits",),
+        }.items():
+            d = run / name
+            d.mkdir(parents=True)
+            for fn in files:
+                _write_cube(str(d / fn))
+
+        objs = {o["id"]: o for o in zm.discover_objects(str(run))}
+        assert set(objs) == {"obj1", "obj2"}        # 'bad' skipped (no SR)
+        assert objs["obj1"]["before"] and objs["obj1"]["hr"]
+        assert objs["obj2"]["before"] is None and objs["obj2"]["hr"] is None
+
+    def test_stretch_and_render_png(self, tmp_path):
+        from PIL import Image
+
+        from euclid_polish.eval import zoobot_morph as zm
+
+        fits_path = str(tmp_path / "SR.fits")
+        cube = np.zeros((4, 16, 16), dtype=np.float32)
+        cube[0, 4:12, 4:12] = 500.0          # a bright VIS blob
+        fits.PrimaryHDU(cube).writeto(fits_path, overwrite=True)
+
+        u8 = zm.stretch_to_uint8(zm.load_vis_plane(fits_path), asinh_scale=100.0)
+        assert u8.dtype == np.uint8 and u8.max() > u8.min()
+
+        out_png = str(tmp_path / "after.png")
+        zm.render_vis_png(fits_path, out_png, asinh_scale=100.0, size=64)
+        with Image.open(out_png) as im:
+            assert im.size == (64, 64) and im.mode == "RGB"
+
+    def test_vector_deltas_without_ref(self):
+        from euclid_polish.eval import zoobot_morph as zm
+
+        d = zm.vector_deltas([0.0, 0.0], [3.0, 4.0])
+        assert d["l2_before_after"] == pytest.approx(5.0)
+        assert "closer_to_ref" not in d
+
+    def test_vector_deltas_with_ref(self):
+        from euclid_polish.eval import zoobot_morph as zm
+
+        # after (1.0) is closer to ref (1.0) than before (0.0) is.
+        d = zm.vector_deltas([0.0, 0.0], [1.0, 1.0], ref=[1.0, 1.0])
+        assert d["closer_to_ref"] is True
+        assert d["ref_improvement"] > 0
+        assert d["l2_after_ref"] == pytest.approx(0.0)
+
+    def test_write_morph_manifest(self, tmp_path):
+        from euclid_polish.eval import zoobot_morph as zm
+
+        out = str(tmp_path / "m.csv")
+        zm.write_morph_manifest(out, [
+            {"id": "a", "l2_before_after": 1.0, "closer_to_ref": True},
+            {"id": "b", "l2_before_after": 2.0},
+        ])
+        with open(out) as f:
+            text = f.read()
+        assert "id," in text.splitlines()[0]
+        assert "closer_to_ref" in text
+
+
+class TestZoobotMorphologyStep:
+    def test_registered_isolated_env(self):
+        step = REGISTRY.get("eval_zoobot_morphology")
+        assert step.job_name == "eval-zoobot"
+        assert step.needs_gpu and step.defaults.n_gpus == 1
+        # Must run in an isolated (non-default) conda env to avoid the
+        # PyTorch/TensorFlow clash.
+        assert step.conda_env and "zoobot" in step.conda_env
+
+    def test_build_command_representation_default(self):
+        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
+            {"run_name": "lenses"})
+        assert argv[0] == "scripts/fasrc_zoobot_morphology.py"
+        assert argv[argv.index("--run-name") + 1] == "lenses"
+        assert "--tree-checkpoint" not in argv     # representation mode
+
+    def test_build_command_votes_mode(self):
+        argv = REGISTRY.get("eval_zoobot_morphology").build_command(
+            {"run_name": "syn", "tree_checkpoint": "/p/tree.ckpt",
+             "schema": "gz_evo_v1_public"})
+        assert argv[argv.index("--tree-checkpoint") + 1] == "/p/tree.ckpt"
+        assert argv[argv.index("--schema") + 1] == "gz_evo_v1_public"

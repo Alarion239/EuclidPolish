@@ -179,6 +179,18 @@ async function loadRun() {
     const srFits = RESULTS_PREFIX + encodeURIComponent(run) + '/' +
                    encodeURIComponent(sub) + '/SR.fits';
     const chi = num(r.residual_chi);
+    let morphLine = '';
+    if (r.morph) {
+      const m = r.morph;
+      let extra = '';
+      if (m.closer_to_ref !== undefined && m.closer_to_ref !== '') {
+        const closer = String(m.closer_to_ref).toLowerCase() === 'true';
+        extra = ' · toward HR: <span class="' + (closer ? 'chi-good' : 'chi-bad') +
+                '">' + (closer ? 'yes' : 'no') + '</span>';
+      }
+      morphLine = '<br>morph Δ (' + (m.mode || '?') + '): ' +
+                  fmt(m.l2_before_after) + extra;
+    }
     const card = document.createElement('div');
     card.className = 'eval-card';
     card.innerHTML =
@@ -191,6 +203,7 @@ async function loadRun() {
         ' · resid σ: ' + fmt(r.residual_std_e) + ' e⁻' +
         '<br>flux fwd/LR: ' + fmt(r.flux_ratio_fwd_over_lr) +
         ' · <a href="' + srFits + '">⬇ SR.fits</a>' +
+        morphLine +
       '</div>';
     gal.appendChild(card);
   }
