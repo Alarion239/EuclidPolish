@@ -193,8 +193,8 @@ the predicted and reference images).
   \bibliographystyle{plainnat}  
   \bibliography{references}
   \endgroup
-  \vspace{3mm}
   {\scriptsize
+   
    Conducted with mentorship from the Center for Astrophysics
    $|$ Harvard \& Smithsonian. Supported by the Harvard College
    Research Program (HCRP).\\[2pt]
@@ -217,15 +217,15 @@ the predicted and reference images).
   \block{Gravitational Lensing}{
     % Text and lens image side by side (plain minipages — a center
     % environment inside a tikzposter block misplaces the image).
-    \begin{minipage}[c]{0.35\linewidth}
+    %\begin{minipage}[c]{0.35\linewidth}
       A massive foreground galaxy bends a background source's light into
       arcs separated by the \emph{Einstein radius} $\theta_E$. Below the
       survey resolution the arcs blend into the lens light, causing the wide
       surveys to miss the systems that best constrain dark-matter halos.
-    \end{minipage}\hfill
-    \begin{minipage}[c]{0.6\linewidth}
+    %\end{minipage}\hfill
+    %\begin{minipage}[c]{0.6\linewidth}
       \includegraphics[width=\linewidth]{fig/poster/gravilensing.jpg}
-    \end{minipage}
+    %\end{minipage}
   }
 
  
@@ -241,18 +241,18 @@ the predicted and reference images).
     \end{minipage}\hfill
     \begin{minipage}[c]{0.48\linewidth}
       \centering
-      \framedimg{euclidcol}{fig/poster/result_euclid.png}\\[2pt]
+      \framedimg{euclidcol}{fig/poster/result_euclid.png}\\[4pt]
       {\textcolor{euclidcol}{Euclid VIS} (0.10$''$/pix)}
     \end{minipage}
     \par\vspace{4mm}
     \begin{minipage}[t]{0.48\linewidth}
       \centering
-      \framedimg{hubblecol}{fig/poster/result_hubble.png}\\[2pt]
+      \framedimg{hubblecol}{fig/poster/result_hubble.png}\\[4pt]
       {\textcolor{hubblecol}{Hubble WFPC2 F814W} (0.046$''$/pix)}
     \end{minipage}\hfill
     \begin{minipage}[t]{0.48\linewidth}
       \centering
-      \framedimg{srcol}{fig/poster/result_sr.png}\\[2pt]
+      \framedimg{srcol}{fig/poster/result_sr.png}\\[4pt]
       {\textcolor{srcol}{Super-resolved (ours)} (0.05$''$/pix)}
     \end{minipage}
   }
