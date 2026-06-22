@@ -119,6 +119,9 @@ def create_app() -> Flask:
                                  #  degrades gracefully when disconnected)
         "/config",               # universal job-config tab is local-first
         "/api/config",           # (persists to ~/.euclid_polish; no SSH)
+        "/evaluation",           # results gallery reads local eval_results/
+        "/api/evaluation/",      # (only .../sync needs SSH; it 400s when down)
+        "/eval-files/",          # serve already-pulled PNG/FITS offline
     )
 
     @app.before_request

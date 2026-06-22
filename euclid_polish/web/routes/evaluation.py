@@ -21,7 +21,9 @@ from typing import Any, Dict, List
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
+from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
+from euclid_polish.web.remote import STATE
 
 
 def _list_catalogs() -> List[Dict[str, Any]]:
@@ -154,6 +156,45 @@ def register(app):
             "rows": n,
             "path": out_csv,
             "rel":  os.path.relpath(out_csv, Config.EVAL_CATALOG_DIR),
+        })
+
+    @app.route("/api/evaluation/sync", methods=["POST"])
+    def api_evaluation_sync():
+        """Pull ``<data_dir>/eval_results`` down from FASRC into the gallery.
+
+        The checkpoint auto-mirror (``fasrc_mirror``) only syncs the ckpt
+        dir — eval-catalog runs land in ``<data_dir>/eval_results`` on the
+        cluster and otherwise never reach the local ``/evaluation`` page.
+        This is the one-shot rsync_pull, reusing the same ControlMaster
+        transport the checkpoint mirror uses, so the user never has to drop
+        to a terminal. ``--delete-after`` keeps local in lockstep with the
+        remote (drops runs deleted on the cluster) without leaving a partial
+        window mid-transfer.
+        """
+        if STATE.ssh is None or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        remote = cfg.data_dir.rstrip("/") + "/eval_results/"
+        local = Config.EVAL_RESULTS_DIR
+        os.makedirs(local, exist_ok=True)
+        try:
+            rc, out, err = STATE.ssh.rsync_pull(
+                remote, local,
+                extra_args=["--delete-after"],
+                timeout=600,
+            )
+        except Exception as e:  # noqa: BLE001 — surface any transport error to UI
+            return jsonify({"ok": False,
+                            "error": f"{type(e).__name__}: {e}"}), 500
+        if rc != 0:
+            return jsonify({"ok": False,
+                            "error": err.strip() or f"rsync exit {rc}"}), 500
+        runs = _list_runs()
+        return jsonify({
+            "ok":     True,
+            "stdout": out.strip()[-2000:],
+            "n_runs": len(runs),
+            "runs":   runs,
         })
 
     @app.route("/eval-files/<path:relpath>")

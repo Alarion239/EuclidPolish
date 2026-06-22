@@ -692,3 +692,41 @@ def test_cancel_endpoint_marks_job_cancelled(fake_remote, client):
     row = fake_remote["db"].get("77777")
     assert row["state"] == "CANCELLED"
     assert row["ended_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Evaluation results sync (eval_results/ is NOT covered by the ckpt mirror)
+# ---------------------------------------------------------------------------
+
+def test_evaluation_sync_pulls_results(fake_remote, client, tmp_path, monkeypatch):
+    """POST /api/evaluation/sync rsyncs <data_dir>/eval_results → local gallery."""
+    from euclid_polish.config import Config
+
+    # Seed a finished run under the fake remote's eval_results dir.
+    remote_run = fake_remote["data_dir"] / "eval_results" / "lenses"
+    (remote_run / "obj1").mkdir(parents=True)
+    (remote_run / "manifest.csv").write_text(
+        "id,ra,dec,ok\nobj1,1.0,2.0,True\n")
+    (remote_run / "obj1" / "eye.png").write_bytes(b"\x89PNGfake")
+
+    # Point the local gallery at an empty tmp dir.
+    local_eval = tmp_path / "local_eval"
+    monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(local_eval))
+
+    r = client.post("/api/evaluation/sync")
+    assert r.status_code == 200, r.get_json()
+    j = r.get_json()
+    assert j["ok"] is True
+    # Files landed locally where the gallery reads them.
+    assert (local_eval / "lenses" / "manifest.csv").is_file()
+    assert (local_eval / "lenses" / "obj1" / "eye.png").is_file()
+    # The response surfaces the now-visible runs so the UI can refresh.
+    assert j["n_runs"] == 1
+    assert any(run["name"] == "lenses" for run in j["runs"])
+
+
+def test_evaluation_sync_refuses_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(STATE, "ssh", None)
+    r = client.post("/api/evaluation/sync")
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False

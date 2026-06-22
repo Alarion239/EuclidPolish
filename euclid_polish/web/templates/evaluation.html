@@ -50,6 +50,8 @@
     <span class="chip active" data-regime="eye">eye</span>
     <span class="chip" data-regime="solar">solar</span>
   </div>
+  <button id="syncBtn" class="secondary" type="button"
+          title="rsync eval_results/ down from FASRC (the ckpt mirror doesn't cover it)">⬇ Sync from FASRC</button>
   <button id="reloadBtn" class="secondary" type="button">↻ Reload</button>
   <span id="runMsg" class="muted"></span>
 </div>
@@ -229,6 +231,32 @@
     }));
   $('reloadBtn').addEventListener('click', refreshRuns);
   $('runSelect').addEventListener('change', loadRun);
+
+  // Pull eval_results/ down from FASRC. The checkpoint auto-mirror doesn't
+  // cover eval-catalog runs, so without this the gallery stays empty after a
+  // cluster run finishes. On success we refresh the dropdown to the new runs.
+  $('syncBtn').addEventListener('click', async () => {
+    const btn = $('syncBtn'), msg = $('runMsg');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ syncing…';
+    msg.textContent = 'rsyncing eval_results/ from FASRC…';
+    try {
+      const r = await fetch('/api/evaluation/sync', { method: 'POST' });
+      const j = await r.json();
+      if (j.ok) {
+        msg.textContent = '✓ synced — ' + j.n_runs
+          + (j.n_runs === 1 ? ' run' : ' runs') + ' available';
+        await refreshRuns();
+      } else {
+        msg.textContent = '✗ ' + (j.error || 'sync failed')
+          + (r.status === 400 ? ' (connect to FASRC first)' : '');
+      }
+    } catch (e) {
+      msg.textContent = '✗ ' + e;
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
 
   // Catalog fetch.
   $('fetchCatBtn').addEventListener('click', async () => {
