@@ -51,6 +51,8 @@
   </div>
   <button id="syncBtn" class="secondary" type="button"
           title="rsync eval_results/ down from FASRC (the ckpt mirror doesn't cover it)">⬇ Sync from FASRC</button>
+  <button id="rerenderBtn" class="secondary" type="button"
+          title="re-render this run's PNGs locally from the FITS with the current plotting code">🎨 Re-render</button>
   <button id="reloadBtn" class="secondary" type="button">↻ Reload</button>
   <span id="runMsg" class="muted"></span>
 </div>
@@ -111,6 +113,7 @@
 
   let sortKey = 'grade';
   let regime = 'eye';
+  let cacheBust = 0;   // bumped on Re-render to bust browser image cache
 
   function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
   function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
@@ -171,7 +174,8 @@
     const base = '/eval-files/' + encodeURIComponent(run) + '/';
     gal.innerHTML = ok.map(r => {
       const sub = encodeURIComponent(r.out_subdir);
-      const img = base + sub + '/' + regime + '.png';
+      const img = base + sub + '/' + regime + '.png'
+                + (cacheBust ? '?t=' + cacheBust : '');
       const srFits = base + sub + '/SR.fits';
       const flux = num(r.flux_ratio_sr_over_lr);
       let morph = '';
@@ -236,6 +240,33 @@
     }));
   $('reloadBtn').addEventListener('click', refreshRuns);
   $('runSelect').addEventListener('change', loadRun);
+
+  // Re-render this run's PNGs locally from the FITS with the current plotting
+  // code (drops the cached PNGs server-side, then busts the browser cache).
+  $('rerenderBtn').addEventListener('click', async () => {
+    const run = $('runSelect').value;
+    const btn = $('rerenderBtn'), msg = $('runMsg');
+    if (!run) { msg.textContent = 'select a run first'; return; }
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ rendering…';
+    msg.textContent = 'rendering ' + run + ' from FITS…';
+    try {
+      const fd = new FormData(); fd.set('run', run);
+      const r = await fetch('/api/evaluation/rerender', { method: 'POST', body: fd });
+      const j = await r.json();
+      if (j.ok) {
+        cacheBust = Date.now();      // force browsers to refetch the new PNGs
+        await loadRun();
+        msg.textContent = '✓ re-rendered (' + j.removed + ' tiles)';
+      } else {
+        msg.textContent = '✗ ' + (j.error || 'rerender failed');
+      }
+    } catch (e) {
+      msg.textContent = '✗ ' + e;
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
 
   // Pull eval_results/ down from FASRC. The checkpoint auto-mirror doesn't
   // cover eval-catalog runs, so without this the gallery stays empty after a

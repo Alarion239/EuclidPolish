@@ -4,9 +4,13 @@
 Given a normalized ``id,ra,dec[,grade]`` catalog (see
 ``scripts/fetch_lens_catalog.py`` for the Euclid Q1 strong-lens catalog), this
 runs the model on a real 4-band Euclid cutout at every position and writes,
-per object, the band FITS + ``SR.fits`` + ``eye.png`` / ``solar.png`` renders
-plus a self-consistency residual, then aggregates a ``manifest.csv`` across the
-whole run.
+per object, the band FITS + ``SR.fits`` + ``original_stack.fits`` plus a
+flux-conservation metric, then aggregates a ``manifest.csv`` across the run.
+
+This is the *evaluation* half only — the expensive model inference. PNG
+rendering is deliberately NOT done here: the WebUI renders the eye/solar plots
+locally from the pulled FITS (``--render`` opts into cluster-side rendering),
+so changing the plotting code never requires re-running the cluster job.
 
 The per-object work is exactly the single-position WebUI inference path —
 :func:`euclid_polish.web.helpers.jobs_impl.reconstruct_cutout_at` is the shared
@@ -96,10 +100,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--max-n", type=int, default=0,
                    help="cap number of objects (0 = all)")
     p.add_argument("--asinh-scale", type=float, default=None,
-                   help="asinh stretch knee for the renders (default: "
-                        "Config.STRETCH_SCALE_E)")
-    p.add_argument("--no-render", action="store_true",
-                   help="skip the eye/solar PNG renders (FITS + metrics only)")
+                   help="asinh knee stored in the SR FITS header for the local "
+                        "renderer (default: Config.STRETCH_SCALE_E)")
+    p.add_argument("--render", action="store_true",
+                   help="also write eye/solar PNGs on the cluster. Off by "
+                        "default: rendering happens locally from the pulled "
+                        "FITS, so the cluster job only runs the model.")
     return p.parse_args(argv)
 
 
@@ -174,7 +180,7 @@ def main(argv=None) -> int:
                     os.path.join(out_dir, sub),
                     asinh_scale=args.asinh_scale,
                     checkpoint_dir=args.checkpoint,
-                    render=not args.no_render,
+                    render=args.render,
                 )
                 metrics = res["metrics"]
                 for k in _METRIC_KEYS:

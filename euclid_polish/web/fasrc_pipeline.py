@@ -733,8 +733,8 @@ class CatalogEvalStep(FASRCPipelineStep):
         nrb = int(params.get("num_res_blocks", 0) or 0)
         if nrb > 0:
             cmd += ["--num-res-blocks", str(nrb)]
-        if str(params.get("no_render", "")).lower() in ("1", "true", "on", "yes"):
-            cmd += ["--no-render"]
+        # PNG rendering happens locally from the pulled FITS; the cluster job
+        # only runs the model. (Opt in to cluster-side rendering with --render.)
         return cmd
 
 

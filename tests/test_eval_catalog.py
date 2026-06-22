@@ -94,7 +94,6 @@ class TestCatalogEvalStep:
             "run_name": "lensesA", "grade": "A", "cutout_size": 128,
             "max_n": 30, "asinh_scale": 100, "num_res_blocks": 32,
             "catalog": "data/eval_catalogs/lens_catalog/lenses.csv",
-            "no_render": "true",
         })
         assert argv[argv.index("--run-name") + 1] == "lensesA"
         assert argv[argv.index("--cutout-size") + 1] == "128"
@@ -102,7 +101,8 @@ class TestCatalogEvalStep:
         assert argv[argv.index("--max-n") + 1] == "30"
         assert argv[argv.index("--num-res-blocks") + 1] == "32"
         assert argv[argv.index("--catalog") + 1].endswith("lenses.csv")
-        assert "--no-render" in argv
+        # Rendering is local; the cluster job never gets a render flag.
+        assert "--no-render" not in argv and "--render" not in argv
 
 
 # --------------------------------------------------------------------------- #
@@ -191,6 +191,41 @@ class TestEvaluationRoutes:
 
     def test_eval_files_traversal_blocked(self, client):
         assert client.get("/eval-files/../../etc/passwd").status_code == 403
+
+    def test_render_on_demand_from_fits(self, client, tmp_path, monkeypatch):
+        # FASRC writes only FITS; the server renders the PNG locally on first
+        # request. Lay down SR.fits + original_stack.fits and confirm a missing
+        # eye.png is rendered and served.
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
+        os.makedirs(obj, exist_ok=True)
+        h = w = 16
+        sr = np.ones((4, 2 * h, 2 * w), dtype=np.float32)
+        sr[0, 12:20, 12:20] = 50.0
+        fits.PrimaryHDU(sr, header=fits.Header({"ASINH": 100.0})).writeto(
+            os.path.join(obj, "SR.fits"))
+        stack = np.ones((4, h, w), dtype=np.float32)
+        stack[0, 6:10, 6:10] = 50.0
+        fits.PrimaryHDU(stack).writeto(os.path.join(obj, "original_stack.fits"))
+
+        assert not os.path.isfile(os.path.join(obj, "eye.png"))
+        r = client.get("/eval-files/run1/lensA/eye.png")
+        assert r.status_code == 200 and r.mimetype == "image/png"
+        assert os.path.isfile(os.path.join(obj, "eye.png"))
+
+    def test_rerender_drops_cached_pngs(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
+        os.makedirs(obj, exist_ok=True)
+        with open(os.path.join(obj, "eye.png"), "wb") as f:
+            f.write(b"stale")
+        r = client.post("/api/evaluation/rerender", data={"run": "run1"})
+        assert r.status_code == 200 and r.get_json()["removed"] == 1
+        assert not os.path.isfile(os.path.join(obj, "eye.png"))
+
+    def test_rerender_rejects_traversal(self, client):
+        assert client.post("/api/evaluation/rerender",
+                           data={"run": "../etc"}).status_code == 400
 
     def test_fetch_catalog_endpoint(self, client, monkeypatch):
         # Stub the (network) fetch so the route is exercised offline.

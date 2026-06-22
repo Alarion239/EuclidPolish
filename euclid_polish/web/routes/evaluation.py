@@ -85,6 +85,53 @@ def _read_manifest(run_dir: str) -> List[Dict[str, Any]]:
     return rows
 
 
+#: Gallery PNG filename → plot_reconstruction rgb_mode. Rendering is done
+#: LOCALLY from the per-object FITS (FASRC only runs the model + writes FITS),
+#: so changing the plotting code is picked up by a re-render with no cluster
+#: round-trip.
+_REGIME_BY_PNG = {"eye.png": "eye", "solar.png": "calibrated"}
+
+
+def _render_object_png(obj_dir: str, png_name: str) -> str | None:
+    """Render an object's ``eye.png`` / ``solar.png`` from its FITS.
+
+    Reads ``original_stack.fits`` (4-band LR cube) + ``SR.fits`` (SR cube) in
+    ``obj_dir`` and runs the shared ``plot_reconstruction`` — the same renderer
+    the local inference page uses — writing the PNG next to the FITS. Returns
+    the PNG path, or ``None`` when the inputs are missing / the name isn't a
+    known regime.
+    """
+    rgb_mode = _REGIME_BY_PNG.get(os.path.basename(png_name).lower())
+    if rgb_mode is None:
+        return None
+    sr_fits = os.path.join(obj_dir, "SR.fits")
+    stack_fits = os.path.join(obj_dir, "original_stack.fits")
+    if not (os.path.isfile(sr_fits) and os.path.isfile(stack_fits)):
+        return None
+
+    # Heavy imports (astropy / TF-backed inference) deferred to first render.
+    import numpy as np
+    from astropy.io import fits
+    from euclid_polish.training.inference import plot_reconstruction
+
+    with fits.open(sr_fits) as h:
+        sr = np.asarray(h[0].data, dtype=np.float32)
+        asinh = float(h[0].header.get("ASINH", Config.STRETCH_SCALE_E))
+    with fits.open(stack_fits) as h:
+        stack = np.asarray(h[0].data, dtype=np.float32)   # (4, H, W) or (H, W)
+
+    lr_cube = np.moveaxis(stack, 0, -1) if stack.ndim == 3 else stack
+    lr_vis = lr_cube[..., 0] if lr_cube.ndim == 3 else lr_cube
+    sr_data = np.moveaxis(sr, 0, -1) if sr.ndim == 3 else sr
+    out_png = os.path.join(obj_dir, os.path.basename(png_name))
+    plot_reconstruction(
+        lr_vis, sr_data, hr_data=None, output_path=out_png,
+        lr_cube=lr_cube if lr_cube.ndim == 3 else None,
+        asinh_scale=asinh, rgb_mode=rgb_mode,
+    )
+    return out_png
+
+
 def _list_runs() -> List[Dict[str, Any]]:
     """List evaluation runs: sub-dirs of EVAL_RESULTS_DIR holding a manifest."""
     root = Config.EVAL_RESULTS_DIR
@@ -197,18 +244,57 @@ def register(app):
             "runs":   runs,
         })
 
+    @app.route("/api/evaluation/rerender", methods=["POST"])
+    def api_evaluation_rerender():
+        """Drop a run's cached eye/solar PNGs so they re-render from the FITS.
+
+        Rendering is local and lazy (see :func:`serve_eval_files`), so removing
+        the PNGs makes the next gallery view regenerate them with the current
+        plotting code — no cluster round-trip.
+        """
+        run = (request.form.get("run") or request.args.get("run") or "").strip()
+        if not run or os.sep in run or (os.altsep and os.altsep in run) \
+                or run in (".", ".."):
+            abort(400)
+        rd = os.path.join(Config.EVAL_RESULTS_DIR, run)
+        if not os.path.isdir(rd):
+            abort(404)
+        removed = 0
+        for dirpath, _dirs, files in os.walk(rd):
+            for fn in files:
+                if fn.lower() in ("eye.png", "solar.png"):
+                    try:
+                        os.remove(os.path.join(dirpath, fn))
+                        removed += 1
+                    except OSError:
+                        pass
+        return jsonify({"ok": True, "removed": removed})
+
     @app.route("/eval-files/<path:relpath>")
     def serve_eval_files(relpath: str):
-        """Serve PNG / FITS from data/eval_results/ (jailed against traversal)."""
+        """Serve PNG / FITS from data/eval_results/ (jailed against traversal).
+
+        Gallery PNGs are rendered locally on demand from the per-object FITS
+        (FASRC writes only FITS): a missing PNG — or any request with
+        ``?fresh=1`` — is (re-)rendered from ``SR.fits`` + ``original_stack.fits``
+        with the current plotting code, then served. So tweaking the renderer
+        is reflected by a re-render, never a cluster re-run.
+        """
         root = os.path.realpath(Config.EVAL_RESULTS_DIR)
         full = os.path.realpath(os.path.join(root, relpath))
         if not full.startswith(root + os.sep):
             abort(403)
-        if not os.path.isfile(full):
-            abort(404)
         lower = full.lower()
         if lower.endswith(".png"):
-            return send_file(full, mimetype="image/png")
+            fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+            if fresh or not os.path.isfile(full):
+                _render_object_png(os.path.dirname(full),
+                                   os.path.basename(full))
+            if not os.path.isfile(full):
+                abort(404)
+            return send_file(full, mimetype="image/png", max_age=0)
+        if not os.path.isfile(full):
+            abort(404)
         mt = ("application/fits" if lower.endswith(".fits")
               else "application/octet-stream")
         return send_file(full, mimetype=mt, as_attachment=True,
