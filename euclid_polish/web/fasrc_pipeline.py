@@ -367,6 +367,11 @@ def render_sbatch_body(
           fi
         fi
         mamba activate {shlex.quote(conda_env_path or cfg.conda_env_path)}
+        # ``module load`` puts the system (old) libstdc++ on LD_LIBRARY_PATH;
+        # prepend the activated env's lib so its newer libstdc++ wins —
+        # otherwise numpy/torch C-extensions fail with "GLIBCXX_3.4.xx not
+        # found by /lib64/libstdc++.so.6".
+        export LD_LIBRARY_PATH="${{CONDA_PREFIX}}/lib:${{LD_LIBRARY_PATH:-}}"
 
         echo "Python:  $(which python)"
         python -u {cmd_line}
