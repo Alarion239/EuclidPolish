@@ -140,8 +140,16 @@ class BaseVisualizer:
         colorbar_label: str = "Electrons",
         log_scale: bool | None = None,    # legacy — prefer ``stretch``
         cmap: str = "viridis",
+        colorbar_inset: bool = False,
     ) -> None:
         """Add an intensity panel.
+
+        ``colorbar_inset``: draw the colorbar as a slim inset to the RIGHT of
+        the image (like :meth:`add_rgb_scale_panel`'s temperature legend)
+        instead of letting matplotlib steal space from the axes. This keeps
+        the image filling its full grid cell, so a grayscale panel sits the
+        same on-screen size as a neighbouring colour (RGB) panel that has no
+        colorbar — used for the LR-vs-SR side-by-side cutout view.
 
         Parameters
         ----------
@@ -197,7 +205,13 @@ class BaseVisualizer:
         ax.set_title(title, fontsize=12)
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
-        plt.colorbar(im, ax=ax, label=cbar_label)
+        if colorbar_inset:
+            # Slim inset to the right — does NOT shrink the image axes, so the
+            # panel stays the same size as a colorbar-less RGB panel beside it.
+            cax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
+            self._fig.colorbar(im, cax=cax, label=cbar_label)
+        else:
+            plt.colorbar(im, ax=ax, label=cbar_label)
 
     def add_rgb_panel(
         self,

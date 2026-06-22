@@ -148,12 +148,14 @@ class TestReconstructCutoutAt:
             assert hdr["CSIZE"] == h
             assert "VIS" in hdr["BANDS"]
 
-        # Metrics dict always has the full key set (values may be None when the
-        # forward residual can't be computed without a PSF).
-        for k in ("residual_std_e", "residual_mae_e", "residual_rmse_e",
-                  "residual_max_abs_e", "residual_chi",
-                  "flux_ratio_fwd_over_lr"):
-            assert k in res["metrics"]
+        # Metrics: flux conservation only (no forward-model residual for real
+        # cutouts — the true PSF is unknown). SR is the fake ones(32²) cube, so
+        # Σ SR_VIS = 1024; the ratio is self-consistent with the totals.
+        m = res["metrics"]
+        assert set(m) == {"lr_total_e", "sr_total_e", "flux_ratio_sr_over_lr"}
+        assert m["sr_total_e"] == pytest.approx(2 * h * 2 * w)
+        assert m["flux_ratio_sr_over_lr"] == pytest.approx(
+            m["sr_total_e"] / m["lr_total_e"])
         assert res["png_paths"] == []   # render=False
 
 
@@ -221,8 +223,8 @@ class TestEvaluationRoutes:
         run_dir = os.path.join(Config.EVAL_RESULTS_DIR, "run1")
         os.makedirs(run_dir, exist_ok=True)
         with open(os.path.join(run_dir, "manifest.csv"), "w") as f:
-            f.write("id,ra,dec,grade,ok,error,out_subdir,residual_chi\n")
-            f.write("lensA,1,2,A,True,,lensA,1.5\n")
+            f.write("id,ra,dec,grade,ok,error,out_subdir,flux_ratio_sr_over_lr\n")
+            f.write("lensA,1,2,A,True,,lensA,1.02\n")
         r = client.get("/api/evaluation/runs?run=run1")
         assert r.status_code == 200
         rows = r.get_json()["rows"]

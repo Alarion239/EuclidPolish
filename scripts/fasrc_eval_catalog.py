@@ -46,15 +46,14 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.eval_catalog import read_eval_catalog
 from euclid_polish.observability.reporter import Reporter
 
-# Columns written to manifest.csv, in order. The residual_* / flux_ratio_*
-# keys come straight from reconstruct_cutout_at()'s metrics dict.
+# Columns written to manifest.csv, in order. These come straight from
+# reconstruct_cutout_at()'s metrics dict. There is no forward-model residual
+# for real cutouts (the true PSF is position-dependent and unknown); the only
+# PSF-independent pixel-level check is flux conservation.
 _METRIC_KEYS = (
-    "residual_std_e",
-    "residual_mae_e",
-    "residual_rmse_e",
-    "residual_max_abs_e",
-    "residual_chi",
-    "flux_ratio_fwd_over_lr",
+    "lr_total_e",
+    "sr_total_e",
+    "flux_ratio_sr_over_lr",
 )
 _MANIFEST_COLS = (
     ["id", "ra", "dec", "grade", "ok", "error", "out_subdir"]

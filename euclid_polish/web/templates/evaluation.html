@@ -40,9 +40,8 @@
   </div>
   <div class="toolbar-group">
     <span class="toolbar-label">Sort</span>
-    <span class="chip active" data-sort="residual_chi">self-consistency χ</span>
-    <span class="chip" data-sort="residual_std_e">residual σ</span>
-    <span class="chip" data-sort="grade">grade</span>
+    <span class="chip active" data-sort="grade">grade</span>
+    <span class="chip" data-sort="flux_ratio_sr_over_lr">flux Σ SR/LR</span>
     <span class="chip" data-sort="id">id</span>
   </div>
   <div class="toolbar-group">
@@ -57,11 +56,13 @@
 </div>
 
 <p class="eval-legend">
-  Each tile shows the colour render (LR&nbsp;→&nbsp;SR&nbsp;→ forward-model
-  residual). <b>χ</b> = residual scatter ÷ expected noise — near&nbsp;1 means the
-  SR is self-consistent with the observation;
-  <span class="metric-bad">≫&nbsp;1</span> flags over/under-reconstruction.
-  <b>flux fwd/LR</b> should sit near 1 (flux conservation). When a Zoobot run is
+  Each tile shows the colour render: dirty <b>LR&nbsp;VIS</b> beside the
+  super-resolved <b>SR</b> (same on-sky size), in linear and asinh stretch.
+  Real cutouts have no ground truth and the true Euclid PSF is
+  position-dependent and unknown, so there's no forward-model residual — the
+  one PSF-independent pixel check is <b>flux&nbsp;Σ&nbsp;SR/LR</b>, which should
+  sit near&nbsp;1 (the deconvolution shouldn't invent or destroy flux). The
+  quantitative morphology signal comes from Zoobot: when a Zoobot run is
   present, <b>morph&nbsp;Δ</b> shows how far morphology moved, and — for
   synthetic targets with HR — whether SR moved it <i>toward</i> the truth.
 </p>
@@ -108,15 +109,17 @@
     ? polishUI.escapeHtml : (s => String(s));
   const $ = (id) => document.getElementById(id);
 
-  let sortKey = 'residual_chi';
+  let sortKey = 'grade';
   let regime = 'eye';
 
   function num(x) { const v = parseFloat(x); return isNaN(v) ? null : v; }
   function fmt(x) { const v = num(x); return v == null ? '—' : v.toPrecision(3); }
-  function chiClass(v) {
+  // Flux ratio Σ SR/LR is best near 1; colour by distance from unity.
+  function fluxClass(v) {
     if (v == null || isNaN(v)) return '';
-    if (v < 2) return 'metric-good';
-    if (v < 5) return 'metric-warn';
+    const d = Math.abs(v - 1);
+    if (d < 0.1) return 'metric-good';
+    if (d < 0.3) return 'metric-warn';
     return 'metric-bad';
   }
   function gradeClass(g) {
@@ -149,8 +152,11 @@
     ok.sort((a, b) => {
       if (sortKey === 'grade' || sortKey === 'id')
         return String(a[sortKey]).localeCompare(String(b[sortKey]));
-      const av = num(a[sortKey]), bv = num(b[sortKey]);
+      let av = num(a[sortKey]), bv = num(b[sortKey]);
       if (av == null) return 1; if (bv == null) return -1;
+      if (sortKey === 'flux_ratio_sr_over_lr') {   // worst = furthest from 1
+        av = Math.abs(av - 1); bv = Math.abs(bv - 1);
+      }
       return bv - av;                    // numeric → worst (largest) first
     });
     const skipped = rows.length - ok.length;
@@ -167,7 +173,7 @@
       const sub = encodeURIComponent(r.out_subdir);
       const img = base + sub + '/' + regime + '.png';
       const srFits = base + sub + '/SR.fits';
-      const chi = num(r.residual_chi);
+      const flux = num(r.flux_ratio_sr_over_lr);
       let morph = '';
       if (r.morph) {
         const m = r.morph;
@@ -190,9 +196,8 @@
         +   '</a>'
         +   '<div class="meta">'
         +     '<b>' + esc(r.id) + '</b>' + gradeTag
-        +     '<br>χ: <span class="' + chiClass(chi) + '">' + fmt(r.residual_chi)
-        +       '</span> · σ: ' + fmt(r.residual_std_e) + ' e⁻'
-        +     '<br>flux fwd/LR: ' + fmt(r.flux_ratio_fwd_over_lr)
+        +     '<br>flux Σ SR/LR: <span class="' + fluxClass(flux) + '">'
+        +       fmt(r.flux_ratio_sr_over_lr) + '</span>'
         +       ' · <a href="' + srFits + '">⬇ SR.fits</a>'
         +     morph
         +   '</div>'

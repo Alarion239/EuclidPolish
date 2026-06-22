@@ -569,13 +569,21 @@ def plot_reconstruction(
             vis.save_figure(output_path)
             return
 
-        # Default 2 × {2, 3, or 4} layout. Dirty LR is always rendered
-        # in VIS-only grayscale: a 4-band colour composite is
-        # dominated by the much-noisier NISP channels and visually
-        # underplays the VIS plane that the model actually targets.
-        # SR is grayscale (model is VIS-only). Optional predicted-
-        # dirty + residual when the caller supplied the forward-
-        # modelled SR.
+        # Default 2 × 2 layout: Dirty LR | SR, in linear and asinh rows.
+        # Dirty LR is always rendered in VIS-only grayscale (a 4-band colour
+        # composite is dominated by the much-noisier NISP channels and
+        # visually underplays the VIS plane the model targets); SR renders in
+        # the chosen colour regime. The LR panel uses an inset colorbar so it
+        # does NOT shrink relative to the colorbar-less SR panel — LR and SR
+        # then sit the same on-screen size, which is what makes them pleasant
+        # to compare side by side.
+        #
+        # There is intentionally no "predicted LR" / forward-model residual
+        # column for real cutouts: those would forward-model SR through *our*
+        # committed VIS PSF, but the true Euclid PSF is position-dependent and
+        # unknown at an arbitrary (RA, Dec), so the residual measures the PSF
+        # mismatch rather than the reconstruction. (predicted_dirty / residual
+        # are still accepted for the synthetic / known-PSF callers.)
         has_predicted = predicted_dirty is not None
         has_residual  = residual is not None
         cols = 2 + int(has_predicted) + int(has_residual)
@@ -585,7 +593,7 @@ def plot_reconstruction(
         # Row 1 — linear.
         vis.add_scale_panel(lr_data, stretch="linear",
                             title_suffix="\nDirty (LR, VIS)",
-                            cmap="gray")
+                            cmap="gray", colorbar_inset=True)
         _add_sr_panel(vis, "linear")
         if has_predicted:
             vis.add_scale_panel(
@@ -604,7 +612,7 @@ def plot_reconstruction(
         vis.add_scale_panel(lr_data, stretch="asinh",
                             asinh_scale=shared_scale,
                             title_suffix="\nDirty (LR, VIS)",
-                            cmap="gray")
+                            cmap="gray", colorbar_inset=True)
         _add_sr_panel(vis, "asinh", temp_legend=True)
         if has_predicted:
             vis.add_scale_panel(

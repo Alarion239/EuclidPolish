@@ -10,7 +10,6 @@ from euclid_polish.euclid.psf_library import load_all_band_psfs
 from euclid_polish.sky.multiband_forward import MultiBandForward
 from euclid_polish.sky.tfrecord import read_multiband_skyimages
 from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.training.inference import _noise_floor_lr_std_e
 from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.inference import plot_reconstruction
 from euclid_polish.training.inference import reconstruct
@@ -330,38 +329,6 @@ def _forward_model_sr_residual(
     return predicted, residual
 
 
-def _cutout_residual_metrics(residual: Optional[np.ndarray]) -> Dict[str, Any]:
-    """Self-consistency metrics from the forward-model residual (electrons).
-
-    Real targets have no HR ground truth, so quality is judged by how well
-    ``forward(SR)`` reproduces the observed dirty LR. ``residual`` is
-    ``lr_vis - forward(SR)`` in electrons (see :func:`_forward_model_sr_residual`).
-    ``residual_chi`` normalises the residual scatter by the analytical
-    per-pixel noise floor — ≈1 means the reconstruction is self-consistent to
-    the noise; ≫1 flags over/under-reconstruction.
-    """
-    if residual is None:
-        return {
-            "residual_mean_e":    None,
-            "residual_std_e":     None,
-            "residual_mae_e":     None,
-            "residual_rmse_e":    None,
-            "residual_max_abs_e": None,
-            "residual_chi":       None,
-        }
-    finite = residual[np.isfinite(residual)].astype(np.float64)
-    std = float(np.std(finite))
-    floor = _noise_floor_lr_std_e()
-    return {
-        "residual_mean_e":    float(np.mean(finite)),
-        "residual_std_e":     std,
-        "residual_mae_e":     float(np.mean(np.abs(finite))),
-        "residual_rmse_e":    float(np.sqrt(np.mean(finite ** 2))),
-        "residual_max_abs_e": float(np.abs(finite).max()),
-        "residual_chi":       (std / floor) if floor > 0 else None,
-    }
-
-
 def reconstruct_cutout_at(
     model,
     ra: float,
@@ -480,23 +447,16 @@ def reconstruct_cutout_at(
         stack_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved stacked original → {stack_path}")
 
-    # ────────────────────────────────────────────────────────────────
-    # Self-consistency check: forward-model the SR and compare to the
-    # observed dirty LR. If the network is doing its job, applying the
-    # VIS forward chain (fftconvolve with empirical ePSF + 2× sum-rebin)
-    # to SR should produce something close to the actual dirty LR; the
-    # residual flags pixel-level over- or under-reconstruction.
-    # ────────────────────────────────────────────────────────────────
-    _tick(len(band_names) + 1, "forward-modelling SR for residual")
-    try:
-        predicted_dirty, residual = _forward_model_sr_residual(sr_data, lr_vis)
-        print(f"  ✓ residual stats: mean={residual.mean():.3g}, "
-              f"std={residual.std():.3g}, "
-              f"|max|={np.abs(residual).max():.3g}")
-    except Exception as e:
-        print(f"  residual computation skipped: {type(e).__name__}: {e}")
-        predicted_dirty = None
-        residual = None
+    # NOTE: there is deliberately NO forward-model self-consistency residual
+    # for real cutouts. That comparison would push SR back through *our*
+    # committed VIS PSF, but the true Euclid PSF is position-dependent and
+    # unknown at an arbitrary (RA, Dec) — so a "predicted LR" and its residual
+    # measure the PSF mismatch, not the reconstruction, and are misleading.
+    # The quantitative signal for real targets is the Zoobot morphology
+    # comparison; the only pixel-level check that survives an unknown PSF is
+    # flux conservation (total counts are invariant under a *normalised* PSF),
+    # computed directly below.
+    _tick(len(band_names) + 1, "rendering")
 
     # Save SR with the 2× magnified VIS WCS so it overlays the stacked
     # original on-sky (0.05″/pix vs 0.10″/pix). A 4-band SR cube is
@@ -537,23 +497,25 @@ def reconstruct_cutout_at(
                                 output_path=out_path, lr_cube=lr_cube,
                                 asinh_scale=asinh_scale,
                                 show_all_bands=show_all_bands,
-                                predicted_dirty=predicted_dirty,
-                                residual=residual,
                                 rgb_mode=mode)
             png_paths.append(out_path)
             print(f"  ✓ {out_path}")
     _tick(total, "saved outputs")
 
-    metrics = _cutout_residual_metrics(residual)
-    # Flux conservation: a faithful reconstruction, pushed back through the
-    # forward op, should preserve the observed VIS flux (ratio ≈ 1).
-    if predicted_dirty is not None:
-        lr_sum = float(np.sum(lr_vis))
-        metrics["flux_ratio_fwd_over_lr"] = (
-            float(np.sum(predicted_dirty)) / lr_sum if lr_sum != 0 else None
-        )
-    else:
-        metrics["flux_ratio_fwd_over_lr"] = None
+    # Flux conservation — the one pixel-level sanity check that doesn't depend
+    # on the (unknown, position-dependent) true PSF: a normalised PSF + sum-
+    # rebin conserves total counts, so Σ(forward(SR)) ≡ Σ(SR). We therefore
+    # compare Σ(SR_VIS) to Σ(LR_VIS) directly — ratio ≈ 1 means the
+    # deconvolution neither invented nor destroyed flux.
+    _sr = np.asarray(sr_data)
+    sr_vis = _sr[..., 0] if _sr.ndim == 3 else _sr
+    lr_sum = float(np.sum(lr_vis))
+    sr_sum = float(np.sum(sr_vis))
+    metrics = {
+        "lr_total_e":            lr_sum,
+        "sr_total_e":            sr_sum,
+        "flux_ratio_sr_over_lr": (sr_sum / lr_sum) if lr_sum != 0 else None,
+    }
 
     return {
         "out_dir":      out_dir,
@@ -634,7 +596,7 @@ def _job_reconstruct_euclid_cutout(
         "dec":          dec,
         "cutout_size":  cutout_size_vis_pixels,
         "bands":        res["bands"],
-        "residual_std": res["metrics"]["residual_std_e"],
+        "flux_ratio":   res["metrics"]["flux_ratio_sr_over_lr"],
     }
 
 
