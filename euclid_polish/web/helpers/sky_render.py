@@ -189,20 +189,25 @@ def _render_sky_record_png(subset: str, kind: str, band: str,
         )
         ax.set_xticks([]); ax.set_yticks([])
         if color_mode == "eye":
-            # Hue ↔ blackbody-temperature legend strip.
+            # Hue ↔ blackbody-temperature legend: slim VERTICAL colorbar
+            # to the RIGHT of the image (cool/orange at the bottom,
+            # hot/blue at the top), matching the reconstruction panels.
             strip, temps = planck_color_strip()
-            lax = ax.inset_axes([0.0, -0.085, 1.0, 0.03])
-            lax.imshow(strip, aspect="auto", origin="lower",
-                       extent=[0, len(temps) - 1, 0, 1])
+            strip_col = np.transpose(strip, (1, 0, 2))   # (1,n,3) → (n,1,3)
+            lax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
+            lax.imshow(strip_col, aspect="auto", origin="lower",
+                       extent=[0, 1, 0, len(temps) - 1])
             log_t = np.log(temps)
             ticks_k = [3000, 4000, 6000, 10000, 20000]
-            lax.set_xticks([
+            lax.set_yticks([
                 float(np.interp(np.log(t), log_t, np.arange(len(temps))))
                 for t in ticks_k
             ])
-            lax.set_xticklabels([f"{t // 1000}k" for t in ticks_k], fontsize=7)
-            lax.set_yticks([])
-            lax.set_xlabel("blackbody T (K)", fontsize=8, labelpad=1)
+            lax.set_yticklabels([f"{t // 1000}k" for t in ticks_k], fontsize=7)
+            lax.yaxis.tick_right()
+            lax.yaxis.set_label_position("right")
+            lax.set_xticks([])
+            lax.set_ylabel("blackbody T (K)", fontsize=8, labelpad=2)
         fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
