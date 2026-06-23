@@ -421,6 +421,35 @@ class TestZoobotMorphHelpers:
         assert "id," in text.splitlines()[0]
         assert "closer_to_ref" in text
 
+    def test_morphology_summary_pca_with_hr_truth(self, tmp_path):
+        # The PCA shift map folds the HR-truth vector into the projection for
+        # synthetic objects and renders a ★ anchor — exercise that branch end
+        # to end (predictions with a 'hr' view + has_hr/closer_to_ref manifest).
+        from euclid_polish.eval import zoobot_morph as zm
+
+        run = str(tmp_path / "run")
+        os.makedirs(run, exist_ok=True)
+        # group map: one synthetic (has HR) + one lens (no HR).
+        with open(os.path.join(run, "manifest.csv"), "w") as f:
+            f.write("id,grade,ok\nsyn0,synthetic,True\nlensA,A,True\n")
+        # 3-d feature vectors; syn0 after sits between before and hr.
+        with open(os.path.join(run, "zoobot_predictions.csv"), "w") as f:
+            f.write("id_str,feat_0,feat_1,feat_2\n")
+            f.write("syn0__before,0,0,0\n")
+            f.write("syn0__after,1,1,0\n")
+            f.write("syn0__hr,2,2,0\n")
+            f.write("lensA__before,0,1,1\n")
+            f.write("lensA__after,1,0,2\n")
+        with open(os.path.join(run, "morphology_manifest.csv"), "w") as f:
+            f.write("id,l2_before_after,pearson_before_after,mode,has_hr,"
+                    "closer_to_ref\n")
+            f.write("syn0,1.4,0.9,representation,True,True\n")
+            f.write("lensA,1.7,0.5,representation,False,\n")
+
+        out_png = str(tmp_path / "morph.png")
+        assert zm.render_morphology_summary(run, out_png) == out_png
+        assert os.path.isfile(out_png)
+
 
 class TestLensCatalogModule:
     def test_normalize_grade_filter(self, tmp_path):

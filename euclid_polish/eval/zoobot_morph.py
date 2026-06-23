@@ -300,12 +300,21 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
         if objs:
             Xb = np.array([view[o]["before"] for o in objs])
             Xa = np.array([view[o]["after"] for o in objs])
-            X = np.vstack([Xb, Xa]); mu = X.mean(0)
+            # HR ground truth exists only for synthetic objects; fold it into the
+            # PCA fit so the projection captures the LR→SR→HR geometry and the
+            # truth point lands on the same axes as the before/after points.
+            hr_objs = [o for o in objs if "hr" in view[o]]
+            Xhr = (np.array([view[o]["hr"] for o in hr_objs])
+                   if hr_objs else None)
+            X = np.vstack([Xb, Xa] + ([Xhr] if Xhr is not None else []))
+            mu = X.mean(0)
             _, S, Vt = np.linalg.svd(X - mu, full_matrices=False)
             P = Vt[:2]
             emb = {
                 "objs": objs,
                 "pb": (Xb - mu) @ P.T, "pa": (Xa - mu) @ P.T,
+                "hr_objs": hr_objs,
+                "phr": ((Xhr - mu) @ P.T) if Xhr is not None else None,
                 "var": (S ** 2 / (S ** 2).sum())[:2] * 100,
             }
 
@@ -348,7 +357,9 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
         p1.set_xlabel("Pearson r (before vs after)"); p1.set_ylabel("# objects")
         p1.set_title("Morphology preserved?\n(1 = identical)"); p1.legend(fontsize=9)
 
-    # Panel 2 — PCA shift map, after-points + arrows coloured by group.
+    # Panel 2 — PCA shift map: ○ before → ● after arrows coloured by group,
+    # plus a ★ HR-truth anchor (synthetic only) with a dotted after→truth tie so
+    # you can read whether SR moved each object *toward* the ground truth.
     if emb is not None:
         a = ax[k]; k += 1
         gcol = [_group_color(grade_of.get(o, "")) for o in emb["objs"]]
@@ -359,14 +370,39 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
             a.annotate("", xy=emb["pa"][i], xytext=emb["pb"][i],
                        arrowprops=dict(arrowstyle="->", color=gcol[i],
                                        alpha=.5, lw=1.1))
+        if emb.get("phr") is not None:
+            pos = {o: j for j, o in enumerate(emb["objs"])}
+            for j, o in enumerate(emb["hr_objs"]):
+                hcol = _group_color(grade_of.get(o, "synthetic"))
+                a.plot([emb["pa"][pos[o], 0], emb["phr"][j, 0]],
+                       [emb["pa"][pos[o], 1], emb["phr"][j, 1]],
+                       color=hcol, ls=":", lw=1.0, alpha=.6)
+            a.scatter(emb["phr"][:, 0], emb["phr"][:, 1],
+                      c=[_group_color(grade_of.get(o, "synthetic"))
+                         for o in emb["hr_objs"]],
+                      marker="*", s=150, edgecolors="k", linewidths=.4)
         a.set_xlabel(f"PC1 ({emb['var'][0]:.0f}% var)")
         a.set_ylabel(f"PC2 ({emb['var'][1]:.0f}% var)")
-        a.set_title("Shift in Zoobot feature space\n(○ before → ● after)")
-        if multi:
+        # Title carries the toward-truth tally (real metric is full-dim L2, read
+        # from the manifest's closer_to_ref column, not the 2-D projection).
+        hr_rows = [r for r in mani if str(r.get("has_hr", "")).lower() == "true"]
+        toward = sum(1 for r in hr_rows
+                     if str(r.get("closer_to_ref", "")).lower() == "true")
+        sub = (f"\nSR → HR truth for {toward}/{len(hr_rows)}"
+               if hr_rows else "")
+        a.set_title("Shift in Zoobot feature space\n(○ before → ● after"
+                    + (", ★ HR truth)" if emb.get("phr") is not None else ")")
+                    + sub)
+        if multi or emb.get("phr") is not None:
             import matplotlib.lines as mlines
-            a.legend(handles=[mlines.Line2D([], [], marker="o", ls="",
-                                            color=_group_color(g), label=g)
-                              for g in groups if g], fontsize=8, title="group")
+            handles = [mlines.Line2D([], [], marker="o", ls="",
+                                     color=_group_color(g), label=g)
+                       for g in groups if g]
+            if emb.get("phr") is not None:
+                handles.append(mlines.Line2D([], [], marker="*", ls="",
+                                             color="#444", markersize=11,
+                                             label="HR truth"))
+            a.legend(handles=handles, fontsize=8, title="group")
 
     # Panel 3 — example before|after.
     if example is not None:
