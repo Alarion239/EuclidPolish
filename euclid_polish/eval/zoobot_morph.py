@@ -233,6 +233,25 @@ def _read_predictions(pred_path: str):
     return ids, np.asarray(vecs, dtype=np.float64)
 
 
+#: Stable colour per analysis group (the manifest's ``grade`` column).
+GROUP_COLORS = {"A": "#2a5db0", "B": "#2e8b57", "C": "#b8860b",
+                "synthetic": "#b03a3a"}
+
+
+def _group_color(g) -> str:
+    return GROUP_COLORS.get(str(g), "#666666")
+
+
+def read_grade_map(run_dir: str) -> Dict[str, str]:
+    """``id → grade/group`` from a run's ``manifest.csv`` (empty if absent)."""
+    import csv
+    p = os.path.join(run_dir, "manifest.csv")
+    if not os.path.isfile(p):
+        return {}
+    return {r["id"]: (r.get("grade") or "")
+            for r in csv.DictReader(open(p)) if r.get("id")}
+
+
 def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     """Render a run-level before/after morphology summary PNG → ``out_png``.
 
@@ -264,6 +283,9 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     l2 = _col("l2_before_after")
     mode = mani[0].get("mode", "?")
     by_id = {r["id"]: r for r in mani}
+    grade_of = read_grade_map(run_dir)
+    groups = [g for g in dict.fromkeys(grade_of.get(r["id"], "") for r in mani)]
+    multi = len([g for g in groups if g]) > 1
 
     # Optional PCA embedding from the raw predictions.
     pred_path = os.path.join(run_dir, "zoobot_predictions.csv")
@@ -302,31 +324,49 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     ax = list(axes[0])
     k = 0
 
-    # Panel 1 — similarity distribution.
-    axes_hist = ax[k]; k += 1
-    axes_hist.hist(pear, bins=min(15, max(4, len(pear))), color="#2a5db0", alpha=.85)
-    axes_hist.axvline(pear.mean(), color="#b03a3a", ls="--",
-                      label=f"mean = {pear.mean():.3f}")
-    axes_hist.set_xlabel("Pearson r (before vs after)")
-    axes_hist.set_ylabel("# objects")
-    axes_hist.set_title("Morphology preserved?\n(1 = identical)")
-    axes_hist.legend(fontsize=9)
+    # Panel 1 — Pearson similarity (per-group strip when grouped, else hist).
+    p1 = ax[k]; k += 1
+    if multi:
+        gs = [g for g in groups if g]
+        for xi, g in enumerate(gs):
+            ys = [float(r["pearson_before_after"]) for r in mani
+                  if grade_of.get(r["id"], "") == g
+                  and r.get("pearson_before_after") not in (None, "")]
+            if not ys:
+                continue
+            xj = np.random.default_rng(0).normal(xi, 0.06, len(ys))
+            p1.scatter(xj, ys, color=_group_color(g), s=26, alpha=.8)
+            p1.scatter([xi], [np.mean(ys)], color=_group_color(g), s=240,
+                       marker="_", lw=2.5)
+        p1.set_xticks(range(len(gs))); p1.set_xticklabels(gs)
+        p1.set_xlabel("group"); p1.set_ylabel("Pearson r (before vs after)")
+        p1.set_title("Morphology preserved by group\n(1 = identical; bar = mean)")
+    else:
+        p1.hist(pear, bins=min(15, max(4, len(pear))), color="#2a5db0", alpha=.85)
+        p1.axvline(pear.mean(), color="#b03a3a", ls="--",
+                   label=f"mean = {pear.mean():.3f}")
+        p1.set_xlabel("Pearson r (before vs after)"); p1.set_ylabel("# objects")
+        p1.set_title("Morphology preserved?\n(1 = identical)"); p1.legend(fontsize=9)
 
-    # Panel 2 — PCA shift map.
+    # Panel 2 — PCA shift map, after-points + arrows coloured by group.
     if emb is not None:
         a = ax[k]; k += 1
+        gcol = [_group_color(grade_of.get(o, "")) for o in emb["objs"]]
         a.scatter(emb["pb"][:, 0], emb["pb"][:, 1], facecolors="none",
-                  edgecolors="#888", s=55, label="before (LR)")
-        a.scatter(emb["pa"][:, 0], emb["pa"][:, 1], color="#2a5db0", s=32,
-                  label="after (SR)")
+                  edgecolors="#bbb", s=48)
+        a.scatter(emb["pa"][:, 0], emb["pa"][:, 1], c=gcol, s=34)
         for i in range(len(emb["objs"])):
             a.annotate("", xy=emb["pa"][i], xytext=emb["pb"][i],
-                       arrowprops=dict(arrowstyle="->", color="#b03a3a",
-                                       alpha=.55, lw=1.1))
+                       arrowprops=dict(arrowstyle="->", color=gcol[i],
+                                       alpha=.5, lw=1.1))
         a.set_xlabel(f"PC1 ({emb['var'][0]:.0f}% var)")
         a.set_ylabel(f"PC2 ({emb['var'][1]:.0f}% var)")
-        a.set_title("Shift in Zoobot feature space\n(arrow = LR → SR)")
-        a.legend(fontsize=9)
+        a.set_title("Shift in Zoobot feature space\n(○ before → ● after)")
+        if multi:
+            import matplotlib.lines as mlines
+            a.legend(handles=[mlines.Line2D([], [], marker="o", ls="",
+                                            color=_group_color(g), label=g)
+                              for g in groups if g], fontsize=8, title="group")
 
     # Panel 3 — example before|after.
     if example is not None:
@@ -343,6 +383,140 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
 
     fig.suptitle(f"Zoobot morphology before/after — {os.path.basename(run_dir)} "
                  f"({len(mani)} objects, {mode} mode)", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+    fig.savefig(out_png, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    return out_png
+
+
+def _group_triptych(run_dir: str, obj_id: str, asinh: float, h: int = 110):
+    """Build an RGB uint8 strip [LR | SR | HR?] for one object, panels resized
+    to ``h`` px tall with thin separators. Returns the array or ``None``."""
+    import numpy as np
+    from PIL import Image
+    parts = []
+    for fn in ("original_stack.fits", "SR.fits", "HR.fits"):
+        p = os.path.join(run_dir, obj_id, fn)
+        if not os.path.isfile(p):
+            continue
+        u8 = stretch_to_uint8(load_vis_plane(p), asinh_scale=asinh)
+        im = Image.fromarray(u8, mode="L").convert("RGB").resize((h, h),
+                                                                 Image.BILINEAR)
+        parts.append(np.asarray(im, dtype=np.uint8))
+    if not parts:
+        return None
+    sep = np.full((h, 3, 3), 255, np.uint8)
+    out = parts[0]
+    for pt in parts[1:]:
+        out = np.concatenate([out, sep, pt], axis=1)
+    return out
+
+
+def render_transformation_summary(run_dir: str, out_png: str) -> Optional[str]:
+    """Render a run-level SR-transformation summary PNG → ``out_png``.
+
+    Panels: (1) SR-vs-HR recovery for the synthetic group (PSNR LR↔HR vs SR↔HR;
+    points above the diagonal mean SR is closer to truth); (2) flux ratio
+    Σ SR/LR per group; (3) an example transformation strip per group
+    (LR | SR for lenses, LR | SR | HR for synthetic). Returns ``out_png`` or
+    ``None`` if there's no manifest.
+    """
+    import csv
+
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    mani_path = os.path.join(run_dir, "manifest.csv")
+    if not os.path.isfile(mani_path):
+        return None
+    rows = [r for r in csv.DictReader(open(mani_path))
+            if r.get("id") and str(r.get("ok", "")).lower() == "true"]
+    if not rows:
+        return None
+    groups = [g for g in dict.fromkeys(r.get("grade", "") for r in rows)]
+
+    def _f(r, k):
+        v = r.get(k, "")
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    fig, ax = plt.subplots(1, 3, figsize=(18, 5.4))
+
+    # Panel 1 — SR-vs-HR recovery (synthetic only).
+    syn = [r for r in rows if r.get("grade") == "synthetic"
+           and _f(r, "psnr_lr_hr") is not None and _f(r, "psnr_sr_hr") is not None]
+    if syn:
+        x = [_f(r, "psnr_lr_hr") for r in syn]
+        y = [_f(r, "psnr_sr_hr") for r in syn]
+        ax[0].scatter(x, y, color=_group_color("synthetic"), s=40)
+        lo, hi = min(x + y), max(x + y)
+        ax[0].plot([lo, hi], [lo, hi], color="#888", ls="--", label="no change")
+        ax[0].set_xlabel("PSNR  LR vs HR (dB)")
+        ax[0].set_ylabel("PSNR  SR vs HR (dB)")
+        win = sum(b > a for a, b in zip(x, y))
+        ax[0].set_title(f"SR vs HR recovery (synthetic)\nabove line = closer to "
+                        f"truth: {win}/{len(syn)}")
+        ax[0].legend(fontsize=9)
+    else:
+        ax[0].axis("off")
+        ax[0].text(0.5, 0.5, "No synthetic group\n(SR-vs-HR needs HR truth)",
+                   ha="center", va="center", color="#888")
+
+    # Panel 2 — flux ratio Σ SR/LR per group.
+    gs = [g for g in groups if g]
+    for xi, g in enumerate(gs):
+        ys = [_f(r, "flux_ratio_sr_over_lr") for r in rows
+              if r.get("grade") == g and _f(r, "flux_ratio_sr_over_lr") is not None]
+        if not ys:
+            continue
+        xj = np.random.default_rng(0).normal(xi, 0.06, len(ys))
+        ax[1].scatter(xj, ys, color=_group_color(g), s=26, alpha=.8)
+        ax[1].scatter([xi], [np.mean(ys)], color=_group_color(g), s=240,
+                      marker="_", lw=2.5)
+    ax[1].axhline(1.0, color="#888", ls=":", lw=1)
+    ax[1].set_xticks(range(len(gs))); ax[1].set_xticklabels(gs)
+    ax[1].set_xlabel("group"); ax[1].set_ylabel("flux Σ SR / Σ LR")
+    ax[1].set_title("Flux conservation by group\n(1 = conserved; bar = mean)")
+
+    # Panel 3 — example transformation strip per group.
+    from euclid_polish.config import Config
+    asinh = float(Config.STRETCH_SCALE_E)
+    strips, labels = [], []
+    width = 0
+    for g in (gs or [""]):
+        ex = next((r for r in rows if r.get("grade") == g), None)
+        if ex is None:
+            continue
+        strip = _group_triptych(run_dir, ex["out_subdir"], asinh)
+        if strip is None:
+            continue
+        strips.append(strip); labels.append(g or "?")
+        width = max(width, strip.shape[1])
+    if strips:
+        padded = [np.pad(s, ((0, 0), (0, width - s.shape[1]), (0, 0)),
+                         constant_values=255) for s in strips]
+        gap = np.full((6, width, 3), 255, np.uint8)
+        stacked = padded[0]
+        ytick = [padded[0].shape[0] / 2]
+        ycur = padded[0].shape[0]
+        for s in padded[1:]:
+            stacked = np.concatenate([stacked, gap, s], axis=0)
+            ytick.append(ycur + gap.shape[0] + s.shape[0] / 2)
+            ycur += gap.shape[0] + s.shape[0]
+        ax[2].imshow(stacked)
+        ax[2].set_yticks(ytick); ax[2].set_yticklabels(labels)
+        ax[2].set_xticks([])
+        ax[2].set_title("Example transform per group\nLR | SR | HR", fontsize=11)
+    else:
+        ax[2].axis("off")
+
+    fig.suptitle(f"How the data transformed — {os.path.basename(run_dir)}",
+                 fontsize=13)
     fig.tight_layout()
     os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
     fig.savefig(out_png, dpi=130, bbox_inches="tight")

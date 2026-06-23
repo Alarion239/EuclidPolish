@@ -41,6 +41,61 @@ def default_catalog_path() -> str:
     return os.path.join(Config.EVAL_CATALOG_DIR, "lens_catalog", "lenses.csv")
 
 
+def load_eval_model(checkpoint: Optional[str] = None,
+                    num_res_blocks: Optional[int] = None):
+    """Load the local SR model once (raises if no checkpoint). Shared by the
+    single-catalog and grouped runners."""
+    import tensorflow as tf
+    from euclid_polish.training.inference import load_model_from_checkpoint
+
+    checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
+    num_res_blocks = num_res_blocks or Config.DEFAULT_NUM_RES_BLOCKS
+    if not tf.train.latest_checkpoint(checkpoint):
+        raise FileNotFoundError(f"no checkpoint in {checkpoint}")
+    return load_model_from_checkpoint(
+        checkpoint, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
+        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
+    )
+
+
+def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
+                        asinh_scale: Optional[float], checkpoint: str,
+                        grade: Optional[str] = None, render: bool = False,
+                        log: Optional[Callable[[str], None]] = None
+                        ) -> Dict[str, Any]:
+    """Reconstruct one catalog object → write its FITS, return a manifest row.
+
+    ``obj`` is an ``{id, ra, dec, grade}`` dict (from read_eval_catalog).
+    ``grade`` overrides ``obj['grade']`` when given (used to tag the group).
+    A failure is captured in the row's ``error`` (never raised) so one bad
+    object can't kill a run.
+    """
+    from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at
+
+    emit = log or (lambda m: None)
+    obj_id = obj["id"]
+    sub = _safe_id(obj_id)
+    rec: Dict[str, Any] = {
+        "id": obj_id, "ra": obj["ra"], "dec": obj["dec"],
+        "grade": grade if grade is not None else (obj.get("grade") or ""),
+        "ok": False, "error": "", "out_subdir": sub,
+    }
+    rec.update({k: "" for k in _METRIC_KEYS})
+    try:
+        res = reconstruct_cutout_at(
+            model, obj["ra"], obj["dec"], cutout_size,
+            os.path.join(out_dir, sub),
+            asinh_scale=asinh_scale, checkpoint_dir=checkpoint, render=render)
+        for k in _METRIC_KEYS:
+            rec[k] = res["metrics"].get(k)
+        rec["ok"] = True
+    except Exception as e:  # noqa: BLE001 — one bad object must not kill the run
+        rec["error"] = f"{type(e).__name__}: {e}"
+        emit(f"  ! {obj_id} skipped: {rec['error']}")
+        traceback.print_exc()
+    return rec
+
+
 def run_catalog_eval(
     *,
     out_dir: str,
@@ -68,13 +123,7 @@ def run_catalog_eval(
         if on_progress is not None:
             on_progress(done, total, label)
 
-    # Heavy imports (TF) deferred so importing this module stays cheap.
-    import tensorflow as tf
-    from euclid_polish.training.inference import load_model_from_checkpoint
-    from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at
-
     checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
-    num_res_blocks = num_res_blocks or Config.DEFAULT_NUM_RES_BLOCKS
     catalog = catalog_path or default_catalog_path()
 
     if not os.path.isfile(catalog):
@@ -93,13 +142,8 @@ def run_catalog_eval(
         return {"out_dir": out_dir, "n": 0, "n_ok": 0, "n_skip": 0,
                 "manifest": None}
 
-    if not tf.train.latest_checkpoint(checkpoint):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint}")
     _emit(f"loading model from {checkpoint}")
-    model = load_model_from_checkpoint(
-        checkpoint, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
-        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-    )
+    model = load_eval_model(checkpoint, num_res_blocks)
 
     os.makedirs(out_dir, exist_ok=True)
     manifest_path = os.path.join(out_dir, "manifest.csv")
@@ -108,34 +152,14 @@ def run_catalog_eval(
         writer = csv.DictWriter(fmani, fieldnames=_MANIFEST_COLS)
         writer.writeheader()
         for i, row in enumerate(rows):
-            obj_id = row["id"]
-            sub = _safe_id(obj_id)
-            _tick(i, n, f"{obj_id} ({i + 1}/{n})")
-            _emit(f"[{i + 1}/{n}] {obj_id}  ra={row['ra']:.5f} "
+            _tick(i, n, f"{row['id']} ({i + 1}/{n})")
+            _emit(f"[{i + 1}/{n}] {row['id']}  ra={row['ra']:.5f} "
                   f"dec={row['dec']:.5f}")
-            rec: Dict[str, Any] = {
-                "id": obj_id, "ra": row["ra"], "dec": row["dec"],
-                "grade": row["grade"] or "", "ok": False, "error": "",
-                "out_subdir": sub,
-            }
-            rec.update({k: "" for k in _METRIC_KEYS})
-            try:
-                res = reconstruct_cutout_at(
-                    model, row["ra"], row["dec"], cutout_size,
-                    os.path.join(out_dir, sub),
-                    asinh_scale=asinh_scale, checkpoint_dir=checkpoint,
-                    render=render,
-                )
-                for k in _METRIC_KEYS:
-                    rec[k] = res["metrics"].get(k)
-                rec["ok"] = True
-                n_ok += 1
-            except Exception as e:  # noqa: BLE001 — one bad object must not kill the run
-                msg = f"{type(e).__name__}: {e}"
-                rec["error"] = msg
-                n_skip += 1
-                _emit(f"  ! skipped: {msg}")
-                traceback.print_exc()
+            rec = eval_catalog_object(
+                model, row, out_dir, cutout_size=cutout_size,
+                asinh_scale=asinh_scale, checkpoint=checkpoint,
+                render=render, log=_emit)
+            n_ok, n_skip = (n_ok + 1, n_skip) if rec["ok"] else (n_ok, n_skip + 1)
             writer.writerow(rec)
             fmani.flush()
 

@@ -102,9 +102,18 @@
 
 {# Run-level Zoobot morphology summary — only shown when the selected run has
    been scored (morphology_manifest.csv present). #}
+<details id="transformPanel" class="card" style="grid-column:1/-1; display:none;" open>
+  <summary><b>How the data transformed</b>
+    <span class="muted">— SR-vs-HR recovery, flux by group, example strips</span>
+    <button id="transformReplot" class="secondary" type="button"
+            style="margin-left:10px;">↻ re-plot</button></summary>
+  <img id="transformImg" alt="transformation summary"
+       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
+</details>
+
 <details id="morphPanel" class="card" style="grid-column:1/-1; display:none;" open>
   <summary><b>Morphology summary</b>
-    <span class="muted">— Zoobot before/after across this run</span>
+    <span class="muted">— Zoobot before/after across this run (coloured by group)</span>
     <button id="morphReplot" class="secondary" type="button"
             style="margin-left:10px;">↻ re-plot</button></summary>
   <img id="morphImg" alt="morphology summary"
@@ -160,10 +169,30 @@
   <span id="fetchCatMsg" class="muted" style="margin-left:8px;"></span>
 </section>
 
-{# Local jobs: both run on this machine (the SR model in-process, Zoobot in its
-   own torch env) with a live progress bar + log below. No cluster needed. #}
+{# Local jobs: everything runs on this machine (the SR model in-process, Zoobot
+   in its own torch env) with a live progress bar + log below. No cluster. #}
 <section class="card" style="grid-column: 1 / -1;">
-  <h3>Run evaluation <span class="muted" style="font-weight:normal;">— SR model over a catalog, locally</span></h3>
+  <h3>① Prepare grouped analysis
+    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + N synthetic (with HR), one run</span></h3>
+  <div class="form-row">
+    <label>Run name
+      <input type="text" id="gpRun" value="analysis-1" pattern="[A-Za-z0-9._-]+"></label>
+    <label>N per group
+      <input type="number" id="gpN" value="10" min="1" max="500"></label>
+    <label>Cutout size (VIS px)
+      <input type="number" id="gpCutout" value="{{ default_cutout }}" min="32" max="4096" step="32"></label>
+    <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;">
+      <input type="checkbox" id="gpSynth" checked> include synthetic</label>
+  </div>
+  <div style="margin-top:10px;">
+    <button id="runGroupedBtn" type="button">▶ Prepare</button>
+    <span class="hint" style="margin-left:8px;">A/B/C = real lens cutouts (LR+SR);
+      synthetic = validation triptychs (LR+SR+HR). Then ② Run Zoobot, ③ view the plots.</span>
+  </div>
+</section>
+
+<section class="card" style="grid-column: 1 / -1;">
+  <h3>Run single grade <span class="muted" style="font-weight:normal;">— one catalog grade, locally</span></h3>
   <div class="form-row">
     <label>Run name
       <input type="text" id="evRun" value="lenses-A" pattern="[A-Za-z0-9._-]+"></label>
@@ -246,24 +275,31 @@
     return ({A: 'tag-ok', B: 'tag-warn', C: 'tag-warn'})[g] || 'tag';
   }
 
-  // Show the morphology summary for a run when it's been scored; hide otherwise.
-  function updateMorph(run, fresh) {
-    const panel = $('morphPanel'), img = $('morphImg');
+  // Show a run-level summary image when available; hide the panel otherwise.
+  function updateSummary(panelId, imgId, endpoint, run, fresh) {
+    const panel = $(panelId), img = $(imgId);
     if (!run) { panel.style.display = 'none'; return; }
-    const url = '/api/evaluation/morphology?run=' + encodeURIComponent(run)
+    const url = endpoint + '?run=' + encodeURIComponent(run)
               + (fresh ? '&fresh=1&t=' + Date.now() : '');
     img.onload = () => { panel.style.display = ''; };
-    img.onerror = () => { panel.style.display = 'none'; };  // no morphology yet
+    img.onerror = () => { panel.style.display = 'none'; };
     img.src = url;
   }
+  const updateMorph = (run, fresh) =>
+    updateSummary('morphPanel', 'morphImg', '/api/evaluation/morphology', run, fresh);
+  const updateTransform = (run, fresh) =>
+    updateSummary('transformPanel', 'transformImg', '/api/evaluation/transformation', run, fresh);
   $('morphReplot').addEventListener('click',
     () => updateMorph($('runSelect').value, true));
+  $('transformReplot').addEventListener('click',
+    () => updateTransform($('runSelect').value, true));
 
   async function loadRun() {
     const run = $('runSelect').value;
     const gal = $('gallery');
     const msg = $('runMsg');
     updateMorph(run, false);
+    updateTransform(run, false);
     if (!run) {
       gal.innerHTML = '<div class="eval-empty">No run selected.</div>';
       msg.textContent = ''; return;
@@ -418,6 +454,17 @@
     } catch (e) { $('runMsg').textContent = '✗ ' + e; }
     finally { btn.disabled = false; btn.textContent = label; }
   }
+
+  $('runGroupedBtn').addEventListener('click', () => {
+    const fd = new FormData();
+    fd.set('run_name', $('gpRun').value);
+    fd.set('n', $('gpN').value);
+    fd.set('cutout_size', $('gpCutout').value);
+    fd.set('synthetic', $('gpSynth').checked ? '1' : '0');
+    startJob('/api/evaluation/run-grouped', fd,
+             'Grouped: ' + $('gpRun').value, $('runGroupedBtn'),
+             () => { $('zbRun').value = $('gpRun').value; refreshRuns(); });
+  });
 
   $('runEvalBtn').addEventListener('click', () => {
     const fd = new FormData();

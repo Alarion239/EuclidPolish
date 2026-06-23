@@ -256,6 +256,36 @@ def register(app):
         job_id = JOB_REGISTRY.spawn(f"eval: {run}", _run)
         return jsonify({"ok": True, "job_id": job_id})
 
+    @app.route("/api/evaluation/run-grouped", methods=["POST"])
+    def api_evaluation_run_grouped():
+        """Prepare the unified grouped dataset LOCALLY (A/B/C + synthetic).
+
+        One in-process background job: N lens cutouts per grade + N synthetic
+        validation triptychs → one run dir with a single grouped manifest.
+        """
+        f = request.form
+        run = (f.get("run_name") or "analysis").strip() or "analysis"
+        if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
+            return jsonify({"ok": False, "error": "bad run name"}), 400
+        try:
+            n = int(f.get("n", 5) or 5)
+            cutout = int(f.get("cutout_size", 256) or 256)
+        except ValueError:
+            return jsonify({"ok": False, "error": "n / cutout must be ints"}), 400
+        include_synth = str(f.get("synthetic", "1")).lower() in ("1", "true", "on", "yes")
+        out_dir = os.path.join(Config.EVAL_RESULTS_DIR, run)
+
+        from euclid_polish.eval import grouped_runner
+
+        def _run(cap):
+            return grouped_runner.run_grouped_analysis(
+                out_dir=out_dir, n=n, cutout_size=cutout,
+                include_synthetic=include_synth,
+                on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
+                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
+        job_id = JOB_REGISTRY.spawn(f"grouped: {run}", _run)
+        return jsonify({"ok": True, "job_id": job_id})
+
     @app.route("/api/evaluation/run-zoobot", methods=["POST"])
     def api_evaluation_run_zoobot():
         """Score Zoobot morphology for a run LOCALLY (CPU) as a background job.
@@ -414,6 +444,28 @@ def register(app):
         if fresh or not os.path.isfile(out_png):
             from euclid_polish.eval import zoobot_morph
             if zoobot_morph.render_morphology_summary(run_dir, out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/api/evaluation/transformation")
+    def api_evaluation_transformation():
+        """Render + serve the run-level SR-transformation summary PNG.
+
+        404 when the run has no ``manifest.csv``. Cached to
+        ``<run>/transformation_summary.png``; ``?fresh=1`` re-renders.
+        """
+        run = (request.args.get("run") or "").strip()
+        if not run or os.sep in run or (os.altsep and os.altsep in run) \
+                or run in (".", ".."):
+            abort(400)
+        run_dir = os.path.abspath(os.path.join(Config.EVAL_RESULTS_DIR, run))
+        if not os.path.isfile(os.path.join(run_dir, "manifest.csv")):
+            abort(404)
+        out_png = os.path.join(run_dir, "transformation_summary.png")
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            from euclid_polish.eval import zoobot_morph
+            if zoobot_morph.render_transformation_summary(run_dir, out_png) is None:
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

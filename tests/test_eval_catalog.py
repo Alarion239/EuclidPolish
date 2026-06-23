@@ -195,6 +195,33 @@ class TestEvaluationRoutes:
     def test_eval_files_traversal_blocked(self, client):
         assert client.get("/eval-files/../../etc/passwd").status_code == 403
 
+    def test_run_grouped_spawns_job(self, client, tmp_path, monkeypatch):
+        from euclid_polish.eval import grouped_runner
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
+                            lambda **k: {"n": 0})
+        r = client.post("/api/evaluation/run-grouped",
+                        data={"run_name": "a1", "n": "3", "cutout_size": "128"})
+        assert r.status_code == 200 and r.get_json()["job_id"]
+        assert client.post("/api/evaluation/run-grouped",
+                           data={"run_name": "../x"}).status_code == 400
+
+    def test_transformation_404_then_renders(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        run = os.path.join(Config.EVAL_RESULTS_DIR, "run1")
+        os.makedirs(run, exist_ok=True)
+        assert client.get("/api/evaluation/transformation?run=run1").status_code == 404
+        assert client.get("/api/evaluation/transformation?run=../e").status_code == 400
+        with open(os.path.join(run, "manifest.csv"), "w") as f:
+            f.write("id,ra,dec,grade,ok,error,out_subdir,lr_total_e,sr_total_e,"
+                    "flux_ratio_sr_over_lr,psnr_lr_hr,psnr_sr_hr\n")
+            for g in ("A", "B", "C"):
+                f.write(f"{g}1,1,2,{g},True,,{g}1,1e6,1e6,1.0,,\n")
+            f.write("s1,,,synthetic,True,,s1,1e6,1e6,0.9,80,95\n")
+        r = client.get("/api/evaluation/transformation?run=run1")
+        assert r.status_code == 200 and r.mimetype == "image/png"
+        assert os.path.isfile(os.path.join(run, "transformation_summary.png"))
+
     def test_morphology_404_without_manifest(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
