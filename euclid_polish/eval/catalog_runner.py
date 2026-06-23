@@ -25,10 +25,12 @@ from euclid_polish.euclid.eval_catalog import read_eval_catalog
 
 # Per-object metric keys (from reconstruct_cutout_at) + the manifest columns.
 _METRIC_KEYS = ("lr_total_e", "sr_total_e", "flux_ratio_sr_over_lr")
-_MANIFEST_COLS = (
+MANIFEST_COLS = (
     ["id", "ra", "dec", "grade", "ok", "error", "out_subdir"]
     + list(_METRIC_KEYS)
+    + ["psnr_lr_hr", "psnr_sr_hr"]
 )
+_MANIFEST_COLS = MANIFEST_COLS
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -37,8 +39,188 @@ def _safe_id(obj_id: str) -> str:
     return s or "obj"
 
 
+def object_output_dir(out_dir: str, obj_id: str) -> str:
+    return os.path.join(out_dir, _safe_id(obj_id))
+
+
+def _base_manifest_row(obj, grade: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
+        "grade": grade if grade is not None else (obj.get("grade") or ""),
+        "ok": False, "error": "", "out_subdir": _safe_id(obj["id"]),
+        **{k: "" for k in _METRIC_KEYS},
+    }
+
+
+def can_reuse_eval_object(obj_dir: str) -> bool:
+    """True when an object already has the real-lens evaluation FITS outputs."""
+    needed = ("original_stack.fits", "SR.fits")
+    return all(
+        os.path.isfile(os.path.join(obj_dir, name))
+        and os.path.getsize(os.path.join(obj_dir, name)) > 0
+        for name in needed
+    )
+
+
+def _vis_plane(arr):
+    import numpy as np
+
+    data = np.asarray(arr)
+    if data.ndim == 3:
+        if data.shape[0] == Config.NUM_LR_CHANNELS:
+            return data[0]
+        if data.shape[-1] == Config.NUM_LR_CHANNELS:
+            return data[..., 0]
+        return data[0]
+    return data
+
+
+def reuse_catalog_object(obj, out_dir: str, *, grade: Optional[str] = None,
+                         log: Optional[Callable[[str], None]] = None
+                         ) -> Dict[str, Any]:
+    """Build a manifest row from existing LR/SR FITS without downloading."""
+    import numpy as np
+    from astropy.io import fits
+
+    emit = log or (lambda m: None)
+    rec = _base_manifest_row(obj, grade=grade)
+    obj_dir = object_output_dir(out_dir, obj["id"])
+    try:
+        with fits.open(os.path.join(obj_dir, "original_stack.fits")) as hdul:
+            lr_vis = _vis_plane(hdul[0].data)
+        with fits.open(os.path.join(obj_dir, "SR.fits")) as hdul:
+            sr_vis = _vis_plane(hdul[0].data)
+        lr_sum = float(np.sum(lr_vis))
+        sr_sum = float(np.sum(sr_vis))
+        rec.update({
+            "ok": True,
+            "lr_total_e": lr_sum,
+            "sr_total_e": sr_sum,
+            "flux_ratio_sr_over_lr": (sr_sum / lr_sum) if lr_sum else "",
+        })
+        emit(f"  ↻ {obj['id']}: reusing existing LR/SR FITS")
+    except Exception as e:  # noqa: BLE001 — keep batch semantics
+        rec["error"] = f"{type(e).__name__}: {e}"
+        emit(f"  ! {obj['id']} cache unusable: {rec['error']}")
+    return rec
+
+
 def default_catalog_path() -> str:
     return os.path.join(Config.EVAL_CATALOG_DIR, "lens_catalog", "lenses.csv")
+
+
+def center_crop(arr, size: int):
+    """Center-crop the trailing two (spatial) axes of ``arr`` to ``size``×``size``.
+
+    Works for 2-D planes and channel-first cubes ``(C, H, W)`` alike. Centering
+    on the array's central pixel means an even source cropped to an even ``size``
+    stays even, while ``size`` is otherwise honored exactly; the crop is a no-op
+    when both spatial dims are already ≤ ``size``.
+    """
+    import numpy as np
+
+    a = np.asarray(arr)
+    h, w = a.shape[-2], a.shape[-1]
+    if h <= size and w <= size:
+        return a
+    sy = max(0, (h - size) // 2)
+    sx = max(0, (w - size) // 2)
+    return a[..., sy:sy + size, sx:sx + size]
+
+
+def crop_object_fits(obj_dir: str, vis_size: int, *,
+                     log: Optional[Callable[[str], None]] = None) -> bool:
+    """Center-crop an object's LR/SR FITS in place to ``vis_size`` VIS pixels.
+
+    ``original_stack.fits`` lives on the VIS (LR) grid and is cropped to
+    ``vis_size``; ``SR.fits`` is on the 2× HR grid and is cropped to
+    ``2*vis_size``. Idempotent — already-small files are left untouched — so the
+    same object can be re-cropped across reruns without shrinking further.
+    Returns ``True`` if any file was rewritten.
+    """
+    import numpy as np
+    from astropy.io import fits
+
+    emit = log or (lambda m: None)
+    changed = False
+    for name, size in (("original_stack.fits", vis_size),
+                       ("SR.fits", 2 * vis_size)):
+        path = os.path.join(obj_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with fits.open(path) as hdul:
+            data = np.asarray(hdul[0].data)
+            header = hdul[0].header
+        cropped = center_crop(data, size)
+        if cropped.shape == data.shape:
+            continue
+        fits.PrimaryHDU(np.ascontiguousarray(cropped), header=header).writeto(
+            path, overwrite=True, output_verify="silentfix")
+        changed = True
+    if changed:
+        emit(f"  ✂ {os.path.basename(obj_dir)}: cropped to {vis_size}px VIS")
+    return changed
+
+
+def seed_object_from_cache(source_dir: str, out_dir: str, obj_id: str) -> bool:
+    """Copy an object's cached LR/SR FITS from ``source_dir`` into ``out_dir``.
+
+    Lets a fresh run reuse already-downloaded cutouts (e.g. crop them to a new
+    size) without re-fetching from the archive. No-op when ``source_dir`` lacks
+    the object or the destination already has it; returns ``True`` if it copied.
+    """
+    import shutil
+
+    src_dir = object_output_dir(source_dir, obj_id)
+    dst_dir = object_output_dir(out_dir, obj_id)
+    if os.path.abspath(src_dir) == os.path.abspath(dst_dir):
+        return False
+    if can_reuse_eval_object(dst_dir) or not can_reuse_eval_object(src_dir):
+        return False
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in ("original_stack.fits", "SR.fits"):
+        src = os.path.join(src_dir, name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(dst_dir, name))
+    return True
+
+
+def write_manifest_upsert(
+    manifest_path: str,
+    rows: List[Dict[str, Any]],
+    fieldnames=MANIFEST_COLS,
+) -> None:
+    """Write ``rows`` into a shared manifest, preserving unrelated objects."""
+    existing: List[Dict[str, Any]] = []
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, newline="") as f:
+            existing = list(csv.DictReader(f))
+
+    order: List[str] = []
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for row in existing + rows:
+        obj_id = str(row.get("id", ""))
+        if not obj_id:
+            continue
+        if obj_id not in by_id:
+            order.append(obj_id)
+        merged = dict(by_id.get(obj_id, {}))
+        merged.update(row)
+        by_id[obj_id] = merged
+
+    cols = list(fieldnames)
+    for row in by_id.values():
+        for key in row:
+            if key not in cols:
+                cols.append(key)
+
+    os.makedirs(os.path.dirname(manifest_path) or ".", exist_ok=True)
+    with open(manifest_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
+        for obj_id in order:
+            row = by_id[obj_id]
+            writer.writerow({key: row.get(key, "") for key in cols})
 
 
 def load_eval_model(checkpoint: Optional[str] = None,
@@ -70,21 +252,17 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     A failure is captured in the row's ``error`` (never raised) so one bad
     object can't kill a run.
     """
-    from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at
-
     emit = log or (lambda m: None)
     obj_id = obj["id"]
-    sub = _safe_id(obj_id)
-    rec: Dict[str, Any] = {
-        "id": obj_id, "ra": obj["ra"], "dec": obj["dec"],
-        "grade": grade if grade is not None else (obj.get("grade") or ""),
-        "ok": False, "error": "", "out_subdir": sub,
-    }
-    rec.update({k: "" for k in _METRIC_KEYS})
+    rec = _base_manifest_row(obj, grade=grade)
+    if can_reuse_eval_object(object_output_dir(out_dir, obj_id)):
+        return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
     try:
+        from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at
+
         res = reconstruct_cutout_at(
             model, obj["ra"], obj["dec"], cutout_size,
-            os.path.join(out_dir, sub),
+            object_output_dir(out_dir, obj_id),
             asinh_scale=asinh_scale, checkpoint_dir=checkpoint, render=render)
         for k in _METRIC_KEYS:
             rec[k] = res["metrics"].get(k)
@@ -119,6 +297,10 @@ def run_catalog_eval(
     def _emit(msg: str) -> None:
         (log or print)(msg)
 
+    if on_progress is None:                     # local/CLI run → visible bar
+        from euclid_polish.eval.progress import tqdm_progress
+        on_progress = tqdm_progress("catalog")
+
     def _tick(done: int, total: int, label: str = "") -> None:
         if on_progress is not None:
             on_progress(done, total, label)
@@ -142,26 +324,32 @@ def run_catalog_eval(
         return {"out_dir": out_dir, "n": 0, "n_ok": 0, "n_skip": 0,
                 "manifest": None}
 
-    _emit(f"loading model from {checkpoint}")
-    model = load_eval_model(checkpoint, num_res_blocks)
-
     os.makedirs(out_dir, exist_ok=True)
+    needs_model = any(
+        not can_reuse_eval_object(object_output_dir(out_dir, row["id"]))
+        for row in rows
+    )
+    model = None
+    if needs_model:
+        _emit(f"loading model from {checkpoint}")
+        model = load_eval_model(checkpoint, num_res_blocks)
+    else:
+        _emit("all catalog outputs already present — reusing cached FITS")
+
     manifest_path = os.path.join(out_dir, "manifest.csv")
     n_ok = n_skip = 0
-    with open(manifest_path, "w", newline="") as fmani:
-        writer = csv.DictWriter(fmani, fieldnames=_MANIFEST_COLS)
-        writer.writeheader()
-        for i, row in enumerate(rows):
-            _tick(i, n, f"{row['id']} ({i + 1}/{n})")
-            _emit(f"[{i + 1}/{n}] {row['id']}  ra={row['ra']:.5f} "
-                  f"dec={row['dec']:.5f}")
-            rec = eval_catalog_object(
-                model, row, out_dir, cutout_size=cutout_size,
-                asinh_scale=asinh_scale, checkpoint=checkpoint,
-                render=render, log=_emit)
-            n_ok, n_skip = (n_ok + 1, n_skip) if rec["ok"] else (n_ok, n_skip + 1)
-            writer.writerow(rec)
-            fmani.flush()
+    out_rows: List[Dict[str, Any]] = []
+    for i, row in enumerate(rows):
+        _tick(i, n, f"{row['id']} ({i + 1}/{n})")
+        _emit(f"[{i + 1}/{n}] {row['id']}  ra={row['ra']:.5f} "
+              f"dec={row['dec']:.5f}")
+        rec = eval_catalog_object(
+            model, row, out_dir, cutout_size=cutout_size,
+            asinh_scale=asinh_scale, checkpoint=checkpoint,
+            render=render, log=_emit)
+        n_ok, n_skip = (n_ok + 1, n_skip) if rec["ok"] else (n_ok, n_skip + 1)
+        out_rows.append(rec)
+        write_manifest_upsert(manifest_path, out_rows, _MANIFEST_COLS)
 
     _tick(n, n, "done")
     _emit(f"\n✓ done: {n_ok} ok, {n_skip} skipped → {manifest_path}")

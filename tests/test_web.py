@@ -797,6 +797,35 @@ def test_api_sky_totals_returns_json(client):
     assert set(body.keys()) >= {"clean_train", "clean_validate", "dirty_train", "dirty_validate"}
 
 
+def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
+    from euclid_polish.web import fasrc_fetcher
+    from euclid_polish.web.routes import views as views_mod
+
+    pulled = []
+
+    def fake_fetch(remote_path, **kwargs):
+        pulled.append(remote_path)
+        return fasrc_fetcher.FetchResult(ok=True, size_bytes=12)
+
+    monkeypatch.setattr(views_mod._fasrc_fetcher, "fetch_one_file", fake_fetch)
+
+    r = client.post("/api/sky/sync")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert any(p.endswith("/sources_validate.csv") for p in pulled)
+    assert not any(p.endswith("/sources_train.csv") for p in pulled)
+    assert body["files"]["sources_validate"]["ok"] is True
+
+    pulled.clear()
+    r = client.post("/api/sky/sync", data={"include_train": "1"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert any(p.endswith("/sources_validate.csv") for p in pulled)
+    assert any(p.endswith("/sources_train.csv") for p in pulled)
+    assert body["files"]["sources_train"]["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # /hst-pairs (HST Catalog) — same viewer as /sky over FASRC-cached records
 # ---------------------------------------------------------------------------

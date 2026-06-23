@@ -43,13 +43,20 @@ def _psnr(a, b) -> Optional[float]:
     return float(20.0 * np.log10(float(Config.PSNR_PEAK_E) / rmse))
 
 
-def select_central_source(sources, want_type: str, *, field: int, m: int):
-    """Most-central source of ``want_type`` whose m×m box fits in a ``field``-px
-    grid (>= m/2 from every edge), or ``None``. Distance to (field/2, field/2)."""
+def select_central_source(
+    sources, want_type: str, *, field: int, m: int, prefer_bright: bool = False
+):
+    """Pick a fittable source of ``want_type`` in a ``field``-px grid.
+
+    By default this preserves the original behavior: choose the source nearest
+    the field center. For ``syn-gal`` we can instead prefer high VIS flux so the
+    selected galaxy is visible above the noise floor, with centrality as the
+    tie-breaker.
+    """
     half = m / 2.0
     c = field / 2.0
     best = None
-    best_d = None
+    best_key = None
     for s in sources:
         if s.get("type") != want_type:
             continue
@@ -57,8 +64,16 @@ def select_central_source(sources, want_type: str, *, field: int, m: int):
         if x < half or x > field - half or y < half or y > field - half:
             continue
         d = (x - c) ** 2 + (y - c) ** 2
-        if best_d is None or d < best_d:
-            best, best_d = s, d
+        if prefer_bright:
+            try:
+                flux = float(s.get("flux_vis_e", 0.0))
+            except (TypeError, ValueError):
+                flux = 0.0
+            key = (-flux, d)
+        else:
+            key = (d,)
+        if best_key is None or key < best_key:
+            best, best_key = s, key
     return best
 
 
@@ -83,6 +98,7 @@ def run_synthetic_eval(
     asinh_scale: Optional[float] = None,
     stamp_m: int = 64,
     seed: int = 0,
+    unique_fields: bool = True,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
@@ -101,6 +117,9 @@ def run_synthetic_eval(
     from euclid_polish.eval.catalog_runner import load_eval_model
 
     def _emit(m): (log or print)(m)
+    if on_progress is None:                     # local/CLI run → visible bar
+        from euclid_polish.eval.progress import tqdm_progress
+        on_progress = tqdm_progress("synthetic")
     def _tick(i, total, lbl=""):
         if on_progress: on_progress(i, total, lbl)
 
@@ -148,9 +167,11 @@ def run_synthetic_eval(
     for grade, stype in _SUBGROUPS:
         taken = 0
         for idx in order:
-            if idx in used or taken >= n:
+            if taken >= n or (unique_fields and idx in used):
                 continue
-            pick = select_central_source(by_field[idx], stype, field=field, m=m)
+            pick = select_central_source(
+                by_field[idx], stype, field=field, m=m,
+                prefer_bright=(grade == "syn-gal"))
             if pick is None:
                 continue
             plan.append((idx, grade, pick))

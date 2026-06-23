@@ -160,6 +160,9 @@ def register(app):
             targets[f"{kind}_validate"] = f"{remote_dir}/{kind}_validate.tfrecord"
             if include_train:
                 targets[f"{kind}_train"] = f"{remote_dir}/{kind}_train.tfrecord"
+        targets["sources_validate"] = f"{remote_dir}/sources_validate.csv"
+        if include_train:
+            targets["sources_train"] = f"{remote_dir}/sources_train.csv"
         max_bytes = 5 * 1024 * 1024 * 1024
         results: Dict[str, Dict[str, Any]] = {}
         any_ok = False

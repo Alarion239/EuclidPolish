@@ -13,7 +13,7 @@ logged and skipped rather than aborting the run.
 
 Usage::
 
-    python scripts/eval_catalog.py --run-name lenses-A --grade A --max-n 20
+    python scripts/eval_catalog.py --grade A --max-n 20
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="normalized id,ra,dec[,grade] catalog CSV (default: "
                         "the lens catalog under Config.EVAL_CATALOG_DIR)")
     p.add_argument("--out", default=None,
-                   help="output dir (default: Config.EVAL_RESULTS_DIR/<run-name>)")
+                   help="output dir (default: Config.EVAL_RESULTS_DIR)")
     p.add_argument("--run-name", default="run",
-                   help="run sub-directory under Config.EVAL_RESULTS_DIR")
+                   help="deprecated; evaluation now accumulates in Config.EVAL_RESULTS_DIR")
     p.add_argument("--checkpoint", default=Config.DEFAULT_CHECKPOINT_DIR)
     p.add_argument("--num-res-blocks", type=int,
                    default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -56,7 +56,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
-    out_dir = args.out or os.path.join(Config.EVAL_RESULTS_DIR, args.run_name)
+    out_dir = args.out or Config.EVAL_RESULTS_DIR
     catalog_runner.run_catalog_eval(
         out_dir=out_dir,
         catalog_path=args.catalog,

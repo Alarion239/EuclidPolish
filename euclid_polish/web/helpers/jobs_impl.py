@@ -376,15 +376,19 @@ def reconstruct_cutout_at(
     bands_info: Dict[str, Dict[str, Any]] = {}
     vis_header = None
     for k, band_name in enumerate(band_names):
-        _tick(k, f"downloading {band_name} cutout")
+        _tick(k, f"loading {band_name} cutout")
         band = Config.get_band(band_name)
         outf = os.path.join(out_dir, f"{band_name}.fits")
-        ok, err = fetch_cutout_at(
-            ra=ra, dec=dec, band_name=band_name, output_file=outf,
-            cutout_size_vis_pixels=cutout_size_vis_pixels,
-        )
-        if not ok:
-            raise RuntimeError(f"{band_name}: {err}")
+        if os.path.isfile(outf) and os.path.getsize(outf) > 0:
+            print(f"  {band_name}: reusing cached cutout → {outf}")
+        else:
+            _tick(k, f"downloading {band_name} cutout")
+            ok, err = fetch_cutout_at(
+                ra=ra, dec=dec, band_name=band_name, output_file=outf,
+                cutout_size_vis_pixels=cutout_size_vis_pixels,
+            )
+            if not ok:
+                raise RuntimeError(f"{band_name}: {err}")
         with fits.open(outf) as hdul:
             arr = hdul[0].data.astype(np.float32)
             header = hdul[0].header

@@ -29,7 +29,7 @@ Two model modes:
 Usage (in the EuclidPolishZoobot env; ``auto`` picks CUDA on a GPU node)::
 
     conda run -n EuclidPolishZoobot python scripts/zoobot_morphology.py \
-        --run-dir data/eval_results/lenses
+        --run-dir data/eval_results
 """
 
 from __future__ import annotations
@@ -57,11 +57,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--run-dir", default=None,
                    help="eval run directory (per-object SR.fits / "
-                        "original_stack.fits). Default: "
-                        "Config.EVAL_RESULTS_DIR/<run-name>")
+                        "original_stack.fits). Default: Config.EVAL_RESULTS_DIR")
     p.add_argument("--run-name", default="lenses",
-                   help="run sub-directory under Config.EVAL_RESULTS_DIR when "
-                        "--run-dir is not given")
+                   help="deprecated; ignored unless --run-dir is omitted in older callers")
     p.add_argument("--model-name",
                    default="hf_hub:mwalmsley/zoobot-encoder-convnext_nano",
                    help="HuggingFace Zoobot encoder (representation mode)")
@@ -159,8 +157,7 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
     reporter = Reporter.from_env()
 
-    run_dir = args.run_dir or os.path.join(
-        Config.EVAL_RESULTS_DIR, args.run_name)
+    run_dir = args.run_dir or Config.EVAL_RESULTS_DIR
     asinh_scale = args.asinh_scale or Config.STRETCH_SCALE_E
 
     objects = zm.discover_objects(run_dir)

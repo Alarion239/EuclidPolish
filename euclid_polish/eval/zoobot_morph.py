@@ -252,6 +252,122 @@ def read_grade_map(run_dir: str) -> Dict[str, str]:
             for r in csv.DictReader(open(p)) if r.get("id")}
 
 
+def _pad3(coords: np.ndarray) -> np.ndarray:
+    """Return coordinates with exactly three columns, padding missing axes."""
+    if coords.ndim != 2:
+        coords = np.zeros((0, 3), dtype=np.float64)
+    if coords.shape[1] >= 3:
+        return coords[:, :3]
+    return np.pad(coords, ((0, 0), (0, 3 - coords.shape[1])), mode="constant")
+
+
+def _pca3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
+    Xc = X - X.mean(0)
+    _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    P = Vt[:min(3, Vt.shape[0])]
+    coords = _pad3(Xc @ P.T)
+    denom = float((S ** 2).sum())
+    var = ((S ** 2 / denom)[:3] * 100.0).tolist() if denom > 0 else []
+    return coords, (var + [0.0, 0.0, 0.0])[:3]
+
+
+def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
+    if len(X) == 0:
+        return np.zeros((0, 3), dtype=np.float64), [0.0, 0.0, 0.0]
+    diff = X[:, None, :] - X[None, :, :]
+    d2 = np.sum(diff * diff, axis=2)
+    n = d2.shape[0]
+    J = np.eye(n) - np.ones((n, n)) / n
+    B = -0.5 * J @ d2 @ J
+    vals, vecs = np.linalg.eigh(B)
+    order = np.argsort(vals)[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+    pos = np.maximum(vals[:3], 0.0)
+    coords = _pad3(vecs[:, :3] * np.sqrt(pos))
+    total = float(np.maximum(vals, 0.0).sum())
+    var = (pos / total * 100.0).tolist() if total > 0 else [0.0, 0.0, 0.0]
+    return coords, (var + [0.0, 0.0, 0.0])[:3]
+
+
+def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
+    """Build JSON-ready 3-D PCA and classical-MDS embeddings for a Zoobot run.
+
+    The input is ``zoobot_predictions.csv``. Each row is a view vector named
+    ``<object-id>__before``, ``<object-id>__after`` or ``<object-id>__hr``.
+    PCA and MDS are fit over every available view vector so before/after/HR
+    points share one coordinate system per method.
+    """
+    pred_path = os.path.join(run_dir, "zoobot_predictions.csv")
+    if not os.path.isfile(pred_path):
+        return None
+
+    ids, X = _read_predictions(pred_path)
+    if len(ids) == 0 or X.size == 0:
+        return None
+
+    grade_of = read_grade_map(run_dir)
+    view_rank = {"before": 0, "after": 1, "hr": 2}
+    rows = []
+    for idx, raw in enumerate(ids):
+        obj, sep, view = raw.rpartition("__")
+        if not sep:
+            obj, view = raw, "vector"
+        group = grade_of.get(obj, "")
+        rows.append({
+            "key": raw,
+            "id": obj,
+            "view": view,
+            "group": group,
+            "color": _group_color(group),
+            "_idx": idx,
+        })
+    rows.sort(key=lambda r: (r["id"], view_rank.get(r["view"], 99), r["view"]))
+    order = [r["_idx"] for r in rows]
+    X = X[order]
+
+    points = [{k: v for k, v in r.items() if k != "_idx"} for r in rows]
+    keyset = {p["key"] for p in points}
+    object_views: Dict[str, set[str]] = {}
+    for p in points:
+        object_views.setdefault(p["id"], set()).add(p["view"])
+    edges = []
+    for obj in sorted(object_views):
+        if f"{obj}__before" in keyset and f"{obj}__after" in keyset:
+            edges.append({
+                "from": f"{obj}__before",
+                "to": f"{obj}__after",
+                "kind": "before-after",
+            })
+        if f"{obj}__after" in keyset and f"{obj}__hr" in keyset:
+            edges.append({
+                "from": f"{obj}__after",
+                "to": f"{obj}__hr",
+                "kind": "after-hr",
+            })
+
+    def _method_payload(coords: np.ndarray, variance: List[float]):
+        out = []
+        for point, xyz in zip(points, coords):
+            p = dict(point)
+            p["xyz"] = [float(v) for v in xyz]
+            out.append(p)
+        return {"points": out, "variance_pct": [float(v) for v in variance]}
+
+    pca, pca_var = _pca3(X)
+    mds, mds_var = _classical_mds3(X)
+    return {
+        "run": os.path.basename(run_dir),
+        "count": len(points),
+        "points": points,
+        "edges": edges,
+        "embeddings": {
+            "pca": _method_payload(pca, pca_var),
+            "mds": _method_payload(mds, mds_var),
+        },
+    }
+
+
 def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     """Render a run-level before/after morphology summary PNG → ``out_png``.
 
@@ -287,7 +403,7 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     groups = [g for g in dict.fromkeys(grade_of.get(r["id"], "") for r in mani)]
     multi = len([g for g in groups if g]) > 1
 
-    # Optional PCA embedding from the raw predictions.
+    # Optional 2-D embeddings from the raw predictions.
     pred_path = os.path.join(run_dir, "zoobot_predictions.csv")
     emb = None
     if os.path.isfile(pred_path):
@@ -307,15 +423,26 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
             Xhr = (np.array([view[o]["hr"] for o in hr_objs])
                    if hr_objs else None)
             X = np.vstack([Xb, Xa] + ([Xhr] if Xhr is not None else []))
-            mu = X.mean(0)
-            _, S, Vt = np.linalg.svd(X - mu, full_matrices=False)
-            P = Vt[:2]
+            n_obj = len(objs)
+
+            def _split_coords(coords):
+                coords = coords[:, :2]
+                out = {
+                    "pb": coords[:n_obj],
+                    "pa": coords[n_obj:2 * n_obj],
+                    "phr": None,
+                }
+                if Xhr is not None:
+                    out["phr"] = coords[2 * n_obj:]
+                return out
+
+            pca_coords, pca_var = _pca3(X)
+            mds_coords, mds_var = _classical_mds3(X)
             emb = {
                 "objs": objs,
-                "pb": (Xb - mu) @ P.T, "pa": (Xa - mu) @ P.T,
                 "hr_objs": hr_objs,
-                "phr": ((Xhr - mu) @ P.T) if Xhr is not None else None,
-                "var": (S ** 2 / (S ** 2).sum())[:2] * 100,
+                "pca": {**_split_coords(pca_coords), "var": pca_var[:2]},
+                "mds": {**_split_coords(mds_coords), "var": mds_var[:2]},
             }
 
     # An example: the most-changed object whose before/after PNGs exist.
@@ -328,7 +455,7 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
             example = (oid, bp, ap)
             break
 
-    ncols = 1 + int(emb is not None) + int(example is not None)
+    ncols = 1 + (2 * int(emb is not None)) + int(example is not None)
     fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 5.2), squeeze=False)
     ax = list(axes[0])
     k = 0
@@ -357,32 +484,28 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
         p1.set_xlabel("Pearson r (before vs after)"); p1.set_ylabel("# objects")
         p1.set_title("Morphology preserved?\n(1 = identical)"); p1.legend(fontsize=9)
 
-    # Panel 2 — PCA shift map: ○ before → ● after arrows coloured by group,
-    # plus a ★ HR-truth anchor (synthetic only) with a dotted after→truth tie so
-    # you can read whether SR moved each object *toward* the ground truth.
-    if emb is not None:
-        a = ax[k]; k += 1
+    def _plot_embedding_shift(a, method, label, axis_prefix, var_word):
         gcol = [_group_color(grade_of.get(o, "")) for o in emb["objs"]]
-        a.scatter(emb["pb"][:, 0], emb["pb"][:, 1], marker="s",
+        a.scatter(method["pb"][:, 0], method["pb"][:, 1], marker="s",
                   facecolors="none", edgecolors=gcol, s=52, linewidths=1.4)
-        a.scatter(emb["pa"][:, 0], emb["pa"][:, 1], c=gcol, s=34)
+        a.scatter(method["pa"][:, 0], method["pa"][:, 1], c=gcol, s=34)
         for i in range(len(emb["objs"])):
-            a.annotate("", xy=emb["pa"][i], xytext=emb["pb"][i],
+            a.annotate("", xy=method["pa"][i], xytext=method["pb"][i],
                        arrowprops=dict(arrowstyle="->", color=gcol[i],
                                        alpha=.5, lw=1.1))
-        if emb.get("phr") is not None:
+        if method.get("phr") is not None:
             pos = {o: j for j, o in enumerate(emb["objs"])}
             for j, o in enumerate(emb["hr_objs"]):
                 hcol = _group_color(grade_of.get(o, "synthetic"))
-                a.plot([emb["pa"][pos[o], 0], emb["phr"][j, 0]],
-                       [emb["pa"][pos[o], 1], emb["phr"][j, 1]],
+                a.plot([method["pa"][pos[o], 0], method["phr"][j, 0]],
+                       [method["pa"][pos[o], 1], method["phr"][j, 1]],
                        color=hcol, ls=":", lw=1.0, alpha=.6)
-            a.scatter(emb["phr"][:, 0], emb["phr"][:, 1],
+            a.scatter(method["phr"][:, 0], method["phr"][:, 1],
                       c=[_group_color(grade_of.get(o, "synthetic"))
                          for o in emb["hr_objs"]],
                       marker="*", s=150, edgecolors="k", linewidths=.4)
-        a.set_xlabel(f"PC1 ({emb['var'][0]:.0f}% var)")
-        a.set_ylabel(f"PC2 ({emb['var'][1]:.0f}% var)")
+        a.set_xlabel(f"{axis_prefix}1 ({method['var'][0]:.0f}% {var_word})")
+        a.set_ylabel(f"{axis_prefix}2 ({method['var'][1]:.0f}% {var_word})")
         # Title carries the toward-truth tally (real metric is full-dim L2, read
         # from the manifest's closer_to_ref column, not the 2-D projection).
         hr_rows = [r for r in mani if str(r.get("has_hr", "")).lower() == "true"]
@@ -390,19 +513,26 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
                      if str(r.get("closer_to_ref", "")).lower() == "true")
         sub = (f"\nSR → HR truth for {toward}/{len(hr_rows)}"
                if hr_rows else "")
-        a.set_title("Shift in Zoobot feature space\n(□ before → ● after"
-                    + (", ★ HR truth)" if emb.get("phr") is not None else ")")
+        a.set_title(f"{label} shift in Zoobot feature space\n(□ before → ● after"
+                    + (", ★ HR truth)" if method.get("phr") is not None else ")")
                     + sub)
-        if multi or emb.get("phr") is not None:
+        if multi or method.get("phr") is not None:
             import matplotlib.lines as mlines
             handles = [mlines.Line2D([], [], marker="o", ls="",
                                      color=_group_color(g), label=g)
                        for g in groups if g]
-            if emb.get("phr") is not None:
+            if method.get("phr") is not None:
                 handles.append(mlines.Line2D([], [], marker="*", ls="",
                                              color="#444", markersize=11,
                                              label="HR truth"))
             a.legend(handles=handles, fontsize=8, title="group")
+
+    # Panels 2/3 — PCA and MDS shift maps: ○ before → ● after arrows coloured
+    # by group, plus ★ HR-truth anchors (synthetic only) with dotted after→truth
+    # ties so you can read whether SR moved each object toward the truth.
+    if emb is not None:
+        _plot_embedding_shift(ax[k], emb["pca"], "PCA", "PC", "var"); k += 1
+        _plot_embedding_shift(ax[k], emb["mds"], "MDS", "MDS", "inertia"); k += 1
 
     # Panel 3 — example before|after.
     if example is not None:

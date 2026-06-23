@@ -185,27 +185,27 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     return out_png
 
 
-def _list_runs() -> List[Dict[str, Any]]:
-    """List evaluation runs: sub-dirs of EVAL_RESULTS_DIR holding a manifest."""
+def _shared_run_summary() -> Dict[str, Any]:
+    """Summary for the single shared evaluation store."""
     root = Config.EVAL_RESULTS_DIR
-    runs: List[Dict[str, Any]] = []
-    if not os.path.isdir(root):
-        return runs
-    for name in sorted(os.listdir(root)):
-        rd = os.path.join(root, name)
-        mani = os.path.join(rd, "manifest.csv")
-        if not (os.path.isdir(rd) and os.path.isfile(mani)):
-            continue
-        rows = _read_manifest(rd)
-        n_ok = sum(1 for r in rows if str(r.get("ok", "")).lower() == "true")
-        runs.append({
-            "name":  name,
-            "n":     len(rows),
-            "n_ok":  n_ok,
-            "mtime": os.path.getmtime(mani),
-        })
-    runs.sort(key=lambda r: r["mtime"], reverse=True)
-    return runs
+    rows = _read_manifest(root)
+    n_ok = sum(1 for r in rows if str(r.get("ok", "")).lower() == "true")
+    mani = os.path.join(root, "manifest.csv")
+    return {
+        "name": "eval_results",
+        "run": "eval_results",
+        "rows": rows,
+        "n": len(rows),
+        "n_ok": n_ok,
+        "mtime": os.path.getmtime(mani) if os.path.isfile(mani) else 0,
+    }
+
+
+def _bad_run_arg(value: str) -> bool:
+    return bool(value) and (
+        os.sep in value or (os.altsep and os.altsep in value)
+        or value in (".", "..")
+    )
 
 
 def register(app):
@@ -215,7 +215,7 @@ def register(app):
         return render_template(
             "evaluation.html",
             catalogs=_list_catalogs(),
-            runs=_list_runs(),
+            run_summary=_shared_run_summary(),
             default_cutout=256,
             default_asinh=float(Config.STRETCH_SCALE_E),
             default_clip=_DEFAULT_CLIP,
@@ -230,9 +230,6 @@ def register(app):
         the job's bar + log. Returns a job id to poll via ``/api/jobs/<id>``.
         """
         f = request.form
-        run = (f.get("run_name") or "run").strip() or "run"
-        if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
-            return jsonify({"ok": False, "error": "bad run name"}), 400
         grade = (f.get("grade") or "").strip() or None
         try:
             max_n = int(f.get("max_n", 0) or 0)
@@ -242,7 +239,7 @@ def register(app):
         catalog = (f.get("catalog") or "").strip() or None
         if catalog:
             catalog = os.path.join(Config.DATA_DIR, catalog)
-        out_dir = os.path.join(Config.EVAL_RESULTS_DIR, run)
+        out_dir = Config.EVAL_RESULTS_DIR
 
         from euclid_polish.eval import catalog_runner
 
@@ -253,7 +250,7 @@ def register(app):
                 on_progress=lambda i, n, lbl: cap.tick(i, n, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"),
             )
-        job_id = JOB_REGISTRY.spawn(f"eval: {run}", _run)
+        job_id = JOB_REGISTRY.spawn("eval: eval_results", _run)
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/run-grouped", methods=["POST"])
@@ -264,9 +261,6 @@ def register(app):
         validation triptychs → one run dir with a single grouped manifest.
         """
         f = request.form
-        run = (f.get("run_name") or "analysis").strip() or "analysis"
-        if os.sep in run or (os.altsep and os.altsep in run) or run in (".", ".."):
-            return jsonify({"ok": False, "error": "bad run name"}), 400
         try:
             n = int(f.get("n", 5) or 5)
             cutout = int(f.get("cutout_size", 256) or 256)
@@ -275,7 +269,7 @@ def register(app):
             return jsonify({"ok": False, "error": "n / cutout / M must be ints"}), 400
         stamp_m = max(16, min(256, stamp_m + (stamp_m % 2)))  # even, bounded
         include_synth = str(f.get("synthetic", "1")).lower() in ("1", "true", "on", "yes")
-        out_dir = os.path.join(Config.EVAL_RESULTS_DIR, run)
+        out_dir = Config.EVAL_RESULTS_DIR
 
         from euclid_polish.eval import grouped_runner
 
@@ -285,7 +279,7 @@ def register(app):
                 include_synthetic=include_synth,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
-        job_id = JOB_REGISTRY.spawn(f"grouped: {run}", _run)
+        job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/run-zoobot", methods=["POST"])
@@ -299,11 +293,10 @@ def register(app):
         """
         f = request.form
         run = (f.get("run") or "").strip()
-        if not run or os.sep in run or (os.altsep and os.altsep in run) \
-                or run in (".", ".."):
+        if _bad_run_arg(run):
             return jsonify({"ok": False, "error": "bad run name"}), 400
-        if not os.path.isdir(os.path.join(Config.EVAL_RESULTS_DIR, run)):
-            return jsonify({"ok": False, "error": f"run {run!r} not found"}), 404
+        if not os.path.isdir(Config.EVAL_RESULTS_DIR):
+            return jsonify({"ok": False, "error": "eval_results not found"}), 404
         py = _zoobot_python()
         if py is None:
             return jsonify({"ok": False, "error": (
@@ -311,27 +304,20 @@ def register(app):
                 "`mamba env create -f environment-zoobot.yml`, or set "
                 "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
         cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
-               "--run-name", run, "--device", "cpu"]
+               "--run-dir", Config.EVAL_RESULTS_DIR, "--device", "cpu"]
         tree_ckpt = (f.get("tree_checkpoint") or "").strip()
         if tree_ckpt:
             cmd += ["--tree-checkpoint", tree_ckpt]
-        job_id = _spawn_subprocess_job(f"zoobot: {run}", cmd, {"run": run})
+        job_id = _spawn_subprocess_job(
+            "zoobot: eval_results", cmd, {"run": "eval_results"})
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/runs")
     def api_evaluation_runs():
         run = request.args.get("run", "").strip()
-        if run:
-            # One run's manifest. Jail the name to a single path component so a
-            # crafted ``run`` can't escape EVAL_RESULTS_DIR.
-            if os.sep in run or (os.altsep and os.altsep in run) \
-                    or run in ("", ".", ".."):
-                abort(400)
-            rd = os.path.join(Config.EVAL_RESULTS_DIR, run)
-            if not os.path.isdir(rd):
-                abort(404)
-            return jsonify({"run": run, "rows": _read_manifest(rd)})
-        return jsonify({"runs": _list_runs()})
+        if _bad_run_arg(run):
+            abort(400)
+        return jsonify(_shared_run_summary())
 
     @app.route("/api/evaluation/fetch-catalog", methods=["POST"])
     def api_evaluation_fetch_catalog():
@@ -386,12 +372,12 @@ def register(app):
         if rc != 0:
             return jsonify({"ok": False,
                             "error": err.strip() or f"rsync exit {rc}"}), 500
-        runs = _list_runs()
+        summary = _shared_run_summary()
         return jsonify({
             "ok":     True,
             "stdout": out.strip()[-2000:],
-            "n_runs": len(runs),
-            "runs":   runs,
+            "n":      summary["n"],
+            "n_ok":   summary["n_ok"],
         })
 
     @app.route("/api/evaluation/rerender", methods=["POST"])
@@ -403,10 +389,9 @@ def register(app):
         plotting code — no cluster round-trip.
         """
         run = (request.form.get("run") or request.args.get("run") or "").strip()
-        if not run or os.sep in run or (os.altsep and os.altsep in run) \
-                or run in (".", ".."):
+        if _bad_run_arg(run):
             abort(400)
-        rd = os.path.join(Config.EVAL_RESULTS_DIR, run)
+        rd = Config.EVAL_RESULTS_DIR
         if not os.path.isdir(rd):
             abort(404)
         removed = 0
@@ -432,13 +417,12 @@ def register(app):
         cached to ``<run>/morphology_summary.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if not run or os.sep in run or (os.altsep and os.altsep in run) \
-                or run in (".", ".."):
+        if _bad_run_arg(run):
             abort(400)
         # Absolute path: send_file resolves a *relative* path against the app
         # root (euclid_polish/web), not the CWD, so a relative EVAL_RESULTS_DIR
         # would 500 at serve time.
-        run_dir = os.path.abspath(os.path.join(Config.EVAL_RESULTS_DIR, run))
+        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
         if not os.path.isfile(os.path.join(run_dir, "morphology_manifest.csv")):
             abort(404)
         out_png = os.path.join(run_dir, "morphology_summary.png")
@@ -449,6 +433,22 @@ def register(app):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 
+    @app.route("/api/evaluation/morphology-embedding")
+    def api_evaluation_morphology_embedding():
+        """Return 3-D PCA and MDS coordinates for Zoobot feature vectors."""
+        run = (request.args.get("run") or "").strip()
+        if _bad_run_arg(run):
+            abort(400)
+        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
+        if not os.path.isfile(os.path.join(run_dir, "zoobot_predictions.csv")):
+            abort(404)
+        from euclid_polish.eval import zoobot_morph
+        payload = zoobot_morph.morphology_embedding_payload(run_dir)
+        if payload is None:
+            abort(404)
+        payload["run"] = "eval_results"
+        return jsonify(payload)
+
     @app.route("/api/evaluation/transformation")
     def api_evaluation_transformation():
         """Render + serve the run-level SR-transformation summary PNG.
@@ -457,10 +457,9 @@ def register(app):
         ``<run>/transformation_summary.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if not run or os.sep in run or (os.altsep and os.altsep in run) \
-                or run in (".", ".."):
+        if _bad_run_arg(run):
             abort(400)
-        run_dir = os.path.abspath(os.path.join(Config.EVAL_RESULTS_DIR, run))
+        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
         if not os.path.isfile(os.path.join(run_dir, "manifest.csv")):
             abort(404)
         out_png = os.path.join(run_dir, "transformation_summary.png")
