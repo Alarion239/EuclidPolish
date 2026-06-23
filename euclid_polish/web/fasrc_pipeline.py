@@ -1139,6 +1139,41 @@ class SyntheticGenerateStep(RunPipelineStep):
         return cmd
 
 
+class LensfinderGenerateStep(SyntheticGenerateStep):
+    """Generate the lens-finder field set into a dedicated records dir.
+
+    Same generator as ``synthetic-data`` (TNG scenes + stars + strong lenses,
+    forward-modelled to dirty LR) but with fewer/bigger fields, written to
+    ``data/images/records_lensfinder`` so the main 6400×510 training set is never
+    overwritten. The lens-finder stamps are cut from these fields.
+    """
+
+    RECORDS_DIR: ClassVar[str] = "data/images/records_lensfinder"
+
+    def __init__(self) -> None:
+        # Initialise the RunPipelineStep dataclass base directly so this gets a
+        # distinct identity (SyntheticGenerateStep.__init__ hardcodes the main
+        # 'synthetic_generate' id); the gen knobs come from the config panel's
+        # dedicated lens-finder section via FASRC_STEP_PARAMS.
+        RunPipelineStep.__init__(
+            self,
+            step_id="lensfinder_generate",
+            label="Generate lens-finder fields (CPU)",
+            job_name="lensfinder-data",
+            defaults=StepResources(
+                partition="shared", n_cpus=16, n_gpus=0,
+                memory="64G", time_limit="6:00:00",
+            ),
+            skip_flags=("--skip-train",),
+            needs_train_knobs=True,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = super().build_command(params)          # gen + star/lens density flags
+        cmd += ["--records-dir", self.RECORDS_DIR]
+        return cmd
+
+
 class LensfinderBuildStampsStep(FASRCPipelineStep):
     """Cut LR/SR/HR lens-finder stamps from simulated fields (main TF env, GPU).
 
@@ -1241,6 +1276,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,
+    LensfinderGenerateStep,
     LensfinderBuildStampsStep,
     LensfinderTrainStep,
 )

@@ -48,6 +48,28 @@
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Lens-finder dataset</legend>
+      <div class="form-row">
+        <label title="Number of large fields generated for the lens-finder, into a dedicated records dir (data/images/records_lensfinder) — separate from the main training set, so it is never clobbered.">
+          Fields
+          <input type="number" name="lensfinder_n_fields" value="{{ cfg.lensfinder_n_fields }}"
+                 min="1" max="50000" required>
+        </label>
+        <label title="Validation fields for the lens-finder dataset.">
+          Validate fields
+          <input type="number" name="lensfinder_n_valid" value="{{ cfg.lensfinder_n_valid }}"
+                 min="0" max="5000" required>
+        </label>
+        <label title="Lens-finder field side in 0.05″/pix HR pixels. Bigger fields → more sources + realistic neighbour crowding. Multiple of 6 (the NISP rebin factor).">
+          Field size (px)
+          <input type="number" name="lensfinder_image_size" value="{{ cfg.lensfinder_image_size }}"
+                 min="120" max="2048" step="6" required>
+        </label>
+      </div>
+      <p class="hint">→ the <code>lensfinder-data</code> FASRC step (fewer, bigger fields; own records dir).</p>
+    </fieldset>
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
       <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Star field</legend>
       <div class="form-row">
         <label title="Stellar surface density (stars per arcmin²). Number per scene is Poisson(density × field area). Default ≈ 5000/deg².">
