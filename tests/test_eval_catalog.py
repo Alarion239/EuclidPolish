@@ -574,3 +574,24 @@ class TestSyntheticCutouts:
             log=lambda m: None)
         assert res["groups"] == {}
         assert res["manifest"] is None or os.path.isfile(res["manifest"])
+
+    def test_run_grouped_threads_stamp_m(self, client, monkeypatch):
+        # The editable "Synthetic stamp M" reaches run_grouped_analysis (even,
+        # bounded). Run the spawned job synchronously to capture its kwargs.
+        from euclid_polish.eval import grouped_runner
+        from euclid_polish.web.routes import evaluation as ev
+
+        captured = {}
+        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
+                            lambda **kw: captured.update(kw) or {"groups": {}})
+
+        class _Cap:
+            def tick(self, *a, **k): pass
+            def write(self, *a, **k): pass
+
+        monkeypatch.setattr(ev.JOB_REGISTRY, "spawn",
+                            lambda label, target: (target(_Cap()), "jid")[1])
+        r = client.post("/api/evaluation/run-grouped",
+                        data={"run_name": "t", "n": "2", "stamp_m": "97"})
+        assert r.status_code == 200
+        assert captured.get("stamp_m") == 98          # 97 -> even

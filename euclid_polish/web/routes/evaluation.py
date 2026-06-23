@@ -270,8 +270,10 @@ def register(app):
         try:
             n = int(f.get("n", 5) or 5)
             cutout = int(f.get("cutout_size", 256) or 256)
+            stamp_m = int(f.get("stamp_m", 64) or 64)
         except ValueError:
-            return jsonify({"ok": False, "error": "n / cutout must be ints"}), 400
+            return jsonify({"ok": False, "error": "n / cutout / M must be ints"}), 400
+        stamp_m = max(16, min(256, stamp_m + (stamp_m % 2)))  # even, bounded
         include_synth = str(f.get("synthetic", "1")).lower() in ("1", "true", "on", "yes")
         out_dir = os.path.join(Config.EVAL_RESULTS_DIR, run)
 
@@ -279,7 +281,7 @@ def register(app):
 
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
-                out_dir=out_dir, n=n, cutout_size=cutout,
+                out_dir=out_dir, n=n, cutout_size=cutout, stamp_m=stamp_m,
                 include_synthetic=include_synth,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
