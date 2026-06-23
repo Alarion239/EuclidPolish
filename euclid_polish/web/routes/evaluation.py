@@ -391,6 +391,32 @@ def register(app):
                         pass
         return jsonify({"ok": True, "removed": removed})
 
+    @app.route("/api/evaluation/morphology")
+    def api_evaluation_morphology():
+        """Render + serve the run-level Zoobot morphology summary PNG.
+
+        404 when the run has no ``morphology_manifest.csv`` yet (Zoobot hasn't
+        been run). Rendered locally from the manifest + raw predictions and
+        cached to ``<run>/morphology_summary.png``; ``?fresh=1`` re-renders.
+        """
+        run = (request.args.get("run") or "").strip()
+        if not run or os.sep in run or (os.altsep and os.altsep in run) \
+                or run in (".", ".."):
+            abort(400)
+        # Absolute path: send_file resolves a *relative* path against the app
+        # root (euclid_polish/web), not the CWD, so a relative EVAL_RESULTS_DIR
+        # would 500 at serve time.
+        run_dir = os.path.abspath(os.path.join(Config.EVAL_RESULTS_DIR, run))
+        if not os.path.isfile(os.path.join(run_dir, "morphology_manifest.csv")):
+            abort(404)
+        out_png = os.path.join(run_dir, "morphology_summary.png")
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            from euclid_polish.eval import zoobot_morph
+            if zoobot_morph.render_morphology_summary(run_dir, out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
     @app.route("/eval-files/<path:relpath>")
     def serve_eval_files(relpath: str):
         """Serve PNG / FITS from data/eval_results/ (jailed against traversal).

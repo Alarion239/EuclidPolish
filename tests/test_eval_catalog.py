@@ -195,6 +195,26 @@ class TestEvaluationRoutes:
     def test_eval_files_traversal_blocked(self, client):
         assert client.get("/eval-files/../../etc/passwd").status_code == 403
 
+    def test_morphology_404_without_manifest(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        os.makedirs(os.path.join(Config.EVAL_RESULTS_DIR, "run1"))
+        assert client.get("/api/evaluation/morphology?run=run1").status_code == 404
+        assert client.get("/api/evaluation/morphology?run=../e").status_code == 400
+
+    def test_morphology_renders_from_manifest(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        run = os.path.join(Config.EVAL_RESULTS_DIR, "run1")
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "morphology_manifest.csv"), "w") as f:
+            f.write("id,l2_before_after,cosine_before_after,"
+                    "pearson_before_after,mode,has_hr\n")
+            for i in range(5):
+                f.write(f"obj{i},{10+i},{0.1+i*0.01},{0.8+i*0.01},"
+                        f"representation,False\n")
+        r = client.get("/api/evaluation/morphology?run=run1")
+        assert r.status_code == 200 and r.mimetype == "image/png"
+        assert os.path.isfile(os.path.join(run, "morphology_summary.png"))
+
     def test_render_on_demand_from_fits(self, client, tmp_path, monkeypatch):
         # FASRC writes only FITS; the server renders the PNG locally on first
         # request. Lay down SR.fits + original_stack.fits and confirm a missing

@@ -100,6 +100,17 @@
   synthetic targets with HR — whether SR moved it <i>toward</i> the truth.
 </p>
 
+{# Run-level Zoobot morphology summary — only shown when the selected run has
+   been scored (morphology_manifest.csv present). #}
+<details id="morphPanel" class="card" style="grid-column:1/-1; display:none;" open>
+  <summary><b>Morphology summary</b>
+    <span class="muted">— Zoobot before/after across this run</span>
+    <button id="morphReplot" class="secondary" type="button"
+            style="margin-left:10px;">↻ re-plot</button></summary>
+  <img id="morphImg" alt="morphology summary"
+       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
+</details>
+
 <div id="gallery" class="gallery">
   <div class="eval-empty">Select a run to view results.</div>
 </div>
@@ -235,10 +246,24 @@
     return ({A: 'tag-ok', B: 'tag-warn', C: 'tag-warn'})[g] || 'tag';
   }
 
+  // Show the morphology summary for a run when it's been scored; hide otherwise.
+  function updateMorph(run, fresh) {
+    const panel = $('morphPanel'), img = $('morphImg');
+    if (!run) { panel.style.display = 'none'; return; }
+    const url = '/api/evaluation/morphology?run=' + encodeURIComponent(run)
+              + (fresh ? '&fresh=1&t=' + Date.now() : '');
+    img.onload = () => { panel.style.display = ''; };
+    img.onerror = () => { panel.style.display = 'none'; };  // no morphology yet
+    img.src = url;
+  }
+  $('morphReplot').addEventListener('click',
+    () => updateMorph($('runSelect').value, true));
+
   async function loadRun() {
     const run = $('runSelect').value;
     const gal = $('gallery');
     const msg = $('runMsg');
+    updateMorph(run, false);
     if (!run) {
       gal.innerHTML = '<div class="eval-empty">No run selected.</div>';
       msg.textContent = ''; return;
@@ -411,7 +436,8 @@
     fd.set('run', $('zbRun').value);
     fd.set('tree_checkpoint', $('zbTree').value);
     startJob('/api/evaluation/run-zoobot', fd,
-             'Zoobot: ' + $('zbRun').value, $('runZoobotBtn'), () => loadRun());
+             'Zoobot: ' + $('zbRun').value, $('runZoobotBtn'),
+             () => { loadRun(); updateMorph($('zbRun').value, true); });
   });
 
   // ── Interactive lightbox ────────────────────────────────────────────────

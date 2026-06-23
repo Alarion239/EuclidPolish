@@ -209,3 +209,142 @@ def write_morph_manifest(path: str, rows: List[Dict[str, Any]]) -> None:
         w.writeheader()
         for r in rows:
             w.writerow(r)
+
+
+# --------------------------------------------------------------------------- #
+# Summary plot (run-level) — reads the manifest + raw predictions
+# --------------------------------------------------------------------------- #
+
+def _read_predictions(pred_path: str):
+    """Read zoobot_predictions.csv → (ids, vectors). Non-``id_str`` columns are
+    the per-image vector (representation feats or vote fractions)."""
+    import csv
+
+    import numpy as np
+    with open(pred_path) as f:
+        rdr = csv.reader(f)
+        header = next(rdr)
+        id_idx = header.index("id_str")
+        vec_idx = [i for i, h in enumerate(header) if h != "id_str"]
+        ids, vecs = [], []
+        for row in rdr:
+            ids.append(row[id_idx])
+            vecs.append([float(row[i]) for i in vec_idx])
+    return ids, np.asarray(vecs, dtype=np.float64)
+
+
+def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
+    """Render a run-level before/after morphology summary PNG → ``out_png``.
+
+    Panels (drawn from what's available): (1) the distribution of the
+    before↔after similarity (Pearson r) across the run; (2) a 2-D PCA "shift
+    map" of the raw Zoobot vectors with an arrow per object from its LR (before)
+    point to its SR (after) point; (3) the actual before|after images Zoobot
+    classified for the most-changed object. Returns ``out_png`` or ``None`` when
+    there's no ``morphology_manifest.csv`` yet.
+    """
+    import csv
+
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    mani_path = os.path.join(run_dir, "morphology_manifest.csv")
+    if not os.path.isfile(mani_path):
+        return None
+    mani = [r for r in csv.DictReader(open(mani_path)) if r.get("id")]
+    if not mani:
+        return None
+
+    def _col(name):
+        return np.array([float(r[name]) for r in mani
+                         if r.get(name) not in (None, "")])
+    pear = _col("pearson_before_after")
+    l2 = _col("l2_before_after")
+    mode = mani[0].get("mode", "?")
+    by_id = {r["id"]: r for r in mani}
+
+    # Optional PCA embedding from the raw predictions.
+    pred_path = os.path.join(run_dir, "zoobot_predictions.csv")
+    emb = None
+    if os.path.isfile(pred_path):
+        ids, vecs = _read_predictions(pred_path)
+        view = {}
+        for s, v in zip(ids, vecs):
+            obj, _, vw = s.rpartition("__")
+            view.setdefault(obj, {})[vw] = v
+        objs = [o for o, d in view.items() if "before" in d and "after" in d]
+        if objs:
+            Xb = np.array([view[o]["before"] for o in objs])
+            Xa = np.array([view[o]["after"] for o in objs])
+            X = np.vstack([Xb, Xa]); mu = X.mean(0)
+            _, S, Vt = np.linalg.svd(X - mu, full_matrices=False)
+            P = Vt[:2]
+            emb = {
+                "objs": objs,
+                "pb": (Xb - mu) @ P.T, "pa": (Xa - mu) @ P.T,
+                "var": (S ** 2 / (S ** 2).sum())[:2] * 100,
+            }
+
+    # An example: the most-changed object whose before/after PNGs exist.
+    example = None
+    order = sorted(by_id, key=lambda i: -float(by_id[i].get("l2_before_after") or 0))
+    for oid in order:
+        bp = os.path.join(run_dir, oid, "zoobot", "before.png")
+        ap = os.path.join(run_dir, oid, "zoobot", "after.png")
+        if os.path.isfile(bp) and os.path.isfile(ap):
+            example = (oid, bp, ap)
+            break
+
+    ncols = 1 + int(emb is not None) + int(example is not None)
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 5.2), squeeze=False)
+    ax = list(axes[0])
+    k = 0
+
+    # Panel 1 — similarity distribution.
+    axes_hist = ax[k]; k += 1
+    axes_hist.hist(pear, bins=min(15, max(4, len(pear))), color="#2a5db0", alpha=.85)
+    axes_hist.axvline(pear.mean(), color="#b03a3a", ls="--",
+                      label=f"mean = {pear.mean():.3f}")
+    axes_hist.set_xlabel("Pearson r (before vs after)")
+    axes_hist.set_ylabel("# objects")
+    axes_hist.set_title("Morphology preserved?\n(1 = identical)")
+    axes_hist.legend(fontsize=9)
+
+    # Panel 2 — PCA shift map.
+    if emb is not None:
+        a = ax[k]; k += 1
+        a.scatter(emb["pb"][:, 0], emb["pb"][:, 1], facecolors="none",
+                  edgecolors="#888", s=55, label="before (LR)")
+        a.scatter(emb["pa"][:, 0], emb["pa"][:, 1], color="#2a5db0", s=32,
+                  label="after (SR)")
+        for i in range(len(emb["objs"])):
+            a.annotate("", xy=emb["pa"][i], xytext=emb["pb"][i],
+                       arrowprops=dict(arrowstyle="->", color="#b03a3a",
+                                       alpha=.55, lw=1.1))
+        a.set_xlabel(f"PC1 ({emb['var'][0]:.0f}% var)")
+        a.set_ylabel(f"PC2 ({emb['var'][1]:.0f}% var)")
+        a.set_title("Shift in Zoobot feature space\n(arrow = LR → SR)")
+        a.legend(fontsize=9)
+
+    # Panel 3 — example before|after.
+    if example is not None:
+        from matplotlib import image as mpimg
+        a = ax[k]; k += 1
+        oid, bp, ap = example
+        bimg, aimg = mpimg.imread(bp), mpimg.imread(ap)
+        gap = np.ones((bimg.shape[0], 8) + bimg.shape[2:], dtype=bimg.dtype)
+        a.imshow(np.concatenate([bimg, gap, aimg], axis=1))
+        a.axis("off")
+        d = by_id[oid].get("l2_before_after", "?")
+        a.set_title(f"What Zoobot sees: before | after\n{oid[:18]}…  "
+                    f"Δl2={float(d):.1f}", fontsize=10)
+
+    fig.suptitle(f"Zoobot morphology before/after — {os.path.basename(run_dir)} "
+                 f"({len(mani)} objects, {mode} mode)", fontsize=13)
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+    fig.savefig(out_png, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    return out_png
