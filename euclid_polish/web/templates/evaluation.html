@@ -167,9 +167,15 @@
   </div>
 </details>
 
-<div id="gallery" class="gallery">
-  <div class="eval-empty">Select a run to view results.</div>
-</div>
+{# The per-object image grid is heavy, so keep it collapsed under one panel
+   (the analysis panels above are the headline); expand to browse the tiles. #}
+<details id="galleryPanel" class="card" style="grid-column:1/-1;">
+  <summary><b>Resolved lens images</b>
+    <span class="muted" id="galleryCount"></span></summary>
+  <div id="gallery" class="gallery">
+    <div class="eval-empty">Select a run to view results.</div>
+  </div>
+</details>
 
 {# Interactive detail view — click any tile to open. Two sliders re-render the
    PNG server-side (faithful eye/solar colour) from the FITS, debounced. #}
@@ -621,9 +627,12 @@
     const skipped = rows.length - ok.length;
     msg.textContent = ok.length + ' shown'
       + (skipped > 0 ? ' · ' + skipped + ' skipped (no coverage)' : '');
+    $('galleryCount').textContent = '— ' + ok.length + ' object' + (ok.length === 1 ? '' : 's')
+      + (skipped > 0 ? ' · ' + skipped + ' skipped' : '');
 
     if (!ok.length) {
       gal.innerHTML = '<div class="eval-empty">No successful objects in the shared store yet.</div>';
+      $('galleryCount').textContent = '— none yet';
       return;
     }
 
