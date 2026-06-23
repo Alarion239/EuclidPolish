@@ -1139,6 +1139,86 @@ class SyntheticGenerateStep(RunPipelineStep):
         return cmd
 
 
+class LensfinderBuildStampsStep(FASRCPipelineStep):
+    """Cut LR/SR/HR lens-finder stamps from simulated fields (main TF env, GPU).
+
+    Runs the SR model over the generated big fields and crops source-centered
+    lens + galaxy stamps into a catalog the Zoobot finetune step consumes. Uses
+    the main TensorFlow env (``conda_env=None``) because it calls ``reconstruct``.
+    The big fields come from the existing ``synthetic-data`` step submitted with a
+    large ``--image-size`` into a dedicated records dir.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="lensfinder_build_stamps",
+            label="Build lens-finder stamps (GPU)",
+            job_name="lensfinder-stamps",
+            defaults=StepResources(
+                partition="gpu", n_cpus=8, n_gpus=1,
+                memory="48G", time_limit="6:00:00",
+            ),
+            needs_gpu=True,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/lensfinder_build_stamps.py",
+            "--records-dir", str(params.get("records_dir",
+                                            "data/images/records_lensfinder")),
+            "--subset", str(params.get("subset", "train")),
+            "--out-dir", str(params.get("out_dir", "data/lensfinder/stamps")),
+            "--stamp-m", str(int(params.get("stamp_m", 128))),
+            "--neg-per-lens", str(int(params.get("neg_per_lens", 2))),
+        ]
+        for key, flag in (("checkpoint", "--checkpoint"),
+                          ("num_res_blocks", "--num-res-blocks"),
+                          ("max_fields", "--max-fields")):
+            v = params.get(key)
+            if v not in (None, ""):
+                cmd += [flag, str(v)]
+        return cmd
+
+
+class LensfinderTrainStep(FASRCPipelineStep):
+    """Finetune the Zoobot lens classifier per reconstruction (GPU, PyTorch).
+
+    Runs in the ``EuclidPolishZoobot`` env (isolated from the main TensorFlow
+    env). Trains LR / SR / HR heads from the stamp catalog and writes per-recon
+    ``predictions.csv``; the TPR-vs-θ_E evaluation is CPU/torch-free and runs
+    locally (``scripts/lensfinder_evaluate.py``).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="lensfinder_train",
+            label="Train lens-finder (GPU, PyTorch)",
+            job_name="lensfinder-train",
+            defaults=StepResources(
+                partition="gpu", n_cpus=8, n_gpus=1,
+                memory="32G", time_limit="12:00:00",
+            ),
+            needs_gpu=True,
+            conda_env="EuclidPolishZoobot",
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/lensfinder_train.py",
+            "--catalog", str(params.get("catalog",
+                                        "data/lensfinder/stamps/catalog.csv")),
+            "--out-dir", str(params.get("out_dir", "data/lensfinder/heads")),
+            "--recon", str(params.get("recon", "all")),
+            "--epochs", str(int(params.get("epochs", 30))),
+        ]
+        for key, flag in (("batch_size", "--batch-size"),
+                          ("learning_rate", "--learning-rate")):
+            v = params.get(key)
+            if v not in (None, ""):
+                cmd += [flag, str(v)]
+        return cmd
+
+
 # ---------------------------------------------------------------------------
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
@@ -1161,6 +1241,8 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,
+    LensfinderBuildStampsStep,
+    LensfinderTrainStep,
 )
 
 
