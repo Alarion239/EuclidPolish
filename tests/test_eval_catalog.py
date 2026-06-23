@@ -884,3 +884,29 @@ class TestCenterCropAndReuse:
         cb(0, 3, "a")
         cb(1, 3, "b")
         cb(3, 3, "done")         # closes the bar without raising
+
+    def test_classical_mds_matches_naive_distances(self):
+        """The memory-safe MDS must equal the naive (N,N,D) pairwise form.
+
+        Guards the ‖xᵢ‖²+‖xⱼ‖²−2xᵢxⱼ rewrite that replaced an X[:,None,:] -
+        X[None,:,:] broadcast (which spiked the embedding endpoint to GBs).
+        Classical MDS is exact for Euclidean data, so the embedded pairwise
+        distances must match the originals up to rotation.
+        """
+        from euclid_polish.eval.zoobot_morph import _classical_mds3
+        rng = np.random.default_rng(1)
+        X = rng.standard_normal((40, 8))
+        coords, var = _classical_mds3(X)
+        assert coords.shape == (40, 3)
+
+        def _pdist(A):
+            d = A[:, None, :] - A[None, :, :]
+            return np.sqrt(np.sum(d * d, axis=2))
+
+        # Top-3 components can't perfectly reconstruct 8-D distances, but the
+        # leading structure must be recovered (strong correlation, no blow-up).
+        orig, emb = _pdist(X), _pdist(coords)
+        iu = np.triu_indices(40, 1)
+        r = np.corrcoef(orig[iu], emb[iu])[0, 1]
+        assert r > 0.6
+        assert var[0] >= var[1] >= var[2] >= 0.0

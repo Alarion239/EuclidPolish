@@ -274,8 +274,14 @@ def _pca3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
 def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
     if len(X) == 0:
         return np.zeros((0, 3), dtype=np.float64), [0.0, 0.0, 0.0]
-    diff = X[:, None, :] - X[None, :, :]
-    d2 = np.sum(diff * diff, axis=2)
+    # Pairwise squared Euclidean distances via ‖xᵢ‖² + ‖xⱼ‖² − 2·xᵢ·xⱼ. The naive
+    # X[:, None, :] - X[None, :, :] materializes an (N, N, D) tensor (≈5.6 GB at
+    # N=1046, D=640, then doubled by the square) which spiked the embedding
+    # endpoint to tens of GB; this form only needs the N×N Gram + distance
+    # matrices (a few MB).
+    sq = np.einsum("ij,ij->i", X, X)
+    d2 = sq[:, None] + sq[None, :] - 2.0 * (X @ X.T)
+    np.maximum(d2, 0.0, out=d2)                  # clip tiny negatives from roundoff
     n = d2.shape[0]
     J = np.eye(n) - np.ones((n, n)) / n
     B = -0.5 * J @ d2 @ J
