@@ -126,8 +126,30 @@ def _load_model_and_labels(args):
         mode = "votes"
     else:
         # Representation mode: published encoder + feat_N embedding columns.
-        model = representations.ZoobotEncoder.load_from_name(args.model_name)
-        encoder_dim = define_model.get_encoder_dim(model.encoder)
+        # ``predict_on_catalog`` feeds batches as dicts ({"image": tensor, …}),
+        # but ZoobotEncoder.forward expects the raw image tensor — so wrap the
+        # encoder in a predictor whose predict_step pulls the image out first.
+        import lightning as L
+        import torch
+
+        enc = representations.ZoobotEncoder.load_from_name(args.model_name).encoder
+        encoder_dim = define_model.get_encoder_dim(enc)
+
+        class _RepPredictor(L.LightningModule):
+            def __init__(self, encoder):
+                super().__init__()
+                self.encoder = encoder
+
+            def predict_step(self, batch, batch_idx=0, dataloader_idx=0):
+                if isinstance(batch, dict):
+                    x = next((batch[k] for k in ("image", "images", "x")
+                              if k in batch),
+                             next(v for v in batch.values() if torch.is_tensor(v)))
+                else:
+                    x = batch
+                return self.encoder(x)
+
+        model = _RepPredictor(enc)
         label_cols = [f"feat_{k}" for k in range(encoder_dim)]
         mode = "representation"
     return model, label_cols, mode
