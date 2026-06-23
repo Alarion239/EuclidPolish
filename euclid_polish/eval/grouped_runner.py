@@ -32,6 +32,7 @@ def run_grouped_analysis(
     checkpoint: Optional[str] = None,
     num_res_blocks: Optional[int] = None,
     asinh_scale: Optional[float] = None,
+    stamp_m: int = 64,
     seed: int = 0,
     grades=LENS_GRADES,
     include_synthetic: bool = True,
@@ -56,13 +57,18 @@ def run_grouped_analysis(
         rows = read_eval_catalog(catalog, grade=g, max_n=n)
         lens_plan.append((g, rows))
         _emit(f"grade {g}: {len(rows)} lens(es)")
-    total = sum(len(r) for _, r in lens_plan) + (n if include_synthetic else 0)
+    n_lens = sum(len(r) for _, r in lens_plan)
+    total = n_lens + (2 * n if include_synthetic else 0)
     if total == 0:
         _emit("nothing to evaluate")
         return {"out_dir": out_dir, "n": 0, "manifest": None}
 
-    _emit(f"loading model from {checkpoint}")
-    model = catalog_runner.load_eval_model(checkpoint, num_res_blocks)
+    # Load the SR model only when there is lens work; the synthetic runner loads
+    # it lazily itself, so a synthetic-only run still works.
+    model = None
+    if n_lens:
+        _emit(f"loading model from {checkpoint}")
+        model = catalog_runner.load_eval_model(checkpoint, num_res_blocks)
     os.makedirs(out_dir, exist_ok=True)
 
     done = [0]
@@ -85,14 +91,18 @@ def run_grouped_analysis(
             _tick(f"{g}: {obj['id']}")
 
     if include_synthetic:
-        _emit("synthetic group…")
-        base = total - n
-        syn = synthetic_runner.run_synthetic_eval(
-            out_dir, n, model=model, asinh_scale=asinh_scale, seed=seed,
-            on_progress=(lambda i, t, lbl: on_progress(base + i, total, lbl))
-            if on_progress else None,
-            log=_emit)
-        all_rows.extend(syn["rows"])
+        _emit("synthetic subgroups (syn-lens / syn-gal)…")
+        base = n_lens
+        try:
+            syn = synthetic_runner.run_synthetic_eval(
+                out_dir, n, model=model, asinh_scale=asinh_scale, stamp_m=stamp_m,
+                seed=seed,
+                on_progress=(lambda i, t, lbl: on_progress(base + i, base + t, lbl))
+                if on_progress else None,
+                log=_emit)
+            all_rows.extend(syn["rows"])
+        except Exception as e:  # noqa: BLE001 — synthetic must not kill A/B/C
+            _emit(f"synthetic subgroups skipped: {type(e).__name__}: {e}")
         done[0] = total
 
     manifest_path = os.path.join(out_dir, "manifest.csv")
@@ -106,7 +116,9 @@ def run_grouped_analysis(
         on_progress(total, total, "done")
     n_ok = sum(1 for r in all_rows if r.get("ok"))
     _emit(f"\n✓ grouped analysis: {n_ok}/{len(all_rows)} ok → {manifest_path}")
+    groups: Dict[str, int] = {}
+    for r in all_rows:
+        if r.get("ok"):
+            groups[r["grade"]] = groups.get(r["grade"], 0) + 1
     return {"out_dir": out_dir, "n": len(all_rows), "n_ok": n_ok,
-            "manifest": manifest_path,
-            "groups": {g: sum(1 for r in all_rows if r["grade"] == g and r.get("ok"))
-                       for g in list(grades) + (["synthetic"] if include_synthetic else [])}}
+            "manifest": manifest_path, "groups": groups}

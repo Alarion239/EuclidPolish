@@ -559,3 +559,17 @@ class TestSyntheticCutouts:
         lr = np.arange(128 * 128, dtype=np.float32).reshape(128, 128)
         lstamp = sr.crop_stamp(lr, cx=64.0, cy=50.0, m=32)
         assert lstamp.shape == (32, 32)
+
+    def test_grouped_skips_synthetic_without_records(self, tmp_path, monkeypatch):
+        # No validation records → synthetic raises internally; the grouped run
+        # must still finish and write a (possibly empty) manifest. grades=() so
+        # there's no lens network work.
+        from euclid_polish.eval import grouped_runner, synthetic_runner
+        monkeypatch.setattr(synthetic_runner, "default_records_dir",
+                            lambda: None)
+        out = str(tmp_path / "run")
+        res = grouped_runner.run_grouped_analysis(
+            out, n=1, grades=(), include_synthetic=True, stamp_m=64,
+            log=lambda m: None)
+        assert res["groups"] == {}
+        assert res["manifest"] is None or os.path.isfile(res["manifest"])
