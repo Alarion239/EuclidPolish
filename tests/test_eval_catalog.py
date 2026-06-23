@@ -217,7 +217,8 @@ class TestEvaluationRoutes:
                     "flux_ratio_sr_over_lr,psnr_lr_hr,psnr_sr_hr\n")
             for g in ("A", "B", "C"):
                 f.write(f"{g}1,1,2,{g},True,,{g}1,1e6,1e6,1.0,,\n")
-            f.write("s1,,,synthetic,True,,s1,1e6,1e6,0.9,80,95\n")
+            f.write("s1,,,syn-gal,True,,s1,1e6,1e6,0.9,80,95\n")
+            f.write("s2,,,syn-lens,True,,s2,1e6,1e6,0.95,82,99\n")
         r = client.get("/api/evaluation/transformation?run=run1")
         assert r.status_code == 200 and r.mimetype == "image/png"
         assert os.path.isfile(os.path.join(run, "transformation_summary.png"))
@@ -429,9 +430,9 @@ class TestZoobotMorphHelpers:
 
         run = str(tmp_path / "run")
         os.makedirs(run, exist_ok=True)
-        # group map: one synthetic (has HR) + one lens (no HR).
+        # group map: one synthetic galaxy + one synthetic lens (both HR).
         with open(os.path.join(run, "manifest.csv"), "w") as f:
-            f.write("id,grade,ok\nsyn0,synthetic,True\nlensA,A,True\n")
+            f.write("id,grade,ok\nsyn0,syn-gal,True\nlensA,syn-lens,True\n")
         # 3-d feature vectors; syn0 after sits between before and hr.
         with open(os.path.join(run, "zoobot_predictions.csv"), "w") as f:
             f.write("id_str,feat_0,feat_1,feat_2\n")

@@ -235,7 +235,7 @@ def _read_predictions(pred_path: str):
 
 #: Stable colour per analysis group (the manifest's ``grade`` column).
 GROUP_COLORS = {"A": "#2a5db0", "B": "#2e8b57", "C": "#b8860b",
-                "synthetic": "#b03a3a"}
+                "syn-lens": "#b03a3a", "syn-gal": "#7a4fb0"}
 
 
 def _group_color(g) -> str:
@@ -483,13 +483,13 @@ def render_transformation_summary(run_dir: str, out_png: str) -> Optional[str]:
 
     fig, ax = plt.subplots(1, 3, figsize=(18, 5.4))
 
-    # Panel 1 — SR-vs-HR recovery (synthetic only).
-    syn = [r for r in rows if r.get("grade") == "synthetic"
-           and _f(r, "psnr_lr_hr") is not None and _f(r, "psnr_sr_hr") is not None]
+    # Panel 1 — SR-vs-HR recovery (any group carrying HR truth: syn-lens/syn-gal).
+    syn = [r for r in rows
+           if _f(r, "psnr_lr_hr") is not None and _f(r, "psnr_sr_hr") is not None]
     if syn:
         x = [_f(r, "psnr_lr_hr") for r in syn]
         y = [_f(r, "psnr_sr_hr") for r in syn]
-        ax[0].scatter(x, y, color=_group_color("synthetic"), s=40)
+        ax[0].scatter(x, y, c=[_group_color(r.get("grade", "")) for r in syn], s=40)
         lo, hi = min(x + y), max(x + y)
         ax[0].plot([lo, hi], [lo, hi], color="#888", ls="--", label="no change")
         ax[0].set_xlabel("PSNR  LR vs HR (dB)")
