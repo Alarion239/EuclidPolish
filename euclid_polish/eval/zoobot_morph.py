@@ -363,8 +363,8 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     if emb is not None:
         a = ax[k]; k += 1
         gcol = [_group_color(grade_of.get(o, "")) for o in emb["objs"]]
-        a.scatter(emb["pb"][:, 0], emb["pb"][:, 1], facecolors="none",
-                  edgecolors="#bbb", s=48)
+        a.scatter(emb["pb"][:, 0], emb["pb"][:, 1], marker="s",
+                  facecolors="none", edgecolors=gcol, s=52, linewidths=1.4)
         a.scatter(emb["pa"][:, 0], emb["pa"][:, 1], c=gcol, s=34)
         for i in range(len(emb["objs"])):
             a.annotate("", xy=emb["pa"][i], xytext=emb["pb"][i],
@@ -390,7 +390,7 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
                      if str(r.get("closer_to_ref", "")).lower() == "true")
         sub = (f"\nSR → HR truth for {toward}/{len(hr_rows)}"
                if hr_rows else "")
-        a.set_title("Shift in Zoobot feature space\n(○ before → ● after"
+        a.set_title("Shift in Zoobot feature space\n(□ before → ● after"
                     + (", ★ HR truth)" if emb.get("phr") is not None else ")")
                     + sub)
         if multi or emb.get("phr") is not None:
