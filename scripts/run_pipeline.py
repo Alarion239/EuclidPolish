@@ -58,6 +58,9 @@ from euclid_polish.sky.multiband_forward import (
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
+from euclid_polish.sky.source_catalog import (
+    SourceCatalogWriter, concat_source_csvs,
+)
 from euclid_polish.sky.tfrecord import (
     open_multiband_writer, tfrecord_path, write_multiband_skyimages,
 )
@@ -226,12 +229,16 @@ def step_generate(args: argparse.Namespace) -> None:
         # 6400 510² × 4-channel float32 fields would cost ~26 GB of RSS
         # and OOM-kill on the FASRC default --mem=32G.
         with open_multiband_writer(f"clean_{subset}",
-                                   records_dir=args.records_dir) as w:
+                                   records_dir=args.records_dir) as w, \
+             SourceCatalogWriter(
+                 tfrecord_path(args.records_dir, f"sources_{subset}")
+                 .replace(".tfrecord", ".csv")) as sources:
             for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
-                sky, _ = sim.simulate_field(rng)
+                sky, meta = sim.simulate_field(rng)
                 sky.index = i
                 sky.subset = subset
                 w.write(sky, index=i)
+                sources.add_field(i, meta)
                 done += 1
                 reporter.set_step(done, grand_total, f"generate {subset} {i + 1}/{n}")
             path, count = w.path, w.count
@@ -353,11 +360,14 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     reporter = Reporter.from_env()
     reporter.set_worker_step(shard_id, 0, count, subset)
     last_emit = time.perf_counter()
+    sources_part = tfrecord_path(records_dir,
+                                 f"sources_{tag}").replace(".tfrecord", ".csv")
     with open_multiband_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
          open_multiband_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
-         open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw:
+         open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw, \
+         SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
-            sky, _ = sim.simulate_field(rng)
+            sky, meta = sim.simulate_field(rng)
             sky.index = i
             sky.subset = subset
             lr, hr = fwd.process(sky, rng=rng)
@@ -368,6 +378,7 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
             cw.write(sky, index=i)
             hw.write(hr, index=i)
             dw.write(lr, index=i)
+            sources.add_field(i, meta)
             now = time.perf_counter()
             if local == count or (now - last_emit) >= 2.0:
                 reporter.set_worker_step(shard_id, local, count, subset)
@@ -501,6 +512,19 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                     os.remove(p)
                 except OSError:
                     pass
+
+        # Concatenate the per-shard source sidecars in the same id order.
+        src_parts = [tfrecord_path(args.records_dir,
+                                   f"sources_{subset}.part{sid:04d}")
+                     .replace(".tfrecord", ".csv")
+                     for sid, (s, e) in enumerate(bounds) if e > s]
+        concat_source_csvs(src_parts, tfrecord_path(
+            args.records_dir, f"sources_{subset}").replace(".tfrecord", ".csv"))
+        for p in src_parts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ clean + hr + dirty {subset}")
 
