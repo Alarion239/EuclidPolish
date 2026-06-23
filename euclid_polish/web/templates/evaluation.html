@@ -133,18 +133,9 @@
        style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
 </details>
 
-<details id="morphPanel" class="card" style="grid-column:1/-1; display:none;" open>
-  <summary><b>Morphology summary</b>
-    <span class="muted">— Zoobot before/after across the shared store (coloured by group)</span>
-    <button id="morphReplot" class="secondary" type="button"
-            style="margin-left:10px;">↻ re-plot</button></summary>
-  <img id="morphImg" alt="morphology summary"
-       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
-</details>
-
 <details id="space3dPanel" class="card" style="grid-column:1/-1; display:none;" open>
-  <summary><b>3D morphology space</b>
-    <span class="muted">— PCA and MDS from Zoobot vectors</span>
+  <summary><b>Morphology space</b>
+    <span class="muted">— PCA of Zoobot vectors, 3D and 2D side by side</span>
     <button id="space3dReset" class="secondary" type="button"
             style="margin-left:10px;">reset view</button></summary>
   <div id="space3dEmpty" class="space3d-empty">Zoobot vectors are not available for the shared store.</div>
@@ -158,17 +149,20 @@
     <label title="HR truth positions are drawn as stars for synthetic objects">
       <input type="checkbox" id="space3dHrToggle" checked> HR stars
     </label>
+    <label title="before→after (and after→HR) arrows per object">
+      <input type="checkbox" id="space3dArrowsToggle" checked> arrows
+    </label>
   </div>
   <div id="space3dGrid" class="space3d-grid" style="display:none;">
     <div class="space3d-view">
-      <div class="space3d-head"><b>PCA</b><span id="space3dPcaVar"></span></div>
+      <div class="space3d-head"><b>PCA · 3D</b><span id="space3dPcaVar"></span></div>
       <canvas id="space3dPca" class="space3d-canvas"></canvas>
       <div id="space3dPcaMeta" class="space3d-meta"></div>
     </div>
     <div class="space3d-view">
-      <div class="space3d-head"><b>MDS</b><span id="space3dMdsVar"></span></div>
-      <canvas id="space3dMds" class="space3d-canvas"></canvas>
-      <div id="space3dMdsMeta" class="space3d-meta"></div>
+      <div class="space3d-head"><b>PCA · 2D</b><span id="space3dPca2dVar"></span></div>
+      <canvas id="space3dPca2d" class="space3d-canvas"></canvas>
+      <div id="space3dPca2dMeta" class="space3d-meta"></div>
     </div>
   </div>
 </details>
@@ -333,20 +327,17 @@
     img.onerror = () => { panel.style.display = 'none'; };
     img.src = url;
   }
-  const updateMorph = (fresh) =>
-    updateSummary('morphPanel', 'morphImg', '/api/evaluation/morphology', fresh);
   const updateTransform = (fresh) =>
     updateSummary('transformPanel', 'transformImg', '/api/evaluation/transformation', fresh);
-  $('morphReplot').addEventListener('click',
-    () => updateMorph(true));
   $('transformReplot').addEventListener('click',
     () => updateTransform(true));
 
-  function makeSpace3dScene(canvas, metaEl) {
+  function makeSpace3dScene(canvas, metaEl, dims) {
     const ctx = canvas.getContext('2d');
+    const is2d = dims === 2;
     let allPoints = [], allEdges = [], points = [], edges = [], byKey = {};
-    let visibleGroups = new Set(), showHr = true;
-    let rotX = -0.48, rotY = 0.72, zoom = 1.0, dragging = false;
+    let visibleGroups = new Set(), showHr = true, showEdges = true;
+    let rotX = -0.48, rotY = 0.72, zoom = 1.0, panX = 0, panY = 0, dragging = false;
     let lastX = 0, lastY = 0, hover = null;
 
     function resize() {
@@ -380,9 +371,10 @@
       allEdges = nextEdges || [];
       applyFilters();
     }
-    function setFilters(nextGroups, nextShowHr) {
+    function setFilters(nextGroups, nextShowHr, nextShowEdges) {
       visibleGroups = nextGroups || new Set();
       showHr = !!nextShowHr;
+      if (nextShowEdges !== undefined) showEdges = !!nextShowEdges;
       applyFilters();
     }
     function applyFilters() {
@@ -396,17 +388,24 @@
       draw();
     }
     function reset() {
-      rotX = -0.48; rotY = 0.72; zoom = 1.0; hover = null; draw();
+      rotX = -0.48; rotY = 0.72; zoom = 1.0; panX = 0; panY = 0; hover = null; draw();
     }
     function project(p) {
       const [x, y, z] = p.nxyz;
+      const scale = Math.min(canvas.width, canvas.height) * 0.76 * zoom;
+      if (is2d) {                              // flat PC1/PC2, pan instead of rotate
+        return {
+          x: canvas.width / 2 + x * scale + panX,
+          y: canvas.height / 2 - y * scale + panY,
+          z: 0, s: 1,
+        };
+      }
       const cy = Math.cos(rotY), sy = Math.sin(rotY);
       const cx = Math.cos(rotX), sx = Math.sin(rotX);
       const x1 = x * cy + z * sy;
       const z1 = -x * sy + z * cy;
       const y1 = y * cx - z1 * sx;
       const z2 = y * sx + z1 * cx;
-      const scale = Math.min(canvas.width, canvas.height) * 0.76 * zoom;
       const persp = 1.25 / (1.25 + z2 * 0.42);
       return {
         x: canvas.width / 2 + x1 * scale * persp,
@@ -449,13 +448,15 @@
 
       ctx.strokeStyle = 'rgba(70, 78, 95, 0.16)';
       ctx.lineWidth = Math.max(1, window.devicePixelRatio || 1);
-      [[[-0.5,0,0],[0.5,0,0]], [[0,-0.5,0],[0,0.5,0]], [[0,0,-0.5],[0,0,0.5]]]
-        .forEach(axis => {
-          const a = project({ nxyz: axis[0] }), b = project({ nxyz: axis[1] });
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        });
+      const axes = is2d
+        ? [[[-0.5,0,0],[0.5,0,0]], [[0,-0.5,0],[0,0.5,0]]]
+        : [[[-0.5,0,0],[0.5,0,0]], [[0,-0.5,0],[0,0.5,0]], [[0,0,-0.5],[0,0,0.5]]];
+      axes.forEach(axis => {
+        const a = project({ nxyz: axis[0] }), b = project({ nxyz: axis[1] });
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      });
 
-      edges.forEach(e => {
+      if (showEdges) edges.forEach(e => {
         const a = byKey[e.from], b = byKey[e.to];
         if (!a || !b) return;
         const qa = projected.get(a.key), qb = projected.get(b.key);
@@ -498,9 +499,15 @@
     canvas.addEventListener('pointermove', e => {
       const rect = canvas.getBoundingClientRect();
       if (dragging) {
-        rotY += (e.clientX - lastX) * 0.012;
-        rotX += (e.clientY - lastY) * 0.012;
-        rotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotX));
+        if (is2d) {                            // 2D: drag pans the plane
+          const dpr = window.devicePixelRatio || 1;
+          panX += (e.clientX - lastX) * dpr;
+          panY += (e.clientY - lastY) * dpr;
+        } else {
+          rotY += (e.clientX - lastX) * 0.012;
+          rotX += (e.clientY - lastY) * 0.012;
+          rotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotX));
+        }
         lastX = e.clientX; lastY = e.clientY;
       } else {
         hover = nearest(e.clientX - rect.left, e.clientY - rect.top);
@@ -524,9 +531,11 @@
     return { setData, setEdges, setFilters, reset, resize };
   }
 
+  // Both scenes share the PCA embedding (classical MDS is identical to PCA under
+  // this Euclidean metric): a rotatable 3D view and a flat PC1/PC2 view.
   const space3dScenes = {
-    pca: makeSpace3dScene($('space3dPca'), $('space3dPcaMeta')),
-    mds: makeSpace3dScene($('space3dMds'), $('space3dMdsMeta')),
+    pca: makeSpace3dScene($('space3dPca'), $('space3dPcaMeta'), 3),
+    pca2d: makeSpace3dScene($('space3dPca2d'), $('space3dPca2dMeta'), 2),
   };
   function fmtVar(vals) {
     return vals.map(v => Math.round(v) + '%').join(' / ');
@@ -539,8 +548,9 @@
   function applySpace3dFilters() {
     const groups = selectedSpace3dGroups();
     const showHr = $('space3dHrToggle').checked;
-    space3dScenes.pca.setFilters(groups, showHr);
-    space3dScenes.mds.setFilters(groups, showHr);
+    const showEdges = $('space3dArrowsToggle').checked;
+    space3dScenes.pca.setFilters(groups, showHr, showEdges);
+    space3dScenes.pca2d.setFilters(groups, showHr, showEdges);
   }
   async function updateSpace3d() {
     const panel = $('space3dPanel'), grid = $('space3dGrid'), empty = $('space3dEmpty');
@@ -553,14 +563,15 @@
       grid.style.display = '';
       filters.style.display = '';
       empty.style.display = 'none';
+      const pca = j.embeddings.pca;
       space3dScenes.pca.setEdges(j.edges);
-      space3dScenes.mds.setEdges(j.edges);
-      space3dScenes.pca.setData(j.embeddings.pca);
-      space3dScenes.mds.setData(j.embeddings.mds);
+      space3dScenes.pca2d.setEdges(j.edges);
+      space3dScenes.pca.setData(pca);
+      space3dScenes.pca2d.setData(pca);
       applySpace3dFilters();
-      $('space3dPcaVar').textContent = 'variance ' + fmtVar(j.embeddings.pca.variance_pct);
-      $('space3dMdsVar').textContent = 'inertia ' + fmtVar(j.embeddings.mds.variance_pct);
-      setTimeout(() => { space3dScenes.pca.resize(); space3dScenes.mds.resize(); }, 0);
+      $('space3dPcaVar').textContent = 'variance ' + fmtVar(pca.variance_pct);
+      $('space3dPca2dVar').textContent = 'variance ' + fmtVar(pca.variance_pct.slice(0, 2));
+      setTimeout(() => { space3dScenes.pca.resize(); space3dScenes.pca2d.resize(); }, 0);
     } catch (e) {
       panel.style.display = 'none';
       grid.style.display = 'none';
@@ -568,16 +579,15 @@
       empty.style.display = '';
     }
   }
-  document.querySelectorAll('[data-space3d-group], #space3dHrToggle')
+  document.querySelectorAll('[data-space3d-group], #space3dHrToggle, #space3dArrowsToggle')
     .forEach(el => el.addEventListener('change', applySpace3dFilters));
   $('space3dReset').addEventListener('click', () => {
-    space3dScenes.pca.reset(); space3dScenes.mds.reset();
+    space3dScenes.pca.reset(); space3dScenes.pca2d.reset();
   });
 
   async function loadRun() {
     const gal = $('gallery');
     const msg = $('runMsg');
-    updateMorph(false);
     updateTransform(false);
     updateSpace3d();
     gal.classList.add('viz-loading');
@@ -754,7 +764,7 @@
     fd.set('tree_checkpoint', $('zbTree').value);
     startJob('/api/evaluation/run-zoobot', fd,
              'Zoobot: eval_results', $('runZoobotBtn'),
-             () => { loadRun(); updateMorph(true); });
+             () => { loadRun(); });
   });
 
   // ── Interactive lightbox ────────────────────────────────────────────────

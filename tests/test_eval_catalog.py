@@ -234,9 +234,13 @@ class TestEvaluationRoutes:
         assert "jobPanel" in body
         assert "fetchCatBtn" in body and "runSelect" not in body
         assert "Shared evaluation store" in body
+        # PCA shown in 3D and 2D side by side (MDS dropped — identical metric);
+        # the 2D plot is JS-drawn in the same panel, with group/HR/arrows toggles.
         assert "space3dPanel" in body and "space3dPca" in body
-        assert "space3dMds" in body
+        assert "space3dPca2d" in body and "space3dMds" not in body
         assert "space3dFilters" in body and "space3dHrToggle" in body
+        assert "space3dArrowsToggle" in body
+        assert "morphImg" not in body          # server PNG replaced by JS 2D PCA
         for group in ("A", "B", "C", "syn-lens", "syn-gal"):
             assert f'data-space3d-group="{group}"' in body
 
