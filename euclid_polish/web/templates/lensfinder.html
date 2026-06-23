@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Lens-finder · EuclidPolish{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h3>🔎 Lens-finder — does super-resolution surface more lenses?</h3>
+  <p class="muted" style="margin-top:0;">
+    Replicates the POLISH++ evaluation: finetune a Zoobot binary lens classifier
+    and compare its recovery on <b>LR vs SR vs HR</b> source-centered stamps,
+    reporting TPR-vs-Einstein-radius at a fixed false-positive rate. Run the three
+    FASRC steps below in order; field count / size live in the
+    <a href="{{ url_for('config_page') }}">Config</a> panel
+    (“Lens-finder dataset” section). Stamp / training knobs use sensible defaults
+    (stamp 128&nbsp;HR&nbsp;px, three LR/SR/HR heads). The final
+    TPR-vs-θ<sub>E</sub> plot is produced locally by
+    <code>scripts/lensfinder_evaluate.py</code> once the heads are synced down.
+  </p>
+  <p class="hint">
+    Pipeline: <code>lensfinder-data</code> (fields → <code>records_lensfinder</code>)
+    → <code>lensfinder-stamps</code> (SR + cut LR/SR/HR stamps)
+    → <code>lensfinder-train</code> (3 Zoobot heads, <code>EuclidPolishZoobot</code> env).
+  </p>
+</section>
+
+<section class="card">
+  <h4 style="margin:0 0 8px;">1 · Generate lens-finder fields</h4>
+  {% with step_id="lensfinder_generate" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h4 style="margin:0 0 8px;">2 · Build LR/SR/HR stamps</h4>
+  {% with step_id="lensfinder_build_stamps" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h4 style="margin:0 0 8px;">3 · Train the lens-finder (3 heads)</h4>
+  {% with step_id="lensfinder_train" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+{% endblock %}
