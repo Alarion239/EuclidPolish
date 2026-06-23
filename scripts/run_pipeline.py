@@ -18,6 +18,7 @@ All file paths and constants come from :mod:`euclid_polish.config`.
 from __future__ import annotations
 
 import argparse
+import glob
 import math
 import os
 import shutil
@@ -164,6 +165,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="Regenerate every subset from scratch, ignoring "
+                         "already-complete data on disk (default: resume — "
+                         "skip subsets whose records + sidecar are complete).")
     ap.add_argument("--stages-csv", default="",
                     help="Path to per-stage timings CSV. "
                          "Default: <records-dir>/stages_${SLURM_JOB_ID}.csv "
@@ -218,6 +223,12 @@ def step_generate(args: argparse.Namespace) -> None:
     done = 0
 
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
+        if not args.force and _subset_complete(
+                args.records_dir, subset, ("clean", "sources"), n):
+            done += n
+            _log(f"  {subset}: clean already complete ({n} records) — skipping")
+            reporter.set_step(done, grand_total, f"{subset} already complete")
+            continue
         # Entropy-seeded master RNG so repeat runs see fresh randomness.
         # The seed is logged so a curious-looking run can be replayed
         # later by hard-coding the printed value here.
@@ -283,6 +294,14 @@ def step_convolve(args: argparse.Namespace) -> None:
             _log(f"⚠️  {clean_path} not found, skipping {subset}")
             continue
 
+        n_expected = args.ntrain if subset == "train" else args.nvalid
+        if not args.force and _subset_complete(
+                args.records_dir, subset, ("hr", "dirty"), n_expected):
+            done += counts[subset]
+            _log(f"  {subset}: hr+dirty already complete — skipping")
+            reporter.set_step(done, grand_total, f"{subset} already complete")
+            continue
+
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
@@ -339,6 +358,69 @@ def _shard_bounds(n: int, n_shards: int) -> List[Tuple[int, int]]:
     """Contiguous ``[start, end)`` ranges partitioning ``[0, n)``."""
     return [(round(k * n / n_shards), round((k + 1) * n / n_shards))
             for k in range(n_shards)]
+
+
+# ---------------------------------------------------------------------------
+# Resume support: detect already-complete subsets so a resubmitted job only
+# generates what's left (e.g. a SLURM job killed after ``train`` finishes).
+# ---------------------------------------------------------------------------
+
+def _count_tfrecords(path: str) -> int | None:
+    """Number of examples in a TFRecord file, or None if it can't be read in
+    full. A missing file or a record truncated by a job killed mid-merge
+    (``tf.errors.DataLossError``) both return None — i.e. 'not complete'."""
+    if not os.path.exists(path):
+        return None
+    try:
+        return sum(1 for _ in tf.data.TFRecordDataset(path))
+    except tf.errors.DataLossError:
+        return None
+
+
+def _sources_complete(csv_path: str, expected_n: int) -> bool:
+    """True iff the source sidecar exists (expected_n <= 0 is trivially OK).
+
+    Sidecar rows are sparse — a field that renders no galaxies/lenses writes no
+    row — so a field_index-coverage check would false-flag a complete run whose
+    last field is empty. ``concat_source_csvs`` is atomic, so the final CSV only
+    ever exists in complete form; existence is therefore a sound signal. The
+    per-subset TFRecord count check is the authoritative guard."""
+    if expected_n <= 0:
+        return True
+    return os.path.exists(csv_path)
+
+
+def _subset_complete(records_dir: str, subset: str,
+                     kinds, expected_n: int) -> bool:
+    """True iff every TFRecord ``kind`` for ``subset`` has exactly ``expected_n``
+    records and, when 'sources' is requested, the sidecar exists. A count that
+    differs from ``expected_n`` (e.g. a resubmit with a different n) is treated
+    as incomplete, so the subset is regenerated to match the request."""
+    for kind in kinds:
+        if kind == "sources":
+            csv_path = tfrecord_path(records_dir, f"sources_{subset}").replace(
+                ".tfrecord", ".csv")
+            if not _sources_complete(csv_path, expected_n):
+                return False
+        else:
+            if _count_tfrecords(tfrecord_path(records_dir, f"{kind}_{subset}")) \
+                    != expected_n:
+                return False
+    return True
+
+
+def _cleanup_parts(records_dir: str, subset: str) -> None:
+    """Remove leftover per-shard part files for ``subset`` from a prior run.
+
+    Orphan parts survive when a resumed run uses a different shard count (the
+    merge only reads the freshly-computed parts list), wasting disk; deleting
+    them before regenerating keeps the records dir clean."""
+    for kind in ("clean", "hr", "dirty", "sources"):
+        for p in glob.glob(os.path.join(records_dir, f"{kind}_{subset}.part*")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
@@ -462,6 +544,12 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:
             continue
+        if not args.force and _subset_complete(
+                args.records_dir, subset,
+                ("clean", "hr", "dirty", "sources"), n):
+            _log(f"  {subset}: already complete ({n} records) — skipping")
+            continue
+        _cleanup_parts(args.records_dir, subset)
         # More shards than workers → finer progress + load balancing.
         # ~256 images/shard, but at least one shard per worker and never
         # more shards than images.

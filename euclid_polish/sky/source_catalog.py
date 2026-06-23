@@ -100,9 +100,14 @@ def read_sources(csv_path: str) -> Dict[int, List[Dict[str, Any]]]:
 
 
 def concat_source_csvs(part_paths: List[str], out_path: str) -> None:
-    """Concatenate shard CSVs (in the given order) into one, single header."""
+    """Concatenate shard CSVs (in the given order) into one, single header.
+
+    Atomic: build a sibling temp file then ``os.replace`` it into place, so a
+    crash mid-merge never leaves a truncated ``sources_<subset>.csv`` that a
+    resumed run would mistake for complete (see the resume design doc)."""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", newline="") as out:
+    tmp_path = out_path + ".tmp"
+    with open(tmp_path, "w", newline="") as out:
         out.write(",".join(SOURCE_COLS) + "\r\n")
         for p in part_paths:
             if not os.path.isfile(p):
@@ -111,3 +116,4 @@ def concat_source_csvs(part_paths: List[str], out_path: str) -> None:
                 next(f, None)                     # skip shard header
                 for line in f:
                     out.write(line)
+    os.replace(tmp_path, out_path)
