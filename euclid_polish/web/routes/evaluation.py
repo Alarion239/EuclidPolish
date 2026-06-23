@@ -312,6 +312,32 @@ def register(app):
             "zoobot: eval_results", cmd, {"run": "eval_results"})
         return jsonify({"ok": True, "job_id": job_id})
 
+    @app.route("/api/evaluation/run-lensfinder", methods=["POST"])
+    def api_evaluation_run_lensfinder():
+        """Score eval objects with the trained lens-finder heads LOCALLY (CPU).
+
+        Runs scripts/lensfinder_score_eval.py in the EuclidPolishZoobot env over
+        the shared store, writing ``lens_scores.csv`` (P(lens) per object/recon)
+        that the PCA opacity + lens-identification panel consume. Returns a job
+        id, or 400 with an install hint if the env is missing.
+        """
+        f = request.form
+        if not os.path.isdir(Config.EVAL_RESULTS_DIR):
+            return jsonify({"ok": False, "error": "eval_results not found"}), 404
+        py = _zoobot_python()
+        if py is None:
+            return jsonify({"ok": False, "error": (
+                "Zoobot env not found. Create it once with "
+                "`mamba env create -f environment-zoobot.yml`.")}), 400
+        heads = (f.get("heads_dir") or "").strip() or os.path.join(
+            Config.DATA_DIR, "lensfinder", "heads")
+        cmd = [py, os.path.join(_REPO_ROOT, "scripts", "lensfinder_score_eval.py"),
+               "--run-dir", Config.EVAL_RESULTS_DIR, "--heads-dir", heads,
+               "--device", "cpu"]
+        job_id = _spawn_subprocess_job(
+            "lensfinder: eval_results", cmd, {"run": "eval_results"})
+        return jsonify({"ok": True, "job_id": job_id})
+
     @app.route("/api/evaluation/runs")
     def api_evaluation_runs():
         run = request.args.get("run", "").strip()
@@ -467,6 +493,27 @@ def register(app):
         if fresh or not os.path.isfile(out_png):
             from euclid_polish.eval import zoobot_morph
             if zoobot_morph.render_transformation_summary(run_dir, out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/api/evaluation/lensfinder-summary")
+    def api_evaluation_lensfinder_summary():
+        """Render + serve the lens-identification analysis PNG.
+
+        404 until the lens-finder has scored this run (``lens_scores.csv``).
+        Cached to ``<run>/lensfinder_summary.png``; ``?fresh=1`` re-renders.
+        """
+        run = (request.args.get("run") or "").strip()
+        if _bad_run_arg(run):
+            abort(400)
+        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
+        if not os.path.isfile(os.path.join(run_dir, "lens_scores.csv")):
+            abort(404)
+        out_png = os.path.join(run_dir, "lensfinder_summary.png")
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            from euclid_polish.eval import lensfinder_eval
+            if lensfinder_eval.render_lensfinder_summary(run_dir, out_png) is None:
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

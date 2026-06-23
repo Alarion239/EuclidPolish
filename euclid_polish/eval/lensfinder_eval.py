@@ -1,0 +1,151 @@
+"""Consume ``lens_scores.csv`` on the /evaluation page (pure main env, no torch).
+
+``scripts/lensfinder_score_eval.py`` (torch env) writes one row per object with
+``P(lens)`` for the LR / SR / HR renders. Here we read those back to drive two
+things: the PCA marker opacity (``per_object_plens``) and the lens-identification
+analysis figure (``render_lensfinder_summary``) — SR-vs-LR shift, synthetic
+ROC/AUC, score histograms by group, and P(lens) vs expert grade.
+"""
+
+from __future__ import annotations
+
+import csv
+import math
+import os
+from typing import Any, Dict, List, Optional
+
+GROUPS = ("A", "B", "C", "syn-lens", "syn-gal")
+#: which render's score a morphology point uses, by its ``view``.
+VIEW_TO_RECON = {"before": "lr", "after": "sr", "hr": "hr"}
+
+
+def _f(v: Any) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def read_lens_scores(run_dir: str) -> List[Dict[str, Any]]:
+    """Read ``lens_scores.csv`` → ``[{id, grade, lr, sr, hr}]`` (empty if absent)."""
+    p = os.path.join(run_dir, "lens_scores.csv")
+    if not os.path.isfile(p):
+        return []
+    out: List[Dict[str, Any]] = []
+    with open(p, newline="") as f:
+        for r in csv.DictReader(f):
+            out.append({
+                "id": r.get("id", ""), "grade": r.get("grade", ""),
+                "lr": _f(r.get("p_lens_lr")), "sr": _f(r.get("p_lens_sr")),
+                "hr": _f(r.get("p_lens_hr")),
+            })
+    return out
+
+
+def per_object_plens(run_dir: str) -> Dict[str, Dict[str, float]]:
+    """``{object_id: {"lr": P, "sr": P, "hr": P}}`` for the embedding payload."""
+    out: Dict[str, Dict[str, float]] = {}
+    for r in read_lens_scores(run_dir):
+        out[r["id"]] = {k: r[k] for k in ("lr", "sr", "hr")}
+    return out
+
+
+def _finite_pairs(rows, key, labels=None):
+    """(values[, labels]) keeping only finite ``key`` entries."""
+    vals, labs = [], []
+    for i, r in enumerate(rows):
+        v = r[key]
+        if math.isfinite(v):
+            vals.append(v)
+            if labels is not None:
+                labs.append(labels[i])
+    return (vals, labs) if labels is not None else vals
+
+
+def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
+    """Render the 4-panel lens-identification figure → ``out_png`` (or None).
+
+    Panels: (1) SR-vs-LR P(lens) shift coloured by group, (2) synthetic ROC+AUC
+    for LR vs SR, (3) P(lens) histograms by group, (4) P(lens) vs expert grade.
+    Returns ``None`` when ``lens_scores.csv`` is absent.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from euclid_polish.eval.zoobot_morph import GROUP_COLORS, _group_color
+    from euclid_polish.lensfinder import metrics as lm
+
+    rows = read_lens_scores(run_dir)
+    if not rows:
+        return None
+
+    fig, ax = plt.subplots(2, 2, figsize=(11.5, 9.0))
+
+    # (1) SR vs LR shift — points above the diagonal mean SR raised P(lens).
+    a = ax[0, 0]
+    for g in GROUPS:
+        gr = [r for r in rows if r["grade"] == g
+              and math.isfinite(r["lr"]) and math.isfinite(r["sr"])]
+        if gr:
+            a.scatter([r["lr"] for r in gr], [r["sr"] for r in gr], s=14,
+                      alpha=0.6, color=_group_color(g), label=g, edgecolors="none")
+    a.plot([0, 1], [0, 1], ":", color="#999")
+    a.set_xlabel("P(lens) — LR (before)")
+    a.set_ylabel("P(lens) — SR (after)")
+    a.set_title("Does SR raise lens identifiability?")
+    a.set_xlim(-0.02, 1.02); a.set_ylim(-0.02, 1.02)
+    a.legend(fontsize=8, loc="lower right"); a.grid(alpha=0.2)
+
+    # (2) Synthetic ROC + AUC (syn-lens = positive, syn-gal = negative).
+    a = ax[0, 1]
+    syn = [r for r in rows if r["grade"] in ("syn-lens", "syn-gal")]
+    if syn:
+        for recon, color in (("lr", "#888888"), ("sr", "#2a5db0")):
+            pairs = [(r[recon], 1 if r["grade"] == "syn-lens" else 0)
+                     for r in syn if math.isfinite(r[recon])]
+            if len(pairs) >= 2 and len({p[1] for p in pairs}) == 2:
+                s = [p[0] for p in pairs]; y = [p[1] for p in pairs]
+                fpr, tpr, _ = lm.roc_curve(s, y)
+                a.plot(fpr, tpr, color=color,
+                       label=f"{recon.upper()} (AUC {lm.auc(fpr, tpr):.3f})")
+        a.plot([0, 1], [0, 1], ":", color="#bbb")
+    a.set_xlabel("False positive rate"); a.set_ylabel("True positive rate")
+    a.set_title("Synthetic lens vs galaxy — ROC")
+    a.legend(fontsize=9, loc="lower right"); a.grid(alpha=0.2)
+
+    # (3) P(lens) histograms by group (SR score).
+    a = ax[1, 0]
+    bins = np.linspace(0, 1, 21)
+    for g in GROUPS:
+        vals = _finite_pairs([r for r in rows if r["grade"] == g], "sr")
+        if vals:
+            a.hist(vals, bins=bins, histtype="step", linewidth=1.6,
+                   color=_group_color(g), label=g)
+    a.set_xlabel("P(lens) — SR"); a.set_ylabel("count")
+    a.set_title("Score distribution by group"); a.legend(fontsize=8); a.grid(alpha=0.2)
+
+    # (4) P(lens) vs expert grade for the real lenses (A/B/C).
+    a = ax[1, 1]
+    grades = ["A", "B", "C"]
+    data = [[r["sr"] for r in rows if r["grade"] == g and math.isfinite(r["sr"])]
+            for g in grades]
+    rng = np.random.default_rng(0)
+    for i, (g, d) in enumerate(zip(grades, data)):
+        if d:
+            x = i + 1 + (rng.random(len(d)) - 0.5) * 0.25
+            a.scatter(x, d, s=12, alpha=0.5, color=_group_color(g))
+            a.plot([i + 0.75, i + 1.25], [np.median(d)] * 2, color="#222", lw=2)
+    a.set_xticks([1, 2, 3]); a.set_xticklabels(grades)
+    a.set_xlabel("expert grade"); a.set_ylabel("P(lens) — SR")
+    a.set_title("Finder score vs expert grade"); a.set_ylim(-0.02, 1.02)
+    a.grid(alpha=0.2)
+
+    fig.suptitle("Lens identification — trained finder on the eval objects",
+                 fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+    fig.savefig(out_png, dpi=130)
+    plt.close(fig)
+    return out_png

@@ -313,6 +313,10 @@ def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
         return None
 
     grade_of = read_grade_map(run_dir)
+    # P(lens) per object/recon (if the lens-finder has scored this run) drives
+    # the PCA marker opacity. Imported lazily to avoid a module-load cycle.
+    from euclid_polish.eval.lensfinder_eval import VIEW_TO_RECON, per_object_plens
+    plens_by_obj = per_object_plens(run_dir)
     view_rank = {"before": 0, "after": 1, "hr": 2}
     rows = []
     for idx, raw in enumerate(ids):
@@ -320,12 +324,17 @@ def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
         if not sep:
             obj, view = raw, "vector"
         group = grade_of.get(obj, "")
+        recon = VIEW_TO_RECON.get(view)
+        pl = plens_by_obj.get(obj, {}).get(recon) if recon else None
+        if isinstance(pl, float) and pl != pl:           # NaN → null for JSON
+            pl = None
         rows.append({
             "key": raw,
             "id": obj,
             "view": view,
             "group": group,
             "color": _group_color(group),
+            "plens": pl,
             "_idx": idx,
         })
     rows.sort(key=lambda r: (r["id"], view_rank.get(r["view"], 99), r["view"]))

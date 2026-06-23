@@ -167,6 +167,16 @@
   </div>
 </details>
 
+<details id="lensfinderPanel" class="card" style="grid-column:1/-1; display:none;" open>
+  <summary><b>Lens identification</b>
+    <span class="muted">— trained lens-finder P(lens) on the eval objects
+      (SR-vs-LR shift · synthetic ROC · score histograms · vs expert grade)</span>
+    <button id="lensfinderReplot" class="secondary" type="button"
+            style="margin-left:10px;">↻ re-plot</button></summary>
+  <img id="lensfinderImg" alt="lens identification summary"
+       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
+</details>
+
 {# The per-object image grid is heavy, so keep it collapsed under one panel
    (the analysis panels above are the headline); expand to browse the tiles. #}
 <details id="galleryPanel" class="card" style="grid-column:1/-1;">
@@ -282,6 +292,15 @@
       <code>EuclidPolishZoobot</code> env on CPU; writes the morphology Δ into
       the shared store, shown in the gallery.</span>
   </div>
+  <div style="margin-top:10px;">
+    <button id="runLensfinderBtn" type="button">🔎 Run lens-finder</button>
+    <input id="lfHeadsDir" type="text"
+           placeholder="heads dir (default data/lensfinder/heads)"
+           style="margin-left:8px; width:300px;">
+    <span class="hint" style="margin-left:8px;">Scores each object's LR/SR/HR with
+      the trained heads → <code>lens_scores.csv</code> (drives the PCA opacity +
+      the lens-identification panel).</span>
+  </div>
 </section>
 
 {# Shared live progress + log panel for whichever local job is running. #}
@@ -335,8 +354,12 @@
   }
   const updateTransform = (fresh) =>
     updateSummary('transformPanel', 'transformImg', '/api/evaluation/transformation', fresh);
+  const updateLensfinder = (fresh) =>
+    updateSummary('lensfinderPanel', 'lensfinderImg', '/api/evaluation/lensfinder-summary', fresh);
   $('transformReplot').addEventListener('click',
     () => updateTransform(true));
+  $('lensfinderReplot').addEventListener('click',
+    () => updateLensfinder(true));
 
   function makeSpace3dScene(canvas, metaEl, dims) {
     const ctx = canvas.getContext('2d');
@@ -422,6 +445,10 @@
     }
     function drawMarker(p, q) {
       const size = (p.view === 'hr' ? 8 : 5.5) * q.s * (window.devicePixelRatio || 1);
+      // Opacity ∝ P(lens) when the lens-finder has scored this run (a floor
+      // keeps low-probability points faintly visible); opaque when unscored.
+      ctx.globalAlpha = (p.plens == null)
+        ? 1.0 : Math.max(0.12, Math.min(1.0, 0.12 + 0.88 * p.plens));
       ctx.lineWidth = Math.max(1.2, 1.4 * (window.devicePixelRatio || 1));
       ctx.strokeStyle = p.color || '#666';
       ctx.fillStyle = p.color || '#666';
@@ -440,6 +467,7 @@
       } else {
         ctx.beginPath(); ctx.arc(q.x, q.y, size, 0, Math.PI * 2); ctx.fill();
       }
+      ctx.globalAlpha = 1.0;
     }
     function draw() {
       if (!ctx) return;
@@ -595,6 +623,7 @@
     const gal = $('gallery');
     const msg = $('runMsg');
     updateTransform(false);
+    updateLensfinder(false);
     updateSpace3d();
     gal.classList.add('viz-loading');
     msg.textContent = 'loading…';
@@ -774,6 +803,14 @@
     startJob('/api/evaluation/run-zoobot', fd,
              'Zoobot: eval_results', $('runZoobotBtn'),
              () => { loadRun(); });
+  });
+
+  $('runLensfinderBtn').addEventListener('click', () => {
+    const fd = new FormData();
+    fd.set('heads_dir', $('lfHeadsDir').value);
+    startJob('/api/evaluation/run-lensfinder', fd,
+             'Lens-finder: eval_results', $('runLensfinderBtn'),
+             () => { updateSpace3d(); updateLensfinder(true); });
   });
 
   // ── Interactive lightbox ────────────────────────────────────────────────
