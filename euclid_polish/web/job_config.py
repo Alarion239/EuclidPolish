@@ -39,6 +39,16 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
                                 "lens_density_arcmin2": "lens_density_arcmin2",
                                 "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
                                 "lens_sigma_v_max_kms": "lens_sigma_v_max_kms"},
+    "lensfinder_generate":     {"n_train": "lensfinder_n_fields",
+                                "n_valid": "lensfinder_n_valid",
+                                "image_size": "lensfinder_image_size",
+                                "star_density_arcmin2": "star_density_arcmin2",
+                                "star_mag_slope": "star_mag_slope",
+                                "star_mag_bright": "star_mag_bright",
+                                "star_mag_faint": "star_mag_faint",
+                                "lens_density_arcmin2": "lens_density_arcmin2",
+                                "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
+                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms"},
 }
 
 
@@ -91,6 +101,13 @@ class JobConfig:
     lens_density_arcmin2: float = Config.LENS_DENSITY_ARCMIN2
     lens_sigma_v_min_kms: float = Config.LENS_SIGMA_V_MIN_KMS
     lens_sigma_v_max_kms: float = Config.LENS_SIGMA_V_MAX_KMS
+    # Lens-finder dataset: fewer, bigger fields generated into a dedicated
+    # records dir (``data/images/records_lensfinder``) so the main 6400×510
+    # training set is never clobbered. Stamps for the SR-vs-LR lens-finder are
+    # cut from these. (Reuses the star/lens-density knobs above.)
+    lensfinder_n_fields:   int = 800
+    lensfinder_n_valid:    int = 80
+    lensfinder_image_size: int = 2040
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
