@@ -529,3 +529,33 @@ class TestLocalRunRoutes:
         os.makedirs(Config.EVAL_RESULTS_DIR, exist_ok=True)
         assert client.post("/api/evaluation/run-zoobot",
                            data={"run": "nope"}).status_code == 404
+
+
+class TestSyntheticCutouts:
+    def test_select_central_source_picks_closest_fitting(self):
+        from euclid_polish.eval import synthetic_runner as sr
+        srcs = [
+            {"type": "galaxy", "x_pix": 128.0, "y_pix": 128.0},  # center, fits
+            {"type": "galaxy", "x_pix": 130.0, "y_pix": 131.0},  # near center
+            {"type": "galaxy", "x_pix": 5.0,   "y_pix": 5.0},    # edge, rejected
+            {"type": "lens",   "x_pix": 128.0, "y_pix": 128.0},  # wrong type
+        ]
+        pick = sr.select_central_source(srcs, "galaxy", field=256, m=64)
+        assert pick is not None and pick["x_pix"] == 128.0
+
+    def test_select_central_source_rejects_all_when_edge(self):
+        from euclid_polish.eval import synthetic_runner as sr
+        srcs = [{"type": "lens", "x_pix": 10.0, "y_pix": 10.0}]
+        assert sr.select_central_source(srcs, "lens", field=256, m=64) is None
+
+    def test_crop_stamp_hr_and_lr(self):
+        import numpy as np
+        from euclid_polish.eval import synthetic_runner as sr
+        hr = np.arange(256 * 256, dtype=np.float32).reshape(256, 256)
+        stamp = sr.crop_stamp(hr, cx=128.0, cy=100.0, m=64)
+        assert stamp.shape == (64, 64)
+        # center (cx,cy) maps to rows [cy-32:cy+32], cols [cx-32:cx+32]
+        assert stamp[0, 0] == hr[68, 96]
+        lr = np.arange(128 * 128, dtype=np.float32).reshape(128, 128)
+        lstamp = sr.crop_stamp(lr, cx=64.0, cy=50.0, m=32)
+        assert lstamp.shape == (32, 32)
