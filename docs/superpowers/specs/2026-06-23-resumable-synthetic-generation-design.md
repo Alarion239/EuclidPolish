@@ -71,9 +71,16 @@ def _count_tfrecords(path: str) -> int | None:
     """
 
 def _sources_complete(csv_path: str, expected_n: int) -> bool:
-    """True iff the source sidecar covers field_index 0..expected_n-1.
+    """True iff the source sidecar exists (expected_n <= 0 is trivially OK).
 
-    Checks max(field_index) + 1 == expected_n (catches a half-written CSV).
+    The sidecar's rows are SPARSE — a field that renders no galaxies/lenses
+    writes no row — so a max(field_index) check would false-flag a complete
+    run whose last field is empty. Instead the sources merge is made ATOMIC
+    (write temp + os.replace, see concat_source_csvs change below), so the
+    final CSV only ever exists in complete form and existence is a sound
+    completeness signal. The per-subset TFRecord count check is the
+    authoritative guard; this just catches the kill-between-TFRecord-merge-
+    and-sources-merge window (final CSV absent).
     """
 
 def _subset_complete(records_dir: str, subset: str,
@@ -93,6 +100,16 @@ def _subset_complete(records_dir: str, subset: str,
 `expected_n` is `args.ntrain` for `train`, `args.nvalid` for `validate`. A
 complete-but-wrong-count subset (resubmit with a different `n`) fails the count
 check and is regenerated — on-disk data always matches the requested `n`.
+
+### Atomic sources merge
+
+`concat_source_csvs` (`euclid_polish/sky/source_catalog.py`) currently streams
+directly to its final path. Change it to write a sibling temp file and
+`os.replace` it into place on success (the atomic-write pattern already used by
+`StarCatalog.save`). This guarantees the final `sources_{subset}.csv` is only ever
+observed complete, which is what makes the existence-based `_sources_complete`
+check sound. The TFRecord merge (`_concat_tfrecords`) needs no such change — a
+truncated TFRecord is already caught by the record-count check.
 
 ### Stale shard cleanup
 
@@ -148,8 +165,10 @@ Extend `tests/test_run_pipeline_parallel.py` (uses `TinyCosmosCatalog`,
 
 - **Unit** — `_count_tfrecords`: normal count; missing file → `None`; truncated
   file (write a valid TFRecord, chop trailing bytes) → `None`.
-- **Unit** — `_sources_complete`: full sidecar → `True`; sidecar missing the last
-  field_index → `False`; missing file → `False`.
+- **Unit** — `_sources_complete`: existing sidecar → `True`; missing file →
+  `False`; `expected_n <= 0` → `True` regardless.
+- **Unit** — `concat_source_csvs` is atomic: a sparse sidecar (a field with no
+  rows) still merges correctly, and the merged file appears only on success.
 - **Unit** — `_subset_complete`: all kinds at expected_n → `True`; one kind short
   → `False`; count `!=` expected → `False`.
 - **Unit** — `_cleanup_parts`: removes only `*_{subset}.part*`, leaves final files
@@ -165,9 +184,13 @@ Extend `tests/test_run_pipeline_parallel.py` (uses `TinyCosmosCatalog`,
 
 - **Truncated final file (mid-merge kill):** handled — `_count_tfrecords` returns
   `None` on `DataLossError`, so the subset is regenerated.
-- **Partial sidecar but complete TFRecords (kill in the merge window between
-  TFRecord concat and CSV concat):** handled — `sources` is in the parallel path's
-  `kinds`, so an incomplete sidecar marks the subset incomplete.
+- **Kill in the merge window between TFRecord concat and CSV concat:** handled —
+  the sources merge is atomic, so the final sidecar is absent (not partial) until
+  it completes; `sources` is in the parallel path's `kinds`, so its absence marks
+  the subset incomplete.
+- **Sparse sidecar rows (a field with no rendered sources):** handled — the
+  sources check is existence-based, not a field_index-coverage count, so a
+  complete run whose last field is empty is not false-flagged.
 - **Resubmit with a different `--ntrain/--nvalid`:** count mismatch ⇒ regenerate.
 - **`_count_tfrecords` cost:** one streaming pass per final file on resume only;
   `step_convolve` already does this at `:275`, so the cost is acceptable.
