@@ -69,8 +69,49 @@ def _frames(rows, recon):
     return _df("train"), _df("val"), _df("test")
 
 
-def _train_one(recon, rows, args, reporter):
+def _make_reporter_bridge(L, reporter, recon, max_epochs, step_offset):
+    """A Lightning callback that forwards loss to the FASRC events stream.
+
+    Zoobot/Lightning log loss to their own logger; the WebUI loss plot reads
+    ``reporter.metric`` events instead — so on each validation epoch we pull the
+    train/val loss out of ``trainer.callback_metrics`` and emit one metric
+    sample (``step`` is offset per head so the three heads form one monotonic
+    curve) plus a per-epoch progress tick. Hooked on ``on_train_epoch_end`` —
+    which fires after validation, so both the aggregated train loss and the val
+    loss are present, and the pre-training sanity-check pass is skipped.
+    """
+    class _ReporterBridge(L.Callback):
+        def on_train_epoch_end(self, trainer, pl_module):
+            cm = trainer.callback_metrics
+
+            def _pick(is_val):
+                for k, v in cm.items():
+                    kl = k.lower()
+                    if "loss" in kl and (("val" in kl) == is_val):
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return None
+                return None
+
+            tl, vl = _pick(False), _pick(True)
+            row = {"step": step_offset + int(trainer.global_step),
+                   "recon": recon, "epoch": int(trainer.current_epoch)}
+            if tl is not None:
+                row["loss"] = tl
+            if vl is not None:
+                row["val_loss"] = vl
+            if tl is not None or vl is not None:     # only emit real loss points
+                reporter.metric(row)
+            reporter.set_step(int(trainer.current_epoch) + 1, max_epochs,
+                              f"{recon} epoch")
+
+    return _ReporterBridge()
+
+
+def _train_one(recon, rows, args, reporter, step_offset):
     """Train + test one reconstruction head. Returns its metrics dict."""
+    import lightning as L
     import pandas as pd
     from galaxy_datasets.transforms import (default_view_config,
                                             get_galaxy_transform,
@@ -108,6 +149,8 @@ def _train_one(recon, rows, args, reporter):
     trainer = finetune.get_trainer(
         save_dir=out, max_epochs=args.epochs, patience=args.patience,
         devices=1, accelerator=args.device)
+    trainer.callbacks.append(
+        _make_reporter_bridge(L, reporter, recon, args.epochs, step_offset))
     trainer.fit(model, dm)
 
     # Predict P(lens) on the held-out test split.
@@ -122,7 +165,7 @@ def _train_one(recon, rows, args, reporter):
     else:
         pd.DataFrame(columns=["id_str", *_PRED_COLS]).to_csv(pred_csv, index=False)
     return {"recon": recon, "n_train": len(df_train), "n_test": len(df_test),
-            "predictions": pred_csv}
+            "predictions": pred_csv, "global_step": int(trainer.global_step)}
 
 
 def main(argv=None) -> int:
@@ -134,9 +177,12 @@ def main(argv=None) -> int:
     print(f"catalog {args.catalog}: {len(rows)} rows; training heads {recons}")
 
     results = []
+    step_offset = 0
     for recon in recons:
         reporter.set_stage(f"training {recon} head")
-        results.append(_train_one(recon, rows, args, reporter))
+        res = _train_one(recon, rows, args, reporter, step_offset)
+        step_offset += res["global_step"]        # heads share one monotonic axis
+        results.append(res)
     for r in results:
         print(f"  ✓ {r['recon']}: {r['n_train']} train, {r['n_test']} test "
               f"→ {r['predictions']}")

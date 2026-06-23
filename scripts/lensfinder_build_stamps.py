@@ -30,6 +30,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.lensfinder import catalog as lf_catalog
 from euclid_polish.lensfinder import stamps as lf_stamps
+from euclid_polish.observability.reporter import Reporter
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -62,6 +63,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
+    reporter = Reporter.from_env()
 
     import numpy as np
     from tqdm import tqdm
@@ -100,13 +102,16 @@ def main(argv=None) -> int:
     field = int(np.asarray(hr_recs[0].data, np.float32).shape[0])
     print(f"{len(common)} fields, HR field {field}px, stamp {m}px HR")
 
+    reporter.set_stage(f"loading SR model from {args.checkpoint}")
     model = load_model_from_checkpoint(
         args.checkpoint, Config.DEFAULT_REBIN_FACTOR, args.num_res_blocks,
         nchan_out=Config.NUM_HR_CHANNELS)
 
+    reporter.set_stage(f"cutting stamps from {len(common)} fields")
     rows = []
     n_lens = n_gal = 0
-    for idx in tqdm(common, desc="fields"):
+    for i, idx in enumerate(tqdm(common, desc="fields")):
+        reporter.set_step(i, len(common), f"field {idx}")
         lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)
         hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
         _, sr = reconstruct(model, lr_cube)
@@ -146,10 +151,13 @@ def main(argv=None) -> int:
                 n_gal += stype == "galaxy"
         del sr, hr_raw, lr_cube
 
+    reporter.set_step(len(common), len(common), "done")
     lf_catalog.assign_splits(rows, val_frac=args.val_frac,
                              test_frac=args.test_frac, seed=args.seed)
     out_csv = os.path.join(args.out_dir, "catalog.csv")
     lf_catalog.write_catalog(out_csv, rows)
+    reporter.metric({"fields": len(common), "lens": n_lens, "galaxy": n_gal,
+                     "stamps": len(rows)})
     print(f"\n✓ {n_lens} lens + {n_gal} galaxy sources → {len(rows)} stamps "
           f"({len(rows)//3} per recon) → {out_csv}")
     return 0
