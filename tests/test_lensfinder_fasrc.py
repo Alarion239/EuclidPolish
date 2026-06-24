@@ -29,8 +29,16 @@ def test_train_step_uses_zoobot_env_gpu():
 
 def test_build_command_honors_params():
     s = REGISTRY.get("lensfinder_build_stamps")
-    cmd = s.build_command({"stamp_m": 256, "max_fields": 50})
-    assert "256" in cmd and "--max-fields" in cmd and "50" in cmd
+    cmd = s.build_command({"stamp_m": 200, "max_fields": 50})
+    assert "200" in cmd and "--max-fields" in cmd and "50" in cmd
+
+
+def test_build_stamps_defaults_106_and_drops_checkpoint():
+    s = REGISTRY.get("lensfinder_build_stamps")
+    cmd = s.build_command({})
+    assert cmd[cmd.index("--stamp-m") + 1] == "106"      # 424/4
+    assert "--checkpoint" not in cmd                     # moved to sr_infer
+    assert "--num-res-blocks" not in cmd
 
 
 def test_generate_step_uses_dedicated_records_dir():
@@ -60,6 +68,18 @@ def test_train_step_emits_patience_param():
     s = REGISTRY.get("lensfinder_train")
     cmd = s.build_command({"patience": 9})
     assert cmd[cmd.index("--patience") + 1] == "9"
+
+
+def test_sr_infer_step_is_gpu_main_env():
+    s = REGISTRY.get("lensfinder_sr_infer")
+    assert s.needs_gpu is True and s.defaults.partition == "gpu"
+    assert s.defaults.n_gpus == 1
+    assert s.conda_env is None                     # SR inference -> main TF env
+    assert s.job_name == "lensfinder-sr-infer"
+    cmd = s.build_command({"checkpoint": "ckpt/x", "num_res_blocks": 8})
+    assert cmd[0] == "scripts/lensfinder_sr_infer.py"
+    assert cmd[cmd.index("--checkpoint") + 1] == "ckpt/x"
+    assert cmd[cmd.index("--num-res-blocks") + 1] == "8"
 
 
 def test_train_step_receives_config_training_knobs():

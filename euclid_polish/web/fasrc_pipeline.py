@@ -1206,12 +1206,49 @@ class LensfinderBuildStampsStep(FASRCPipelineStep):
                                             "data/images/records_lensfinder")),
             "--subset", str(params.get("subset", "train")),
             "--out-dir", str(params.get("out_dir", "data/lensfinder/stamps")),
-            "--stamp-m", str(int(params.get("stamp_m", 128))),
+            "--stamp-m", str(int(params.get("stamp_m", 106))),   # 424/4; LR = 53
             "--neg-per-lens", str(int(params.get("neg_per_lens", 2))),
         ]
+        for key, flag in (("png_size", "--png-size"),
+                          ("max_fields", "--max-fields"),
+                          ("lupton_stretch", "--lupton-stretch"),
+                          ("lupton_q", "--lupton-q")):
+            v = params.get(key)
+            if v not in (None, ""):
+                cmd += [flag, str(v)]
+        return cmd
+
+
+class LensfinderSRInferStep(FASRCPipelineStep):
+    """Run SR over lens-finder fields, persist sr_{subset} records (GPU, main TF env).
+
+    The GPU half of the (former) fused stamp build: one forward pass per field,
+    written to ``sr_{subset}.tfrecord`` for the CPU ``lensfinder_build_stamps``
+    step to crop. Resumable (skips a complete subset)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="lensfinder_sr_infer",
+            label="Lens-finder SR inference (GPU, PyTorch-free TF)",
+            job_name="lensfinder-sr-infer",
+            defaults=StepResources(
+                partition="gpu", n_cpus=8, n_gpus=1,
+                memory="48G", time_limit="6:00:00",
+            ),
+            needs_gpu=True,
+        )
+
+    def build_command(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [
+            "scripts/lensfinder_sr_infer.py",
+            "--records-dir", str(params.get("records_dir",
+                                            "data/images/records_lensfinder")),
+        ]
+        sub = str(params.get("subset", "")).strip()
+        if sub:
+            cmd += ["--subset", sub]
         for key, flag in (("checkpoint", "--checkpoint"),
-                          ("num_res_blocks", "--num-res-blocks"),
-                          ("max_fields", "--max-fields")):
+                          ("num_res_blocks", "--num-res-blocks")):
             v = params.get(key)
             if v not in (None, ""):
                 cmd += [flag, str(v)]
@@ -1281,6 +1318,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     SyntheticGenerateStep,
     HSTTrainStep,
     LensfinderGenerateStep,
+    LensfinderSRInferStep,
     LensfinderBuildStampsStep,
     LensfinderTrainStep,
 )
