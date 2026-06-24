@@ -115,6 +115,13 @@ def main(argv=None) -> int:
             reporter.set_step(i + 1, len(objects), f"{recon} {obj['id']}")
         if not rows:
             continue
+        # The render loop above reports per-object STEPs; the predict below runs
+        # the whole batch through the head as one call with no per-step output,
+        # so flag the start of that (slow, silent) phase explicitly.
+        reporter.set_stage(f"{recon}: scoring {len(rows)} stamps through the head")
+        print(f"  · {recon}: rendered {len(rows)} stamps; running them through "
+              f"the head on {args.device} (no per-step bar — this is the slow "
+              f"part)…", flush=True)
         model = finetune.FinetuneableZoobotClassifier.load_from_checkpoint(ckpt)
         preds = predict_on_catalog.predict(
             catalog=pd.DataFrame(rows), model=model, label_cols=_PRED_COLS,

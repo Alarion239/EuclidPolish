@@ -32,6 +32,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import tempfile
 import threading as _t
 import time
@@ -1401,6 +1402,12 @@ def register(app):
 
         try:
             resp = _build_training_status()
+        except subprocess.TimeoutExpired:
+            # FASRC login-node / ControlMaster lag — transient and expected.
+            # Don't dump a full traceback on every ~3 s heartbeat; one quiet line.
+            print("[training-status] FASRC poll timed out — retry next tick")
+            resp = jsonify({"ok": False, "error": "fasrc poll timed out",
+                            "transient": True}), 200
         except Exception as e:
             traceback.print_exc()
             resp = jsonify({
