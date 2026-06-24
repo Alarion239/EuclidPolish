@@ -2,45 +2,18 @@
 {% block title %}Sky · EuclidPolish{% endblock %}
 
 {% block toolbar %}
-<div class="toolbar">
-  <span class="toolbar-label">Type</span>
-  {# No separate "HR target" chip: since the 4-band-output change the hr
-     record is the clean 4-band sky (trimmed to the rebin multiple), so
-     the clean view shows the training target. #}
-  <a class="chip" data-group="kind" data-value="clean">clean (4-band)</a>
-  <a class="chip" data-group="kind" data-value="dirty">dirty (4-band LR)</a>
-  <span class="toolbar-label">Subset</span>
-  <a class="chip" data-group="subset" data-value="train">train</a>
-  <a class="chip" data-group="subset" data-value="validate">validate</a>
-  <span class="toolbar-label">Band</span>
-  {% for n in ('VIS', 'Y_E', 'J_E', 'H_E') %}
-    <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
-  {% endfor %}
-  <a class="chip" data-group="band" data-value="color"
-     title="4-band color composite (pick the rendering with the mode chips)">🎨 color</a>
-  <span class="toolbar-label">Color mode</span>
-  <a class="chip" data-group="cmode" data-value="calibrated"
-     title="Solar-balanced, per-image [p1, p99.5] adaptive windows — auto-adapts to each record's depth (good for browsing).">🎨 solar</a>
-  <a class="chip" data-group="cmode" data-value="eye"
-     title="PHYSICAL mode: per-pixel blackbody temperature → CIE Planckian-locus hue, absolute brightness — colors read like the night sky (Sun-like ≈ white, cool ≈ orange, hot ≈ blue) and are directly comparable across records. Shows a blackbody-T legend.">👁 eye</a>
-  <span class="toolbar-label">Index</span>
-  <button class="chip" id="idx-prev">‹</button>
-  <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
-  <button class="chip" id="idx-next">›</button>
-</div>
+<h2>Sky records</h2>
 {% endblock %}
 
 {% block viz %}
-<div class="viz-area">
-  <img id="viz-img" alt="sky record sample">
-  <div class="placeholder">No records on disk yet — generate sky data first.</div>
-</div>
+{# ── Unified cutout viewer: multi-band TFRecords (LR/HR tiers) ── #}
+<div id="cutout-viewer"></div>
 <p class="hint" style="margin-top: 8px;">
   <a id="inspect-link" href="#" target="_blank">
     🔬 Inspect this image as FITS (header + download)
   </a>
   <span class="muted" id="inspect-disabled" style="display:none;">
-    — color view has no single-band FITS; pick a band first
+    — colour view has no single-band FITS; pick a band first
   </span>
 </p>
 
@@ -71,76 +44,30 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-let totals = { clean_train: 0, clean_validate: 0, dirty_train: 0, dirty_validate: 0 };
-let curIdx = 0;
-
-function maxIdx() {
-  const k = polishUI.viz.get("kind");
-  const s = polishUI.viz.get("subset");
-  return Math.max(0, (totals[`${k}_${s}`] || 0) - 1);
-}
-function clampIdx(i) {
-  const m = maxIdx();
-  return Math.max(0, Math.min(i, m));
-}
-function setIdx(i) {
-  curIdx = clampIdx(i);
-  document.getElementById("idx-display").textContent = `${curIdx} / ${maxIdx()}`;
-  polishUI.viz.set("i", curIdx);
-}
-
-async function refreshTotals() {
-  try {
-    const r = await fetch("/api/sky/totals");
-    totals = await r.json();
-    setIdx(curIdx);   // re-clamp + re-render label
-  } catch (e) {}
-}
-
-function updateInspectLink() {
-  const subset = polishUI.viz.get("subset");
-  const kind   = polishUI.viz.get("kind");
-  const band   = polishUI.viz.get("band");
-  const i      = polishUI.viz.get("i");
-  const link   = document.getElementById("inspect-link");
-  const note   = document.getElementById("inspect-disabled");
-  if (!link) return;
-  // Color view is a composite — no single-band FITS for it.
-  const inspectable = band !== "color";
-  link.style.display = inspectable ? "" : "none";
-  note.style.display = inspectable ? "none" : "";
-  if (inspectable) {
-    link.href = `/sky/inspect?subset=${subset}&kind=${kind}&band=${band}&i=${i}`;
-  }
-}
-
-polishUI.viz.bind({
-  imgId:     "viz-img",
-  toolbarId: null,
-  buildUrl:  (sel) => {
-    // Side-effect: keep the inspect link in sync with the viewer state.
-    setTimeout(updateInspectLink, 0);
-    return `/view/sky?subset=${sel.subset}&kind=${sel.kind}&band=${sel.band}`
-         + `&i=${sel.i}&cmode=${sel.cmode}`;
+<script type="module">
+// ── Unified cutout viewer (multi-band sky TFRecords) ─────────────────
+import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
+const inspect = document.getElementById("inspect-link");
+const note    = document.getElementById("inspect-disabled");
+// Tier key → /sky/inspect "kind" arg (LR=dirty, HR=clean, target=hr).
+window.__skyViewer = mountCutoutViewer(document.getElementById("cutout-viewer"), {
+  collection: "sky",
+  params: { subset: "validate" },
+  paramControls: [{
+    key: "subset", label: "Subset",
+    options: [{ value: "validate", label: "validate" }, { value: "train", label: "train" }],
+  }],
+  onChange: (s) => {
+    if (!inspect) return;
+    const composite = ["lupton", "temp"].includes(s.color);
+    inspect.style.display = composite ? "none" : "";
+    if (note) note.style.display = composite ? "" : "none";
+    if (!composite) {
+      inspect.href = `/sky/inspect?subset=${s.params.subset}&kind=${s.tier}`
+                   + `&band=${s.color}&i=${s.index}`;
+    }
   },
-  initial:   { kind: "clean", subset: "validate", band: "VIS", i: 0,
-               cmode: "calibrated" },
 });
-updateInspectLink();
-
-// Wire the toolbar chips (kind / subset / band)
-document.querySelector(".toolbar").addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip[data-group]");
-  if (!chip) return;
-  e.preventDefault();
-  if (chip.dataset.group === "i") return;   // index display; not a switcher
-  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
-  setIdx(curIdx);  // ensures index display updates (max may change with kind/subset)
-});
-
-document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
-document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
 
 // Sync the FASRC records into the local cache, then refresh the preview.
 document.getElementById("sky-sync-form").addEventListener("submit", async (e) => {
@@ -153,7 +80,7 @@ document.getElementById("sky-sync-form").addEventListener("submit", async (e) =>
     if (d.ok) {
       const n = Object.values(d.files).filter(f => f.ok).length;
       statusEl.innerHTML = `<p>✓ synced ${n} shard(s).</p>`;
-      refreshTotals().then(() => polishUI.viz.refresh());
+      if (window.__skyViewer) window.__skyViewer.reload();
     } else {
       statusEl.innerHTML = `<p>✗ sync failed (nothing pulled). Generate on FASRC first?</p>`;
     }
@@ -161,7 +88,5 @@ document.getElementById("sky-sync-form").addEventListener("submit", async (e) =>
     statusEl.innerHTML = `<p>✗ ${err}</p>`;
   }
 });
-
-refreshTotals();
 </script>
 {% endblock %}

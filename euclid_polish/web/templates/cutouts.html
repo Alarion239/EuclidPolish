@@ -2,25 +2,12 @@
 {% block title %}Cutouts · EuclidPolish{% endblock %}
 
 {% block toolbar %}
-<div class="toolbar">
-  <span class="toolbar-label">Band</span>
-  {% for n in ('VIS', 'Y_E', 'J_E', 'H_E') %}
-    <a class="chip" data-group="band" data-value="{{ n }}">{{ n }}</a>
-  {% endfor %}
-  <span class="toolbar-label">Star</span>
-  <button class="chip" id="idx-prev">‹</button>
-  <span class="chip active" id="idx-display" data-group="i" data-value="0">0</span>
-  <button class="chip" id="idx-next">›</button>
-</div>
+<h2>Star cutouts</h2>
 {% endblock %}
 
 {% block viz %}
-{# ── Star navigator (valid in all 4 bands) — saved locally on first view ── #}
-<div class="viz-area">
-  <img id="viz-img" alt="star cutout">
-  <div class="placeholder">No stars valid in all 4 bands yet — download
-    cutouts below, then the integrity pass marks the valid ones.</div>
-</div>
+{# ── Unified cutout viewer: real Euclid stars valid in all 4 bands ── #}
+<div id="cutout-viewer"></div>
 <p class="hint" style="margin-top: 8px;">
   <a id="inspect-link" href="#" target="_blank">
     🔬 Inspect this cutout as FITS (header + download)
@@ -86,53 +73,21 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-// ── Star navigator (valid in all 4 bands) ───────────────────────────
-let totals = { count: {{ n_valid }} };
-let curIdx = 0;
-
-function maxIdx() { return Math.max(0, (totals.count || 0) - 1); }
-function setIdx(i) {
-  curIdx = Math.max(0, Math.min(i, maxIdx()));
-  document.getElementById("idx-display").textContent = `${curIdx} / ${maxIdx()}`;
-  polishUI.viz.set("i", curIdx);
-}
-function updateInspectLink() {
-  const link = document.getElementById("inspect-link");
-  if (!link) return;
-  link.href = `/star-cutout/inspect?band=${polishUI.viz.get("band")}&i=${polishUI.viz.get("i")}`;
-}
-async function refreshTotals() {
-  try {
-    const r = await fetch("/api/star-cutouts/totals");
-    totals = await r.json();
-    setIdx(curIdx);
-  } catch (e) {}
-}
-
-polishUI.viz.bind({
-  imgId:     "viz-img",
-  toolbarId: null,
-  buildUrl:  (sel) => {
-    setTimeout(updateInspectLink, 0);   // keep the inspect link in sync
-    return `/view/star-cutout?band=${sel.band}&i=${sel.i}`;
+<script type="module">
+// ── Unified cutout viewer (real Euclid stars) ───────────────────────
+import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
+const inspect = document.getElementById("inspect-link");
+mountCutoutViewer(document.getElementById("cutout-viewer"), {
+  collection: "cutouts",
+  onChange: (s) => {
+    // Inspect the single-band FITS the viewer is showing (composite modes
+    // have no single-band FITS → fall back to VIS).
+    const band = ["lupton", "temp"].includes(s.color) ? "VIS" : s.color;
+    if (inspect) inspect.href = `/star-cutout/inspect?band=${band}&i=${s.index}`;
   },
-  initial:   { band: "VIS", i: 0 },
 });
-updateInspectLink();
-
-document.querySelector(".toolbar").addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip[data-group]");
-  if (!chip) return;
-  e.preventDefault();
-  if (chip.dataset.group === "i") return;   // index display; not a switcher
-  polishUI.viz.set(chip.dataset.group, chip.dataset.value);
-  setIdx(curIdx);
-});
-document.getElementById("idx-prev").addEventListener("click", () => setIdx(curIdx - 1));
-document.getElementById("idx-next").addEventListener("click", () => setIdx(curIdx + 1));
-refreshTotals();
-
+</script>
+<script>
 // ── Euclid archive credentials ──────────────────────────────────────
 async function refreshEuclidCredsStatus() {
   const badge = document.getElementById("euclid-creds-badge");

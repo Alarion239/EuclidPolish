@@ -29,7 +29,8 @@ from euclid_polish.web import experimental, fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession, STATE
 from euclid_polish.web.routes import (
     auth, catalog, config, cutouts, evaluation, fasrc, files, git, hst,
-    hstpairs, lensfinder, model, poster, psfs, sky, tng, tracking, views,
+    hstpairs, lensfinder, model, poster, psfs, sky, tng, tracking, viewer,
+    views,
 )
 
 
@@ -122,6 +123,7 @@ def create_app() -> Flask:
         "/evaluation",           # results gallery reads local eval_results/
         "/api/evaluation/",      # (only .../sync needs SSH; it 400s when down)
         "/eval-files/",          # serve already-pulled PNG/FITS offline
+        "/viewer/",              # unified cutout viewer reads local caches
     )
 
     @app.before_request
@@ -200,6 +202,7 @@ def create_app() -> Flask:
     files.register(app)
     git.register(app)
     tracking.register(app)
+    viewer.register(app)
     fasrc.register(app)
 
     return app

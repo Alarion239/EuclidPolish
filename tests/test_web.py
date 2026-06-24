@@ -217,9 +217,57 @@ def test_cutouts_page_renders(client):
     assert r.status_code == 200
     body = r.data.decode()
     assert "Cutouts" in body
-    # All four bands appear as checkboxes
-    for name in ("VIS", "Y_E", "J_E", "H_E"):
-        assert f'value="{name}"' in body
+    # The band/colour picker now lives in the unified client-side cutout
+    # viewer (static/cutout_viewer.js), mounted on #cutout-viewer, rather
+    # than as server-rendered band chips.
+    assert 'id="cutout-viewer"' in body
+    assert "cutout_viewer.js" in body
+
+
+def test_viewer_meta_unknown_collection_404(client):
+    assert client.get("/viewer/meta/nope").status_code == 404
+
+
+def test_viewer_meta_shape_and_color_constants(client):
+    """Every collection's meta carries counts, tiers, bands + colour consts."""
+    for collection in ("sky", "cutouts", "evaluation"):
+        r = client.get(f"/viewer/meta/{collection}")
+        assert r.status_code == 200, collection
+        m = r.get_json()
+        assert isinstance(m["count"], int) and m["count"] >= 0
+        assert {"key", "label"} <= set((m["tiers"] or [{}])[0]) or m["count"] == 0
+        assert m["band_names"] == ["VIS", "Y_E", "J_E", "H_E"]
+        # Colour constants the JS renderer needs for parity with color.py.
+        col = m["color"]
+        assert col["default_asinh"] == float(Config.STRETCH_SCALE_E)
+        vis = col["bands"]["VIS"]
+        assert {"t_total_s", "zeropoint_ab", "solar_ab_mag", "pivot_um"} <= set(vis)
+        assert col["rgb_scheme"] == ["H_E", "J_E", "VIS"]
+
+
+def test_viewer_cube_is_raw_float32(client):
+    """When the eval store has objects, a cube serves raw float32 with a
+    shape header whose dimensions match the body length."""
+    m = client.get("/viewer/meta/evaluation").get_json()
+    if m["count"] == 0:
+        pytest.skip("no local eval objects to fetch")
+    obj = next((o for o in m["objects"] if "SR" in o["tiers"]), None)
+    if obj is None:
+        pytest.skip("no SR tier available")
+    idx = m["objects"].index(obj)
+    r = client.get(f"/viewer/cube/evaluation/{idx}?tier=SR")
+    assert r.status_code == 200
+    h, w, c = (int(x) for x in r.headers["X-Cube-Shape"].split(","))
+    assert c == 4
+    assert len(r.data) == h * w * c * 4   # float32
+    assert r.headers["X-Cube-Bands"] == "VIS,Y_E,J_E,H_E"
+
+
+def test_viewer_cube_bad_tier_404(client):
+    m = client.get("/viewer/meta/evaluation").get_json()
+    if m["count"] == 0:
+        pytest.skip("no local eval objects to fetch")
+    assert client.get("/viewer/cube/evaluation/0?tier=NOPE").status_code in (400, 404)
 
 
 def test_training_page_renders(client):

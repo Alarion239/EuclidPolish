@@ -1,0 +1,314 @@
+"""Collection registry feeding the unified client-side cutout viewer.
+
+The viewer (``static/cutout_viewer.js``) renders raw N-band float cubes in
+the browser. This module is the server side of that contract: it abstracts
+the three heterogeneous data sources behind one tiny interface so the
+``/viewer`` routes don't care where pixels come from.
+
+A *collection* is a named source of indexable cutouts. Each registered
+collection provides:
+
+* ``meta(params) -> dict`` — ``count``, ``tiers`` (``[{key,label}]``),
+  ``default_tier``, ``band_names``, and optionally an ``objects`` list
+  (per-index label/grade/available-tiers, used by ``evaluation``).
+* ``cube(index, tier, params) -> (ndarray (H, W, C) float32, info)`` where
+  ``info`` is ``{label, asinh, pixscale}``.
+
+Three collections are registered:
+
+==============  =========  ======================================  ==========
+collection      params     tiers                                    source
+==============  =========  ======================================  ==========
+``sky``         subset     dirty→LR, clean→HR, hr→HR-target          TFRecords
+``cutouts``     —          real→Euclid                               per-band FITS
+``evaluation``  —          LR / SR / HR (per object)                 object FITS
+==============  =========  ======================================  ==========
+
+Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
+"""
+from __future__ import annotations
+
+import os
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+from astropy.io import fits
+
+from euclid_polish.config import Config
+from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.helpers.status import (
+    _ensure_local_star_cutout,
+    _record_count,
+    _valid_4band_stars,
+)
+
+#: Band names + channel order shared by every collection.
+BAND_NAMES: Tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
+
+
+class ViewerError(Exception):
+    """Raised by a collection loader; ``code`` maps to an HTTP status."""
+
+    def __init__(self, code: int, message: str = ""):
+        super().__init__(message or f"viewer error {code}")
+        self.code = code
+
+
+def color_constants() -> Dict[str, Any]:
+    """The per-band calibration constants the JS renderer needs.
+
+    Sent once with every ``meta`` response so the browser-side colour math
+    (AB-flux normalisation, solar balance, Planckian-locus temperature fit)
+    is computed from the exact same numbers as ``visualization/color.py``.
+    """
+    bands = {}
+    for name in BAND_NAMES:
+        b = Config.get_band(name)
+        bands[name] = {
+            "t_total_s": float(b.t_total_s),
+            "zeropoint_ab": float(b.zeropoint_ab_e_per_s),
+            "solar_ab_mag": float(Config.Color.SOLAR_AB_MAG[name]),
+            "pivot_um": float(Config.Color.PIVOT_WAVELENGTH_UM[name]),
+            "asinh_scale_e": float(b.asinh_stretch_scale_e),
+        }
+    return {
+        "band_names": list(BAND_NAMES),
+        "bands": bands,
+        "rgb_scheme": list(Config.Color.RGB_SCHEMES["vis_nisp"]),  # [H_E,J_E,VIS]
+        "default_asinh": float(Config.STRETCH_SCALE_E),
+    }
+
+
+def _as_hwc(arr: np.ndarray) -> np.ndarray:
+    """Normalise a FITS/record array to ``(H, W, C)`` float32.
+
+    Accepts ``(C, H, W)`` (FITS cube convention), ``(H, W, C)`` (records),
+    or ``(H, W)`` (single band → 1 channel).
+    """
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim == 2:
+        return a[..., None]
+    if a.ndim != 3:
+        raise ViewerError(415, f"expected 2-D/3-D array, got {a.shape}")
+    # FITS cubes are (C, H, W) with a small leading axis; records are
+    # (H, W, C). Disambiguate by which axis is the short (band) one.
+    if a.shape[0] <= 4 and a.shape[0] < a.shape[-1]:
+        return np.moveaxis(a, 0, -1)
+    return a
+
+
+# ---------------------------------------------------------------------------
+# sky — multi-band TFRecords (FASRC-synced cache)
+# ---------------------------------------------------------------------------
+
+_SKY_TIERS = [
+    {"key": "dirty", "label": "LR (dirty)"},
+    {"key": "clean", "label": "HR (clean)"},
+    {"key": "hr", "label": "HR target"},
+]
+
+
+def _sky_subset(params: Dict[str, str]) -> str:
+    subset = (params.get("subset") or "validate").strip()
+    if subset not in ("train", "validate"):
+        raise ViewerError(400, "subset must be train|validate")
+    return subset
+
+
+def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
+    subset = _sky_subset(params)
+    records_dir = _sky_records_local_dir()
+    tiers = [t for t in _SKY_TIERS
+             if os.path.exists(tfrecord_path(records_dir, f"{t['key']}_{subset}"))]
+    counts = {t["key"]: (_record_count(f"{t['key']}_{subset}", records_dir) or 0)
+              for t in tiers}
+    count = max(counts.values()) if counts else 0
+    default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
+        tiers[0]["key"] if tiers else "dirty")
+    return {
+        "count": count,
+        "tiers": tiers,
+        "default_tier": default,
+        "band_names": list(BAND_NAMES),
+        "tier_counts": counts,
+    }
+
+
+def _sky_cube(index: int, tier: str, params: Dict[str, str]):
+    subset = _sky_subset(params)
+    if tier not in ("dirty", "clean", "hr"):
+        raise ViewerError(400, "bad tier")
+    path = tfrecord_path(_sky_records_local_dir(), f"{tier}_{subset}")
+    if not os.path.exists(path):
+        raise ViewerError(404, "records not synced")
+    records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+    if not records or index >= len(records):
+        raise ViewerError(404, "index out of range")
+    rec = records[index]
+    cube = _as_hwc(rec.data)
+    info = {
+        "label": f"{tier} · {subset} · idx {rec.index}",
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0),
+    }
+    return cube, info
+
+
+# ---------------------------------------------------------------------------
+# cutouts — real Euclid stars valid in all 4 bands (per-band FITS, stacked)
+# ---------------------------------------------------------------------------
+
+def _cutouts_meta(params: Dict[str, str]) -> Dict[str, Any]:
+    _size, ids = _valid_4band_stars(force=False)
+    return {
+        "count": len(ids),
+        "tiers": [{"key": "real", "label": "Euclid"}],
+        "default_tier": "real",
+        "band_names": list(BAND_NAMES),
+    }
+
+
+def _read_fits_plane(path: str) -> np.ndarray:
+    with fits.open(path, memmap=False) as hdul:
+        for hdu in hdul:
+            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
+                return np.asarray(hdu.data, dtype=np.float32)
+    raise ViewerError(415, "no 2-D plane in FITS")
+
+
+def _cutouts_cube(index: int, tier: str, params: Dict[str, str]):
+    size, ids = _valid_4band_stars(force=False)
+    if not ids or size is None:
+        raise ViewerError(404, "no valid-in-4-bands stars")
+    if index < 0 or index >= len(ids):
+        raise ViewerError(404, "index out of range")
+    sid = ids[index]
+    planes = []
+    for band in BAND_NAMES:
+        path = _ensure_local_star_cutout(band, sid, size)
+        if not path:
+            raise ViewerError(404, f"{band} cutout unavailable")
+        planes.append(_read_fits_plane(path))
+    shapes = {p.shape for p in planes}
+    if len(shapes) != 1:
+        raise ViewerError(415, f"band cutouts disagree in shape: {shapes}")
+    cube = np.stack(planes, axis=-1)
+    info = {
+        "label": f"star {sid} · {size}px",
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+    }
+    return cube, info
+
+
+# ---------------------------------------------------------------------------
+# evaluation — per-object LR/SR/HR FITS in the shared eval store
+# ---------------------------------------------------------------------------
+
+_EVAL_TIER_FILES = {
+    "LR": "original_stack.fits",
+    "SR": "SR.fits",
+    "HR": "HR.fits",
+}
+
+
+def _eval_objects() -> List[Dict[str, Any]]:
+    """Manifest objects (ok rows) with their on-disk tiers + label/grade."""
+    from euclid_polish.web.routes.evaluation import _read_manifest  # local: avoid cycle
+
+    root = os.path.abspath(Config.EVAL_RESULTS_DIR)
+    rows = _read_manifest(root)
+    objs: List[Dict[str, Any]] = []
+    for r in rows:
+        if str(r.get("ok", "")).lower() != "true":
+            continue
+        sub = r.get("out_subdir") or r.get("id")
+        if not sub:
+            continue
+        obj_dir = os.path.join(root, sub)
+        tiers = [k for k, fn in _EVAL_TIER_FILES.items()
+                 if os.path.isfile(os.path.join(obj_dir, fn))]
+        if not tiers:
+            continue
+        grade = (r.get("grade") or "").strip()
+        objs.append({
+            "subdir": sub,
+            "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
+            "grade": grade,
+            "tiers": tiers,
+        })
+    return objs
+
+
+def _eval_meta(params: Dict[str, str]) -> Dict[str, Any]:
+    objs = _eval_objects()
+    # All tiers seen across the run, ordered LR→SR→HR, for the chip strip.
+    order = ["LR", "SR", "HR"]
+    seen = {t for o in objs for t in o["tiers"]}
+    tiers = [{"key": k, "label": k} for k in order if k in seen]
+    default = "SR" if any(t["key"] == "SR" for t in tiers) else (
+        tiers[0]["key"] if tiers else "SR")
+    return {
+        "count": len(objs),
+        "tiers": tiers,
+        "default_tier": default,
+        "band_names": list(BAND_NAMES),
+        "objects": [{"label": o["label"], "grade": o["grade"],
+                     "tiers": o["tiers"], "subdir": o["subdir"]}
+                    for o in objs],
+    }
+
+
+def _eval_cube(index: int, tier: str, params: Dict[str, str]):
+    objs = _eval_objects()
+    if index < 0 or index >= len(objs):
+        raise ViewerError(404, "index out of range")
+    obj = objs[index]
+    if tier not in _EVAL_TIER_FILES:
+        raise ViewerError(400, "bad tier")
+    if tier not in obj["tiers"]:
+        raise ViewerError(404, f"{tier} not available for this object")
+    path = os.path.join(os.path.abspath(Config.EVAL_RESULTS_DIR),
+                        obj["subdir"], _EVAL_TIER_FILES[tier])
+    asinh = float(Config.STRETCH_SCALE_E)
+    with fits.open(path, memmap=False) as hdul:
+        data = hdul[0].data
+        try:
+            asinh = float(hdul[0].header.get("ASINH", asinh))
+        except (TypeError, ValueError):
+            pass
+    cube = _as_hwc(data)
+    info = {"label": f"{obj['label']} · {tier}", "asinh": asinh, "pixscale": 0.0}
+    return cube, info
+
+
+# ---------------------------------------------------------------------------
+# registry
+# ---------------------------------------------------------------------------
+
+_Meta = Callable[[Dict[str, str]], Dict[str, Any]]
+_Cube = Callable[[int, str, Dict[str, str]], Tuple[np.ndarray, Dict[str, Any]]]
+
+_REGISTRY: Dict[str, Tuple[_Meta, _Cube]] = {
+    "sky": (_sky_meta, _sky_cube),
+    "cutouts": (_cutouts_meta, _cutouts_cube),
+    "evaluation": (_eval_meta, _eval_cube),
+}
+
+
+def get_meta(collection: str, params: Dict[str, str]) -> Dict[str, Any]:
+    if collection not in _REGISTRY:
+        raise ViewerError(404, "unknown collection")
+    meta = _REGISTRY[collection][0](params)
+    meta["collection"] = collection
+    meta["color"] = color_constants()
+    return meta
+
+
+def get_cube(collection: str, index: int, tier: str,
+             params: Dict[str, str]) -> Tuple[np.ndarray, Dict[str, Any]]:
+    if collection not in _REGISTRY:
+        raise ViewerError(404, "unknown collection")
+    cube, info = _REGISTRY[collection][1](index, tier, params)
+    return np.ascontiguousarray(cube, dtype=np.float32), info
