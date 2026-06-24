@@ -74,6 +74,8 @@ class TestRegistry:
             "download_tng_skirt",
             "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
+            "lensfinder_generate", "lensfinder_sr_infer",
+            "lensfinder_build_stamps", "lensfinder_train",
         }
 
     def test_tfrecords_step_passes_max_relative_noise(self):
@@ -386,7 +388,7 @@ class TestRegistry:
         (download, kernel, PSF extract, synthetic generate, catalog eval,
         Zoobot morphology, …) is CPU by default."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train"}
+        assert gpu_steps == {"train", "lensfinder_sr_infer", "lensfinder_train"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -497,6 +499,10 @@ class TestSbatchRendering:
             "euclid_sky_download":          "sky-cutouts",
             "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
             "euclid_star_anchor_tfrecords": "anchor-tfrecords",
+            "lensfinder_generate":          "lensfinder-data",
+            "lensfinder_sr_infer":          "lensfinder-sr-infer",
+            "lensfinder_build_stamps":      "lensfinder-stamps",
+            "lensfinder_train":             "lensfinder-train",
         }
         for step in REGISTRY.all():
             assert step.job_name == expected[step.step_id], (
