@@ -136,3 +136,16 @@ class TestEvalRender:
         out = str(tmp_path / "hr.png")
         st.render_eval_stamp(src, out, crop_m=53, size=424)
         assert os.path.exists(out)
+
+
+def test_crop_path_does_not_pull_heavy_synthetic_runner():
+    """The stamp crop path must not import euclid.eval.synthetic_runner, whose
+    module-level imports drag in the astroquery-backed euclid stack — that broke
+    lensfinder_score_eval in the PyTorch-only Zoobot env (no astroquery)."""
+    import sys
+    sys.modules.pop("euclid_polish.eval.synthetic_runner", None)
+    lr = np.zeros((64, 64, 4), np.float32)
+    sr = np.zeros((128, 128, 4), np.float32)
+    hr = np.zeros((128, 128, 4), np.float32)
+    st.cut_triplet(lr, sr, hr, cx=64.0, cy=64.0, m=106)
+    assert "euclid_polish.eval.synthetic_runner" not in sys.modules

@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 from euclid_polish.config import Config
 from euclid_polish.eval.catalog_runner import (EVAL_HR_SIZE, EVAL_LR_SIZE,
                                                enforce_object_sizes)
+from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
 
 
 def default_records_dir() -> Optional[str]:
@@ -78,14 +79,6 @@ def select_central_source(
         if best_key is None or key < best_key:
             best, best_key = s, key
     return best
-
-
-def crop_stamp(plane, *, cx: float, cy: float, m: int):
-    """Crop an m×m stamp from a 2-D ``plane`` centered at (cx, cy) pixel coords."""
-    import numpy as np
-    x0 = int(round(cx)) - m // 2
-    y0 = int(round(cy)) - m // 2
-    return np.asarray(plane)[y0:y0 + m, x0:x0 + m]
 
 
 #: Analysis subgroups: (manifest grade, source ``type`` to center on).

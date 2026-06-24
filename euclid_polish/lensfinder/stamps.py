@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from euclid_polish.eval.stamp_geometry import crop_stamp
+
 
 def iter_field_sources(
     sources: Sequence[Dict[str, Any]], *,
@@ -69,8 +71,6 @@ def cut_triplet(lr_cube, sr_cube, hr_cube, *, cx: float, cy: float, m: int
     ``(cx/2, cy/2, m//2)`` while SR/HR crop at ``(cx, cy, m)`` (same sky FOV).
     All bands are kept (VIS, Y_E, J_E, H_E); the renderer composites them.
     """
-    from euclid_polish.eval.synthetic_runner import crop_stamp
-
     def _cube_crop(cube, ccx, ccy, mm):
         cube = np.asarray(cube, dtype=np.float32)
         return np.stack([crop_stamp(cube[..., c], cx=ccx, cy=ccy, m=mm)
@@ -144,8 +144,6 @@ def render_eval_stamp(fits_path: str, out_png: str, *, crop_m: int,
     band-replicated to four so the render degrades to grayscale instead of
     crashing.
     """
-    from euclid_polish.eval.synthetic_runner import crop_stamp
-
     cube = load_fits_cube(fits_path)
     h, w = cube.shape[:2]
     cropped = np.stack(
