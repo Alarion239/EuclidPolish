@@ -9,11 +9,13 @@ Shares the SR model load across all groups and runs locally, in-process.
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.eval_catalog import read_eval_catalog
 from euclid_polish.eval import catalog_runner, synthetic_runner
+from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
 
 #: Manifest columns for a grouped run (superset: PSNR is synthetic-only).
 GROUPED_COLS = [
@@ -31,11 +33,10 @@ def run_grouped_analysis(
     checkpoint: Optional[str] = None,
     num_res_blocks: Optional[int] = None,
     asinh_scale: Optional[float] = None,
-    stamp_m: int = 64,
+    stamp_m: int = EVAL_HR_SIZE,
     seed: int = 0,
     grades=LENS_GRADES,
     include_synthetic: bool = True,
-    lens_crop_vis: Optional[int] = None,
     lens_source_dir: Optional[str] = None,
     unique_fields: bool = True,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
@@ -43,13 +44,14 @@ def run_grouped_analysis(
 ) -> Dict[str, Any]:
     """Prepare the four-group dataset into ``out_dir``; write one manifest.
 
-    ``lens_crop_vis`` center-crops each real A/B/C cutout to that many VIS pixels
-    (and its SR to ``2×``) after it is downloaded or reused — handy for matching
-    the synthetic stamp field of view. ``lens_source_dir`` seeds real-lens FITS
-    from an existing run dir so cached cutouts are reused (and merely re-cropped)
-    instead of re-downloaded. ``unique_fields=False`` lets a synthetic field host
-    both a syn-lens and a syn-gal stamp, maximizing yield from a small validation
-    set.
+    Every object is held at the canonical eval geometry: a ``EVAL_LR_SIZE``² LR
+    stamp beside a ``EVAL_HR_SIZE``² SR/HR stamp. Real A/B/C cutouts are fetched
+    at ``cutout_size`` VIS px and then center-cropped to that geometry; an object
+    whose stamp comes out smaller than the target is dropped. ``lens_source_dir``
+    seeds real-lens FITS from an existing run dir so cached cutouts are reused
+    (and merely re-cropped) instead of re-downloaded. ``unique_fields=False`` lets
+    a synthetic field host both a syn-lens and a syn-gal stamp, maximizing yield
+    from a small validation set.
     """
     def _emit(m): (log or print)(m)
 
@@ -117,17 +119,27 @@ def run_grouped_analysis(
                 catalog_runner.seed_object_from_cache(
                     lens_source_dir, out_dir, obj["id"])
             if catalog_runner.can_reuse_eval_object(obj_dir):
-                if lens_crop_vis:               # crop first → metrics match stamp
-                    catalog_runner.crop_object_fits(obj_dir, lens_crop_vis, log=_emit)
-                rec = catalog_runner.reuse_catalog_object(
-                    obj, out_dir, grade=g, log=_emit)
+                produced, err = True, ""
             else:
-                rec = catalog_runner.eval_catalog_object(
+                r0 = catalog_runner.eval_catalog_object(
                     model, obj, out_dir, cutout_size=cutout_size,
                     asinh_scale=asinh_scale, checkpoint=checkpoint, grade=g,
                     log=_emit)
-                if rec.get("ok") and lens_crop_vis:
-                    catalog_runner.crop_object_fits(obj_dir, lens_crop_vis, log=_emit)
+                produced, err = bool(r0.get("ok")), r0.get("error", "")
+            # Hold the canonical geometry (LR EVAL_LR_SIZE², SR EVAL_HR_SIZE²),
+            # then read the flux metrics off the cropped FITS so they describe
+            # the stamp the gallery and Zoobot actually see. A stamp that came
+            # out smaller than the target is dropped.
+            if produced and catalog_runner.enforce_object_sizes(obj_dir, log=_emit):
+                rec = catalog_runner.reuse_catalog_object(
+                    obj, out_dir, grade=g, log=_emit)
+            else:
+                if produced:                    # produced but below target → drop
+                    shutil.rmtree(obj_dir, ignore_errors=True)
+                    err = (f"stamp below {EVAL_LR_SIZE}×{EVAL_LR_SIZE} LR / "
+                           f"{EVAL_HR_SIZE}×{EVAL_HR_SIZE} SR")
+                rec = catalog_runner._base_manifest_row(obj, grade=g)
+                rec["error"] = err
             rec.setdefault("psnr_lr_hr", "")
             rec.setdefault("psnr_sr_hr", "")
             all_rows.append(rec)

@@ -217,58 +217,24 @@ def register(app):
             "evaluation.html",
             catalogs=_list_catalogs(),
             run_summary=_shared_run_summary(),
-            default_cutout=256,
             default_asinh=float(Config.STRETCH_SCALE_E),
             default_clip=_DEFAULT_CLIP,
         )
-
-    @app.route("/api/evaluation/run-eval", methods=["POST"])
-    def api_evaluation_run_eval():
-        """Run the SR model over a catalog LOCALLY as a background job.
-
-        In-process (TF is in the WebUI env): loads the local checkpoint, loops
-        the catalog writing per-object FITS + manifest, reporting progress to
-        the job's bar + log. Returns a job id to poll via ``/api/jobs/<id>``.
-        """
-        f = request.form
-        grade = (f.get("grade") or "").strip() or None
-        try:
-            max_n = int(f.get("max_n", 0) or 0)
-            cutout = int(f.get("cutout_size", 256) or 256)
-        except ValueError:
-            return jsonify({"ok": False, "error": "max_n / cutout must be ints"}), 400
-        catalog = (f.get("catalog") or "").strip() or None
-        if catalog:
-            catalog = os.path.join(Config.DATA_DIR, catalog)
-        out_dir = Config.EVAL_RESULTS_DIR
-
-        from euclid_polish.eval import catalog_runner
-
-        def _run(cap):
-            return catalog_runner.run_catalog_eval(
-                out_dir=out_dir, catalog_path=catalog, grade=grade,
-                max_n=(max_n or None), cutout_size=cutout,
-                on_progress=lambda i, n, lbl: cap.tick(i, n, lbl),
-                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"),
-            )
-        job_id = JOB_REGISTRY.spawn("eval: eval_results", _run)
-        return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/run-grouped", methods=["POST"])
     def api_evaluation_run_grouped():
         """Prepare the unified grouped dataset LOCALLY (A/B/C + synthetic).
 
         One in-process background job: N lens cutouts per grade + N synthetic
-        validation triptychs → one run dir with a single grouped manifest.
+        validation triptychs → one run dir with a single grouped manifest. Every
+        object is held at the canonical eval geometry (53² LR, 106² SR/HR), so
+        there are no size knobs.
         """
         f = request.form
         try:
             n = int(f.get("n", 5) or 5)
-            cutout = int(f.get("cutout_size", 256) or 256)
-            stamp_m = int(f.get("stamp_m", 64) or 64)
         except ValueError:
-            return jsonify({"ok": False, "error": "n / cutout / M must be ints"}), 400
-        stamp_m = max(16, min(256, stamp_m + (stamp_m % 2)))  # even, bounded
+            return jsonify({"ok": False, "error": "n must be an int"}), 400
         include_synth = str(f.get("synthetic", "1")).lower() in ("1", "true", "on", "yes")
         out_dir = Config.EVAL_RESULTS_DIR
 
@@ -276,8 +242,7 @@ def register(app):
 
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
-                out_dir=out_dir, n=n, cutout_size=cutout, stamp_m=stamp_m,
-                include_synthetic=include_synth,
+                out_dir=out_dir, n=n, include_synthetic=include_synth,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
         job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)
@@ -287,13 +252,13 @@ def register(app):
     def api_evaluation_run_zoobot():
         """Score Zoobot morphology for a run LOCALLY (CPU) as a background job.
 
-        Zoobot is PyTorch (separate env), so this runs scripts/zoobot_morphology.py
-        in the EuclidPolishZoobot env as a subprocess, streaming its output to
-        the job log. Returns a job id, or 400 with an install hint if the env
-        is missing.
+        Runs the published Zoobot encoder over each cutout (stretched to 424²)
+        and saves the representation vectors — no heads required. Zoobot is
+        PyTorch (separate env), so this runs scripts/zoobot_morphology.py in the
+        EuclidPolishZoobot env as a subprocess, streaming its output to the job
+        log. Returns a job id, or 400 with an install hint if the env is missing.
         """
-        f = request.form
-        run = (f.get("run") or "").strip()
+        run = (request.form.get("run") or "").strip()
         if _bad_run_arg(run):
             return jsonify({"ok": False, "error": "bad run name"}), 400
         if not os.path.isdir(Config.EVAL_RESULTS_DIR):
@@ -306,9 +271,6 @@ def register(app):
                 "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
         cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
                "--run-dir", Config.EVAL_RESULTS_DIR, "--device", "cpu"]
-        tree_ckpt = (f.get("tree_checkpoint") or "").strip()
-        if tree_ckpt:
-            cmd += ["--tree-checkpoint", tree_ckpt]
         job_id = _spawn_subprocess_job(
             "zoobot: eval_results", cmd, {"run": "eval_results"})
         return jsonify({"ok": True, "job_id": job_id})
@@ -319,10 +281,11 @@ def register(app):
 
         Runs scripts/lensfinder_score_eval.py in the EuclidPolishZoobot env over
         the shared store, writing ``lens_scores.csv`` (P(lens) per object/recon)
-        that the PCA opacity + lens-identification panel consume. Returns a job
-        id, or 400 with an install hint if the env is missing.
+        that the PCA opacity + lens-identification panel consume. Scores with the
+        heads under the default ``data/lensfinder/heads`` (use "Load heads" to
+        rsync them from FASRC). Returns a job id, or 400 with an install hint if
+        the env is missing.
         """
-        f = request.form
         if not os.path.isdir(Config.EVAL_RESULTS_DIR):
             return jsonify({"ok": False, "error": "eval_results not found"}), 404
         py = _zoobot_python()
@@ -330,8 +293,7 @@ def register(app):
             return jsonify({"ok": False, "error": (
                 "Zoobot env not found. Create it once with "
                 "`mamba env create -f environment-zoobot.yml`.")}), 400
-        heads = (f.get("heads_dir") or "").strip() or os.path.join(
-            Config.DATA_DIR, "lensfinder", "heads")
+        heads = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
         cmd = [py, os.path.join(_REPO_ROOT, "scripts", "lensfinder_score_eval.py"),
                "--run-dir", Config.EVAL_RESULTS_DIR, "--heads-dir", heads,
                "--device", "cpu"]

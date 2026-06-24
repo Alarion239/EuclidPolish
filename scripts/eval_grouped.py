@@ -7,14 +7,15 @@ the same loop the WebUI's "Run grouped" job uses, but run in the terminal with a
 
 Prepares ``n`` real lens cutouts per grade (A/B/C) plus source-centered
 synthetic stamps (syn-lens / syn-gal) into one run dir with a single
-``manifest.csv``. Real cutouts can be reused from an existing run dir and merely
-re-cropped (``--lens-source`` / ``--lens-crop``) instead of re-downloaded.
+``manifest.csv``. Every object is held at the canonical eval geometry — 53² LR
+beside 106² SR/HR — so there are no size knobs; a stamp smaller than that is
+dropped. Real cutouts can be reused from an existing run dir (``--lens-source``)
+instead of re-downloaded.
 
 Usage (in the EuclidPolishEnv env)::
 
-    python scripts/eval_grouped.py --n 100 --stamp-m 128 \
-        --lens-crop 63 --lens-source data/eval_results \
-        --out data/eval_zoobot500
+    python scripts/eval_grouped.py --n 100 \
+        --lens-source data/eval_results --out data/eval_zoobot500
 """
 
 from __future__ import annotations
@@ -41,13 +42,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="cutouts per class (per A/B/C grade and per synthetic "
                         "subgroup)")
     p.add_argument("--cutout-size", type=int, default=256,
-                   help="real-lens download size in VIS px (cropped afterwards "
-                        "by --lens-crop)")
-    p.add_argument("--stamp-m", type=int, default=128,
-                   help="synthetic stamp size in HR px (2× VIS); even, 16..256")
-    p.add_argument("--lens-crop", type=int, default=None,
-                   help="center-crop real-lens cutouts to this many VIS px "
-                        "(SR to 2×); omit to keep full size")
+                   help="real-lens download size in VIS px (center-cropped to "
+                        "the canonical 53² LR / 106² SR afterwards)")
     p.add_argument("--lens-source", default=None,
                    help="reuse cached real-lens FITS from this run dir instead "
                         "of re-downloading (they are merely re-cropped)")
@@ -67,17 +63,14 @@ def _parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> int:
     args = _parse_args(argv)
     out_dir = args.out or Config.EVAL_RESULTS_DIR
-    stamp_m = max(16, min(256, args.stamp_m + (args.stamp_m % 2)))  # even, bounded
 
     res = grouped_runner.run_grouped_analysis(
         out_dir, n=args.n,
         cutout_size=args.cutout_size,
         catalog_path=args.catalog,
         checkpoint=args.checkpoint,
-        stamp_m=stamp_m,
         seed=args.seed,
         include_synthetic=not args.no_synthetic,
-        lens_crop_vis=args.lens_crop,
         lens_source_dir=args.lens_source,
         unique_fields=args.unique_fields,
     )

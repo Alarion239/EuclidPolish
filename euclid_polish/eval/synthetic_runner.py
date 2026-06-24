@@ -13,9 +13,12 @@ comparable to the real A/B/C lens cutouts. No network; needs the cached
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from euclid_polish.config import Config
+from euclid_polish.eval.catalog_runner import (EVAL_HR_SIZE, EVAL_LR_SIZE,
+                                               enforce_object_sizes)
 
 
 def default_records_dir() -> Optional[str]:
@@ -96,7 +99,7 @@ def run_synthetic_eval(
     checkpoint: Optional[str] = None,
     num_res_blocks: Optional[int] = None,
     asinh_scale: Optional[float] = None,
-    stamp_m: int = 64,
+    stamp_m: int = EVAL_HR_SIZE,
     seed: int = 0,
     unique_fields: bool = True,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
@@ -255,6 +258,18 @@ def run_synthetic_eval(
                 else hr_cube_st,
                 f"{grade} HR truth (electrons)",
                 {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
+
+            # Hold the canonical eval geometry (LR EVAL_LR_SIZE², SR/HR
+            # EVAL_HR_SIZE²); a stamp truncated below the target at a field edge
+            # is dropped rather than carried at an off-size.
+            if not enforce_object_sizes(obj_dir, log=_emit):
+                shutil.rmtree(obj_dir, ignore_errors=True)
+                rec["error"] = (f"stamp below {EVAL_LR_SIZE}×{EVAL_LR_SIZE} LR / "
+                                f"{EVAL_HR_SIZE}×{EVAL_HR_SIZE} SR/HR")
+                _emit(f"  ! {sub} dropped: {rec['error']}")
+                n_skip += 1
+                rows.append(rec)
+                continue
 
             lr_sum, sr_sum = float(np.sum(lr_vis_st)), float(np.sum(sr_vis_st))
             lr_up = np.repeat(np.repeat(lr_vis_st, 2, 0), 2, 1)  # nearest 2× → HR grid

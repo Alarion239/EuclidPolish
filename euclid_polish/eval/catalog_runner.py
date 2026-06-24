@@ -33,6 +33,14 @@ MANIFEST_COLS = (
 _MANIFEST_COLS = MANIFEST_COLS
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
+#: Canonical evaluation stamp sizes (px). The LR cutout lives on the VIS grid;
+#: SR and HR live on the 2× grid. Every eval object is center-cropped to these
+#: (or dropped when smaller — see :func:`enforce_object_sizes`) so the gallery,
+#: the Zoobot representations and the lens-finder all see one coherent geometry —
+#: the same 53/106 the lens-finder training stamps use.
+EVAL_LR_SIZE = 53
+EVAL_HR_SIZE = 2 * EVAL_LR_SIZE   # 106
+
 
 def _safe_id(obj_id: str) -> str:
     s = _SAFE_ID.sub("_", obj_id).strip("_")
@@ -160,6 +168,56 @@ def crop_object_fits(obj_dir: str, vis_size: int, *,
     if changed:
         emit(f"  ✂ {os.path.basename(obj_dir)}: cropped to {vis_size}px VIS")
     return changed
+
+
+def enforce_object_sizes(obj_dir: str, *,
+                         log: Optional[Callable[[str], None]] = None) -> bool:
+    """Crop an object's FITS to the canonical eval sizes; signal drop if smaller.
+
+    ``original_stack.fits`` (LR / VIS grid) is held at ``EVAL_LR_SIZE``² and
+    ``SR.fits`` / ``HR.fits`` (2× grid) at ``EVAL_HR_SIZE``². Larger stamps are
+    center-cropped down; a stamp smaller than its target in either spatial axis
+    means the object can't be represented at the canonical geometry, so this
+    returns ``False`` (the caller drops it) **without modifying any file**.
+    ``HR.fits`` is optional (real A/B/C cutouts have no HR); the LR and SR planes
+    are required. Returns ``True`` once every present plane met (or exceeded, and
+    was cropped to) its target.
+    """
+    import numpy as np
+    from astropy.io import fits
+
+    emit = log or (lambda m: None)
+    tag = os.path.basename(obj_dir.rstrip(os.sep))
+    plan = (("original_stack.fits", EVAL_LR_SIZE, True),
+            ("SR.fits", EVAL_HR_SIZE, True),
+            ("HR.fits", EVAL_HR_SIZE, False))
+
+    # 1) Validate every plane's size before touching anything on disk.
+    loaded = []
+    for name, size, required in plan:
+        path = os.path.join(obj_dir, name)
+        if not os.path.isfile(path):
+            if required:
+                emit(f"  ✗ {tag}: missing {name} — dropping")
+                return False
+            continue
+        with fits.open(path) as hdul:
+            data = np.asarray(hdul[0].data)
+            header = hdul[0].header.copy()
+        h, w = data.shape[-2], data.shape[-1]
+        if h < size or w < size:
+            emit(f"  ✗ {tag}: {name} {w}×{h} < {size}×{size} — dropping")
+            return False
+        loaded.append((path, name, size, data, header))
+
+    # 2) Crop to the exact target (rewrite only when the shape actually changes).
+    for path, name, size, data, header in loaded:
+        cropped = center_crop(data, size)
+        if cropped.shape != data.shape:
+            fits.PrimaryHDU(np.ascontiguousarray(cropped), header=header).writeto(
+                path, overwrite=True, output_verify="silentfix")
+            emit(f"  ✂ {tag}: {name} → {size}×{size}")
+    return True
 
 
 def seed_object_from_cache(source_dir: str, out_dir: str, obj_id: str) -> bool:

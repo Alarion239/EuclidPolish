@@ -240,68 +240,35 @@
   <div class="form-row">
     <label>N per group
       <input type="number" id="gpN" value="10" min="1" max="500"></label>
-    <label>Cutout size (VIS px)
-      <input type="number" id="gpCutout" value="{{ default_cutout }}" min="32" max="4096" step="32"></label>
-    <label>Synthetic stamp M (HR px)
-      <input type="number" id="gpStampM" value="64" min="16" max="256" step="2"></label>
     <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;">
       <input type="checkbox" id="gpSynth" checked> include synthetic</label>
   </div>
   <div style="margin-top:10px;">
     <button id="runGroupedBtn" type="button">▶ Prepare</button>
     <span class="hint" style="margin-left:8px;">A/B/C = real lens cutouts (LR+SR);
-      syn-lens / syn-gal = M×M stamps centered on a synthetic lens / field galaxy
-      (LR+SR+HR). Then ② Run Zoobot, ③ view the plots.</span>
+      syn-lens / syn-gal = stamps centered on a synthetic lens / field galaxy
+      (LR+SR+HR). Every object is held at 53² LR / 106² SR·HR. Then ② Run Zoobot,
+      ③ view the plots.</span>
   </div>
 </section>
 
 <section class="card" style="grid-column: 1 / -1;">
-  <h3>Run single grade <span class="muted" style="font-weight:normal;">— one catalog grade, locally</span></h3>
-  <div class="form-row">
-    <label>Grade
-      <select id="evGrade">
-        <option value="">all</option>
-        <option value="A" selected>A</option>
-        <option value="B">B</option>
-        <option value="C">C</option>
-      </select></label>
-    <label>Max objects <span class="muted">(0 = all)</span>
-      <input type="number" id="evMaxN" value="20" min="0" max="5000"></label>
-    <label>Cutout size (VIS px)
-      <input type="number" id="evCutout" value="{{ default_cutout }}" min="32" max="4096" step="32"></label>
-    <label>Catalog <span class="muted">(blank = lens catalog)</span>
-      <input type="text" id="evCatalog" value=""
-             placeholder="eval_catalogs/lens_catalog/lenses.csv"></label>
-  </div>
-  <div style="margin-top:10px;">
-    <button id="runEvalBtn" type="button">▶ Run evaluation</button>
-    <span class="hint" style="margin-left:8px;">Loads the local checkpoint, fetches
-      cutouts, writes per-object FITS + manifest into <code>data/eval_results/</code>.</span>
-  </div>
-</section>
-
-<section class="card" style="grid-column: 1 / -1;">
-  <h3>Run Zoobot morphology <span class="muted" style="font-weight:normal;">— before/after, locally (CPU)</span></h3>
-  <div class="form-row">
-    <label>Tree checkpoint <span class="muted">(blank = representation mode)</span>
-      <input type="text" id="zbTree" value="" placeholder="representation mode"></label>
-  </div>
+  <h3>Run Zoobot morphology <span class="muted" style="font-weight:normal;">— representation vectors, locally (CPU)</span></h3>
   <div style="margin-top:10px;">
     <button id="runZoobotBtn" type="button">🦋 Run Zoobot</button>
-    <span class="hint" style="margin-left:8px;">Runs in the
-      <code>EuclidPolishZoobot</code> env on CPU; writes the morphology Δ into
-      the shared store, shown in the gallery.</span>
+    <span class="hint" style="margin-left:8px;">Stretches each cutout to 424² and
+      runs the published Zoobot encoder (no heads needed); writes the
+      representation vectors + morphology Δ into the shared store, shown in the
+      gallery and the morphology-space plots.</span>
   </div>
   <div style="margin-top:10px;">
     <button id="runLensfinderBtn" type="button">🔎 Run lens-finder</button>
     <button id="lfLoadHeadsBtn" class="secondary" type="button"
             title="rsync the trained lens-finder heads down from FASRC into data/lensfinder/heads">⬇ Load heads</button>
-    <input id="lfHeadsDir" type="text"
-           placeholder="heads dir (default data/lensfinder/heads)"
-           style="margin-left:8px; width:300px;">
-    <span class="hint" style="margin-left:8px;">Scores each object's LR/SR/HR with
-      the trained heads → <code>lens_scores.csv</code> (drives the PCA opacity +
-      the lens-identification panel).</span>
+    <span class="hint" style="margin-left:8px;">When heads are present under
+      <code>data/lensfinder/heads</code>, scores each object's LR/SR/HR (stretched
+      to 424²) → <code>lens_scores.csv</code> P(lens) (drives the PCA opacity +
+      the lens-identification panel). Use "Load heads" to fetch them from FASRC.</span>
   </div>
 </section>
 
@@ -780,37 +747,20 @@
   $('runGroupedBtn').addEventListener('click', () => {
     const fd = new FormData();
     fd.set('n', $('gpN').value);
-    fd.set('cutout_size', $('gpCutout').value);
-    fd.set('stamp_m', $('gpStampM').value);
     fd.set('synthetic', $('gpSynth').checked ? '1' : '0');
     startJob('/api/evaluation/run-grouped', fd,
              'Grouped: eval_results', $('runGroupedBtn'),
              () => { refreshRuns(); });
   });
 
-  $('runEvalBtn').addEventListener('click', () => {
-    const fd = new FormData();
-    fd.set('grade', $('evGrade').value);
-    fd.set('max_n', $('evMaxN').value);
-    fd.set('cutout_size', $('evCutout').value);
-    fd.set('catalog', $('evCatalog').value);
-    startJob('/api/evaluation/run-eval', fd,
-             'Evaluation: eval_results', $('runEvalBtn'),
-             () => { refreshRuns(); });
-  });
-
   $('runZoobotBtn').addEventListener('click', () => {
-    const fd = new FormData();
-    fd.set('tree_checkpoint', $('zbTree').value);
-    startJob('/api/evaluation/run-zoobot', fd,
+    startJob('/api/evaluation/run-zoobot', new FormData(),
              'Zoobot: eval_results', $('runZoobotBtn'),
              () => { loadRun(); });
   });
 
   $('runLensfinderBtn').addEventListener('click', () => {
-    const fd = new FormData();
-    fd.set('heads_dir', $('lfHeadsDir').value);
-    startJob('/api/evaluation/run-lensfinder', fd,
+    startJob('/api/evaluation/run-lensfinder', new FormData(),
              'Lens-finder: eval_results', $('runLensfinderBtn'),
              () => { updateSpace3d(); updateLensfinder(true); });
   });

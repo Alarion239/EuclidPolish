@@ -6,6 +6,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.eval import synthetic_runner as sr
+from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
 
 
 class _Img:
@@ -15,7 +16,8 @@ class _Img:
 
 
 def test_hr_fits_written_four_band(tmp_path, monkeypatch):
-    # dirty_* records are LR half-grid (64²×4); hr_* are HR-grid (128²×4).
+    # dirty_* records are LR half-grid (64²×4); hr_* are HR-grid (128²×4) — large
+    # enough to crop the canonical 53² LR / 106² SR·HR stamp centered at (64,64).
     def fake_read(path, num_images=0):
         if "dirty" in str(path):
             return [_Img(0, np.zeros((64, 64, 4), np.float32))]
@@ -35,8 +37,12 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
         on_progress=lambda *a: None, log=lambda *a: None)
     assert res["n_ok"] == 1
 
-    with fits.open(f"{out_dir}/syn-lens_0000/HR.fits") as hdul:
-        hr = np.asarray(hdul[0].data)
-        bands = hdul[0].header.get("BANDS", "")
-    assert hr.shape == (4, 64, 64)          # 4-band, HR grid (m=64 here)
-    assert "VIS" in bands
+    base = f"{out_dir}/syn-lens_0000"
+    # Canonical geometry: LR EVAL_LR_SIZE², SR/HR EVAL_HR_SIZE², all 4-band.
+    with fits.open(f"{base}/HR.fits") as hdul:
+        assert np.asarray(hdul[0].data).shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
+        assert "VIS" in hdul[0].header.get("BANDS", "")
+    with fits.open(f"{base}/SR.fits") as hdul:
+        assert np.asarray(hdul[0].data).shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
+    with fits.open(f"{base}/original_stack.fits") as hdul:
+        assert np.asarray(hdul[0].data).shape == (4, EVAL_LR_SIZE, EVAL_LR_SIZE)

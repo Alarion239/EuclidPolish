@@ -228,9 +228,15 @@ class TestEvaluationRoutes:
         r = client.get("/evaluation")
         assert r.status_code == 200
         body = r.get_data(as_text=True)
-        # Local run forms (eval + zoobot) + the catalog-fetch + results
-        # controls are present (no FASRC step cards).
-        assert "runEvalBtn" in body and "runZoobotBtn" in body
+        # Local run forms (grouped + zoobot + lens-finder) + the catalog-fetch
+        # + results controls are present (no FASRC step cards).
+        assert "runGroupedBtn" in body and "runZoobotBtn" in body
+        assert "runLensfinderBtn" in body
+        # The single-grade form and all stamp-size / model knobs were removed —
+        # sizes are fixed (53² LR / 106² SR·HR) and the modes auto-resolve.
+        assert "runEvalBtn" not in body and "evGrade" not in body
+        for gone in ("gpCutout", "gpStampM", "zbTree", "lfHeadsDir"):
+            assert gone not in body
         assert "jobPanel" in body
         assert "fetchCatBtn" in body and "runSelect" not in body
         assert "Shared evaluation store" in body
@@ -244,7 +250,10 @@ class TestEvaluationRoutes:
         for group in ("A", "B", "C", "syn-lens", "syn-gal"):
             assert f'data-space3d-group="{group}"' in body
 
-    def test_runs_api_empty(self, client):
+    def test_runs_api_empty(self, client, tmp_path, monkeypatch):
+        # Isolate the shared store to a fresh dir; otherwise this reads whatever
+        # data/eval_results happens to hold on the dev machine.
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         r = client.get("/api/evaluation/runs")
         assert r.status_code == 200
         j = r.get_json()
@@ -274,9 +283,10 @@ class TestEvaluationRoutes:
         monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
                             lambda **k: captured.update(k) or {"n": 0})
         r = client.post("/api/evaluation/run-grouped",
-                        data={"run_name": "a1", "n": "3", "cutout_size": "128"})
+                        data={"run_name": "a1", "n": "3"})
         assert r.status_code == 200 and r.get_json()["job_id"]
         assert captured["out_dir"] == Config.EVAL_RESULTS_DIR
+        assert captured["n"] == 3
         assert client.post("/api/evaluation/run-grouped",
                            data={"run_name": "../x"}).status_code == 200
 
@@ -634,29 +644,6 @@ class TestLocalRunRoutes:
         app.config.update(TESTING=True)
         return app.test_client()
 
-    def test_run_eval_spawns_local_job(self, client, tmp_path, monkeypatch):
-        from euclid_polish.eval import catalog_runner
-        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        captured = {}
-        # Don't actually run the model — stub the runner.
-        monkeypatch.setattr(catalog_runner, "run_catalog_eval",
-                            lambda **k: captured.update(k) or {"n": 0})
-        r = client.post("/api/evaluation/run-eval",
-                        data={"run_name": "lensesA", "grade": "A", "max_n": "3"})
-        assert r.status_code == 200 and r.get_json()["job_id"]
-        assert captured["out_dir"] == Config.EVAL_RESULTS_DIR
-
-    def test_run_eval_rejects_bad_run(self, client, tmp_path, monkeypatch):
-        # Stub the runner so the spawned background job can't launch a real
-        # (catalog + model) eval that outlives the test and races later
-        # monkeypatches of eval_catalog_object.
-        from euclid_polish.eval import catalog_runner
-        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        monkeypatch.setattr(catalog_runner, "run_catalog_eval",
-                            lambda **k: {"n": 0})
-        r = client.post("/api/evaluation/run-eval", data={"run_name": "../x"})
-        assert r.status_code == 200
-
     def test_run_zoobot_env_missing_hint(self, client, tmp_path, monkeypatch):
         from euclid_polish.web.routes import evaluation as evmod
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
@@ -735,8 +722,9 @@ class TestSyntheticCutouts:
         for oid in ("a0", "b0", "c0"):
             d = out / oid
             d.mkdir(parents=True)
-            stack = np.ones((4, 8, 8), dtype=np.float32)
-            sr = np.full((4, 16, 16), 2.0, dtype=np.float32)
+            # Above the canonical 53²/106² so enforce_object_sizes crops, not drops.
+            stack = np.ones((4, 64, 64), dtype=np.float32)
+            sr = np.full((4, 128, 128), 2.0, dtype=np.float32)
             fits.PrimaryHDU(stack).writeto(d / "original_stack.fits")
             fits.PrimaryHDU(sr).writeto(d / "SR.fits")
 
@@ -752,6 +740,11 @@ class TestSyntheticCutouts:
         assert res["n_ok"] == 3
         rows = read_eval_catalog(str(out / "manifest.csv"))
         assert [r["id"] for r in rows] == ["a0", "b0", "c0"]
+        # Reused FITS are held at the canonical eval geometry.
+        with fits.open(out / "a0" / "original_stack.fits") as h:
+            assert h[0].data.shape == (4, 53, 53)
+        with fits.open(out / "a0" / "SR.fits") as h:
+            assert h[0].data.shape == (4, 106, 106)
 
     def test_crop_stamp_hr_and_lr(self):
         import numpy as np
@@ -778,28 +771,6 @@ class TestSyntheticCutouts:
             log=lambda m: None)
         assert res["groups"] == {}
         assert res["manifest"] is None or os.path.isfile(res["manifest"])
-
-    def test_run_grouped_threads_stamp_m(self, client, monkeypatch):
-        # The editable "Synthetic stamp M" reaches run_grouped_analysis (even,
-        # bounded). Run the spawned job synchronously to capture its kwargs.
-        from euclid_polish.eval import grouped_runner
-        from euclid_polish.web.routes import evaluation as ev
-
-        captured = {}
-        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
-                            lambda **kw: captured.update(kw) or {"groups": {}})
-
-        class _Cap:
-            def tick(self, *a, **k): pass
-            def write(self, *a, **k): pass
-
-        monkeypatch.setattr(ev.JOB_REGISTRY, "spawn",
-                            lambda label, target: (target(_Cap()), "jid")[1])
-        r = client.post("/api/evaluation/run-grouped",
-                        data={"run_name": "t", "n": "2", "stamp_m": "97"})
-        assert r.status_code == 200
-        assert captured.get("stamp_m") == 98          # 97 -> even
-
 
 class TestCenterCropAndReuse:
     def test_center_crop_plane_and_cube(self):
@@ -831,6 +802,35 @@ class TestCenterCropAndReuse:
         # second pass is a no-op (already small)
         assert catalog_runner.crop_object_fits(str(d), 63) is False
 
+    def test_enforce_object_sizes_crops_then_drops(self, tmp_path):
+        from euclid_polish.eval import catalog_runner as cr
+        # Oversized LR/SR/HR are center-cropped to the canonical geometry.
+        d = tmp_path / "ok"
+        d.mkdir()
+        fits.PrimaryHDU(np.ones((4, 64, 64), np.float32)).writeto(
+            d / "original_stack.fits")
+        fits.PrimaryHDU(np.ones((4, 128, 128), np.float32)).writeto(d / "SR.fits")
+        fits.PrimaryHDU(np.ones((4, 200, 200), np.float32)).writeto(d / "HR.fits")
+        assert cr.enforce_object_sizes(str(d)) is True
+        with fits.open(d / "original_stack.fits") as h:
+            assert h[0].data.shape == (4, cr.EVAL_LR_SIZE, cr.EVAL_LR_SIZE)
+        for name in ("SR.fits", "HR.fits"):
+            with fits.open(d / name) as h:
+                assert h[0].data.shape == (4, cr.EVAL_HR_SIZE, cr.EVAL_HR_SIZE)
+        # Already exact → second pass is a no-op that still validates True.
+        assert cr.enforce_object_sizes(str(d)) is True
+
+        # An SR smaller than the target → drop (False); no file is modified.
+        small = tmp_path / "small"
+        small.mkdir()
+        fits.PrimaryHDU(
+            np.ones((4, cr.EVAL_LR_SIZE, cr.EVAL_LR_SIZE), np.float32)).writeto(
+            small / "original_stack.fits")
+        fits.PrimaryHDU(np.ones((4, 64, 64), np.float32)).writeto(small / "SR.fits")
+        assert cr.enforce_object_sizes(str(small)) is False
+        with fits.open(small / "SR.fits") as h:
+            assert h[0].data.shape == (4, 64, 64)
+
     def test_seed_object_from_cache(self, tmp_path):
         from euclid_polish.eval import catalog_runner
         src = tmp_path / "cache"
@@ -849,8 +849,8 @@ class TestCenterCropAndReuse:
 
     def test_grouped_seeds_and_crops_from_source_without_download(
             self, tmp_path, monkeypatch):
-        """A fresh out_dir reuses cached cutouts from lens_source_dir, crops
-        them, and never loads the model or downloads."""
+        """A fresh out_dir reuses cached cutouts from lens_source_dir, crops them
+        to the canonical eval geometry, and never loads the model or downloads."""
         from euclid_polish.eval import catalog_runner, grouped_runner
 
         catalog = tmp_path / "lenses.csv"
@@ -871,13 +871,14 @@ class TestCenterCropAndReuse:
         out = tmp_path / "run"
         res = grouped_runner.run_grouped_analysis(
             str(out), n=1, catalog_path=str(catalog), include_synthetic=False,
-            lens_crop_vis=63, lens_source_dir=str(source), log=lambda m: None)
+            lens_source_dir=str(source), log=lambda m: None)
 
         assert res["n_ok"] == 1
+        # Seeded cutouts are center-cropped to the canonical 53² LR / 106² SR.
         with fits.open(out / "a0" / "original_stack.fits") as h:
-            assert h[0].data.shape == (4, 63, 63)
+            assert h[0].data.shape == (4, 53, 53)
         with fits.open(out / "a0" / "SR.fits") as h:
-            assert h[0].data.shape == (4, 126, 126)
+            assert h[0].data.shape == (4, 106, 106)
         # source cache stays untouched at full size
         with fits.open(source / "a0" / "original_stack.fits") as h:
             assert h[0].data.shape == (4, 256, 256)
