@@ -72,10 +72,12 @@ def main(argv=None) -> int:
     reporter = Reporter.from_env()
 
     import numpy as np
+    import tensorflow as tf
     from tqdm import tqdm
 
     from euclid_polish.sky.source_catalog import read_sources
-    from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+    from euclid_polish.sky.tfrecord import tfrecord_path
+    from euclid_polish.sky.types import MultiBandSkyImage
 
     m = int(args.stamp_m)
     if m % 2:
@@ -89,30 +91,49 @@ def main(argv=None) -> int:
         print(f"no sources in {src_csv}")
         return 1
 
-    window = args.max_fields or 1_000_000
-    lr_by = {r.index: r for r in read_multiband_skyimages(
-        tfrecord_path(rdir, f"dirty_{args.subset}"), num_images=window)}
-    sr_by = {r.index: r for r in read_multiband_skyimages(
-        tfrecord_path(rdir, f"sr_{args.subset}"), num_images=window)}
-    hr_by = {r.index: r for r in read_multiband_skyimages(
-        tfrecord_path(rdir, f"hr_{args.subset}"), num_images=window)}
-    common = sorted(set(lr_by) & set(sr_by) & set(hr_by) & set(by_field))
+    paths = {k: tfrecord_path(rdir, f"{k}_{args.subset}")
+             for k in ("dirty", "sr", "hr")}
+    for k, p in paths.items():
+        if not os.path.exists(p):
+            print(f"missing {p}")
+            return 1
+    total = len(by_field)
     if args.max_fields:
-        common = common[:args.max_fields]
-    if not common:
-        print("no fields with matching LR/SR/HR + sources")
-        return 1
-    field = int(np.asarray(hr_by[common[0]].data, np.float32).shape[0])
-    print(f"{len(common)} fields, HR field {field}px, stamp {m}px HR (LR {m // 2})")
+        total = min(total, args.max_fields)
 
-    reporter.set_stage(f"cutting 4-band stamps from {len(common)} fields")
+    # Stream the three field records in lockstep — never materialise every
+    # field. A 2040²×4 SR/HR field is ~66 MB; 800 fields × (dirty+sr+hr) would
+    # be ~120 GB and OOM. Peak memory here is one field's three cubes plus the
+    # (small) catalog rows.
+    ds = tf.data.Dataset.zip(tuple(
+        tf.data.TFRecordDataset(paths[k]) for k in ("dirty", "sr", "hr")))
+
+    reporter.set_stage(f"cutting 4-band stamps from {total} fields")
     rows = []
     n_lens = n_gal = 0
-    for i, idx in enumerate(tqdm(common, desc="fields")):
-        reporter.set_step(i, len(common), f"field {idx}")
-        lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)
-        sr_cube = np.asarray(sr_by[idx].data, dtype=np.float32)
-        hr_cube = np.asarray(hr_by[idx].data, dtype=np.float32)
+    field = None
+    processed = 0
+    for raw_lr, raw_sr, raw_hr in tqdm(ds, desc="fields", total=total):
+        if args.max_fields and processed >= args.max_fields:
+            break
+        lr_img = MultiBandSkyImage.from_tfrecord(raw_lr)
+        sr_img = MultiBandSkyImage.from_tfrecord(raw_sr)
+        hr_img = MultiBandSkyImage.from_tfrecord(raw_hr)
+        idx = lr_img.index
+        if sr_img.index != idx or hr_img.index != idx:
+            raise RuntimeError(
+                f"record index misalignment: dirty={idx} sr={sr_img.index} "
+                f"hr={hr_img.index} (dirty_/sr_/hr_ must share field order)")
+        processed += 1
+        reporter.set_step(processed, total, f"field {idx}")
+        if idx not in by_field:
+            continue
+        lr_cube = np.asarray(lr_img.data, dtype=np.float32)
+        sr_cube = np.asarray(sr_img.data, dtype=np.float32)
+        hr_cube = np.asarray(hr_img.data, dtype=np.float32)
+        if field is None:
+            field = int(hr_cube.shape[0])
+            print(f"HR field {field}px, stamp {m}px HR (LR {m // 2}); ~{total} fields")
 
         lenses = lf_stamps.iter_field_sources(
             by_field[idx], want_type="lens", field=field, m=m,
@@ -149,14 +170,17 @@ def main(argv=None) -> int:
                     })
                 n_lens += stype == "lens"
                 n_gal += stype == "galaxy"
-        del sr_cube, hr_cube, lr_cube
+        del lr_cube, sr_cube, hr_cube, lr_img, sr_img, hr_img
 
-    reporter.set_step(len(common), len(common), "done")
+    if field is None:
+        print("no fields with matching LR/SR/HR + sources")
+        return 1
+    reporter.set_step(total, total, "done")
     lf_catalog.assign_splits(rows, val_frac=args.val_frac,
                              test_frac=args.test_frac, seed=args.seed)
     out_csv = os.path.join(args.out_dir, "catalog.csv")
     lf_catalog.write_catalog(out_csv, rows)
-    reporter.metric({"fields": len(common), "lens": n_lens, "galaxy": n_gal,
+    reporter.metric({"fields": processed, "lens": n_lens, "galaxy": n_gal,
                      "stamps": len(rows)})
     print(f"\n✓ {n_lens} lens + {n_gal} galaxy sources → {len(rows)} stamps "
           f"({len(rows)//3} per recon) → {out_csv}")

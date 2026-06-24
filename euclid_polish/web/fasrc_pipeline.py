@@ -1193,8 +1193,11 @@ class LensfinderBuildStampsStep(FASRCPipelineStep):
             label="Build lens-finder stamps (CPU)",
             job_name="lensfinder-stamps",
             defaults=StepResources(
-                partition="shared", n_cpus=16, n_gpus=0,
-                memory="48G", time_limit="12:00:00",
+                # Fields are streamed one at a time (see lensfinder_build_stamps),
+                # so peak RSS is ~one field's cubes + the catalog rows (~2-3 GB),
+                # not the full record set. 16 GB is ample.
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="12:00:00",
             ),
             needs_gpu=False,
         )

@@ -50,6 +50,42 @@ def _write_sources(rdir):
             f.write(",".join(str(r.get(c, "")) for c in SOURCE_COLS) + "\n")
 
 
+def _write_multi(rdir, name, shape, bands, n):
+    with open_multiband_writer(name, records_dir=rdir) as w:
+        for i in range(n):
+            data = np.full(shape, float(i + 1), np.float32)
+            w.write(MultiBandSkyImage(
+                data=data, pixel_scale_arcsec=0.05, band_names=bands,
+                is_clean=("dirty" not in name), index=i, subset="train"), index=i)
+
+
+def test_build_stamps_streams_multiple_fields(tmp_path):
+    # Several fields, written in index order to dirty_/sr_/hr_ — exercises the
+    # lockstep zip stream (the memory-safe path), not the old all-in-RAM load.
+    rdir = str(tmp_path / "rec")
+    os.makedirs(rdir, exist_ok=True)
+    n = 3
+    _write_multi(rdir, "dirty_train", (64, 64, 4), Config.LR_INPUT_BAND_NAMES, n)
+    _write_multi(rdir, "sr_train", (128, 128, 4), Config.HR_TARGET_BAND_NAMES, n)
+    _write_multi(rdir, "hr_train", (128, 128, 4), Config.HR_TARGET_BAND_NAMES, n)
+    with open(os.path.join(rdir, "sources_train.csv"), "w", newline="") as f:
+        f.write(",".join(SOURCE_COLS) + "\n")
+        for fi in range(n):                       # one lens + one galaxy per field
+            for typ, x, y, te in (("lens", 64.0, 64.0, 1.0), ("galaxy", 70.0, 60.0, "")):
+                row = {"field_index": fi, "type": typ, "x_pix": x, "y_pix": y,
+                       "theta_E_arcsec": te, "flux_vis_e": 300}
+                f.write(",".join(str(row.get(c, "")) for c in SOURCE_COLS) + "\n")
+    out = str(tmp_path / "stamps")
+
+    rc = bs.main(["--records-dir", rdir, "--subset", "train", "--out-dir", out,
+                  "--stamp-m", "106"])
+    assert rc == 0
+    rows = open(os.path.join(out, "catalog.csv")).read().strip().splitlines()
+    # n fields × (1 lens + 1 galaxy) × 3 recons + header.
+    assert len(rows) == 1 + n * 2 * 3
+    assert os.path.exists(os.path.join(out, "train", "hr", "00002_lens_0.png"))
+
+
 def test_build_stamps_writes_color_catalog(tmp_path):
     rdir = str(tmp_path / "rec")
     os.makedirs(rdir, exist_ok=True)
