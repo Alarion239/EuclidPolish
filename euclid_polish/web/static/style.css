@@ -427,6 +427,8 @@ button.secondary:hover { background: #565e64; }
 }
 .cv-idx-total { color: #6b7280; }
 .cv-kbd { font-size: 11px; color: #9aa1b0; margin-left: 6px; }
+.cv-speed { margin-left: 4px; }
+.cv-speed .cv-range { width: 88px; }
 
 
 /* ─── HST step cards: task / history / resources fieldsets ─────────────

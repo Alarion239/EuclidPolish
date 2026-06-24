@@ -142,6 +142,7 @@ export function mountCutoutViewer(root, opts = {}) {
     shown: new Map(),      // tier → rec currently displayed (for cheap re-render)
     frames: [],            // [{ tier, frame, canvas, ctx, overlay, legendWrap, msg }]
     playTimer: null,
+    playMs: PLAY_INTERVAL_MS,   // auto-run cadence (live-tunable via the nav slider)
     hot: false,
   };
 
@@ -550,8 +551,12 @@ export function mountCutoutViewer(root, opts = {}) {
       if (e.key === "Enter") { commit(); idxInput.blur(); }
     });
     const idxWrap = el("span", { class: "cv-idx" }, [idxInput, idxTotal]);
+    const speed = slider("speed", 0.3, 3.0, state.playMs / 1000,
+      (v) => `${v.toFixed(1)} s`, (v) => setPlaySpeed(v * 1000));
+    speed.classList.add("cv-speed");
+    speed.title = "auto-run cadence — seconds per slide";
     const hint = el("span", { class: "cv-kbd", text: "← →  ·  Space to run" });
-    nav.append(prev, idxWrap, next, play, hint);
+    nav.append(prev, idxWrap, next, play, speed, hint);
   }
 
   function updateNav() {
@@ -574,7 +579,16 @@ export function mountCutoutViewer(root, opts = {}) {
       nav._play.classList.remove("active");
     } else {
       nav._play.classList.add("active");
-      state.playTimer = setInterval(() => go(state.index + 1), PLAY_INTERVAL_MS);
+      state.playTimer = setInterval(() => go(state.index + 1), state.playMs);
+    }
+  }
+
+  /** Set the auto-run cadence; restart a running timer so it takes effect now. */
+  function setPlaySpeed(ms) {
+    state.playMs = ms;
+    if (state.playTimer) {
+      clearInterval(state.playTimer);
+      state.playTimer = setInterval(() => go(state.index + 1), state.playMs);
     }
   }
 
