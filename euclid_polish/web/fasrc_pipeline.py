@@ -1291,7 +1291,8 @@ class LensfinderTrainStep(FASRCPipelineStep):
         ]
         for key, flag in (("patience", "--patience"),
                           ("batch_size", "--batch-size"),
-                          ("learning_rate", "--learning-rate")):
+                          ("learning_rate", "--learning-rate"),
+                          ("training_mode", "--training-mode")):
             v = params.get(key)
             if v not in (None, ""):
                 cmd += [flag, str(v)]

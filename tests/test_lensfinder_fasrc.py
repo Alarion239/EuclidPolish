@@ -92,3 +92,10 @@ def test_train_step_receives_config_training_knobs():
     assert cmd[cmd.index("--patience") + 1] == str(params["patience"])
     assert cmd[cmd.index("--batch-size") + 1] == str(params["batch_size"])
     assert cmd[cmd.index("--learning-rate") + 1] == str(params["learning_rate"])
+    assert cmd[cmd.index("--training-mode") + 1] == str(params["training_mode"])
+
+
+def test_train_step_emits_training_mode():
+    s = REGISTRY.get("lensfinder_train")
+    cmd = s.build_command({"training_mode": "head_only"})
+    assert cmd[cmd.index("--training-mode") + 1] == "head_only"

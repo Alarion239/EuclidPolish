@@ -52,7 +52,8 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
     "lensfinder_train":        {"epochs": "lensfinder_epochs",
                                 "patience": "lensfinder_patience",
                                 "batch_size": "lensfinder_batch_size",
-                                "learning_rate": "lensfinder_learning_rate"},
+                                "learning_rate": "lensfinder_learning_rate",
+                                "training_mode": "lensfinder_training_mode"},
 }
 
 
@@ -119,6 +120,10 @@ class JobConfig:
     lensfinder_patience:      int   = 6
     lensfinder_batch_size:    int   = 64
     lensfinder_learning_rate: float = 1e-4
+    # Zoobot fine-tune depth: "head_only" freezes the encoder and trains only
+    # the linear head (fast, clean probe of the pretrained features);
+    # "full" fine-tunes all encoder params (layer-decayed LR).
+    lensfinder_training_mode: str   = "head_only"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -165,10 +170,13 @@ def update(patch: Dict[str, Any]) -> JobConfig:
         if not hasattr(cfg, k) or v is None or v == "":
             continue
         cur = getattr(cfg, k)
-        try:
-            v = float(v) if isinstance(cur, float) else int(v)
-        except (TypeError, ValueError):
-            continue
+        if isinstance(cur, str):
+            v = str(v)                       # string fields kept verbatim
+        else:
+            try:
+                v = float(v) if isinstance(cur, float) else int(v)
+            except (TypeError, ValueError):
+                continue
         setattr(cfg, k, v)
     save(cfg)
     return cfg

@@ -51,6 +51,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--png-size", type=int, default=424)
     p.add_argument("--learning-rate", type=float, default=1e-4)
+    p.add_argument("--training-mode", default="head_only",
+                   choices=["head_only", "full"],
+                   help="head_only = freeze encoder, train only the linear head "
+                        "(fast, clean probe); full = fine-tune all encoder params")
     p.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu", "mps"])
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args(argv)
@@ -144,7 +148,8 @@ def _train_one(recon, rows, args, reporter, step_offset):
     # label's Long dtype and crashes cross_entropy, so we don't use it.
     model = finetune.FinetuneableZoobotClassifier(
         num_classes=2, label_col="label",
-        name=args.encoder_name, learning_rate=args.learning_rate)
+        name=args.encoder_name, learning_rate=args.learning_rate,
+        training_mode=args.training_mode)
 
     trainer = finetune.get_trainer(
         save_dir=out, max_epochs=args.epochs, patience=args.patience,

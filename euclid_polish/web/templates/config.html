@@ -92,6 +92,13 @@
           <input type="number" name="lensfinder_learning_rate" value="{{ cfg.lensfinder_learning_rate }}"
                  min="0" max="1" step="any" required>
         </label>
+        <label title="Fine-tune depth. head_only freezes the Zoobot encoder and trains only the linear head (fast, won't overfit, clean probe of the pretrained features). full fine-tunes all 15M encoder params (slower, more capacity, overfit-prone).">
+          Fine-tune depth
+          <select name="lensfinder_training_mode">
+            <option value="head_only" {{ 'selected' if cfg.lensfinder_training_mode == 'head_only' else '' }}>head_only (freeze encoder)</option>
+            <option value="full" {{ 'selected' if cfg.lensfinder_training_mode == 'full' else '' }}>full (fine-tune all)</option>
+          </select>
+        </label>
       </div>
       <p class="hint">→ the <code>lensfinder-train</code> FASRC step (Zoobot fine-tuning). Training is early-stopping-driven: <code>max epochs</code> is just the ceiling.</p>
     </fieldset>

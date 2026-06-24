@@ -124,7 +124,8 @@ def test_lensfinder_training_mapped_for_train_step():
     assert m == {"epochs": "lensfinder_epochs",
                  "patience": "lensfinder_patience",
                  "batch_size": "lensfinder_batch_size",
-                 "learning_rate": "lensfinder_learning_rate"}
+                 "learning_rate": "lensfinder_learning_rate",
+                 "training_mode": "lensfinder_training_mode"}
 
 
 def test_save_endpoint_persists_lensfinder_fields(client, cfg_path):
@@ -147,3 +148,22 @@ def test_config_page_renders_training_section(client, cfg_path):
     assert r.status_code == 200
     assert b"Lens-finder training" in r.data
     assert b"lensfinder_patience" in r.data
+
+
+def test_training_mode_default_and_string_update(cfg_path):
+    c = job_config.load()
+    assert c.lensfinder_training_mode == "head_only"      # default
+    # String fields must persist through update() — previously dropped because
+    # update() coerced every value to int/float.
+    c = job_config.update({"lensfinder_training_mode": "full"})
+    assert c.lensfinder_training_mode == "full"
+    assert job_config.load().lensfinder_training_mode == "full"   # persisted
+    # numeric fields still coerce alongside a string field
+    c = job_config.update({"lensfinder_training_mode": "head_only",
+                           "lensfinder_epochs": "50"})
+    assert c.lensfinder_training_mode == "head_only" and c.lensfinder_epochs == 50
+
+
+def test_training_mode_mapped_for_train_step():
+    m = job_config.FASRC_STEP_PARAMS["lensfinder_train"]
+    assert m["training_mode"] == "lensfinder_training_mode"
