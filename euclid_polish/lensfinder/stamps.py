@@ -111,3 +111,48 @@ def render_stamp_rgb(stamp4, out_png: str, *,
     os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
     img.save(out_png)
     return out_png
+
+
+def load_fits_cube(fits_path: str) -> np.ndarray:
+    """Load a FITS primary HDU as a band-last float32 cube ``(H, W, C)``.
+
+    Accepts band-first ``(C, H, W)`` cubes (the eval LR/SR/HR layout) and 2-D
+    ``(H, W)`` planes (a legacy VIS-only ``HR.fits``), which become ``(H, W, 1)``.
+    """
+    from astropy.io import fits
+
+    with fits.open(fits_path) as hdul:
+        data = np.asarray(hdul[0].data, dtype=np.float32)
+    if data.ndim == 2:
+        return data[..., None]
+    if data.ndim == 3:
+        return np.moveaxis(data, 0, -1)          # (C, H, W) → (H, W, C)
+    raise ValueError(f"load_fits_cube expects 2-D or 3-D FITS; got {data.shape}")
+
+
+def render_eval_stamp(fits_path: str, out_png: str, *, crop_m: int,
+                      scale_r: float = 1.0, scale_g: float = 1.0,
+                      scale_b: float = 1.0, stretch: float = 100.0,
+                      Q: float = 8.0, size: int = 424) -> str:
+    """Render an eval FITS cutout exactly as training renders a stamp.
+
+    Mirrors ``lensfinder_build_stamps``: the eval cutouts are source-centered,
+    so center-crop the cube to ``crop_m`` px (geometric center == source) and
+    composite via :func:`render_stamp_rgb` with the same Lupton-asinh recipe.
+    ``stretch`` defaults to ``Config.STRETCH_SCALE_E`` (100). A cube with fewer
+    than four bands (e.g. a not-yet-regenerated VIS-only ``HR.fits``) is
+    band-replicated to four so the render degrades to grayscale instead of
+    crashing.
+    """
+    from euclid_polish.eval.synthetic_runner import crop_stamp
+
+    cube = load_fits_cube(fits_path)
+    h, w = cube.shape[:2]
+    cropped = np.stack(
+        [crop_stamp(cube[..., c], cx=w / 2.0, cy=h / 2.0, m=crop_m)
+         for c in range(cube.shape[-1])], axis=-1)
+    if cropped.shape[-1] < 4:
+        reps = int(np.ceil(4 / cropped.shape[-1]))
+        cropped = np.tile(cropped, (1, 1, reps))[..., :4]
+    return render_stamp_rgb(cropped, out_png, scale_r=scale_r, scale_g=scale_g,
+                            scale_b=scale_b, stretch=stretch, Q=Q, size=size)

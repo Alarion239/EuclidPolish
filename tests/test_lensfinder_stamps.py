@@ -84,3 +84,55 @@ class TestRender:
         st.render_stamp_rgb(stamp4, out, size=424)
         import os
         assert os.path.exists(out)
+
+
+class TestEvalRender:
+    def _write_fits(self, path, arr):
+        from astropy.io import fits
+        fits.PrimaryHDU(np.ascontiguousarray(arr)).writeto(path, overwrite=True)
+
+    def test_load_fits_cube_band_first_to_band_last(self, tmp_path):
+        p = str(tmp_path / "sr.fits")
+        self._write_fits(p, np.zeros((4, 12, 10), np.float32))   # (C, H, W)
+        cube = st.load_fits_cube(p)
+        assert cube.shape == (12, 10, 4)                          # (H, W, C)
+
+    def test_load_fits_cube_2d_becomes_single_band(self, tmp_path):
+        p = str(tmp_path / "hr_vis.fits")
+        self._write_fits(p, np.zeros((12, 10), np.float32))       # legacy VIS-only
+        cube = st.load_fits_cube(p)
+        assert cube.shape == (12, 10, 1)
+
+    def test_render_eval_stamp_crops_and_writes_424_rgb(self, tmp_path):
+        from PIL import Image
+        rng = np.random.default_rng(0)
+        # SR-like 4-band 128px frame; crop to the 106 training size.
+        arr = (rng.random((4, 128, 128)).astype(np.float32) * 500.0)
+        src = str(tmp_path / "SR.fits")
+        self._write_fits(src, arr)
+        out = str(tmp_path / "after.png")
+        st.render_eval_stamp(src, out, crop_m=106, size=424)
+        with Image.open(out) as im:
+            assert im.size == (424, 424) and im.mode == "RGB"
+
+    def test_render_eval_stamp_centers_crop(self, tmp_path):
+        # A single hot pixel at the frame center must survive the center-crop
+        # (proves the crop is centered, not corner-anchored).
+        arr = np.zeros((4, 128, 128), np.float32)
+        arr[:, 64, 64] = 9.0
+        src = str(tmp_path / "SR.fits")
+        self._write_fits(src, arr)
+        cube = st.load_fits_cube(src)
+        from euclid_polish.eval.synthetic_runner import crop_stamp
+        cropped = crop_stamp(cube[..., 0], cx=64.0, cy=64.0, m=106)
+        assert cropped[53, 53] == 9.0          # center lands at stamp center
+
+    def test_render_eval_stamp_fewer_than_4_bands_does_not_crash(self, tmp_path):
+        import os
+        # Legacy VIS-only HR.fits (2-D) must still render via band replication.
+        arr = (np.random.default_rng(1).random((64, 64)).astype(np.float32) * 50)
+        src = str(tmp_path / "HR.fits")
+        self._write_fits(src, arr)
+        out = str(tmp_path / "hr.png")
+        st.render_eval_stamp(src, out, crop_m=53, size=424)
+        assert os.path.exists(out)
