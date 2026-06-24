@@ -294,6 +294,8 @@
   </div>
   <div style="margin-top:10px;">
     <button id="runLensfinderBtn" type="button">🔎 Run lens-finder</button>
+    <button id="lfLoadHeadsBtn" class="secondary" type="button"
+            title="rsync the trained lens-finder heads down from FASRC into data/lensfinder/heads">⬇ Load heads</button>
     <input id="lfHeadsDir" type="text"
            placeholder="heads dir (default data/lensfinder/heads)"
            style="margin-left:8px; width:300px;">
@@ -811,6 +813,29 @@
     startJob('/api/evaluation/run-lensfinder', fd,
              'Lens-finder: eval_results', $('runLensfinderBtn'),
              () => { updateSpace3d(); updateLensfinder(true); });
+  });
+
+  $('lfLoadHeadsBtn').addEventListener('click', async () => {
+    const btn = $('lfLoadHeadsBtn'), msg = $('runMsg');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ loading…';
+    msg.textContent = 'rsyncing lens-finder heads from FASRC…';
+    try {
+      const r = await fetch('/api/evaluation/sync-heads', { method: 'POST' });
+      const j = await r.json();
+      if (j.ok) {
+        msg.textContent = j.n_heads
+          ? '✓ loaded heads: ' + j.recons.join(', ') + ' — Run lens-finder to score'
+          : '⚠ no heads found on remote (data/lensfinder/heads) — train them first';
+      } else {
+        msg.textContent = '✗ ' + (j.error || 'load failed')
+          + (r.status === 400 ? ' (connect to FASRC first)' : '');
+      }
+    } catch (e) {
+      msg.textContent = '✗ ' + e;
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
   });
 
   // ── Interactive lightbox ────────────────────────────────────────────────

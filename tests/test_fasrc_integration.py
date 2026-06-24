@@ -730,3 +730,55 @@ def test_evaluation_sync_refuses_when_disconnected(client, monkeypatch):
     r = client.post("/api/evaluation/sync")
     assert r.status_code == 400
     assert r.get_json()["ok"] is False
+
+
+def test_evaluation_sync_heads_pulls_checkpoints(fake_remote, client, tmp_path,
+                                                 monkeypatch):
+    """POST /api/evaluation/sync-heads rsyncs <data_dir>/lensfinder/heads → local.
+
+    Only recons that actually carry a checkpoint are reported, so an untrained
+    recon (hr here) is skipped — matching the score step, which skips heads with
+    no checkpoint.
+    """
+    from euclid_polish.config import Config
+
+    heads = fake_remote["data_dir"] / "lensfinder" / "heads"
+    for recon in ("lr", "sr"):
+        ck = heads / recon / "checkpoints"
+        ck.mkdir(parents=True)
+        (ck / "epoch=1.ckpt").write_bytes(b"fakeckpt")
+    (heads / "hr").mkdir(parents=True)            # present but untrained → skipped
+
+    local_data = tmp_path / "local_data"
+    monkeypatch.setattr(Config, "DATA_DIR", str(local_data))
+
+    r = client.post("/api/evaluation/sync-heads")
+    assert r.status_code == 200, r.get_json()
+    j = r.get_json()
+    assert j["ok"] is True
+    assert sorted(j["recons"]) == ["lr", "sr"]    # hr has no ckpt → not counted
+    assert j["n_heads"] == 2
+    assert (local_data / "lensfinder" / "heads" / "sr" / "checkpoints"
+            / "epoch=1.ckpt").is_file()
+
+
+def test_evaluation_sync_heads_empty_remote_is_not_error(fake_remote, client,
+                                                         tmp_path, monkeypatch):
+    """A missing remote heads dir (untrained) is a clean n_heads=0, not a 500."""
+    from euclid_polish.config import Config
+
+    # Deliberately do NOT create <data_dir>/lensfinder/heads on the fake remote.
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "local_data"))
+
+    r = client.post("/api/evaluation/sync-heads")
+    assert r.status_code == 200, r.get_json()
+    j = r.get_json()
+    assert j["ok"] is True
+    assert j["n_heads"] == 0 and j["recons"] == []
+
+
+def test_evaluation_sync_heads_refuses_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(STATE, "ssh", None)
+    r = client.post("/api/evaluation/sync-heads")
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False

@@ -15,6 +15,7 @@ sbatch are all shared). This module only adds read-only views:
 from __future__ import annotations
 
 import csv
+import glob
 import os
 import re
 import subprocess
@@ -405,6 +406,45 @@ def register(app):
             "n":      summary["n"],
             "n_ok":   summary["n_ok"],
         })
+
+    @app.route("/api/evaluation/sync-heads", methods=["POST"])
+    def api_evaluation_sync_heads():
+        """Pull the trained lens-finder heads down from FASRC.
+
+        The heads (``lensfinder_train`` → ``<data_dir>/lensfinder/heads/{lr,sr,hr}
+        /checkpoints/*.ckpt``) live on the cluster; this rsyncs them into the
+        local ``data/lensfinder/heads`` so "Run lens-finder" can score with them,
+        reusing the same ControlMaster transport as the eval-results sync. Recons
+        whose checkpoint never arrives are simply skipped at score time, so a
+        partial set of heads is fine. Returns the recons that now have a
+        checkpoint so the page can report what loaded.
+        """
+        if STATE.ssh is None or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        cfg = fasrc_config.load()
+        remote = cfg.data_dir.rstrip("/") + "/lensfinder/heads/"
+        local = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
+        os.makedirs(local, exist_ok=True)
+        try:
+            rc, out, err = STATE.ssh.rsync_pull(
+                remote, local, extra_args=["--delete-after"], timeout=600)
+        except Exception as e:  # noqa: BLE001 — surface any transport error to UI
+            return jsonify({"ok": False,
+                            "error": f"{type(e).__name__}: {e}"}), 500
+        recons = [r for r in ("lr", "sr", "hr")
+                  if glob.glob(os.path.join(local, r, "checkpoints", "*.ckpt"))]
+        if rc != 0:
+            # A missing/empty remote heads dir (heads simply not trained yet) is
+            # not a transport failure — report it as "no heads" so the UI can say
+            # "train them first" instead of surfacing a raw rsync error.
+            low = (err or "").lower()
+            benign = ("no such file or directory" in low
+                      or "empty file list" in low)
+            if not benign:
+                return jsonify({"ok": False,
+                                "error": err.strip() or f"rsync exit {rc}"}), 500
+        return jsonify({"ok": True, "stdout": out.strip()[-2000:],
+                        "recons": recons, "n_heads": len(recons)})
 
     @app.route("/api/evaluation/rerender", methods=["POST"])
     def api_evaluation_rerender():
