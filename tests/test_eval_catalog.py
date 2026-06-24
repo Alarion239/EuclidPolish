@@ -615,6 +615,54 @@ class TestZoobotMorphHelpers:
             {"from": "obj1__after", "to": "obj1__hr", "kind": "after-hr"},
         ]
 
+    def test_morphology_embedding_payload_refits_on_selected_groups(self, tmp_path):
+        from euclid_polish.eval import zoobot_morph as zm
+
+        run = str(tmp_path / "run")
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "manifest.csv"), "w") as f:
+            f.write("id,grade,ok\nobjA,A,True\nobjL,syn-lens,True\n"
+                    "objG,syn-gal,True\n")
+        with open(os.path.join(run, "zoobot_predictions.csv"), "w") as f:
+            f.write("id_str,feat_0,feat_1,feat_2,feat_3\n")
+            f.write("objA__before,0,0,0,0\n")
+            f.write("objA__after,1,0,0,0\n")
+            f.write("objL__before,0,1,0,0\n")
+            f.write("objL__after,0,2,0,1\n")
+            f.write("objL__hr,0,3,0,1\n")
+            f.write("objG__before,1,0,1,0\n")
+            f.write("objG__after,1,0,2,0\n")
+            f.write("objG__hr,1,0,3,0\n")
+
+        full = zm.morphology_embedding_payload(run)
+        assert full["count"] == 8
+
+        # Selecting only the two synthetic classes refits on just those rows.
+        sub = zm.morphology_embedding_payload(run, groups={"syn-lens", "syn-gal"})
+        assert sub["count"] == 6
+        assert {p["group"] for p in sub["points"]} == {"syn-lens", "syn-gal"}
+        for method in ("pca", "mds", "pca_lr", "pca_srhr"):
+            pts = sub["embeddings"][method]["points"]
+            assert {p["group"] for p in pts} <= {"syn-lens", "syn-gal"}
+        # The fit changes: PC1 variance differs from the all-class fit.
+        assert sub["embeddings"]["pca"]["variance_pct"] != \
+            full["embeddings"]["pca"]["variance_pct"]
+        # Edges only connect surviving (selected) points — no objA edge.
+        assert all(e["from"].startswith(("objL", "objG")) for e in sub["edges"])
+
+        # A single class refits on that class alone.
+        one = zm.morphology_embedding_payload(run, groups={"A"})
+        assert one["count"] == 2
+        assert {p["group"] for p in one["points"]} == {"A"}
+        assert {p["view"] for p in one["embeddings"]["pca_lr"]["points"]} == {"before"}
+
+        # Empty selection yields a valid empty payload (not a 404/None).
+        empty = zm.morphology_embedding_payload(run, groups=set())
+        assert empty is not None
+        assert empty["count"] == 0
+        assert empty["points"] == []
+        assert empty["embeddings"]["pca"]["points"] == []
+
 
 class TestLensCatalogModule:
     def test_normalize_grade_filter(self, tmp_path):

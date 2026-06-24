@@ -10,6 +10,12 @@
 {% endblock %}
 
 {% block viz %}
+<section class="card" id="cutoutBrowser" style="grid-column:1/-1;">
+  <h3 style="margin-top:0;">Cutout browser
+    <span class="muted" style="font-weight:normal;">— LR / SR / HR, rendered in
+      the browser; flip tiers at identical stretch, ← → to step through</span></h3>
+  <div id="cutout-viewer"></div>
+</section>
 <style>
   /* Scoped to the evaluation page; relies on the shared light theme. */
   .eval-controls { display: flex; align-items: center; gap: 10px 16px;
@@ -140,12 +146,12 @@
 
 <details id="space3dPanel" class="card" style="grid-column:1/-1; display:none;" open>
   <summary><b>Morphology space</b>
-    <span class="muted">— PCA of Zoobot vectors: joint, then LR-only and SR+HR fit separately to compare variance</span>
+    <span class="muted">— PCA of Zoobot vectors: joint, then LR-only and SR+HR fit separately to compare variance; class checkboxes re-fit on the selected classes</span>
     <button id="space3dReset" class="secondary" type="button"
             style="margin-left:10px;">reset view</button></summary>
   <div id="space3dEmpty" class="space3d-empty">Zoobot vectors are not available for the shared store.</div>
   <div id="space3dFilters" class="space3d-filters" style="display:none;">
-    <span class="toolbar-label">Show classes</span>
+    <span class="toolbar-label" title="Each PCA is re-fit on just the checked classes — axes and variance % reflect the selection">Fit classes</span>
     <label><input type="checkbox" data-space3d-group="A" checked> A</label>
     <label><input type="checkbox" data-space3d-group="B" checked> B</label>
     <label><input type="checkbox" data-space3d-group="C" checked> C</label>
@@ -312,6 +318,28 @@
     <span id="jobBarLabel" class="bar-label">…</span></div>
   <pre id="jobLog" class="job-log" style="max-height:280px;"></pre>
 </section>
+
+<script type="module">
+// ── Unified cutout viewer (eval objects: LR / SR / HR) ───────────────
+import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
+window.__evalViewer = mountCutoutViewer(
+  document.getElementById("cutout-viewer"), { collection: "evaluation" });
+// subdir → viewer index, so a gallery tile can jump the viewer to that object.
+window.__evalSubIndex = {};
+fetch("/viewer/meta/evaluation").then((r) => (r.ok ? r.json() : null)).then((m) => {
+  if (m && m.objects) m.objects.forEach((o, i) => {
+    if (o.subdir) window.__evalSubIndex[o.subdir] = i;
+  });
+}).catch(() => {});
+window.__evalJumpTo = (sub) => {
+  const i = window.__evalSubIndex[sub];
+  if (i === undefined || !window.__evalViewer) return false;
+  window.__evalViewer.goTo(i);
+  document.getElementById("cutoutBrowser")
+    .scrollIntoView({ behavior: "smooth", block: "start" });
+  return true;
+};
+</script>
 
 <script>
 (function () {
@@ -605,13 +633,26 @@
     space3dScenes.pcaSrhr.setFilters(groups, showHr, showEdges);
     space3dScenes.pcaSrhr2d.setFilters(groups, showHr, showEdges);
   }
+  // Re-fit is debounced (rapid checkbox toggling) and sequence-guarded (a slow
+  // response can't clobber a newer selection).
+  let space3dReqSeq = 0, space3dRefitTimer = null;
+  function scheduleSpace3dRefit() {
+    clearTimeout(space3dRefitTimer);
+    space3dRefitTimer = setTimeout(updateSpace3d, 160);
+  }
   async function updateSpace3d() {
     const panel = $('space3dPanel'), grid = $('space3dGrid'), empty = $('space3dEmpty');
     const filters = $('space3dFilters');
+    const seq = ++space3dReqSeq;
+    // The class checkboxes define the fit subset: the PCA is re-fit server-side
+    // on just these classes (no class checked → empty payload).
+    const sel = Array.from(selectedSpace3dGroups());
+    const qs = '?groups=' + encodeURIComponent(sel.join(','));
     try {
-      const r = await fetch('/api/evaluation/morphology-embedding');
+      const r = await fetch('/api/evaluation/morphology-embedding' + qs);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
+      if (seq !== space3dReqSeq) return;   // superseded by a newer refit
       panel.style.display = '';
       grid.style.display = '';
       filters.style.display = '';
@@ -638,13 +679,18 @@
         Object.values(space3dScenes).forEach(s => s.resize());
       }, 0);
     } catch (e) {
+      if (seq !== space3dReqSeq) return;   // superseded by a newer refit
       panel.style.display = 'none';
       grid.style.display = 'none';
       filters.style.display = 'none';
       empty.style.display = '';
     }
   }
-  document.querySelectorAll('[data-space3d-group], #space3dHrToggle, #space3dArrowsToggle')
+  // Class checkboxes re-fit the PCA on the selected classes; HR-stars and
+  // arrows stay display-only (they don't change the fit).
+  document.querySelectorAll('[data-space3d-group]')
+    .forEach(el => el.addEventListener('change', scheduleSpace3dRefit));
+  document.querySelectorAll('#space3dHrToggle, #space3dArrowsToggle')
     .forEach(el => el.addEventListener('change', applySpace3dFilters));
   $('space3dReset').addEventListener('click', () => {
     Object.values(space3dScenes).forEach(s => s.reset());
@@ -893,6 +939,9 @@
     const a = e.target.closest('.lb-open');
     if (!a) return;
     e.preventDefault();
+    // Prefer the unified in-browser viewer; fall back to the server-render
+    // lightbox only for objects it doesn't carry (e.g. no FITS on disk).
+    if (window.__evalJumpTo && window.__evalJumpTo(a.dataset.sub)) return;
     openLightbox(a.dataset.sub, a.dataset.id);
   });
   $('lbAsinh').addEventListener('input', () => {

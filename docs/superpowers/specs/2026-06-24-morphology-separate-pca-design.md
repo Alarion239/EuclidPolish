@@ -60,4 +60,27 @@ explained-variance % only, matching the joint plot.
 ## Out of scope
 
 - No new variance metric (absolute total variance / scree) — per-PC % only.
-- No change to the joint fit, MDS, arrows, opacity-by-P(lens), or filters.
+- No change to MDS, opacity-by-P(lens).
+
+## Follow-up (2026-06-24): re-fit on the selected classes
+
+The class checkboxes were display-only filters over a fixed global fit, so the
+axes and variance % never reflected the selection. They now drive a **server-
+side re-fit**: each PCA (joint, LR-only, SR+HR) is fit on only the checked
+classes, so the axes and explained-variance % describe that subset — e.g.
+checking only `syn-lens` + `syn-gal` does the PCA on just those two datasets.
+
+- **Backend** — `morphology_embedding_payload(run_dir, groups=None)` gains an
+  optional class filter (strict membership; ungraded rows drop out under any
+  selection). `None` → all classes. An empty selection returns a valid empty
+  payload (not `None`). `_read_predictions` is memoised on (path, mtime) so a
+  refit per toggle doesn't re-parse the multi-MB CSV.
+- **Route** — `?groups=A,syn-lens` → the class set; absent → all classes.
+- **Frontend** — class checkboxes trigger a debounced (160 ms),
+  sequence-guarded refetch; checking all five reproduces the global fit;
+  unchecking everything → empty plots (panel stays). HR-stars and arrows stay
+  display-only (they do not re-fit). The legend already reflects the views a
+  fit holds.
+- **Test** — `test_morphology_embedding_payload_refits_on_selected_groups`:
+  subset membership across all four fits, variance differs from the all-class
+  fit, edges only connect surviving points, single-class and empty cases.

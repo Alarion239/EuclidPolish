@@ -233,6 +233,27 @@ def _read_predictions(pred_path: str):
     return ids, np.asarray(vecs, dtype=np.float64)
 
 
+#: ``_read_predictions`` memoised on (path, mtime). The morphology panel refits
+#: on every class-checkbox toggle; without this each toggle re-parses the
+#: multi-MB predictions CSV. Callers must not mutate the returned array in place
+#: (the embedding builder only fancy-indexes it, which copies).
+_PRED_PARSE_CACHE: Dict[str, Any] = {}
+
+
+def _read_predictions_cached(pred_path: str):
+    key = os.path.abspath(pred_path)
+    try:
+        stamp = os.path.getmtime(pred_path)
+    except OSError:
+        return _read_predictions(pred_path)
+    hit = _PRED_PARSE_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    val = _read_predictions(pred_path)
+    _PRED_PARSE_CACHE[key] = (stamp, val)
+    return val
+
+
 #: Stable colour per analysis group (the manifest's ``grade`` column).
 GROUP_COLORS = {"A": "#2a5db0", "B": "#2e8b57", "C": "#b8860b",
                 "syn-lens": "#b03a3a", "syn-gal": "#7a4fb0"}
@@ -296,19 +317,27 @@ def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
     return coords, (var + [0.0, 0.0, 0.0])[:3]
 
 
-def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
+def morphology_embedding_payload(
+    run_dir: str, groups: Optional[Any] = None
+) -> Optional[Dict[str, Any]]:
     """Build JSON-ready 3-D PCA and classical-MDS embeddings for a Zoobot run.
 
     The input is ``zoobot_predictions.csv``. Each row is a view vector named
     ``<object-id>__before``, ``<object-id>__after`` or ``<object-id>__hr``.
     PCA and MDS are fit over every available view vector so before/after/HR
     points share one coordinate system per method.
+
+    ``groups`` (an iterable of class names, e.g. ``{"syn-lens", "syn-gal"}``)
+    restricts every fit to objects in those classes — the PCA is re-fit on just
+    that subset, so the axes and explained-variance % reflect the selection
+    rather than the global cloud. ``None`` (the default) fits over all classes.
+    An empty selection returns a valid empty payload rather than ``None``.
     """
     pred_path = os.path.join(run_dir, "zoobot_predictions.csv")
     if not os.path.isfile(pred_path):
         return None
 
-    ids, X = _read_predictions(pred_path)
+    ids, X = _read_predictions_cached(pred_path)
     if len(ids) == 0 or X.size == 0:
         return None
 
@@ -337,11 +366,29 @@ def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
             "plens": pl,
             "_idx": idx,
         })
+    # Re-fit on only the selected classes when asked. Strict membership: an
+    # object survives iff its class is checked (ungraded rows, which carry no
+    # class, drop out under any selection) — so "syn-lens + syn-gal" fits on
+    # exactly those two datasets.
+    if groups is not None:
+        selected = set(groups)
+        rows = [r for r in rows if r["group"] in selected]
+
     rows.sort(key=lambda r: (r["id"], view_rank.get(r["view"], 99), r["view"]))
     order = [r["_idx"] for r in rows]
     X = X[order]
 
     points = [{k: v for k, v in r.items() if k != "_idx"} for r in rows]
+    if not points:
+        _empty = {"points": [], "variance_pct": [0.0, 0.0, 0.0]}
+        return {
+            "run": os.path.basename(run_dir),
+            "count": 0,
+            "points": [],
+            "edges": [],
+            "embeddings": {k: dict(_empty)
+                           for k in ("pca", "mds", "pca_lr", "pca_srhr")},
+        }
     keyset = {p["key"] for p in points}
     object_views: Dict[str, set[str]] = {}
     for p in points:
