@@ -1246,7 +1246,8 @@ class LensfinderTrainStep(FASRCPipelineStep):
             "--recon", str(params.get("recon", "all")),
             "--epochs", str(int(params.get("epochs", 30))),
         ]
-        for key, flag in (("batch_size", "--batch-size"),
+        for key, flag in (("patience", "--patience"),
+                          ("batch_size", "--batch-size"),
                           ("learning_rate", "--learning-rate")):
             v = params.get(key)
             if v not in (None, ""):

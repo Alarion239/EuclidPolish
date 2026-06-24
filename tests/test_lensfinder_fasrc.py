@@ -50,3 +50,21 @@ def test_jobconfig_has_lensfinder_section_defaults():
     c = JobConfig()
     assert c.lensfinder_n_fields == 800
     assert c.lensfinder_image_size == 2040
+
+
+def test_train_step_emits_patience_param():
+    s = REGISTRY.get("lensfinder_train")
+    cmd = s.build_command({"patience": 9})
+    assert cmd[cmd.index("--patience") + 1] == "9"
+
+
+def test_train_step_receives_config_training_knobs():
+    from euclid_polish.web import job_config as jc
+
+    s = REGISTRY.get("lensfinder_train")
+    params = jc.fasrc_params_for("lensfinder_train")   # injected from /config
+    cmd = s.build_command(dict(params))
+    assert cmd[cmd.index("--epochs") + 1] == str(params["epochs"])
+    assert cmd[cmd.index("--patience") + 1] == str(params["patience"])
+    assert cmd[cmd.index("--batch-size") + 1] == str(params["batch_size"])
+    assert cmd[cmd.index("--learning-rate") + 1] == str(params["learning_rate"])

@@ -49,6 +49,10 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
                                 "lens_density_arcmin2": "lens_density_arcmin2",
                                 "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
                                 "lens_sigma_v_max_kms": "lens_sigma_v_max_kms"},
+    "lensfinder_train":        {"epochs": "lensfinder_epochs",
+                                "patience": "lensfinder_patience",
+                                "batch_size": "lensfinder_batch_size",
+                                "learning_rate": "lensfinder_learning_rate"},
 }
 
 
@@ -108,6 +112,13 @@ class JobConfig:
     lensfinder_n_fields:   int = 800
     lensfinder_n_valid:    int = 80
     lensfinder_image_size: int = 2040
+    # Lens-finder Zoobot fine-tuning knobs. ``epochs`` is the max-epoch ceiling;
+    # ``patience`` drives early stopping on validation loss (training usually
+    # stops well before the ceiling). Defaults mirror scripts/lensfinder_train.py.
+    lensfinder_epochs:        int   = 30
+    lensfinder_patience:      int   = 6
+    lensfinder_batch_size:    int   = 64
+    lensfinder_learning_rate: float = 1e-4
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

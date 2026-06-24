@@ -24,21 +24,11 @@ def register(app):
 
     @app.route("/api/config/save", methods=["POST"])
     def api_config_save():
-        before = job_config.load().vis_pixels
-        cfg = job_config.update({
-            "vis_pixels":    request.form.get("vis_pixels"),
-            "n_train":       request.form.get("n_train"),
-            "n_valid":       request.form.get("n_valid"),
-            "hr_image_size": request.form.get("hr_image_size"),
-            "asinh_scale":   request.form.get("asinh_scale"),
-            "star_density_arcmin2": request.form.get("star_density_arcmin2"),
-            "star_mag_slope":       request.form.get("star_mag_slope"),
-            "star_mag_bright":      request.form.get("star_mag_bright"),
-            "star_mag_faint":       request.form.get("star_mag_faint"),
-            "lens_density_arcmin2": request.form.get("lens_density_arcmin2"),
-            "lens_sigma_v_min_kms": request.form.get("lens_sigma_v_min_kms"),
-            "lens_sigma_v_max_kms": request.form.get("lens_sigma_v_max_kms"),
-        })
+        # Forward the whole form; ``update`` ignores unknown keys and blanks, so
+        # every JobConfig field on the page persists without a hand-maintained
+        # allowlist here (which previously silently dropped the lens-finder
+        # dataset + training fields).
+        cfg = job_config.update(request.form.to_dict())
         note = None
         try:
             requested = int(request.form.get("vis_pixels", cfg.vis_pixels))

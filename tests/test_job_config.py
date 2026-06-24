@@ -102,3 +102,48 @@ def test_star_field_mapped_for_synthetic_generate():
     for k in ("star_density_arcmin2", "star_mag_slope",
               "star_mag_bright", "star_mag_faint"):
         assert m[k] == k
+
+
+def test_lensfinder_training_defaults_and_update(cfg_path):
+    c = job_config.load()
+    assert c.lensfinder_epochs == 30          # mirrors scripts/lensfinder_train.py
+    assert c.lensfinder_patience == 6
+    assert c.lensfinder_batch_size == 64
+    assert c.lensfinder_learning_rate == 1e-4
+    c = job_config.update({"lensfinder_epochs": "100", "lensfinder_patience": "10",
+                           "lensfinder_batch_size": "32",
+                           "lensfinder_learning_rate": "5e-5"})
+    assert c.lensfinder_epochs == 100 and c.lensfinder_patience == 10
+    assert c.lensfinder_batch_size == 32
+    assert c.lensfinder_learning_rate == 5e-5   # coerced as float, not int
+    assert job_config.load().lensfinder_epochs == 100   # persisted
+
+
+def test_lensfinder_training_mapped_for_train_step():
+    m = job_config.FASRC_STEP_PARAMS["lensfinder_train"]
+    assert m == {"epochs": "lensfinder_epochs",
+                 "patience": "lensfinder_patience",
+                 "batch_size": "lensfinder_batch_size",
+                 "learning_rate": "lensfinder_learning_rate"}
+
+
+def test_save_endpoint_persists_lensfinder_fields(client, cfg_path):
+    # These fields were previously dropped by the route's hand-maintained
+    # allowlist; the whole form is now forwarded to update().
+    r = client.post("/api/config/save", data={
+        "lensfinder_n_fields": "1200", "lensfinder_epochs": "80",
+        "lensfinder_patience": "9", "lensfinder_learning_rate": "2e-4",
+    })
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    c = job_config.load()
+    assert c.lensfinder_n_fields == 1200      # dataset field now persists too
+    assert c.lensfinder_epochs == 80
+    assert c.lensfinder_patience == 9
+    assert c.lensfinder_learning_rate == 2e-4
+
+
+def test_config_page_renders_training_section(client, cfg_path):
+    r = client.get("/config")
+    assert r.status_code == 200
+    assert b"Lens-finder training" in r.data
+    assert b"lensfinder_patience" in r.data
