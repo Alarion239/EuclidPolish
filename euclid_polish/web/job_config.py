@@ -116,7 +116,7 @@ class JobConfig:
     # Lens-finder Zoobot fine-tuning knobs. ``epochs`` is the max-epoch ceiling;
     # ``patience`` drives early stopping on validation loss (training usually
     # stops well before the ceiling). Defaults mirror scripts/lensfinder_train.py.
-    lensfinder_epochs:        int   = 30
+    lensfinder_epochs:        int   = 10
     lensfinder_patience:      int   = 6
     lensfinder_batch_size:    int   = 64
     lensfinder_learning_rate: float = 1e-4

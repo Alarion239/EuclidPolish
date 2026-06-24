@@ -106,7 +106,7 @@ def test_star_field_mapped_for_synthetic_generate():
 
 def test_lensfinder_training_defaults_and_update(cfg_path):
     c = job_config.load()
-    assert c.lensfinder_epochs == 30          # mirrors scripts/lensfinder_train.py
+    assert c.lensfinder_epochs == 10          # mirrors scripts/lensfinder_train.py
     assert c.lensfinder_patience == 6
     assert c.lensfinder_batch_size == 64
     assert c.lensfinder_learning_rate == 1e-4

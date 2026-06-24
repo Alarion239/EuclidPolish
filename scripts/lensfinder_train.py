@@ -16,7 +16,7 @@ Usage (EuclidPolishZoobot env)::
 
     python scripts/lensfinder_train.py \
         --catalog data/lensfinder/stamps/catalog.csv \
-        --out-dir data/lensfinder/heads --recon all --epochs 30
+        --out-dir data/lensfinder/heads --recon all --epochs 10
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--recon", default="all", choices=["lr", "sr", "hr", "all"])
     p.add_argument("--encoder-name", default=_ENCODER,
                    help="HuggingFace Zoobot encoder to finetune")
-    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--patience", type=int, default=6)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--num-workers", type=int, default=4)

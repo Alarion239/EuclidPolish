@@ -1287,7 +1287,7 @@ class LensfinderTrainStep(FASRCPipelineStep):
                                         "data/lensfinder/stamps/catalog.csv")),
             "--out-dir", str(params.get("out_dir", "data/lensfinder/heads")),
             "--recon", str(params.get("recon", "all")),
-            "--epochs", str(int(params.get("epochs", 30))),
+            "--epochs", str(int(params.get("epochs", 10))),
         ]
         for key, flag in (("patience", "--patience"),
                           ("batch_size", "--batch-size"),
