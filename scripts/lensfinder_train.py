@@ -57,7 +57,27 @@ def _parse_args(argv=None) -> argparse.Namespace:
                         "(fast, clean probe); full = fine-tune all encoder params")
     p.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu", "mps"])
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--force", action="store_true",
+                   help="retrain every head from scratch, ignoring existing "
+                        "predictions.csv / checkpoints (default: resume — skip "
+                        "heads already trained, continue partial ones)")
     return p.parse_args(argv)
+
+
+def _latest_checkpoint(out: str):
+    """Newest .ckpt to resume a partially-trained head from, or None.
+
+    Prefers ``last.ckpt`` (a rolling per-epoch snapshot), else the most recently
+    written best-epoch checkpoint."""
+    ckpt_dir = os.path.join(out, "checkpoints")
+    if not os.path.isdir(ckpt_dir):
+        return None
+    last = os.path.join(ckpt_dir, "last.ckpt")
+    if os.path.exists(last):
+        return last
+    ckpts = [os.path.join(ckpt_dir, f) for f in os.listdir(ckpt_dir)
+             if f.endswith(".ckpt")]
+    return max(ckpts, key=os.path.getmtime) if ckpts else None
 
 
 def _frames(rows, recon):
@@ -114,9 +134,26 @@ def _make_reporter_bridge(L, reporter, recon, max_epochs, step_offset):
 
 
 def _train_one(recon, rows, args, reporter, step_offset):
-    """Train + test one reconstruction head. Returns its metrics dict."""
+    """Train + test one reconstruction head. Returns its metrics dict.
+
+    Resumable: a head whose ``predictions.csv`` already exists is skipped; a
+    head with checkpoints but no predictions is resumed from its latest
+    checkpoint (Lightning restores weights + optimizer + epoch + early-stop
+    state). ``--force`` retrains from scratch.
+    """
+    out = os.path.join(args.out_dir, recon)
+    os.makedirs(out, exist_ok=True)
+    pred_csv = os.path.join(out, "predictions.csv")
+    if not args.force and os.path.exists(pred_csv):
+        reporter.set_stage(f"{recon}: already trained — skipping")
+        print(f"  ⏭  {recon}: predictions.csv exists — skipping "
+              f"(use --force to retrain)")
+        return {"recon": recon, "n_train": 0, "n_test": 0,
+                "predictions": pred_csv, "global_step": 0, "skipped": True}
+
     import lightning as L
     import pandas as pd
+    from lightning.pytorch.callbacks import ModelCheckpoint
     from galaxy_datasets.transforms import (default_view_config,
                                             get_galaxy_transform,
                                             minimal_view_config)
@@ -125,8 +162,6 @@ def _train_one(recon, rows, args, reporter, step_offset):
     from zoobot.pytorch.predictions import predict_on_catalog
 
     df_train, df_val, df_test = _frames(rows, recon)
-    out = os.path.join(args.out_dir, recon)
-    os.makedirs(out, exist_ok=True)
     reporter.set_stage(f"{recon}: {len(df_train)} train / {len(df_val)} val / "
                        f"{len(df_test)} test")
 
@@ -154,9 +189,17 @@ def _train_one(recon, rows, args, reporter, step_offset):
     trainer = finetune.get_trainer(
         save_dir=out, max_epochs=args.epochs, patience=args.patience,
         devices=1, accelerator=args.device)
+    # Save a rolling last.ckpt each epoch so a re-submit resumes with no redo.
+    for cb in trainer.callbacks:
+        if isinstance(cb, ModelCheckpoint):
+            cb.save_last = True
     trainer.callbacks.append(
         _make_reporter_bridge(L, reporter, recon, args.epochs, step_offset))
-    trainer.fit(model, dm)
+    ckpt = None if args.force else _latest_checkpoint(out)
+    if ckpt:
+        reporter.set_stage(f"{recon}: resuming from {os.path.basename(ckpt)}")
+        print(f"  ↻ {recon}: resuming from {os.path.basename(ckpt)}")
+    trainer.fit(model, dm, ckpt_path=ckpt)
 
     # Predict P(lens) on the held-out test split.
     pred_csv = os.path.join(out, "predictions.csv")
@@ -194,8 +237,9 @@ def main(argv=None) -> int:
         step_offset += res["global_step"]        # heads share one monotonic axis
         results.append(res)
     for r in results:
+        tag = " (skipped — already trained)" if r.get("skipped") else ""
         print(f"  ✓ {r['recon']}: {r['n_train']} train, {r['n_test']} test "
-              f"→ {r['predictions']}")
+              f"→ {r['predictions']}{tag}")
     reporter.metric({"heads": len(results)})
     return 0
 
