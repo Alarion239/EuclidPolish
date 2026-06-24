@@ -30,6 +30,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.eval import zoobot_morph as zm
+from euclid_polish.lensfinder import stamps as lf_stamps
 from euclid_polish.observability.reporter import Reporter
 
 #: (catalog recon key, discover_objects view) — head ``recon`` scores its render.
@@ -49,6 +50,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--png-size", type=int, default=424)
+    p.add_argument("--stamp-m", type=int, default=106,
+                   help="HR-grid crop size; MUST match build_stamps (LR uses m//2)")
+    p.add_argument("--lupton-q", type=float, default=8.0)
+    p.add_argument("--rgb-scale-r", type=float, default=1.0)
+    p.add_argument("--rgb-scale-g", type=float, default=1.0)
+    p.add_argument("--rgb-scale-b", type=float, default=1.0)
     p.add_argument("--asinh-scale", type=float, default=None)
     p.add_argument("--max-objects", type=int, default=0, help="cap (0 = all)")
     return p.parse_args(argv)
@@ -64,6 +71,8 @@ def main(argv=None) -> int:
     reporter = Reporter.from_env()
     run_dir = args.run_dir or Config.EVAL_RESULTS_DIR
     asinh = float(args.asinh_scale or Config.STRETCH_SCALE_E)
+    m = int(args.stamp_m)
+    m += m % 2                                  # even → integer LR half-crop
 
     objects = zm.discover_objects(run_dir)
     if args.max_objects:
@@ -97,7 +106,11 @@ def main(argv=None) -> int:
             if not src:
                 continue
             png = os.path.join(obj["dir"], "lensfinder", f"{view}.png")
-            zm.render_vis_png(src, png, asinh_scale=asinh, size=args.png_size)
+            crop_m = m // 2 if recon == "lr" else m
+            lf_stamps.render_eval_stamp(
+                src, png, crop_m=crop_m, stretch=asinh, Q=args.lupton_q,
+                scale_r=args.rgb_scale_r, scale_g=args.rgb_scale_g,
+                scale_b=args.rgb_scale_b, size=args.png_size)
             rows.append({"id_str": obj["id"], "file_loc": png})
             reporter.set_step(i + 1, len(objects), f"{recon} {obj['id']}")
         if not rows:
