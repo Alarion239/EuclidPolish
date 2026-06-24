@@ -1,23 +1,43 @@
-# Isolated PyTorch environment for the Zoobot morphology evaluation.
+# Isolated PyTorch environment for the Zoobot lens-finder + morphology eval.
 #
 # Zoobot is PyTorch-based and would clash with the main EuclidPolishEnv
 # (TensorFlow). Keep it in its OWN env — do NOT merge into environment.yml.
 #
-# Create it ON FASRC, once (the `eval_zoobot_morphology` step activates it by
-# name on a GPU node):
+# Create it ON FASRC, once (the `lensfinder_train` / `eval_zoobot_morphology`
+# steps activate it by name on a GPU node):
 #
 #   module load python
 #   mamba env create -f environment-zoobot.yml         # → env "EuclidPolishZoobot"
 #
-# IMPORTANT — to actually use the FASRC GPU, install the CUDA torch build (the
-# default "zoobot[pytorch]" below is a CPU wheel). After creating the env:
+# ─────────────────────────────────────────────────────────────────────────────
+# IMPORTANT — pick a torch CUDA build that the FASRC GPU DRIVER supports.
+#
+# The "zoobot[pytorch]" wheel below is CPU-only. For the GPU you must install a
+# CUDA torch build — BUT torch bundles its own CUDA runtime, and if that runtime
+# is NEWER than the node's NVIDIA kernel driver, training dies immediately at
+# `torch._C._cuda_init()` with:
+#
+#   RuntimeError: The NVIDIA driver on your system is too old (found version …)
+#
+# (`module load cuda` does NOT fix this — it only sets the system toolkit, not
+# the kernel driver.) FASRC's `gpu` partition is heterogeneous: older V100 nodes
+# carry older drivers than the A100/H100 nodes, so a too-new torch fails there.
+#
+# Pick the build like so:
+#   1. On a GPU node, run `nvidia-smi` → read the top-right "CUDA Version: XX.Y"
+#      (the MAX CUDA the driver supports) and the Driver Version.
+#   2. Install a torch whose CUDA tag is ≤ that ceiling. cu121 (or cu118) is the
+#      most PORTABLE choice — newer drivers are backward-compatible, so a cu121
+#      build runs on BOTH old and new nodes; a cu124/cu126 build does not.
 #
 #   mamba run -n EuclidPolishZoobot pip install --force-reinstall \
 #       "zoobot[pytorch-cu121]>=2.0"
+#   # equivalently, pin torch directly to the matching wheel index:
+#   #   pip install --force-reinstall torch torchvision \
+#   #       --index-url https://download.pytorch.org/whl/cu121
 #
-# (or pin the index: pip install torch --index-url
-#  https://download.pytorch.org/whl/cu121). On a CPU-only run, the default wheel
-# is fine — just submit the step to a non-GPU partition.
+# On a CPU-only run the default wheel is fine — just submit to a non-GPU partition.
+# ─────────────────────────────────────────────────────────────────────────────
 name: EuclidPolishZoobot
 channels:
   - conda-forge
