@@ -5,9 +5,13 @@ from __future__ import annotations
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
 
-def test_build_stamps_step_uses_main_env_gpu():
+def test_build_stamps_step_runs_cpu_shared_main_env():
     s = REGISTRY.get("lensfinder_build_stamps")
-    assert s.needs_gpu is True
+    # SR here is sequential batch-1 inference interleaved with CPU stamp/PNG
+    # work — the GPU would sit idle, so it defaults to the CPU shared partition.
+    assert s.needs_gpu is False
+    assert s.defaults.partition == "shared"
+    assert s.defaults.n_gpus == 0
     assert s.conda_env is None                   # SR inference → main TF env
     cmd = s.build_command({})
     assert cmd[0] == "scripts/lensfinder_build_stamps.py"

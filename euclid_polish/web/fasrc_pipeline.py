@@ -1175,11 +1175,14 @@ class LensfinderGenerateStep(SyntheticGenerateStep):
 
 
 class LensfinderBuildStampsStep(FASRCPipelineStep):
-    """Cut LR/SR/HR lens-finder stamps from simulated fields (main TF env, GPU).
+    """Cut LR/SR/HR lens-finder stamps from simulated fields (main TF env, CPU).
 
     Runs the SR model over the generated big fields and crops source-centered
     lens + galaxy stamps into a catalog the Zoobot finetune step consumes. Uses
     the main TensorFlow env (``conda_env=None``) because it calls ``reconstruct``.
+    This is SR *inference* (one forward pass per field), not training, so it runs
+    on the CPU ``shared`` partition — slower than a GPU but far cheaper/shorter to
+    queue. Raise ``--gres``/partition on the card if a GPU run is wanted.
     The big fields come from the existing ``synthetic-data`` step submitted with a
     large ``--image-size`` into a dedicated records dir.
     """
@@ -1187,13 +1190,13 @@ class LensfinderBuildStampsStep(FASRCPipelineStep):
     def __init__(self) -> None:
         super().__init__(
             step_id="lensfinder_build_stamps",
-            label="Build lens-finder stamps (GPU)",
+            label="Build lens-finder stamps (CPU)",
             job_name="lensfinder-stamps",
             defaults=StepResources(
-                partition="gpu", n_cpus=8, n_gpus=1,
-                memory="48G", time_limit="6:00:00",
+                partition="shared", n_cpus=16, n_gpus=0,
+                memory="48G", time_limit="12:00:00",
             ),
-            needs_gpu=True,
+            needs_gpu=False,
         )
 
     def build_command(self, params: Dict[str, Any]) -> List[str]:
