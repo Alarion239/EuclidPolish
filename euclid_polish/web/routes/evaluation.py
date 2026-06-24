@@ -373,18 +373,20 @@ def register(app):
     def api_evaluation_sync_heads():
         """Pull the trained lens-finder heads down from FASRC.
 
-        The heads (``lensfinder_train`` → ``<data_dir>/lensfinder/heads/{lr,sr,hr}
-        /checkpoints/*.ckpt``) live on the cluster; this rsyncs them into the
-        local ``data/lensfinder/heads`` so "Run lens-finder" can score with them,
-        reusing the same ControlMaster transport as the eval-results sync. Recons
-        whose checkpoint never arrives are simply skipped at score time, so a
-        partial set of heads is fine. Returns the recons that now have a
-        checkpoint so the page can report what loaded.
+        The heads are written by ``lensfinder_train --out-dir data/lensfinder/heads``
+        — a path relative to the SLURM workdir, which is the repo
+        (``<repo_path>/data/lensfinder/heads/{lr,sr,hr}/checkpoints/*.ckpt`` on
+        holylabs), NOT the separate ``data_dir`` (netscratch). This rsyncs them
+        into the local ``data/lensfinder/heads`` so "Run lens-finder" can score
+        with them, reusing the same ControlMaster transport as the eval-results
+        sync. Recons whose checkpoint never arrives are simply skipped at score
+        time, so a partial set of heads is fine. Returns the recons that now have
+        a checkpoint so the page can report what loaded.
         """
         if STATE.ssh is None or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
-        remote = cfg.data_dir.rstrip("/") + "/lensfinder/heads/"
+        remote = cfg.repo_path.rstrip("/") + "/data/lensfinder/heads/"
         local = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
         os.makedirs(local, exist_ok=True)
         try:
@@ -463,15 +465,24 @@ def register(app):
 
     @app.route("/api/evaluation/morphology-embedding")
     def api_evaluation_morphology_embedding():
-        """Return 3-D PCA and MDS coordinates for Zoobot feature vectors."""
+        """Return 3-D PCA and MDS coordinates for Zoobot feature vectors.
+
+        ``?groups=A,syn-lens`` re-fits every PCA on just those classes (the
+        Morphology-space class checkboxes). Absent → fit over all classes; a
+        present-but-empty value → empty payload (every class unchecked).
+        """
         run = (request.args.get("run") or "").strip()
         if _bad_run_arg(run):
             abort(400)
         run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
         if not os.path.isfile(os.path.join(run_dir, "zoobot_predictions.csv")):
             abort(404)
+        raw_groups = request.args.get("groups")
+        groups = None if raw_groups is None else {
+            g for g in (s.strip() for s in raw_groups.split(",")) if g
+        }
         from euclid_polish.eval import zoobot_morph
-        payload = zoobot_morph.morphology_embedding_payload(run_dir)
+        payload = zoobot_morph.morphology_embedding_payload(run_dir, groups=groups)
         if payload is None:
             abort(404)
         payload["run"] = "eval_results"

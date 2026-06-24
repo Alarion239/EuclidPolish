@@ -734,15 +734,16 @@ def test_evaluation_sync_refuses_when_disconnected(client, monkeypatch):
 
 def test_evaluation_sync_heads_pulls_checkpoints(fake_remote, client, tmp_path,
                                                  monkeypatch):
-    """POST /api/evaluation/sync-heads rsyncs <data_dir>/lensfinder/heads → local.
+    """POST /api/evaluation/sync-heads rsyncs <repo_path>/data/lensfinder/heads.
 
-    Only recons that actually carry a checkpoint are reported, so an untrained
-    recon (hr here) is skipped — matching the score step, which skips heads with
-    no checkpoint.
+    The heads are written by ``lensfinder_train --out-dir data/lensfinder/heads``,
+    a path relative to the SLURM workdir = the repo (holylabs), NOT the separate
+    ``data_dir`` (netscratch). Only recons that carry a checkpoint are reported,
+    so an untrained recon (hr) is skipped — matching the score step.
     """
     from euclid_polish.config import Config
 
-    heads = fake_remote["data_dir"] / "lensfinder" / "heads"
+    heads = fake_remote["repo"] / "data" / "lensfinder" / "heads"
     for recon in ("lr", "sr"):
         ck = heads / recon / "checkpoints"
         ck.mkdir(parents=True)
