@@ -369,6 +369,23 @@ def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
             out.append(p)
         return {"points": out, "variance_pct": [float(v) for v in variance]}
 
+    def _subset_payload(views: set[str]):
+        # PCA fit on just the named views so the axes capture that subset's own
+        # variance (LR alone, or SR+HR together). ``points``/``X`` are row-
+        # aligned, so selection is index-parallel. Lets the Morphology-space
+        # panel compare how the explained-variance structure changes between the
+        # LR inputs and the SR+HR outputs, independent of the LR→SR shift.
+        idx = [i for i, p in enumerate(points) if p["view"] in views]
+        if not idx:
+            return {"points": [], "variance_pct": [0.0, 0.0, 0.0]}
+        coords, var = _pca3(X[idx])
+        out = []
+        for point, xyz in zip((points[i] for i in idx), coords):
+            p = dict(point)
+            p["xyz"] = [float(v) for v in xyz]
+            out.append(p)
+        return {"points": out, "variance_pct": [float(v) for v in var]}
+
     pca, pca_var = _pca3(X)
     mds, mds_var = _classical_mds3(X)
     return {
@@ -379,6 +396,8 @@ def morphology_embedding_payload(run_dir: str) -> Optional[Dict[str, Any]]:
         "embeddings": {
             "pca": _method_payload(pca, pca_var),
             "mds": _method_payload(mds, mds_var),
+            "pca_lr": _subset_payload({"before"}),
+            "pca_srhr": _subset_payload({"after", "hr"}),
         },
     }
 

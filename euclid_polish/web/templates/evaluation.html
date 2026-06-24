@@ -53,6 +53,11 @@
   .eval-thumb .lb-open { cursor: zoom-in; display: block; }
   .space3d-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr));
                   gap: 12px; margin-top: 10px; }
+  .space3d-rowlabel { grid-column: 1 / -1; margin: 8px 0 -4px;
+                      font-size: 13px; font-weight: 600; color: #202635; }
+  .space3d-rowlabel:first-child { margin-top: 0; }
+  .space3d-rowlabel span { font-weight: 400; color: #6b7686; font-size: 12px;
+                           margin-left: 8px; }
   .space3d-view { border: 1px solid #d7dbe4; border-radius: 6px;
                   background: #f8fafc; overflow: hidden; }
   .space3d-head { display: flex; align-items: baseline; justify-content: space-between;
@@ -135,7 +140,7 @@
 
 <details id="space3dPanel" class="card" style="grid-column:1/-1; display:none;" open>
   <summary><b>Morphology space</b>
-    <span class="muted">— PCA of Zoobot vectors, 3D and 2D side by side</span>
+    <span class="muted">— PCA of Zoobot vectors: joint, then LR-only and SR+HR fit separately to compare variance</span>
     <button id="space3dReset" class="secondary" type="button"
             style="margin-left:10px;">reset view</button></summary>
   <div id="space3dEmpty" class="space3d-empty">Zoobot vectors are not available for the shared store.</div>
@@ -154,6 +159,8 @@
     </label>
   </div>
   <div id="space3dGrid" class="space3d-grid" style="display:none;">
+    <div class="space3d-rowlabel">Joint — LR + SR + HR
+      <span>one PCA fit over every view; arrows trace the LR→SR→HR shift</span></div>
     <div class="space3d-view">
       <div class="space3d-head"><b>PCA · 3D</b><span id="space3dPcaVar"></span></div>
       <canvas id="space3dPca" class="space3d-canvas"></canvas>
@@ -163,6 +170,32 @@
       <div class="space3d-head"><b>PCA · 2D</b><span id="space3dPca2dVar"></span></div>
       <canvas id="space3dPca2d" class="space3d-canvas"></canvas>
       <div id="space3dPca2dMeta" class="space3d-meta"></div>
+    </div>
+
+    <div class="space3d-rowlabel">LR only
+      <span>PCA fit on the low-res inputs alone (□ before)</span></div>
+    <div class="space3d-view">
+      <div class="space3d-head"><b>LR · 3D</b><span id="space3dPcaLrVar"></span></div>
+      <canvas id="space3dPcaLr" class="space3d-canvas"></canvas>
+      <div id="space3dPcaLrMeta" class="space3d-meta"></div>
+    </div>
+    <div class="space3d-view">
+      <div class="space3d-head"><b>LR · 2D</b><span id="space3dPcaLr2dVar"></span></div>
+      <canvas id="space3dPcaLr2d" class="space3d-canvas"></canvas>
+      <div id="space3dPcaLr2dMeta" class="space3d-meta"></div>
+    </div>
+
+    <div class="space3d-rowlabel">SR + HR
+      <span>PCA fit on the super-res + high-res outputs together (● after · ★ HR)</span></div>
+    <div class="space3d-view">
+      <div class="space3d-head"><b>SR+HR · 3D</b><span id="space3dPcaSrhrVar"></span></div>
+      <canvas id="space3dPcaSrhr" class="space3d-canvas"></canvas>
+      <div id="space3dPcaSrhrMeta" class="space3d-meta"></div>
+    </div>
+    <div class="space3d-view">
+      <div class="space3d-head"><b>SR+HR · 2D</b><span id="space3dPcaSrhr2dVar"></span></div>
+      <canvas id="space3dPcaSrhr2d" class="space3d-canvas"></canvas>
+      <div id="space3dPcaSrhr2dMeta" class="space3d-meta"></div>
     </div>
   </div>
 </details>
@@ -481,10 +514,16 @@
         ctx.stroke();
       }
       ctx.restore();
+      // Legend reflects only the views this fit actually holds (LR-only shows
+      // just □ before; SR+HR shows ● after / ★ HR; the joint fit shows all).
+      const present = new Set(points.map(p => p.view));
+      const legend = [];
+      if (present.has('before')) legend.push('□ before');
+      if (present.has('after')) legend.push('● after');
+      if (present.has('hr')) legend.push('★ HR');
       metaEl.textContent = hover
         ? hover.id + ' · ' + hover.view + (hover.group ? ' · ' + hover.group : '')
-        : points.length + ' vectors · □ before · ● after'
-          + (showHr ? ' · ★ HR' : '');
+        : points.length + ' vectors' + (legend.length ? ' · ' + legend.join(' · ') : '');
     }
     function nearest(cssX, cssY) {
       const dpr = window.devicePixelRatio || 1;
@@ -539,6 +578,12 @@
   const space3dScenes = {
     pca: makeSpace3dScene($('space3dPca'), $('space3dPcaMeta'), 3),
     pca2d: makeSpace3dScene($('space3dPca2d'), $('space3dPca2dMeta'), 2),
+    // LR-only and SR+HR fits get their own coordinate systems so the per-PC
+    // variance readouts can be compared independently of the LR→SR shift.
+    pcaLr: makeSpace3dScene($('space3dPcaLr'), $('space3dPcaLrMeta'), 3),
+    pcaLr2d: makeSpace3dScene($('space3dPcaLr2d'), $('space3dPcaLr2dMeta'), 2),
+    pcaSrhr: makeSpace3dScene($('space3dPcaSrhr'), $('space3dPcaSrhrMeta'), 3),
+    pcaSrhr2d: makeSpace3dScene($('space3dPcaSrhr2d'), $('space3dPcaSrhr2dMeta'), 2),
   };
   function fmtVar(vals) {
     return vals.map(v => Math.round(v) + '%').join(' / ');
@@ -554,6 +599,11 @@
     const showEdges = $('space3dArrowsToggle').checked;
     space3dScenes.pca.setFilters(groups, showHr, showEdges);
     space3dScenes.pca2d.setFilters(groups, showHr, showEdges);
+    // The separate fits carry no edges, so the arrows toggle is a no-op there.
+    space3dScenes.pcaLr.setFilters(groups, showHr, showEdges);
+    space3dScenes.pcaLr2d.setFilters(groups, showHr, showEdges);
+    space3dScenes.pcaSrhr.setFilters(groups, showHr, showEdges);
+    space3dScenes.pcaSrhr2d.setFilters(groups, showHr, showEdges);
   }
   async function updateSpace3d() {
     const panel = $('space3dPanel'), grid = $('space3dGrid'), empty = $('space3dEmpty');
@@ -567,14 +617,26 @@
       filters.style.display = '';
       empty.style.display = 'none';
       const pca = j.embeddings.pca;
+      const pcaLr = j.embeddings.pca_lr || { points: [], variance_pct: [0, 0, 0] };
+      const pcaSrhr = j.embeddings.pca_srhr || { points: [], variance_pct: [0, 0, 0] };
       space3dScenes.pca.setEdges(j.edges);
       space3dScenes.pca2d.setEdges(j.edges);
       space3dScenes.pca.setData(pca);
       space3dScenes.pca2d.setData(pca);
+      space3dScenes.pcaLr.setData(pcaLr);
+      space3dScenes.pcaLr2d.setData(pcaLr);
+      space3dScenes.pcaSrhr.setData(pcaSrhr);
+      space3dScenes.pcaSrhr2d.setData(pcaSrhr);
       applySpace3dFilters();
       $('space3dPcaVar').textContent = 'variance ' + fmtVar(pca.variance_pct);
       $('space3dPca2dVar').textContent = 'variance ' + fmtVar(pca.variance_pct.slice(0, 2));
-      setTimeout(() => { space3dScenes.pca.resize(); space3dScenes.pca2d.resize(); }, 0);
+      $('space3dPcaLrVar').textContent = 'variance ' + fmtVar(pcaLr.variance_pct);
+      $('space3dPcaLr2dVar').textContent = 'variance ' + fmtVar(pcaLr.variance_pct.slice(0, 2));
+      $('space3dPcaSrhrVar').textContent = 'variance ' + fmtVar(pcaSrhr.variance_pct);
+      $('space3dPcaSrhr2dVar').textContent = 'variance ' + fmtVar(pcaSrhr.variance_pct.slice(0, 2));
+      setTimeout(() => {
+        Object.values(space3dScenes).forEach(s => s.resize());
+      }, 0);
     } catch (e) {
       panel.style.display = 'none';
       grid.style.display = 'none';
@@ -585,7 +647,7 @@
   document.querySelectorAll('[data-space3d-group], #space3dHrToggle, #space3dArrowsToggle')
     .forEach(el => el.addEventListener('change', applySpace3dFilters));
   $('space3dReset').addEventListener('click', () => {
-    space3dScenes.pca.reset(); space3dScenes.pca2d.reset();
+    Object.values(space3dScenes).forEach(s => s.reset());
   });
 
   async function loadRun() {

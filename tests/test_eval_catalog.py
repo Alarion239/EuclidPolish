@@ -591,12 +591,24 @@ class TestZoobotMorphHelpers:
         payload = zm.morphology_embedding_payload(run)
         assert payload is not None
         assert payload["count"] == 5
-        assert set(payload["embeddings"]) == {"pca", "mds"}
+        assert set(payload["embeddings"]) == {"pca", "mds", "pca_lr", "pca_srhr"}
+        # The joint fits span every view and stay row-aligned with payload points.
         for method in ("pca", "mds"):
             points = payload["embeddings"][method]["points"]
             assert [p["key"] for p in points] == [p["key"] for p in payload["points"]]
             assert all(len(p["xyz"]) == 3 for p in points)
             assert np.asarray([p["xyz"] for p in points]).shape == (5, 3)
+        # The LR fit holds only `before` views; the SR+HR fit only `after`/`hr`.
+        lr = payload["embeddings"]["pca_lr"]
+        assert {p["view"] for p in lr["points"]} == {"before"}
+        assert len(lr["points"]) == 2
+        assert all(len(p["xyz"]) == 3 for p in lr["points"])
+        assert lr["variance_pct"][0] > 0
+        srhr = payload["embeddings"]["pca_srhr"]
+        assert {p["view"] for p in srhr["points"]} == {"after", "hr"}
+        assert len(srhr["points"]) == 3
+        assert all(len(p["xyz"]) == 3 for p in srhr["points"])
+        assert srhr["variance_pct"][0] > 0
         assert payload["edges"] == [
             {"from": "obj0__before", "to": "obj0__after", "kind": "before-after"},
             {"from": "obj1__before", "to": "obj1__after", "kind": "before-after"},
