@@ -1296,6 +1296,11 @@ class LensfinderTrainStep(FASRCPipelineStep):
             v = params.get(key)
             if v not in (None, ""):
                 cmd += [flag, str(v)]
+        # Match dataloader workers to the allocated CPUs (reserve one for the
+        # main/GPU-feeding process), so a 1-CPU job doesn't oversubscribe and
+        # risk the DataLoader freeze Lightning warns about.
+        n_cpus = int(params.get("n_cpus", 8) or 8)
+        cmd += ["--num-workers", str(max(0, n_cpus - 1))]
         return cmd
 
 

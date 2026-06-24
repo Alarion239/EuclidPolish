@@ -177,6 +177,11 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
     reporter = Reporter.from_env()
 
+    import torch
+    # A100/H100 Tensor Cores: TF32 matmuls — a large speedup with negligible
+    # precision cost for this classifier (also silences Lightning's warning).
+    torch.set_float32_matmul_precision("high")
+
     rows = lf_catalog.read_catalog(args.catalog)
     recons = (["lr", "sr", "hr"] if args.recon == "all" else [args.recon])
     print(f"catalog {args.catalog}: {len(rows)} rows; training heads {recons}")

@@ -99,3 +99,11 @@ def test_train_step_emits_training_mode():
     s = REGISTRY.get("lensfinder_train")
     cmd = s.build_command({"training_mode": "head_only"})
     assert cmd[cmd.index("--training-mode") + 1] == "head_only"
+
+
+def test_train_step_num_workers_tracks_cpus():
+    s = REGISTRY.get("lensfinder_train")
+    cmd = s.build_command({"n_cpus": 8})
+    assert cmd[cmd.index("--num-workers") + 1] == "7"      # reserve 1 for main
+    cmd1 = s.build_command({"n_cpus": 1})
+    assert cmd1[cmd1.index("--num-workers") + 1] == "0"     # no oversubscription
