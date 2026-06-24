@@ -7,17 +7,19 @@
   <p class="muted" style="margin-top:0;">
     Replicates the POLISH++ evaluation: finetune a Zoobot binary lens classifier
     and compare its recovery on <b>LR vs SR vs HR</b> source-centered stamps,
-    reporting TPR-vs-Einstein-radius at a fixed false-positive rate. Run the three
+    reporting TPR-vs-Einstein-radius at a fixed false-positive rate. Run the four
     FASRC steps below in order; field count / size live in the
     <a href="{{ url_for('config_page') }}">Config</a> panel
-    (“Lens-finder dataset” section). Stamp / training knobs use sensible defaults
-    (stamp 128&nbsp;HR&nbsp;px, three LR/SR/HR heads). The final
-    TPR-vs-θ<sub>E</sub> plot is produced locally by
+    (“Lens-finder dataset” section), and the Zoobot training knobs in
+    “Lens-finder training”. Stamps default to 4-band Lupton-RGB color, cut
+    53&nbsp;LR&nbsp;/&nbsp;106&nbsp;HR&nbsp;px (424/8, 424/4) and upscaled to 424.
+    The final TPR-vs-θ<sub>E</sub> plot is produced locally by
     <code>scripts/lensfinder_evaluate.py</code> once the heads are synced down.
   </p>
   <p class="hint">
     Pipeline: <code>lensfinder-data</code> (fields → <code>records_lensfinder</code>)
-    → <code>lensfinder-stamps</code> (SR + cut LR/SR/HR stamps)
+    → <code>lensfinder-sr-infer</code> (SR each field → <code>sr_</code> records, GPU)
+    → <code>lensfinder-stamps</code> (cut 4-band LR/SR/HR color stamps, CPU)
     → <code>lensfinder-train</code> (3 Zoobot heads, <code>EuclidPolishZoobot</code> env).
   </p>
 </section>
@@ -28,12 +30,17 @@
 </section>
 
 <section class="card">
-  <h4 style="margin:0 0 8px;">2 · Build LR/SR/HR stamps</h4>
+  <h4 style="margin:0 0 8px;">2 · SR inference (GPU)</h4>
+  {% with step_id="lensfinder_sr_infer" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h4 style="margin:0 0 8px;">3 · Build LR/SR/HR stamps</h4>
   {% with step_id="lensfinder_build_stamps" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 
 <section class="card">
-  <h4 style="margin:0 0 8px;">3 · Train the lens-finder (3 heads)</h4>
+  <h4 style="margin:0 0 8px;">4 · Train the lens-finder (3 heads)</h4>
   {% with step_id="lensfinder_train" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 
