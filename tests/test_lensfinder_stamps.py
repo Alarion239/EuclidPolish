@@ -43,39 +43,44 @@ class TestSourceSelection:
 
 
 class TestTripletGeometry:
-    def _field(self):
-        lr_cube = np.random.default_rng(1).random((128, 128, 4)).astype(np.float32)
-        sr_arr = np.random.default_rng(2).random((256, 256, 4)).astype(np.float32)
-        hr_raw = np.random.default_rng(3).random((256, 256)).astype(np.float32)
-        return lr_cube, sr_arr, hr_raw
+    def test_cut_triplet_keeps_four_bands_at_native_sizes(self):
+        # Field big enough that a centered 106px stamp fits; LR is half-grid.
+        lr_cube = np.random.default_rng(1).random((64, 64, 4)).astype(np.float32)
+        sr_cube = np.random.default_rng(2).random((128, 128, 4)).astype(np.float32)
+        hr_cube = np.random.default_rng(3).random((128, 128, 4)).astype(np.float32)
+        t = st.cut_triplet(lr_cube, sr_cube, hr_cube, cx=64.0, cy=64.0, m=106)
+        assert set(t) == {"lr", "sr", "hr"}
+        assert t["lr"].shape == (53, 53, 4)      # LR half-grid, all 4 bands
+        assert t["sr"].shape == (106, 106, 4)
+        assert t["hr"].shape == (106, 106, 4)
 
-    def test_cut_triplet_shapes(self):
-        lr_cube, sr_arr, hr_raw = self._field()
-        t = st.cut_triplet(lr_cube, sr_arr, hr_raw, cx=128.0, cy=100.0, m=M)
-        assert t["lr_vis"].shape == (M // 2, M // 2)     # 64×64 LR
-        assert t["sr_vis"].shape == (M, M)               # 128×128 SR
-        assert t["hr_vis"].shape == (M, M)               # 128×128 HR
-
-    def test_recon_planes_common_grid(self):
-        lr_cube, sr_arr, hr_raw = self._field()
-        t = st.cut_triplet(lr_cube, sr_arr, hr_raw, cx=128.0, cy=128.0, m=M)
-        planes = st.recon_planes(t)
-        assert set(planes) == {"lr", "sr", "hr"}
-        for p in planes.values():
-            assert p.shape == (M, M)                     # LR upsampled to M×M
-
-    def test_lr_upsample_doubles(self):
-        a = np.arange(16, dtype=np.float32).reshape(4, 4)
-        up = st.lr_upsample_to_grid(a)
-        assert up.shape == (8, 8)
-        assert up[0, 0] == a[0, 0] and up[1, 1] == a[0, 0]   # nearest 2×
+    def test_cut_triplet_shares_crop_center(self):
+        lr_cube = np.zeros((64, 64, 4), np.float32)
+        sr_cube = np.zeros((128, 128, 4), np.float32)
+        hr_cube = np.zeros((128, 128, 4), np.float32)
+        sr_cube[64, 64, 0] = 9.0                 # mark HR-grid center
+        hr_cube[64, 64, 0] = 9.0
+        lr_cube[32, 32, 0] = 9.0                 # same point on LR half-grid
+        t = st.cut_triplet(lr_cube, sr_cube, hr_cube, cx=64.0, cy=64.0, m=106)
+        assert t["sr"][53, 53, 0] == 9.0         # center lands at stamp center
+        assert t["hr"][53, 53, 0] == 9.0
+        assert t["lr"][26, 26, 0] == 9.0
 
 
 class TestRender:
-    def test_render_stamp_png(self, tmp_path):
+    def test_render_stamp_rgb_writes_424_rgb(self, tmp_path):
         from PIL import Image
-        plane = np.random.default_rng(0).random((128, 128)).astype(np.float32)
+        rng = np.random.default_rng(0)
+        stamp4 = (rng.random((106, 106, 4)).astype(np.float32) * 500.0)
         out = str(tmp_path / "sr.png")
-        st.render_stamp_png(plane, out, asinh_scale=100.0, size=424)
+        st.render_stamp_rgb(stamp4, out, size=424)
         with Image.open(out) as im:
             assert im.size == (424, 424) and im.mode == "RGB"
+
+    def test_render_stamp_rgb_handles_flat_stamp(self, tmp_path):
+        # A uniform (zero-contrast) stamp must not crash or produce NaNs.
+        stamp4 = np.full((53, 53, 4), 3.0, np.float32)
+        out = str(tmp_path / "lr.png")
+        st.render_stamp_rgb(stamp4, out, size=424)
+        import os
+        assert os.path.exists(out)
