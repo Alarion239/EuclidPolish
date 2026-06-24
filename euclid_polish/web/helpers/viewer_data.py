@@ -28,6 +28,7 @@ Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -35,6 +36,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
@@ -211,14 +213,24 @@ _EVAL_TIER_FILES = {
     "SR": "SR.fits",
     "HR": "HR.fits",
 }
+#: Viewer tier key → ``lens_scores.csv`` recon column for the P(lens) lookup.
+_EVAL_TIER_PLENS = {"LR": "lr", "SR": "sr", "HR": "hr"}
 
 
 def _eval_objects() -> List[Dict[str, Any]]:
-    """Manifest objects (ok rows) with their on-disk tiers + label/grade."""
+    """Manifest objects (ok rows) with on-disk tiers, label/grade, and P(lens).
+
+    ``plens`` carries the headed lens-finder's prediction per tier (``{"LR":
+    0.12, "SR": 0.87, ...}``) so the viewer can show what the model thinks for
+    each render. Only finite scores present in ``lens_scores.csv`` are included;
+    a tier with no score (e.g. an unscored run, or HR for a real lens) is simply
+    absent and the viewer shows no badge for it.
+    """
     from euclid_polish.web.routes.evaluation import _read_manifest  # local: avoid cycle
 
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     rows = _read_manifest(root)
+    plens_by_id = per_object_plens(root)        # {id: {"lr": P, "sr": P, "hr": P}}
     objs: List[Dict[str, Any]] = []
     for r in rows:
         if str(r.get("ok", "")).lower() != "true":
@@ -232,11 +244,16 @@ def _eval_objects() -> List[Dict[str, Any]]:
         if not tiers:
             continue
         grade = (r.get("grade") or "").strip()
+        scores = plens_by_id.get(r.get("id") or sub, {})
+        plens = {tier: float(scores[col])
+                 for tier, col in _EVAL_TIER_PLENS.items()
+                 if math.isfinite(scores.get(col, float("nan")))}
         objs.append({
             "subdir": sub,
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
             "grade": grade,
             "tiers": tiers,
+            "plens": plens,
         })
     return objs
 
@@ -255,7 +272,8 @@ def _eval_meta(params: Dict[str, str]) -> Dict[str, Any]:
         "default_tier": default,
         "band_names": list(BAND_NAMES),
         "objects": [{"label": o["label"], "grade": o["grade"],
-                     "tiers": o["tiers"], "subdir": o["subdir"]}
+                     "tiers": o["tiers"], "subdir": o["subdir"],
+                     "plens": o["plens"]}
                     for o in objs],
     }
 

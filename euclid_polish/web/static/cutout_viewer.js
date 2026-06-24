@@ -123,6 +123,9 @@ const COLOR_MODES_EXTRA = [
   { key: "temp", label: "Temp", title: "Per-pixel blackbody-T colour (Planckian locus)" },
 ];
 
+//: Auto-run ("Run through") cadence — slow enough to read each object.
+const PLAY_INTERVAL_MS = 1500;
+
 export function mountCutoutViewer(root, opts = {}) {
   const collection = opts.collection;
   const state = {
@@ -319,12 +322,30 @@ export function mountCutoutViewer(root, opts = {}) {
     fr.overlay.textContent = rec.label;
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
+    showPlens(fr);
+  }
+
+  /** Show the headed lens-finder's P(lens) for this frame's tier (eval only). */
+  function showPlens(fr) {
+    const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
+    const p = obj && obj.plens ? obj.plens[fr.tier] : undefined;
+    if (p == null || !isFinite(p)) { fr.plens.style.display = "none"; return; }
+    const t = Math.max(0, Math.min(1, p));
+    const hue = Math.round(120 * t);                 // 0 → red (galaxy), 120 → green (lens)
+    fr.plens.textContent = `P(lens) ${p.toFixed(2)}`;
+    fr.plens.style.borderLeftColor = `hsl(${hue}, 65%, 52%)`;
+    fr.plens.style.color = `hsl(${hue}, 72%, 82%)`;
+    fr.plens.style.display = "block";
   }
 
   function setFrameMsg(fr, text) {
     fr.msg.textContent = text || "";
     fr.msg.style.display = text ? "flex" : "none";
-    if (text) { fr.overlay.textContent = ""; fr.legendWrap.style.display = "none"; }
+    if (text) {
+      fr.overlay.textContent = "";
+      fr.legendWrap.style.display = "none";
+      fr.plens.style.display = "none";
+    }
   }
 
   function makeFrame(tier) {
@@ -336,10 +357,11 @@ export function mountCutoutViewer(root, opts = {}) {
       el("span", { class: "cv-legend-tick", text: "3k" }),
     ]);
     const overlay = el("div", { class: "cv-overlay" });
+    const plens = el("div", { class: "cv-plens" });   // headed-model P(lens) for this tier
     const msg = el("div", { class: "cv-msg" });
-    const frame = el("div", { class: "cv-frame" }, [canvas, legendWrap, overlay, msg]);
+    const frame = el("div", { class: "cv-frame" }, [canvas, legendWrap, overlay, plens, msg]);
     const fr = { tier, frame, canvas, ctx: canvas.getContext("2d"),
-                 legendWrap, legendCanvas, overlay, msg };
+                 legendWrap, legendCanvas, overlay, plens, msg };
     drawLegend(fr);
     return fr;
   }
@@ -552,7 +574,7 @@ export function mountCutoutViewer(root, opts = {}) {
       nav._play.classList.remove("active");
     } else {
       nav._play.classList.add("active");
-      state.playTimer = setInterval(() => go(state.index + 1), 450);
+      state.playTimer = setInterval(() => go(state.index + 1), PLAY_INTERVAL_MS);
     }
   }
 
