@@ -38,3 +38,6 @@ scripts/polish-pub/
 *.credentials
 .euclid_credentials
 euclid_credentials*
+
+# brainstorming visual companion
+.superpowers/
