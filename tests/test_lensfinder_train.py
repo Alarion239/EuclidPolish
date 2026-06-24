@@ -64,6 +64,12 @@ def test_latest_checkpoint_none_when_empty(tmp_path):
     assert lt._latest_checkpoint(str(tmp_path / "nope")) is None
 
 
+def test_checkpoint_epoch_from_filename(tmp_path):
+    assert lt._checkpoint_epoch(str(tmp_path / "13.ckpt")) == 13
+    assert lt._checkpoint_epoch(str(tmp_path / "1-v1.ckpt")) == 1   # dedup suffix
+    assert lt._checkpoint_epoch(None) is None
+
+
 def test_train_one_skips_when_predictions_exist(tmp_path):
     out = tmp_path / "sr"
     out.mkdir(parents=True)

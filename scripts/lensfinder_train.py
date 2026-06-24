@@ -80,6 +80,43 @@ def _latest_checkpoint(out: str):
     return max(ckpts, key=os.path.getmtime) if ckpts else None
 
 
+def _checkpoint_epoch(ckpt_path):
+    """The training epoch a Lightning checkpoint was saved at, or None.
+
+    Prefer the filename (``'{epoch}.ckpt'``, possibly ``'{epoch}-vN.ckpt'``);
+    fall back to the ``epoch`` key in the checkpoint payload (e.g. last.ckpt)."""
+    if not ckpt_path:
+        return None
+    stem = os.path.basename(ckpt_path)
+    if stem.endswith(".ckpt"):
+        stem = stem[:-len(".ckpt")]
+    head = stem.split("-")[0]
+    if head.isdigit():
+        return int(head)
+    try:
+        import torch
+        return int(torch.load(ckpt_path, map_location="cpu",
+                              weights_only=False).get("epoch"))
+    except Exception:
+        return None
+
+
+def _write_predictions(df_test, model, test_tf, pred_csv, args):
+    """Write the test-split P(lens) predictions CSV (or an empty one)."""
+    import pandas as pd
+    from zoobot.pytorch.predictions import predict_on_catalog
+
+    if len(df_test):
+        predict_on_catalog.predict(
+            catalog=df_test, model=model, label_cols=_PRED_COLS,
+            inference_transform=test_tf, save_loc=pred_csv,
+            datamodule_kwargs={"batch_size": args.batch_size,
+                               "num_workers": args.num_workers},
+            trainer_kwargs={"accelerator": args.device, "devices": 1})
+    else:
+        pd.DataFrame(columns=["id_str", *_PRED_COLS]).to_csv(pred_csv, index=False)
+
+
 def _frames(rows, recon):
     """Build per-split pandas frames (file_loc, label, id_str) for one recon."""
     import pandas as pd
@@ -152,25 +189,39 @@ def _train_one(recon, rows, args, reporter, step_offset):
                 "predictions": pred_csv, "global_step": 0, "skipped": True}
 
     import lightning as L
-    import pandas as pd
     from lightning.pytorch.callbacks import ModelCheckpoint
     from galaxy_datasets.transforms import (default_view_config,
                                             get_galaxy_transform,
                                             minimal_view_config)
     from galaxy_datasets.pytorch.galaxy_datamodule import CatalogDataModule
     from zoobot.pytorch.training import finetune
-    from zoobot.pytorch.predictions import predict_on_catalog
 
     df_train, df_val, df_test = _frames(rows, recon)
     reporter.set_stage(f"{recon}: {len(df_train)} train / {len(df_val)} val / "
                        f"{len(df_test)} test")
 
-    train_cfg = default_view_config()
-    train_cfg.output_size = (args.png_size, args.png_size)
     test_cfg = minimal_view_config()
     test_cfg.output_size = (args.png_size, args.png_size)
-    train_tf = get_galaxy_transform(train_cfg)
     test_tf = get_galaxy_transform(test_cfg)
+
+    # A checkpoint at/past the current ceiling can't be resumed (Lightning
+    # rejects current_epoch >= max_epochs). Treat it as trained: load it and
+    # just (re)write the predictions the evaluation needs.
+    ckpt = None if args.force else _latest_checkpoint(out)
+    ckpt_epoch = _checkpoint_epoch(ckpt)
+    if ckpt and ckpt_epoch is not None and ckpt_epoch >= int(args.epochs):
+        reporter.set_stage(f"{recon}: ckpt epoch {ckpt_epoch} >= max_epochs "
+                           f"{args.epochs} — predicting only")
+        print(f"  ⏭  {recon}: checkpoint epoch {ckpt_epoch} ≥ max_epochs "
+              f"{args.epochs} — treating as trained, writing predictions only")
+        model = finetune.FinetuneableZoobotClassifier.load_from_checkpoint(ckpt)
+        _write_predictions(df_test, model, test_tf, pred_csv, args)
+        return {"recon": recon, "n_train": len(df_train), "n_test": len(df_test),
+                "predictions": pred_csv, "global_step": 0, "skipped": True}
+
+    train_cfg = default_view_config()
+    train_cfg.output_size = (args.png_size, args.png_size)
+    train_tf = get_galaxy_transform(train_cfg)
 
     dm = CatalogDataModule(
         label_cols=["label"],
@@ -195,23 +246,13 @@ def _train_one(recon, rows, args, reporter, step_offset):
             cb.save_last = True
     trainer.callbacks.append(
         _make_reporter_bridge(L, reporter, recon, args.epochs, step_offset))
-    ckpt = None if args.force else _latest_checkpoint(out)
     if ckpt:
         reporter.set_stage(f"{recon}: resuming from {os.path.basename(ckpt)}")
         print(f"  ↻ {recon}: resuming from {os.path.basename(ckpt)}")
     trainer.fit(model, dm, ckpt_path=ckpt)
 
     # Predict P(lens) on the held-out test split.
-    pred_csv = os.path.join(out, "predictions.csv")
-    if len(df_test):
-        predict_on_catalog.predict(
-            catalog=df_test, model=model, label_cols=_PRED_COLS,
-            inference_transform=test_tf, save_loc=pred_csv,
-            datamodule_kwargs={"batch_size": args.batch_size,
-                               "num_workers": args.num_workers},
-            trainer_kwargs={"accelerator": args.device, "devices": 1})
-    else:
-        pd.DataFrame(columns=["id_str", *_PRED_COLS]).to_csv(pred_csv, index=False)
+    _write_predictions(df_test, model, test_tf, pred_csv, args)
     return {"recon": recon, "n_train": len(df_train), "n_test": len(df_test),
             "predictions": pred_csv, "global_step": int(trainer.global_step)}
 
