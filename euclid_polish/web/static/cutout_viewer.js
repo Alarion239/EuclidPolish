@@ -129,46 +129,38 @@ export function mountCutoutViewer(root, opts = {}) {
     meta: null,
     params: Object.assign({}, opts.params || {}),
     index: opts.initialIndex || 0,
-    tier: null,
+    tiers: [],             // selected tier keys (multi-select), canonical order
     color: "VIS",          // band name | "lupton" | "temp"
     knee: 100,             // K (e⁻)
     gain: 1.0,             // brightness multiplier
     K0: 100,               // knee captured on first load → fixes the white ref
-    cache: new Map(),      // "tier:index" → cube record
-    prepared: null,        // memoised colour/intensity decomposition
-    preparedKey: "",
+    cubeCache: new Map(),  // "tier:index" → cube record
+    prepCache: new Map(),  // "tier:index:color" → colour/intensity decomposition
+    shown: new Map(),      // tier → rec currently displayed (for cheap re-render)
+    frames: [],            // [{ tier, frame, canvas, ctx, overlay, legendWrap, msg }]
     playTimer: null,
+    hot: false,
   };
 
   // --- DOM scaffold --------------------------------------------------------
   root.classList.add("cutout-viewer");
   root.innerHTML = "";
-
   const toolbar = el("div", { class: "cv-toolbar" });
-  const frame = el("div", { class: "cv-frame" });
-  const canvas = el("canvas", { class: "cv-canvas", width: 1, height: 1 });
-  const legend = el("canvas", { class: "cv-legend", width: 14, height: 160 });
-  const legendWrap = el("div", { class: "cv-legend-wrap" }, [
-    el("span", { class: "cv-legend-tick cv-legend-top", text: "20k" }),
-    legend,
-    el("span", { class: "cv-legend-tick cv-legend-bot", text: "3k" }),
-  ]);
-  const overlay = el("div", { class: "cv-overlay" });
-  const msg = el("div", { class: "cv-msg" });
-  frame.append(canvas, legendWrap, overlay, msg);
-
+  const framesRow = el("div", { class: "cv-frames" });
   const nav = el("div", { class: "cv-nav" });
-  root.append(toolbar, frame, nav);
-  const ctx = canvas.getContext("2d");
+  root.append(toolbar, framesRow, nav);
 
   // --- helpers -------------------------------------------------------------
   const band = (name) => state.meta.color.bands[name];
   const cacheKey = (tier, index) => `${tier}:${index}`;
-
-  function setMsg(text) {
-    msg.textContent = text || "";
-    msg.style.display = text ? "flex" : "none";
-  }
+  /** Selected tiers in the meta's canonical order ([{key,label}]). */
+  const orderedSelected = () =>
+    ((state.meta && state.meta.tiers) || []).filter((t) => state.tiers.includes(t.key));
+  /** Tiers available for the current object (eval gates per object). */
+  const tierAvail = (key) => {
+    const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
+    return !obj || !obj.tiers || obj.tiers.includes(key);
+  };
 
   function notify() {
     if (opts.onIndexChange) opts.onIndexChange(state.index);
@@ -177,64 +169,58 @@ export function mountCutoutViewer(root, opts = {}) {
 
   async function fetchCube(tier, index) {
     const key = cacheKey(tier, index);
-    if (state.cache.has(key)) return state.cache.get(key);
+    if (state.cubeCache.has(key)) return state.cubeCache.get(key);
     const qs = new URLSearchParams(Object.assign({ tier }, state.params));
-    const url = `/viewer/cube/${collection}/${index}?${qs}`;
-    const r = await fetch(url);
+    const r = await fetch(`/viewer/cube/${collection}/${index}?${qs}`);
     if (!r.ok) throw new Error(`cube ${r.status}`);
     const shape = (r.headers.get("X-Cube-Shape") || "").split(",").map(Number);
     const buf = await r.arrayBuffer();
     const rec = {
-      h: shape[0], w: shape[1], c: shape[2],
+      key, h: shape[0], w: shape[1], c: shape[2],
       data: new Float32Array(buf),
       label: r.headers.get("X-Cube-Label") || "",
       asinh: parseFloat(r.headers.get("X-Cube-Asinh")) || 100,
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
     };
-    state.cache.set(key, rec);
-    if (state.cache.size > 80) state.cache.delete(state.cache.keys().next().value);
+    state.cubeCache.set(key, rec);
+    if (state.cubeCache.size > 96) state.cubeCache.delete(state.cubeCache.keys().next().value);
     return rec;
   }
 
   function prefetch(index) {
-    const tiers = (state.meta.tiers || []).map((t) => t.key);
     const jobs = [];
     for (const di of [1, -1, 2]) {
       const j = index + di;
-      if (j >= 0 && j < state.meta.count) jobs.push([state.tier, j]);
+      if (j >= 0 && j < state.meta.count) {
+        for (const t of state.tiers) if (tierAvail(t)) jobs.push([t, j]);
+      }
     }
-    for (const t of tiers) if (t !== state.tier) jobs.push([t, index]);
     for (const [t, j] of jobs) fetchCube(t, j).catch(() => {});
   }
 
-  // --- colour prepare (per cube + colour mode) -----------------------------
-  // Returns { mode, factor, I, ... } where I is per-pixel linear intensity in
-  // the same units `factor` converts the e⁻ sliders into. Heavy work (temp
-  // fit) happens here, then transfer() is cheap on every slider tick.
+  // --- colour prepare (pure, memoised by cube + colour mode) ---------------
+  // Returns { mode, factor, I, ... } with I = per-pixel linear intensity in
+  // the unit `factor` converts the e⁻ sliders into. Heavy work (temp fit)
+  // happens here; transfer() is cheap on every slider tick.
   function prepare(rec) {
-    const key = `${cacheKey(state.tier, state.index)}|${state.color}`;
-    if (state.preparedKey === key && state.prepared) return state.prepared;
+    const key = `${rec.key}:${state.color}`;
+    if (state.prepCache.has(key)) return state.prepCache.get(key);
 
     const C = state.meta.color;
     const names = C.band_names;
     const npx = rec.h * rec.w;
-    // value of band k at pixel p inside the interleaved (H,W,C) buffer
-    const at = (p, k) => rec.data[p * rec.c + k];
+    const at = (p, k) => rec.data[p * rec.c + k];   // band k at pixel p
 
     let prepared;
     if (state.color === "lupton" || state.color === "temp") {
       const useSolar = state.color === "lupton";
-      // AB (+ solar) calibrated channels.
-      const calib = [];
-      for (let k = 0; k < names.length; k++) {
-        const b = band(names[k]);
-        let f = abFluxNorm(b);
-        if (useSolar) f *= solarBalance(b);
-        calib.push(f);
-      }
+      const calib = names.map((n, k) => {
+        let f = abFluxNorm(band(n));
+        if (useSolar) f *= solarBalance(band(n));
+        return f;
+      });
       if (state.color === "lupton") {
-        // RGB scheme [H_E, J_E, VIS] → R,G,B; intensity = mean of the three.
-        const sel = C.rgb_scheme.map((n) => names.indexOf(n));
+        const sel = C.rgb_scheme.map((n) => names.indexOf(n)); // [H_E,J_E,VIS]
         const R = new Float32Array(npx), G = new Float32Array(npx), B = new Float32Array(npx);
         const I = new Float32Array(npx);
         for (let p = 0; p < npx; p++) {
@@ -247,10 +233,8 @@ export function mountCutoutViewer(root, opts = {}) {
         prepared = { mode: "lupton", R, G, B, I,
                      factor: abFluxNorm(visB) * solarBalance(visB) };
       } else {
-        // Temperature: per-pixel blackbody-T fit → Planckian-locus hue.
         const lam = names.map((n) => band(n).pivot_um);
         const ts = eyeTGrid(96);
-        // Pre-normalise each grid temperature's Planck vector.
         const pvecs = [];
         for (const T of ts) {
           const p = planckFnu(lam, T);
@@ -279,20 +263,19 @@ export function mountCutoutViewer(root, opts = {}) {
         prepared = { mode: "temp", hueR, hueG, hueB, I, factor: abFluxNorm(visB) };
       }
     } else {
-      // Single band grayscale → I = that band's raw electrons.
-      const k = names.indexOf(state.color);
-      const kk = k < 0 ? 0 : k;
+      const k = Math.max(0, names.indexOf(state.color));
       const I = new Float32Array(npx);
-      for (let p = 0; p < npx; p++) I[p] = at(p, kk);
+      for (let p = 0; p < npx; p++) I[p] = at(p, k);
       prepared = { mode: "gray", I, factor: 1.0 };
     }
     prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
-    state.prepared = prepared; state.preparedKey = key;
+    state.prepCache.set(key, prepared);
+    if (state.prepCache.size > 48) state.prepCache.delete(state.prepCache.keys().next().value);
     return prepared;
   }
 
-  // --- transfer (per slider tick) → canvas ---------------------------------
-  function render(rec) {
+  // --- transfer (per slider tick) → one frame's canvas ---------------------
+  function renderInto(fr, rec) {
     const prep = prepare(rec);
     const { h, w, npx, I, factor } = prep;
     // Kc = knee·factor; white reference Wref = 30·K0·factor (e⁻). norm cancels
@@ -300,15 +283,14 @@ export function mountCutoutViewer(root, opts = {}) {
     const Kc = Math.max(state.knee * factor, 1e-30);
     const norm = Math.max(Math.asinh((30.0 * state.K0 * factor) / Kc), 1e-6);
     const G = state.gain;
-
+    const canvas = fr.canvas;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    const img = ctx.createImageData(w, h);
+    const img = fr.ctx.createImageData(w, h);
     const out = img.data;
 
     if (prep.mode === "gray") {
       for (let p = 0; p < npx; p++) {
-        const t = asinhTransfer(I[p], G, Kc, norm);
-        const v = (t * 255) | 0;
+        const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
         const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
       }
     } else if (prep.mode === "lupton") {
@@ -333,17 +315,41 @@ export function mountCutoutViewer(root, opts = {}) {
         out[o + 3] = 255;
       }
     }
-    ctx.putImageData(img, 0, 0);
-    legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
+    fr.ctx.putImageData(img, 0, 0);
+    fr.overlay.textContent = rec.label;
+    fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
+    setFrameMsg(fr, "");
   }
 
-  function renderLegend() {
-    const n = 160;
-    const img = legend.getContext("2d").createImageData(14, n);
+  function setFrameMsg(fr, text) {
+    fr.msg.textContent = text || "";
+    fr.msg.style.display = text ? "flex" : "none";
+    if (text) { fr.overlay.textContent = ""; fr.legendWrap.style.display = "none"; }
+  }
+
+  function makeFrame(tier) {
+    const canvas = el("canvas", { class: "cv-canvas", width: 1, height: 1 });
+    const legendCanvas = el("canvas", { class: "cv-legend", width: 14, height: 160 });
+    const legendWrap = el("div", { class: "cv-legend-wrap" }, [
+      el("span", { class: "cv-legend-tick", text: "20k" }),
+      legendCanvas,
+      el("span", { class: "cv-legend-tick", text: "3k" }),
+    ]);
+    const overlay = el("div", { class: "cv-overlay" });
+    const msg = el("div", { class: "cv-msg" });
+    const frame = el("div", { class: "cv-frame" }, [canvas, legendWrap, overlay, msg]);
+    const fr = { tier, frame, canvas, ctx: canvas.getContext("2d"),
+                 legendWrap, legendCanvas, overlay, msg };
+    drawLegend(fr);
+    return fr;
+  }
+
+  function drawLegend(fr) {
+    const n = 160, ctx = fr.legendCanvas.getContext("2d");
+    const img = ctx.createImageData(14, n);
     const lo = Math.log(3000), hi = Math.log(20000);
     for (let row = 0; row < n; row++) {
-      // top (row 0) = hot (20k), bottom = cool (3k)
-      const T = Math.exp(hi - (hi - lo) * (row / (n - 1)));
+      const T = Math.exp(hi - (hi - lo) * (row / (n - 1)));   // top hot, bottom cool
       const [x, y] = planckianXY(T);
       const [r, g, b] = xyToLinearSrgb(x, y);
       for (let col = 0; col < 14; col++) {
@@ -354,42 +360,61 @@ export function mountCutoutViewer(root, opts = {}) {
         img.data[o + 3] = 255;
       }
     }
-    legend.getContext("2d").putImageData(img, 0, 0);
+    ctx.putImageData(img, 0, 0);
   }
 
-  // --- load + show current cube --------------------------------------------
+  /** Rebuild the frame row to match the selected tiers (canonical order). */
+  function rebuildFrames() {
+    const want = orderedSelected().map((t) => t.key);
+    const have = state.frames.map((f) => f.tier);
+    if (want.length === have.length && want.every((t, i) => t === have[i])) return;
+    framesRow.innerHTML = "";
+    state.frames = want.map((t) => {
+      const fr = makeFrame(t);
+      framesRow.appendChild(fr.frame);
+      return fr;
+    });
+    framesRow.classList.toggle("cv-multi", state.frames.length > 1);
+  }
+
+  // --- load + show current index across all selected tiers -----------------
   async function show() {
-    if (!state.meta || state.meta.count === 0) { setMsg("No cutouts available."); return; }
-    state.index = Math.max(0, Math.min(state.index, state.meta.count - 1));
-    frame.classList.add("cv-loading");
-    try {
-      const rec = await fetchCube(state.tier, state.index);
-      setMsg("");
-      render(rec);
-      overlay.textContent = rec.label;
+    if (!state.meta || state.meta.count === 0) {
+      rebuildFrames();
+      for (const fr of state.frames) setFrameMsg(fr, "No cutouts available.");
       updateNav();
-      prefetch(state.index);
-      notify();
-    } catch (e) {
-      setMsg(tierAvailable() ? `Could not load cutout (${e.message}).`
-                             : "Not synced yet — pull the data first.");
-    } finally {
-      frame.classList.remove("cv-loading");
+      return;
+    }
+    state.index = Math.max(0, Math.min(state.index, state.meta.count - 1));
+    rebuildFrames();
+    state.shown.clear();
+    await Promise.all(state.frames.map(async (fr) => {
+      if (!tierAvail(fr.tier)) { setFrameMsg(fr, `no ${fr.tier} for this object`); return; }
+      fr.frame.classList.add("cv-loading");
+      try {
+        const rec = await fetchCube(fr.tier, state.index);
+        state.shown.set(fr.tier, rec);
+        renderInto(fr, rec);
+      } catch (e) {
+        setFrameMsg(fr, tierAvail(fr.tier) ? "not synced yet" : `no ${fr.tier}`);
+      } finally {
+        fr.frame.classList.remove("cv-loading");
+      }
+    }));
+    updateNav();
+    prefetch(state.index);
+    notify();
+  }
+
+  // Re-render the already-loaded cubes (slider ticks — no fetch).
+  function rerender() {
+    for (const fr of state.frames) {
+      const rec = state.shown.get(fr.tier);
+      if (rec) renderInto(fr, rec);
     }
   }
 
-  // Re-render the current (already-cached) cube without a fetch — slider ticks.
-  function rerender() {
-    const rec = state.cache.get(cacheKey(state.tier, state.index));
-    if (rec) render(rec);
-  }
-
-  function tierAvailable() {
-    const obj = state.meta.objects && state.meta.objects[state.index];
-    return !obj || !obj.tiers || obj.tiers.includes(state.tier);
-  }
-
-  // --- toolbar / nav building ----------------------------------------------
+  // --- toolbar -------------------------------------------------------------
   function chip(group, value, label, title) {
     return el("button", {
       class: "cv-chip", "data-group": group, "data-value": value,
@@ -401,24 +426,35 @@ export function mountCutoutViewer(root, opts = {}) {
   function syncChips() {
     toolbar.querySelectorAll(".cv-chip[data-group]").forEach((c) => {
       const g = c.dataset.group;
-      const cur = g === "tier" ? state.tier : g === "color" ? state.color : state.params[g];
-      c.classList.toggle("active", c.dataset.value === String(cur));
-      if (g === "tier") {
-        const obj = state.meta.objects && state.meta.objects[state.index];
-        const avail = !obj || !obj.tiers || obj.tiers.includes(c.dataset.value);
-        c.classList.toggle("cv-disabled", !avail);
-      }
+      let on;
+      if (g === "tier") on = state.tiers.includes(c.dataset.value);
+      else if (g === "color") on = c.dataset.value === state.color;
+      else on = c.dataset.value === String(state.params[g]);
+      c.classList.toggle("active", on);
+      if (g === "tier") c.classList.toggle("cv-disabled", !tierAvail(c.dataset.value));
     });
   }
 
   function onChip(group, value) {
-    if (group === "tier") { state.tier = value; state.preparedKey = ""; show(); }
-    else if (group === "color") { state.color = value; state.preparedKey = ""; rerender(); notify(); }
-    else { // param (e.g. subset) → reload meta
+    if (group === "tier") {
+      // Multi-select: toggle membership, keep at least one tier selected.
+      const set = new Set(state.tiers);
+      if (set.has(value)) { if (set.size > 1) set.delete(value); }
+      else set.add(value);
+      state.tiers = (state.meta.tiers || [])
+        .map((t) => t.key).filter((k) => set.has(k));
+      syncChips();
+      show();
+    } else if (group === "color") {
+      state.color = value;
+      syncChips();
+      rerender();
+      notify();
+    } else {                                  // param control (e.g. sky subset)
       state.params[group] = value;
+      syncChips();
       loadMeta().then(show);
     }
-    syncChips();
   }
 
   function slider(label, min, max, val, fmt, onInput) {
@@ -433,24 +469,19 @@ export function mountCutoutViewer(root, opts = {}) {
       out.textContent = fmt(v);
       onInput(v);
     });
-    const wrap = el("div", { class: "cv-slider" }, [
-      el("label", { text: label }), input, out,
-    ]);
-    wrap._set = (v) => { input.value = toSlider(v); out.textContent = fmt(v); };
-    return wrap;
+    return el("div", { class: "cv-slider" }, [el("label", { text: label }), input, out]);
   }
 
-  let kneeSlider, brightSlider;
   function buildToolbar() {
     toolbar.innerHTML = "";
     const tiers = state.meta.tiers || [];
     if (tiers.length > 1) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: "Tier" }));
       const g = el("div", { class: "cv-group" });
-      tiers.forEach((t) => g.append(chip("tier", t.key, t.label)));
+      tiers.forEach((t) => g.append(chip("tier", t.key, t.label,
+        "toggle — select more than one to compare side by side")));
       toolbar.append(g);
     }
-    // Param controls (e.g. sky subset).
     for (const pc of (opts.paramControls || [])) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: pc.label }));
       const g = el("div", { class: "cv-group" });
@@ -464,16 +495,17 @@ export function mountCutoutViewer(root, opts = {}) {
     toolbar.append(cg);
 
     const sg = el("div", { class: "cv-group cv-sliders" });
-    kneeSlider = slider("asinh knee", 5, 5000, state.knee,
-      (v) => `${v < 100 ? v.toFixed(0) : Math.round(v)} e⁻`,
-      (v) => { state.knee = v; rerender(); });
-    brightSlider = slider("brightness", 0.1, 10, state.gain,
-      (v) => `${v.toFixed(2)}×`,
-      (v) => { state.gain = v; rerender(); });
-    sg.append(kneeSlider, brightSlider);
+    sg.append(
+      slider("asinh knee", 5, 5000, state.knee,
+        (v) => `${Math.round(v)} e⁻`, (v) => { state.knee = v; rerender(); }),
+      slider("brightness", 0.1, 10, state.gain,
+        (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); }),
+    );
     toolbar.append(sg);
   }
 
+  // --- nav (prev / editable index / next / play) ---------------------------
+  let idxInput, idxTotal;
   function buildNav() {
     nav.innerHTML = "";
     const prev = el("button", { class: "cv-navbtn", type: "button", text: "◀", title: "Previous (←)",
@@ -482,24 +514,38 @@ export function mountCutoutViewer(root, opts = {}) {
       onclick: () => go(state.index + 1) });
     const play = el("button", { class: "cv-navbtn cv-play", type: "button", text: "▶▶", title: "Run through (Space)",
       onclick: togglePlay });
-    const idx = el("span", { class: "cv-idx" });
-    nav._idx = idx; nav._play = play;
+    nav._play = play;
+    idxInput = el("input", { class: "cv-idx-input", type: "text", inputmode: "numeric",
+      title: "type an index and press Enter to jump" });
+    idxTotal = el("span", { class: "cv-idx-total" });
+    const commit = () => {
+      const v = parseInt(idxInput.value, 10);
+      if (Number.isFinite(v)) go(v, false);     // explicit jump → clamp, don't wrap
+      else updateNav();
+    };
+    idxInput.addEventListener("change", commit);
+    idxInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { commit(); idxInput.blur(); }
+    });
+    const idxWrap = el("span", { class: "cv-idx" }, [idxInput, idxTotal]);
     const hint = el("span", { class: "cv-kbd", text: "← →  ·  Space to run" });
-    nav.append(prev, idx, next, play, hint);
+    nav.append(prev, idxWrap, next, play, hint);
   }
 
   function updateNav() {
-    if (nav._idx) nav._idx.textContent = `${state.index} / ${Math.max(0, state.meta.count - 1)}`;
+    if (!idxInput) return;
+    if (document.activeElement !== idxInput) idxInput.value = state.index;
+    idxTotal.textContent = ` / ${Math.max(0, state.meta.count - 1)}`;
   }
 
-  function go(i) {
+  function go(i, wrap = true) {
     const n = state.meta.count;
     if (n === 0) return;
-    state.index = (i + n) % n;     // wrap for smooth run-through
-    state.preparedKey = "";
+    state.index = wrap ? ((i % n) + n) % n : Math.max(0, Math.min(i, n - 1));
     show();
     syncChips();
   }
+
   function togglePlay() {
     if (state.playTimer) {
       clearInterval(state.playTimer); state.playTimer = null;
@@ -511,9 +557,7 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   function onKey(e) {
-    // Only when the pointer/focus is on the viewer, so arrow/space don't
-    // hijack pages that embed it alongside other content (e.g. /evaluation).
-    if (!state.hot) return;
+    if (!state.hot) return;     // only when the viewer is hovered/focused
     if (e.target.matches("input, textarea, select")) return;
     if (e.key === "ArrowLeft") { go(state.index - 1); e.preventDefault(); }
     else if (e.key === "ArrowRight") { go(state.index + 1); e.preventDefault(); }
@@ -529,8 +573,11 @@ export function mountCutoutViewer(root, opts = {}) {
     const r = await fetch(`/viewer/meta/${collection}?${qs}`);
     if (!r.ok) throw new Error(`meta ${r.status}`);
     state.meta = await r.json();
-    if (!state.tier || !state.meta.tiers.some((t) => t.key === state.tier)) {
-      state.tier = state.meta.default_tier;
+    const tierKeys = (state.meta.tiers || []).map((t) => t.key);
+    state.tiers = state.tiers.filter((t) => tierKeys.includes(t));
+    if (!state.tiers.length) {
+      state.tiers = tierKeys.includes(state.meta.default_tier)
+        ? [state.meta.default_tier] : tierKeys.slice(0, 1);
     }
     if (!state.meta.band_names.includes(state.color)
         && !["lupton", "temp"].includes(state.color)) {
@@ -538,20 +585,21 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     state.knee = state.meta.color.default_asinh || 100;
     state.K0 = state.knee;
-    state.cache.clear();
+    state.cubeCache.clear();
+    state.prepCache.clear();
     buildToolbar();
     buildNav();
     syncChips();
-    renderLegend();
   }
 
   document.addEventListener("keydown", onKey);
 
   const api = {
-    goTo(i) { go(i); },
+    goTo(i) { go(i, false); },
     getIndex() { return state.index; },
     getState() {
-      return { index: state.index, tier: state.tier, color: state.color,
+      return { index: state.index, tier: state.tiers[0],
+               tiers: state.tiers.slice(), color: state.color,
                params: Object.assign({}, state.params) };
     },
     reload() { return loadMeta().then(show); },
@@ -562,9 +610,16 @@ export function mountCutoutViewer(root, opts = {}) {
     },
   };
 
-  // initial load
-  setMsg("Loading…");
-  loadMeta().then(show).catch((e) => setMsg(`Could not load viewer (${e.message}).`));
+  // initial load — a plain placeholder until meta arrives, then show()
+  // builds the real per-tier frames.
+  function placeholder(text) {
+    framesRow.innerHTML = "";
+    state.frames = [];
+    const m = el("div", { class: "cv-msg", text }); m.style.display = "flex";
+    framesRow.appendChild(el("div", { class: "cv-frame" }, [m]));
+  }
+  placeholder("Loading…");
+  loadMeta().then(show).catch((e) => placeholder(`Could not load viewer (${e.message}).`));
   return api;
 }
 
