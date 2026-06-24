@@ -205,13 +205,19 @@ def run_synthetic_eval(
             os.makedirs(obj_dir, exist_ok=True)
             lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
             hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
-            hr_vis = hr_raw[..., 0] if hr_raw.ndim == 3 else hr_raw   # (2H,2W)
             _, sr_data = reconstruct(model, lr_cube)
             sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
 
             cx, cy = float(src["x_pix"]), float(src["y_pix"])
             # HR & SR live on the HR grid; the LR cube is half-resolution.
-            hr_st = crop_stamp(hr_vis, cx=cx, cy=cy, m=m)
+            if hr_raw.ndim == 3:
+                hr_cube_st = np.stack(
+                    [crop_stamp(hr_raw[..., b], cx=cx, cy=cy, m=m)
+                     for b in range(hr_raw.shape[-1])], axis=-1)
+                hr_vis_st = hr_cube_st[..., 0]
+            else:                                   # legacy VIS-only HR record
+                hr_vis_st = crop_stamp(hr_raw, cx=cx, cy=cy, m=m)
+                hr_cube_st = hr_vis_st[..., None]
             if sr_arr.ndim == 3:
                 sr_cube_st = np.stack(
                     [crop_stamp(sr_arr[..., b], cx=cx, cy=cy, m=m)
@@ -244,7 +250,11 @@ def run_synthetic_eval(
                 np.moveaxis(sr_cube_st, -1, 0) if sr_cube_st.ndim == 3 else sr_cube_st,
                 f"{grade} SR stamp (WDSR)",
                 {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
-            _wr(os.path.join(obj_dir, "HR.fits"), hr_st, f"{grade} HR truth (VIS)")
+            _wr(os.path.join(obj_dir, "HR.fits"),
+                np.moveaxis(hr_cube_st, -1, 0) if hr_cube_st.ndim == 3
+                else hr_cube_st,
+                f"{grade} HR truth (electrons)",
+                {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
 
             lr_sum, sr_sum = float(np.sum(lr_vis_st)), float(np.sum(sr_vis_st))
             lr_up = np.repeat(np.repeat(lr_vis_st, 2, 0), 2, 1)  # nearest 2× → HR grid
@@ -252,8 +262,8 @@ def run_synthetic_eval(
                 "ok": True,
                 "lr_total_e": lr_sum, "sr_total_e": sr_sum,
                 "flux_ratio_sr_over_lr": (sr_sum / lr_sum) if lr_sum else "",
-                "psnr_lr_hr": _psnr(lr_up, hr_st),
-                "psnr_sr_hr": _psnr(sr_vis_st, hr_st),
+                "psnr_lr_hr": _psnr(lr_up, hr_vis_st),
+                "psnr_sr_hr": _psnr(sr_vis_st, hr_vis_st),
             })
             n_ok += 1
         except Exception as e:  # noqa: BLE001 — one bad field must not kill the run
