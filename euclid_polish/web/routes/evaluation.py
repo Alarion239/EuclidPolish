@@ -202,6 +202,36 @@ def _shared_run_summary() -> Dict[str, Any]:
     }
 
 
+def _list_runs() -> List[Dict[str, Any]]:
+    """Evaluation runs that landed as sub-dirs of EVAL_RESULTS_DIR.
+
+    The local grouped run writes one shared store (root ``manifest.csv``, see
+    ``_shared_run_summary``), but the remote ``eval_results/`` pulled by the
+    FASRC sync is organized per-catalog (``eval_results/<catalog>/manifest.csv``).
+    This enumerates those run sub-dirs so the sync route can report how many
+    appeared. Newest first by manifest mtime.
+    """
+    root = Config.EVAL_RESULTS_DIR
+    runs: List[Dict[str, Any]] = []
+    if not os.path.isdir(root):
+        return runs
+    for name in sorted(os.listdir(root)):
+        rd = os.path.join(root, name)
+        mani = os.path.join(rd, "manifest.csv")
+        if not (os.path.isdir(rd) and os.path.isfile(mani)):
+            continue
+        rows = _read_manifest(rd)
+        n_ok = sum(1 for r in rows if str(r.get("ok", "")).lower() == "true")
+        runs.append({
+            "name":  name,
+            "n":     len(rows),
+            "n_ok":  n_ok,
+            "mtime": os.path.getmtime(mani),
+        })
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return runs
+
+
 def _bad_run_arg(value: str) -> bool:
     return bool(value) and (
         os.sep in value or (os.altsep and os.altsep in value)
@@ -362,11 +392,14 @@ def register(app):
             return jsonify({"ok": False,
                             "error": err.strip() or f"rsync exit {rc}"}), 500
         summary = _shared_run_summary()
+        runs = _list_runs()
         return jsonify({
             "ok":     True,
             "stdout": out.strip()[-2000:],
             "n":      summary["n"],
             "n_ok":   summary["n_ok"],
+            "n_runs": len(runs),
+            "runs":   runs,
         })
 
     @app.route("/api/evaluation/sync-heads", methods=["POST"])
