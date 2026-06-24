@@ -30,6 +30,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.eval import grouped_runner
+from euclid_polish.eval.catalog_runner import EVAL_LR_SIZE
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -41,9 +42,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--n", type=int, default=100,
                    help="cutouts per class (per A/B/C grade and per synthetic "
                         "subgroup)")
-    p.add_argument("--cutout-size", type=int, default=256,
-                   help="real-lens download size in VIS px (center-cropped to "
-                        "the canonical 53² LR / 106² SR afterwards)")
+    p.add_argument("--cutout-size", type=int, default=EVAL_LR_SIZE,
+                   help="real-lens download size in VIS px (default = the "
+                        f"canonical {EVAL_LR_SIZE} LR side → {2 * EVAL_LR_SIZE}² "
+                        "SR; a larger value is center-cropped down)")
     p.add_argument("--lens-source", default=None,
                    help="reuse cached real-lens FITS from this run dir instead "
                         "of re-downloading (they are merely re-cropped)")

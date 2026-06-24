@@ -28,7 +28,7 @@ LENS_GRADES = ("A", "B", "C")
 
 def run_grouped_analysis(
     out_dir: str, n: int, *,
-    cutout_size: int = 256,
+    cutout_size: int = EVAL_LR_SIZE,
     catalog_path: Optional[str] = None,
     checkpoint: Optional[str] = None,
     num_res_blocks: Optional[int] = None,
@@ -45,13 +45,16 @@ def run_grouped_analysis(
     """Prepare the four-group dataset into ``out_dir``; write one manifest.
 
     Every object is held at the canonical eval geometry: a ``EVAL_LR_SIZE``² LR
-    stamp beside a ``EVAL_HR_SIZE``² SR/HR stamp. Real A/B/C cutouts are fetched
-    at ``cutout_size`` VIS px and then center-cropped to that geometry; an object
-    whose stamp comes out smaller than the target is dropped. ``lens_source_dir``
-    seeds real-lens FITS from an existing run dir so cached cutouts are reused
-    (and merely re-cropped) instead of re-downloaded. ``unique_fields=False`` lets
-    a synthetic field host both a syn-lens and a syn-gal stamp, maximizing yield
-    from a small validation set.
+    stamp beside a ``EVAL_HR_SIZE``² SR/HR stamp. Real A/B/C cutouts are downloaded
+    directly at the LR side (``cutout_size`` defaults to ``EVAL_LR_SIZE`` VIS px →
+    the model yields ``EVAL_HR_SIZE``² SR), so there's nothing to throw away;
+    :func:`~euclid_polish.eval.catalog_runner.enforce_object_sizes` then only trims
+    a rare archive-rounding overhang or drops a stamp truncated at a survey edge. A
+    larger ``cutout_size`` still works (it is center-cropped down). ``lens_source_dir``
+    seeds real-lens FITS from an existing run dir so cached cutouts are reused (and
+    merely re-cropped) instead of re-downloaded. ``unique_fields=False`` lets a
+    synthetic field host both a syn-lens and a syn-gal stamp, maximizing yield from
+    a small validation set.
     """
     def _emit(m): (log or print)(m)
 
