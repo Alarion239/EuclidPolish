@@ -99,32 +99,63 @@ def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
     a.legend(fontsize=8, loc="lower right"); a.grid(alpha=0.2)
 
     # (2) Synthetic ROC + AUC (syn-lens = positive, syn-gal = negative).
+    # HR is the ground-truth high-res upper bound — it exists only for the
+    # synthetic objects (real A/B/C have no HR), but this panel is synthetic-only
+    # so HR is fully available and worth showing as the ceiling LR→SR climbs to.
     a = ax[0, 1]
     syn = [r for r in rows if r["grade"] in ("syn-lens", "syn-gal")]
     if syn:
-        for recon, color in (("lr", "#888888"), ("sr", "#2a5db0")):
+        for recon, color in (("lr", "#888888"), ("sr", "#2a5db0"), ("hr", "#1a9850")):
             pairs = [(r[recon], 1 if r["grade"] == "syn-lens" else 0)
                      for r in syn if math.isfinite(r[recon])]
             if len(pairs) >= 2 and len({p[1] for p in pairs}) == 2:
                 s = [p[0] for p in pairs]; y = [p[1] for p in pairs]
                 fpr, tpr, _ = lm.roc_curve(s, y)
-                a.plot(fpr, tpr, color=color,
+                a.plot(fpr, tpr, color=color, lw=1.8,
                        label=f"{recon.upper()} (AUC {lm.auc(fpr, tpr):.3f})")
         a.plot([0, 1], [0, 1], ":", color="#bbb")
     a.set_xlabel("False positive rate"); a.set_ylabel("True positive rate")
     a.set_title("Synthetic lens vs galaxy — ROC")
     a.legend(fontsize=9, loc="lower right"); a.grid(alpha=0.2)
 
-    # (3) P(lens) histograms by group (SR score).
+    # (3) P(lens) score distribution by group — ridgeline (one band per group).
+    # Overlaid step-histograms were unreadable (5 curves stacked on one axis);
+    # here each group gets its own baseline, its histogram filled and peak-
+    # normalized so the *shape* (where the P(lens) mass sits) is comparable
+    # across groups regardless of count. Bands overlap slightly, front-to-back,
+    # for the classic joyplot look; the median is marked with a short tick.
     a = ax[1, 0]
-    bins = np.linspace(0, 1, 21)
-    for g in GROUPS:
+    bins = np.linspace(0, 1, 26)
+    centers = 0.5 * (bins[:-1] + bins[1:])
+    order = list(GROUPS)                       # A, B, C, syn-lens, syn-gal
+    n_g = len(order)
+    spacing, band_h = 1.0, 1.5                  # band_h > spacing → gentle overlap
+    yticks, yticklabels = [], []
+    for i, g in enumerate(order):
+        base = (n_g - 1 - i) * spacing          # A on top, syn-gal at the bottom
         vals = _finite_pairs([r for r in rows if r["grade"] == g], "sr")
-        if vals:
-            a.hist(vals, bins=bins, histtype="step", linewidth=1.6,
-                   color=_group_color(g), label=g)
-    a.set_xlabel("P(lens) — SR"); a.set_ylabel("count")
-    a.set_title("Score distribution by group"); a.legend(fontsize=8); a.grid(alpha=0.2)
+        yticks.append(base)
+        yticklabels.append(f"{g}  (n={len(vals)})")
+        a.axhline(base, color="#e0e0e0", lw=0.7, zorder=i * 3)
+        if not vals:
+            continue
+        counts, _ = np.histogram(vals, bins=bins)
+        h = counts / counts.max() * band_h      # peak-normalize each group
+        col = _group_color(g)
+        # Lower groups draw on top so their bands overlap the ones above.
+        a.fill_between(centers, base, base + h, color=col, alpha=0.80,
+                       linewidth=0.0, zorder=i * 3 + 1)
+        a.plot(centers, base + h, color="#ffffff", lw=1.4, zorder=i * 3 + 2)
+        a.plot(centers, base + h, color=col, lw=1.1, zorder=i * 3 + 2)
+        med = float(np.median(vals))
+        a.plot([med, med], [base, base + band_h * 0.30], color="#222",
+               lw=1.4, zorder=i * 3 + 3)
+    a.set_yticks(yticks); a.set_yticklabels(yticklabels, fontsize=9)
+    a.set_ylim(-0.25, (n_g - 1) * spacing + band_h + 0.1)
+    a.set_xlim(0, 1)
+    a.set_xlabel("P(lens) — SR")
+    a.set_title("Score distribution by group (peak-normalized)")
+    a.grid(axis="x", alpha=0.2)
 
     # (4) P(lens) vs expert grade for the real lenses (A/B/C).
     a = ax[1, 1]
