@@ -153,3 +153,20 @@ def test_eval_catalog_threads_tf_model(monkeypatch):
     assert captured["model"] is m._tf_model
     assert captured["out_dir"] == "outX"
     assert captured["kwargs"].get("catalog_path") == "catY"
+
+
+def test_eval_grouped_threads_tf_model(monkeypatch):
+    """Model.eval_grouped delegates to run_grouped_analysis with model=self._tf_model."""
+    from euclid_polish.eval import grouped_runner
+    m = _bare_model()
+    captured = {}
+    def _fake_run(out_dir, n, *, model=None, **kwargs):
+        captured.update(out_dir=out_dir, n=n, model=model, kwargs=kwargs)
+        return {"sentinel": True}
+    monkeypatch.setattr(grouped_runner, "run_grouped_analysis", _fake_run)
+    result = m.eval_grouped("outX", 3, include_synthetic=False)
+    assert result == {"sentinel": True}
+    assert captured["model"] is m._tf_model
+    assert captured["out_dir"] == "outX"
+    assert captured["n"] == 3
+    assert captured["kwargs"].get("include_synthetic") is False

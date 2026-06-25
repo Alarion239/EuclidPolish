@@ -15,6 +15,7 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.cutout.base import LRCutout, SRCutout
 from euclid_polish.eval import catalog_runner
+from euclid_polish.eval import grouped_runner
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
@@ -109,6 +110,16 @@ class Model:
         return catalog_runner.run_catalog_eval(
             out_dir=out_dir, model=self._tf_model, **kwargs)
 
-    def eval_grouped(self, *args, **kwargs):
-        """Grouped real-galaxy evaluation. Implemented in SP2."""
-        raise NotImplementedError("eval_grouped is implemented in SP2")
+    def eval_grouped(self, out_dir, n, **kwargs):
+        """Run grouped evaluation (lens grades A/B/C + real galaxies +
+        synthetic) with this model.
+
+        Thin wrapper over
+        :func:`~euclid_polish.eval.grouped_runner.run_grouped_analysis`,
+        passing this model's loaded TF graph so it is not re-loaded. All
+        other kwargs (``catalog_path``, ``checkpoint``, ``include_synthetic``,
+        ``include_galaxies``, ``seed``, ``on_progress``, ``log`` …) pass
+        through. Returns the run summary dict.
+        """
+        return grouped_runner.run_grouped_analysis(
+            out_dir, n, model=self._tf_model, **kwargs)
