@@ -994,6 +994,37 @@ class TestCenterCropAndReuse:
         assert var[0] >= var[1] >= var[2] >= 0.0
 
 
+def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
+    """When a model is passed in, load_eval_model is NOT called and the
+    supplied model object is threaded to eval_catalog_object."""
+    from euclid_polish.eval import catalog_runner
+
+    # A catalog with one object that is NOT cached (forces needs_model path).
+    cat = tmp_path / "cat.csv"
+    cat.write_text("id,ra,dec,grade\nobj1,10.0,-5.0,A\n")
+
+    def _boom(*a, **k):
+        raise AssertionError("load_eval_model must NOT be called when model= is supplied")
+    monkeypatch.setattr(catalog_runner, "load_eval_model", _boom)
+
+    seen = {}
+
+    def _fake_eval_object(model, obj, out_dir, **kwargs):
+        seen["model"] = model
+        rec = {c: "" for c in catalog_runner.MANIFEST_COLS}
+        rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
+                    "grade": obj.get("grade", ""), "ok": True,
+                    "out_subdir": obj["id"]})
+        return rec
+    monkeypatch.setattr(catalog_runner, "eval_catalog_object", _fake_eval_object)
+
+    sentinel = object()
+    result = catalog_runner.run_catalog_eval(
+        out_dir=str(tmp_path / "out"), catalog_path=str(cat), model=sentinel)
+    assert seen["model"] is sentinel
+    assert result["n_ok"] >= 1
+
+
 def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
     import csv as _csv
     from euclid_polish.eval import grouped_runner

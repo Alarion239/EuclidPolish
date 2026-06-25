@@ -345,6 +345,7 @@ def run_catalog_eval(
     render: bool = False,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     log: Optional[Callable[[str], None]] = None,
+    model: Any = None,
 ) -> Dict[str, Any]:
     """Evaluate the model over a catalog into ``out_dir``; return a summary.
 
@@ -387,11 +388,10 @@ def run_catalog_eval(
         not can_reuse_eval_object(object_output_dir(out_dir, row["id"]))
         for row in rows
     )
-    model = None
-    if needs_model:
+    if needs_model and model is None:
         _emit(f"loading model from {checkpoint}")
         model = load_eval_model(checkpoint, num_res_blocks)
-    else:
+    elif not needs_model:
         _emit("all catalog outputs already present — reusing cached FITS")
 
     manifest_path = os.path.join(out_dir, "manifest.csv")
