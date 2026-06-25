@@ -14,7 +14,7 @@ import math
 import os
 from typing import Any, Dict, List, Optional
 
-GROUPS = ("A", "B", "C", "syn-lens", "syn-gal")
+GROUPS = ("A", "B", "C", "gal", "syn-lens", "syn-gal")
 #: which render's score a morphology point uses, by its ``view``.
 VIEW_TO_RECON = {"before": "lr", "after": "sr", "hr": "hr"}
 

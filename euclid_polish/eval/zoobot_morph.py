@@ -256,6 +256,7 @@ def _read_predictions_cached(pred_path: str):
 
 #: Stable colour per analysis group (the manifest's ``grade`` column).
 GROUP_COLORS = {"A": "#2a5db0", "B": "#2e8b57", "C": "#b8860b",
+                "gal": "#17a2b8",
                 "syn-lens": "#b03a3a", "syn-gal": "#7a4fb0"}
 
 

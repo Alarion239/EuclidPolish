@@ -80,3 +80,12 @@ class TestRoutes:
         monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
         r = c.post("/api/evaluation/run-lensfinder", data={})
         assert r.status_code == 400 and "Zoobot env" in r.get_json()["error"]
+
+
+def test_gal_group_registered():
+    from euclid_polish.eval import lensfinder_eval
+    from euclid_polish.eval.zoobot_morph import GROUP_COLORS, _group_color
+    assert "gal" in lensfinder_eval.GROUPS
+    assert "gal" in GROUP_COLORS
+    # distinct from every other group's colour
+    assert _group_color("gal") not in {GROUP_COLORS[g] for g in GROUP_COLORS if g != "gal"}
