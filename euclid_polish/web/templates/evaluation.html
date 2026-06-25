@@ -285,22 +285,20 @@
    in its own torch env) with a live progress bar + log below. No cluster. #}
 <section class="card" style="grid-column: 1 / -1;">
   <h3>① Prepare grouped analysis
-    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + N syn-lens + N syn-gal (with HR), one run</span></h3>
+    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + 3×(grade-A) real galaxies + N syn-lens + N syn-gal (with HR), one run</span></h3>
   <div class="form-row">
     <label>N per group
       <input type="number" id="gpN" value="10" min="1" max="500"></label>
     <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;">
       <input type="checkbox" id="gpSynth" checked> include synthetic</label>
-    <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;"
-           title="3 × the grade-A count, drawn from the same fields — a real negative control">
-      <input type="checkbox" id="gpGal" checked> include real galaxies</label>
   </div>
   <div style="margin-top:10px;">
     <button id="runGroupedBtn" type="button">▶ Prepare</button>
     <span class="hint" style="margin-left:8px;">A/B/C = real lens cutouts (LR+SR);
-      syn-lens / syn-gal = stamps centered on a synthetic lens / field galaxy
-      (LR+SR+HR). Every object is held at 53² LR / 106² SR·HR. Then ② Run Zoobot,
-      ③ view the plots.</span>
+      real galaxies = clean field galaxies from the same fields (3× the grade-A
+      count) — a fixed negative control, always included; syn-lens / syn-gal =
+      stamps centered on a synthetic lens / field galaxy (LR+SR+HR). Every object
+      is held at 53² LR / 106² SR·HR. Then ② Run Zoobot, ③ view the plots.</span>
   </div>
 </section>
 
@@ -874,7 +872,6 @@ window.__evalJumpTo = (sub) => {
     const fd = new FormData();
     fd.set('n', $('gpN').value);
     fd.set('synthetic', $('gpSynth').checked ? '1' : '0');
-    fd.set('galaxies', $('gpGal').checked ? '1' : '0');
     startJob('/api/evaluation/run-grouped', fd,
              'Grouped: eval_results', $('runGroupedBtn'),
              () => { refreshRuns(); });
