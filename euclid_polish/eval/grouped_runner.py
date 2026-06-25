@@ -68,6 +68,7 @@ def run_grouped_analysis(
     unique_fields: bool = True,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     log: Optional[Callable[[str], None]] = None,
+    model: Any = None,
 ) -> Dict[str, Any]:
     """Prepare the four-group dataset into ``out_dir``; write one manifest.
 
@@ -124,16 +125,15 @@ def run_grouped_analysis(
         return bool(lens_source_dir) and catalog_runner.can_reuse_eval_object(
             catalog_runner.object_output_dir(lens_source_dir, obj_id))
 
-    model = None
     needs_lens_model = any(
         not _reusable(obj["id"])
         for _, rows in lens_plan
         for obj in rows
     )
-    if needs_lens_model:
+    if needs_lens_model and model is None:
         _emit(f"loading model from {checkpoint}")
         model = catalog_runner.load_eval_model(checkpoint, num_res_blocks)
-    elif n_lens:
+    elif n_lens and not needs_lens_model:
         _emit("A/B/C lens outputs already present — reusing cached FITS")
     os.makedirs(out_dir, exist_ok=True)
 
