@@ -31,6 +31,7 @@ from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.provenance.store import ProvStore
 from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.training.inference import plot_reconstruction as _plot_reconstruction
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec/pix
 _LR_SCALE = Config.VIS_PIXEL_SCALE_ARCSEC     # 0.10 arcsec/pix
@@ -344,3 +345,64 @@ class EuclidLRCutout(LRCutout):
 @dataclass(frozen=True)
 class SRCutout(HRCutout):
     """A super-resolved cutout — output of ``Model.upsample``."""
+
+    def save_png(
+        self,
+        path: str,
+        *,
+        regime: str = "eye",
+        lr: "Optional[LRCutout]" = None,
+        hr: "Optional[HRCutout]" = None,
+    ) -> None:
+        """Render an LR→SR(→HR) reconstruction figure as a PNG.
+
+        Wraps :func:`~euclid_polish.training.inference.plot_reconstruction`.
+
+        Parameters
+        ----------
+        path : str
+            Output PNG path.
+        regime : str
+            Colour regime — ``"eye"`` (physical blackbody-T colours, default)
+            or ``"calibrated"`` (solar-balanced adaptive windows).
+        lr : LRCutout, optional
+            The dirty LR input. When None a 2× average-pooled SR-VIS proxy is
+            used for the LR panel.
+        hr : HRCutout, optional
+            Ground-truth HR target. When given, the with-HR layout + residual
+            metrics are shown.
+        """
+        sr_data = np.asarray(self.data, dtype=np.float32)
+
+        lr_data = lr_cube = None
+        if lr is not None:
+            lr_arr = np.asarray(lr.data, dtype=np.float32)
+            if lr_arr.ndim == 3 and lr_arr.shape[-1] > 1:
+                lr_cube = lr_arr
+                lr_data = lr_arr[..., 0]
+            else:
+                lr_data = lr_arr[..., 0] if lr_arr.ndim == 3 else lr_arr
+        if lr_data is None:
+            vis = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
+            h, w = vis.shape[:2]
+            lr_data = vis[: h - h % 2, : w - w % 2].reshape(
+                h // 2, 2, w // 2, 2).mean(axis=(1, 3))
+
+        hr_data = hr_cube = None
+        if hr is not None:
+            hr_arr = np.asarray(hr.data, dtype=np.float32)
+            if hr_arr.ndim == 3 and hr_arr.shape[-1] > 1:
+                hr_cube = hr_arr
+                hr_data = hr_arr[..., 0]
+            else:
+                hr_data = hr_arr[..., 0] if hr_arr.ndim == 3 else hr_arr
+
+        _plot_reconstruction(
+            lr_data=lr_data,
+            sr_data=sr_data,
+            hr_data=hr_data,
+            output_path=path,
+            lr_cube=lr_cube,
+            hr_cube=hr_cube,
+            rgb_mode=regime,
+        )

@@ -292,3 +292,31 @@ def test_sr_cutout_save_fits_carries_provid(tmp_path):
     cut.save_fits(str(out))
     with fits.open(str(out)) as hdul:
         assert "PROVID" in hdul[0].header
+
+
+def test_sr_save_png_writes_nonempty_file(tmp_path):
+    from euclid_polish.cutout import SRCutout
+    store = _store(tmp_path)
+    cut = SRCutout(image=_hr_image(8, 8), id=store.mint())
+    out = tmp_path / "sr.png"
+    cut.save_png(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_sr_save_png_with_lr_writes_file(tmp_path):
+    from euclid_polish.cutout import SRCutout, SyntheticLRCutout
+    store = _store(tmp_path)
+    sr = SRCutout(image=_hr_image(8, 8), id=store.mint())
+    lr = SyntheticLRCutout(image=_lr_image(4, 4), id=store.mint())
+    out = tmp_path / "sr_with_lr.png"
+    sr.save_png(str(out), lr=lr)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_sr_save_png_regime_calibrated(tmp_path):
+    from euclid_polish.cutout import SRCutout
+    store = _store(tmp_path)
+    cut = SRCutout(image=_hr_image(8, 8), id=store.mint())
+    out = tmp_path / "sr_cal.png"
+    cut.save_png(str(out), regime="calibrated")
+    assert out.exists() and out.stat().st_size > 0
