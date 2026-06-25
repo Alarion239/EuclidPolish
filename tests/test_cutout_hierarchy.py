@@ -192,3 +192,59 @@ def test_euclid_query_stacks_bands_and_mints_id(tmp_path):
     assert cut.pixel_scale_arcsec == 0.10
     assert cut.data.shape == (4, 4, 4)
     np.testing.assert_array_equal(cut.data[..., 0], np.ones((4, 4), np.float32))
+
+
+def test_euclid_fetch_with_injected_fetcher(tmp_path):
+    from euclid_polish.cutout import EuclidLRCutout
+    store = _store(tmp_path)
+    levels = {"VIS": 10.0, "Y_E": 20.0, "J_E": 30.0, "H_E": 40.0}
+
+    def fake_plane(ra, dec, band_name, size):
+        return np.full((size, size), levels[band_name], dtype=np.float32)
+
+    cut = EuclidLRCutout.fetch(ra=10.0, dec=-5.0, size=8, store=store,
+                               fetch_plane=fake_plane)
+    assert isinstance(cut, EuclidLRCutout)
+    assert cut.band_names == ("VIS", "Y_E", "J_E", "H_E")
+    assert cut.data.shape == (8, 8, 4)
+    np.testing.assert_allclose(cut.data[..., 0], 10.0)
+    np.testing.assert_allclose(cut.data[..., 3], 40.0)
+
+
+def test_euclid_fetch_mints_provenance_id(tmp_path):
+    from euclid_polish.cutout import EuclidLRCutout
+    store = _store(tmp_path)
+
+    def fake_plane(ra, dec, band_name, size):
+        return np.zeros((size, size), dtype=np.float32)
+
+    cut = EuclidLRCutout.fetch(ra=0.0, dec=0.0, size=4, store=store,
+                               fetch_plane=fake_plane)
+    assert cut.id is not None
+    assert str(cut.id) != ""
+
+
+def test_euclid_fetch_implicit_store(tmp_path):
+    import unittest.mock as mock
+    from euclid_polish.cutout import EuclidLRCutout
+    store = _store(tmp_path)
+
+    def fake_plane(ra, dec, band_name, size):
+        return np.zeros((size, size), dtype=np.float32)
+
+    with mock.patch("euclid_polish.cutout.base.default_store", return_value=store):
+        cut = EuclidLRCutout.fetch(ra=0.0, dec=0.0, size=4, fetch_plane=fake_plane)
+    assert isinstance(cut, EuclidLRCutout)
+
+
+def test_euclid_fetch_pixel_scale_is_lr(tmp_path):
+    from euclid_polish.cutout import EuclidLRCutout
+    from euclid_polish.config import Config
+    store = _store(tmp_path)
+
+    def fake_plane(ra, dec, band_name, size):
+        return np.zeros((size, size), dtype=np.float32)
+
+    cut = EuclidLRCutout.fetch(ra=0.0, dec=0.0, size=4, store=store,
+                               fetch_plane=fake_plane)
+    assert abs(cut.pixel_scale_arcsec - Config.VIS_PIXEL_SCALE_ARCSEC) < 1e-6
