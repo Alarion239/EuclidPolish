@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
@@ -34,6 +34,9 @@ from scipy.ndimage import zoom, shift as ndi_shift, rotate as ndi_rotate
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
+from euclid_polish.provenance.persistable import StampCarrier
+from euclid_polish.provenance.records import Format
 from euclid_polish.psf import measurements as _meas
 
 
@@ -44,7 +47,7 @@ DEFAULT_HR_PIXEL_SCALE: float = float(Config.DEFAULT_PIXEL_SCALE)
 
 
 @dataclass
-class PSF:
+class PSF(StampCarrier):
     """A PSF kernel + its physical metadata, with operations.
 
     Parameters
@@ -78,6 +81,8 @@ class PSF:
     pixel_scale: float
     fwhm_arcsec: Optional[float] = None
     oversampling: Optional[int] = None
+
+    PROV_FORMAT: ClassVar[Format] = Format.FITS
 
     # ------------------------------------------------------------------
     # Properties
@@ -441,6 +446,8 @@ class PSF:
         hdu.header["COMMENT"] = (
             "Written by euclid_polish.psf.PSF.save -- sum=1 normalised."
         )
+        if self.stamp is not None:
+            write_stamp_cards(hdu.header, self.stamp)
         fits.HDUList([hdu]).writeto(fits_path, overwrite=True)
         return fits_path
 
@@ -461,6 +468,7 @@ class PSF:
         with fits.open(fits_path) as hdul:
             header = hdul[0].header
             data = np.asarray(hdul[0].data, dtype=np.float32)
+        stamp = read_stamp_cards(header)
         # Two historical FITS conventions — PXSCALE (our save) and
         # PIXSCALE (HST extractor + HLSP WCS). Accept either.
         pix = header.get("PXSCALE", None)
@@ -475,4 +483,8 @@ class PSF:
             fwhm_arcsec=fwhm_arcsec,
             oversampling=oversampling,
         )
-        return psf.with_unit_sum() if normalise else psf
+        if normalise:
+            psf = psf.with_unit_sum()
+        if stamp is not None:
+            psf = psf.with_stamp(stamp)
+        return psf
