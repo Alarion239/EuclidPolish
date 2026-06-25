@@ -30,6 +30,7 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.provenance.store import ProvStore
+from euclid_polish.sky.tfrecord import write_multiband_skyimages
 from euclid_polish.sky.types import MultiBandSkyImage
 from euclid_polish.training.inference import plot_reconstruction as _plot_reconstruction
 
@@ -80,6 +81,25 @@ class Cutout:
 
     def to_tfrecord(self, index: Optional[int] = None) -> bytes:
         return self.stamped_image().to_tfrecord(index=index)
+
+    def write_tfrecord(self, records_dir: str, name: str) -> str:
+        """Write this cutout as a single-element TFRecord; return the path.
+
+        Delegates to
+        :func:`~euclid_polish.sky.tfrecord.write_multiband_skyimages`,
+        embedding this cutout's provenance stamp in the record. The file is
+        ``<records_dir>/<name>.tfrecord`` (``records_dir`` is created if absent).
+
+        Parameters
+        ----------
+        records_dir : str
+            Output directory.
+        name : str
+            Record-set name (e.g. ``"hr_train"``).
+        """
+        return write_multiband_skyimages(
+            [self.stamped_image()], name=name, records_dir=records_dir,
+        )
 
     def save_fits(self, path: str, *, wcs_header=None) -> None:
         """Write this cutout's data to a FITS file with provenance cards.

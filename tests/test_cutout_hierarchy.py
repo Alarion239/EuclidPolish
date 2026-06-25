@@ -320,3 +320,33 @@ def test_sr_save_png_regime_calibrated(tmp_path):
     out = tmp_path / "sr_cal.png"
     cut.save_png(str(out), regime="calibrated")
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_cutout_write_tfrecord_creates_file(tmp_path):
+    import os
+    from euclid_polish.cutout import HRCutout
+    store = _store(tmp_path)
+    cut = HRCutout(image=_hr_image(), id=store.mint())
+    records_dir = str(tmp_path / "records")
+    cut.write_tfrecord(records_dir, "test_hr")
+    expected = os.path.join(records_dir, "test_hr.tfrecord")
+    assert os.path.exists(expected) and os.path.getsize(expected) > 0
+
+
+def test_cutout_write_tfrecord_readable(tmp_path):
+    import os
+    import tensorflow as tf
+    from euclid_polish.cutout import HRCutout
+    from euclid_polish.sky.types import MultiBandSkyImage
+    store = _store(tmp_path)
+    cut = HRCutout(image=_hr_image(), id=store.mint())
+    records_dir = str(tmp_path / "records")
+    cut.write_tfrecord(records_dir, "test_hr")
+    path = os.path.join(records_dir, "test_hr.tfrecord")
+    raw = list(tf.data.TFRecordDataset(path).as_numpy_iterator())
+    assert len(raw) == 1
+    back = MultiBandSkyImage.from_tfrecord(raw[0])
+    assert back.data.shape == cut.data.shape
+    # The cutout's provenance id round-trips via the embedded stamp
+    assert back.prov_stamp() is not None
+    assert back.prov_stamp().id == cut.id
