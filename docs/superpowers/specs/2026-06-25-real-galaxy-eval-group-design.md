@@ -118,9 +118,20 @@ cuts.
   SR → `enforce_object_sizes` → `reuse_catalog_object`). No new per-object code.
 - `total` (progress denominator) includes `n_gal`. Model load is gated the same
   way (`needs_lens_model` extended to galaxies that lack cached FITS).
-- Caching: the galaxy catalog CSV is cached under `EVAL_CATALOG_DIR`; a re-run
-  reuses it. A `regenerate_galaxies` flag (or deleting the CSV) forces a
-  re-query. Per-object FITS reuse works exactly as for A/B/C.
+- Caching (two layers — downloads are expensive, never repeat them):
+  1. **Catalog cache (stable draw):** the galaxy catalog CSV is cached under
+     `EVAL_CATALOG_DIR`; a re-run reads the same CSV, so the *same* 3N galaxies
+     (same object ids) are selected every time. A `regenerate_galaxies` flag (or
+     deleting the CSV) forces a re-query. The seeded draw is also deterministic,
+     so even a regeneration with the same seed/inputs reproduces the set.
+  2. **Per-object cutout reuse:** galaxies use the existing
+     `can_reuse_eval_object(object_output_dir(out_dir, id))` check verbatim — if
+     a galaxy's `original_stack.fits`/`SR.fits` already exist in the shared store
+     (`Config.EVAL_RESULTS_DIR`, the `out_dir` every grouped run writes to), the
+     download **and** the SR pass are skipped and the cached FITS are re-cropped
+     instead. `seed_object_from_cache` / `lens_source_dir` seeding from a prior
+     run dir works for `gal` exactly as for A/B/C. Net effect: a galaxy is
+     downloaded at most once; every subsequent run reuses it.
 
 ### Unit 3 — Display
 
