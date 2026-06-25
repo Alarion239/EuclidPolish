@@ -56,7 +56,7 @@ The public face of a trained checkpoint.
 - `upsample_array(arr: np.ndarray) -> np.ndarray` — the raw-array escape hatch for the few call sites that hold a bare ndarray.
 - `eval_catalog(...)` / `eval_grouped(...)` — **declared here, implemented in SP2.**
 
-Removing `super_resolve` from `LRCutout` also decouples the `cutout` package from `training.inference` (cutouts become pure data; `Model` is the only thing that imports the inference engine).
+Removing `super_resolve` from `LRCutout` takes `reconstruct` out of `cutout/base.py` — `Model` is the only importer of the *upsampling* engine. (`save_fits`/`save_png`/`fetch` still pull `astropy`/`plot_reconstruction`/the downloader at `cutout/base.py`'s module top — these are acyclic and expected, since those IO/render verbs now live on the cutout classes. The only **forbidden** import edge is `cutout → model`, enforced by a test.)
 
 ### `Cutout` hierarchy changes (`euclid_polish/cutout/`)
 
@@ -96,6 +96,6 @@ Automatic and unchanged in mechanism — the new methods reuse the existing stam
 ## Risks & migration safety
 
 - **Behaviour-preserving by construction:** SP1 adds classes and methods; it does not change the engines or any call site. The procedural paths keep working until SP3–SP5 migrate them.
-- **Import layering:** moving `super_resolve` to `Model` removes the `cutout → training.inference` dependency (a strict improvement); `Model` is the only new edge into the inference engine. Verify no import cycle (`model → cutout`, `model → training.inference`; `cutout` imports neither).
+- **Import layering:** the ONLY forbidden edge is `cutout → model` (would cycle with `model → cutout`); enforced by a test. `cutout → training.inference` (for `save_png`'s `plot_reconstruction`) and `cutout → downloader` (for `fetch`) are acyclic and fine — those engines never import `cutout`. `Model` is the sole importer of `reconstruct`.
 - **`save_png` complexity:** `plot_reconstruction` has three modes (real / synthetic-with-HR / colour). `save_png` wraps it without reimplementing; the mode is chosen from what the cutout carries.
 - **Guarded provenance:** every implicit-store call is wrapped so a provenance failure degrades to an unstamped-but-correct artifact, never an error.
