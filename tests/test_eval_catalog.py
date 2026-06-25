@@ -975,3 +975,41 @@ class TestCenterCropAndReuse:
         r = np.corrcoef(orig[iu], emb[iu])[0, 1]
         assert r > 0.6
         assert var[0] >= var[1] >= var[2] >= 0.0
+
+
+def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
+    import csv as _csv
+    from euclid_polish.eval import grouped_runner
+    from euclid_polish.euclid import galaxy_catalog
+    calls = {}
+
+    def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path, seed=0, **kw):
+        calls["n_galaxies"] = n_galaxies
+        os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+        with open(out_csv, "w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["id", "ra", "dec", "grade"])
+            for i in range(n_galaxies):
+                w.writerow([f"gal_{i}", 10.0 + i * 1e-3, -5.0, "gal"])
+        return out_csv, n_galaxies
+
+    monkeypatch.setattr(galaxy_catalog, "build", fake_build)
+    monkeypatch.setattr(galaxy_catalog, "default_out_csv",
+                        lambda: str(tmp_path / "galaxies.csv"))
+    lens_plan = [("A", [{}, {}, {}, {}]), ("B", [{}] * 10), ("C", [{}] * 10)]
+    rows = grouped_runner._galaxy_plan(lens_plan, catalog="lenses.csv",
+                                       seed=0, log=lambda m: None)
+    assert calls["n_galaxies"] == 12               # 3 × 4 grade-A
+    assert len(rows) == 12 and all(r["grade"] == "gal" for r in rows)
+
+
+def test_galaxy_plan_graceful_when_build_fails(monkeypatch, tmp_path):
+    from euclid_polish.eval import grouped_runner
+    from euclid_polish.euclid import galaxy_catalog
+    monkeypatch.setattr(galaxy_catalog, "default_out_csv",
+                        lambda: str(tmp_path / "g.csv"))
+    monkeypatch.setattr(galaxy_catalog, "build",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no auth")))
+    rows = grouped_runner._galaxy_plan([("A", [{}, {}])], catalog="l.csv",
+                                       seed=0, log=lambda m: None)
+    assert rows == []                              # galaxies must not kill A/B/C
