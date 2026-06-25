@@ -346,47 +346,59 @@ def render_power_spectrum_summary(
     # finalize once per (space, band)
     res = {(sp, b): accs[(sp, b)].finalize() for sp in spaces for b in band_names}
 
+    from matplotlib.ticker import FuncFormatter, NullFormatter
+
+    # plot against angular scale θ = 1/(2k) [arcsec] — the size of the finest
+    # resolvable feature: at the HR Nyquist that is one 0.05″ pixel.
+    def to_scale(k):
+        return 0.5 / np.asarray(k, dtype=float)
+
+    scale_lo = float(Config.DEFAULT_PIXEL_SCALE)             # 0.05″ = HR pixel
+    scale_hi = 0.5 / k_edges[0]                              # coarsest probed scale
+    lr_scale = 0.5 / LR_NYQUIST_CYC_ARCSEC                   # 0.10″ LR sampling
+    xticks = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.5))
     col_meta = (
-        (0, "T", "transfer function  T(k)=√(P_SR/P_HR)", (0.0, 1.45)),
-        (1, "r", "cross-correlation  r(k)=P_HR×SR/√(P_HR·P_SR)", (0.0, 1.05)),
+        (0, "T", "transfer function  T = √(P_SR/P_HR)", (0.0, 1.45)),
+        (1, "r", "cross-correlation  r = P_HR×SR/√(P_HR·P_SR)", (0.0, 1.05)),
     )
     for ri, sp in enumerate(spaces):
         for ci, key, short, ylim in col_meta:
             ax = axes[ri, ci]
             for bname in band_names:
                 rb = res[(sp, bname)]
+                x = to_scale(rb["k"])
                 color = BAND_COLORS.get(bname, "#444")
-                ax.fill_between(
-                    rb["k"], rb[key + "_lo"], rb[key + "_hi"],
-                    color=color, alpha=0.12, lw=0,
-                )
-                ax.plot(rb["k"], rb[key], "-o", ms=3.0, lw=1.7,
-                        color=color, label=bname)
+                ax.fill_between(x, rb[key + "_lo"], rb[key + "_hi"],
+                                color=color, alpha=0.12, lw=0)
+                ax.plot(x, rb[key], "-o", ms=3.0, lw=1.7, color=color, label=bname)
             ax.axhline(1.0, ls=":", color="#888", lw=1.0)
-            ax.axvline(
-                LR_NYQUIST_CYC_ARCSEC, ls="--", color="#444", lw=1.1,
-                label="LR Nyquist (5)" if (ri == 0 and ci == 0) else None,
-            )
-            # per-band PSF resolution proxy: k = 1 / FWHM
+            # LR sampling scale (0.10″) — above this is super-resolution
+            ax.axvline(lr_scale, ls="--", color="#333", lw=1.3,
+                       label="LR sampling (0.1″)" if (ri == 0 and ci == 0) else None)
+            # per-band PSF FWHM (the band's true resolution scale), clearly visible
             for bname in band_names:
                 fwhm = float(Config.get_band(bname).psf_fwhm_arcsec)
-                ax.axvline(1.0 / fwhm, ls="-", lw=0.8, alpha=0.22,
+                ax.axvline(fwhm, ls=(0, (5, 2)), lw=1.5, alpha=0.55,
                            color=BAND_COLORS.get(bname, "#444"))
             ax.set_xscale("log")
-            ax.set_xlim(k_edges[0], k_edges[-1])
+            ax.set_xlim(scale_lo, scale_hi)
             ax.set_ylim(*ylim)
-            ax.set_xlabel("k  [cycles / arcsec]")
-            ax.set_ylabel(f"{key}(k)  [{sp}]")
+            ax.set_xticks(xticks)
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.set_xlabel("angular scale  θ = 1/2k  [arcsec]   (0.05″ = HR pixel)")
+            ax.set_ylabel(f"{key}  [{sp}]")
             ax.grid(alpha=0.2)
             ax.set_title(f"{sp} — {short}")
-    axes[0, 0].legend(fontsize=8, loc="lower left", ncol=2)
+    axes[1, 1].legend(fontsize=8, loc="lower right", ncol=2)
 
     fig.suptitle(
         "Angular power spectrum — HR vs SR (sky validation fields, "
         f"per-field median ± 16–84%)\n{n_used} fields · "
-        f"{field_n}×{field_n} @ 0.05″ · "
-        "thin verticals = 1/PSF-FWHM per band · dashed = LR Nyquist (5 cyc/arcsec)",
+        f"{field_n}×{field_n} @ 0.05″ · finer (smaller θ) → left · "
+        "dashed coloured = per-band PSF FWHM · dashed black = LR sampling (0.1″)",
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
