@@ -248,3 +248,47 @@ def test_euclid_fetch_pixel_scale_is_lr(tmp_path):
     cut = EuclidLRCutout.fetch(ra=0.0, dec=0.0, size=4, store=store,
                                fetch_plane=fake_plane)
     assert abs(cut.pixel_scale_arcsec - Config.VIS_PIXEL_SCALE_ARCSEC) < 1e-6
+
+
+def test_cutout_save_fits_writes_file(tmp_path):
+    from euclid_polish.cutout import HRCutout
+    store = _store(tmp_path)
+    cut = HRCutout(image=_hr_image(), id=store.mint())
+    out = tmp_path / "test.fits"
+    cut.save_fits(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_cutout_save_fits_readable_float32(tmp_path):
+    from astropy.io import fits
+    from euclid_polish.cutout import HRCutout
+    store = _store(tmp_path)
+    cut = HRCutout(image=_hr_image(), id=store.mint())
+    out = tmp_path / "test.fits"
+    cut.save_fits(str(out))
+    with fits.open(str(out)) as hdul:
+        assert hdul[0].data is not None
+        assert hdul[0].data.dtype.type == np.float32
+
+
+def test_cutout_save_fits_carries_provid(tmp_path):
+    from astropy.io import fits
+    from euclid_polish.cutout import HRCutout
+    store = _store(tmp_path)
+    cut = HRCutout(image=_hr_image(), id=store.mint())
+    out = tmp_path / "test.fits"
+    cut.save_fits(str(out))
+    with fits.open(str(out)) as hdul:
+        assert "PROVID" in hdul[0].header
+        assert hdul[0].header["PROVID"] == str(cut.id)
+
+
+def test_sr_cutout_save_fits_carries_provid(tmp_path):
+    from astropy.io import fits
+    from euclid_polish.cutout import SRCutout
+    store = _store(tmp_path)
+    cut = SRCutout(image=_hr_image(), id=store.mint())
+    out = tmp_path / "sr.fits"
+    cut.save_fits(str(out))
+    with fits.open(str(out)) as hdul:
+        assert "PROVID" in hdul[0].header

@@ -23,6 +23,7 @@ import numpy as np
 from astropy.io import fits as _fits
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.fits import write_stamp_cards
 from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.provenance.defaults import default_store
@@ -78,6 +79,40 @@ class Cutout:
 
     def to_tfrecord(self, index: Optional[int] = None) -> bytes:
         return self.stamped_image().to_tfrecord(index=index)
+
+    def save_fits(self, path: str, *, wcs_header=None) -> None:
+        """Write this cutout's data to a FITS file with provenance cards.
+
+        Pixel data is written as float32. Multi-band ``(H, W, C)`` data is
+        stored as a 3D FITS image with ``C`` planes on NAXIS3 (channel order
+        = :attr:`band_names`). A ``PROVID`` card (and the rest of the
+        provenance stamp) is embedded.
+
+        Parameters
+        ----------
+        path : str
+            Output FITS path (parent directory must exist).
+        wcs_header : astropy.io.fits.Header, optional
+            Base header to copy (e.g. a scaled-WCS header for SR, or the VIS
+            FITS header for LR). A blank header is used when None.
+        """
+        arr = np.asarray(self.data, dtype=np.float32).astype(np.float32, copy=False)
+        hdr = wcs_header.copy() if wcs_header is not None else _fits.Header()
+        for _bad in ("EXTNAME", "XTENSION"):
+            if _bad in hdr:
+                del hdr[_bad]
+        if arr.ndim == 3:
+            arr = np.ascontiguousarray(np.moveaxis(arr, -1, 0))
+        hdr["BUNIT"] = ("electron", "Raw electrons (sign preserved)")
+        if self.band_names:
+            hdr["BANDS"] = (",".join(self.band_names),
+                            "Band order (NAXIS3 plane index 0 = first band)")
+        try:
+            write_stamp_cards(hdr, self.prov_stamp())
+        except Exception:   # noqa: BLE001 — provenance cards are best-effort
+            pass
+        hdu = _fits.PrimaryHDU(arr, header=hdr)
+        hdu.writeto(path, overwrite=True, output_verify="silentfix")
 
 
 @dataclass(frozen=True)
