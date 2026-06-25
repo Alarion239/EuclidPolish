@@ -818,6 +818,17 @@ class Config:
     TFRECORD_SCHEMA_VERSION = 2
 
     # ---------------------------------------------------------------------
+    # Provenance & identity
+    # ---------------------------------------------------------------------
+    #
+    # Every generation process and every saved artifact gets an 8-hex
+    # ``ProvId`` and a frozen on-disk record. Truth lives in per-object
+    # sidecars next to the data; ``PROV_DIR`` only holds the derived,
+    # rebuildable index cache (never the source of truth).
+    PROV_DIR            = os.path.join(DATA_DIR, "_prov")
+    PROV_SCHEMA_VERSION = 1
+
+    # ---------------------------------------------------------------------
     # Per-band PSF kernel sizing
     # ---------------------------------------------------------------------
     #
