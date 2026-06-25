@@ -123,3 +123,93 @@ def _run_query(query: str) -> Tuple[Any, str]:
         return (job.get_results() if job is not None else None), ""
     except Exception as e:  # noqa: BLE001 — surfaced to the caller, never raised
         return None, f"{type(e).__name__}: {e}"
+
+
+def _near_any_lens(ra: float, dec: float, lenses: List[Dict[str, Any]],
+                   radius_arcsec: float) -> bool:
+    """True if (ra, dec) is within ``radius_arcsec`` of any lens position."""
+    for lens in lenses:
+        if angular_separation_arcsec(ra, dec, lens["ra"], lens["dec"]) < radius_arcsec:
+            return True
+    return False
+
+
+def _read_cached(out_csv: str) -> List[Dict[str, Any]]:
+    """Read a previously-written galaxy catalog (stable order), or []."""
+    if not os.path.isfile(out_csv):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(out_csv, newline="") as f:
+        for r in csv.DictReader(f):
+            rows.append({"id": r["id"], "ra": float(r["ra"]),
+                         "dec": float(r["dec"]), "grade": r.get("grade", GAL_GRADE)})
+    return rows
+
+
+def _write(out_csv: str, rows: List[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    with open(out_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "ra", "dec", "grade"])
+        for r in rows:
+            w.writerow([r["id"], r["ra"], r["dec"], r.get("grade", GAL_GRADE)])
+
+
+def build(out_csv: Optional[str] = None, *, n_galaxies: int,
+          lens_catalog_path: str, seed: int = 0,
+          cone_radius_arcmin: float = 3.0, oversample: int = 4,
+          regenerate: bool = False,
+          log: Optional[Callable[[str], None]] = None) -> Tuple[str, int]:
+    """Build (or top up) the galaxy catalog to ``n_galaxies`` rows; return ``(path, n)``.
+
+    Drawn from the same fields as the lenses (cone queries around each lens
+    RA/Dec). The CSV is cached: already-drawn galaxies are kept (stable ids →
+    their cutouts are reused, never re-downloaded); only the shortfall is queried.
+    """
+    emit = log or (lambda m: None)
+    out = out_csv or default_out_csv()
+
+    cached = [] if regenerate else _read_cached(out)
+    if len(cached) >= n_galaxies:
+        return out, len(cached)                     # cache already satisfies the request
+
+    if not login(allow_interactive=False):
+        raise RuntimeError(
+            "Euclid archive login required to build the galaxy catalog. Set "
+            "EUCLID_USER/EUCLID_PASSWORD or a credentials file (same credentials "
+            "the lens-cutout downloads use).")
+
+    lenses = read_eval_catalog(lens_catalog_path)
+    rng = random.Random(seed)
+    fields = list(lenses)
+    rng.shuffle(fields)
+
+    pool: List[Dict[str, Any]] = []
+    seen_ids = {r["id"] for r in cached}
+    target_pool = oversample * n_galaxies
+    radius_deg = cone_radius_arcmin / 60.0
+
+    for fld in fields:
+        if len(cached) + len(pool) >= target_pool:
+            break
+        results, err = _run_query(galaxy_adql(fld["ra"], fld["dec"], radius_deg))
+        if err:
+            emit(f"  galaxy query failed at ({fld['ra']:.4f}, {fld['dec']:.4f}): {err}")
+            continue
+        for cand in _candidates_from_results(results):
+            if cand["id"] in seen_ids:
+                continue
+            if _near_any_lens(cand["ra"], cand["dec"], lenses, LENS_EXCLUDE_ARCSEC):
+                continue
+            seen_ids.add(cand["id"])
+            pool.append(cand)
+
+    rng.shuffle(pool)
+    need = n_galaxies - len(cached)
+    drawn = pool[:need]
+    rows = cached + [{"id": d["id"], "ra": d["ra"], "dec": d["dec"],
+                      "grade": GAL_GRADE} for d in drawn]
+    if len(rows) < n_galaxies:
+        emit(f"⚠ only {len(rows)} galaxies found (< {n_galaxies} requested); using all")
+    _write(out, rows)
+    return out, len(rows)

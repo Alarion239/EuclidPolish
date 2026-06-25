@@ -45,3 +45,80 @@ def test_candidates_parse_and_mag_floor():
 
 def test_candidates_handle_none_results():
     assert gc._candidates_from_results(None) == []
+
+
+class _FakeJob:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def get_results(self):
+        return self._rows
+
+
+def _fake_launch(query):
+    # Field at ra=10 returns one good galaxy + one sitting ON the lens (excluded);
+    # field at ra=20 returns two good galaxies.
+    if "10.0," in query:
+        return _FakeJob([
+            {"object_id": 1, "right_ascension": 10.01, "declination": -5.0,
+             "segmentation_area": 800.0, "flux_vis_psf": 50.0},
+            {"object_id": 2, "right_ascension": 10.0, "declination": -5.0,
+             "segmentation_area": 800.0, "flux_vis_psf": 50.0},
+        ])
+    return _FakeJob([
+        {"object_id": 3, "right_ascension": 20.02, "declination": 30.0,
+         "segmentation_area": 800.0, "flux_vis_psf": 50.0},
+        {"object_id": 4, "right_ascension": 20.03, "declination": 30.01,
+         "segmentation_area": 800.0, "flux_vis_psf": 50.0},
+    ])
+
+
+def _lens_csv(tmp_path):
+    p = tmp_path / "lenses.csv"
+    p.write_text("id,ra,dec,grade\nL1,10.0,-5.0,A\nL2,20.0,30.0,A\n")
+    return str(p)
+
+
+def test_build_draws_3n_and_excludes_lenses(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "login", lambda **k: True)
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    out = tmp_path / "galaxies.csv"
+    path, n = gc.build(str(out), n_galaxies=3, lens_catalog_path=_lens_csv(tmp_path),
+                       seed=0, cone_radius_arcmin=3.0, oversample=4)
+    rows = list(csv.DictReader(open(path)))
+    ids = {r["id"] for r in rows}
+    assert n == 3
+    assert "gal_2" not in ids                       # within 10" of lens L1 → excluded
+    assert ids == {"gal_1", "gal_3", "gal_4"}
+    assert all(r["grade"] == "gal" for r in rows)
+
+
+def test_build_requires_auth(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "login", lambda **k: False)
+    with pytest.raises(RuntimeError):
+        gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
+                 lens_catalog_path=_lens_csv(tmp_path), seed=0)
+
+
+def test_build_reuses_cache_without_requery(monkeypatch, tmp_path):
+    out = tmp_path / "galaxies.csv"
+    out.write_text("id,ra,dec,grade\n"
+                   "gal_1,10.0,-5.0,gal\ngal_2,11.0,-5.0,gal\ngal_3,12.0,-5.0,gal\n")
+    called = {"login": False}
+    monkeypatch.setattr(gc, "login",
+                        lambda **k: called.__setitem__("login", True) or True)
+    path, n = gc.build(str(out), n_galaxies=3,
+                       lens_catalog_path="does-not-exist.csv", seed=0)
+    assert n == 3 and called["login"] is False      # cache satisfied → no archive call
+
+
+def test_build_seed_deterministic(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "login", lambda **k: True)
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    a, _ = gc.build(str(tmp_path / "a.csv"), n_galaxies=2,
+                    lens_catalog_path=_lens_csv(tmp_path), seed=7)
+    b, _ = gc.build(str(tmp_path / "b.csv"), n_galaxies=2,
+                    lens_catalog_path=_lens_csv(tmp_path), seed=7)
+    ids_a = [r["id"] for r in csv.DictReader(open(a))]
+    ids_b = [r["id"] for r in csv.DictReader(open(b))]
+    assert ids_a == ids_b
