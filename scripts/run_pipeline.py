@@ -62,7 +62,9 @@ from euclid_polish.sky.multiband_generator import (
 from euclid_polish.sky.source_catalog import (
     SourceCatalogWriter, concat_source_csvs,
 )
-from euclid_polish.sky.gen_provenance import make_generation_context
+from euclid_polish.sky.gen_provenance import (
+    ShardStampPlan, make_generation_context,
+)
 from euclid_polish.sky.tfrecord import (
     open_multiband_writer, tfrecord_path, write_multiband_skyimages,
 )
@@ -181,6 +183,24 @@ def parse_args() -> argparse.Namespace:
 # Step 1: clean multi-band scene generation
 # ---------------------------------------------------------------------------
 
+def _generator_config_from_args(args: argparse.Namespace) -> MultiBandGeneratorConfig:
+    """Build the generator config from CLI args (shared by serial + parallel)."""
+    return MultiBandGeneratorConfig(
+        image_size=args.image_size,
+        pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        tng_fraction=args.tng_fraction,
+        tng_redshift_mode=args.tng_redshift_mode,
+        tng_dwarf_density_arcmin2=args.tng_dwarf_density_arcmin2,
+        star_density_arcmin2=args.star_density_arcmin2,
+        star_mag_slope=args.star_mag_slope,
+        star_mag_bright=args.star_mag_bright,
+        star_mag_faint=args.star_mag_faint,
+        lens_density_arcmin2=args.lens_density_arcmin2,
+        lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
+        lens_sigma_v_max_kms=args.lens_sigma_v_max_kms,
+    )
+
+
 def step_generate(args: argparse.Namespace) -> None:
     _banner(f"STEP 1: Generate clean 4-band HR fields  "
             f"({args.ntrain} train + {args.nvalid} valid, "
@@ -197,18 +217,7 @@ def step_generate(args: argparse.Namespace) -> None:
         cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
         _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
-    cfg = MultiBandGeneratorConfig(image_size=args.image_size,
-                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                   tng_fraction=args.tng_fraction,
-                                   tng_redshift_mode=args.tng_redshift_mode,
-                                   tng_dwarf_density_arcmin2=args.tng_dwarf_density_arcmin2,
-                                   star_density_arcmin2=args.star_density_arcmin2,
-                                   star_mag_slope=args.star_mag_slope,
-                                   star_mag_bright=args.star_mag_bright,
-                                   star_mag_faint=args.star_mag_faint,
-                                   lens_density_arcmin2=args.lens_density_arcmin2,
-                                   lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
-                                   lens_sigma_v_max_kms=args.lens_sigma_v_max_kms)
+    cfg = _generator_config_from_args(args)
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
@@ -472,7 +481,7 @@ def _cleanup_parts(records_dir: str, subset: str) -> None:
 
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
                              start: int, count: int, shard_id: int,
-                             seed) -> Tuple[str, int, int]:
+                             seed, plan=None) -> Tuple[str, int, int]:
     """Generate clean → forward to hr+dirty for ``[start, start+count)`` and
     write the triple to per-shard TFRecords.
 
@@ -504,6 +513,13 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
             hr.subset = subset
             lr.index = i
             lr.subset = subset
+            if plan is not None:
+                try:
+                    sky.stamp = plan.clean_stamp(subset)
+                    hr.stamp = plan.hr_stamp(subset)
+                    lr.stamp = plan.dirty_stamp(subset)
+                except Exception:
+                    pass
             cw.write(sky, index=i)
             hw.write(hr, index=i)
             dw.write(lr, index=i)
@@ -567,9 +583,10 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
 def _gen_convolve_shard(task) -> Tuple[str, int, int]:
     """Top-level pool entry point → ``_generate_convolve_range`` with the
     worker-global sim/fwd."""
-    subset, start, count, shard_id, seed = task
+    subset, start, count, shard_id, seed, plan = task
     return _generate_convolve_range(
         _W_SIM, _W_FWD, _W_RECORDS_DIR, subset, start, count, shard_id, seed,
+        plan=plan,
     )
 
 
@@ -588,6 +605,10 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                              and args.tng_dwarf_density_arcmin2 <= 0.0)
                     else ensure_prefiltered_catalog(args.catalog))
 
+    # Provenance (best-effort): one generation run for the whole parallel step;
+    # per-subset ids are pre-minted in this parent and shipped to the workers.
+    gen_ctx = make_generation_context(_generator_config_from_args(args))
+
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:
             continue
@@ -603,12 +624,25 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         n_shards = min(n, max(workers, math.ceil(n / 256)))
         bounds = _shard_bounds(n, n_shards)
         master_seed = int.from_bytes(os.urandom(8), "little")
+        # Pre-mint this subset's three file ids in the parent; every shard
+        # stamps with the same plan (records share one id per file).
+        plan = None
+        if gen_ctx is not None:
+            try:
+                plan = ShardStampPlan(
+                    run_id=gen_ctx.run_id,
+                    clean_id=gen_ctx.file_id("clean", subset),
+                    hr_id=gen_ctx.file_id("hr", subset),
+                    dirty_id=gen_ctx.file_id("dirty", subset),
+                )
+            except Exception:
+                plan = None
         tasks = []
         for sid, (start, end) in enumerate(bounds):
             if end > start:
                 # SeedSequence material → reproducible, independent per shard.
                 seed = [master_seed, (1 if subset == "train" else 2), sid]
-                tasks.append((subset, start, end - start, sid, seed))
+                tasks.append((subset, start, end - start, sid, seed, plan))
 
         reporter.set_stage(f"generate+forward {subset} (×{workers})")
         # Announce the parallel phase: total items + worker count. The
@@ -659,6 +693,20 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             try:
                 os.remove(p)
             except OSError:
+                pass
+        # Persist the merged file-level artifacts (hr+dirty parent on clean).
+        if gen_ctx is not None:
+            try:
+                clean_id = gen_ctx.file_id("clean", subset)
+                gen_ctx.finalize("clean", subset,
+                                 tfrecord_path(args.records_dir, f"clean_{subset}"))
+                gen_ctx.finalize("hr", subset,
+                                 tfrecord_path(args.records_dir, f"hr_{subset}"),
+                                 parents=(clean_id,))
+                gen_ctx.finalize("dirty", subset,
+                                 tfrecord_path(args.records_dir, f"dirty_{subset}"),
+                                 parents=(clean_id,))
+            except Exception:
                 pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ clean + hr + dirty {subset}")

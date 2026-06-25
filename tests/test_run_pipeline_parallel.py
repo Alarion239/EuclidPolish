@@ -116,3 +116,29 @@ def test_parallel_shards_merge_into_paired_records(tmp_path):
     lr, hr = pairs[0]
     assert lr.shape[-1] == Config.NUM_LR_CHANNELS
     assert hr.shape[-1] == Config.NUM_HR_CHANNELS
+
+
+def test_worker_stamps_records_when_plan_given(tmp_path):
+    """A pre-minted ShardStampPlan stamps clean/hr/dirty in the worker; hr+dirty
+    parent on the clean file id."""
+    from euclid_polish.provenance.ids import ProvId
+    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    from euclid_polish.sky.tfrecord import read_multiband_skyimages
+    sim, fwd = _sim_fwd()
+    rdir = str(tmp_path)
+    plan = ShardStampPlan(run_id=ProvId("7f3a9c21"), clean_id=ProvId("4b1e7a90"),
+                          hr_id=ProvId("2b8e44d1"), dirty_id=ProvId("9c1f0a7d"))
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], plan=plan)
+
+    def _one(kind):
+        return read_multiband_skyimages(
+            tfrecord_path(rdir, f"{kind}_train.part0000"), num_images=1)[0]
+
+    clean, hr, dirty = _one("clean"), _one("hr"), _one("dirty")
+    assert clean.prov_stamp().id == ProvId("4b1e7a90")
+    assert hr.prov_stamp().id == ProvId("2b8e44d1")
+    assert dirty.prov_stamp().id == ProvId("9c1f0a7d")
+    assert hr.prov_stamp().parents == (ProvId("4b1e7a90"),)
+    assert dirty.prov_stamp().parents == (ProvId("4b1e7a90"),)
+    assert clean.prov_stamp().produced_by == ProvId("7f3a9c21")

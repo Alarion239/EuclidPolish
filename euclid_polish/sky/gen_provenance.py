@@ -71,6 +71,34 @@ class GenerationContext:
         return art
 
 
+@dataclass(frozen=True)
+class ShardStampPlan:
+    """Pre-minted ids for one subset of a parallel generation run.
+
+    Picklable and store-free, so the parent mints the ids once and ships the
+    plan to each worker process; workers stamp records without touching a store.
+    The three record files of a subset share one id each; hr/dirty parent on the
+    clean file.
+    """
+
+    run_id: ProvId
+    clean_id: ProvId
+    hr_id: ProvId
+    dirty_id: ProvId
+
+    def clean_stamp(self, subset: str) -> Stamp:
+        return Stamp(id=self.clean_id, produced_by=self.run_id,
+                     schema_version=3, subset=subset)
+
+    def hr_stamp(self, subset: str) -> Stamp:
+        return Stamp(id=self.hr_id, produced_by=self.run_id,
+                     parents=(self.clean_id,), schema_version=3, subset=subset)
+
+    def dirty_stamp(self, subset: str) -> Stamp:
+        return Stamp(id=self.dirty_id, produced_by=self.run_id,
+                     parents=(self.clean_id,), schema_version=3, subset=subset)
+
+
 def begin_generation_run(store: ProvStore, cfg: Any, *,
                          parents: Sequence[ProvId] = (),
                          git: Optional[Dict[str, Any]] = None) -> GenerationContext:

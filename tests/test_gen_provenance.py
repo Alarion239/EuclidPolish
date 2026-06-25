@@ -91,3 +91,29 @@ def test_make_generation_context_is_guarded(monkeypatch):
         lambda: (_ for _ in ()).throw(OSError("no store")),
     )
     assert gp.make_generation_context(FakeCfg()) is None
+
+
+def test_shard_stamp_plan_is_store_free_and_correct():
+    from euclid_polish.provenance.ids import ProvId
+    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    plan = ShardStampPlan(
+        run_id=ProvId("aaaaaaaa"), clean_id=ProvId("bbbbbbbb"),
+        hr_id=ProvId("cccccccc"), dirty_id=ProvId("dddddddd"),
+    )
+    c = plan.clean_stamp("train")
+    h = plan.hr_stamp("train")
+    d = plan.dirty_stamp("validate")
+    assert c.id == ProvId("bbbbbbbb") and c.produced_by == ProvId("aaaaaaaa")
+    assert c.subset == "train"
+    assert h.id == ProvId("cccccccc") and h.parents == (ProvId("bbbbbbbb"),)
+    assert d.id == ProvId("dddddddd") and d.subset == "validate"
+
+
+def test_shard_stamp_plan_is_picklable():
+    """Workers run in separate processes — the plan must pickle."""
+    import pickle
+    from euclid_polish.provenance.ids import ProvId
+    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    plan = ShardStampPlan(ProvId("aaaaaaaa"), ProvId("bbbbbbbb"),
+                          ProvId("cccccccc"), ProvId("dddddddd"))
+    assert pickle.loads(pickle.dumps(plan)) == plan
