@@ -62,6 +62,7 @@ from euclid_polish.sky.multiband_generator import (
 from euclid_polish.sky.source_catalog import (
     SourceCatalogWriter, concat_source_csvs,
 )
+from euclid_polish.sky.gen_provenance import make_generation_context
 from euclid_polish.sky.tfrecord import (
     open_multiband_writer, tfrecord_path, write_multiband_skyimages,
 )
@@ -211,6 +212,9 @@ def step_generate(args: argparse.Namespace) -> None:
     sim = MultiBandSimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
+    # Provenance (best-effort): one generation run; clean records carry its id.
+    gen_ctx = make_generation_context(cfg)
+
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).
     # One cumulative bar across train + validate.
     reporter = Reporter.from_env()
@@ -248,11 +252,21 @@ def step_generate(args: argparse.Namespace) -> None:
                 sky, meta = sim.simulate_field(rng)
                 sky.index = i
                 sky.subset = subset
+                if gen_ctx is not None:
+                    try:
+                        sky.stamp = gen_ctx.stamp("clean", subset)
+                    except Exception:
+                        pass
                 w.write(sky, index=i)
                 sources.add_field(i, meta)
                 done += 1
                 reporter.set_step(done, grand_total, f"generate {subset} {i + 1}/{n}")
             path, count = w.path, w.count
+        if gen_ctx is not None:
+            try:
+                gen_ctx.finalize("clean", subset, path)
+            except Exception:
+                pass
         _log(f"  {subset}: done — {count} → {path}  "
              f"({time.perf_counter() - t0:.1f} s)")
 
@@ -275,6 +289,10 @@ def step_convolve(args: argparse.Namespace) -> None:
 
     fwd = MultiBandForward(psf_sets_by_band=psf_sets,
                            config=MultiBandForwardConfig(add_noise=True))
+
+    # Provenance (best-effort): one forward-model run; hr+dirty records carry
+    # its id and parent on the clean record file they came from.
+    conv_ctx = make_generation_context(fwd.config)
 
     # Structured progress for the WebUI — one cumulative bar across both
     # subsets present. Pre-count the clean records (re-iterating is ~ms).
@@ -305,6 +323,17 @@ def step_convolve(args: argparse.Namespace) -> None:
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
+
+        # The clean record file id (if stamped) is the lineage parent of the
+        # hr+dirty files produced from it. Peek the first record once.
+        clean_parent = None
+        if conv_ctx is not None:
+            try:
+                first = MultiBandSkyImage.from_tfrecord(next(iter(clean_ds)))
+                cs = first.prov_stamp()
+                clean_parent = cs.id if cs is not None else None
+            except Exception:
+                clean_parent = None
         n_total = counts[subset]
         # Entropy-seeded forward-model RNG — different noise / artifact
         # realisation every run. Master seed is logged for replay.
@@ -328,10 +357,28 @@ def step_convolve(args: argparse.Namespace) -> None:
                 hr.index = i
                 lr.subset = subset
                 hr.subset = subset
+                if conv_ctx is not None:
+                    try:
+                        parents = (clean_parent,) if clean_parent is not None else ()
+                        hr.stamp = conv_ctx.stamp("hr", subset, parents=parents)
+                        lr.stamp = conv_ctx.stamp("dirty", subset, parents=parents)
+                    except Exception:
+                        pass
                 hr_w.write(hr, index=i)
                 lr_w.write(lr, index=i)
                 done += 1
                 reporter.set_step(done, grand_total, f"forward {subset} {i + 1}/{n_total}")
+        if conv_ctx is not None:
+            try:
+                parents = (clean_parent,) if clean_parent is not None else ()
+                conv_ctx.finalize("hr", subset,
+                                  tfrecord_path(args.records_dir, f"hr_{subset}"),
+                                  parents=parents)
+                conv_ctx.finalize("dirty", subset,
+                                  tfrecord_path(args.records_dir, f"dirty_{subset}"),
+                                  parents=parents)
+            except Exception:
+                pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ kept clean + wrote hr + dirty {subset}")
 
