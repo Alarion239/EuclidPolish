@@ -273,6 +273,7 @@ def register(app):
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
                 out_dir=out_dir, n=n, include_synthetic=include_synth,
+                include_galaxies=True,           # real galaxies always included (fixed control)
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
         job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)
@@ -560,6 +561,28 @@ def register(app):
         if fresh or not os.path.isfile(out_png):
             from euclid_polish.eval import lensfinder_eval
             if lensfinder_eval.render_lensfinder_summary(run_dir, out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/api/evaluation/angular-power-spectrum")
+    def api_evaluation_angular_power_spectrum():
+        """Render + serve the per-band HR-vs-SR angular power-spectrum PNG.
+
+        Per-band T(k) and r(k) (linear + asinh) over the **sky validation
+        fields** synced through /sky (HR ``clean`` record vs generated SR cube).
+        404 until the records are synced and SR has been generated. Cached to
+        ``<eval_results>/angular_power_spectrum.png``; ``?fresh=1`` re-renders.
+        """
+        run = (request.args.get("run") or "").strip()
+        if _bad_run_arg(run):
+            abort(400)
+        out_png = os.path.join(
+            os.path.abspath(Config.EVAL_RESULTS_DIR), "angular_power_spectrum.png"
+        )
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            from euclid_polish.eval import power_spectrum
+            if power_spectrum.render_power_spectrum_summary(out_png) is None:
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

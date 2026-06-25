@@ -14,7 +14,7 @@ import math
 import os
 from typing import Any, Dict, List, Optional
 
-GROUPS = ("A", "B", "C", "syn-lens", "syn-gal")
+GROUPS = ("A", "B", "C", "gal", "syn-lens", "syn-gal")
 #: which render's score a morphology point uses, by its ``view``.
 VIEW_TO_RECON = {"before": "lr", "after": "sr", "hr": "hr"}
 
@@ -63,11 +63,14 @@ def _finite_pairs(rows, key, labels=None):
 
 
 def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
-    """Render the 4-panel lens-identification figure → ``out_png`` (or None).
+    """Render the 6-panel lens-identification figure → ``out_png`` (or None).
 
-    Panels: (1) SR-vs-LR P(lens) shift coloured by group, (2) synthetic ROC+AUC
-    for LR vs SR, (3) P(lens) histograms by group, (4) P(lens) vs expert grade.
-    Returns ``None`` when ``lens_scores.csv`` is absent.
+    Top row: (1) SR-vs-LR P(lens) shift coloured by group, (2) synthetic ROC+AUC
+    for LR/SR/HR, (2b) real ROC (A/B/C lenses vs real field galaxies, LR/SR).
+    Bottom row: (3) SR score ridgeline by group, (4) LR score ridgeline by group
+    (the same view before SR — read the SR shift off (3) vs (4)), (4b) real
+    lens-vs-galaxy SR score histograms. Returns ``None`` when ``lens_scores.csv``
+    is absent.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -81,7 +84,7 @@ def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
     if not rows:
         return None
 
-    fig, ax = plt.subplots(2, 2, figsize=(11.5, 9.0))
+    fig, ax = plt.subplots(2, 3, figsize=(16.5, 9.0))
 
     # (1) SR vs LR shift — points above the diagonal mean SR raised P(lens).
     a = ax[0, 0]
@@ -118,59 +121,93 @@ def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
     a.set_title("Synthetic lens vs galaxy — ROC")
     a.legend(fontsize=9, loc="lower right"); a.grid(alpha=0.2)
 
-    # (3) P(lens) score distribution by group — ridgeline (one band per group).
-    # Overlaid step-histograms were unreadable (5 curves stacked on one axis);
-    # here each group gets its own baseline, its histogram filled and peak-
-    # normalized so the *shape* (where the P(lens) mass sits) is comparable
-    # across groups regardless of count. Bands overlap slightly, front-to-back,
-    # for the classic joyplot look; the median is marked with a short tick.
-    a = ax[1, 0]
-    bins = np.linspace(0, 1, 26)
-    centers = 0.5 * (bins[:-1] + bins[1:])
-    order = list(GROUPS)                       # A, B, C, syn-lens, syn-gal
-    n_g = len(order)
-    spacing, band_h = 1.0, 1.5                  # band_h > spacing → gentle overlap
-    yticks, yticklabels = [], []
-    for i, g in enumerate(order):
-        base = (n_g - 1 - i) * spacing          # A on top, syn-gal at the bottom
-        vals = _finite_pairs([r for r in rows if r["grade"] == g], "sr")
-        yticks.append(base)
-        yticklabels.append(f"{g}  (n={len(vals)})")
-        a.axhline(base, color="#e0e0e0", lw=0.7, zorder=i * 3)
-        if not vals:
-            continue
-        counts, _ = np.histogram(vals, bins=bins)
-        h = counts / counts.max() * band_h      # peak-normalize each group
-        col = _group_color(g)
-        # Lower groups draw on top so their bands overlap the ones above.
-        a.fill_between(centers, base, base + h, color=col, alpha=0.80,
-                       linewidth=0.0, zorder=i * 3 + 1)
-        a.plot(centers, base + h, color="#ffffff", lw=1.4, zorder=i * 3 + 2)
-        a.plot(centers, base + h, color=col, lw=1.1, zorder=i * 3 + 2)
-        med = float(np.median(vals))
-        a.plot([med, med], [base, base + band_h * 0.30], color="#222",
-               lw=1.4, zorder=i * 3 + 3)
-    a.set_yticks(yticks); a.set_yticklabels(yticklabels, fontsize=9)
-    a.set_ylim(-0.25, (n_g - 1) * spacing + band_h + 0.1)
-    a.set_xlim(0, 1)
-    a.set_xlabel("P(lens) — SR")
-    a.set_title("Score distribution by group (peak-normalized)")
-    a.grid(axis="x", alpha=0.2)
+    # (2b) Real ROC — A/B/C lenses (positive) vs real field galaxies (negative).
+    # No HR: real objects have no ground truth. This is the payoff of having real
+    # negatives — does SR improve real lens-vs-galaxy separability?
+    a = ax[0, 2]
+    real = [r for r in rows if r["grade"] in ("A", "B", "C", "gal")]
+    is_lens = lambda r: 1 if r["grade"] in ("A", "B", "C") else 0
+    if real and any(is_lens(r) for r in real) and any(not is_lens(r) for r in real):
+        for recon, color in (("lr", "#888888"), ("sr", "#2a5db0")):
+            pairs = [(r[recon], is_lens(r)) for r in real if math.isfinite(r[recon])]
+            if len(pairs) >= 2 and len({p[1] for p in pairs}) == 2:
+                s = [p[0] for p in pairs]; y = [p[1] for p in pairs]
+                fpr, tpr, _ = lm.roc_curve(s, y)
+                a.plot(fpr, tpr, color=color, lw=1.8,
+                       label=f"{recon.upper()} (AUC {lm.auc(fpr, tpr):.3f})")
+        a.plot([0, 1], [0, 1], ":", color="#bbb")
+    a.set_xlabel("False positive rate"); a.set_ylabel("True positive rate")
+    a.set_title("Real lens (A/B/C) vs galaxy — ROC")
+    if a.get_legend_handles_labels()[0]:           # only when a run has gal negatives
+        a.legend(fontsize=9, loc="lower right")
+    a.grid(alpha=0.2)
 
-    # (4) P(lens) vs expert grade for the real lenses (A/B/C).
-    a = ax[1, 1]
-    grades = ["A", "B", "C"]
-    data = [[r["sr"] for r in rows if r["grade"] == g and math.isfinite(r["sr"])]
-            for g in grades]
-    rng = np.random.default_rng(0)
-    for i, (g, d) in enumerate(zip(grades, data)):
-        if d:
-            x = i + 1 + (rng.random(len(d)) - 0.5) * 0.25
-            a.scatter(x, d, s=12, alpha=0.5, color=_group_color(g))
-            a.plot([i + 0.75, i + 1.25], [np.median(d)] * 2, color="#222", lw=2)
-    a.set_xticks([1, 2, 3]); a.set_xticklabels(grades)
-    a.set_xlabel("expert grade"); a.set_ylabel("P(lens) — SR")
-    a.set_title("Finder score vs expert grade"); a.set_ylim(-0.02, 1.02)
+    # (3)/(4) P(lens) score distribution by group — ridgelines (one band per
+    # group). Overlaid step-histograms were unreadable (many curves on one
+    # axis); here each group gets its own baseline, its histogram filled and
+    # peak-normalized so the *shape* (where the P(lens) mass sits) is comparable
+    # across groups regardless of count. Bands overlap slightly, front-to-back,
+    # for the classic joyplot look; the median is marked with a short tick. The
+    # SR (after) and LR (before) panels sit side by side so the SR shift in each
+    # group's score mass is read off directly.
+    def _ridgeline(a, key, title, xlabel):
+        bins = np.linspace(0, 1, 26)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        order = list(GROUPS)                    # A, B, C, gal, syn-lens, syn-gal
+        n_g = len(order)
+        spacing, band_h = 1.0, 1.5              # band_h > spacing → gentle overlap
+        yticks, yticklabels = [], []
+        for i, g in enumerate(order):
+            base = (n_g - 1 - i) * spacing       # A on top, syn-gal at the bottom
+            vals = _finite_pairs([r for r in rows if r["grade"] == g], key)
+            yticks.append(base)
+            yticklabels.append(f"{g}  (n={len(vals)})")
+            a.axhline(base, color="#e0e0e0", lw=0.7, zorder=i * 3)
+            if not vals:
+                continue
+            counts, _ = np.histogram(vals, bins=bins)
+            h = counts / counts.max() * band_h   # peak-normalize each group
+            col = _group_color(g)
+            # Lower groups draw on top so their bands overlap the ones above.
+            a.fill_between(centers, base, base + h, color=col, alpha=0.80,
+                           linewidth=0.0, zorder=i * 3 + 1)
+            a.plot(centers, base + h, color="#ffffff", lw=1.4, zorder=i * 3 + 2)
+            a.plot(centers, base + h, color=col, lw=1.1, zorder=i * 3 + 2)
+            med = float(np.median(vals))
+            a.plot([med, med], [base, base + band_h * 0.30], color="#222",
+                   lw=1.4, zorder=i * 3 + 3)
+        a.set_yticks(yticks); a.set_yticklabels(yticklabels, fontsize=9)
+        a.set_ylim(-0.25, (n_g - 1) * spacing + band_h + 0.1)
+        a.set_xlim(0, 1)
+        a.set_xlabel(xlabel); a.set_title(title)
+        a.grid(axis="x", alpha=0.2)
+
+    # (3) SR (after) score distribution by group — includes the real galaxies.
+    _ridgeline(ax[1, 0], "sr",
+               "Score distribution by group — SR (peak-normalized)",
+               "P(lens) — SR")
+
+    # (4) LR (before) score distribution by group — same view pre-SR, so the SR
+    # shift in each group's score mass is the (3)−(4) difference.
+    _ridgeline(ax[1, 1], "lr",
+               "Score distribution by group — LR (peak-normalized)",
+               "P(lens) — LR")
+
+    # (4b) Real binary score separation — A/B/C lenses vs real galaxies (SR P(lens)).
+    a = ax[1, 2]
+    bins = np.linspace(0, 1, 26)
+    lens_vals = _finite_pairs([r for r in rows if r["grade"] in ("A", "B", "C")], "sr")
+    gal_vals = _finite_pairs([r for r in rows if r["grade"] == "gal"], "sr")
+    if lens_vals:
+        a.hist(lens_vals, bins=bins, color="#2a5db0", alpha=0.55, density=True,
+               label=f"lenses A/B/C (n={len(lens_vals)})")
+    if gal_vals:
+        a.hist(gal_vals, bins=bins, color=_group_color("gal"), alpha=0.55, density=True,
+               label=f"galaxies (n={len(gal_vals)})")
+    a.set_xlabel("P(lens) — SR"); a.set_ylabel("density")
+    a.set_title("Real: lens vs galaxy score")
+    if a.get_legend_handles_labels()[0]:
+        a.legend(fontsize=8)
     a.grid(alpha=0.2)
 
     fig.suptitle("Lens identification — trained finder on the eval objects",

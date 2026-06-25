@@ -209,22 +209,32 @@
 <details id="lensfinderPanel" class="card" style="grid-column:1/-1; display:none;" open>
   <summary><b>Lens identification</b>
     <span class="muted">— trained lens-finder P(lens) on the eval objects
-      (SR-vs-LR shift · synthetic ROC · score histograms · vs expert grade)</span>
+      (SR-vs-LR shift · synthetic ROC · real ROC · SR & LR score ridgelines)</span>
     <button id="lensfinderReplot" class="secondary" type="button"
             style="margin-left:10px;">↻ re-plot</button></summary>
   <img id="lensfinderImg" alt="lens identification summary"
        style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
 </details>
 
-{# The per-object image grid is heavy, so keep it collapsed under one panel
-   (the analysis panels above are the headline); expand to browse the tiles. #}
-<details id="galleryPanel" class="card" style="grid-column:1/-1;">
-  <summary><b>Resolved lens images</b>
-    <span class="muted" id="galleryCount"></span></summary>
-  <div id="gallery" class="gallery">
-    <div class="eval-empty">Select a run to view results.</div>
-  </div>
+<details id="powerSpecPanel" class="card" style="grid-column:1/-1; display:none;" open>
+  <summary><b>Angular power spectrum</b>
+    <span class="muted">— per-band HR-vs-SR transfer function T(k) and
+      cross-correlation r(k) vs scale over the <b>sky validation fields</b>
+      (sync + Generate-SR on the Sky tab); r→1 = structure resolved, r→0 =
+      decorrelated/invented. Super-resolution regime is above LR Nyquist.</span>
+    <button id="powerSpecReplot" class="secondary" type="button"
+            style="margin-left:10px;">↻ re-plot</button></summary>
+  <img id="powerSpecImg" alt="HR vs SR angular power spectrum"
+       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
 </details>
+
+{# Per-object image grid removed from the page — the cutout viewer at the top
+   already previews every object. Hidden #gallery / #galleryCount stubs remain
+   so loadRun() and the click-to-open lightbox JS keep working unchanged. #}
+<div id="galleryPanel" style="display:none;">
+  <span id="galleryCount"></span>
+  <div id="gallery" class="gallery"></div>
+</div>
 
 {# Interactive detail view — click any tile to open. Two sliders re-render the
    PNG server-side (faithful eye/solar colour) from the FITS, debounced. #}
@@ -275,7 +285,7 @@
    in its own torch env) with a live progress bar + log below. No cluster. #}
 <section class="card" style="grid-column: 1 / -1;">
   <h3>① Prepare grouped analysis
-    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + N syn-lens + N syn-gal (with HR), one run</span></h3>
+    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + 3×(grade-A) real galaxies + N syn-lens + N syn-gal (with HR), one run</span></h3>
   <div class="form-row">
     <label>N per group
       <input type="number" id="gpN" value="10" min="1" max="500"></label>
@@ -285,9 +295,10 @@
   <div style="margin-top:10px;">
     <button id="runGroupedBtn" type="button">▶ Prepare</button>
     <span class="hint" style="margin-left:8px;">A/B/C = real lens cutouts (LR+SR);
-      syn-lens / syn-gal = stamps centered on a synthetic lens / field galaxy
-      (LR+SR+HR). Every object is held at 53² LR / 106² SR·HR. Then ② Run Zoobot,
-      ③ view the plots.</span>
+      real galaxies = clean field galaxies from the same fields (3× the grade-A
+      count) — a fixed negative control, always included; syn-lens / syn-gal =
+      stamps centered on a synthetic lens / field galaxy (LR+SR+HR). Every object
+      is held at 53² LR / 106² SR·HR. Then ② Run Zoobot, ③ view the plots.</span>
   </div>
 </section>
 
@@ -386,10 +397,14 @@ window.__evalJumpTo = (sub) => {
     updateSummary('transformPanel', 'transformImg', '/api/evaluation/transformation', fresh);
   const updateLensfinder = (fresh) =>
     updateSummary('lensfinderPanel', 'lensfinderImg', '/api/evaluation/lensfinder-summary', fresh);
+  const updatePowerSpec = (fresh) =>
+    updateSummary('powerSpecPanel', 'powerSpecImg', '/api/evaluation/angular-power-spectrum', fresh);
   $('transformReplot').addEventListener('click',
     () => updateTransform(true));
   $('lensfinderReplot').addEventListener('click',
     () => updateLensfinder(true));
+  $('powerSpecReplot').addEventListener('click',
+    () => updatePowerSpec(true));
 
   function makeSpace3dScene(canvas, metaEl, dims) {
     const ctx = canvas.getContext('2d');
@@ -701,6 +716,7 @@ window.__evalJumpTo = (sub) => {
     const msg = $('runMsg');
     updateTransform(false);
     updateLensfinder(false);
+    updatePowerSpec(false);
     updateSpace3d();
     gal.classList.add('viz-loading');
     msg.textContent = 'loading…';
