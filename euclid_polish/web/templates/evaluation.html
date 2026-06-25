@@ -216,6 +216,17 @@
        style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
 </details>
 
+<details id="powerSpecPanel" class="card" style="grid-column:1/-1; display:none;" open>
+  <summary><b>Angular power spectrum</b>
+    <span class="muted">— per-band HR-vs-SR transfer function T(k) and
+      cross-correlation r(k) vs scale (linear + asinh); r→1 = structure resolved,
+      r→0 = decorrelated/invented. Super-resolution regime is above LR Nyquist.</span>
+    <button id="powerSpecReplot" class="secondary" type="button"
+            style="margin-left:10px;">↻ re-plot</button></summary>
+  <img id="powerSpecImg" alt="HR vs SR angular power spectrum"
+       style="display:block; max-width:100%; height:auto; margin-top:10px; border-radius:4px;">
+</details>
+
 {# The per-object image grid is heavy, so keep it collapsed under one panel
    (the analysis panels above are the headline); expand to browse the tiles. #}
 <details id="galleryPanel" class="card" style="grid-column:1/-1;">
@@ -386,10 +397,14 @@ window.__evalJumpTo = (sub) => {
     updateSummary('transformPanel', 'transformImg', '/api/evaluation/transformation', fresh);
   const updateLensfinder = (fresh) =>
     updateSummary('lensfinderPanel', 'lensfinderImg', '/api/evaluation/lensfinder-summary', fresh);
+  const updatePowerSpec = (fresh) =>
+    updateSummary('powerSpecPanel', 'powerSpecImg', '/api/evaluation/angular-power-spectrum', fresh);
   $('transformReplot').addEventListener('click',
     () => updateTransform(true));
   $('lensfinderReplot').addEventListener('click',
     () => updateLensfinder(true));
+  $('powerSpecReplot').addEventListener('click',
+    () => updatePowerSpec(true));
 
   function makeSpace3dScene(canvas, metaEl, dims) {
     const ctx = canvas.getContext('2d');
@@ -701,6 +716,7 @@ window.__evalJumpTo = (sub) => {
     const msg = $('runMsg');
     updateTransform(false);
     updateLensfinder(false);
+    updatePowerSpec(false);
     updateSpace3d();
     gal.classList.add('viz-loading');
     msg.textContent = 'loading…';
