@@ -57,7 +57,6 @@ from euclid_polish.sky.tfrecord import (
     write_multiband_skyimages,
 )
 
-from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.log_plot import (
 default_log_path, plot_training_log,
 )
@@ -67,6 +66,8 @@ load_model_from_weights,
 reconstruct,
 plot_reconstruction,
 )
+from euclid_polish.model import Model
+from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
 
 
 class InteractiveCLI:
@@ -1033,6 +1034,7 @@ class InteractiveCLI:
                     {"name": "🏋️  Train WDSR model", "value": "train"},
                     {"name": "📈 Evaluate model", "value": "evaluate"},
                     {"name": "🔬 Reconstruct image (inference)", "value": "reconstruct"},
+                    {"name": "🌐 Fetch a sky position & super-resolve", "value": "fetch_sr"},
                     {"name": "🔄 Inspect checkpoints", "value": "inspect"},
                     {"name": "📉 Plot training log", "value": "plot_log"},
                     {"name": "🔙 Back to main menu", "value": "back"},
@@ -1048,6 +1050,8 @@ class InteractiveCLI:
                 self._evaluate_model()
             elif choice == "reconstruct":
                 self._reconstruct_image()
+            elif choice == "fetch_sr":
+                self._fetch_and_superresolve()
             elif choice == "inspect":
                 self._inspect_checkpoints()
             elif choice == "plot_log":
@@ -1301,7 +1305,7 @@ class InteractiveCLI:
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
                     if hr_match is not None:
-                        chosen_hr[i] = hr_match.data
+                        chosen_hr[i] = hr_match
         else:
             lr_file = input("Path to LR image (.npy or .png): ").strip()
             if not lr_file or not os.path.exists(lr_file):
@@ -1337,10 +1341,22 @@ class InteractiveCLI:
                     print(f"\n✗ No checkpoints found in {ckpt_dir}")
                     return
                 print(f"\nLoading model from checkpoint {ckpt_dir}...")
-                model = load_model_from_checkpoint(
-                    ckpt_dir, scale_val, num_res_blocks_val,
-                    nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-                )
+                if input_source == "tfrecord":
+                    model = Model(ckpt_dir, scale=scale_val, num_res_blocks=num_res_blocks_val)
+                    hr_for_render = [h for h in chosen_hr if h is not None]
+                    saved = reconstruct_and_render(
+                        chosen_lr, model, Config.VIS_RECONSTRUCTION_DIR,
+                        hr_images=hr_for_render if len(hr_for_render) == len(chosen_lr) else None,
+                    )
+                    for p in saved:
+                        print(f"  saved {p}")
+                    print(f"\n✓ {len(saved)} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
+                    return
+                else:
+                    model = load_model_from_checkpoint(
+                        ckpt_dir, scale_val, num_res_blocks_val,
+                        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
+                    )
             else:
                 weights_path = input("Path to .h5 weights file: ").strip()
                 if not weights_path or not os.path.exists(weights_path):
@@ -1359,7 +1375,7 @@ class InteractiveCLI:
                 print(f"Running super-resolution on {num_reconstruct} images...")
                 for i, lr_img in enumerate(chosen_lr):
                     lr_data, sr_data = reconstruct(model, lr_img.data)
-                    hr_data = chosen_hr[i]
+                    hr_data = chosen_hr[i].data if chosen_hr[i] is not None else None
                     output_path = os.path.join(
                         Config.VIS_RECONSTRUCTION_DIR,
                         f"reconstruct_idx{lr_img.index}.png",
@@ -1392,6 +1408,34 @@ class InteractiveCLI:
             print(f"\n✗ Reconstruction failed: {e}")
             traceback.print_exc()
 
+
+    def _fetch_and_superresolve(self):
+        """Fetch a real Euclid sky position from the archive and super-resolve it."""
+        ra_str = input("RA in degrees (ICRS): ").strip()
+        dec_str = input("Dec in degrees (ICRS): ").strip()
+        size_str = input("Cutout side in VIS pixels (default 256): ").strip() or "256"
+        ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+
+        try:
+            ra = float(ra_str)
+            dec = float(dec_str)
+            size = int(size_str)
+        except ValueError:
+            print("\n✗ Invalid input: RA/Dec must be floats, size must be an integer")
+            return
+
+        out_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "adhoc")
+        try:
+            model = Model(ckpt_dir, scale=Config.DEFAULT_REBIN_FACTOR,
+                          num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
+            fits_path, png_path = fetch_and_superresolve(
+                ra=ra, dec=dec, size=size, model=model, out_dir=out_dir,
+            )
+            print(f"\n✓ FITS: {fits_path}")
+            print(f"  PNG:  {png_path}")
+        except Exception as e:
+            print(f"\n✗ Fetch/super-resolve failed: {e}")
+            traceback.print_exc()
 
     @staticmethod
     def _ask_vmax(default: float | None = None) -> float | None:
