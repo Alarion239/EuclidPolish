@@ -24,3 +24,24 @@ def test_galaxy_adql_has_cuts():
     assert f"{gc._QUALITY_COL} = 0" in q            # clean detection
     assert f"{gc._SIZE_COL} BETWEEN" in q           # size window
     assert "CIRCLE('ICRS', 10.0, -5.0, 0.05)" in q  # the cone
+
+
+def test_candidates_parse_and_mag_floor():
+    rows = [
+        # flux 50 µJy → mag ~19.65 → kept
+        {"object_id": 1, "right_ascension": 10.01, "declination": -5.0,
+         "segmentation_area": 800.0, "flux_vis_psf": 50.0},
+        # flux 0.01 µJy → mag ~28.9 → too faint → dropped
+        {"object_id": 2, "right_ascension": 10.02, "declination": -5.0,
+         "segmentation_area": 800.0, "flux_vis_psf": 0.01},
+        # non-finite flux → dropped
+        {"object_id": 3, "right_ascension": 10.03, "declination": -5.0,
+         "segmentation_area": 800.0, "flux_vis_psf": float("nan")},
+    ]
+    cands = gc._candidates_from_results(rows)
+    assert [c["id"] for c in cands] == ["gal_1"]
+    assert cands[0]["ra"] == 10.01 and cands[0]["dec"] == -5.0
+
+
+def test_candidates_handle_none_results():
+    assert gc._candidates_from_results(None) == []

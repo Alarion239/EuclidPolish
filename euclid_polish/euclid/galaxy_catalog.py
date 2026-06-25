@@ -79,3 +79,47 @@ def galaxy_adql(ra: float, dec: float, radius_deg: float) -> str:
       AND {_FLUX_COL} IS NOT NULL
       AND {_FLUX_COL} > 0
     """
+
+
+def _unmask_float(value: Any) -> Optional[float]:
+    """Float from a possibly-masked/None TAP cell, or None if not finite."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _candidates_from_results(results: Any,
+                             mag_floor: float = MAG_FLOOR
+                             ) -> List[Dict[str, Any]]:
+    """Parse a TAP result into candidate galaxy dicts passing the brightness floor.
+
+    Works with an astropy ``Table`` or any iterable of column-indexable rows
+    (e.g. dicts in tests). Size/quality cuts are applied server-side in the
+    ADQL; here we only drop non-finite or too-faint sources.
+    """
+    out: List[Dict[str, Any]] = []
+    if results is None:
+        return out
+    for row in results:
+        ra = _unmask_float(row[_RA_COL])
+        dec = _unmask_float(row[_DEC_COL])
+        flux = _unmask_float(row[_FLUX_COL])
+        if ra is None or dec is None or flux is None or flux <= 0:
+            continue
+        mag = uJy_to_ab_mag(flux)
+        if mag >= mag_floor:                       # too faint → skip
+            continue
+        out.append({"id": f"gal_{row[_ID_COL]}", "ra": ra, "dec": dec,
+                    "mag_vis": mag})
+    return out
+
+
+def _run_query(query: str) -> Tuple[Any, str]:
+    """Run a synchronous ADQL query; return ``(results_or_None, error)``."""
+    try:
+        job = Euclid.launch_job(query)
+        return (job.get_results() if job is not None else None), ""
+    except Exception as e:  # noqa: BLE001 — surfaced to the caller, never raised
+        return None, f"{type(e).__name__}: {e}"
