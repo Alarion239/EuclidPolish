@@ -122,3 +122,18 @@ def test_build_seed_deterministic(monkeypatch, tmp_path):
     ids_a = [r["id"] for r in csv.DictReader(open(a))]
     ids_b = [r["id"] for r in csv.DictReader(open(b))]
     assert ids_a == ids_b
+
+
+def test_cli_invokes_build(monkeypatch, tmp_path):
+    import importlib
+    cli = importlib.import_module("scripts.fetch_galaxy_catalog")
+    captured = {}
+
+    def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path, seed=0, **kw):
+        captured.update(n_galaxies=n_galaxies, lens=lens_catalog_path, out=out_csv)
+        return (out_csv or "galaxies.csv"), n_galaxies
+
+    monkeypatch.setattr(cli.galaxy_catalog, "build", fake_build)
+    rc = cli.main(["--n", "6", "--lens", "lenses.csv", "--out", str(tmp_path / "g.csv")])
+    assert rc == 0
+    assert captured["n_galaxies"] == 6 and captured["lens"] == "lenses.csv"
