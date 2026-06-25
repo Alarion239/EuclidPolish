@@ -4,6 +4,7 @@ from __future__ import annotations
 from astropy.io import fits
 from astropy.io import fits as _fits
 from euclid_polish.config import Config
+from euclid_polish.eval.sr_provenance import stamp_sr_fits
 from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.euclid.psf_library import load_all_band_psfs
@@ -487,6 +488,17 @@ def reconstruct_cutout_at(
     sr_hdu.header["CKPT"]     = (str(checkpoint_dir)[:60], "Checkpoint dir")
     sr_hdu.header["ASINH"]    = (float(asinh_scale or Config.STRETCH_SCALE_E),
                                  "asinh stretch knee used for plot")
+    # Provenance: stamp the SR with its model lineage (best-effort, before write).
+    try:
+        stamp_sr_fits(
+            sr_hdu.header, checkpoint_dir=str(checkpoint_dir),
+            sr_fits_path=sr_fits_path,
+            descriptors={"ra": float(ra), "dec": float(dec),
+                         "cutout_size": int(cutout_size_vis_pixels),
+                         "bands": ",".join(band_names)},
+        )
+    except Exception as exc:
+        print(f"  [provenance] SR.fits not stamped: {exc}")
     sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
 
