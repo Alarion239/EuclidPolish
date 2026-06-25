@@ -37,6 +37,7 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.eval.lensfinder_eval import per_object_plens
+from euclid_polish.sky import sr as sky_sr
 from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
@@ -104,10 +105,14 @@ def _as_hwc(arr: np.ndarray) -> np.ndarray:
 # sky — multi-band TFRecords (FASRC-synced cache)
 # ---------------------------------------------------------------------------
 
-_SKY_TIERS = [
-    {"key": "dirty", "label": "LR (dirty)"},
-    {"key": "clean", "label": "HR (clean)"},
-    {"key": "hr", "label": "HR target"},
+# Tiers offered for sky records: LR (the dirty record), HR (the clean
+# record), and SR (model output, generated on demand by the /sky button —
+# disabled until at least one SR cube exists). The "hr target" record is the
+# same clean 4-band sky since the VIS+NISP-output change, so it isn't a
+# separate tier.
+_SKY_RECORD_TIERS = [
+    {"key": "dirty", "label": "LR"},
+    {"key": "clean", "label": "HR"},
 ]
 
 
@@ -121,11 +126,16 @@ def _sky_subset(params: Dict[str, str]) -> str:
 def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
     subset = _sky_subset(params)
     records_dir = _sky_records_local_dir()
-    tiers = [t for t in _SKY_TIERS
+    tiers = [dict(t) for t in _SKY_RECORD_TIERS
              if os.path.exists(tfrecord_path(records_dir, f"{t['key']}_{subset}"))]
     counts = {t["key"]: (_record_count(f"{t['key']}_{subset}", records_dir) or 0)
               for t in tiers}
     count = max(counts.values()) if counts else 0
+    # SR is always offered so the user can see it exists; it's disabled until
+    # the model has been run over the records (the "Generate SR" button).
+    n_sr = sky_sr.sr_count(subset)
+    tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0})
+    counts["sr"] = n_sr
     default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
         tiers[0]["key"] if tiers else "dirty")
     return {
@@ -139,7 +149,17 @@ def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
 
 def _sky_cube(index: int, tier: str, params: Dict[str, str]):
     subset = _sky_subset(params)
-    if tier not in ("dirty", "clean", "hr"):
+    if tier == "sr":
+        path = sky_sr.sr_path(subset, index)
+        if not os.path.isfile(path):
+            raise ViewerError(404, "SR not generated for this record")
+        cube = _as_hwc(np.load(path))
+        return cube, {
+            "label": f"sr · {subset} · idx {index}",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": 0.0,
+        }
+    if tier not in ("dirty", "clean"):
         raise ViewerError(400, "bad tier")
     path = tfrecord_path(_sky_records_local_dir(), f"{tier}_{subset}")
     if not os.path.exists(path):

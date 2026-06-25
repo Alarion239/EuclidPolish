@@ -6,8 +6,19 @@
 {% endblock %}
 
 {% block viz %}
-{# ── Unified cutout viewer: multi-band TFRecords (LR/HR tiers) ── #}
+{# ── Unified cutout viewer: multi-band TFRecords (LR / HR / SR tiers) ── #}
 <div id="cutout-viewer"></div>
+
+{# Generate SR over the downloaded records (needs records + a checkpoint).
+   When done, the SR tier in the viewer above unlocks. #}
+<div class="cv-genbar">
+  <form id="sky-sr-form" action="/api/sky/generate-sr">
+    <button id="sky-sr-btn" type="submit" disabled>✨ Generate SR</button>
+  </form>
+  <span id="sky-sr-hint" class="muted"></span>
+  <div id="sky-sr-status"></div>
+</div>
+
 <p class="hint" style="margin-top: 8px;">
   <a id="inspect-link" href="#" target="_blank">
     🔬 Inspect this image as FITS (header + download)
@@ -69,6 +80,41 @@ window.__skyViewer = mountCutoutViewer(document.getElementById("cutout-viewer"),
   },
 });
 
+// ── Generate SR ─────────────────────────────────────────────────────
+// Enabled only when both sky records and a local checkpoint are present;
+// when the job finishes, the SR tier in the viewer unlocks.
+const srBtn = document.getElementById("sky-sr-btn");
+const srHint = document.getElementById("sky-sr-hint");
+const srForm = document.getElementById("sky-sr-form");
+const srStatusEl = document.getElementById("sky-sr-status");
+
+async function refreshSrStatus() {
+  try {
+    const d = await (await fetch("/api/sky/sr-status")).json();
+    srBtn.disabled = !d.can_generate;
+    if (!d.records) srHint.textContent = "— sync sky records first";
+    else if (!d.checkpoint) srHint.textContent = "— no checkpoint in ./ckpt/wdsr";
+    else {
+      const n = Object.values(d.sr || {}).reduce((a, b) => a + b, 0);
+      srHint.textContent = n
+        ? `— ${n} SR cube(s) generated; click to (re)run`
+        : "— runs the model over the downloaded records";
+    }
+  } catch (e) { srHint.textContent = ""; }
+}
+
+srForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  srBtn.disabled = true;
+  window.polishUI.run(srForm, srStatusEl, {
+    onDone: () => {
+      refreshSrStatus();
+      if (window.__skyViewer) window.__skyViewer.reload();
+    },
+  });
+});
+refreshSrStatus();
+
 // Sync the FASRC records into the local cache, then refresh the preview.
 document.getElementById("sky-sync-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -80,6 +126,7 @@ document.getElementById("sky-sync-form").addEventListener("submit", async (e) =>
     if (d.ok) {
       const n = Object.values(d.files).filter(f => f.ok).length;
       statusEl.innerHTML = `<p>✓ synced ${n} shard(s).</p>`;
+      refreshSrStatus();
       if (window.__skyViewer) window.__skyViewer.reload();
     } else {
       statusEl.innerHTML = `<p>✗ sync failed (nothing pulled). Generate on FASRC first?</p>`;

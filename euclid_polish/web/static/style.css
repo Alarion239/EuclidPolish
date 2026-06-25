@@ -427,6 +427,13 @@ button.secondary:hover { background: #565e64; }
 }
 .cv-idx-total { color: #6b7280; }
 .cv-kbd { font-size: 11px; color: #9aa1b0; margin-left: 6px; }
+
+/* Generate-SR control bar under the sky viewer. */
+.cv-genbar { text-align: center; margin: 10px 0 14px; }
+.cv-genbar form { display: inline; }
+.cv-genbar #sky-sr-hint { margin-left: 8px; font-size: 12px; }
+.cv-genbar #sky-sr-status { margin-top: 8px; }
+.cv-genbar #sky-sr-status:empty { margin-top: 0; }
 .cv-speed { margin-left: 4px; }
 .cv-speed .cv-range { width: 88px; }
 

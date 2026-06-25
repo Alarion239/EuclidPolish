@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
+from euclid_polish.sky import sr as sky_sr
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
 from flask import abort
@@ -176,3 +178,45 @@ def register(app):
             results[key] = entry
         return jsonify({"ok": any_ok, "files": results,
                         "include_train": include_train})
+
+    @app.route("/api/sky/sr-status")
+    def api_sky_sr_status():
+        """State for the /sky "Generate SR" button + SR tier.
+
+        ``can_generate`` is true only when both the dirty records and a local
+        checkpoint are present; ``sr`` reports how many SR cubes exist per
+        subset (which drives the SR tier's enabled state in the viewer)."""
+        records_dir = _sky_records_local_dir()
+        subsets = sky_sr.present_subsets(records_dir)
+        ckpt = sky_sr.checkpoint_present()
+        return jsonify({
+            "records": bool(subsets),
+            "checkpoint": ckpt,
+            "can_generate": bool(subsets) and ckpt,
+            "subsets": subsets,
+            "sr": {s: sky_sr.sr_count(s) for s in sky_sr.SUBSETS},
+        })
+
+    @app.route("/api/sky/generate-sr", methods=["POST"])
+    def api_sky_generate_sr():
+        """Run the SR model over the local dirty records as a background job.
+
+        Gated on records + checkpoint (refuses 400 otherwise). Returns a
+        ``job_id`` the page polls; the SR tier enables once cubes land."""
+        records_dir = _sky_records_local_dir()
+        subsets = sky_sr.present_subsets(records_dir)
+        if not subsets:
+            return jsonify({"error": "no sky records — sync them first"}), 400
+        if not sky_sr.checkpoint_present():
+            return jsonify({"error": "no checkpoint in ./ckpt/wdsr"}), 400
+        overwrite = (str(request.values.get("overwrite", "")).lower()
+                     in ("1", "true", "yes", "on"))
+
+        def _run(cap):
+            return sky_sr.generate(
+                records_dir, subsets, overwrite=overwrite,
+                on_progress=lambda i, t, l: cap.tick(i, t, l),
+                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
+
+        job_id = JOB_REGISTRY.spawn("sky: generate SR", _run)
+        return jsonify({"job_id": job_id})

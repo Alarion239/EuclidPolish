@@ -165,6 +165,14 @@ export function mountCutoutViewer(root, opts = {}) {
     const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
     return !obj || !obj.tiers || obj.tiers.includes(key);
   };
+  const tierMeta = (key) =>
+    ((state.meta && state.meta.tiers) || []).find((t) => t.key === key);
+  /** Not selectable: globally disabled (e.g. SR not generated yet) or, for
+   *  per-object collections, missing for the current object. */
+  const tierDisabled = (key) => {
+    const tm = tierMeta(key);
+    return !!(tm && tm.disabled) || !tierAvail(key);
+  };
 
   function notify() {
     if (opts.onIndexChange) opts.onIndexChange(state.index);
@@ -454,13 +462,15 @@ export function mountCutoutViewer(root, opts = {}) {
       else if (g === "color") on = c.dataset.value === state.color;
       else on = c.dataset.value === String(state.params[g]);
       c.classList.toggle("active", on);
-      if (g === "tier") c.classList.toggle("cv-disabled", !tierAvail(c.dataset.value));
+      if (g === "tier") c.classList.toggle("cv-disabled", tierDisabled(c.dataset.value));
     });
   }
 
   function onChip(group, value) {
     if (group === "tier") {
       // Multi-select: toggle membership, keep at least one tier selected.
+      // A disabled tier (e.g. SR before it's generated) can't be added.
+      if (!state.tiers.includes(value) && tierDisabled(value)) return;
       const set = new Set(state.tiers);
       if (set.has(value)) { if (set.size > 1) set.delete(value); }
       else set.add(value);
@@ -610,10 +620,15 @@ export function mountCutoutViewer(root, opts = {}) {
     if (!r.ok) throw new Error(`meta ${r.status}`);
     state.meta = await r.json();
     const tierKeys = (state.meta.tiers || []).map((t) => t.key);
-    state.tiers = state.tiers.filter((t) => tierKeys.includes(t));
+    // Keep only still-present, still-enabled tiers; never auto-select a
+    // disabled one (e.g. SR before it's been generated).
+    state.tiers = state.tiers.filter((t) => tierKeys.includes(t) && !tierDisabled(t));
     if (!state.tiers.length) {
-      state.tiers = tierKeys.includes(state.meta.default_tier)
-        ? [state.meta.default_tier] : tierKeys.slice(0, 1);
+      const def = state.meta.default_tier;
+      const firstEnabled = (state.meta.tiers || [])
+        .find((t) => !tierDisabled(t.key));
+      state.tiers = (tierKeys.includes(def) && !tierDisabled(def)) ? [def]
+        : (firstEnabled ? [firstEnabled.key] : tierKeys.slice(0, 1));
     }
     if (!state.meta.band_names.includes(state.color)
         && !["lupton", "temp"].includes(state.color)) {
