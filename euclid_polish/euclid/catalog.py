@@ -39,6 +39,8 @@ from astroquery.esa.euclid import Euclid
 from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import uJy_to_ab_mag
 from euclid_polish.euclid.validator import angular_separation_arcsec
+from euclid_polish.provenance.ids import ProvId
+from euclid_polish.provenance.records import Stamp
 
 from euclid_polish.config import Config as _Cfg
 
@@ -163,6 +165,38 @@ class StarCatalog:
     def exists(self) -> bool:
         return os.path.exists(self.catalog_path)
 
+    # ── provenance: a STABLE id for the catalog (minted once, reused) ──────
+
+    def _provenance_path(self) -> str:
+        return self.catalog_path + ".prov.json"
+
+    def prov_id(self) -> Optional[ProvId]:
+        """The catalog's stable :class:`ProvId`, or ``None`` if never saved."""
+        p = self._provenance_path()
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p) as f:
+                return Stamp.from_json(f.read()).id
+        except Exception:
+            return None
+
+    def _ensure_provenance(self) -> None:
+        """Assign a stable id on first save; reuse it on every later save.
+
+        Best-effort — the catalog's identity must never block a download save.
+        """
+        try:
+            if self.prov_id() is not None:
+                return
+            stamp = Stamp(id=ProvId.mint(lambda _id: False), schema_version=3)
+            tmp = self._provenance_path() + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(stamp.to_json())
+            os.replace(tmp, self._provenance_path())
+        except Exception:
+            pass
+
     def load(self) -> Dict[str, Any]:
         """Return ``{"stars": [...], "next_id": int}``.
 
@@ -231,6 +265,8 @@ class StarCatalog:
                         os.remove(tmp)
                     except OSError:
                         pass
+        # Stamp the catalog with a stable id (once); cheap and guarded.
+        self._ensure_provenance()
 
     # ── per-(band, size) flag primitives ──────────────────────────────────
     #
