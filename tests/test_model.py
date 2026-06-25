@@ -137,3 +137,19 @@ def test_no_import_of_model_from_cutout():
     with open(cb.__file__) as f:
         src = f.read()
     assert "euclid_polish.model" not in src
+
+
+def test_eval_catalog_threads_tf_model(monkeypatch):
+    """Model.eval_catalog delegates to run_catalog_eval with model=self._tf_model."""
+    from euclid_polish.eval import catalog_runner
+    m = _bare_model()
+    captured = {}
+    def _fake_run(*, out_dir, model=None, **kwargs):
+        captured.update(out_dir=out_dir, model=model, kwargs=kwargs)
+        return {"sentinel": True}
+    monkeypatch.setattr(catalog_runner, "run_catalog_eval", _fake_run)
+    result = m.eval_catalog(out_dir="outX", catalog_path="catY")
+    assert result == {"sentinel": True}
+    assert captured["model"] is m._tf_model
+    assert captured["out_dir"] == "outX"
+    assert captured["kwargs"].get("catalog_path") == "catY"

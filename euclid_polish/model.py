@@ -14,6 +14,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.cutout.base import LRCutout, SRCutout
+from euclid_polish.eval import catalog_runner
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
@@ -95,9 +96,18 @@ class Model:
             new_id = ProvId.sentinel()
         return SRCutout(image=sr_img, id=new_id, parents=parents)
 
-    def eval_catalog(self, *args, **kwargs):
-        """Evaluate the model on a lens catalog. Implemented in SP2."""
-        raise NotImplementedError("eval_catalog is implemented in SP2")
+    def eval_catalog(self, *, out_dir, **kwargs):
+        """Evaluate this model on a lens catalog.
+
+        Thin wrapper over
+        :func:`~euclid_polish.eval.catalog_runner.run_catalog_eval`, passing
+        this model's loaded TF graph so it is not re-loaded from disk. All
+        other keyword args (``catalog_path``, ``checkpoint``, ``cutout_size``,
+        ``grade``, ``max_n``, ``render``, ``on_progress``, ``log`` …) pass
+        straight through. Returns the run summary dict.
+        """
+        return catalog_runner.run_catalog_eval(
+            out_dir=out_dir, model=self._tf_model, **kwargs)
 
     def eval_grouped(self, *args, **kwargs):
         """Grouped real-galaxy evaluation. Implemented in SP2."""
