@@ -7,7 +7,7 @@ provenance and owns the verb that produced it. Each leaf delegates its verb to
 the existing engine through an injected callable, so the type layer never
 duplicates the download / forward-model / reconstruct logic.
 
-    EuclidLRCutout.query(...)              -> the Euclid archive
+    EuclidLRCutout.fetch(ra, dec, size)    -> the Euclid archive
     SyntheticHRCutout.downsample(forward) -> MultiBandForward.process
     Model.upsample(lr, ...)                -> training.inference.reconstruct
 """
@@ -117,7 +117,7 @@ class Cutout:
             Base header to copy (e.g. a scaled-WCS header for SR, or the VIS
             FITS header for LR). A blank header is used when None.
         """
-        arr = np.asarray(self.data, dtype=np.float32).astype(np.float32, copy=False)
+        arr = np.asarray(self.data, dtype=np.float32)
         hdr = wcs_header.copy() if wcs_header is not None else _fits.Header()
         for _bad in ("EXTNAME", "XTENSION"):
             if _bad in hdr:
@@ -166,7 +166,7 @@ class SyntheticHRCutout(HRCutout):
 
         Delegates to ``forward.process`` (a
         :class:`~euclid_polish.sky.multiband_forward.MultiBandForward`); the
-        LR cutout's parent is this HR cutout. Renamed from ``convolve``.
+        LR cutout's parent is this HR cutout.
 
         Parameters
         ----------
@@ -235,35 +235,6 @@ class SyntheticLRCutout(LRCutout):
 @dataclass(frozen=True)
 class EuclidLRCutout(LRCutout):
     """A real Euclid 4-band cutout from the archive."""
-
-    @classmethod
-    def query(
-        cls,
-        ra: float,
-        dec: float,
-        size: int,
-        store: ProvStore,
-        *,
-        fetch_plane: Callable[[float, float, str, int], np.ndarray],
-        bands: Sequence[str] = Config.LR_INPUT_BAND_NAMES,
-        produced_by: Optional[ProvId] = None,
-    ) -> "EuclidLRCutout":
-        """Download a 4-band cutout at ``(ra, dec)``.
-
-        ``fetch_plane(ra, dec, band, size)`` returns one ``(H, W)`` electron
-        plane — injected so the type layer stays decoupled from the archive +
-        ADU→e⁻ conversion machinery (which the Phase-3 wiring supplies).
-        """
-        planes = [
-            np.asarray(fetch_plane(ra, dec, band, size), dtype=np.float32)
-            for band in bands
-        ]
-        data = np.stack(planes, axis=-1)
-        img = MultiBandSkyImage(
-            data=data, pixel_scale_arcsec=_LR_SCALE,
-            band_names=tuple(bands), is_clean=False,
-        )
-        return cls(image=img, id=store.mint(), produced_by=produced_by)
 
     @classmethod
     def fetch(
@@ -405,6 +376,7 @@ class SRCutout(HRCutout):
         if lr_data is None:
             vis = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
             h, w = vis.shape[:2]
+            # no LR supplied: trim to even dims and 2x average-pool the SR VIS plane as a display proxy
             lr_data = vis[: h - h % 2, : w - w % 2].reshape(
                 h // 2, 2, w // 2, 2).mean(axis=(1, 3))
 

@@ -40,7 +40,6 @@ def _bare_model(model_id=None):
     from euclid_polish.model import Model
     m = Model.__new__(Model)
     m._tf_model = object()
-    m._scale = 2
     m.id = model_id
     m._reconstruct_fn = _fake_reconstruct
     return m

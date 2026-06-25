@@ -122,7 +122,6 @@ def test_model_upsample_makes_srcutout_with_two_parents(tmp_path):
 
     m = Model.__new__(Model)
     m._tf_model = object()
-    m._scale = 2
     m.id = store.mint()
     m._reconstruct_fn = fake_reconstruct
 
@@ -177,15 +176,15 @@ def test_synthetic_hr_generate_implicit_store(tmp_path):
     assert isinstance(hr, SyntheticHRCutout)
 
 
-def test_euclid_query_stacks_bands_and_mints_id(tmp_path):
+def test_euclid_fetch_stacks_bands_and_mints_id(tmp_path):
     from euclid_polish.cutout import EuclidLRCutout
     store = _store(tmp_path)
     levels = {"VIS": 1.0, "Y_E": 2.0, "J_E": 3.0, "H_E": 4.0}
 
-    def fake_fetch_plane(ra, dec, band, size):
-        return np.full((size, size), levels[band], np.float32)
+    def fake_fetch_plane(ra, dec, band_name, size):
+        return np.full((size, size), levels[band_name], np.float32)
 
-    cut = EuclidLRCutout.query(ra=10.0, dec=-5.0, size=4, store=store,
+    cut = EuclidLRCutout.fetch(ra=10.0, dec=-5.0, size=4, store=store,
                                fetch_plane=fake_fetch_plane)
     assert isinstance(cut, EuclidLRCutout)
     assert cut.band_names == BANDS

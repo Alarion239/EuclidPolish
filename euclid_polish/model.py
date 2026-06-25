@@ -53,7 +53,6 @@ class Model:
     ) -> None:
         load_fn = _load_fn if _load_fn is not None else _default_load
         self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
-        self._scale = int(scale)
         self._reconstruct_fn: Callable = (
             _reconstruct_fn if _reconstruct_fn is not None else _default_reconstruct
         )
@@ -78,7 +77,7 @@ class Model:
         The provenance step is guarded so a store failure degrades to an
         unstamped but correct artifact.
         """
-        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.image.data)
+        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.data)
         sr_data = np.asarray(sr_data, dtype=np.float32)
         if sr_data.ndim == 3 and sr_data.shape[-1] == len(lr.band_names):
             bands = lr.band_names
