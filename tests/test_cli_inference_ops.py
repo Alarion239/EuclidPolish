@@ -53,3 +53,18 @@ def test_reconstruct_and_render_with_hr(tmp_path):
     assert len(paths) == 1
     import os
     assert os.path.exists(paths[0]) and os.path.getsize(paths[0]) > 0
+
+
+def test_fetch_and_superresolve_writes_fits_and_png(tmp_path):
+    from euclid_polish.cli.inference_ops import fetch_and_superresolve
+    store = ProvStore(str(tmp_path / "prov"))
+
+    def fake_plane(ra, dec, band_name, size):
+        return np.zeros((size, size), np.float32)
+
+    fits_path, png_path = fetch_and_superresolve(
+        ra=10.0, dec=-5.0, size=8, model=_fake_model(),
+        out_dir=str(tmp_path / "out"), store=store, fetch_plane=fake_plane)
+    import os
+    assert os.path.exists(fits_path) and os.path.getsize(fits_path) > 0
+    assert os.path.exists(png_path) and os.path.getsize(png_path) > 0

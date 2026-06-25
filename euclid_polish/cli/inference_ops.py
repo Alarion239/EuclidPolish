@@ -9,7 +9,7 @@ from typing import List, Optional
 
 import numpy as np  # noqa: F401  (kept for callers/extension)
 
-from euclid_polish.cutout.base import HRCutout, SyntheticLRCutout
+from euclid_polish.cutout.base import EuclidLRCutout, HRCutout, SyntheticLRCutout
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.sky.types import MultiBandSkyImage
 
@@ -71,3 +71,51 @@ def reconstruct_and_render(
         sr.save_png(png, regime=regime, lr=lr_cut, hr=hr_cut)
         paths.append(png)
     return paths
+
+
+def fetch_and_superresolve(
+    *,
+    ra: float,
+    dec: float,
+    size: int,
+    model,
+    out_dir: str,
+    regime: str = "eye",
+    store=None,
+    fetch_plane=None,
+) -> tuple:
+    """Fetch a real Euclid cutout at ``(ra, dec)``, super-resolve it, and save.
+
+    Parameters
+    ----------
+    ra, dec : float
+        ICRS coordinates in degrees.
+    size : int
+        Cutout side in VIS pixels (0.10"/pix grid).
+    model : Model
+        A loaded :class:`~euclid_polish.model.Model`.
+    out_dir : str
+        Output directory (created if absent).
+    regime : str
+        Colour regime for the PNG ("eye" or "calibrated").
+    store : ProvStore, optional
+        Provenance store; defaults to ``default_store()``.
+    fetch_plane : callable, optional
+        ``(ra, dec, band_name, size) -> np.ndarray`` (electrons) for
+        tests/offline. ``None`` uses the real archive download.
+
+    Returns
+    -------
+    tuple of (str, str)
+        ``(sr_fits_path, sr_png_path)``.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    _store = store if store is not None else default_store()
+    lr = EuclidLRCutout.fetch(ra=ra, dec=dec, size=size,
+                              store=_store, fetch_plane=fetch_plane)
+    sr = model.upsample(lr, store=_store)
+    fits_path = os.path.join(out_dir, "SR.fits")
+    png_path = os.path.join(out_dir, "SR.png")
+    sr.save_fits(fits_path)
+    sr.save_png(png_path, regime=regime, lr=lr)
+    return fits_path, png_path
