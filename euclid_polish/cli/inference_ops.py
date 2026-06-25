@@ -15,12 +15,15 @@ from euclid_polish.sky.types import MultiBandSkyImage
 
 
 def _lr_cutout(img: MultiBandSkyImage, store) -> SyntheticLRCutout:
-    cid = store.mint()
+    # Reuse the record's embedded id when present (preserves lineage); else mint.
+    stamp = img.prov_stamp()
+    cid = stamp.id if stamp is not None else store.mint()
     return SyntheticLRCutout(image=img, id=cid)
 
 
 def _hr_cutout(img: MultiBandSkyImage, store) -> HRCutout:
-    cid = store.mint()
+    stamp = img.prov_stamp()
+    cid = stamp.id if stamp is not None else store.mint()
     return HRCutout(image=img, id=cid)
 
 
