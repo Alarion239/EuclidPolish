@@ -157,3 +157,57 @@ def test_write_creates_expected_path(tmp_path, lr_image):
     path = write_multiband_skyimages([lr_image], "dirty_train", records_dir=str(tmp_path))
     assert path == os.path.join(str(tmp_path), "dirty_train.tfrecord")
     assert os.path.exists(path)
+
+
+# ---------------------------------------------------------------------------
+# v3 provenance stamp (Phase 1)
+# ---------------------------------------------------------------------------
+
+def test_v3_stamp_survives_round_trip(tmp_path):
+    from euclid_polish.provenance import ProvId, Stamp
+    rng = np.random.default_rng(3)
+    stamp = Stamp(
+        id=ProvId("4b1e7a90"),
+        produced_by=ProvId("7f3a9c21"),
+        parents=(ProvId("2b8e44d1"),),
+        schema_version=3,
+        subset="train",
+    )
+    img = MultiBandSkyImage(
+        data=rng.normal(size=(8, 8, 4)).astype(np.float32),
+        pixel_scale_arcsec=0.10,
+        band_names=("VIS", "Y_E", "J_E", "H_E"),
+        is_clean=False,
+        stamp=stamp,
+    )
+    path = write_multiband_skyimages([img], "dirty_train", records_dir=str(tmp_path))
+    [back] = read_multiband_skyimages(path, num_images=1)
+    assert back.prov_stamp() == stamp
+    assert back.subset == "train"      # subset drop fixed via the stamp
+
+
+def test_unstamped_record_reads_back_with_no_stamp(tmp_path, lr_image):
+    path = write_multiband_skyimages([lr_image], "dirty_train", records_dir=str(tmp_path))
+    [back] = read_multiband_skyimages(path, num_images=1)
+    assert back.prov_stamp() is None
+
+
+def test_graph_parser_identical_with_and_without_stamp(tmp_path):
+    """The training graph parser must be byte-identical regardless of stamp."""
+    from euclid_polish.provenance import ProvId, Stamp
+    rng = np.random.default_rng(11)
+    data = rng.normal(size=(8, 8, 4)).astype(np.float32)
+    plain = MultiBandSkyImage(
+        data=data, pixel_scale_arcsec=0.10,
+        band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
+    )
+    stamped = MultiBandSkyImage(
+        data=data, pixel_scale_arcsec=0.10,
+        band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
+        stamp=Stamp(id=ProvId("4b1e7a90")),
+    )
+    p_plain = write_multiband_skyimages([plain], "dirty_train", records_dir=str(tmp_path / "a"))
+    p_stamp = write_multiband_skyimages([stamped], "dirty_train", records_dir=str(tmp_path / "b"))
+    t_plain = next(iter(tf.data.TFRecordDataset(p_plain).map(lambda r: parse_record_graph_v2(r, 4))))
+    t_stamp = next(iter(tf.data.TFRecordDataset(p_stamp).map(lambda r: parse_record_graph_v2(r, 4))))
+    np.testing.assert_array_equal(t_plain.numpy(), t_stamp.numpy())

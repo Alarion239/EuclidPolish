@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, ClassVar, Dict, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.persistable import StampCarrier
+from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.sky.noise import apply_band_noise
 
 if TYPE_CHECKING:
@@ -53,7 +55,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MultiBandSkyImage:
+class MultiBandSkyImage(StampCarrier):
     """A multi-channel sky image with explicit band metadata.
 
     Channel layout is always ``(H, W, C)``. The ``band_names`` tuple names
@@ -63,7 +65,14 @@ class MultiBandSkyImage:
     A single ``pixel_scale_arcsec`` covers all channels. After the forward
     model resamples NISP onto the VIS LR grid, all four LR channels share
     the same 0.10″/pix scale; HR is 0.05″/pix VIS only.
+
+    Provenance: an optional :class:`~euclid_polish.provenance.records.Stamp`
+    (keyword-only, inherited from ``StampCarrier``) rides inside the TFRecord
+    when set, so a bare record is self-identifying. When absent the record is
+    written exactly as before (schema v2, no stamp fields).
     """
+
+    PROV_FORMAT: ClassVar[Format] = Format.TFRECORD
 
     data: np.ndarray                       # float32, shape (H, W, C)
     pixel_scale_arcsec: float              # one scale shared by all channels
@@ -96,7 +105,12 @@ class MultiBandSkyImage:
     def num_channels(self) -> int:
         return self.data.shape[-1]
 
-    # TFRecord feature schema v2 (single source of truth)
+    # TFRecord feature schema (single source of truth).
+    #
+    # The two ``prov_*`` keys carry the optional provenance stamp (schema v3).
+    # They have an empty ``default_value`` so legacy v2 records — and new
+    # unstamped records — parse cleanly with no stamp. Adding keys with a
+    # default is invisible to the graph parser, which reads only image/h/w/c.
     _TFRECORD_FEATURES = {
         'image':         tf.io.FixedLenFeature([], tf.string),
         'index':         tf.io.FixedLenFeature([], tf.int64),
@@ -107,6 +121,8 @@ class MultiBandSkyImage:
         'is_clean':      tf.io.FixedLenFeature([], tf.int64),
         'band_names':    tf.io.FixedLenFeature([], tf.string),  # comma-joined
         'schema_version':tf.io.FixedLenFeature([], tf.int64),
+        'prov_id':       tf.io.FixedLenFeature([], tf.string, default_value=b""),
+        'prov_stamp':    tf.io.FixedLenFeature([], tf.string, default_value=b""),
     }
 
     def to_tfrecord(self, index: int | None = None) -> bytes:
@@ -125,8 +141,21 @@ class MultiBandSkyImage:
             'pixel_scale':    tf.train.Feature(float_list=tf.train.FloatList(value=[self.pixel_scale_arcsec])),
             'is_clean':       tf.train.Feature(int64_list=tf.train.Int64List(value=[int(self.is_clean)])),
             'band_names':     tf.train.Feature(bytes_list=tf.train.BytesList(value=[bands_value])),
-            'schema_version': tf.train.Feature(int64_list=tf.train.Int64List(value=[Config.TFRECORD_SCHEMA_VERSION])),
         }
+        # Stamp only when present: unstamped records stay byte-for-byte v2.
+        if self.stamp is not None:
+            emb = self.stamp
+            if emb.subset is None and self.subset is not None:
+                emb = dataclasses.replace(emb, subset=self.subset)
+            feature['prov_id'] = tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[str(emb.id).encode("utf-8")]))
+            feature['prov_stamp'] = tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[emb.to_json().encode("utf-8")]))
+            schema_version = 3
+        else:
+            schema_version = Config.TFRECORD_SCHEMA_VERSION
+        feature['schema_version'] = tf.train.Feature(
+            int64_list=tf.train.Int64List(value=[schema_version]))
         return tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
 
     @classmethod
@@ -142,12 +171,21 @@ class MultiBandSkyImage:
         bands= tuple(example['band_names'].numpy().decode("utf-8").split(","))
         image_bytes = tf.io.decode_raw(example['image'], tf.float32)
         data = tf.reshape(image_bytes, [h, w, c]).numpy()
+        # Recover the provenance stamp (and the subset it carries) when present.
+        stamp = None
+        subset = None
+        prov_stamp_bytes = example['prov_stamp'].numpy()
+        if prov_stamp_bytes:
+            stamp = Stamp.from_json(prov_stamp_bytes.decode("utf-8"))
+            subset = stamp.subset
         return cls(
             data=data,
             pixel_scale_arcsec=ps,
             band_names=bands,
             is_clean=clean,
             index=idx,
+            subset=subset,
+            stamp=stamp,
         )
 
     # ------------------------------------------------------------------
