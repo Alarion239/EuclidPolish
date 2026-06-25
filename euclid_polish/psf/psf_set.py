@@ -228,6 +228,30 @@ class PSFSet(StampCarrier):
                                 angle_min=angle_min, angle_max=angle_max)
         return self.apply_sample(spec, rotation_order=rotation_order)
 
+    def draw_random(
+        self,
+        rng: np.random.Generator,
+        *,
+        use_unrotated_prob: float = 0.3,
+        angle_min: int = 1,
+        angle_max: int = 359,
+        rotation_order: int = 3,
+    ) -> PSF:
+        """Return one PSF sampled at random for a synthetic scene.
+
+        Convenience wrapper over :meth:`sample_for_generation` (which is
+        itself ``apply_sample(draw_sample(rng))``). Prefer this when a single
+        random kernel is needed without the multi-band :class:`PSFSample`
+        bookkeeping.
+        """
+        return self.sample_for_generation(
+            rng,
+            use_unrotated_prob=use_unrotated_prob,
+            angle_min=angle_min,
+            angle_max=angle_max,
+            rotation_order=rotation_order,
+        )
+
     # ------------------------------------------------------------------
     # Grid operations — map over members, return a new PSFSet
     # ------------------------------------------------------------------
