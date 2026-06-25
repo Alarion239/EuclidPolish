@@ -290,6 +290,20 @@ class TestEvaluationRoutes:
         assert client.post("/api/evaluation/run-grouped",
                            data={"run_name": "../x"}).status_code == 200
 
+    def test_run_grouped_passes_galaxies_flag(self, client, tmp_path, monkeypatch):
+        from euclid_polish.eval import grouped_runner
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        captured = {}
+        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
+                            lambda **k: captured.update(k) or {"n": 0})
+        r = client.post("/api/evaluation/run-grouped",
+                        data={"n": "3", "galaxies": "0"})
+        assert r.status_code == 200
+        assert captured["include_galaxies"] is False
+        r = client.post("/api/evaluation/run-grouped",
+                        data={"n": "3", "galaxies": "1"})
+        assert captured["include_galaxies"] is True
+
     def test_transformation_404_then_renders(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         run = Config.EVAL_RESULTS_DIR
