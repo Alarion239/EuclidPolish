@@ -7,9 +7,9 @@ provenance and owns the verb that produced it. Each leaf delegates its verb to
 the existing engine through an injected callable, so the type layer never
 duplicates the download / forward-model / reconstruct logic.
 
-    EuclidLRCutout.query(...)           -> the Euclid archive
-    SyntheticHRCutout.convolve(forward) -> MultiBandForward.process
-    Model.upsample(lr, ...)             -> training.inference.reconstruct
+    EuclidLRCutout.query(...)              -> the Euclid archive
+    SyntheticHRCutout.downsample(forward) -> MultiBandForward.process
+    Model.upsample(lr, ...)                -> training.inference.reconstruct
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Callable, ClassVar, Optional, Sequence, Tuple
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.provenance.store import ProvStore
@@ -92,22 +93,39 @@ class LRCutout(Cutout):
 class SyntheticHRCutout(HRCutout):
     """A clean generated HR field from the simulator."""
 
-    def convolve(
+    def downsample(
         self,
         forward,
-        store: ProvStore,
         *,
-        produced_by: Optional[ProvId] = None,
         rng=None,
+        store=None,
+        produced_by: Optional[ProvId] = None,
     ) -> "SyntheticLRCutout":
         """Run the forward model, producing a :class:`SyntheticLRCutout`.
 
-        Delegates to ``forward.process`` (a ``MultiBandForward``); the LR
-        cutout's parent is this HR cutout.
+        Delegates to ``forward.process`` (a
+        :class:`~euclid_polish.sky.multiband_forward.MultiBandForward`); the
+        LR cutout's parent is this HR cutout. Renamed from ``convolve``.
+
+        Parameters
+        ----------
+        forward : MultiBandForward
+            The forward-model operator.
+        rng : np.random.Generator, optional
+            Noise RNG; a fresh ``default_rng`` is used when None.
+        store : ProvStore, optional
+            Provenance store. Defaults to ``default_store()`` (guarded).
+        produced_by : ProvId, optional
+            Id of the orchestrating process.
         """
         lr_img, _hr_out = forward.process(self.image, rng)
+        try:
+            _store = store if store is not None else default_store()
+            new_id = _store.mint()
+        except Exception:   # noqa: BLE001 — provenance is best-effort
+            new_id = ProvId.sentinel()   # ProvId imported at module top
         return SyntheticLRCutout(
-            image=lr_img, id=store.mint(), produced_by=produced_by,
+            image=lr_img, id=new_id, produced_by=produced_by,
             parents=(self.id,),
         )
 

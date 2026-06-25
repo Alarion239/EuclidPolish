@@ -4,7 +4,7 @@ A class hierarchy where each leaf owns its verb and carries provenance:
 
     Cutout
     ├── HRCutout (0.05″/pix)
-    │   ├── SyntheticHRCutout  — .convolve(forward) -> SyntheticLRCutout
+    │   ├── SyntheticHRCutout  — .downsample(forward) -> SyntheticLRCutout
     │   └── SRCutout           — output of Model.upsample(lr, ...)
     └── LRCutout (0.10″/pix)
         ├── SyntheticLRCutout

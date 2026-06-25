@@ -74,7 +74,7 @@ def test_cutout_to_tfrecord_embeds_its_id(tmp_path):
     assert back.prov_stamp().id == cut.id
 
 
-def test_synthetic_hr_convolve_makes_lr_with_hr_parent(tmp_path):
+def test_synthetic_hr_downsample_makes_lr_with_hr_parent(tmp_path):
     from euclid_polish.cutout import SyntheticHRCutout, SyntheticLRCutout
     store = _store(tmp_path)
     hr = SyntheticHRCutout(image=_hr_image(), id=store.mint())
@@ -83,11 +83,28 @@ def test_synthetic_hr_convolve_makes_lr_with_hr_parent(tmp_path):
         def process(self, image, rng=None):
             return _lr_image(), image      # (lr, hr_out)
 
-    lr = hr.convolve(FakeForward(), store)
+    lr = hr.downsample(FakeForward(), store=store)
     assert isinstance(lr, SyntheticLRCutout)
     assert lr.pixel_scale_arcsec == 0.10
     assert lr.parents == (hr.id,)
     assert lr.id != hr.id
+
+
+def test_synthetic_hr_downsample_implicit_store(tmp_path):
+    """downsample with no explicit store uses default_store() (guarded)."""
+    import unittest.mock as mock
+    from euclid_polish.cutout import SyntheticHRCutout, SyntheticLRCutout
+    store = _store(tmp_path)
+    hr = SyntheticHRCutout(image=_hr_image(), id=store.mint())
+
+    class FakeForward:
+        def process(self, image, rng=None):
+            return _lr_image(), image
+
+    with mock.patch("euclid_polish.cutout.base.default_store", return_value=store):
+        lr = hr.downsample(FakeForward())
+    assert isinstance(lr, SyntheticLRCutout)
+    assert lr.parents == (hr.id,)
 
 
 def test_model_upsample_makes_srcutout_with_two_parents(tmp_path):
