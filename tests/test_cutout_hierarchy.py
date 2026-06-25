@@ -90,21 +90,29 @@ def test_synthetic_hr_convolve_makes_lr_with_hr_parent(tmp_path):
     assert lr.id != hr.id
 
 
-def test_lr_super_resolve_makes_srcutout_with_two_parents(tmp_path):
+def test_model_upsample_makes_srcutout_with_two_parents(tmp_path):
+    """Regression: upsample (ex-super_resolve) still produces an SRCutout
+    with parents=(model.id, lr.id). Uses Model's _reconstruct_fn injection."""
     from euclid_polish.cutout import SyntheticLRCutout, SRCutout
+    from euclid_polish.model import Model
+
     store = _store(tmp_path)
     lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
-    model_id = store.mint()
 
     def fake_reconstruct(model, data):
         h, w = data.shape[:2]
         return data[..., 0], np.zeros((h * 2, w * 2, 4), np.float32)
 
-    sr = lr.super_resolve(model=object(), model_id=model_id, store=store,
-                          reconstruct_fn=fake_reconstruct)
+    m = Model.__new__(Model)
+    m._tf_model = object()
+    m._scale = 2
+    m.id = store.mint()
+    m._reconstruct_fn = fake_reconstruct
+
+    sr = m.upsample(lr, store=store)
     assert isinstance(sr, SRCutout)
     assert sr.pixel_scale_arcsec == 0.05
-    assert set(sr.parents) == {model_id, lr.id}
+    assert set(sr.parents) == {m.id, lr.id}
 
 
 def test_euclid_query_stacks_bands_and_mints_id(tmp_path):
