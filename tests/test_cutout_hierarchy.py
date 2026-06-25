@@ -132,6 +132,51 @@ def test_model_upsample_makes_srcutout_with_two_parents(tmp_path):
     assert set(sr.parents) == {m.id, lr.id}
 
 
+def test_synthetic_hr_generate_returns_hr_cutout(tmp_path):
+    """generate(simulator, rng=rng, store=store) returns a SyntheticHRCutout."""
+    from euclid_polish.cutout import SyntheticHRCutout
+    store = _store(tmp_path)
+    rng = np.random.default_rng(0)
+
+    class FakeSimulator:
+        def simulate_field(self, rng, **kwargs):
+            return _hr_image(), {"n_galaxies": 0}
+
+    hr = SyntheticHRCutout.generate(FakeSimulator(), rng=rng, store=store)
+    assert isinstance(hr, SyntheticHRCutout)
+    assert hr.pixel_scale_arcsec == 0.05
+    assert hr.data.shape[-1] == 4
+
+
+def test_synthetic_hr_generate_mints_unique_ids(tmp_path):
+    from euclid_polish.cutout import SyntheticHRCutout
+    store = _store(tmp_path)
+    rng = np.random.default_rng(1)
+
+    class FakeSimulator:
+        def simulate_field(self, rng, **kwargs):
+            return _hr_image(), {}
+
+    hr1 = SyntheticHRCutout.generate(FakeSimulator(), rng=rng, store=store)
+    hr2 = SyntheticHRCutout.generate(FakeSimulator(), rng=rng, store=store)
+    assert hr1.id != hr2.id
+
+
+def test_synthetic_hr_generate_implicit_store(tmp_path):
+    """generate without explicit store uses default_store() (guarded)."""
+    import unittest.mock as mock
+    from euclid_polish.cutout import SyntheticHRCutout
+    store = _store(tmp_path)
+
+    class FakeSimulator:
+        def simulate_field(self, rng, **kwargs):
+            return _hr_image(), {}
+
+    with mock.patch("euclid_polish.cutout.base.default_store", return_value=store):
+        hr = SyntheticHRCutout.generate(FakeSimulator())
+    assert isinstance(hr, SyntheticHRCutout)
+
+
 def test_euclid_query_stacks_bands_and_mints_id(tmp_path):
     from euclid_polish.cutout import EuclidLRCutout
     store = _store(tmp_path)

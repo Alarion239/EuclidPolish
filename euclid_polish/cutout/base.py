@@ -129,6 +129,42 @@ class SyntheticHRCutout(HRCutout):
             parents=(self.id,),
         )
 
+    @classmethod
+    def generate(
+        cls,
+        simulator,
+        *,
+        rng=None,
+        store=None,
+        produced_by: Optional[ProvId] = None,
+    ) -> "SyntheticHRCutout":
+        """Generate a clean HR field from ``simulator``.
+
+        Delegates to ``simulator.simulate_field(rng)`` (a
+        :class:`~euclid_polish.sky.multiband_generator.MultiBandSimulator`).
+        The resulting :class:`SyntheticHRCutout` gets a fresh provenance id.
+
+        Parameters
+        ----------
+        simulator : MultiBandSimulator
+            The scene-generator operator.
+        rng : np.random.Generator, optional
+            Reproducible noise source; a fresh ``default_rng()`` is used when None.
+        store : ProvStore, optional
+            Provenance store. Defaults to ``default_store()`` (guarded).
+        produced_by : ProvId, optional
+            Id of the orchestrating process (e.g. a GenerationRun).
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        sky_image, _meta = simulator.simulate_field(rng)
+        try:
+            _store = store if store is not None else default_store()
+            new_id = _store.mint()
+        except Exception:   # noqa: BLE001 — provenance is best-effort
+            new_id = ProvId.sentinel()   # ProvId imported at module top
+        return cls(image=sky_image, id=new_id, produced_by=produced_by)
+
 
 @dataclass(frozen=True)
 class SyntheticLRCutout(LRCutout):
