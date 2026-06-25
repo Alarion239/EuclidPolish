@@ -266,6 +266,7 @@ def register(app):
         except ValueError:
             return jsonify({"ok": False, "error": "n must be an int"}), 400
         include_synth = str(f.get("synthetic", "1")).lower() in ("1", "true", "on", "yes")
+        include_gal = str(f.get("galaxies", "1")).lower() in ("1", "true", "on", "yes")
         out_dir = Config.EVAL_RESULTS_DIR
 
         from euclid_polish.eval import grouped_runner
@@ -273,6 +274,7 @@ def register(app):
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
                 out_dir=out_dir, n=n, include_synthetic=include_synth,
+                include_galaxies=include_gal,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
         job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)

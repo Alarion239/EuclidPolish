@@ -291,6 +291,9 @@
       <input type="number" id="gpN" value="10" min="1" max="500"></label>
     <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;">
       <input type="checkbox" id="gpSynth" checked> include synthetic</label>
+    <label class="checkbox-field" style="flex-direction:row; align-items:center; gap:6px;"
+           title="3 × the grade-A count, drawn from the same fields — a real negative control">
+      <input type="checkbox" id="gpGal" checked> include real galaxies</label>
   </div>
   <div style="margin-top:10px;">
     <button id="runGroupedBtn" type="button">▶ Prepare</button>
@@ -871,6 +874,7 @@ window.__evalJumpTo = (sub) => {
     const fd = new FormData();
     fd.set('n', $('gpN').value);
     fd.set('synthetic', $('gpSynth').checked ? '1' : '0');
+    fd.set('galaxies', $('gpGal').checked ? '1' : '0');
     startJob('/api/evaluation/run-grouped', fd,
              'Grouped: eval_results', $('runGroupedBtn'),
              () => { refreshRuns(); });

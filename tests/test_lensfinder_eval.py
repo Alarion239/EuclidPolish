@@ -80,3 +80,32 @@ class TestRoutes:
         monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
         r = c.post("/api/evaluation/run-lensfinder", data={})
         assert r.status_code == 400 and "Zoobot env" in r.get_json()["error"]
+
+
+def test_gal_group_registered():
+    from euclid_polish.eval import lensfinder_eval
+    from euclid_polish.eval.zoobot_morph import GROUP_COLORS, _group_color
+    assert "gal" in lensfinder_eval.GROUPS
+    assert "gal" in GROUP_COLORS
+    # distinct from every other group's colour
+    assert _group_color("gal") not in {GROUP_COLORS[g] for g in GROUP_COLORS if g != "gal"}
+
+
+def test_summary_renders_with_real_galaxies(tmp_path):
+    from euclid_polish.eval import lensfinder_eval
+    run = tmp_path / "run"
+    run.mkdir()
+    # A/B/C lenses (high SR P(lens)), real galaxies (low), + synthetic for the
+    # synthetic ROC. Real ROC needs both real-lens positives and gal negatives.
+    lines = ["id,grade,p_lens_lr,p_lens_sr,p_lens_hr"]
+    for i in range(6):
+        lines.append(f"A{i},A,0.6,0.9,")
+        lines.append(f"B{i},B,0.5,0.8,")
+        lines.append(f"C{i},C,0.4,0.7,")
+        lines.append(f"G{i},gal,0.2,0.1,")
+        lines.append(f"SL{i},syn-lens,0.5,0.85,0.95")
+        lines.append(f"SG{i},syn-gal,0.2,0.15,0.05")
+    (run / "lens_scores.csv").write_text("\n".join(lines) + "\n")
+    out_png = run / "summary.png"
+    res = lensfinder_eval.render_lensfinder_summary(str(run), str(out_png))
+    assert res == str(out_png) and out_png.is_file() and out_png.stat().st_size > 0
