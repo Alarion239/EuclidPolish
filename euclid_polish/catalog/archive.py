@@ -17,8 +17,8 @@ import numpy as np
 from astropy.io import fits as _fits
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.downloader import fetch_cutout_at
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.image import Image, Role
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp

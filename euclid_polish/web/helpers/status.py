@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.psf import PSF
 from euclid_polish.image.tfio import tfrecord_path

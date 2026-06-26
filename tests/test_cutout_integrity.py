@@ -14,8 +14,8 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.cutout_integrity import (
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.cutout_integrity import (
     cutout_openable, purge_incomplete_cutouts, rebuild_catalog_from_cutouts,
     validate_all_cutouts,
 )

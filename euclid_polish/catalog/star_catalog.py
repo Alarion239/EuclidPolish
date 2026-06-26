@@ -37,8 +37,8 @@ import pandas as pd
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import uJy_to_ab_mag
-from euclid_polish.euclid.validator import angular_separation_arcsec
+from euclid_polish.catalog.photometry import uJy_to_ab_mag
+from euclid_polish.catalog.validator import angular_separation_arcsec
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 

@@ -16,8 +16,8 @@ import pytest
 from astropy.table import Table
 
 from euclid_polish.config import Config
-from euclid_polish.euclid import catalog as catalog_module
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog import star_catalog as catalog_module
+from euclid_polish.catalog.star_catalog import StarCatalog
 
 
 class _FakeJob:

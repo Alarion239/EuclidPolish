@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from euclid_polish.euclid import galaxy_catalog as gc
+from euclid_polish.catalog import galaxy_catalog as gc
 from euclid_polish.config import Config
 
 

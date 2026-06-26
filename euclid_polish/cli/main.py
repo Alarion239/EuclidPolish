@@ -23,7 +23,7 @@ from questionary import select, confirm, checkbox
 
 from euclid_polish.config import Config
 from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
-from euclid_polish.euclid import (
+from euclid_polish.catalog import (
     StarCatalog,
     EuclidCutoutDownloader,
     DownloadConfig,

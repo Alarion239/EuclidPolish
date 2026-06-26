@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import (
+from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
     pixel_solid_angle_sr,

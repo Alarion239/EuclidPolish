@@ -7,7 +7,7 @@ EmptyDataError, 500-ing every page that reads the catalog summary
 
 from __future__ import annotations
 
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 
 
 def test_load_empty_file_returns_empty_catalog(tmp_path):

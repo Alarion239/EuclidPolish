@@ -33,8 +33,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.downloader import fetch_cutout_at
-from euclid_polish.euclid.photometry import (
+from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.photometry import (
     adu_per_s_to_electrons, adu_per_s_to_electrons_factor,
 )
 from euclid_polish.training.inference import (

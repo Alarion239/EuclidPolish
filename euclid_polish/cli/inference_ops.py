@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from euclid_polish.euclid.archive import EuclidArchive
+from euclid_polish.catalog.archive import EuclidArchive
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.visualization.reconstruction import plot_imageset
 

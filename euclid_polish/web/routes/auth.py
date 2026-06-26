@@ -1,7 +1,7 @@
 """auth routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.euclid import auth
+from euclid_polish.catalog import auth
 from euclid_polish.web.remote import STATE
 from flask import jsonify
 from flask import request

@@ -32,10 +32,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid import auth
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.cutout_integrity import validate_all_cutouts
-from euclid_polish.euclid.downloader import (
+from euclid_polish.catalog import auth
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.cutout_integrity import validate_all_cutouts
+from euclid_polish.catalog.downloader import (
     DownloadConfig, EuclidCutoutDownloader,
 )
 from euclid_polish.observability.reporter import Reporter

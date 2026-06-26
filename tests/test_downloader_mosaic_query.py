@@ -7,7 +7,7 @@ expired TAP session after a long band) and ``.get_results()`` then raised
 
 from __future__ import annotations
 
-from euclid_polish.euclid import downloader as D
+from euclid_polish.catalog import downloader as D
 
 
 class _FakeJob:

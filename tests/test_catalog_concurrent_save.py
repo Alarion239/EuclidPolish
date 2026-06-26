@@ -17,7 +17,7 @@ import threading
 
 import pytest
 
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 
 
 def _catalog(n_stars: int) -> dict:

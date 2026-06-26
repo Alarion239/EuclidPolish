@@ -19,9 +19,9 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from tqdm import tqdm
 
-from euclid_polish.euclid.auth import login as _euclid_relogin
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.validator import FitsValidator, angular_separation_arcsec
+from euclid_polish.catalog.auth import login as _euclid_relogin
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.validator import FitsValidator, angular_separation_arcsec
 from euclid_polish.config import Config
 
 

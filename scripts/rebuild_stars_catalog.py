@@ -34,8 +34,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.cutout_integrity import rebuild_catalog_from_cutouts
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.cutout_integrity import rebuild_catalog_from_cutouts
 
 
 def main() -> int:

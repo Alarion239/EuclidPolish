@@ -20,7 +20,7 @@ To place a galaxy into a synthetic field we run three steps (in this order):
 2. **Rotate** by a quarter turn (0/90/180/270°) — exact ``np.rot90``, an
    orientation augmentation on top of the atlas's 5 physical viewpoints.
 3. **Convert to electrons** over the Euclid stack via
-   :func:`~euclid_polish.euclid.photometry.mjy_per_sr_to_electrons`, using the
+   :func:`~euclid_polish.catalog.photometry.mjy_per_sr_to_electrons`, using the
    assigned HR pixel scale to turn MJy/sr into electrons-per-pixel. The result
    is a clean, pre-PSF source ready to drop onto the HR sky; the existing
    forward model supplies the Euclid PSF, noise, and LR rebin.
@@ -38,7 +38,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.photometry import (
+from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )

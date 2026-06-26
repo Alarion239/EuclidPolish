@@ -5,8 +5,8 @@ from astropy.io import fits
 from astropy.io import fits as _fits
 from euclid_polish.config import Config
 from euclid_polish.eval.sr_provenance import stamp_sr_fits
-from euclid_polish.euclid.downloader import fetch_cutout_at
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.observation_simulator import ObservationSimulator
 from euclid_polish.image.tfio import read_images

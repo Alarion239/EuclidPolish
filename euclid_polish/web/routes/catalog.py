@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
-from euclid_polish.euclid import auth
+from euclid_polish.catalog import auth
 from flask import render_template
 from euclid_polish.web.helpers.status import _catalog_status, _cutout_layout_status
 

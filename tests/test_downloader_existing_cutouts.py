@@ -14,8 +14,8 @@ import os
 import numpy as np
 from astropy.io import fits
 
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import DownloadConfig, EuclidCutoutDownloader
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.downloader import DownloadConfig, EuclidCutoutDownloader
 
 
 def _write_cutout(path: str, ra: float, dec: float, size: int = 16) -> None:

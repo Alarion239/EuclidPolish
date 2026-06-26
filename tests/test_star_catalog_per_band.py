@@ -7,8 +7,8 @@ import os
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import DownloadConfig
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.downloader import DownloadConfig
 
 
 # ---------------------------------------------------------------------------

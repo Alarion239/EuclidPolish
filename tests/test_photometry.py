@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import (
+from euclid_polish.catalog.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
     adu_per_s_to_electrons_factor,

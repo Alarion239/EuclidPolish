@@ -10,8 +10,8 @@ so the stars are re-attempted.
 
 from __future__ import annotations
 
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import DownloadConfig, EuclidCutoutDownloader
+from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.downloader import DownloadConfig, EuclidCutoutDownloader
 
 _SIZE = 16
 

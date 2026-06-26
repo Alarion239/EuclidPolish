@@ -2,7 +2,7 @@
 """Query the N brightest Euclid stars.
 
 Non-interactive CLI wrapper around
-:meth:`euclid_polish.euclid.catalog.StarCatalog.query_brightest_stars`.
+:meth:`euclid_polish.catalog.star_catalog.StarCatalog.query_brightest_stars`.
 Sorts ``mer_catalogue`` by VIS flux server-side (ESA Euclid archive) and
 writes the result into ``$DATA_DIR/euclid_stars/stars.csv``.
 
@@ -30,7 +30,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.observability.reporter import Reporter
 
 

@@ -14,7 +14,7 @@ from astropy.io import fits
 from werkzeug.exceptions import NotFound
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.web.helpers import sky_render
 
 

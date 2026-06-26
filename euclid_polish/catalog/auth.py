@@ -17,7 +17,7 @@ from typing import Optional
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.validator import validate_file_exists
+from euclid_polish.catalog.validator import validate_file_exists
 
 
 _is_logged_in: bool = False

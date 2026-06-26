@@ -57,7 +57,7 @@ def test_apply_unstamped_hr_has_no_parents(tmp_path):
 
 
 def test_fetch_returns_real_image(tmp_path):
-    from euclid_polish.euclid.archive import EuclidArchive
+    from euclid_polish.catalog.archive import EuclidArchive
     store = ProvStore(str(tmp_path))
 
     def fake_plane(ra, dec, band, size):

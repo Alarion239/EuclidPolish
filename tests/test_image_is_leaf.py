@@ -22,7 +22,7 @@ _FORBIDDEN = (
     "euclid_polish.cli",
     "euclid_polish.web",
     "euclid_polish.cutout",
-    "euclid_polish.euclid",
+    "euclid_polish.catalog",
     # visualization builds ON the image layer, never the reverse.
     "euclid_polish.visualization",
 )

@@ -20,7 +20,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
+from euclid_polish.catalog.star_catalog import StarCatalog
 
 #: Cutout filenames are ``star_<id>_<size>.fits`` (id zero-padded to ≥4).
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
