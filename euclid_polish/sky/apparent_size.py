@@ -1,34 +1,27 @@
-"""Realistic distribution of **apparent angular half-light radii** for galaxies
-in a magnitude-limited sample — used to place injected TNG50 stamps at lifelike
-sizes instead of a flat ×1/×2/×3/×4 downsample (which made every TNG galaxy a
-giant blob).
+"""Apparent angular half-light radii for a magnitude-limited galaxy sample,
+used to size injected TNG50 stamps.
 
-Why a *physical forward model* rather than a hand-drawn curve
-------------------------------------------------------------
 The apparent size of a galaxy is its physical half-light radius divided by the
 angular-diameter distance to its redshift, so the observed angular-size
 distribution is the convolution
 
-    p(θ) = ∫dz n(z) ∫dR P(R | z) δ(θ − R / d_A(z)).
+    p(θ) = ∫dz n(z) ∫dR P(R | z) δ(θ − R / d_A(z)),
 
-We sample that convolution directly:
+sampled directly from a physical forward model:
 
-* **P(R)** — physical half-light radius is **log-normal** at fixed mass, the
-  consensus of Shen et al. 2003 (SDSS, z≈0) and van der Wel et al. 2014
-  (CANDELS), with scatter σ_lnR ≈ 0.3–0.5 dex; sizes shrink with redshift
-  roughly as (1+z)^−0.75.
-* **n(z)** — the standard magnitude-limited form n(z) ∝ z² exp(−(z/z₀)^β).
+* **P(R)** — physical half-light radius is **log-normal** at fixed mass
+  (Shen et al. 2003 SDSS z≈0; van der Wel et al. 2014 CANDELS), with scatter
+  σ_lnR ≈ 0.3–0.5 dex; sizes shrink with redshift roughly as (1+z)^−0.75.
+* **n(z)** — the magnitude-limited form n(z) ∝ z² exp(−(z/z₀)^β).
 * **d_A(z)** — Planck15 angular-diameter distance.
 
-The defaults are tuned so the result reproduces the **deep-field measurements**:
-median apparent R_e ≈ 0.22″ (matching our COSMOS mag<25 selection and the
-0.2–0.25″ medians reported for faint HST samples), with a **physically fat,
-continuous tail** — only ~2% of galaxies exceed 1″, ~0.3% exceed 2″, ~0.1%
-exceed 3″. So most injected galaxies are small (heavily downsampled) and big,
-resolved galaxies are rare but genuinely present — no artificial spike.
+The defaults reproduce deep-field measurements: median apparent R_e ≈ 0.22″
+(COSMOS mag<25 selection; 0.2–0.25″ medians for faint HST samples), with a
+continuous tail — only ~2% of galaxies exceed 1″, ~0.3% exceed 2″, ~0.1%
+exceed 3″. Most injected galaxies are small (heavily downsampled); large
+resolved galaxies are rare but present.
 
-The model is number-weighted (one draw per galaxy slot), which is what scene
-generation needs.
+The model is number-weighted: one draw per galaxy slot.
 """
 
 from __future__ import annotations
@@ -56,7 +49,7 @@ class ApparentSizeModel:
     nz_z0, nz_beta
         Redshift distribution ``n(z) ∝ z² exp(−(z/nz_z0)^nz_beta)``.
     theta_min_arcsec, theta_max_arcsec
-        Hard clip on the returned angular size (guards the pathological tails).
+        Hard clip on the returned angular size.
     zmax, n_grid
         Redshift grid extent / resolution for the inverse-CDF + d_A spline
         (precomputed once at construction).
@@ -106,7 +99,7 @@ class ApparentSizeModel:
         """Draw apparent half-light radii (arcsec).
 
         ``size=None`` returns a Python float; an int returns an ``(size,)``
-        ndarray. Fully vectorised — drawing a batch is as cheap as one draw.
+        ndarray. Fully vectorised.
         """
         scalar = size is None
         n = 1 if scalar else int(size)
@@ -125,13 +118,13 @@ class ApparentSizeModel:
 
 
 class CosmosSizeSampler:
-    """Draw TNG target apparent half-light radii from the COSMOS catalog's *own*
+    """Draw TNG target apparent half-light radii from the COSMOS catalog's own
     effective-radius distribution, so injected TNG galaxies match the Sérsic
-    population **by construction** — no calibration, guaranteed agreement.
+    population by construction.
 
-    COSMOS is a deep field, so it has essentially no big, resolved galaxies; a
-    small, continuous **big tail** is mixed in (log-uniform over ``big_range``,
-    probability ``big_fraction``) so the network still sees real large-galaxy
+    COSMOS is a deep field with essentially no big, resolved galaxies; a small,
+    continuous **big tail** is mixed in (log-uniform over ``big_range``,
+    probability ``big_fraction``) so the network still sees large-galaxy
     structure occasionally.
 
     Parameters

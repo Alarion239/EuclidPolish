@@ -6,8 +6,7 @@ A generation run (one ``run_pipeline`` invocation, per subset) mints a
 writes is stamped with its *file-level* artifact id (so all records in
 ``clean_train.tfrecord`` share one id, addressed individually by their index)
 plus the run id. The whole thing is best-effort: :func:`make_generation_context`
-returns ``None`` if anything goes wrong, and callers write unstamped records
-exactly as before.
+returns ``None`` on failure, in which case callers write unstamped records.
 """
 
 from __future__ import annotations

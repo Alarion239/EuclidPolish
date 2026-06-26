@@ -1,14 +1,14 @@
-"""Redshift realism for TNG SKIRT stamps: one z draw drives everything.
+"""Redshift realism for TNG SKIRT stamps: one z draw drives every observable.
 
 The SKIRT atlas frames are *intrinsic* (z = 0) physical images — 100 pc/pixel
 surface brightness in MJy/sr with no assumed distance. To place one at
-redshift ``z`` we derive every observable from that single draw:
+redshift ``z`` every observable is derived from that single draw:
 
 1. **Angular size** — a native pixel subtends ``100 pc / D_A(z)``, so the
    block-mean factor that lands the stamp on the 0.05″ HR grid is
    ``F(z) = θ_pix_HR[rad] · D_A(z) / 100 pc`` (:func:`rebin_factor_for_redshift`).
-   Because D_A turns over at z ≈ 1.6, F never exceeds ≈ 4.3 — distant
-   galaxies stop shrinking, as on the real sky.
+   D_A turns over at z ≈ 1.6, so F never exceeds ≈ 4.3 — distant galaxies
+   stop shrinking, as on the real sky.
 2. **Tolman dimming** — per-frequency surface brightness dims as
    ``I_ν,obs(ν_obs) = I_ν,em(ν_em) / (1+z)³`` (:func:`tolman_dimming_factor`).
 3. **Spectral drift** — observed band b samples the rest-frame SED at
@@ -26,8 +26,7 @@ catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
 TNG-lit lens galaxy bends light according to its own subhalo's mass.
 
 The cosmological-distance helpers (flat ΛCDM, Collett-2015 parameters) live
-here and are re-exported by :mod:`euclid_polish.sky.lens_population`, which
-historically owned them.
+here and are re-exported by :mod:`euclid_polish.sky.lens_population`.
 """
 
 from __future__ import annotations
@@ -70,11 +69,7 @@ def comoving_distance_mpc(
     Omega_L: float = Config.LENS_COSMOLOGY_OMEGA_L,
     n_int: int = 1024,
 ) -> float:
-    """Line-of-sight comoving distance (Mpc) via Simpson rule.
-
-    No external cosmology dependency — the simulation only needs distances
-    and distance ratios.
-    """
+    """Line-of-sight comoving distance (Mpc), integrated numerically."""
     c_kms = 299_792.458
     DH = c_kms / H0       # Hubble distance, Mpc
     zs = np.linspace(0.0, z, n_int + 1)
@@ -117,9 +112,9 @@ def rebin_factor_for_redshift(
 
     One output pixel must span ``F`` native pixels = ``F · 100 pc``, and that
     length must subtend ``pixel_scale_arcsec`` at D_A(z):
-    ``F = θ_HR[rad] · D_A(z) / 100 pc``. Floored at 1 (we cannot upsample
-    below the native grid — galaxies closer than z ≈ 0.10 render slightly
-    smaller than physical). The caller stochastically rounds to an integer.
+    ``F = θ_HR[rad] · D_A(z) / 100 pc``. Floored at 1, since the native grid
+    cannot be upsampled — galaxies closer than z ≈ 0.10 render slightly
+    smaller than physical. The caller stochastically rounds to an integer.
     """
     da_pc = angular_diameter_distance(z) * _PC_PER_MPC
     f = pixel_scale_arcsec * _ARCSEC_TO_RAD * da_pc / native_pc_per_pixel
@@ -133,9 +128,9 @@ def compactness_factor(
     beta: float = Config.TNG_COMPACT_BETA,
 ) -> float:
     """Size-evolution correction ``C(z) = c0·(1+z)^beta`` for the z = 0
-    atlas morphologies: real galaxies at redshift ``z`` were more compact at
+    atlas morphologies: real galaxies at redshift ``z`` are more compact at
     fixed mass (van der Wel+ 2014). Applied as extra downsampling on top of
-    the geometric F(z), flux-conserving (SB × C²) — z, dimming and drift
+    the geometric F(z), flux-conserving (SB × C²); z, dimming and drift
     are untouched.
     """
     return float(c0 * (1.0 + z) ** beta)
@@ -244,8 +239,8 @@ def sample_target_logmass(
     """Draw one log10 stellar mass from the Schechter mass function,
     ``φ dlogM ∝ (M/M*)^(α+1) e^(-M/M*)`` (Baldry+ 2012 / Muzzin+ 2013),
     truncated to ``[logm_min, logm_max]``. The mass-rescaled TNG field
-    population follows the observed mass distribution by construction —
-    giants only in the rare exponential tail.
+    population follows the observed mass distribution: giants only in the
+    rare exponential tail.
     """
     key = (float(logm_star), float(alpha), float(logm_min), float(logm_max))
     grid = _MFCDF_CACHE.get(key)
@@ -269,10 +264,10 @@ def sample_target_logmass(
 def tolman_dimming_factor(z: float) -> float:
     """Cosmological surface-brightness dimming for per-frequency intensity.
 
-    ``I_ν,obs(ν_obs) = I_ν,em((1+z)·ν_obs) / (1+z)³`` — the (1+z)³ here; the
-    band-shift part is :func:`band_drift_factors`' job. The SKIRT frames are
-    MJy/sr (per-frequency), so the two factors together are the complete
-    photometric response.
+    ``I_ν,obs(ν_obs) = I_ν,em((1+z)·ν_obs) / (1+z)³`` — this returns the
+    (1+z)³ factor only; the band-shift part is :func:`band_drift_factors`'
+    job. The SKIRT frames are MJy/sr (per-frequency), so the two factors
+    together are the complete photometric response.
     """
     return float((1.0 + z) ** -3)
 
@@ -323,8 +318,8 @@ def band_drift_factors(
         ln_s = np.log(sed)
         ln_q = ln_lam - lnz1                      # blueshifted query points
         ln_interp = np.interp(ln_q, ln_lam, ln_s)
-        # np.interp clamps below the bluest point — continue the edge slope
-        # instead (clamped: the rest-UV is exactly where 4 points say least).
+        # np.interp clamps below the bluest point; continue the edge slope
+        # instead (slope clamped, since the rest-UV is least constrained).
         below = ln_q < ln_lam[0]
         if np.any(below):
             slope = (ln_s[1] - ln_s[0]) / (ln_lam[1] - ln_lam[0])
@@ -369,7 +364,7 @@ def load_tng_properties(csv_path: Optional[str] = None,
                         ) -> Dict[str, Dict[str, float]]:
     """Read ``tng_properties.csv`` → ``{subhalo_id: {sfr, mass_stars, m_halo,
     reff}}`` (floats, NaN where missing). Missing file → empty dict. Cached
-    per path — the generator looks masses up per lens draw.
+    per path; the generator looks masses up per lens draw.
     """
     path = csv_path or default_tng_properties_csv()
     cached = _TNG_PROPS_CACHE.get(path)

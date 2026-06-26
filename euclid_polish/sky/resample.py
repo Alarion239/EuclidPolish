@@ -1,19 +1,19 @@
 """
 Image resampling primitives.
 
-Currently exposes a 3× Lanczos-3 upsampler used by the NISP→VIS-LR step of
-the multi-band forward model (NISP native 0.30″ → VIS-LR-matched 0.10″).
-The Lanczos-3 kernel matches the SWarp/MER pipeline; a faster cubic-spline
-alternative is provided behind the ``kernel="cubic"`` option.
+Exposes a Lanczos-3 upsampler used by the NISP→VIS-LR step of the multi-band
+forward model (NISP native 0.30″ → VIS-LR-matched 0.10″). The Lanczos-3 kernel
+matches the SWarp/MER pipeline; a faster cubic-spline alternative is available
+via the ``kernel="cubic"`` option.
 
-The Lanczos-3 weight matrices for each output axis are pre-computed once
-per output shape, then reused for both axes — separable 1-D filters yield
-the same result as the 2-D kernel for the (separable) Lanczos kernel.
+The Lanczos-3 weight matrices for each output axis are pre-computed once per
+output shape, then reused for both axes — separable 1-D filters yield the same
+result as the 2-D kernel for the (separable) Lanczos kernel.
 
 Edge behaviour: input samples outside the input range are treated as zero
-(zero-padding). For our use case the NISP image always extends beyond the
-HR field it's downsampled from, so the edges contain only sky+noise and
-zero-padding does not bias the science region.
+(zero-padding). The NISP image always extends beyond the HR field it's
+downsampled from, so the edges contain only sky+noise and zero-padding does
+not bias the science region.
 """
 
 from __future__ import annotations

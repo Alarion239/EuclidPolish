@@ -1,13 +1,13 @@
 """Detector artifact injection: cosmic rays + hot pixels + masked-trail streaks.
 
 Real Euclid LR exposures contain features that pure Poisson + read-noise
-does not reproduce. The three classes we model here:
+does not reproduce. Three classes are modelled here:
 
 * **Cosmic rays** — galactic-cosmic-ray (GCR) muons and protons hit the
   detector at ~5 hits/cm²/s at L2. Each hit deposits charge in one or a
-  few neighbouring pixels (full track geometry is approximated here as
-  short oriented streaks of length 1–4 native pixels). Most are removed
-  by the MER cross-dither median; we model the post-rejection survivors.
+  few neighbouring pixels; the full track geometry is approximated as
+  short oriented streaks of length 1–4 native pixels. Most are removed
+  by the MER cross-dither median; this models the post-rejection survivors.
 * **Hot pixels** — ~0.1% of detector pixels show anomalously high dark
   current and effectively saturate over a typical exposure.
 * **Long faint streaks** — the MER pipeline (Q1 paper, Romelli+ 2025
@@ -19,11 +19,11 @@ does not reproduce. The three classes we model here:
   one such streak.
 
 All three are injected *after* the Poisson shot-noise stage but *before*
-read noise — that matches the physical readout order (charge integrates
-→ pixels are read → read noise added).
+read noise, matching the physical readout order (charge integrates →
+pixels are read → read noise added).
 
 Rates are quoted per native detector pixel (12 µm VIS, 18 µm NISP). The
-caller passes the band so we scale to the correct pixel area.
+caller passes the band, which sets the pixel area to scale to.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from euclid_polish.config import BandConfig, Config
 class ArtifactConfig:
     """Per-frame artifact injection knobs.
 
-    Defaults come from :class:`Config` and match flight measurements
+    Defaults come from :class:`Config` and follow flight measurements
     (Schirmer+ 2025 NISP Instrument paper; Holmes+ 2012 SREM CR rate).
     Disable a class of artifacts by setting its ``add_*`` flag to False.
     """
@@ -202,8 +202,8 @@ def inject_hot_pixels(
     cumulative dark current of a defective pixel filling toward
     saturation over the integration.
 
-    Note: a real detector has a *fixed* hot-pixel mask; for training we
-    randomize per frame so the network learns position-independent
+    Note: a real detector has a *fixed* hot-pixel mask; here the positions
+    are randomized per frame so the network learns position-independent
     robustness instead of memorising the mask.
     """
     if not cfg.add_hot_pixels or cfg.hot_pixel_fraction <= 0:
@@ -258,13 +258,13 @@ def inject_streaks(
 
     ``local_sigma_e`` is the per-pixel noise RMS at this point in the
     pipeline (sky + dark + read shot noise quadrature). The caller computes
-    it once per band; this function does not re-derive it from the image
-    because the image at this stage is sky/dark-subtracted and a per-pixel
+    it once per band; this function does not re-derive it from the image,
+    since the image at this stage is sky/dark-subtracted and a per-pixel
     estimate would be biased by sources.
 
-    The amplitude is intentionally sub-σ (typically 0.3–0.8 σ) — the
+    The amplitude is intentionally sub-σ (typically 0.3–0.8 σ): the
     streaks are invisible at normal stretches and only emerge under tight
-    background clipping, matching what we see in the real Q1 cutouts.
+    background clipping, matching the real Q1 cutouts.
     """
     if not cfg.add_streaks or local_sigma_e <= 0:
         return image_e
@@ -294,11 +294,10 @@ def inject_streaks(
         peak_e = sign * amp_sigma * local_sigma_e
 
         # Walk the spine in one-pixel-per-step increments along the
-        # dominant axis. This avoids the diagonal-walk double-counting
-        # bug where consecutive sub-pixel steps land in the same integer
-        # cell (a 45° spine traversed with cos/sin steps revisits every
-        # other cell). Stepping ``1/max(|dx|,|dy|)`` along the spine
-        # yields ~one new integer pixel per step regardless of angle.
+        # dominant axis. Stepping ``1/max(|dx|,|dy|)`` along the spine
+        # yields ~one new integer pixel per step regardless of angle, so
+        # consecutive steps do not land in the same integer cell (cos/sin
+        # steps along a 45° spine would revisit every other cell).
         dx = np.cos(theta)
         dy = np.sin(theta)
         n_unit = max(abs(dx), abs(dy), 1e-9)
@@ -313,8 +312,8 @@ def inject_streaks(
             xc = cx + t * dx
             # Within one spine step, deposit at most once per integer
             # pixel; otherwise a narrow Gaussian cross-section (sigma_cross
-            # < 1) puts all j-offsets into the same int cell and we get
-            # a stacked deposition that exceeds peak_e.
+            # < 1) puts all j-offsets into the same int cell, stacking
+            # depositions to exceed peak_e.
             seen: set[tuple[int, int]] = set()
             for j in range(-half_cross, half_cross + 1):
                 yi = int(round(yc + j * py))

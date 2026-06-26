@@ -7,26 +7,25 @@ real-space kernel ``A`` that, when convolved with an HST image, produces
 an image consistent with what Euclid would see of the same scene
 (modulo noise; see below).
 
-Why this exists
----------------
+Purpose
+-------
 
-We use the COSMOS HLSP F814W mosaic as a real-morphology HR target.
-The naive forward model would convolve those HST cutouts with the
-Euclid PSF directly, but that double-convolves through HST's PSF — the
-effective PSF in the synthesised LR ends up ``E ⊛ H`` rather than ``E``,
-~17 % broader than real Euclid. The differential kernel removes that
-bias: applying ``A`` instead of ``E`` to an HST observation gives an LR
-with the right effective PSF.
+The COSMOS HLSP F814W mosaic is the real-morphology HR target.
+Convolving those HST cutouts with the Euclid PSF directly would
+double-convolve through HST's own PSF — the effective PSF in the
+synthesised LR would be ``E ⊛ H`` rather than ``E``, ~17 % broader than
+real Euclid. The differential kernel removes that bias: applying ``A``
+instead of ``E`` to an HST observation gives an LR with the right
+effective PSF.
 
 The math is straightforward Wiener deconvolution in Fourier space:
 
     Â(k) = Ê(k) · conj(Ĥ(k)) / (|Ĥ(k)|² + reg²)
 
 The regularisation term ``reg`` prevents noise blow-up at high spatial
-frequencies where ``Ĥ`` falls off. We keep it small enough that the
-in-band response is essentially ``Ê/Ĥ`` but large enough that the kernel
-remains a low-pass filter (which it should be when ``E`` is broader than
-``H``).
+frequencies where ``Ĥ`` falls off. It is small enough that the in-band
+response is essentially ``Ê/Ĥ`` but large enough that the kernel remains
+a low-pass filter (which it is when ``E`` is broader than ``H``).
 
 Validity
 --------
@@ -34,10 +33,9 @@ Validity
 ``A`` is well-defined and physically sensible iff ``E`` is *broader* than
 ``H`` at every spatial frequency where ``H`` carries appreciable power.
 For Euclid VIS (0.16″ FWHM) vs HST F814W (~0.10″ FWHM) this holds; for
-NISP bands (0.40-0.48″ FWHM) it's even more comfortable. Reverse the
-roles (asking for an HST-like kernel from Euclid data) and the same code
-would amplify noise — that's the ill-posed deconvolution regime and is
-intentionally not supported.
+NISP bands (0.40-0.48″ FWHM) the margin is larger. Reversing the roles
+(asking for an HST-like kernel from Euclid data) is the ill-posed
+deconvolution regime that amplifies noise, and is not supported.
 """
 
 from __future__ import annotations
@@ -61,8 +59,8 @@ def _fourier_shift(arr: np.ndarray, dy: float, dx: float) -> np.ndarray:
 
     Sinc-interpolation for band-limited inputs, exact to round-off.
     Total flux is preserved exactly (a phase ramp doesn't touch the DC
-    component). Wraparound at the boundaries is irrelevant in our use
-    case — PSFs are centred and decay to ~0 well before the edges.
+    component). Wraparound at the boundaries is harmless here: PSFs are
+    centred and decay to ~0 well before the edges.
     """
     H, W = arr.shape
     ky = np.fft.fftfreq(H)
@@ -76,15 +74,15 @@ def _fourier_shift(arr: np.ndarray, dy: float, dx: float) -> np.ndarray:
 def _positive_centroid(arr: np.ndarray) -> Tuple[float, float]:
     """Flux-weighted centroid of the positive part of ``arr``.
 
-    Same convention as :func:`_recenter_to_geometric` — pinned in one
-    helper so callers that need the centroid AND the recentered array
-    don't compute it twice through subtly different formulae.
+    Uses the same convention as :func:`_recenter_to_geometric`, kept in one
+    helper so callers needing both the centroid and the recentered array
+    compute it consistently.
     """
     pos = np.maximum(arr, 0.0)
     total = float(pos.sum())
     if not np.isfinite(total) or total <= 0:
-        # Degenerate input — return the geometric centre so any
-        # caller computing "shift the centroid to target" sees 0 shift.
+        # Degenerate input: return the geometric centre so a caller
+        # computing "shift the centroid to target" sees 0 shift.
         return (arr.shape[0] - 1) / 2.0, (arr.shape[1] - 1) / 2.0
     yy, xx = np.indices(arr.shape)
     return (
@@ -98,25 +96,19 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     geometric centre ``((H-1)/2, (W-1)/2)``.
 
     The centroid is computed on the *positive* part of the array
-    (``max(arr, 0)``) to avoid the Wiener-deconvolution-style
-    negative wings of an ePSF biasing the moment. For typical empirical
-    PSFs the positive half carries essentially all the flux anyway.
+    (``max(arr, 0)``) so the Wiener-deconvolution-style negative wings of
+    an ePSF do not bias the moment. For typical empirical PSFs the
+    positive half carries essentially all the flux.
 
-    The shift itself uses :func:`scipy.ndimage.shift` (cubic spline,
+    The shift uses :func:`scipy.ndimage.shift` (cubic spline,
     ``mode='constant'`` so out-of-bounds pixels are zero-extrapolated).
-    Earlier versions used :func:`_fourier_shift`, which is exact for
-    band-limited inputs but **periodic at the array boundary**: a tiny
-    amount of flux at one edge wraps around to the opposite edge,
-    which after the Wiener inverse showed up as bright ringing along
-    each border centred on the central row/column (border / interior
-    amplitude ratio ~30× in the convolved result). The spatial-spline
-    shift has a small interpolation error (~10 % bump in rel.RMS for
-    sub-pixel offsets) but no wraparound — strictly the better trade
-    for an empirical-PSF deconvolution workflow.
+    This has a small interpolation error (~10 % bump in rel.RMS for
+    sub-pixel offsets) but no boundary wraparound, which matters for an
+    empirical-PSF deconvolution workflow.
 
     No-ops when the centroid is already at the geometric centre to
-    within 1e-3 of a pixel (cheap guard against introducing
-    interpolation round-off when there's nothing to fix).
+    within 1e-3 of a pixel, avoiding interpolation round-off when there
+    is nothing to fix.
     """
 
     pos = np.maximum(arr, 0.0)
@@ -143,13 +135,11 @@ def _pad_to(arr: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
     """Zero-pad ``arr`` to ``shape``, placing the input's centre pixel
     at the target array's ``shape // 2`` index in each axis.
 
-    The naive formula ``(target - source) // 2`` agrees with this for
-    (even, even) and (odd, odd) but is **off by one** for (even target,
-    odd source) — which is exactly our hot case (pad an odd-N input
-    PSF into an even-N (power-of-2) FFT grid). The off-by-one matters
-    because ``ifftshift`` uses ``shape // 2`` as the centre convention;
-    a wrong pad introduces a 1-pixel shift that the FFT then turns
-    into a linear phase term, and the resulting kernel comes out
+    The centre is placed at ``shape // 2`` to match the ``ifftshift``
+    convention. ``(target - source) // 2`` would be off by one for
+    (even target, odd source) — the case of padding an odd-N input PSF
+    into an even-N (power-of-2) FFT grid — introducing a 1-pixel shift
+    that the FFT turns into a linear phase term, leaving the kernel
     centred 1 pixel off the geometric centre.
     """
     H, W = arr.shape
@@ -180,15 +170,15 @@ def compute_differential_kernel(
     Parameters
     ----------
     psf_euclid, psf_hubble
-        2-D float arrays, normalised to ``sum=1`` (we don't re-normalise
-        — feeding un-normalised PSFs gives a kernel with non-unity DC
-        gain which silently breaks photometry downstream).
+        2-D float arrays, normalised to ``sum=1``. They are not
+        re-normalised here; un-normalised PSFs give a kernel with
+        non-unity DC gain that breaks photometry downstream.
     regularisation
         Wiener regulariser as a fraction of ``max|Ĥ|``. Larger values
         suppress high-frequency content more aggressively (= smoother A,
-        less noise amplification). The default ``1e-3`` is conservative
-        and matches the regime where ``H`` falls off well before the
-        Nyquist of the grid.
+        less noise amplification). The default ``1e-3`` is conservative,
+        for the regime where ``H`` falls off well before the Nyquist of
+        the grid.
     target_shape
         Optional ``(H, W)`` to zero-pad both PSFs to before the FFT — use
         a larger grid to reduce FFT boundary artefacts. Defaults to the
@@ -198,18 +188,18 @@ def compute_differential_kernel(
         flux centroid lands on the geometric centre, then **undo the
         net shift on the output kernel** so the returned ``A`` is
         physically correct against the *original* un-recentered E and
-        H — that's what downstream callers convolve real cutouts with.
+        H — what downstream callers convolve real cutouts with.
 
-        Why the dance: a centroid mismatch between E and H puts a
-        sub-pixel phase ramp on ``Ê/Ĥ``; at Nyquist this is ``≈±1``
-        and the spatial-domain ``A`` comes out as a pixel-by-pixel
-        checkerboard. Recentering both inputs onto the geometric
-        centre kills the phase ramp at the cost of baking a *shift*
-        into ``A_solved`` equal to ``(dy_e − dy_h, dx_e − dx_h)``.
-        We then apply the inverse spatial shift (scipy spline,
-        mode='constant', no wraparound) to ``A_solved`` so the final
-        kernel satisfies ``A ⊛ H_original ≈ E_original`` — the
-        contract any downstream forward model relies on.
+        A centroid mismatch between E and H puts a sub-pixel phase ramp
+        on ``Ê/Ĥ``; at Nyquist this is ``≈±1`` and the spatial-domain
+        ``A`` comes out as a pixel-by-pixel checkerboard. Recentering
+        both inputs onto the geometric centre removes the phase ramp at
+        the cost of baking a *shift* into ``A_solved`` equal to
+        ``(dy_e − dy_h, dx_e − dx_h)``. The inverse spatial shift (scipy
+        spline, mode='constant', no wraparound) is then applied to
+        ``A_solved`` so the final kernel satisfies
+        ``A ⊛ H_original ≈ E_original`` — the contract any downstream
+        forward model relies on.
 
         Disables itself when the centroids of both inputs already sit
         inside 1e-3 px of the geometric centre (no recentering, no
@@ -235,15 +225,15 @@ def compute_differential_kernel(
     e_in = psf_euclid.astype(np.float64)
     h_in = psf_hubble.astype(np.float64)
     if recenter:
-        # Capture centroids of the originals so we can undo the net
-        # shift on the kernel below. Same flux-weighted positive
-        # centroid `_recenter_to_geometric` uses.
+        # Centroids of the originals, used to undo the net shift on the
+        # kernel below. Same flux-weighted positive centroid
+        # `_recenter_to_geometric` uses.
         cy_e, cx_e = _positive_centroid(e_in)
         cy_h, cx_h = _positive_centroid(h_in)
         e_in = _recenter_to_geometric(e_in)
         h_in = _recenter_to_geometric(h_in)
 
-    # Pad for FFT — larger grid means less wraparound contamination of the
+    # Pad for FFT: a larger grid means less wraparound contamination of the
     # kernel's outer wings. Round up to the next power of 2 ≥ 2× the input.
     if target_shape is None:
         side = 1 << int(np.ceil(np.log2(2 * max(H_in, W_in))))
@@ -254,7 +244,7 @@ def compute_differential_kernel(
     h_pad = _pad_to(h_in, target_shape)
 
     # ifftshift moves the PSF centre to (0, 0) so the FFT phase reference
-    # is the kernel centre rather than the array corner — keeps Â real.
+    # is the kernel centre rather than the array corner, keeping Â real.
     e_hat = np.fft.fft2(np.fft.ifftshift(e_pad))
     h_hat = np.fft.fft2(np.fft.ifftshift(h_pad))
 
@@ -267,21 +257,21 @@ def compute_differential_kernel(
     # this support for reasonable regularisation.
     #
     # Same centring convention as _pad_to: ``shape // 2`` is the centre
-    # in both source and destination. Using ``(H_pad - H_in) // 2``
-    # silently shifts A by 1 pixel for (even pad, odd in), which then
-    # shows up as a dipole at the dead centre of ``A ⊛ H − E``.
+    # in both source and destination. ``(H_pad - H_in) // 2`` would shift
+    # A by 1 pixel for (even pad, odd in), showing up as a dipole at the
+    # dead centre of ``A ⊛ H − E``.
     i0 = H_pad // 2 - H_in // 2
     j0 = W_pad // 2 - W_in // 2
     a = a_pad[i0:i0 + H_in, j0:j0 + W_in]
 
     if recenter:
         # Undo the (cy_e − cy_h, cx_e − cx_h) shift the recentering
-        # baked into A. Without this the returned kernel satisfies
-        # ``A ⊛ H_recentered = E_recentered`` but downstream code
-        # convolves real cutouts with the *original* H — making the
-        # forward-modelled "Euclid-like" LR sub-pixel-shifted from
-        # what real Euclid actually observes. See the docstring's
-        # `recenter` section for the derivation.
+        # baked into A, so the returned kernel satisfies
+        # ``A ⊛ H_original ≈ E_original``. Downstream code convolves real
+        # cutouts with the *original* H; without this undo the
+        # forward-modelled "Euclid-like" LR would be sub-pixel-shifted
+        # from what real Euclid observes. See the docstring's `recenter`
+        # section for the derivation.
         a = _ndshift(
             a.astype(np.float64),
             shift=(cy_e - cy_h, cx_e - cx_h),
@@ -303,7 +293,7 @@ def apply_kernel(image: np.ndarray, kernel: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# Provenance dataclass — what goes in/comes out of the FITS file
+# Provenance dataclass — fields stored in / read from the FITS file
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
