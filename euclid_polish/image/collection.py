@@ -18,7 +18,6 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image.core import Image, Role
-from euclid_polish.image.plotting import plot_reconstruction
 from euclid_polish.image.tfio import read_multiband_skyimages, write_multiband_skyimages
 from euclid_polish.provenance.records import Stamp
 
@@ -79,59 +78,6 @@ class ImageSet:
         """The subset whose :attr:`Image.role` equals ``role``."""
         return ImageSet(images=[im for im in self.images if im.role is role],
                         stamp=self.stamp)
-
-    def _first_role(self, role: Role) -> Optional[Image]:
-        for im in self.images:
-            if im.role is role:
-                return im
-        return None
-
-    # -- rendering -- #
-
-    def plot_reconstruction(self, output_path: str, *, regime: str = "eye",
-                            asinh_scale: Optional[float] = None) -> str:
-        """Render the LR→SR(→HR) reconstruction figure for this set.
-
-        Picks the SR image (``role='sr'``, required), the LR input
-        (``role='lr'`` or ``'real'``, optional — a 2× pooled SR-VIS proxy is
-        used when absent), and the HR truth (``role='hr'``, optional) from the
-        set, then delegates to the shared renderer. ``regime`` is the colour
-        regime (``"eye"`` or ``"calibrated"``). Returns ``output_path``.
-        """
-        sr = self._first_role(Role.SR)
-        if sr is None:
-            raise ValueError("plot_reconstruction needs an image with role='sr'")
-        lr = self._first_role(Role.LR) or self._first_role(Role.REAL)
-        hr = self._first_role(Role.HR)
-
-        sr_data = np.asarray(sr.data, dtype=np.float32)
-
-        lr_data = lr_cube = None
-        if lr is not None:
-            a = np.asarray(lr.data, dtype=np.float32)
-            if a.ndim == 3 and a.shape[-1] > 1:
-                lr_cube, lr_data = a, a[..., 0]
-            else:
-                lr_data = a[..., 0] if a.ndim == 3 else a
-        if lr_data is None:
-            vis = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
-            h, w = vis.shape[:2]
-            lr_data = vis[: h - h % 2, : w - w % 2].reshape(
-                h // 2, 2, w // 2, 2).mean(axis=(1, 3))
-
-        hr_data = hr_cube = None
-        if hr is not None:
-            a = np.asarray(hr.data, dtype=np.float32)
-            if a.ndim == 3 and a.shape[-1] > 1:
-                hr_cube, hr_data = a, a[..., 0]
-            else:
-                hr_data = a[..., 0] if a.ndim == 3 else a
-
-        plot_reconstruction(
-            lr_data=lr_data, sr_data=sr_data, hr_data=hr_data,
-            output_path=output_path, lr_cube=lr_cube, hr_cube=hr_cube,
-            asinh_scale=asinh_scale, rgb_mode=regime)
-        return output_path
 
     def split(self, train_frac: float, *,
               rng: Optional[np.random.Generator] = None) -> "tuple[ImageSet, ImageSet]":

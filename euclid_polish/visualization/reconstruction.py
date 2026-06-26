@@ -1,11 +1,14 @@
-"""Reconstruction figures for the image layer (leaf-safe).
+"""LR→SR(→HR) reconstruction figures.
 
-The LR→SR(→HR) reconstruction renderer used across the CLI, WebUI and eval
-runners. It lived in ``training/inference.py`` (tangled with the TF reconstruct
-engine); it only needs numpy/matplotlib + the leaf ``visualization`` package, so
-it belongs with the image layer. ``ImageSet.plot_reconstruction`` is the OO
-entry point; ``training.inference`` re-exports ``plot_reconstruction`` for
-back-compat.
+The visualization layer sits *above* the data layer: it imports
+:class:`~euclid_polish.image.Image` / :class:`~euclid_polish.image.ImageSet` and
+builds rich figures on top of them. (The image package stays a leaf and never
+imports visualization.) Two entry points:
+
+* :func:`plot_reconstruction` — the array-level renderer (used across the CLI,
+  WebUI and eval runners; ``training.inference`` re-exports it for back-compat).
+* :func:`plot_imageset` — the OO entry: hand it an ``ImageSet`` and it picks the
+  LR / SR / HR images by role and renders them.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.visualization.base import BaseVisualizer
 
 
@@ -416,3 +420,58 @@ def plot_reconstruction(
     plt.suptitle("Super-Resolution Reconstruction" + regime_note,
                  fontsize=16)
     vis.save_figure(output_path)
+
+
+def _first(images: ImageSet, role: Role) -> Optional[Image]:
+    for im in images:
+        if im.role is role:
+            return im
+    return None
+
+
+def plot_imageset(images: ImageSet, output_path: str, *, regime: str = "eye",
+                  asinh_scale: Optional[float] = None) -> str:
+    """Render the LR→SR(→HR) reconstruction figure for an :class:`ImageSet`.
+
+        plot_imageset(ImageSet.from_images([lr, sr, hr]), "recon.png")
+
+    Picks the SR image (``role='sr'``, required), the LR input (``role='lr'`` or
+    ``'real'``, optional — a 2× pooled SR-VIS proxy is used when absent) and the
+    HR truth (``role='hr'``, optional) from the set, then delegates to
+    :func:`plot_reconstruction`. ``regime`` is the colour regime (``"eye"`` or
+    ``"calibrated"``). Returns ``output_path``.
+    """
+    sr = _first(images, Role.SR)
+    if sr is None:
+        raise ValueError("plot_imageset needs an image with role='sr'")
+    lr = _first(images, Role.LR) or _first(images, Role.REAL)
+    hr = _first(images, Role.HR)
+
+    sr_data = np.asarray(sr.data, dtype=np.float32)
+
+    lr_data = lr_cube = None
+    if lr is not None:
+        a = np.asarray(lr.data, dtype=np.float32)
+        if a.ndim == 3 and a.shape[-1] > 1:
+            lr_cube, lr_data = a, a[..., 0]
+        else:
+            lr_data = a[..., 0] if a.ndim == 3 else a
+    if lr_data is None:
+        vis = sr_data[..., 0] if sr_data.ndim == 3 else sr_data
+        h, w = vis.shape[:2]
+        lr_data = vis[: h - h % 2, : w - w % 2].reshape(
+            h // 2, 2, w // 2, 2).mean(axis=(1, 3))
+
+    hr_data = hr_cube = None
+    if hr is not None:
+        a = np.asarray(hr.data, dtype=np.float32)
+        if a.ndim == 3 and a.shape[-1] > 1:
+            hr_cube, hr_data = a, a[..., 0]
+        else:
+            hr_data = a[..., 0] if a.ndim == 3 else a
+
+    plot_reconstruction(
+        lr_data=lr_data, sr_data=sr_data, hr_data=hr_data,
+        output_path=output_path, lr_cube=lr_cube, hr_cube=hr_cube,
+        asinh_scale=asinh_scale, rgb_mode=regime)
+    return output_path

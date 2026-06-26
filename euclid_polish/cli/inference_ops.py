@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from euclid_polish.euclid.archive import EuclidArchive
 from euclid_polish.image import Image, ImageSet, Role
+from euclid_polish.visualization.reconstruction import plot_imageset
 
 
 def reconstruct_and_render(
@@ -53,7 +54,7 @@ def reconstruct_and_render(
         if hr_images is not None and i < len(hr_images):
             members.append(hr_images[i].with_role(Role.HR))
         png = os.path.join(out_dir, f"reconstruction_{i:03d}.png")
-        ImageSet.from_images(members).plot_reconstruction(png, regime=regime)
+        plot_imageset(ImageSet.from_images(members), png, regime=regime)
         paths.append(png)
     return paths
 
@@ -101,5 +102,5 @@ def fetch_and_superresolve(
     fits_path = os.path.join(out_dir, "SR.fits")
     png_path = os.path.join(out_dir, "SR.png")
     sr.save_fits(fits_path)
-    ImageSet.from_images([lr, sr]).plot_reconstruction(png_path, regime=regime)
+    plot_imageset(ImageSet.from_images([lr, sr]), png_path, regime=regime)
     return fits_path, png_path

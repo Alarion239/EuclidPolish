@@ -13,9 +13,9 @@ import tensorflow as tf
 from astropy.wcs import WCS
 
 from euclid_polish.config import Config
-# plot_reconstruction moved to the leaf image layer; re-exported here so
+# plot_reconstruction now lives in the visualization layer; re-exported here so
 # ``from euclid_polish.training.inference import plot_reconstruction`` keeps working.
-from euclid_polish.image.plotting import plot_reconstruction  # noqa: F401
+from euclid_polish.visualization.reconstruction import plot_reconstruction  # noqa: F401
 from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.color import lupton_rgb
