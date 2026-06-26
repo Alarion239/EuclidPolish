@@ -2,10 +2,10 @@
 
 :func:`apply_band_noise` is Euclid VIS/NISP per-band Poisson photon +
 sky + dark + (optional artifacts) + Gaussian read. It lives here so
-:mod:`euclid_polish.sky.types` can import it at module scope without
+:mod:`euclid_polish.image` can import it at module scope without
 re-introducing the triangular import cycle through
 :mod:`euclid_polish.sky.multiband_forward` (which itself imports
-``MultiBandSkyImage``).
+``Image``).
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def apply_band_noise(
     Module-level so non-class callers (e.g. the HST→Euclid TFRecord
     generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
     :class:`MultiBandForward` per-band pipeline, the
-    :meth:`MultiBandSkyImage.with_band_noise` method) can use the
+    :meth:`Image.with_band_noise` method) can use the
     exact same noise model.
     """
 

@@ -18,7 +18,7 @@ mode**: every source is a redshift-realistic stamp
 the COSMOS catalog is optional.
 
 The output of :meth:`MultiBandSimulator.simulate_field` is a single
-:class:`MultiBandSkyImage` with ``data`` of shape ``(H, W, 4)`` in **raw
+:class:`Image` with ``data`` of shape ``(H, W, 4)`` in **raw
 electrons** on the 0.05″ HR grid, one channel per band ordered as
 :attr:`Config.LR_INPUT_BAND_NAMES` (``VIS, Y_E, J_E, H_E``).
 
@@ -58,7 +58,7 @@ from euclid_polish.sky.tng_galaxy import (
     predict_vis_flux_e, predict_visible_radius_arcsec, sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 from dataclasses import replace
 
@@ -813,12 +813,12 @@ class MultiBandSimulator:
         n_lenses:   Optional[int] = None,
         n_big:      Optional[int] = None,
         n_dwarfs:   Optional[int] = None,
-    ) -> Tuple[MultiBandSkyImage, dict]:
+    ) -> Tuple[Image, dict]:
         """Render one clean HR field in 4 bands.
 
         Returns
         -------
-        sky_image : :class:`MultiBandSkyImage` with ``data`` shape
+        sky_image : :class:`Image` with ``data`` shape
                     ``(image_size, image_size, 4)`` in raw electrons.
         metadata  : dict with per-source parameter records.
         """
@@ -898,7 +898,7 @@ class MultiBandSimulator:
             "stars":      stars,
             "lenses":     lenses,
         }
-        sky = MultiBandSkyImage(
+        sky = Image(
             data=canvas,
             pixel_scale_arcsec=cfg.pixel_scale,
             band_names=Config.LR_INPUT_BAND_NAMES,

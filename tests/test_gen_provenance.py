@@ -65,14 +65,14 @@ def test_finalize_dirty_can_parent_on_clean(tmp_path):
 def test_stamped_record_round_trips_through_tfrecord(tmp_path):
     """The exact path step_generate uses: ctx.stamp → write → read back."""
     import numpy as np
-    from euclid_polish.sky.tfrecord import (
+    from euclid_polish.image.tfio import (
         read_multiband_skyimages, write_multiband_skyimages,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     store = ProvStore(str(tmp_path / "store"))
     ctx = begin_generation_run(store, FakeCfg(), git=None)
-    img = MultiBandSkyImage(
+    img = Image(
         data=np.zeros((4, 4, 4), np.float32), pixel_scale_arcsec=0.05,
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=True, subset="train",
     )

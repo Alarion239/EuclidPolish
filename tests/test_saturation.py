@@ -123,9 +123,9 @@ def test_apply_saturation_clips_out_of_bounds():
 # ---------------------------------------------------------------------------
 
 def _hr_field_with_star(mag_vis: float, n: int = 48):
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
     data = np.zeros((n, n, len(_BANDS)), dtype=np.float32)
-    return MultiBandSkyImage(
+    return Image(
         data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=_BANDS, is_clean=True,
         metadata={"stars": [{"type": "star", "x_pix": n / 2.0,

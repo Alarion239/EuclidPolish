@@ -8,21 +8,21 @@ injected callable, so these tests need no archive, no PSFs, and no model:
     LRCutout.super_resolve(model, ...)     -> reconstruct (injected)
 
 The cutout is the typed handle carrying identity + provenance; the wrapped
-MultiBandSkyImage stays the pure pixel/serialization workhorse.
+Image stays the pure pixel/serialization workhorse.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 
 
 def _hr_image(h=8, w=8):
     rng = np.random.default_rng(0)
-    return MultiBandSkyImage(
+    return Image(
         data=rng.normal(size=(h, w, 4)).astype(np.float32),
         pixel_scale_arcsec=0.05, band_names=BANDS, is_clean=True,
     )
@@ -30,7 +30,7 @@ def _hr_image(h=8, w=8):
 
 def _lr_image(h=4, w=4):
     rng = np.random.default_rng(1)
-    return MultiBandSkyImage(
+    return Image(
         data=rng.normal(size=(h, w, 4)).astype(np.float32),
         pixel_scale_arcsec=0.10, band_names=BANDS, is_clean=False,
     )
@@ -70,7 +70,7 @@ def test_cutout_to_tfrecord_embeds_its_id(tmp_path):
     from euclid_polish.cutout import HRCutout
     store = _store(tmp_path)
     cut = HRCutout(image=_hr_image(), id=store.mint())
-    back = MultiBandSkyImage.from_tfrecord(cut.to_tfrecord(index=0))
+    back = Image.from_tfrecord(cut.to_tfrecord(index=0))
     assert back.prov_stamp().id == cut.id
 
 
@@ -336,7 +336,7 @@ def test_cutout_write_tfrecord_readable(tmp_path):
     import os
     import tensorflow as tf
     from euclid_polish.cutout import HRCutout
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
     store = _store(tmp_path)
     cut = HRCutout(image=_hr_image(), id=store.mint())
     records_dir = str(tmp_path / "records")
@@ -344,7 +344,7 @@ def test_cutout_write_tfrecord_readable(tmp_path):
     path = os.path.join(records_dir, "test_hr.tfrecord")
     raw = list(tf.data.TFRecordDataset(path).as_numpy_iterator())
     assert len(raw) == 1
-    back = MultiBandSkyImage.from_tfrecord(raw[0])
+    back = Image.from_tfrecord(raw[0])
     assert back.data.shape == cut.data.shape
     # The cutout's provenance id round-trips via the embedded stamp
     assert back.prov_stamp() is not None

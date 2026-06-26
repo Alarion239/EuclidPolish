@@ -24,7 +24,7 @@ of the LR input). Historically only channel 0 (VIS) was kept — records written
 before the 4-band change carry 1-channel HR and must be regenerated.
 
 The output of :meth:`MultiBandForward.process_hr_to_lr` is a pair of
-``MultiBandSkyImage`` objects:
+``Image`` objects:
 
   * ``lr``  : (H_lr, W_lr, 4), pixel scale 0.10″, dirty (Poisson+read), e⁻
   * ``hr``  : (H_hr, W_hr, 4), pixel scale 0.05″, clean (all bands), e⁻
@@ -41,9 +41,9 @@ from scipy import signal as scipy_signal
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
 from euclid_polish.psf.psf_set import PSFSet, PSFSample
-# Re-export the canonical noise function (lives in sky.noise to keep
-# sky.types' module-level imports free of circulars). Existing callers
-# of ``from euclid_polish.sky.multiband_forward import apply_band_noise``
+# Re-export the canonical noise function (lives in sky.noise, a leaf module).
+# Existing callers of
+# ``from euclid_polish.sky.multiband_forward import apply_band_noise``
 # continue to work via this re-export.
 from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
 from euclid_polish.sky.saturation import (
@@ -53,7 +53,7 @@ from euclid_polish.euclid.psf_library import (
     make_gaussian_psf, psf_side_pixels_for_band,
 )
 from euclid_polish.sky.resample import upsample as resample_upsample
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ class MultiBandForward:
         """Photometric sum-rebin with trailing-row trim.
 
         **Thin wrapper** around
-        :meth:`euclid_polish.sky.types.MultiBandSkyImage.rebin_array` —
+        :meth:`euclid_polish.image.Image.rebin_array` —
         single source of truth for the rebin op. Trailing rows / cols
         that don't fit a whole bin are silently trimmed
         (``trim_remainder=True``); this matches the historical
@@ -188,7 +188,7 @@ class MultiBandForward:
         (``MultiBandForward._process_one_band``, the SR-output renderer
         in ``web/app.py``).
         """
-        return MultiBandSkyImage.rebin_array(
+        return Image.rebin_array(
             arr_2d, int(factor), trim_remainder=True,
         )
 
@@ -271,23 +271,23 @@ class MultiBandForward:
     # ------------------------------------------------------------------ #
     def process(
         self,
-        hr_4ch: MultiBandSkyImage,
+        hr_4ch: Image,
         rng: Optional[np.random.Generator] = None,
-    ) -> Tuple[MultiBandSkyImage, MultiBandSkyImage]:
+    ) -> Tuple[Image, Image]:
         """Run the full forward model on one HR clean 4-channel field.
 
         Parameters
         ----------
-        hr_4ch : :class:`MultiBandSkyImage` with shape (H, W, 4),
+        hr_4ch : :class:`Image` with shape (H, W, 4),
                  ``pixel_scale_arcsec == hr_pixel_scale``, band order
                  ``Config.LR_INPUT_BAND_NAMES``.
         rng    : reproducible noise source; ``np.random.default_rng()`` if None.
 
         Returns
         -------
-        lr_4ch : :class:`MultiBandSkyImage` shape (H_lr, W_lr, 4) at 0.10″/pix,
+        lr_4ch : :class:`Image` shape (H_lr, W_lr, 4) at 0.10″/pix,
                  e⁻ (can be negative after sky subtraction).
-        hr_4ch_out : :class:`MultiBandSkyImage` shape (H, W, 4) at 0.05″/pix,
+        hr_4ch_out : :class:`Image` shape (H, W, 4) at 0.05″/pix,
                  e⁻, clean (no noise) — the network's 4-band HR target.
         """
         if abs(hr_4ch.pixel_scale_arcsec - self.config.hr_pixel_scale) > 1e-4:
@@ -356,7 +356,7 @@ class MultiBandForward:
         # band k of the LR input — the model super-resolves VIS+NISP jointly.
         hr_clean = hr_data_trim.astype(np.float32, copy=True)
 
-        lr_img = MultiBandSkyImage(
+        lr_img = Image(
             data=lr_stack,
             pixel_scale_arcsec=self.target_lr_pixel_scale_arcsec,
             band_names=Config.LR_INPUT_BAND_NAMES,
@@ -364,7 +364,7 @@ class MultiBandForward:
             index=hr_4ch.index,
             subset=hr_4ch.subset,
         )
-        hr_img = MultiBandSkyImage(
+        hr_img = Image(
             data=hr_clean,
             pixel_scale_arcsec=hr_4ch.pixel_scale_arcsec,
             band_names=Config.HR_TARGET_BAND_NAMES,

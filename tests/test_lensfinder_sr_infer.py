@@ -9,9 +9,9 @@ import os
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import (open_multiband_writer,
+from euclid_polish.image.tfio import (open_multiband_writer,
                                         read_multiband_skyimages, tfrecord_path)
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 def _load():
@@ -31,7 +31,7 @@ def _write_dirty(rdir, subset, n, shape=(16, 16, 4)):
     with open_multiband_writer(f"dirty_{subset}", records_dir=rdir) as w:
         for i in range(n):
             data = np.full(shape, float(i + 1), np.float32)
-            w.write(MultiBandSkyImage(
+            w.write(Image(
                 data=data, pixel_scale_arcsec=0.1,
                 band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False,
                 index=i, subset=subset), index=i)

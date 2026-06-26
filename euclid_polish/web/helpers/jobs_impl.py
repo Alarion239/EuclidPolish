@@ -9,8 +9,8 @@ from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.euclid.psf_library import load_all_band_psfs
 from euclid_polish.sky.multiband_forward import MultiBandForward
-from euclid_polish.sky.tfrecord import read_multiband_skyimages
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.inference import plot_reconstruction
 from euclid_polish.training.inference import reconstruct

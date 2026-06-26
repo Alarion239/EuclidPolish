@@ -22,7 +22,7 @@ from euclid_polish.sky.multiband_forward import (
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from tests._tiny_catalog import TinyCosmosCatalog
 
@@ -123,7 +123,7 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
     parent on the clean file id."""
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.sky.gen_provenance import ShardStampPlan
-    from euclid_polish.sky.tfrecord import read_multiband_skyimages
+    from euclid_polish.image.tfio import read_multiband_skyimages
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)
     plan = ShardStampPlan(run_id=ProvId("7f3a9c21"), clean_id=ProvId("4b1e7a90"),

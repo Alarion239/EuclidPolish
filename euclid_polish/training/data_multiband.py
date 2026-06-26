@@ -32,7 +32,7 @@ import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import parse_record_graph_v2, tfrecord_path
+from euclid_polish.image.tfio import parse_record_graph_v2, tfrecord_path
 
 import os as _os
 

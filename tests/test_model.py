@@ -9,15 +9,15 @@ import numpy as np
 
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.cutout.base import SyntheticLRCutout, SRCutout
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 
 
-def _lr_image(h: int = 4, w: int = 4) -> MultiBandSkyImage:
+def _lr_image(h: int = 4, w: int = 4) -> Image:
     rng = np.random.default_rng(1)
-    return MultiBandSkyImage(
+    return Image(
         data=rng.normal(size=(h, w, 4)).astype(np.float32),
         pixel_scale_arcsec=0.10, band_names=BANDS, is_clean=False,
     )

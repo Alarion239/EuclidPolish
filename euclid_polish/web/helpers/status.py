@@ -6,7 +6,7 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.psf_library import psf_inventory
 from euclid_polish.euclid.types import PSF
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for

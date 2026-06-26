@@ -22,11 +22,6 @@ def test_role_defaults_to_unknown():
     assert im.role is Role.UNKNOWN
 
 
-def test_backcompat_alias_is_image():
-    from euclid_polish.sky.types import MultiBandSkyImage
-    assert MultiBandSkyImage is Image
-
-
 def test_unknown_role_value_falls_back():
     assert Role("not-a-real-role") is Role.UNKNOWN
 

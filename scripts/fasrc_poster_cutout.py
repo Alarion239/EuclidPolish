@@ -74,7 +74,7 @@ from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig,
     MultiBandSimulator,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.tng.properties import _fig_to_png
 from euclid_polish.visualization.color import eye_rgb
 from euclid_polish.training.inference import (
@@ -335,7 +335,7 @@ def forward_and_reconstruct(
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
     fwd = MultiBandForward(psf_sets_by_band=psf_sets,
                            config=MultiBandForwardConfig(add_noise=True))
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=np.asarray(clean_4ch, dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=BAND_NAMES, is_clean=True)

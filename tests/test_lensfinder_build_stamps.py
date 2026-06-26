@@ -11,8 +11,8 @@ from PIL import Image
 
 from euclid_polish.config import Config
 from euclid_polish.sky.source_catalog import SOURCE_COLS
-from euclid_polish.sky.tfrecord import open_multiband_writer
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image import Image as MultiBandSkyImage
 
 
 def _load():

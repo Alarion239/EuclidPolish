@@ -46,8 +46,8 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import (
     ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
 )
-from euclid_polish.sky.tfrecord import open_multiband_writer
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image import Image
 
 SCALE = Config.DEFAULT_REBIN_FACTOR          # LR→HR factor (2)
 STAR_ANCHOR_RECORDS_DIR = os.path.join(Config.DATA_DIR, "images/records_v2_star_anchor")
@@ -225,10 +225,10 @@ def main() -> int:
             lr_cube, hr_target = ex
             subset = "validate" if (usable % args.valid_every == 0) else "train"
             idx = counts[subset]
-            writers[(subset, "dirty")].write(MultiBandSkyImage(
+            writers[(subset, "dirty")].write(Image(
                 data=lr_cube, pixel_scale_arcsec=Config.BAND_VIS.pixel_scale_lr_arcsec,
                 band_names=band_names, is_clean=False, index=idx, subset=subset), index=idx)
-            writers[(subset, "hr")].write(MultiBandSkyImage(
+            writers[(subset, "hr")].write(Image(
                 data=hr_target, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                 band_names=(Config.HR_TARGET_BAND_NAME,), is_clean=True,
                 index=idx, subset=subset), index=idx)

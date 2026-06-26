@@ -43,7 +43,7 @@ from euclid_polish.euclid.types import PSF
 from euclid_polish.sky.multiband_forward import (
     MultiBandForward, MultiBandForwardConfig,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
     H = W = 96
     data = np.zeros((H, W, 4), dtype=np.float32)
     data[H // 2, W // 2, :] = 1.0e6
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
     )
@@ -379,7 +379,7 @@ def test_forward_model_lr_grid_is_vis_aligned(extracted_psfs):
     fwd = MultiBandForward(psfs_by_band=psfs,
                            config=MultiBandForwardConfig(add_noise=True))
     H = W = 96
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=np.random.default_rng(0).normal(size=(H, W, 4)).astype(np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -402,7 +402,7 @@ def test_forward_model_runs_with_only_gaussian_fallbacks(tmp_path):
     )
     fwd = MultiBandForward(psfs_by_band=psfs,
                            config=MultiBandForwardConfig(add_noise=False))
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=np.zeros((96, 96, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,

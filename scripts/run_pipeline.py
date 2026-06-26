@@ -65,10 +65,10 @@ from euclid_polish.sky.source_catalog import (
 from euclid_polish.sky.gen_provenance import (
     ShardStampPlan, make_generation_context,
 )
-from euclid_polish.sky.tfrecord import (
+from euclid_polish.image.tfio import (
     open_multiband_writer, tfrecord_path, write_multiband_skyimages,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training import Trainer
 from euclid_polish.training.models.wdsr import wdsr
@@ -338,7 +338,7 @@ def step_convolve(args: argparse.Namespace) -> None:
         clean_parent = None
         if conv_ctx is not None:
             try:
-                first = MultiBandSkyImage.from_tfrecord(next(iter(clean_ds)))
+                first = Image.from_tfrecord(next(iter(clean_ds)))
                 cs = first.prov_stamp()
                 clean_parent = cs.id if cs is not None else None
             except Exception:
@@ -360,7 +360,7 @@ def step_convolve(args: argparse.Namespace) -> None:
                                    records_dir=args.records_dir) as lr_w:
             for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
                                          unit="img", total=n_total)):
-                hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                hr_4ch = Image.from_tfrecord(raw)
                 lr, hr = fwd.process(hr_4ch, rng=rng)
                 lr.index = i
                 hr.index = i

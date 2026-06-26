@@ -19,7 +19,7 @@ from euclid_polish.eval import grouped_runner
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
     reconstruct as _default_reconstruct,
@@ -85,7 +85,7 @@ class Model:
             bands = lr.band_names
         else:
             bands = ("VIS",)
-        sr_img = MultiBandSkyImage(
+        sr_img = Image(
             data=sr_data, pixel_scale_arcsec=_HR_SCALE, band_names=bands,
             is_clean=True, subset=lr.image.subset,
         )

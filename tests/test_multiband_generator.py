@@ -11,7 +11,7 @@ from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig,
     MultiBandSimulator,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def simulator():
 def test_field_returns_4channel_skyimage(simulator: MultiBandSimulator):
     rng = np.random.default_rng(0)
     img, meta = simulator.simulate_field(rng)
-    assert isinstance(img, MultiBandSkyImage)
+    assert isinstance(img, Image)
     assert img.shape == (128, 128, 4)
     assert img.band_names == Config.LR_INPUT_BAND_NAMES
     assert img.is_clean is True

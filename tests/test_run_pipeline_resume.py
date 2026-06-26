@@ -16,7 +16,7 @@ from euclid_polish.sky.multiband_forward import (
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import tfrecord_path
 from tests._tiny_catalog import TinyCosmosCatalog
 
 

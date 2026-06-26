@@ -107,7 +107,7 @@ def run_synthetic_eval(
     import numpy as np
     from astropy.io import fits
 
-    from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+    from euclid_polish.image.tfio import read_multiband_skyimages, tfrecord_path
     from euclid_polish.sky.source_catalog import read_sources
     from euclid_polish.training.inference import reconstruct
     from euclid_polish.eval.catalog_runner import load_eval_model

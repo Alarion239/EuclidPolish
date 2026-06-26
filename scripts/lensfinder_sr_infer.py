@@ -28,8 +28,8 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
     Format, InferenceRun, SRCutoutArtifact, Stamp,
 )
-from euclid_polish.sky.tfrecord import open_multiband_writer, tfrecord_path
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_multiband_writer, tfrecord_path
+from euclid_polish.image import Image
 
 
 def _count_records(path: str) -> int | None:
@@ -80,10 +80,10 @@ def run_sr_inference(records_dir: str, subset: str, sr_fn, *,
     input_parent = None
     with open_multiband_writer(f"sr_{subset}", records_dir=records_dir) as w:
         for i, raw in enumerate(ds):
-            img = MultiBandSkyImage.from_tfrecord(raw)
+            img = Image.from_tfrecord(raw)
             sr = np.asarray(sr_fn(np.asarray(img.data, np.float32)), np.float32)
             idx = img.index if img.index is not None else i
-            out = MultiBandSkyImage(
+            out = Image(
                 data=sr, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                 band_names=Config.HR_TARGET_BAND_NAMES, is_clean=True,
                 index=idx, subset=subset)

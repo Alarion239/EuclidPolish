@@ -20,8 +20,9 @@ what kind of image this is (clean / hr / lr / sr / real) — it replaces the old
 HR/LR/SR/Euclid subclass tree. An optional provenance :class:`Stamp` rides
 inside the TFRecord / FITS when present, so a bare file is self-identifying.
 
-Back-compat: ``euclid_polish.sky.types`` re-exports this class as
-``MultiBandSkyImage`` so existing call sites keep working unchanged.
+This class was historically named ``MultiBandSkyImage`` and lived in
+``euclid_polish.sky.types``; that module has been removed and all call sites now
+use ``from euclid_polish.image import Image``.
 """
 
 from __future__ import annotations

@@ -32,7 +32,7 @@ from euclid_polish.euclid import (
     FitsValidator,
     auth,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
@@ -50,7 +50,7 @@ from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
-from euclid_polish.sky.tfrecord import (
+from euclid_polish.image.tfio import (
     open_multiband_writer,
     read_multiband_skyimages,
     tfrecord_path,
@@ -930,7 +930,7 @@ class InteractiveCLI:
                                 total=n_images, desc=f"Forward {subset}",
                                 unit="img"):
                     try:
-                        hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                        hr_4ch = Image.from_tfrecord(raw)
                         lr, hr = forward.process(hr_4ch, rng=rng)
                         hr_w.write(hr, index=n_ok)
                         lr_w.write(lr, index=n_ok)
@@ -1744,7 +1744,7 @@ class InteractiveCLI:
 
                 # Collect matched pairs per subset to avoid index-space collisions.
                 # Multi-band v2 records: HR is 1-channel (VIS), LR is 4-channel.
-                all_pairs: list[tuple[MultiBandSkyImage, MultiBandSkyImage]] = []
+                all_pairs: list[tuple[Image, Image]] = []
                 for subset in ("train", "validate"):
                     clean_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
                     dirty_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")

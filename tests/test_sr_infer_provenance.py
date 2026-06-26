@@ -12,10 +12,10 @@ from euclid_polish.provenance.checkpoint import write_checkpoint_provenance
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.tfrecord import (
+from euclid_polish.image.tfio import (
     read_multiband_skyimages, tfrecord_path, write_multiband_skyimages,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -31,7 +31,7 @@ def _load_sr_infer():
 def test_run_sr_inference_stamps_records(tmp_path, monkeypatch):
     rdir = str(tmp_path)
     # A stamped dirty record on disk.
-    dirty = MultiBandSkyImage(
+    dirty = Image(
         data=np.zeros((8, 8, 4), np.float32), pixel_scale_arcsec=0.10,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False, index=0,
         subset="train",

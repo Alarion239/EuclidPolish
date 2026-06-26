@@ -1,4 +1,4 @@
-"""Tests for ``MultiBandSkyImage`` and v2 TFRecord I/O."""
+"""Tests for ``Image`` and v2 TFRecord I/O."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import (
+from euclid_polish.image.tfio import (
     parse_record_graph_v2,
     read_multiband_skyimages,
     write_multiband_skyimages,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 # ---------------------------------------------------------------------------
-# MultiBandSkyImage construction
+# Image construction
 # ---------------------------------------------------------------------------
 
 def test_accepts_3d_data():
     data = np.zeros((8, 8, 4), dtype=np.float32)
-    img = MultiBandSkyImage(
+    img = Image(
         data=data, pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
     )
@@ -34,7 +34,7 @@ def test_accepts_3d_data():
 def test_promotes_2d_to_3d():
     """Legacy 2-D arrays are auto-promoted to (H, W, 1)."""
     data = np.zeros((8, 8), dtype=np.float32)
-    img = MultiBandSkyImage(
+    img = Image(
         data=data, pixel_scale_arcsec=0.05,
         band_names=("VIS",), is_clean=True,
     )
@@ -44,7 +44,7 @@ def test_promotes_2d_to_3d():
 
 def test_rejects_non_2d_3d():
     with pytest.raises(ValueError):
-        MultiBandSkyImage(
+        Image(
             data=np.zeros((8,), dtype=np.float32),
             pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True,
         )
@@ -52,7 +52,7 @@ def test_rejects_non_2d_3d():
 
 def test_rejects_band_channel_mismatch():
     with pytest.raises(ValueError, match="band_names"):
-        MultiBandSkyImage(
+        Image(
             data=np.zeros((8, 8, 4), dtype=np.float32),
             pixel_scale_arcsec=0.10, band_names=("VIS", "Y_E"), is_clean=False,
         )
@@ -61,7 +61,7 @@ def test_rejects_band_channel_mismatch():
 def test_preserves_data():
     rng = np.random.default_rng(0)
     data = rng.normal(size=(16, 16, 4)).astype(np.float32)
-    img = MultiBandSkyImage(
+    img = Image(
         data=data, pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
     )
@@ -69,7 +69,7 @@ def test_preserves_data():
 
 
 def test_metadata_default():
-    img = MultiBandSkyImage(
+    img = Image(
         data=np.zeros((4, 4, 1), dtype=np.float32),
         pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True,
     )
@@ -82,9 +82,9 @@ def test_metadata_default():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def lr_image() -> MultiBandSkyImage:
+def lr_image() -> Image:
     rng = np.random.default_rng(0)
-    return MultiBandSkyImage(
+    return Image(
         data=rng.normal(size=(8, 12, 4)).astype(np.float32),
         pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"),
@@ -93,9 +93,9 @@ def lr_image() -> MultiBandSkyImage:
 
 
 @pytest.fixture
-def hr_image() -> MultiBandSkyImage:
+def hr_image() -> Image:
     rng = np.random.default_rng(1)
-    return MultiBandSkyImage(
+    return Image(
         data=rng.normal(size=(16, 24, 1)).astype(np.float32),
         pixel_scale_arcsec=0.05,
         band_names=("VIS",),
@@ -123,7 +123,7 @@ def test_v2_roundtrip_exact(tmp_path, lr_image, hr_image):
 def test_handles_multiple_records(tmp_path):
     rng = np.random.default_rng(7)
     imgs = [
-        MultiBandSkyImage(
+        Image(
             data=rng.normal(size=(4, 4, 4)).astype(np.float32),
             pixel_scale_arcsec=0.10,
             band_names=("VIS", "Y_E", "J_E", "H_E"),
@@ -173,7 +173,7 @@ def test_v3_stamp_survives_round_trip(tmp_path):
         schema_version=3,
         subset="train",
     )
-    img = MultiBandSkyImage(
+    img = Image(
         data=rng.normal(size=(8, 8, 4)).astype(np.float32),
         pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"),
@@ -197,11 +197,11 @@ def test_graph_parser_identical_with_and_without_stamp(tmp_path):
     from euclid_polish.provenance import ProvId, Stamp
     rng = np.random.default_rng(11)
     data = rng.normal(size=(8, 8, 4)).astype(np.float32)
-    plain = MultiBandSkyImage(
+    plain = Image(
         data=data, pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
     )
-    stamped = MultiBandSkyImage(
+    stamped = Image(
         data=data, pixel_scale_arcsec=0.10,
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False,
         stamp=Stamp(id=ProvId("4b1e7a90")),

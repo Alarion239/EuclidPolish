@@ -282,10 +282,10 @@ def test_forward_model_with_artifacts_changes_image():
     from euclid_polish.sky.multiband_forward import (
         MultiBandForward, MultiBandForwardConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     H = W = 128
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -315,10 +315,10 @@ def test_forward_model_artifact_off_matches_old_behaviour():
     from euclid_polish.sky.multiband_forward import (
         MultiBandForward, MultiBandForwardConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     H = W = 64
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,

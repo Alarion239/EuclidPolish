@@ -4,8 +4,8 @@ from __future__ import annotations
 from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.sky.tfrecord import read_multiband_skyimages
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.visualization.color import (
     calibrated_rgb_panel, eye_rgb, planck_color_strip,
 )

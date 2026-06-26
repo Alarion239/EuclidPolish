@@ -22,7 +22,7 @@ from euclid_polish.sky.multiband_forward import (
 from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
-from euclid_polish.sky.tfrecord import (
+from euclid_polish.image.tfio import (
     tfrecord_path, write_multiband_skyimages,
 )
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset

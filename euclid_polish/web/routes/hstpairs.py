@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import read_multiband_skyimages
-from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.image import Image
 from euclid_polish.visualization.color import calibrated_rgb_panel
 from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
@@ -105,7 +105,7 @@ def register(app):
                 clean_hr_data[..., c].astype(np.float32), kernel,
                 mode="same",
             )
-        return MultiBandSkyImage.rebin_array(out_hr, rebin)
+        return Image.rebin_array(out_hr, rebin)
 
     def _compute_hst_pair_arrays(subset, kind, index, records_dir):
         """Raw-array companion to ``_render_sky_record_png`` /

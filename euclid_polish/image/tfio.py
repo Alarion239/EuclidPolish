@@ -4,7 +4,8 @@ This is the persistence layer an :class:`~euclid_polish.image.collection.ImageSe
 is built on. It depends only on tensorflow + the :class:`Image` atom, so the
 import direction stays ``sky/`` → ``image/`` (never the reverse).
 
-``euclid_polish.sky.tfrecord`` re-exports these names for back-compat.
+These functions were historically in ``euclid_polish.sky.tfrecord``; that module
+has been removed and call sites now import from ``euclid_polish.image.tfio``.
 """
 
 from __future__ import annotations

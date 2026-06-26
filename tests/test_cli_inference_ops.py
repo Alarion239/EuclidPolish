@@ -5,7 +5,7 @@ import numpy as np
 
 from euclid_polish.model import Model
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 
@@ -22,13 +22,13 @@ def _fake_model():
 
 
 def _lr_img(h=4, w=4):
-    return MultiBandSkyImage(
+    return Image(
         data=np.zeros((h, w, 4), np.float32), pixel_scale_arcsec=0.10,
         band_names=BANDS, is_clean=False)
 
 
 def _hr_img(h=8, w=8):
-    return MultiBandSkyImage(
+    return Image(
         data=np.zeros((h, w, 4), np.float32), pixel_scale_arcsec=0.05,
         band_names=BANDS, is_clean=True)
 

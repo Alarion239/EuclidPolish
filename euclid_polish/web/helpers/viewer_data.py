@@ -38,7 +38,7 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.sky import sr as sky_sr
-from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+from euclid_polish.image.tfio import read_multiband_skyimages, tfrecord_path
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
     _ensure_local_star_cutout,

@@ -848,12 +848,12 @@ def test_view_sky_renders_color_modes(client, tmp_path, monkeypatch):
     (adaptive solar) and 'eye' (physical blackbody-T colors with the
     temperature legend)."""
     import numpy as np
-    from euclid_polish.sky.tfrecord import write_multiband_skyimages
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image.tfio import write_multiband_skyimages
+    from euclid_polish.image import Image
     from euclid_polish.web.helpers import paths as web_paths
 
     rng = np.random.default_rng(0)
-    img = MultiBandSkyImage(
+    img = Image(
         data=(np.abs(rng.normal(size=(24, 24, 4))) * 500.0).astype(np.float32),
         pixel_scale_arcsec=0.05,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
@@ -965,10 +965,10 @@ def test_view_hst_pair_pair_kind_renders_real_png(
     """
     import numpy as np
     from euclid_polish.config import Config
-    from euclid_polish.sky.tfrecord import (
+    from euclid_polish.image.tfio import (
         open_multiband_writer, tfrecord_path,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
     from euclid_polish.web import fasrc_fetcher as ff
     from euclid_polish.web import remote as web_remote
     from euclid_polish.web import fasrc_config
@@ -1008,7 +1008,7 @@ def test_view_hst_pair_pair_kind_renders_real_png(
         data = rng.uniform(0, 100, size=(H, W, n_bands)).astype(np.float32)
         band_names = (Config.LR_INPUT_BAND_NAMES if n_bands == 4
                       else ("VIS",))
-        img = MultiBandSkyImage(
+        img = Image(
             data=data, pixel_scale_arcsec=scale,
             band_names=band_names, is_clean=(kind != "dirty"),
             metadata={"source": "test"},

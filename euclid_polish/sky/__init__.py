@@ -8,7 +8,7 @@ Public API:
   the project's custom Sersic renderer.
 * :class:`MultiBandForward` — per-band PSF convolution + noise +
   NISP→VIS-LR resample, returning paired (LR 4-channel, HR-VIS 1-channel).
-* :class:`MultiBandSkyImage` — typed container for ``(H, W, C)`` records.
+* :class:`Image` — typed container for ``(H, W, C)`` records.
 * :class:`Cosmos2025Catalog` — galaxy catalog reader (mandatory).
 * :class:`LensPopulation` — Collett 2015 lens population sampler.
 """
@@ -34,7 +34,7 @@ from euclid_polish.sky.lens_population import (
     render_lens_to_canvas,
     render_lens_to_multiband_canvas,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 from euclid_polish.sky.profiles import (
     add_sersic_to_bands,
     compute_sersic_stamp,
@@ -51,7 +51,7 @@ __all__ = [
     "MultiBandGeneratorConfig",
     "MultiBandForward",
     "MultiBandForwardConfig",
-    "MultiBandSkyImage",
+    "Image",
     "CosmosCatalog",
     "Cosmos2025Catalog",
     "open_cosmos2025",

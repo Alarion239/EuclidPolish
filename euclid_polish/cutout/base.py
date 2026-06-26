@@ -1,6 +1,6 @@
 """The behaviour-bearing cutout hierarchy.
 
-``Cutout`` *composes* a :class:`~euclid_polish.sky.types.MultiBandSkyImage`
+``Cutout`` *composes* a :class:`~euclid_polish.image.Image`
 (has-a, not is-a): the image stays the pure pixel / serialization / physics
 workhorse, while the cutout is the typed handle that carries identity +
 provenance and owns the verb that produced it. Each leaf delegates its verb to
@@ -30,8 +30,8 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.tfrecord import write_multiband_skyimages
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import write_multiband_skyimages
+from euclid_polish.image import Image
 from euclid_polish.training.inference import plot_reconstruction as _plot_reconstruction
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec/pix
@@ -42,7 +42,7 @@ _LR_SCALE = Config.VIS_PIXEL_SCALE_ARCSEC     # 0.10 arcsec/pix
 class Cutout:
     """A typed, provenance-carrying handle around a multi-band image."""
 
-    image: MultiBandSkyImage
+    image: Image
     id: ProvId
     produced_by: Optional[ProvId] = None
     parents: Tuple[ProvId, ...] = ()
@@ -75,7 +75,7 @@ class Cutout:
             subset=self.image.subset,
         )
 
-    def stamped_image(self) -> MultiBandSkyImage:
+    def stamped_image(self) -> Image:
         """The wrapped image carrying this cutout's stamp (for serialization)."""
         return self.image.with_stamp(self.prov_stamp())
 
@@ -86,7 +86,7 @@ class Cutout:
         """Write this cutout as a single-element TFRecord; return the path.
 
         Delegates to
-        :func:`~euclid_polish.sky.tfrecord.write_multiband_skyimages`,
+        :func:`~euclid_polish.image.tfio.write_multiband_skyimages`,
         embedding this cutout's provenance stamp in the record. The file is
         ``<records_dir>/<name>.tfrecord`` (``records_dir`` is created if absent).
 
@@ -281,7 +281,7 @@ class EuclidLRCutout(LRCutout):
             planes = cls._fetch_planes_from_archive(ra, dec, size, bands)
 
         data = np.stack(planes, axis=-1)
-        img = MultiBandSkyImage(
+        img = Image(
             data=data, pixel_scale_arcsec=_LR_SCALE,
             band_names=tuple(bands), is_clean=False,
         )

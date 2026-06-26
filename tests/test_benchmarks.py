@@ -159,10 +159,10 @@ def test_bench_forward_one_field_small():
     from euclid_polish.sky.multiband_forward import (
         MultiBandForward, MultiBandForwardConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     rng = np.random.default_rng(0)
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=rng.uniform(0, 1e3, size=(96, 96, 4)).astype(np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES,
@@ -187,10 +187,10 @@ def test_bench_forward_one_field_realistic():
     from euclid_polish.sky.multiband_forward import (
         MultiBandForward, MultiBandForwardConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     rng = np.random.default_rng(0)
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=rng.uniform(0, 1e3, size=(252, 252, 4)).astype(np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES,
@@ -410,9 +410,9 @@ def test_bench_forward_512_production():
     from euclid_polish.sky.multiband_forward import (
         MultiBandForward, MultiBandForwardConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
     rng = np.random.default_rng(0)
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=rng.uniform(0, 1e3, size=(510, 510, 4)).astype(np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES,
@@ -457,14 +457,14 @@ def test_bench_end_to_end_one_pair_252():
 def test_bench_tfrecord_roundtrip(tmp_path):
     """Write and read back 16 multi-band records (96² each)."""
     import numpy as np
-    from euclid_polish.sky.tfrecord import (
+    from euclid_polish.image.tfio import (
         write_multiband_skyimages, read_multiband_skyimages,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     rng = np.random.default_rng(0)
     imgs = [
-        MultiBandSkyImage(
+        Image(
             data=rng.normal(size=(96, 96, 4)).astype(np.float32),
             pixel_scale_arcsec=0.10,
             band_names=Config.LR_INPUT_BAND_NAMES,

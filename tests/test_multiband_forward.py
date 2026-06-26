@@ -11,7 +11,7 @@ from euclid_polish.sky.multiband_forward import (
     MultiBandForwardConfig,
     default_psf_for_band,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def hr_field():
     data = np.zeros((H, W, 4), dtype=np.float32)
     # 1e6 e⁻ delta at the centre of each band's channel.
     data[H // 2, W // 2, :] = 1.0e6
-    return MultiBandSkyImage(
+    return Image(
         data=data,
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES,
@@ -92,7 +92,7 @@ def test_noise_on_yields_negative_pixels():
     """With noise on, sky-subtracted output should have some negative pixels."""
     forward = MultiBandForward(config=MultiBandForwardConfig(add_noise=True))
     H = W = 64
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -106,7 +106,7 @@ def test_noise_on_yields_negative_pixels():
 def test_noise_off_yields_zero_blank_image(forward: MultiBandForward):
     """A blank HR scene with noise off produces an all-zero LR (no sky added)."""
     H = W = 64
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -120,7 +120,7 @@ def test_noise_off_yields_zero_blank_image(forward: MultiBandForward):
 # ---------------------------------------------------------------------------
 
 def test_band_count_mismatch_rejected(forward: MultiBandForward):
-    bad = MultiBandSkyImage(
+    bad = Image(
         data=np.zeros((32, 32, 1), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=("VIS",),
@@ -131,7 +131,7 @@ def test_band_count_mismatch_rejected(forward: MultiBandForward):
 
 
 def test_hr_scale_mismatch_rejected(forward: MultiBandForward):
-    bad = MultiBandSkyImage(
+    bad = Image(
         data=np.zeros((32, 32, 4), dtype=np.float32),
         pixel_scale_arcsec=0.99,
         band_names=Config.LR_INPUT_BAND_NAMES,

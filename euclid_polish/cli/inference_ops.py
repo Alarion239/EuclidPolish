@@ -11,28 +11,28 @@ import numpy as np  # noqa: F401  (kept for callers/extension)
 
 from euclid_polish.cutout.base import EuclidLRCutout, HRCutout, SyntheticLRCutout
 from euclid_polish.provenance.defaults import default_store
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
-def _lr_cutout(img: MultiBandSkyImage, store) -> SyntheticLRCutout:
+def _lr_cutout(img: Image, store) -> SyntheticLRCutout:
     # Reuse the record's embedded id when present (preserves lineage); else mint.
     stamp = img.prov_stamp()
     cid = stamp.id if stamp is not None else store.mint()
     return SyntheticLRCutout(image=img, id=cid)
 
 
-def _hr_cutout(img: MultiBandSkyImage, store) -> HRCutout:
+def _hr_cutout(img: Image, store) -> HRCutout:
     stamp = img.prov_stamp()
     cid = stamp.id if stamp is not None else store.mint()
     return HRCutout(image=img, id=cid)
 
 
 def reconstruct_and_render(
-    lr_images: List[MultiBandSkyImage],
+    lr_images: List[Image],
     model,
     out_dir: str,
     *,
-    hr_images: Optional[List[MultiBandSkyImage]] = None,
+    hr_images: Optional[List[Image]] = None,
     regime: str = "eye",
     store=None,
 ) -> List[str]:
@@ -40,13 +40,13 @@ def reconstruct_and_render(
 
     Parameters
     ----------
-    lr_images : list of MultiBandSkyImage
+    lr_images : list of Image
         The dirty LR inputs.
     model : Model
         A loaded :class:`~euclid_polish.model.Model`.
     out_dir : str
         Output directory (created if absent).
-    hr_images : list of MultiBandSkyImage, optional
+    hr_images : list of Image, optional
         Ground-truth HR targets (same length/order as ``lr_images``); when
         present the HR panel + residual metrics are rendered.
     regime : str
