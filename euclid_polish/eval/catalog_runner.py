@@ -21,7 +21,7 @@ import traceback
 from typing import Any, Callable, Dict, List, Optional
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.eval_catalog import read_eval_catalog
+from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 # Per-object metric keys (from reconstruct_cutout_at) + the manifest columns.
 _METRIC_KEYS = ("lr_total_e", "sr_total_e", "flux_ratio_sr_over_lr")
@@ -370,7 +370,7 @@ def run_catalog_eval(
     if not os.path.isfile(catalog):
         if catalog_path:
             raise FileNotFoundError(f"catalog not found: {catalog}")
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
         _emit(f"catalog {catalog} not found — fetching from Zenodo…")
         lens_catalog.fetch(catalog)
 

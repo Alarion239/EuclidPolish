@@ -17,9 +17,6 @@ Every operation that changes the data returns a NEW ``PSF`` — the
 class is treated as immutable so consumers can chain operations
 ``psf.resampled_to(0.05).centre_cropped_to(421).with_unit_sum()``
 without worrying about which step mutates what.
-
-The legacy thin dataclass at ``euclid_polish.euclid.types.PSF`` now
-re-exports this class for back-compat.
 """
 
 from __future__ import annotations

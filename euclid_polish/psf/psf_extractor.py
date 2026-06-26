@@ -16,7 +16,7 @@ from photutils.psf import EPSFModel, EPSFBuilder, EPSFStars, EPSFStar
 from tqdm import tqdm
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf import PSF
 
 
 @dataclass

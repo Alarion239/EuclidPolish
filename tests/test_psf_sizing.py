@@ -9,14 +9,14 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf.psf_library import (
     load_all_band_psfs,
     load_band_psf,
     make_gaussian_psf,
     psf_half_pixels_for_band,
     psf_side_pixels_for_band,
 )
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf import PSF
 from euclid_polish.sky.observation_simulator import default_psf_for_band
 
 
@@ -189,13 +189,13 @@ def test_load_all_band_psfs_have_distinct_sizes(tmp_path):
     (64, 63),
 ])
 def test_effective_output_size_forces_odd(user_input, expected):
-    from euclid_polish.euclid.psf_extractor import PSFExtractionConfig
+    from euclid_polish.psf.psf_extractor import PSFExtractionConfig
     cfg = PSFExtractionConfig(output_size=user_input)
     assert cfg.effective_output_size == expected
 
 
 def test_extraction_config_rejects_non_positive_output_size():
-    from euclid_polish.euclid.psf_extractor import PSFExtractionConfig
+    from euclid_polish.psf.psf_extractor import PSFExtractionConfig
     cfg = PSFExtractionConfig(output_size=0)
     ok, msg = cfg.validate()
     assert not ok

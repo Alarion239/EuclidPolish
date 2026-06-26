@@ -15,7 +15,7 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.eval_catalog import CatalogError, read_eval_catalog
+from euclid_polish.eval.eval_catalog import CatalogError, read_eval_catalog
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
@@ -83,7 +83,7 @@ class TestRunCatalogEval:
 
     def test_autofetch_then_empty_returns_cleanly(self, tmp_path, monkeypatch):
         from euclid_polish.eval import catalog_runner
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
         monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
         called = {}
 
@@ -442,7 +442,7 @@ class TestEvaluationRoutes:
 
     def test_fetch_catalog_endpoint(self, client, monkeypatch):
         # Stub the (network) fetch so the route is exercised offline.
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
 
         monkeypatch.setattr(
             lens_catalog, "fetch",
@@ -455,7 +455,7 @@ class TestEvaluationRoutes:
         assert j["rel"].endswith("lenses.csv")
 
     def test_fetch_catalog_endpoint_reports_failure(self, client, monkeypatch):
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
 
         def boom(*a, **k):
             raise RuntimeError("zenodo down")
@@ -683,7 +683,7 @@ class TestZoobotMorphHelpers:
 
 class TestLensCatalogModule:
     def test_normalize_grade_filter(self, tmp_path):
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
 
         raw = tmp_path / "raw.csv"
         raw.write_text(
@@ -700,7 +700,7 @@ class TestLensCatalogModule:
 
     def test_fetch_uses_source_without_network(self, tmp_path):
         # source= short-circuits the download, so this never touches the net.
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
 
         raw = tmp_path / "raw.csv"
         raw.write_text(

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets,
     load_all_band_psfs,
     load_band_psf,
@@ -16,7 +16,7 @@ from euclid_polish.euclid.psf_library import (
     psf_inventory,
     psf_path_for_band,
 )
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf import PSF
 from euclid_polish.psf import PSFSet
 
 
@@ -46,7 +46,7 @@ def test_load_band_psf_reads_empirical_when_present(tmp_path):
     """Save a Gaussian as an "empirical" PSF, then load it back."""
     # Synthesise a Gaussian PSF at NISP native scale (0.30") to simulate an
     # empirical kernel and save it under the canonical filename for Y_E.
-    from euclid_polish.euclid.psf_library import _gaussian_psf
+    from euclid_polish.psf.psf_library import _gaussian_psf
     src = _gaussian_psf(0.45, 0.30, size=63)
     saved_path = src.save(str(tmp_path), filename=Config.BAND_Y_E.psf_fits_filename)
     assert os.path.exists(saved_path)
@@ -77,7 +77,7 @@ def test_psf_inventory_reports_missing_bands(tmp_path):
 
 
 def test_psf_inventory_reports_present_band(tmp_path):
-    from euclid_polish.euclid.psf_library import _gaussian_psf
+    from euclid_polish.psf.psf_library import _gaussian_psf
     src = _gaussian_psf(0.16, 0.05, size=31)
     src.save(str(tmp_path), filename=Config.BAND_VIS.psf_fits_filename)
     inv = psf_inventory(psf_dir=str(tmp_path))
@@ -90,7 +90,7 @@ def test_psf_inventory_reports_present_band(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _save_band_psf_set(tmp_path, band, n, *, scale=0.05):
-    from euclid_polish.euclid.psf_library import _gaussian_psf
+    from euclid_polish.psf.psf_library import _gaussian_psf
     members = [_gaussian_psf(0.10 + 0.02 * i, scale, size=31) for i in range(n)]
     pset = PSFSet.from_psfs(members)
     return pset.save(str(tmp_path), filename=band.psf_fits_filename)

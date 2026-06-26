@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_extractor import PSFExtractor
+from euclid_polish.psf.psf_extractor import PSFExtractor
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.psf import PSF
 
@@ -155,7 +155,7 @@ def test_build_cluster_psf_builds_from_stamps(monkeypatch):
         staticmethod(lambda epsf, scale:
                      PSF(data=np.full((5, 5), 1.0 / 25, np.float32),
                          pixel_scale=scale)))
-    from euclid_polish.euclid.psf_extractor import PSFExtractionConfig
+    from euclid_polish.psf.psf_extractor import PSFExtractionConfig
     cfg = PSFExtractionConfig(psf_size=5, progress_bar=False)
     psf = gen._build_cluster_psf((cfg, 0.025,
                                   [np.ones((5, 5), np.float32) for _ in range(3)]))

@@ -1,7 +1,7 @@
 """
 Per-band PSF loading and management.
 
-The PSF extraction pipeline (:mod:`euclid_polish.euclid.psf_extractor`) is
+The PSF extraction pipeline (:mod:`euclid_polish.psf.psf_extractor`) is
 band-agnostic — it takes a directory of star cutouts and produces an
 empirical ePSF as a single normalised FITS file. To support the multi-band
 forward model we just need a thin wrapper that, given a band name, returns
@@ -29,7 +29,7 @@ import numpy as np
 from scipy.ndimage import zoom
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_set import PSFSet
 
 

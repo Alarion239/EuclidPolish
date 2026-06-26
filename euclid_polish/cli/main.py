@@ -27,11 +27,10 @@ from euclid_polish.euclid import (
     StarCatalog,
     EuclidCutoutDownloader,
     DownloadConfig,
-    PSFExtractor,
-    PSFExtractionConfig,
     FitsValidator,
     auth,
 )
+from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
 from euclid_polish.image import Image
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.sky_simulator import (
@@ -40,15 +39,15 @@ from euclid_polish.sky.sky_simulator import (
 from euclid_polish.sky.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.euclid.types import PSF
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
-from euclid_polish.euclid import estimate_fwhm
+from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
 from euclid_polish.image.tfio import (
     open_writer,

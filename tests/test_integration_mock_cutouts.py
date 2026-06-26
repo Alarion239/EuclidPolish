@@ -33,13 +33,13 @@ from astropy.io import fits
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.downloader import DownloadConfig
-from euclid_polish.euclid.psf_extractor import (
+from euclid_polish.psf.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
 )
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf.psf_library import (
     load_all_band_psfs, load_band_psf, psf_path_for_band,
 )
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf import PSF
 from euclid_polish.sky.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )

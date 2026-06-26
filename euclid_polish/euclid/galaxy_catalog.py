@@ -1,6 +1,6 @@
 """Build a real-field-galaxy evaluation catalog by querying the Euclid archive.
 
-Mirrors :mod:`euclid_polish.euclid.lens_catalog` in shape (one source of truth
+Mirrors :mod:`euclid_polish.eval.lens_catalog` in shape (one source of truth
 shared by a CLI and the WebUI), but the "fetch" is a live ADQL cone query on
 ``catalogue.mer_catalogue`` around the strong-lens fields rather than a Zenodo
 download. It selects clean, resolved, bigger-end galaxies — confidently *not*
@@ -21,7 +21,7 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.auth import login
-from euclid_polish.euclid.eval_catalog import read_eval_catalog
+from euclid_polish.eval.eval_catalog import read_eval_catalog
 from euclid_polish.euclid.photometry import uJy_to_ab_mag
 from euclid_polish.euclid.validator import angular_separation_arcsec
 

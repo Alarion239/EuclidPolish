@@ -14,7 +14,7 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.psf.psf_library import load_all_band_psfs
 from tests._tiny_catalog import TinyCosmosCatalog
 from euclid_polish.sky.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,

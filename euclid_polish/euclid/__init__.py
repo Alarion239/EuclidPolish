@@ -1,11 +1,10 @@
 """
 Euclid Operations module.
 
-This module provides classes for working with Euclid telescope data,
-including catalog management, cutout downloading, and PSF extraction.
+Classes for working with Euclid telescope data: catalog querying and cutout
+downloading.
 """
 
-from euclid_polish.euclid.types import PSF, estimate_fwhm
 from euclid_polish.euclid.catalog import StarCatalog
 from euclid_polish.euclid.validator import (
     FitsValidator,
@@ -15,17 +14,12 @@ from euclid_polish.euclid.validator import (
     validate_range,
     validate_positive,
 )
-from euclid_polish.euclid.psf_extractor import PSFExtractor, PSFExtractionConfig
 from euclid_polish.euclid.downloader import EuclidCutoutDownloader, DownloadConfig
 from euclid_polish.euclid import auth
 
 __all__ = [
-    "PSF",
-    "estimate_fwhm",
     "StarCatalog",
     "FitsValidator",
-    "PSFExtractor",
-    "PSFExtractionConfig",
     "EuclidCutoutDownloader",
     "DownloadConfig",
     "angular_separation_arcsec",

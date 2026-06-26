@@ -5,7 +5,6 @@ Coverage:
     convolve, save/load).
   * The standalone measurement helpers (FWHM, centroid).
   * The instrument loaders (sum=1, on HR grid, optionally recentred).
-  * Back-compat shim from ``euclid_polish.euclid.types.PSF``.
 """
 
 from __future__ import annotations
@@ -352,28 +351,6 @@ class TestRotation:
         rot = p.rotated(23.0)
         assert rot.pixel_scale == 0.025
         assert rot.oversampling == 4
-
-
-# ---------------------------------------------------------------------------
-# Back-compat shim
-# ---------------------------------------------------------------------------
-
-class TestBackCompatShim:
-
-    def test_old_import_path_still_works(self):
-        """``from euclid_polish.euclid.types import PSF`` keeps working
-        after the consolidation — exactly the same class is exposed."""
-        from euclid_polish.euclid.types import PSF as LegacyPSF
-        from euclid_polish.psf import PSF as NewPSF
-        assert LegacyPSF is NewPSF
-
-    def test_estimate_fwhm_legacy_helper_still_exported(self):
-        """``estimate_fwhm`` was historically importable from
-        ``euclid_polish.euclid.types`` (some test files use it)."""
-        from euclid_polish.euclid.types import estimate_fwhm
-        row = _gauss(31, 2.0)[15]
-        got = estimate_fwhm(row)
-        assert got > 0
 
 
 # ---------------------------------------------------------------------------

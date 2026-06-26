@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Download the Euclid Q1 strong-lens catalog and normalize it for evaluation.
 
-Thin CLI over :mod:`euclid_polish.euclid.lens_catalog` (the shared fetch logic
+Thin CLI over :mod:`euclid_polish.eval.lens_catalog` (the shared fetch logic
 also used by the WebUI). Pulls the lightweight discovery catalog CSV from
 Zenodo record 15025832 and writes a normalized ``id,ra,dec,grade,subset`` CSV
 that ``scripts/fasrc_eval_catalog.py`` consumes.
@@ -24,7 +24,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.euclid import lens_catalog
+from euclid_polish.eval import lens_catalog
 
 
 def main(argv: list[str] | None = None) -> int:

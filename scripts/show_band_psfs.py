@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf.psf_library import (
     load_all_band_psfs, psf_inventory,
 )
 
