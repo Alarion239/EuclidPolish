@@ -1,9 +1,9 @@
 """The :class:`Model` operator — the public face of a trained checkpoint.
 
 Wraps :func:`~euclid_polish.training.inference.load_model_from_checkpoint`
-and :func:`~euclid_polish.training.inference.reconstruct`. This is the only
-module that imports the inference engine for *upsampling*; cutout objects are
-pure data and never import this module (enforced by a test).
+and :func:`~euclid_polish.training.inference.reconstruct`. ``upsample`` consumes
+and produces plain :class:`~euclid_polish.image.Image` objects (the leaf data
+atom), so the image layer never needs to import this module.
 """
 
 from __future__ import annotations
@@ -13,13 +13,13 @@ from typing import Callable, Optional
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.cutout.base import LRCutout, SRCutout
 from euclid_polish.eval import catalog_runner
 from euclid_polish.eval import grouped_runner
+from euclid_polish.image import Image, Role
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
-from euclid_polish.provenance.defaults import default_store
+from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.ids import ProvId
-from euclid_polish.image import Image
+from euclid_polish.provenance.records import Stamp
 from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
     reconstruct as _default_reconstruct,
@@ -70,14 +70,16 @@ class Model:
         _lr_display, sr_data = self._reconstruct_fn(self._tf_model, arr)
         return np.asarray(sr_data, dtype=np.float32)
 
-    def upsample(self, lr: LRCutout, *, store=None) -> SRCutout:
-        """Super-resolve an :class:`LRCutout` into an :class:`SRCutout`.
+    def upsample(self, lr: Image, *, store=None) -> Image:
+        """Super-resolve an LR :class:`Image` into an SR Image (role ``'sr'``).
 
-        The SR cutout's parents are ``(self.id, lr.id)`` (``self.id`` is
-        omitted when ``None`` — a legacy checkpoint with no provenance
-        sidecar). The new id is minted via ``store`` (or ``default_store()``).
-        The provenance step is guarded so a store failure degrades to an
-        unstamped but correct artifact.
+            sr = model.upsample(lr)
+
+        The SR image's stamp parents are ``(self.id, lr's id)`` (``self.id`` is
+        omitted when ``None`` — a legacy checkpoint with no provenance sidecar;
+        ``lr``'s id comes from its embedded stamp when present). The new id is
+        minted via ``store`` (or ``default_store()``), guarded so a store
+        failure degrades to an unstamped-but-correct artifact.
         """
         _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.data)
         sr_data = np.asarray(sr_data, dtype=np.float32)
@@ -85,17 +87,13 @@ class Model:
             bands = lr.band_names
         else:
             bands = ("VIS",)
-        sr_img = Image(
+        lr_id = lr.stamp.id if lr.stamp is not None else None
+        parents = tuple(p for p in (self.id, lr_id) if p is not None)
+        return Image(
             data=sr_data, pixel_scale_arcsec=_HR_SCALE, band_names=bands,
-            is_clean=True, subset=lr.image.subset,
-        )
-        parents = tuple(p for p in (self.id, lr.id) if p is not None)
-        try:
-            _store = store if store is not None else default_store()
-            new_id = _store.mint()
-        except Exception:   # noqa: BLE001 — provenance is best-effort
-            new_id = ProvId.sentinel()
-        return SRCutout(image=sr_img, id=new_id, parents=parents)
+            is_clean=True, role=Role.SR, subset=lr.subset,
+            stamp=Stamp(id=mint_id(store), parents=parents, schema_version=3,
+                        subset=lr.subset))
 
     def eval_catalog(self, *, out_dir, **kwargs):
         """Evaluate this model on a lens catalog.

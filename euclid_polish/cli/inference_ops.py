@@ -1,30 +1,15 @@
 """Testable, non-interactive inference operations the CLI menus call.
 
-Pure functions over the OO surface (Model / Cutout) — no input()/questionary.
+Pure functions over the OO operator surface — ``Model.upsample``,
+``EuclidArchive.fetch``, ``Image``/``ImageSet`` — with no input()/questionary.
 """
 from __future__ import annotations
 
 import os
 from typing import List, Optional
 
-import numpy as np  # noqa: F401  (kept for callers/extension)
-
-from euclid_polish.cutout.base import EuclidLRCutout, HRCutout, SyntheticLRCutout
-from euclid_polish.provenance.defaults import default_store
-from euclid_polish.image import Image
-
-
-def _lr_cutout(img: Image, store) -> SyntheticLRCutout:
-    # Reuse the record's embedded id when present (preserves lineage); else mint.
-    stamp = img.prov_stamp()
-    cid = stamp.id if stamp is not None else store.mint()
-    return SyntheticLRCutout(image=img, id=cid)
-
-
-def _hr_cutout(img: Image, store) -> HRCutout:
-    stamp = img.prov_stamp()
-    cid = stamp.id if stamp is not None else store.mint()
-    return HRCutout(image=img, id=cid)
+from euclid_polish.euclid.archive import EuclidArchive
+from euclid_polish.image import Image, ImageSet, Role
 
 
 def reconstruct_and_render(
@@ -50,9 +35,9 @@ def reconstruct_and_render(
         Ground-truth HR targets (same length/order as ``lr_images``); when
         present the HR panel + residual metrics are rendered.
     regime : str
-        Colour regime passed to ``save_png`` ("eye" or "calibrated").
+        Colour regime ("eye" or "calibrated").
     store : ProvStore, optional
-        Provenance store; defaults to ``default_store()``.
+        Provenance store threaded to ``model.upsample`` (defaults internally).
 
     Returns
     -------
@@ -60,15 +45,15 @@ def reconstruct_and_render(
         Paths of the written PNGs.
     """
     os.makedirs(out_dir, exist_ok=True)
-    _store = store if store is not None else default_store()
     paths: List[str] = []
     for i, lr_img in enumerate(lr_images):
-        lr_cut = _lr_cutout(lr_img, _store)
-        sr = model.upsample(lr_cut, store=_store)
-        hr_cut = (_hr_cutout(hr_images[i], _store)
-                  if hr_images is not None and i < len(hr_images) else None)
+        lr = lr_img.with_role(Role.LR)
+        sr = model.upsample(lr, store=store)
+        members = [lr, sr]
+        if hr_images is not None and i < len(hr_images):
+            members.append(hr_images[i].with_role(Role.HR))
         png = os.path.join(out_dir, f"reconstruction_{i:03d}.png")
-        sr.save_png(png, regime=regime, lr=lr_cut, hr=hr_cut)
+        ImageSet.from_images(members).plot_reconstruction(png, regime=regime)
         paths.append(png)
     return paths
 
@@ -99,7 +84,7 @@ def fetch_and_superresolve(
     regime : str
         Colour regime for the PNG ("eye" or "calibrated").
     store : ProvStore, optional
-        Provenance store; defaults to ``default_store()``.
+        Provenance store threaded to fetch + upsample (defaults internally).
     fetch_plane : callable, optional
         ``(ra, dec, band_name, size) -> np.ndarray`` (electrons) for
         tests/offline. ``None`` uses the real archive download.
@@ -110,12 +95,11 @@ def fetch_and_superresolve(
         ``(sr_fits_path, sr_png_path)``.
     """
     os.makedirs(out_dir, exist_ok=True)
-    _store = store if store is not None else default_store()
-    lr = EuclidLRCutout.fetch(ra=ra, dec=dec, size=size,
-                              store=_store, fetch_plane=fetch_plane)
-    sr = model.upsample(lr, store=_store)
+    lr = EuclidArchive.fetch(ra=ra, dec=dec, size=size,
+                             store=store, fetch_plane=fetch_plane)
+    sr = model.upsample(lr, store=store)
     fits_path = os.path.join(out_dir, "SR.fits")
     png_path = os.path.join(out_dir, "SR.png")
     sr.save_fits(fits_path)
-    sr.save_png(png_path, regime=regime, lr=lr)
+    ImageSet.from_images([lr, sr]).plot_reconstruction(png_path, regime=regime)
     return fits_path, png_path

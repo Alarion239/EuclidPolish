@@ -316,6 +316,10 @@ class Image(StampCarrier):
         return dataclasses.replace(
             self, data=self.data[..., k:k + 1].copy(), band_names=(name,))
 
+    def with_role(self, role: Role) -> "Image":
+        """A copy tagged with ``role`` (the original is unchanged)."""
+        return dataclasses.replace(self, role=role)
+
     # ------------------------------------------------------------------
     # Shape / sampling — pure-numpy geometry (no operator needed)
     # ------------------------------------------------------------------

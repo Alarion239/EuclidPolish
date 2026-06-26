@@ -58,7 +58,9 @@ from euclid_polish.sky.tng_galaxy import (
     predict_vis_flux_e, predict_visible_radius_arcsec, sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.image import Image
+from euclid_polish.image import Image, Role
+from euclid_polish.provenance.defaults import mint_id
+from euclid_polish.provenance.records import Stamp
 
 from dataclasses import replace
 
@@ -804,6 +806,21 @@ class MultiBandSimulator:
         }
 
     # ------------------------------------------------------------------ #
+    def generate(self, rng=None, *, store=None, **kwargs) -> Image:
+        """Generate one clean HR field as a stamped :class:`Image` (role ``'hr'``).
+
+        The OO operator verb over :meth:`simulate_field`: render a fresh scene,
+        tag it ``role='hr'``, and mint a provenance id (guarded). Extra keyword
+        args (``n_galaxies``, ``n_stars`` …) pass straight through.
+
+            hr = simulator.generate(rng)
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        sky, _meta = self.simulate_field(rng, **kwargs)
+        return sky.with_role(Role.HR).with_stamp(
+            Stamp(id=mint_id(store), schema_version=3))
+
     def simulate_field(
         self,
         rng: np.random.Generator,

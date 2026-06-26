@@ -9,8 +9,8 @@ import numpy as np
 
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.image import Image
-from euclid_polish.cutout.base import SyntheticLRCutout, SRCutout
+from euclid_polish.image import Image, Role
+from euclid_polish.provenance.records import Stamp
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 
@@ -21,6 +21,11 @@ def _lr_image(h: int = 4, w: int = 4) -> Image:
         data=rng.normal(size=(h, w, 4)).astype(np.float32),
         pixel_scale_arcsec=0.10, band_names=BANDS, is_clean=False,
     )
+
+
+def _stamped_lr(store, h: int = 4, w: int = 4) -> Image:
+    """An LR Image carrying a freshly-minted provenance stamp (so it has an id)."""
+    return _lr_image(h, w).with_stamp(Stamp(id=store.mint(), schema_version=3))
 
 
 def _fake_load(ckpt_dir, scale, num_res_blocks, **kwargs):
@@ -86,20 +91,19 @@ def test_upsample_array_2d_output():
     assert result.shape == (8, 8)
 
 
-def test_upsample_returns_srcutout(tmp_path):
+def test_upsample_returns_sr_image(tmp_path):
     store = ProvStore(str(tmp_path))
     m = _bare_model(model_id=store.mint())
-    lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
-    sr = m.upsample(lr, store=store)
-    assert isinstance(sr, SRCutout)
+    sr = m.upsample(_stamped_lr(store), store=store)
+    assert isinstance(sr, Image)
+    assert sr.role is Role.SR
 
 
 def test_upsample_sr_pixel_scale_is_hr(tmp_path):
     from euclid_polish.config import Config
     store = ProvStore(str(tmp_path))
     m = _bare_model()
-    lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
-    sr = m.upsample(lr, store=store)
+    sr = m.upsample(_stamped_lr(store), store=store)
     assert abs(sr.pixel_scale_arcsec - Config.DEFAULT_PIXEL_SCALE) < 1e-6
 
 
@@ -107,36 +111,31 @@ def test_upsample_parents_are_model_id_and_lr_id(tmp_path):
     store = ProvStore(str(tmp_path))
     model_id = store.mint()
     m = _bare_model(model_id=model_id)
-    lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
+    lr_id = store.mint()
+    lr = _lr_image().with_stamp(Stamp(id=lr_id, schema_version=3))
     sr = m.upsample(lr, store=store)
-    assert set(sr.parents) == {model_id, lr.id}
+    assert set(sr.stamp.parents) == {model_id, lr_id}
 
 
 def test_upsample_none_model_id_excludes_none(tmp_path):
     store = ProvStore(str(tmp_path))
     m = _bare_model(model_id=None)
-    lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
+    lr_id = store.mint()
+    lr = _lr_image().with_stamp(Stamp(id=lr_id, schema_version=3))
     sr = m.upsample(lr, store=store)
-    assert lr.id in sr.parents
-    assert None not in sr.parents
+    assert lr_id in sr.stamp.parents
+    assert None not in sr.stamp.parents
 
 
 def test_upsample_implicit_store(tmp_path):
     import unittest.mock as mock
     store = ProvStore(str(tmp_path))
     m = _bare_model()
-    lr = SyntheticLRCutout(image=_lr_image(), id=store.mint())
-    with mock.patch("euclid_polish.model.default_store", return_value=store):
+    lr = _stamped_lr(store)
+    with mock.patch("euclid_polish.provenance.defaults.default_store",
+                    return_value=store):
         sr = m.upsample(lr)
-    assert isinstance(sr, SRCutout)
-
-
-def test_no_import_of_model_from_cutout():
-    """cutout.base must NOT import euclid_polish.model (cycle guard)."""
-    import euclid_polish.cutout.base as cb
-    with open(cb.__file__) as f:
-        src = f.read()
-    assert "euclid_polish.model" not in src
+    assert isinstance(sr, Image)
 
 
 def test_eval_catalog_threads_tf_model(monkeypatch):

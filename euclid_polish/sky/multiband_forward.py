@@ -53,7 +53,9 @@ from euclid_polish.euclid.psf_library import (
     make_gaussian_psf, psf_side_pixels_for_band,
 )
 from euclid_polish.sky.resample import upsample as resample_upsample
-from euclid_polish.image import Image
+from euclid_polish.image import Image, Role
+from euclid_polish.provenance.defaults import mint_id
+from euclid_polish.provenance.records import Stamp
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +271,24 @@ class MultiBandForward:
         return lr_e.astype(np.float32, copy=False)
 
     # ------------------------------------------------------------------ #
+    def apply(self, hr: Image, rng=None, *, store=None) -> Image:
+        """Forward-model a clean HR :class:`Image` into a dirty LR Image (role ``'lr'``).
+
+        The OO operator verb over :meth:`process`: PSF-convolve, rebin, add
+        per-band noise + artifacts, returning the dirty LR input the model
+        super-resolves. The LR's provenance parent is ``hr``'s id.
+
+            lr = forward.apply(hr)
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        lr_img, _hr_out = self.process(hr, rng)
+        parent = hr.stamp.id if hr.stamp is not None else None
+        parents = tuple(p for p in (parent,) if p is not None)
+        return lr_img.with_role(Role.LR).with_stamp(
+            Stamp(id=mint_id(store), parents=parents, schema_version=3,
+                  subset=hr.subset))
+
     def process(
         self,
         hr_4ch: Image,
