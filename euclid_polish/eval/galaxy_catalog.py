@@ -58,12 +58,13 @@ def _diam_to_area_px(diam_arcsec: float) -> float:
     return math.pi * r_px * r_px
 
 
-def galaxy_adql(ra: float, dec: float, radius_deg: float) -> str:
+def galaxy_adql(ra: float, dec: float, radius_deg: float,
+                limit: int = Config.GalaxySelection.MAX_RESULTS) -> str:
     """ADQL cone query for clean, resolved, bigger-end galaxies at ``(ra, dec)``."""
     area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
     area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
     return f"""
-    SELECT TOP 100000
+    SELECT TOP {limit}
         {_ID_COL}, {_RA_COL}, {_DEC_COL}, {_SIZE_COL}, {_FLUX_COL}
     FROM catalogue.mer_catalogue
     WHERE CONTAINS(

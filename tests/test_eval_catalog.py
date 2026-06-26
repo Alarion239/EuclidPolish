@@ -1072,7 +1072,7 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
 def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
     import csv as _csv
     from euclid_polish.eval import grouped_runner
-    from euclid_polish.catalog import galaxy_catalog
+    from euclid_polish.eval import galaxy_catalog
     calls = {}
 
     def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path, seed=0, **kw):
@@ -1097,7 +1097,7 @@ def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
 
 def test_galaxy_plan_graceful_when_build_fails(monkeypatch, tmp_path):
     from euclid_polish.eval import grouped_runner
-    from euclid_polish.catalog import galaxy_catalog
+    from euclid_polish.eval import galaxy_catalog
     monkeypatch.setattr(galaxy_catalog, "default_out_csv",
                         lambda: str(tmp_path / "g.csv"))
     monkeypatch.setattr(galaxy_catalog, "build",

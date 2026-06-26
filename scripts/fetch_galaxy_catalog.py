@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Build a real-field-galaxy evaluation catalog from the Euclid archive.
 
-Thin CLI over :mod:`euclid_polish.catalog.galaxy_catalog` (the shared build logic
+Thin CLI over :mod:`euclid_polish.eval.galaxy_catalog` (the shared build logic
 also used by the grouped eval runner). Queries ``catalogue.mer_catalogue`` around
 the strong-lens fields for clean, resolved, bigger-end galaxies and writes a
 normalized ``id,ra,dec,grade`` CSV (``grade="gal"``). Needs Euclid archive
@@ -23,7 +23,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.catalog import galaxy_catalog
+from euclid_polish.eval import galaxy_catalog
 
 
 def main(argv: list[str] | None = None) -> int:

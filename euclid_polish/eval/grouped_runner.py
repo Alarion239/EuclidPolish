@@ -13,7 +13,7 @@ import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from euclid_polish.config import Config
-from euclid_polish.catalog import galaxy_catalog
+from euclid_polish.eval import galaxy_catalog
 from euclid_polish.eval.eval_catalog import read_eval_catalog
 from euclid_polish.eval import catalog_runner, synthetic_runner
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE

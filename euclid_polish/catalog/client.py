@@ -179,6 +179,7 @@ class EuclidCatalog:
         return objs
 
     def query_galaxies(self, ra: float, dec: float, radius_deg: float, *,
+                       limit: int = Config.GalaxySelection.MAX_RESULTS,
                        diam_lo_arcsec: float = Config.GalaxySelection.DIAM_LO_ARCSEC,
                        diam_hi_arcsec: float = Config.GalaxySelection.DIAM_HI_ARCSEC,
                        mag_floor: float = Config.GalaxySelection.MAG_FLOOR,
@@ -187,14 +188,14 @@ class EuclidCatalog:
 
         Server-side cuts: extended (``point_like_flag = 0``), not spurious, clean
         (``det_quality_flag = 0``), segmentation area within the
-        ``diam_lo_arcsec``–``diam_hi_arcsec`` diameter window. Here we drop
-        sources fainter than ``mag_floor``. All three default to
+        ``diam_lo_arcsec``–``diam_hi_arcsec`` diameter window, capped at ``limit``
+        rows. Here we drop sources fainter than ``mag_floor``. All four default to
         :class:`Config.GalaxySelection`.
         """
         area_lo = math.pi * ((diam_lo_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
         area_hi = math.pi * ((diam_hi_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
         query = (
-            "SELECT TOP 100000 object_id, right_ascension, declination, "
+            f"SELECT TOP {limit} object_id, right_ascension, declination, "
             "segmentation_area, flux_vis_psf FROM catalogue.mer_catalogue "
             f"WHERE CONTAINS(POINT('ICRS', right_ascension, declination), "
             f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) = 1 "
