@@ -49,12 +49,6 @@ def _finite(value) -> Optional[float]:
     return f if math.isfinite(f) else None
 
 
-# Galaxy selection window (clean, resolved, bigger-end, not point-like).
-_GAL_DIAM_LO_ARCSEC = 2.0
-_GAL_DIAM_HI_ARCSEC = 5.0
-_GAL_MAG_FLOOR = 23.0
-
-
 class EuclidCatalog:
     """Authenticated access to the Euclid science archive."""
 
@@ -185,15 +179,20 @@ class EuclidCatalog:
         return objs
 
     def query_galaxies(self, ra: float, dec: float, radius_deg: float, *,
-                       mag_floor: float = _GAL_MAG_FLOOR) -> List[CatalogObject]:
+                       diam_lo_arcsec: float = Config.GalaxySelection.DIAM_LO_ARCSEC,
+                       diam_hi_arcsec: float = Config.GalaxySelection.DIAM_HI_ARCSEC,
+                       mag_floor: float = Config.GalaxySelection.MAG_FLOOR,
+                       ) -> List[CatalogObject]:
         """Clean, resolved, bigger-end galaxies in a cone (``kind='galaxy'``).
 
         Server-side cuts: extended (``point_like_flag = 0``), not spurious, clean
         (``det_quality_flag = 0``), segmentation area within the
-        2–5″ diameter window. Here we drop sources fainter than ``mag_floor``.
+        ``diam_lo_arcsec``–``diam_hi_arcsec`` diameter window. Here we drop
+        sources fainter than ``mag_floor``. All three default to
+        :class:`Config.GalaxySelection`.
         """
-        area_lo = math.pi * ((_GAL_DIAM_LO_ARCSEC / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
-        area_hi = math.pi * ((_GAL_DIAM_HI_ARCSEC / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
+        area_lo = math.pi * ((diam_lo_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
+        area_hi = math.pi * ((diam_hi_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
         query = (
             "SELECT TOP 100000 object_id, right_ascension, declination, "
             "segmentation_area, flux_vis_psf FROM catalogue.mer_catalogue "

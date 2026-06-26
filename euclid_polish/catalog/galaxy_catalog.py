@@ -42,10 +42,8 @@ _SPURIOUS_COL = "spurious_flag"      # 1 = artifact
 _QUALITY_COL = "det_quality_flag"    # 0 = clean (no mask/blend/saturation/border)
 _FLUX_COL = "flux_vis_psf"           # µJy — conservative brightness floor
 
-# Selection defaults (tunable).
-DIAM_LO_ARCSEC = 2.0                 # bigger-end lower bound
-DIAM_HI_ARCSEC = 5.0                 # hard cap (must fit the 53 px LR stamp)
-MAG_FLOOR = 23.0                     # keep galaxies brighter than this (VIS PSF mag)
+# Galaxy selection window lives in Config.GalaxySelection (shared with
+# EuclidCatalog.query_galaxies — single source of truth).
 LENS_EXCLUDE_ARCSEC = 10.0           # drop anything this close to a known lens
 
 
@@ -62,8 +60,8 @@ def _diam_to_area_px(diam_arcsec: float) -> float:
 
 def galaxy_adql(ra: float, dec: float, radius_deg: float) -> str:
     """ADQL cone query for clean, resolved, bigger-end galaxies at ``(ra, dec)``."""
-    area_lo = _diam_to_area_px(DIAM_LO_ARCSEC)
-    area_hi = _diam_to_area_px(DIAM_HI_ARCSEC)
+    area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
+    area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
     return f"""
     SELECT TOP 100000
         {_ID_COL}, {_RA_COL}, {_DEC_COL}, {_SIZE_COL}, {_FLUX_COL}
@@ -91,7 +89,7 @@ def _unmask_float(value: Any) -> Optional[float]:
 
 
 def _candidates_from_results(results: Any,
-                             mag_floor: float = MAG_FLOOR
+                             mag_floor: float = Config.GalaxySelection.MAG_FLOOR
                              ) -> List[Dict[str, Any]]:
     """Parse a TAP result into candidate galaxy dicts passing the brightness floor.
 

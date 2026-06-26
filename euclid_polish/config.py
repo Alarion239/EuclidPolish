@@ -941,6 +941,17 @@ class Config:
         DOWNLOAD_SIZE_TOL_PIXELS: int       = 10
 
     @dataclass(frozen=True)
+    class GalaxySelection:
+        """Real-field-galaxy eval selection window (``EuclidCatalog.query_galaxies``
+        + ``catalog.galaxy_catalog``). Picks clean, resolved, bigger-end galaxies
+        that are confidently *not* lenses. ``DIAM_*`` are on-sky diameters (″),
+        turned into a ``segmentation_area`` band via the VIS pixel scale;
+        ``MAG_FLOOR`` drops sources fainter than this AB VIS-PSF magnitude."""
+        DIAM_LO_ARCSEC: float = 2.0   # bigger-end lower bound
+        DIAM_HI_ARCSEC: float = 5.0   # hard cap (must fit the LR stamp)
+        MAG_FLOOR: float      = 23.0  # keep galaxies brighter than this
+
+    @dataclass(frozen=True)
     class WebFetch:
         """FASRC artifact fetch cache + job-progress smoothing (euclid_polish/web)."""
         CACHE_SUBDIR: str          = "_fasrc_cache"
