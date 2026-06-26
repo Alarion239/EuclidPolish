@@ -73,12 +73,9 @@ from dataclasses import replace
 class SkySimulatorConfig:
     """Field-level config for the multi-band simulator.
 
-    The synthetic generator is fully analytic: all galaxies render via
-    Sersic B+D from the COSMOS catalog. Real-HST-morphology training
-    data lives in a separate stream (``fasrc_generate_hst_tfrecords``)
-    and round-trip data lives in another
-    (``fasrc_generate_euclid_roundtrip_tfrecords``); both are mixed at
-    the dataloader level, not inside the simulator.
+    The synthetic generator is analytic: galaxies render via Sersic B+D
+    from the COSMOS catalog. Optionally a fraction render as real TNG50
+    stamps (``tng_fraction``).
     """
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
@@ -103,35 +100,34 @@ class SkySimulatorConfig:
     lens_sigma_v_min_kms:     float = Config.LENS_SIGMA_V_MIN_KMS
     lens_sigma_v_max_kms:     float = Config.LENS_SIGMA_V_MAX_KMS
     # Fraction of galaxies drawn as real TNG50 SKIRT stamps instead of analytic
-    # Sersic profiles (per galaxy). 0 keeps generation exactly as before.
+    # Sersic profiles (per galaxy). 0 renders all galaxies as Sersic.
     tng_fraction:             float = 0.0
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     # When True, each injected TNG galaxy is downsampled so its apparent angular
     # half-light radius is drawn from the COSMOS catalog's own effective-radius
     # distribution (:class:`CosmosSizeSampler`) — so TNG galaxies match the
-    # Sersic population by construction. When False, the legacy flat
-    # ×1/×2/×3/×4 draw is used.
+    # Sersic population by construction. When False, a flat ×1/×2/×3/×4 draw is
+    # used.
     tng_realistic_sizes:      bool  = True
     # Genuinely big galaxies are their OWN population at a fixed sky surface
-    # density — INDEPENDENT of tng_fraction (which only governs the small
-    # field-galaxy TNG/Sersic mix). Legacy sizing path only: redshift mode has
-    # no separate big population. They are always rendered as real TNG stamps
-    # at a large size (R_e log-uniform over ``tng_big_re_arcsec``). The default
-    # density ≈ 1 big galaxy per 15 stamps of 512² @ 0.05″/px (0.182 arcmin²);
-    # the count per field is Poisson(density · area). Set to 0 to disable.
-    # NOTE these are big in *half-light radius*; because a bright compact bulge +
-    # extended disk has an on-sky FOOTPRINT several × R_e (de Vaucouleurs wings),
-    # even a ~1-4" R_e galaxy can fill a 25" stamp — so they are kept rare.
+    # density — independent of tng_fraction (which only governs the small
+    # field-galaxy TNG/Sersic mix). Active in the non-redshift sizing path only:
+    # redshift mode has no separate big population. They are always rendered as
+    # real TNG stamps at a large size (R_e log-uniform over ``tng_big_re_arcsec``).
+    # The default density ≈ 1 big galaxy per 15 stamps of 512² @ 0.05″/px
+    # (0.182 arcmin²); the count per field is Poisson(density · area). Set to 0
+    # to disable. These are big in *half-light radius*; because a bright compact
+    # bulge + extended disk has an on-sky footprint several × R_e (de Vaucouleurs
+    # wings), even a ~1-4" R_e galaxy can fill a 25" stamp, so they are kept rare.
     big_galaxy_density_arcmin2: float = 0.37
     tng_big_re_arcsec:        Tuple[float, float] = (1.0, 4.0)
     # Physical-redshift mode for TNG injection: one z draw per stamp sets
     # its downsample factor (via D_A), Tolman dimming, and a randomized
-    # spectral drift — replacing the COSMOS-matched target-size draw (see
+    # spectral drift, replacing the COSMOS-matched target-size draw (see
     # sky/redshift_model.py). TNG-lit lens galaxies take σ_v from the
     # subhalo's stellar mass and must satisfy θ_E ≥
-    # lens_theta_e_min_re_ratio × apparent half-light radius. False keeps
-    # generation byte-identical to before. Implied by tng_fraction == 1
-    # (pure-TNG mode, see the class docstring).
+    # lens_theta_e_min_re_ratio × apparent half-light radius. Implied by
+    # tng_fraction == 1 (pure-TNG mode, see the class docstring).
     tng_redshift_mode:        bool  = False
     # Property catalog for the mass→σ_v mapping; "" → the local cache
     # written by the TNG-infographic render.
@@ -190,12 +186,12 @@ def _sample_star_mag(
     """Sample one VIS magnitude from the differential stellar number-count law
     ``dN/dm ∝ 10^(slope · m)`` over ``[m_bright, m_faint]``, by inverse-CDF.
 
-    A single smooth, monotonic distribution (replacing the old 3-bin prior):
-    most stars sit near the faint limit, with a thin tail to the bright cap.
-    ``slope`` is the high-Galactic-latitude star-count slope ``d log N / dm``
-    (~0.14–0.35 in the optical/NIR; Euclid observes away from the plane). The
-    inverse-CDF uses ``log1p``/``expm1`` for numerical stability; ``slope→0``
-    degenerates to uniform.
+    A single smooth, monotonic distribution: most stars sit near the faint
+    limit, with a thin tail to the bright cap. ``slope`` is the
+    high-Galactic-latitude star-count slope ``d log N / dm`` (~0.14–0.35 in
+    the optical/NIR; Euclid observes away from the plane). The inverse-CDF
+    uses ``log1p``/``expm1`` for numerical stability; ``slope→0`` degenerates
+    to uniform.
     """
     span = float(m_faint) - float(m_bright)
     if span <= 0.0:
@@ -294,9 +290,9 @@ class SkySimulator:
                 sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
                 sigma_v_max_kms=self.config.lens_sigma_v_max_kms))
         # Realistic apparent-size sampler for TNG injection: drawn from the
-        # COSMOS catalog's own effective-radius distribution (+ rare big tail),
-        # so TNG galaxies match the Sersic population by construction.
-        # Redshift mode replaces it with the D_A(z) sizing.
+        # COSMOS catalog's own effective-radius distribution, so TNG galaxies
+        # match the Sersic population by construction. Redshift mode instead
+        # uses the D_A(z) sizing.
         self.tng_size_model: Optional[CosmosSizeSampler] = None
         if (self.catalog is not None and self.config.tng_fraction > 0.0
                 and self.config.tng_realistic_sizes and self.tng_galaxies):
@@ -439,8 +435,9 @@ class SkySimulator:
     ) -> Optional[dict]:
         """Inject one genuinely big galaxy — always a real TNG stamp, sized to
         a large apparent half-light radius drawn log-uniformly over
-        ``tng_big_re_arcsec``. Legacy path only: redshift mode has no separate
-        big population (see :meth:`simulate_field`)."""
+        ``tng_big_re_arcsec``. Active in the non-redshift sizing path only:
+        redshift mode has no separate big population (see
+        :meth:`simulate_field`)."""
         lo, hi = self.config.tng_big_re_arcsec
         target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
         rec = self._add_tng_galaxy(canvas_4ch, rng, target_re_arcsec=target)
@@ -460,15 +457,13 @@ class SkySimulator:
 
         Geometry band-independent; per-band fluxes from the catalog
         drive the photometry. Each Sersic component is rendered once and
-        broadcast-scaled into every channel by its per-band flux — cuts
-        Sersic evaluations by ``NUM_LR_CHANNELS=4×`` without changing
-        the result.
+        broadcast-scaled into every channel by its per-band flux,
+        cutting Sersic evaluations by ``NUM_LR_CHANNELS=4×``.
         """
         cfg = self.config
         if self.pure_tng:
             return self._add_tng_galaxy(canvas_4ch, rng)
-        # Short-circuit on tng_fraction==0 so the default path consumes no extra
-        # RNG and stays byte-identical to the all-Sersic generator.
+        # tng_fraction==0 draws no extra RNG and renders all-Sersic.
         if (cfg.tng_fraction > 0.0 and self.tng_galaxies
                 and rng.random() < cfg.tng_fraction):
             rec = self._add_tng_galaxy(canvas_4ch, rng)
@@ -708,8 +703,7 @@ class SkySimulator:
             return self._add_lens_pure(canvas_4ch, rng)
         # Redshift mode: with probability tng_fraction the deflector is a TNG
         # subhalo — mass-derived σ_v, visibility-constrained θ_E. The gate
-        # draws no RNG when the mode is off, keeping the legacy path
-        # byte-identical.
+        # draws no RNG when the mode is off.
         z_mode = (cfg.tng_redshift_mode and cfg.tng_fraction > 0.0
                   and bool(self.tng_galaxies))
         tng_lens_pick = None
@@ -743,7 +737,7 @@ class SkySimulator:
 
         # Lens light and lensed source are each, independently, a real TNG stamp
         # with probability tng_fraction (same proportion as field galaxies);
-        # otherwise an analytic B+D Sersic. tng_fraction==0 draws no extra RNG.
+        # otherwise an analytic B+D Sersic.
         lens_light_stamp = source_stamp = None
         lens_render = source_render = "sersic"
         sigma_v_kms = mstar = re_app = float("nan")
@@ -783,8 +777,8 @@ class SkySimulator:
             source_stamp = self._tng_stamp_for_galaxy(lp.source_galaxy, rng)
             if source_stamp is not None:
                 source_render = "tng"
-        # Fast path: render the lens once into the 4-channel canvas (geometry
-        # is band-independent; only per-band fluxes differ).
+        # Render the lens once into the 4-channel canvas (geometry is
+        # band-independent; only per-band fluxes differ).
         render_lens_to_multiband_canvas(
             canvas_4ch, params=lp_render, pixel_scale=cfg.pixel_scale,
             lens_light_stamp=lens_light_stamp, source_stamp=source_stamp,
@@ -809,9 +803,9 @@ class SkySimulator:
     def generate(self, rng=None, *, store=None, **kwargs) -> Image:
         """Generate one clean HR field as a stamped :class:`Image` (role ``'hr'``).
 
-        The OO operator verb over :meth:`simulate_field`: render a fresh scene,
-        tag it ``role='hr'``, and mint a provenance id (guarded). Extra keyword
-        args (``n_galaxies``, ``n_stars`` …) pass straight through.
+        Wraps :meth:`simulate_field`: render a fresh scene, tag it
+        ``role='hr'``, and mint a provenance id (guarded). Extra keyword args
+        (``n_galaxies``, ``n_stars`` …) pass straight through.
 
             hr = simulator.generate(rng)
         """
@@ -856,9 +850,9 @@ class SkySimulator:
             n_lenses   = int(rng.poisson(cfg.lens_density_arcmin2 * area))
         # Big galaxies: a fixed-density population, independent of tng_fraction.
         # Gated on TNG being enabled so tng_fraction==0 stays the pure-Sersic
-        # baseline (no extra RNG drawn → byte-identical). Redshift mode has no
-        # separate big population at all — the realistic n(z) already yields
-        # big nearby galaxies at the rate the sky does.
+        # baseline (no extra RNG drawn). Redshift mode has no separate big
+        # population — the realistic n(z) already yields big nearby galaxies at
+        # the rate the sky does.
         if cfg.tng_redshift_mode:
             n_big = 0
         big_enabled = (cfg.tng_fraction > 0.0 and bool(self.tng_galaxies)

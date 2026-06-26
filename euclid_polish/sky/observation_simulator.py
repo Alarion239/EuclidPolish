@@ -1,10 +1,8 @@
 """
 Multi-band forward model: HR clean (4 channels) → LR dirty (4 channels) + HR clean target (4 channels).
 
-All four bands are delivered by the Euclid MER archive on a common 0.10″/pix
-grid, so every band is modelled the same way (there is no native-0.30″ NISP
-stage in the forward path). Pipeline per band on the HR canvas (0.05″ HR pixel
-scale, electrons):
+All four bands sit on a common 0.10″/pix LR grid, so every band is modelled the
+same way. Pipeline per band on the HR canvas (0.05″ HR pixel scale, electrons):
 
   VIS / Y_E / J_E / H_E:
     HR (0.05″, e⁻)
@@ -13,15 +11,13 @@ scale, electrons):
       → Poisson(sky + signal) − sky + read_noise · √N_exp  (+ optional artifacts)
       → LR (0.10″, e⁻)
 
-A Lanczos-3 resample-to-VIS-LR stage exists (sky/resample.py) but is dormant
-under the current uniform-0.10″ band configuration (its factor evaluates to 1);
-it would only re-activate if a band's LR pixel scale were restored to 0.30″.
+A Lanczos-3 resample-to-VIS-LR stage (sky/resample.py) maps each band onto the
+shared LR grid; under the uniform 0.10″ band configuration its factor is 1, so
+it is a no-op. It activates when a band's LR pixel scale differs (e.g. 0.30″).
 Bright-star saturation is then applied to the assembled dirty LR stack.
 
-The HR clean target keeps **all four channels** (4-band training: the model
-super-resolves VIS and the NISP bands jointly; band k of the target is band k
-of the LR input). Historically only channel 0 (VIS) was kept — records written
-before the 4-band change carry 1-channel HR and must be regenerated.
+The HR clean target keeps all four channels: the model super-resolves VIS and
+the NISP bands jointly; band k of the target is band k of the LR input.
 
 The output of :meth:`ObservationSimulator.process_hr_to_lr` is a pair of
 ``Image`` objects:
@@ -41,10 +37,7 @@ from scipy import signal as scipy_signal
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.euclid.types import PSF
 from euclid_polish.psf.psf_set import PSFSet, PSFSample
-# Re-export the canonical noise function (lives in sky.noise, a leaf module).
-# Existing callers of
-# ``from euclid_polish.sky.observation_simulator import apply_band_noise``
-# continue to work via this re-export.
+# Re-export the canonical noise function (defined in sky.noise).
 from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
 from euclid_polish.sky.saturation import (
     StarSaturationModel, apply_star_saturation,
@@ -71,19 +64,16 @@ class ObservationSimulatorConfig:
     nisp_resample_factor: int = Config.NISP_LR_TO_VIS_LR_RATIO  # 3
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: Optional["ArtifactConfig"] = None        # type: ignore[name-defined]
-    # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws
-    # one PSF via ``PSFSet.sample_for_generation`` — a star-count-weighted
-    # cluster pick, then with probability (1 - psf_unrotated_prob) a random
-    # roll rotation (modelling the per-pointing telescope roll). No blending
-    # (blending rolls would superimpose spikes). With ``randomize_psf`` off,
-    # the field-mean PSF is used (deterministic — matches the old single-PSF
-    # forward when K=1).
-    # EXPERIMENT: random PSF selection ON, rotation OFF — each scene draws a
-    # random (star-count-weighted) cluster PSF and applies it WITHOUT any
-    # roll rotation (psf_unrotated_prob=1.0 → draw_sample always returns
-    # angle=None, so apply_sample never rotates). Set randomize_psf=False to
-    # go back to the deterministic field-mean PSF; lower psf_unrotated_prob
-    # (<1.0) to re-introduce roll-rotation augmentation.
+    # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
+    # PSF — a star-count-weighted cluster pick, then with probability
+    # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope
+    # roll). No blending. With ``randomize_psf`` off, the deterministic
+    # field-mean PSF is used.
+    # With psf_unrotated_prob=1.0, draw_sample always returns angle=None, so
+    # apply_sample never rotates: each scene draws a random (star-count-weighted)
+    # cluster PSF and applies it without roll rotation. Set randomize_psf=False
+    # for the deterministic field-mean PSF; lower psf_unrotated_prob (<1.0) to
+    # add roll-rotation augmentation.
     randomize_psf: bool = True
     psf_unrotated_prob: float = 1.0
 
@@ -106,12 +96,11 @@ class ObservationSimulatorConfig:
 def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
     """Construct a Gaussian PSF for ``band`` at the HR pixel scale.
 
-    The stamp side is auto-derived from the band's FWHM via
+    The stamp side is derived from the band's FWHM via
     :func:`psf_side_pixels_for_band`, so each band gets a kernel sized
     to its own resolution (a wide H_E PSF is wider than a narrow VIS
     PSF). For VIS the caller usually supplies the empirical ePSF
-    instead; this fallback exists so the entire pipeline runs end-to-end
-    on a fresh checkout.
+    instead; this Gaussian is the fallback when no PSF is provided.
     """
     side = psf_side_pixels_for_band(band, hr_pixel_scale)
     return make_gaussian_psf(band.psf_fwhm_arcsec, hr_pixel_scale, size=side)
@@ -121,10 +110,8 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 # Forward model
 # ---------------------------------------------------------------------------
 
-# ``apply_band_noise`` lives in :mod:`euclid_polish.sky.noise` and is
-# re-exported at the top of this module (see the import block above)
-# so existing callers ``from euclid_polish.sky.observation_simulator
-# import apply_band_noise`` continue to work unchanged.
+# ``apply_band_noise`` is defined in :mod:`euclid_polish.sky.noise` and
+# re-exported at the top of this module (see the import block above).
 
 
 class ObservationSimulator:
@@ -146,13 +133,13 @@ class ObservationSimulator:
                        are filled with a Gaussian fallback.
         psf_sets_by_band : dict mapping band name → :class:`PSFSet` (the
                        position-dependent ensemble). Takes priority over
-                       ``psfs_by_band`` for any band present in both. This is
-                       the path that enables the per-scene random cluster pick
-                       (one kernel per scene; no blending).
+                       ``psfs_by_band`` for any band present in both. Enables
+                       the per-scene random cluster pick (one kernel per scene;
+                       no blending).
         config       : :class:`ObservationSimulatorConfig`.
         """
         self.config = config or ObservationSimulatorConfig()
-        # Unify on PSFSets internally: K=1 reproduces the old single-PSF path.
+        # Unify on PSFSets internally; a 1-element set is a single fixed PSF.
         sets: Dict[str, PSFSet] = (
             dict(psf_sets_by_band) if psf_sets_by_band is not None else {})
         if psfs_by_band is not None:
@@ -181,14 +168,9 @@ class ObservationSimulator:
     def sum_rebin(arr_2d: np.ndarray, factor: int) -> np.ndarray:
         """Photometric sum-rebin with trailing-row trim.
 
-        **Thin wrapper** around
-        :meth:`euclid_polish.image.Image.rebin_array` —
-        single source of truth for the rebin op. Trailing rows / cols
-        that don't fit a whole bin are silently trimmed
-        (``trim_remainder=True``); this matches the historical
-        behaviour of every caller of this static method
-        (``ObservationSimulator._process_one_band``, the SR-output renderer
-        in ``web/app.py``).
+        Wrapper around :meth:`euclid_polish.image.Image.rebin_array`.
+        Trailing rows / cols that don't fit a whole bin are trimmed
+        (``trim_remainder=True``).
         """
         return Image.rebin_array(
             arr_2d, int(factor), trim_remainder=True,
@@ -201,10 +183,8 @@ class ObservationSimulator:
         band: BandConfig,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Method wrapper that pulls add_artifacts + artifact_config off
-        ``self.config`` and delegates to the module-level
-        :func:`apply_band_noise`. Kept as a method for back-compat with
-        the existing pipeline; new callers should use the function."""
+        """Pull add_artifacts + artifact_config off ``self.config`` and
+        delegate to the module-level :func:`apply_band_noise`."""
         return apply_band_noise(
             signal_e, band, rng,
             add_artifacts=self.config.add_artifacts,
@@ -216,8 +196,7 @@ class ObservationSimulator:
     def target_lr_pixel_scale_arcsec(self) -> float:
         """Pixel scale of the unified LR grid every channel ends up on.
 
-        We anchor to VIS — the science is super-resolving VIS, so VIS LR
-        is the natural target grid. Non-VIS bands are resampled into this
+        Anchored to the VIS LR grid. Non-VIS bands are resampled into this
         grid after their own native rebin + noise stage.
         """
         return Config.BAND_VIS.pixel_scale_lr_arcsec
@@ -240,15 +219,14 @@ class ObservationSimulator:
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
         # Realise the scene's shared PSF sample against this band's set: cluster
-        # ``psf_spec.index`` rotated by the shared roll (operator-free, no
-        # blending). ``psf_spec=None`` → the deterministic field-mean.
+        # ``psf_spec.index`` rotated by the shared roll (no blending).
+        # ``psf_spec=None`` → the field-mean PSF.
         pset = self._psf_sets[band.name]
         psf = pset.apply_sample(psf_spec) if psf_spec is not None else pset.mean()
         target_scale = self.target_lr_pixel_scale_arcsec
 
-        # 1. PSF convolution on HR plane — single source of truth is
-        #    PSF.convolved_with (defensively sum=1-normalises the
-        #    kernel and runs fftconvolve mode="same" + float32 cast).
+        # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
+        #    the kernel and runs fftconvolve mode="same" + float32 cast).
         hr_e = psf.convolved_with(hr_channel)
 
         # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
@@ -360,8 +338,8 @@ class ObservationSimulator:
 
         # Bright-star detector saturation: clip a blocky region per saturating
         # (star, band) onto the dirty LR image. Independent per band; the clean
-        # HR target is untouched. The value-preserving NISP resample means the
-        # native well depth is the right clip level on this shared 0.10″ grid.
+        # HR target is untouched. The native well depth is the clip level on
+        # this shared 0.10″ grid.
         if self._sat_model is not None:
             stars = (getattr(hr_4ch, "metadata", None) or {}).get("stars", [])
             if stars:
@@ -371,7 +349,7 @@ class ObservationSimulator:
                     hr_to_lr_scale=hr_to_lr,
                     band_names=Config.LR_INPUT_BAND_NAMES)
 
-        # HR target: ALL four bands (clean, no noise applied), trimmed to the
+        # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is
         # band k of the LR input — the model super-resolves VIS+NISP jointly.
         hr_clean = hr_data_trim.astype(np.float32, copy=True)
