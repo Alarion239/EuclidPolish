@@ -33,11 +33,11 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.catalog import auth
+from euclid_polish.catalog.client import EuclidCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.catalog.cutout_integrity import validate_all_cutouts
-from euclid_polish.catalog.downloader import (
-    DownloadConfig, EuclidCutoutDownloader,
-)
+from euclid_polish.catalog.downloader import DownloadConfig
 from euclid_polish.observability.reporter import Reporter
 
 
@@ -65,14 +65,14 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
-                       progress_cb, show_progress, retry_failed=False):
-    """Download every cutout for one band. Returns the downloader result dict.
+def _download_one_band(band_name, *, eclient, output_dir, vis_pixels, workers,
+                       arcsec, progress_cb, show_progress, retry_failed=False):
+    """Download every cutout for one band. Returns the result dict.
 
-    Self-contained (own ``DownloadConfig`` + ``EuclidCutoutDownloader``) so it is
-    safe to run several of these concurrently — each band writes to its own
+    Self-contained (loads its own ``CatalogObject`` list + ``DownloadConfig``) so
+    it is safe to run several of these concurrently — each band writes to its own
     ``cutouts/<band>/`` directory and tracks distinct per-(band, size) catalog
-    flags, and ``StarCatalog.save`` is atomic.
+    flags, and ``CatalogObject.write`` is atomic.
     """
     band = Config.get_band(band_name)
     native = band.cutout_size_for_arcsec(arcsec)
@@ -82,10 +82,11 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
     cfg = DownloadConfig.for_band(
         band_name, cutout_size_vis_pixels=vis_pixels, max_workers=workers,
     )
-    downloader = EuclidCutoutDownloader(cat, cfg)
+    objects = CatalogObject.read(os.path.join(output_dir, Config.CATALOG_FILE))
     t_band = time.perf_counter()
-    result = downloader.download(show_progress=show_progress,
-                                 progress_cb=progress_cb, retry_failed=retry_failed)
+    result = eclient.download_cutouts(
+        objects, output_dir, cfg, show_progress=show_progress,
+        progress_cb=progress_cb, retry_failed=retry_failed)
     print(f"  → {band_name}: downloaded={result['downloaded']}, "
           f"valid={result['valid']}, corrupted={result['corrupted']}, "
           f"failed={result.get('failed', 0)}  "
@@ -93,8 +94,8 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
     return result
 
 
-def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
-              band_workers, logged_in, retry_failed=False):
+def run_bands(band_names, *, eclient, output_dir, vis_pixels, workers, arcsec,
+              reporter, band_workers, logged_in, retry_failed=False):
     """Download all bands, sequentially or several at once.
 
     ``band_workers == 1`` keeps the old one-band-at-a-time path (with a TAP
@@ -128,8 +129,9 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
 
         with ThreadPoolExecutor(max_workers=band_workers) as pool:
             futs = {
-                pool.submit(_download_one_band, bn, cat=cat,
-                            vis_pixels=vis_pixels, workers=workers, arcsec=arcsec,
+                pool.submit(_download_one_band, bn, eclient=eclient,
+                            output_dir=output_dir, vis_pixels=vis_pixels,
+                            workers=workers, arcsec=arcsec,
                             progress_cb=make_cb(bn), show_progress=False,
                             retry_failed=retry_failed): bn
                 for bn in band_names
@@ -154,8 +156,8 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
             cb = (lambda cur, tot, lbl, _b=bn:
                   reporter.set_step(cur, tot, f"{_b} {lbl}"))
             summary[bn] = _download_one_band(
-                bn, cat=cat, vis_pixels=vis_pixels, workers=workers,
-                arcsec=arcsec, progress_cb=cb, show_progress=True,
+                bn, eclient=eclient, output_dir=output_dir, vis_pixels=vis_pixels,
+                workers=workers, arcsec=arcsec, progress_cb=cb, show_progress=True,
                 retry_failed=retry_failed)
 
     for bn, r in summary.items():
@@ -198,9 +200,15 @@ def main() -> int:
         )
         print("⚠️  proceeding unauthenticated (public data only)")
 
+    # The astroquery ``Euclid`` session is a process-global singleton; once
+    # ``auth.login`` has authenticated it, an unauthenticated client reuses that
+    # session for queries + downloads.
+    eclient = EuclidCatalog._unauthenticated()
+
     t0 = time.perf_counter()
     summary = run_bands(
-        band_names, cat=cat, vis_pixels=args.vis_pixels, workers=args.workers,
+        band_names, eclient=eclient, output_dir=args.output_dir,
+        vis_pixels=args.vis_pixels, workers=args.workers,
         arcsec=arcsec, reporter=reporter, band_workers=args.band_workers,
         logged_in=logged_in, retry_failed=args.retry_failed,
     )

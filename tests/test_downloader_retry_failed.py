@@ -10,76 +10,84 @@ so the stars are re-attempted.
 
 from __future__ import annotations
 
-from euclid_polish.catalog.star_catalog import StarCatalog
-from euclid_polish.catalog.downloader import DownloadConfig, EuclidCutoutDownloader
+import os
+
+from euclid_polish.config import Config
+from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.catalog.client import EuclidCatalog
+from euclid_polish.catalog.downloader import DownloadConfig
 
 _SIZE = 16
 
 
 def _seed_all_failed(tmp_path, n):
-    """Catalog of ``n`` stars, every one flagged download_failed for VIS@_SIZE,
-    with no cutouts on disk."""
-    cat = StarCatalog(str(tmp_path))
-    stars = []
+    """Catalog of ``n`` objects, every one flagged download_failed for VIS@_SIZE,
+    with no cutouts on disk. Returns ``(output_dir, objects, EuclidCatalog)``."""
+    output_dir = str(tmp_path)
+    objects = []
     for i in range(n):
-        s = {"id": i, "ra": 150.0 + i * 1e-3, "dec": 2.0 + i * 1e-3,
-             "magnitude": 18.0}
-        StarCatalog.set_download_failed(s, _SIZE, band="VIS")
-        stars.append(s)
-    cat.save({"stars": stars, "next_id": n})
-    cfg = DownloadConfig.for_band("VIS", cutout_size=_SIZE)
-    return cat, EuclidCutoutDownloader(cat, cfg)
+        o = CatalogObject(ra=150.0 + i * 1e-3, dec=2.0 + i * 1e-3, id=i,
+                          magnitude=18.0)
+        o.set_download_failed(_SIZE, band="VIS")
+        objects.append(o)
+    CatalogObject.write(objects, os.path.join(output_dir, Config.CATALOG_FILE))
+    return output_dir, objects, EuclidCatalog._unauthenticated()
+
+
+def _cfg():
+    return DownloadConfig.for_band("VIS", cutout_size=_SIZE)
 
 
 def test_clear_download_failed_primitive():
-    s: dict = {}
-    StarCatalog.set_download_failed(s, _SIZE, band="VIS")
-    assert StarCatalog.is_download_failed(s, _SIZE, band="VIS") is True
-    StarCatalog.clear_download_failed(s, _SIZE, band="VIS")
-    assert StarCatalog.is_download_failed(s, _SIZE, band="VIS") is False
+    o = CatalogObject(ra=1.0, dec=2.0)
+    o.set_download_failed(_SIZE, band="VIS")
+    assert o.is_download_failed(_SIZE, band="VIS") is True
+    o.clear_download_failed(_SIZE, band="VIS")
+    assert o.is_download_failed(_SIZE, band="VIS") is False
     # Other bands untouched.
-    StarCatalog.set_download_failed(s, _SIZE, band="Y_E")
-    StarCatalog.clear_download_failed(s, _SIZE, band="VIS")
-    assert StarCatalog.is_download_failed(s, _SIZE, band="Y_E") is True
+    o.set_download_failed(_SIZE, band="Y_E")
+    o.clear_download_failed(_SIZE, band="VIS")
+    assert o.is_download_failed(_SIZE, band="Y_E") is True
 
 
 def test_early_return_reports_failed_count(tmp_path):
-    # Every star failed → nothing pending → early return, but it must surface
+    # Every object failed → nothing pending → early return, but it must surface
     # the failed count (not the old misleading failed=0) and download nothing.
-    cat, dl = _seed_all_failed(tmp_path, 12)
-    result = dl.download(show_progress=False)
+    output_dir, objects, cat = _seed_all_failed(tmp_path, 12)
+    result = cat.download_cutouts(objects, output_dir, _cfg(), show_progress=False)
     assert result["downloaded"] == 0
     assert result["failed"] == 12
     assert result["valid"] == 0
 
 
 def test_retry_failed_clears_flags_and_reattempts(tmp_path, monkeypatch):
-    cat, dl = _seed_all_failed(tmp_path, 8)
+    output_dir, objects, cat = _seed_all_failed(tmp_path, 8)
 
     # Stub the network: pretend no tile covers the stars, so they re-flag failed
     # (the point under test is that retry_failed re-entered them as *pending*,
     # i.e. resolution was attempted at all rather than an instant early return).
     calls = {"resolve": 0}
 
-    def fake_resolve(stars):
+    def fake_resolve(objs, config):
         calls["resolve"] += 1
         return {}                       # nothing covered → all re-flag failed
-    monkeypatch.setattr(dl, "_resolve_mosaics", fake_resolve)
+    monkeypatch.setattr(cat, "_resolve_mosaics", fake_resolve)
 
-    result = dl.download(show_progress=False, retry_failed=True)
+    result = cat.download_cutouts(objects, output_dir, _cfg(),
+                                  show_progress=False, retry_failed=True)
     assert calls["resolve"] == 1        # we got past the early return
     assert result["downloaded"] == 0
-    # Persisted catalog: the stars are re-flagged failed (genuinely uncovered).
-    reloaded = cat.load()["stars"]
-    assert all(StarCatalog.is_download_failed(s, _SIZE, band="VIS")
-               for s in reloaded)
+    # Persisted catalog: the objects are re-flagged failed (genuinely uncovered).
+    reloaded = CatalogObject.read(os.path.join(output_dir, Config.CATALOG_FILE))
+    assert all(o.is_download_failed(_SIZE, band="VIS") for o in reloaded)
 
 
 def test_no_retry_takes_early_return_without_resolving(tmp_path, monkeypatch):
-    cat, dl = _seed_all_failed(tmp_path, 8)
+    output_dir, objects, cat = _seed_all_failed(tmp_path, 8)
     called = {"resolve": False}
     monkeypatch.setattr(
-        dl, "_resolve_mosaics",
-        lambda stars: called.__setitem__("resolve", True) or {})
-    dl.download(show_progress=False, retry_failed=False)
+        cat, "_resolve_mosaics",
+        lambda objs, config: called.__setitem__("resolve", True) or {})
+    cat.download_cutouts(objects, output_dir, _cfg(),
+                         show_progress=False, retry_failed=False)
     assert called["resolve"] is False   # never resolved — all stayed failed

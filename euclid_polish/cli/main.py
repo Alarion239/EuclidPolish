@@ -25,11 +25,13 @@ from euclid_polish.config import Config
 from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
 from euclid_polish.catalog import (
     StarCatalog,
-    EuclidCutoutDownloader,
+    EuclidCatalog,
+    CatalogObject,
     DownloadConfig,
     FitsValidator,
     auth,
 )
+from euclid_polish.catalog.catalog_object import merge_new, summarize
 from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
 from euclid_polish.image import Image
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
@@ -377,17 +379,16 @@ class InteractiveCLI:
             max_workers = default_workers
 
         # --- Pre-flight summary: pending per (band, native_size) ---
-        catalog_data = catalog.load()
-        stars = catalog_data.get('stars', [])
-        total = len(stars)
+        objects = CatalogObject.read(catalog.catalog_path)
+        total = len(objects)
         print(f"\n📊 Catalog: {total} stars  |  field = {arcsec_side:.2f}\" "
               f"(= {cutout_size_vis} VIS px)")
         any_pending = False
         for band_name in selected_bands:
             native_size = per_band_native[band_name]
-            v = sum(1 for s in stars if StarCatalog.is_valid(s, native_size, band=band_name))
-            c = sum(1 for s in stars if StarCatalog.is_corrupted(s, native_size, band=band_name))
-            f = sum(1 for s in stars if StarCatalog.is_download_failed(s, native_size, band=band_name))
+            v = sum(1 for o in objects if o.is_valid(native_size, band=band_name))
+            c = sum(1 for o in objects if o.is_corrupted(native_size, band=band_name))
+            f = sum(1 for o in objects if o.is_download_failed(native_size, band=band_name))
             p = total - v - c - f
             mark = "—" if p <= 0 else f"{p} to fetch"
             print(f"  {band_name:5s}  native_size={native_size:4d}  "
@@ -407,8 +408,9 @@ class InteractiveCLI:
         ).ask():
             return
 
-        # --- Loop over bands; one downloader instance per band ---
+        # --- Loop over bands; the shared object list accumulates flags ---
         try:
+            eclient = EuclidCatalog._unauthenticated()
             band_results = {}
             for band_name in selected_bands:
                 native_size = per_band_native[band_name]
@@ -418,8 +420,8 @@ class InteractiveCLI:
                     cutout_size_vis_pixels=cutout_size_vis,
                     max_workers=max_workers,
                 )
-                downloader = EuclidCutoutDownloader(catalog, cfg)
-                result = downloader.download(show_progress=True)
+                result = eclient.download_cutouts(
+                    objects, output_dir, cfg, show_progress=True)
                 band_results[band_name] = result
                 print(f"  → downloaded {result['downloaded']}, "
                       f"valid={result['valid']}, corrupted={result['corrupted']}, "

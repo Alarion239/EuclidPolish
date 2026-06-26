@@ -17,15 +17,21 @@ from __future__ import annotations
 import math
 import os
 import threading
-from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from astroquery.esa.euclid import Euclid
+from tqdm import tqdm
 
 from euclid_polish.catalog.archive import EuclidArchive
 from euclid_polish.catalog.catalog_object import CatalogObject
-from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.downloader import (
+    DownloadConfig, core_is_saturated, download_one_cutout, fetch_cutout_at,
+    positions_match, resolve_mosaics, scan_cutouts,
+)
 from euclid_polish.catalog.photometry import uJy_to_ab_mag
+from euclid_polish.catalog.validator import FitsValidator
 from euclid_polish.config import Config
 
 
@@ -223,3 +229,192 @@ class EuclidCatalog:
     def fetch_image(self, ra: float, dec: float, size: int):
         """Download a 4-band electron-unit :class:`~euclid_polish.image.Image` at ``(ra, dec)``."""
         return EuclidArchive.fetch(ra=ra, dec=dec, size=size)
+
+    # ------------------------------------------------------------------
+    # Batch cutout download (a whole CatalogObject list, one band)
+    # ------------------------------------------------------------------
+
+    def _resolve_mosaics(self, objects: List[CatalogObject],
+                         config: DownloadConfig) -> Dict[int, Dict[str, Any]]:
+        """Resolve each object's mosaic tile, refreshing the session on lapse."""
+        return resolve_mosaics(objects, config, relogin=self.relogin)
+
+    def download_cutouts(
+        self, objects: List[CatalogObject], output_dir: str,
+        config: DownloadConfig, *,
+        ids: Optional[List[int]] = None,
+        show_progress: bool = True,
+        progress_cb: Optional[Callable[[int, int, str], None]] = None,
+        retry_failed: bool = False,
+        validator: Optional[FitsValidator] = None,
+    ) -> Dict[str, Any]:
+        """Download ``config.band`` cutouts for ``objects`` into ``output_dir``.
+
+        Cutouts land in ``<output_dir>/cutouts/<band>/star_<id>_<size>.fits`` and
+        each object's per-``(band, size)`` flags are updated in place; the list is
+        persisted to ``<output_dir>/<CATALOG_FILE>`` via
+        :meth:`CatalogObject.write`. Mutates ``objects`` in place.
+
+        ``ids`` restricts the download to those object ids. ``retry_failed``
+        clears this band's ``download_failed`` flags first so objects wrongly
+        flagged by a transient TAP/session error get re-attempted.
+        ``progress_cb(current, total, label)`` drives the WebUI progress bar.
+        Returns a summary dict.
+        """
+        validator = validator or FitsValidator()
+        band = config.band
+        cutout_size = config.cutout_size
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        cutout_dir = Config.cutout_dir_for_band(
+            band, root=os.path.join(output_dir, Config.CUTOUTS_SUBDIR))
+        os.makedirs(cutout_dir, exist_ok=True)
+
+        def persist():
+            CatalogObject.write(objects, catalog_path)
+
+        # Optionally un-stick objects wrongly flagged ``download_failed`` by a
+        # transient resolution error, so they re-enter the pending set below.
+        if retry_failed:
+            n_cleared = 0
+            for o in objects:
+                if o.is_download_failed(cutout_size, band=band):
+                    o.clear_download_failed(cutout_size, band=band)
+                    n_cleared += 1
+            if n_cleared:
+                print(f"  retry-failed: cleared {n_cleared} download_failed "
+                      f"flags for {band} (size {cutout_size})")
+
+        # Scan existing FITS files (size-aware) and reconcile corruption.
+        existing_fits, corrupted_disk = scan_cutouts(cutout_dir, validator)
+        if corrupted_disk:
+            by_id = {o.id: o for o in objects}
+            for star_id, size, filepath in corrupted_disk:
+                o = by_id.get(star_id)
+                if o is not None and size is not None:
+                    o.set_corrupted(size, band=band)
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
+            persist()
+
+        pixel_scale_arcmin = config.pixel_scale_arcsec / 60.0
+        cutout_radius_arcmin = (cutout_size / 2.0) * pixel_scale_arcmin
+
+        # Walk every existing file (all sizes) and reconcile validity.
+        matched: set = set()  # objects with a valid cutout at cutout_size
+        by_id = {o.id: o for o in objects}
+        for star_id, files in existing_fits.items():
+            o = by_id.get(star_id)
+            if o is None:
+                continue
+            for fra, fdec, fsize, _ in files:
+                if not positions_match(fra, fdec, o.ra, o.dec,
+                                       config.position_tolerance):
+                    continue
+                if not o.is_valid(fsize, band=band):
+                    o.set_valid(fsize, band=band)
+                if abs(fsize - cutout_size) <= config.size_tolerance:
+                    matched.add(star_id)
+
+        # Pending = not corrupted/failed at the requested (band, size).
+        pending = [o for o in objects
+                   if not o.is_corrupted(cutout_size, band=band)
+                   and not o.is_download_failed(cutout_size, band=band)]
+        if ids is not None:
+            pending = [o for o in pending if o.id in ids]
+        needing = [o for o in pending
+                   if o.id not in matched or not o.is_valid(cutout_size, band=band)]
+
+        persist()
+
+        if not needing:
+            valid = sum(1 for o in objects if o.is_valid(cutout_size, band=band))
+            corrupted = sum(1 for o in objects
+                            if o.is_corrupted(cutout_size, band=band))
+            failed = sum(1 for o in objects
+                         if o.is_download_failed(cutout_size, band=band))
+            if failed:
+                print(f"  {band}: nothing pending, but {failed} stars are "
+                      f"flagged download_failed — rerun with --retry-failed.")
+            return {'downloaded': 0, 'valid': valid, 'corrupted': corrupted,
+                    'failed': failed, 'cutout_size': cutout_size, 'band': band}
+
+        # Resolve every object → mosaic tile in ONE ADQL query.
+        print(f"  Resolving mosaic tiles for {len(needing)} stars...")
+        mosaic_lookup = self._resolve_mosaics(needing, config)
+        unmatched_ids = {o.id for o in needing if o.id not in mosaic_lookup}
+        if unmatched_ids:
+            print(f"  ⚠️  {len(unmatched_ids)} stars not covered by any "
+                  f"{band} tile — marking failed")
+        with_mosaics = [o for o in needing if o.id in mosaic_lookup]
+
+        corrupted_ids: List[int] = []
+
+        def _download_and_validate(o: CatalogObject) -> Tuple[int, bool]:
+            mosaic = mosaic_lookup[o.id]
+            output_file = os.path.join(
+                cutout_dir, f"star_{o.id:04d}_{cutout_size}.fits")
+            for _ in range(2):     # one retry on validation failure
+                if not download_one_cutout(o.ra, o.dec, config,
+                                           cutout_radius_arcmin, output_file,
+                                           mosaic):
+                    continue
+                is_valid, _ = validator.validate_cutout(
+                    output_file, o.ra, o.dec, config.position_tolerance)
+                if is_valid:
+                    # Reject oversaturated / clipped cores (MER zeros the peak
+                    # of bright stars) — same check the PSF extractor applies.
+                    data = validator.get_data(output_file)
+                    if core_is_saturated(data, config.saturation_core_size):
+                        if os.path.exists(output_file):
+                            os.remove(output_file)
+                        return o.id, False
+                    return o.id, True
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+            return o.id, False
+
+        if with_mosaics:
+            with ThreadPoolExecutor(max_workers=config.max_workers) as pool:
+                futures = [pool.submit(_download_and_validate, o)
+                           for o in with_mosaics]
+                progress = tqdm(
+                    as_completed(futures), total=len(futures),
+                    desc=f"Downloading (size {cutout_size}, {config.max_workers}x)",
+                    disable=not show_progress)
+                n_total = len(futures)
+                for done_i, fut in enumerate(progress, start=1):
+                    star_id, ok = fut.result()
+                    if not ok:
+                        corrupted_ids.append(star_id)
+                    if progress_cb is not None:
+                        progress_cb(done_i, n_total, f"star_{star_id:04d}")
+
+        # Update flags — per-(band, size).
+        new_valid_ids = [o.id for o in with_mosaics if o.id not in corrupted_ids]
+        for o in objects:
+            if o.id in new_valid_ids:
+                o.set_valid(cutout_size, band=band)
+            if o.id in corrupted_ids:
+                o.set_corrupted(cutout_size, band=band)
+            if o.id in unmatched_ids:
+                o.set_download_failed(cutout_size, band=band)
+
+        persist()
+
+        final_valid = sum(1 for o in objects if o.is_valid(cutout_size, band=band))
+        final_corrupted = sum(1 for o in objects
+                              if o.is_corrupted(cutout_size, band=band))
+        final_failed = sum(1 for o in objects
+                           if o.is_download_failed(cutout_size, band=band))
+        return {
+            'downloaded': len(new_valid_ids),
+            'valid': final_valid,
+            'corrupted': final_corrupted,
+            'failed': final_failed,
+            'corrupted_ids': corrupted_ids,
+            'unmatched_ids': sorted(unmatched_ids),
+            'cutout_size': cutout_size,
+            'band': band,
+        }
