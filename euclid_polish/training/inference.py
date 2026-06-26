@@ -319,19 +319,3 @@ def reconstruct(
 
 
 
-def _safe_lupton_rgb(cube: Optional[np.ndarray]) -> Optional[np.ndarray]:
-    """Build a Lupton RGB from a 4-band cube, swallowing any rendering
-    failure so the rest of the plot still renders. Returns None if the
-    cube is missing or doesn't have all four bands."""
-    if cube is None or cube.ndim != 3 or cube.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
-        return None
-    try:
-        return lupton_rgb(
-            cube, band_names=Config.LR_INPUT_BAND_NAMES,
-            scheme="vis_nisp", reference="solar", Q=8.0, stretch=1.0,
-        )
-    except Exception as e:    # pragma: no cover — color is best-effort
-        print(f"  color composite skipped: {type(e).__name__}: {e}")
-        return None
-
-

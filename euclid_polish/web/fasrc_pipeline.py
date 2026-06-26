@@ -263,8 +263,8 @@ def render_sbatch_body(
         First echoed line inside the script (after the ``====`` rule).
         Caller picks the wording so log greps stay stable per step family.
     step_id :
-        If given, an ``STEP_ID=…`` echo is emitted at the tail so
-        :func:`fasrc_jobs.parse_step_id` can tag the runtime.
+        If given, an ``STEP_ID=…`` echo is emitted at the tail of the
+        script.
 
     Returns
     -------

@@ -233,13 +233,6 @@ class SSHSession:
         return (r.returncode, stdout,
                 r.stderr.decode("utf-8", errors="replace"))
 
-    def run_check(self, cmd: str, timeout: int = 60) -> str:
-        """Like :meth:`run` but raises :class:`SSHError` on non-zero rc."""
-        rc, out, err = self.run(cmd, timeout=timeout)
-        if rc != 0:
-            raise SSHError(f"`{cmd}` exit {rc}: {err.strip() or out.strip()}")
-        return out
-
     def stream(self, cmd: str) -> Iterator[str]:
         """Yield stdout lines from ``cmd`` as they arrive (for ``tail -f``).
 

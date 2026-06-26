@@ -72,23 +72,6 @@ def psf_side_pixels_for_band(
     return 2 * psf_half_pixels_for_band(band, pixel_scale) + 1
 
 
-def _centre_crop(arr: np.ndarray, side: int) -> np.ndarray:
-    """Return a centred ``(side, side)`` sub-array of ``arr``.
-
-    If the input is smaller than ``side`` along an axis, that axis is
-    returned unchanged (no zero-padding — we'd rather under-crop than
-    fabricate data).
-    """
-    h, w = arr.shape
-    if h <= side and w <= side:
-        return arr
-    new_h = min(h, side)
-    new_w = min(w, side)
-    i0 = (h - new_h) // 2
-    j0 = (w - new_w) // 2
-    return arr[i0 : i0 + new_h, j0 : j0 + new_w]
-
-
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------

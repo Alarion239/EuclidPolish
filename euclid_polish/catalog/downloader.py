@@ -109,7 +109,6 @@ class DownloadConfig:
     cutout_radius: float = 0.2  # arcmin
     position_tolerance: float = Config.Matching.DOWNLOAD_POSITION_TOL_ARCSEC
     size_tolerance: int = Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS
-    environment: str = "PDR"
     max_workers: int = 8  # parallel cutout HTTPS fetches
     band: str = "VIS"
     instrument: str = "VIS"

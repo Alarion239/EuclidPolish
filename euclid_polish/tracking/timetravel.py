@@ -430,10 +430,6 @@ def remove_sandbox(short: str, *,
 # remote (FASRC) sandbox — over a duck-typed ssh session
 # ---------------------------------------------------------------------------
 
-def _sh(*parts: str) -> str:
-    return " ".join(parts)
-
-
 def prepare_remote_sandbox(
     ssh, *,
     repo_path: str,

@@ -222,23 +222,6 @@ class BaseVisualizer:
         else:
             plt.colorbar(im, ax=ax, label=cbar_label)
 
-    def add_rgb_panel(
-        self,
-        rgb: np.ndarray,
-        title_suffix: str = "",
-    ) -> None:
-        """Display a pre-rendered ``(H, W, 3)`` RGB image in ``[0, 1]``."""
-        if rgb.ndim != 3 or rgb.shape[-1] != 3:
-            raise ValueError(
-                f"rgb must be (H, W, 3); got shape {rgb.shape}"
-            )
-        ax = self._fig.add_subplot(self._next_gs_position())
-        ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
-                  interpolation="nearest")
-        ax.set_title(f"color composite{title_suffix}", fontsize=12)
-        ax.set_xlabel("X (pixels)")
-        ax.set_ylabel("Y (pixels)")
-
     def add_rgb_scale_panel(
         self,
         cube: np.ndarray,
@@ -420,34 +403,6 @@ class BaseVisualizer:
         ax.set_xlabel("X (pixels)")
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label="|Δ| / |signal|")
-
-    def add_residual_histogram_panel(
-        self,
-        residual_stretched: np.ndarray,
-        title_suffix: str = "",
-    ) -> None:
-        """Add a histogram of stretched residuals + overlay simple stats."""
-        ax = self._fig.add_subplot(self._next_gs_position())
-        flat = residual_stretched[np.isfinite(residual_stretched)].ravel()
-        if flat.size == 0:
-            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
-            return
-        # Clip the tail for binning so the histogram isn't dominated by outliers
-        lo, hi = np.percentile(flat, [0.5, 99.5])
-        ax.hist(np.clip(flat, lo, hi), bins=80, color="tab:gray", edgecolor="none")
-        ax.axvline(0.0, color="red", lw=1.0, ls="--", alpha=0.8)
-        ax.set_xlabel("residual (asinh space)")
-        ax.set_ylabel("count")
-        ax.set_title(f"residual histogram{title_suffix}", fontsize=12)
-        # Stats overlay
-        mean = float(np.mean(flat))
-        std  = float(np.std(flat))
-        med  = float(np.median(flat))
-        ax.text(0.02, 0.95,
-                f"mean = {mean:+.3g}\nmedian = {med:+.3g}\nstd  = {std:.3g}\nN = {flat.size}",
-                transform=ax.transAxes, va="top", ha="left",
-                fontsize=9, fontfamily="monospace",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.4))
 
     def add_statistics_panel(self, data: np.ndarray, stats_dict: Dict[str, Any]) -> None:
         """Render a fixed-width key/value statistics panel.

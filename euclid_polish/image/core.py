@@ -296,9 +296,6 @@ class Image(StampCarrier):
     # Band convenience accessors
     # ------------------------------------------------------------------
 
-    def has_band(self, name: str) -> bool:
-        return name in self.band_names
-
     def band_index(self, name: str) -> int:
         if name not in self.band_names:
             raise ValueError(f"band {name!r} not in {self.band_names}")
@@ -309,12 +306,6 @@ class Image(StampCarrier):
         if band is None:
             return self.data
         return self.data[..., self.band_index(band)]
-
-    def single_band(self, name: str) -> "Image":
-        """A new :class:`Image` carrying only channel ``name`` (shape ``(H, W, 1)``)."""
-        k = self.band_index(name)
-        return dataclasses.replace(
-            self, data=self.data[..., k:k + 1].copy(), band_names=(name,))
 
     def with_role(self, role: Role) -> "Image":
         """A copy tagged with ``role`` (the original is unchanged)."""
@@ -401,17 +392,6 @@ class Image(StampCarrier):
 
     def total_flux(self, band: Optional[str] = None) -> float:
         return float(self.plane(band).sum())
-
-    def background_median(self, band: Optional[str] = None, *,
-                          mask_above: Optional[float] = None) -> float:
-        """Per-channel median, optionally masking pixels above a threshold."""
-        arr = np.asarray(self.plane(band), dtype=np.float64)
-        if mask_above is not None:
-            mask = arr < float(mask_above)
-            if int(mask.sum()) < 10:
-                return float(np.median(arr))
-            return float(np.median(arr[mask]))
-        return float(np.median(arr))
 
     def psnr_against(self, other: "Image", *, data_range: Optional[float] = None) -> float:
         """Peak signal-to-noise ratio (dB) of ``self`` vs ``other``.

@@ -45,11 +45,6 @@ class FitsValidator:
     corruption, data quality, and WCS header validation.
     """
 
-    # Default validation thresholds
-    MIN_SHAPE = 10  # Minimum dimension size
-    ZERO_TOLERANCE = 1e-10  # Tolerance for considering values as zero
-    CONSTANT_TOLERANCE = 1e-10  # Tolerance for detecting constant images
-
     def __init__(
         self,
         min_shape: int = 10,
@@ -248,14 +243,6 @@ class FitsValidator:
                 if hasattr(hdu.data, 'size') and hdu.data.size > 0:
                     return hdu.data
         return None
-
-    def _positions_match(
-        self,
-        ra1: float, dec1: float,
-        ra2: float, dec2: float,
-        tolerance_arcsec: float
-    ) -> bool:
-        return angular_separation_arcsec(ra1, dec1, ra2, dec2) < tolerance_arcsec
 
 
 def validate_file_exists(filepath: str, name: str = "File") -> Tuple[bool, Optional[str]]:

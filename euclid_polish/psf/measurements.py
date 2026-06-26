@@ -34,34 +34,6 @@ def estimate_fwhm_pixels_1d(profile: np.ndarray) -> float:
     return float(idx[-1] - idx[0] + 1)
 
 
-def _interp_fwhm_pixels_1d(profile: np.ndarray) -> float:
-    """1-D FWHM with linear interpolation between the half-max
-    crossings — sub-pixel precision. ``estimate_fwhm_pixels_1d``'s
-    integer-pixel-counting cousin.
-
-    Internal helper for :func:`fwhm_pixels_radial`.
-    """
-    profile = np.asarray(profile, dtype=np.float64)
-    peak = profile.max()
-    if peak <= 0:
-        return 0.0
-    half = peak / 2.0
-    above = np.where(profile > half)[0]
-    if len(above) < 2:
-        return 0.0
-    L, R = above[0], above[-1]
-    # Linear-interp the half-power crossings on each side.
-    if L > 0 and profile[L - 1] != profile[L]:
-        Lx = (L - 1) + (profile[L - 1] - half) / (profile[L - 1] - profile[L])
-    else:
-        Lx = float(L)
-    if R < len(profile) - 1 and profile[R] != profile[R + 1]:
-        Rx = R + (profile[R] - half) / (profile[R] - profile[R + 1])
-    else:
-        Rx = float(R)
-    return float(Rx - Lx)
-
-
 def radial_profile(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Azimuthally-averaged radial profile around the brightest pixel.
 

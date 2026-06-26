@@ -59,7 +59,7 @@ class PSF(StampCarrier):
         know whether they need to resample before convolution.
     fwhm_arcsec
         Optional cached FWHM measurement (from the FITS header, or
-        computed via :meth:`measured_fwhm_arcsec` and stored).
+        computed from :meth:`fwhm_pixels` and stored).
     oversampling
         Optional EPSFBuilder oversampling factor (integer ≥ 1).
         Purely informational — it tells you "this kernel was built
@@ -97,10 +97,6 @@ class PSF(StampCarrier):
     def peak(self) -> float:
         return float(np.asarray(self.data).max())
 
-    @property
-    def is_normalised(self, *, atol: float = 1e-4) -> bool:
-        return abs(self.total_flux - 1.0) < atol
-
     # ------------------------------------------------------------------
     # Measurements (delegate to the standalone helpers so the same
     # code path runs for a PSF object and for a raw array)
@@ -132,10 +128,6 @@ class PSF(StampCarrier):
             f"choose row | radial | area_eq"
         )
 
-    def measured_fwhm_arcsec(self, method: str = "radial") -> float:
-        """FWHM converted to arcsec via :attr:`pixel_scale`."""
-        return self.fwhm_pixels(method) * float(self.pixel_scale)
-
     def flux_centroid(self) -> Tuple[float, float]:
         return _meas.flux_centroid(self.data)
 
@@ -163,12 +155,6 @@ class PSF(StampCarrier):
             self,
             data=(self.data / s).astype(self.data.dtype, copy=False),
         )
-
-    def normalized(self) -> PSF:
-        """Alias for :meth:`with_unit_sum`. Kept so the legacy API
-        (``PSF.from_fits`` calls ``.normalized()``) still works after
-        this consolidation."""
-        return self.with_unit_sum()
 
     def background_cleaned(
         self,

@@ -7,13 +7,11 @@ This module provides a unified command-line interface for all EuclidPolish opera
 from euclid_polish.cli.utils import (
     ValidationResult,
     DisplayFormatter,
-    CommandRunner,
     build_command_args,
 )
 
 __all__ = [
     "ValidationResult",
     "DisplayFormatter",
-    "CommandRunner",
     "build_command_args",
 ]

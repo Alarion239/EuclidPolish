@@ -280,16 +280,6 @@ def parse_progress(line: str) -> Optional[tuple[int, int]]:
     return step, total
 
 
-def parse_step_id(text: str) -> Optional[str]:
-    """Extract the last ``STEP_ID=...`` line — set by HST-pipeline sbatch banners."""
-    last: Optional[str] = None
-    for m in _STEP_ID_RE.finditer(text or ""):
-        last = m.group(1)
-    return last
-
-
-
-
 # ---------------------------------------------------------------------------
 # Submission helper — single SSH-write + sbatch + parse + DB.insert flow
 # ---------------------------------------------------------------------------
