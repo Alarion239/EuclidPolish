@@ -34,7 +34,6 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.catalog.cutout_integrity import rebuild_catalog_from_cutouts
 
 
@@ -48,9 +47,9 @@ def main() -> int:
                     help="Report what would be recovered; write nothing.")
     args = ap.parse_args()
 
-    cat = StarCatalog(args.output_dir)
-    print(f"Rebuilding catalog: {cat.catalog_path}")
-    s = rebuild_catalog_from_cutouts(cat, dry_run=args.dry_run)
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    print(f"Rebuilding catalog: {catalog_path}")
+    s = rebuild_catalog_from_cutouts(args.output_dir, dry_run=args.dry_run)
     print(f"  star ids on disk    : {s['ids_on_disk']}")
     print(f"  already in catalog  : {s['already_in_catalog']}")
     print(f"  recovered (added)   : {s['recovered']}  "
@@ -60,7 +59,7 @@ def main() -> int:
     if not s["dry_run"]:
         print(f"  cutouts validated   : {s.get('validated_cutouts')}  "
               f"(valid in all {len(Config.BANDS)} bands: {s.get('valid_all_bands')})")
-        print(f"  wrote {cat.catalog_path} (backup at {cat.catalog_path}.bak)")
+        print(f"  wrote {catalog_path} (backup at {catalog_path}.bak)")
     return 0
 
 

@@ -7,6 +7,10 @@ flag from whether the FITS actually opens and carries finite data. Run it
 right after a download so downstream consumers (PSF extraction, star-anchor
 generation, the ``/star-cutouts`` gallery) can trust the catalog's
 "valid in all 4 bands" without re-opening every file themselves.
+
+Operates on a catalog directory: cutouts live under
+``<output_dir>/cutouts/<band>/`` and the catalog CSV at
+``<output_dir>/<CATALOG_FILE>``, read/written as a ``list[CatalogObject]``.
 """
 
 from __future__ import annotations
@@ -20,10 +24,14 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject, next_id
 
 #: Cutout filenames are ``star_<id>_<size>.fits`` (id zero-padded to ≥4).
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
+
+
+def _catalog_path(output_dir: str) -> str:
+    return os.path.join(output_dir, Config.CATALOG_FILE)
 
 
 def cutout_openable(path: str) -> bool:
@@ -56,7 +64,7 @@ def _radec_from_header(path: str):
 
 
 def rebuild_catalog_from_cutouts(
-    cat: StarCatalog,
+    output_dir: str,
     band_names: Optional[List[str]] = None,
     *,
     reporter: Any = None,
@@ -71,14 +79,13 @@ def rebuild_catalog_from_cutouts(
     keep their metadata. It then re-derives every per-``(band,size)`` validity
     flag via :func:`validate_all_cutouts` and persists (atomically).
 
-    Use after an OOM-killed download truncated ``stars.csv``: the cutout FITS are
+    Use after an OOM-killed download truncated the catalog: the cutout FITS are
     the durable record, this rebuilds the index over them. Returns a summary."""
     if band_names is None:
         band_names = [b.name for b in Config.BANDS]
-    catalog = cat.load()
-    by_id = {int(s["id"]): s for s in catalog.get("stars", [])
-             if s.get("id") is not None}
-    cutouts_root = os.path.join(cat.output_dir, Config.CUTOUTS_SUBDIR)
+    objects = CatalogObject.read(_catalog_path(output_dir))
+    by_id = {int(o.id): o for o in objects if o.id is not None}
+    cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
 
     id_to_path: Dict[int, str] = {}
     for bn in band_names:
@@ -95,14 +102,10 @@ def rebuild_catalog_from_cutouts(
         ra, dec = _radec_from_header(id_to_path[sid])
         if ra is None:
             no_radec += 1
-        catalog["stars"].append({
-            "id":        sid,
-            "ra":        ra if ra is not None else float("nan"),
-            "dec":       dec if dec is not None else float("nan"),
-            "magnitude": float("nan"),
-        })
-    ids = [int(s["id"]) for s in catalog["stars"] if s.get("id") is not None]
-    catalog["next_id"] = (max(ids) + 1) if ids else 0
+        objects.append(CatalogObject(
+            ra=ra if ra is not None else float("nan"),
+            dec=dec if dec is not None else float("nan"),
+            id=sid, magnitude=float("nan")))
 
     summary: Dict[str, Any] = {
         "ids_on_disk":        len(on_disk),
@@ -110,41 +113,40 @@ def rebuild_catalog_from_cutouts(
         "recovered":          len(missing),
         "missing_radec":      no_radec,
         "catalog_before":     len(by_id),
-        "catalog_after":      len(catalog["stars"]),
+        "catalog_after":      len(objects),
         "dry_run":            bool(dry_run),
     }
     if dry_run:
         return summary
-    res = validate_all_cutouts(cat, catalog, band_names, reporter=reporter)
+    res = validate_all_cutouts(output_dir, band_names, objects=objects,
+                               reporter=reporter)
     summary["validated_cutouts"] = res["checked"]
     summary["valid_all_bands"] = res["valid_all_bands"]
     return summary
 
 
 def validate_all_cutouts(
-    cat: StarCatalog,
-    catalog: Dict[str, Any],
+    output_dir: str,
     band_names: Optional[List[str]] = None,
     *,
+    objects: Optional[List[CatalogObject]] = None,
     reporter: Any = None,
 ) -> Dict[str, Any]:
     """Re-derive per-``(band, size)`` validity by opening every cutout on disk.
 
     For each ``star_<id>_<size>.fits`` under each band's cutout dir, set the
-    star's ``valid``/``corrupted`` flag from :func:`cutout_openable`, then
-    persist via ``cat.save``. ``reporter`` (optional) drives a progress bar.
+    object's ``valid``/``corrupted`` flag from :func:`cutout_openable`, then
+    persist. ``objects`` is read from the catalog when not supplied; it is
+    mutated and written back. ``reporter`` (optional) drives a progress bar.
 
     Returns ``{"checked", "unopenable", "valid_all_bands", "n_bands"}``.
     """
     if band_names is None:
         band_names = [b.name for b in Config.BANDS]
-    stars = catalog.get("stars", [])
-    by_id = {int(s["id"]): s for s in stars if "id" in s}
-
-    # Cutouts live under ``<output_dir>/cutouts/<band>/`` — the SAME root the
-    # downloader writes to (``catalog.output_dir`` + CUTOUTS_SUBDIR), not the
-    # fixed STAR_CUTOUTS_ROOT, so a custom output dir still resolves.
-    cutouts_root = os.path.join(cat.output_dir, Config.CUTOUTS_SUBDIR)
+    if objects is None:
+        objects = CatalogObject.read(_catalog_path(output_dir))
+    by_id = {int(o.id): o for o in objects if o.id is not None}
+    cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
 
     tasks = []
     for bn in band_names:
@@ -157,22 +159,21 @@ def validate_all_cutouts(
     n = len(tasks)
     unopenable = 0
     for i, (sid, bn, size, path) in enumerate(tasks):
-        star = by_id.get(sid)
-        if star is None:
+        o = by_id.get(sid)
+        if o is None:
             continue
         if cutout_openable(path):
-            StarCatalog.set_valid(star, size, band=bn)
+            o.set_valid(size, band=bn)
         else:
-            StarCatalog.set_corrupted(star, size, band=bn)
+            o.set_corrupted(size, band=bn)
             unopenable += 1
         if reporter is not None and (i % 200 == 0 or i == n - 1):
             reporter.set_step(i + 1, n, f"{bn} star {sid:04d}")
 
-    cat.save(catalog)
+    CatalogObject.write(objects, _catalog_path(output_dir))
 
     want = set(band_names)
-    valid_all = sum(1 for s in stars
-                    if want <= set(StarCatalog.valid_bands(s)))
+    valid_all = sum(1 for o in objects if want <= set(o.valid_bands()))
     return {
         "checked":          n,
         "unopenable":       unopenable,
@@ -182,10 +183,10 @@ def validate_all_cutouts(
 
 
 def purge_incomplete_cutouts(
-    cat: StarCatalog,
-    catalog: Dict[str, Any],
+    output_dir: str,
     band_names: Optional[List[str]] = None,
     *,
+    objects: Optional[List[CatalogObject]] = None,
     dry_run: bool = False,
     drop_catalog_rows: bool = True,
     reporter: Any = None,
@@ -203,27 +204,24 @@ def purge_incomplete_cutouts(
     first if the on-disk files may have changed since the flags were written.
 
     With ``drop_catalog_rows`` (default), purged stars are also removed from
-    the catalog so it stays consistent with disk; otherwise the rows are kept
-    (their now-absent cutouts will simply read back as missing on the next
-    integrity pass). ``dry_run`` reports what *would* be deleted, touching
-    neither disk nor catalog.
+    the catalog so it stays consistent with disk; otherwise the rows are kept.
+    ``dry_run`` reports what *would* be deleted, touching neither disk nor
+    catalog.
 
     Returns ``{"n_bands", "complete_stars", "incomplete_stars",
     "deleted_files", "failed_deletes", "dropped_rows", "dry_run"}``.
     """
     if band_names is None:
         band_names = [b.name for b in Config.BANDS]
+    if objects is None:
+        objects = CatalogObject.read(_catalog_path(output_dir))
     want = set(band_names)
-    stars = catalog.get("stars", [])
-    cutouts_root = os.path.join(cat.output_dir, Config.CUTOUTS_SUBDIR)
+    cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
 
-    # Stars complete across every band are keepers; everything else is purged.
-    purge_ids = {int(s["id"]) for s in stars
-                 if s.get("id") is not None
-                 and not (want <= set(StarCatalog.valid_bands(s)))}
-    complete_count = sum(1 for s in stars
-                         if s.get("id") is not None
-                         and want <= set(StarCatalog.valid_bands(s)))
+    purge_ids = {int(o.id) for o in objects
+                 if o.id is not None and not (want <= set(o.valid_bands()))}
+    complete_count = sum(1 for o in objects
+                         if o.id is not None and want <= set(o.valid_bands()))
 
     # Map every on-disk cutout to its star id, robust to id zero-padding
     # (filenames are ``star_<id>_<size>.fits`` with ``:04d`` *minimum* width).
@@ -252,12 +250,9 @@ def purge_incomplete_cutouts(
 
     dropped = 0
     if not dry_run and drop_catalog_rows and purge_ids:
-        catalog["stars"] = [s for s in stars
-                            if not (s.get("id") is not None
-                                    and int(s["id"]) in purge_ids)]
-        ids = [int(s["id"]) for s in catalog["stars"] if s.get("id") is not None]
-        catalog["next_id"] = (max(ids) + 1) if ids else 0
-        cat.save(catalog)
+        kept = [o for o in objects
+                if not (o.id is not None and int(o.id) in purge_ids)]
+        CatalogObject.write(kept, _catalog_path(output_dir))
         dropped = len(purge_ids)
 
     return {

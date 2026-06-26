@@ -35,7 +35,6 @@ from euclid_polish.config import Config
 from euclid_polish.catalog import auth
 from euclid_polish.catalog.client import EuclidCatalog
 from euclid_polish.catalog.catalog_object import CatalogObject
-from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.catalog.cutout_integrity import validate_all_cutouts
 from euclid_polish.catalog.downloader import DownloadConfig
 from euclid_polish.observability.reporter import Reporter
@@ -180,10 +179,10 @@ def main() -> int:
     print(f"workers / band  = {args.workers}")
     print(f"bands in parallel = {max(1, min(len(band_names), args.band_workers))}\n")
 
-    cat = StarCatalog(args.output_dir)
-    if not cat.exists():
-        reporter.error(f"no catalog at {cat.catalog_path}")
-        print(f"✗ no catalog at {cat.catalog_path}")
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    if not os.path.exists(catalog_path):
+        reporter.error(f"no catalog at {catalog_path}")
+        print(f"✗ no catalog at {catalog_path}")
         return 1
 
     # Log in to the Euclid archive (proprietary cutouts need it). Tries
@@ -224,7 +223,7 @@ def main() -> int:
     # catalog's per-(band, size) validity, so downstream tasks can trust
     # "valid in all 4 bands" without re-opening every file themselves.
     reporter.set_stage("validating cutouts (integrity)")
-    integ = validate_all_cutouts(cat, cat.load(), band_names, reporter=reporter)
+    integ = validate_all_cutouts(args.output_dir, band_names, reporter=reporter)
     print(f"\nIntegrity: checked {integ['checked']} cutouts, "
           f"{integ['unopenable']} unopenable → "
           f"{integ['valid_all_bands']} stars valid in all "

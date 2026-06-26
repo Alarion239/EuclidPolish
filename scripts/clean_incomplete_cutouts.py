@@ -28,7 +28,6 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
 from euclid_polish.catalog.cutout_integrity import (
     purge_incomplete_cutouts, validate_all_cutouts,
 )
@@ -50,24 +49,22 @@ def main() -> int:
     args = ap.parse_args()
 
     reporter = Reporter.from_env()
-    cat = StarCatalog(args.output_dir)
-    if not cat.exists():
-        reporter.error(f"no catalog at {cat.catalog_path}")
-        print(f"✗ no catalog at {cat.catalog_path}")
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    if not os.path.exists(catalog_path):
+        reporter.error(f"no catalog at {catalog_path}")
+        print(f"✗ no catalog at {catalog_path}")
         return 1
 
-    catalog = cat.load()
     if not args.skip_validate:
         reporter.set_stage("validating cutouts (integrity)")
-        v = validate_all_cutouts(cat, catalog, reporter=reporter)
+        v = validate_all_cutouts(args.output_dir, reporter=reporter)
         print(f"  validated {v['checked']} cutouts; {v['unopenable']} unopenable; "
               f"{v['valid_all_bands']} stars valid in all {v['n_bands']} bands")
-        catalog = cat.load()   # reload with refreshed flags
 
     reporter.set_stage("purging incomplete cutouts"
                        + (" (dry run)" if args.dry_run else ""))
     s = purge_incomplete_cutouts(
-        cat, catalog,
+        args.output_dir,
         dry_run=args.dry_run,
         drop_catalog_rows=not args.keep_catalog_rows,
         reporter=reporter,

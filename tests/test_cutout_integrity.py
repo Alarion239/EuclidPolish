@@ -1,4 +1,4 @@
-"""The cutout integrity pass (``euclid.cutout_integrity``).
+"""The cutout integrity pass (``euclid_polish.catalog.cutout_integrity``).
 
 Opening every ``star_<id>_<size>.fits`` and (re)deriving the catalog's
 per-(band, size) validity, so un-openable cutouts are flagged corrupted and
@@ -14,7 +14,7 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.cutout_integrity import (
     cutout_openable, purge_incomplete_cutouts, rebuild_catalog_from_cutouts,
     validate_all_cutouts,
@@ -44,6 +44,15 @@ def _seed_cutouts(cutouts: str, n: int) -> None:
                         150.0 + sid * 0.01, 2.0 + sid * 0.01)
 
 
+def _save_catalog(output_dir, objects):
+    CatalogObject.write(objects, os.path.join(output_dir, Config.CATALOG_FILE))
+
+
+def _load_by_id(output_dir):
+    objs = CatalogObject.read(os.path.join(output_dir, Config.CATALOG_FILE))
+    return {int(o.id): o for o in objs if o.id is not None}
+
+
 def test_cutout_openable(tmp_path):
     good = tmp_path / "good.fits"
     _write_good(str(good))
@@ -54,8 +63,8 @@ def test_cutout_openable(tmp_path):
 
 
 def test_validate_flags_openable_and_corrupt(tmp_path):
-    root = tmp_path / "euclid_stars"
-    cutouts = str(root / "cutouts")
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, "cutouts")
     band_names = [b.name for b in Config.BANDS]
 
     # 4 stars × 4 bands of good cutouts.
@@ -69,23 +78,20 @@ def test_validate_flags_openable_and_corrupt(tmp_path):
     (open(os.path.join(vis_dir, f"star_0002_{_SIZE}.fits"), "wb")
      .write(b"truncated garbage, not openable"))
 
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": i, "ra": 150.0 + i * 1e-3, "dec": 2.0 + i * 1e-3}
-                        for i in range(4)],
-              "next_id": 4})
+    _save_catalog(root, [CatalogObject(ra=150.0 + i * 1e-3, dec=2.0 + i * 1e-3,
+                                       id=i) for i in range(4)])
 
-    summary = validate_all_cutouts(cat, cat.load(), band_names)
+    summary = validate_all_cutouts(root, band_names)
 
     assert summary["checked"] == 16          # 4 stars × 4 bands
     assert summary["unopenable"] == 1        # the garbage VIS file
     assert summary["valid_all_bands"] == 3   # stars 0, 1, 3 (not 2)
     assert summary["n_bands"] == len(band_names)
 
-    # Flags persisted to the CSV: star 2 lost VIS; the others keep all bands.
-    by_id = {int(s["id"]): s for s in cat.load()["stars"]}
-    assert set(StarCatalog.valid_bands(by_id[0])) >= set(band_names)
-    assert "VIS" not in StarCatalog.valid_bands(by_id[2])
-    assert set(StarCatalog.valid_bands(by_id[2])) == set(band_names) - {"VIS"}
+    by_id = _load_by_id(root)
+    assert set(by_id[0].valid_bands()) >= set(band_names)
+    assert "VIS" not in by_id[2].valid_bands()
+    assert set(by_id[2].valid_bands()) == set(band_names) - {"VIS"}
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +108,8 @@ def _all_paths(cutouts: str) -> set:
 
 
 def test_purge_deletes_incomplete_keeps_complete(tmp_path):
-    root = tmp_path / "euclid_stars"
-    cutouts = str(root / "cutouts")
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, "cutouts")
     band_names = [b.name for b in Config.BANDS]
 
     # 3 stars: 0 & 2 complete in all bands; star 1 has a corrupt VIS cutout.
@@ -116,28 +122,26 @@ def test_purge_deletes_incomplete_keeps_complete(tmp_path):
     with open(os.path.join(vis_dir, f"star_0001_{_SIZE}.fits"), "wb") as fh:
         fh.write(b"garbage, not a fits")
 
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": i, "ra": 150.0 + i * 1e-3, "dec": 2.0 + i * 1e-3}
-                        for i in range(3)], "next_id": 3})
-    validate_all_cutouts(cat, cat.load(), band_names)   # set flags from disk
+    _save_catalog(root, [CatalogObject(ra=150.0 + i * 1e-3, dec=2.0 + i * 1e-3,
+                                       id=i) for i in range(3)])
+    validate_all_cutouts(root, band_names)   # set flags from disk
 
-    s = purge_incomplete_cutouts(cat, cat.load(), band_names)
+    s = purge_incomplete_cutouts(root, band_names)
     assert s["complete_stars"] == 2          # stars 0 and 2
     assert s["incomplete_stars"] == 1        # star 1
     assert s["deleted_files"] == len(band_names)   # all 4 of star 1's cutouts
     assert s["dropped_rows"] == 1
 
-    # Star 1 is gone from disk and catalog; 0 and 2 keep every band's cutout.
     remaining = _all_paths(cutouts)
     assert not any("star_0001_" in p for p in remaining)
     assert sum("star_0000_" in p for p in remaining) == len(band_names)
     assert sum("star_0002_" in p for p in remaining) == len(band_names)
-    assert {int(st["id"]) for st in cat.load()["stars"]} == {0, 2}
+    assert set(_load_by_id(root)) == {0, 2}
 
 
 def test_purge_missing_band_is_incomplete(tmp_path):
-    root = tmp_path / "euclid_stars"
-    cutouts = str(root / "cutouts")
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, "cutouts")
     band_names = [b.name for b in Config.BANDS]
 
     # Star 0 complete; star 1 only ever downloaded in VIS (others never arrived).
@@ -148,22 +152,21 @@ def test_purge_missing_band_is_incomplete(tmp_path):
     _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
                              f"star_0001_{_SIZE}.fits"))
 
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
-                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
-    validate_all_cutouts(cat, cat.load(), band_names)
+    _save_catalog(root, [CatalogObject(ra=150.0, dec=2.0, id=0),
+                         CatalogObject(ra=150.1, dec=2.1, id=1)])
+    validate_all_cutouts(root, band_names)
 
-    s = purge_incomplete_cutouts(cat, cat.load(), band_names)
+    s = purge_incomplete_cutouts(root, band_names)
     assert s["complete_stars"] == 1 and s["incomplete_stars"] == 1
     assert s["deleted_files"] == 1           # star 1's lone VIS cutout
     remaining = _all_paths(cutouts)
     assert not any("star_0001_" in p for p in remaining)
-    assert {int(st["id"]) for st in cat.load()["stars"]} == {0}
+    assert set(_load_by_id(root)) == {0}
 
 
 def test_purge_dry_run_touches_nothing(tmp_path):
-    root = tmp_path / "euclid_stars"
-    cutouts = str(root / "cutouts")
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, "cutouts")
     band_names = [b.name for b in Config.BANDS]
     for bn in band_names:
         d = Config.cutout_dir_for_band(bn, root=cutouts)
@@ -171,21 +174,20 @@ def test_purge_dry_run_touches_nothing(tmp_path):
         _write_good(os.path.join(d, f"star_0000_{_SIZE}.fits"))
     _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
                              f"star_0001_{_SIZE}.fits"))
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
-                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
-    validate_all_cutouts(cat, cat.load(), band_names)
+    _save_catalog(root, [CatalogObject(ra=150.0, dec=2.0, id=0),
+                         CatalogObject(ra=150.1, dec=2.1, id=1)])
+    validate_all_cutouts(root, band_names)
 
     before = _all_paths(cutouts)
-    s = purge_incomplete_cutouts(cat, cat.load(), band_names, dry_run=True)
+    s = purge_incomplete_cutouts(root, band_names, dry_run=True)
     assert s["dry_run"] is True and s["deleted_files"] == 1 and s["dropped_rows"] == 0
     assert _all_paths(cutouts) == before                       # nothing deleted
-    assert len(cat.load()["stars"]) == 2                       # catalog intact
+    assert len(_load_by_id(root)) == 2                         # catalog intact
 
 
 def test_purge_keep_catalog_rows(tmp_path):
-    root = tmp_path / "euclid_stars"
-    cutouts = str(root / "cutouts")
+    root = str(tmp_path / "euclid_stars")
+    cutouts = os.path.join(root, "cutouts")
     band_names = [b.name for b in Config.BANDS]
     for bn in band_names:
         d = Config.cutout_dir_for_band(bn, root=cutouts)
@@ -193,16 +195,14 @@ def test_purge_keep_catalog_rows(tmp_path):
         _write_good(os.path.join(d, f"star_0000_{_SIZE}.fits"))
     _write_good(os.path.join(Config.cutout_dir_for_band("VIS", root=cutouts),
                              f"star_0001_{_SIZE}.fits"))
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0},
-                        {"id": 1, "ra": 150.1, "dec": 2.1}], "next_id": 2})
-    validate_all_cutouts(cat, cat.load(), band_names)
+    _save_catalog(root, [CatalogObject(ra=150.0, dec=2.0, id=0),
+                         CatalogObject(ra=150.1, dec=2.1, id=1)])
+    validate_all_cutouts(root, band_names)
 
-    s = purge_incomplete_cutouts(cat, cat.load(), band_names,
-                                 drop_catalog_rows=False)
+    s = purge_incomplete_cutouts(root, band_names, drop_catalog_rows=False)
     assert s["deleted_files"] == 1 and s["dropped_rows"] == 0
     assert not any("star_0001_" in p for p in _all_paths(cutouts))   # files gone
-    assert {int(st["id"]) for st in cat.load()["stars"]} == {0, 1}   # rows kept
+    assert set(_load_by_id(root)) == {0, 1}                          # rows kept
 
 
 # ---------------------------------------------------------------------------
@@ -210,61 +210,32 @@ def test_purge_keep_catalog_rows(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_rebuild_recovers_missing_stars(tmp_path):
-    root = tmp_path / "euclid_stars"
-    _seed_cutouts(str(root / "cutouts"), n=6)             # 6 stars on disk
+    root = str(tmp_path / "euclid_stars")
+    _seed_cutouts(os.path.join(root, "cutouts"), n=6)     # 6 stars on disk
     band_names = [b.name for b in Config.BANDS]
-    cat = StarCatalog(str(root))
     # A surviving PARTIAL catalog (the OOM symptom): only ids 0,1 remain,
     # carrying magnitude metadata; ids 2–5 are orphaned cutouts.
-    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0, "magnitude": 18.5},
-                        {"id": 1, "ra": 150.01, "dec": 2.01, "magnitude": 19.0}],
-              "next_id": 2})
+    _save_catalog(root, [CatalogObject(ra=150.0, dec=2.0, id=0, magnitude=18.5),
+                         CatalogObject(ra=150.01, dec=2.01, id=1, magnitude=19.0)])
 
-    s = rebuild_catalog_from_cutouts(cat)
+    s = rebuild_catalog_from_cutouts(root)
     assert s["ids_on_disk"] == 6 and s["recovered"] == 4
     assert s["catalog_after"] == 6 and s["missing_radec"] == 0
 
-    by_id = {int(st["id"]): st for st in cat.load()["stars"]}
+    by_id = _load_by_id(root)
     assert set(by_id) == {0, 1, 2, 3, 4, 5}
     # Recovered star: ra/dec from the FITS WCS header, valid in every band.
-    assert by_id[3]["ra"] == pytest.approx(150.03)
-    assert by_id[3]["dec"] == pytest.approx(2.03)
-    assert set(StarCatalog.valid_bands(by_id[3])) == set(band_names)
+    assert by_id[3].ra == pytest.approx(150.03)
+    assert by_id[3].dec == pytest.approx(2.03)
+    assert set(by_id[3].valid_bands()) == set(band_names)
     # Surviving star kept its magnitude.
-    assert by_id[0]["magnitude"] == pytest.approx(18.5)
-    assert cat.load()["next_id"] == 6
+    assert by_id[0].magnitude == pytest.approx(18.5)
 
 
 def test_rebuild_dry_run_writes_nothing(tmp_path):
-    root = tmp_path / "euclid_stars"
-    _seed_cutouts(str(root / "cutouts"), n=3)
-    cat = StarCatalog(str(root))
-    cat.save({"stars": [{"id": 0, "ra": 150.0, "dec": 2.0}], "next_id": 1})
-    s = rebuild_catalog_from_cutouts(cat, dry_run=True)
+    root = str(tmp_path / "euclid_stars")
+    _seed_cutouts(os.path.join(root, "cutouts"), n=3)
+    _save_catalog(root, [CatalogObject(ra=150.0, dec=2.0, id=0)])
+    s = rebuild_catalog_from_cutouts(root, dry_run=True)
     assert s["recovered"] == 2 and s["dry_run"] is True
-    assert len(cat.load()["stars"]) == 1                   # unchanged on disk
-
-
-def test_save_is_atomic_and_keeps_backup(tmp_path):
-    import pandas as pd
-    cat = StarCatalog(str(tmp_path / "euclid_stars"))
-    cat.save({"stars": [{"id": 0, "ra": 1.0, "dec": 2.0}], "next_id": 1})
-    assert os.path.isfile(cat.catalog_path)
-    assert not os.path.exists(cat.catalog_path + ".tmp")   # temp cleaned up
-    cat.save({"stars": [{"id": 0, "ra": 1.0, "dec": 2.0},
-                        {"id": 1, "ra": 3.0, "dec": 4.0}], "next_id": 2})
-    assert os.path.isfile(cat.catalog_path + ".bak")       # prior version kept
-    assert len(pd.read_csv(cat.catalog_path + ".bak")) == 1
-    assert len(cat.load()["stars"]) == 2
-
-
-def test_load_backs_up_corrupt_nonempty_catalog(tmp_path):
-    cat = StarCatalog(str(tmp_path / "euclid_stars"))
-    os.makedirs(cat.output_dir, exist_ok=True)
-    # A non-empty but column-less file (the realistic OOM-truncation: a
-    # non-atomic write killed before any header/rows reached disk).
-    with open(cat.catalog_path, "wb") as fh:
-        fh.write(b"\n   \n\n")
-    out = cat.load()
-    assert out == {"stars": [], "next_id": 0}              # safe empty fallback
-    assert os.path.isfile(cat.catalog_path + ".corrupt")   # bytes preserved
+    assert len(_load_by_id(root)) == 1                     # unchanged on disk
