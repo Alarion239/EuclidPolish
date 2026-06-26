@@ -14,7 +14,9 @@ from astropy.io import fits
 from werkzeug.exceptions import NotFound
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+import os
+
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.web.helpers import sky_render
 
 
@@ -58,20 +60,20 @@ def test_centroids_only_render(psf_file):
 def test_render_with_catalog_diameters(psf_file, tmp_path):
     rng = np.random.default_rng(0)
     bands = [b.name for b in Config.BANDS]
-    stars = []
+    objects = []
     sid = 0
     for ra, dec in _CENTROIDS:
         for _ in range(12):
             sid += 1
-            s = {"id": sid, "ra": ra + rng.normal(0, 0.02),
-                 "dec": dec + rng.normal(0, 0.02), "magnitude": 18.0,
-                 "valid": {}, "corrupted": {}, "download_failed": {}}
+            o = CatalogObject(ra=ra + rng.normal(0, 0.02),
+                              dec=dec + rng.normal(0, 0.02),
+                              id=sid, magnitude=18.0)
             for bn in bands:
-                s["valid"].setdefault(bn, {})["511"] = True
-            stars.append(s)
+                o.set_valid(511, band=bn)
+            objects.append(o)
     cat_dir = tmp_path / "cat"
     cat_dir.mkdir()
-    StarCatalog(str(cat_dir)).save({"stars": stars})
+    CatalogObject.write(objects, os.path.join(str(cat_dir), Config.CATALOG_FILE))
     assert _is_png(sky_render._render_psf_clusters_png(str(cat_dir), str(psf_file)))
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.image.tfio import read_images
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.visualization.methods import plot_star_positions
@@ -115,10 +115,10 @@ def _saturation_cutoff(valid_mags, invalid_mags, bins):
     return cutoff
 
 
-def _render_saturation_view(stars):
+def _render_saturation_view(objects):
     """2×2 grid (one panel per band) of VIS-magnitude histograms split into
     valid (green) and invalid/saturated (red), with a suggested per-band
-    oversaturation cutoff line."""
+    oversaturation cutoff line. ``objects`` is a list of ``CatalogObject``."""
     band_names = [b.name for b in Config.BANDS]
     n = len(band_names)
     ncols = 2
@@ -128,13 +128,13 @@ def _render_saturation_view(stars):
 
     for ax, name in zip(axes, band_names):
         valid_mags, invalid_mags = [], []
-        for s in stars:
-            m = s.get("magnitude")
+        for o in objects:
+            m = o.magnitude
             if m is None or not np.isfinite(m):
                 continue
-            if StarCatalog.is_valid(s, band=name):
+            if o.is_valid(band=name):
                 valid_mags.append(float(m))
-            elif StarCatalog.is_corrupted(s, band=name):
+            elif o.is_corrupted(band=name):
                 invalid_mags.append(float(m))     # disjoint from valid
 
         combined = valid_mags + invalid_mags
@@ -221,14 +221,14 @@ def _render_psf_clusters_png(output_dir: Optional[str],
 
     # Catalog stars valid in all four bands → nearest-centroid assignment.
     sra, sdec = [], []
-    cat = StarCatalog(output_dir) if output_dir else None
-    if cat is not None and cat.exists():
+    cat_path = os.path.join(output_dir, Config.CATALOG_FILE) if output_dir else None
+    if cat_path and os.path.exists(cat_path):
         band_names = [b.name for b in Config.BANDS]
-        for s in cat.load().get("stars", []):
-            ra, dec = s.get("ra"), s.get("dec")
+        for o in CatalogObject.read(cat_path):
+            ra, dec = o.ra, o.dec
             if ra is None or dec is None or not (np.isfinite(ra) and np.isfinite(dec)):
                 continue
-            if all(StarCatalog.is_valid(s, band=bn) for bn in band_names):
+            if all(o.is_valid(band=bn) for bn in band_names):
                 sra.append(float(ra)); sdec.append(float(dec))
     sra, sdec = np.asarray(sra), np.asarray(sdec)
     if len(sra):
@@ -312,18 +312,18 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     per-band saturation (valid vs invalid)."""
     matplotlib.use("Agg")
 
-    cat = StarCatalog(output_dir)
-    if not cat.exists():
+    cat_path = os.path.join(output_dir, Config.CATALOG_FILE)
+    if not os.path.exists(cat_path):
         abort(404)
-    data = cat.load()
-    stars = data.get("stars", [])
-    if not stars:
+    objects = CatalogObject.read(cat_path)
+    if not objects:
         abort(404)
     if view == "positions":
+        stars = [{"ra": o.ra, "dec": o.dec, "magnitude": o.magnitude,
+                  "corrupted": o.has_any("corrupted")} for o in objects]
         fig = plot_star_positions(stars)
     elif view == "magnitudes":
-        mags = [s.get("magnitude") for s in stars
-                if s.get("magnitude") is not None]
+        mags = [o.magnitude for o in objects if o.magnitude is not None]
         fig, ax = plt.subplots(figsize=(6.5, 4.5))
         ax.hist(mags, bins=40, color="#2a5db0", edgecolor="white")
         ax.set_xlabel("VIS magnitude (AB)"); ax.set_ylabel("count")
@@ -331,7 +331,7 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
                      f"(median = {float(np.median(mags)):.2f})")
         fig.tight_layout()
     elif view == "saturation":
-        fig = _render_saturation_view(stars)
+        fig = _render_saturation_view(objects)
     else:
         abort(400)
     buf = io.BytesIO()
