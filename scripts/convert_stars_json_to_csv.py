@@ -9,8 +9,8 @@ old code wrote:
   - ``"valid": {"512": True}``                              (band-less)
   - ``"valid": {"VIS": {"512": True}}``                     (current)
 
-All three roll up into the canonical nested form before being handed
-to :class:`StarCatalog.save`, which writes the new CSV.
+All three roll up into the canonical nested form before being written
+as a ``list[CatalogObject]`` to the new CSV.
 
 Usage:
     python scripts/convert_stars_json_to_csv.py
@@ -30,7 +30,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject
 
 _FLAG_KINDS = ("valid", "corrupted", "download_failed")
 _DEFAULT_BAND = "VIS"
@@ -62,18 +62,17 @@ def _promote_flag(value):
                             for size, ok in value.items() if ok}}
 
 
-def _promote_star(star: dict) -> dict:
-    out = {
-        "id":        int(star["id"]),
-        "ra":        float(star["ra"]),
-        "dec":       float(star["dec"]),
-        "magnitude": float(star["magnitude"]),
-    }
+def _promote_star(star: dict) -> CatalogObject:
+    obj = CatalogObject(
+        ra=float(star["ra"]), dec=float(star["dec"]),
+        id=int(star["id"]), magnitude=float(star["magnitude"]))
+    flags = {k: {} for k in _FLAG_KINDS}
     for kind in _FLAG_KINDS:
         nested = _promote_flag(star.get(kind))
         if nested:
-            out[kind] = nested
-    return out
+            flags[kind] = nested
+    obj.flags = flags
+    return obj
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,9 +99,9 @@ def main() -> int:
     promoted = [_promote_star(s) for s in raw_stars]
     print(f"loaded {len(raw_stars)} stars from {json_path}")
 
-    cat = StarCatalog(args.output_dir)
-    cat.save({"stars": promoted})
-    print(f"✓ wrote {len(promoted)} stars to {cat.catalog_path}")
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    CatalogObject.write(promoted, catalog_path)
+    print(f"✓ wrote {len(promoted)} stars to {catalog_path}")
 
     if args.keep_old:
         print(f"  (kept legacy file at {json_path})")

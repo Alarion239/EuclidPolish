@@ -2,7 +2,7 @@
 """Query the N brightest Euclid stars.
 
 Non-interactive CLI wrapper around
-:meth:`euclid_polish.catalog.star_catalog.StarCatalog.query_brightest_stars`.
+:meth:`euclid_polish.catalog.client.EuclidCatalog.query_bright_stars`.
 Sorts ``mer_catalogue`` by VIS flux server-side (ESA Euclid archive) and
 writes the result into ``$DATA_DIR/euclid_stars/stars.csv``.
 
@@ -30,7 +30,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.client import EuclidCatalog, EuclidAuthError
+from euclid_polish.catalog.catalog_object import CatalogObject, merge_new
 from euclid_polish.observability.reporter import Reporter
 
 
@@ -74,17 +75,32 @@ def main() -> int:
 
     t0 = time.perf_counter()
     reporter.set_stage("querying Euclid archive")
-    cat = StarCatalog(args.output_dir)
-    result = cat.query_brightest_stars(
-        num_stars=args.num_stars,
-        magnitude_limit=args.magnitude_limit,
-        magnitude_min=args.magnitude_min,
-        snr_min=args.snr_min,
-        require_unmasked=not args.allow_masked,
-    )
-    print(result["message"])
-    if "Query failed" in str(result.get("message", "")):
-        reporter.error(str(result["message"]))
+    # Authenticate from EUCLID_USER/EUCLID_PASSWORD if set; else fall back to an
+    # unauthenticated client (the public mer_catalogue query needs no login).
+    try:
+        eclient = EuclidCatalog()
+    except EuclidAuthError:
+        eclient = EuclidCatalog._unauthenticated()
+
+    try:
+        candidates = eclient.query_bright_stars(
+            args.num_stars,
+            magnitude_limit=args.magnitude_limit,
+            magnitude_min=args.magnitude_min,
+            snr_min=args.snr_min,
+            require_unmasked=not args.allow_masked,
+        )
+    except Exception as e:                       # noqa: BLE001 — reported, not raised
+        reporter.error(f"Query failed: {e}")
+        print(f"Query failed: {e}")
+        return 1
+
+    path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    existing = CatalogObject.read(path)
+    res = merge_new(existing, candidates, limit=args.num_stars)
+    CatalogObject.write(existing, path)
+    print(f"Added {res['added']} stars → {len(existing)} total in catalog "
+          f"(skipped {res['skipped']} duplicates)")
 
     print(f"\nRUNTIME_SECONDS={time.perf_counter() - t0:.1f}")
     return 0

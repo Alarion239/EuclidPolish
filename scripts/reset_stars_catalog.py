@@ -38,7 +38,9 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject
+
+_FLAG_KINDS = ("valid", "corrupted", "download_failed")
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,31 +56,30 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _reset_flags(star: dict) -> dict:
-    """Return a new dict with every download-state flag wiped."""
-    return {k: v for k, v in star.items()
-            if k not in ("valid", "corrupted", "download_failed")}
+def _reset_flags(obj: CatalogObject) -> CatalogObject:
+    """Wipe every download-state flag on ``obj`` (no cutouts on disk yet)."""
+    obj.flags = {k: {} for k in _FLAG_KINDS}
+    return obj
 
 
 def main() -> int:
     args = parse_args()
-    cat = StarCatalog(args.output_dir)
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
     cutouts_dir = os.path.join(args.output_dir, Config.CUTOUTS_SUBDIR)
 
-    if not cat.exists():
-        print(f"✗ no catalog at {cat.catalog_path}")
+    if not os.path.exists(catalog_path):
+        print(f"✗ no catalog at {catalog_path}")
         return 1
 
-    catalog = cat.load()
-    stars = catalog["stars"]
-    print(f"loaded {len(stars)} stars from {cat.catalog_path}")
+    objects = CatalogObject.read(catalog_path)
+    print(f"loaded {len(objects)} stars from {catalog_path}")
 
-    keep = min(args.keep, len(stars))
+    keep = min(args.keep, len(objects))
     rng = np.random.default_rng(args.seed)
-    keep_idx = sorted(rng.choice(len(stars), size=keep, replace=False).tolist())
-    kept = [_reset_flags(stars[i]) for i in keep_idx]
+    keep_idx = sorted(rng.choice(len(objects), size=keep, replace=False).tolist())
+    kept = [_reset_flags(objects[i]) for i in keep_idx]
     print(f"keeping {len(kept)} random stars (seed={args.seed}); "
-          f"dropping {len(stars) - len(kept)}")
+          f"dropping {len(objects) - len(kept)}")
 
     # Count what's on disk for the report.
     n_fits = 0
@@ -100,10 +101,9 @@ def main() -> int:
                 os.remove(full)
         print(f"  ✓ wiped {cutouts_dir}/*")
 
-    # Persist the trimmed catalog. ``next_id`` is recomputed from the IDs
-    # we kept, which is fine — the ones we dropped are gone for good.
-    cat.save({"stars": kept})
-    print(f"  ✓ wrote {len(kept)} stars to {cat.catalog_path}")
+    # Persist the trimmed catalog (kept stars retain their original ids).
+    CatalogObject.write(kept, catalog_path)
+    print(f"  ✓ wrote {len(kept)} stars to {catalog_path}")
     return 0
 
 

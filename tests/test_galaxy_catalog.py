@@ -80,7 +80,7 @@ def _lens_csv(tmp_path):
 
 
 def test_build_draws_3n_and_excludes_lenses(monkeypatch, tmp_path):
-    monkeypatch.setattr(gc, "login", lambda **k: True)
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
     monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
     out = tmp_path / "galaxies.csv"
     path, n = gc.build(str(out), n_galaxies=3, lens_catalog_path=_lens_csv(tmp_path),
@@ -94,7 +94,7 @@ def test_build_draws_3n_and_excludes_lenses(monkeypatch, tmp_path):
 
 
 def test_build_requires_auth(monkeypatch, tmp_path):
-    monkeypatch.setattr(gc, "login", lambda **k: False)
+    monkeypatch.setattr(gc, "_login", lambda **k: False)
     with pytest.raises(RuntimeError):
         gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
                  lens_catalog_path=_lens_csv(tmp_path), seed=0)
@@ -105,7 +105,7 @@ def test_build_reuses_cache_without_requery(monkeypatch, tmp_path):
     out.write_text("id,ra,dec,grade\n"
                    "gal_1,10.0,-5.0,gal\ngal_2,11.0,-5.0,gal\ngal_3,12.0,-5.0,gal\n")
     called = {"login": False}
-    monkeypatch.setattr(gc, "login",
+    monkeypatch.setattr(gc, "_login",
                         lambda **k: called.__setitem__("login", True) or True)
     path, n = gc.build(str(out), n_galaxies=3,
                        lens_catalog_path="does-not-exist.csv", seed=0)
@@ -113,7 +113,7 @@ def test_build_reuses_cache_without_requery(monkeypatch, tmp_path):
 
 
 def test_build_seed_deterministic(monkeypatch, tmp_path):
-    monkeypatch.setattr(gc, "login", lambda **k: True)
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
     monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
     a, _ = gc.build(str(tmp_path / "a.csv"), n_galaxies=2,
                     lens_catalog_path=_lens_csv(tmp_path), seed=7)

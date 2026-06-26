@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
-from euclid_polish.catalog.auth import login
+from euclid_polish.catalog.client import EuclidCatalog, EuclidAuthError
 from euclid_polish.eval.eval_catalog import read_eval_catalog
 from euclid_polish.catalog.photometry import uJy_to_ab_mag
 from euclid_polish.catalog.validator import angular_separation_arcsec
@@ -29,7 +29,7 @@ from euclid_polish.catalog.validator import angular_separation_arcsec
 GAL_GRADE = "gal"
 
 # MER catalogue (``catalogue.mer_catalogue``) column names. ``det_quality_flag``
-# and the coord/flux columns are already used by StarCatalog (catalog.py); the
+# and the coord/flux columns are already used by EuclidCatalog queries; the
 # morphology/classification columns below are the Euclid Q1 names — confirm them
 # once against the live schema (see scripts/fetch_galaxy_catalog.py --probe), and
 # if a name differs, change it here only (the ADQL is built from these).
@@ -116,6 +116,15 @@ def _candidates_from_results(results: Any,
     return out
 
 
+def _login() -> bool:
+    """True if a Euclid archive session is available (EUCLID_USER/PASSWORD)."""
+    try:
+        EuclidCatalog()
+        return True
+    except EuclidAuthError:
+        return False
+
+
 def _run_query(query: str) -> Tuple[Any, str]:
     """Run a synchronous ADQL query; return ``(results_or_None, error)``."""
     try:
@@ -173,7 +182,7 @@ def build(out_csv: Optional[str] = None, *, n_galaxies: int,
     if len(cached) >= n_galaxies:
         return out, len(cached)                     # cache already satisfies the request
 
-    if not login(allow_interactive=False):
+    if not _login():
         raise RuntimeError(
             "Euclid archive login required to build the galaxy catalog. Set "
             "EUCLID_USER/EUCLID_PASSWORD or a credentials file (same credentials "

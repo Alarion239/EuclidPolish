@@ -5,7 +5,7 @@ NISP bands at their native pixel scales, then push them through the
 full downstream chain:
 
     mock cutouts on disk
-        → StarCatalog flags per (band, size)
+        → CatalogObject flags per (band, size)
         → PSFExtractor builds the ePSF (per-band oversampling)
         → ePSF saved at 0.05"/pix
         → load_band_psf reads the FITS back
@@ -31,7 +31,7 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.catalog.star_catalog import StarCatalog
+from euclid_polish.catalog.catalog_object import CatalogObject, summarize
 from euclid_polish.catalog.downloader import DownloadConfig
 from euclid_polish.psf.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
@@ -201,31 +201,31 @@ def test_per_band_native_sizes_match_angular_field(stars_root, four_band_cutouts
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: StarCatalog tracks per-band, per-size flags from mock downloads
+# Stage 2: CatalogObject tracks per-band, per-size flags from mock downloads
 # ---------------------------------------------------------------------------
 
 def test_catalog_records_per_band_validity(stars_root, four_band_cutouts):
-    """Mark each band's cutouts valid via StarCatalog and read them back."""
+    """Mark each band's cutouts valid via CatalogObject and read them back."""
     arcsec_side = CUTOUT_SIZE_VIS * Config.BAND_VIS.pixel_scale_lr_arcsec
-    catalog = StarCatalog(str(stars_root))
-    stars = [{"id": i, "ra": 150.0 + 0.001 * i, "dec": 2.5 + 0.001 * i}
-             for i in range(8)]
+    path = os.path.join(str(stars_root), Config.CATALOG_FILE)
+    objects = [CatalogObject(ra=150.0 + 0.001 * i, dec=2.5 + 0.001 * i, id=i)
+               for i in range(8)]
 
     for band in Config.BANDS:
         size = band.cutout_size_for_arcsec(arcsec_side)
-        for s in stars:
-            StarCatalog.set_valid(s, size, band=band.name)
+        for o in objects:
+            o.set_valid(size, band=band.name)
 
-    catalog.save({"stars": stars, "next_id": 8})
-    loaded = catalog.load()
-    for s in loaded["stars"]:
+    CatalogObject.write(objects, path)
+    loaded = CatalogObject.read(path)
+    for o in loaded:
         for band in Config.BANDS:
             size = band.cutout_size_for_arcsec(arcsec_side)
-            assert StarCatalog.is_valid(s, size, band=band.name), (
-                f"star {s['id']} not valid for {band.name} at size={size}"
+            assert o.is_valid(size, band=band.name), (
+                f"star {o.id} not valid for {band.name} at size={size}"
             )
 
-    summary = catalog.get_summary()
+    summary = summarize(loaded)
     for band in Config.BANDS:
         assert summary["valid_by_band"][band.name] == 8
 

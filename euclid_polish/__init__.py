@@ -9,7 +9,7 @@ This package provides tools for:
 
 Example:
     >>> from euclid_polish.config import Config
-    >>> from euclid_polish.catalog import StarCatalog
+    >>> from euclid_polish.catalog import EuclidCatalog
     >>> from euclid_polish.training import Trainer
 """
 

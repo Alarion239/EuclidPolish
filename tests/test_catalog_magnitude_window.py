@@ -1,4 +1,4 @@
-"""Magnitude-window args to ``StarCatalog.query_brightest_stars``.
+"""Magnitude-window args to ``EuclidCatalog.query_bright_stars``.
 
 We can't easily hit the live Euclid TAP service in unit tests, so we
 monkey-patch ``Euclid.launch_job_async`` and inspect the ADQL query
@@ -16,8 +16,8 @@ import pytest
 from astropy.table import Table
 
 from euclid_polish.config import Config
-from euclid_polish.catalog import star_catalog as catalog_module
-from euclid_polish.catalog.star_catalog import StarCatalog
+import euclid_polish.catalog.client as client_module
+from euclid_polish.catalog.client import EuclidCatalog
 
 
 class _FakeJob:
@@ -45,7 +45,7 @@ def captured_query(monkeypatch):
         )
         return _FakeJob(empty)
 
-    monkeypatch.setattr(catalog_module.Euclid, "launch_job_async", fake_async)
+    monkeypatch.setattr(client_module.Euclid, "launch_job_async", fake_async)
     return captured
 
 
@@ -53,9 +53,9 @@ def _flux_for_mag(mag: float) -> float:
     return 10 ** ((Config.AB_ZP_UJY - mag) / 2.5)
 
 
-def test_magnitude_min_emits_flux_upper_bound(tmp_path, captured_query):
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10, magnitude_min=15.0)
+def test_magnitude_min_emits_flux_upper_bound(captured_query):
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10, magnitude_min=15.0)
     q = captured_query["query"]
     expected_flux_max = _flux_for_mag(15.0)
     # Pull out the numeric upper bound following 'flux_vis_psf <'
@@ -64,9 +64,9 @@ def test_magnitude_min_emits_flux_upper_bound(tmp_path, captured_query):
     assert float(m.group(1)) == pytest.approx(expected_flux_max, rel=1e-9)
 
 
-def test_magnitude_min_and_limit_together(tmp_path, captured_query):
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10, magnitude_min=15.0, magnitude_limit=21.0)
+def test_magnitude_min_and_limit_together(captured_query):
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10, magnitude_min=15.0, magnitude_limit=21.0)
     q = captured_query["query"]
     # Lower bound must come from magnitude_limit=21 (faint-end cutoff).
     m_lo = re.search(r"flux_vis_psf\s*>\s*([0-9.eE+\-]+)", q)
@@ -82,39 +82,39 @@ def test_magnitude_min_and_limit_together(tmp_path, captured_query):
     assert float(m_hi.group(1)) == pytest.approx(_flux_for_mag(15.0), rel=1e-9)
 
 
-def test_snr_min_emits_error_ratio_clause(tmp_path, captured_query):
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10, snr_min=50)
+def test_snr_min_emits_error_ratio_clause(captured_query):
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10, snr_min=50)
     q = captured_query["query"]
     assert "fluxerr_vis_psf" in q
     assert re.search(r"flux_vis_psf\s*>\s*50(\.0)?\s*\*\s*fluxerr_vis_psf", q), q
 
 
-def test_inverted_window_raises(tmp_path):
-    cat = StarCatalog(str(tmp_path))
+def test_inverted_window_raises():
+    cat = EuclidCatalog._unauthenticated()
     # Bright cutoff >= faint cutoff → empty window.
-    with pytest.raises(ValueError, match="window would be empty"):
-        cat.query_brightest_stars(num_stars=10, magnitude_min=22, magnitude_limit=20)
+    with pytest.raises(ValueError, match="magnitude_min must be < magnitude_limit"):
+        cat.query_bright_stars(10, magnitude_min=22, magnitude_limit=20)
 
 
-def test_no_magnitude_min_omits_upper_bound(tmp_path, captured_query):
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10)
+def test_no_magnitude_min_omits_upper_bound(captured_query):
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10)
     q = captured_query["query"]
     # No '< <number>' clause for flux_vis_psf when magnitude_min unset.
     assert re.search(r"flux_vis_psf\s*<\s*[0-9]", q) is None, q
 
 
-def test_unmasked_cut_on_by_default(tmp_path, captured_query):
+def test_unmasked_cut_on_by_default(captured_query):
     """Mask-free (``det_quality_flag = 0``) is the default — the clean point
     sources wanted for ePSF construction (no saturation/blending/bright-star
     masks)."""
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10)
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10)
     assert re.search(r"det_quality_flag\s*=\s*0", captured_query["query"])
 
 
-def test_allow_masked_drops_the_cut(tmp_path, captured_query):
-    cat = StarCatalog(str(tmp_path))
-    cat.query_brightest_stars(num_stars=10, require_unmasked=False)
+def test_allow_masked_drops_the_cut(captured_query):
+    cat = EuclidCatalog._unauthenticated()
+    cat.query_bright_stars(10, require_unmasked=False)
     assert "det_quality_flag" not in captured_query["query"]

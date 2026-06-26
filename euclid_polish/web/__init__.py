@@ -2,7 +2,7 @@
 Localhost web interface for EuclidPolish.
 
 Thin Flask layer over the existing modules — every page delegates to
-``StarCatalog`` / ``psf_inventory`` / ``SkySimulator`` /
+``EuclidCatalog`` / ``psf_inventory`` / ``SkySimulator`` /
 ``ObservationSimulator`` rather than reimplementing pipeline logic. The
 slow operations (generate, forward, extract-psf) run in background
 threads tracked by :mod:`euclid_polish.web.jobs`; the UI polls the job

@@ -95,6 +95,16 @@ class EuclidCatalog:
                 raise EuclidAuthError(f"Euclid login failed: {e}") from e
         self._user, self._password = user, password
 
+    @property
+    def user(self) -> Optional[str]:
+        """The authenticated username, or ``None`` (unauthenticated client)."""
+        return self._user
+
+    @property
+    def is_authenticated(self) -> bool:
+        """True if this client was constructed with credentials."""
+        return self._user is not None
+
     def relogin(self) -> bool:
         """Refresh the session after a mid-batch TAP expiry. ``False`` on failure."""
         if not self._user or not self._password:

@@ -2,7 +2,7 @@
 """Rebuild ``stars.csv`` from the cutouts already on disk (recovery tool).
 
 When a download job is OOM-killed (or otherwise crashes) mid-write it can leave
-``stars.csv`` truncated. ``StarCatalog.load`` then reads the corrupt file as an
+``stars.csv`` truncated. ``CatalogObject.read`` then reads the corrupt file as an
 *empty* catalog, and the next download starts from scratch and overwrites it
 with a small fresh batch — **orphaning** the cutout FITS already on disk (the
 files survive, the *index* doesn't). That's the "12k downloaded but stars.csv

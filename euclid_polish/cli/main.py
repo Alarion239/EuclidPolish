@@ -5,6 +5,7 @@ Unified Interactive CLI for EuclidPolish.
 This module provides an interactive command-line interface for all EuclidPolish operations.
 """
 
+import getpass
 import glob
 import os
 import sys
@@ -15,6 +16,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 from astropy.io import fits
+from astroquery.esa.euclid import Euclid
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
@@ -24,12 +26,11 @@ from questionary import select, confirm, checkbox
 from euclid_polish.config import Config
 from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
 from euclid_polish.catalog import (
-    StarCatalog,
     EuclidCatalog,
+    EuclidAuthError,
     CatalogObject,
     DownloadConfig,
     FitsValidator,
-    auth,
 )
 from euclid_polish.catalog.catalog_object import merge_new, summarize
 from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
@@ -106,6 +107,23 @@ class InteractiveCLI:
         """Initialize the CLI."""
         self.config = Config
         self.display = DisplayFormatter
+        #: The logged-in Euclid client (set by the login menu), or None.
+        self._euclid = None
+
+    def _euclid_client(self):
+        """The logged-in client, or an unauthenticated one that reuses whatever
+        astroquery session is active (so queries work after an external login)."""
+        return self._euclid or EuclidCatalog._unauthenticated()
+
+    def _ingest_query(self, output_dir, candidates, *, limit=None):
+        """Dedupe queried ``CatalogObject``s into the on-disk catalog + persist."""
+        path = os.path.join(output_dir, Config.CATALOG_FILE)
+        existing = CatalogObject.read(path)
+        res = merge_new(existing, candidates, limit=limit)
+        CatalogObject.write(existing, path)
+        return {**res, "total": len(existing),
+                "message": f"Added {res['added']} stars → "
+                           f"{len(existing)} total in catalog"}
 
     def run(self):
         """Run the interactive CLI."""
@@ -146,8 +164,8 @@ class InteractiveCLI:
                 {"name": "📂 Show per-band PSF inventory", "value": "psf_inventory"},
                 {"name": "✔️  Check cutouts integrity", "value": "check"},
             ]
-            if auth.is_authenticated():
-                user = auth.current_user() or "authenticated"
+            if self._euclid is not None:
+                user = self._euclid.user or "authenticated"
                 choices.append({"name": f"🔓 Logout ({user})", "value": "logout"})
             else:
                 choices.append({"name": "🔐 Login to Euclid archive", "value": "login"})
@@ -201,16 +219,15 @@ class InteractiveCLI:
         if output_dir == "custom":
             output_dir = input("Enter path: ").strip()
 
-        catalog = StarCatalog(output_dir)
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
 
-        if not catalog.exists():
-            print(f"\n⚠️  Catalog not found at {catalog.catalog_path}")
+        if not os.path.exists(catalog_path):
+            print(f"\n⚠️  Catalog not found at {catalog_path}")
             if confirm("Query the catalog first?", default=True).ask():
                 self._query_catalog()
             return
 
-        summary = catalog.get_summary()
-        status = catalog.get_stars_by_status()
+        summary = summarize(CatalogObject.read(catalog_path))
 
         DisplayFormatter.print_header("📊 Star Catalog Summary")
         print(f"Total stars:        {summary['total']}")
@@ -223,7 +240,7 @@ class InteractiveCLI:
             print(f"\nMagnitude range:   {summary['mag_min']:.2f} - {summary['mag_max']:.2f}")
 
         print(f"\nNext ID:            {summary['next_id']}")
-        print(f"Catalog file:       {catalog.catalog_path}")
+        print(f"Catalog file:       {catalog_path}")
 
     def _query_catalog(self):
         """Query Euclid archive for bright stars."""
@@ -287,14 +304,15 @@ class InteractiveCLI:
             print(f"\nQuerying RA={ra_val:.1f}°, Dec={dec_val:.1f}°, radius={radius_val}°, {window}...")
 
             try:
-                catalog = StarCatalog(output_dir)
-                result = catalog.query_euclid_catalog(
+                candidates = self._euclid_client().query_bright_stars(
+                    100000,
                     ra=ra_val,
                     dec=dec_val,
                     radius=radius_val,
                     magnitude_limit=mag_val,
                     magnitude_min=mag_min_val,
                 )
+                result = self._ingest_query(output_dir, candidates)
 
                 print(f"\n{result['message']}")
                 if result['skipped'] > 0:
@@ -326,9 +344,9 @@ class InteractiveCLI:
             output_dir = input("Enter path: ").strip()
 
         # Check if catalog exists
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             if confirm("Query the catalog first?", default=True).ask():
                 self._query_catalog()
             return
@@ -379,7 +397,7 @@ class InteractiveCLI:
             max_workers = default_workers
 
         # --- Pre-flight summary: pending per (band, native_size) ---
-        objects = CatalogObject.read(catalog.catalog_path)
+        objects = CatalogObject.read(catalog_path)
         total = len(objects)
         print(f"\n📊 Catalog: {total} stars  |  field = {arcsec_side:.2f}\" "
               f"(= {cutout_size_vis} VIS px)")
@@ -660,40 +678,36 @@ class InteractiveCLI:
                 print(f"  ... and {len(results['corrupted']) - 10} more")
 
         # Update catalog if stars.csv exists
-        catalog = StarCatalog(output_dir)
-        if catalog.exists():
-            catalog_data = catalog.load()
-            stars = catalog_data.get('stars', [])
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if os.path.exists(catalog_path):
+            objects = CatalogObject.read(catalog_path)
+            by_id = {o.id: o for o in objects}
 
             # Update star status based on validation — per-size, not whole-star
             for filepath, error_msg in results['corrupted']:
                 filename = os.path.basename(filepath)
                 parts = filename.split('_')
-                if len(parts) >= 2 and parts[0] == 'star':
+                if len(parts) >= 3 and parts[0] == 'star':
                     try:
                         star_id = int(parts[1])
-                        size = int(parts[2].replace('.fits', '')) if len(parts) >= 3 else None
-                        for star in stars:
-                            if star.get('id') == star_id:
-                                if size is not None:
-                                    StarCatalog.set_corrupted(star, size)
-                                else:
-                                    # Size unknown — fall back to legacy whole-star flag
-                                    star['corrupted'] = True
-                                break
+                        size = int(parts[2].replace('.fits', ''))
                     except ValueError:
-                        pass
+                        continue
+                    o = by_id.get(star_id)
+                    if o is not None:
+                        o.set_corrupted(size)
 
-            catalog.save(catalog_data)
+            CatalogObject.write(objects, catalog_path)
             print(f"\n✓ Updated catalog with validation results")
 
         print(f"\n✓ Integrity check completed!")
 
     def _login_euclid(self):
-        """Log into the Euclid archive via env / file / interactive prompt."""
-        if auth.is_authenticated():
+        """Log into the Euclid archive via env vars or an explicit username/password."""
+        if self._euclid is not None:
             DisplayFormatter.print_success(
-                f"Already logged in as {auth.current_user() or '(unknown)'}. Logout first to switch accounts."
+                f"Already logged in as {self._euclid.user or '(unknown)'}. "
+                f"Logout first to switch accounts."
             )
             return
 
@@ -701,7 +715,6 @@ class InteractiveCLI:
             "Login method:",
             choices=[
                 {"name": "Environment variables (EUCLID_USER / EUCLID_PASSWORD)", "value": "env"},
-                {"name": f"Credentials file (2 lines: user, password)", "value": "file"},
                 {"name": "Enter username and password now", "value": "interactive"},
                 {"name": "Cancel", "value": "cancel"},
             ]
@@ -711,34 +724,33 @@ class InteractiveCLI:
             DisplayFormatter.print_cancelled()
             return
 
-        if method == "env":
-            ok = auth.login_from_env()
-            if not ok:
-                DisplayFormatter.print_error(
-                    "EUCLID_USER and/or EUCLID_PASSWORD not set, or login was rejected."
-                )
-        elif method == "file":
-            default_path = Config.DEFAULT_CREDENTIALS_FILE
-            path = input(f"Credentials file (default {default_path}): ").strip() or default_path
-            ok = auth.login_with_file(path)
-        else:
-            ok = auth.login_interactive()
+        try:
+            if method == "env":
+                self._euclid = EuclidCatalog()
+            else:
+                user = input("Euclid username: ").strip()
+                password = getpass.getpass("Euclid password: ")
+                self._euclid = EuclidCatalog(login=user, password=password)
+        except EuclidAuthError as e:
+            DisplayFormatter.print_error(str(e))
+            return
 
-        if ok:
-            DisplayFormatter.print_success(
-                f"Logged in as {auth.current_user() or '(unknown)'}. "
-                f"All subsequent Euclid queries will use this session."
-            )
+        DisplayFormatter.print_success(
+            f"Logged in as {self._euclid.user or '(unknown)'}. "
+            f"All subsequent Euclid queries will use this session."
+        )
 
     def _logout_euclid(self):
         """Log out from the Euclid archive."""
-        if not auth.is_authenticated():
+        if self._euclid is None:
             DisplayFormatter.print_error("Not logged in.")
             return
-        if auth.logout():
-            DisplayFormatter.print_success("Logged out.")
-        else:
-            DisplayFormatter.print_error("Logout raised — local session cleared anyway.")
+        self._euclid = None
+        try:
+            Euclid.logout()
+        except Exception:
+            pass
+        DisplayFormatter.print_success("Logged out.")
 
     def _query_brightest_stars(self):
         """Query the brightest N stars from the Euclid archive (async)."""
@@ -806,7 +818,7 @@ class InteractiveCLI:
             default=True,
         ).ask()
 
-        if not auth.is_authenticated():
+        if self._euclid is None:
             print("\n⚠️  Not logged in: async job results are still fetched now, but")
             print("    the job record is garbage-collected after 72h on the server.")
 
@@ -815,10 +827,9 @@ class InteractiveCLI:
             return
 
         try:
-            catalog = StarCatalog(output_dir)
             print("\nSubmitting async query...")
-            result = catalog.query_brightest_stars(
-                num_stars=num_stars,
+            candidates = self._euclid_client().query_bright_stars(
+                num_stars,
                 ra=ra_val,
                 dec=dec_val,
                 radius=radius_val,
@@ -826,6 +837,7 @@ class InteractiveCLI:
                 magnitude_min=mag_min_val,
                 require_unmasked=require_unmasked,
             )
+            result = self._ingest_query(output_dir, candidates, limit=num_stars)
             print(f"\n{result['message']}")
             if result.get('skipped', 0) > 0:
                 print(f"  (Skipped {result['skipped']} duplicate stars)")
@@ -1497,17 +1509,18 @@ class InteractiveCLI:
             if output_dir == "custom":
                 output_dir = input("Enter path: ").strip()
 
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             return
 
-        data = catalog.load()
-        stars = data.get("stars", [])
-        if not stars:
+        objects = CatalogObject.read(catalog_path)
+        if not objects:
             print("\n✗ Catalog is empty — nothing to plot")
             return
 
+        stars = [{"ra": o.ra, "dec": o.dec, "magnitude": o.magnitude,
+                  "corrupted": o.has_any("corrupted")} for o in objects]
         output_path = Config.VIS_STAR_POSITIONS
         draw_star_positions(stars, output_path)
         print(f"\n✓ Star positions plot saved to {output_path} ({len(stars)} stars)")
@@ -1535,13 +1548,12 @@ class InteractiveCLI:
 
 
         # Load catalog
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             return
 
-        catalog_data = catalog.load()
-        stars = catalog_data.get('stars', [])
+        stars = CatalogObject.read(catalog_path)
 
         if len(stars) == 0:
             print(f"\n✗ No stars found in catalog")
@@ -1559,9 +1571,9 @@ class InteractiveCLI:
 
         for star in tqdm(selected_stars, desc="Creating visualizations"):
             # Load FITS data
-            fits_files = glob.glob(os.path.join(cutout_dir, f"star_{star['id']:04d}_*.fits"))
+            fits_files = glob.glob(os.path.join(cutout_dir, f"star_{star.id:04d}_*.fits"))
             if not fits_files:
-                print(f"  Warning: No cutout for star {star['id']}")
+                print(f"  Warning: No cutout for star {star.id}")
                 continue
 
             try:
@@ -1573,24 +1585,24 @@ class InteractiveCLI:
                 visualizer.add_scale_panel(data)
                 visualizer.add_scale_panel(data, log_scale=True)
 
-                mag_str = f"{star['magnitude']:.2f}" if star.get('magnitude') else "N/A"
+                mag_str = f"{star.magnitude:.2f}" if star.magnitude is not None else "N/A"
                 visualizer.add_statistics_panel(data, {
                     'title': 'Star Information:',
                     'stats': {
-                        'ID': f"{star['id']:04d}",
-                        'RA': f"{star['ra']:.6f}°",
-                        'Dec': f"{star['dec']:.6f}°",
+                        'ID': f"{star.id:04d}",
+                        'RA': f"{star.ra:.6f}°",
+                        'Dec': f"{star.dec:.6f}°",
                         'Magnitude': mag_str,
                     },
                     'include_data_stats': True,
                 })
 
                 # Save figure
-                output_path = os.path.join(vis_dir, f'star_{star["id"]:04d}.png')
+                output_path = os.path.join(vis_dir, f'star_{star.id:04d}.png')
                 visualizer.save_figure(output_path)
 
             except Exception as e:
-                print(f"  Warning: Failed to visualize star {star['id']}: {e}")
+                print(f"  Warning: Failed to visualize star {star.id}: {e}")
 
         print(f"\n✓ Visualizations saved to {vis_dir}")
 
