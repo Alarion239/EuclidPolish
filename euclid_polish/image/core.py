@@ -250,6 +250,49 @@ class Image(StampCarrier):
                    is_clean=clean, role=role, stamp=stamp)
 
     # ------------------------------------------------------------------
+    # Raw-bytes export (the WebUI cutout-viewer wire format)
+    # ------------------------------------------------------------------
+
+    def to_raw_bytes(self) -> bytes:
+        """The pixels as a little-endian float32, C-contiguous ``(H, W, C)`` buffer.
+
+        This is the canonical wire format the browser cutout viewer
+        (``static/cutout_viewer.js``) reads straight into a ``Float32Array``:
+        it is exactly the body of the ``/viewer/cube`` response. Pair it with
+        :meth:`wire_meta` for the shape/band header. No HTTP or framework types
+        are involved, so this stays a leaf concern.
+        """
+        return np.ascontiguousarray(self.data, dtype="<f4").tobytes(order="C")
+
+    @classmethod
+    def from_raw_bytes(cls, buf, *, shape, band_names, pixel_scale_arcsec,
+                       is_clean: bool = False, role: Role = Role.UNKNOWN,
+                       stamp: Optional[Stamp] = None) -> "Image":
+        """Rebuild an Image from a :meth:`to_raw_bytes` buffer + its shape/bands.
+
+        The inverse of :meth:`to_raw_bytes` — e.g. to reconstruct an Image from
+        a viewer-cube payload (body + ``X-Cube-Shape``/``X-Cube-Bands``).
+        """
+        data = np.frombuffer(buf, dtype="<f4").reshape(tuple(shape)).astype(np.float32)
+        return cls(data=data, pixel_scale_arcsec=float(pixel_scale_arcsec),
+                   band_names=tuple(band_names), is_clean=is_clean, role=role,
+                   stamp=stamp)
+
+    def wire_meta(self) -> dict:
+        """Framework-free descriptor for the viewer wire (no Flask/HTTP types).
+
+        ``{"shape": (H, W, C), "band_names": [...], "pixel_scale_arcsec": ...}``.
+        The route maps these onto its ``X-Cube-*`` headers; keeping the method
+        framework-free preserves the leaf property.
+        """
+        h, w, c = self.shape
+        return {
+            "shape": (h, w, c),
+            "band_names": list(self.band_names),
+            "pixel_scale_arcsec": float(self.pixel_scale_arcsec),
+        }
+
+    # ------------------------------------------------------------------
     # Band convenience accessors
     # ------------------------------------------------------------------
 

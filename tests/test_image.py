@@ -84,6 +84,33 @@ def test_plot_writes_file(tmp_path):
     assert os.path.exists(p) and os.path.getsize(p) > 0
 
 
+def test_to_raw_bytes_is_little_endian_f4_c_order():
+    im = _img(side=3, c=4)
+    raw = im.to_raw_bytes()
+    assert isinstance(raw, (bytes, bytearray))
+    arr = np.frombuffer(raw, dtype="<f4").reshape(im.shape)
+    np.testing.assert_array_equal(arr, im.data.astype("<f4"))
+
+
+def test_from_raw_bytes_roundtrips():
+    im = _img(side=3, c=4, scale=0.05, role=Role.HR)
+    back = Image.from_raw_bytes(im.to_raw_bytes(), shape=im.shape,
+                                band_names=im.band_names,
+                                pixel_scale_arcsec=im.pixel_scale_arcsec,
+                                role=Role.HR)
+    np.testing.assert_array_equal(back.data, im.data)
+    assert back.band_names == im.band_names
+    assert back.role is Role.HR
+
+
+def test_wire_meta_is_framework_free_descriptor():
+    im = _img(side=5, c=4, scale=0.10)
+    m = im.wire_meta()
+    assert m["shape"] == (5, 5, 4)
+    assert m["band_names"] == list(im.band_names)
+    assert abs(m["pixel_scale_arcsec"] - 0.10) < 1e-9
+
+
 def test_crop_and_rebin_preserved():
     im = _img(side=8, c=1, scale=0.05, role=Role.HR, clean=True)
     assert im.centre_cropped_to(4).shape == (4, 4, 1)
