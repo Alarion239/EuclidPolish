@@ -123,7 +123,7 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
     parent on the clean file id."""
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.sky.gen_provenance import ShardStampPlan
-    from euclid_polish.image.tfio import read_multiband_skyimages
+    from euclid_polish.image.tfio import read_images
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)
     plan = ShardStampPlan(run_id=ProvId("7f3a9c21"), clean_id=ProvId("4b1e7a90"),
@@ -132,7 +132,7 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
                                 seed=[1, 1, 0], plan=plan)
 
     def _one(kind):
-        return read_multiband_skyimages(
+        return read_images(
             tfrecord_path(rdir, f"{kind}_train.part0000"), num_images=1)[0]
 
     clean, hr, dirty = _one("clean"), _one("hr"), _one("dirty")

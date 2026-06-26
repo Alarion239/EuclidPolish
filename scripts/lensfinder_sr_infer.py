@@ -28,7 +28,7 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
     Format, InferenceRun, SRCutoutArtifact, Stamp,
 )
-from euclid_polish.image.tfio import open_multiband_writer, tfrecord_path
+from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.image import Image
 
 
@@ -78,7 +78,7 @@ def run_sr_inference(records_dir: str, subset: str, sr_fn, *,
         prov = None
 
     input_parent = None
-    with open_multiband_writer(f"sr_{subset}", records_dir=records_dir) as w:
+    with open_writer(f"sr_{subset}", records_dir=records_dir) as w:
         for i, raw in enumerate(ds):
             img = Image.from_tfrecord(raw)
             sr = np.asarray(sr_fn(np.asarray(img.data, np.float32)), np.float32)

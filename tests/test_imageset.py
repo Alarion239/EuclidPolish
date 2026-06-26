@@ -32,7 +32,7 @@ def test_write_read_roundtrip(tmp_path):
 def test_read_limit(tmp_path):
     s = ImageSet.from_images([_img(i) for i in range(5)])
     path = s.write(str(tmp_path), "hr_train")
-    back = ImageSet.read(path, limit=2)
+    back = ImageSet.read(path, num_images=2)
     assert len(back) == 2
 
 

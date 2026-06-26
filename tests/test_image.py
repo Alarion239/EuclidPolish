@@ -1,6 +1,4 @@
 """Tests for the clean Image data atom (euclid_polish.image.core)."""
-import os
-
 import numpy as np
 import pytest
 
@@ -76,12 +74,6 @@ def test_save_and_load_fits_roundtrip(tmp_path):
     assert abs(back.pixel_scale_arcsec - 0.05) < 1e-9
     assert back.role is Role.SR
     assert back.stamp is not None and back.stamp.id == sid
-
-
-def test_plot_writes_file(tmp_path):
-    p = str(tmp_path / "q.png")
-    _img().plot(p)
-    assert os.path.exists(p) and os.path.getsize(p) > 0
 
 
 def test_to_raw_bytes_is_little_endian_f4_c_order():

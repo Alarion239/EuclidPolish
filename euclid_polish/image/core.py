@@ -2,8 +2,8 @@
 
 ``Image`` is the central multi-band sky-image type for the whole project and it
 sits at the *bottom* of the import graph: it depends only on third-party libs
-(numpy, tensorflow, astropy, matplotlib) plus :mod:`euclid_polish.config` and the
-pure provenance value-types. It never imports an operator (simulator, forward
+(numpy, tensorflow, astropy) plus :mod:`euclid_polish.config` and the pure
+provenance value-types. It never imports an operator (simulator, forward
 model, trained model, archive). Everything ``Image`` owns is self-contained —
 (de)serialization, plotting, crop/rebin, measurements, metrics — so the same
 work reads identically from the CLI, the WebUI, the eval runners and scripts.
@@ -30,9 +30,8 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from astropy.io import fits as _fits
@@ -119,82 +118,83 @@ class Image(StampCarrier):
         return self.data.shape[-1]
 
     # ------------------------------------------------------------------
-    # TFRecord serialization (schema v2/v3 + role)
+    # TFRecord serialization
     # ------------------------------------------------------------------
     #
-    # ``prov_*`` carry the optional provenance stamp (schema v3); ``role`` is an
-    # additive string. All three have empty defaults so legacy v2 records — and
-    # the graph parser, which reads only image/h/w/c — are unaffected.
+    # One fixed schema, every field always written. ``prov_id``/``prov_stamp``
+    # are empty strings for an unstamped image. The graph training path uses a
+    # smaller feature subset (see ``image.tfio.parse_example``).
     _TFRECORD_FEATURES = {
-        'image':          tf.io.FixedLenFeature([], tf.string),
-        'index':          tf.io.FixedLenFeature([], tf.int64),
-        'height':         tf.io.FixedLenFeature([], tf.int64),
-        'width':          tf.io.FixedLenFeature([], tf.int64),
-        'channels':       tf.io.FixedLenFeature([], tf.int64),
-        'pixel_scale':    tf.io.FixedLenFeature([], tf.float32),
-        'is_clean':       tf.io.FixedLenFeature([], tf.int64),
-        'band_names':     tf.io.FixedLenFeature([], tf.string),
-        'schema_version': tf.io.FixedLenFeature([], tf.int64),
-        'prov_id':        tf.io.FixedLenFeature([], tf.string, default_value=b""),
-        'prov_stamp':     tf.io.FixedLenFeature([], tf.string, default_value=b""),
-        'role':           tf.io.FixedLenFeature([], tf.string, default_value=b""),
+        'image':       tf.io.FixedLenFeature([], tf.string),
+        'index':       tf.io.FixedLenFeature([], tf.int64),
+        'height':      tf.io.FixedLenFeature([], tf.int64),
+        'width':       tf.io.FixedLenFeature([], tf.int64),
+        'channels':    tf.io.FixedLenFeature([], tf.int64),
+        'pixel_scale': tf.io.FixedLenFeature([], tf.float32),
+        'is_clean':    tf.io.FixedLenFeature([], tf.int64),
+        'band_names':  tf.io.FixedLenFeature([], tf.string),
+        'role':        tf.io.FixedLenFeature([], tf.string),
+        'prov_id':     tf.io.FixedLenFeature([], tf.string),
+        'prov_stamp':  tf.io.FixedLenFeature([], tf.string),
     }
 
     def to_tfrecord(self, index: int | None = None) -> bytes:
         """Serialize to a TFRecord Example (bytes). Stores data as float32."""
         h, w, c = self.shape
         idx = index if index is not None else (self.index or 0)
-        bytes_value = np.ascontiguousarray(self.data, dtype=np.float32).tobytes()
-        bands_value = ",".join(self.band_names).encode("utf-8")
-        feature = {
-            'image':       tf.train.Feature(bytes_list=tf.train.BytesList(value=[bytes_value])),
-            'index':       tf.train.Feature(int64_list=tf.train.Int64List(value=[idx])),
-            'height':      tf.train.Feature(int64_list=tf.train.Int64List(value=[h])),
-            'width':       tf.train.Feature(int64_list=tf.train.Int64List(value=[w])),
-            'channels':    tf.train.Feature(int64_list=tf.train.Int64List(value=[c])),
-            'pixel_scale': tf.train.Feature(float_list=tf.train.FloatList(value=[self.pixel_scale_arcsec])),
-            'is_clean':    tf.train.Feature(int64_list=tf.train.Int64List(value=[int(self.is_clean)])),
-            'band_names':  tf.train.Feature(bytes_list=tf.train.BytesList(value=[bands_value])),
-            'role':        tf.train.Feature(bytes_list=tf.train.BytesList(value=[self.role.value.encode("utf-8")])),
-        }
         if self.stamp is not None:
             emb = self.stamp
             if emb.subset is None and self.subset is not None:
                 emb = dataclasses.replace(emb, subset=self.subset)
-            feature['prov_id'] = tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[str(emb.id).encode("utf-8")]))
-            feature['prov_stamp'] = tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[emb.to_json().encode("utf-8")]))
-            schema_version = 3
+            prov_id = str(emb.id).encode("utf-8")
+            prov_stamp = emb.to_json().encode("utf-8")
         else:
-            schema_version = Config.TFRECORD_SCHEMA_VERSION
-        feature['schema_version'] = tf.train.Feature(
-            int64_list=tf.train.Int64List(value=[schema_version]))
-        return tf.train.Example(features=tf.train.Features(feature=feature)).SerializeToString()
+            prov_id = prov_stamp = b""
+
+        def _b(v):
+            return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
+
+        def _i(v):
+            return tf.train.Feature(int64_list=tf.train.Int64List(value=[v]))
+
+        feature = {
+            'image':       _b(np.ascontiguousarray(self.data, dtype=np.float32).tobytes()),
+            'index':       _i(idx),
+            'height':      _i(h),
+            'width':       _i(w),
+            'channels':    _i(c),
+            'pixel_scale': tf.train.Feature(
+                float_list=tf.train.FloatList(value=[self.pixel_scale_arcsec])),
+            'is_clean':    _i(int(self.is_clean)),
+            'band_names':  _b(",".join(self.band_names).encode("utf-8")),
+            'role':        _b(self.role.value.encode("utf-8")),
+            'prov_id':     _b(prov_id),
+            'prov_stamp':  _b(prov_stamp),
+        }
+        return tf.train.Example(
+            features=tf.train.Features(feature=feature)).SerializeToString()
 
     @classmethod
     def from_tfrecord(cls, raw_record) -> "Image":
         """Parse a single TFRecord example (eager mode)."""
-        example = tf.io.parse_single_example(raw_record, cls._TFRECORD_FEATURES)
-        h = int(example['height'].numpy())
-        w = int(example['width'].numpy())
-        c = int(example['channels'].numpy())
-        idx = int(example['index'].numpy())
-        ps = round(float(example['pixel_scale'].numpy()), 6)
-        clean = bool(example['is_clean'].numpy())
-        bands = tuple(example['band_names'].numpy().decode("utf-8").split(","))
-        data = tf.reshape(tf.io.decode_raw(example['image'], tf.float32),
+        ex = tf.io.parse_single_example(raw_record, cls._TFRECORD_FEATURES)
+        h = int(ex['height'].numpy())
+        w = int(ex['width'].numpy())
+        c = int(ex['channels'].numpy())
+        data = tf.reshape(tf.io.decode_raw(ex['image'], tf.float32),
                           [h, w, c]).numpy()
-        role_bytes = example['role'].numpy()
-        role = Role(role_bytes.decode("utf-8")) if role_bytes else Role.UNKNOWN
-        stamp = None
-        subset = None
-        prov_stamp_bytes = example['prov_stamp'].numpy()
+        role = Role(ex['role'].numpy().decode("utf-8"))
+        stamp = subset = None
+        prov_stamp_bytes = ex['prov_stamp'].numpy()
         if prov_stamp_bytes:
             stamp = Stamp.from_json(prov_stamp_bytes.decode("utf-8"))
             subset = stamp.subset
-        return cls(data=data, pixel_scale_arcsec=ps, band_names=bands,
-                   is_clean=clean, role=role, index=idx, subset=subset, stamp=stamp)
+        return cls(
+            data=data,
+            pixel_scale_arcsec=round(float(ex['pixel_scale'].numpy()), 6),
+            band_names=tuple(ex['band_names'].numpy().decode("utf-8").split(",")),
+            is_clean=bool(ex['is_clean'].numpy()),
+            role=role, index=int(ex['index'].numpy()), subset=subset, stamp=stamp)
 
     # ------------------------------------------------------------------
     # FITS serialization (self-contained, round-trips role + provenance)
@@ -429,32 +429,3 @@ class Image(StampCarrier):
         if data_range is None:
             data_range = float(a.max() - a.min()) or 1.0
         return float(20.0 * np.log10(data_range / np.sqrt(mse)))
-
-    # ------------------------------------------------------------------
-    # Plotting (self-contained quick-look)
-    # ------------------------------------------------------------------
-
-    def plot(self, path: Optional[str] = None, *, band: Optional[str] = None,
-             asinh: bool = True, cmap: str = "gray"):
-        """Render a single-band quick-look.
-
-        Saves a PNG to ``path`` (and returns it) when given, else draws into a
-        fresh Axes and returns it. ``asinh`` applies an MAD-scaled arcsinh
-        stretch so faint structure is visible.
-        """
-        arr = np.asarray(
-            self.plane(band if band is not None else self.band_names[0]),
-            dtype=np.float64)
-        if asinh:
-            scale = float(np.median(np.abs(arr - np.median(arr)))) or 1.0
-            disp = np.arcsinh(arr / scale)
-        else:
-            disp = arr
-        fig, ax = plt.subplots(figsize=(4, 4))
-        ax.imshow(disp, origin="lower", cmap=cmap)
-        ax.set_axis_off()
-        if path is not None:
-            fig.savefig(path, bbox_inches="tight", dpi=100)
-            plt.close(fig)
-            return path
-        return ax

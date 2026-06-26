@@ -23,7 +23,7 @@ from euclid_polish.sky.multiband_generator import (
     MultiBandGeneratorConfig, MultiBandSimulator,
 )
 from euclid_polish.image.tfio import (
-    tfrecord_path, write_multiband_skyimages,
+    tfrecord_path, write_images,
 )
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
@@ -58,8 +58,8 @@ def test_full_pipeline_round_trip(tmp_path):
 
     # 3. Write v2 TFRecords.
     for subset in ("train", "validate"):
-        write_multiband_skyimages(lr_imgs, f"dirty_{subset}", records_dir=records_dir)
-        write_multiband_skyimages(hr_imgs, f"clean_{subset}", records_dir=records_dir)
+        write_images(lr_imgs, f"dirty_{subset}", records_dir=records_dir)
+        write_images(hr_imgs, f"clean_{subset}", records_dir=records_dir)
 
     # 4. Build the multi-band data loader.
     ds = MultiBandEuclidDataset(

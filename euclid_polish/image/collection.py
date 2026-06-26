@@ -18,7 +18,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image.core import Image, Role
-from euclid_polish.image.tfio import read_multiband_skyimages, write_multiband_skyimages
+from euclid_polish.image.tfio import read_images, write_images
 from euclid_polish.provenance.records import Stamp
 
 
@@ -41,12 +41,11 @@ class ImageSet:
         return cls(images=list(images), stamp=stamp)
 
     @classmethod
-    def read(cls, path_or_glob: str, *, limit: Optional[int] = None,
+    def read(cls, path_or_glob: str, *, num_images: Optional[int] = None,
              stamp: Optional[Stamp] = None) -> "ImageSet":
-        """Read every record under ``path_or_glob`` (or the first ``limit``)."""
-        num = limit if limit is not None else (1 << 30)
-        images = read_multiband_skyimages(path_or_glob, num_images=num, mode='first')
-        return cls(images=images, stamp=stamp)
+        """Read every record under ``path_or_glob`` (or the first ``num_images``)."""
+        n = num_images if num_images is not None else (1 << 30)
+        return cls(images=read_images(path_or_glob, num_images=n), stamp=stamp)
 
     # -- collection protocol -- #
 
@@ -70,7 +69,7 @@ class ImageSet:
         Each image carries its own stamp into its record (the set-level stamp is
         provenance metadata for the whole file, recorded in its sidecar).
         """
-        return write_multiband_skyimages(self.images, name=name, records_dir=records_dir)
+        return write_images(self.images, name=name, records_dir=records_dir)
 
     # -- queries -- #
 

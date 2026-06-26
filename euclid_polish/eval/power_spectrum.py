@@ -288,7 +288,7 @@ def render_power_spectrum_summary(
     import matplotlib.pyplot as plt
 
     from euclid_polish.sky import sr as sky_sr
-    from euclid_polish.image.tfio import read_multiband_skyimages, tfrecord_path
+    from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
     records_dir = _sky_records_local_dir()
@@ -296,7 +296,7 @@ def render_power_spectrum_summary(
     n_sr = sky_sr.sr_count(subset)
     if not os.path.exists(clean_path) or n_sr == 0:
         return None
-    records = read_multiband_skyimages(clean_path, num_images=n_sr)
+    records = read_images(clean_path, num_images=n_sr)
     if not records:
         return None
 

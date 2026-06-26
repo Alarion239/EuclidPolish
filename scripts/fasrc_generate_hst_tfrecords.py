@@ -97,7 +97,7 @@ from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.differential_kernel import DifferentialKernel
 from euclid_polish.sky.noise import apply_band_noise
-from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image
 
 
@@ -893,11 +893,11 @@ def main() -> int:
 
     for subset, target_n in pairs_per_subset.items():
         sub_done = 0
-        with open_multiband_writer(
+        with open_writer(
             f"clean_{subset}", records_dir=args.output_dir,
-        ) as cw, open_multiband_writer(
+        ) as cw, open_writer(
             f"dirty_{subset}", records_dir=args.output_dir,
-        ) as dw, open_multiband_writer(
+        ) as dw, open_writer(
             f"hr_{subset}", records_dir=args.output_dir,
         ) as hw:
             writers = (cw, dw, hw)

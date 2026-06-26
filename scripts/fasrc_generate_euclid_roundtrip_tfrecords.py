@@ -42,7 +42,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image
 
 
@@ -315,7 +315,7 @@ def main() -> int:
     ]
 
     for subset, pos_ids in splits:
-        with open_multiband_writer(f"dirty_{subset}", args.output_dir) as w:
+        with open_writer(f"dirty_{subset}", args.output_dir) as w:
             sorted_pos_ids = sorted(pos_ids)
             n_pos = len(sorted_pos_ids)
             for pos_i, pid in enumerate(sorted_pos_ids):

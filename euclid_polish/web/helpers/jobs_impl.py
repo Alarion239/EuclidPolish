@@ -9,7 +9,7 @@ from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.euclid.psf_library import load_all_band_psfs
 from euclid_polish.sky.multiband_forward import MultiBandForward
-from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import read_images
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.inference import plot_reconstruction
@@ -137,10 +137,10 @@ def _job_generate_reconstruct(
         if not os.path.exists(lr_path):
             raise FileNotFoundError(
                 f"login-node generation produced no dirty records in {local_tmp}")
-        lr_records    = read_multiband_skyimages(lr_path, num_images=10_000)
-        hr_records    = (read_multiband_skyimages(hr_path, num_images=10_000)
+        lr_records    = read_images(lr_path, num_images=10_000)
+        hr_records    = (read_images(hr_path, num_images=10_000)
                          if os.path.exists(hr_path) else [])
-        clean_records = (read_multiband_skyimages(clean_path, num_images=10_000)
+        clean_records = (read_images(clean_path, num_images=10_000)
                          if os.path.exists(clean_path) else [])
         hr_by_idx    = {h.index: h for h in hr_records}
         clean_by_idx = {c.index: c for c in clean_records}

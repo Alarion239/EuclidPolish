@@ -458,7 +458,7 @@ def test_bench_tfrecord_roundtrip(tmp_path):
     """Write and read back 16 multi-band records (96² each)."""
     import numpy as np
     from euclid_polish.image.tfio import (
-        write_multiband_skyimages, read_multiband_skyimages,
+        write_images, read_images,
     )
     from euclid_polish.image import Image
 
@@ -474,10 +474,10 @@ def test_bench_tfrecord_roundtrip(tmp_path):
     ]
 
     def write_call():
-        write_multiband_skyimages(imgs, "bench", records_dir=str(tmp_path))
+        write_images(imgs, "bench", records_dir=str(tmp_path))
 
     def read_call():
-        read_multiband_skyimages(str(tmp_path / "bench.tfrecord"), num_images=16)
+        read_images(str(tmp_path / "bench.tfrecord"), num_images=16)
 
     write_call()  # warmup write
     _bench("write 16× 96²×4ch", write_call)

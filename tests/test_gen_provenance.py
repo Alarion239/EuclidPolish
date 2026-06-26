@@ -66,7 +66,7 @@ def test_stamped_record_round_trips_through_tfrecord(tmp_path):
     """The exact path step_generate uses: ctx.stamp → write → read back."""
     import numpy as np
     from euclid_polish.image.tfio import (
-        read_multiband_skyimages, write_multiband_skyimages,
+        read_images, write_images,
     )
     from euclid_polish.image import Image
 
@@ -77,8 +77,8 @@ def test_stamped_record_round_trips_through_tfrecord(tmp_path):
         band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=True, subset="train",
     )
     img.stamp = ctx.stamp("clean", "train")
-    path = write_multiband_skyimages([img], "clean_train", records_dir=str(tmp_path))
-    [back] = read_multiband_skyimages(path, num_images=1)
+    path = write_images([img], "clean_train", records_dir=str(tmp_path))
+    [back] = read_images(path, num_images=1)
     assert back.prov_stamp().id == ctx.file_id("clean", "train")
     assert back.prov_stamp().produced_by == ctx.run_id
     assert back.subset == "train"

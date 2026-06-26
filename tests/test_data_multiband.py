@@ -9,7 +9,7 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import write_multiband_skyimages
+from euclid_polish.image.tfio import write_images
 from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import (
     MultiBandEuclidDataset,
@@ -77,8 +77,8 @@ def _write_test_records(tmp_path) -> str:
         )
         for _ in range(2)
     ]
-    write_multiband_skyimages(hr_imgs, "clean_train", records_dir=str(tmp_path))
-    write_multiband_skyimages(lr_imgs, "dirty_train", records_dir=str(tmp_path))
+    write_images(hr_imgs, "clean_train", records_dir=str(tmp_path))
+    write_images(lr_imgs, "dirty_train", records_dir=str(tmp_path))
     return str(tmp_path)
 
 
@@ -145,8 +145,8 @@ def _write_anchor_records(tmp_path, subset: str = "train") -> str:
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False))
         hr_imgs.append(Image(
             data=hr, pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True))
-    write_multiband_skyimages(lr_imgs, f"dirty_anchor_{subset}", records_dir=str(tmp_path))
-    write_multiband_skyimages(hr_imgs, f"hr_anchor_{subset}", records_dir=str(tmp_path))
+    write_images(lr_imgs, f"dirty_anchor_{subset}", records_dir=str(tmp_path))
+    write_images(hr_imgs, f"hr_anchor_{subset}", records_dir=str(tmp_path))
     return str(tmp_path)
 
 
@@ -167,8 +167,8 @@ def _write_hst_records(tmp_path, subset: str = "train") -> str:
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False)
         for _ in range(2)
     ]
-    write_multiband_skyimages(hr_imgs, f"hr_{subset}", records_dir=str(tmp_path))
-    write_multiband_skyimages(lr_imgs, f"dirty_{subset}", records_dir=str(tmp_path))
+    write_images(hr_imgs, f"hr_{subset}", records_dir=str(tmp_path))
+    write_images(lr_imgs, f"dirty_{subset}", records_dir=str(tmp_path))
     return str(tmp_path)
 
 

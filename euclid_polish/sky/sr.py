@@ -24,7 +24,7 @@ from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import Format, InferenceRun, SRCutoutArtifact
-from euclid_polish.image.tfio import read_multiband_skyimages, tfrecord_path
+from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.training.inference import reconstruct
 
 #: Subsets we generate SR for, in priority order.
@@ -109,7 +109,7 @@ def generate(records_dir: str, subsets: Iterable[str],
         path = tfrecord_path(records_dir, f"dirty_{subset}")
         if not os.path.exists(path):
             continue
-        records = read_multiband_skyimages(path, num_images=10 ** 9)
+        records = read_images(path, num_images=10 ** 9)
         if limit is not None:
             records = records[:limit]
         for i, rec in enumerate(records):

@@ -46,7 +46,7 @@ from euclid_polish.config import Config
 from euclid_polish.euclid.photometry import (
     ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
 )
-from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image
 
 SCALE = Config.DEFAULT_REBIN_FACTOR          # LR→HR factor (2)
@@ -191,7 +191,7 @@ def main() -> int:
     with contextlib.ExitStack() as stack:
         writers = {
             (subset, kind): stack.enter_context(
-                open_multiband_writer(f"{kind}_anchor_{subset}", args.output_dir))
+                open_writer(f"{kind}_anchor_{subset}", args.output_dir))
             for subset in ("train", "validate") for kind in ("dirty", "hr")
         }
         usable = 0

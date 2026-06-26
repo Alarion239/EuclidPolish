@@ -51,10 +51,10 @@ from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.euclid import estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
 from euclid_polish.image.tfio import (
-    open_multiband_writer,
-    read_multiband_skyimages,
+    open_writer,
+    read_images,
     tfrecord_path,
-    write_multiband_skyimages,
+    write_images,
 )
 
 from euclid_polish.training.log_plot import (
@@ -922,9 +922,9 @@ class InteractiveCLI:
 
             # Stream LR + HR pairs directly to disk so memory scales with
             # one image (≈5 MB) instead of the whole set (~13 GB at 6400).
-            with open_multiband_writer(
+            with open_writer(
                     f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as hr_w, \
-                 open_multiband_writer(
+                 open_writer(
                     f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2) as lr_w:
                 for raw in tqdm(tf.data.TFRecordDataset(clean_file),
                                 total=n_images, desc=f"Forward {subset}",
@@ -1009,7 +1009,7 @@ class InteractiveCLI:
                       f"[master_seed={master_seed}]...")
                 # Stream so memory bounded to ~one image (otherwise 6400
                 # 510² × 4-channel fields cost ~26 GB).
-                with open_multiband_writer(
+                with open_writer(
                         f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as w:
                     for i in tqdm(range(n), desc=subset):
                         sky, _ = sim.simulate_field(rng)
@@ -1287,7 +1287,7 @@ class InteractiveCLI:
             except ValueError:
                 print("\n✗ Invalid number")
                 return
-            images = read_multiband_skyimages(tfr_path, num_images=9999)
+            images = read_images(tfr_path, num_images=9999)
             if not images:
                 print(f"\n✗ No images found in {tfr_path}")
                 return
@@ -1300,7 +1300,7 @@ class InteractiveCLI:
             clean_file = tfr_path.replace("dirty_", "clean_")
             chosen_hr = [None] * num_reconstruct
             if os.path.exists(clean_file):
-                clean_images = read_multiband_skyimages(clean_file, num_images=9999)
+                clean_images = read_images(clean_file, num_images=9999)
                 clean_by_idx = {img.index: img for img in clean_images}
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
@@ -1714,7 +1714,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in clean_files:
-                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
+                    all_images.extend(read_images(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1728,7 +1728,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in dirty_files:
-                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
+                    all_images.extend(read_images(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1752,9 +1752,9 @@ class InteractiveCLI:
                         continue
                     dirty_by_index = {
                         img.index: img
-                        for img in read_multiband_skyimages(dirty_sub, num_images=9999)
+                        for img in read_images(dirty_sub, num_images=9999)
                     }
-                    for hr in read_multiband_skyimages(clean_sub, num_images=9999):
+                    for hr in read_images(clean_sub, num_images=9999):
                         lr = dirty_by_index.get(hr.index)
                         if lr is not None:
                             all_pairs.append((hr, lr))

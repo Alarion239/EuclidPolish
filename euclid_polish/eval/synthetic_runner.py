@@ -107,7 +107,7 @@ def run_synthetic_eval(
     import numpy as np
     from astropy.io import fits
 
-    from euclid_polish.image.tfio import read_multiband_skyimages, tfrecord_path
+    from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.source_catalog import read_sources
     from euclid_polish.training.inference import reconstruct
     from euclid_polish.eval.catalog_runner import load_eval_model
@@ -137,9 +137,9 @@ def run_synthetic_eval(
 
     # Read a window of records (enough to find N of each subgroup).
     window = max(n * 12, 60)
-    lr_recs = read_multiband_skyimages(tfrecord_path(rdir, "dirty_validate"),
+    lr_recs = read_images(tfrecord_path(rdir, "dirty_validate"),
                                        num_images=window)
-    hr_recs = read_multiband_skyimages(tfrecord_path(rdir, "hr_validate"),
+    hr_recs = read_images(tfrecord_path(rdir, "hr_validate"),
                                        num_images=window)
     if not hr_recs:
         _emit("no HR validation records read.")

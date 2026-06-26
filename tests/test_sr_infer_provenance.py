@@ -13,7 +13,7 @@ from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.provenance.store import ProvStore
 from euclid_polish.image.tfio import (
-    read_multiband_skyimages, tfrecord_path, write_multiband_skyimages,
+    read_images, tfrecord_path, write_images,
 )
 from euclid_polish.image import Image
 
@@ -38,7 +38,7 @@ def test_run_sr_inference_stamps_records(tmp_path, monkeypatch):
     )
     dirty.stamp = Stamp(id=ProvId("4b1e7a90"), produced_by=ProvId("7f3a9c21"),
                         schema_version=3, subset="train")
-    write_multiband_skyimages([dirty], "dirty_train", records_dir=rdir)
+    write_images([dirty], "dirty_train", records_dir=rdir)
 
     # A checkpoint that knows its model id.
     ckpt = str(tmp_path / "ckpt")
@@ -57,7 +57,7 @@ def test_run_sr_inference_stamps_records(tmp_path, monkeypatch):
     n = mod.run_sr_inference(rdir, "train", sr_fn, checkpoint=ckpt)
     assert n == 1
 
-    [sr] = read_multiband_skyimages(tfrecord_path(rdir, "sr_train"), num_images=1)
+    [sr] = read_images(tfrecord_path(rdir, "sr_train"), num_images=1)
     st = sr.prov_stamp()
     assert st is not None
     assert ProvId("2f9c81aa") in st.parents      # the producing model

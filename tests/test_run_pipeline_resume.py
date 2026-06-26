@@ -211,13 +211,13 @@ def test_step_convolve_resumes_then_force_regenerates(tmp_path, monkeypatch):
         os.remove(tfrecord_path(rdir, f"{kind}_train.part0000"))
 
     opened = []
-    real = rp.open_multiband_writer
+    real = rp.open_writer
 
     def spy(name, **kw):
         opened.append(name)
         return real(name, **kw)
 
-    monkeypatch.setattr(rp, "open_multiband_writer", spy)
+    monkeypatch.setattr(rp, "open_writer", spy)
 
     # First run: hr_train + dirty_train get written.
     rp.step_convolve(_convolve_args(rdir, ntrain=4, nvalid=0, force=False))

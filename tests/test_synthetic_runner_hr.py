@@ -23,7 +23,7 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
             return [_Img(0, np.zeros((64, 64, 4), np.float32))]
         return [_Img(0, np.ones((128, 128, 4), np.float32))]
 
-    monkeypatch.setattr("euclid_polish.image.tfio.read_multiband_skyimages",
+    monkeypatch.setattr("euclid_polish.image.tfio.read_images",
                         fake_read)
     monkeypatch.setattr("euclid_polish.sky.source_catalog.read_sources",
                         lambda p: {0: [{"type": "lens", "x_pix": 64.0,

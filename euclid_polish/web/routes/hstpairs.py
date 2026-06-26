@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import read_images
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.image import Image
 from euclid_polish.web import experimental
@@ -127,7 +127,7 @@ def register(app):
             path = tfrecord_path(records_dir, name)
             if not os.path.exists(path):
                 abort(404)
-            recs = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+            recs = read_images(path, num_images=max(index + 1, 1))
             if not recs or index >= len(recs):
                 abort(404)
             return recs[min(index, len(recs) - 1)]

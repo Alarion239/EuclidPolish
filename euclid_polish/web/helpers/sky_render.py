@@ -4,7 +4,7 @@ from __future__ import annotations
 from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.image.tfio import read_multiband_skyimages
+from euclid_polish.image.tfio import read_images
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.visualization.methods import plot_star_positions
 from flask import abort
@@ -60,7 +60,7 @@ def _export_sky_record_fits(
 
     # Stream just enough records to reach ``idx`` — TFRecords don't have
     # random access so we read sequentially. Cheap for typical idx ≤ ~50.
-    records = read_multiband_skyimages(src_path, num_images=idx + 1)
+    records = read_images(src_path, num_images=idx + 1)
     if not records or idx >= len(records):
         abort(404)
     record = records[idx]

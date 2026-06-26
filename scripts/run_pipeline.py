@@ -66,7 +66,7 @@ from euclid_polish.sky.gen_provenance import (
     ShardStampPlan, make_generation_context,
 )
 from euclid_polish.image.tfio import (
-    open_multiband_writer, tfrecord_path, write_multiband_skyimages,
+    open_writer, tfrecord_path, write_images,
 )
 from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
@@ -252,7 +252,7 @@ def step_generate(args: argparse.Namespace) -> None:
         # Stream each image to disk as it's generated — accumulating
         # 6400 510² × 4-channel float32 fields would cost ~26 GB of RSS
         # and OOM-kill on the FASRC default --mem=32G.
-        with open_multiband_writer(f"clean_{subset}",
+        with open_writer(f"clean_{subset}",
                                    records_dir=args.records_dir) as w, \
              SourceCatalogWriter(
                  tfrecord_path(args.records_dir, f"sources_{subset}")
@@ -354,9 +354,9 @@ def step_convolve(args: argparse.Namespace) -> None:
         t0 = time.perf_counter()
         # Two streaming writers (one for hr_, one for dirty_); clean_ is
         # NOT rewritten — the 4-band record is kept for inspection.
-        with open_multiband_writer(f"hr_{subset}",
+        with open_writer(f"hr_{subset}",
                                    records_dir=args.records_dir) as hr_w, \
-             open_multiband_writer(f"dirty_{subset}",
+             open_writer(f"dirty_{subset}",
                                    records_dir=args.records_dir) as lr_w:
             for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
                                          unit="img", total=n_total)):
@@ -500,9 +500,9 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     last_emit = time.perf_counter()
     sources_part = tfrecord_path(records_dir,
                                  f"sources_{tag}").replace(".tfrecord", ".csv")
-    with open_multiband_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
-         open_multiband_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
-         open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw, \
+    with open_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
+         open_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
+         open_writer(f"dirty_{tag}", records_dir=records_dir) as dw, \
          SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
             sky, meta = sim.simulate_field(rng)

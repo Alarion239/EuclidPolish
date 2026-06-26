@@ -815,7 +815,6 @@ class Config:
     # versioned so a reader can check it got what it expected.
 
     RECORDS_DIR_V2          = os.path.join(DATA_DIR, "images/records_v2")
-    TFRECORD_SCHEMA_VERSION = 2
 
     # ---------------------------------------------------------------------
     # Provenance & identity

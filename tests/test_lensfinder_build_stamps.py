@@ -11,7 +11,7 @@ from PIL import Image
 
 from euclid_polish.config import Config
 from euclid_polish.sky.source_catalog import SOURCE_COLS
-from euclid_polish.image.tfio import open_multiband_writer
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image as MultiBandSkyImage
 
 
@@ -29,7 +29,7 @@ bs = _load()
 
 
 def _write_field(rdir, name, shape, bands):
-    with open_multiband_writer(name, records_dir=rdir) as w:
+    with open_writer(name, records_dir=rdir) as w:
         data = np.random.default_rng(abs(hash(name)) % 1000).random(shape).astype(
             np.float32) * 400.0
         w.write(MultiBandSkyImage(
@@ -51,7 +51,7 @@ def _write_sources(rdir):
 
 
 def _write_multi(rdir, name, shape, bands, n):
-    with open_multiband_writer(name, records_dir=rdir) as w:
+    with open_writer(name, records_dir=rdir) as w:
         for i in range(n):
             data = np.full(shape, float(i + 1), np.float32)
             w.write(MultiBandSkyImage(
