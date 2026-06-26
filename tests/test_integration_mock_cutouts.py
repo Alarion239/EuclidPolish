@@ -9,7 +9,7 @@ full downstream chain:
         → PSFExtractor builds the ePSF (per-band oversampling)
         → ePSF saved at 0.05"/pix
         → load_band_psf reads the FITS back
-        → MultiBandForward convolves a synthetic clean HR field
+        → ObservationSimulator convolves a synthetic clean HR field
 
 If any link in this chain breaks (file layout, catalog schema, PSF
 oversampling, scale resampling, kernel sizing), one of these tests
@@ -40,8 +40,8 @@ from euclid_polish.euclid.psf_library import (
     load_all_band_psfs, load_band_psf, psf_path_for_band,
 )
 from euclid_polish.euclid.types import PSF
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
 from euclid_polish.image import Image
 
@@ -335,7 +335,7 @@ def test_load_all_band_psfs_after_extraction(extracted_psfs):
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: MultiBandForward consumes the per-band PSFs end-to-end
+# Stage 5: ObservationSimulator consumes the per-band PSFs end-to-end
 # ---------------------------------------------------------------------------
 
 def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
@@ -344,9 +344,9 @@ def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(extracted_psfs),
     )
-    fwd = MultiBandForward(
+    fwd = ObservationSimulator(
         psfs_by_band=psfs,
-        config=MultiBandForwardConfig(add_noise=False),
+        config=ObservationSimulatorConfig(add_noise=False),
     )
 
     # Tiny synthetic HR scene: a single 1e6-electron source per band at centre.
@@ -376,8 +376,8 @@ def test_forward_model_lr_grid_is_vis_aligned(extracted_psfs):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(extracted_psfs),
     )
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     H = W = 96
     hr = Image(
         data=np.random.default_rng(0).normal(size=(H, W, 4)).astype(np.float32),
@@ -400,8 +400,8 @@ def test_forward_model_runs_with_only_gaussian_fallbacks(tmp_path):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(tmp_path),
     )
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=False))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=False))
     hr = Image(
         data=np.zeros((96, 96, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,

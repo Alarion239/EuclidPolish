@@ -98,7 +98,7 @@ class Stamp:
 class ConfigSnapshot:
     """A frozen snapshot of a typed config dataclass.
 
-    ``config_type`` names the source dataclass (e.g. ``MultiBandGeneratorConfig``)
+    ``config_type`` names the source dataclass (e.g. ``SkySimulatorConfig``)
     and ``fields`` is its field values. The snapshot is documented-by-reference:
     the schema is the named source type, captured verbatim for reproducibility.
     """

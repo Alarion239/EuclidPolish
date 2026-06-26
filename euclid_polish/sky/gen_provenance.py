@@ -2,7 +2,7 @@
 
 A generation run (one ``run_pipeline`` invocation, per subset) mints a
 :class:`GenerationRun` whose config is frozen from the live
-``MultiBandGeneratorConfig`` / ``MultiBandForwardConfig``. Every record it
+``SkySimulatorConfig`` / ``ObservationSimulatorConfig``. Every record it
 writes is stamped with its *file-level* artifact id (so all records in
 ``clean_train.tfrecord`` share one id, addressed individually by their index)
 plus the run id. The whole thing is best-effort: :func:`make_generation_context`

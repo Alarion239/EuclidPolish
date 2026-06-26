@@ -4,7 +4,7 @@
 sky + dark + (optional artifacts) + Gaussian read. It lives here so
 :mod:`euclid_polish.image` can import it at module scope without
 re-introducing the triangular import cycle through
-:mod:`euclid_polish.sky.multiband_forward` (which itself imports
+:mod:`euclid_polish.sky.observation_simulator` (which itself imports
 ``Image``).
 """
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Euclid per-band noise (was: sky/multiband_forward.py:apply_band_noise)
+# Euclid per-band noise (was: sky/observation_simulator.py:apply_band_noise)
 # ---------------------------------------------------------------------------
 
 def apply_band_noise(
@@ -47,7 +47,7 @@ def apply_band_noise(
 
     Module-level so non-class callers (e.g. the HST→Euclid TFRecord
     generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
-    :class:`MultiBandForward` per-band pipeline, the
+    :class:`ObservationSimulator` per-band pipeline, the
     :meth:`Image.with_band_noise` method) can use the
     exact same noise model.
     """

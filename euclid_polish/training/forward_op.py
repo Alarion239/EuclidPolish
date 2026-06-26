@@ -13,7 +13,7 @@ layer:
     ``irfft2d``), matching ``scipy.signal.fftconvolve(..., mode='same')`` — far
     cheaper than a spatial ``conv2d`` for the ~1023² PSF.
   * Stride-N sum-rebin via ``avg_pool2d × N²``, mirroring
-    :meth:`MultiBandForward.sum_rebin`.
+    :meth:`ObservationSimulator.sum_rebin`.
   * **No noise.** Noise is a non-differentiable sampling step; the operator is
     defined on the deterministic image formation only.
 
@@ -23,7 +23,7 @@ In the current trainer the operator applied in training is :class:`HSTForwardOp`
 
 The numerical contract with the numpy path is tested in
 ``tests/test_forward_op.py``: applying this layer to a known HR input must match
-:meth:`MultiBandForward._process_one_band` for VIS to within float32 round-off
+:meth:`ObservationSimulator._process_one_band` for VIS to within float32 round-off
 across the bulk of the array (the test crops a sentinel border to stay robust to
 boundary effects).
 """
@@ -119,7 +119,7 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
     -----
     Use ``crop_half_side`` to shrink the convolution kernel for speed
     during training; the default (full saved kernel) keeps numerical
-    parity with :class:`MultiBandForward._process_one_band`.
+    parity with :class:`ObservationSimulator._process_one_band`.
 
     The PSF kernel is registered as a non-trainable Keras weight so
     ``model.save`` / ``model.load`` carry it without needing the FITS
@@ -215,7 +215,7 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
 
         # Sum-rebin via avg_pool × area. ``padding='VALID'`` trims
         # trailing pixels that don't fit a whole bin — matches
-        # ``MultiBandForward.sum_rebin``'s ``[:h_t, :w_t]``.
+        # ``ObservationSimulator.sum_rebin``'s ``[:h_t, :w_t]``.
         if self.rebin_factor > 1:
             x = tf.nn.avg_pool2d(
                 x, ksize=self.rebin_factor, strides=self.rebin_factor,

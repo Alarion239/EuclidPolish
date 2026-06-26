@@ -53,11 +53,11 @@ from euclid_polish.euclid.psf_library import load_all_band_psf_sets
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
 from euclid_polish.sky.source_catalog import (
     SourceCatalogWriter, concat_source_csvs,
@@ -183,9 +183,9 @@ def parse_args() -> argparse.Namespace:
 # Step 1: clean multi-band scene generation
 # ---------------------------------------------------------------------------
 
-def _generator_config_from_args(args: argparse.Namespace) -> MultiBandGeneratorConfig:
+def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
     """Build the generator config from CLI args (shared by serial + parallel)."""
-    return MultiBandGeneratorConfig(
+    return SkySimulatorConfig(
         image_size=args.image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=args.tng_fraction,
@@ -218,7 +218,7 @@ def step_generate(args: argparse.Namespace) -> None:
         _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
     cfg = _generator_config_from_args(args)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
     # Provenance (best-effort): one generation run; clean records carry its id.
@@ -296,8 +296,8 @@ def step_convolve(args: argparse.Namespace) -> None:
         _log(f"  PSF[{name}]: {pset.n} kernel(s), shape={pset.shape}, "
              f"{pset.pixel_scale}\"/pix")
 
-    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psf_sets_by_band=psf_sets,
+                           config=ObservationSimulatorConfig(add_noise=True))
 
     # Provenance (best-effort): one forward-model run; hr+dirty records carry
     # its id and parent on the clean record file they came from.
@@ -557,8 +557,8 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     # catalog_path is None in pure-TNG mode (tng_fraction == 1): nothing
     # Sersic is rendered, so COSMOS never loads.
     cat = open_cosmos2025(path=catalog_path) if catalog_path else None
-    _W_SIM = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=image_size,
+    _W_SIM = SkySimulator(
+        cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                                       tng_fraction=tng_fraction,
                                       tng_redshift_mode=tng_redshift_mode,
@@ -575,8 +575,8 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
-    _W_FWD = MultiBandForward(psf_sets_by_band=psf_sets,
-                              config=MultiBandForwardConfig(add_noise=True))
+    _W_FWD = ObservationSimulator(psf_sets_by_band=psf_sets,
+                              config=ObservationSimulatorConfig(add_noise=True))
     _W_RECORDS_DIR = records_dir
 
 

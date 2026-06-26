@@ -156,8 +156,8 @@ def test_bench_forward_one_field_small():
     Baseline ~1 ms. Tiny because all PSFs are small Gaussians and the
     FFT-convolve on 96×96 is fast.
     """
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
 
@@ -168,13 +168,13 @@ def test_bench_forward_one_field_small():
         band_names=Config.LR_INPUT_BAND_NAMES,
         is_clean=True,
     )
-    fwd = MultiBandForward(config=MultiBandForwardConfig(add_noise=False))
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=False))
     noise_rng = np.random.default_rng(1)
 
     def call():
         fwd.process(hr, rng=noise_rng)
 
-    best, _ = _bench("MultiBandForward.process 96² noise=False", call)
+    best, _ = _bench("ObservationSimulator.process 96² noise=False", call)
     assert best < 50.0, f"forward(96²) too slow: {best:.1f} ms"
 
 
@@ -184,8 +184,8 @@ def test_bench_forward_one_field_realistic():
     Baseline ~4 ms. The dominant cost is the four 252² FFT convolutions;
     Poisson + Gaussian sampling adds a constant ~1 ms.
     """
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
 
@@ -196,13 +196,13 @@ def test_bench_forward_one_field_realistic():
         band_names=Config.LR_INPUT_BAND_NAMES,
         is_clean=True,
     )
-    fwd = MultiBandForward(config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=True))
     noise_rng = np.random.default_rng(1)
 
     def call():
         fwd.process(hr, rng=noise_rng)
 
-    best, _ = _bench("MultiBandForward.process 252² noise=True", call, n_repeats=3)
+    best, _ = _bench("ObservationSimulator.process 252² noise=True", call, n_repeats=3)
     assert best < 100.0, f"forward(252²) too slow: {best:.1f} ms"
 
 
@@ -235,11 +235,11 @@ def test_bench_scene_generator_small():
     would speed this up at the cost of flux conservation accuracy.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
+    from euclid_polish.sky.sky_simulator import (
+        SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=500, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=96))
+    sim = SkySimulator(cat, SkySimulatorConfig(image_size=96))
     rng = np.random.default_rng(0)
 
     def call():
@@ -367,11 +367,11 @@ def test_bench_scene_generator_252():
     per arcmin² on this canvas size).
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
+    from euclid_polish.sky.sky_simulator import (
+        SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=252))
+    sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
     sim.simulate_field(np.random.default_rng(0))
 
     def call():
@@ -388,11 +388,11 @@ def test_bench_scene_generator_512():
     full training-set generation.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
+    from euclid_polish.sky.sky_simulator import (
+        SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=512))
+    sim = SkySimulator(cat, SkySimulatorConfig(image_size=512))
     sim.simulate_field(np.random.default_rng(0))
 
     def call():
@@ -407,8 +407,8 @@ def test_bench_forward_512_production():
 
     Baseline ~10-15 ms / field. FFT convolutions on 512² are the cost.
     """
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
     rng = np.random.default_rng(0)
@@ -418,13 +418,13 @@ def test_bench_forward_512_production():
         band_names=Config.LR_INPUT_BAND_NAMES,
         is_clean=True,
     )
-    fwd = MultiBandForward(config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=True))
     noise_rng = np.random.default_rng(1)
 
     def call():
         fwd.process(hr, rng=noise_rng)
 
-    best, _ = _bench("MultiBandForward.process 512² noise=True", call, n_repeats=3)
+    best, _ = _bench("ObservationSimulator.process 512² noise=True", call, n_repeats=3)
     assert best < 300.0
 
 
@@ -435,15 +435,15 @@ def test_bench_end_to_end_one_pair_252():
     full-pipeline wall time.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
+    from euclid_polish.sky.sky_simulator import (
+        SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=252))
-    fwd = MultiBandForward(config=MultiBandForwardConfig(add_noise=True))
+    sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=True))
     sim.simulate_field(np.random.default_rng(0))  # warmup
 
     def call():

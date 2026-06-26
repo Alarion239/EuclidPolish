@@ -7,9 +7,9 @@ import pytest
 
 from euclid_polish.config import Config
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig,
-    MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig,
+    SkySimulator,
 )
 from euclid_polish.image import Image
 
@@ -17,17 +17,17 @@ from euclid_polish.image import Image
 @pytest.fixture(scope="module")
 def simulator():
     cat = TinyCosmosCatalog(n_galaxies=1_000, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=128,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         gal_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
         star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
         lens_density_arcmin2=0.0,    # off for the deterministic sub-tests
     )
-    return MultiBandSimulator(cat, cfg)
+    return SkySimulator(cat, cfg)
 
 
-def test_field_returns_4channel_skyimage(simulator: MultiBandSimulator):
+def test_field_returns_4channel_skyimage(simulator: SkySimulator):
     rng = np.random.default_rng(0)
     img, meta = simulator.simulate_field(rng)
     assert isinstance(img, Image)
@@ -39,14 +39,14 @@ def test_field_returns_4channel_skyimage(simulator: MultiBandSimulator):
     assert meta["n_stars"]    >= 0
 
 
-def test_field_total_flux_positive(simulator: MultiBandSimulator):
+def test_field_total_flux_positive(simulator: SkySimulator):
     rng = np.random.default_rng(0)
     img, _ = simulator.simulate_field(rng, n_galaxies=10, n_stars=5, n_lenses=0)
     for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
         assert img.data[..., k].sum() > 0, f"channel {name} empty"
 
 
-def test_explicit_counts_respected(simulator: MultiBandSimulator):
+def test_explicit_counts_respected(simulator: SkySimulator):
     rng = np.random.default_rng(0)
     _, meta = simulator.simulate_field(rng, n_galaxies=7, n_stars=3, n_lenses=0)
     assert meta["n_galaxies"] == 7
@@ -54,7 +54,7 @@ def test_explicit_counts_respected(simulator: MultiBandSimulator):
     assert meta["n_lenses"]   == 0
 
 
-def test_reproducible_with_same_seed(simulator: MultiBandSimulator):
+def test_reproducible_with_same_seed(simulator: SkySimulator):
     a, _ = simulator.simulate_field(np.random.default_rng(42),
                                     n_galaxies=5, n_stars=2, n_lenses=0)
     b, _ = simulator.simulate_field(np.random.default_rng(42),
@@ -62,7 +62,7 @@ def test_reproducible_with_same_seed(simulator: MultiBandSimulator):
     np.testing.assert_array_equal(a.data, b.data)
 
 
-def test_zero_sources_yields_empty_canvas(simulator: MultiBandSimulator):
+def test_zero_sources_yields_empty_canvas(simulator: SkySimulator):
     rng = np.random.default_rng(0)
     img, _ = simulator.simulate_field(rng, n_galaxies=0, n_stars=0, n_lenses=0)
     assert np.all(img.data == 0.0)
@@ -71,18 +71,18 @@ def test_zero_sources_yields_empty_canvas(simulator: MultiBandSimulator):
 def test_invalid_config_raises():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=0))
+        SkySimulator(cat, SkySimulatorConfig(image_size=0))
     with pytest.raises(ValueError):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(pixel_scale=-0.1))
+        SkySimulator(cat, SkySimulatorConfig(pixel_scale=-0.1))
 
 
 def test_lens_density_produces_lens_records():
     cat = TinyCosmosCatalog(n_galaxies=500, seed=1)
-    cfg = MultiBandGeneratorConfig(image_size=128,
+    cfg = SkySimulatorConfig(image_size=128,
                                    gal_density_arcmin2=0.0,
                                    star_density_arcmin2=0.0,
                                    lens_density_arcmin2=0.0)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     rng = np.random.default_rng(0)
     img, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0, n_lenses=3)
     # Stub catalog may legitimately fail to find a viable lens config
@@ -93,7 +93,7 @@ def test_lens_density_produces_lens_records():
         assert img.data.sum() > 0
 
 
-def test_stars_appear_in_all_bands(simulator: MultiBandSimulator):
+def test_stars_appear_in_all_bands(simulator: SkySimulator):
     rng = np.random.default_rng(0)
     img, _ = simulator.simulate_field(rng, n_galaxies=0, n_stars=20, n_lenses=0)
     for k in range(Config.NUM_LR_CHANNELS):
@@ -126,10 +126,10 @@ def test_tng_injection_when_enabled(tmp_path):
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     assert {g[1] for g in sim.tng_galaxies} == {"111", "222"}
     assert sim.pure_tng and sim.config.tng_redshift_mode
     img, meta = sim.simulate_field(np.random.default_rng(0),
@@ -150,10 +150,10 @@ def test_tng_fraction_zero_is_all_sersic_and_no_load(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=0.0, tng_fraction=0.0, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     assert sim.tng_galaxies == []        # not even loaded when disabled
     _, meta = sim.simulate_field(np.random.default_rng(0),
                                  n_galaxies=3, n_stars=0, n_lenses=0)
@@ -163,9 +163,9 @@ def test_tng_fraction_zero_is_all_sersic_and_no_load(tmp_path):
 def test_tng_fraction_zero_is_byte_identical_to_default():
     """tng_fraction=0 must not perturb the RNG path vs the default generator."""
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    base = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+    base = SkySimulator(cat, SkySimulatorConfig(
         image_size=64, lens_density_arcmin2=0.0))
-    zero = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+    zero = SkySimulator(cat, SkySimulatorConfig(
         image_size=64, lens_density_arcmin2=0.0, tng_fraction=0.0))
     a, _ = base.simulate_field(np.random.default_rng(7),
                                n_galaxies=5, n_stars=2, n_lenses=0)
@@ -195,7 +195,7 @@ def test_composite_stamp_clipping():
 
 
 def test_star_mag_smooth_power_law():
-    from euclid_polish.sky.multiband_generator import _sample_star_mag
+    from euclid_polish.sky.sky_simulator import _sample_star_mag
     rng = np.random.default_rng(0)
     mags = np.array([_sample_star_mag(rng, slope=0.2, m_bright=16.0, m_faint=25.0)
                      for _ in range(200_000)])
@@ -211,7 +211,7 @@ def test_star_mag_smooth_power_law():
 
 
 def test_star_mag_slope_zero_is_uniform():
-    from euclid_polish.sky.multiband_generator import _sample_star_mag
+    from euclid_polish.sky.sky_simulator import _sample_star_mag
     rng = np.random.default_rng(1)
     mags = np.array([_sample_star_mag(rng, slope=0.0, m_bright=18.0, m_faint=24.0)
                      for _ in range(100_000)])
@@ -221,22 +221,22 @@ def test_star_mag_slope_zero_is_uniform():
 def test_invalid_star_mag_range_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="star_mag_bright"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(
+        SkySimulator(cat, SkySimulatorConfig(
             star_mag_bright=25.0, star_mag_faint=20.0))
 
 
 def test_invalid_tng_fraction_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="tng_fraction"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_fraction=1.5))
+        SkySimulator(cat, SkySimulatorConfig(tng_fraction=1.5))
 
 
 def test_invalid_tng_big_params_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="big_galaxy_density"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(big_galaxy_density_arcmin2=-1.0))
+        SkySimulator(cat, SkySimulatorConfig(big_galaxy_density_arcmin2=-1.0))
     with pytest.raises(ValueError, match="tng_big_re_arcsec"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(tng_big_re_arcsec=(2.0, 1.0)))
+        SkySimulator(cat, SkySimulatorConfig(tng_big_re_arcsec=(2.0, 1.0)))
 
 
 def test_big_galaxies_independent_of_tng_fraction(tmp_path):
@@ -248,7 +248,7 @@ def test_big_galaxies_independent_of_tng_fraction(tmp_path):
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
     for tf in (0.1, 0.7):
-        sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+        sim = SkySimulator(cat, SkySimulatorConfig(
             image_size=128, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
             tng_fraction=tf, tng_galaxy_dir=tng))
         _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
@@ -263,7 +263,7 @@ def test_big_galaxy_density_drives_count(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+    sim = SkySimulator(cat, SkySimulatorConfig(
         image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=0.5, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=50.0))
     _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
@@ -276,7 +276,7 @@ def test_lens_light_capped_at_theta_e():
     # lens stays compact relative to the source arcs.
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
     factor = 0.8
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+    sim = SkySimulator(cat, SkySimulatorConfig(
         image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_light_re_factor=factor, tng_fraction=0.0))
     _img, meta = sim.simulate_field(np.random.default_rng(1), n_galaxies=0,
@@ -289,7 +289,7 @@ def test_lens_light_capped_at_theta_e():
 def test_invalid_lens_light_re_factor_rejected():
     cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
     with pytest.raises(ValueError, match="lens_light_re_factor"):
-        MultiBandSimulator(cat, MultiBandGeneratorConfig(lens_light_re_factor=0.0))
+        SkySimulator(cat, SkySimulatorConfig(lens_light_re_factor=0.0))
 
 
 def test_big_galaxies_off_when_tng_disabled(tmp_path):
@@ -298,7 +298,7 @@ def test_big_galaxies_off_when_tng_disabled(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(
+    sim = SkySimulator(cat, SkySimulatorConfig(
         image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=0.0, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=100.0))
     _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
@@ -312,10 +312,10 @@ def test_tng_lens_components_when_enabled(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=1.0, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     img, meta = sim.simulate_field(np.random.default_rng(3),
                                    n_galaxies=0, n_stars=0, n_lenses=4)
     assert meta["n_lenses"] >= 1
@@ -328,10 +328,10 @@ def test_tng_lens_components_when_enabled(tmp_path):
 def test_tng_zero_lens_components_are_sersic(tmp_path):
     # tng_fraction=0 → lens components stay analytic Sersic.
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
-    cfg = MultiBandGeneratorConfig(image_size=96,
+    cfg = SkySimulatorConfig(image_size=96,
                                    pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                                    tng_fraction=0.0)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     _img, meta = sim.simulate_field(np.random.default_rng(3),
                                     n_galaxies=0, n_stars=0, n_lenses=4)
     for L in meta["lenses"]:

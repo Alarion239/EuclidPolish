@@ -23,7 +23,7 @@ super-resolves VIS and the NISP bands jointly; band k of the target is band k
 of the LR input). Historically only channel 0 (VIS) was kept — records written
 before the 4-band change carry 1-channel HR and must be regenerated.
 
-The output of :meth:`MultiBandForward.process_hr_to_lr` is a pair of
+The output of :meth:`ObservationSimulator.process_hr_to_lr` is a pair of
 ``Image`` objects:
 
   * ``lr``  : (H_lr, W_lr, 4), pixel scale 0.10″, dirty (Poisson+read), e⁻
@@ -43,7 +43,7 @@ from euclid_polish.euclid.types import PSF
 from euclid_polish.psf.psf_set import PSFSet, PSFSample
 # Re-export the canonical noise function (lives in sky.noise, a leaf module).
 # Existing callers of
-# ``from euclid_polish.sky.multiband_forward import apply_band_noise``
+# ``from euclid_polish.sky.observation_simulator import apply_band_noise``
 # continue to work via this re-export.
 from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
 from euclid_polish.sky.saturation import (
@@ -63,7 +63,7 @@ from euclid_polish.provenance.records import Stamp
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MultiBandForwardConfig:
+class ObservationSimulatorConfig:
     add_noise: bool = True
     add_artifacts: bool = True       # cosmic rays + hot pixels
     add_saturation: bool = True      # bright-star detector saturation (per band)
@@ -123,17 +123,17 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 
 # ``apply_band_noise`` lives in :mod:`euclid_polish.sky.noise` and is
 # re-exported at the top of this module (see the import block above)
-# so existing callers ``from euclid_polish.sky.multiband_forward
+# so existing callers ``from euclid_polish.sky.observation_simulator
 # import apply_band_noise`` continue to work unchanged.
 
 
-class MultiBandForward:
+class ObservationSimulator:
     """Apply per-band PSF + noise + (NISP→VIS-LR resample) to a 4-band HR field."""
 
     def __init__(
         self,
         psfs_by_band: Optional[Dict[str, PSF]] = None,
-        config: Optional[MultiBandForwardConfig] = None,
+        config: Optional[ObservationSimulatorConfig] = None,
         *,
         psf_sets_by_band: Optional[Dict[str, PSFSet]] = None,
     ):
@@ -149,9 +149,9 @@ class MultiBandForward:
                        ``psfs_by_band`` for any band present in both. This is
                        the path that enables the per-scene random cluster pick
                        (one kernel per scene; no blending).
-        config       : :class:`MultiBandForwardConfig`.
+        config       : :class:`ObservationSimulatorConfig`.
         """
-        self.config = config or MultiBandForwardConfig()
+        self.config = config or ObservationSimulatorConfig()
         # Unify on PSFSets internally: K=1 reproduces the old single-PSF path.
         sets: Dict[str, PSFSet] = (
             dict(psf_sets_by_band) if psf_sets_by_band is not None else {})
@@ -187,7 +187,7 @@ class MultiBandForward:
         that don't fit a whole bin are silently trimmed
         (``trim_remainder=True``); this matches the historical
         behaviour of every caller of this static method
-        (``MultiBandForward._process_one_band``, the SR-output renderer
+        (``ObservationSimulator._process_one_band``, the SR-output renderer
         in ``web/app.py``).
         """
         return Image.rebin_array(

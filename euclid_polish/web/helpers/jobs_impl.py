@@ -8,7 +8,7 @@ from euclid_polish.eval.sr_provenance import stamp_sr_fits
 from euclid_polish.euclid.downloader import fetch_cutout_at
 from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.euclid.psf_library import load_all_band_psfs
-from euclid_polish.sky.multiband_forward import MultiBandForward
+from euclid_polish.sky.observation_simulator import ObservationSimulator
 from euclid_polish.image.tfio import read_images
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.inference import load_model_from_checkpoint
@@ -320,7 +320,7 @@ def _forward_model_sr_residual(
     rebin_factor = int(round(
         Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
     ))
-    predicted = MultiBandForward.sum_rebin(sr_hr, rebin_factor)
+    predicted = ObservationSimulator.sum_rebin(sr_hr, rebin_factor)
     # ``sum_rebin`` may trim a row/col if HR isn't divisible by the rebin
     # factor — match the LR shape by cropping to the smaller.
     h = min(predicted.shape[0], lr_vis.shape[0])

@@ -30,9 +30,9 @@ from euclid_polish.sky.tng_galaxy import (
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig,
-    MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig,
+    SkySimulator,
 )
 from tests._tiny_catalog import TinyCosmosCatalog
 
@@ -391,13 +391,13 @@ def _z_mode_sim(tmp_path, *, lens_density=0.0, tng_fraction=1.0,
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11), ("222", 1.0e11)])
     cat = TinyCosmosCatalog(n_galaxies=400, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=lens_density,
         tng_fraction=tng_fraction, tng_galaxy_dir=tng,
         tng_redshift_mode=True, tng_properties_csv=csv_path,
         tng_dwarf_density_arcmin2=dwarf_density)
-    return MultiBandSimulator(cat, cfg)
+    return SkySimulator(cat, cfg)
 
 
 def test_generator_z_mode_field_galaxies(tmp_path):
@@ -496,11 +496,11 @@ def test_lens_require_showable_smoke(tmp_path):
     _write_fake_tng_galaxy(tng, "111")
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11)])
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=1.0, tng_fraction=1.0, tng_galaxy_dir=tng,
         tng_properties_csv=csv_path, lens_require_showable=True)
-    sim = MultiBandSimulator(None, cfg)
+    sim = SkySimulator(None, cfg)
     rng = np.random.default_rng(4)
     for _ in range(30):
         _, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0,
@@ -552,10 +552,10 @@ def test_pure_tng_dwarf_backfill(tmp_path):
 def test_pure_tng_dwarfs_need_a_catalog(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(None, cfg)
+    sim = SkySimulator(None, cfg)
     # Explicit n_dwarfs is ignored without a catalog (nothing to sample).
     _, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=1,
                                  n_stars=0, n_lenses=0, n_dwarfs=5)
@@ -594,11 +594,11 @@ def test_pure_tng_mode_works_without_catalog(tmp_path):
     _write_fake_tng_galaxy(tng, "222")
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11), ("222", 1.0e11)])
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=1.0, tng_fraction=1.0, tng_galaxy_dir=tng,
         tng_properties_csv=csv_path)
-    sim = MultiBandSimulator(None, cfg)
+    sim = SkySimulator(None, cfg)
     rng = np.random.default_rng(5)
     lenses = []
     for _ in range(20):
@@ -625,11 +625,11 @@ def test_catalog_none_requires_pure_tng(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     with pytest.raises(ValueError, match="pure-TNG"):
-        MultiBandSimulator(None, MultiBandGeneratorConfig(
+        SkySimulator(None, SkySimulatorConfig(
             tng_fraction=0.5, tng_galaxy_dir=tng))
     # No downloaded galaxies → not pure either, whatever the fraction.
     with pytest.raises(ValueError, match="pure-TNG"):
-        MultiBandSimulator(None, MultiBandGeneratorConfig(
+        SkySimulator(None, SkySimulatorConfig(
             tng_fraction=1.0, tng_galaxy_dir=str(tmp_path / "empty")))
 
 
@@ -656,10 +656,10 @@ def test_z_mode_off_keeps_legacy_metadata(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=0.0, tng_fraction=0.9, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     assert not sim.pure_tng and not sim.config.tng_redshift_mode
     _, meta = sim.simulate_field(np.random.default_rng(0),
                                  n_galaxies=8, n_stars=0, n_lenses=0)

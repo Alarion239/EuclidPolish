@@ -1,6 +1,6 @@
 """Per-source sidecar catalog for synthetic fields.
 
-``MultiBandSimulator.simulate_field`` knows every galaxy/lens it places, but the
+``SkySimulator.simulate_field`` knows every galaxy/lens it places, but the
 TFRecord schema stores only pixels. This module persists that source list as a
 CSV next to the records (``sources_<subset>.csv``) so the evaluation can crop
 postage stamps centered on a known lens or galaxy. One row per galaxy and per

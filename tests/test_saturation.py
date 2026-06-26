@@ -133,10 +133,10 @@ def _hr_field_with_star(mag_vis: float, n: int = 48):
 
 
 def test_forward_bakes_saturation_into_dirty_not_target():
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    fwd = MultiBandForward(config=MultiBandForwardConfig(
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(
         add_noise=False, add_artifacts=False, add_saturation=True))
     lr, hr = fwd.process(_hr_field_with_star(13.0),
                          np.random.default_rng(0))
@@ -148,10 +148,10 @@ def test_forward_bakes_saturation_into_dirty_not_target():
 
 
 def test_forward_saturation_can_be_disabled():
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    fwd = MultiBandForward(config=MultiBandForwardConfig(
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(
         add_noise=False, add_artifacts=False, add_saturation=False))
     lr, _ = fwd.process(_hr_field_with_star(13.0), np.random.default_rng(0))
     assert lr.data.max() == 0.0          # no saturation stamped

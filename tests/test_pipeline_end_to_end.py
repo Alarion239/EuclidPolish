@@ -16,11 +16,11 @@ import tensorflow as tf
 from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psfs
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
 from euclid_polish.image.tfio import (
     tfrecord_path, write_images,
@@ -33,8 +33,8 @@ def test_full_pipeline_round_trip(tmp_path):
     """Phase 0–7 wired together: generate → forward-model → load → train one step."""
     # 1. Generate clean HR fields (multi-band).
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+    sim = SkySimulator(
+        cat, SkySimulatorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE),
     )
     clean_imgs = []
     for i in range(3):
@@ -47,8 +47,8 @@ def test_full_pipeline_round_trip(tmp_path):
 
     # 2. Run forward model (HR 4-ch → LR 4-ch + HR 4-ch clean target).
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     rng = np.random.default_rng(0)
     lr_imgs, hr_imgs = [], []
     for sky in clean_imgs:

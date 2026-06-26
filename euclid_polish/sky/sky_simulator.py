@@ -17,7 +17,7 @@ mode**: every source is a redshift-realistic stamp
 (:mod:`euclid_polish.sky.redshift_model`), nothing Sersic is rendered, and
 the COSMOS catalog is optional.
 
-The output of :meth:`MultiBandSimulator.simulate_field` is a single
+The output of :meth:`SkySimulator.simulate_field` is a single
 :class:`Image` with ``data`` of shape ``(H, W, 4)`` in **raw
 electrons** on the 0.05″ HR grid, one channel per band ordered as
 :attr:`Config.LR_INPUT_BAND_NAMES` (``VIS, Y_E, J_E, H_E``).
@@ -70,7 +70,7 @@ from dataclasses import replace
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MultiBandGeneratorConfig:
+class SkySimulatorConfig:
     """Field-level config for the multi-band simulator.
 
     The synthetic generator is fully analytic: all galaxies render via
@@ -233,7 +233,7 @@ def _deposit_star(
 # Multi-band simulator
 # ---------------------------------------------------------------------------
 
-class MultiBandSimulator:
+class SkySimulator:
     """Generates ``(H, W, 4)`` HR clean fields in electrons.
 
     Each channel is the clean image of the same scene seen in band
@@ -254,12 +254,12 @@ class MultiBandSimulator:
     def __init__(
         self,
         catalog: Optional[CosmosCatalog],
-        config: Optional[MultiBandGeneratorConfig] = None,
+        config: Optional[SkySimulatorConfig] = None,
         *,
         lens_population: Optional[LensPopulation] = None,
     ):
         self.catalog = catalog
-        self.config  = config or MultiBandGeneratorConfig()
+        self.config  = config or SkySimulatorConfig()
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")

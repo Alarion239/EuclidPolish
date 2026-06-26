@@ -5,13 +5,13 @@ sits at the *bottom* of the import graph: it depends only on third-party libs
 (numpy, tensorflow, astropy) plus :mod:`euclid_polish.config` and the pure
 provenance value-types. It never imports an operator (simulator, forward
 model, trained model, archive). Everything ``Image`` owns is self-contained —
-(de)serialization, plotting, crop/rebin, measurements, metrics — so the same
-work reads identically from the CLI, the WebUI, the eval runners and scripts.
+(de)serialization, crop/rebin, measurements, metrics — so the same work reads
+identically from the CLI, the WebUI, the eval runners and scripts.
 
 Transforms that need an operator live on the operator:
 
-    hr = simulator.generate(rng)     # MultiBandSimulator owns generate
-    lr = forward.apply(hr)           # MultiBandForward owns the forward op
+    hr = simulator.generate(rng)     # SkySimulator owns generate
+    lr = forward.apply(hr)           # ObservationSimulator owns the forward op
     sr = model.upsample(lr)          # Model owns upsample
 
 Channel layout is always ``(H, W, C)``; ``band_names`` names each channel in

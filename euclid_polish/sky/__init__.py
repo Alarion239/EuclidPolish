@@ -3,23 +3,23 @@ Multi-band sky simulation + forward model.
 
 Public API:
 
-* :class:`MultiBandSimulator` — generate 4-channel clean HR fields
+* :class:`SkySimulator` — generate 4-channel clean HR fields
   (galaxies + stars + strong lenses) using the COSMOS2025 catalog and
   the project's custom Sersic renderer.
-* :class:`MultiBandForward` — per-band PSF convolution + noise +
+* :class:`ObservationSimulator` — per-band PSF convolution + noise +
   NISP→VIS-LR resample, returning paired (LR 4-channel, HR-VIS 1-channel).
 * :class:`Image` — typed container for ``(H, W, C)`` records.
 * :class:`Cosmos2025Catalog` — galaxy catalog reader (mandatory).
 * :class:`LensPopulation` — Collett 2015 lens population sampler.
 """
 
-from euclid_polish.sky.multiband_generator import (
-    MultiBandSimulator,
-    MultiBandGeneratorConfig,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
 )
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward,
-    MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
 )
 from euclid_polish.sky.cosmos2025 import (
     CosmosCatalog,
@@ -47,10 +47,10 @@ from euclid_polish.sky.profiles import (
 from euclid_polish.sky.resample import upsample, lanczos3_upsample, cubic_upsample
 
 __all__ = [
-    "MultiBandSimulator",
-    "MultiBandGeneratorConfig",
-    "MultiBandForward",
-    "MultiBandForwardConfig",
+    "SkySimulator",
+    "SkySimulatorConfig",
+    "ObservationSimulator",
+    "ObservationSimulatorConfig",
     "Image",
     "CosmosCatalog",
     "Cosmos2025Catalog",

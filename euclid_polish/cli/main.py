@@ -34,11 +34,11 @@ from euclid_polish.euclid import (
 )
 from euclid_polish.image import Image
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
 from euclid_polish.euclid.types import PSF
 from euclid_polish.euclid.psf_library import (
@@ -907,9 +907,9 @@ class InteractiveCLI:
         if not confirm(f"\nRun forward model on {total} images?", default=True).ask():
             return
 
-        forward = MultiBandForward(
+        forward = ObservationSimulator(
             psf_sets_by_band=psf_sets,
-            config=MultiBandForwardConfig(add_noise=True),
+            config=ObservationSimulatorConfig(add_noise=True),
         )
 
         for subset, clean_file, n_images in subsets_to_run:
@@ -993,11 +993,11 @@ class InteractiveCLI:
             catalog = open_cosmos2025(path=catalog_path)
             print(f"\nCatalog: {type(catalog).__name__} — {len(catalog)} galaxies usable")
 
-            cfg = MultiBandGeneratorConfig(
+            cfg = SkySimulatorConfig(
                 image_size=image_size_val,
                 pixel_scale=pixel_scale_val,
             )
-            sim = MultiBandSimulator(catalog, cfg)
+            sim = SkySimulator(catalog, cfg)
             os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
 
             for subset, n in (("train", ntrain_val), ("validate", nvalid_val)):

@@ -14,8 +14,8 @@ _PKG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "euclid_polish",
 # Substrings that, if found in an absolute import inside image/, mean a layering
 # violation (image reaching "up" into operators/CLI/web/eval/training).
 _FORBIDDEN = (
-    "euclid_polish.sky.multiband_forward",
-    "euclid_polish.sky.multiband_generator",
+    "euclid_polish.sky.observation_simulator",
+    "euclid_polish.sky.sky_simulator",
     "euclid_polish.model",
     "euclid_polish.training",
     "euclid_polish.eval",

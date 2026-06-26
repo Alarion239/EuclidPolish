@@ -344,7 +344,7 @@ def render_lens_to_multiband_canvas(
 
     Renders the morphology *once* (band-independent geometry) and scales
     it into every band by the corresponding per-band flux. This is the
-    fast path used by :class:`MultiBandSimulator`; cuts cost from
+    fast path used by :class:`SkySimulator`; cuts cost from
     ``4 × (2 Sersic + ray-shoot + 2 source-evals)`` down to
     ``2 Sersic + 1 ray-shoot + 2 source-evals`` per lens system.
 

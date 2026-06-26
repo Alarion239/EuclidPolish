@@ -66,13 +66,13 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward,
-    MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig,
-    MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig,
+    SkySimulator,
 )
 from euclid_polish.image import Image
 from euclid_polish.tng.properties import _fig_to_png
@@ -202,12 +202,12 @@ def generate_cutout(
     # source a real TNG50 stamp — exactly how the main training pipeline runs
     # (fasrc_pipeline defaults tng_fraction=1.0). Both `tng` and `lens` modes
     # use it so the poster object matches the training scenes: in particular,
-    # `lens` then goes through MultiBandSimulator._add_lens_pure (TNG deflector
+    # `lens` then goes through SkySimulator._add_lens_pure (TNG deflector
     # + TNG lensed source, SIE+shear geometry), the same lens model the
     # pipeline produces — not the legacy analytic-Sérsic catalog path. The
     # `sersic`/`star` modes stay analytic (tng_fraction=0).
     pure_tng_mode = mode in ("tng", "lens", "field")
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         tng_fraction=(1.0 if pure_tng_mode else 0.0),
@@ -223,7 +223,7 @@ def generate_cutout(
     # off), so COSMOS is skipped — same rule as run_pipeline.
     cat = None if pure_tng_mode else open_cosmos2025(
         path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
-    sim = MultiBandSimulator(cat, cfg)
+    sim = SkySimulator(cat, cfg)
     if pure_tng_mode and not sim.tng_galaxies:
         raise RuntimeError(
             f"no downloaded TNG galaxies under {cfg.tng_galaxy_dir} — run the "
@@ -333,8 +333,8 @@ def forward_and_reconstruct(
     psf_sets = load_all_band_psf_sets(
         psf_dir=psf_dir, require_empirical=False,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
-    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psf_sets_by_band=psf_sets,
+                           config=ObservationSimulatorConfig(add_noise=True))
     hr = Image(
         data=np.asarray(clean_4ch, dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,

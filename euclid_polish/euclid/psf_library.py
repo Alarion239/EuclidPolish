@@ -206,7 +206,7 @@ def load_all_band_psfs(
     """Load PSFs for every band in :attr:`Config.BANDS`.
 
     Returned dict is keyed by band name (``'VIS'`` etc.) and is ready to
-    pass to :class:`euclid_polish.sky.multiband_forward.MultiBandForward`.
+    pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`.
     """
     return {
         band.name: load_band_psf(
@@ -271,7 +271,7 @@ def load_all_band_psf_sets(
 ) -> Dict[str, PSFSet]:
     """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
 
-    Ready to pass to :class:`euclid_polish.sky.multiband_forward.MultiBandForward`
+    Ready to pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`
     as ``psf_sets_by_band`` so generation draws one random cluster PSF per scene
     (optionally roll-rotated; no blending).
     """

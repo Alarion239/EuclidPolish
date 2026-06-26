@@ -16,11 +16,11 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.euclid.psf_library import load_all_band_psfs
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
@@ -43,13 +43,13 @@ rp = _load_run_pipeline()
 
 def _sim_fwd():
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=96,
+    sim = SkySimulator(
+        cat, SkySimulatorConfig(image_size=96,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE),
     )
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")  # Gaussian
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     return sim, fwd
 
 
