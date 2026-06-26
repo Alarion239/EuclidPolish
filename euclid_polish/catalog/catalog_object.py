@@ -30,6 +30,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from euclid_polish.config import Config
+from euclid_polish.catalog.validator import angular_separation_arcsec
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -282,3 +284,78 @@ def next_id(objects: "List[CatalogObject]") -> int:
     """One past the largest assigned id (0 for an empty / id-less list)."""
     ids = [o.id for o in objects if isinstance(o.id, int)]
     return max(ids) + 1 if ids else 0
+
+
+# ---------------------------------------------------------------------------
+# List-level operations (dedup / ingest / aggregation)
+# ---------------------------------------------------------------------------
+
+def _is_duplicate(ra: float, dec: float, objects: "List[CatalogObject]",
+                  tol_arcsec: float) -> bool:
+    """True if ``(ra, dec)`` lies within ``tol_arcsec`` of any object's position."""
+    for o in objects:
+        if angular_separation_arcsec(ra, dec, o.ra, o.dec) < tol_arcsec:
+            return True
+    return False
+
+
+def merge_new(existing: "List[CatalogObject]",
+              candidates: "List[CatalogObject]", *,
+              tol_arcsec: float = Config.Matching.CATALOG_POSITION_TOL_ARCSEC,
+              limit: Optional[int] = None) -> Dict[str, Any]:
+    """Append non-duplicate ``candidates`` to ``existing`` with fresh ids.
+
+    Candidates within ``tol_arcsec`` of an already-present object (existing or a
+    just-added candidate) are skipped. ``limit`` caps how many are added. Mutates
+    ``existing`` in place; returns ``{"added", "skipped", "objects"}``.
+    """
+    nid = next_id(existing)
+    added = skipped = 0
+    for cand in candidates:
+        if limit is not None and added >= limit:
+            break
+        if _is_duplicate(cand.ra, cand.dec, existing, tol_arcsec):
+            skipped += 1
+            continue
+        cand.id = nid
+        existing.append(cand)
+        nid += 1
+        added += 1
+    return {"added": added, "skipped": skipped, "objects": existing}
+
+
+def by_status(objects: "List[CatalogObject]") -> Dict[str, "List[CatalogObject]"]:
+    """Bucket objects by any-``(band, size)`` download status."""
+    return {
+        "valid":     [o for o in objects if o.has_any("valid")],
+        "corrupted": [o for o in objects if o.has_any("corrupted")],
+        "failed":    [o for o in objects if o.has_any("download_failed")],
+        "pending":   [o for o in objects
+                      if not o.has_any("valid")
+                      and not o.has_any("corrupted")
+                      and not o.has_any("download_failed")],
+        "all":       objects,
+    }
+
+
+def summarize(objects: "List[CatalogObject]") -> Dict[str, Any]:
+    """Aggregate counts over a catalog: totals, per-status, per-band, mag range."""
+    buckets = by_status(objects)
+    summary: Dict[str, Any] = {
+        "total":     len(objects),
+        "valid":     len(buckets["valid"]),
+        "corrupted": len(buckets["corrupted"]),
+        "failed":    len(buckets["failed"]),
+        "pending":   len(buckets["pending"]),
+        "next_id":   next_id(objects),
+    }
+    summary["valid_by_band"] = {
+        b.name: sum(1 for o in objects if o.is_valid(band=b.name))
+        for b in Config.BANDS
+    }
+    mags = [o.magnitude for o in objects
+            if o.magnitude is not None and np.isfinite(o.magnitude)]
+    if mags:
+        summary["mag_min"] = min(mags)
+        summary["mag_max"] = max(mags)
+    return summary

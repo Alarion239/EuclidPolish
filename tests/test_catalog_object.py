@@ -3,7 +3,9 @@ import os
 
 import numpy as np
 
-from euclid_polish.catalog.catalog_object import CatalogObject, next_id
+from euclid_polish.catalog.catalog_object import (
+    CatalogObject, next_id, merge_new, summarize, by_status,
+)
 
 
 def _obj(i=0, ra=10.0, dec=-5.0, mag=18.0):
@@ -75,3 +77,39 @@ def test_read_missing_file_is_empty(tmp_path):
 def test_next_id():
     assert next_id([]) == 0
     assert next_id([_obj(0), _obj(4), _obj(2)]) == 5
+
+
+def test_merge_new_dedupes_and_assigns_ids():
+    existing = [CatalogObject(ra=10.0, dec=-5.0, id=0)]
+    candidates = [
+        CatalogObject(ra=10.0, dec=-5.0),           # duplicate of existing
+        CatalogObject(ra=20.0, dec=15.0),           # new
+        CatalogObject(ra=20.0, dec=15.0),           # duplicate of the new one
+    ]
+    res = merge_new(existing, candidates)
+    assert res["added"] == 1 and res["skipped"] == 2
+    assert len(existing) == 2
+    assert existing[1].id == 1 and (existing[1].ra, existing[1].dec) == (20.0, 15.0)
+
+
+def test_merge_new_respects_limit():
+    existing = []
+    candidates = [CatalogObject(ra=float(i), dec=0.0) for i in range(5)]
+    res = merge_new(existing, candidates, limit=2)
+    assert res["added"] == 2 and len(existing) == 2
+    assert [o.id for o in existing] == [0, 1]
+
+
+def test_summarize_and_by_status():
+    a, b, c, d = _obj(0), _obj(1), _obj(2), _obj(3)
+    a.set_valid(64, "VIS")
+    b.set_corrupted(64, "VIS")
+    c.set_download_failed(64, "VIS")
+    # d stays pending
+    objs = [a, b, c, d]
+    s = summarize(objs)
+    assert s["total"] == 4 and s["valid"] == 1 and s["corrupted"] == 1
+    assert s["failed"] == 1 and s["pending"] == 1 and s["next_id"] == 4
+    assert s["valid_by_band"]["VIS"] == 1
+    st = by_status(objs)
+    assert st["valid"] == [a] and st["pending"] == [d] and st["all"] == objs
