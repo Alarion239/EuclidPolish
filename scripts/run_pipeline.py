@@ -125,19 +125,18 @@ def parse_args() -> argparse.Namespace:
                          "Requires both generate and convolve (i.e. neither "
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
-    ap.add_argument("--tng-fraction", type=float, default=0.0,
-                    help="Fraction of synthetic galaxies drawn as real TNG50 "
-                         "SKIRT stamps instead of analytic Sersic profiles. "
-                         "0 = all Sersic (unchanged); 1 = pure-TNG mode "
-                         "(implies --tng-redshift-mode and skips the COSMOS "
-                         "catalog entirely). Needs TNG galaxies downloaded "
-                         "under $DATA_DIR/tng_skirt/.")
-    ap.add_argument("--tng-dwarf-density-arcmin2", type=float,
-                    default=Config.TNG_DWARF_SERSIC_DENSITY_ARCMIN2,
-                    help="Pure-TNG mode only: surface density of small "
-                         "COSMOS Sersic galaxies backfilling the faint "
-                         "dwarf population the atlas lacks. 0 disables "
-                         "(then tng-fraction 1 needs no COSMOS catalog).")
+    ap.add_argument("--tng-density-arcmin2", type=float, default=0.0,
+                    help="Surface density of TNG50 SKIRT stamp galaxies "
+                         "(TNG population, galaxies/arcmin²). 0 = all-Sersic "
+                         "baseline; set > 0 to mix in resolved TNG stamps. "
+                         "Independent of --sersic-density-arcmin2. "
+                         "Needs TNG galaxies downloaded under "
+                         "$DATA_DIR/tng_skirt/.")
+    ap.add_argument("--sersic-density-arcmin2", type=float,
+                    default=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+                    help="Surface density of analytic Sersic (COSMOS) "
+                         "galaxies (galaxies/arcmin²). Set to 0 to run "
+                         "TNG-only without a COSMOS catalog.")
     ap.add_argument("--tng-redshift-mode", action="store_true",
                     help="Physical-redshift treatment of TNG stamps: one z "
                          "draw per stamp sets its downsample factor (via "
@@ -188,9 +187,9 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
     return SkySimulatorConfig(
         image_size=args.image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=args.tng_fraction,
+        sersic_density_arcmin2=args.sersic_density_arcmin2,
+        tng_density_arcmin2=args.tng_density_arcmin2,
         tng_redshift_mode=args.tng_redshift_mode,
-        tng_dwarf_density_arcmin2=args.tng_dwarf_density_arcmin2,
         star_density_arcmin2=args.star_density_arcmin2,
         star_mag_slope=args.star_mag_slope,
         star_mag_bright=args.star_mag_bright,
@@ -206,13 +205,11 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    # Pure-TNG mode with the dwarf backfill disabled renders nothing Sersic,
-    # so the 10 GB COSMOS master FITS is not needed at all. Otherwise
-    # pre-filter it to a small cached .npz once, then load that — instant on
-    # repeat runs (and shared by the parallel path).
-    if args.tng_fraction >= 1.0 and args.tng_dwarf_density_arcmin2 <= 0.0:
+    # Skip the 10 GB COSMOS master FITS when the Sersic population is disabled.
+    # Otherwise pre-filter it to a small cached .npz once → instant on repeat runs.
+    if args.sersic_density_arcmin2 <= 0.0:
         cat = None
-        _log("Catalog: skipped (pure-TNG mode, dwarf backfill off)")
+        _log("Catalog: skipped (sersic_density_arcmin2=0)")
     else:
         cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
         _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
@@ -539,9 +536,9 @@ _W_RECORDS_DIR = ""
 
 def _gen_init_worker(catalog_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
-                     tng_fraction=0.0,
+                     sersic_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+                     tng_density_arcmin2=0.0,
                      tng_redshift_mode=False,
-                     tng_dwarf_density_arcmin2=Config.TNG_DWARF_SERSIC_DENSITY_ARCMIN2,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                      star_mag_slope=Config.STAR_MAG_SLOPE,
                      star_mag_bright=Config.STAR_MAG_BRIGHT,
@@ -554,15 +551,15 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     memmapped and only the filtered columns are held, so each worker's copy
     is a few MB — no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
-    # catalog_path is None in pure-TNG mode (tng_fraction == 1): nothing
-    # Sersic is rendered, so COSMOS never loads.
+    # catalog_path is None when sersic_density_arcmin2=0: nothing Sersic is
+    # rendered so COSMOS never loads.
     cat = open_cosmos2025(path=catalog_path) if catalog_path else None
     _W_SIM = SkySimulator(
         cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                      tng_fraction=tng_fraction,
+                                      sersic_density_arcmin2=sersic_density_arcmin2,
+                                      tng_density_arcmin2=tng_density_arcmin2,
                                       tng_redshift_mode=tng_redshift_mode,
-                                      tng_dwarf_density_arcmin2=tng_dwarf_density_arcmin2,
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
@@ -600,9 +597,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     # Pre-filter the 10 GB master FITS to a small cached .npz ONCE (in the
     # parent), so each per-subset, per-worker pool initializer reloads a few-MB
     # file in milliseconds instead of re-parsing 784k rows every time.
-    # Pure-TNG mode with the dwarf backfill off needs no catalog at all.
-    catalog_path = (None if (args.tng_fraction >= 1.0
-                             and args.tng_dwarf_density_arcmin2 <= 0.0)
+    # sersic_density=0 needs no COSMOS catalog at all.
+    catalog_path = (None if args.sersic_density_arcmin2 <= 0.0
                     else ensure_prefiltered_catalog(args.catalog))
 
     # Provenance (best-effort): one generation run for the whole parallel step;
@@ -656,8 +652,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(catalog_path, args.image_size, args.psf_dir,
                       args.require_empirical_psf, args.records_dir,
-                      args.tng_fraction, args.tng_redshift_mode,
-                      args.tng_dwarf_density_arcmin2,
+                      args.sersic_density_arcmin2, args.tng_density_arcmin2,
+                      args.tng_redshift_mode,
                       args.star_density_arcmin2,
                       args.star_mag_slope, args.star_mag_bright,
                       args.star_mag_faint, args.lens_density_arcmin2,

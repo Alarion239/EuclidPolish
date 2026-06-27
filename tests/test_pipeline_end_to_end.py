@@ -39,7 +39,7 @@ def test_full_pipeline_round_trip(tmp_path):
     clean_imgs = []
     for i in range(3):
         rng = np.random.default_rng(i)
-        sky, _ = sim.simulate_field(rng, n_galaxies=2, n_stars=1, n_lenses=0)
+        sky, _ = sim.simulate_field(rng, n_sersic=2, n_stars=1, n_lenses=0)
         sky.index = i
         clean_imgs.append(sky)
 

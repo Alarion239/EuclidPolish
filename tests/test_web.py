@@ -611,15 +611,16 @@ def test_post_inference_generate_reconstruct_returns_job_id(client):
     assert "job_id" in r.get_json()
 
 
-def test_login_node_generate_cmd_injects_tng_fraction():
-    """The inference login-node generation always runs pure-TNG mode:
-    --tng-fraction 1 (the UI control was removed; we always use 1)."""
+def test_login_node_generate_cmd_injects_tng_density():
+    """The inference login-node generation always runs all-TNG mode:
+    --sersic-density-arcmin2 0 and --tng-density-arcmin2 >0."""
     from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     from euclid_polish.web.fasrc_config import FasrcConfig
     cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
     base = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2)
     assert "scripts/run_pipeline.py" in base
-    assert "--tng-fraction 1" in base
+    assert "--sersic-density-arcmin2 0" in base
+    assert "--tng-density-arcmin2" in base
 
 
 # ---------------------------------------------------------------------------

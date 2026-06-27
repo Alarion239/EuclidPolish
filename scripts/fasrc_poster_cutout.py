@@ -133,9 +133,11 @@ def _counts_for_mode(mode: str) -> Dict[str, int]:
     exactly as the main training pipeline does."""
     if mode == "field":
         return {}
-    base = dict(n_galaxies=0, n_stars=0, n_lenses=0, n_big=0)
-    if mode in ("sersic", "tng"):
-        base["n_galaxies"] = 1
+    base = dict(n_sersic=0, n_tng=0, n_stars=0, n_lenses=0)
+    if mode == "sersic":
+        base["n_sersic"] = 1
+    elif mode == "tng":
+        base["n_tng"] = 1
     elif mode == "star":
         base["n_stars"] = 1
     elif mode == "lens":
@@ -198,19 +200,17 @@ def generate_cutout(
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
 
-    # Pure-TNG mode (tng_fraction=1) makes every galaxy / lens-light / lensed
-    # source a real TNG50 stamp — exactly how the main training pipeline runs
-    # (fasrc_pipeline defaults tng_fraction=1.0). Both `tng` and `lens` modes
-    # use it so the poster object matches the training scenes: in particular,
-    # `lens` then goes through SkySimulator._add_lens_pure (TNG deflector
-    # + TNG lensed source, SIE+shear geometry), the same lens model the
-    # pipeline produces — not the legacy analytic-Sérsic catalog path. The
-    # `sersic`/`star` modes stay analytic (tng_fraction=0).
-    pure_tng_mode = mode in ("tng", "lens", "field")
+    # TNG-stamp modes (tng, lens, field) use real TNG50 stamps matching the
+    # training pipeline: no Sersic catalog needed for lens/tng/field.
+    # `sersic`/`star` modes stay all-analytic.
+    tng_mode = mode in ("tng", "lens", "field")
     cfg = SkySimulatorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=(1.0 if pure_tng_mode else 0.0),
+        sersic_density_arcmin2=(0.0 if tng_mode
+                                else Config.DEFAULT_GAL_DENSITY_ARCMIN2),
+        tng_density_arcmin2=(Config.DEFAULT_GAL_DENSITY_ARCMIN2 if tng_mode
+                             else 0.0),
         # Poster lenses must be eye-visible: rejected analytically inside
         # _add_lens_pure before any stamp is rendered.
         lens_require_showable=(mode == "lens"),
@@ -219,15 +219,14 @@ def generate_cutout(
         star_density_arcmin2=(FIELD_STAR_DENSITY_ARCMIN2 if mode == "field"
                               else Config.DEFAULT_STAR_DENSITY_ARCMIN2),
     )
-    # Pure-TNG modes render nothing Sersic (the dwarf backfill defaults to
-    # off), so COSMOS is skipped — same rule as run_pipeline.
-    cat = None if pure_tng_mode else open_cosmos2025(
+    # TNG modes render nothing Sersic, so COSMOS is not needed.
+    cat = None if tng_mode else open_cosmos2025(
         path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
     sim = SkySimulator(cat, cfg)
-    if pure_tng_mode and not sim.tng_galaxies:
+    if tng_mode and not sim.tng_galaxies:
         raise RuntimeError(
             f"no downloaded TNG galaxies under {cfg.tng_galaxy_dir} — run the "
-            f"TNG atlas download first ('{mode}' uses pure-TNG mode to match "
+            f"TNG atlas download first ('{mode}' uses TNG stamps to match "
             "the training pipeline), or pick another mode.")
 
     # Centre the single object: _random_pix is the sole source of source
@@ -253,7 +252,7 @@ def generate_cutout(
                 # Whole-field summary instead of a single object's record.
                 rec = {k: meta[k] for k in
                        ("field_area_arcmin2", "n_galaxies",
-                        "n_dwarf_galaxies", "n_stars", "n_lenses")}
+                        "n_stars", "n_lenses")}
             else:
                 rec = {"sersic": meta["galaxies"], "tng": meta["galaxies"],
                        "star": meta["stars"], "lens": meta["lenses"]}[mode][0]

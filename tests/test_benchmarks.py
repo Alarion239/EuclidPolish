@@ -243,7 +243,7 @@ def test_bench_scene_generator_small():
     rng = np.random.default_rng(0)
 
     def call():
-        sim.simulate_field(rng, n_galaxies=3, n_stars=2, n_lenses=0)
+        sim.simulate_field(rng, n_sersic=3, n_stars=2, n_lenses=0)
 
     best, _ = _bench("simulate_field 96² (3 gal + 2 stars)", call)
     assert best < 4000.0, f"scene generator too slow: {best:.1f} ms"

@@ -78,7 +78,7 @@ def test_multiband_pipeline_components_wired():
                            config=ObservationSimulatorConfig(add_noise=False))
 
     rng = np.random.default_rng(0)
-    hr, _ = sim.simulate_field(rng, n_galaxies=3, n_stars=1, n_lenses=0)
+    hr, _ = sim.simulate_field(rng, n_sersic=3, n_stars=1, n_lenses=0)
     lr, hr_target = fwd.process(hr, rng=rng)
 
     assert lr.shape[-1] == Config.NUM_LR_CHANNELS

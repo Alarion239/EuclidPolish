@@ -20,7 +20,7 @@ def simulator():
     cfg = SkySimulatorConfig(
         image_size=128,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        gal_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+        sersic_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
         star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
         lens_density_arcmin2=0.0,    # off for the deterministic sub-tests
     )
@@ -41,14 +41,14 @@ def test_field_returns_4channel_skyimage(simulator: SkySimulator):
 
 def test_field_total_flux_positive(simulator: SkySimulator):
     rng = np.random.default_rng(0)
-    img, _ = simulator.simulate_field(rng, n_galaxies=10, n_stars=5, n_lenses=0)
+    img, _ = simulator.simulate_field(rng, n_sersic=10, n_stars=5, n_lenses=0)
     for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
         assert img.data[..., k].sum() > 0, f"channel {name} empty"
 
 
 def test_explicit_counts_respected(simulator: SkySimulator):
     rng = np.random.default_rng(0)
-    _, meta = simulator.simulate_field(rng, n_galaxies=7, n_stars=3, n_lenses=0)
+    _, meta = simulator.simulate_field(rng, n_sersic=7, n_tng=0, n_stars=3, n_lenses=0)
     assert meta["n_galaxies"] == 7
     assert meta["n_stars"]    == 3
     assert meta["n_lenses"]   == 0
@@ -56,15 +56,15 @@ def test_explicit_counts_respected(simulator: SkySimulator):
 
 def test_reproducible_with_same_seed(simulator: SkySimulator):
     a, _ = simulator.simulate_field(np.random.default_rng(42),
-                                    n_galaxies=5, n_stars=2, n_lenses=0)
+                                    n_sersic=5, n_stars=2, n_lenses=0)
     b, _ = simulator.simulate_field(np.random.default_rng(42),
-                                    n_galaxies=5, n_stars=2, n_lenses=0)
+                                    n_sersic=5, n_stars=2, n_lenses=0)
     np.testing.assert_array_equal(a.data, b.data)
 
 
 def test_zero_sources_yields_empty_canvas(simulator: SkySimulator):
     rng = np.random.default_rng(0)
-    img, _ = simulator.simulate_field(rng, n_galaxies=0, n_stars=0, n_lenses=0)
+    img, _ = simulator.simulate_field(rng, n_sersic=0, n_tng=0, n_stars=0, n_lenses=0)
     assert np.all(img.data == 0.0)
 
 
@@ -79,12 +79,12 @@ def test_invalid_config_raises():
 def test_lens_density_produces_lens_records():
     cat = TinyCosmosCatalog(n_galaxies=500, seed=1)
     cfg = SkySimulatorConfig(image_size=128,
-                                   gal_density_arcmin2=0.0,
-                                   star_density_arcmin2=0.0,
-                                   lens_density_arcmin2=0.0)
+                             sersic_density_arcmin2=0.0,
+                             star_density_arcmin2=0.0,
+                             lens_density_arcmin2=0.0)
     sim = SkySimulator(cat, cfg)
     rng = np.random.default_rng(0)
-    img, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0, n_lenses=3)
+    img, meta = sim.simulate_field(rng, n_sersic=0, n_stars=0, n_lenses=3)
     # Stub catalog may legitimately fail to find a viable lens config
     # (e.g. no source above the z floor); allow 0 - 3 lenses but every
     # successful render contributes positive flux.
@@ -95,13 +95,13 @@ def test_lens_density_produces_lens_records():
 
 def test_stars_appear_in_all_bands(simulator: SkySimulator):
     rng = np.random.default_rng(0)
-    img, _ = simulator.simulate_field(rng, n_galaxies=0, n_stars=20, n_lenses=0)
+    img, _ = simulator.simulate_field(rng, n_sersic=0, n_stars=20, n_lenses=0)
     for k in range(Config.NUM_LR_CHANNELS):
         assert img.data[..., k].max() > 0
 
 
 # ---------------------------------------------------------------------------
-# TNG galaxy injection
+# TNG galaxy injection — two-population model
 # ---------------------------------------------------------------------------
 
 def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
@@ -118,60 +118,89 @@ def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
     open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
 
 
-def test_tng_injection_when_enabled(tmp_path):
-    # tng_fraction=1 is PURE-TNG mode: redshift mode is forced on, so the
-    # downsample factor comes from D_A(z) (1..5 after stochastic rounding)
-    # and every record carries its z.
+def test_tng_population_renders_tng(tmp_path):
+    """tng_density_arcmin2 > 0 → TNG stamps in the galaxy records."""
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
     cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
-    sim = SkySimulator(cat, cfg)
+        sersic_density_arcmin2=0.0, tng_density_arcmin2=1.0,
+        lens_density_arcmin2=0.0, tng_galaxy_dir=tng)
+    sim = SkySimulator(None, cfg)
     assert {g[1] for g in sim.tng_galaxies} == {"111", "222"}
-    assert sim.pure_tng and sim.config.tng_redshift_mode
     img, meta = sim.simulate_field(np.random.default_rng(0),
-                                   n_galaxies=4, n_stars=0, n_lenses=0,
-                                   n_dwarfs=0)
-    assert [g["render"] for g in meta["galaxies"]] == ["tng"] * 4
+                                   n_sersic=0, n_tng=4, n_stars=0, n_lenses=0)
+    assert len(meta["galaxies"]) == 4
+    assert all(g["render"] == "tng" for g in meta["galaxies"])
     assert img.data.sum() > 0
     g0 = meta["galaxies"][0]
     assert g0["subhalo_id"] in ("111", "222")
     assert g0["orientation"] in (1, 2, 3, 4, 5)
-    # F(z) <= 4.24 x compactness C(z) x mass-rescale squeeze s^-0.25.
-    assert 1 <= g0["rebin_factor"] <= 40
-    assert Config.TNG_Z_MIN <= g0["z"] <= Config.TNG_Z_MAX
     assert len(g0["flux_e_per_band"]) == 4
 
 
-def test_tng_fraction_zero_is_all_sersic_and_no_load(tmp_path):
+def test_mixed_population_has_both_renders(tmp_path):
+    """When both densities are non-zero both render types appear."""
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
     cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=0.0, tng_fraction=0.0, tng_galaxy_dir=tng)
+        sersic_density_arcmin2=1.0, tng_density_arcmin2=1.0,
+        lens_density_arcmin2=0.0, tng_galaxy_dir=tng)
     sim = SkySimulator(cat, cfg)
-    assert sim.tng_galaxies == []        # not even loaded when disabled
+    img, meta = sim.simulate_field(np.random.default_rng(0),
+                                   n_sersic=3, n_tng=3, n_stars=0, n_lenses=0)
+    renders = {g["render"] for g in meta["galaxies"]}
+    assert "sersic" in renders
+    assert "tng" in renders
+    assert meta["n_galaxies"] == 6
+
+
+def test_tng_not_loaded_when_density_zero(tmp_path):
+    """tng_density_arcmin2=0.0 → TNG atlas is not loaded."""
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111")
+    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
+    cfg = SkySimulatorConfig(
+        image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        lens_density_arcmin2=0.0, tng_density_arcmin2=0.0,
+        tng_galaxy_dir=tng)
+    sim = SkySimulator(cat, cfg)
+    assert sim.tng_galaxies == []   # not loaded when TNG population is off
     _, meta = sim.simulate_field(np.random.default_rng(0),
-                                 n_galaxies=3, n_stars=0, n_lenses=0)
+                                 n_sersic=3, n_tng=0, n_stars=0, n_lenses=0)
     assert all(g["render"] == "sersic" for g in meta["galaxies"])
 
 
-def test_tng_fraction_zero_is_byte_identical_to_default():
-    """tng_fraction=0 must not perturb the RNG path vs the default generator."""
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    base = SkySimulator(cat, SkySimulatorConfig(
-        image_size=64, lens_density_arcmin2=0.0))
-    zero = SkySimulator(cat, SkySimulatorConfig(
-        image_size=64, lens_density_arcmin2=0.0, tng_fraction=0.0))
-    a, _ = base.simulate_field(np.random.default_rng(7),
-                               n_galaxies=5, n_stars=2, n_lenses=0)
-    b, _ = zero.simulate_field(np.random.default_rng(7),
-                               n_galaxies=5, n_stars=2, n_lenses=0)
-    np.testing.assert_array_equal(a.data, b.data)
+def test_invalid_tng_re_range_rejected():
+    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
+    with pytest.raises(ValueError, match="tng_re_arcsec_range"):
+        SkySimulator(cat, SkySimulatorConfig(tng_re_arcsec_range=(2.0, 1.0)))
+    with pytest.raises(ValueError, match="tng_re_arcsec_range"):
+        SkySimulator(cat, SkySimulatorConfig(tng_re_arcsec_range=(0.0, 1.0)))
+
+
+def test_tng_injection_with_redshift_mode(tmp_path):
+    """tng_redshift_mode → z stamped on every TNG galaxy record."""
+    tng = str(tmp_path / "tng")
+    _write_fake_tng_galaxy(tng, "111")
+    _write_fake_tng_galaxy(tng, "222")
+    cfg = SkySimulatorConfig(
+        image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        sersic_density_arcmin2=0.0, tng_density_arcmin2=1.0,
+        lens_density_arcmin2=0.0, tng_galaxy_dir=tng,
+        tng_redshift_mode=True)
+    sim = SkySimulator(None, cfg)
+    img, meta = sim.simulate_field(np.random.default_rng(0),
+                                   n_sersic=0, n_tng=4, n_stars=0, n_lenses=0)
+    assert img.data.sum() > 0
+    for g in meta["galaxies"]:
+        assert g["render"] == "tng"
+        assert Config.TNG_Z_MIN <= g["z"] <= Config.TNG_Z_MAX
+        assert g["rebin_factor"] >= 1
+        assert len(g["flux_e_per_band"]) == 4
 
 
 def test_composite_stamp_clipping():
@@ -225,50 +254,14 @@ def test_invalid_star_mag_range_rejected():
             star_mag_bright=25.0, star_mag_faint=20.0))
 
 
-def test_invalid_tng_fraction_rejected():
-    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
-    with pytest.raises(ValueError, match="tng_fraction"):
-        SkySimulator(cat, SkySimulatorConfig(tng_fraction=1.5))
-
-
-def test_invalid_tng_big_params_rejected():
-    cat = TinyCosmosCatalog(n_galaxies=10, seed=0)
-    with pytest.raises(ValueError, match="big_galaxy_density"):
-        SkySimulator(cat, SkySimulatorConfig(big_galaxy_density_arcmin2=-1.0))
-    with pytest.raises(ValueError, match="tng_big_re_arcsec"):
-        SkySimulator(cat, SkySimulatorConfig(tng_big_re_arcsec=(2.0, 1.0)))
-
-
-def test_big_galaxies_independent_of_tng_fraction(tmp_path):
-    # The big-galaxy population is a fixed count (here forced via n_big),
-    # always TNG, flagged "big" — and identical for any *fractional*
-    # tng_fraction. (tng_fraction=1 is pure-TNG/redshift mode, which has no
-    # separate big population — covered in test_redshift_model.py.)
+def test_catalog_none_requires_zero_sersic_density(tmp_path):
+    """catalog=None is only valid when sersic_density_arcmin2=0.0."""
     tng = str(tmp_path / "tng")
-    _write_fake_tng_galaxy(tng, "111", size=240)
-    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    for tf in (0.1, 0.7):
-        sim = SkySimulator(cat, SkySimulatorConfig(
-            image_size=128, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-            tng_fraction=tf, tng_galaxy_dir=tng))
-        _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
-                                        n_stars=0, n_lenses=0, n_big=3)
-        big = [g for g in meta["galaxies"] if g.get("big")]
-        assert len(big) == 3 and meta["n_big_galaxies"] == 3
-        assert all(g["render"] == "tng" for g in big)
-
-
-def test_big_galaxy_density_drives_count(tmp_path):
-    # A high surface density yields several big galaxies via the Poisson draw.
-    tng = str(tmp_path / "tng")
-    _write_fake_tng_galaxy(tng, "111", size=240)
-    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(
-        image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=0.5, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=50.0))
-    _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
-                                    n_stars=0, n_lenses=0)
-    assert meta["n_big_galaxies"] >= 1     # area≈0.182 arcmin² × 50 ≈ 9 expected
+    _write_fake_tng_galaxy(tng, "111")
+    with pytest.raises(ValueError, match="sersic_density_arcmin2"):
+        # default sersic density > 0 → error without catalog
+        SkySimulator(None, SkySimulatorConfig(
+            tng_density_arcmin2=1.0, tng_galaxy_dir=tng))
 
 
 def test_lens_light_capped_at_theta_e():
@@ -278,8 +271,8 @@ def test_lens_light_capped_at_theta_e():
     factor = 0.8
     sim = SkySimulator(cat, SkySimulatorConfig(
         image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_light_re_factor=factor, tng_fraction=0.0))
-    _img, meta = sim.simulate_field(np.random.default_rng(1), n_galaxies=0,
+        lens_light_re_factor=factor, tng_density_arcmin2=0.0))
+    _img, meta = sim.simulate_field(np.random.default_rng(1), n_sersic=0,
                                     n_stars=0, n_lenses=8)
     assert meta["n_lenses"] >= 1
     for L in meta["lenses"]:
@@ -292,32 +285,17 @@ def test_invalid_lens_light_re_factor_rejected():
         SkySimulator(cat, SkySimulatorConfig(lens_light_re_factor=0.0))
 
 
-def test_big_galaxies_off_when_tng_disabled(tmp_path):
-    # tng_fraction=0 stays the pure-Sersic baseline: no big galaxies even with a
-    # huge density set.
-    tng = str(tmp_path / "tng")
-    _write_fake_tng_galaxy(tng, "111", size=240)
-    cat = TinyCosmosCatalog(n_galaxies=2000, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(
-        image_size=512, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=0.0, tng_galaxy_dir=tng, big_galaxy_density_arcmin2=100.0))
-    _img, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=0,
-                                    n_stars=0, n_lenses=0)
-    assert meta["n_big_galaxies"] == 0
-
-
 def test_tng_lens_components_when_enabled(tmp_path):
-    # With TNG on, the lens light AND lensed source are real TNG stamps at the
-    # same tng_fraction proportion as field galaxies.
+    # With TNG loaded, the lens light AND lensed source are real TNG stamps.
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111", size=240)
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
     cfg = SkySimulatorConfig(
         image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        tng_fraction=1.0, tng_galaxy_dir=tng)
+        tng_density_arcmin2=1.0, tng_galaxy_dir=tng)
     sim = SkySimulator(cat, cfg)
     img, meta = sim.simulate_field(np.random.default_rng(3),
-                                   n_galaxies=0, n_stars=0, n_lenses=4)
+                                   n_sersic=0, n_tng=0, n_stars=0, n_lenses=4)
     assert meta["n_lenses"] >= 1
     for L in meta["lenses"]:
         assert L["lens_light_render"] == "tng"
@@ -325,15 +303,15 @@ def test_tng_lens_components_when_enabled(tmp_path):
     assert img.data.sum() > 0
 
 
-def test_tng_zero_lens_components_are_sersic(tmp_path):
-    # tng_fraction=0 → lens components stay analytic Sersic.
+def test_tng_zero_lens_components_are_sersic():
+    # tng_density_arcmin2=0.0, no TNG dir → lens components stay analytic Sersic.
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
     cfg = SkySimulatorConfig(image_size=96,
-                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                   tng_fraction=0.0)
+                             pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+                             tng_density_arcmin2=0.0)
     sim = SkySimulator(cat, cfg)
     _img, meta = sim.simulate_field(np.random.default_rng(3),
-                                    n_galaxies=0, n_stars=0, n_lenses=4)
+                                    n_sersic=0, n_tng=0, n_stars=0, n_lenses=4)
     for L in meta["lenses"]:
         assert L["lens_light_render"] == "sersic"
         assert L["source_render"] == "sersic"

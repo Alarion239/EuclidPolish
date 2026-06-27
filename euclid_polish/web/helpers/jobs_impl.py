@@ -50,8 +50,8 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # Always pure-TNG mode (redshift realism, COSMOS catalog skipped).
-    tng_flag = " --tng-fraction 1"
+    # All-TNG mode (redshift realism, COSMOS catalog skipped).
+    tng_flag = f" --sersic-density-arcmin2 0 --tng-density-arcmin2 {Config.DEFAULT_GAL_DENSITY_ARCMIN2}"
     return textwrap.dedent(f"""
         set -e
         export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
