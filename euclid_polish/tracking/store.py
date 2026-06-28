@@ -37,6 +37,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from euclid_polish.config import Config
+from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.provenance.gitinfo import capture_git as git_commit_info
 from ._utils import _now_iso, _write_json, _read_json
 
@@ -52,7 +53,7 @@ _PROJECT_ROOT = os.path.dirname(
 _LOCK = threading.RLock()
 
 # Which top-level files make a TensorFlow checkpoint dir restorable.
-_CKPT_KEEP_EXACT = {"checkpoint", "training_log.csv", "training_log.jsonl"}
+_CKPT_KEEP_EXACT = {"checkpoint", TrainingLog.FILENAME, "training_log.jsonl"}
 
 
 class TrackingError(RuntimeError):

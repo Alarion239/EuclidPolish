@@ -13,16 +13,24 @@ from euclid_polish.config import Config
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.store import ProvStore
 
+_default_store_cache = None
+
 
 def default_store() -> ProvStore:
-    """A :class:`ProvStore` rooted at the project's data + checkpoint dirs."""
-    candidates = [
-        Config.RECORDS_DIR_V2,
-        Config.DATA_DIR,
-        os.path.join(os.getcwd(), "ckpt"),
-    ]
-    roots = [r for r in candidates if os.path.isdir(r)]
-    return ProvStore(Config.PROV_DIR, data_roots=roots or [Config.PROV_DIR])
+    """A :class:`ProvStore` rooted at the project's data + checkpoint dirs.
+
+    Returns the same instance on repeated calls within a process (cached).
+    """
+    global _default_store_cache
+    if _default_store_cache is None:
+        candidates = [
+            Config.RECORDS_DIR_V2,
+            Config.DATA_DIR,
+            Config.DEFAULT_CHECKPOINT_DIR,
+        ]
+        roots = [r for r in candidates if os.path.isdir(r)]
+        _default_store_cache = ProvStore(Config.PROV_DIR, data_roots=roots or [Config.PROV_DIR])
+    return _default_store_cache
 
 
 def mint_id(store=None) -> ProvId:

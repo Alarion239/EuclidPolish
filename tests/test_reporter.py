@@ -64,13 +64,12 @@ class TestNoOp:
         r.set_stage("x")  # should not raise
 
     def test_from_env_with_events_silences_tqdm(self, monkeypatch, tmp_path):
-        """Under a job (events file present) the Reporter drives the WebUI
-        bar, so from_env() exports TQDM_DISABLE to keep tqdm bars out of the
-        .err log. (monkeypatch.delenv restores the prior state at teardown,
-        so the flag never leaks into other tests.)"""
-        monkeypatch.setenv(ENV_EVENTS_PATH, str(tmp_path / "j.events"))
+        """silence_tqdm() sets TQDM_DISABLE=1; scripts that drive the WebUI
+        progress bar via Reporter should call it explicitly before from_env().
+        (monkeypatch.delenv restores the prior state at teardown so the flag
+        never leaks into other tests.)"""
         monkeypatch.delenv("TQDM_DISABLE", raising=False)
-        Reporter.from_env()
+        Reporter.silence_tqdm()
         assert os.environ.get("TQDM_DISABLE") == "1"
 
     def test_from_env_no_events_leaves_tqdm_untouched(self, monkeypatch):

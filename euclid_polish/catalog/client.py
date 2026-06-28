@@ -26,7 +26,7 @@ from astropy.io import fits as _fits
 from astroquery.esa.euclid import Euclid
 from tqdm import tqdm
 
-from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.catalog.catalog_object import CatalogObject, _finite_float
 from euclid_polish.catalog.downloader import (
     DownloadConfig, core_is_saturated, download_one_cutout, fetch_cutout_at,
     positions_match, resolve_mosaics, scan_cutouts,
@@ -42,15 +42,6 @@ from euclid_polish.provenance.records import Stamp
 class EuclidAuthError(RuntimeError):
     """Raised when Euclid authentication cannot be established."""
 
-
-def _finite(value) -> Optional[float]:
-    if value is None or (hasattr(value, "mask") and bool(value.mask)):
-        return None
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    return f if math.isfinite(f) else None
 
 
 class EuclidCatalog:
@@ -170,14 +161,15 @@ class EuclidCatalog:
         query = (f"SELECT TOP {num_stars} right_ascension, declination, "
                  f"flux_vis_psf, fluxerr_vis_psf FROM catalogue.mer_catalogue "
                  f"WHERE {' AND '.join(where)} ORDER BY flux_vis_psf DESC")
-        results = self._launch(query, async_=True)
+        job = Euclid.launch_job_async(query)
+        results = job.get_results() if job is not None else None
 
         objs: List[CatalogObject] = []
         for row in results or []:
-            flux = _finite(row["flux_vis_psf"])
+            flux = _finite_float(row["flux_vis_psf"])
             if flux is None or flux <= 0:
                 continue
-            ferr = _finite(row["fluxerr_vis_psf"])
+            ferr = _finite_float(row["fluxerr_vis_psf"])
             objs.append(CatalogObject(
                 ra=float(row["right_ascension"]), dec=float(row["declination"]),
                 magnitude=uJy_to_ab_mag(flux), flux_psf_uJy=flux,
@@ -199,6 +191,8 @@ class EuclidCatalog:
         rows. Here we drop sources fainter than ``mag_floor``. All four default to
         :class:`Config.GalaxySelection`.
         """
+        if radius_deg <= 0:
+            raise ValueError(f"radius_deg must be positive, got {radius_deg}")
         area_lo = math.pi * ((diam_lo_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
         area_hi = math.pi * ((diam_hi_arcsec / 2.0) / Config.VIS_PIXEL_SCALE_ARCSEC) ** 2
         query = (
@@ -209,13 +203,14 @@ class EuclidCatalog:
             "AND point_like_flag = 0 AND spurious_flag = 0 AND det_quality_flag = 0 "
             f"AND segmentation_area BETWEEN {area_lo:.1f} AND {area_hi:.1f} "
             "AND flux_vis_psf IS NOT NULL AND flux_vis_psf > 0")
-        results = self._launch(query, async_=False)
+        job = Euclid.launch_job(query)
+        results = job.get_results() if job is not None else None
 
         objs: List[CatalogObject] = []
         for row in results or []:
-            r = _finite(row["right_ascension"])
-            d = _finite(row["declination"])
-            flux = _finite(row["flux_vis_psf"])
+            r = _finite_float(row["right_ascension"])
+            d = _finite_float(row["declination"])
+            flux = _finite_float(row["flux_vis_psf"])
             if r is None or d is None or flux is None or flux <= 0:
                 continue
             mag = uJy_to_ab_mag(flux)
@@ -224,11 +219,6 @@ class EuclidCatalog:
             objs.append(CatalogObject(ra=r, dec=d, magnitude=mag,
                                       flux_psf_uJy=flux, kind="galaxy"))
         return objs
-
-    def _launch(self, query: str, *, async_: bool):
-        """Run an ADQL query, returning its result table (or ``None``)."""
-        job = (Euclid.launch_job_async(query) if async_ else Euclid.launch_job(query))
-        return job.get_results() if job is not None else None
 
     # ------------------------------------------------------------------
     # Downloads
@@ -406,7 +396,7 @@ class EuclidCatalog:
                   f"{band} tile — marking failed")
         with_mosaics = [o for o in needing if o.id in mosaic_lookup]
 
-        corrupted_ids: List[int] = []
+        rejected_ids: List[int] = []
 
         def _download_and_validate(o: CatalogObject) -> Tuple[int, bool]:
             mosaic = mosaic_lookup[o.id]
@@ -448,16 +438,16 @@ class EuclidCatalog:
                 for done_i, fut in enumerate(progress, start=1):
                     star_id, ok = fut.result()
                     if not ok:
-                        corrupted_ids.append(star_id)
+                        rejected_ids.append(star_id)
                     if progress_cb is not None:
                         progress_cb(done_i, n_total, f"star_{star_id:04d}")
 
         # Update flags — per-(band, size).
-        new_valid_ids = [o.id for o in with_mosaics if o.id not in corrupted_ids]
+        new_valid_ids = [o.id for o in with_mosaics if o.id not in rejected_ids]
         for o in objects:
             if o.id in new_valid_ids:
                 o.set_valid(cutout_size, band=band)
-            if o.id in corrupted_ids:
+            if o.id in rejected_ids:
                 o.set_corrupted(cutout_size, band=band)
             if o.id in unmatched_ids:
                 o.set_download_failed(cutout_size, band=band)
@@ -474,7 +464,7 @@ class EuclidCatalog:
             'valid': final_valid,
             'corrupted': final_corrupted,
             'failed': final_failed,
-            'corrupted_ids': corrupted_ids,
+            'rejected_ids': rejected_ids,
             'unmatched_ids': sorted(unmatched_ids),
             'cutout_size': cutout_size,
             'band': band,

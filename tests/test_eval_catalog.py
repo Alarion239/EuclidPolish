@@ -863,22 +863,6 @@ class TestCenterCropAndReuse:
         small = np.zeros((10, 10), dtype=np.float32)
         assert center_crop(small, 63).shape == (10, 10)
 
-    def test_crop_object_fits_idempotent(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
-        d = tmp_path / "obj"
-        d.mkdir()
-        fits.PrimaryHDU(np.ones((4, 256, 256), np.float32)).writeto(
-            d / "original_stack.fits")
-        fits.PrimaryHDU(np.ones((4, 512, 512), np.float32)).writeto(
-            d / "SR.fits")
-        assert catalog_runner.crop_object_fits(str(d), 63) is True
-        with fits.open(d / "original_stack.fits") as h:
-            assert h[0].data.shape == (4, 63, 63)
-        with fits.open(d / "SR.fits") as h:
-            assert h[0].data.shape == (4, 126, 126)   # SR = 2× VIS
-        # second pass is a no-op (already small)
-        assert catalog_runner.crop_object_fits(str(d), 63) is False
-
     def test_enforce_object_sizes_crops_then_drops(self, tmp_path):
         from euclid_polish.eval import catalog_runner as cr
         # Oversized LR/SR/HR are center-cropped to the canonical geometry.

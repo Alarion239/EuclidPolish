@@ -111,13 +111,7 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     is nothing to fix.
     """
 
-    pos = np.maximum(arr, 0.0)
-    total = float(pos.sum())
-    if not np.isfinite(total) or total <= 0:
-        return arr     # degenerate — leave it alone
-    yy, xx = np.indices(arr.shape)
-    cy = float((yy * pos).sum() / total)
-    cx = float((xx * pos).sum() / total)
+    cy, cx = _positive_centroid(arr)
     target_y = (arr.shape[0] - 1) / 2.0
     target_x = (arr.shape[1] - 1) / 2.0
     dy = target_y - cy

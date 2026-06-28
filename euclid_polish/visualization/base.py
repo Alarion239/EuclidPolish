@@ -165,8 +165,8 @@ class BaseVisualizer:
             for sky-subtracted electron data. ``"log10"`` is a legacy clamp-
             to-positive log for PSF/cutout-like inputs.
         asinh_scale : float, optional
-            ``scale`` parameter for the asinh stretch. ``None`` picks the
-            image's MAD (median absolute deviation).
+            ``scale`` parameter for the asinh stretch. ``None`` uses
+            ``Config.STRETCH_SCALE_E`` — the training-aligned global constant.
         log_scale : bool, optional
             Deprecated. ``True`` is equivalent to ``stretch="log10"``.
         cmap : str

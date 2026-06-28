@@ -66,8 +66,8 @@ def _residual_asinh_stats(residual_stretched: np.ndarray, residual_e: np.ndarray
     }
 
 
-def _noise_floor_lr_std_e() -> float:
-    """Expected per-LR-pixel noise std (e⁻) from the analytical noise model.
+def _noise_floor_vis_e() -> float:
+    """Expected per-VIS-pixel noise std (e⁻) from the analytical noise model.
 
     Used as the denominator floor in relative-error panels — keeps the plot
     finite where signal → 0.
@@ -332,7 +332,7 @@ def plot_reconstruction(
     sr_stretched       = np.arcsinh(sr_vis / shared_scale).astype(np.float32)
     residual_e         = (hr_data - sr_vis).astype(np.float32)
     residual_stretched = (hr_stretched - sr_stretched).astype(np.float32)
-    floor_e            = _noise_floor_lr_std_e()
+    floor_e            = _noise_floor_vis_e()
     floor_str          = float(np.arcsinh(floor_e / shared_scale))
 
     # 3 × 5 layout. SR / HR cells render in colour when their 4-band

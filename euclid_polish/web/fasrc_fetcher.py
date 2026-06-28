@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_jobs
 
 from euclid_polish.web.remote import STATE
 
@@ -353,21 +354,16 @@ def run_remote_python(
     """Run a project script on FASRC via the existing SSH ControlMaster.
 
     Returns ``(rc, stdout, stderr)`` — stdout is bytes when ``binary=True``.
-    The command activates the configured conda env so astropy/numpy/PIL
-    are available, then invokes the script with its argv tail.
-
-    Used by the HST tile inspector to call ``scripts/fasrc_inspect_tile.py``
-    on a login node without rsync'ing the multi-GB tile back to local.
+    Delegates command construction to :func:`fasrc_jobs.build_remote_python_command`
+    so there is a single canonical implementation of the conda-activation and
+    environment-setup logic. Called by the HST tile inspector (``routes/hst.py``)
+    to run ``scripts/fasrc_inspect_tile.py`` on a login node without rsync'ing
+    the multi-GB tile back to local.
     """
     if STATE.ssh is None or not STATE.ssh.is_connected():
         return 1, (b"" if binary else ""), "ssh not connected"
     cfg = fasrc_config.load()
-    py = f"{cfg.conda_env_path.rstrip('/')}/bin/python"
-    script = f"{cfg.repo_path.rstrip('/')}/{script_rel_path.lstrip('/')}"
-    cmd = (
-        f"{shlex.quote(py)} {shlex.quote(script)} "
-        + " ".join(shlex.quote(a) for a in args)
-    )
+    cmd = fasrc_jobs.build_remote_python_command(cfg, [script_rel_path, *args])
     try:
         return STATE.ssh.run(cmd, timeout=timeout, binary=binary)
     except Exception as e:

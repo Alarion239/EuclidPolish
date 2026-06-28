@@ -45,8 +45,10 @@ def _hr_scale_for(x: tf.Tensor, num_channels: "int | None") -> np.ndarray:
 
 
 def asinh_stretch_lr(x: tf.Tensor) -> tf.Tensor:
-    """asinh(x / k) per LR channel; ``x`` has shape ``(..., 4)``."""
-    return tf.asinh(x / _lr_stretch_scale())
+    """asinh(x / k) per LR channel; ``x`` has shape ``(..., C)`` where C ≤ 4."""
+    c = x.shape[-1]
+    k = _lr_stretch_scale()[:int(c)] if c is not None else _lr_stretch_scale()
+    return tf.asinh(x / k)
 
 
 def asinh_stretch_hr(x: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:

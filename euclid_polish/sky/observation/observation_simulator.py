@@ -60,7 +60,6 @@ class ObservationSimulatorConfig:
     add_artifacts: bool = True       # cosmic rays + hot pixels
     add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "lanczos3" or "cubic"
-    nisp_resample_factor: int = Config.NISP_LR_TO_VIS_LR_RATIO  # 3
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: Optional["ArtifactConfig"] = None        # type: ignore[name-defined]
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
@@ -82,8 +81,6 @@ class ObservationSimulatorConfig:
                 f"nisp_resample_kernel must be 'lanczos3' or 'cubic'; "
                 f"got {self.nisp_resample_kernel!r}"
             )
-        if self.nisp_resample_factor < 1:
-            raise ValueError("nisp_resample_factor must be ≥ 1")
         if self.hr_pixel_scale <= 0:
             raise ValueError("hr_pixel_scale must be positive")
 
@@ -176,21 +173,6 @@ class ObservationSimulator:
         )
 
     # ------------------------------------------------------------------ #
-    def _apply_band_noise(
-        self,
-        signal_e: np.ndarray,
-        band: BandConfig,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Pull add_artifacts + artifact_config off ``self.config`` and
-        delegate to the module-level :func:`apply_band_noise`."""
-        return apply_band_noise(
-            signal_e, band, rng,
-            add_artifacts=self.config.add_artifacts,
-            artifact_config=self.config.artifact_config,
-        )
-
-    # ------------------------------------------------------------------ #
     @property
     def target_lr_pixel_scale_arcsec(self) -> float:
         """Pixel scale of the unified LR grid every channel ends up on.
@@ -235,7 +217,11 @@ class ObservationSimulator:
 
         # 3. Apply per-band noise on the LR grid.
         if self.config.add_noise:
-            lr_e = self._apply_band_noise(lr_signal_e, band, rng)
+            lr_e = apply_band_noise(
+                lr_signal_e, band, rng,
+                add_artifacts=self.config.add_artifacts,
+                artifact_config=self.config.artifact_config,
+            )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)
 

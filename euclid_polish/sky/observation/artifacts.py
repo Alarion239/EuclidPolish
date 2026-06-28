@@ -266,7 +266,7 @@ def inject_streaks(
     streaks are invisible at normal stretches and only emerge under tight
     background clipping, matching the real Q1 cutouts.
     """
-    if not cfg.add_streaks or local_sigma_e <= 0:
+    if not cfg.add_streaks:
         return image_e
     H, W = image_e.shape
     mean_n = expected_streak_count((H, W), cfg)
@@ -346,6 +346,11 @@ def inject_artifacts(
     disable streaks even if ``cfg.add_streaks`` is True.
     """
     cfg = cfg or ArtifactConfig()
+    if cfg.add_streaks and local_sigma_e <= 0:
+        raise ValueError(
+            "inject_artifacts: cfg.add_streaks is True but local_sigma_e <= 0; "
+            "provide a positive per-pixel noise RMS or set add_streaks=False."
+        )
     out = inject_cosmic_rays(image_e, band, rng, cfg)
     out = inject_hot_pixels(out, rng, cfg)
     out = inject_streaks(out, rng, cfg, local_sigma_e)

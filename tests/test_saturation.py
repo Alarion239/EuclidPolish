@@ -92,9 +92,9 @@ def test_apply_saturation_stamps_bright_star_only():
     lr = np.zeros((H, W, len(_BANDS)), dtype=np.float32)
     # mag-13 star at HR (64,64) → LR (32,32) with hr_to_lr=0.5; saturates all bands.
     stars = [{"type": "star", "x_pix": 64.0, "y_pix": 64.0, "mag_vis": 13.0}]
-    n = apply_star_saturation(lr, stars, m, np.random.default_rng(0),
-                              hr_to_lr_scale=0.5, band_names=_BANDS)
-    assert n == len(_BANDS)                                     # all bands saturated
+    apply_star_saturation(lr, stars, m, np.random.default_rng(0),
+                          hr_to_lr_scale=0.5, band_names=_BANDS)
+    # all bands saturated: each channel clipped to its well depth
     for k, bn in enumerate(_BANDS):
         well = m.well_depth_e(Config.get_band(bn))
         assert lr[..., k].max() == pytest.approx(well, rel=1e-5)
@@ -103,9 +103,9 @@ def test_apply_saturation_stamps_bright_star_only():
     # A faint star leaves the image untouched.
     lr2 = np.zeros((H, W, len(_BANDS)), dtype=np.float32)
     faint = [{"type": "star", "x_pix": 64.0, "y_pix": 64.0, "mag_vis": 22.0}]
-    n2 = apply_star_saturation(lr2, faint, m, np.random.default_rng(0),
-                               hr_to_lr_scale=0.5, band_names=_BANDS)
-    assert n2 == 0 and lr2.max() == 0.0
+    apply_star_saturation(lr2, faint, m, np.random.default_rng(0),
+                          hr_to_lr_scale=0.5, band_names=_BANDS)
+    assert lr2.max() == 0.0
 
 
 def test_apply_saturation_clips_out_of_bounds():

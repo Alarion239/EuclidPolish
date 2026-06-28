@@ -37,8 +37,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import matplotlib
-matplotlib.use("Agg")                       # headless, before pyplot
-import matplotlib.pyplot as plt
 import numpy as np
 
 from euclid_polish.config import Config
@@ -216,6 +214,8 @@ def gather_properties(work_dir: str, ids: List[str], key: str, *,
 # ---------------------------------------------------------------------------
 
 def _fig_to_png(fig) -> bytes:
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -223,6 +223,8 @@ def _fig_to_png(fig) -> bytes:
 
 
 def placeholder_png(message: str) -> bytes:
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(7, 2.2))
     ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=13, wrap=True)
     ax.axis("off")
@@ -286,6 +288,8 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
     """2×2 PNG: SFR / stellar mass / total mass / effective radius."""
     if not props:
         return placeholder_png("No galaxy properties to plot.")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
     def col(name: str) -> np.ndarray:
         v = np.array([props[g].get(name, np.nan) for g in props], dtype=float)

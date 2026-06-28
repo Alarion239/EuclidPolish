@@ -417,7 +417,7 @@ def eye_rgb(
     # hue-preservingly. Override ``white_e`` to re-anchor the absolute
     # scale; it stays image-independent so colours remain comparable.
     knee_cal  = float(asinh_scale_e) * _ab_flux_norm("VIS")
-    white_e   = float(white_e) if white_e else 30.0 * float(asinh_scale_e)
+    white_e   = float(white_e) if white_e is not None else 30.0 * float(asinh_scale_e)
     white_cal = white_e * _ab_flux_norm("VIS")
     intensity = np.maximum(calibrated.mean(axis=-1), 0.0)
     if stretch == "asinh":

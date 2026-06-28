@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.eval.power_spectrum import (
-    SpectrumAccumulator,
+    _SpectrumAccumulator as SpectrumAccumulator,
     cross_power_2d,
     k_magnitude_2d,
     log_k_edges,

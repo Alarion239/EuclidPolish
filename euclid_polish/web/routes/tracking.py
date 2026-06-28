@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
+from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.tracking import dirty_warning
@@ -132,7 +133,7 @@ def register(app):
                 # checkpoint"). Best-effort — never fail the backup over it.
                 try:
                     bdir = store.model_backup_dir("current", rec["name"])
-                    csv = os.path.join(bdir, "training_log.csv")
+                    csv = os.path.join(bdir, TrainingLog.FILENAME)
                     if os.path.isfile(csv):
                         plot_training_log(
                             csv, os.path.join(bdir, "training_log.png"))

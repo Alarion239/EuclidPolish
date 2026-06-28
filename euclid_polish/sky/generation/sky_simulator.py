@@ -465,7 +465,7 @@ class SkySimulator:
                 "z_lens": float(lp.z_lens),
                 "z_source": float(lp.z_source),
                 "theta_E_arcsec": float(lp.theta_E_arcsec),
-                "sigma_v_proxy_q": float(lp.lens_q),
+                "sie_axis_ratio": float(lp.lens_q),
                 "sigma_v_kms": float(sigma_v),
                 "lens_mstar_msun": float(mstar),
                 "lens_apparent_re_arcsec": float(re_app),

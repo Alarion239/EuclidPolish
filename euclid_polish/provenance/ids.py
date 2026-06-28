@@ -58,11 +58,6 @@ class ProvId:
         return cls(_SENTINEL)
 
     @classmethod
-    def parse(cls, text: str) -> "ProvId":
-        """Parse a string into a :class:`ProvId` (alias for the constructor)."""
-        return cls(text)
-
-    @classmethod
     def mint(cls, exists: Callable[["ProvId"], bool]) -> "ProvId":
         """Draw a fresh id, re-drawing while ``exists(id)`` is true.
 

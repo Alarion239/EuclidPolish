@@ -228,75 +228,47 @@ class PSFSet(StampCarrier):
                                 angle_min=angle_min, angle_max=angle_max)
         return self.apply_sample(spec, rotation_order=rotation_order)
 
-    def draw_random(
-        self,
-        rng: np.random.Generator,
-        *,
-        use_unrotated_prob: float = 0.3,
-        angle_min: int = 1,
-        angle_max: int = 359,
-        rotation_order: int = 3,
-    ) -> PSF:
-        """Return one PSF sampled at random for a synthetic scene.
-
-        Convenience wrapper over :meth:`sample_for_generation` (which is
-        itself ``apply_sample(draw_sample(rng))``). Prefer this when a single
-        random kernel is needed without the multi-band :class:`PSFSample`
-        bookkeeping.
-        """
-        return self.sample_for_generation(
-            rng,
-            use_unrotated_prob=use_unrotated_prob,
-            angle_min=angle_min,
-            angle_max=angle_max,
-            rotation_order=rotation_order,
-        )
-
     # ------------------------------------------------------------------
     # Grid operations — map over members, return a new PSFSet
     # ------------------------------------------------------------------
 
-    def resampled_to(self, target_pixel_scale: float) -> PSFSet:
-        out = [p.resampled_to(target_pixel_scale) for p in self.psfs]
-        return PSFSet(
-            psfs=out,
-            pixel_scale=float(target_pixel_scale),
+    def _with_psfs(
+        self, psfs: List[PSF], pixel_scale: Optional[float] = None
+    ) -> PSFSet:
+        """Return a new PSFSet with replaced ``psfs``, copying all sidecar fields.
+
+        ``pixel_scale`` overrides the stored value (use for :meth:`resampled_to`
+        where the scale changes); omit to keep the current scale.
+        """
+        result = PSFSet(
+            psfs=psfs,
+            pixel_scale=float(pixel_scale) if pixel_scale is not None
+                        else self.pixel_scale,
             centroids=self.centroids,
             n_stars=self.n_stars,
             oversampling=self.oversampling,
         )
+        if self.stamp is not None:
+            result = result.with_stamp(self.stamp)
+        return result
+
+    def resampled_to(self, target_pixel_scale: float) -> PSFSet:
+        out = [p.resampled_to(target_pixel_scale) for p in self.psfs]
+        return self._with_psfs(out, pixel_scale=target_pixel_scale)
 
     def background_cleaned(self) -> PSFSet:
         """Apply :meth:`PSF.background_cleaned` to every member (noise-floor
         cut + radial taper, Config-tuned)."""
-        return PSFSet(
-            psfs=[p.background_cleaned() for p in self.psfs],
-            pixel_scale=self.pixel_scale,
-            centroids=self.centroids,
-            n_stars=self.n_stars,
-            oversampling=self.oversampling,
-        )
+        return self._with_psfs([p.background_cleaned() for p in self.psfs])
 
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSFSet:
         out = [p.centre_cropped_to(side, renormalise=renormalise)
                for p in self.psfs]
-        return PSFSet(
-            psfs=out,
-            pixel_scale=self.pixel_scale,
-            centroids=self.centroids,
-            n_stars=self.n_stars,
-            oversampling=self.oversampling,
-        )
+        return self._with_psfs(out)
 
     def recentred(self, *, on: str = "peak", subpixel: bool = True) -> PSFSet:
         out = [p.recentred(on=on, subpixel=subpixel) for p in self.psfs]
-        return PSFSet(
-            psfs=out,
-            pixel_scale=self.pixel_scale,
-            centroids=self.centroids,
-            n_stars=self.n_stars,
-            oversampling=self.oversampling,
-        )
+        return self._with_psfs(out)
 
     # ------------------------------------------------------------------
     # I/O — multi-extension FITS (PrimaryHDU = mean, ImageHDUs = clusters)

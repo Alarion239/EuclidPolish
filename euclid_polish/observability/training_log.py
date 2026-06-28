@@ -27,6 +27,8 @@ from typing import Optional, Sequence
 class TrainingLog:
     """Owns one append-only metrics CSV with a fixed column schema."""
 
+    FILENAME: str = "training_log.csv"
+
     def __init__(self, path: str, columns: Sequence[str]) -> None:
         self.path = path
         self.columns = tuple(columns)

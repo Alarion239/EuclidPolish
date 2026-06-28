@@ -26,7 +26,6 @@ import os
 from typing import Dict, Optional
 
 import numpy as np
-from scipy.ndimage import zoom
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
@@ -76,34 +75,6 @@ def psf_side_pixels_for_band(
 # Loading
 # ---------------------------------------------------------------------------
 
-def _resample_psf_to_pixel_scale(psf: PSF, target_pixel_scale: float) -> PSF:
-    """Resample a PSF kernel onto a new pixel grid.
-
-    Uses a cubic spline (``scipy.ndimage.zoom(order=3)``) rather than the
-    Lanczos-3 we use for sky-image resampling. Reason: Lanczos has negative
-    side-lobes that ring on the sharp PSF wings, producing small negative
-    pixel values that subsequently shrink under the ``data/data.sum()``
-    renormalisation. Cubic spline is monotone-preserving in practice for
-    PSF-shaped (broadly Gaussian) kernels and gives a cleaner kernel.
-
-    The resampled kernel is renormalised to sum=1 after zoom to fix any
-    numerical drift introduced by the interpolator.
-    """
-    if abs(psf.pixel_scale - target_pixel_scale) < 1e-6:
-        return psf
-    factor = psf.pixel_scale / target_pixel_scale
-    data = zoom(psf.data, zoom=factor, order=3, mode="nearest")
-    # Renormalise so sum = 1 (the convolution invariant we rely on downstream).
-    s = data.sum()
-    if s != 0:
-        data = data / s
-    return PSF(
-        data=data.astype(np.float32),
-        pixel_scale=target_pixel_scale,
-        fwhm_arcsec=psf.fwhm_arcsec,
-        oversampling=psf.oversampling,
-    )
-
 
 def make_gaussian_psf(
     fwhm_arcsec: float, pixel_scale: float, *, size: Optional[int] = None,
@@ -141,7 +112,7 @@ def make_gaussian_psf(
 _gaussian_psf = make_gaussian_psf
 
 
-def load_band_psf(
+def load_band_psf_raw(
     band: BandConfig,
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
@@ -153,7 +124,7 @@ def load_band_psf(
     Resolution order:
 
       1. ``psf_dir / band.psf_fits_filename`` exists → load it, normalise,
-         resample to ``target_pixel_scale`` if needed.
+         clean background, resample to ``target_pixel_scale`` if needed.
       2. Otherwise, build a Gaussian PSF at ``band.psf_fwhm_arcsec``.
 
     With ``require_empirical=True`` the second branch raises instead of
@@ -165,7 +136,8 @@ def load_band_psf(
         # Use whatever size was produced at extraction time — the extractor
         # is the single source of truth for empirical-PSF dimensions.
         psf = PSF.from_fits(path)
-        return _resample_psf_to_pixel_scale(psf, target_pixel_scale)
+        psf = psf.background_cleaned()
+        return psf.resampled_to(target_pixel_scale)
 
     if require_empirical:
         raise FileNotFoundError(
@@ -180,6 +152,10 @@ def load_band_psf(
                              size=target_side)
 
 
+# Backward-compatible alias — new code should call ``load_band_psf_raw``.
+load_band_psf = load_band_psf_raw
+
+
 def load_all_band_psfs(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
@@ -192,7 +168,7 @@ def load_all_band_psfs(
     pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`.
     """
     return {
-        band.name: load_band_psf(
+        band.name: load_band_psf_raw(
             band,
             target_pixel_scale=target_pixel_scale,
             psf_dir=psf_dir,

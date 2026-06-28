@@ -110,7 +110,6 @@ class DownloadConfig:
     populated config; the bare init exists for back-compat tests.
     """
     cutout_size: int = Config.DEFAULT_CUTOUT_SIZE
-    cutout_radius: float = 0.2  # arcmin
     position_tolerance: float = Config.Matching.DOWNLOAD_POSITION_TOL_ARCSEC
     size_tolerance: int = Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS
     max_workers: int = 8  # parallel cutout HTTPS fetches
@@ -178,8 +177,6 @@ class DownloadConfig:
         """Validate configuration."""
         if self.cutout_size <= 0:
             return False, "Cutout size must be positive"
-        if self.cutout_radius <= 0:
-            return False, "Cutout radius must be positive"
         if self.position_tolerance <= 0:
             return False, "Position tolerance must be positive"
         if self.max_workers <= 0:

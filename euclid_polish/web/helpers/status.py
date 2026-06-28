@@ -4,6 +4,7 @@ from __future__ import annotations
 from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
+from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.psf import PSF
 from euclid_polish.image.tfio import tfrecord_path
@@ -315,7 +316,7 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     """Pick the current ``training_log.csv`` or fall back to legacy
     ``training_log.jsonl`` so logs from runs before the CSV switch still
     plot. Returns the path that exists, or None if neither does."""
-    for name in ("training_log.csv", "training_log.jsonl"):
+    for name in (TrainingLog.FILENAME, "training_log.jsonl"):
         p = os.path.join(checkpoint_dir, name)
         if os.path.exists(p):
             return p

@@ -55,7 +55,7 @@ class Stamp:
     id: ProvId
     produced_by: Optional[ProvId] = None
     parents: Tuple[ProvId, ...] = ()
-    schema_version: int = 1
+    schema_version: int = 3
     subset: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -105,7 +105,7 @@ class ConfigSnapshot:
 
     config_type: str
     fields: Dict[str, Any] = field(default_factory=dict)
-    SCHEMA_VERSION: ClassVar[int] = 1
+    SCHEMA_VERSION: ClassVar[int] = 3
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -136,11 +136,11 @@ class ProvRecord:
 
     id: ProvId
     parents: Tuple[ProvId, ...] = ()
-    git: Optional[Dict[str, Any]] = field(default_factory=capture_git)
+    git: Optional[Dict[str, Any]] = field(default=None)
     created_at: str = field(default_factory=_now_iso)
 
     KIND: ClassVar[str] = "provrecord"
-    SCHEMA_VERSION: ClassVar[int] = 1
+    SCHEMA_VERSION: ClassVar[int] = 3
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

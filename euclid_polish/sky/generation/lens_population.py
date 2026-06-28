@@ -75,9 +75,10 @@ class LensParams:
     lens_galaxy:      Optional[GalaxyParams]
     source_galaxy:    Optional[GalaxyParams]
 
-    # Placement on the simulator canvas (HR pixel coords)
-    centre_x_pix:     float = 0.0
-    centre_y_pix:     float = 0.0
+    # Placement on the simulator canvas (HR pixel coords).
+    # None means "use the canvas centre" (the default before placement).
+    centre_x_pix:     Optional[float] = None
+    centre_y_pix:     Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +109,32 @@ def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> f
         return 0.0
     theta_E_rad = 4.0 * math.pi * (sigma_v_kms / c_kms) ** 2 * D_ls / D_s
     return float(np.degrees(theta_E_rad) * 3600.0)
+
+
+# ---------------------------------------------------------------------------
+# Module-level sampling helpers (shared by LensPopulation and
+# sample_lens_geometry so the logic lives in exactly one place)
+# ---------------------------------------------------------------------------
+
+def _sample_shear(rng: np.random.Generator) -> Tuple[float, float]:
+    """Draw (γ1, γ2) from a zero-mean Gaussian with σ = LENS_EXT_SHEAR_SIGMA."""
+    s = Config.LENS_EXT_SHEAR_SIGMA
+    return float(rng.normal(0.0, s)), float(rng.normal(0.0, s))
+
+
+def _sample_disk_offset(
+    rng: np.random.Generator, theta_E: float,
+) -> Tuple[float, float]:
+    """Uniform-in-disk source offset within LENS_SOURCE_OFFSET_FRAC × θ_E.
+
+    Returns (dx, dy) in arcsec relative to the lens centre. Sampling
+    uniformly in the disk preferentially yields strong-lensing geometries
+    (caustic crossings, fold images) over pure weak shear.
+    """
+    r_max = Config.LENS_SOURCE_OFFSET_FRAC * theta_E
+    r = math.sqrt(rng.uniform()) * r_max
+    phi = rng.uniform(0.0, 2.0 * math.pi)
+    return r * math.cos(phi), r * math.sin(phi)
 
 
 # ---------------------------------------------------------------------------
@@ -142,23 +169,12 @@ class LensPopulation:
         return float(rng.uniform(self.sigma_v_min_kms, self.sigma_v_max_kms))
 
     def _sample_shear(self, rng: np.random.Generator) -> Tuple[float, float]:
-        s = Config.LENS_EXT_SHEAR_SIGMA
-        return float(rng.normal(0.0, s)), float(rng.normal(0.0, s))
+        return _sample_shear(rng)
 
     def _sample_source_offset(
         self, rng: np.random.Generator, theta_E: float,
     ) -> Tuple[float, float]:
-        """Pick a source position inside ``LENS_SOURCE_OFFSET_FRAC × θ_E``.
-
-        Uniform in the disk — this preferentially yields strong-lensing
-        configurations (caustic crossings, fold images) rather than pure
-        weak shear. Returns (dx, dy) in arcsec relative to the lens centre.
-        """
-        r_max = Config.LENS_SOURCE_OFFSET_FRAC * theta_E
-        # Uniform-in-disk sample
-        r = math.sqrt(rng.uniform()) * r_max
-        phi = rng.uniform(0.0, 2.0 * math.pi)
-        return r * math.cos(phi), r * math.sin(phi)
+        return _sample_disk_offset(rng, theta_E)
 
     def sample(
         self,
@@ -250,11 +266,8 @@ def sample_lens_geometry(
         q = float(rng.uniform(
             Config.LENS_AXIS_RATIO_MIN, Config.LENS_AXIS_RATIO_MAX))
         pa = float(rng.uniform(0.0, math.pi))
-        s = Config.LENS_EXT_SHEAR_SIGMA
-        g1, g2 = float(rng.normal(0.0, s)), float(rng.normal(0.0, s))
-        r_max = Config.LENS_SOURCE_OFFSET_FRAC * theta_E
-        r = math.sqrt(rng.uniform()) * r_max
-        phi = rng.uniform(0.0, 2.0 * math.pi)
+        g1, g2 = _sample_shear(rng)
+        dx, dy = _sample_disk_offset(rng, theta_E)
         return LensParams(
             z_lens         = z_lens,
             z_source       = z_source,
@@ -263,8 +276,8 @@ def sample_lens_geometry(
             lens_pa_rad    = pa,
             shear_gamma1   = g1,
             shear_gamma2   = g2,
-            src_dx_arcsec  = r * math.cos(phi),
-            src_dy_arcsec  = r * math.sin(phi),
+            src_dx_arcsec  = dx,
+            src_dy_arcsec  = dy,
             lens_galaxy    = None,
             source_galaxy  = None,
         )
@@ -357,8 +370,8 @@ def render_lens_to_multiband_canvas(
     Returns the updated canvas.
     """
     H, W, C = canvas_4ch.shape
-    cx_pix = params.centre_x_pix if params.centre_x_pix != 0 else W / 2.0
-    cy_pix = params.centre_y_pix if params.centre_y_pix != 0 else H / 2.0
+    cx_pix = params.centre_x_pix if params.centre_x_pix is not None else W / 2.0
+    cy_pix = params.centre_y_pix if params.centre_y_pix is not None else H / 2.0
 
     # --- 1. Lens galaxy's own light: real TNG stamp or analytic B+D Sersic ---
     lg = params.lens_galaxy

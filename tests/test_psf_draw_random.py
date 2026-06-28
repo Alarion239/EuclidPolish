@@ -19,26 +19,26 @@ def _make_set(n: int = 3) -> PSFSet:
 def test_draw_random_returns_psf():
     pset = _make_set()
     rng = np.random.default_rng(42)
-    result = pset.draw_random(rng)
+    result = pset.sample_for_generation(rng)
     assert isinstance(result, PSF)
 
 
 def test_draw_random_single_member_is_deterministic():
     pset = PSFSet.from_psfs([_make_psf(1.0)])
-    p1 = pset.draw_random(np.random.default_rng(0))
-    p2 = pset.draw_random(np.random.default_rng(99))
+    p1 = pset.sample_for_generation(np.random.default_rng(0))
+    p2 = pset.sample_for_generation(np.random.default_rng(99))
     np.testing.assert_allclose(p1.data, p2.data)
 
 
 def test_draw_random_pixel_scale_preserved():
     pset = _make_set()
-    p = pset.draw_random(np.random.default_rng(7))
+    p = pset.sample_for_generation(np.random.default_rng(7))
     assert abs(p.pixel_scale - 0.05) < 1e-6
 
 
 def test_draw_random_valid_psf_over_seeds():
     pset = _make_set(n=5)
     for seed in range(10):
-        p = pset.draw_random(np.random.default_rng(seed))
+        p = pset.sample_for_generation(np.random.default_rng(seed))
         assert isinstance(p, PSF)
         assert np.isfinite(p.data).all()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
+from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.training.log_plot import plot_training_records
 from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
@@ -1228,7 +1229,7 @@ def register(app):
         if request.args.get("vis_only", "").strip().lower() in (
                 "1", "on", "true", "yes"):
             base += "-vis"
-        csv_path   = f"{base}/training_log.csv"
+        csv_path   = f"{base}/{TrainingLog.FILENAME}"
         jsonl_path = f"{base}/training_log.jsonl"
 
         # Fetch whichever log file exists. Cap to 50k lines (~20 MB) so

@@ -156,15 +156,14 @@ def apply_star_saturation(
     *,
     hr_to_lr_scale: float,
     band_names: Sequence[str],
-) -> int:
+) -> None:
     """Stamp saturated rectangles onto the LR dirty image in place.
 
     For every star, each band independently draws ``model.saturates``; if it
     does, the rectangle-union mask (centred on the star's LR pixel) is clipped to
-    that band's well depth. Returns the number of (star, band) saturations.
+    that band's well depth.
     ``hr_to_lr_scale`` maps the star's HR pixel position to the LR grid."""
     H, W = lr_4ch.shape[:2]
-    n_applied = 0
     for star in stars:
         try:
             cx = int(round(float(star["x_pix"]) * hr_to_lr_scale))
@@ -183,5 +182,3 @@ def apply_star_saturation(
                 jj0, jj1 = max(0, j0), min(W, j0 + w)
                 if ii0 < ii1 and jj0 < jj1:
                     lr_4ch[ii0:ii1, jj0:jj1, k] = well
-            n_applied += 1
-    return n_applied

@@ -291,6 +291,35 @@ _HEREDOC_EOF = "__EUCLID_POLISH_EOF__"
 _SBATCH_JOBID_RE = re.compile(r"Submitted batch job (\d+)")
 
 
+def _conda_activate_snippet(env_path: str, load_cuda: bool = False) -> str:
+    """Return a zero-indented bash block that loads modules and activates a conda env.
+
+    Generates ``module load python`` (plus ``module load cuda`` when
+    ``load_cuda=True``) followed by a ``CONDA_SHLVL``-gated conda/mamba
+    initialization and ``mamba activate``. Used by both sbatch scripts
+    (:func:`fasrc_pipeline.render_sbatch_body`) and login-node helper
+    commands (:func:`jobs_impl._login_node_generate_cmd`) to eliminate
+    duplicate inline shell snippets.
+    """
+    env = shlex.quote(env_path)
+    cuda_line = "\nmodule load cuda" if load_cuda else ""
+    lines = [
+        f"module load python{cuda_line}",
+        "",
+        'if [ -z "${CONDA_SHLVL:-}" ]; then',
+        '  CONDA_BASE="$(conda info --base 2>/dev/null || true)"',
+        '  if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then',
+        '    source "$CONDA_BASE/etc/profile.d/conda.sh"',
+        '  fi',
+        '  if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/mamba.sh" ]; then',
+        '    source "$CONDA_BASE/etc/profile.d/mamba.sh"',
+        '  fi',
+        'fi',
+        f"mamba activate {env}",
+    ]
+    return "\n".join(lines)
+
+
 def build_remote_python_command(
     cfg: fasrc_config.FasrcConfig, argv: List[str],
 ) -> str:

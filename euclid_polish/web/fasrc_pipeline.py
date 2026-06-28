@@ -37,6 +37,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +315,8 @@ def render_sbatch_body(
         f'\n        echo "STEP_ID={step_id}"' if step_id else ""
     )
 
+    _conda_block = _conda_activate_snippet(
+        conda_env_path or cfg.conda_env_path, load_cuda=True)
     body = textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={shlex.quote(job_name)}
@@ -352,21 +355,7 @@ def render_sbatch_body(
         mkdir -p "$EUCLID_POLISH_DATA_DIR" "$EUCLID_POLISH_CKPT_DIR"
 
         module purge
-        module load python
-        module load cuda
-
-        if [ -z "${{CONDA_SHLVL:-}}" ]; then
-          CONDA_BASE="$(conda info --base 2>/dev/null || true)"
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-            # shellcheck disable=SC1091
-            source "$CONDA_BASE/etc/profile.d/conda.sh"
-          fi
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/mamba.sh" ]; then
-            # shellcheck disable=SC1091
-            source "$CONDA_BASE/etc/profile.d/mamba.sh"
-          fi
-        fi
-        mamba activate {shlex.quote(conda_env_path or cfg.conda_env_path)}
+        __CONDA_BLOCK__
         # ``module load`` puts the system (old) libstdc++ on LD_LIBRARY_PATH;
         # prepend the activated env's lib so its newer libstdc++ wins —
         # otherwise numpy/torch C-extensions fail with "GLIBCXX_3.4.xx not
@@ -382,7 +371,7 @@ def render_sbatch_body(
         echo "Finished: $(date)"
         echo "RUNTIME_SECONDS=${{__FASRC_RUNTIME__}}"{step_id_echo}
         echo "============================================================"
-    """)
+    """).replace("__CONDA_BLOCK__", _conda_block)
     return {
         "body":   body,
         "script": script_rel,

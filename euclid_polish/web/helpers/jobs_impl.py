@@ -17,6 +17,7 @@ from euclid_polish.training.inference import reconstruct
 from euclid_polish.training.inference import scaled_wcs_header
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.remote import STATE
 from scipy import signal as scipy_signal
 from typing import Any
@@ -52,27 +53,18 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     q = shlex.quote
     # All-TNG mode (redshift realism, COSMOS catalog skipped).
     tng_flag = f" --sersic-density-arcmin2 0 --tng-density-arcmin2 {Config.DEFAULT_GAL_DENSITY_ARCMIN2}"
+    _conda_block = _conda_activate_snippet(cfg.conda_env_path)
     return textwrap.dedent(f"""
         set -e
         export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
         mkdir -p {q(remote_tmp)}
         module purge 2>/dev/null || true
-        module load python 2>/dev/null || true
-        if [ -z "${{CONDA_SHLVL:-}}" ]; then
-          CONDA_BASE="$(conda info --base 2>/dev/null || true)"
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-            source "$CONDA_BASE/etc/profile.d/conda.sh"
-          fi
-          if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/mamba.sh" ]; then
-            source "$CONDA_BASE/etc/profile.d/mamba.sh"
-          fi
-        fi
-        mamba activate {q(cfg.conda_env_path)}
+        __CONDA_BLOCK__
         cd {q(cfg.repo_path)}
         python -u scripts/run_pipeline.py \
           --ntrain 0 --nvalid {int(n_pairs)} --image-size {int(hr_image_size)} \
           --records-dir {q(remote_tmp)} --skip-train --gen-workers 1{tng_flag}
-    """).strip()
+    """).replace("__CONDA_BLOCK__", _conda_block).strip()
 
 
 def _job_generate_reconstruct(

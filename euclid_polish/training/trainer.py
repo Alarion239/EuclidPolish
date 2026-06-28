@@ -30,7 +30,7 @@ from euclid_polish.training.models.common import evaluate
 # a job killed mid-training still leaves a usable log behind. Owned by
 # ``euclid_polish.observability.training_log.TrainingLog`` (schema +
 # append + resume rotation); the trainer just builds rows.
-TRAINING_LOG_FILENAME = "training_log.csv"
+TRAINING_LOG_FILENAME = TrainingLog.FILENAME
 # Per-band validation PSNR columns (4-band model; a VIS-only run fills just
 # the first). MONITORING ONLY — save-best keys on the joint ``psnr_stretched``;
 # these exist so the log shows VIS and the noisier NISP channels separately.

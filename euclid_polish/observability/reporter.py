@@ -87,6 +87,18 @@ class Reporter:
     # ------------------------------------------------------------------
 
     @classmethod
+    def silence_tqdm(cls) -> None:
+        """Suppress tqdm live bars in this process by setting ``TQDM_DISABLE=1``.
+
+        Uses ``setdefault`` so an explicit override already present in the
+        environment wins. ``tqdm.write`` status lines are unaffected — only
+        the live ASCII progress bar is suppressed. Call explicitly before
+        constructing a :class:`Reporter` when tqdm suppression is desired
+        (e.g. inside a SLURM script that uses a Reporter for WebUI progress).
+        """
+        os.environ.setdefault("TQDM_DISABLE", "1")
+
+    @classmethod
     def from_env(cls) -> "Reporter":
         """Construct from ``EUCLID_POLISH_EVENTS_PATH``.
 
@@ -94,17 +106,13 @@ class Reporter:
         same script works under SLURM (events file present) and during
         local development (no env var, no file, no errors).
 
-        When the events file IS present, a Reporter is driving the WebUI
-        progress bar, so any ``tqdm`` bar would just flood the job's
-        ``.err`` log with redundant ASCII frames. Silence every tqdm bar
-        in this process by exporting ``TQDM_DISABLE`` (tqdm reads it at
-        each bar's creation). ``setdefault`` so an explicit override from
-        the environment still wins. ``tqdm.write`` status lines (parsed
-        from ``.out``) are unaffected — only the live bar is suppressed.
+        Callers that want to suppress tqdm bars (e.g. because a Reporter
+        is driving the WebUI progress bar and a parallel tqdm bar would
+        just flood ``.err``) should call :meth:`silence_tqdm` explicitly
+        before this method — it is no longer a hidden side-effect of
+        construction.
         """
         events_path = os.environ.get(ENV_EVENTS_PATH)
-        if events_path:
-            os.environ.setdefault("TQDM_DISABLE", "1")
         return cls(events_path=events_path)
 
     # ------------------------------------------------------------------
@@ -119,6 +127,7 @@ class Reporter:
         progress bar.
         """
         self._emit("stage", str(name), echo=True)
+        self._last_step_echo_ts = 0.0
 
     def set_step(self, current: int, total: int, label: str = "") -> None:
         """Record fine-grained progress within the current stage.

@@ -22,6 +22,7 @@ without worrying about which step mutates what.
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field, replace
 from typing import ClassVar, Optional, Tuple
 
@@ -458,6 +459,14 @@ class PSF(StampCarrier):
         if pix is None:
             pix = header.get("PIXSCALE", 0.0)
         pixel_scale = float(pix)
+        if pixel_scale == 0.0:
+            warnings.warn(
+                f"PSF loaded from {fits_path!r} has pixel_scale=0.0 "
+                "(PXSCALE/PIXSCALE missing from header); "
+                "resampling and FWHM computations will be incorrect.",
+                UserWarning,
+                stacklevel=2,
+            )
         oversampling = int(header["OVERSAMP"]) if "OVERSAMP" in header else None
         fwhm_arcsec  = float(header["FWHM"])   if "FWHM"    in header else None
         psf = cls(
