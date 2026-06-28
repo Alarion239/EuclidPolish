@@ -34,7 +34,6 @@ import io
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional
 
 import matplotlib
 import numpy as np
@@ -54,14 +53,14 @@ DEFAULT_WORKERS = 16                         # concurrent TNG-API requests
 # API key
 # ---------------------------------------------------------------------------
 
-def load_api_key(path: Optional[str] = None) -> str:
+def load_api_key(path: str | None = None) -> str:
     """Resolve the TNG token: $TNG_API_KEY, else the (expanded) key file."""
     env = os.environ.get("TNG_API_KEY", "").strip()
     if env:
         return env
     p = os.path.expanduser(path or Config.Tng.API_KEY_FILE)
     if os.path.isfile(p):
-        with open(p, "r", encoding="utf-8") as f:
+        with open(p, encoding="utf-8") as f:
             return f.readline().strip()
     return ""
 
@@ -87,7 +86,7 @@ def _pick(d: dict, *keys: str):
     return None
 
 
-def parse_subhalo(sub: dict) -> Dict[str, float]:
+def parse_subhalo(sub: dict) -> dict[str, float]:
     """Map a ``/subhalos/{id}/?format=json`` dict → physical properties.
 
     Masses: code units → M☉ (×1e10/h); ``mass_log_msun`` is already log₁₀ M☉.
@@ -120,7 +119,7 @@ def parse_subhalo(sub: dict) -> Dict[str, float]:
 
 
 def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 30
-                     ) -> Dict[str, float]:
+                     ) -> dict[str, float]:
     """One TNG-API call for a galaxy's properties (NaN-filled on failure)."""
     try:
         sub = _get_json(f"{API_BASE}/subhalos/{subhalo_id}/?format=json",
@@ -134,10 +133,10 @@ def fetch_properties(subhalo_id: str, key: str, *, timeout: int = 30
 # Cache (per-galaxy CSV)
 # ---------------------------------------------------------------------------
 
-def _read_cache(path: str) -> Dict[str, Dict[str, float]]:
+def _read_cache(path: str) -> dict[str, dict[str, float]]:
     if not os.path.isfile(path):
         return {}
-    rows: Dict[str, Dict[str, float]] = {}
+    rows: dict[str, dict[str, float]] = {}
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             gid = str(row.get("id", "")).strip()
@@ -148,7 +147,7 @@ def _read_cache(path: str) -> Dict[str, Dict[str, float]]:
     return rows
 
 
-def _is_failed_row(props: Dict[str, float]) -> bool:
+def _is_failed_row(props: dict[str, float]) -> bool:
     """True for a cache row left by a *fully-failed* fetch (every property NaN).
 
     A transient API timeout / rate-limit during the concurrent sweep caches an
@@ -160,7 +159,7 @@ def _is_failed_row(props: Dict[str, float]) -> bool:
     return not any(np.isfinite(v) for v in vals)
 
 
-def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
+def _write_cache(path: str, rows: dict[str, dict[str, float]]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -173,9 +172,9 @@ def _write_cache(path: str, rows: Dict[str, Dict[str, float]]) -> None:
     os.replace(tmp, path)
 
 
-def gather_properties(work_dir: str, ids: List[str], key: str, *,
+def gather_properties(work_dir: str, ids: list[str], key: str, *,
                       max_workers: int = DEFAULT_WORKERS, reporter=None
-                      ) -> Dict[str, Dict[str, float]]:
+                      ) -> dict[str, dict[str, float]]:
     """Return {id: props} for ``ids``, caching to ``work_dir/tng_properties.csv``.
 
     Only missing galaxies are fetched, and they're fetched **concurrently** (the
@@ -231,7 +230,7 @@ def placeholder_png(message: str) -> bytes:
     return _fig_to_png(fig)
 
 
-def sfr_population(props: Dict[str, Dict[str, float]]):
+def sfr_population(props: dict[str, dict[str, float]]):
     """Split the SFR column into ``(log10 star-forming, n_quenched, n_missing)``.
 
     ``n_quenched`` = galaxies with SFR **== 0** exactly (quenched / gas-poor —
@@ -248,7 +247,7 @@ def sfr_population(props: Dict[str, Dict[str, float]]):
     return (np.log10(pos) if pos.size else pos), n_quenched, n_missing
 
 
-def _plot_sfr_panel(ax, props: Dict[str, Dict[str, float]],
+def _plot_sfr_panel(ax, props: dict[str, dict[str, float]],
                     title: str, xlabel: str) -> None:
     """SFR panel: log-histogram of star-forming galaxies + an explicit
     'quenched (SFR=0)' bar, so the panel reconciles with the download count
@@ -284,7 +283,7 @@ def _plot_sfr_panel(ax, props: Dict[str, Dict[str, float]],
         ax.legend(fontsize=8, loc="upper right")
 
 
-def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
+def plot_histograms(props: dict[str, dict[str, float]]) -> bytes:
     """2×2 PNG: SFR / stellar mass / total mass / effective radius."""
     if not props:
         return placeholder_png("No galaxy properties to plot.")
@@ -326,7 +325,7 @@ def plot_histograms(props: Dict[str, Dict[str, float]]) -> bytes:
     return _fig_to_png(fig)
 
 
-def render_histograms_for_ids(work_dir: str, ids: List[str], key: str, *,
+def render_histograms_for_ids(work_dir: str, ids: list[str], key: str, *,
                               max_workers: int = DEFAULT_WORKERS,
                               reporter=None) -> bytes:
     """End-to-end: ids → properties (cached, concurrent) → 2×2 histogram PNG."""

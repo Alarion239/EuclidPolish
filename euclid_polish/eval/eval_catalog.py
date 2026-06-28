@@ -22,7 +22,7 @@ non-lens catalogs.
 from __future__ import annotations
 
 import csv
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Accepted source-column aliases → canonical name. Matched case-insensitively
 # (the incoming header is lower-cased before lookup).
@@ -37,7 +37,7 @@ class CatalogError(ValueError):
     """Raised when a catalog CSV is missing required columns or has bad rows."""
 
 
-def _resolve_column(header: List[str], aliases: tuple) -> Optional[str]:
+def _resolve_column(header: list[str], aliases: tuple) -> str | None:
     """Return the first header entry whose lower-case form is in ``aliases``."""
     lower = {h.lower().strip(): h for h in header}
     for alias in aliases:
@@ -49,9 +49,9 @@ def _resolve_column(header: List[str], aliases: tuple) -> Optional[str]:
 def read_eval_catalog(
     path: str,
     *,
-    grade: Optional[str] = None,
-    max_n: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+    grade: str | None = None,
+    max_n: int | None = None,
+) -> list[dict[str, Any]]:
     """Read an evaluation catalog CSV into a list of row dicts.
 
     Parameters
@@ -99,7 +99,7 @@ def read_eval_catalog(
             )
 
         want_grade = grade.strip().lower() if grade is not None else None
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for lineno, raw in enumerate(reader, start=2):
             row_grade = (raw.get(grade_col).strip()
                          if grade_col and raw.get(grade_col) is not None

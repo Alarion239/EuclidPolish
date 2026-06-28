@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from euclid_polish.eval import galaxy_catalog as gc
 from euclid_polish.config import Config
+from euclid_polish.eval import galaxy_catalog as gc
 
 
 def test_diam_to_area_px_matches_circle():

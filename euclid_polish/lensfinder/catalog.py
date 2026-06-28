@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import csv
 import os
-from typing import Any, Dict, List, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 #: One row per (source, reconstruction). ``recon`` ∈ {lr, sr, hr}; the three
 #: rows for one source share ``id_str`` stem, ``field_index`` and ``is_lens``.
@@ -21,9 +22,9 @@ CATALOG_COLS = [
 RECONS = ("lr", "sr", "hr")
 
 
-def write_catalog(path: str, rows: Sequence[Dict[str, Any]]) -> None:
+def write_catalog(path: str, rows: Sequence[dict[str, Any]]) -> None:
     """Write catalog rows to CSV; columns = ``CATALOG_COLS`` then any extras."""
-    keys: List[str] = list(CATALOG_COLS)
+    keys: list[str] = list(CATALOG_COLS)
     for r in rows:
         for k in r:
             if k not in keys:
@@ -36,7 +37,7 @@ def write_catalog(path: str, rows: Sequence[Dict[str, Any]]) -> None:
             w.writerow(r)
 
 
-def read_catalog(path: str) -> List[Dict[str, str]]:
+def read_catalog(path: str) -> list[dict[str, str]]:
     """Read a catalog CSV into a list of string-valued dicts (round-trip)."""
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
@@ -49,25 +50,25 @@ def _as_int(v: Any, default: int = 0) -> int:
         return default
 
 
-def subset_for_recon(rows: Sequence[Dict[str, Any]], recon: str
-                     ) -> List[Dict[str, Any]]:
+def subset_for_recon(rows: Sequence[dict[str, Any]], recon: str
+                     ) -> list[dict[str, Any]]:
     """Rows for a single reconstruction (``lr`` / ``sr`` / ``hr``)."""
     return [r for r in rows if r.get("recon") == recon]
 
 
-def class_counts(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+def class_counts(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
     """``{"lens": n_positive, "nonlens": n_negative}`` over ``rows``."""
     pos = sum(1 for r in rows if _as_int(r.get("is_lens")) == 1)
     return {"lens": pos, "nonlens": len(rows) - pos}
 
 
 def assign_splits(
-    rows: Sequence[Dict[str, Any]], *,
+    rows: Sequence[dict[str, Any]], *,
     val_frac: float = 0.15,
     test_frac: float = 0.15,
     seed: int = 0,
     group_key: str = "field_index",
-) -> Sequence[Dict[str, Any]]:
+) -> Sequence[dict[str, Any]]:
     """Assign ``split`` ∈ {train, val, test} to each row, grouped by ``group_key``.
 
     All rows sharing a group value land in the same split, so a lens and the

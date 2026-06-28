@@ -1,27 +1,28 @@
 """views routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.config import Config
-from euclid_polish.web.helpers import sky_records
-from euclid_polish.training.log_plot import plot_training_log
-from euclid_polish.web import fasrc_config
-from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
-from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
-from euclid_polish.web.fasrc_fetcher import _local_path_for
-from flask import abort
-from flask import jsonify
-from flask import render_template
-from flask import request
-from flask import send_file
-from typing import Any
-from typing import Dict
 import io
 import os
 import threading as _t
+from typing import Any
+
+from flask import abort, jsonify, render_template, request, send_file
+
+from euclid_polish.config import Config
+from euclid_polish.training.log_plot import plot_training_log
+from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
 from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png
-from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir, _fasrc_catalog_dir, _list_vis_pngs, _record_count, _resolve_training_log
+from euclid_polish.web.helpers.status import (
+    _cached_fasrc_psf_dir,
+    _fasrc_catalog_dir,
+    _list_vis_pngs,
+    _record_count,
+    _resolve_training_log,
+)
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 
 
 def register(app):
@@ -137,7 +138,7 @@ def register(app):
         remote_dir = _sky_records_remote_dir()
         include_train = (request.values.get("include_train", "false")
                          .lower() in ("1", "true", "yes", "on"))
-        targets: Dict[str, str] = {}
+        targets: dict[str, str] = {}
         for kind in ("clean", "dirty", "hr"):
             targets[f"{kind}_validate"] = f"{remote_dir}/{kind}_validate.tfrecord"
             if include_train:
@@ -146,11 +147,11 @@ def register(app):
         if include_train:
             targets["sources_train"] = f"{remote_dir}/sources_train.csv"
         max_bytes = 5 * 1024 * 1024 * 1024
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
             r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
-            entry: Dict[str, Any] = {"ok": r.ok, "size_bytes": r.size_bytes}
+            entry: dict[str, Any] = {"ok": r.ok, "size_bytes": r.size_bytes}
             if r.ok:
                 any_ok = True
             else:
@@ -194,9 +195,10 @@ def register(app):
 
         def _run(cap):
             import numpy as np
-            from euclid_polish.model import Model
+
             from euclid_polish.image import ImageSet
             from euclid_polish.image.tfio import tfrecord_path as _trp
+            from euclid_polish.model import Model
             model = Model(Config.DEFAULT_CHECKPOINT_DIR)
             os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
             done = 0

@@ -9,7 +9,6 @@ functions.
 
 from euclid_polish.config import Config
 
-
 # ---------------------------------------------------------------------------
 # Input validation — each returns ``True`` if valid, else an error-message str.
 # ---------------------------------------------------------------------------

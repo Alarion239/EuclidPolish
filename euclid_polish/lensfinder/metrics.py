@@ -8,13 +8,13 @@ this imports in the main env without torch or TensorFlow.
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 
 
 def roc_curve(scores: Sequence[float], labels: Sequence[int]
-              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(fpr, tpr, thresholds)`` for binary labels (1 = positive).
 
     A point is the rate when predicting positive for ``score >= threshold``.
@@ -88,7 +88,7 @@ def theta_e_bins(lo: float, hi: float, n: int) -> np.ndarray:
 def tpr_vs_theta_e(
     scores: Sequence[float], labels: Sequence[int], theta_e: Sequence[float], *,
     target_fpr: float, bins: Sequence[float],
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """TPR per Einstein-radius bin at a single global FPR threshold.
 
     The threshold is computed once on *all* negatives (fixed FPR across the test
@@ -102,7 +102,7 @@ def tpr_vs_theta_e(
     thr = threshold_at_fpr(s, y, target_fpr)
     edges = np.asarray(bins, dtype=float)
     pos = y == 1
-    out: List[Dict[str, float]] = []
+    out: list[dict[str, float]] = []
     for lo, hi in zip(edges[:-1], edges[1:]):
         m = pos & (te >= lo) & (te < hi)
         n = int(m.sum())
@@ -117,7 +117,7 @@ def bootstrap_tpr_ci(
     scores: Sequence[float], labels: Sequence[int], *,
     target_fpr: float, n_boot: int = 500, seed: int = 0,
     alpha: float = 0.16,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Bootstrap CI for overall TPR@FPR (resampling rows). ~1σ by default."""
     s = np.asarray(scores, dtype=float)
     y = np.asarray(labels, dtype=int)

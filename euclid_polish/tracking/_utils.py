@@ -10,11 +10,11 @@ from __future__ import annotations
 import datetime
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime(
+    return datetime.datetime.now(datetime.UTC).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
@@ -29,7 +29,7 @@ def _write_json(path: str, obj: Any) -> None:
     os.replace(tmp, path)
 
 
-def _read_json(path: str) -> Optional[Dict[str, Any]]:
+def _read_json(path: str) -> dict[str, Any] | None:
     try:
         with open(path) as fp:
             return json.load(fp)

@@ -16,16 +16,15 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.psf import (
-    PSF,
     DEFAULT_HR_PIXEL_SCALE,
-    flux_centroid,
-    fwhm_pixels_radial,
-    fwhm_pixels_area_equivalent,
+    PSF,
     estimate_fwhm_pixels_1d,
+    flux_centroid,
+    fwhm_pixels_area_equivalent,
+    fwhm_pixels_radial,
     peak_offset_from_centre,
     radial_profile,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

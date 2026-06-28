@@ -6,7 +6,6 @@ the two are on one electron-over-the-stack scale."""
 import numpy as np
 import pytest
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
@@ -14,6 +13,7 @@ from euclid_polish.catalog.photometry import (
     uJy_to_ab_mag,
     uJy_to_electrons,
 )
+from euclid_polish.config import Config
 
 BAND = Config.BAND_VIS
 

@@ -24,7 +24,8 @@ improves morphology recovery rather than merely changing it).
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -37,7 +38,7 @@ _VIS_PLANE = 0
 # Object discovery
 # --------------------------------------------------------------------------- #
 
-def discover_objects(run_dir: str) -> List[Dict[str, Any]]:
+def discover_objects(run_dir: str) -> list[dict[str, Any]]:
     """Find per-object eval outputs under a run directory.
 
     A run directory (from ``scripts/fasrc_eval_catalog.py``) has one
@@ -46,7 +47,7 @@ def discover_objects(run_dir: str) -> List[Dict[str, Any]]:
     ``{"id", "before", "after", "hr"}`` dicts (``hr`` is ``None`` when absent),
     sorted by id. Sub-directories without an ``SR.fits`` are skipped.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     if not os.path.isdir(run_dir):
         return out
     for name in sorted(os.listdir(run_dir)):
@@ -157,8 +158,8 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
 def vector_deltas(
     before: Sequence[float],
     after: Sequence[float],
-    ref: Optional[Sequence[float]] = None,
-) -> Dict[str, Any]:
+    ref: Sequence[float] | None = None,
+) -> dict[str, Any]:
     """Compare ``before``/``after`` (and optionally an ``hr`` reference) vectors.
 
     Returns L2 distance, cosine distance and Pearson correlation between the
@@ -169,7 +170,7 @@ def vector_deltas(
     """
     b = np.asarray(before, dtype=np.float64)
     a = np.asarray(after, dtype=np.float64)
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "l2_before_after":     _l2(b, a),
         "cosine_before_after": _cosine_distance(b, a),
         "pearson_before_after": _pearson(b, a),
@@ -187,7 +188,7 @@ def vector_deltas(
     return out
 
 
-def write_morph_manifest(path: str, rows: List[Dict[str, Any]]) -> None:
+def write_morph_manifest(path: str, rows: list[dict[str, Any]]) -> None:
     """Write morphology rows to CSV. Column set is the union of all row keys
     (``id`` first), so representation-mode and vote-mode runs both serialise
     cleanly."""
@@ -198,7 +199,7 @@ def write_morph_manifest(path: str, rows: List[Dict[str, Any]]) -> None:
         with open(path, "w", newline="") as f:
             csv.writer(f).writerow(["id"])
         return
-    keys: List[str] = ["id"]
+    keys: list[str] = ["id"]
     for r in rows:
         for k in r:
             if k not in keys:
@@ -237,7 +238,7 @@ def _read_predictions(pred_path: str):
 #: on every class-checkbox toggle; without this each toggle re-parses the
 #: multi-MB predictions CSV. Callers must not mutate the returned array in place
 #: (the embedding builder only fancy-indexes it, which copies).
-_PRED_PARSE_CACHE: Dict[str, Any] = {}
+_PRED_PARSE_CACHE: dict[str, Any] = {}
 
 
 def _read_predictions_cached(pred_path: str):
@@ -264,7 +265,7 @@ def _group_color(g) -> str:
     return GROUP_COLORS.get(str(g), "#666666")
 
 
-def read_grade_map(run_dir: str) -> Dict[str, str]:
+def read_grade_map(run_dir: str) -> dict[str, str]:
     """``id → grade/group`` from a run's ``manifest.csv`` (empty if absent)."""
     import csv
     p = os.path.join(run_dir, "manifest.csv")
@@ -284,7 +285,7 @@ def _pad3(coords: np.ndarray) -> np.ndarray:
     return np.pad(coords, ((0, 0), (0, 3 - coords.shape[1])), mode="constant")
 
 
-def _pca3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
+def _pca3(X: np.ndarray) -> tuple[np.ndarray, list[float]]:
     Xc = X - X.mean(0)
     _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     P = Vt[:min(3, Vt.shape[0])]
@@ -294,7 +295,7 @@ def _pca3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
     return coords, (var + [0.0, 0.0, 0.0])[:3]
 
 
-def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
+def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, list[float]]:
     if len(X) == 0:
         return np.zeros((0, 3), dtype=np.float64), [0.0, 0.0, 0.0]
     # Pairwise squared Euclidean distances via ‖xᵢ‖² + ‖xⱼ‖² − 2·xᵢ·xⱼ. The naive
@@ -320,8 +321,8 @@ def _classical_mds3(X: np.ndarray) -> tuple[np.ndarray, List[float]]:
 
 
 def morphology_embedding_payload(
-    run_dir: str, groups: Optional[Any] = None
-) -> Optional[Dict[str, Any]]:
+    run_dir: str, groups: Any | None = None
+) -> dict[str, Any] | None:
     """Build JSON-ready 3-D PCA and classical-MDS embeddings for a Zoobot run.
 
     The input is ``zoobot_predictions.csv``. Each row is a view vector named
@@ -392,7 +393,7 @@ def morphology_embedding_payload(
                            for k in ("pca", "mds", "pca_lr", "pca_srhr")},
         }
     keyset = {p["key"] for p in points}
-    object_views: Dict[str, set[str]] = {}
+    object_views: dict[str, set[str]] = {}
     for p in points:
         object_views.setdefault(p["id"], set()).add(p["view"])
     edges = []
@@ -410,7 +411,7 @@ def morphology_embedding_payload(
                 "kind": "after-hr",
             })
 
-    def _method_payload(coords: np.ndarray, variance: List[float]):
+    def _method_payload(coords: np.ndarray, variance: list[float]):
         out = []
         for point, xyz in zip(points, coords):
             p = dict(point)
@@ -451,7 +452,7 @@ def morphology_embedding_payload(
     }
 
 
-def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
+def render_morphology_summary(run_dir: str, out_png: str) -> str | None:
     """Render a run-level before/after morphology summary PNG → ``out_png``.
 
     Panels (drawn from what's available): (1) the distribution of the
@@ -463,8 +464,8 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     """
     import csv
 
-    import numpy as np
     import matplotlib
+    import numpy as np
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -663,7 +664,7 @@ def _group_triptych(run_dir: str, obj_id: str, asinh: float, h: int = 110):
     return out
 
 
-def render_transformation_summary(run_dir: str, out_png: str) -> Optional[str]:
+def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
     """Render a run-level SR-transformation summary PNG → ``out_png``.
 
     Panels: (1) SR-vs-HR recovery for the synthetic group (PSNR LR↔HR vs SR↔HR;
@@ -674,8 +675,8 @@ def render_transformation_summary(run_dir: str, out_png: str) -> Optional[str]:
     """
     import csv
 
-    import numpy as np
     import matplotlib
+    import numpy as np
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 

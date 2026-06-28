@@ -21,7 +21,6 @@ Re-submitting re-rolls the draw (a fresh RNG each call).
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -48,13 +47,13 @@ def local_properties_path() -> str:
     return os.path.join(Config.DATA_DIR, "_tng_infographics", PROPERTIES_CSV)
 
 
-def _random(ids: List[str], n: int, rng) -> List[str]:
+def _random(ids: list[str], n: int, rng) -> list[str]:
     k = min(n, len(ids))
     return [ids[i] for i in rng.choice(len(ids), size=k, replace=False)]
 
 
-def select_ids(props: Dict[str, Dict[str, float]], mode: str, n: int, *,
-               temperature: float = 0.3, rng=None) -> List[str]:
+def select_ids(props: dict[str, dict[str, float]], mode: str, n: int, *,
+               temperature: float = 0.3, rng=None) -> list[str]:
     """Choose ``n`` galaxy ids from ``props`` by ``mode``.
 
     Property modes rank by the relevant field (NaN values excluded) and draw a
@@ -89,7 +88,7 @@ def select_ids(props: Dict[str, Dict[str, float]], mode: str, n: int, *,
 
 
 def pick_by_mode(mode: str, n: int, *, temperature: float = 0.3, rng=None
-                 ) -> List[str]:
+                 ) -> list[str]:
     """Read the local property cache and select ids; ``[]`` if the cache is
     absent/empty (caller falls back to a node-side random pick)."""
     props = _read_cache(local_properties_path())

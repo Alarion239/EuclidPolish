@@ -1,23 +1,21 @@
 """tracking routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import os
+from typing import Any
+
+from flask import jsonify, render_template, request
+
 from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
-from euclid_polish.tracking import TrackingError
+from euclid_polish.tracking import TrackingError, dirty_warning
 from euclid_polish.tracking import default_store as tracking_default_store
-from euclid_polish.tracking import dirty_warning
 from euclid_polish.tracking import sync as tracking_sync
 from euclid_polish.tracking import timetravel as tracking_timetravel
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_config
-from euclid_polish.web.remote import STATE
-from flask import jsonify
-from flask import render_template
-from flask import request
-from typing import Any
-from typing import Dict
-import os
 from euclid_polish.web.helpers.paths import _resolve_trackable_ckpt, _resolve_trackable_file
+from euclid_polish.web.remote import STATE
 
 
 def register(app):
@@ -36,7 +34,7 @@ def register(app):
             cfg.repo_path, cfg.tracking_remote_dir,
         )
 
-    def _tracking_try_sync(store) -> Dict[str, Any]:
+    def _tracking_try_sync(store) -> dict[str, Any]:
         """Best-effort push of the store → holylabs; never raises."""
         try:
             return tracking_sync.push(
@@ -45,7 +43,7 @@ def register(app):
         except Exception as e:  # pragma: no cover - defensive
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    def _tracking_state() -> Dict[str, Any]:
+    def _tracking_state() -> dict[str, Any]:
         store = tracking_default_store()
         listing = store.list_campaigns()
         # Enrich each archived campaign with its model backups so the UI can
@@ -165,7 +163,7 @@ def register(app):
 
     # ---- time-travel: re-run a backup's exact code in a sandbox ----------
 
-    def _sandbox_fasrc_cfg(short: str) -> Dict[str, Any]:
+    def _sandbox_fasrc_cfg(short: str) -> dict[str, Any]:
         """Live FASRC config with all paths redirected to the remote sandbox,
         so a job submitted from the sandbox server can't touch live work."""
         cfg = fasrc_config.load()

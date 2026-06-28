@@ -1,25 +1,24 @@
 """sky_render helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from astropy.io import fits
-from euclid_polish.config import Config
-from euclid_polish.catalog.catalog_object import CatalogObject
-from euclid_polish.image.tfio import read_images
-from euclid_polish.image.tfio import tfrecord_path
-from euclid_polish.visualization.methods import plot_star_positions
-from flask import abort
-from typing import List
-from typing import Optional
 import io
+import os
+
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+from astropy.io import fits
+from flask import abort
+
+from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.config import Config
+from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.visualization.methods import plot_star_positions
 
 
 def _export_sky_record_fits(
     subset: str, kind: str, band: str, index: int,
-    records_dir: Optional[str] = None,
+    records_dir: str | None = None,
 ) -> str:
     """Materialise one sky record as a single-band FITS file.
 
@@ -186,8 +185,8 @@ def _great_circle_arcmin(ra1, dec1, ra2, dec2):
     return np.degrees(2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))) * 60.0
 
 
-def _render_psf_clusters_png(output_dir: Optional[str],
-                             psf_path: Optional[str]) -> bytes:
+def _render_psf_clusters_png(output_dir: str | None,
+                             psf_path: str | None) -> bytes:
     """Local sky map of the ePSF-extraction clusters + per-cluster diameter.
 
     ``psf_path`` is the VIS ePSF FITS to read cluster centroids from — pass
@@ -238,7 +237,7 @@ def _render_psf_clusters_png(output_dir: Optional[str],
         labels = np.zeros(0, dtype=int)
 
     # Per-cluster member count + angular diameter (max pairwise separation).
-    diam: List[Optional[float]] = [None] * n_clusters
+    diam: list[float | None] = [None] * n_clusters
     for k in range(n_clusters):
         mem = np.where(labels == k)[0]
         if len(mem) >= 2:

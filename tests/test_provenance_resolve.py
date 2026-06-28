@@ -10,15 +10,15 @@ from __future__ import annotations
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
-
 # --------------------------------------------------------------------------- #
 # Checkpoint identity sidecar
 # --------------------------------------------------------------------------- #
 
 def test_checkpoint_provenance_round_trip(tmp_path):
     from euclid_polish.provenance.checkpoint import (
-        write_checkpoint_provenance, read_checkpoint_provenance,
         model_id_of_checkpoint,
+        read_checkpoint_provenance,
+        write_checkpoint_provenance,
     )
     ckpt = tmp_path / "wdsr"
     stamp = Stamp(id=ProvId("2f9c81aa"), produced_by=ProvId("2b8e44d1"),
@@ -30,7 +30,8 @@ def test_checkpoint_provenance_round_trip(tmp_path):
 
 def test_checkpoint_provenance_absent_is_none(tmp_path):
     from euclid_polish.provenance.checkpoint import (
-        read_checkpoint_provenance, model_id_of_checkpoint,
+        model_id_of_checkpoint,
+        read_checkpoint_provenance,
     )
     assert read_checkpoint_provenance(str(tmp_path)) is None
     assert model_id_of_checkpoint(str(tmp_path)) is None

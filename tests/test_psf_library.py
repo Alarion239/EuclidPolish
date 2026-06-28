@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.psf import PSF, PSFSet
 from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets,
     load_all_band_psfs,
@@ -16,8 +17,6 @@ from euclid_polish.psf.psf_library import (
     psf_inventory,
     psf_path_for_band,
 )
-from euclid_polish.psf import PSF
-from euclid_polish.psf import PSFSet
 
 
 def test_psf_path_for_band_uses_config_filename(tmp_path):

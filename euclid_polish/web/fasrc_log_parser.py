@@ -30,8 +30,7 @@ import csv
 import io
 import json
 import re
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 _STAGE_FROM_STEP_LINE = {
     "1": "generate",
@@ -52,15 +51,15 @@ _RE_TQDM       = re.compile(r"(?:^|\s)(\d{1,9})\s*/\s*(\d{2,9})")
 _RE_CKPT_SAVED = re.compile(r"Checkpoint\s+saved", re.IGNORECASE)
 
 
-def parse_stdout(text: str, *, max_lines: int = 2_000) -> Dict[str, Any]:
+def parse_stdout(text: str, *, max_lines: int = 2_000) -> dict[str, Any]:
     """Extract stage + last live-training line + checkpoint markers from .out."""
     lines = text.splitlines()
     if len(lines) > max_lines:
         lines = lines[-max_lines:]
 
-    stage: Optional[str] = None
-    last_train_step: Optional[Dict[str, Any]] = None
-    last_ckpt_line: Optional[str] = None
+    stage: str | None = None
+    last_train_step: dict[str, Any] | None = None
+    last_ckpt_line: str | None = None
     pipeline_done = False
     last_banner_idx: int = -1
 
@@ -100,12 +99,12 @@ def parse_stdout(text: str, *, max_lines: int = 2_000) -> Dict[str, Any]:
     }
 
 
-def parse_stderr_progress(text: str) -> Optional[Dict[str, int]]:
+def parse_stderr_progress(text: str) -> dict[str, int] | None:
     """Pull the most recent ``current/total`` pair out of a tqdm log.
 
     Returns ``None`` if no plausible progress line is present yet.
     """
-    last: Optional[Dict[str, int]] = None
+    last: dict[str, int] | None = None
     for line in text.splitlines():
         m = _RE_TQDM.search(line)
         if not m:
@@ -118,7 +117,7 @@ def parse_stderr_progress(text: str) -> Optional[Dict[str, int]]:
     return last
 
 
-def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
+def _coerce_validation_row(rec: dict[str, Any]) -> dict[str, Any]:
     """Normalise a validation row into the keys the UI consumes."""
     def _f(key: str, default: float = 0.0) -> float:
         v = rec.get(key)
@@ -129,7 +128,7 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             return default
 
-    def _opt_f(key: str) -> Optional[float]:
+    def _opt_f(key: str) -> float | None:
         """Float or ``None`` for the additive multi-source columns —
         ``None`` means the source wasn't wired for that row (empty cell),
         so the UI can drop the point instead of plotting a fake 0."""
@@ -165,7 +164,7 @@ def _coerce_validation_row(rec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def parse_training_log(text: str, *, max_records: int = 200) -> List[Dict[str, Any]]:
+def parse_training_log(text: str, *, max_records: int = 200) -> list[dict[str, Any]]:
     """Parse the trainer's append-only validation log.
 
     Auto-detects CSV (current format) vs JSONL (legacy). The CSV reader
@@ -173,7 +172,7 @@ def parse_training_log(text: str, *, max_records: int = 200) -> List[Dict[str, A
     falls back when the file begins with ``{``. Each row is normalised
     into the same dict shape the dashboard expects.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     if not text:
         return out
     # Anchor format detection on the trainer's CSV header (``step,`` is
@@ -202,10 +201,10 @@ def parse_training_log(text: str, *, max_records: int = 200) -> List[Dict[str, A
     return out
 
 
-def estimate_eta(*, stage: Optional[str],
-                 train_step: Optional[Dict[str, Any]],
+def estimate_eta(*, stage: str | None,
+                 train_step: dict[str, Any] | None,
                  elapsed_seconds: float,
-                 history_secs_per_step: Optional[float]) -> Optional[float]:
+                 history_secs_per_step: float | None) -> float | None:
     """Wall-time ETA in seconds, refined live during the train stage.
 
     Live mode (train + ``train_step`` populated): linear extrapolation
@@ -231,8 +230,8 @@ def estimate_eta(*, stage: Optional[str],
 def summarise(out_text: str, err_text: str,
               jsonl_text: str = "",
               elapsed_seconds: float = 0.0,
-              history_secs_per_step: Optional[float] = None,
-              ) -> Dict[str, Any]:
+              history_secs_per_step: float | None = None,
+              ) -> dict[str, Any]:
     """Single dict the route hands to the UI verbatim."""
     out = parse_stdout(out_text)
     err = parse_stderr_progress(err_text)

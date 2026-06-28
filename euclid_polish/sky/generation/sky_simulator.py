@@ -27,16 +27,22 @@ from __future__ import annotations
 import math
 import sys
 from dataclasses import dataclass, replace
-from typing import List, Optional, Tuple
 
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog
-from euclid_polish.sky.generation.lens_population import (
-    LensPopulation, render_lens_to_multiband_canvas, sample_lens_geometry,
+from euclid_polish.image import Image, Role
+from euclid_polish.provenance.defaults import mint_id
+from euclid_polish.provenance.records import Stamp
+from euclid_polish.sky.generation.cosmos2025 import (
+    CosmosCatalog,
+    circularized_effective_radius_arcsec,
 )
-from euclid_polish.sky.generation.cosmos2025 import circularized_effective_radius_arcsec
+from euclid_polish.sky.generation.lens_population import (
+    LensPopulation,
+    render_lens_to_multiband_canvas,
+    sample_lens_geometry,
+)
 from euclid_polish.sky.generation.profiles import add_sersic_to_bands
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
@@ -49,14 +55,15 @@ from euclid_polish.sky.generation.redshift_model import (
     sigma_v_from_stellar_mass,
 )
 from euclid_polish.sky.generation.tng_galaxy import (
-    N_ORIENTATIONS, composite_stamp, list_tng_galaxies, native_halflight_px,
-    predict_vis_flux_e, predict_visible_radius_arcsec, sample_tng_stamp,
+    N_ORIENTATIONS,
+    composite_stamp,
+    list_tng_galaxies,
+    native_halflight_px,
+    predict_vis_flux_e,
+    predict_visible_radius_arcsec,
+    sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.image import Image, Role
-from euclid_polish.provenance.defaults import mint_id
-from euclid_polish.provenance.records import Stamp
-
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -80,7 +87,7 @@ class SkySimulatorConfig:
     sersic_density_arcmin2:   float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
     # TNG stamp population (resolved, log-uniform size)
     tng_density_arcmin2:      float = 0.0
-    tng_re_arcsec_range:      Tuple[float, float] = (0.3, 4.0)
+    tng_re_arcsec_range:      tuple[float, float] = (0.3, 4.0)
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     # Physical-redshift mode for TNG: z from n(z) → D_A sizing + Tolman dimming
     tng_redshift_mode:        bool  = False
@@ -100,7 +107,7 @@ class SkySimulatorConfig:
     lens_theta_e_min_re_ratio: float = Config.LENS_THETA_E_MIN_RE_RATIO
     lens_require_showable:    bool  = False
 
-    def validate(self) -> Tuple[bool, Optional[str]]:
+    def validate(self) -> tuple[bool, str | None]:
         if self.image_size <= 0:
             return False, "image_size must be positive"
         if self.pixel_scale <= 0:
@@ -176,10 +183,10 @@ class SkySimulator:
 
     def __init__(
         self,
-        catalog: Optional[CosmosCatalog],
-        config: Optional[SkySimulatorConfig] = None,
+        catalog: CosmosCatalog | None,
+        config: SkySimulatorConfig | None = None,
         *,
-        lens_population: Optional[LensPopulation] = None,
+        lens_population: LensPopulation | None = None,
     ):
         self.catalog = catalog
         self.config  = config or SkySimulatorConfig()
@@ -196,7 +203,7 @@ class SkySimulator:
         # stamps may be used for lens/source light.
         needs_tng = (self.config.tng_density_arcmin2 > 0.0
                      or self.config.lens_density_arcmin2 > 0.0)
-        self.tng_galaxies: List[Tuple[str, str]] = (
+        self.tng_galaxies: list[tuple[str, str]] = (
             list_tng_galaxies(self.config.tng_galaxy_dir)
             if needs_tng else []
         )
@@ -207,7 +214,7 @@ class SkySimulator:
                 "TNG population will be empty.\n")
 
         # Catalog-backed lens priors (needed when catalog is available).
-        self.lens_population: Optional[LensPopulation] = (
+        self.lens_population: LensPopulation | None = (
             lens_population or LensPopulation(
                 catalog,
                 sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
@@ -216,7 +223,7 @@ class SkySimulator:
 
         # TNG properties for mass → σ_v mapping (redshift mode).
         self.tng_properties: dict = {}
-        self._atlas_logm: Optional[np.ndarray] = None
+        self._atlas_logm: np.ndarray | None = None
         if self.config.tng_redshift_mode and self.tng_galaxies:
             self.tng_properties = load_tng_properties(
                 self.config.tng_properties_csv or None)
@@ -240,14 +247,14 @@ class SkySimulator:
         side_arcmin = self.config.image_size * self.config.pixel_scale / 60.0
         return side_arcmin ** 2
 
-    def _random_pix(self, rng: np.random.Generator) -> Tuple[float, float]:
+    def _random_pix(self, rng: np.random.Generator) -> tuple[float, float]:
         N = self.config.image_size
         return float(rng.uniform(0.0, N - 1)), float(rng.uniform(0.0, N - 1))
 
     # ------------------------------------------------------------------ #
     def _pick_field_galaxy(
         self, rng: np.random.Generator,
-    ) -> Tuple[List[Tuple[str, str]], float, Optional[float]]:
+    ) -> tuple[list[tuple[str, str]], float, float | None]:
         """Mass-function-weighted pick for one TNG field stamp (redshift mode).
 
         Draws the target mass from the Schechter MF, finds atlas galaxies in
@@ -276,8 +283,8 @@ class SkySimulator:
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-        *, z: Optional[float] = None,
-    ) -> Optional[dict]:
+        *, z: float | None = None,
+    ) -> dict | None:
         """Inject one TNG stamp at a random field position.
 
         **Non-redshift mode**: R_e drawn log-uniformly over ``tng_re_arcsec_range``.
@@ -383,8 +390,8 @@ class SkySimulator:
 
     def _tng_stamp_for_galaxy(
         self, g, rng: np.random.Generator,
-        *, target_re_arcsec: Optional[float] = None,
-    ) -> Optional[np.ndarray]:
+        *, target_re_arcsec: float | None = None,
+    ) -> np.ndarray | None:
         """A TNG stamp sized to match galaxy ``g``'s effective radius (or
         ``target_re_arcsec`` when given). None if TNG is unavailable."""
         if not self.tng_galaxies:
@@ -399,7 +406,7 @@ class SkySimulator:
     def _add_lens_pure(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, max_tries: int = 32,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Catalog-free lens system: TNG deflector + TNG source.
 
         Used when no COSMOS catalog is available (TNG-only mode). Per try:
@@ -481,7 +488,7 @@ class SkySimulator:
 
     def _add_lens(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Render one strong-lens system onto the canvas.
 
         Routes to :meth:`_add_lens_pure` (catalog-free, TNG-only) when no
@@ -559,11 +566,11 @@ class SkySimulator:
         self,
         rng: np.random.Generator,
         *,
-        n_sersic:  Optional[int] = None,
-        n_tng:     Optional[int] = None,
-        n_stars:   Optional[int] = None,
-        n_lenses:  Optional[int] = None,
-    ) -> Tuple[Image, dict]:
+        n_sersic:  int | None = None,
+        n_tng:     int | None = None,
+        n_stars:   int | None = None,
+        n_lenses:  int | None = None,
+    ) -> tuple[Image, dict]:
         """Render one clean HR field in 4 bands.
 
         Returns

@@ -31,9 +31,9 @@ import shlex
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterator, List, Optional, Tuple
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # SSH ControlMaster session
@@ -211,7 +211,7 @@ class SSHSession:
     # ----------------------------- exec -----------------------------------
 
     def run(self, cmd: str, timeout: int = 60,
-            binary: bool = False) -> Tuple[int, Any, str]:
+            binary: bool = False) -> tuple[int, Any, str]:
         """Run a one-shot command via the multiplexed connection.
 
         Returns (returncode, stdout, stderr). Caller decides how to handle
@@ -266,8 +266,8 @@ class SSHSession:
     # ----------------------------- file xfer ------------------------------
 
     def rsync_pull(self, remote_path: str, local_dir: str,
-                   extra_args: Optional[List[str]] = None,
-                   timeout: int = 600) -> Tuple[int, str, str]:
+                   extra_args: list[str] | None = None,
+                   timeout: int = 600) -> tuple[int, str, str]:
         """Mirror ``remote_path`` → ``local_dir`` via the ControlMaster.
 
         Uses ``rsync -e "ssh -S <socket>"`` so no fresh auth is needed.
@@ -288,8 +288,8 @@ class SSHSession:
                 r.stderr.decode("utf-8", errors="replace"))
 
     def rsync_push(self, local_path: str, remote_dir: str,
-                   extra_args: Optional[List[str]] = None,
-                   timeout: int = 900) -> Tuple[int, str, str]:
+                   extra_args: list[str] | None = None,
+                   timeout: int = 900) -> tuple[int, str, str]:
         """Mirror the *contents* of ``local_path`` → ``remote_dir`` (holylabs).
 
         The inverse of :meth:`rsync_pull`: pushes a local directory up
@@ -325,8 +325,8 @@ class RemoteState:
     """Singleton: one SSH session, shared across Flask requests."""
 
     def __init__(self) -> None:
-        self.ssh: Optional[SSHSession] = None
-        self.connected_at: Optional[float] = None
+        self.ssh: SSHSession | None = None
+        self.connected_at: float | None = None
 
     def public_status(self) -> dict:
         ssh_ok = bool(self.ssh and self.ssh.is_connected())

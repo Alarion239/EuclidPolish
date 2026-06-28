@@ -32,13 +32,16 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.catalog.photometry import (
-    adu_per_s_to_electrons, adu_per_s_to_electrons_factor,
+    adu_per_s_to_electrons,
+    adu_per_s_to_electrons_factor,
 )
+from euclid_polish.config import Config
 from euclid_polish.training.inference import (
-    load_model_from_checkpoint, reconstruct, scaled_wcs_header,
+    load_model_from_checkpoint,
+    reconstruct,
+    scaled_wcs_header,
 )
 
 

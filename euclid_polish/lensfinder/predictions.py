@@ -9,23 +9,24 @@ stamp. numpy/csv only — no torch.
 from __future__ import annotations
 
 import csv
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
 
 def read_scores(pred_path: str, *, pos_col: str = "p_lens",
-                id_col: str = "id_str") -> Dict[str, float]:
+                id_col: str = "id_str") -> dict[str, float]:
     """Read a prediction CSV → ``{id_str: P(lens)}``.
 
     Uses ``pos_col`` if present; otherwise falls back to a column whose name
     ends in ``lens`` but is not the ``not``-lens class, else the last column.
     """
-    out: Dict[str, float] = {}
+    out: dict[str, float] = {}
     with open(pred_path, newline="") as f:
         rdr = csv.DictReader(f)
         cols = rdr.fieldnames or []
-        col: Optional[str] = pos_col if pos_col in cols else None
+        col: str | None = pos_col if pos_col in cols else None
         if col is None:
             cand = [c for c in cols
                     if c.lower().endswith("lens") and "not" not in c.lower()]
@@ -48,16 +49,16 @@ def _f(v: Any) -> float:
 
 
 def join_scores(
-    catalog_rows: Sequence[Dict[str, Any]],
-    scores: Dict[str, float], *,
-    split: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    catalog_rows: Sequence[dict[str, Any]],
+    scores: dict[str, float], *,
+    split: str | None = None,
+) -> list[dict[str, Any]]:
     """Attach ``score = P(lens)`` to catalog rows; optionally restrict to a split.
 
     Rows without a matching prediction are dropped. Returns dicts with
     ``id_str, is_lens, theta_E_arcsec, recon, score``.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for r in catalog_rows:
         if split is not None and r.get("split") != split:
             continue
@@ -74,8 +75,8 @@ def join_scores(
     return out
 
 
-def scored_arrays(joined: Sequence[Dict[str, Any]]
-                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def scored_arrays(joined: Sequence[dict[str, Any]]
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``join_scores`` output → ``(scores, labels, theta_e)`` numpy arrays."""
     s = np.array([j["score"] for j in joined], dtype=float)
     y = np.array([j["is_lens"] for j in joined], dtype=int)

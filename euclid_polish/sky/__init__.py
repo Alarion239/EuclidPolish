@@ -13,19 +13,12 @@ Public API:
 * :class:`LensPopulation` — Collett 2015 lens population sampler.
 """
 
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulator,
-    SkySimulatorConfig,
-)
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator,
-    ObservationSimulatorConfig,
-)
+from euclid_polish.image import Image
 from euclid_polish.sky.generation.cosmos2025 import (
-    CosmosCatalog,
     Cosmos2025Catalog,
-    open_cosmos2025,
+    CosmosCatalog,
     GalaxyParams,
+    open_cosmos2025,
 )
 from euclid_polish.sky.generation.lens_population import (
     LensParams,
@@ -34,17 +27,24 @@ from euclid_polish.sky.generation.lens_population import (
     render_lens_to_canvas,
     render_lens_to_multiband_canvas,
 )
-from euclid_polish.image import Image
 from euclid_polish.sky.generation.profiles import (
     add_sersic_to_bands,
     compute_sersic_stamp,
     draw_bulge_disk,
     draw_sersic,
     evaluate_sersic_at_coords,
-    sersic_b_n,
     sersic_amp_from_flux,
+    sersic_b_n,
 )
-from euclid_polish.sky.observation.resample import upsample, lanczos3_upsample, cubic_upsample
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
+from euclid_polish.sky.observation.resample import cubic_upsample, lanczos3_upsample, upsample
 
 __all__ = [
     "SkySimulator",

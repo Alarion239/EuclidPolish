@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig,
-    SkySimulator,
-)
 from euclid_polish.image import Image
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from tests._tiny_catalog import TinyCosmosCatalog
 
 
 @pytest.fixture(scope="module")
@@ -106,6 +106,7 @@ def test_stars_appear_in_all_bands(simulator: SkySimulator):
 
 def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
     import os
+
     from astropy.io import fits
     d = os.path.join(tng_dir, gid)
     os.makedirs(d, exist_ok=True)

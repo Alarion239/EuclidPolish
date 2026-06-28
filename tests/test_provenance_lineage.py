@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.lineage import Lineage
+from euclid_polish.provenance.records import Artifact, Format, Process
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.provenance.records import Artifact, Process, Format
 
 
 def _build_chain(store, *, model_id=None):

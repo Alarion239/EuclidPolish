@@ -7,12 +7,11 @@ no hidden state.
 
 from __future__ import annotations
 
-import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
-def _run(args: List[str], cwd: Optional[str] = None,
+def _run(args: list[str], cwd: str | None = None,
          timeout: int = 30) -> subprocess.CompletedProcess:
     # stdin=DEVNULL: when git inherits a TTY stdin from the Flask process,
     # ``git log`` with a custom format can hang waiting on input. Forcing
@@ -29,7 +28,7 @@ def repo_root() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Branch, ahead/behind counters, dirty files, last commit summary."""
     root = repo_root()
     if not root:
@@ -55,7 +54,7 @@ def status() -> Dict[str, Any]:
                 ahead, behind = int(parts[0]), int(parts[1])
 
     # Working tree state.
-    files: List[Dict[str, str]] = []
+    files: list[dict[str, str]] = []
     r = _run(["git", "status", "--porcelain"], cwd=root)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
@@ -68,7 +67,7 @@ def status() -> Dict[str, Any]:
     last = _run(
         ["git", "log", "-1", "--pretty=format:%h%x09%s%x09%cr"], cwd=root,
     )
-    last_commit: Dict[str, str] = {}
+    last_commit: dict[str, str] = {}
     if last.returncode == 0 and last.stdout.strip():
         parts = last.stdout.strip().split("\t", 2)
         if len(parts) == 3:
@@ -88,7 +87,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def log(n: int = 12) -> List[Dict[str, str]]:
+def log(n: int = 12) -> list[dict[str, str]]:
     """Last ``n`` commits as a list of dicts."""
     root = repo_root()
     if not root:
@@ -97,7 +96,7 @@ def log(n: int = 12) -> List[Dict[str, str]]:
               "--pretty=format:%h%x09%an%x09%s%x09%cr"], cwd=root)
     if r.returncode != 0:
         return []
-    out: List[Dict[str, str]] = []
+    out: list[dict[str, str]] = []
     for line in r.stdout.splitlines():
         parts = line.split("\t", 3)
         if len(parts) == 4:
@@ -122,8 +121,8 @@ def diff(staged: bool = False, max_chars: int = 60_000) -> str:
     return out
 
 
-def commit(message: str, paths: Optional[List[str]] = None
-           ) -> Dict[str, Any]:
+def commit(message: str, paths: list[str] | None = None
+           ) -> dict[str, Any]:
     """Stage ``paths`` (or everything if None) and create one commit."""
     root = repo_root()
     if not root:
@@ -146,7 +145,7 @@ def commit(message: str, paths: Optional[List[str]] = None
     return {"ok": True, "stdout": c.stdout.strip()}
 
 
-def push() -> Dict[str, Any]:
+def push() -> dict[str, Any]:
     root = repo_root()
     if not root:
         return {"ok": False, "error": "not in a git repo"}
@@ -159,7 +158,7 @@ def push() -> Dict[str, Any]:
             "stdout": (r.stdout + r.stderr).strip()}
 
 
-def pull() -> Dict[str, Any]:
+def pull() -> dict[str, Any]:
     root = repo_root()
     if not root:
         return {"ok": False, "error": "not in a git repo"}
@@ -172,7 +171,7 @@ def pull() -> Dict[str, Any]:
             "stdout": (r.stdout + r.stderr).strip()}
 
 
-def fetch() -> Dict[str, Any]:
+def fetch() -> dict[str, Any]:
     """Update remote-tracking branches without merging."""
     root = repo_root()
     if not root:

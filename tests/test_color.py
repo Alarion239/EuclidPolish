@@ -21,7 +21,6 @@ import pytest
 from euclid_polish.config import Config
 from euclid_polish.visualization import color
 
-
 _BANDS = Config.LR_INPUT_BAND_NAMES   # ("VIS", "Y_E", "J_E", "H_E")
 
 

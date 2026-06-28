@@ -20,14 +20,11 @@ import time
 import warnings
 
 import numpy as np
-
 from astropy.io import fits
-from photutils.psf import EPSFStar
+from astropy.nddata import NDData
 from astropy.stats import sigma_clipped_stats
 from photutils.detection import DAOStarFinder
-from astropy.nddata import NDData
-from photutils.psf import extract_stars
-from photutils.psf import EPSFBuilder, EPSFStars
+from photutils.psf import EPSFBuilder, EPSFStar, EPSFStars, extract_stars
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -35,7 +32,6 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability import Reporter
-
 
 # HST PSF-extraction constants now live on Config.HST (see
 # euclid_polish/config.py): HLSP_DIR_NAME, PSF_DIR_NAME, PSF_FILE_NAME,
@@ -162,7 +158,7 @@ def _load_cached_star_stamps(
 
 def _find_stars_in_tile(data: np.ndarray, *, max_n: int,
                         sigma: float = 5.0,
-                        half_side: int = Config.HST.PSF_HALF_SIDE_PIX) -> "Table":
+                        half_side: int = Config.HST.PSF_HALF_SIDE_PIX) -> Table:
     """Detect bright unsaturated point sources in one tile.
 
     Returns an astropy Table with at least ``x`` and ``y`` columns
@@ -251,7 +247,7 @@ def _is_clean_star_stamp(arr: np.ndarray) -> bool:
 
 
 def _extract_stamps_from_tile(
-    data: np.ndarray, sources: "Table", *, half_side: int = Config.HST.PSF_HALF_SIDE_PIX,
+    data: np.ndarray, sources: Table, *, half_side: int = Config.HST.PSF_HALF_SIDE_PIX,
 ) -> list:
     """Pull ``2·half_side+1``-pixel stamps for each source in ``sources``.
 
@@ -291,7 +287,7 @@ def main() -> int:
     reporter = Reporter.from_env()
 
     print("=" * 64)
-    print(f"  HST F814W ePSF extraction")
+    print("  HST F814W ePSF extraction")
     print("=" * 64)
     print(f"  HLSP tile dir   = {in_dir}")
     print(f"  output dir      = {out_dir}")
@@ -370,7 +366,7 @@ def main() -> int:
             return 0
 
         # ---- collect stars across tiles until we hit the target count ----
-        print(f"[2/3] scanning tiles for bright unsaturated point sources ...")
+        print("[2/3] scanning tiles for bright unsaturated point sources ...")
 
         # Cap per tile (not an even split across tiles): the loop already
         # stops once it has args.n_stars, so a couple of rich tiles can
@@ -402,7 +398,7 @@ def main() -> int:
                 sources = _find_stars_in_tile(
                     data, max_n=stars_per_tile, half_side=half_extract)
             if sources is None or len(sources) == 0:
-                print(f"        (no stars passed quality cuts)")
+                print("        (no stars passed quality cuts)")
                 continue
             print(f"        + {len(sources)} stars")
             try:
@@ -483,10 +479,10 @@ def main() -> int:
     # gave EPSFBuilder room so its output ≥ target.
     target = 2 * args.half_side + 1
     M = psf_arr.shape[0]
-    if M > target:
+    if target < M:
         off = (M - target) // 2
         psf_arr = psf_arr[off:off + target, off:off + target]
-    elif M < target:
+    elif target > M:
         lo = (target - M) // 2
         psf_arr = np.pad(psf_arr, ((lo, target - M - lo), (lo, target - M - lo)))
     if psf_arr.shape[0] != M:

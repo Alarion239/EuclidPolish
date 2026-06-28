@@ -5,7 +5,6 @@ import time
 
 import numpy as np
 import tensorflow as tf
-
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.metrics import Mean
 from tf_keras.optimizers import Adam
@@ -15,12 +14,14 @@ from tqdm import tqdm
 from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.provenance.checkpoint import (
-    read_checkpoint_provenance, write_checkpoint_provenance,
+    read_checkpoint_provenance,
+    write_checkpoint_provenance,
 )
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.training.augmentation import (
-    asinh_stretch_hr, inverse_asinh_stretch_hr,
+    asinh_stretch_hr,
+    inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate
 
@@ -305,7 +306,7 @@ class Trainer:
         # positionally onto PER_BAND_PSNR_COLUMNS; a VIS-only model has one
         # channel, so the NISP columns stay "" (blank in the CSV).
         band_vals = metrics.get("psnr_band_stretched")
-        psnr_bands: dict = {col: "" for col in PER_BAND_PSNR_COLUMNS}
+        psnr_bands: dict = dict.fromkeys(PER_BAND_PSNR_COLUMNS, "")
         if band_vals is not None:
             for col, v in zip(PER_BAND_PSNR_COLUMNS, band_vals.numpy()):
                 psnr_bands[col] = float(v)

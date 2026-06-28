@@ -38,8 +38,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Optional
-
+from typing import Any
 
 #: Name of the env var the sbatch template sets to the per-job events
 #: file path. Scripts read it via :meth:`Reporter.from_env`; tests can
@@ -71,7 +70,7 @@ class Reporter:
     #: stalled loop within a coffee.
     STEP_ECHO_INTERVAL_S: float = 30.0
 
-    def __init__(self, events_path: Optional[str] = None) -> None:
+    def __init__(self, events_path: str | None = None) -> None:
         self.events_path = events_path
         # Guard concurrent threaded writers in the same process.
         # Multi-process writers don't need this; ``O_APPEND`` gives
@@ -99,7 +98,7 @@ class Reporter:
         os.environ.setdefault("TQDM_DISABLE", "1")
 
     @classmethod
-    def from_env(cls) -> "Reporter":
+    def from_env(cls) -> Reporter:
         """Construct from ``EUCLID_POLISH_EVENTS_PATH``.
 
         Returns a no-op reporter when the env var is missing — so the
@@ -253,7 +252,7 @@ class Reporter:
         value: Any,
         *,
         echo: bool,
-        stderr_prefix: Optional[str] = None,
+        stderr_prefix: str | None = None,
     ) -> None:
         if self.events_path:
             line = json.dumps(
@@ -261,9 +260,8 @@ class Reporter:
                 separators=(",", ":"),
                 ensure_ascii=False,
             ) + "\n"
-            with self._lock:
-                with open(self.events_path, "a", encoding="utf-8") as f:
-                    f.write(line)
+            with self._lock, open(self.events_path, "a", encoding="utf-8") as f:
+                f.write(line)
 
         if echo:
             prefix = stderr_prefix or kind.upper()

@@ -15,9 +15,9 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from euclid_polish.config import Config
 import euclid_polish.catalog.client as client_module
 from euclid_polish.catalog.client import EuclidCatalog
+from euclid_polish.config import Config
 
 
 class _FakeJob:

@@ -20,15 +20,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import numpy as np
+from lenstronomy.LensModel.lens_model import LensModel
+from scipy.ndimage import map_coordinates
 
 from euclid_polish.config import Config
 from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog, GalaxyParams
 from euclid_polish.sky.generation.profiles import (
     add_sersic_to_bands,
-    draw_sersic,
     evaluate_sersic_at_coords,
 )
 from euclid_polish.sky.generation.redshift_model import (
@@ -36,10 +36,6 @@ from euclid_polish.sky.generation.redshift_model import (
     comoving_distance_mpc,
 )
 from euclid_polish.sky.generation.tng_galaxy import composite_stamp
-
-from scipy.ndimage import map_coordinates
-from lenstronomy.LensModel.lens_model import LensModel
-
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -72,13 +68,13 @@ class LensParams:
     # Lens-galaxy and source-galaxy parametric descriptions. None in the
     # pure-TNG (catalog-free) path, where both lights are real stamps and
     # there is no Sersic fallback.
-    lens_galaxy:      Optional[GalaxyParams]
-    source_galaxy:    Optional[GalaxyParams]
+    lens_galaxy:      GalaxyParams | None
+    source_galaxy:    GalaxyParams | None
 
     # Placement on the simulator canvas (HR pixel coords).
     # None means "use the canvas centre" (the default before placement).
-    centre_x_pix:     Optional[float] = None
-    centre_y_pix:     Optional[float] = None
+    centre_x_pix:     float | None = None
+    centre_y_pix:     float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +112,7 @@ def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> f
 # sample_lens_geometry so the logic lives in exactly one place)
 # ---------------------------------------------------------------------------
 
-def _sample_shear(rng: np.random.Generator) -> Tuple[float, float]:
+def _sample_shear(rng: np.random.Generator) -> tuple[float, float]:
     """Draw (γ1, γ2) from a zero-mean Gaussian with σ = LENS_EXT_SHEAR_SIGMA."""
     s = Config.LENS_EXT_SHEAR_SIGMA
     return float(rng.normal(0.0, s)), float(rng.normal(0.0, s))
@@ -124,7 +120,7 @@ def _sample_shear(rng: np.random.Generator) -> Tuple[float, float]:
 
 def _sample_disk_offset(
     rng: np.random.Generator, theta_E: float,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Uniform-in-disk source offset within LENS_SOURCE_OFFSET_FRAC × θ_E.
 
     Returns (dx, dy) in arcsec relative to the lens centre. Sampling
@@ -168,12 +164,12 @@ class LensPopulation:
         """
         return float(rng.uniform(self.sigma_v_min_kms, self.sigma_v_max_kms))
 
-    def _sample_shear(self, rng: np.random.Generator) -> Tuple[float, float]:
+    def _sample_shear(self, rng: np.random.Generator) -> tuple[float, float]:
         return _sample_shear(rng)
 
     def _sample_source_offset(
         self, rng: np.random.Generator, theta_E: float,
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         return _sample_disk_offset(rng, theta_E)
 
     def sample(
@@ -181,7 +177,7 @@ class LensPopulation:
         rng: np.random.Generator,
         *,
         max_retries: int = 16,
-        sigma_v_kms: Optional[float] = None,
+        sigma_v_kms: float | None = None,
     ) -> LensParams:
         """Sample one fully populated :class:`LensParams`.
 
@@ -189,7 +185,7 @@ class LensPopulation:
         galaxy is a TNG stamp whose σ_v is derived from the subhalo's stellar
         mass, so the deflector strength matches the light on the canvas.
         """
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for _ in range(max_retries):
             try:
                 lens_gal = self.catalog.sample_lens_galaxy(
@@ -244,7 +240,7 @@ def sample_lens_geometry(
     sigma_v_kms: float,
     *,
     max_retries: int = 16,
-) -> Optional[LensParams]:
+) -> LensParams | None:
     """Catalog-free lens-system geometry from the Collett-2015 priors.
 
     The pure-TNG path: both lights are real stamps, so no COSMOS rows are
@@ -342,8 +338,8 @@ def render_lens_to_multiband_canvas(
     *,
     params: LensParams,
     pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
-    lens_light_stamp: Optional[np.ndarray] = None,
-    source_stamp: Optional[np.ndarray] = None,
+    lens_light_stamp: np.ndarray | None = None,
+    source_stamp: np.ndarray | None = None,
 ) -> np.ndarray:
     """Add one lens system to a 4-channel canvas in a single pass.
 

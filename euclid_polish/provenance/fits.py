@@ -8,8 +8,6 @@ module pulls no astropy import of its own.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -25,7 +23,7 @@ def write_stamp_cards(header, stamp: Stamp) -> None:
     header["PROVSCHM"] = (int(stamp.schema_version), "Provenance schema version")
 
 
-def read_stamp_cards(header) -> Optional[Stamp]:
+def read_stamp_cards(header) -> Stamp | None:
     """The stamp encoded in ``header``, or ``None`` if it carries no PROVID."""
     if "PROVID" not in header:
         return None

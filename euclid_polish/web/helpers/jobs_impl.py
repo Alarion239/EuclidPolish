@@ -1,40 +1,40 @@
 """jobs_impl helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from astropy.io import fits
-from astropy.io import fits as _fits
-from euclid_polish.config import Config
-from euclid_polish.eval.sr_provenance import stamp_sr_fits
-from euclid_polish.catalog.downloader import fetch_cutout_at
-from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
-from euclid_polish.image.tfio import read_images
-from euclid_polish.image.tfio import tfrecord_path
-from euclid_polish.training.inference import load_model_from_checkpoint
-from euclid_polish.training.inference import plot_reconstruction
-from euclid_polish.training.inference import reconstruct
-from euclid_polish.training.inference import scaled_wcs_header
-from euclid_polish.web import fasrc_config
-from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
-from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
-from euclid_polish.web.remote import STATE
-from scipy import signal as scipy_signal
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import Optional
-from typing import Tuple
 import glob
-import matplotlib.pyplot as plt
-import numpy as np
 import os
 import shlex
 import shutil
-import tensorflow as tf
 import textwrap
 import uuid
+from collections.abc import Callable
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+from astropy.io import fits
+from astropy.io import fits as _fits
+from scipy import signal as scipy_signal
+
+from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.config import Config
+from euclid_polish.eval.sr_provenance import stamp_sr_fits
+from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
+from euclid_polish.training.inference import (
+    load_model_from_checkpoint,
+    plot_reconstruction,
+    reconstruct,
+    scaled_wcs_header,
+)
+from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.helpers.status import _fasrc_psf_dir
+from euclid_polish.web.remote import STATE
 
 
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
@@ -70,8 +70,8 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
 def _job_generate_reconstruct(
     cap, checkpoint_dir: str, num_res_blocks: int,
     hr_image_size: int, n_pairs: int,
-    asinh_scale: Optional[float] = None,
-) -> Dict[str, Any]:
+    asinh_scale: float | None = None,
+) -> dict[str, Any]:
     """Generate fresh synthetic pair(s) on the FASRC login node, pull them
     down, run the model locally, and render LR | SR | HR | forward(SR) |
     residual with the FASRC PSF the checkpoint trained against.
@@ -279,8 +279,8 @@ def _job_generate_reconstruct(
 
 def _forward_model_sr_residual(
     sr_data: np.ndarray, lr_vis: np.ndarray,
-    psf_dir: Optional[str] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    psf_dir: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Push SR back through the VIS forward chain and diff against the LR.
 
     Convolves SR with the empirical VIS ePSF, sum-rebins ×2 to the
@@ -329,12 +329,12 @@ def reconstruct_cutout_at(
     cutout_size_vis_pixels: int,
     out_dir: str,
     *,
-    asinh_scale: Optional[float] = None,
+    asinh_scale: float | None = None,
     show_all_bands: bool = False,
     checkpoint_dir: str = "",
     render: bool = True,
-    progress: Optional[Callable[[int, int, str], None]] = None,
-) -> Dict[str, Any]:
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
     """Fetch a 4-band real Euclid cutout at ``(ra, dec)``, run SR, write outputs.
 
     This is the per-object body shared by the single-position WebUI job
@@ -365,8 +365,8 @@ def reconstruct_cutout_at(
     # Fetch each band; per-band MAGZERO from each header drives the
     # per-band ADU/s → electrons conversion so the model sees the same
     # calibration scale the simulator uses.
-    bands_data: Dict[str, np.ndarray] = {}
-    bands_info: Dict[str, Dict[str, Any]] = {}
+    bands_data: dict[str, np.ndarray] = {}
+    bands_info: dict[str, dict[str, Any]] = {}
     vis_header = None
     for k, band_name in enumerate(band_names):
         _tick(k, f"loading {band_name} cutout")
@@ -545,9 +545,9 @@ def _job_reconstruct_euclid_cutout(
     checkpoint_dir: str,
     num_res_blocks: int,
     cutout_size_vis_pixels: int,
-    asinh_scale: Optional[float] = None,
+    asinh_scale: float | None = None,
     show_all_bands: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
 
     Thin wrapper over :func:`reconstruct_cutout_at`: it loads the model, wipes
@@ -638,9 +638,9 @@ def _job_roundtrip_inspect(
     pos_id: int,
     checkpoint_dir: str,
     num_res_blocks: int,
-    asinh_scale: Optional[float] = None,
+    asinh_scale: float | None = None,
     show_all_bands: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Inspect one real-Euclid round-trip cutout — and its round-trip
     reconstruction once a checkpoint exists.
 
@@ -663,8 +663,8 @@ def _job_roundtrip_inspect(
     local = res.local_path
 
     cap.tick(1, 4, "reading 4-band bundle")
-    bands_data: Dict[str, np.ndarray] = {}
-    bands_info: Dict[str, Dict[str, Any]] = {}
+    bands_data: dict[str, np.ndarray] = {}
+    bands_info: dict[str, dict[str, Any]] = {}
     with fits.open(local) as hdul:
         names_present = {h.name for h in hdul if getattr(h, "name", "")}
         primary_hdr = hdul[0].header

@@ -41,14 +41,11 @@ deconvolution regime that amplifies noise, and is not supported.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 import numpy as np
 from astropy.io import fits
 from scipy import signal as scipy_signal
-
 from scipy.ndimage import shift as _ndshift
-
 
 # ---------------------------------------------------------------------------
 # Pure-numpy core
@@ -71,7 +68,7 @@ def _fourier_shift(arr: np.ndarray, dy: float, dx: float) -> np.ndarray:
     return np.fft.ifft2(np.fft.fft2(arr) * phase).real
 
 
-def _positive_centroid(arr: np.ndarray) -> Tuple[float, float]:
+def _positive_centroid(arr: np.ndarray) -> tuple[float, float]:
     """Flux-weighted centroid of the positive part of ``arr``.
 
     Uses the same convention as :func:`_recenter_to_geometric`, kept in one
@@ -125,7 +122,7 @@ def _recenter_to_geometric(arr: np.ndarray) -> np.ndarray:
     return shifted.astype(arr.dtype)
 
 
-def _pad_to(arr: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+def _pad_to(arr: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     """Zero-pad ``arr`` to ``shape``, placing the input's centre pixel
     at the target array's ``shape // 2`` index in each axis.
 
@@ -152,7 +149,7 @@ def compute_differential_kernel(
     psf_hubble: np.ndarray,
     *,
     regularisation: float = 1e-3,
-    target_shape: Tuple[int, int] | None = None,
+    target_shape: tuple[int, int] | None = None,
     recenter: bool = True,
 ) -> np.ndarray:
     """Solve ``A ⊛ H ≈ E`` and return ``A`` on the same grid as the inputs.
@@ -327,13 +324,13 @@ class DifferentialKernel:
         hdu.writeto(path, overwrite=True)
 
     @classmethod
-    def from_fits(cls, path: str) -> "DifferentialKernel":
+    def from_fits(cls, path: str) -> DifferentialKernel:
         with fits.open(path, memmap=False) as hdul:
             sci = next(
                 (e for e in hdul if e.is_image and e.data is not None), None,
             )
             if sci is None:
-                raise IOError(f"no image HDU in {path}")
+                raise OSError(f"no image HDU in {path}")
             h = sci.header
             return cls(
                 data               = np.asarray(sci.data, dtype=np.float32),

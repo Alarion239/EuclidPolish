@@ -15,7 +15,6 @@ from euclid_polish.training.augmentation import (
 )
 from euclid_polish.training.models.wdsr import wdsr
 
-
 # ---------------------------------------------------------------------------
 # Per-band asinh stretch
 # ---------------------------------------------------------------------------

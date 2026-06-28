@@ -9,9 +9,8 @@ import os
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import (open_writer,
-                                        read_images, tfrecord_path)
 from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer, read_images, tfrecord_path
 
 
 def _load():

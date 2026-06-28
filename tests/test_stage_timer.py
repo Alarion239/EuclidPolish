@@ -9,7 +9,6 @@ import pytest
 
 from euclid_polish.training.stage_timer import StageTimer
 
-
 EXPECTED_HEADER = [
     "jobid", "stage", "started_at", "ended_at", "duration_seconds",
     "params_dependent", "n_train", "n_valid", "image_size",
@@ -82,9 +81,8 @@ def test_row_written_even_if_stage_raises(tmp_path):
     survives — bracketed by the timestamps actually observed."""
     p = tmp_path / "stages.csv"
     t = StageTimer(str(p), jobid="9")
-    with pytest.raises(RuntimeError):
-        with t.stage("train", params_dependent=True):
-            raise RuntimeError("kaboom")
+    with pytest.raises(RuntimeError), t.stage("train", params_dependent=True):
+        raise RuntimeError("kaboom")
     rows = _read_rows(str(p))
     assert len(rows) == 1
     assert rows[0]["stage"] == "train"

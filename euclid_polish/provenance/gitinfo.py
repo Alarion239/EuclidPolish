@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any
 
 # Project root = two levels up from this file (…/euclid_polish/provenance/).
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def capture_git(repo_root: str = _PROJECT_ROOT) -> Optional[Dict[str, Any]]:
+def capture_git(repo_root: str = _PROJECT_ROOT) -> dict[str, Any] | None:
     """Current HEAD as ``{hash, short, branch, dirty}`` — ``None`` if no repo.
 
     Best-effort: any git failure (not a repo, git missing) returns ``None`` so

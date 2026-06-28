@@ -1,32 +1,6 @@
 """fasrc routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.config import Config
-from euclid_polish.observability.training_log import TrainingLog
-from euclid_polish.training.log_plot import plot_training_records
-from euclid_polish.web import experimental
-from euclid_polish.web import fasrc_config
-from euclid_polish.web import fasrc_jobs
-from euclid_polish.web import fasrc_log_parser
-from euclid_polish.web import fasrc_queue
-from euclid_polish.web import job_config
-from euclid_polish.web.fasrc_mirror import MIRROR
-from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
-from euclid_polish.web.fasrc_pipeline import StepResources
-from euclid_polish.web.job_status import JobStatusFetcher
-from euclid_polish.web.remote import SSHConfig
-from euclid_polish.web.remote import SSHError
-from euclid_polish.web.remote import SSHSession
-from euclid_polish.web.remote import STATE
-from flask import Response
-from flask import abort
-from flask import jsonify
-from flask import render_template
-from flask import request
-from flask import stream_with_context
-from typing import Any
-from typing import Dict
-from typing import List
 import csv
 import io as _io
 import json
@@ -38,6 +12,26 @@ import tempfile
 import threading as _t
 import time
 import traceback
+from typing import Any
+
+from flask import Response, abort, jsonify, render_template, request, stream_with_context
+
+from euclid_polish.config import Config
+from euclid_polish.observability.training_log import TrainingLog
+from euclid_polish.training.log_plot import plot_training_records
+from euclid_polish.web import (
+    experimental,
+    fasrc_config,
+    fasrc_jobs,
+    fasrc_log_parser,
+    fasrc_queue,
+    job_config,
+)
+from euclid_polish.web.fasrc_mirror import MIRROR
+from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
+from euclid_polish.web.fasrc_pipeline import StepResources
+from euclid_polish.web.job_status import JobStatusFetcher
+from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 
 
 def register(app):
@@ -608,7 +602,7 @@ def register(app):
             "remote_paths": {
                 "data_dir":    cfg_loaded.data_dir,
                 "ckpt_dir":    cfg_loaded.ckpt_dir,
-                "logs_dir":    f"logs/hst_pipeline",
+                "logs_dir":    "logs/hst_pipeline",
             },
         })
 
@@ -727,7 +721,7 @@ def register(app):
             return True
 
         cfg = fasrc_config.load()
-        results: Dict[str, Any] = {}
+        results: dict[str, Any] = {}
 
         # VIS-only model lives in the sibling "<ckpt_dir>-vis" dir; deleting it
         # must target that dir on both FASRC and local, never the 4-channel one.
@@ -931,7 +925,7 @@ def register(app):
             f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
         )
-        squeue_rows: List[Dict[str, Any]] = []
+        squeue_rows: list[dict[str, Any]] = []
         if rc_q == 0:
             squeue_rows = fasrc_jobs.parse_squeue(out_q)
             fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=STATE.ssh)
@@ -1047,7 +1041,7 @@ def register(app):
             f"| sort -rn -k1,1 | head -20000 ; }}; exit 0"
         )
         rc, out, _err = STATE.ssh.run(cmd, timeout=15)
-        files: Dict[str, Dict[str, Any]] = {}     # keyed by base name
+        files: dict[str, dict[str, Any]] = {}     # keyed by base name
         if rc == 0:
             for line in out.splitlines():
                 parts = line.split("\t")
@@ -1074,7 +1068,7 @@ def register(app):
         # 2. Overlay JobDB rows (gives us jobid + state + label + params).
         #    Large limit so older runs (later pages) still get their
         #    jobid/state/label, not just the most recent 120.
-        db_by_name: Dict[str, Dict[str, Any]] = {}
+        db_by_name: dict[str, dict[str, Any]] = {}
         for row in fasrc_jobs.DB.list_recent(5000):
             lp = row.get("log_path") or ""
             base = os.path.basename(lp)
@@ -1082,7 +1076,7 @@ def register(app):
             if stem:
                 db_by_name[stem] = row
 
-        runs: List[Dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
         for stem, rec in files.items():
             db_row = db_by_name.get(stem) or {}
             try:
@@ -1376,7 +1370,7 @@ def register(app):
     # sluggish. A 2-second TTL coalesces bursts and keeps live progress
     # visibly fresh (next poll arrives just after expiry).
 
-    _TRAINING_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "resp": None}
+    _TRAINING_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "resp": None}
     _TRAINING_STATUS_TTL_S: float = 2.0
 
     @app.route("/api/fasrc/training-status")
@@ -1709,7 +1703,7 @@ def register(app):
 
         def _gen():
             yield f"data: $ remote: cd {cfg.repo_path}\n\n"
-            yield f"data: $ module load python\n\n"
+            yield "data: $ module load python\n\n"
             yield (f"data: $ yes | mamba env update -p "
                    f"{cfg.conda_env_path} -f environment.yml\n\n")
             try:

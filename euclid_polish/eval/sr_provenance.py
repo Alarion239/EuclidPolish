@@ -9,22 +9,25 @@ provenance hiccup never blocks reconstruction.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.fits import write_stamp_cards
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
-    Artifact, Format, Process, Stamp,
+    Artifact,
+    Format,
+    Process,
+    Stamp,
 )
 from euclid_polish.provenance.store import ProvStore
 
 
 def write_sr_provenance(header, *, checkpoint_dir: str, sr_fits_path: str,
-                        store: Optional[ProvStore] = None,
-                        git: Optional[Dict[str, Any]] = None,
-                        descriptors: Optional[Dict[str, Any]] = None) -> Stamp:
+                        store: ProvStore | None = None,
+                        git: dict[str, Any] | None = None,
+                        descriptors: dict[str, Any] | None = None) -> Stamp:
     """Write provenance cards into ``header`` and persist the SR artifact.
 
     Returns the :class:`Stamp` written (caller may ignore it). The model id —

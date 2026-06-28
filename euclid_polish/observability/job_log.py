@@ -29,14 +29,14 @@ import csv
 import json
 import os
 import threading
-from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, fields
+from datetime import UTC, datetime
+from typing import Any
 
 
 def _utc_now_iso() -> str:
     """ISO 8601 timestamp in UTC, second precision. Stable for CSV diffs."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -105,7 +105,7 @@ class JobLog:
     #: Column order in the CSV. Pinned so consumers (pandas / shell
     #: pipelines) see a stable schema even when :class:`JobRecord`
     #: grows new fields.
-    COLUMNS: List[str] = [f.name for f in fields(JobRecord)]
+    COLUMNS: list[str] = [f.name for f in fields(JobRecord)]
 
     def __init__(self, csv_path: str) -> None:
         self.csv_path = csv_path
@@ -127,13 +127,12 @@ class JobLog:
         """
         if not record.submitted_at:
             record.submitted_at = _utc_now_iso()
-        with self._lock:
-            with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=self.COLUMNS,
-                                   extrasaction="ignore")
-                w.writerow(self._stringify(asdict(record)))
+        with self._lock, open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=self.COLUMNS,
+                               extrasaction="ignore")
+            w.writerow(self._stringify(asdict(record)))
 
-    def record_post_mortem(self, jobid: str, stats: Dict[str, Any]) -> bool:
+    def record_post_mortem(self, jobid: str, stats: dict[str, Any]) -> bool:
         """Fill the post-mortem columns for ``jobid`` from ``stats``.
 
         ``stats`` keys map to :class:`JobRecord` post-mortem field names
@@ -152,7 +151,7 @@ class JobLog:
                     return True
             return False
 
-    def get(self, jobid: str) -> Optional[Dict[str, str]]:
+    def get(self, jobid: str) -> dict[str, str] | None:
         """Return the row for ``jobid`` (or ``None`` if not present)."""
         with self._lock:
             for r in self._read_all_locked():
@@ -160,7 +159,7 @@ class JobLog:
                     return r
             return None
 
-    def list_all(self) -> List[Dict[str, str]]:
+    def list_all(self) -> list[dict[str, str]]:
         """Return every row in submission order."""
         with self._lock:
             return self._read_all_locked()
@@ -169,7 +168,7 @@ class JobLog:
     # Per-step history queries
     # ------------------------------------------------------------------
 
-    def history_for_step(self, step_id: str) -> List[Dict[str, str]]:
+    def history_for_step(self, step_id: str) -> list[dict[str, str]]:
         """Return every row whose ``step_id`` matches, newest first.
 
         Drives the "previous runs" panel under each step's form. The
@@ -189,7 +188,7 @@ class JobLog:
         self,
         step_id:     str,
         params_json: str,
-    ) -> Optional[Dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Find the run that should seed the resources form, or ``None``.
 
         Selection rule (sign-off in conversation): the *most recent
@@ -224,7 +223,7 @@ class JobLog:
         with self._lock:
             if not os.path.exists(self.csv_path):
                 return
-            with open(self.csv_path, "r", newline="", encoding="utf-8") as f:
+            with open(self.csv_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 header = list(reader.fieldnames or [])
@@ -232,13 +231,13 @@ class JobLog:
                 return
             self._write_all_locked(rows)
 
-    def _read_all_locked(self) -> List[Dict[str, str]]:
+    def _read_all_locked(self) -> list[dict[str, str]]:
         if not os.path.exists(self.csv_path):
             return []
-        with open(self.csv_path, "r", newline="", encoding="utf-8") as f:
+        with open(self.csv_path, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
-    def _write_all_locked(self, rows: List[Dict[str, Any]]) -> None:
+    def _write_all_locked(self, rows: list[dict[str, Any]]) -> None:
         tmp = self.csv_path + ".tmp"
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=self.COLUMNS,
@@ -264,5 +263,5 @@ class JobLog:
         return str(v)
 
     @classmethod
-    def _stringify(cls, d: Dict[str, Any]) -> Dict[str, str]:
+    def _stringify(cls, d: dict[str, Any]) -> dict[str, str]:
         return {k: cls._stringify_value(v) for k, v in d.items()}

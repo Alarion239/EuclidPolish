@@ -31,13 +31,12 @@ captures whatever fraction of the analytic profile falls on it.
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import numpy as np
-from scipy.special import gammaincinv, gamma as gamma_fn
+from scipy.special import gamma as gamma_fn
+from scipy.special import gammaincinv
 
 from euclid_polish.config import Config
-
 
 # ---------------------------------------------------------------------------
 # Sersic geometry helpers
@@ -170,8 +169,8 @@ def draw_sersic(
     theta_rad: float,
     x0: float, y0: float,
     pixel_scale: float = 1.0,
-    csub: Optional[int] = None,
-    out: Optional[np.ndarray] = None,
+    csub: int | None = None,
+    out: np.ndarray | None = None,
     add: bool = True,
 ) -> np.ndarray:
     """Rasterise one elliptical Sersic profile onto a 2-D grid.
@@ -260,7 +259,7 @@ def compute_sersic_stamp(
     theta_rad: float,
     x0: float, y0: float,
     pixel_scale: float = 1.0,
-    csub: Optional[int] = None,
+    csub: int | None = None,
 ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     """Compute a unit-flux Sersic stamp and its location on the canvas.
 
@@ -358,7 +357,7 @@ def add_sersic_to_bands(
     theta_rad: float,
     x0: float, y0: float,
     pixel_scale: float = 1.0,
-    csub: Optional[int] = None,
+    csub: int | None = None,
 ) -> None:
     """Render a Sersic at unit flux ONCE, then scatter-add into every band.
 
@@ -433,7 +432,7 @@ def draw_bulge_disk(
     theta_rad: float,
     x0: float, y0: float,
     pixel_scale: float = 1.0,
-    out: Optional[np.ndarray] = None,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Convenience: bulge (n=4) + disk (n=1) at a shared centroid + PA.
 

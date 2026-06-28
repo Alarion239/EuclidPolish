@@ -11,7 +11,6 @@ from euclid_polish.config import Config
 from euclid_polish.tracking import dirty_warning
 from euclid_polish.tracking import timetravel as tt
 
-
 # --------------------------------------------------------------------------
 # fixtures
 # --------------------------------------------------------------------------

@@ -21,7 +21,6 @@ from euclid_polish.web import fasrc_jobs
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import StepResources
 
-
 # ---------------------------------------------------------------------------
 # StepResources.from_form_strict
 # ---------------------------------------------------------------------------

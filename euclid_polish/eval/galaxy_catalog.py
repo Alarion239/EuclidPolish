@@ -15,15 +15,16 @@ import csv
 import math
 import os
 import random
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from astroquery.esa.euclid import Euclid
 
-from euclid_polish.config import Config
-from euclid_polish.catalog.client import EuclidCatalog, EuclidAuthError
-from euclid_polish.eval.eval_catalog import read_eval_catalog
+from euclid_polish.catalog.client import EuclidAuthError, EuclidCatalog
 from euclid_polish.catalog.photometry import uJy_to_ab_mag
 from euclid_polish.catalog.validator import angular_separation_arcsec
+from euclid_polish.config import Config
+from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 #: Group label for a real field galaxy (parallels the synthetic ``syn-gal``).
 GAL_GRADE = "gal"
@@ -80,7 +81,7 @@ def galaxy_adql(ra: float, dec: float, radius_deg: float,
     """
 
 
-def _unmask_float(value: Any) -> Optional[float]:
+def _unmask_float(value: Any) -> float | None:
     """Float from a possibly-masked/None TAP cell, or None if not finite."""
     try:
         f = float(value)
@@ -91,14 +92,14 @@ def _unmask_float(value: Any) -> Optional[float]:
 
 def _candidates_from_results(results: Any,
                              mag_floor: float = Config.GalaxySelection.MAG_FLOOR
-                             ) -> List[Dict[str, Any]]:
+                             ) -> list[dict[str, Any]]:
     """Parse a TAP result into candidate galaxy dicts passing the brightness floor.
 
     Works with an astropy ``Table`` or any iterable of column-indexable rows
     (e.g. dicts in tests). Size/quality cuts are applied server-side in the
     ADQL; here we only drop non-finite or too-faint sources.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     if results is None:
         return out
     for row in results:
@@ -124,7 +125,7 @@ def _login() -> bool:
         return False
 
 
-def _run_query(query: str) -> Tuple[Any, str]:
+def _run_query(query: str) -> tuple[Any, str]:
     """Run a synchronous ADQL query; return ``(results_or_None, error)``."""
     try:
         job = Euclid.launch_job(query)
@@ -133,7 +134,7 @@ def _run_query(query: str) -> Tuple[Any, str]:
         return None, f"{type(e).__name__}: {e}"
 
 
-def _near_any_lens(ra: float, dec: float, lenses: List[Dict[str, Any]],
+def _near_any_lens(ra: float, dec: float, lenses: list[dict[str, Any]],
                    radius_arcsec: float) -> bool:
     """True if (ra, dec) is within ``radius_arcsec`` of any lens position."""
     for lens in lenses:
@@ -142,11 +143,11 @@ def _near_any_lens(ra: float, dec: float, lenses: List[Dict[str, Any]],
     return False
 
 
-def _read_cached(out_csv: str) -> List[Dict[str, Any]]:
+def _read_cached(out_csv: str) -> list[dict[str, Any]]:
     """Read a previously-written galaxy catalog (stable order), or []."""
     if not os.path.isfile(out_csv):
         return []
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     with open(out_csv, newline="") as f:
         for r in csv.DictReader(f):
             rows.append({"id": r["id"], "ra": float(r["ra"]),
@@ -154,7 +155,7 @@ def _read_cached(out_csv: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _write(out_csv: str, rows: List[Dict[str, Any]]) -> None:
+def _write(out_csv: str, rows: list[dict[str, Any]]) -> None:
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     with open(out_csv, "w", newline="") as f:
         w = csv.writer(f)
@@ -163,11 +164,11 @@ def _write(out_csv: str, rows: List[Dict[str, Any]]) -> None:
             w.writerow([r["id"], r["ra"], r["dec"], r.get("grade", GAL_GRADE)])
 
 
-def build(out_csv: Optional[str] = None, *, n_galaxies: int,
+def build(out_csv: str | None = None, *, n_galaxies: int,
           lens_catalog_path: str, seed: int = 0,
           cone_radius_arcmin: float = 3.0, oversample: int = 4,
           regenerate: bool = False,
-          log: Optional[Callable[[str], None]] = None) -> Tuple[str, int]:
+          log: Callable[[str], None] | None = None) -> tuple[str, int]:
     """Build (or top up) the galaxy catalog to ``n_galaxies`` rows; return ``(path, n)``.
 
     Drawn from the same fields as the lenses (cone queries around each lens
@@ -192,7 +193,7 @@ def build(out_csv: Optional[str] = None, *, n_galaxies: int,
     fields = list(lenses)
     rng.shuffle(fields)
 
-    pool: List[Dict[str, Any]] = []
+    pool: list[dict[str, Any]] = []
     seen_ids = {r["id"] for r in cached}
     target_pool = oversample * n_galaxies
     radius_deg = cone_radius_arcmin / 60.0

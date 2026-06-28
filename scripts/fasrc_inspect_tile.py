@@ -33,8 +33,8 @@ import os
 import sys
 import warnings
 
-from astropy.io import fits
 import numpy as np
+from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
 from PIL import Image
 

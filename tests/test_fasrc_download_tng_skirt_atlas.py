@@ -18,7 +18,6 @@ import pytest
 from euclid_polish.config import Config
 from scripts import fasrc_download_tng_skirt_atlas as mod
 
-
 # ---------------------------------------------------------------------------
 # galaxy-id parsing
 # ---------------------------------------------------------------------------

@@ -25,13 +25,13 @@ import shutil
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.validator import angular_separation_arcsec
+from euclid_polish.config import Config
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -45,7 +45,7 @@ _OPT_FLOAT_COLS = ("flux_psf_uJy", "fluxerr_psf_uJy")
 _write_lock = threading.Lock()
 
 
-def _finite_float(value) -> Optional[float]:
+def _finite_float(value) -> float | None:
     """``float(value)`` if finite, else ``None`` (handles masked / NaN / missing)."""
     if value is None or (hasattr(value, "mask") and bool(value.mask)):
         return None
@@ -62,12 +62,12 @@ class CatalogObject:
 
     ra: float
     dec: float
-    id: Optional[int] = None
-    magnitude: Optional[float] = None
-    flux_psf_uJy: Optional[float] = None
-    fluxerr_psf_uJy: Optional[float] = None
+    id: int | None = None
+    magnitude: float | None = None
+    flux_psf_uJy: float | None = None
+    fluxerr_psf_uJy: float | None = None
     kind: str = "star"
-    flags: Dict[str, Dict[str, Dict[str, bool]]] = field(
+    flags: dict[str, dict[str, dict[str, bool]]] = field(
         default_factory=lambda: {k: {} for k in _FLAG_KINDS})
 
     def __post_init__(self) -> None:
@@ -78,7 +78,7 @@ class CatalogObject:
     # Per-(band, size) cutout-download status
     # ------------------------------------------------------------------
 
-    def _read_flag(self, kind: str, band: str, size: Optional[int]) -> bool:
+    def _read_flag(self, kind: str, band: str, size: int | None) -> bool:
         slot = self.flags.get(kind, {}).get(band, {})
         if not isinstance(slot, dict):
             return False
@@ -100,7 +100,7 @@ class CatalogObject:
         return any(any(sizes.values()) for sizes in self.flags.get(kind, {}).values()
                    if isinstance(sizes, dict))
 
-    def is_valid(self, size: Optional[int] = None, band: str = "VIS") -> bool:
+    def is_valid(self, size: int | None = None, band: str = "VIS") -> bool:
         return self._read_flag("valid", band, size)
 
     def set_valid(self, size: int, band: str = "VIS") -> None:
@@ -109,14 +109,14 @@ class CatalogObject:
         self._write_flag("valid", band, size, True)
         self._write_flag("corrupted", band, size, False)
 
-    def is_corrupted(self, size: Optional[int] = None, band: str = "VIS") -> bool:
+    def is_corrupted(self, size: int | None = None, band: str = "VIS") -> bool:
         return self._read_flag("corrupted", band, size)
 
     def set_corrupted(self, size: int, band: str = "VIS") -> None:
         self._write_flag("corrupted", band, size, True)
         self._write_flag("valid", band, size, False)
 
-    def is_download_failed(self, size: Optional[int] = None, band: str = "VIS") -> bool:
+    def is_download_failed(self, size: int | None = None, band: str = "VIS") -> bool:
         return self._read_flag("download_failed", band, size)
 
     def set_download_failed(self, size: int, band: str = "VIS") -> None:
@@ -126,19 +126,17 @@ class CatalogObject:
         """Drop a ``download_failed`` flag so the object is retried."""
         self._write_flag("download_failed", band, size, False)
 
-    def valid_sizes(self, band: str = "VIS") -> List[int]:
+    def valid_sizes(self, band: str = "VIS") -> list[int]:
         slot = self.flags.get("valid", {}).get(band, {})
         return [int(k) for k, ok in slot.items() if ok] if isinstance(slot, dict) else []
 
-    def valid_bands(self, size: Optional[int] = None) -> List[str]:
+    def valid_bands(self, size: int | None = None) -> list[str]:
         """Bands with at least one valid cutout (``size=None`` accepts any)."""
-        out: List[str] = []
+        out: list[str] = []
         for band, sizes in self.flags.get("valid", {}).items():
             if not isinstance(sizes, dict):
                 continue
-            if size is None and any(sizes.values()):
-                out.append(band)
-            elif size is not None and sizes.get(str(size), False):
+            if size is None and any(sizes.values()) or size is not None and sizes.get(str(size), False):
                 out.append(band)
         return out
 
@@ -146,9 +144,9 @@ class CatalogObject:
     # Row serialization
     # ------------------------------------------------------------------
 
-    def to_row(self) -> Dict[str, Any]:
+    def to_row(self) -> dict[str, Any]:
         """This object as a flat CSV row dict (base scalars + flag columns)."""
-        row: Dict[str, Any] = {
+        row: dict[str, Any] = {
             "id":        self.id,
             "ra":        _finite_float(self.ra),
             "dec":       _finite_float(self.dec),
@@ -166,11 +164,11 @@ class CatalogObject:
         return row
 
     @classmethod
-    def from_row(cls, row: Dict[str, Any]) -> "CatalogObject":
+    def from_row(cls, row: dict[str, Any]) -> CatalogObject:
         """Build a :class:`CatalogObject` from a CSV row dict."""
         v = _finite_float(row.get("id"))
         obj_id = int(v) if v is not None else None
-        flags: Dict[str, Dict[str, Dict[str, bool]]] = {k: {} for k in _FLAG_KINDS}
+        flags: dict[str, dict[str, dict[str, bool]]] = {k: {} for k in _FLAG_KINDS}
         for col, val in row.items():
             m = _FLAG_RE.match(str(col))
             if not m:
@@ -196,7 +194,7 @@ class CatalogObject:
     # ------------------------------------------------------------------
 
     @classmethod
-    def read(cls, path: str) -> "List[CatalogObject]":
+    def read(cls, path: str) -> list[CatalogObject]:
         """Read every object from a ``stars.csv`` catalog (empty list if absent).
 
         A truncated / half-written file is copied to ``.corrupt`` and treated as
@@ -216,7 +214,7 @@ class CatalogObject:
         return [cls.from_row(row.to_dict()) for _, row in df.iterrows()]
 
     @classmethod
-    def write(cls, objects: "List[CatalogObject]", path: str) -> None:
+    def write(cls, objects: list[CatalogObject], path: str) -> None:
         """Atomically write ``objects`` to ``path`` and stamp a stable prov id.
 
         The write renders to a unique temp file then renames, keeps a one-deep
@@ -253,7 +251,7 @@ class CatalogObject:
     # -- provenance: a stable id per catalog file (minted once, reused) -- #
 
     @staticmethod
-    def prov_id(path: str) -> Optional[ProvId]:
+    def prov_id(path: str) -> ProvId | None:
         """The catalog's stable :class:`ProvId`, or ``None`` if never written."""
         p = path + ".prov.json"
         if not os.path.exists(p):
@@ -278,7 +276,7 @@ class CatalogObject:
             pass
 
 
-def next_id(objects: "List[CatalogObject]") -> int:
+def next_id(objects: list[CatalogObject]) -> int:
     """One past the largest assigned id (0 for an empty / id-less list)."""
     ids = [o.id for o in objects if isinstance(o.id, int)]
     return max(ids) + 1 if ids else 0
@@ -288,7 +286,7 @@ def next_id(objects: "List[CatalogObject]") -> int:
 # List-level operations (dedup / ingest / aggregation)
 # ---------------------------------------------------------------------------
 
-def _is_duplicate(ra: float, dec: float, objects: "List[CatalogObject]",
+def _is_duplicate(ra: float, dec: float, objects: list[CatalogObject],
                   tol_arcsec: float) -> bool:
     """True if ``(ra, dec)`` lies within ``tol_arcsec`` of any object's position."""
     for o in objects:
@@ -297,10 +295,10 @@ def _is_duplicate(ra: float, dec: float, objects: "List[CatalogObject]",
     return False
 
 
-def merge_new(existing: "List[CatalogObject]",
-              candidates: "List[CatalogObject]", *,
+def merge_new(existing: list[CatalogObject],
+              candidates: list[CatalogObject], *,
               tol_arcsec: float = Config.Matching.CATALOG_POSITION_TOL_ARCSEC,
-              limit: Optional[int] = None) -> Dict[str, Any]:
+              limit: int | None = None) -> dict[str, Any]:
     """Append non-duplicate ``candidates`` to ``existing`` with fresh ids.
 
     Candidates within ``tol_arcsec`` of an already-present object (existing or a
@@ -322,7 +320,7 @@ def merge_new(existing: "List[CatalogObject]",
     return {"added": added, "skipped": skipped, "objects": existing}
 
 
-def by_status(objects: "List[CatalogObject]") -> Dict[str, "List[CatalogObject]"]:
+def by_status(objects: list[CatalogObject]) -> dict[str, list[CatalogObject]]:
     """Bucket objects by any-``(band, size)`` download status."""
     return {
         "valid":     [o for o in objects if o.has_any("valid")],
@@ -336,10 +334,10 @@ def by_status(objects: "List[CatalogObject]") -> Dict[str, "List[CatalogObject]"
     }
 
 
-def summarize(objects: "List[CatalogObject]") -> Dict[str, Any]:
+def summarize(objects: list[CatalogObject]) -> dict[str, Any]:
     """Aggregate counts over a catalog: totals, per-status, per-band, mag range."""
     buckets = by_status(objects)
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "total":     len(objects),
         "valid":     len(buckets["valid"]),
         "corrupted": len(buckets["corrupted"]),

@@ -11,68 +11,74 @@ import os
 import sys
 import traceback
 
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
-
 from astropy.io import fits
 from astroquery.esa.euclid import Euclid
-from tf_keras.losses import MeanAbsoluteError
-from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+from questionary import checkbox, confirm, select
 from tqdm import tqdm
-from questionary import select, confirm, checkbox
 
-
-from euclid_polish.config import Config
-from euclid_polish.cli.utils import (
-    print_cancelled, print_error, print_header, print_success,
-    validate_dec, validate_positive_number, validate_ra,
-)
 from euclid_polish.catalog import (
-    EuclidCatalog,
-    EuclidAuthError,
     CatalogObject,
     DownloadConfig,
+    EuclidAuthError,
+    EuclidCatalog,
     FitsValidator,
 )
 from euclid_polish.catalog.catalog_object import merge_new, summarize
-from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
-from euclid_polish.image import Image
-from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig, SkySimulator,
+from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
+from euclid_polish.cli.utils import (
+    print_cancelled,
+    print_error,
+    print_header,
+    print_success,
+    validate_dec,
+    validate_positive_number,
+    validate_ra,
 )
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
-)
-from euclid_polish.psf import PSF
-from euclid_polish.psf.psf_library import (
-    load_all_band_psf_sets, psf_inventory, psf_path_for_band,
-)
-from euclid_polish.training import Trainer
-from euclid_polish.training.models.wdsr import wdsr
-from euclid_polish.model import Model
-from euclid_polish.image import ImageSet
-from euclid_polish.visualization import BaseVisualizer
-from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
-from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
+from euclid_polish.config import Config
+from euclid_polish.image import Image, ImageSet
 from euclid_polish.image.tfio import (
     open_writer,
     read_images,
     tfrecord_path,
-    write_images,
 )
-
-from euclid_polish.training.log_plot import (
-default_log_path, plot_training_log,
+from euclid_polish.model import Model
+from euclid_polish.psf import PSF
+from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
+from euclid_polish.psf.psf_extractor import PSFExtractionConfig, PSFExtractor
+from euclid_polish.psf.psf_library import (
+    load_all_band_psf_sets,
+    psf_inventory,
 )
+from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
+from euclid_polish.training import Trainer
 from euclid_polish.training.inference import (
-load_model_from_checkpoint,
-load_model_from_weights,
-reconstruct,
-plot_reconstruction,
+    load_model_from_checkpoint,
+    load_model_from_weights,
+    plot_reconstruction,
+    reconstruct,
 )
-from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
+from euclid_polish.training.log_plot import (
+    default_log_path,
+    plot_training_log,
+)
+from euclid_polish.visualization import BaseVisualizer
+from euclid_polish.visualization.methods import (
+    draw_clean_dirty_pair,
+    draw_clean_image,
+    draw_dirty_image,
+    draw_star_positions,
+)
 
 
 class InteractiveCLI:
@@ -385,7 +391,7 @@ class InteractiveCLI:
             for name in selected_bands
         }
         print(f"  → angular field side = {arcsec_side:.2f}\"")
-        print(f"  → native pixel counts: " + ", ".join(
+        print("  → native pixel counts: " + ", ".join(
             f"{name}={n}" for name, n in per_band_native.items()))
 
         default_workers = DownloadConfig.max_workers
@@ -417,8 +423,8 @@ class InteractiveCLI:
                 any_pending = True
 
         if not any_pending:
-            print(f"\n✓ Nothing to download — every selected band has all stars accounted for "
-                  f"at this field size")
+            print("\n✓ Nothing to download — every selected band has all stars accounted for "
+                  "at this field size")
             return
 
         if not confirm(
@@ -522,7 +528,7 @@ class InteractiveCLI:
         try:
             cutout_size = int(cutout_size_input) if cutout_size_input else Config.DEFAULT_CUTOUT_SIZE
         except ValueError:
-            print(f"\n✗ Invalid cutout size: must be an integer")
+            print("\n✗ Invalid cutout size: must be an integer")
             return
 
         num_stars_input = input("Number of stars to use (default: all): ").strip()
@@ -543,7 +549,7 @@ class InteractiveCLI:
                     print(f"\n✗ PSF size ({psf_size}) cannot exceed cutout size ({cutout_size})")
                     return
             except ValueError:
-                print(f"\n✗ Invalid PSF size: must be an integer")
+                print("\n✗ Invalid PSF size: must be an integer")
                 return
         else:
             psf_size = default_psf_size
@@ -612,7 +618,7 @@ class InteractiveCLI:
             print(f"  FITS file: {fits_path}")
 
             summary = extractor.get_summary()
-            print(f"\nPSF Summary:")
+            print("\nPSF Summary:")
             print(f"  Shape: {summary['shape']}")
             print(f"  Pixel scale: {epsf_pixel_scale:.4f} arcsec/pix")
             print(f"  Oversampling: {summary['oversampling']}")
@@ -672,7 +678,7 @@ class InteractiveCLI:
         print(f"Corrupted:        {len(results['corrupted'])} 🔴")
 
         if results['corrupted']:
-            print(f"\nCorrupted files:")
+            print("\nCorrupted files:")
             for filepath, error_msg in results['corrupted'][:10]:  # Show first 10
                 filename = os.path.basename(filepath)
                 print(f"  🔴 {filename}: {error_msg}")
@@ -700,9 +706,9 @@ class InteractiveCLI:
                         o.set_corrupted(size)
 
             CatalogObject.write(objects, catalog_path)
-            print(f"\n✓ Updated catalog with validation results")
+            print("\n✓ Updated catalog with validation results")
 
-        print(f"\n✓ Integrity check completed!")
+        print("\n✓ Integrity check completed!")
 
     def _login_euclid(self):
         """Log into the Euclid archive via env vars or an explicit username/password."""
@@ -915,9 +921,9 @@ class InteractiveCLI:
         for subset, _, n_images in subsets_to_run:
             print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
-        print(f"  Noise: per-band Poisson + Gaussian read for VIS / Y_E / J_E / H_E")
+        print("  Noise: per-band Poisson + Gaussian read for VIS / Y_E / J_E / H_E")
         print(f"  NISP→VIS-LR resample: {Config.NISP_RESAMPLE_KERNEL}")
-        print(f"  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS, Y_E, J_E, H_E) @ 0.05\"/pix")
+        print("  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS, Y_E, J_E, H_E) @ 0.05\"/pix")
 
         if not confirm(f"\nRun forward model on {total} images?", default=True).ask():
             return
@@ -970,8 +976,8 @@ class InteractiveCLI:
         nvalid     = input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip() or str(Config.DEFAULT_NIMAGES // 5)
         pixel_scale = input(f"HR pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip() or str(Config.DEFAULT_PIXEL_SCALE)
         image_size  = input(
-            f"HR image side in pixels (prefer a multiple of 6 to avoid edge trim; "
-            f"default 252): "
+            "HR image side in pixels (prefer a multiple of 6 to avoid edge trim; "
+            "default 252): "
         ).strip() or "252"
 
         try:
@@ -991,15 +997,15 @@ class InteractiveCLI:
                   f"pixel{'s' if lost != 1 else ''} on each axis at the trailing "
                   f"edge); nearest no-trim sizes are {trimmed} or {trimmed + 6}.")
 
-        print(f"\nConfiguration (multi-band, v2 schema):")
+        print("\nConfiguration (multi-band, v2 schema):")
         print(f"  Catalog:           {catalog_path}")
         print(f"  Training images:   {ntrain_val}")
         print(f"  Validation images: {nvalid_val}")
         print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix (HR)")
         print(f"  Image size:        {image_size_val} x {image_size_val} (4 channels)")
         print(f"  Output (TFRecord): {Config.RECORDS_DIR_V2}/")
-        print(f"    clean_train.tfrecord")
-        print(f"    clean_validate.tfrecord")
+        print("    clean_train.tfrecord")
+        print("    clean_validate.tfrecord")
 
         if not confirm("\nGenerate clean multi-band sky data?", default=True).ask():
             return
@@ -1104,7 +1110,7 @@ class InteractiveCLI:
         if not os.path.exists(dirty_valid):
             print(f"\n⚠️  No validation data in {records_dir} — will train without validation")
 
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Scale: {scale_val}x")
         print(f"  Residual blocks: {num_res_blocks_val}")
         print(f"  Training steps: {steps_val}")
@@ -1545,7 +1551,7 @@ class InteractiveCLI:
         stars = CatalogObject.read(catalog_path)
 
         if len(stars) == 0:
-            print(f"\n✗ No stars found in catalog")
+            print("\n✗ No stars found in catalog")
             return
 
         # Select stars (first N)

@@ -46,21 +46,18 @@ import os
 import sys
 import tempfile
 import time
-from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-
 from astropy.io import fits
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
-
 
 # Sky-catalog location, catalogue filename, and cutouts subdir now live in
 # Config — see Config.EUCLID_SKY_DIR, Config.EuclidSky.SKY_CATALOG_FILENAME,
@@ -182,7 +179,7 @@ def _fetch_position_bundle(
     if os.path.isfile(target) and os.path.getsize(target) > 0:
         return {"status": "cached", "id": pos_id, "errors": []}
 
-    band_names: List[str] = list(Config.LR_INPUT_BAND_NAMES)
+    band_names: list[str] = list(Config.LR_INPUT_BAND_NAMES)
     band_files: dict = {}
     errors: list = []
     tmp_dir = tempfile.mkdtemp(prefix=f"euclid_sky_{pos_id:04d}_")
@@ -280,7 +277,7 @@ def main() -> int:
     arcsec_side = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
     print("=" * 64)
-    print(f"  Euclid sky cutout download (for round-trip training)")
+    print("  Euclid sky cutout download (for round-trip training)")
     print("=" * 64)
     print(f"  output dir       = {args.output_dir}")
     print(f"  sky disk         = (RA={args.ra_centre:.3f}°, "

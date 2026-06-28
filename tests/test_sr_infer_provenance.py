@@ -8,14 +8,16 @@ import os
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import (
+    read_images,
+    tfrecord_path,
+    write_images,
+)
 from euclid_polish.provenance.checkpoint import write_checkpoint_provenance
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.image.tfio import (
-    read_images, tfrecord_path, write_images,
-)
-from euclid_polish.image import Image
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

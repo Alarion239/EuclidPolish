@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # --------------------------------------------------------------------------- #
 # ProvId
 # --------------------------------------------------------------------------- #
@@ -115,6 +114,7 @@ def test_stamp_legacy_is_sentinel():
 
 def test_config_snapshot_from_dataclass_captures_fields():
     from dataclasses import dataclass
+
     from euclid_polish.provenance.records import ConfigSnapshot
 
     @dataclass
@@ -135,7 +135,9 @@ def test_config_snapshot_from_dataclass_captures_fields():
 def test_generation_run_round_trip():
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.provenance.records import (
-        Process, ConfigSnapshot, record_from_dict,
+        ConfigSnapshot,
+        Process,
+        record_from_dict,
     )
     run = Process.generation(
         id=ProvId("7f3a9c21"),
@@ -155,7 +157,9 @@ def test_generation_run_round_trip():
 def test_checkpoint_artifact_round_trip_preserves_kind():
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.provenance.records import (
-        Artifact, Format, record_from_dict,
+        Artifact,
+        Format,
+        record_from_dict,
     )
     art = Artifact.checkpoint(
         id=ProvId("2f9c81aa"),
@@ -250,7 +254,7 @@ def test_store_sidecar_next_to_data(tmp_path):
 
 def _build_sr_graph(store):
     """A model → inference → SR-cutout chain. Returns (model, infer, sr)."""
-    from euclid_polish.provenance.records import Artifact, Process, Format
+    from euclid_polish.provenance.records import Artifact, Format, Process
     train = Process.training(id=store.mint(), git=None, status="ok")
     model = Artifact.checkpoint(id=store.mint(), git=None,
                                 produced_by=train.id, format=Format.CKPT)
@@ -264,8 +268,8 @@ def _build_sr_graph(store):
 
 
 def test_lineage_ancestors_walks_to_root(tmp_path):
-    from euclid_polish.provenance.store import ProvStore
     from euclid_polish.provenance.lineage import Lineage
+    from euclid_polish.provenance.store import ProvStore
     store = ProvStore(str(tmp_path))
     model, infer, sr = _build_sr_graph(store)
     anc = Lineage(store).ancestors(sr.id)
@@ -274,8 +278,8 @@ def test_lineage_ancestors_walks_to_root(tmp_path):
 
 
 def test_lineage_descendants_finds_outputs(tmp_path):
-    from euclid_polish.provenance.store import ProvStore
     from euclid_polish.provenance.lineage import Lineage
+    from euclid_polish.provenance.store import ProvStore
     store = ProvStore(str(tmp_path))
     model, infer, sr = _build_sr_graph(store)
     desc = Lineage(store).descendants(model.id)
@@ -284,9 +288,9 @@ def test_lineage_descendants_finds_outputs(tmp_path):
 
 def test_lineage_is_stale_current_vs_stale_vs_unknown(tmp_path):
     from euclid_polish.provenance.ids import ProvId
+    from euclid_polish.provenance.lineage import Lineage
     from euclid_polish.provenance.records import Artifact, Format
     from euclid_polish.provenance.store import ProvStore
-    from euclid_polish.provenance.lineage import Lineage
     store = ProvStore(str(tmp_path))
     model, infer, sr = _build_sr_graph(store)
     lin = Lineage(store)
@@ -305,9 +309,10 @@ def test_lineage_is_stale_current_vs_stale_vs_unknown(tmp_path):
 
 def test_stamp_carrier_with_stamp_returns_unmutated_copy():
     from dataclasses import dataclass
+
     from euclid_polish.provenance.ids import ProvId
-    from euclid_polish.provenance.records import Stamp
     from euclid_polish.provenance.persistable import StampCarrier
+    from euclid_polish.provenance.records import Stamp
 
     @dataclass
     class Thing(StampCarrier):
@@ -324,8 +329,9 @@ def test_stamp_carrier_with_stamp_returns_unmutated_copy():
 
 def test_persistable_protocol_recognises_a_full_implementer():
     from dataclasses import dataclass
-    from euclid_polish.provenance.records import Format
+
     from euclid_polish.provenance.persistable import Persistable, StampCarrier
+    from euclid_polish.provenance.records import Format
 
     @dataclass
     class Doc(StampCarrier):

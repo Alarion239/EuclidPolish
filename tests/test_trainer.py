@@ -28,16 +28,21 @@ import tensorflow as tf
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.training.augmentation import (
-    asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
+    asinh_stretch_hr,
+    asinh_stretch_lr,
+    lr_only_dataset,
 )
 from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import (
-    Trainer, TRAINING_LOG_COLUMNS, _is_grad_spike,
-    GRAD_SPIKE_SKIP_NORM, GRAD_SPIKE_SKIP_WARMUP_STEPS,
+    GRAD_SPIKE_SKIP_NORM,
+    GRAD_SPIKE_SKIP_WARMUP_STEPS,
+    TRAINING_LOG_COLUMNS,
+    Trainer,
+    _is_grad_spike,
 )
 
 
@@ -65,6 +70,7 @@ def test_apply_lr_follows_schedule_and_halves(tmp_path):
     """The optimiser is built with a settable constant LR; ``_apply_lr``
     follows a passed schedule (× the guard's halving scale)."""
     from tf_keras.optimizers.schedules import PiecewiseConstantDecay
+
     from euclid_polish.training.models.wdsr import wdsr
 
     m = wdsr(scale=2, num_res_blocks=1, nchan_in=4, nchan_out=1)
@@ -683,7 +689,7 @@ class TestLogHeaderRotation:
         with open(log_path, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=old_cols)
             w.writeheader()
-            w.writerow({c: 0 for c in old_cols})
+            w.writerow(dict.fromkeys(old_cols, 0))
 
         trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
         trainer.train(

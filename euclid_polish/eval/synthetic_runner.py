@@ -14,15 +14,15 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from euclid_polish.config import Config
-from euclid_polish.eval.catalog_runner import (EVAL_HR_SIZE, EVAL_LR_SIZE,
-                                               enforce_object_sizes)
+from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE, enforce_object_sizes
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
 
 
-def default_records_dir() -> Optional[str]:
+def default_records_dir() -> str | None:
     """Local dir holding the validation TFRecords, or ``None`` if not present."""
     cand = [Config.RECORDS_DIR_V2]
     try:                                        # web-layer cache resolver
@@ -36,7 +36,7 @@ def default_records_dir() -> Optional[str]:
     return None
 
 
-def _psnr(a, b) -> Optional[float]:
+def _psnr(a, b) -> float | None:
     """PSNR (dB) over the overlapping region, peak = Config.PSNR_PEAK_E."""
     import numpy as np
     a = np.asarray(a, np.float64); b = np.asarray(b, np.float64)
@@ -88,16 +88,16 @@ _SUBGROUPS = (("syn-lens", "lens"), ("syn-gal", "galaxy"))
 def run_synthetic_eval(
     out_dir: str, n: int, *,
     model=None,
-    records_dir: Optional[str] = None,
-    checkpoint: Optional[str] = None,
-    num_res_blocks: Optional[int] = None,
-    asinh_scale: Optional[float] = None,
+    records_dir: str | None = None,
+    checkpoint: str | None = None,
+    num_res_blocks: int | None = None,
+    asinh_scale: float | None = None,
     stamp_m: int = EVAL_HR_SIZE,
     seed: int = 0,
     unique_fields: bool = True,
-    on_progress: Optional[Callable[[int, int, str], None]] = None,
-    log: Optional[Callable[[str], None]] = None,
-) -> Dict[str, Any]:
+    on_progress: Callable[[int, int, str], None] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Crop up to N syn-lens + N syn-gal source-centered stamps into ``out_dir``.
 
     Returns ``{"rows": [...], "n_ok", "n_skip", "groups": {...}}``. Requires the
@@ -107,10 +107,10 @@ def run_synthetic_eval(
     import numpy as np
     from astropy.io import fits
 
+    from euclid_polish.eval.catalog_runner import load_eval_model
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
     from euclid_polish.training.inference import reconstruct
-    from euclid_polish.eval.catalog_runner import load_eval_model
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
@@ -158,7 +158,7 @@ def run_synthetic_eval(
     rng = np.random.default_rng(seed)
     order = list(common)
     rng.shuffle(order)
-    plan: List[tuple] = []                      # (field_index, grade, source)
+    plan: list[tuple] = []                      # (field_index, grade, source)
     used = set()
     for grade, stype in _SUBGROUPS:
         taken = 0
@@ -184,14 +184,14 @@ def run_synthetic_eval(
     scale_hdr = float(asinh_scale or Config.STRETCH_SCALE_E)
     bands = ",".join(Config.LR_INPUT_BAND_NAMES)
 
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     n_ok = n_skip = 0
     total = len(plan)
     for j, (idx, grade, src) in enumerate(plan):
         _tick(j, total, f"{grade} idx {idx}")
         sub = f"{grade}_{idx:04d}"
         obj_dir = os.path.join(out_dir, sub)
-        rec: Dict[str, Any] = {
+        rec: dict[str, Any] = {
             "id": sub, "ra": "", "dec": "", "grade": grade,
             "ok": False, "error": "", "out_subdir": sub,
             "lr_total_e": "", "sr_total_e": "", "flux_ratio_sr_over_lr": "",
@@ -280,7 +280,7 @@ def run_synthetic_eval(
             n_skip += 1
         rows.append(rec)
 
-    groups: Dict[str, int] = {}
+    groups: dict[str, int] = {}
     for r in rows:
         if r.get("ok"):
             groups[r["grade"]] = groups.get(r["grade"], 0) + 1

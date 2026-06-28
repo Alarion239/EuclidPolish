@@ -9,13 +9,12 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
 from euclid_polish.image.tfio import (
     parse_example,
     read_images,
     write_images,
 )
-from euclid_polish.image import Image
-
 
 # ---------------------------------------------------------------------------
 # Image construction

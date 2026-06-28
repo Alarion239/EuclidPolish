@@ -1,25 +1,24 @@
 """status helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import os
+from typing import Any
+
+import tensorflow as tf
 from astropy.io import fits
-from euclid_polish.config import Config
+
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
-from euclid_polish.observability.training_log import TrainingLog
-from euclid_polish.psf.psf_library import psf_inventory
-from euclid_polish.psf import PSF
+from euclid_polish.config import Config
 from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.observability.training_log import TrainingLog
+from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
 from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
-from euclid_polish.web.remote import STATE
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-import os
-import tensorflow as tf
 from euclid_polish.web.helpers.paths import _safe_relpath
+from euclid_polish.web.remote import STATE
 
 
 def _fasrc_catalog_remote_path() -> str:
@@ -28,7 +27,7 @@ def _fasrc_catalog_remote_path() -> str:
     return f"{cfg.data_dir}/euclid_stars/{Config.CATALOG_FILE}"
 
 
-def _fasrc_catalog_dir(force: bool = True) -> Optional[str]:
+def _fasrc_catalog_dir(force: bool = True) -> str | None:
     """Pull the FASRC ``stars.csv`` into the local cache; return the dir
     holding it (the ``<dir>/stars.csv`` the catalog reads), or None if the
     remote catalog isn't there / can't be fetched.
@@ -56,11 +55,11 @@ def _valid_4band_stars(force: bool = False):
     if not objects:
         return None, []
     band_names = [b.name for b in Config.BANDS]
-    by_size: Dict[int, List[int]] = {}
+    by_size: dict[int, list[int]] = {}
     for o in objects:
         # Sizes valid in EVERY band = intersection of each band's valid sizes;
         # any band with no valid size disqualifies the star.
-        per_band: List[set] = []
+        per_band: list[set] = []
         for bn in band_names:
             sizes = set(o.valid_sizes(bn))
             if not sizes:
@@ -77,7 +76,7 @@ def _valid_4band_stars(force: bool = False):
     return best, sorted(by_size[best])
 
 
-def _ensure_local_star_cutout(band: str, sid: int, size: int) -> Optional[str]:
+def _ensure_local_star_cutout(band: str, sid: int, size: int) -> str | None:
     """Local canonical path of star ``sid``'s ``band`` cutout, PERSISTENTLY
     saved under ``data/euclid_stars/cutouts/<band>/`` (the same layout the
     gallery + /inspect read). Pulled from FASRC once on first request;
@@ -101,7 +100,7 @@ def _ensure_local_star_cutout(band: str, sid: int, size: int) -> Optional[str]:
     return local_path if os.path.isfile(local_path) else None
 
 
-def _catalog_status() -> Dict[str, Any]:
+def _catalog_status() -> dict[str, Any]:
     cat_dir = _fasrc_catalog_dir()
     if cat_dir is None:
         return {"present": False}
@@ -115,7 +114,7 @@ def _catalog_status() -> Dict[str, Any]:
             "path": _fasrc_catalog_remote_path()}
 
 
-def _fasrc_psf_dir(force: bool = True) -> Optional[str]:
+def _fasrc_psf_dir(force: bool = True) -> str | None:
     """Pull the FASRC Euclid ePSFs into the local cache; return the dir
     holding them, or None if none are on FASRC yet.
 
@@ -124,7 +123,7 @@ def _fasrc_psf_dir(force: bool = True) -> Optional[str]:
     down and read them — not a stale local copy. The four band files share
     one remote dir, so they land in one local cache dir."""
     cfg = fasrc_config.load()
-    local_dir: Optional[str] = None
+    local_dir: str | None = None
     for band in Config.BANDS:
         remote = f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}"
         res = _fasrc_fetcher.fetch_one_file(
@@ -135,14 +134,14 @@ def _fasrc_psf_dir(force: bool = True) -> Optional[str]:
     return local_dir
 
 
-def _cached_fasrc_psf_dir() -> Optional[str]:
+def _cached_fasrc_psf_dir() -> str | None:
     """Local cache dir holding the FASRC ePSFs **without** triggering a fetch.
 
     Page renders read whatever was last synced (fast, no SSH round-trip); the
     explicit "Synchronise" button (``/api/euclid-psf/sync``) is the only thing
     that re-rsyncs. Returns None if nothing has been synced down yet."""
     cfg = fasrc_config.load()
-    local_dir: Optional[str] = None
+    local_dir: str | None = None
     for band in Config.BANDS:
         local = _local_path_for(
             f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}")
@@ -151,7 +150,7 @@ def _cached_fasrc_psf_dir() -> Optional[str]:
     return local_dir
 
 
-def _psf_status() -> Dict[str, Any]:
+def _psf_status() -> dict[str, Any]:
     # Read the local cache only — no rsync on page load. The Synchronise
     # button pulls fresh ePSFs from FASRC on demand.
     psf_dir = _cached_fasrc_psf_dir()
@@ -186,7 +185,7 @@ def _psf_status() -> Dict[str, Any]:
     return {"bands": bands}
 
 
-def _tfrecords_status(records_dir: Optional[str] = None) -> Dict[str, Any]:
+def _tfrecords_status(records_dir: str | None = None) -> dict[str, Any]:
     """List on-disk TFRecord files under ``records_dir``.
 
     Defaults to ``Config.RECORDS_DIR_V2`` (the locally-generated sky
@@ -208,7 +207,7 @@ def _tfrecords_status(records_dir: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-def _checkpoints_status() -> Dict[str, Any]:
+def _checkpoints_status() -> dict[str, Any]:
     """Every checkpoint file on disk, recursing into sub-tracks.
 
     Walks the whole checkpoint dir (not just the top level) so the second
@@ -217,7 +216,7 @@ def _checkpoints_status() -> Dict[str, Any]:
     lives in so the UI can group + show locations.
     """
     ckpt_dir = Config.DEFAULT_CHECKPOINT_DIR
-    out: Dict[str, Any] = {"dir": ckpt_dir, "files": []}
+    out: dict[str, Any] = {"dir": ckpt_dir, "files": []}
     # The standard 4-channel model lives in ``ckpt_dir``; the VIS-only
     # (1-channel) model in the sibling ``ckpt_dir-vis``. List both so the UI
     # shows whichever exist. Each entry's ``variant`` ("" / "vis") +
@@ -247,7 +246,7 @@ def _checkpoints_status() -> Dict[str, Any]:
 
 
 def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
-                          preview_n: int = 8) -> Dict[str, Any]:
+                          preview_n: int = 8) -> dict[str, Any]:
     """Count cutout FITS files per band under ``output_dir/cutouts/<band>/``.
 
     Also returns up to ``preview_n`` filenames per band for inline thumbnails.
@@ -273,7 +272,7 @@ def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
     return {"root": cutout_root, "bands": bands_info, "total": total}
 
 
-def _list_vis_pngs() -> list[Dict[str, Any]]:
+def _list_vis_pngs() -> list[dict[str, Any]]:
     """Recent PNGs under data/vis/, newest first.
 
     Each entry includes ``inspect_fits`` — a project-relative path to a
@@ -281,7 +280,7 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
     uses this to route the thumbnail click to ``/inspect`` instead of
     just popping the raw PNG.
     """
-    pngs: list[Dict[str, Any]] = []
+    pngs: list[dict[str, Any]] = []
     if not os.path.isdir(Config.VIS_DIR):
         return pngs
     for dirpath, _, files in os.walk(Config.VIS_DIR):
@@ -312,7 +311,7 @@ def _list_vis_pngs() -> list[Dict[str, Any]]:
     return pngs
 
 
-def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
+def _resolve_training_log(checkpoint_dir: str) -> str | None:
     """Pick the current ``training_log.csv`` or fall back to legacy
     ``training_log.jsonl`` so logs from runs before the CSV switch still
     plot. Returns the path that exists, or None if neither does."""
@@ -323,7 +322,7 @@ def _resolve_training_log(checkpoint_dir: str) -> Optional[str]:
     return None
 
 
-def _ckpt_dir_for_kind(checkpoint_dir: str, kind: Optional[str],
+def _ckpt_dir_for_kind(checkpoint_dir: str, kind: str | None,
                        vis_only: Any = False) -> str:
     """Resolve the inference checkpoint dir for the chosen save-best track.
 
@@ -346,7 +345,7 @@ def _ckpt_dir_for_kind(checkpoint_dir: str, kind: Optional[str],
     return base
 
 
-def _record_count(name: str, records_dir: Optional[str] = None) -> Optional[int]:
+def _record_count(name: str, records_dir: str | None = None) -> int | None:
     """Records in a multi-band tfrecord.
 
     Returns:

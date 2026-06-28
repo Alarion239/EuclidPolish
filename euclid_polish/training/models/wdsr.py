@@ -16,7 +16,6 @@ Why no in-graph stretch / inverse:
 """
 
 import tensorflow_probability as tfp
-
 from tf_keras.layers import Add, Concatenate, Conv2D, Input, Lambda
 from tf_keras.models import Model
 

@@ -30,8 +30,7 @@ import csv
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Optional
-
+from typing import Any
 
 _HEADER = [
     "jobid", "stage", "started_at", "ended_at", "duration_seconds",
@@ -47,7 +46,7 @@ class StageTimer:
 
     def __init__(self, csv_path: str, *,
                  jobid: str,
-                 params: Optional[Dict[str, Any]] = None) -> None:
+                 params: dict[str, Any] | None = None) -> None:
         self.csv_path = csv_path
         self.jobid    = jobid
         self.params   = dict(params or {})
@@ -74,7 +73,7 @@ class StageTimer:
             self._append(name, params_dependent, t0, time.time())
 
     def mark(self, name: str, *, params_dependent: bool,
-             started_at: float, ended_at: Optional[float] = None) -> None:
+             started_at: float, ended_at: float | None = None) -> None:
         """Append a row for a stage whose boundaries were captured
         outside the context manager (e.g. ``init`` measured from the
         script's first instant up to the first stage starting)."""

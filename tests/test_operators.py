@@ -7,8 +7,9 @@
 (``Model.upsample`` is covered in test_model.py.) The operators are exercised
 with their heavy engines stubbed — only the thin verb wrapper is under test.
 """
-import numpy as np
 from unittest.mock import patch
+
+import numpy as np
 from astropy.io import fits as _fits
 
 from euclid_polish.catalog import EuclidCatalog

@@ -7,14 +7,15 @@ import os
 
 import numpy as np
 import pytest
+from astropy.io import fits as _fits
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
+from euclid_polish.config import Config
 from euclid_polish.sky.generation.tng_galaxy import (
     block_mean,
     list_tng_galaxies,
@@ -26,7 +27,6 @@ from euclid_polish.sky.generation.tng_galaxy import (
     sample_tng_stamp,
     tng_fits_path,
 )
-from astropy.io import fits as _fits
 
 BAND = Config.BAND_VIS
 HR_SCALE = Config.DEFAULT_PIXEL_SCALE  # 0.05"

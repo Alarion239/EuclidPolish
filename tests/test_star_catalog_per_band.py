@@ -6,14 +6,13 @@ import os
 
 import pytest
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import (
     CatalogObject,
     next_id,
     summarize,
 )
 from euclid_polish.catalog.downloader import DownloadConfig
-
+from euclid_polish.config import Config
 
 # ---------------------------------------------------------------------------
 # Per-band flag round-trips

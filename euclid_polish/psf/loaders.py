@@ -18,10 +18,9 @@ HST-vs-Euclid-vs-anything-else logic lives here.
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.psf.core import PSF, DEFAULT_HR_PIXEL_SCALE
+from euclid_polish.psf.core import DEFAULT_HR_PIXEL_SCALE, PSF
 
 
 def load_hst_f814w_psf(

@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from euclid_polish.config import Config
-from euclid_polish.eval import galaxy_catalog
-from euclid_polish.eval.eval_catalog import read_eval_catalog
-from euclid_polish.eval import catalog_runner, synthetic_runner
+from euclid_polish.eval import catalog_runner, galaxy_catalog, synthetic_runner
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
+from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 #: Manifest columns for a grouped run (superset: PSNR is synthetic-only).
 GROUPED_COLS = [
@@ -28,7 +28,7 @@ LENS_GRADES = ("A", "B", "C")
 
 
 def _galaxy_plan(lens_plan, *, catalog: str, seed: int,
-                 log: Callable[[str], None]) -> List[Dict[str, Any]]:
+                 log: Callable[[str], None]) -> list[dict[str, Any]]:
     """Rows for the real-galaxy group: 3 × the realized grade-A lens count.
 
     Galaxies are drawn from the same fields as the lenses and cached, so each
@@ -55,21 +55,21 @@ def _galaxy_plan(lens_plan, *, catalog: str, seed: int,
 def run_grouped_analysis(
     out_dir: str, n: int, *,
     cutout_size: int = EVAL_LR_SIZE,
-    catalog_path: Optional[str] = None,
-    checkpoint: Optional[str] = None,
-    num_res_blocks: Optional[int] = None,
-    asinh_scale: Optional[float] = None,
+    catalog_path: str | None = None,
+    checkpoint: str | None = None,
+    num_res_blocks: int | None = None,
+    asinh_scale: float | None = None,
     stamp_m: int = EVAL_HR_SIZE,
     seed: int = 0,
     grades=LENS_GRADES,
     include_synthetic: bool = True,
     include_galaxies: bool = True,
-    lens_source_dir: Optional[str] = None,
+    lens_source_dir: str | None = None,
     unique_fields: bool = True,
-    on_progress: Optional[Callable[[int, int, str], None]] = None,
-    log: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    log: Callable[[str], None] | None = None,
     model: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Prepare the four-group dataset into ``out_dir``; write one manifest.
 
     Every object is held at the canonical eval geometry: a ``EVAL_LR_SIZE``² LR
@@ -142,7 +142,7 @@ def run_grouped_analysis(
         if on_progress:
             on_progress(done[0], total, label)
 
-    all_rows: List[Dict[str, Any]] = []
+    all_rows: list[dict[str, Any]] = []
     for g, rows in lens_plan:
         for obj in rows:
             _tick(f"{g}: {obj['id']}")
@@ -202,7 +202,7 @@ def run_grouped_analysis(
         on_progress(total, total, "done")
     n_ok = sum(1 for r in all_rows if r.get("ok"))
     _emit(f"\n✓ grouped analysis: {n_ok}/{len(all_rows)} ok → {manifest_path}")
-    groups: Dict[str, int] = {}
+    groups: dict[str, int] = {}
     for r in all_rows:
         if r.get("ok"):
             groups[r["grade"]] = groups.get(r["grade"], 0) + 1

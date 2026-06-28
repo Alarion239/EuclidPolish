@@ -35,7 +35,7 @@ correct clip level on the shared 0.10″ LR grid, where saturation is applied.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -59,9 +59,9 @@ class StarSaturationModel:
     def __init__(
         self,
         *,
-        bands: Optional[Sequence[BandConfig]] = None,
-        band_offsets: Optional[Dict[str, float]] = None,
-        calib_mag: Optional[Dict[str, float]] = None,
+        bands: Sequence[BandConfig] | None = None,
+        band_offsets: dict[str, float] | None = None,
+        calib_mag: dict[str, float] | None = None,
         fwhm_arcsec: float = Config.STAR_SATURATION_FWHM_ARCSEC,
         jitter_dex: float = Config.STAR_SATURATION_JITTER_DEX,
         rect_min_px: int = Config.STAR_SATURATION_RECT_MIN_PX,
@@ -84,8 +84,8 @@ class StarSaturationModel:
             raise ValueError("max_rects must be ≥ 1")
 
         # Precompute per-band peak fraction + calibrated well depth (electrons).
-        self._f_peak: Dict[str, float] = {}
-        self._well_e: Dict[str, float] = {}
+        self._f_peak: dict[str, float] = {}
+        self._well_e: dict[str, float] = {}
         for b in self.bands:
             self._f_peak[b.name] = _f_peak(_native_pixel(b), self.fwhm_arcsec)
             self._well_e[b.name] = self._peak_mean_e(self.calib_mag[b.name], b)
@@ -127,7 +127,7 @@ class StarSaturationModel:
         return peak >= well
 
     def rectangles(self, rng: np.random.Generator
-                   ) -> List[Tuple[int, int, int, int]]:
+                   ) -> list[tuple[int, int, int, int]]:
         """1–3 overlapping rectangles ``(x0, y0, w, h)`` (pixels, relative to the
         peak pixel at the origin). The first contains the origin; the rest are
         placed to overlap it."""

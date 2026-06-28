@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
+from euclid_polish.config import Config
 
 
 def _path(tmp_path):

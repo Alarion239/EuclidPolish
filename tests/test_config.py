@@ -15,7 +15,6 @@ import pytest
 
 from euclid_polish.config import BandConfig, Config
 
-
 # ---------------------------------------------------------------------------
 # BandConfig basics
 # ---------------------------------------------------------------------------
@@ -32,7 +31,7 @@ def test_band_names_unique_and_ordered():
 
 
 def test_lr_input_band_names_match_bands_tuple():
-    assert Config.LR_INPUT_BAND_NAMES == tuple(b.name for b in Config.BANDS)
+    assert tuple(b.name for b in Config.BANDS) == Config.LR_INPUT_BAND_NAMES
 
 
 def test_native_detector_scale_vis_vs_nisp():

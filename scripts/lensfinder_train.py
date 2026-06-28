@@ -189,11 +189,13 @@ def _train_one(recon, rows, args, reporter, step_offset):
                 "predictions": pred_csv, "global_step": 0, "skipped": True}
 
     import lightning as L
-    from lightning.pytorch.callbacks import ModelCheckpoint
-    from galaxy_datasets.transforms import (default_view_config,
-                                            get_galaxy_transform,
-                                            minimal_view_config)
     from galaxy_datasets.pytorch.galaxy_datamodule import CatalogDataModule
+    from galaxy_datasets.transforms import (
+        default_view_config,
+        get_galaxy_transform,
+        minimal_view_config,
+    )
+    from lightning.pytorch.callbacks import ModelCheckpoint
     from zoobot.pytorch.training import finetune
 
     df_train, df_val, df_test = _frames(rows, recon)

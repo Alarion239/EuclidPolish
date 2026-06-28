@@ -19,7 +19,6 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 
-
 _SCRIPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "scripts", "fasrc_extract_hst_psf.py",

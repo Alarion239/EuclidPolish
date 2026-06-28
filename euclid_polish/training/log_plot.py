@@ -3,15 +3,14 @@
 import csv
 import json
 import os
-from typing import List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 from euclid_polish.training.trainer import (
-    PER_BAND_PSNR_COLUMNS, TRAINING_LOG_FILENAME,
+    PER_BAND_PSNR_COLUMNS,
+    TRAINING_LOG_FILENAME,
 )
-
 
 _NUMERIC_LOG_COLS = {
     "step", "wall_time",
@@ -38,7 +37,7 @@ _BAND_PLOT_COLORS = {
 }
 
 
-def read_training_log(log_path: str) -> List[dict]:
+def read_training_log(log_path: str) -> list[dict]:
     """Read the trainer's validation-history log and return records as dicts.
 
     Auto-detects:
@@ -90,11 +89,11 @@ def read_training_log(log_path: str) -> List[dict]:
 
 
 def plot_training_records(
-    records: List[dict],
+    records: list[dict],
     output_path: str,
     smooth_window: int = 0,
     title_suffix: str = "",
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Plot the validation metrics — all on ONE graph.
 
     Three curves share a single figure (from a pre-loaded record list;
@@ -116,7 +115,7 @@ def plot_training_records(
     steps    = np.array([r["step"]            for r in records])
     psnr_syn = np.array([r["psnr_stretched"]  for r in records])
 
-    def _opt_series(col: str) -> Tuple[np.ndarray, np.ndarray]:
+    def _opt_series(col: str) -> tuple[np.ndarray, np.ndarray]:
         """(steps, values) for the rows that actually carry ``col``.
 
         Multi-source columns are blank on rows from synthetic-only runs
@@ -124,8 +123,8 @@ def plot_training_records(
         from the SSH parser; both are filtered so each curve plots only
         the points genuinely measured.
         """
-        xs: List[float] = []
-        ys: List[float] = []
+        xs: list[float] = []
+        ys: list[float] = []
         for r in records:
             v = r.get(col)
             if v is None or v == "":
@@ -186,7 +185,7 @@ def plot_training_records(
         except (TypeError, ValueError):
             return None
 
-    def _smoothed(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _smoothed(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if smooth_window and smooth_window > 1 and y.size >= smooth_window:
             k = np.ones(smooth_window) / smooth_window
             return x[smooth_window - 1:], np.convolve(y, k, mode="valid")
@@ -370,7 +369,7 @@ def plot_training_log(
     log_path: str,
     output_path: str,
     smooth_window: int = 0,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Read the trainer's validation log (CSV or legacy JSONL) and plot.
 
     Thin wrapper around :func:`plot_training_records` that reads the

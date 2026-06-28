@@ -26,11 +26,9 @@ The model is number-weighted: one draw per galaxy slot.
 
 from __future__ import annotations
 
-from typing import Optional, Union
-
+import astropy.units as u
 import numpy as np
 from astropy.cosmology import Planck15 as _COSMO
-import astropy.units as u
 
 _RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0
 
@@ -94,8 +92,8 @@ class ApparentSizeModel:
 
     # ------------------------------------------------------------------ #
     def sample(
-        self, rng: np.random.Generator, size: Optional[int] = None
-    ) -> Union[float, np.ndarray]:
+        self, rng: np.random.Generator, size: int | None = None
+    ) -> float | np.ndarray:
         """Draw apparent half-light radii (arcsec).
 
         ``size=None`` returns a Python float; an int returns an ``(size,)``
@@ -159,8 +157,8 @@ class CosmosSizeSampler:
         if not (0.0 < self.big_lo <= self.big_hi):
             raise ValueError(f"invalid big_range {big_range}")
 
-    def sample(self, rng: np.random.Generator, size: Optional[int] = None
-               ) -> Union[float, np.ndarray]:
+    def sample(self, rng: np.random.Generator, size: int | None = None
+               ) -> float | np.ndarray:
         scalar = size is None
         n = 1 if scalar else int(size)
         out = self._re[rng.integers(0, self._re.size, n)].astype(float)

@@ -128,6 +128,7 @@ def test_backup_unknown_kind(client):
 def test_timetravel_restore_route(client, monkeypatch):
     import json
     import os
+
     from euclid_polish.tracking import default_store
     from euclid_polish.tracking import timetravel as tt
 

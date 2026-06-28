@@ -18,8 +18,9 @@ import math
 import os
 import tempfile
 import threading
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 import numpy as np
 from astropy.io import fits as _fits
@@ -28,8 +29,13 @@ from tqdm import tqdm
 
 from euclid_polish.catalog.catalog_object import CatalogObject, _finite_float
 from euclid_polish.catalog.downloader import (
-    DownloadConfig, core_is_saturated, download_one_cutout, fetch_cutout_at,
-    positions_match, resolve_mosaics, scan_cutouts,
+    DownloadConfig,
+    core_is_saturated,
+    download_one_cutout,
+    fetch_cutout_at,
+    positions_match,
+    resolve_mosaics,
+    scan_cutouts,
 )
 from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor, uJy_to_ab_mag
 from euclid_polish.catalog.validator import FitsValidator
@@ -50,10 +56,10 @@ class EuclidCatalog:
     #: astroquery's ``Euclid`` is a process-global singleton — one login lock.
     _login_lock = threading.Lock()
 
-    def __init__(self, login: Optional[str] = None, password: Optional[str] = None,
+    def __init__(self, login: str | None = None, password: str | None = None,
                  *, _skip_login: bool = False) -> None:
-        self._user: Optional[str] = None
-        self._password: Optional[str] = None
+        self._user: str | None = None
+        self._password: str | None = None
         if _skip_login:
             return
         user, pw = self._resolve_credentials(login, password)
@@ -64,8 +70,8 @@ class EuclidCatalog:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _resolve_credentials(login: Optional[str],
-                             password: Optional[str]) -> "tuple[str, str]":
+    def _resolve_credentials(login: str | None,
+                             password: str | None) -> tuple[str, str]:
         if login and password:
             return login, password
         env_user = os.environ.get("EUCLID_USER")
@@ -85,7 +91,7 @@ class EuclidCatalog:
         self._user, self._password = user, password
 
     @property
-    def user(self) -> Optional[str]:
+    def user(self) -> str | None:
         """The authenticated username, or ``None`` (unauthenticated client)."""
         return self._user
 
@@ -106,7 +112,7 @@ class EuclidCatalog:
             return False
 
     @classmethod
-    def _unauthenticated(cls) -> "EuclidCatalog":
+    def _unauthenticated(cls) -> EuclidCatalog:
         """A client that skipped the network login — tests / offline only."""
         return cls(_skip_login=True)
 
@@ -116,13 +122,13 @@ class EuclidCatalog:
 
     def query_bright_stars(
         self, num_stars: int, *,
-        ra: Optional[float] = None, dec: Optional[float] = None,
-        radius: Optional[float] = None,
-        magnitude_limit: Optional[float] = None,
-        magnitude_min: Optional[float] = None,
-        snr_min: Optional[float] = None,
+        ra: float | None = None, dec: float | None = None,
+        radius: float | None = None,
+        magnitude_limit: float | None = None,
+        magnitude_min: float | None = None,
+        snr_min: float | None = None,
         require_unmasked: bool = True,
-    ) -> List[CatalogObject]:
+    ) -> list[CatalogObject]:
         """Top-``num_stars`` mask-free point sources by VIS PSF flux (descending).
 
         Magnitudes are AB (``Config.AB_ZP_UJY``); the raw PSF flux + error are
@@ -164,7 +170,7 @@ class EuclidCatalog:
         job = Euclid.launch_job_async(query)
         results = job.get_results() if job is not None else None
 
-        objs: List[CatalogObject] = []
+        objs: list[CatalogObject] = []
         for row in results or []:
             flux = _finite_float(row["flux_vis_psf"])
             if flux is None or flux <= 0:
@@ -182,7 +188,7 @@ class EuclidCatalog:
                        diam_lo_arcsec: float = Config.GalaxySelection.DIAM_LO_ARCSEC,
                        diam_hi_arcsec: float = Config.GalaxySelection.DIAM_HI_ARCSEC,
                        mag_floor: float = Config.GalaxySelection.MAG_FLOOR,
-                       ) -> List[CatalogObject]:
+                       ) -> list[CatalogObject]:
         """Clean, resolved, bigger-end galaxies in a cone (``kind='galaxy'``).
 
         Server-side cuts: extended (``point_like_flag = 0``), not spurious, clean
@@ -206,7 +212,7 @@ class EuclidCatalog:
         job = Euclid.launch_job(query)
         results = job.get_results() if job is not None else None
 
-        objs: List[CatalogObject] = []
+        objs: list[CatalogObject] = []
         for row in results or []:
             r = _finite_float(row["right_ascension"])
             d = _finite_float(row["declination"])
@@ -251,8 +257,8 @@ class EuclidCatalog:
         store : ProvStore, optional
             Provenance store; defaults to ``default_store()`` (guarded).
         """
-        planes: List[np.ndarray] = []
-        vis_wcs: Optional[FitsWCS] = None
+        planes: list[np.ndarray] = []
+        vis_wcs: FitsWCS | None = None
         for band_name in bands:
             band = Config.get_band(band_name)
             with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tf:
@@ -290,14 +296,14 @@ class EuclidCatalog:
     # ------------------------------------------------------------------
 
     def download_cutouts(
-        self, objects: List[CatalogObject], output_dir: str,
+        self, objects: list[CatalogObject], output_dir: str,
         config: DownloadConfig, *,
-        ids: Optional[List[int]] = None,
+        ids: list[int] | None = None,
         show_progress: bool = True,
-        progress_cb: Optional[Callable[[int, int, str], None]] = None,
+        progress_cb: Callable[[int, int, str], None] | None = None,
         retry_failed: bool = False,
-        validator: Optional[FitsValidator] = None,
-    ) -> Dict[str, Any]:
+        validator: FitsValidator | None = None,
+    ) -> dict[str, Any]:
         """Download ``config.band`` cutouts for ``objects`` into ``output_dir``.
 
         Cutouts land in ``<output_dir>/cutouts/<band>/star_<id>_<size>.fits`` and
@@ -396,9 +402,9 @@ class EuclidCatalog:
                   f"{band} tile — marking failed")
         with_mosaics = [o for o in needing if o.id in mosaic_lookup]
 
-        rejected_ids: List[int] = []
+        rejected_ids: list[int] = []
 
-        def _download_and_validate(o: CatalogObject) -> Tuple[int, bool]:
+        def _download_and_validate(o: CatalogObject) -> tuple[int, bool]:
             mosaic = mosaic_lookup[o.id]
             output_file = os.path.join(
                 cutout_dir, f"star_{o.id:04d}_{cutout_size}.fits")

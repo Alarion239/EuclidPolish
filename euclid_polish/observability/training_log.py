@@ -21,7 +21,7 @@ from __future__ import annotations
 import csv
 import os
 import time
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 
 class TrainingLog:
@@ -35,14 +35,14 @@ class TrainingLog:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         # Set to the ``.bak`` path when an existing file with a stale header
         # was rotated out of the way (caller may surface it to the user).
-        self.rotated_backup: Optional[str] = self._rotate_if_stale_header()
+        self.rotated_backup: str | None = self._rotate_if_stale_header()
 
-    def _rotate_if_stale_header(self) -> Optional[str]:
+    def _rotate_if_stale_header(self) -> str | None:
         """If an existing log's header doesn't match the current columns,
         rename it to a timestamped backup so appends never misalign."""
         if not (os.path.exists(self.path) and os.path.getsize(self.path) > 0):
             return None
-        with open(self.path, "r", newline="") as fh:
+        with open(self.path, newline="") as fh:
             first_line = fh.readline().rstrip("\r\n")
         if first_line == ",".join(self.columns):
             return None

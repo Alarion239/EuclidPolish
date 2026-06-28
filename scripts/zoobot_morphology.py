@@ -108,8 +108,8 @@ def _build_catalog(objects, run_dir, asinh_scale, png_size, reporter):
 
 def _load_model_and_labels(args):
     """Load the Zoobot model and the prediction column names for the mode."""
-    from zoobot.pytorch.training import representations
     from zoobot.pytorch.estimators import define_model
+    from zoobot.pytorch.training import representations
 
     if args.tree_checkpoint:
         # Vote-fraction mode: finetuned tree model + schema-named columns.
@@ -168,8 +168,7 @@ def main(argv=None) -> int:
 
     # Heavy imports (torch / zoobot / galaxy-datasets) are deferred to here so
     # --help and a missing env fail fast and legibly.
-    from galaxy_datasets.transforms import (default_view_config,
-                                            get_galaxy_transform)
+    from galaxy_datasets.transforms import default_view_config, get_galaxy_transform
     from zoobot.pytorch.predictions import predict_on_catalog
 
     reporter.set_stage("rendering PNGs")

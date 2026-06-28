@@ -31,7 +31,6 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
 
 from euclid_polish.config import Config
 
-
 # Default per-band ratios for tests — VIS=1.0 by construction, NISP
 # bands take order-of-magnitude typical values. Real value at runtime
 # comes from the catalog; for tests any plausible vector works.

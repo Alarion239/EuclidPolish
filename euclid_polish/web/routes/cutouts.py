@@ -1,18 +1,23 @@
 """cutouts routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.config import Config
-from flask import abort
-from flask import jsonify
-from flask import redirect
-from flask import render_template
-from flask import request
-from flask import send_file
-from flask import url_for
 import io
-from euclid_polish.web.helpers.fits_render import _list_band_cutouts, _render_fits_to_png, _resolve_cutout_path
+
+from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
+
+from euclid_polish.config import Config
+from euclid_polish.web.helpers.fits_render import (
+    _list_band_cutouts,
+    _render_fits_to_png,
+    _resolve_cutout_path,
+)
 from euclid_polish.web.helpers.paths import _safe_relpath
-from euclid_polish.web.helpers.status import _catalog_status, _cutout_layout_status, _ensure_local_star_cutout, _valid_4band_stars
+from euclid_polish.web.helpers.status import (
+    _catalog_status,
+    _cutout_layout_status,
+    _ensure_local_star_cutout,
+    _valid_4band_stars,
+)
 
 
 def register(app):

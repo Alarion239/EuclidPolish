@@ -11,10 +11,9 @@ from __future__ import annotations
 import json
 
 from euclid_polish.observability import ResourceSampler
-from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability import resource_sampler as rs
+from euclid_polish.observability.reporter import Reporter
 from euclid_polish.web.job_status import fold_events
-
 
 # ---------------------------------------------------------------------------
 # nvidia-smi CSV parsing

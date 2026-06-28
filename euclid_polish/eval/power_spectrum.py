@@ -35,14 +35,13 @@ imports matplotlib and the TFRecord/sky loaders.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from euclid_polish.config import Config
 
 #: per-band line colours (blue→red, roughly by pivot wavelength)
-BAND_COLORS: Dict[str, str] = {
+BAND_COLORS: dict[str, str] = {
     "VIS": "#3b6fb0", "Y_E": "#5aae61", "J_E": "#e08214", "H_E": "#d6604d",
 }
 
@@ -62,8 +61,8 @@ def tukey_window_2d(n: int, alpha: float = 0.25) -> np.ndarray:
 
 
 def cross_power_2d(
-    a: np.ndarray, b: np.ndarray, window: Optional[np.ndarray] = None
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    a: np.ndarray, b: np.ndarray, window: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """2D auto/cross power for two same-shape real images.
 
     Each image is mean-subtracted (kills the DC term) and multiplied by
@@ -108,8 +107,8 @@ def bin_powers(
     sr: np.ndarray,
     pixel_scale_arcsec: float,
     k_edges: np.ndarray,
-    window: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    window: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Azimuthally-binned ``(p_hr, p_sr, p_cross, count)`` for one HR/SR pair."""
     n = hr.shape[0]
     if window is None:
@@ -129,7 +128,7 @@ def bin_powers(
 
 def ratios_from_powers(
     bh: np.ndarray, bs: np.ndarray, bx: np.ndarray, bc: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """``(T, r)`` from binned powers; empty bins → NaN. r ∈ [-1, 1] per object."""
     with np.errstate(divide="ignore", invalid="ignore"):
         t = np.sqrt(bs / bh)
@@ -165,7 +164,7 @@ class _SpectrumAccumulator:
         hr: np.ndarray,
         sr: np.ndarray,
         pixel_scale_arcsec: float,
-        window: Optional[np.ndarray] = None,
+        window: np.ndarray | None = None,
     ) -> None:
         """Add one HR/SR plane pair (same shape) to the ensemble."""
         bh, bs, bx, bc = bin_powers(hr, sr, pixel_scale_arcsec, self.k_edges, window)
@@ -175,7 +174,7 @@ class _SpectrumAccumulator:
         self.count += bc
         self.n_obj += 1
 
-    def finalize(self) -> Dict[str, np.ndarray]:
+    def finalize(self) -> dict[str, np.ndarray]:
         """Return ``{k, T, r, p_hr, p_sr, count}``; empty bins are NaN."""
         kc = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
         t, r = ratios_from_powers(
@@ -199,8 +198,8 @@ class BandStat:
     def __init__(self, k_edges: np.ndarray):
         self.k_edges = np.asarray(k_edges, dtype=np.float64)
         self.kc = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
-        self._t_rows: List[np.ndarray] = []
-        self._r_rows: List[np.ndarray] = []
+        self._t_rows: list[np.ndarray] = []
+        self._r_rows: list[np.ndarray] = []
 
     @property
     def n_obj(self) -> int:
@@ -211,14 +210,14 @@ class BandStat:
         hr: np.ndarray,
         sr: np.ndarray,
         pixel_scale_arcsec: float,
-        window: Optional[np.ndarray] = None,
+        window: np.ndarray | None = None,
     ) -> None:
         bh, bs, bx, bc = bin_powers(hr, sr, pixel_scale_arcsec, self.k_edges, window)
         t, r = ratios_from_powers(bh, bs, bx, bc)
         self._t_rows.append(t)
         self._r_rows.append(r)
 
-    def finalize(self) -> Dict[str, np.ndarray]:
+    def finalize(self) -> dict[str, np.ndarray]:
         nb = len(self.kc)
         if not self._t_rows:
             nan = np.full(nb, np.nan)
@@ -251,7 +250,7 @@ class BandStat:
 # --------------------------------------------------------------------------- #
 # Data loading                                                                 #
 # --------------------------------------------------------------------------- #
-def _bands_from_cube(arr: np.ndarray) -> Dict[int, np.ndarray]:
+def _bands_from_cube(arr: np.ndarray) -> dict[int, np.ndarray]:
     """Map a HR/SR FITS array to ``{band_index: 2D plane}``.
 
     Accepts ``(H, W)`` (VIS-only → band 0) or ``(C, H, W)`` (channel-first, the
@@ -274,7 +273,7 @@ def _bands_from_cube(arr: np.ndarray) -> Dict[int, np.ndarray]:
 # --------------------------------------------------------------------------- #
 def render_power_spectrum_summary(
     out_png: str, subset: str = "validate"
-) -> Optional[str]:
+) -> str | None:
     """Render the per-band HR-vs-SR power-spectrum figure → ``out_png``.
 
     Two rows (linear electrons / asinh space) × two columns (transfer function
@@ -288,8 +287,8 @@ def render_power_spectrum_summary(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from euclid_polish.web.helpers import sky_records
     from euclid_polish.image.tfio import read_images, tfrecord_path
+    from euclid_polish.web.helpers import sky_records
     from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
     records_dir = _sky_records_local_dir()
@@ -308,7 +307,7 @@ def render_power_spectrum_summary(
     spaces = ("linear", "asinh")
 
     # one per-field-median stat per (space, band)
-    accs: Dict[Tuple[str, str], BandStat] = {
+    accs: dict[tuple[str, str], BandStat] = {
         (sp, b): BandStat(k_edges) for sp in spaces for b in band_names
     }
     stretch = float(Config.STRETCH_SCALE_E)

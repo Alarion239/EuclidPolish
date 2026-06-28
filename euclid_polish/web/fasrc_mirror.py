@@ -11,7 +11,6 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
@@ -21,8 +20,8 @@ from euclid_polish.web.remote import STATE
 @dataclass
 class MirrorStatus:
     enabled:     bool = False
-    last_run_at: Optional[float] = None
-    last_rc:     Optional[int] = None
+    last_run_at: float | None = None
+    last_rc:     int | None = None
     last_error:  str = ""
     last_stdout: str = ""
     remote_dir:  str = ""
@@ -38,7 +37,7 @@ class Mirror:
 
     def __init__(self, period_seconds: int = 60) -> None:
         self.period = max(15, int(period_seconds))
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
         self._lock = threading.Lock()
         self.status = MirrorStatus()

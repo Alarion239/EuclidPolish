@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
     default_psf_for_band,
 )
-from euclid_polish.image import Image
 
 
 @pytest.fixture

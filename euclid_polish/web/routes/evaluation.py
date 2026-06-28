@@ -19,7 +19,7 @@ import glob
 import os
 import re
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from flask import abort, jsonify, render_template, request, send_file
 
@@ -37,7 +37,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 _STEP_RE = re.compile(r"STEP:\s*([\d,]+)\s*/\s*([\d,]+)")
 
 
-def _zoobot_python() -> Optional[str]:
+def _zoobot_python() -> str | None:
     """Locate the isolated EuclidPolishZoobot env's Python (torch is not in the
     main env). ``EUCLID_POLISH_ZOOBOT_PYTHON`` overrides; else probe the usual
     conda locations. Returns the interpreter path or ``None``."""
@@ -76,7 +76,7 @@ def _spawn_subprocess_job(label: str, cmd: list, result: dict):
     return JOB_REGISTRY.spawn(label, _run)
 
 
-def _list_catalogs() -> List[Dict[str, Any]]:
+def _list_catalogs() -> list[dict[str, Any]]:
     """List normalized evaluation catalogs (``*.csv``) under EVAL_CATALOG_DIR.
 
     Skips the raw Zenodo download (``q1_discovery_engine_lens_catalog.csv``) so
@@ -85,7 +85,7 @@ def _list_catalogs() -> List[Dict[str, Any]]:
     from euclid_polish.eval.lens_catalog import SOURCE_CSV
 
     root = Config.EVAL_CATALOG_DIR
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     if not os.path.isdir(root):
         return out
     for dirpath, _dirs, files in os.walk(root):
@@ -110,14 +110,14 @@ def _list_catalogs() -> List[Dict[str, Any]]:
     return out
 
 
-def _read_csv(path: str) -> List[Dict[str, str]]:
+def _read_csv(path: str) -> list[dict[str, str]]:
     if not os.path.isfile(path):
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
 
 
-def _read_manifest(run_dir: str) -> List[Dict[str, Any]]:
+def _read_manifest(run_dir: str) -> list[dict[str, Any]]:
     """Manifest rows for a run, with Zoobot morphology deltas merged in by id.
 
     When ``morphology_manifest.csv`` (from the Zoobot step) is present, each
@@ -166,6 +166,7 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     # Heavy imports (astropy / TF-backed inference) deferred to first render.
     import numpy as np
     from astropy.io import fits
+
     from euclid_polish.training.inference import plot_reconstruction
 
     with fits.open(sr_fits) as h:
@@ -186,7 +187,7 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     return out_png
 
 
-def _shared_run_summary() -> Dict[str, Any]:
+def _shared_run_summary() -> dict[str, Any]:
     """Summary for the single shared evaluation store."""
     root = Config.EVAL_RESULTS_DIR
     rows = _read_manifest(root)
@@ -202,7 +203,7 @@ def _shared_run_summary() -> Dict[str, Any]:
     }
 
 
-def _list_runs() -> List[Dict[str, Any]]:
+def _list_runs() -> list[dict[str, Any]]:
     """Evaluation runs that landed as sub-dirs of EVAL_RESULTS_DIR.
 
     The local grouped run writes one shared store (root ``manifest.csv``, see
@@ -212,7 +213,7 @@ def _list_runs() -> List[Dict[str, Any]]:
     appeared. Newest first by manifest mtime.
     """
     root = Config.EVAL_RESULTS_DIR
-    runs: List[Dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
     if not os.path.isdir(root):
         return runs
     for name in sorted(os.listdir(root)):

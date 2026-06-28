@@ -7,10 +7,10 @@ import os
 
 import numpy as np
 
-from euclid_polish.provenance.ids import ProvId
-from euclid_polish.provenance.store import ProvStore
 from euclid_polish.image import Image, Role
+from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.provenance.store import ProvStore
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 
@@ -60,8 +60,8 @@ def test_model_id_none_for_legacy_checkpoint(tmp_path):
 
 def test_model_id_read_from_provenance_json(tmp_path):
     from euclid_polish.model import Model
-    from euclid_polish.provenance.records import Stamp
     from euclid_polish.provenance.checkpoint import write_checkpoint_provenance
+    from euclid_polish.provenance.records import Stamp
     ckpt_dir = str(tmp_path / "ckpt")
     os.makedirs(ckpt_dir)
     store = ProvStore(str(tmp_path / "prov"))

@@ -33,12 +33,11 @@ import textwrap
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
-
 
 # ---------------------------------------------------------------------------
 # Resource preset (subset of SLURM knobs the user can override per submit)
@@ -59,7 +58,7 @@ class StepResources:
     memory:      str = "16G"
     time_limit:  str = "2:00:00"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "partition":  self.partition,
             "n_cpus":     int(self.n_cpus),
@@ -69,7 +68,7 @@ class StepResources:
         }
 
     @classmethod
-    def from_form(cls, form: Dict[str, Any], defaults: "StepResources") -> "StepResources":
+    def from_form(cls, form: dict[str, Any], defaults: StepResources) -> StepResources:
         """Build from a Flask form (string-valued), filling gaps with ``defaults``."""
         def _get(k: str, fallback: Any) -> Any:
             v = form.get(k)
@@ -88,7 +87,7 @@ class StepResources:
             raise ValueError(f"invalid resource field: {e}") from e
 
     @classmethod
-    def from_form_strict(cls, form: Dict[str, Any]) -> "StepResources":
+    def from_form_strict(cls, form: dict[str, Any]) -> StepResources:
         """Build from a Flask form, *rejecting* blank resource fields.
 
         Used by the HST-pipeline submit endpoint after the
@@ -102,7 +101,7 @@ class StepResources:
         ``n_cpus`` and ``n_gpus`` are required integers (``n_gpus=0``
         is fine, but blank is not).
         """
-        missing: List[str] = []
+        missing: list[str] = []
         def _required(k: str) -> str:
             v = form.get(k)
             if v is None or (isinstance(v, str) and v.strip() == ""):
@@ -157,13 +156,13 @@ class FASRCPipelineStep(ABC):
     #: the UI hides the corresponding form field. Use when the underlying
     #: work is single-threaded and asking SLURM for extra cores just
     #: wastes the allocation — see HSTPSFExtractStep.
-    fixed_cpus: Optional[int] = None
+    fixed_cpus: int | None = None
     #: Simple, stable SLURM job name (what the user sees in squeue/sacct
     #: and the log filenames). Describes WHAT the job does, independent of
     #: any pipeline grouping, so it survives feature reshuffles. Falls back
     #: to ``step_id`` when unset; the timestamp suffix keeps log paths
     #: unique per submission.
-    job_name:  Optional[str] = None
+    job_name:  str | None = None
     #: EXPERIMENTAL-lane step (HST / star-anchor / round-trip supervision).
     #: While ``experimental.EXPERIMENTAL_LANES_ENABLED`` is False these
     #: steps are hidden from the WebUI step listing and refused by the
@@ -174,10 +173,10 @@ class FASRCPipelineStep(ABC):
     #: (``cfg.conda_env_path``). Set to an absolute env path or a named env
     #: when a step needs an isolated environment — e.g. the PyTorch-based
     #: Zoobot morphology step, which would clash with the main TensorFlow env.
-    conda_env: Optional[str] = None
+    conda_env: str | None = None
 
     @abstractmethod
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         """Return the Python command (argv) to run inside the sbatch script.
 
         ``params`` is a flat dict of form values; subclasses pick out
@@ -206,12 +205,12 @@ class FASRCPipelineStep(ABC):
     def build_sbatch_body(
         self,
         *,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         resources: StepResources,
         cfg: fasrc_config.FasrcConfig,
         label: str,
-        relative_log_dir: Optional[str] = None,
-    ) -> Dict[str, str]:
+        relative_log_dir: str | None = None,
+    ) -> dict[str, str]:
         """Render the full sbatch script + the relative log paths.
 
         Returns ``{"body": str, "script": rel, "out": rel, "err": rel,
@@ -245,11 +244,11 @@ def render_sbatch_body(
     resources:        StepResources,
     cfg:              fasrc_config.FasrcConfig,
     label:            str,
-    cmd_argv:         List[str],
+    cmd_argv:         list[str],
     banner_line:      str,
-    step_id:          Optional[str] = None,
-    conda_env_path:   Optional[str] = None,
-) -> Dict[str, str]:
+    step_id:          str | None = None,
+    conda_env_path:   str | None = None,
+) -> dict[str, str]:
     """Render an sbatch script body + the relative log paths.
 
     Every FASRC job submitted from the UI runs through here — there is no
@@ -402,7 +401,7 @@ class HSTDownloadStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         n_tiles = int(params.get("n_tiles", 25))
         return [
             "scripts/fasrc_download_hst_hlsp.py",
@@ -432,7 +431,7 @@ class HSTPSFExtractStep(FASRCPipelineStep):
             fixed_cpus=1,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         n_stars = int(params.get("n_stars", 200))
         half_side = int(params.get("half_side", 255))
         margin_frac = float(params.get("extract_margin_frac", 0.08))
@@ -460,7 +459,7 @@ class DifferentialKernelStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         reg = float(params.get("regularisation", 1e-3))
         return [
             "scripts/fasrc_compute_differential_kernel.py",
@@ -484,7 +483,7 @@ class HSTTFRecordStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         n_train = int(params.get("n_train", 2000))
         n_valid = int(params.get("n_valid", 200))
         image_size = int(params.get("image_size", 256))
@@ -518,7 +517,7 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         n_positions = int(params.get("n_positions", 200))
         vis_pixels  = int(params.get("vis_pixels", 512))
         ra_centre   = float(params.get("ra_centre", 270.0))
@@ -550,7 +549,7 @@ class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels = int(params.get("vis_pixels", 512))
         stamp_size = int(params.get("stamp_size", 128))
         valid_fraction = float(params.get("valid_fraction", 0.1))
@@ -575,7 +574,7 @@ class EuclidQueryStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         num_stars = int(params.get("num_stars", 200) or 200)
         cmd = ["scripts/query_brightest_stars.py", "--num-stars", str(num_stars)]
         mag_min = str(params.get("magnitude_min", "")).strip()
@@ -603,7 +602,7 @@ class EuclidVerifyPhotometryStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         n    = int(params.get("n", 40) or 40)
         size = int(params.get("size", 256) or 256)
         return ["scripts/verify_star_photometry.py",
@@ -623,7 +622,7 @@ class EuclidCutoutDownloadStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels = int(params.get("vis_pixels", 512))
         workers    = int(params.get("workers", 8))
         return [
@@ -649,7 +648,7 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels    = int(params.get("vis_pixels", 512))
         stars_per_psf = int(params.get("stars_per_psf", 100))
         # Minimum cluster size: clusters smaller than this are merged into a
@@ -708,7 +707,7 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         # Workers default to one download thread per allocated CPU, but the
         # form can set them independently: the work is network-I/O bound, so a
         # single CPU drives many concurrent transfers — running more workers
@@ -745,12 +744,12 @@ _TNG_MODES = ("random", "most_massive", "least_massive", "most_star_forming",
               "least_star_forming", "biggest_radius", "smallest_radius")
 
 
-def _tng_mode(params: Dict[str, Any]) -> str:
+def _tng_mode(params: dict[str, Any]) -> str:
     m = str(params.get("mode", "random")).strip().lower()
     return m if m in _TNG_MODES else "random"
 
 
-def _tng_temperature(params: Dict[str, Any]) -> float:
+def _tng_temperature(params: dict[str, Any]) -> float:
     try:
         t = float(params.get("temperature", 0.3))
     except (TypeError, ValueError):
@@ -763,7 +762,7 @@ def _tng_note(mode: str, temperature: float) -> str:
     return pretty if mode == "random" else f"{pretty} · T={temperature:.2f}"
 
 
-def _tng_select(mode: str, n: int, temperature: float) -> List[str]:
+def _tng_select(mode: str, n: int, temperature: float) -> list[str]:
     """Select ``n`` galaxy ids locally by mode (empty if no property cache)."""
     # Lazy import: keeps matplotlib (pulled via tng.properties) out of the
     # pipeline module's import path. Resolved at call time so tests can patch.
@@ -791,7 +790,7 @@ class TngGridStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         band = str(params.get("band", "VIS") or "VIS").upper()
         if band not in ("VIS", "Y", "J", "H", "RGB"):
             band = "VIS"
@@ -833,7 +832,7 @@ class TngStackStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         band = str(params.get("band", "VIS") or "VIS").upper()
         if band not in ("VIS", "Y", "J", "H"):
             band = "VIS"
@@ -879,7 +878,7 @@ class PosterCutoutStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         mode = str(params.get("mode", "sersic") or "sersic").lower()
         if mode not in ("sersic", "star", "lens", "tng", "field"):
             mode = "sersic"
@@ -911,7 +910,7 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         size        = int(params.get("size", 256))
         stamp       = int(params.get("stamp", 128))
         valid_every = int(params.get("valid_every", 10))
@@ -953,7 +952,7 @@ class HSTTrainStep(FASRCPipelineStep):
             needs_gpu=True,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         steps               = int(params.get("steps", 400_000))
         # Explicit per-lane batch composition (the batch is their sum). The
         # synthetic lane is always present; HST / star-anchor lanes are on
@@ -1044,7 +1043,7 @@ class RunPipelineStep(FASRCPipelineStep):
     #: Extra ``--skip-…`` flags appended to the run_pipeline.py argv.
     #: Stored as a tuple so instances stay hashable (the dataclass
     #: ``defaults`` field is mutable, but this one is set per-class).
-    skip_flags:        Tuple[str, ...] = ()
+    skip_flags:        tuple[str, ...] = ()
     #: Whether the UI should show the training-only knob fields
     #: (n_train / n_valid / image_size / batch_size / steps).
     needs_train_knobs: bool = True
@@ -1054,7 +1053,7 @@ class RunPipelineStep(FASRCPipelineStep):
     def banner_line(self, label: str) -> str:
         return f"Web-submitted job: {label}"
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         # ``.get`` rather than ``[…]`` so missing keys don't blow up the
         # script renderer (the Flask handler validates numerics up-front
         # via ``StepResources.from_form`` + an explicit ``int()`` pass).
@@ -1099,7 +1098,7 @@ class SyntheticGenerateStep(RunPipelineStep):
             needs_train_knobs=True,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         # Parallelise generation across the allocated CPUs: one process per
         # CPU runs the combined generate+forward pass on its index range.
         cmd = super().build_command(params)
@@ -1159,7 +1158,7 @@ class LensfinderGenerateStep(SyntheticGenerateStep):
             needs_train_knobs=True,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         cmd = super().build_command(params)          # gen + star/lens density flags
         cmd += ["--records-dir", self.RECORDS_DIR]
         return cmd
@@ -1193,7 +1192,7 @@ class LensfinderBuildStampsStep(FASRCPipelineStep):
             needs_gpu=False,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         cmd = [
             "scripts/lensfinder_build_stamps.py",
             "--records-dir", str(params.get("records_dir",
@@ -1232,7 +1231,7 @@ class LensfinderSRInferStep(FASRCPipelineStep):
             needs_gpu=True,
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         cmd = [
             "scripts/lensfinder_sr_infer.py",
             "--records-dir", str(params.get("records_dir",
@@ -1271,7 +1270,7 @@ class LensfinderTrainStep(FASRCPipelineStep):
             conda_env="EuclidPolishZoobot",
         )
 
-    def build_command(self, params: Dict[str, Any]) -> List[str]:
+    def build_command(self, params: dict[str, Any]) -> list[str]:
         cmd = [
             "scripts/lensfinder_train.py",
             "--catalog", str(params.get("catalog",
@@ -1328,10 +1327,10 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
 class StepRegistry:
     """Lookup helper: ``REGISTRY.get("kernel")`` → step instance."""
 
-    by_id: Dict[str, FASRCPipelineStep] = field(default_factory=dict)
+    by_id: dict[str, FASRCPipelineStep] = field(default_factory=dict)
 
     @classmethod
-    def build(cls) -> "StepRegistry":
+    def build(cls) -> StepRegistry:
         return cls(by_id={k.__name__ and step.step_id: step
                           for k in STEP_CLASSES
                           for step in [k()]})
@@ -1342,7 +1341,7 @@ class StepRegistry:
             raise KeyError(f"unknown pipeline step: {step_id!r}")
         return s
 
-    def all(self) -> List[FASRCPipelineStep]:
+    def all(self) -> list[FASRCPipelineStep]:
         return list(self.by_id.values())
 
 

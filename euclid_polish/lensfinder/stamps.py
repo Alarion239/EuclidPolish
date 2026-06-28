@@ -12,7 +12,8 @@ on the HR grid; the LR cube is half-resolution, so LR crops use
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -20,9 +21,9 @@ from euclid_polish.eval.stamp_geometry import crop_stamp
 
 
 def iter_field_sources(
-    sources: Sequence[Dict[str, Any]], *,
+    sources: Sequence[dict[str, Any]], *,
     want_type: str, field: int, m: int, edge_margin: float = 0.0,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Every source of ``want_type`` that fits an m×m stamp inside the field.
 
     Edge filter mirrors ``synthetic_runner.select_central_source``: a source
@@ -32,7 +33,7 @@ def iter_field_sources(
     wants every lens plus a sample of galaxies per field.
     """
     half = m / 2.0 + float(edge_margin)
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for s in sources:
         if s.get("type") != want_type:
             continue
@@ -44,9 +45,9 @@ def iter_field_sources(
 
 
 def sample_galaxy_negatives(
-    galaxies: Sequence[Dict[str, Any]], n_keep: int, *,
+    galaxies: Sequence[dict[str, Any]], n_keep: int, *,
     rng: np.random.Generator, prefer_bright: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Pick up to ``n_keep`` galaxy negatives.
 
     ``prefer_bright`` keeps the highest VIS-flux galaxies (hard negatives that
@@ -63,7 +64,7 @@ def sample_galaxy_negatives(
 
 
 def cut_triplet(lr_cube, sr_cube, hr_cube, *, cx: float, cy: float, m: int
-                ) -> Dict[str, np.ndarray]:
+                ) -> dict[str, np.ndarray]:
     """Source-centered 4-band stamps, one per reconstruction.
 
     Returns ``{"lr": (m//2, m//2, C), "sr": (m, m, C), "hr": (m, m, C)}`` on

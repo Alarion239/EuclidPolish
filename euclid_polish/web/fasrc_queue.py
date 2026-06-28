@@ -27,7 +27,8 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from euclid_polish.web import fasrc_config
 
@@ -44,7 +45,7 @@ _ACTIVE_STATES = frozenset({
 _SACCT_GRACE_S = 1800.0
 
 
-def job_outcome(jobid: str, db: Any, joblog: Any) -> Tuple[str, str]:
+def job_outcome(jobid: str, db: Any, joblog: Any) -> tuple[str, str]:
     """Classify a job as ``("success"|"failure"|"pending", state)``.
 
     Authoritative source is sacct (folded into the CSV ``joblog`` by the
@@ -85,10 +86,10 @@ class JobQueue:
     def __init__(self, path: str = QUEUE_PATH) -> None:
         self.path = path
         self._lock = threading.RLock()
-        self.items: List[Dict[str, Any]] = []
-        self.active_jobid: Optional[str] = None
+        self.items: list[dict[str, Any]] = []
+        self.active_jobid: str | None = None
         self.halted: bool = False
-        self.halted_reason: Optional[str] = None
+        self.halted_reason: str | None = None
         self._load()
 
     # ------------------------------- persistence --------------------------
@@ -140,7 +141,7 @@ class JobQueue:
                     return True
             return False
 
-    def public(self) -> Dict[str, Any]:
+    def public(self) -> dict[str, Any]:
         """Jsonify-able snapshot for the UI (``names`` is the list of labels)."""
         with self._lock:
             return {
@@ -155,7 +156,7 @@ class JobQueue:
 
     # ------------------------------- mutations ----------------------------
 
-    def enqueue(self, spec: Dict[str, Any], label: str) -> Dict[str, Any]:
+    def enqueue(self, spec: dict[str, Any], label: str) -> dict[str, Any]:
         with self._lock:
             item = {"id": uuid.uuid4().hex[:8], "label": label,
                     "spec": spec, "queued_at": time.time()}
@@ -176,7 +177,7 @@ class JobQueue:
             self.halted_reason = None
             self._save()
 
-    def clear(self) -> Dict[str, Any]:
+    def clear(self) -> dict[str, Any]:
         """Drop all queued items and clear any halt. Leaves active untouched."""
         with self._lock:
             self.items = []
@@ -185,7 +186,7 @@ class JobQueue:
             self._save()
             return self.public()
 
-    def remove(self, item_id: str) -> Dict[str, Any]:
+    def remove(self, item_id: str) -> dict[str, Any]:
         with self._lock:
             self.items = [it for it in self.items if it["id"] != item_id]
             self._save()
@@ -199,8 +200,8 @@ class JobQueue:
     # ------------------------------- promotion ----------------------------
 
     def tick(self, db: Any, joblog: Any, ssh: Any,
-             submit_fn: Callable[[Dict[str, Any]],
-                                 Tuple[Optional[str], Dict[str, Any]]]) -> None:
+             submit_fn: Callable[[dict[str, Any]],
+                                 tuple[str | None, dict[str, Any]]]) -> None:
         """Advance the queue: promote on success, halt on failure.
 
         Idempotent and cheap — safe to call on every dashboard poll. Does
@@ -225,8 +226,8 @@ class JobQueue:
             self._promote(submit_fn)
 
     def _promote(self,
-                 submit_fn: Callable[[Dict[str, Any]],
-                                     Tuple[Optional[str], Dict[str, Any]]]) -> None:
+                 submit_fn: Callable[[dict[str, Any]],
+                                     tuple[str | None, dict[str, Any]]]) -> None:
         if not self.items:
             self.active_jobid = None
             self._save()

@@ -34,7 +34,6 @@ import argparse
 import os
 import re
 import sys
-from typing import List, Optional
 
 import numpy as np
 from astropy.io import fits
@@ -82,7 +81,7 @@ def _frame_hdu(path: str, orient: int) -> fits.ImageHDU:
         f"no viewpoint O{orient} extension in {path!r}")
 
 
-def build_band_stack(paths: List[str], orient: int) -> fits.HDUList:
+def build_band_stack(paths: list[str], orient: int) -> fits.HDUList:
     """Bundle viewpoint ``orient`` from each per-band file into one FITS with
     one ImageHDU per band, ordered VIS/Y/J/H."""
     by_band = {}
@@ -116,7 +115,7 @@ def build_band_stack(paths: List[str], orient: int) -> fits.HDUList:
     return hdul
 
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -129,7 +128,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _split_positionals(items: List[str]) -> tuple[List[str], int]:
+def _split_positionals(items: list[str]) -> tuple[list[str], int]:
     """Separate the bare 1..5 viewpoint number from the FITS paths."""
     orients = [a for a in items if a.strip() in {str(o) for o in ORIENTATIONS}]
     paths = [a for a in items if a not in orients]
@@ -144,7 +143,7 @@ def _split_positionals(items: List[str]) -> tuple[List[str], int]:
     return paths, int(orients[0])
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ns = parse_args(argv)
     paths, orient = _split_positionals(ns.args)
     for p in paths:

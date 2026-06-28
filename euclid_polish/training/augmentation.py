@@ -12,7 +12,6 @@ from tensorflow.python.data.experimental import AUTOTUNE
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import parse_example
 
-
 # ---------------------------------------------------------------------------
 # Per-band asinh stretch
 # ---------------------------------------------------------------------------
@@ -38,7 +37,7 @@ def _hr_stretch_scale() -> np.ndarray:
     return _HR_STRETCH_SCALE_NP
 
 
-def _hr_scale_for(x: tf.Tensor, num_channels: "int | None") -> np.ndarray:
+def _hr_scale_for(x: tf.Tensor, num_channels: int | None) -> np.ndarray:
     n = num_channels if num_channels is not None else x.shape[-1]
     k = _hr_stretch_scale()
     return k[:int(n)] if n is not None else k
@@ -51,7 +50,7 @@ def asinh_stretch_lr(x: tf.Tensor) -> tf.Tensor:
     return tf.asinh(x / k)
 
 
-def asinh_stretch_hr(x: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
+def asinh_stretch_hr(x: tf.Tensor, num_channels: int | None = None) -> tf.Tensor:
     """asinh(x / k) per HR band; ``x`` has shape ``(..., C)``, C ≤ 4."""
     return tf.asinh(x / _hr_scale_for(x, num_channels))
 
@@ -61,7 +60,7 @@ def inverse_asinh_stretch_lr(y: tf.Tensor) -> tf.Tensor:
     return tf.sinh(y) * _lr_stretch_scale()
 
 
-def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
+def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: int | None = None) -> tf.Tensor:
     """Inverse of :func:`asinh_stretch_hr`."""
     return tf.sinh(y) * _hr_scale_for(y, num_channels)
 

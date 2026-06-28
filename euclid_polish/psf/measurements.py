@@ -11,8 +11,6 @@ to arcsec by multiplying by the kernel's ``pixel_scale``.
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import numpy as np
 
 
@@ -34,7 +32,7 @@ def estimate_fwhm_pixels_1d(profile: np.ndarray) -> float:
     return float(idx[-1] - idx[0] + 1)
 
 
-def radial_profile(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def radial_profile(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Azimuthally-averaged radial profile around the brightest pixel.
 
     Returns ``(radii_pixels, mean_intensity)``: ``radii_pixels[k]``
@@ -107,7 +105,7 @@ def fwhm_pixels_area_equivalent(data: np.ndarray) -> float:
     return float(2.0 * np.sqrt(n_above / np.pi))
 
 
-def flux_centroid(data: np.ndarray) -> Tuple[float, float]:
+def flux_centroid(data: np.ndarray) -> tuple[float, float]:
     """Flux-weighted (sub-pixel) centroid ``(y, x)``.
 
     Uses only positive pixels so a sky-subtracted PSF with small
@@ -123,7 +121,7 @@ def flux_centroid(data: np.ndarray) -> Tuple[float, float]:
     return float((yy * w).sum() / s), float((xx * w).sum() / s)
 
 
-def peak_offset_from_centre(data: np.ndarray) -> Tuple[float, float]:
+def peak_offset_from_centre(data: np.ndarray) -> tuple[float, float]:
     """``(argmax_y - centre_y, argmax_x - centre_x)`` — integer-pixel
     offset of the PSF's brightest pixel from the geometric centre of
     the stamp. Useful for "is this PSF properly centred?" checks.

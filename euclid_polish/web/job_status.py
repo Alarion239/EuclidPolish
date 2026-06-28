@@ -25,11 +25,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from euclid_polish.config import Config
-
 
 # ---------------------------------------------------------------------------
 # Public dataclasses
@@ -42,7 +41,7 @@ class Event:
     ts:   float
     msg:  str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"ts": float(self.ts), "msg": str(self.msg)}
 
 
@@ -54,7 +53,7 @@ class StepProgress:
     total:   int
     label:   str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "current": int(self.current),
             "total":   int(self.total),
@@ -81,7 +80,7 @@ class ParallelProgress:
     active_workers: int
     n_workers:      int
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "current":        int(self.current),
             "total":          int(self.total),
@@ -124,19 +123,19 @@ class ResourceUsage:
     on a CPU-only job) stays ``None`` / empty.
     """
 
-    cpu_percent:     Optional[float]   = None
-    gpu_percent:     Optional[float]   = None
-    gpu_mem_percent: Optional[float]   = None
-    cpu_mean:        Optional[float]   = None
-    cpu_peak:        Optional[float]   = None
-    gpu_mean:        Optional[float]   = None
-    gpu_peak:        Optional[float]   = None
-    gpu_mem_peak:    Optional[float]   = None
+    cpu_percent:     float | None   = None
+    gpu_percent:     float | None   = None
+    gpu_mem_percent: float | None   = None
+    cpu_mean:        float | None   = None
+    cpu_peak:        float | None   = None
+    gpu_mean:        float | None   = None
+    gpu_peak:        float | None   = None
+    gpu_mem_peak:    float | None   = None
     n_samples:       int               = 0
-    cpu_series:      Tuple[float, ...] = ()
-    gpu_series:      Tuple[float, ...] = ()
+    cpu_series:      tuple[float, ...] = ()
+    gpu_series:      tuple[float, ...] = ()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "cpu_percent":     self.cpu_percent,
             "gpu_percent":     self.gpu_percent,
@@ -159,7 +158,7 @@ class StageEvent:
     ts:   float
     name: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"ts": float(self.ts), "name": str(self.name)}
 
 
@@ -167,46 +166,46 @@ class StageEvent:
 class JobStatus:
     """Structured status of one job, derived from its events stream."""
 
-    stage:        Optional[str]            = None
+    stage:        str | None            = None
     #: Full ordered history of stage transitions; the UI renders this
     #: as a checklist with timestamps so the user can see what stages
     #: ran before the current one. ``stage`` is the last entry's name
     #: (or None when no stage event has been seen yet).
-    stages:       Tuple[StageEvent, ...]   = ()
-    step:         Optional[StepProgress]   = None
+    stages:       tuple[StageEvent, ...]   = ()
+    step:         StepProgress | None   = None
     #: Steps per wall-clock second within the *current* stage, computed
     #: from the (current, ts) pairs the script has emitted since the
     #: latest ``set_stage``. ``None`` when fewer than two step events
     #: have arrived in this stage (rate is undefined).
-    step_rate_per_s: Optional[float]       = None
+    step_rate_per_s: float | None       = None
     #: Estimated seconds until the current stage's ``step.total`` is
     #: reached, at the current rate. ``None`` whenever
     #: ``step_rate_per_s`` is ``None`` or ``total`` is missing/zero.
-    step_eta_s:    Optional[float]         = None
+    step_eta_s:    float | None         = None
     #: Present only during a parallel phase: cumulative count + how many
     #: worker processes are active right now. ``step`` mirrors the same
     #: cumulative (current/total) so the progress bar + rate/ETA work
     #: unchanged; ``parallel`` adds the live worker count.
-    parallel:     Optional[ParallelProgress] = None
+    parallel:     ParallelProgress | None = None
     #: Smoothed live CPU/GPU utilisation + run aggregates, folded from the
     #: ``resource`` sample stream. ``None`` when the job emitted no samples
     #: (older scripts, or one that didn't start the ResourceSampler).
-    resources:    Optional[ResourceUsage]  = None
+    resources:    ResourceUsage | None  = None
     #: Latest training-metrics sample folded from the ``metric`` event
     #: stream (loss, PSNR per lane, gradient norms, …) — the live training
     #: progress the WebUI used to scrape from the ``.out`` log. ``None``
     #: until the first evaluate emits a metric event.
-    latest_metrics: Optional[Dict[str, Any]] = None
+    latest_metrics: dict[str, Any] | None = None
     #: Full (capped) history of metric samples in arrival order — one per
     #: evaluate. Drives the live loss/PSNR readout and the in-card
     #: validation list without reading the training-log file.
-    metrics:        Tuple[Dict[str, Any], ...] = ()
+    metrics:        tuple[dict[str, Any], ...] = ()
     #: The latest metric sample that wrote a checkpoint (``saved`` truthy),
     #: as a short ``"step N"`` marker — the events-native replacement for
     #: the ``Checkpoint saved`` log line that triggers the ckpt mirror.
-    last_checkpoint: Optional[str]          = None
-    warnings:     Tuple[Event, ...]        = ()
-    errors:       Tuple[Event, ...]        = ()
+    last_checkpoint: str | None          = None
+    warnings:     tuple[Event, ...]        = ()
+    errors:       tuple[Event, ...]        = ()
     #: When the events file was last fetched (server clock). Lets the
     #: UI dim cards whose backing file hasn't been touched in a while.
     last_fetched: float                    = field(default_factory=time.time)
@@ -215,7 +214,7 @@ class JobStatus:
     #: scripts that don't use :class:`Reporter`.
     has_events:   bool                     = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "stage":           self.stage,
             "stages":          [s.to_dict() for s in self.stages],
@@ -246,38 +245,38 @@ def fold_events(text: str) -> JobStatus:
     unknown ``kind`` are also skipped; we'd rather lose forward
     compatibility than 500 the status endpoint.
     """
-    stage:     Optional[str]          = None
-    stages:    List[StageEvent]        = []
-    step:      Optional[StepProgress] = None
-    warnings:  List[Event]             = []
-    errors:    List[Event]             = []
+    stage:     str | None          = None
+    stages:    list[StageEvent]        = []
+    step:      StepProgress | None = None
+    warnings:  list[Event]             = []
+    errors:    list[Event]             = []
     saw_any    = False
     #: Per-stage step history: list of (ts, current, total) tuples for
     #: every step event since the latest ``stage`` event. Cleared on
     #: every stage transition so rate/ETA only ever average inside the
     #: current stage — a fast download stage's rate doesn't pollute the
     #: ETA of a slow training stage that follows.
-    stage_step_history: List[Tuple[float, int, int]] = []
+    stage_step_history: list[tuple[float, int, int]] = []
 
     # Parallel-phase aggregation. ``by_worker`` keeps each worker unit's
     # latest (ts, current, total, pid); ``parallel_history`` records the
     # cumulative-over-time so the bar's rate/ETA work on the aggregate.
     parallel_total:   int = 0
     parallel_workers: int = 0
-    by_worker: Dict[str, Tuple[float, int, int, Any]] = {}
-    parallel_history: List[Tuple[float, int, int]] = []
+    by_worker: dict[str, tuple[float, int, int, Any]] = {}
+    parallel_history: list[tuple[float, int, int]] = []
 
     # Resource-utilisation samples (CPU/GPU). Kept as separate per-metric
     # series because a CPU-only job emits ``cpu`` without ``gpu``.
-    res_cpu:     List[float] = []
-    res_gpu:     List[float] = []
-    res_gpu_mem: List[float] = []
+    res_cpu:     list[float] = []
+    res_gpu:     list[float] = []
+    res_gpu_mem: list[float] = []
 
     # Training-metrics samples (one per evaluate) folded from the ``metric``
     # event stream. ``last_checkpoint`` is the latest sample that wrote a
     # checkpoint — the events-native replacement for the ".out" log line.
-    metrics:         List[Dict[str, Any]] = []
-    last_checkpoint: Optional[str]        = None
+    metrics:         list[dict[str, Any]] = []
+    last_checkpoint: str | None        = None
 
     for raw in text.splitlines():
         raw = raw.strip()
@@ -369,7 +368,7 @@ def fold_events(text: str) -> JobStatus:
     # Parallel phase: fold the per-worker stream into one cumulative bar
     # (so the existing progress/rate/ETA path works unchanged) plus a live
     # count of how many worker processes are crunching right now.
-    parallel: Optional[ParallelProgress] = None
+    parallel: ParallelProgress | None = None
     if parallel_history:
         _, cum, grand = parallel_history[-1]
         step = StepProgress(current=cum, total=grand, label="")
@@ -397,9 +396,9 @@ def fold_events(text: str) -> JobStatus:
     # During a parallel phase the cumulative-over-time history drives the
     # rate/ETA; otherwise the per-stage serial step history does.
     rate_history = parallel_history if parallel_history else stage_step_history
-    step_rate_per_s: Optional[float] = None
-    step_eta_s:      Optional[float] = None
-    ema_spp: Optional[float] = None        # EMA of seconds-per-step
+    step_rate_per_s: float | None = None
+    step_eta_s:      float | None = None
+    ema_spp: float | None = None        # EMA of seconds-per-step
     for (t0, c0, _), (t1, c1, tot1) in zip(
         rate_history, rate_history[1:]
     ):
@@ -420,16 +419,16 @@ def fold_events(text: str) -> JobStatus:
 
     # Resource utilisation: smoothed live value (last-N mean) + run
     # aggregates (mean/peak) + a capped recent series for the sparkline.
-    def _smooth(xs: List[float]) -> Optional[float]:
+    def _smooth(xs: list[float]) -> float | None:
         if not xs:
             return None
         tail = xs[-_RESOURCE_SMOOTH_WINDOW:]
         return sum(tail) / len(tail)
 
-    def _mean(xs: List[float]) -> Optional[float]:
+    def _mean(xs: list[float]) -> float | None:
         return (sum(xs) / len(xs)) if xs else None
 
-    resources: Optional[ResourceUsage] = None
+    resources: ResourceUsage | None = None
     if res_cpu or res_gpu:
         resources = ResourceUsage(
             cpu_percent=_smooth(res_cpu),
@@ -475,7 +474,7 @@ class _SSHRunner(Protocol):
     a stub.
     """
 
-    def run(self, cmd: str, *, timeout: float = ...) -> Tuple[int, str, str]: ...
+    def run(self, cmd: str, *, timeout: float = ...) -> tuple[int, str, str]: ...
 
     def is_connected(self) -> bool: ...
 
@@ -489,10 +488,10 @@ class JobStatusFetcher:
     create staleness bugs without buying anything.
     """
 
-    def __init__(self, ssh: Optional[_SSHRunner]) -> None:
+    def __init__(self, ssh: _SSHRunner | None) -> None:
         self.ssh = ssh
 
-    def fetch(self, events_path: Optional[str]) -> JobStatus:
+    def fetch(self, events_path: str | None) -> JobStatus:
         """Return the current status for the job at ``events_path``.
 
         Empty :class:`JobStatus` (``has_events=False``) is returned

@@ -10,8 +10,8 @@ import io
 
 import numpy as np
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.config import Config
 from euclid_polish.web.helpers.sky_render import (
     _render_saturation_view,
     _saturation_cutoff,

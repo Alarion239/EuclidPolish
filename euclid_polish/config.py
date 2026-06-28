@@ -8,8 +8,7 @@ eliminating magic strings and numbers scattered throughout the codebase.
 import math
 import os
 from dataclasses import dataclass
-from typing import ClassVar, Dict, Optional, Tuple
-
+from typing import ClassVar
 
 # ---------------------------------------------------------------------------
 # Band configuration
@@ -996,13 +995,13 @@ class Config:
 
         Solar absolute mags (Willmer 2018, ApJS 236:47; HST F814W for VIS,
         2MASS Y/J/H for NISP) and default RGB band picks ``(R, G, B)``."""
-        SOLAR_AB_MAG: ClassVar[Dict[str, float]] = {
+        SOLAR_AB_MAG: ClassVar[dict[str, float]] = {
             "VIS": 4.52,   # HST F814W proxy
             "Y_E": 4.92,   # 2MASS Y proxy
             "J_E": 5.10,   # 2MASS J
             "H_E": 5.12,   # 2MASS H
         }
-        RGB_SCHEMES: ClassVar[Dict[str, Tuple[str, str, str]]] = {
+        RGB_SCHEMES: ClassVar[dict[str, tuple[str, str, str]]] = {
             "vis_nisp":  ("H_E", "J_E", "VIS"),   # spans full Euclid range
             "nisp_only": ("H_E", "J_E", "Y_E"),   # NIR-only, VIS-free
             "h_y_vis":   ("H_E", "Y_E", "VIS"),   # wider green-channel spacing
@@ -1011,7 +1010,7 @@ class Config:
         # sampling points for the "eye" physical color mode's per-pixel
         # color-temperature fit. VIS: Euclid Collaboration (Cropper+24);
         # NISP Y/J/H: Schirmer+22 Table 4.
-        PIVOT_WAVELENGTH_UM: ClassVar[Dict[str, float]] = {
+        PIVOT_WAVELENGTH_UM: ClassVar[dict[str, float]] = {
             "VIS": 0.715,
             "Y_E": 1.081,
             "J_E": 1.367,
@@ -1040,7 +1039,7 @@ class Config:
 
     @classmethod
     def cutout_dir_for_band(cls, band_name: str,
-                            root: Optional[str] = None) -> str:
+                            root: str | None = None) -> str:
         """Return ``<root>/<band_name>`` — the subdir where ``band_name``'s
         star cutouts live. Defaults to :attr:`STAR_CUTOUTS_ROOT`."""
         root = root or cls.STAR_CUTOUTS_ROOT

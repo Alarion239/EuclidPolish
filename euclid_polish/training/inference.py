@@ -5,21 +5,19 @@ Provides utilities for applying a trained WDSR model to low-resolution
 images and visualizing the results.
 """
 
-import os
-from typing import Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 from astropy.wcs import WCS
 
 from euclid_polish.config import Config
-# plot_reconstruction now lives in the visualization layer; re-exported here so
-# ``from euclid_polish.training.inference import plot_reconstruction`` keeps working.
-from euclid_polish.visualization.reconstruction import plot_reconstruction  # noqa: F401
 from euclid_polish.training.augmentation import asinh_stretch_lr, inverse_asinh_stretch_hr
 from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
-from euclid_polish.visualization.color import lupton_rgb
+
+# plot_reconstruction now lives in the visualization layer; re-exported here so
+# ``from euclid_polish.training.inference import plot_reconstruction`` keeps working.
+from euclid_polish.visualization.reconstruction import plot_reconstruction  # noqa: F401
 
 
 def scaled_wcs_header(vis_header, scale: int):
@@ -59,7 +57,7 @@ def scaled_wcs_header(vis_header, scale: int):
 
 def infer_checkpoint_nchan_in(
     checkpoint_dir: str, skip_kernel_size: int = 5,
-) -> Optional[int]:
+) -> int | None:
     """Number of LR input channels a saved checkpoint's model expects, or None.
 
     The checkpoint *is* the source of truth for the architecture — a VIS-only
@@ -91,7 +89,7 @@ def infer_checkpoint_nchan_in(
 def infer_checkpoint_nchan_out(
     checkpoint_dir: str, scale: int, nchan_in: int,
     skip_kernel_size: int = 5,
-) -> Optional[int]:
+) -> int | None:
     """Number of SR output channels a saved checkpoint's model emits, or None.
 
     Discriminates via the skip-branch conv kernels — the only
@@ -220,7 +218,7 @@ def load_model_from_weights(
 def reconstruct(
     model,
     lr_input,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply super-resolution to a single LR image.
 
@@ -310,9 +308,7 @@ def reconstruct(
         sr_data = sr_data[..., 0]
     # LR returned for display: if the caller passed a multi-channel cube,
     # show only the VIS channel (band 0) — that's what the HR target is.
-    if lr_data.ndim == 3 and lr_data.shape[-1] > 1:
-        lr_display = lr_data[..., 0]
-    elif lr_data.ndim == 3 and lr_data.shape[-1] == 1:
+    if lr_data.ndim == 3 and lr_data.shape[-1] > 1 or lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_display = lr_data[..., 0]
     else:
         lr_display = lr_data

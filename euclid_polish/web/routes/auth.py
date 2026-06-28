@@ -1,10 +1,10 @@
 """auth routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+from flask import jsonify, request
+
 from euclid_polish.web import euclid_session
 from euclid_polish.web.remote import STATE
-from flask import jsonify
-from flask import request
 
 
 def register(app):

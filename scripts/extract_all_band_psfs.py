@@ -38,7 +38,6 @@ import math
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
 
 # Cap per-process BLAS threads BEFORE numpy/scipy import. We run the bands
 # in a process pool (one worker per band); without this each worker would
@@ -57,11 +56,12 @@ from photutils.psf import EPSFStar
 from sklearn.cluster import KMeans
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.psf.psf_extractor import (
-    PSFExtractionConfig, PSFExtractor,
-)
-from euclid_polish.psf import PSF, PSFSet
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.psf import PSF, PSFSet
+from euclid_polish.psf.psf_extractor import (
+    PSFExtractionConfig,
+    PSFExtractor,
+)
 
 
 def _cutout_dir_for_band(band: BandConfig) -> str:
@@ -85,7 +85,7 @@ def _cutout_dir_for_band(band: BandConfig) -> str:
     return new_path
 
 
-def _load_star_positions(stars_csv: str) -> Dict[int, Tuple[float, float]]:
+def _load_star_positions(stars_csv: str) -> dict[int, tuple[float, float]]:
     """Map star ``id → (ra, dec)`` from the catalog CSV.
 
     Used to spatially cluster each band's good stars before extraction.
@@ -94,7 +94,7 @@ def _load_star_positions(stars_csv: str) -> Dict[int, Tuple[float, float]]:
     """
     if not os.path.isfile(stars_csv):
         return {}
-    positions: Dict[int, Tuple[float, float]] = {}
+    positions: dict[int, tuple[float, float]] = {}
     with open(stars_csv) as fh:
         for row in csv.DictReader(fh):
             try:
@@ -105,17 +105,17 @@ def _load_star_positions(stars_csv: str) -> Dict[int, Tuple[float, float]]:
 
 
 def _merge_small_clusters(
-    clusters: List[List[int]],
-    coord_by_idx: Dict[int, np.ndarray],
+    clusters: list[list[int]],
+    coord_by_idx: dict[int, np.ndarray],
     min_stars: int,
-) -> List[List[int]]:
+) -> list[list[int]]:
     """Merge any cluster smaller than ``min_stars`` into its nearest
     neighbour (by centroid) until every cluster meets the floor or only one
     remains. Guarantees ≥ ``min_stars`` per cluster whenever the total
     allows it (a single field with < min_stars stars stays as one cluster)."""
     clusters = [list(c) for c in clusters]
 
-    def centroid(c: List[int]) -> np.ndarray:
+    def centroid(c: list[int]) -> np.ndarray:
         return np.mean([coord_by_idx[i] for i in c], axis=0)
 
     while len(clusters) > 1:
@@ -137,12 +137,12 @@ def _merge_small_clusters(
 
 
 def cluster_star_indices(
-    ids: List[int],
-    positions: Dict[int, Tuple[float, float]],
+    ids: list[int],
+    positions: dict[int, tuple[float, float]],
     stars_per_psf: int,
     *,
     min_stars: int = 50,
-) -> List[List[int]]:
+) -> list[list[int]]:
     """Group the ``ids`` into spatially-coherent clusters of ~``stars_per_psf``.
 
     K = max(1, round(n / stars_per_psf)) clusters via K-Means++ on the sky
@@ -180,7 +180,7 @@ def cluster_star_indices(
     labels = KMeans(
         n_clusters=k, init="k-means++", n_init=10, random_state=0,
     ).fit_predict(scaled)
-    clusters: List[List[int]] = [[] for _ in range(k)]
+    clusters: list[list[int]] = [[] for _ in range(k)]
     for local_i, lab in enumerate(labels):
         clusters[int(lab)].append(keep[local_i])
     clusters = [c for c in clusters if c]
@@ -287,7 +287,7 @@ def _prepare_cache(cache_dir: str, signature: dict, reporter: Reporter) -> None:
 
 def load_accepted_band(
     band: BandConfig, args: argparse.Namespace, reporter: Reporter,
-) -> Optional[Dict]:
+) -> dict | None:
     """Load one band's cutouts and reject saturated/edge stars.
 
     Returns ``{cfg, scale, filename, accepted}`` where ``accepted`` is
@@ -395,7 +395,7 @@ def main() -> int:
 
     # Phase 1 — load + reject each band (sequential, so "VIS first, then …").
     reporter.set_stage("loading + rejecting stars")
-    band_data: Dict[str, Dict] = {}
+    band_data: dict[str, dict] = {}
     for bi, band in enumerate(bands, start=1):
         d = load_accepted_band(band, args, reporter)
         if d is not None:
@@ -431,7 +431,7 @@ def main() -> int:
 
     n_clusters = len(clusters)
     star_counts = [len(c) for c in clusters]
-    centroids: List[Tuple[float, float]] = []
+    centroids: list[tuple[float, float]] = []
     for c in clusters:
         pts = [positions[i] for i in c if i in positions]
         centroids.append((float(np.mean([p[0] for p in pts])),

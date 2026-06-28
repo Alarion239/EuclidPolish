@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import glob
 import os
-from typing import List, Optional
 
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import tfrecord_path
@@ -34,7 +33,7 @@ def sr_count(subset: str) -> int:
     return len(glob.glob(os.path.join(sky_sr_dir(), f"sr_{subset}_*.npy")))
 
 
-def checkpoint_present(checkpoint: Optional[str] = None) -> bool:
+def checkpoint_present(checkpoint: str | None = None) -> bool:
     """True when a usable checkpoint is on disk (cheap; no TensorFlow import).
 
     Mirrors ``tf.train.latest_checkpoint`` without paying its import cost:
@@ -53,13 +52,13 @@ def records_present(records_dir: str, subset: str = "validate") -> bool:
     return os.path.exists(tfrecord_path(records_dir, f"dirty_{subset}"))
 
 
-def present_subsets(records_dir: str) -> List[str]:
+def present_subsets(records_dir: str) -> list[str]:
     return [s for s in SUBSETS if records_present(records_dir, s)]
 
 
 def record_sr_cube(store, npy_path: str, subset: str, idx: int, *,
                    model_id=None, input_id=None, produced_by=None,
-                   git=None, sidecar_dir: Optional[str] = None) -> Artifact:
+                   git=None, sidecar_dir: str | None = None) -> Artifact:
     """Persist an SR-cutout :class:`Artifact` for one SR cube, next to the data.
 
     Parents are ``(model_id, input_id)`` (whichever are known) so the cube can

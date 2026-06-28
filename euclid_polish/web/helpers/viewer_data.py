@@ -30,15 +30,16 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.eval.lensfinder_eval import per_object_plens
-from euclid_polish.web.helpers import sky_records
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
     _ensure_local_star_cutout,
@@ -47,7 +48,7 @@ from euclid_polish.web.helpers.status import (
 )
 
 #: Band names + channel order shared by every collection.
-BAND_NAMES: Tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
+BAND_NAMES: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
 
 
 class ViewerError(Exception):
@@ -58,7 +59,7 @@ class ViewerError(Exception):
         self.code = code
 
 
-def color_constants() -> Dict[str, Any]:
+def color_constants() -> dict[str, Any]:
     """The per-band calibration constants the JS renderer needs.
 
     Sent once with every ``meta`` response so the browser-side colour math
@@ -116,14 +117,14 @@ _SKY_RECORD_TIERS = [
 ]
 
 
-def _sky_subset(params: Dict[str, str]) -> str:
+def _sky_subset(params: dict[str, str]) -> str:
     subset = (params.get("subset") or "validate").strip()
     if subset not in ("train", "validate"):
         raise ViewerError(400, "subset must be train|validate")
     return subset
 
 
-def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
+def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
     subset = _sky_subset(params)
     records_dir = _sky_records_local_dir()
     tiers = [dict(t) for t in _SKY_RECORD_TIERS
@@ -147,7 +148,7 @@ def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def _sky_cube(index: int, tier: str, params: Dict[str, str]):
+def _sky_cube(index: int, tier: str, params: dict[str, str]):
     subset = _sky_subset(params)
     if tier == "sr":
         path = sky_records.sr_path(subset, index)
@@ -181,7 +182,7 @@ def _sky_cube(index: int, tier: str, params: Dict[str, str]):
 # cutouts — real Euclid stars valid in all 4 bands (per-band FITS, stacked)
 # ---------------------------------------------------------------------------
 
-def _cutouts_meta(params: Dict[str, str]) -> Dict[str, Any]:
+def _cutouts_meta(params: dict[str, str]) -> dict[str, Any]:
     _size, ids = _valid_4band_stars(force=False)
     return {
         "count": len(ids),
@@ -199,7 +200,7 @@ def _read_fits_plane(path: str) -> np.ndarray:
     raise ViewerError(415, "no 2-D plane in FITS")
 
 
-def _cutouts_cube(index: int, tier: str, params: Dict[str, str]):
+def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
     size, ids = _valid_4band_stars(force=False)
     if not ids or size is None:
         raise ViewerError(404, "no valid-in-4-bands stars")
@@ -237,7 +238,7 @@ _EVAL_TIER_FILES = {
 _EVAL_TIER_PLENS = {"LR": "lr", "SR": "sr", "HR": "hr"}
 
 
-def _eval_objects() -> List[Dict[str, Any]]:
+def _eval_objects() -> list[dict[str, Any]]:
     """Manifest objects (ok rows) with on-disk tiers, label/grade, and P(lens).
 
     ``plens`` carries the headed lens-finder's prediction per tier (``{"LR":
@@ -251,7 +252,7 @@ def _eval_objects() -> List[Dict[str, Any]]:
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     rows = _read_manifest(root)
     plens_by_id = per_object_plens(root)        # {id: {"lr": P, "sr": P, "hr": P}}
-    objs: List[Dict[str, Any]] = []
+    objs: list[dict[str, Any]] = []
     for r in rows:
         if str(r.get("ok", "")).lower() != "true":
             continue
@@ -278,7 +279,7 @@ def _eval_objects() -> List[Dict[str, Any]]:
     return objs
 
 
-def _eval_meta(params: Dict[str, str]) -> Dict[str, Any]:
+def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
     objs = _eval_objects()
     # All tiers seen across the run, ordered LR→SR→HR, for the chip strip.
     order = ["LR", "SR", "HR"]
@@ -298,7 +299,7 @@ def _eval_meta(params: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def _eval_cube(index: int, tier: str, params: Dict[str, str]):
+def _eval_cube(index: int, tier: str, params: dict[str, str]):
     objs = _eval_objects()
     if index < 0 or index >= len(objs):
         raise ViewerError(404, "index out of range")
@@ -325,17 +326,17 @@ def _eval_cube(index: int, tier: str, params: Dict[str, str]):
 # registry
 # ---------------------------------------------------------------------------
 
-_Meta = Callable[[Dict[str, str]], Dict[str, Any]]
-_Cube = Callable[[int, str, Dict[str, str]], Tuple[np.ndarray, Dict[str, Any]]]
+_Meta = Callable[[dict[str, str]], dict[str, Any]]
+_Cube = Callable[[int, str, dict[str, str]], tuple[np.ndarray, dict[str, Any]]]
 
-_REGISTRY: Dict[str, Tuple[_Meta, _Cube]] = {
+_REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "sky": (_sky_meta, _sky_cube),
     "cutouts": (_cutouts_meta, _cutouts_cube),
     "evaluation": (_eval_meta, _eval_cube),
 }
 
 
-def get_meta(collection: str, params: Dict[str, str]) -> Dict[str, Any]:
+def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
     if collection not in _REGISTRY:
         raise ViewerError(404, "unknown collection")
     meta = _REGISTRY[collection][0](params)
@@ -345,7 +346,7 @@ def get_meta(collection: str, params: Dict[str, str]) -> Dict[str, Any]:
 
 
 def get_cube(collection: str, index: int, tier: str,
-             params: Dict[str, str]) -> Tuple[np.ndarray, Dict[str, Any]]:
+             params: dict[str, str]) -> tuple[np.ndarray, dict[str, Any]]:
     if collection not in _REGISTRY:
         raise ViewerError(404, "unknown collection")
     cube, info = _REGISTRY[collection][1](index, tier, params)

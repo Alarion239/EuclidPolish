@@ -19,15 +19,17 @@ Two stretch modes are supported on intensity panels:
 """
 
 import os
-import numpy as np
+from typing import Any
+
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.gridspec import GridSpec
 
 from euclid_polish.config import Config
-from typing import Dict, Any, Tuple
-
 from euclid_polish.visualization.color import (
-    calibrated_rgb_panel, eye_rgb, planck_color_strip,
+    calibrated_rgb_panel,
+    eye_rgb,
+    planck_color_strip,
 )
 
 
@@ -35,7 +37,7 @@ def _percentile_bounds(
     data: np.ndarray,
     lo: float = 1.0,
     hi: float = 99.5,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Return (vmin, vmax) at the given percentiles, with sane fallbacks.
 
     For *sparse* images (e.g. clean-HR with isolated point sources, where
@@ -403,7 +405,7 @@ class BaseVisualizer:
         ax.set_ylabel("Y (pixels)")
         plt.colorbar(im, ax=ax, label="|Δ| / |signal|")
 
-    def add_statistics_panel(self, data: np.ndarray, stats_dict: Dict[str, Any]) -> None:
+    def add_statistics_panel(self, data: np.ndarray, stats_dict: dict[str, Any]) -> None:
         """Render a fixed-width key/value statistics panel.
 
         Caller-provided ``stats_dict["stats"]`` is rendered as ``key  value``

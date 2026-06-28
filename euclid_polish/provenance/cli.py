@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import List, Optional
 
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
@@ -24,12 +23,12 @@ def _kind_of(store: ProvStore, pid: ProvId) -> str:
     return rec.kind if rec is not None else "?"
 
 
-def _print_ids(store: ProvStore, ids: List[ProvId]) -> None:
+def _print_ids(store: ProvStore, ids: list[ProvId]) -> None:
     for pid in sorted(ids, key=str):
         print(f"  {pid}  {_kind_of(store, pid)}")
 
 
-def main(argv: Optional[List[str]] = None, store: Optional[ProvStore] = None) -> int:
+def main(argv: list[str] | None = None, store: ProvStore | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prov", description="Query provenance lineage.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("show", "ancestors", "descendants"):

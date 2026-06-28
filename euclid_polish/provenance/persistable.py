@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import ClassVar, Optional, Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from euclid_polish.provenance.records import Format, Stamp
 
@@ -23,9 +23,9 @@ class Persistable(Protocol):
 
     PROV_FORMAT: ClassVar[Format]
 
-    def prov_stamp(self) -> Optional[Stamp]: ...
+    def prov_stamp(self) -> Stamp | None: ...
 
-    def with_stamp(self, stamp: Stamp) -> "Persistable": ...
+    def with_stamp(self, stamp: Stamp) -> Persistable: ...
 
 
 @dataclass
@@ -36,9 +36,9 @@ class StampCarrier:
     a clean constructor signature regardless of field order.
     """
 
-    stamp: Optional[Stamp] = field(default=None, kw_only=True)
+    stamp: Stamp | None = field(default=None, kw_only=True)
 
-    def prov_stamp(self) -> Optional[Stamp]:
+    def prov_stamp(self) -> Stamp | None:
         return self.stamp
 
     def with_stamp(self, stamp: Stamp):

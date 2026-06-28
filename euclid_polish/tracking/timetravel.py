@@ -38,10 +38,11 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from euclid_polish.config import Config
-from ._utils import _now_iso, _write_json, _read_json
+
+from ._utils import _now_iso, _read_json, _write_json
 
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -105,11 +106,11 @@ def sandbox_dir(short: str) -> str:
     return os.path.join(timetravel_root(), short)
 
 
-def read_sandbox(short: str) -> Optional[Dict[str, Any]]:
+def read_sandbox(short: str) -> dict[str, Any] | None:
     return _read_json(os.path.join(sandbox_dir(short), "sandbox.json"))
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
+def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
     try:
@@ -146,9 +147,9 @@ def remote_sandbox_base(data_dir: str, short: str) -> str:
 # local sandbox lifecycle
 # ---------------------------------------------------------------------------
 
-def _seed_checkpoint(seed_ckpt_dir: str, dest_ckpt: str) -> List[str]:
+def _seed_checkpoint(seed_ckpt_dir: str, dest_ckpt: str) -> list[str]:
     """Copy a backup's checkpoint files into the sandbox ckpt dir."""
-    copied: List[str] = []
+    copied: list[str] = []
     os.makedirs(dest_ckpt, exist_ok=True)
     for name in sorted(os.listdir(seed_ckpt_dir)):
         if name == "meta.json":          # tracking-internal sidecar; skip
@@ -163,9 +164,9 @@ def _seed_checkpoint(seed_ckpt_dir: str, dest_ckpt: str) -> List[str]:
     return copied
 
 
-def _symlink_inputs(live_data_dir: str, sandbox_data: str) -> List[str]:
+def _symlink_inputs(live_data_dir: str, sandbox_data: str) -> list[str]:
     """Symlink each existing read-only input subtree into the sandbox."""
-    linked: List[str] = []
+    linked: list[str] = []
     for rel in INPUT_RELPATHS:
         src = os.path.join(live_data_dir, rel)
         if not os.path.exists(src):
@@ -181,10 +182,10 @@ def _symlink_inputs(live_data_dir: str, sandbox_data: str) -> List[str]:
 def prepare_local_sandbox(
     commit: str, *,
     repo_root: str = _PROJECT_ROOT,
-    live_data_dir: Optional[str] = None,
-    seed_ckpt_dir: Optional[str] = None,
-    source: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    live_data_dir: str | None = None,
+    seed_ckpt_dir: str | None = None,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Create (or reuse) a local sandbox for ``commit`` and return its record.
 
     Idempotent: if a sandbox for the commit's short hash already exists it is
@@ -224,7 +225,7 @@ def prepare_local_sandbox(
     linked = _symlink_inputs(live_data_dir, data_dir)
 
     # 3. seed the backup's checkpoint so inference/resume uses the exact model.
-    seeded: List[str] = []
+    seeded: list[str] = []
     if seed_ckpt_dir and os.path.isdir(seed_ckpt_dir):
         seeded = _seed_checkpoint(seed_ckpt_dir, ckpt_dir)
     else:
@@ -253,7 +254,7 @@ def prepare_local_sandbox(
     return meta
 
 
-def write_home_fasrc_config(short: str, cfg_dict: Dict[str, Any]) -> str:
+def write_home_fasrc_config(short: str, cfg_dict: dict[str, Any]) -> str:
     """Write a sandbox ``~/.euclid_polish/fasrc.json`` (under the sandbox HOME).
 
     The caller supplies the full config dict (live config with the remote
@@ -269,7 +270,7 @@ def write_home_fasrc_config(short: str, cfg_dict: Dict[str, Any]) -> str:
     return path
 
 
-def set_sandbox_remote(short: str, remote: Optional[Dict[str, Any]]) -> None:
+def set_sandbox_remote(short: str, remote: dict[str, Any] | None) -> None:
     """Record the remote-sandbox result on a sandbox's metadata."""
     meta = read_sandbox(short)
     if meta is None:
@@ -278,10 +279,10 @@ def set_sandbox_remote(short: str, remote: Optional[Dict[str, Any]]) -> None:
     _write_json(os.path.join(meta["root"], "sandbox.json"), meta)
 
 
-def list_sandboxes() -> List[Dict[str, Any]]:
+def list_sandboxes() -> list[dict[str, Any]]:
     """All sandboxes (newest first), each annotated with live ``running``."""
     root = timetravel_root()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     if os.path.isdir(root):
         for name in os.listdir(root):
             meta = _read_json(os.path.join(root, name, "sandbox.json"))
@@ -305,8 +306,8 @@ _SHIM = (
 )
 
 
-def spawn_server(short: str, *, port: Optional[int] = None,
-                 wait_s: float = 25.0) -> Dict[str, Any]:
+def spawn_server(short: str, *, port: int | None = None,
+                 wait_s: float = 25.0) -> dict[str, Any]:
     """Launch the sandbox's old code as a second WebUI; record pid + url.
 
     Blocks up to ``wait_s`` for the port to answer — the old code imports
@@ -361,7 +362,7 @@ def spawn_server(short: str, *, port: Optional[int] = None,
             "responding": up}
 
 
-def stop_server(short: str) -> Dict[str, Any]:
+def stop_server(short: str) -> dict[str, Any]:
     """Terminate a sandbox's running server (process group)."""
     meta = read_sandbox(short)
     if not meta:
@@ -383,7 +384,7 @@ def stop_server(short: str) -> Dict[str, Any]:
 
 
 def remove_sandbox(short: str, *,
-                   repo_root: str = _PROJECT_ROOT) -> Dict[str, Any]:
+                   repo_root: str = _PROJECT_ROOT) -> dict[str, Any]:
     """Stop the server, drop the git worktree, and delete the sandbox dir."""
     root = sandbox_dir(short)
     if not os.path.isdir(root):
@@ -412,9 +413,9 @@ def prepare_remote_sandbox(
     data_dir: str,
     commit: str,
     short: str,
-    input_relpaths: Optional[List[str]] = None,
-    push_origin_cmd: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    input_relpaths: list[str] | None = None,
+    push_origin_cmd: list[str] | None = None,
+) -> dict[str, Any]:
     """Create a FASRC worktree + netscratch sandbox so jobs stay isolated.
 
     ``ssh`` must expose ``is_connected()`` and ``run(cmd, timeout=…)``.

@@ -34,12 +34,13 @@ import os
 import re
 import shutil
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.provenance.gitinfo import capture_git as git_commit_info
-from ._utils import _now_iso, _write_json, _read_json
+
+from ._utils import _now_iso, _read_json, _write_json
 
 # Project root = three levels up from this file (…/euclid_polish/tracking/).
 # Used as the cwd for the git-commit stamp so it works regardless of where
@@ -86,7 +87,7 @@ def _unique_path(directory: str, name: str) -> str:
     return candidate
 
 
-def _commit_str(commit: Optional[Dict[str, Any]]) -> str:
+def _commit_str(commit: dict[str, Any] | None) -> str:
     """One-line human rendering of a commit dict for markdown headers."""
     if not commit:
         return "(no git commit)"
@@ -96,7 +97,7 @@ def _commit_str(commit: Optional[Dict[str, Any]]) -> str:
     return s
 
 
-def dirty_warning(commit: Optional[Dict[str, Any]]) -> Optional[str]:
+def dirty_warning(commit: dict[str, Any] | None) -> str | None:
     """Reproducibility warning for a just-stamped commit, or ``None`` if clean.
 
     We never auto-commit — capturing the exact state is the user's call.
@@ -121,7 +122,7 @@ def dirty_warning(commit: Optional[Dict[str, Any]]) -> Optional[str]:
 class TrackingStore:
     """File-based campaign store rooted at ``root`` (``Config.TRACKING_DIR``)."""
 
-    def __init__(self, root: Optional[str] = None,
+    def __init__(self, root: str | None = None,
                  repo_root: str = _PROJECT_ROOT) -> None:
         self.root = os.path.abspath(root or Config.TRACKING_DIR)
         self.repo_root = repo_root
@@ -133,7 +134,7 @@ class TrackingStore:
     def has_current(self) -> bool:
         return os.path.isfile(os.path.join(self.current_dir, "metadata.json"))
 
-    def current(self) -> Optional[Dict[str, Any]]:
+    def current(self) -> dict[str, Any] | None:
         """Active campaign metadata, or ``None`` if none is active."""
         return _read_json(os.path.join(self.current_dir, "metadata.json"))
 
@@ -146,7 +147,7 @@ class TrackingStore:
         return self.current_dir
 
     def create_campaign(self, title: str,
-                        description: str = "") -> Dict[str, Any]:
+                        description: str = "") -> dict[str, Any]:
         """Start a new active campaign. Fails if one is already active."""
         with _LOCK:
             if self.has_current():
@@ -184,7 +185,7 @@ class TrackingStore:
             open(os.path.join(self.current_dir, "fasrc_jobs.jsonl"), "a").close()
             return meta
 
-    def save_campaign(self) -> Dict[str, Any]:
+    def save_campaign(self) -> dict[str, Any]:
         """Freeze the active campaign and move it to ``archive/<slug>``.
 
         Stamps the current HEAD commit as ``saved_commit`` so the archive
@@ -207,9 +208,9 @@ class TrackingStore:
             shutil.move(self.current_dir, target)
             return {"archive_path": target, "metadata": meta}
 
-    def list_campaigns(self) -> Dict[str, Any]:
+    def list_campaigns(self) -> dict[str, Any]:
         """``{active: metadata|None, archived: [...]}`` (archived newest first)."""
-        archived: List[Dict[str, Any]] = []
+        archived: list[dict[str, Any]] = []
         if os.path.isdir(self.archive_dir):
             for name in os.listdir(self.archive_dir):
                 meta = _read_json(
@@ -249,8 +250,8 @@ class TrackingStore:
     # ----------------------------- backups --------------------------------
 
     def _record_meta(self, *, kind: str, name: str, comment: str,
-                     source_path: str, files: List[str],
-                     size_bytes: int) -> Dict[str, Any]:
+                     source_path: str, files: list[str],
+                     size_bytes: int) -> dict[str, Any]:
         return {
             "name":        name,
             "kind":        kind,
@@ -263,17 +264,17 @@ class TrackingStore:
         }
 
     def backup_fits(self, src_path: str, comment: str = "",
-                   name: Optional[str] = None) -> Dict[str, Any]:
+                   name: str | None = None) -> dict[str, Any]:
         return self._backup_file("fits", src_path, comment, name,
                                  default_ext=".fits")
 
     def backup_image(self, src_path: str, comment: str = "",
-                    name: Optional[str] = None) -> Dict[str, Any]:
+                    name: str | None = None) -> dict[str, Any]:
         return self._backup_file("images", src_path, comment, name,
                                  default_ext=".png")
 
     def _backup_file(self, subdir: str, src_path: str, comment: str,
-                    name: Optional[str], *, default_ext: str) -> Dict[str, Any]:
+                    name: str | None, *, default_ext: str) -> dict[str, Any]:
         with _LOCK:
             self._require_current()
             if not os.path.isfile(src_path):
@@ -298,8 +299,8 @@ class TrackingStore:
             _write_json(os.path.join(dest_dir, stored_name + ".meta.json"), meta)
             return meta
 
-    def backup_model(self, ckpt_dir: Optional[str] = None, comment: str = "",
-                    name: Optional[str] = None) -> Dict[str, Any]:
+    def backup_model(self, ckpt_dir: str | None = None, comment: str = "",
+                    name: str | None = None) -> dict[str, Any]:
         """Copy a restorable snapshot of a TensorFlow checkpoint directory.
 
         Captures the ``checkpoint`` manifest, every ``ckpt-N.{index,data-*}``,
@@ -334,14 +335,14 @@ class TrackingStore:
             _write_json(os.path.join(dest_dir, "meta.json"), meta)
             return meta
 
-    def list_backups(self) -> Dict[str, List[Dict[str, Any]]]:
+    def list_backups(self) -> dict[str, list[dict[str, Any]]]:
         """Enumerate the active campaign's ``{models, fits, images}`` backups."""
         if not self.has_current():
             return {"models": [], "fits": [], "images": []}
         return self._backups_in(self.current_dir)
 
-    def _backups_in(self, campaign_dir: str) -> Dict[str, List[Dict[str, Any]]]:
-        out: Dict[str, List[Dict[str, Any]]] = {
+    def _backups_in(self, campaign_dir: str) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {
             "models": [], "fits": [], "images": [],
         }
         # Models: one sub-dir each, meta.json inside.
@@ -367,7 +368,7 @@ class TrackingStore:
 
     # ---- campaign/backup resolution (used by time-travel) ----------------
 
-    def campaign_dir(self, name: Optional[str]) -> str:
+    def campaign_dir(self, name: str | None) -> str:
         """Abs dir for ``"current"`` or an archived campaign ``name``.
 
         ``name`` is basename-sanitised so it can't escape the archive dir.
@@ -381,13 +382,13 @@ class TrackingStore:
             raise TrackingError(f"no campaign {name!r}")
         return d
 
-    def campaign_meta(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
+    def campaign_meta(self, name: str | None) -> dict[str, Any] | None:
         return _read_json(os.path.join(self.campaign_dir(name), "metadata.json"))
 
-    def backups_in(self, name: Optional[str]) -> Dict[str, List[Dict[str, Any]]]:
+    def backups_in(self, name: str | None) -> dict[str, list[dict[str, Any]]]:
         return self._backups_in(self.campaign_dir(name))
 
-    def model_backup_dir(self, name: Optional[str], model: str) -> str:
+    def model_backup_dir(self, name: str | None, model: str) -> str:
         """Abs dir of model backup ``model`` within campaign ``name``."""
         d = os.path.join(self.campaign_dir(name), "models",
                          os.path.basename(model))
@@ -395,14 +396,14 @@ class TrackingStore:
             raise TrackingError(f"no model backup {model!r} in {name!r}")
         return d
 
-    def model_backup_meta(self, name: Optional[str],
-                          model: str) -> Optional[Dict[str, Any]]:
+    def model_backup_meta(self, name: str | None,
+                          model: str) -> dict[str, Any] | None:
         return _read_json(os.path.join(self.model_backup_dir(name, model),
                                        "meta.json"))
 
     # --------------------------- FASRC jobs -------------------------------
 
-    def log_fasrc_job(self, record: Dict[str, Any]) -> Optional[str]:
+    def log_fasrc_job(self, record: dict[str, Any]) -> str | None:
         """Append a submitted-job record to the active campaign's job log.
 
         Falls back to ``<root>/unassigned_fasrc_jobs.jsonl`` when no campaign
@@ -425,12 +426,12 @@ class TrackingStore:
             except OSError:
                 return None
 
-    def read_fasrc_jobs(self) -> List[Dict[str, Any]]:
+    def read_fasrc_jobs(self) -> list[dict[str, Any]]:
         """Parse the active campaign's job log (newest first)."""
         if not self.has_current():
             return []
         path = os.path.join(self.current_dir, "fasrc_jobs.jsonl")
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         try:
             with open(path) as fp:
                 for line in fp:
@@ -446,9 +447,9 @@ class TrackingStore:
         return out
 
 
-def _copy_checkpoint(ckpt_dir: str, dest_dir: str) -> List[str]:
+def _copy_checkpoint(ckpt_dir: str, dest_dir: str) -> list[str]:
     """Copy the restorable subset of a checkpoint dir; return relative paths."""
-    copied: List[str] = []
+    copied: list[str] = []
     for name in sorted(os.listdir(ckpt_dir)):
         src = os.path.join(ckpt_dir, name)
         if os.path.isdir(src):
@@ -473,7 +474,7 @@ def _copy_checkpoint(ckpt_dir: str, dest_dir: str) -> List[str]:
 
 # Process-wide default store, lazily built so tests can monkeypatch
 # Config.TRACKING_DIR before first use.
-_DEFAULT: Optional[TrackingStore] = None
+_DEFAULT: TrackingStore | None = None
 
 
 def default_store() -> TrackingStore:

@@ -30,7 +30,6 @@ import math
 import os
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
@@ -39,7 +38,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config            # config-only: no astroquery
+from euclid_polish.config import Config  # config-only: no astroquery
 
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
 
@@ -53,7 +52,7 @@ def _adu_to_e_factor(magzero: float, band) -> float:
     return 10.0 ** ((band.sim_zeropoint_e - float(magzero)) / 2.5)
 
 
-def load_cutout_electrons(path: str, band) -> Tuple[np.ndarray, float]:
+def load_cutout_electrons(path: str, band) -> tuple[np.ndarray, float]:
     """Read a star cutout → electrons-over-stack (via the header MAGZERO)."""
     with fits.open(path, memmap=False) as hdul:
         arr = np.asarray(hdul[0].data, dtype=np.float64)
@@ -62,7 +61,7 @@ def load_cutout_electrons(path: str, band) -> Tuple[np.ndarray, float]:
 
 
 def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
-                            flat_frac: float = 0.99) -> Dict[str, float]:
+                            flat_frac: float = 0.99) -> dict[str, float]:
     """Peak / flat-top size / non-finite count in the central window."""
     H, W = img_e.shape
     cy, cx = H // 2, W // 2
@@ -79,9 +78,9 @@ def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
             "flattop_px": flattop, "nan_core_px": int((~finite).sum())}
 
 
-def _index_dir(band_dir: str, size: int) -> Dict[int, str]:
+def _index_dir(band_dir: str, size: int) -> dict[int, str]:
     """One ``os.listdir`` → ``{star_id: path}`` (exact ``size``, else largest)."""
-    out: Dict[int, Tuple[int, str]] = {}
+    out: dict[int, tuple[int, str]] = {}
     try:
         names = os.listdir(band_dir)
     except OSError:
@@ -99,14 +98,14 @@ def _index_dir(band_dir: str, size: int) -> Dict[int, str]:
 
 
 def _discover_band_dirs(output_dir: str, bands, size: int
-                        ) -> Dict[str, Tuple[str, Dict[int, str]]]:
+                        ) -> dict[str, tuple[str, dict[int, str]]]:
     """Resolve each band → (dir, {sid: path}). Tries the canonical
     ``<output_dir>/cutouts/<band>`` first; if any band's dir is empty, falls back
     to a bounded walk that finds *any* directory holding ``star_<id>_<size>.fits``
     and maps it to a band by the dir name (band name, archive filter, or prefix).
     """
     cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
-    result: Dict[str, Tuple[str, Dict[int, str]]] = {}
+    result: dict[str, tuple[str, dict[int, str]]] = {}
     need_walk = False
     for b in bands:
         d = Config.cutout_dir_for_band(b.name, root=cutouts_root)
@@ -117,13 +116,13 @@ def _discover_band_dirs(output_dir: str, bands, size: int
         return result
 
     _log(f"  canonical dirs empty for some bands — walking {output_dir} ...")
-    discovered: Dict[str, Tuple[str, Dict[int, str]]] = {}
+    discovered: dict[str, tuple[str, dict[int, str]]] = {}
     base_depth = output_dir.rstrip(os.sep).count(os.sep)
     for root, dirs, files in os.walk(output_dir):
         if root.count(os.sep) - base_depth > 4:
             dirs[:] = []
             continue
-        idx: Dict[int, Tuple[int, str]] = {}
+        idx: dict[int, tuple[int, str]] = {}
         for name in files:
             m = _FNAME_RE.search(name)
             if not m:
@@ -155,9 +154,9 @@ def _discover_band_dirs(output_dir: str, bands, size: int
     return result
 
 
-def _mag_by_id(stars_csv: str) -> Dict[int, float]:
+def _mag_by_id(stars_csv: str) -> dict[int, float]:
     """``{star_id: VIS magnitude}`` for catalog rows with a finite magnitude."""
-    out: Dict[int, float] = {}
+    out: dict[int, float] = {}
     try:
         with open(stars_csv, newline="") as fh:
             for r in csv.DictReader(fh):
@@ -173,7 +172,7 @@ def _mag_by_id(stars_csv: str) -> Dict[int, float]:
 
 
 def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
-               window_px: int = 51) -> Dict[str, List[dict]]:
+               window_px: int = 51) -> dict[str, list[dict]]:
     """Per band → list of {mag, peak_e, central_e, flattop_px, nan_core_px}.
 
     Driven by the cutout FILES on disk (robust to a desynced ``stars.csv``):
@@ -185,7 +184,7 @@ def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
     print(f"  catalog: {len(mag_by_id)} stars with a finite magnitude", flush=True)
     resolved = _discover_band_dirs(output_dir, bands, size)
 
-    out: Dict[str, List[dict]] = {b.name: [] for b in bands}
+    out: dict[str, list[dict]] = {b.name: [] for b in bands}
     for b in bands:
         d, index = resolved[b.name]
         with_mag = sorted((s for s in index if s in mag_by_id),
@@ -222,7 +221,7 @@ def model_clip_e(band) -> float:
 _MAG_BINS = [(-99, 13), (13, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 99)]
 
 
-def _summarize_band(recs: List[dict]) -> None:
+def _summarize_band(recs: list[dict]) -> None:
     if not recs:
         print("    (no cutouts found)")
         return

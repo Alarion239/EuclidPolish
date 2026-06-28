@@ -9,7 +9,6 @@ for preview (PNG) / download (FITS), mirroring the TNG grid/stack result routes.
 from __future__ import annotations
 
 import glob
-import io
 import os
 import time
 

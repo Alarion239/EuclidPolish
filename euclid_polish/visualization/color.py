@@ -32,12 +32,9 @@ every image. :func:`planck_color_strip` provides the hue ↔ T legend.
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import numpy as np
 
 from euclid_polish.config import Config
-
 
 # Calibration constants (solar AB mags + default RGB band picks) now live
 # in Config.Color — see Config.Color.SOLAR_AB_MAG / Config.Color.RGB_SCHEMES.
@@ -73,7 +70,7 @@ def _solar_balance(band_name: str) -> float:
 
 def calibrate(
     cube: np.ndarray,
-    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    band_names: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
     reference: str = "solar",
 ) -> np.ndarray:
     """Apply per-band flux calibration to a ``(H, W, C)`` LR cube.
@@ -158,7 +155,7 @@ def lupton_rgb_from_channels(
 
 def calibrated_rgb_panel(
     cube: np.ndarray,
-    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    band_names: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
     scheme: str = "vis_nisp",
     reference: str = "solar",
     stretch: str = "asinh",
@@ -272,7 +269,7 @@ def _planck_fnu(wavelength_um: np.ndarray, T: float) -> np.ndarray:
     return (1.0 / lam) ** 3 / np.expm1(x)
 
 
-def _planckian_xy(T: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _planckian_xy(T: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """CIE 1931 (x, y) chromaticity of a blackbody at ``T`` (K).
 
     Cubic-in-1/T fits to the Planckian locus (Kim et al. 2002), the
@@ -327,7 +324,7 @@ def _eye_t_grid(n: int = 96) -> np.ndarray:
 
 def fit_color_temperature(
     cube_calibrated: np.ndarray,
-    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    band_names: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
     t_grid_n: int = 96,
 ) -> np.ndarray:
     """Per-pixel blackbody color temperature (K) from AB-calibrated fluxes.
@@ -359,11 +356,11 @@ def fit_color_temperature(
 
 def eye_rgb(
     cube: np.ndarray,
-    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    band_names: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
     *,
     stretch: str = "asinh",
     asinh_scale_e: float = 1000.0,
-    white_e: "float | None" = None,
+    white_e: float | None = None,
     t_grid_n: int = 96,
 ) -> np.ndarray:
     """Physical "eye" rendering of a 4-band cube → sRGB in ``[0, 1]``.
@@ -433,7 +430,7 @@ def planck_color_strip(
     n: int = 256,
     t_min: float = 2500.0,
     t_max: float = 20000.0,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Legend strip for the eye mode: ``(strip, temps)``.
 
     ``strip`` is a ``(1, n, 3)`` sRGB image of the Planckian-locus hues
@@ -450,7 +447,7 @@ def planck_color_strip(
 
 def lupton_rgb(
     cube: np.ndarray,
-    band_names: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
+    band_names: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES,
     scheme: str = "vis_nisp",
     reference: str = "solar",
     *,

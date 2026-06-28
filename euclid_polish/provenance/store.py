@@ -12,7 +12,6 @@ import glob as _glob
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
 
 from euclid_polish.provenance._util import _atomic_write_json
 from euclid_polish.provenance.ids import ProvId
@@ -30,11 +29,11 @@ class ProvStore:
     extra directories scanned for sidecars co-located with their data.
     """
 
-    def __init__(self, index_dir: str, data_roots: Optional[List[str]] = None):
+    def __init__(self, index_dir: str, data_roots: list[str] | None = None):
         self.index_dir = index_dir
         self.data_roots = list(data_roots) if data_roots else [index_dir]
         os.makedirs(index_dir, exist_ok=True)
-        self._index: Dict[str, str] = {}   # id -> sidecar path
+        self._index: dict[str, str] = {}   # id -> sidecar path
         self.rebuild_index()
 
     # -- roots / scanning -- #
@@ -74,7 +73,7 @@ class ProvStore:
 
     # -- read / write -- #
 
-    def put(self, record: ProvRecord, sidecar_dir: Optional[str] = None) -> str:
+    def put(self, record: ProvRecord, sidecar_dir: str | None = None) -> str:
         """Write ``record`` to a sidecar (next to its data if ``sidecar_dir``)."""
         directory = sidecar_dir or self.index_dir
         os.makedirs(directory, exist_ok=True)
@@ -95,13 +94,13 @@ class ProvStore:
         with open(path) as fp:
             return record_from_dict(json.load(fp))
 
-    def get_or_none(self, pid: ProvId) -> Optional[ProvRecord]:
+    def get_or_none(self, pid: ProvId) -> ProvRecord | None:
         try:
             return self.get(pid)
         except KeyError:
             return None
 
-    def all_records(self) -> List[ProvRecord]:
+    def all_records(self) -> list[ProvRecord]:
         out = []
         for path in self._index.values():
             try:
@@ -111,8 +110,8 @@ class ProvStore:
                 continue
         return out
 
-    def find(self, *, kind: Optional[str] = None,
-             produced_by: Optional[ProvId] = None) -> List[ProvRecord]:
+    def find(self, *, kind: str | None = None,
+             produced_by: ProvId | None = None) -> list[ProvRecord]:
         """Return records matching the given filters (index scan)."""
         out = []
         for rec in self.all_records():

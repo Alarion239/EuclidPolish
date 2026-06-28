@@ -8,15 +8,15 @@ depending on any real data file.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from astropy.io import fits
 from werkzeug.exceptions import NotFound
 
-from euclid_polish.config import Config
-import os
-
 from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.config import Config
 from euclid_polish.web.helpers import sky_render
 
 

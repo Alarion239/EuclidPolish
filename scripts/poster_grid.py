@@ -31,19 +31,18 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import List, Optional, Tuple
 
-import numpy as np
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
 from astropy.io import fits
 
 # Reuse the house stretch / FITS helpers (poster_render.py sits next to this).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poster_render import grayscale_norm, center_crop, block_mean  # noqa: E402
+from poster_render import block_mean, center_crop, grayscale_norm  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +54,7 @@ def _square(arr: np.ndarray) -> np.ndarray:
     return arr[y0:y0 + s, x0:x0 + s]
 
 
-def _load_fits_2d(path: str, hdu: Optional[int]) -> np.ndarray:
+def _load_fits_2d(path: str, hdu: int | None) -> np.ndarray:
     with fits.open(path) as hl:
         if hdu is not None:
             data = hl[hdu].data
@@ -70,12 +69,12 @@ def _load_fits_2d(path: str, hdu: Optional[int]) -> np.ndarray:
     return data
 
 
-def _split_stack(path: str, hdu: Optional[int]) -> Tuple[List[np.ndarray], List[str]]:
+def _split_stack(path: str, hdu: int | None) -> tuple[list[np.ndarray], list[str]]:
     """Split a multi-band FITS into a list of 2-D band arrays + band names.
 
     Handles a 3-D cube ((N,H,W) or (H,W,N)) or several 2-D image HDUs."""
     with fits.open(path) as hl:
-        names: List[str] = []
+        names: list[str] = []
         # 3-D cube in one HDU
         idx = hdu if hdu is not None else 0
         data = hl[idx].data
@@ -135,7 +134,7 @@ def main() -> None:
     args = p.parse_args()
 
     # ---- assemble the list of cells: (array, origin, is_rgb) + labels --------
-    cells: List[Tuple[np.ndarray, str, bool]] = []
+    cells: list[tuple[np.ndarray, str, bool]] = []
     labels = [s.strip() for s in args.labels.split(",")] if args.labels else []
 
     if args.stack:

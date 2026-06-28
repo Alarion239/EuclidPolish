@@ -11,7 +11,6 @@ checkpoint is "legacy" (unknown provenance).
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from euclid_polish.provenance._util import _atomic_write_json
 from euclid_polish.provenance.ids import ProvId
@@ -32,7 +31,7 @@ def write_checkpoint_provenance(ckpt_dir: str, stamp: Stamp) -> str:
     return path
 
 
-def read_checkpoint_provenance(ckpt_dir: str) -> Optional[Stamp]:
+def read_checkpoint_provenance(ckpt_dir: str) -> Stamp | None:
     """The checkpoint's stamp, or ``None`` if it has no provenance sidecar."""
     path = checkpoint_provenance_path(ckpt_dir)
     if not os.path.exists(path):
@@ -41,7 +40,7 @@ def read_checkpoint_provenance(ckpt_dir: str) -> Optional[Stamp]:
         return Stamp.from_json(fp.read())
 
 
-def model_id_of_checkpoint(ckpt_dir: str) -> Optional[ProvId]:
+def model_id_of_checkpoint(ckpt_dir: str) -> ProvId | None:
     """The model artifact's :class:`ProvId`, or ``None`` for a legacy checkpoint."""
     stamp = read_checkpoint_provenance(ckpt_dir)
     return stamp.id if stamp is not None else None

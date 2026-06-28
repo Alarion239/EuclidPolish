@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import glob
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from astropy.io import fits
 
-from euclid_polish.config import Config
-from euclid_polish.catalog.catalog_object import CatalogObject, next_id
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.downloader import _FNAME_RE
+from euclid_polish.config import Config
 
 
 def _catalog_path(output_dir: str) -> str:
@@ -62,11 +62,11 @@ def _radec_from_header(path: str):
 
 def rebuild_catalog_from_cutouts(
     output_dir: str,
-    band_names: Optional[List[str]] = None,
+    band_names: list[str] | None = None,
     *,
     reporter: Any = None,
     dry_run: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Recover a corrupted/incomplete catalog from the cutouts already on disk.
 
     Scans ``<output_dir>/cutouts/<band>/star_<id>_<size>.fits`` and **adds any
@@ -84,7 +84,7 @@ def rebuild_catalog_from_cutouts(
     by_id = {int(o.id): o for o in objects if o.id is not None}
     cutouts_root = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
 
-    id_to_path: Dict[int, str] = {}
+    id_to_path: dict[int, str] = {}
     for bn in band_names:
         band_dir = Config.cutout_dir_for_band(bn, root=cutouts_root)
         for path in glob.glob(os.path.join(band_dir, "star_[0-9]*_*.fits")):
@@ -104,7 +104,7 @@ def rebuild_catalog_from_cutouts(
             dec=dec if dec is not None else float("nan"),
             id=sid, magnitude=float("nan")))
 
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "ids_on_disk":        len(on_disk),
         "already_in_catalog": len(on_disk) - len(missing),
         "recovered":          len(missing),
@@ -124,11 +124,11 @@ def rebuild_catalog_from_cutouts(
 
 def validate_all_cutouts(
     output_dir: str,
-    band_names: Optional[List[str]] = None,
+    band_names: list[str] | None = None,
     *,
-    objects: Optional[List[CatalogObject]] = None,
+    objects: list[CatalogObject] | None = None,
     reporter: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Re-derive per-``(band, size)`` validity by opening every cutout on disk.
 
     For each ``star_<id>_<size>.fits`` under each band's cutout dir, set the
@@ -181,13 +181,13 @@ def validate_all_cutouts(
 
 def purge_incomplete_cutouts(
     output_dir: str,
-    band_names: Optional[List[str]] = None,
+    band_names: list[str] | None = None,
     *,
-    objects: Optional[List[CatalogObject]] = None,
+    objects: list[CatalogObject] | None = None,
     dry_run: bool = False,
     drop_catalog_rows: bool = True,
     reporter: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Delete every cutout of any star that is **not valid in all bands**.
 
     A star is *complete* iff it has a valid cutout in **every** band of
@@ -222,7 +222,7 @@ def purge_incomplete_cutouts(
 
     # Map every on-disk cutout to its star id, robust to id zero-padding
     # (filenames are ``star_<id>_<size>.fits`` with ``:04d`` *minimum* width).
-    id_to_paths: Dict[int, List[str]] = {}
+    id_to_paths: dict[int, list[str]] = {}
     for bn in band_names:
         band_dir = Config.cutout_dir_for_band(bn, root=cutouts_root)
         for path in glob.glob(os.path.join(band_dir, "star_[0-9]*_*.fits")):

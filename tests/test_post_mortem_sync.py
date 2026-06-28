@@ -17,7 +17,6 @@ import pytest
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.web import fasrc_jobs
 
-
 _SACCT_DONE = (
     "12345|COMPLETED|0:0|2026-05-26T14:33:21|2026-05-26T14:35:44|"
     "143|572|09:32||8000Mc|4|cpu=4,mem=8000M|4|cpu=4,gres/gpu=1,mem=8000M|2:00:00\n"
@@ -47,7 +46,7 @@ class _SSHStub:
     def is_connected(self) -> bool:
         return self.connected
 
-    def run(self, cmd: str, *, timeout: float = 10) -> Tuple[int, str, str]:
+    def run(self, cmd: str, *, timeout: float = 10) -> tuple[int, str, str]:
         self.calls.append(cmd)
         for prefix, resp in self.responses.items():
             if cmd.startswith(prefix):

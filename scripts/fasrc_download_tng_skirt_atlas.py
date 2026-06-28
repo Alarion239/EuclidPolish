@@ -54,7 +54,6 @@ import sys
 import tarfile
 import tempfile
 import time
-from typing import List, Optional, Tuple
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -66,14 +65,12 @@ from euclid_polish.observability.reporter import Reporter
 # Reuse the single-galaxy script's battle-tested API helpers + filter so the
 # atlas-listing parsing and the Euclid-only member regex live in one place.
 from scripts.download_tng_skirt import (
-    SKIRT_ATLAS,
     _KEEP_RE,
     _TAR_SUFFIXES,
+    SKIRT_ATLAS,
     _list_atlas,
-    _name_from_url,
     _request,
 )
-
 
 # ---------------------------------------------------------------------------
 # API key resolution (arg → env → file), never through the WebUI
@@ -88,7 +85,7 @@ def _load_key(args: argparse.Namespace) -> str:
         return env
     path = os.path.expanduser(args.api_key_file)
     if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             key = f.readline().strip()
         if key:
             return key
@@ -154,7 +151,7 @@ def _extract_euclid(archive: str, dest_dir: str) -> int:
 def _download_one(
     *,
     name: str,
-    url: Optional[str],
+    url: str | None,
     key: str,
     out_dir: str,
     keep_archive: bool,
@@ -221,7 +218,7 @@ def _download_one(
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out-dir", default=Config.TNG_SKIRT_DIR,
@@ -254,7 +251,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     key = _load_key(args)
     reporter = Reporter.from_env()
@@ -266,10 +263,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("=" * 64)
     print(f"  out dir   = {out_dir}")
     print(f"  workers   = {args.workers}  ({args.executor})")
-    print(f"  bands     = VIS + NISP Y/J/H (dusty), 5 orientations / galaxy")
+    print("  bands     = VIS + NISP Y/J/H (dusty), 5 orientations / galaxy")
 
     reporter.set_stage("listing atlas")
-    entries: List[Tuple[str, Optional[str], Optional[int]]] = _list_atlas(key)
+    entries: list[tuple[str, str | None, int | None]] = _list_atlas(key)
     if not entries:
         print("  ✗ no atlas entries parsed — check the API key / endpoint.")
         return 1

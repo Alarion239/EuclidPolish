@@ -19,8 +19,9 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -38,7 +39,7 @@ class FakeSSHConfig:
 class LocalSSHSession:
     """Runs every command locally in ``cwd`` with the test's PATH overrides."""
 
-    def __init__(self, cwd: str, env: Optional[dict] = None) -> None:
+    def __init__(self, cwd: str, env: dict | None = None) -> None:
         self.cfg = FakeSSHConfig()
         self.cwd = cwd
         self.env = env
@@ -58,7 +59,7 @@ class LocalSSHSession:
 
     # ----------------------------- exec -----------------------------------
 
-    def run(self, cmd: str, timeout: int = 60) -> Tuple[int, str, str]:
+    def run(self, cmd: str, timeout: int = 60) -> tuple[int, str, str]:
         with self._lock:
             r = subprocess.run(
                 ["bash", "-c", cmd],
@@ -80,7 +81,8 @@ class LocalSSHSession:
         # fresh process group so we can SIGTERM the whole tree on cleanup
         # — otherwise ``tail -F`` is orphaned when bash exits and survives
         # the test, leaking file descriptors and lingering processes.
-        import os, signal
+        import os
+        import signal
         proc = subprocess.Popen(
             ["bash", "-c", cmd],
             cwd=self.cwd, env=self._merged_env(),
@@ -100,8 +102,8 @@ class LocalSSHSession:
                 except Exception: pass
 
     def rsync_pull(self, remote_path: str, local_dir: str,
-                   extra_args: Optional[List[str]] = None,
-                   timeout: int = 60) -> Tuple[int, str, str]:
+                   extra_args: list[str] | None = None,
+                   timeout: int = 60) -> tuple[int, str, str]:
         os.makedirs(local_dir, exist_ok=True)
         # Treat ``remote_path`` as a path inside ``self.cwd`` — same as a real
         # remote rsync, just with the transport stripped.

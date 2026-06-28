@@ -29,8 +29,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.config import Config
 
 _FLAG_KINDS = ("valid", "corrupted", "download_failed")
 _DEFAULT_BAND = "VIS"

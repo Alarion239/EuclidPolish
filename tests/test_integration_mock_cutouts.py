@@ -30,21 +30,24 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from euclid_polish.config import BandConfig, Config
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
 from euclid_polish.catalog.downloader import DownloadConfig
+from euclid_polish.config import BandConfig, Config
+from euclid_polish.image import Image
+from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_extractor import (
-    PSFExtractionConfig, PSFExtractor,
+    PSFExtractionConfig,
+    PSFExtractor,
 )
 from euclid_polish.psf.psf_library import (
-    load_all_band_psfs, load_band_psf, psf_path_for_band,
+    load_all_band_psfs,
+    load_band_psf,
+    psf_path_for_band,
 )
-from euclid_polish.psf import PSF
 from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
+    ObservationSimulator,
+    ObservationSimulatorConfig,
 )
-from euclid_polish.image import Image
-
 
 # ---------------------------------------------------------------------------
 # Mock-cutout factory

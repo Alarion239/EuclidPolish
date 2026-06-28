@@ -23,20 +23,20 @@ import sys
 import time
 
 import numpy as np
-
-from scipy.ndimage import zoom
 from astropy.io import fits
+from scipy.ndimage import zoom
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import psf_path_for_band
-from euclid_polish.psf import PSF
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_library import psf_path_for_band
 from euclid_polish.sky.observation.differential_kernel import (
-    DifferentialKernel, compute_differential_kernel,
+    DifferentialKernel,
+    compute_differential_kernel,
 )
 
 
@@ -200,7 +200,7 @@ def main() -> int:
     args = parse_args()
     reporter = Reporter.from_env()
     print("=" * 64)
-    print(f"  Differential kernel A = E / H")
+    print("  Differential kernel A = E / H")
     print("=" * 64)
     print(f"  HST PSF       = {args.hst_psf}")
     print(f"  Euclid PSF    = {Config.BAND_VIS.psf_fits_filename} "
@@ -212,7 +212,7 @@ def main() -> int:
     t0 = time.time()
 
     reporter.set_stage("loading HST and Euclid PSFs")
-    print(f"[1/3] loading HST and Euclid PSFs ...")
+    print("[1/3] loading HST and Euclid PSFs ...")
 
     if not os.path.isfile(args.hst_psf):
         reporter.error(f"HST PSF not found at {args.hst_psf}")
@@ -318,7 +318,7 @@ def main() -> int:
               f"renormalised")
 
     reporter.set_stage("solving A_hat via Wiener inverse")
-    print(f"[3/3] solving A_hat = E_hat · conj(H_hat) / (|H_hat|² + reg²) ...")
+    print("[3/3] solving A_hat = E_hat · conj(H_hat) / (|H_hat|² + reg²) ...")
     a = compute_differential_kernel(
         e_hr, h_hr, regularisation=args.regularisation,
     )

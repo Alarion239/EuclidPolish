@@ -1,20 +1,25 @@
 """model routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import os
+from typing import Any
+
 from astropy.io import fits
+from flask import jsonify, render_template, request
+
 from euclid_polish.config import Config
 from euclid_polish.web import job_config
-from euclid_polish.web.jobs import REGISTRY
-from flask import jsonify
-from flask import render_template
-from flask import request
-from typing import Any
-from typing import Dict
-from typing import Optional
-import os
 from euclid_polish.web.helpers.forms import _parse_asinh_scale
-from euclid_polish.web.helpers.jobs_impl import _job_generate_reconstruct, _job_reconstruct_euclid_cutout
-from euclid_polish.web.helpers.status import _checkpoints_status, _ckpt_dir_for_kind, _tfrecords_status
+from euclid_polish.web.helpers.jobs_impl import (
+    _job_generate_reconstruct,
+    _job_reconstruct_euclid_cutout,
+)
+from euclid_polish.web.helpers.status import (
+    _checkpoints_status,
+    _ckpt_dir_for_kind,
+    _tfrecords_status,
+)
+from euclid_polish.web.jobs import REGISTRY
 
 
 def register(app):
@@ -33,7 +38,7 @@ def register(app):
     def inference_page():
         # Most-recent reconstruction PNGs (newest first). Each thumbnail
         # links to its sidecar SR.fits when one exists on disk.
-        recon_pngs: list[Dict[str, Any]] = []
+        recon_pngs: list[dict[str, Any]] = []
         rdir = Config.VIS_RECONSTRUCTION_DIR
         if os.path.isdir(rdir):
             for fname in os.listdir(rdir):
@@ -67,7 +72,7 @@ def register(app):
         # Persistent Euclid inference cutouts: one entry per cache dir.
         # Each entry exposes the four LR FITS + the SR FITS as download
         # links so the user can re-load them in their own tools.
-        euclid_runs: list[Dict[str, Any]] = []
+        euclid_runs: list[dict[str, Any]] = []
         eroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
         if os.path.isdir(eroot):
             for tag in os.listdir(eroot):
@@ -113,7 +118,7 @@ def register(app):
         # Synthetic reconstruction runs: per-scene inspectable FITS set
         # (original_stack + SR + HR), the same downloadable/inspectable
         # outputs the real-Euclid cutouts produce.
-        synthetic_runs: list[Dict[str, Any]] = []
+        synthetic_runs: list[dict[str, Any]] = []
         sroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic")
         if os.path.isdir(sroot):
             for tag in os.listdir(sroot):

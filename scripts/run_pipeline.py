@@ -40,40 +40,39 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from typing import List, Tuple
 
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 
-from tf_keras.optimizers.schedules import PiecewiseConstantDecay
-
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import load_all_band_psf_sets
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import (
+    open_writer,
+    tfrecord_path,
+)
+from euclid_polish.model import Model
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
+from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
+from euclid_polish.sky.generation.gen_provenance import (
+    ShardStampPlan,
+    make_generation_context,
 )
 from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig, SkySimulator,
+    SkySimulator,
+    SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.source_catalog import (
-    SourceCatalogWriter, concat_source_csvs,
+    SourceCatalogWriter,
+    concat_source_csvs,
 )
-from euclid_polish.sky.generation.gen_provenance import (
-    ShardStampPlan, make_generation_context,
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
 )
-from euclid_polish.image.tfio import (
-    open_writer, tfrecord_path, write_images,
-)
-from euclid_polish.image import Image
-from euclid_polish.model import Model
-from euclid_polish.training import Trainer
-from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.stage_timer import StageTimer
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -393,7 +392,7 @@ def step_convolve(args: argparse.Namespace) -> None:
 # Parallel combined generate + forward (one process per index range)
 # ---------------------------------------------------------------------------
 
-def _concat_tfrecords(part_paths: List[str], out_path: str) -> None:
+def _concat_tfrecords(part_paths: list[str], out_path: str) -> None:
     """Byte-concatenate TFRecord shard files into one TFRecord.
 
     A TFRecord file is a bare back-to-back sequence of self-framed records
@@ -407,7 +406,7 @@ def _concat_tfrecords(part_paths: List[str], out_path: str) -> None:
                     shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
 
 
-def _shard_bounds(n: int, n_shards: int) -> List[Tuple[int, int]]:
+def _shard_bounds(n: int, n_shards: int) -> list[tuple[int, int]]:
     """Contiguous ``[start, end)`` ranges partitioning ``[0, n)``."""
     return [(round(k * n / n_shards), round((k + 1) * n / n_shards))
             for k in range(n_shards)]
@@ -478,7 +477,7 @@ def _cleanup_parts(records_dir: str, subset: str) -> None:
 
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
                              start: int, count: int, shard_id: int,
-                             seed, plan=None) -> Tuple[str, int, int]:
+                             seed, plan=None) -> tuple[str, int, int]:
     """Generate clean → forward to hr+dirty for ``[start, start+count)`` and
     write the triple to per-shard TFRecords.
 
@@ -577,7 +576,7 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     _W_RECORDS_DIR = records_dir
 
 
-def _gen_convolve_shard(task) -> Tuple[str, int, int]:
+def _gen_convolve_shard(task) -> tuple[str, int, int]:
     """Top-level pool entry point → ``_generate_convolve_range`` with the
     worker-global sim/fwd."""
     subset, start, count, shard_id, seed, plan = task

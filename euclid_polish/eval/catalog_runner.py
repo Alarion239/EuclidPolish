@@ -18,7 +18,8 @@ import csv
 import os
 import re
 import traceback
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from euclid_polish.config import Config
 from euclid_polish.eval.eval_catalog import read_eval_catalog
@@ -51,12 +52,12 @@ def object_output_dir(out_dir: str, obj_id: str) -> str:
     return os.path.join(out_dir, _safe_id(obj_id))
 
 
-def _base_manifest_row(obj, grade: Optional[str] = None) -> Dict[str, Any]:
+def _base_manifest_row(obj, grade: str | None = None) -> dict[str, Any]:
     return {
         "id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
         "grade": grade if grade is not None else (obj.get("grade") or ""),
         "ok": False, "error": "", "out_subdir": _safe_id(obj["id"]),
-        **{k: "" for k in _METRIC_KEYS},
+        **dict.fromkeys(_METRIC_KEYS, ""),
     }
 
 
@@ -83,9 +84,9 @@ def _vis_plane(arr):
     return data
 
 
-def reuse_catalog_object(obj, out_dir: str, *, grade: Optional[str] = None,
-                         log: Optional[Callable[[str], None]] = None
-                         ) -> Dict[str, Any]:
+def reuse_catalog_object(obj, out_dir: str, *, grade: str | None = None,
+                         log: Callable[[str], None] | None = None
+                         ) -> dict[str, Any]:
     """Build a manifest row from existing LR/SR FITS without downloading."""
     import numpy as np
     from astropy.io import fits
@@ -137,7 +138,7 @@ def center_crop(arr, size: int):
 
 
 def enforce_object_sizes(obj_dir: str, *,
-                         log: Optional[Callable[[str], None]] = None) -> bool:
+                         log: Callable[[str], None] | None = None) -> bool:
     """Crop an object's FITS to the canonical eval sizes; signal drop if smaller.
 
     ``original_stack.fits`` (LR / VIS grid) is held at ``EVAL_LR_SIZE``² and
@@ -211,17 +212,17 @@ def seed_object_from_cache(source_dir: str, out_dir: str, obj_id: str) -> bool:
 
 def write_manifest_upsert(
     manifest_path: str,
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     fieldnames=MANIFEST_COLS,
 ) -> None:
     """Write ``rows`` into a shared manifest, preserving unrelated objects."""
-    existing: List[Dict[str, Any]] = []
+    existing: list[dict[str, Any]] = []
     if os.path.isfile(manifest_path):
         with open(manifest_path, newline="") as f:
             existing = list(csv.DictReader(f))
 
-    order: List[str] = []
-    by_id: Dict[str, Dict[str, Any]] = {}
+    order: list[str] = []
+    by_id: dict[str, dict[str, Any]] = {}
     for row in existing + rows:
         obj_id = str(row.get("id", ""))
         if not obj_id:
@@ -247,11 +248,12 @@ def write_manifest_upsert(
             writer.writerow({key: row.get(key, "") for key in cols})
 
 
-def load_eval_model(checkpoint: Optional[str] = None,
-                    num_res_blocks: Optional[int] = None):
+def load_eval_model(checkpoint: str | None = None,
+                    num_res_blocks: int | None = None):
     """Load the local SR model once (raises if no checkpoint). Shared by the
     single-catalog and grouped runners."""
     import tensorflow as tf
+
     from euclid_polish.training.inference import load_model_from_checkpoint
 
     checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
@@ -265,10 +267,10 @@ def load_eval_model(checkpoint: Optional[str] = None,
 
 
 def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
-                        asinh_scale: Optional[float], checkpoint: str,
-                        grade: Optional[str] = None, render: bool = False,
-                        log: Optional[Callable[[str], None]] = None
-                        ) -> Dict[str, Any]:
+                        asinh_scale: float | None, checkpoint: str,
+                        grade: str | None = None, render: bool = False,
+                        log: Callable[[str], None] | None = None
+                        ) -> dict[str, Any]:
     """Reconstruct one catalog object → write its FITS, return a manifest row.
 
     ``obj`` is an ``{id, ra, dec, grade}`` dict (from read_eval_catalog).
@@ -302,18 +304,18 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
 def run_catalog_eval(
     *,
     out_dir: str,
-    catalog_path: Optional[str] = None,
-    checkpoint: Optional[str] = None,
-    num_res_blocks: Optional[int] = None,
+    catalog_path: str | None = None,
+    checkpoint: str | None = None,
+    num_res_blocks: int | None = None,
     cutout_size: int = 256,
-    grade: Optional[str] = None,
-    max_n: Optional[int] = None,
-    asinh_scale: Optional[float] = None,
+    grade: str | None = None,
+    max_n: int | None = None,
+    asinh_scale: float | None = None,
     render: bool = False,
-    on_progress: Optional[Callable[[int, int, str], None]] = None,
-    log: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    log: Callable[[str], None] | None = None,
     model: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Evaluate the model over a catalog into ``out_dir``; return a summary.
 
     ``catalog_path=None`` uses the default lens catalog and auto-fetches it from
@@ -363,7 +365,7 @@ def run_catalog_eval(
 
     manifest_path = os.path.join(out_dir, "manifest.csv")
     n_ok = n_skip = 0
-    out_rows: List[Dict[str, Any]] = []
+    out_rows: list[dict[str, Any]] = []
     for i, row in enumerate(rows):
         _tick(i, n, f"{row['id']} ({i + 1}/{n})")
         _emit(f"[{i + 1}/{n}] {row['id']}  ra={row['ra']:.5f} "

@@ -23,10 +23,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Optional, Tuple
 
-import numpy as np
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -49,10 +48,10 @@ def grayscale_norm(
     arr: np.ndarray,
     *,
     scale_pct: float = 90.0,
-    clip: Tuple[float, float] = (0.5, 99.5),
-    scale: Optional[float] = None,
-    lohi: Optional[Tuple[float, float]] = None,
-) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    clip: tuple[float, float] = (0.5, 99.5),
+    scale: float | None = None,
+    lohi: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, float, tuple[float, float]]:
     """Return (normed[0,1], scale, (lo,hi)). Pass ``scale``/``lohi`` to reuse a
     reference frame's stretch instead of computing this frame's own."""
     d = np.clip(np.asarray(arr, dtype=np.float32), 0.0, None)
@@ -69,7 +68,7 @@ def grayscale_norm(
 
 
 # ---------------------------------------------------------------------------
-def load_fits(path: str, hdu: Optional[int]) -> np.ndarray:
+def load_fits(path: str, hdu: int | None) -> np.ndarray:
     with fits.open(path) as hl:
         if hdu is not None:
             data = hl[hdu].data

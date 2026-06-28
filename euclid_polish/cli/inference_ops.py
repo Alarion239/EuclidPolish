@@ -6,7 +6,6 @@ Pure functions over the OO operator surface — ``Model.upsample``,
 from __future__ import annotations
 
 import os
-from typing import List, Optional
 
 from euclid_polish.catalog import EuclidCatalog
 from euclid_polish.image import Image, ImageSet, Role
@@ -14,14 +13,14 @@ from euclid_polish.visualization.reconstruction import plot_imageset
 
 
 def reconstruct_and_render(
-    lr_images: List[Image],
+    lr_images: list[Image],
     model,
     out_dir: str,
     *,
-    hr_images: Optional[List[Image]] = None,
+    hr_images: list[Image] | None = None,
     regime: str = "eye",
     store=None,
-) -> List[str]:
+) -> list[str]:
     """Super-resolve each LR image with ``model`` and save a reconstruction PNG.
 
     Parameters
@@ -46,7 +45,7 @@ def reconstruct_and_render(
         Paths of the written PNGs.
     """
     os.makedirs(out_dir, exist_ok=True)
-    paths: List[str] = []
+    paths: list[str] = []
     for i, lr_img in enumerate(lr_images):
         lr = lr_img.with_role(Role.LR)
         sr = model.upsample(lr, store=store)

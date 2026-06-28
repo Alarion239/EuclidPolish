@@ -2,7 +2,7 @@
 import pytest
 
 from euclid_polish.catalog.catalog_object import CatalogObject
-from euclid_polish.catalog.client import EuclidCatalog, EuclidAuthError
+from euclid_polish.catalog.client import EuclidAuthError, EuclidCatalog
 
 
 class _FakeJob:

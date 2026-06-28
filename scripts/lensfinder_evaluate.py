@@ -55,7 +55,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
 
 def _evaluate_recon(rows, pred_csv, *, target_fpr, bins):
     """Per-recon metrics dict, or None when the predictions file is absent."""
-    import numpy as np
 
     if not os.path.isfile(pred_csv):
         return None
@@ -102,7 +101,6 @@ def _plots(per_recon, out_dir, target_fpr):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import numpy as np
 
     # TPR vs Einstein radius.
     fig, ax = plt.subplots(figsize=(6.4, 4.6))
@@ -144,7 +142,6 @@ def _plots(per_recon, out_dir, target_fpr):
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
-    import numpy as np
 
     rows = lf_catalog.read_catalog(args.catalog)
     # Einstein-radius range from the test-split positives.

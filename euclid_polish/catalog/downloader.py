@@ -14,13 +14,14 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
-import numpy as np
-from astroquery.esa.euclid import Euclid
-from astropy.coordinates import SkyCoord
 import astropy.units as u
+import numpy as np
+from astropy.coordinates import SkyCoord
+from astroquery.esa.euclid import Euclid
 from tqdm import tqdm
 
 from euclid_polish.catalog.validator import FitsValidator, angular_separation_arcsec
@@ -40,7 +41,7 @@ _TAP_QUERY_LOCK = threading.Lock()
 
 
 def query_mosaic_tiles(query: str, *, retries: int = 2,
-                       relogin: Optional[Callable[[], bool]] = None):
+                       relogin: Callable[[], bool] | None = None):
     """Run a ``sedm.mosaic_product`` ADQL query, tolerant of a dropped session.
 
     ``Euclid.launch_job_async`` can return ``None`` (e.g. the TAP session expired
@@ -115,7 +116,7 @@ class DownloadConfig:
     max_workers: int = 8  # parallel cutout HTTPS fetches
     band: str = "VIS"
     instrument: str = "VIS"
-    filter_name: Optional[str] = None
+    filter_name: str | None = None
     pixel_scale_arcsec: float = Config.VIS_PIXEL_SCALE_ARCSEC
     # Saturation/clipping rejection: a downloaded cutout is rejected when
     # its central ``saturation_core_size × saturation_core_size`` region
@@ -130,10 +131,10 @@ class DownloadConfig:
         cls,
         band_name: str,
         *,
-        cutout_size_vis_pixels: Optional[int] = None,
-        cutout_size: Optional[int] = None,
+        cutout_size_vis_pixels: int | None = None,
+        cutout_size: int | None = None,
         **overrides,
-    ) -> "DownloadConfig":
+    ) -> DownloadConfig:
         """Build a download config from a band name.
 
         Cutout size can be specified two ways:
@@ -173,7 +174,7 @@ class DownloadConfig:
         defaults.update(overrides)
         return cls(**defaults)
 
-    def validate(self) -> tuple[bool, Optional[str]]:
+    def validate(self) -> tuple[bool, str | None]:
         """Validate configuration."""
         if self.cutout_size <= 0:
             return False, "Cutout size must be positive"
@@ -197,10 +198,10 @@ def positions_match(ra1: float, dec1: float, ra2: float, dec2: float,
 
 
 def scan_cutouts(
-    cutout_dir: str, validator: Optional[FitsValidator] = None,
-) -> Tuple[
-    Dict[int, List[Tuple[float, float, int, str]]],
-    List[Tuple[int, Optional[int], str]],
+    cutout_dir: str, validator: FitsValidator | None = None,
+) -> tuple[
+    dict[int, list[tuple[float, float, int, str]]],
+    list[tuple[int, int | None, str]],
 ]:
     """Scan ``cutout_dir`` for ``star_<id>_<size>.fits`` and read each WCS centre.
 
@@ -212,8 +213,8 @@ def scan_cutouts(
     ``corrupted = [(id, size_or_None, path), ...]``.
     """
     validator = validator or FitsValidator()
-    positions: Dict[int, List[Tuple[float, float, int, str]]] = {}
-    corrupted: List[Tuple[int, Optional[int], str]] = []
+    positions: dict[int, list[tuple[float, float, int, str]]] = {}
+    corrupted: list[tuple[int, int | None, str]] = []
 
     fits_files = glob.glob(os.path.join(cutout_dir, "star_[0-9]*_*.fits"))
 
@@ -240,9 +241,9 @@ def scan_cutouts(
 
 
 def resolve_mosaics(
-    objects: List[Any], config: DownloadConfig, *,
-    relogin: Optional[Callable[[], bool]] = None,
-) -> Dict[int, Dict[str, Any]]:
+    objects: list[Any], config: DownloadConfig, *,
+    relogin: Callable[[], bool] | None = None,
+) -> dict[int, dict[str, Any]]:
     """Map every object to its mosaic tile in a single ADQL query.
 
     Pulls the full mosaic catalogue from ``sedm.mosaic_product`` once
@@ -288,7 +289,7 @@ def resolve_mosaics(
     idx, sep, _ = obj_coords.match_to_catalog_sky(mosaic_coords)
 
     max_sep = 0.5 * u.degree  # tile half-diagonal-ish; loose upper bound
-    out: Dict[int, Dict[str, Any]] = {}
+    out: dict[int, dict[str, Any]] = {}
     for i, obj in enumerate(objects):
         if sep[i] > max_sep:
             continue
@@ -302,7 +303,7 @@ def resolve_mosaics(
 
 def download_one_cutout(
     ra: float, dec: float, config: DownloadConfig,
-    cutout_radius_arcmin: float, output_file: str, mosaic: Dict[str, Any],
+    cutout_radius_arcmin: float, output_file: str, mosaic: dict[str, Any],
 ) -> bool:
     """Download a single cutout at ``(ra, dec)`` using a pre-resolved tile.
 
@@ -335,7 +336,7 @@ def fetch_cutout_at(
     band_name: str,
     output_file: str,
     cutout_size_vis_pixels: int = 512,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Fetch a single Euclid cutout at one (ra, dec) for one band.
 
     Bypasses the on-disk star catalog — meant for ad-hoc inference where the

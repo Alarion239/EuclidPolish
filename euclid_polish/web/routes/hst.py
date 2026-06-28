@@ -9,32 +9,29 @@ base.html) exist in the running app.
 """
 from __future__ import annotations
 
-from astropy.io import fits
-from astropy.io import fits as _fits
-from euclid_polish.config import Config
-from euclid_polish.web import experimental
-from euclid_polish.web import fasrc_config
-from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
-from euclid_polish.web.fasrc_fetcher import _local_path_for
-from euclid_polish.web.fasrc_fetcher import is_allowed_remote_path
-from euclid_polish.web.fasrc_fetcher import list_remote_dir
-from euclid_polish.web.fasrc_fetcher import run_remote_python
-from flask import abort
-from flask import jsonify
-from flask import render_template
-from flask import request
-from flask import send_file
-from matplotlib.colors import AsinhNorm
-from scipy.signal import fftconvolve
-from typing import Any
-from typing import Dict
-from typing import List
 import importlib.util
 import io
 import json
+import os
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+from astropy.io import fits
+from astropy.io import fits as _fits
+from flask import abort, jsonify, render_template, request, send_file
+from matplotlib.colors import AsinhNorm
+from scipy.signal import fftconvolve
+
+from euclid_polish.config import Config
+from euclid_polish.web import experimental, fasrc_config
+from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_fetcher import (
+    _local_path_for,
+    is_allowed_remote_path,
+    list_remote_dir,
+    run_remote_python,
+)
 from euclid_polish.web.helpers.fits_render import _render_fits_to_png
 from euclid_polish.web.helpers.paths import _safe_relpath
 
@@ -56,7 +53,7 @@ def register(app):
             f"{cfg_loaded.data_dir}/hst_psf",
             glob_pattern="*.fits",
         )
-        files: List[Dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
         for e in (entries or []):
             files.append({
                 "name":         e["name"],
@@ -352,11 +349,11 @@ def register(app):
             "psf":    f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
             "kernel": f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
         }
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
             r = _fasrc_fetcher.fetch_one_file(remote, force=True)
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "remote_path": remote,
                 "ok":          r.ok,
                 "size_bytes":  r.size_bytes,
@@ -413,7 +410,7 @@ def register(app):
         # De-duplicate by basename, preferring the larger size (catches
         # the brief window where a file exists both flat and nested
         # mid-flatten — flat is the canonical copy when it's complete).
-        best: Dict[str, Dict[str, Any]] = {}
+        best: dict[str, dict[str, Any]] = {}
         for e in (entries or []):
             name = e["name"]
             prev = best.get(name)

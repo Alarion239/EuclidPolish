@@ -15,15 +15,17 @@ import os
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
-)
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig, SkySimulator,
-)
-from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.image import ImageSet
+from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
 from tests._tiny_catalog import TinyCosmosCatalog
 
 
@@ -117,9 +119,9 @@ def test_parallel_shards_merge_into_paired_records(tmp_path):
 def test_worker_stamps_records_when_plan_given(tmp_path):
     """A pre-minted ShardStampPlan stamps clean/hr/dirty in the worker; hr+dirty
     parent on the clean file id."""
+    from euclid_polish.image.tfio import read_images
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.sky.generation.gen_provenance import ShardStampPlan
-    from euclid_polish.image.tfio import read_images
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)
     plan = ShardStampPlan(run_id=ProvId("7f3a9c21"), clean_id=ProvId("4b1e7a90"),

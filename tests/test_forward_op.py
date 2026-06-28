@@ -33,9 +33,9 @@ import tensorflow as tf
 from astropy.io import fits
 
 from euclid_polish.training.forward_op import (
-    EuclidVISForwardOp, _load_vis_psf_kernel,
+    EuclidVISForwardOp,
+    _load_vis_psf_kernel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures

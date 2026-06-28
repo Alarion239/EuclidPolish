@@ -27,9 +27,9 @@ class StubSSH:
     assert what the route asked the shell to do.
     """
 
-    def __init__(self, responses: List[Tuple[int, str, str]]) -> None:
+    def __init__(self, responses: list[tuple[int, str, str]]) -> None:
         self.responses = list(responses)
-        self.calls: List[str] = []
+        self.calls: list[str] = []
 
     def is_connected(self) -> bool:
         return True
@@ -62,7 +62,7 @@ def client(tmp_repo):
     return app.test_client()
 
 
-def _find_response(rows: List[Tuple[float, int, str]]) -> str:
+def _find_response(rows: list[tuple[float, int, str]]) -> str:
     """Format rows the way GNU ``find -printf '%T@\\t%s\\t%p\\n'`` would."""
     return "\n".join(f"{m}\t{s}\t{p}" for m, s, p in rows) + "\n"
 

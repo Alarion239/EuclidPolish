@@ -18,10 +18,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 import threading
-from typing import Dict, Optional, Tuple
 
 try:                                            # psutil is a project dep, but
-    import psutil                               # never let its absence break a
+    import psutil  # never let its absence break a
 except Exception:                               # training run.
     psutil = None                               # type: ignore[assignment]
 
@@ -34,7 +33,7 @@ _NVIDIA_SMI_QUERY = (
 )
 
 
-def read_cpu_percent() -> Optional[float]:
+def read_cpu_percent() -> float | None:
     """Node-wide CPU utilisation in percent since the previous call.
 
     ``psutil.cpu_percent(interval=None)`` measures over the gap since the
@@ -50,7 +49,7 @@ def read_cpu_percent() -> Optional[float]:
         return None
 
 
-def read_gpu() -> Optional[Tuple[float, float, float, float]]:
+def read_gpu() -> tuple[float, float, float, float] | None:
     """Return ``(util%, mem_util%, mem_used_mb, mem_total_mb)`` or ``None``.
 
     Compute/mem-util are averaged across visible GPUs; memory is summed.
@@ -70,7 +69,7 @@ def read_gpu() -> Optional[Tuple[float, float, float, float]]:
     return parse_nvidia_smi(proc.stdout)
 
 
-def parse_nvidia_smi(text: str) -> Optional[Tuple[float, float, float, float]]:
+def parse_nvidia_smi(text: str) -> tuple[float, float, float, float] | None:
     """Fold ``nvidia-smi --query-gpu`` CSV text into one averaged tuple.
 
     Split out from :func:`read_gpu` so it's unit-testable without a GPU.
@@ -98,9 +97,9 @@ def parse_nvidia_smi(text: str) -> Optional[Tuple[float, float, float, float]]:
     return (sum(utils) / n, sum(mem_utils) / n, sum(used), sum(total))
 
 
-def sample_once() -> Dict[str, float]:
+def sample_once() -> dict[str, float]:
     """One CPU+GPU probe → a ``resource`` event payload (may be partial)."""
-    payload: Dict[str, float] = {}
+    payload: dict[str, float] = {}
     cpu = read_cpu_percent()
     if cpu is not None:
         payload["cpu"] = round(cpu, 1)
@@ -131,7 +130,7 @@ class ResourceSampler:
         self.reporter = reporter
         self.interval_s = float(interval_s)
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def _loop(self) -> None:
         # Prime psutil so the first real sample reflects a true interval
@@ -145,7 +144,7 @@ class ResourceSampler:
             if payload:
                 self.reporter.sample_resources(payload)
 
-    def start(self) -> "ResourceSampler":
+    def start(self) -> ResourceSampler:
         if self._thread is not None:
             return self
         self._thread = threading.Thread(
@@ -160,7 +159,7 @@ class ResourceSampler:
             self._thread.join(timeout=self.interval_s + 2.0)
             self._thread = None
 
-    def __enter__(self) -> "ResourceSampler":
+    def __enter__(self) -> ResourceSampler:
         return self.start()
 
     def __exit__(self, *exc) -> None:

@@ -28,23 +28,21 @@ import argparse
 import os
 import sys
 import time
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 import numpy as np
 import pandas as pd
-
 from astropy.io import fits
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
-from euclid_polish.observability.reporter import Reporter
-from euclid_polish.image.tfio import open_writer
+from euclid_polish.config import Config
 from euclid_polish.image import Image
-
+from euclid_polish.image.tfio import open_writer
+from euclid_polish.observability.reporter import Reporter
 
 # Input dir (bundled per-position cutouts), output records dir, and the
 # sky-catalogue filename now live in Config — see
@@ -121,7 +119,7 @@ def parse_args() -> argparse.Namespace:
 def _load_4band_cube(
     input_dir: str, position_id: int, vis_pixels: int,
     *, scale_to_electrons: bool = True,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """Load and stack VIS + Y_E + J_E + H_E images for one position.
 
     Opens ``<input_dir>/sky_NNNN.fits`` once and pulls the four
@@ -245,7 +243,7 @@ def main() -> int:
               "be discarded.")
 
     print("=" * 64)
-    print(f"  Euclid round-trip TFRecord generation")
+    print("  Euclid round-trip TFRecord generation")
     print("=" * 64)
     print(f"  input dir       = {args.input_dir}")
     print(f"  output dir      = {args.output_dir}")
@@ -351,7 +349,7 @@ def main() -> int:
 
     print()
     reporter.set_stage("done")
-    print(f"[3/3] done.")
+    print("[3/3] done.")
     print(f"      positions missing one or more bands : "
           f"{dropped_no_4band} / {len(positions)}")
     print(f"      stamps rejected (edge/NaN)          : {dropped_bad_stamp}")

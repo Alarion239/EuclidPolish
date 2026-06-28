@@ -1,27 +1,22 @@
 """fits_render helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from PIL import Image
-from astropy.io import fits
-from astropy.io import fits as _fits
-from astropy.visualization import AsinhStretch
-from astropy.visualization import ImageNormalize
-from astropy.visualization import MinMaxInterval
-from euclid_polish.config import BandConfig
-from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
-from flask import abort
-from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 import io
+import os
+from typing import Any
+
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+from astropy.io import fits
+from astropy.io import fits as _fits
+from astropy.visualization import AsinhStretch, ImageNormalize, MinMaxInterval
+from flask import abort
+from PIL import Image
+
+from euclid_polish.config import BandConfig, Config
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
 from euclid_polish.web.helpers.status import _fasrc_psf_dir
 
 
@@ -109,7 +104,7 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
 
 
 def _render_fits_to_png(fits_path: str, band: BandConfig,
-                        size: Optional[int] = None) -> bytes:
+                        size: int | None = None) -> bytes:
     """Load a cutout FITS, apply per-band asinh stretch, return PNG bytes.
 
     - Asinh stretch knee comes from ``band.asinh_stretch_scale_e``.
@@ -156,7 +151,7 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
     return buf.getvalue()
 
 
-def _list_band_cutouts(band_name: str, output_dir: str) -> List[str]:
+def _list_band_cutouts(band_name: str, output_dir: str) -> list[str]:
     """Sorted list of cutout filenames present for ``band_name``."""
     band_dir = Config.cutout_dir_for_band(
         band_name, root=os.path.join(output_dir, "cutouts"),
@@ -169,15 +164,15 @@ def _list_band_cutouts(band_name: str, output_dir: str) -> List[str]:
     )
 
 
-def _read_fits_header_rows(path: str) -> List[Dict[str, Any]]:
+def _read_fits_header_rows(path: str) -> list[dict[str, Any]]:
     """Return one row per HDU with its header laid out for the table view.
 
     Each row: ``{hdu_index, name, kind, shape, dtype, cards: [(key, value, comment), ...]}``.
     """
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     with fits.open(path, memmap=False) as hdul:
         for i, hdu in enumerate(hdul):
-            cards: List[Tuple[str, str, str]] = []
+            cards: list[tuple[str, str, str]] = []
             for card in hdu.header.cards:
                 key  = str(card.keyword)
                 val  = str(card.value)
@@ -200,7 +195,7 @@ def _read_fits_header_rows(path: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _fits_file_info(path: str) -> Dict[str, Any]:
+def _fits_file_info(path: str) -> dict[str, Any]:
     """Lightweight ``ls``-style metadata for the inspector header card."""
     st = os.stat(path)
     return {
@@ -211,7 +206,7 @@ def _fits_file_info(path: str) -> Dict[str, Any]:
     }
 
 
-def _render_psf_panel_png(band: Optional[str]) -> bytes:
+def _render_psf_panel_png(band: str | None) -> bytes:
     """Render one band (or all four) on a log-stretch panel as PNG bytes."""
     matplotlib.use("Agg")
 
@@ -250,7 +245,7 @@ def _render_psf_panel_png(band: Optional[str]) -> bytes:
 def _arrays_to_fits_bytes(
     arrays,
     header_meta=None,
-    primary_name: Optional[str] = None,
+    primary_name: str | None = None,
 ) -> bytes:
     """Pack a dict of ``{name: array}`` into a multi-HDU FITS file.
 

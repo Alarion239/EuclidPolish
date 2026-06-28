@@ -10,10 +10,12 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-
 from scripts.measure_star_saturation import (
-    _adu_to_e_factor, _summarize_band, load_cutout_electrons,
-    measure_core_saturation, scan_stars,
+    _adu_to_e_factor,
+    _summarize_band,
+    load_cutout_electrons,
+    measure_core_saturation,
+    scan_stars,
 )
 
 _SIZE = 64

@@ -162,6 +162,7 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     # real ./data tree and trips the session-teardown immutability guard.
     try:
         import time as _time
+
         from euclid_polish.web.jobs import REGISTRY
         _deadline = _time.monotonic() + 5.0
         while _time.monotonic() < _deadline:
@@ -228,6 +229,7 @@ def _safe_default_ssh_state(monkeypatch):
 @_pytest.fixture(scope="session", autouse=True)
 def _protect_real_data_dir():
     import hashlib
+
     from euclid_polish.config import Config
 
     DATA_DIR = Config.DATA_DIR

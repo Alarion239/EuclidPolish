@@ -25,16 +25,15 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar
 
-from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Format(str, Enum):
@@ -60,12 +59,12 @@ class Stamp:
     """
 
     id: ProvId
-    produced_by: Optional[ProvId] = None
-    parents: Tuple[ProvId, ...] = ()
+    produced_by: ProvId | None = None
+    parents: tuple[ProvId, ...] = ()
     schema_version: int = 3
-    subset: Optional[str] = None
+    subset: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
             "produced_by": str(self.produced_by) if self.produced_by else None,
@@ -75,7 +74,7 @@ class Stamp:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "Stamp":
+    def from_dict(cls, d: dict[str, Any]) -> Stamp:
         return cls(
             id=ProvId(d["id"]),
             produced_by=ProvId(d["produced_by"]) if d.get("produced_by") else None,
@@ -88,11 +87,11 @@ class Stamp:
         return json.dumps(self.to_dict(), sort_keys=True)
 
     @classmethod
-    def from_json(cls, text: str) -> "Stamp":
+    def from_json(cls, text: str) -> Stamp:
         return cls.from_dict(json.loads(text))
 
     @classmethod
-    def legacy(cls) -> "Stamp":
+    def legacy(cls) -> Stamp:
         """The stamp for an artifact of unknown (legacy) provenance."""
         return cls(id=ProvId.sentinel(), schema_version=0)
 
@@ -111,10 +110,10 @@ class ConfigSnapshot:
     """
 
     config_type: str
-    fields: Dict[str, Any] = field(default_factory=dict)
+    fields: dict[str, Any] = field(default_factory=dict)
     SCHEMA_VERSION: ClassVar[int] = 3
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "config_type": self.config_type,
             "schema_version": self.SCHEMA_VERSION,
@@ -122,11 +121,11 @@ class ConfigSnapshot:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ConfigSnapshot":
+    def from_dict(cls, d: dict[str, Any]) -> ConfigSnapshot:
         return cls(config_type=d["config_type"], fields=dict(d.get("fields", {})))
 
     @classmethod
-    def from_dataclass(cls, obj: Any) -> "ConfigSnapshot":
+    def from_dataclass(cls, obj: Any) -> ConfigSnapshot:
         return cls(config_type=type(obj).__name__, fields=dataclasses.asdict(obj))
 
 
@@ -136,7 +135,7 @@ class ConfigSnapshot:
 
 #: kind string → the base class that knows how to (de)serialize it. Populated
 #: at the bottom of the module, after ``Process`` / ``Artifact`` are defined.
-_REGISTRY: Dict[str, type] = {}
+_REGISTRY: dict[str, type] = {}
 
 
 @dataclass(frozen=True)
@@ -149,8 +148,8 @@ class ProvRecord:
     """
 
     id: ProvId
-    parents: Tuple[ProvId, ...] = ()
-    git: Optional[Dict[str, Any]] = field(default=None)
+    parents: tuple[ProvId, ...] = ()
+    git: dict[str, Any] | None = field(default=None)
     created_at: str = field(default_factory=_now_iso)
     kind: str = "provrecord"
 
@@ -158,7 +157,7 @@ class ProvRecord:
 
     # -- serialization -- #
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "kind": self.kind,
             "schema_version": self.SCHEMA_VERSION,
@@ -170,11 +169,11 @@ class ProvRecord:
         d.update(self._payload())
         return d
 
-    def _payload(self) -> Dict[str, Any]:
+    def _payload(self) -> dict[str, Any]:
         return {}
 
     @staticmethod
-    def _base_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
+    def _base_kwargs(d: dict[str, Any]) -> dict[str, Any]:
         return dict(
             id=ProvId(d["id"]),
             parents=tuple(ProvId(p) for p in d.get("parents", [])),
@@ -184,11 +183,11 @@ class ProvRecord:
         )
 
     @classmethod
-    def _from_dict(cls, d: Dict[str, Any]) -> "ProvRecord":
+    def _from_dict(cls, d: dict[str, Any]) -> ProvRecord:
         return cls(**cls._base_kwargs(d))
 
 
-def record_from_dict(d: Dict[str, Any]) -> ProvRecord:
+def record_from_dict(d: dict[str, Any]) -> ProvRecord:
     """Reconstruct the concrete record for a serialized dict (keyed on ``kind``).
 
     The ``kind`` selects which base deserializer (``Process`` / ``Artifact``)
@@ -215,30 +214,30 @@ class Process(ProvRecord):
     ``Process(...)`` is kind ``"process"``.
     """
 
-    config: Optional[ConfigSnapshot] = None
-    inputs: Tuple[ProvId, ...] = ()
-    outputs: Tuple[ProvId, ...] = ()
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    config: ConfigSnapshot | None = None
+    inputs: tuple[ProvId, ...] = ()
+    outputs: tuple[ProvId, ...] = ()
+    started_at: str | None = None
+    ended_at: str | None = None
     status: str = "running"
     kind: str = "process"
 
     @classmethod
-    def generation(cls, **kwargs: Any) -> "Process":
+    def generation(cls, **kwargs: Any) -> Process:
         """A generation run (``kind="generationrun"``)."""
         return cls(kind="generationrun", **kwargs)
 
     @classmethod
-    def training(cls, **kwargs: Any) -> "Process":
+    def training(cls, **kwargs: Any) -> Process:
         """A training run (``kind="trainingrun"``)."""
         return cls(kind="trainingrun", **kwargs)
 
     @classmethod
-    def inference(cls, **kwargs: Any) -> "Process":
+    def inference(cls, **kwargs: Any) -> Process:
         """An inference / super-resolution run (``kind="inferencerun"``)."""
         return cls(kind="inferencerun", **kwargs)
 
-    def _payload(self) -> Dict[str, Any]:
+    def _payload(self) -> dict[str, Any]:
         return {
             "config": self.config.to_dict() if self.config else None,
             "inputs": [str(x) for x in self.inputs],
@@ -249,7 +248,7 @@ class Process(ProvRecord):
         }
 
     @classmethod
-    def _from_dict(cls, d: Dict[str, Any]) -> "Process":
+    def _from_dict(cls, d: dict[str, Any]) -> Process:
         kw = cls._base_kwargs(d)
         kw.update(
             config=ConfigSnapshot.from_dict(d["config"]) if d.get("config") else None,
@@ -275,33 +274,33 @@ class Artifact(ProvRecord):
     string; a bare ``Artifact(...)`` is kind ``"artifact"``.
     """
 
-    produced_by: Optional[ProvId] = None
-    format: Optional[Format] = None
-    path: Optional[str] = None
-    descriptors: Dict[str, Any] = field(default_factory=dict)
+    produced_by: ProvId | None = None
+    format: Format | None = None
+    path: str | None = None
+    descriptors: dict[str, Any] = field(default_factory=dict)
     kind: str = "artifact"
 
     @classmethod
-    def sky_tfrecord(cls, **kwargs: Any) -> "Artifact":
+    def sky_tfrecord(cls, **kwargs: Any) -> Artifact:
         """A generated sky TFRecord file (``kind="skytfrecordartifact"``)."""
         return cls(kind="skytfrecordartifact", **kwargs)
 
     @classmethod
-    def source_catalog(cls, **kwargs: Any) -> "Artifact":
+    def source_catalog(cls, **kwargs: Any) -> Artifact:
         """A per-field source catalog (``kind="sourcecatalogartifact"``)."""
         return cls(kind="sourcecatalogartifact", **kwargs)
 
     @classmethod
-    def checkpoint(cls, **kwargs: Any) -> "Artifact":
+    def checkpoint(cls, **kwargs: Any) -> Artifact:
         """A trained model checkpoint (``kind="checkpointartifact"``)."""
         return cls(kind="checkpointartifact", **kwargs)
 
     @classmethod
-    def sr_cutout(cls, **kwargs: Any) -> "Artifact":
+    def sr_cutout(cls, **kwargs: Any) -> Artifact:
         """A super-resolved cutout (``kind="srcutoutartifact"``)."""
         return cls(kind="srcutoutartifact", **kwargs)
 
-    def _payload(self) -> Dict[str, Any]:
+    def _payload(self) -> dict[str, Any]:
         return {
             "produced_by": str(self.produced_by) if self.produced_by else None,
             "format": self.format.value if self.format else None,
@@ -310,7 +309,7 @@ class Artifact(ProvRecord):
         }
 
     @classmethod
-    def _from_dict(cls, d: Dict[str, Any]) -> "Artifact":
+    def _from_dict(cls, d: dict[str, Any]) -> Artifact:
         kw = cls._base_kwargs(d)
         kw.update(
             produced_by=ProvId(d["produced_by"]) if d.get("produced_by") else None,

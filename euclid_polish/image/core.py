@@ -30,7 +30,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import ClassVar, Optional, Tuple
+from typing import ClassVar
 
 import numpy as np
 import tensorflow as tf
@@ -51,22 +51,22 @@ class FitsWCS:
     :func:`~euclid_polish.training.inference.scaled_wcs_header`.
     """
 
-    crpix1: Optional[float] = None   # reference pixel, axis 1
-    crpix2: Optional[float] = None   # reference pixel, axis 2
-    crval1: Optional[float] = None   # reference RA (deg)
-    crval2: Optional[float] = None   # reference Dec (deg)
-    cd1_1: Optional[float] = None    # CD matrix row 1 col 1
-    cd1_2: Optional[float] = None    # CD matrix row 1 col 2
-    cd2_1: Optional[float] = None    # CD matrix row 2 col 1
-    cd2_2: Optional[float] = None    # CD matrix row 2 col 2
-    cdelt1: Optional[float] = None   # pixel scale axis 1 (deg) — CDELT form
-    cdelt2: Optional[float] = None   # pixel scale axis 2 (deg) — CDELT form
-    ctype1: Optional[str] = None     # e.g. "RA---TAN"
-    ctype2: Optional[str] = None     # e.g. "DEC--TAN"
-    cunit1: Optional[str] = None     # e.g. "deg"
-    cunit2: Optional[str] = None     # e.g. "deg"
+    crpix1: float | None = None   # reference pixel, axis 1
+    crpix2: float | None = None   # reference pixel, axis 2
+    crval1: float | None = None   # reference RA (deg)
+    crval2: float | None = None   # reference Dec (deg)
+    cd1_1: float | None = None    # CD matrix row 1 col 1
+    cd1_2: float | None = None    # CD matrix row 1 col 2
+    cd2_1: float | None = None    # CD matrix row 2 col 1
+    cd2_2: float | None = None    # CD matrix row 2 col 2
+    cdelt1: float | None = None   # pixel scale axis 1 (deg) — CDELT form
+    cdelt2: float | None = None   # pixel scale axis 2 (deg) — CDELT form
+    ctype1: str | None = None     # e.g. "RA---TAN"
+    ctype2: str | None = None     # e.g. "DEC--TAN"
+    cunit1: str | None = None     # e.g. "deg"
+    cunit2: str | None = None     # e.g. "deg"
 
-    def to_header(self) -> "_fits.Header":
+    def to_header(self) -> _fits.Header:
         """Build an astropy Header containing the non-None WCS cards."""
         hdr = _fits.Header()
         mapping = {
@@ -84,7 +84,7 @@ class FitsWCS:
         return hdr
 
     @classmethod
-    def from_header(cls, header) -> "FitsWCS":
+    def from_header(cls, header) -> FitsWCS:
         """Extract WCS fields from an astropy FITS Header (missing → None)."""
         return cls(
             crpix1=header.get("CRPIX1"), crpix2=header.get("CRPIX2"),
@@ -143,12 +143,12 @@ class Image(StampCarrier):
 
     data: np.ndarray
     pixel_scale_arcsec: float
-    band_names: Tuple[str, ...]
+    band_names: tuple[str, ...]
     is_clean: bool
     role: Role = field(default=Role.UNKNOWN, kw_only=True)
-    fits_wcs: Optional[FitsWCS] = field(default=None, kw_only=True)
-    index: Optional[int] = None
-    subset: Optional[str] = None
+    fits_wcs: FitsWCS | None = field(default=None, kw_only=True)
+    index: int | None = None
+    subset: str | None = None
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -166,7 +166,7 @@ class Image(StampCarrier):
             self.role = Role(str(self.role))
 
     @property
-    def shape(self) -> Tuple[int, int, int]:
+    def shape(self) -> tuple[int, int, int]:
         return self.data.shape  # type: ignore[return-value]
 
     @property
@@ -231,7 +231,7 @@ class Image(StampCarrier):
             features=tf.train.Features(feature=feature)).SerializeToString()
 
     @classmethod
-    def from_tfrecord(cls, raw_record) -> "Image":
+    def from_tfrecord(cls, raw_record) -> Image:
         """Parse a single TFRecord example (eager mode)."""
         ex = tf.io.parse_single_example(raw_record, cls._TFRECORD_FEATURES)
         h = int(ex['height'].numpy())
@@ -286,7 +286,7 @@ class Image(StampCarrier):
             path, overwrite=True, output_verify="silentfix")
 
     @classmethod
-    def from_fits(cls, path: str) -> "Image":
+    def from_fits(cls, path: str) -> Image:
         """Read an Image written by :meth:`save_fits` (recovers role + stamp)."""
         with _fits.open(path) as hdul:
             hdr = hdul[0].header
@@ -324,7 +324,7 @@ class Image(StampCarrier):
     @classmethod
     def from_raw_bytes(cls, buf, *, shape, band_names, pixel_scale_arcsec,
                        is_clean: bool = False, role: Role = Role.UNKNOWN,
-                       stamp: Optional[Stamp] = None) -> "Image":
+                       stamp: Stamp | None = None) -> Image:
         """Rebuild an Image from a :meth:`to_raw_bytes` buffer + its shape/bands.
 
         The inverse of :meth:`to_raw_bytes` — e.g. to reconstruct an Image from
@@ -358,13 +358,13 @@ class Image(StampCarrier):
             raise ValueError(f"band {name!r} not in {self.band_names}")
         return self.band_names.index(name)
 
-    def plane(self, band: Optional[str] = None) -> np.ndarray:
+    def plane(self, band: str | None = None) -> np.ndarray:
         """A 2-D view of one channel, or the full ``(H, W, C)`` when ``band is None``."""
         if band is None:
             return self.data
         return self.data[..., self.band_index(band)]
 
-    def with_role(self, role: Role) -> "Image":
+    def with_role(self, role: Role) -> Image:
         """A copy tagged with ``role`` (the original is unchanged).
 
         ``is_clean`` is derived from ``role``: clean target roles (CLEAN, HR,
@@ -416,7 +416,7 @@ class Image(StampCarrier):
         if a.ndim not in (2, 3):
             raise ValueError(f"expected 2-D or 3-D array, got shape {a.shape}")
         H, W = a.shape[:2]
-        if H < side or W < side:
+        if side > H or side > W:
             pad_h = max(0, (side - H + 1) // 2)
             pad_w = max(0, (side - W + 1) // 2)
             pad_widths = ((pad_h, pad_h), (pad_w, pad_w))
@@ -429,12 +429,12 @@ class Image(StampCarrier):
             return a[i0:i0 + side, j0:j0 + side]
         return a[i0:i0 + side, j0:j0 + side, :]
 
-    def centre_cropped_to(self, side: int) -> "Image":
+    def centre_cropped_to(self, side: int) -> Image:
         """Centre-crop (or zero-pad up to) a square ``(side, side, C)``."""
         return dataclasses.replace(
             self, data=self.crop_array(self.data, side).astype(self.data.dtype, copy=True))
 
-    def sum_rebinned(self, factor: int) -> "Image":
+    def sum_rebinned(self, factor: int) -> Image:
         """Photometric sum-rebin by integer ``factor``; updates ``pixel_scale_arcsec``."""
         if factor == 1:
             return self
@@ -447,16 +447,16 @@ class Image(StampCarrier):
     # Measurements & metrics (self-contained)
     # ------------------------------------------------------------------
 
-    def peak(self, band: Optional[str] = None) -> float:
+    def peak(self, band: str | None = None) -> float:
         return float(self.plane(band).max())
 
-    def mean(self, band: Optional[str] = None) -> float:
+    def mean(self, band: str | None = None) -> float:
         return float(self.plane(band).mean())
 
-    def total_flux(self, band: Optional[str] = None) -> float:
+    def total_flux(self, band: str | None = None) -> float:
         return float(self.plane(band).sum())
 
-    def psnr_against(self, other: "Image", *, data_range: Optional[float] = None) -> float:
+    def psnr_against(self, other: Image, *, data_range: float | None = None) -> float:
         """Peak signal-to-noise ratio (dB) of ``self`` vs ``other``.
 
         Identical arrays give ``inf``. ``data_range`` defaults to the dynamic

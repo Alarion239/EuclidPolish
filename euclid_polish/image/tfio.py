@@ -53,7 +53,7 @@ def parse_example(raw_record: tf.Tensor, num_channels: int) -> tf.Tensor:
 
 
 def write_images(
-    images: "list[Image]",
+    images: list[Image],
     name: str,
     records_dir: str = Config.RECORDS_DIR_V2,
 ) -> str:
@@ -81,7 +81,7 @@ class _ImageWriter:
         self._path = path
         self._count = 0
 
-    def write(self, img: "Image", index: int | None = None) -> None:
+    def write(self, img: Image, index: int | None = None) -> None:
         if index is None:
             index = self._count
         self._writer.write(img.to_tfrecord(index=index))
@@ -109,14 +109,14 @@ def open_writer(name: str, records_dir: str = Config.RECORDS_DIR_V2):
         writer.close()
 
 
-def read_images(path_or_glob: str, num_images: int = 5) -> "list[Image]":
+def read_images(path_or_glob: str, num_images: int = 5) -> list[Image]:
     """Read up to ``num_images`` ``Image`` objects from ``path_or_glob`` (in order).
 
     Stops as soon as ``num_images`` is reached, so reading the first few records
     of a large shard is cheap.
     """
     paths = sorted(_glob.glob(path_or_glob)) or [path_or_glob]
-    out: "list[Image]" = []
+    out: list[Image] = []
     for raw in tf.data.TFRecordDataset(paths):
         out.append(Image.from_tfrecord(raw))
         if len(out) >= num_images:

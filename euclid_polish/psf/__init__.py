@@ -21,22 +21,22 @@ and synthetic Gaussian PSFs).
 """
 
 from euclid_polish.psf.core import (
-    PSF,
     DEFAULT_HR_PIXEL_SCALE,
+    PSF,
 )
-from euclid_polish.psf.psf_set import PSFSet, PSFSample
+from euclid_polish.psf.loaders import (
+    load_euclid_band_psf,
+    load_hst_f814w_psf,
+)
 from euclid_polish.psf.measurements import (
     estimate_fwhm_pixels_1d,
-    fwhm_pixels_radial,
-    fwhm_pixels_area_equivalent,
     flux_centroid,
+    fwhm_pixels_area_equivalent,
+    fwhm_pixels_radial,
     peak_offset_from_centre,
     radial_profile,
 )
-from euclid_polish.psf.loaders import (
-    load_hst_f814w_psf,
-    load_euclid_band_psf,
-)
+from euclid_polish.psf.psf_set import PSFSample, PSFSet
 
 __all__ = [
     "PSF",

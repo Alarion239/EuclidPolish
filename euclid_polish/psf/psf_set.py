@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import ClassVar, List, Optional, Tuple
+from typing import ClassVar
 
 import numpy as np
 from astropy.io import fits
@@ -51,7 +51,7 @@ class PSFSample:
     no rotation. The same :class:`PSFSample` is applied to every band's set."""
 
     index: int
-    angle: Optional[float] = None
+    angle: float | None = None
 
 
 @dataclass
@@ -81,11 +81,11 @@ class PSFSet(StampCarrier):
     ``PSFSet``; members are never mutated in place.
     """
 
-    psfs: List[PSF]
+    psfs: list[PSF]
     pixel_scale: float
-    centroids: Optional[List[Tuple[float, float]]] = None
-    n_stars: Optional[List[int]] = None
-    oversampling: Optional[int] = None
+    centroids: list[tuple[float, float]] | None = None
+    n_stars: list[int] | None = None
+    oversampling: int | None = None
 
     PROV_FORMAT: ClassVar[Format] = Format.FITS
 
@@ -102,7 +102,7 @@ class PSFSet(StampCarrier):
         return len(self.psfs)
 
     @property
-    def shape(self) -> Tuple[int, int]:
+    def shape(self) -> tuple[int, int]:
         return self.psfs[0].shape
 
     # ------------------------------------------------------------------
@@ -112,10 +112,10 @@ class PSFSet(StampCarrier):
     @classmethod
     def from_psfs(
         cls,
-        psfs: List[PSF],
+        psfs: list[PSF],
         *,
-        centroids: Optional[List[Tuple[float, float]]] = None,
-        n_stars: Optional[List[int]] = None,
+        centroids: list[tuple[float, float]] | None = None,
+        n_stars: list[int] | None = None,
     ) -> PSFSet:
         """Build a set from a list of PSFs, normalising each to sum=1.
 
@@ -166,7 +166,7 @@ class PSFSet(StampCarrier):
             oversampling=self.oversampling,
         ).with_unit_sum()
 
-    def _pick_weights(self) -> Optional[np.ndarray]:
+    def _pick_weights(self) -> np.ndarray | None:
         """Per-PSF sampling probabilities ∝ star count, or ``None`` (→
         uniform) when no usable counts are present."""
         if (self.n_stars is not None and len(self.n_stars) == self.n
@@ -233,7 +233,7 @@ class PSFSet(StampCarrier):
     # ------------------------------------------------------------------
 
     def _with_psfs(
-        self, psfs: List[PSF], pixel_scale: Optional[float] = None
+        self, psfs: list[PSF], pixel_scale: float | None = None
     ) -> PSFSet:
         """Return a new PSFSet with replaced ``psfs``, copying all sidecar fields.
 
@@ -335,9 +335,9 @@ class PSFSet(StampCarrier):
         with only a PrimaryHDU) loads as a 1-element set built from the
         primary — so the new loader works on both formats.
         """
-        members: List[PSF] = []
-        centroids: List[Tuple[float, float]] = []
-        star_counts: List[int] = []
+        members: list[PSF] = []
+        centroids: list[tuple[float, float]] = []
+        star_counts: list[int] = []
         have_centroids = False
         have_counts = False
         stamp = None

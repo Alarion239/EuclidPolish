@@ -22,14 +22,13 @@ the asserts are a regression gate, not a portability gate.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-
 
 # ---------------------------------------------------------------------------
 # Timing helper
@@ -156,10 +155,11 @@ def test_bench_forward_one_field_small():
     Baseline ~1 ms. Tiny because all PSFs are small Gaussians and the
     FFT-convolve on 96×96 is fast.
     """
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
 
     rng = np.random.default_rng(0)
     hr = Image(
@@ -184,10 +184,11 @@ def test_bench_forward_one_field_realistic():
     Baseline ~4 ms. The dominant cost is the four 252² FFT convolutions;
     Poisson + Gaussian sampling adds a constant ~1 ms.
     """
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
 
     rng = np.random.default_rng(0)
     hr = Image(
@@ -234,10 +235,11 @@ def test_bench_scene_generator_small():
     × 4 bands × 3 galaxies ≈ 1.4 s). Reducing the high-n csub heuristic
     would speed this up at the cost of flux conservation accuracy.
     """
-    from tests._tiny_catalog import TinyCosmosCatalog
     from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulatorConfig, SkySimulator,
+        SkySimulator,
+        SkySimulatorConfig,
     )
+    from tests._tiny_catalog import TinyCosmosCatalog
     cat = TinyCosmosCatalog(n_galaxies=500, seed=0)
     sim = SkySimulator(cat, SkySimulatorConfig(image_size=96))
     rng = np.random.default_rng(0)
@@ -259,10 +261,11 @@ def test_bench_lens_render_one_band():
     Lenstronomy ray-shooting is the dominant cost; the Sersic call is a
     smaller fraction of the total.
     """
-    from tests._tiny_catalog import TinyCosmosCatalog
     from euclid_polish.sky.generation.lens_population import (
-        LensPopulation, render_lens_to_canvas,
+        LensPopulation,
+        render_lens_to_canvas,
     )
+    from tests._tiny_catalog import TinyCosmosCatalog
 
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
     pop = LensPopulation(cat)
@@ -285,6 +288,7 @@ def test_bench_lens_render_one_band():
 def test_bench_asinh_stretch_lr_cached():
     """Per-band asinh stretch on a 64² 4-channel batch — should be cache-fast."""
     import tensorflow as tf
+
     from euclid_polish.training.augmentation import asinh_stretch_lr
 
     rng = np.random.default_rng(0)
@@ -366,10 +370,11 @@ def test_bench_scene_generator_252():
     Baseline ~100-300 ms / field (Poisson-fluctuating between ~3-7 galaxies
     per arcmin² on this canvas size).
     """
-    from tests._tiny_catalog import TinyCosmosCatalog
     from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulatorConfig, SkySimulator,
+        SkySimulator,
+        SkySimulatorConfig,
     )
+    from tests._tiny_catalog import TinyCosmosCatalog
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
     sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
     sim.simulate_field(np.random.default_rng(0))
@@ -387,10 +392,11 @@ def test_bench_scene_generator_512():
     Baseline ~250-400 ms / field. Scales the throughput estimate for
     full training-set generation.
     """
-    from tests._tiny_catalog import TinyCosmosCatalog
     from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulatorConfig, SkySimulator,
+        SkySimulator,
+        SkySimulatorConfig,
     )
+    from tests._tiny_catalog import TinyCosmosCatalog
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
     sim = SkySimulator(cat, SkySimulatorConfig(image_size=512))
     sim.simulate_field(np.random.default_rng(0))
@@ -407,10 +413,11 @@ def test_bench_forward_512_production():
 
     Baseline ~10-15 ms / field. FFT convolutions on 512² are the cost.
     """
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
     rng = np.random.default_rng(0)
     hr = Image(
         data=rng.uniform(0, 1e3, size=(510, 510, 4)).astype(np.float32),
@@ -434,13 +441,15 @@ def test_bench_end_to_end_one_pair_252():
     Baseline ~200-500 ms. Multiply by your training-set size to estimate
     full-pipeline wall time.
     """
-    from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulatorConfig, SkySimulator,
+        SkySimulator,
+        SkySimulatorConfig,
     )
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+    from tests._tiny_catalog import TinyCosmosCatalog
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
     sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
     fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=True))
@@ -457,10 +466,12 @@ def test_bench_end_to_end_one_pair_252():
 def test_bench_tfrecord_roundtrip(tmp_path):
     """Write and read back 16 multi-band records (96² each)."""
     import numpy as np
-    from euclid_polish.image.tfio import (
-        write_images, read_images,
-    )
+
     from euclid_polish.image import Image
+    from euclid_polish.image.tfio import (
+        read_images,
+        write_images,
+    )
 
     rng = np.random.default_rng(0)
     imgs = [

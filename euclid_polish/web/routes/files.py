@@ -1,22 +1,32 @@
 """files routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.config import Config
-from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
-from euclid_polish.web.jobs import REGISTRY
-from flask import abort
-from flask import jsonify
-from flask import redirect
-from flask import render_template
-from flask import request
-from flask import send_file
-from flask import url_for
 import io
 import os
-from euclid_polish.web.helpers.fits_render import _fits_file_info, _read_fits_header_rows, _render_fits_to_png_adaptive
-from euclid_polish.web.helpers.paths import _inspectable_roots, _resolve_inspectable_fits, _safe_relpath, _sky_records_local_dir
+
+from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
+
+from euclid_polish.config import Config
+from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.helpers.fits_render import (
+    _fits_file_info,
+    _read_fits_header_rows,
+    _render_fits_to_png_adaptive,
+)
+from euclid_polish.web.helpers.paths import (
+    _inspectable_roots,
+    _resolve_inspectable_fits,
+    _safe_relpath,
+    _sky_records_local_dir,
+)
 from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
-from euclid_polish.web.helpers.status import _catalog_status, _checkpoints_status, _psf_status, _tfrecords_status
+from euclid_polish.web.helpers.status import (
+    _catalog_status,
+    _checkpoints_status,
+    _psf_status,
+    _tfrecords_status,
+)
+from euclid_polish.web.jobs import REGISTRY
 
 
 def register(app):

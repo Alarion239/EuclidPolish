@@ -29,7 +29,6 @@ caller passes the band, which sets the pixel area to scale to.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -335,7 +334,7 @@ def inject_artifacts(
     image_e: np.ndarray,
     band: BandConfig,
     rng: np.random.Generator,
-    cfg: Optional[ArtifactConfig] = None,
+    cfg: ArtifactConfig | None = None,
     local_sigma_e: float = 0.0,
 ) -> np.ndarray:
     """Apply the full artifact stack (CR + hot pixels + streaks) to one band frame.

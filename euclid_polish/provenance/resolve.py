@@ -13,7 +13,6 @@ from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from euclid_polish.provenance.ids import ProvId
 

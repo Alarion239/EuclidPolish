@@ -14,19 +14,22 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
-)
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig, SkySimulator,
-)
 from euclid_polish.image.tfio import (
-    tfrecord_path, write_images,
+    tfrecord_path,
+    write_images,
 )
 from euclid_polish.model import Model
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
 from euclid_polish.training.models.wdsr import wdsr
+from tests._tiny_catalog import TinyCosmosCatalog
 
 
 def test_full_pipeline_round_trip(tmp_path):

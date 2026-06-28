@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import Any, Dict
+from typing import Any
 
 from euclid_polish.config import Config
 
@@ -26,7 +26,7 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "job_config.json")
 # Which JobConfig attribute feeds which param of which FASRC step. The submit
 # route injects these into the form before handing off, so the step cards no
 # longer render the fields. Keyed by step_id → {param_name: jobconfig_attr}.
-FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
+FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
     "download_euclid_cutouts": {"vis_pixels": "vis_pixels"},
     "extract_euclid_psf":      {"vis_pixels": "vis_pixels"},
     "synthetic_generate":      {"n_train": "n_train",
@@ -57,7 +57,7 @@ FASRC_STEP_PARAMS: Dict[str, Dict[str, str]] = {
 }
 
 
-def fasrc_params_for(step_id: str) -> Dict[str, str]:
+def fasrc_params_for(step_id: str) -> dict[str, str]:
     """All job-config-derived params to inject into a FASRC step's form.
 
     Includes the direct ``FASRC_STEP_PARAMS`` mappings plus any *computed*
@@ -125,7 +125,7 @@ class JobConfig:
     # "full" fine-tunes all encoder params (layer-decayed LR).
     lensfinder_training_mode: str   = "head_only"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -159,7 +159,7 @@ def save(cfg: JobConfig) -> None:
         pass
 
 
-def update(patch: Dict[str, Any]) -> JobConfig:
+def update(patch: dict[str, Any]) -> JobConfig:
     """Merge ``patch`` into the on-disk config and return the new state.
 
     Numeric fields are coerced from form strings; blanks are ignored so a

@@ -12,7 +12,7 @@ from __future__ import annotations
 import csv
 import math
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 GROUPS = ("A", "B", "C", "gal", "syn-lens", "syn-gal")
 #: which render's score a morphology point uses, by its ``view``.
@@ -26,12 +26,12 @@ def _f(v: Any) -> float:
         return float("nan")
 
 
-def read_lens_scores(run_dir: str) -> List[Dict[str, Any]]:
+def read_lens_scores(run_dir: str) -> list[dict[str, Any]]:
     """Read ``lens_scores.csv`` → ``[{id, grade, lr, sr, hr}]`` (empty if absent)."""
     p = os.path.join(run_dir, "lens_scores.csv")
     if not os.path.isfile(p):
         return []
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     with open(p, newline="") as f:
         for r in csv.DictReader(f):
             out.append({
@@ -42,9 +42,9 @@ def read_lens_scores(run_dir: str) -> List[Dict[str, Any]]:
     return out
 
 
-def per_object_plens(run_dir: str) -> Dict[str, Dict[str, float]]:
+def per_object_plens(run_dir: str) -> dict[str, dict[str, float]]:
     """``{object_id: {"lr": P, "sr": P, "hr": P}}`` for the embedding payload."""
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for r in read_lens_scores(run_dir):
         out[r["id"]] = {k: r[k] for k in ("lr", "sr", "hr")}
     return out
@@ -62,7 +62,7 @@ def _finite_pairs(rows, key, labels=None):
     return (vals, labs) if labels is not None else vals
 
 
-def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
+def render_lensfinder_summary(run_dir: str, out_png: str) -> str | None:
     """Render the 6-panel lens-identification figure → ``out_png`` (or None).
 
     Top row: (1) SR-vs-LR P(lens) shift coloured by group, (2) synthetic ROC+AUC
@@ -77,7 +77,7 @@ def render_lensfinder_summary(run_dir: str, out_png: str) -> Optional[str]:
     import matplotlib.pyplot as plt
     import numpy as np
 
-    from euclid_polish.eval.zoobot_morph import GROUP_COLORS, _group_color
+    from euclid_polish.eval.zoobot_morph import _group_color
     from euclid_polish.lensfinder import metrics as lm
 
     rows = read_lens_scores(run_dir)

@@ -23,14 +23,12 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Dict, Optional
 
 import numpy as np
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_set import PSFSet
-
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -77,7 +75,7 @@ def psf_side_pixels_for_band(
 
 
 def make_gaussian_psf(
-    fwhm_arcsec: float, pixel_scale: float, *, size: Optional[int] = None,
+    fwhm_arcsec: float, pixel_scale: float, *, size: int | None = None,
 ) -> PSF:
     """Build a normalised Gaussian :class:`PSF` stamp at ``pixel_scale``.
 
@@ -161,7 +159,7 @@ def load_all_band_psfs(
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
     require_empirical: bool = False,
-) -> Dict[str, PSF]:
+) -> dict[str, PSF]:
     """Load PSFs for every band in :attr:`Config.BANDS`.
 
     Returned dict is keyed by band name (``'VIS'`` etc.) and is ready to
@@ -227,7 +225,7 @@ def load_all_band_psf_sets(
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
     require_empirical: bool = False,
-) -> Dict[str, PSFSet]:
+) -> dict[str, PSFSet]:
     """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
 
     Ready to pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`
@@ -249,13 +247,13 @@ def load_all_band_psf_sets(
 # Inventory (for the CLI to report which bands have empirical PSFs)
 # ---------------------------------------------------------------------------
 
-def psf_inventory(psf_dir: str = Config.EUCLID_PSF_DIR) -> Dict[str, Optional[str]]:
+def psf_inventory(psf_dir: str = Config.EUCLID_PSF_DIR) -> dict[str, str | None]:
     """Report which bands currently have an empirical PSF on disk.
 
     Returns ``{band_name: path or None}``. ``None`` means a Gaussian
     fallback would be used. Useful for CLI introspection.
     """
-    out: Dict[str, Optional[str]] = {}
+    out: dict[str, str | None] = {}
     for band in Config.BANDS:
         path = psf_path_for_band(band, psf_dir)
         out[band.name] = path if os.path.isfile(path) else None

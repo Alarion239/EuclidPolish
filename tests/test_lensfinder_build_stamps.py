@@ -10,9 +10,9 @@ import numpy as np
 from PIL import Image
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.source_catalog import SOURCE_COLS
-from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image as MultiBandSkyImage
+from euclid_polish.image.tfio import open_writer
+from euclid_polish.sky.generation.source_catalog import SOURCE_COLS
 
 
 def _load():

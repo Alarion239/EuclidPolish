@@ -13,10 +13,10 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.client import EuclidCatalog
 from euclid_polish.catalog.downloader import DownloadConfig
+from euclid_polish.config import Config
 
 _SIZE = 16
 

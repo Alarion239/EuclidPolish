@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 # Eight lowercase hex characters.
 _ID_RE = re.compile(r"[0-9a-f]{8}")
@@ -53,12 +53,12 @@ class ProvId:
         return self.value == _SENTINEL
 
     @classmethod
-    def sentinel(cls) -> "ProvId":
+    def sentinel(cls) -> ProvId:
         """The reserved id meaning provenance is unknown (legacy artifacts)."""
         return cls(_SENTINEL)
 
     @classmethod
-    def mint(cls, exists: Callable[["ProvId"], bool]) -> "ProvId":
+    def mint(cls, exists: Callable[[ProvId], bool]) -> ProvId:
         """Draw a fresh id, re-drawing while ``exists(id)`` is true.
 
         ``exists`` is the collision predicate — typically ``ProvStore.exists`` —

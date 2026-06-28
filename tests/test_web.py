@@ -543,8 +543,8 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     """Make routes/tng.fetch_one_file return a canned FetchResult + capture
     the (remote_path, kwargs) the route asked for."""
-    from euclid_polish.web.routes import tng as tng_routes
     from euclid_polish.web.fasrc_fetcher import FetchResult
+    from euclid_polish.web.routes import tng as tng_routes
     captured = {}
 
     def fake(remote, **kw):
@@ -614,8 +614,8 @@ def test_post_inference_generate_reconstruct_returns_job_id(client):
 def test_login_node_generate_cmd_injects_tng_density():
     """The inference login-node generation always runs all-TNG mode:
     --sersic-density-arcmin2 0 and --tng-density-arcmin2 >0."""
-    from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     from euclid_polish.web.fasrc_config import FasrcConfig
+    from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
     base = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2)
     assert "scripts/run_pipeline.py" in base
@@ -769,6 +769,7 @@ def test_cutout_image_renders_real_fits(client, tmp_path):
     """Drop a tiny FITS into the VIS cutout dir and round-trip a render."""
     import numpy as np
     from astropy.io import fits
+
     from euclid_polish.config import Config
     band_dir = Config.cutout_dir_for_band(
         "VIS", root=os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts"),

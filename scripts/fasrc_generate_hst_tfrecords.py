@@ -44,9 +44,10 @@ trainer can mix them with the existing synthetic records via the
 from __future__ import annotations
 
 import os
-
 from concurrent.futures import (
-FIRST_COMPLETED, ProcessPoolExecutor, wait,
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    wait,
 )
 
 # Force-hide GPUs BEFORE TF is imported, even if SLURM allocated one.
@@ -78,7 +79,7 @@ import argparse
 import json
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 from astropy.io import fits
@@ -93,12 +94,12 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.observation.differential_kernel import DifferentialKernel
 from euclid_polish.sky.observation.noise import apply_band_noise
-from euclid_polish.image.tfio import open_writer
-from euclid_polish.image import Image
 
 
 def parse_args() -> argparse.Namespace:
@@ -217,8 +218,8 @@ class HLSPTileIndex:
     """
 
     def __init__(self, hlsp_dir: str):
-        self.entries: List[Dict] = []
-        skipped: List[Tuple[str, str]] = []   # (fname, reason)
+        self.entries: list[dict] = []
+        skipped: list[tuple[str, str]] = []   # (fname, reason)
         for fname in sorted(os.listdir(hlsp_dir)):
             if not (fname.endswith(".fits")
                     and fname.startswith("hlsp_cosmos_hst_acs-wfc_mosaic")):
@@ -318,7 +319,7 @@ def _is_stamp_too_bright(
     diff_kernel: np.ndarray,
     sigma_lr_band: float,
     max_relative_noise: float,
-) -> Tuple[bool, Dict[str, float]]:
+) -> tuple[bool, dict[str, float]]:
     """Decide whether the analytic-A forward pass will ring around a bright pixel.
 
     The forward operator A is linear, so after applying it to a noisy
@@ -378,7 +379,7 @@ def _has_bright_point_source(
     *,
     fwhm_px: float,
     threshold_sigma: float,
-) -> Tuple[bool, Dict[str, float]]:
+) -> tuple[bool, dict[str, float]]:
     """Detect a star (bright point source) in the HR VIS plane.
 
     The ``_is_stamp_too_bright`` filter only catches the single
@@ -420,7 +421,7 @@ def _is_empty_field(
     hr_vis: np.ndarray,
     *,
     min_source_sigma: float,
-) -> Tuple[bool, Dict[str, float]]:
+) -> tuple[bool, dict[str, float]]:
     """Reject a chunk that holds no real source — just sky noise.
 
     COSMOS has lots of empty sky: a sky-subtracted chunk is ~0-mean
@@ -485,9 +486,9 @@ def _make_pair(
 # Module globals populated by ``_init_worker`` once per process. None
 # before init; checking them in ``_process_one_tile`` is what catches
 # a missing ``initializer=`` in the pool setup.
-_WORKER_KERNEL:             Optional[np.ndarray] = None
+_WORKER_KERNEL:             np.ndarray | None = None
 _WORKER_IMAGE_SIZE:         int                  = 0
-_WORKER_TYPICAL_RATIOS:     Optional[np.ndarray] = None
+_WORKER_TYPICAL_RATIOS:     np.ndarray | None = None
 _WORKER_SIGMA_LR:           float                = 0.0
 _WORKER_MAX_RELATIVE_NOISE: float                = 0.0
 _WORKER_STAR_FWHM:          float                = 0.0
@@ -537,8 +538,8 @@ def _init_worker(
 
 
 def _process_one_tile(
-    task: Tuple[int, str, int, int, int, int],
-) -> Tuple[Optional[Tuple[str, np.ndarray, np.ndarray]], Optional[str]]:
+    task: tuple[int, str, int, int, int, int],
+) -> tuple[tuple[str, np.ndarray, np.ndarray] | None, str | None]:
     """Cut + resample + forward-model one grid chunk of an HLSP mosaic.
 
     Pure function — no shared state beyond the module globals set by
@@ -659,7 +660,7 @@ def _process_one_tile(
 def _hst_to_euclid_hr_cube(
     hst_rate_per_hr_pix: np.ndarray,
     typical_band_ratios: np.ndarray,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """HST F814W rate → 4-band Euclid HR cube (total electrons per HR pixel).
 
     Photometric chain — every source in the cutout keeps its real
@@ -708,7 +709,7 @@ def main() -> int:
     os.makedirs(args.output_dir, exist_ok=True)
 
     print("=" * 64)
-    print(f"  HST → Euclid TFRecord pair generation (analytic-A only)")
+    print("  HST → Euclid TFRecord pair generation (analytic-A only)")
     print("=" * 64)
     print(f"  HLSP dir         = {args.hlsp_dir}")
     print(f"  kernel           = {args.kernel}")
@@ -733,7 +734,7 @@ def main() -> int:
     hlsp_side_pix    = int(np.ceil(hr_side_arcsec / 0.03))     # cutout size in HLSP pixels
 
     reporter.set_stage("indexing HLSP tiles")
-    print(f"[1/4] indexing HLSP tiles ...")
+    print("[1/4] indexing HLSP tiles ...")
     if not os.path.isdir(args.hlsp_dir):
         reporter.error(f"HLSP dir not found: {args.hlsp_dir}")
         print(f"ERROR: HLSP dir not found: {args.hlsp_dir}")
@@ -743,7 +744,7 @@ def main() -> int:
     print(f"      {len(tiles.entries)} tiles indexed")
 
     reporter.set_stage("loading kernel + COSMOS catalog")
-    print(f"[2/4] loading analytic kernel + COSMOS catalog ...")
+    print("[2/4] loading analytic kernel + COSMOS catalog ...")
     if not os.path.isfile(args.kernel):
         reporter.error(f"analytic kernel ({args.kernel}) does not exist.")
         print(f"ERROR: analytic kernel ({args.kernel}) does not exist. "
@@ -763,7 +764,7 @@ def main() -> int:
     # applied per-pixel; per-source colours are lost but the absolute
     # NISP brightness is correct on average.
     typical_band_ratios = catalog.typical_band_electron_ratios()
-    print(f"      typical e_band / e_VIS (median over catalog): "
+    print("      typical e_band / e_VIS (median over catalog): "
           + ", ".join(
               f"{name}={typical_band_ratios[k]:.3g}"
               for k, name in enumerate(Config.LR_INPUT_BAND_NAMES)
@@ -784,7 +785,7 @@ def main() -> int:
     # decide which chunks survive.
     rng = np.random.default_rng()
     target_total = args.n_train + args.n_valid
-    grid_cells: List[Tuple[int, str, int, int]] = []
+    grid_cells: list[tuple[int, str, int, int]] = []
     for tile_idx, e in enumerate(tiles.entries):
         Ht, Wt = e["shape"]
         for y0 in range(0, Ht - hlsp_side_pix + 1, hlsp_side_pix):
@@ -815,11 +816,11 @@ def main() -> int:
     pairs_skipped_other    = 0
     pairs_per_subset = {"train": args.n_train, "validate": args.n_valid}
 
-    summary: Dict[str, Any] = {"subsets": {}}
+    summary: dict[str, Any] = {"subsets": {}}
     grid_iter = iter(enumerate(grid_cells))
     base_seed = int(rng.integers(0, 2**31))
 
-    def _next_task() -> Optional[Tuple]:
+    def _next_task() -> tuple | None:
         """Pop the next grid chunk off the pre-shuffled list.
 
         The single iterator is consumed across both subsets, so train and
@@ -832,7 +833,7 @@ def main() -> int:
             return (tile_idx, tile_path, y0, x0, hlsp_side_pix, seed)
         return None
 
-    def _classify_skip(reason: Optional[str]) -> None:
+    def _classify_skip(reason: str | None) -> None:
         nonlocal pairs_skipped_cutout, pairs_skipped_bright
         nonlocal pairs_skipped_star, pairs_skipped_other
         nonlocal pairs_skipped_coverage, pairs_skipped_empty

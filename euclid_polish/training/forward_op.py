@@ -31,14 +31,12 @@ boundary effects).
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 import numpy as np
 import tensorflow as tf
+from astropy.io import fits
 
 from euclid_polish.config import Config
-
-from astropy.io import fits
 
 
 def _default_vis_psf_path() -> str:
@@ -68,7 +66,7 @@ def _next_pow2(n: tf.Tensor) -> tf.Tensor:
 
 
 def _load_vis_psf_kernel(
-    psf_fits_path: Optional[str] = None, *, crop_half_side: Optional[int] = None,
+    psf_fits_path: str | None = None, *, crop_half_side: int | None = None,
 ) -> np.ndarray:
     """Load + unit-normalise the VIS PSF as a 2-D float32 kernel.
 
@@ -128,10 +126,10 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
 
     def __init__(
         self,
-        psf_fits_path: Optional[str] = None,
+        psf_fits_path: str | None = None,
         *,
         rebin_factor: int = Config.DEFAULT_REBIN_FACTOR,
-        crop_half_side: Optional[int] = None,
+        crop_half_side: int | None = None,
         name: str = "euclid_vis_forward_op",
         **kwargs,
     ) -> None:
@@ -247,9 +245,9 @@ class HSTForwardOp(EuclidVISForwardOp):
 
     def __init__(
         self,
-        psf_fits_path: Optional[str] = None,
+        psf_fits_path: str | None = None,
         *,
-        crop_half_side: Optional[int] = None,
+        crop_half_side: int | None = None,
         name: str = "hst_forward_op",
         **kwargs,
     ) -> None:

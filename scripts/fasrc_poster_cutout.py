@@ -46,13 +46,12 @@ import argparse
 import io
 import os
 import sys
-from typing import Dict, List, Optional, Tuple
-
-import numpy as np
-from astropy.io import fits
 
 # All imports at module scope (never function-scoped) — see project convention.
 import matplotlib
+import numpy as np
+from astropy.io import fits
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -64,27 +63,27 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig,
-    SkySimulator,
-)
-from euclid_polish.image import Image
 from euclid_polish.tng.properties import _fig_to_png
-from euclid_polish.visualization.color import eye_rgb
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
     reconstruct,
 )
+from euclid_polish.visualization.color import eye_rgb
 
 MODES = ("sersic", "star", "lens", "tng", "field")
 # Output band order matches the generator's channel order.
-BAND_NAMES: Tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","H_E")
+BAND_NAMES: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","H_E")
 
 OUTPUT_SUBDIR = "_poster"
 FITS_NAME = "poster_cutout.fits"
@@ -126,7 +125,7 @@ def output_dir() -> str:
 # Generation
 # ---------------------------------------------------------------------------
 
-def _counts_for_mode(mode: str) -> Dict[str, int]:
+def _counts_for_mode(mode: str) -> dict[str, int]:
     """Explicit per-type source counts: exactly one object, nothing else.
 
     ``field`` overrides nothing — the simulator draws its Poisson counts
@@ -190,7 +189,7 @@ def _record_ok(mode: str, meta: dict) -> bool:
 
 def generate_cutout(
     mode: str, *, seed: int, image_size: int, max_tries: int = 16,
-) -> Tuple[np.ndarray, dict, int]:
+) -> tuple[np.ndarray, dict, int]:
     """Render one centred random object's clean 4-band HR field.
 
     Returns ``(data, source_meta, used_seed)`` where ``data`` has shape
@@ -319,7 +318,7 @@ def build_cutout_hdul(
 
 def forward_and_reconstruct(
     clean_4ch: np.ndarray, seed: int, *, psf_dir: str, ckpt_dir: str,
-) -> Tuple[np.ndarray, np.ndarray, str]:
+) -> tuple[np.ndarray, np.ndarray, str]:
     """Field mode's second half: clean HR → noisy mock-Euclid LR → SR.
 
     The same forward model and inference path the training pipeline uses
@@ -351,7 +350,7 @@ def forward_and_reconstruct(
     ckpt_name = os.path.basename(ckpt_dir)
     state = os.path.join(ckpt_dir, "checkpoint")
     if os.path.isfile(state):
-        with open(state, "r", encoding="utf-8") as fh:
+        with open(state, encoding="utf-8") as fh:
             first = fh.readline()
         if '"' in first:
             ckpt_name = first.split('"')[1]
@@ -484,7 +483,7 @@ def render_preview_png(
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -507,7 +506,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     size = max(16, int(args.image_size))
     print(f"[poster] mode={args.mode} seed={args.seed} image_size={size}")

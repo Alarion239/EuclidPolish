@@ -13,12 +13,14 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.cutout_integrity import (
-    cutout_openable, purge_incomplete_cutouts, rebuild_catalog_from_cutouts,
+    cutout_openable,
+    purge_incomplete_cutouts,
+    rebuild_catalog_from_cutouts,
     validate_all_cutouts,
 )
+from euclid_polish.config import Config
 
 _SIZE = 16
 

@@ -10,7 +10,7 @@ Callers see a uniform collection interface regardless of which mode is active.
 
 from __future__ import annotations
 
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 
 import numpy as np
 import tensorflow as tf
@@ -37,10 +37,10 @@ class ImageSet:
     def __init__(
         self,
         *,
-        images: Optional[List[Image]] = None,
-        path: Optional[str] = None,
-        stamp: Optional[Stamp] = None,
-        max_images: Optional[int] = None,
+        images: list[Image] | None = None,
+        path: str | None = None,
+        stamp: Stamp | None = None,
+        max_images: int | None = None,
     ) -> None:
         if (images is None) == (path is None):
             raise ValueError("Exactly one of 'images' or 'path' must be provided.")
@@ -52,13 +52,13 @@ class ImageSet:
     # -- construction -- #
 
     @classmethod
-    def from_images(cls, images, *, stamp: Optional[Stamp] = None) -> "ImageSet":
+    def from_images(cls, images, *, stamp: Stamp | None = None) -> ImageSet:
         """Build an eager set from an iterable of :class:`Image`."""
         return cls(images=list(images), stamp=stamp)
 
     @classmethod
-    def read(cls, path_or_glob: str, *, stamp: Optional[Stamp] = None,
-             num_images: Optional[int] = None) -> "ImageSet":
+    def read(cls, path_or_glob: str, *, stamp: Stamp | None = None,
+             num_images: int | None = None) -> ImageSet:
         """Return a **lazy** set backed by ``path_or_glob``.
 
         No records are read until the set is iterated. This is safe for
@@ -70,7 +70,7 @@ class ImageSet:
     # -- source access -- #
 
     @property
-    def source_path(self) -> Optional[str]:
+    def source_path(self) -> str | None:
         """TFRecord path when constructed with :meth:`read`; ``None`` otherwise."""
         return self._path
 
@@ -126,14 +126,14 @@ class ImageSet:
 
     # -- queries -- #
 
-    def by_role(self, role: Role) -> "ImageSet":
+    def by_role(self, role: Role) -> ImageSet:
         """The subset whose :attr:`Image.role` equals ``role``."""
         return ImageSet.from_images(
             (img for img in self if img.role is role), stamp=self.stamp
         )
 
     def split(self, train_frac: float, *,
-              rng: Optional[np.random.Generator] = None) -> "tuple[ImageSet, ImageSet]":
+              rng: np.random.Generator | None = None) -> tuple[ImageSet, ImageSet]:
         """Random disjoint split into ``(train, validate)`` by fraction.
 
         Materialises the full set once to shuffle indices. Deterministic given

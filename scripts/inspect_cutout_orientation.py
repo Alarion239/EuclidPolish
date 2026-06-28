@@ -23,7 +23,6 @@ import argparse
 import glob
 import os
 import sys
-from typing import Optional
 
 import numpy as np
 from astropy.io import fits
@@ -45,7 +44,7 @@ ORIENT_KEYS = [
 ]
 
 
-def _orientation(header) -> Optional[dict]:
+def _orientation(header) -> dict | None:
     """WCS pixel scale + position angle of the +y axis (deg E of N) + the
     cutout-centre sky position. ``None`` if the header has no usable WCS."""
     try:

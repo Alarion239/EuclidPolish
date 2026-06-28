@@ -6,7 +6,6 @@ import numpy as np
 
 from euclid_polish.lensfinder import stamps as st
 
-
 FIELD = 256          # HR-grid field size
 M = 128              # HR-grid stamp size → LR stamp 64
 

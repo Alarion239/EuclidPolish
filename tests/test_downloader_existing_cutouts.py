@@ -14,10 +14,12 @@ import os
 import numpy as np
 from astropy.io import fits
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.downloader import (
-    DownloadConfig, positions_match, scan_cutouts,
+    DownloadConfig,
+    positions_match,
+    scan_cutouts,
 )
+from euclid_polish.config import Config
 
 
 def _write_cutout(path: str, ra: float, dec: float, size: int = 16) -> None:

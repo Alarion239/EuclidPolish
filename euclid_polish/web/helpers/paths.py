@@ -1,12 +1,13 @@
 """paths helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import os
+
+from flask import abort
+
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_fetcher import _local_path_for
-from flask import abort
-from typing import List
-import os
 
 
 def _sky_records_remote_dir() -> str:
@@ -25,7 +26,7 @@ def _sky_records_local_dir() -> str:
     return os.path.dirname(_local_path_for(any_path))
 
 
-def _inspectable_roots() -> List[str]:
+def _inspectable_roots() -> list[str]:
     """Real paths under which a user may request any FITS file via /inspect.
 
     Anything outside this set is rejected with HTTP 403 — this prevents a

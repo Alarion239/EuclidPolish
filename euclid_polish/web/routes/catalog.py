@@ -1,9 +1,10 @@
 """catalog routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+from flask import render_template
+
 from euclid_polish.config import Config
 from euclid_polish.web import euclid_session
-from flask import render_template
 from euclid_polish.web.helpers.status import _catalog_status, _cutout_layout_status
 
 

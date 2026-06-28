@@ -16,18 +16,19 @@ is ever needed, swap the dict for a redis-backed queue.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import io
 import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 import tqdm as _tqdm_module
 from tqdm import auto as _tqdm_auto
-
 
 # ---------------------------------------------------------------------------
 # Job record
@@ -41,9 +42,9 @@ class Job:
     label:     str
     status:    str                 = "running"   # running | done | failed
     started:   float               = field(default_factory=time.time)
-    finished:  Optional[float]     = None
+    finished:  float | None     = None
     result:    Any                 = None
-    error:     Optional[str]       = None
+    error:     str | None       = None
     log_buf:   io.StringIO         = field(default_factory=io.StringIO)
     # Progress fields — set by jobs via ``_LogCapture.tick(...)``. Optional;
     # ``progress_total = 0`` means "indeterminate".
@@ -70,7 +71,7 @@ class Job:
             return 0.0
         return 100.0 * self.progress_current / self.progress_total
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         # Keep the log payload small — the UI only renders the last ~4 KB.
         log = self.log
         log_tail = log[-4000:] if len(log) > 4000 else log
@@ -101,10 +102,10 @@ class JobRegistry:
     """Thread-safe job dict + spawn helper."""
 
     def __init__(self) -> None:
-        self._jobs: Dict[str, Job] = {}
+        self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def list(self) -> List[Dict[str, Any]]:
+    def list(self) -> builtins.list[dict[str, Any]]:
         """Newest first."""
         with self._lock:
             return sorted(
@@ -112,11 +113,11 @@ class JobRegistry:
                 key=lambda d: d["started"], reverse=True,
             )
 
-    def get(self, job_id: str) -> Optional[Job]:
+    def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def spawn(self, label: str, target: Callable[["_LogCapture"], Any]) -> str:
+    def spawn(self, label: str, target: Callable[[_LogCapture], Any]) -> str:
         """Run ``target(log_capture)`` in a daemon thread; return the job id.
 
         ``target`` receives a small helper that lets it write to the
@@ -164,9 +165,9 @@ class _LogCapture:
 
     def __init__(self, job: Job) -> None:
         self.job = job
-        self._stack: Optional[contextlib.ExitStack] = None
+        self._stack: contextlib.ExitStack | None = None
 
-    def __enter__(self) -> "_LogCapture":
+    def __enter__(self) -> _LogCapture:
         self._stack = contextlib.ExitStack()
         self._stack.enter_context(contextlib.redirect_stdout(self.job.log_buf))
         self._stack.enter_context(contextlib.redirect_stderr(self.job.log_buf))

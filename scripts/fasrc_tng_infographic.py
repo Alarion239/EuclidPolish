@@ -33,9 +33,9 @@ import os
 import random
 import sys
 import warnings
-from typing import List, Optional, Tuple
 
 import matplotlib
+
 matplotlib.use("Agg")                       # headless, before pyplot
 import matplotlib.pyplot as plt
 import numpy as np
@@ -60,11 +60,11 @@ from euclid_polish.tng.properties import (
     render_histograms_for_ids,
 )
 
-ORIENTATIONS: Tuple[int, ...] = (1, 2, 3, 4, 5)
+ORIENTATIONS: tuple[int, ...] = (1, 2, 3, 4, 5)
 GRID_GALAXIES = 5
 # RGB channels as FITS band tokens (R, G, B) = (H, J, VIS), matching
 # Config.Color.RGB_SCHEMES["vis_nisp"] = (H_E, J_E, VIS).
-RGB_FITS_BANDS: Tuple[str, str, str] = ("H", "J", "VIS")
+RGB_FITS_BANDS: tuple[str, str, str] = ("H", "J", "VIS")
 SINGLE_BANDS = tuple(TNG_FITS_BANDS)         # ("VIS", "Y", "J", "H")
 
 # Where a SLURM job writes its rendered artifact (under the download root),
@@ -87,7 +87,7 @@ def default_output_path(tng_dir: str, mode: str) -> str:
 # Galaxy enumeration + selection
 # ---------------------------------------------------------------------------
 
-def list_downloaded_ids(tng_dir: str) -> List[str]:
+def list_downloaded_ids(tng_dir: str) -> list[str]:
     """Subhalo ids that finished downloading (their folder holds a .done)."""
     if not os.path.isdir(tng_dir):
         return []
@@ -101,7 +101,7 @@ def list_downloaded_ids(tng_dir: str) -> List[str]:
         return sorted(ids)
 
 
-def pick_ids(ids: List[str], k: int, seed: int) -> List[str]:
+def pick_ids(ids: list[str], k: int, seed: int) -> list[str]:
     """Pick up to ``k`` ids. ``seed >= 0`` is reproducible; ``seed < 0`` draws a
     fresh random subset each call (so a re-submitted grid/stack job re-rolls)."""
     rng = random.Random(seed if seed >= 0 else None)
@@ -140,7 +140,7 @@ def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
 
 
 def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
-                    downsample: int) -> Optional[np.ndarray]:
+                    downsample: int) -> np.ndarray | None:
     path = tng_fits_path(gdir, gid, orient, fits_band)
     if not os.path.isfile(path):
         return None
@@ -151,7 +151,7 @@ def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
 
 
 def render_cell(gdir: str, gid: str, orient: int, band: str,
-                downsample: int) -> Optional[np.ndarray]:
+                downsample: int) -> np.ndarray | None:
     """One panel: 2-D [0,1] grayscale, or (H,W,3) uint8 RGB, or None if missing."""
     if band == "RGB":
         chans = []
@@ -170,7 +170,7 @@ def render_cell(gdir: str, gid: str, orient: int, band: str,
 
 
 def render_grid(tng_dir: str, band: str, downsample: int, seed: int, *,
-                ids: Optional[List[str]] = None, note: str = "") -> bytes:
+                ids: list[str] | None = None, note: str = "") -> bytes:
     # Explicit ids (chosen locally by the selection mode) win; otherwise pick a
     # seeded-random set on the node.
     chosen = (list(ids)[:GRID_GALAXIES] if ids
@@ -245,7 +245,7 @@ def build_stack_bytes(tng_dir: str, gid: str, band: str) -> bytes:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", required=True,
@@ -279,7 +279,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     # Binary stdout — mute every chatty warning so the PNG/FITS stays clean.
     warnings.filterwarnings("ignore")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")

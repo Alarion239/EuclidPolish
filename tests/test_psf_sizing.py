@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_library import (
     load_all_band_psfs,
     load_band_psf,
@@ -16,9 +17,7 @@ from euclid_polish.psf.psf_library import (
     psf_half_pixels_for_band,
     psf_side_pixels_for_band,
 )
-from euclid_polish.psf import PSF
 from euclid_polish.sky.observation.observation_simulator import default_psf_for_band
-
 
 # ---------------------------------------------------------------------------
 # Sizing rules

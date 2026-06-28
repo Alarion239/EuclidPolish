@@ -9,13 +9,12 @@ imports ``Image``).
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from euclid_polish.config import BandConfig
-
-from euclid_polish.sky.observation.artifacts import inject_artifacts, ArtifactConfig
+from euclid_polish.sky.observation.artifacts import ArtifactConfig, inject_artifacts
 
 if TYPE_CHECKING:
     # Type-hint-only import.
@@ -32,7 +31,7 @@ def apply_band_noise(
     rng: np.random.Generator,
     *,
     add_artifacts: bool = False,
-    artifact_config: Optional["ArtifactConfig"] = None,
+    artifact_config: ArtifactConfig | None = None,
 ) -> np.ndarray:
     """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
 

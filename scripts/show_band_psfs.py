@@ -11,13 +11,15 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.psf.psf_library import (
-    load_all_band_psfs, psf_inventory,
+    load_all_band_psfs,
+    psf_inventory,
 )
 
 OUT = "data/vis/demo/band_psfs.png"

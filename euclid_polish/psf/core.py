@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import os
 import warnings
-from dataclasses import dataclass, field, replace
-from typing import ClassVar, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import ClassVar
 
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import zoom, shift as ndi_shift, rotate as ndi_rotate
+from scipy.ndimage import rotate as ndi_rotate
+from scipy.ndimage import shift as ndi_shift
+from scipy.ndimage import zoom
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
@@ -36,7 +38,6 @@ from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
 from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format
 from euclid_polish.psf import measurements as _meas
-
 
 # Canonical HR pixel scale (arcsec / pixel). Everything in the project
 # resamples PSFs to this scale before convolution. Exposed here so
@@ -77,8 +78,8 @@ class PSF(StampCarrier):
 
     data: np.ndarray
     pixel_scale: float
-    fwhm_arcsec: Optional[float] = None
-    oversampling: Optional[int] = None
+    fwhm_arcsec: float | None = None
+    oversampling: int | None = None
 
     PROV_FORMAT: ClassVar[Format] = Format.FITS
 
@@ -87,7 +88,7 @@ class PSF(StampCarrier):
     # ------------------------------------------------------------------
 
     @property
-    def shape(self) -> Tuple[int, int]:
+    def shape(self) -> tuple[int, int]:
         return tuple(self.data.shape)   # type: ignore[return-value]
 
     @property
@@ -129,13 +130,13 @@ class PSF(StampCarrier):
             f"choose row | radial | area_eq"
         )
 
-    def flux_centroid(self) -> Tuple[float, float]:
+    def flux_centroid(self) -> tuple[float, float]:
         return _meas.flux_centroid(self.data)
 
-    def peak_offset_from_centre(self) -> Tuple[float, float]:
+    def peak_offset_from_centre(self) -> tuple[float, float]:
         return _meas.peak_offset_from_centre(self.data)
 
-    def radial_profile(self) -> Tuple[np.ndarray, np.ndarray]:
+    def radial_profile(self) -> tuple[np.ndarray, np.ndarray]:
         return _meas.radial_profile(self.data)
 
     # ------------------------------------------------------------------
@@ -249,7 +250,7 @@ class PSF(StampCarrier):
             raise ValueError(f"side must be odd, got {side}")
         psf = np.asarray(self.data)
         H, W = psf.shape
-        if H < side or W < side:
+        if side > H or side > W:
             pad_h = max(0, (side - H + 1) // 2)
             pad_w = max(0, (side - W + 1) // 2)
             psf = np.pad(psf, ((pad_h, pad_h), (pad_w, pad_w)),

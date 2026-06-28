@@ -32,16 +32,15 @@ The returned stamp is ``(H, W, 4)`` in ``Config.LR_INPUT_BAND_NAMES`` order
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
 
-from euclid_polish.config import BandConfig, Config
 from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
+from euclid_polish.config import BandConfig, Config
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     band_drift_factors,
@@ -53,8 +52,8 @@ from euclid_polish.sky.generation.redshift_model import (
 # FITS band token (in the filename) → simulation BandConfig. The atlas frames
 # are named with the short Euclid band labels; the model's bands carry the
 # ``_E`` suffix on the NISP filters.
-TNG_FITS_BANDS: Tuple[str, ...] = ("VIS", "Y", "J", "H")
-_FITS_BAND_TO_CONFIG: Dict[str, str] = {
+TNG_FITS_BANDS: tuple[str, ...] = ("VIS", "Y", "J", "H")
+_FITS_BAND_TO_CONFIG: dict[str, str] = {
     "VIS": "VIS", "Y": "Y_E", "J": "J_E", "H": "H_E",
 }
 
@@ -123,10 +122,10 @@ def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
 
 #: Cache of the integer radius-from-centre grid, keyed by frame shape — the
 #: atlas frames are all the same size, so this is computed once per shape.
-_RADIUS_INT_GRID: Dict[Tuple[int, int], np.ndarray] = {}
+_RADIUS_INT_GRID: dict[tuple[int, int], np.ndarray] = {}
 
 
-def _radius_int_grid(shape: Tuple[int, int]) -> np.ndarray:
+def _radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
     grid = _RADIUS_INT_GRID.get(shape)
     if grid is None:
         H, W = shape
@@ -164,7 +163,7 @@ def measure_halflight_radius_px(frame: np.ndarray, *, frac: float = 0.5) -> floa
 
 
 def stochastic_round_factor(f: float,
-                            rng: Optional[np.random.Generator]) -> int:
+                            rng: np.random.Generator | None) -> int:
     """Round a continuous rebin factor to an integer ≥ 1. With an ``rng`` the
     fractional part is a Bernoulli draw, so the *mean* factor is unbiased even
     where integer granularity is coarse (F ≈ 2–4); without one, plain
@@ -181,7 +180,7 @@ def rebin_for_target_size(
     target_re_arcsec: float,
     hr_pixel_scale: float,
     *,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
     f_max: int = 64,
 ) -> int:
     """Integer block-mean factor that places a stamp of native half-light radius
@@ -218,8 +217,8 @@ def prepare_tng_galaxy(
     rebin_factor: int = 2,
     rot_k: int = 0,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    fits_bands: Tuple[str, ...] = TNG_FITS_BANDS,
-) -> Tuple[np.ndarray, dict]:
+    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
+) -> tuple[np.ndarray, dict]:
     """Build a 4-band, electron-calibrated TNG stamp ready to inject.
 
     Loads the four Euclid frames for ``(subhalo_id, orientation)``, rebins each
@@ -239,8 +238,8 @@ def prepare_tng_galaxy(
         raise ValueError(f"rebin_factor must be ≥ 1, got {rebin_factor}")
     # Assemble in canonical model-band order so channel c is LR band c.
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
-    channels: List[np.ndarray] = []
-    flux_e: Dict[str, float] = {}
+    channels: list[np.ndarray] = []
+    flux_e: dict[str, float] = {}
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
         if fband not in fits_bands:
@@ -272,17 +271,17 @@ def prepare_tng_galaxy(
 # ---------------------------------------------------------------------------
 
 N_ORIENTATIONS = 5                              # SKIRT viewpoints O1..O5
-DOWNSAMPLE_CHOICES: Tuple[int, ...] = (1, 2, 3, 4)
+DOWNSAMPLE_CHOICES: tuple[int, ...] = (1, 2, 3, 4)
 
 
-def list_tng_galaxies(tng_dir: str) -> List[Tuple[str, str]]:
+def list_tng_galaxies(tng_dir: str) -> list[tuple[str, str]]:
     """List ``(galaxy_dir, subhalo_id)`` for downloaded galaxies ready to inject.
 
     A galaxy qualifies if its folder holds a ``.done`` marker AND the VIS O1
     frame exists, so :func:`prepare_tng_galaxy` won't choke on a partial dir."""
     if not os.path.isdir(tng_dir):
         return []
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for gid in os.listdir(tng_dir):
         gdir = os.path.join(tng_dir, gid)
         if (os.path.isfile(os.path.join(gdir, Config.Tng.DONE_MARKER))
@@ -299,7 +298,7 @@ def list_tng_galaxies(tng_dir: str) -> List[Tuple[str, str]]:
 #: repeat draws skip the FITS read + curve-of-growth entirely. Keyed on the
 #: directory too, so distinct galaxy sets (e.g. test fixtures reusing ids) never
 #: alias.
-_HALFLIGHT_PX_CACHE: Dict[Tuple[str, str, int], float] = {}
+_HALFLIGHT_PX_CACHE: dict[tuple[str, str, int], float] = {}
 
 
 def composite_stamp(canvas_4ch: np.ndarray, stamp: np.ndarray,
@@ -386,14 +385,14 @@ def tng_stamp_at_redshift(
     subhalo_id: int | str,
     orientation: int,
     z: float,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    rot_k: Optional[int] = None,
+    rot_k: int | None = None,
     f_max: int = 64,
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
     mass_scale: float = 1.0,
-) -> Tuple[np.ndarray, dict]:
+) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
     ``mass_scale`` < 1 re-uses the stamp as a *smaller galaxy of similar
@@ -473,12 +472,12 @@ def tng_stamp_at_redshift(
 #: mean-SB radial profile (MJy/sr per native-pixel radius) + each band's
 #: total MJy/sr sum. One 4-frame read each, then dict lookups — powers the
 #: ANALYTIC lens-showability predictors (no rendering).
-_NATIVE_PHOTOM_CACHE: Dict[Tuple[str, str, int],
-                           Tuple[np.ndarray, np.ndarray]] = {}
+_NATIVE_PHOTOM_CACHE: dict[tuple[str, str, int],
+                           tuple[np.ndarray, np.ndarray]] = {}
 
 
 def native_photometry(galaxy_dir: str, subhalo_id: int | str,
-                      orientation: int) -> Tuple[np.ndarray, np.ndarray]:
+                      orientation: int) -> tuple[np.ndarray, np.ndarray]:
     """Cached ``(vis_sb_profile, band_sums)`` for one atlas frame set."""
     key = (str(galaxy_dir), str(subhalo_id), int(orientation))
     cached = _NATIVE_PHOTOM_CACHE.get(key)
@@ -548,16 +547,16 @@ def predict_vis_flux_e(
 
 
 def sample_tng_stamp(
-    galaxies: List[Tuple[str, str]],
+    galaxies: list[tuple[str, str]],
     rng: np.random.Generator,
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    downsample_choices: Tuple[int, ...] = DOWNSAMPLE_CHOICES,
-    target_re_arcsec: Optional[float] = None,
-    z: Optional[float] = None,
+    downsample_choices: tuple[int, ...] = DOWNSAMPLE_CHOICES,
+    target_re_arcsec: float | None = None,
+    z: float | None = None,
     mass_scale: float = 1.0,
     f_max: int = 64,
-) -> Optional[Tuple[np.ndarray, dict]]:
+) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
     load).
@@ -592,7 +591,7 @@ def sample_tng_stamp(
 
     rot_k = int(rng.integers(0, 4))
 
-    re_px: Optional[float] = None
+    re_px: float | None = None
     if target_re_arcsec is not None and target_re_arcsec > 0.0:
         re_px = native_halflight_px(gdir, gid, orientation)
         if re_px is not None and np.isfinite(re_px) and re_px > 0.0:

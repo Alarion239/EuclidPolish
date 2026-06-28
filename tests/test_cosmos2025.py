@@ -9,11 +9,10 @@ file is present (otherwise those tests are skipped).
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 import pytest
-
-import time
 
 from euclid_polish.config import Config
 from euclid_polish.sky.generation import cosmos2025 as P

@@ -13,28 +13,49 @@ from __future__ import annotations
 # backend only works on the main thread and would otherwise crash with
 # "Cannot create a GUI FigureManager outside the main thread".
 import matplotlib
+
 matplotlib.use("Agg")
 
 import argparse
 import os
 import os as _os
 import time
-from typing import Optional
 
 from flask import (
-    Flask, jsonify, redirect, render_template, request, url_for,
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
 )
 
 from euclid_polish.web import experimental, fasrc_config, fasrc_jobs
-from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession, STATE
+from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 from euclid_polish.web.routes import (
-    auth, catalog, config, cutouts, evaluation, fasrc, files, git, hst,
-    hstpairs, lensfinder, model, poster, psfs, sky, tng, tracking, viewer,
+    auth,
+    catalog,
+    config,
+    cutouts,
+    evaluation,
+    fasrc,
+    files,
+    git,
+    hst,
+    hstpairs,
+    lensfinder,
+    model,
+    poster,
+    psfs,
+    sky,
+    tng,
+    tracking,
+    viewer,
     views,
 )
 
 
-def _try_startup_ssh_connect() -> Optional[str]:
+def _try_startup_ssh_connect() -> str | None:
     """Attempt one SSH connect during app startup. Return None on success.
 
     Stores the active session on :data:`STATE`. Failures are returned as

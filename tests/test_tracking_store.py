@@ -8,9 +8,9 @@ import os
 import pytest
 
 from euclid_polish.tracking.store import (
+    _PROJECT_ROOT,
     TrackingError,
     TrackingStore,
-    _PROJECT_ROOT,
     git_commit_info,
 )
 

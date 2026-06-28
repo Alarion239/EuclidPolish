@@ -61,14 +61,17 @@ def test_psf_inventory_helper_works():
 def test_multiband_pipeline_components_wired():
     """The three pipeline steps can be wired together end-to-end."""
     import numpy as np
+
     from euclid_polish.config import Config
+    from euclid_polish.psf.psf_library import load_all_band_psfs
     from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulatorConfig, SkySimulator,
+        SkySimulator,
+        SkySimulatorConfig,
     )
     from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
+        ObservationSimulator,
+        ObservationSimulatorConfig,
     )
-    from euclid_polish.psf.psf_library import load_all_band_psfs
     from tests._tiny_catalog import TinyCosmosCatalog
 
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)

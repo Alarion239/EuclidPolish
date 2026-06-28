@@ -23,7 +23,6 @@ from euclid_polish.web.helpers.paths import (
 )
 from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
 
-
 # ---------------------------------------------------------------------------
 # Helpers used across tests
 # ---------------------------------------------------------------------------

@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_extractor import PSFExtractor
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_extractor import PSFExtractor
 
 gen = importlib.import_module("scripts.extract_all_band_psfs")
 

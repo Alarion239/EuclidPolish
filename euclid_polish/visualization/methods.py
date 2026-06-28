@@ -13,8 +13,10 @@ instead of asinh.
 
 import os
 
-import numpy as np
+import astropy.units as u
 import matplotlib.pyplot as plt
+import numpy as np
+from astropy.coordinates import SkyCoord
 from scipy.ndimage import gaussian_filter
 
 from euclid_polish.visualization.base import (
@@ -22,9 +24,6 @@ from euclid_polish.visualization.base import (
     _asinh_scale,
     _asinh_scale_mad,
 )
-
-from astropy.coordinates import SkyCoord
-import astropy.units as u
 
 
 def _smooth_for_display(data: np.ndarray, sigma: float = 1.5) -> np.ndarray:

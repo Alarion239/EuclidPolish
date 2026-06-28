@@ -27,7 +27,7 @@ import shlex
 import sqlite3
 import statistics
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.tracking import default_store
@@ -107,11 +107,11 @@ class JobDB:
         jobid: str,
         *,
         label:       str,
-        params:      Dict[str, Any],
+        params:      dict[str, Any],
         script_path: str,
         log_path:    str,
         err_path:    str,
-        events_path: Optional[str] = None,
+        events_path: str | None = None,
     ) -> None:
         with self._conn() as c:
             c.execute(
@@ -126,8 +126,8 @@ class JobDB:
             )
 
     def update_state(self, jobid: str, *, state: str,
-                     started_at: Optional[float] = None,
-                     ended_at: Optional[float] = None,
+                     started_at: float | None = None,
+                     ended_at: float | None = None,
                      clear_ended: bool = False) -> None:
         sets, args = ["state = ?", "last_seen = ?"], [state, time.time()]
         if started_at is not None:
@@ -158,13 +158,13 @@ class JobDB:
                       "WHERE jobid = ?",
                       (str(step_id), time.time(), jobid))
 
-    def get(self, jobid: str) -> Optional[Dict[str, Any]]:
+    def get(self, jobid: str) -> dict[str, Any] | None:
         with self._conn() as c:
             r = c.execute("SELECT * FROM fasrc_jobs WHERE jobid = ?",
                           (jobid,)).fetchone()
         return dict(r) if r else None
 
-    def list_recent(self, limit: int = 30) -> List[Dict[str, Any]]:
+    def list_recent(self, limit: int = 30) -> list[dict[str, Any]]:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM fasrc_jobs ORDER BY submitted_at DESC "
@@ -172,7 +172,7 @@ class JobDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def list_completed(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def list_completed(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT * FROM fasrc_jobs "
@@ -195,14 +195,14 @@ JOBLOG = JobLog(JOB_LOG_PATH)
 # ETA heuristic
 # ---------------------------------------------------------------------------
 
-def _params_of(row: Dict[str, Any]) -> Dict[str, Any]:
+def _params_of(row: dict[str, Any]) -> dict[str, Any]:
     try:
         return json.loads(row.get("params_json") or "{}")
     except json.JSONDecodeError:
         return {}
 
 
-def secs_per_step_history(n: int = 8) -> Optional[float]:
+def secs_per_step_history(n: int = 8) -> float | None:
     """Median wall-second-per-training-step across the last ``n`` finished jobs.
 
     ``steps`` can arrive as a string because submit forms write everything
@@ -233,7 +233,7 @@ def secs_per_step_history(n: int = 8) -> Optional[float]:
     return statistics.median(samples)
 
 
-def eta_for_submission(steps: int) -> Optional[float]:
+def eta_for_submission(steps: int) -> float | None:
     """Rough wall-time ETA in seconds for a fresh job of ``steps`` steps."""
     spt = secs_per_step_history()
     if spt is None:
@@ -241,7 +241,7 @@ def eta_for_submission(steps: int) -> Optional[float]:
     return spt * steps
 
 
-def eta_for_running(row: Dict[str, Any]) -> Optional[float]:
+def eta_for_running(row: dict[str, Any]) -> float | None:
     """Live ETA for a job that has emitted a ``step X/Y`` line.
 
     Falls back to the historical heuristic if the log has nothing yet.
@@ -268,7 +268,7 @@ _TQDM_PROGRESS_RE = re.compile(r"(\d{1,8})\s*/\s*(\d{1,8})")
 _STEP_ID_RE = re.compile(r"STEP_ID=([A-Za-z0-9_\-]+)")
 
 
-def parse_progress(line: str) -> Optional[tuple[int, int]]:
+def parse_progress(line: str) -> tuple[int, int] | None:
     """Pull (step, total) out of a single log line, or None."""
     m = _TQDM_PROGRESS_RE.search(line)
     if not m:
@@ -321,7 +321,7 @@ def _conda_activate_snippet(env_path: str, load_cuda: bool = False) -> str:
 
 
 def build_remote_python_command(
-    cfg: fasrc_config.FasrcConfig, argv: List[str],
+    cfg: fasrc_config.FasrcConfig, argv: list[str],
 ) -> str:
     """Build the ``bash -lc '…'`` string that runs a project script on the
     FASRC **login node** (no SLURM).
@@ -364,8 +364,8 @@ def build_remote_python_command(
 
 
 def run_remote_python(
-    ssh, *, cfg: fasrc_config.FasrcConfig, argv: List[str], timeout: int = 300,
-) -> Tuple[int, str, str]:
+    ssh, *, cfg: fasrc_config.FasrcConfig, argv: list[str], timeout: int = 300,
+) -> tuple[int, str, str]:
     """Run a project Python script on the FASRC login node over SSH.
 
     Synchronous (blocks up to ``timeout`` s) — meant for quick work like a
@@ -380,11 +380,11 @@ def submit_sbatch_script(
     ssh,
     *,
     cfg:      fasrc_config.FasrcConfig,
-    built:    Dict[str, str],
+    built:    dict[str, str],
     label:    str,
-    params:   Dict[str, Any],
-    step_id:  Optional[str] = None,
-) -> Tuple[Optional[str], Dict[str, Any]]:
+    params:   dict[str, Any],
+    step_id:  str | None = None,
+) -> tuple[str | None, dict[str, Any]]:
     """Write a rendered sbatch script to FASRC, ``sbatch`` it, record it.
 
     Parameters
@@ -506,7 +506,7 @@ def submit_sbatch_script(
     except Exception:
         pass
 
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "ok":          True,
         "jobid":       slurm_id,
         "label":       label,
@@ -523,7 +523,7 @@ def submit_sbatch_script(
 # Parsing remote `squeue` output → row dicts the UI can render
 # ---------------------------------------------------------------------------
 
-def parse_squeue(text: str) -> List[Dict[str, str]]:
+def parse_squeue(text: str) -> list[dict[str, str]]:
     """Parse our fixed-format ``squeue`` output.
 
     We invoke squeue with ``--format`` and a pipe separator. The literal
@@ -531,7 +531,7 @@ def parse_squeue(text: str) -> List[Dict[str, str]]:
     as the two characters ``\t`` in the output, which silently broke the
     earlier tab-based split. Pipes are passed through literally.
     """
-    rows: List[Dict[str, str]] = []
+    rows: list[dict[str, str]] = []
     keys = ["jobid", "name", "state", "time", "time_limit",
             "nodes", "reason", "start_time"]
     for line in text.splitlines():
@@ -582,10 +582,10 @@ SUBMIT_GRACE_S = 120.0
 def sync_pending_on_connect(
     ssh: Any,
     *,
-    db: Optional["JobDB"] = None,
-    job_log: Optional[JobLog] = None,
+    db: JobDB | None = None,
+    job_log: JobLog | None = None,
     recent_limit: int = 50,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Re-sync every non-terminal DB row against SLURM, fill missing post-mortems.
 
     Called whenever the SSH session becomes available — at server
@@ -620,7 +620,7 @@ def sync_pending_on_connect(
     )
 
 
-def fetch_resource_summary(ssh: Any, events_path: Optional[str]) -> Dict[str, Any]:
+def fetch_resource_summary(ssh: Any, events_path: str | None) -> dict[str, Any]:
     """Fold a job's ``resource`` samples into post-mortem summary fields.
 
     ``cat``s the remote events file, folds it (reusing the same
@@ -645,7 +645,7 @@ def fetch_resource_summary(ssh: Any, events_path: Optional[str]) -> Dict[str, An
     if res is None or res.n_samples == 0:
         return {}
 
-    def _r(x: Optional[float]) -> Optional[str]:
+    def _r(x: float | None) -> str | None:
         return None if x is None else f"{x:.1f}"
 
     stats = {
@@ -659,8 +659,8 @@ def fetch_resource_summary(ssh: Any, events_path: Optional[str]) -> Dict[str, An
 
 
 def refresh_all_post_mortems(
-    ssh: Any, *, job_log: Optional[JobLog] = None,
-) -> Dict[str, Any]:
+    ssh: Any, *, job_log: JobLog | None = None,
+) -> dict[str, Any]:
     """Re-pull sacct for every finalised job in the CSV log and re-record.
 
     One-shot maintenance: when the way a post-mortem field is *computed*
@@ -694,11 +694,11 @@ def refresh_all_post_mortems(
     return {"ok": True, "updated": updated, "total": len(candidates)}
 
 
-def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
-                          *, db: Optional["JobDB"] = None,
+def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
+                          *, db: JobDB | None = None,
                           recent_limit: int = 50,
-                          ssh: Optional[Any] = None,
-                          job_log: Optional[JobLog] = None) -> Dict[str, str]:
+                          ssh: Any | None = None,
+                          job_log: JobLog | None = None) -> dict[str, str]:
     """Cross-check the JobDB against a live ``squeue`` snapshot.
 
     For every non-terminal DB row:
@@ -728,10 +728,10 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
     """
     target_db  = db if db is not None else DB
     target_log = job_log if job_log is not None else JOBLOG
-    live_state: Dict[str, str] = {r["jobid"]: r.get("state", "?")
+    live_state: dict[str, str] = {r["jobid"]: r.get("state", "?")
                                   for r in squeue_rows}
-    changes: Dict[str, str] = {}
-    just_finalised: List[str] = []
+    changes: dict[str, str] = {}
+    just_finalised: list[str] = []
 
     db_rows = list(target_db.list_recent(recent_limit))
     db_state_before = {s["jobid"]: (s.get("state") or "") for s in db_rows}
@@ -798,7 +798,7 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
     # leave the per-step history panel stuck on "pending" forever. Since
     # reconcile runs on every dashboard poll, retrying here fills the row
     # in as soon as sacct catches up.
-    needs_pm: List[str] = list(just_finalised)
+    needs_pm: list[str] = list(just_finalised)
     for jid, stt in db_state_before.items():
         if jid in needs_pm or stt not in TERMINAL_STATES:
             continue
@@ -831,7 +831,7 @@ def reconcile_with_squeue(squeue_rows: List[Dict[str, Any]],
     return changes
 
 
-def parse_slurm_time(t: Optional[str]) -> float:
+def parse_slurm_time(t: str | None) -> float:
     """SLURM ``d-hh:mm:ss`` / ``hh:mm:ss`` / ``mm:ss`` → seconds.
 
     Returns 0.0 on anything we can't parse rather than raising — the

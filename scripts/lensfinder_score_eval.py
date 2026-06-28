@@ -84,10 +84,9 @@ def main(argv=None) -> int:
         return 0
 
     import pandas as pd
-    from galaxy_datasets.transforms import (get_galaxy_transform,
-                                            minimal_view_config)
-    from zoobot.pytorch.training import finetune
+    from galaxy_datasets.transforms import get_galaxy_transform, minimal_view_config
     from zoobot.pytorch.predictions import predict_on_catalog
+    from zoobot.pytorch.training import finetune
 
     cfg = minimal_view_config()
     cfg.output_size = (args.png_size, args.png_size)

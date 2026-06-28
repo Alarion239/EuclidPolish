@@ -36,10 +36,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.photometry import (
-    ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
+    ab_mag_to_electrons,
+    adu_per_s_to_electrons,
+    uJy_to_electrons,
 )
+from euclid_polish.config import Config
 
 
 def _catalog_electrons(row: dict, band) -> float:
@@ -119,12 +121,12 @@ def main() -> int:
                   f"{np.percentile(vals, 25):.3f}-{np.percentile(vals, 75):.3f})")
     print("\n→ ratio (measured / catalog) per radius:\n"
           "   • a gross constant offset at ALL radii ⇒ a zeropoint/units bug\n"
-          "     (the catalog flux is µJy, AB ZP {:.2f}; verify it round-trips).\n"
+          f"     (the catalog flux is µJy, AB ZP {Config.AB_ZP_UJY:.2f}; verify it round-trips).\n"
           "   • with PSF flux, the moderate-aperture ratio ≈ 1 ⇒ no correction.\n"
           "     If you instead anchor on an aperture flux and the ratio rises\n"
           "     with radius, the correction factor is that (>1) ratio itself —\n"
           "     anchor_flux = catalog_flux × ratio — NOT 1/ratio."
-          .format(Config.AB_ZP_UJY))
+          )
     return 0
 
 

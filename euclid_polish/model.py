@@ -10,29 +10,30 @@ from __future__ import annotations
 
 import glob as _glob
 import os as _os
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import numpy as np
+import tensorflow as tf
+from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.eval import catalog_runner
-from euclid_polish.eval import grouped_runner
+from euclid_polish.eval import catalog_runner, grouped_runner
 from euclid_polish.image import Image, ImageSet, Role
+from euclid_polish.image.tfio import parse_example
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.training.augmentation import (
+    _augment_multiband,
+    asinh_stretch_hr,
+    asinh_stretch_lr,
+)
 from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
-    reconstruct as _default_reconstruct,
 )
-
-import tensorflow as tf
-from tensorflow.python.data.experimental import AUTOTUNE
-
-from euclid_polish.image.tfio import parse_example
-from euclid_polish.training.augmentation import (
-    asinh_stretch_lr, asinh_stretch_hr, _augment_multiband,
+from euclid_polish.training.inference import (
+    reconstruct as _default_reconstruct,
 )
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.trainer import Trainer
@@ -70,8 +71,8 @@ class Model:
         *,
         scale: int = 2,
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-        _load_fn: Optional[Callable] = None,
-        _reconstruct_fn: Optional[Callable] = None,
+        _load_fn: Callable | None = None,
+        _reconstruct_fn: Callable | None = None,
     ) -> None:
         self._checkpoint_dir = checkpoint_dir
         self._scale = scale
@@ -80,7 +81,7 @@ class Model:
 
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
             self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
-            self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
+            self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         else:
             self._tf_model = _wdsr_build(scale=scale, num_res_blocks=num_res_blocks)
             self.id = None
@@ -200,8 +201,8 @@ class Model:
         self,
         lr_images: ImageSet,
         *,
-        on_progress: Optional[Callable] = None,
-        log: Optional[Callable] = None,
+        on_progress: Callable | None = None,
+        log: Callable | None = None,
     ) -> ImageSet:
         """Super-resolve each image in ``lr_images``; return an eager :class:`ImageSet`.
 

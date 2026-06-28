@@ -25,13 +25,12 @@ import math
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from dataclasses import dataclass
 
-import numpy as np
-from astropy.io import fits
-from astropy.cosmology import Planck15 as _COSMO
 import astropy.units as u
+import numpy as np
+from astropy.cosmology import Planck15 as _COSMO
+from astropy.io import fits
 from scipy.special import gammainc, gammaincinv
 
 from euclid_polish.config import Config
@@ -68,9 +67,9 @@ class GalaxyParams:
     """
 
     # Identity / sky position (None for stub-generated entries).
-    catalog_id:        Optional[int]   = None
-    ra_deg:            Optional[float] = None
-    dec_deg:           Optional[float] = None
+    catalog_id:        int | None   = None
+    ra_deg:            float | None = None
+    dec_deg:           float | None = None
     z_phot:            float           = 0.5
 
     # Shared geometry
@@ -86,8 +85,8 @@ class GalaxyParams:
 
     # Per-band electron fluxes for each component.
     # Length-4 tuples ordered per Config.LR_INPUT_BAND_NAMES.
-    bulge_flux_e:      Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
-    disk_flux_e:       Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    bulge_flux_e:      tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    disk_flux_e:       tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
     def total_flux_e(self, band_index: int) -> float:
         """Total bulge+disk flux in band ``band_index`` (0–3, VIS..H_E)."""
@@ -126,7 +125,7 @@ class CosmosCatalog(ABC):
         """Build :class:`GalaxyParams` from filtered-array row ``i``."""
 
     def sample_lens_galaxy(
-        self, rng: np.random.Generator, z_lens_range: Tuple[float, float],
+        self, rng: np.random.Generator, z_lens_range: tuple[float, float],
     ) -> GalaxyParams:
         """Draw a foreground lens galaxy uniformly within ``z_lens_range``."""
         lo, hi = z_lens_range
@@ -232,7 +231,7 @@ class CosmosCatalog(ABC):
 # Photometric helpers
 # ---------------------------------------------------------------------------
 
-def _mag_to_electrons_per_stack(mag_ab: np.ndarray, band: "BandConfig") -> np.ndarray:
+def _mag_to_electrons_per_stack(mag_ab: np.ndarray, band: BandConfig) -> np.ndarray:
     """Convert AB magnitude → total electrons over the band's stack integration.
 
     ``mag = ZP_E - 2.5 log10(electrons_total)`` with ``ZP_E`` = the band's
@@ -485,7 +484,7 @@ class Cosmos2025Catalog(CosmosCatalog):
 
     @classmethod
     def from_filtered_npz(cls, path: str, *, verbose: bool = True
-                          ) -> "Cosmos2025Catalog":
+                          ) -> Cosmos2025Catalog:
         """Reconstruct a catalog from a :meth:`save_filtered_npz` file — no
         FITS read, no quality cuts (already applied). Bypasses ``__init__``."""
         obj = cls.__new__(cls)        # skip the heavy FITS-reading __init__
@@ -506,16 +505,16 @@ class Cosmos2025Catalog(CosmosCatalog):
 # ---------------------------------------------------------------------------
 
 def _filtered_cache_path(fits_path: str, max_mag: float, max_bd_chi2: float,
-                         cache_dir: Optional[str] = None) -> str:
+                         cache_dir: str | None = None) -> str:
     base = cache_dir or os.path.dirname(os.path.abspath(fits_path)) or "."
     stem = os.path.splitext(os.path.basename(fits_path))[0]
     return os.path.join(base, f"{stem}.filtered_mag{max_mag:g}_chi{max_bd_chi2:g}.npz")
 
 
 def ensure_prefiltered_catalog(
-    fits_path: Optional[str] = None, *,
+    fits_path: str | None = None, *,
     max_mag: float = 25.0, max_bd_chi2: float = 10.0,
-    cache_dir: Optional[str] = None, verbose: bool = True,
+    cache_dir: str | None = None, verbose: bool = True,
 ) -> str:
     """Return a path to a small ``.npz`` holding the *filtered* COSMOS2025
     catalog, building it from the master FITS only when no fresh cache exists.
@@ -549,7 +548,7 @@ def ensure_prefiltered_catalog(
     return npz
 
 
-def _atomic_save_filtered(cat: "Cosmos2025Catalog", npz: str) -> str:
+def _atomic_save_filtered(cat: Cosmos2025Catalog, npz: str) -> str:
     os.makedirs(os.path.dirname(npz) or ".", exist_ok=True)
     tmp = npz + ".tmp.npz"
     cat.save_filtered_npz(tmp)
@@ -562,7 +561,7 @@ def _atomic_save_filtered(cat: "Cosmos2025Catalog", npz: str) -> str:
 # ---------------------------------------------------------------------------
 
 def open_cosmos2025(
-    path: Optional[str] = None,
+    path: str | None = None,
     **kwargs,
 ) -> CosmosCatalog:
     """Open the COSMOS2025 catalog. The catalog is mandatory.

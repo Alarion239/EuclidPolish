@@ -13,7 +13,7 @@ as the default whenever the caller passes no ``on_progress``.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from tqdm.auto import tqdm
 

@@ -18,7 +18,6 @@ from euclid_polish.web.sacct import (
     parse_sacct_output,
 )
 
-
 # ---------------------------------------------------------------------------
 # Memory parser
 # ---------------------------------------------------------------------------
@@ -201,7 +200,7 @@ class _SSHStub:
     def is_connected(self) -> bool:
         return self.connected
 
-    def run(self, cmd: str, *, timeout: float = 15) -> Tuple[int, str, str]:
+    def run(self, cmd: str, *, timeout: float = 15) -> tuple[int, str, str]:
         self.calls.append(cmd)
         return self.rc, self.out, self.err
 

@@ -16,9 +16,9 @@ from __future__ import annotations
 import os
 import threading
 
-from euclid_polish.config import Config
 from euclid_polish.catalog import catalog_object as co
 from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.config import Config
 
 
 def _objects(n_stars: int):

@@ -1,8 +1,8 @@
 """FITS file validation utilities used by the cutout downloader."""
 
+
 import numpy as np
 from astropy.io import fits
-from typing import Tuple, Optional
 
 
 def angular_separation_arcsec(
@@ -28,7 +28,7 @@ class FitsValidator:
         self.zero_tolerance = zero_tolerance
         self.constant_tolerance = constant_tolerance
 
-    def validate_basic_integrity(self, filepath: str) -> Tuple[bool, Optional[str]]:
+    def validate_basic_integrity(self, filepath: str) -> tuple[bool, str | None]:
         """Return ``(True, None)`` iff the file opens, is 2D, non-trivial, and finite."""
         try:
             with fits.open(filepath) as hdul:
@@ -61,7 +61,7 @@ class FitsValidator:
         expected_ra: float,
         expected_dec: float,
         tolerance_arcsec: float = 0.5
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """Basic integrity + WCS centre within ``tolerance_arcsec`` of expected."""
         is_valid, error_msg = self.validate_basic_integrity(filepath)
         if not is_valid:
@@ -79,7 +79,7 @@ class FitsValidator:
             return False, f"WCS validation error: {e}"
         return True, None
 
-    def get_data(self, filepath: str) -> Optional[np.ndarray]:
+    def get_data(self, filepath: str) -> np.ndarray | None:
         """Safely return the first non-empty data array from a FITS file."""
         try:
             with fits.open(filepath) as hdul:
@@ -87,7 +87,7 @@ class FitsValidator:
         except Exception:
             return None
 
-    def get_header(self, filepath: str) -> Optional[dict]:
+    def get_header(self, filepath: str) -> dict | None:
         """Safely return the primary HDU header as a plain dict."""
         try:
             with fits.open(filepath) as hdul:
@@ -95,7 +95,7 @@ class FitsValidator:
         except Exception:
             return None
 
-    def _extract_data(self, hdul) -> Optional[np.ndarray]:
+    def _extract_data(self, hdul) -> np.ndarray | None:
         """Return the first HDU with non-empty data, or None."""
         for hdu in hdul:
             if hdu.data is not None and hasattr(hdu.data, 'size') and hdu.data.size > 0:

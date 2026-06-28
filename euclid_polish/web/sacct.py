@@ -30,13 +30,12 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Any, Dict, List, Optional, Protocol, Tuple
-
+from typing import Any, Protocol
 
 #: Fields fetched from ``sacct``. Order is enforced via ``-o`` so we
 #: can index reliably. Pipe-separated (``-P``) so values containing
 #: spaces (like start/end timestamps) don't break parsing.
-_SACCT_FIELDS: Tuple[str, ...] = (
+_SACCT_FIELDS: tuple[str, ...] = (
     "JobID",
     "State",
     "ExitCode",
@@ -56,7 +55,7 @@ _SACCT_FIELDS: Tuple[str, ...] = (
 
 
 class _SSHRunner(Protocol):
-    def run(self, cmd: str, *, timeout: float = ...) -> Tuple[int, str, str]: ...
+    def run(self, cmd: str, *, timeout: float = ...) -> tuple[int, str, str]: ...
     def is_connected(self) -> bool: ...
 
 
@@ -69,7 +68,7 @@ def build_sacct_command(jobid: str) -> str:
     return f"sacct -j {shlex.quote(str(jobid))} -P --noheader -o {fields}"
 
 
-def fetch_sacct_stats(ssh: _SSHRunner, jobid: str) -> Optional[Dict[str, Any]]:
+def fetch_sacct_stats(ssh: _SSHRunner, jobid: str) -> dict[str, Any] | None:
     """Run ``sacct`` for ``jobid`` and return the folded post-mortem dict.
 
     Returns ``None`` when SSH is unavailable, when ``sacct`` errors, or
@@ -90,7 +89,7 @@ def fetch_sacct_stats(ssh: _SSHRunner, jobid: str) -> Optional[Dict[str, Any]]:
 # Parser (pure, unit-testable)
 # ---------------------------------------------------------------------------
 
-def parse_sacct_output(text: str) -> Dict[str, Any]:
+def parse_sacct_output(text: str) -> dict[str, Any]:
     """Fold one job's multi-row ``sacct -P`` output into a flat dict.
 
     The returned dict's keys map directly to :class:`JobRecord`
@@ -122,7 +121,7 @@ def parse_sacct_output(text: str) -> Dict[str, Any]:
         or 0.0
     )
     alloc_cpus = _parse_int(main_row.get("AllocCPUS")) or 0
-    cpu_efficiency: Optional[float] = None
+    cpu_efficiency: float | None = None
     if elapsed_sec > 0 and alloc_cpus > 0:
         cpu_efficiency = cpu_seconds / (elapsed_sec * alloc_cpus)
 
@@ -156,14 +155,14 @@ def parse_sacct_output(text: str) -> Dict[str, Any]:
 _STATE_TAIL_RE = re.compile(r"\s+by\s+\S+$")
 
 
-def _clean_state(s: Optional[str]) -> str:
+def _clean_state(s: str | None) -> str:
     """``"CANCELLED by 1234"`` → ``"CANCELLED"``; everything else passes through."""
     if not s:
         return ""
     return _STATE_TAIL_RE.sub("", s.strip())
 
 
-def _parse_int(s: Any) -> Optional[int]:
+def _parse_int(s: Any) -> int | None:
     if s is None or s == "":
         return None
     try:
@@ -172,7 +171,7 @@ def _parse_int(s: Any) -> Optional[int]:
         return None
 
 
-def _parse_slurm_duration_secs(s: Any) -> Optional[float]:
+def _parse_slurm_duration_secs(s: Any) -> float | None:
     """Parse a SLURM duration (e.g. ``TotalCPU``) into seconds.
 
     Formats: ``"SS.mmm"``, ``"MM:SS.mmm"``, ``"HH:MM:SS"``,
@@ -213,7 +212,7 @@ _MEM_UNIT_MB = {"": 1.0 / 1024.0 / 1024.0,   # bytes → MB (rare)
                 "T": 1024.0 * 1024.0}        # TB
 
 
-def _parse_mem_mb(s: Any) -> Optional[float]:
+def _parse_mem_mb(s: Any) -> float | None:
     """Parse a SLURM memory string into MB.
 
     Handles ``"1234K"`` (KB), ``"5.5G"`` (GB), ``"512M"`` (MB),
@@ -246,7 +245,7 @@ _TRES_MEM_RE = re.compile(r"(?:^|,)\s*mem=([0-9]+\.?[0-9]*)([KMGT]?)",
                           re.IGNORECASE)
 
 
-def _gres_count_from_tres(tres: Optional[str], key_prefix: str) -> int:
+def _gres_count_from_tres(tres: str | None, key_prefix: str) -> int:
     """Count GPUs from an ``AllocTRES`` string.
 
     SLURM emits ``"cpu=4,gres/gpu=1,mem=8000M"`` for a one-GPU job.
@@ -259,7 +258,7 @@ def _gres_count_from_tres(tres: Optional[str], key_prefix: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _tres_mem_mb(tres: Optional[str]) -> Optional[float]:
+def _tres_mem_mb(tres: str | None) -> float | None:
     """Parse the ``mem=`` field from a TRES string into MB."""
     if not tres:
         return None

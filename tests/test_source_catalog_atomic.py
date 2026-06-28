@@ -10,7 +10,7 @@ def _write_part(path, field_indices):
     with open(path, "w", newline="") as f:
         f.write(",".join(SOURCE_COLS) + "\r\n")
         for fi in field_indices:
-            row = {c: "" for c in SOURCE_COLS}
+            row = dict.fromkeys(SOURCE_COLS, "")
             row["field_index"] = str(fi)
             row["type"] = "galaxy"
             f.write(",".join(row[c] for c in SOURCE_COLS) + "\r\n")

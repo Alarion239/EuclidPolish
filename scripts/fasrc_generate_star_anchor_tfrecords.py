@@ -32,7 +32,6 @@ import contextlib
 import csv
 import os
 import sys
-from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
@@ -42,12 +41,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.config import Config
 from euclid_polish.catalog.photometry import (
-    ab_mag_to_electrons, adu_per_s_to_electrons, uJy_to_electrons,
+    ab_mag_to_electrons,
+    adu_per_s_to_electrons,
+    uJy_to_electrons,
 )
-from euclid_polish.image.tfio import open_writer
+from euclid_polish.config import Config
 from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer
 
 SCALE = Config.DEFAULT_REBIN_FACTOR          # LR→HR factor (2)
 STAR_ANCHOR_RECORDS_DIR = os.path.join(Config.DATA_DIR, "images/records_v2_star_anchor")
@@ -58,7 +59,7 @@ def star_cutout_path(star_id: int, band_name: str, size: int) -> str:
         Config.cutout_dir_for_band(band_name), f"star_{star_id:04d}_{size}.fits")
 
 
-def load_star_cube(star_id: int, size: int) -> Optional[Tuple[np.ndarray, fits.Header]]:
+def load_star_cube(star_id: int, size: int) -> tuple[np.ndarray, fits.Header] | None:
     """Load the 4 co-registered band cutouts, convert each ADU/s→e⁻, and
     stack to ``(H, W, 4)`` in canonical band order. Returns ``(cube, vis_header)``
     or ``None`` if any band is missing, unreadable/corrupt, or the shapes
@@ -95,7 +96,7 @@ def load_star_cube(star_id: int, size: int) -> Optional[Tuple[np.ndarray, fits.H
     return np.stack(planes, axis=-1).astype(np.float32), vis_header
 
 
-def star_pixel(vis_header: fits.Header, ra: float, dec: float) -> Tuple[float, float]:
+def star_pixel(vis_header: fits.Header, ra: float, dec: float) -> tuple[float, float]:
     """Star's (col_x, row_y) float pixel in the VIS cutout, from its WCS."""
     wcs = WCS(vis_header)
     x, y = wcs.all_world2pix(ra, dec, 0)         # 0-based, (x=col, y=row)
@@ -103,8 +104,8 @@ def star_pixel(vis_header: fits.Header, ra: float, dec: float) -> Tuple[float, f
 
 
 def make_anchor_example(
-    cube_e: np.ndarray, star_xy: Tuple[float, float], flux_e: float, stamp: int,
-) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    cube_e: np.ndarray, star_xy: tuple[float, float], flux_e: float, stamp: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
     """Crop a ``stamp``-sized LR cube centered on the star and render the HR
     delta target. Returns ``(lr_cube (stamp,stamp,4), hr_target (2*stamp,2*stamp,1))``
     or ``None`` if the star is too close to the cutout edge for a full stamp."""
@@ -132,7 +133,7 @@ def make_anchor_example(
     return lr_cube, hr_target
 
 
-def _row_float(row: dict, key: str) -> Optional[float]:
+def _row_float(row: dict, key: str) -> float | None:
     v = row.get(key)
     if v is None or str(v).strip() == "":
         return None
@@ -143,7 +144,7 @@ def _row_float(row: dict, key: str) -> Optional[float]:
         return None
 
 
-def anchor_flux_e(row: dict) -> Optional[float]:
+def anchor_flux_e(row: dict) -> float | None:
     """Star-anchor delta value in electrons. Prefer the raw PSF flux
     (``flux_psf_uJy`` → electrons, physical scale); fall back to the catalog
     magnitude for older catalogs that predate the flux columns."""
@@ -156,7 +157,7 @@ def anchor_flux_e(row: dict) -> Optional[float]:
     return None
 
 
-def _read_stars(stars_csv: str, limit: Optional[int]):
+def _read_stars(stars_csv: str, limit: int | None):
     with open(stars_csv) as fh:
         rows = list(csv.DictReader(fh))
     return rows[:limit] if limit else rows

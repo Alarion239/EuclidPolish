@@ -34,7 +34,7 @@ from __future__ import annotations
 import csv
 import math
 import os
-from typing import Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 from scipy.integrate import trapezoid
@@ -51,7 +51,7 @@ TNG_NATIVE_PC_PER_PIXEL = 100.0
 #: Pivot wavelengths (µm) of the four Euclid bands, in
 #: ``Config.LR_INPUT_BAND_NAMES`` order (VIS, Y_E, J_E, H_E) — monotonically
 #: increasing, which the drift interpolation relies on.
-PIVOT_WAVELENGTH_UM: Tuple[float, ...] = (0.715, 1.081, 1.367, 1.773)
+PIVOT_WAVELENGTH_UM: tuple[float, ...] = (0.715, 1.081, 1.367, 1.773)
 
 _ARCSEC_TO_RAD = math.pi / (180.0 * 3600.0)
 _PC_PER_MPC = 1.0e6
@@ -78,7 +78,7 @@ def comoving_distance_mpc(
     return DH * float(trapezoid(integrand, zs))
 
 
-def angular_diameter_distance(z1: float, z2: Optional[float] = None) -> float:
+def angular_diameter_distance(z1: float, z2: float | None = None) -> float:
     """Angular-diameter distance D_A (Mpc).
 
     If ``z2`` is ``None``: from observer (z=0) to z1. Otherwise from z1 to z2
@@ -141,12 +141,12 @@ def compactness_factor(
 # ---------------------------------------------------------------------------
 
 #: Inverse-CDF grids keyed by the sampler parameters; built once per set.
-_ZCDF_CACHE: Dict[Tuple, Tuple[np.ndarray, np.ndarray]] = {}
+_ZCDF_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
 
 
 def _z_inverse_cdf_grid(form: str, z0: float, phi_scale: float,
                         z_min: float, z_max: float,
-                        n: int = 2048) -> Tuple[np.ndarray, np.ndarray]:
+                        n: int = 2048) -> tuple[np.ndarray, np.ndarray]:
     key = (str(form), float(z0), float(phi_scale), float(z_min), float(z_max))
     grid = _ZCDF_CACHE.get(key)
     if grid is None:
@@ -225,7 +225,7 @@ def predicted_vis_mag(logm: float, z: float) -> float:
 
 
 #: Inverse-CDF grid for the Schechter mass draw, keyed by its parameters.
-_MFCDF_CACHE: Dict[Tuple, Tuple[np.ndarray, np.ndarray]] = {}
+_MFCDF_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
 
 
 def sample_target_logmass(
@@ -275,15 +275,15 @@ def tolman_dimming_factor(z: float) -> float:
 def band_drift_factors(
     sed_fnu: Sequence[float],
     z: float,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
     *,
     sigma0: float = Config.TNG_DRIFT_SIGMA0,
     sigma_slope: float = Config.TNG_DRIFT_SIGMA_SLOPE,
     parametric_k: float = Config.TNG_DRIFT_PARAMETRIC_K,
     include_dimming: bool = True,
     max_lnln_slope: float = 6.0,
-    ratio_clip: Tuple[float, float] = (1e-2, 1e2),
-) -> Tuple[np.ndarray, dict]:
+    ratio_clip: tuple[float, float] = (1e-2, 1e2),
+) -> tuple[np.ndarray, dict]:
     """Multiplicative per-band factors modelling redshift ``z``'s photometry.
 
     Three pieces per band (physics in the module docstring): the
@@ -357,11 +357,11 @@ def default_tng_properties_csv() -> str:
 
 
 #: Per-path property cache: {csv_path: {subhalo_id: {field: value}}}.
-_TNG_PROPS_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {}
+_TNG_PROPS_CACHE: dict[str, dict[str, dict[str, float]]] = {}
 
 
-def load_tng_properties(csv_path: Optional[str] = None,
-                        ) -> Dict[str, Dict[str, float]]:
+def load_tng_properties(csv_path: str | None = None,
+                        ) -> dict[str, dict[str, float]]:
     """Read ``tng_properties.csv`` → ``{subhalo_id: {sfr, mass_stars, m_halo,
     reff}}`` (floats, NaN where missing). Missing file → empty dict. Cached
     per path; the generator looks masses up per lens draw.
@@ -370,14 +370,14 @@ def load_tng_properties(csv_path: Optional[str] = None,
     cached = _TNG_PROPS_CACHE.get(path)
     if cached is not None:
         return cached
-    rows: Dict[str, Dict[str, float]] = {}
+    rows: dict[str, dict[str, float]] = {}
     if os.path.isfile(path):
         with open(path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 gid = str(row.get("id", "")).strip()
                 if not gid:
                     continue
-                props: Dict[str, float] = {}
+                props: dict[str, float] = {}
                 for k, v in row.items():
                     if k == "id":
                         continue
@@ -392,13 +392,13 @@ def load_tng_properties(csv_path: Optional[str] = None,
 
 def sigma_v_from_stellar_mass(
     mstar_msun: float,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
     *,
     sigma_ref_kms: float = Config.LENS_FJ_SIGMA_REF_KMS,
     mstar_ref_msun: float = Config.LENS_FJ_MSTAR_REF_MSUN,
     slope: float = Config.LENS_FJ_SLOPE,
     scatter_dex: float = Config.LENS_FJ_SCATTER_DEX,
-    clip_kms: Tuple[float, float] = Config.LENS_SIGMA_V_CLIP_KMS,
+    clip_kms: tuple[float, float] = Config.LENS_SIGMA_V_CLIP_KMS,
 ) -> float:
     """Velocity dispersion (km/s) from stellar mass via Faber–Jackson:
     ``σ = σ_ref · (M*/M_ref)^slope`` with lognormal scatter, clipped to

@@ -12,17 +12,21 @@ returns ``None`` on failure, in which case callers write unstamped records.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any
 
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import (
-    Artifact, ConfigSnapshot, Format, Process,
+    Artifact,
+    ConfigSnapshot,
+    Format,
+    Process,
+    Stamp,
 )
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.provenance.records import Stamp
 
 
 @dataclass
@@ -31,8 +35,8 @@ class GenerationContext:
 
     store: ProvStore
     run_id: ProvId
-    git: Optional[Dict[str, Any]] = None
-    _file_ids: Dict[Tuple[str, str], ProvId] = field(default_factory=dict)
+    git: dict[str, Any] | None = None
+    _file_ids: dict[tuple[str, str], ProvId] = field(default_factory=dict)
 
     def file_id(self, kind: str, subset: str) -> ProvId:
         """The (stable) artifact id for the ``kind``/``subset`` record file."""
@@ -100,7 +104,7 @@ class ShardStampPlan:
 
 def begin_generation_run(store: ProvStore, cfg: Any, *,
                          parents: Sequence[ProvId] = (),
-                         git: Optional[Dict[str, Any]] = None) -> GenerationContext:
+                         git: dict[str, Any] | None = None) -> GenerationContext:
     """Mint + persist a generation :class:`Process` and return its context."""
     run = Process.generation(
         id=store.mint(),
@@ -114,7 +118,7 @@ def begin_generation_run(store: ProvStore, cfg: Any, *,
 
 
 def make_generation_context(cfg: Any, *,
-                            parents: Sequence[ProvId] = ()) -> Optional[GenerationContext]:
+                            parents: Sequence[ProvId] = ()) -> GenerationContext | None:
     """Best-effort context using the project's default store; ``None`` on failure."""
     try:
         store = default_store()

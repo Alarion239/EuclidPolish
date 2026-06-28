@@ -34,9 +34,7 @@ import pytest
 from euclid_polish.web import app as app_module
 from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import STATE
-
 from tests._local_ssh import LocalSSHSession
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

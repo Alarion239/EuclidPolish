@@ -21,15 +21,18 @@ import numpy as np
 import tensorflow as tf
 
 from euclid_polish.config import Config
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
-    Artifact, Format, Process, Stamp,
+    Artifact,
+    Format,
+    Process,
+    Stamp,
 )
-from euclid_polish.image.tfio import open_writer, tfrecord_path
-from euclid_polish.image import Image
 
 
 def _count_records(path: str) -> int | None:
@@ -138,8 +141,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> int:
     args = _parse_args(argv)
     reporter = Reporter.from_env()
-    from euclid_polish.training.inference import (load_model_from_checkpoint,
-                                                  reconstruct)
+    from euclid_polish.training.inference import load_model_from_checkpoint, reconstruct
 
     reporter.set_stage(f"loading SR model from {args.checkpoint}")
     model = load_model_from_checkpoint(

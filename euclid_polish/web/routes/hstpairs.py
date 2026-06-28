@@ -7,27 +7,21 @@ disabled for now: ``register`` below is a no-op unless
 """
 from __future__ import annotations
 
+import io
+import os
+from typing import Any
+
+import numpy as np
 from astropy.io import fits
+from flask import abort, jsonify, render_template, request, send_file
+from scipy.signal import fftconvolve
+
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import read_images
-from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.image import Image
-from euclid_polish.web import experimental
-from euclid_polish.web import fasrc_config
+from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.web import experimental, fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
-from flask import abort
-from flask import jsonify
-from flask import render_template
-from flask import request
-from flask import send_file
-from scipy.signal import fftconvolve
-from typing import Any
-from typing import Dict
-from typing import Optional
-import io
-import numpy as np
-import os
 from euclid_polish.web.helpers.fits_render import _arrays_to_fits_bytes
 from euclid_polish.web.helpers.status import _record_count, _tfrecords_status
 
@@ -70,7 +64,7 @@ def register(app):
             default_subset="validate",
         )
 
-    def _load_diff_kernel_local() -> Optional[np.ndarray]:
+    def _load_diff_kernel_local() -> np.ndarray | None:
         """Return the analytic differential kernel from the local cache.
 
         Returns ``None`` (without raising) when the kernel FITS isn't
@@ -209,7 +203,7 @@ def register(app):
         if (band in Config.LR_INPUT_BAND_NAMES
                 and kind != "pair"):
             k_idx = list(Config.LR_INPUT_BAND_NAMES).index(band)
-            sliced: Dict[str, np.ndarray] = {}
+            sliced: dict[str, np.ndarray] = {}
             for ext_name, arr in arrays.items():
                 if arr.ndim == 3 and arr.shape[-1] > k_idx:
                     sliced[ext_name] = arr[..., k_idx]
@@ -256,7 +250,7 @@ def register(app):
         remote_dir = _hst_pairs_remote_dir()
         include_train = (request.values.get("include_train", "false")
                          .lower() in ("1", "true", "yes", "on"))
-        targets: Dict[str, str] = {}
+        targets: dict[str, str] = {}
         for kind in ("clean", "dirty", "hr"):
             targets[f"{kind}_validate"] = (
                 f"{remote_dir}/{kind}_validate.tfrecord"
@@ -267,11 +261,11 @@ def register(app):
                 )
 
         max_bytes = 5 * 1024 * 1024 * 1024
-        results: Dict[str, Dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
             r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "remote_path": remote,
                 "ok":          r.ok,
                 "size_bytes":  r.size_bytes,

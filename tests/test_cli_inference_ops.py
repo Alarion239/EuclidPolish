@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import os
-import numpy as np
 from unittest.mock import MagicMock
 
+import numpy as np
+
 from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
+from euclid_polish.image import Image
 from euclid_polish.model import Model
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.image import Image
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 

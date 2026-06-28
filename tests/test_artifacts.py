@@ -16,7 +16,6 @@ from euclid_polish.sky.observation.artifacts import (
     inject_streaks,
 )
 
-
 # ---------------------------------------------------------------------------
 # Config validation
 # ---------------------------------------------------------------------------
@@ -279,10 +278,11 @@ def test_streak_orientation_is_isotropic_over_many_streaks():
 # ---------------------------------------------------------------------------
 
 def test_forward_model_with_artifacts_changes_image():
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
 
     H = W = 128
     blank = Image(
@@ -312,10 +312,11 @@ def test_forward_model_with_artifacts_changes_image():
 
 def test_forward_model_artifact_off_matches_old_behaviour():
     """With artifacts off, output should be reproducible from the same RNG seed."""
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator, ObservationSimulatorConfig,
-    )
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
 
     H = W = 64
     blank = Image(

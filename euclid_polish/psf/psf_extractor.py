@@ -6,14 +6,13 @@ from Euclid FITS cutouts using photutils.
 """
 
 import dataclasses
-import os
 import glob
-from typing import List, Tuple, Optional
+import os
 from dataclasses import dataclass
 
 import numpy as np
 from astropy.io import fits
-from photutils.psf import EPSFModel, EPSFBuilder, EPSFStars, EPSFStar
+from photutils.psf import EPSFBuilder, EPSFModel, EPSFStar, EPSFStars
 from tqdm import tqdm
 
 from euclid_polish.config import Config
@@ -41,7 +40,7 @@ class PSFExtractionConfig:
     accuracy: float = Config.DEFAULT_PSF_ACCURACY
     progress_bar: bool = True
     oversampling: int = Config.DEFAULT_REBIN_FACTOR
-    output_size: Optional[int] = None
+    output_size: int | None = None
     # Saturation rejection: Euclid MER zeros out detector pixels that
     # exceed well capacity. A star is rejected if its central
     # ``saturation_core_size × saturation_core_size`` region (centred on
@@ -49,7 +48,7 @@ class PSFExtractionConfig:
     # ``saturation_core_size = 0`` to disable.
     saturation_core_size: int = 7
 
-    def validate(self) -> tuple[bool, Optional[str]]:
+    def validate(self) -> tuple[bool, str | None]:
         """Validate configuration."""
         if self.psf_size <= 0 or self.psf_size % 2 == 0:
             return False, "PSF size must be a positive odd integer"
@@ -68,7 +67,7 @@ class PSFExtractionConfig:
         return True, None
 
     @property
-    def effective_output_size(self) -> Optional[int]:
+    def effective_output_size(self) -> int | None:
         """Force-odd the output_size (1024 → 1023). ``None`` if unset."""
         if self.output_size is None:
             return None
@@ -86,7 +85,7 @@ class PSFExtractor:
     - Saving results
     """
 
-    def __init__(self, config: Optional[PSFExtractionConfig] = None):
+    def __init__(self, config: PSFExtractionConfig | None = None):
         """
         Initialize the PSF extractor.
 
@@ -99,7 +98,7 @@ class PSFExtractor:
         valid, msg = self.config.validate()
         if not valid:
             raise ValueError(f"Invalid PSFExtractionConfig: {msg}")
-        self.epsf: Optional[EPSFModel] = None
+        self.epsf: EPSFModel | None = None
         self.fitted_stars = None
         # Per-run rejection counts populated by extract_psf_stars_from_files.
         self.n_rejected_saturated: int = 0
@@ -109,8 +108,8 @@ class PSFExtractor:
     def get_cutout_files(
         self,
         cutout_dir: str,
-        cutout_size: Optional[int] = None,
-    ) -> List[Tuple[int, str]]:
+        cutout_size: int | None = None,
+    ) -> list[tuple[int, str]]:
         """
         Get FITS cutout files from directory, sorted by index.
 
@@ -154,10 +153,10 @@ class PSFExtractor:
 
     def select_files(
         self,
-        all_files: List[Tuple[int, str]],
-        indices: Optional[List[int]] = None,
-        num_stars: Optional[int] = None
-    ) -> List[Tuple[int, str]]:
+        all_files: list[tuple[int, str]],
+        indices: list[int] | None = None,
+        num_stars: int | None = None
+    ) -> list[tuple[int, str]]:
         """
         Select files for PSF extraction.
 
@@ -188,7 +187,7 @@ class PSFExtractor:
         else:
             return all_files
 
-    def load_cutout(self, filepath: str) -> Optional[np.ndarray]:
+    def load_cutout(self, filepath: str) -> np.ndarray | None:
         """
         Load a FITS cutout file.
 
@@ -234,7 +233,7 @@ class PSFExtractor:
     def extract_psf_star_from_cutout(
         self,
         image_data: np.ndarray
-    ) -> Optional[EPSFStar]:
+    ) -> EPSFStar | None:
         """
         Extract a PSF star from a cutout image.
 
@@ -293,8 +292,8 @@ class PSFExtractor:
 
     def extract_accepted_stars(
         self,
-        cutout_files: List[Tuple[int, str]]
-    ) -> List[Tuple[int, EPSFStar]]:
+        cutout_files: list[tuple[int, str]]
+    ) -> list[tuple[int, EPSFStar]]:
         """Extract accepted PSF stars, **keeping each star's index**.
 
         One load pass over the files. Returns ``[(index, EPSFStar)]`` for
@@ -309,7 +308,7 @@ class PSFExtractor:
         self.n_rejected_load = 0
         self.n_rejected_edge = 0
         self.n_rejected_saturated = 0
-        accepted: List[Tuple[int, EPSFStar]] = []
+        accepted: list[tuple[int, EPSFStar]] = []
 
         iterator = tqdm(
             cutout_files,
@@ -357,16 +356,16 @@ class PSFExtractor:
 
     def extract_psf_stars_from_files(
         self,
-        cutout_files: List[Tuple[int, str]]
-    ) -> List[EPSFStar]:
+        cutout_files: list[tuple[int, str]]
+    ) -> list[EPSFStar]:
         """Accepted PSF stars without their indices (thin wrapper around
         :meth:`extract_accepted_stars` for callers that don't cluster)."""
         return [star for _, star in self.extract_accepted_stars(cutout_files)]
 
     def build_epsf(
         self,
-        cutout_files: List[Tuple[int, str]]
-    ) -> Tuple[EPSFModel, EPSFStars]:
+        cutout_files: list[tuple[int, str]]
+    ) -> tuple[EPSFModel, EPSFStars]:
         """
         Build effective PSF from cutout files.
 
@@ -387,8 +386,8 @@ class PSFExtractor:
 
     def build_epsf_from_stars(
         self,
-        epsf_stars: List[EPSFStar],
-    ) -> Tuple[EPSFModel, EPSFStars]:
+        epsf_stars: list[EPSFStar],
+    ) -> tuple[EPSFModel, EPSFStars]:
         """Run EPSFBuilder on already-extracted ``EPSFStar`` objects.
 
         Split out of :meth:`build_epsf` so the per-cluster extraction

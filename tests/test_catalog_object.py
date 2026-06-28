@@ -4,7 +4,11 @@ import os
 import numpy as np
 
 from euclid_polish.catalog.catalog_object import (
-    CatalogObject, next_id, merge_new, summarize, by_status,
+    CatalogObject,
+    by_status,
+    merge_new,
+    next_id,
+    summarize,
 )
 
 

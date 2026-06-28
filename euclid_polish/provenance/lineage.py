@@ -11,8 +11,6 @@ artifact's model against the current model.
 
 from __future__ import annotations
 
-from typing import List, Optional, Set
-
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ProvRecord
 from euclid_polish.provenance.store import ProvStore
@@ -21,9 +19,9 @@ from euclid_polish.provenance.store import ProvStore
 _MODEL_KINDS = {"checkpointartifact", "trainingrun"}
 
 
-def _upstream_ids(rec: ProvRecord) -> List[ProvId]:
+def _upstream_ids(rec: ProvRecord) -> list[ProvId]:
     """The ids immediately upstream of ``rec``."""
-    ids: List[ProvId] = list(getattr(rec, "parents", ()) or ())
+    ids: list[ProvId] = list(getattr(rec, "parents", ()) or ())
     produced_by = getattr(rec, "produced_by", None)
     if produced_by is not None:
         ids.append(produced_by)
@@ -35,9 +33,9 @@ class Lineage:
     def __init__(self, store: ProvStore):
         self.store = store
 
-    def ancestors(self, pid: ProvId) -> Set[ProvId]:
+    def ancestors(self, pid: ProvId) -> set[ProvId]:
         """All ids transitively upstream of ``pid`` (excluding ``pid`` itself)."""
-        seen: Set[ProvId] = set()
+        seen: set[ProvId] = set()
         frontier = [pid]
         while frontier:
             current = frontier.pop()
@@ -50,14 +48,14 @@ class Lineage:
                     frontier.append(up)
         return seen
 
-    def descendants(self, pid: ProvId) -> Set[ProvId]:
+    def descendants(self, pid: ProvId) -> set[ProvId]:
         """All ids transitively downstream of ``pid`` (excluding ``pid`` itself)."""
         # Build reverse edges once by scanning the whole store.
         children: dict = {}
         for rec in self.store.all_records():
             for up in _upstream_ids(rec):
                 children.setdefault(up, set()).add(rec.id)
-        seen: Set[ProvId] = set()
+        seen: set[ProvId] = set()
         frontier = [pid]
         while frontier:
             current = frontier.pop()
@@ -67,7 +65,7 @@ class Lineage:
                     frontier.append(child)
         return seen
 
-    def model_of(self, artifact_id: ProvId) -> Optional[ProvId]:
+    def model_of(self, artifact_id: ProvId) -> ProvId | None:
         """The model id behind ``artifact_id``, or ``None`` if unknown/legacy."""
         rec = self.store.get_or_none(artifact_id)
         if rec is None:
@@ -85,7 +83,7 @@ class Lineage:
                 return cand
         return None
 
-    def is_stale(self, artifact_id: ProvId, current_model_id: ProvId) -> Optional[bool]:
+    def is_stale(self, artifact_id: ProvId, current_model_id: ProvId) -> bool | None:
         """``True`` if stale, ``False`` if current, ``None`` if unknown.
 
         Intentionally one-hop: "stale" means *not made by the current model*, not

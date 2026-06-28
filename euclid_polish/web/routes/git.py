@@ -1,10 +1,9 @@
 """git routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+from flask import jsonify, render_template, request
+
 from euclid_polish.web import git_ops
-from flask import jsonify
-from flask import render_template
-from flask import request
 
 
 def register(app):

@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from euclid_polish.provenance.records import Format
 from euclid_polish.provenance.store import ProvStore
 from euclid_polish.sky.generation.gen_provenance import (
-    GenerationContext, begin_generation_run, make_generation_context,
+    GenerationContext,
+    begin_generation_run,
+    make_generation_context,
 )
 
 
@@ -65,10 +67,12 @@ def test_finalize_dirty_can_parent_on_clean(tmp_path):
 def test_stamped_record_round_trips_through_tfrecord(tmp_path):
     """The exact path step_generate uses: ctx.stamp → write → read back."""
     import numpy as np
-    from euclid_polish.image.tfio import (
-        read_images, write_images,
-    )
+
     from euclid_polish.image import Image
+    from euclid_polish.image.tfio import (
+        read_images,
+        write_images,
+    )
 
     store = ProvStore(str(tmp_path / "store"))
     ctx = begin_generation_run(store, FakeCfg(), git=None)
@@ -112,6 +116,7 @@ def test_shard_stamp_plan_is_store_free_and_correct():
 def test_shard_stamp_plan_is_picklable():
     """Workers run in separate processes — the plan must pickle."""
     import pickle
+
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.sky.generation.gen_provenance import ShardStampPlan
     plan = ShardStampPlan(ProvId("aaaaaaaa"), ProvId("bbbbbbbb"),

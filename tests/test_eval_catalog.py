@@ -19,7 +19,6 @@ from euclid_polish.eval.eval_catalog import CatalogError, read_eval_catalog
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
-
 # --------------------------------------------------------------------------- #
 # Catalog reader
 # --------------------------------------------------------------------------- #
@@ -82,8 +81,7 @@ class TestRunCatalogEval:
             REGISTRY.get("eval_catalog")
 
     def test_autofetch_then_empty_returns_cleanly(self, tmp_path, monkeypatch):
-        from euclid_polish.eval import catalog_runner
-        from euclid_polish.eval import lens_catalog
+        from euclid_polish.eval import catalog_runner, lens_catalog
         monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
         called = {}
 
@@ -561,8 +559,9 @@ class TestZoobotMorphHelpers:
         # projection for synthetic objects and render a ★ anchor — exercise
         # that branch end to end (predictions with a 'hr' view +
         # has_hr/closer_to_ref manifest).
-        from euclid_polish.eval import zoobot_morph as zm
         from PIL import Image
+
+        from euclid_polish.eval import zoobot_morph as zm
 
         run = str(tmp_path / "run")
         os.makedirs(run, exist_ok=True)
@@ -787,6 +786,7 @@ class TestSyntheticCutouts:
     def test_grouped_reuses_existing_lens_outputs_without_model_load(
             self, tmp_path, monkeypatch):
         from astropy.io import fits
+
         from euclid_polish.eval import catalog_runner, grouped_runner
 
         catalog = tmp_path / "lenses.csv"
@@ -825,6 +825,7 @@ class TestSyntheticCutouts:
 
     def test_crop_stamp_hr_and_lr(self):
         import numpy as np
+
         from euclid_polish.eval import synthetic_runner as sr
         hr = np.arange(256 * 256, dtype=np.float32).reshape(256, 256)
         stamp = sr.crop_stamp(hr, cx=128.0, cy=100.0, m=64)
@@ -995,7 +996,7 @@ def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
 
     def _fake_eval_object(model, obj, out_dir, **kwargs):
         seen["model"] = model
-        rec = {c: "" for c in catalog_runner.MANIFEST_COLS}
+        rec = dict.fromkeys(catalog_runner.MANIFEST_COLS, "")
         rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
                     "grade": obj.get("grade", ""), "ok": True,
                     "out_subdir": obj["id"]})
@@ -1021,7 +1022,7 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
 
     def _fake_eval_object(model, obj, out_dir, **kwargs):
         seen["model"] = model
-        rec = {c: "" for c in catalog_runner.MANIFEST_COLS}
+        rec = dict.fromkeys(catalog_runner.MANIFEST_COLS, "")
         rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
                     "grade": obj.get("grade", ""), "ok": True,
                     "out_subdir": obj["id"]})
@@ -1033,7 +1034,7 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
                         lambda obj_dir, **kw: True)
 
     def _fake_reuse(obj, out_dir, *, grade=None, log=None):
-        rec = {c: "" for c in catalog_runner.MANIFEST_COLS}
+        rec = dict.fromkeys(catalog_runner.MANIFEST_COLS, "")
         rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
                     "grade": grade or obj.get("grade", ""), "ok": True,
                     "out_subdir": obj["id"]})
@@ -1055,8 +1056,8 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
 
 def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
     import csv as _csv
-    from euclid_polish.eval import grouped_runner
-    from euclid_polish.eval import galaxy_catalog
+
+    from euclid_polish.eval import galaxy_catalog, grouped_runner
     calls = {}
 
     def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path, seed=0, **kw):
@@ -1080,8 +1081,7 @@ def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
 
 
 def test_galaxy_plan_graceful_when_build_fails(monkeypatch, tmp_path):
-    from euclid_polish.eval import grouped_runner
-    from euclid_polish.eval import galaxy_catalog
+    from euclid_polish.eval import galaxy_catalog, grouped_runner
     monkeypatch.setattr(galaxy_catalog, "default_out_csv",
                         lambda: str(tmp_path / "g.csv"))
     monkeypatch.setattr(galaxy_catalog, "build",

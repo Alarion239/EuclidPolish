@@ -34,20 +34,16 @@ import shlex
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 from euclid_polish.config import Config
-from euclid_polish.web import fasrc_config
-from euclid_polish.web import fasrc_jobs
-
+from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import STATE
-
 
 # ---------------------------------------------------------------------------
 # Safety: which remote paths are reachable
 # ---------------------------------------------------------------------------
 
-def allowed_remote_roots() -> List[str]:
+def allowed_remote_roots() -> list[str]:
     """Real prefixes a fetched path must live under on the remote.
 
     Computed from the persisted FASRC config so a user changing
@@ -102,7 +98,7 @@ def _ensure_parent_dir(path: str) -> None:
 # Single-flight locks per path
 # ---------------------------------------------------------------------------
 
-_LOCKS_REGISTRY: Dict[str, threading.Lock] = {}
+_LOCKS_REGISTRY: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
@@ -141,17 +137,17 @@ class FetchResult:
     """
 
     ok:           bool
-    local_path:   Optional[str] = None
+    local_path:   str | None = None
     from_cache:   bool          = False
-    error:        Optional[str] = None
-    size_bytes:   Optional[int] = None
+    error:        str | None = None
+    size_bytes:   int | None = None
 
 
 # ---------------------------------------------------------------------------
 # Cache maintenance
 # ---------------------------------------------------------------------------
 
-def _cache_files() -> List[Tuple[str, int, float]]:
+def _cache_files() -> list[tuple[str, int, float]]:
     """List ``(path, size, mtime)`` for every file under ``Config.FASRC_CACHE_DIR``."""
     out = []
     if not os.path.isdir(Config.FASRC_CACHE_DIR):
@@ -171,7 +167,7 @@ def cache_size_bytes() -> int:
     return sum(s for _p, s, _t in _cache_files())
 
 
-def _evict_lru_until_under(limit: int, protect: "Optional[set]" = None) -> int:
+def _evict_lru_until_under(limit: int, protect: set | None = None) -> int:
     """Delete oldest cached files until total size ≤ ``limit``. Returns bytes freed.
 
     ``protect`` is a set of absolute paths that must never be evicted —
@@ -205,7 +201,7 @@ def _evict_lru_until_under(limit: int, protect: "Optional[set]" = None) -> int:
 # The fetcher
 # ---------------------------------------------------------------------------
 
-def _remote_size_bytes(remote_path: str) -> Tuple[bool, Optional[int], Optional[str]]:
+def _remote_size_bytes(remote_path: str) -> tuple[bool, int | None, str | None]:
     """``stat -c %s <path>`` over SSH → ``(ok, size_or_None, err)``."""
     if STATE.ssh is None or not STATE.ssh.is_connected():
         return False, None, "ssh not connected"
@@ -348,9 +344,9 @@ def fetch_one_file(
 # ---------------------------------------------------------------------------
 
 def run_remote_python(
-    script_rel_path: str, args: List[str], *,
+    script_rel_path: str, args: list[str], *,
     binary: bool = False, timeout: int = 30,
-) -> Tuple[int, object, str]:
+) -> tuple[int, object, str]:
     """Run a project script on FASRC via the existing SSH ControlMaster.
 
     Returns ``(rc, stdout, stderr)`` — stdout is bytes when ``binary=True``.
@@ -380,7 +376,7 @@ def list_remote_dir(
     glob_pattern: str = "*",
     max_entries: int = 500,
     max_depth: int = 1,
-) -> Tuple[bool, List[Dict[str, object]], Optional[str]]:
+) -> tuple[bool, list[dict[str, object]], str | None]:
     """List one remote directory via ``find`` over the existing SSH session.
 
     Returns ``(ok, entries, error)`` where each entry is
@@ -415,7 +411,7 @@ def list_remote_dir(
             return True, [], None
         return False, [], err.strip() or "find failed"
 
-    entries: List[Dict[str, object]] = []
+    entries: list[dict[str, object]] = []
     for line in out.splitlines():
         line = line.strip()
         if not line:

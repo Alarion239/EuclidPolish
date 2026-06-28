@@ -12,18 +12,18 @@ from __future__ import annotations
 import csv
 import math
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "z", "subhalo_id", "theta_E_arcsec"]
 
 
-def _flux_vis(src: Dict[str, Any]):
+def _flux_vis(src: dict[str, Any]):
     f = src.get("flux_e_per_band")
     return float(f[0]) if f else ""
 
 
-def _z(src: Dict[str, Any]):
+def _z(src: dict[str, Any]):
     z = src.get("z_phot", src.get("z_lens", src.get("z")))
     if z is None:
         return ""
@@ -31,7 +31,7 @@ def _z(src: Dict[str, Any]):
     return "" if math.isnan(z) else z
 
 
-def _galaxy_row(field_index: int, g: Dict[str, Any]) -> Dict[str, Any]:
+def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
     return {
         "field_index": field_index, "type": "galaxy",
         "render": g.get("render", ""),
@@ -41,7 +41,7 @@ def _galaxy_row(field_index: int, g: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _lens_row(field_index: int, lens: Dict[str, Any]) -> Dict[str, Any]:
+def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
     theta = lens.get("theta_E_arcsec")
     return {
         "field_index": field_index, "type": "lens", "render": "",
@@ -61,7 +61,7 @@ class SourceCatalogWriter:
         self._w = csv.DictWriter(self._f, fieldnames=SOURCE_COLS)
         self._w.writeheader()
 
-    def add_field(self, field_index: int, meta: Dict[str, Any]) -> None:
+    def add_field(self, field_index: int, meta: dict[str, Any]) -> None:
         for g in meta.get("galaxies", []) or []:
             self._w.writerow(_galaxy_row(field_index, g))
         for lens in meta.get("lenses", []) or []:
@@ -77,8 +77,8 @@ class SourceCatalogWriter:
         self.close()
 
 
-def _parse(row: Dict[str, str]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"type": row["type"], "render": row["render"],
+def _parse(row: dict[str, str]) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": row["type"], "render": row["render"],
                            "subhalo_id": row["subhalo_id"] or None}
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec"):
@@ -87,11 +87,11 @@ def _parse(row: Dict[str, str]) -> Dict[str, Any]:
     return out
 
 
-def read_sources(csv_path: str) -> Dict[int, List[Dict[str, Any]]]:
+def read_sources(csv_path: str) -> dict[int, list[dict[str, Any]]]:
     """``field_index -> list[source dict]``; missing file -> ``{}``."""
     if not os.path.isfile(csv_path):
         return {}
-    by_field: Dict[int, List[Dict[str, Any]]] = {}
+    by_field: dict[int, list[dict[str, Any]]] = {}
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
             r = _parse(row)
@@ -99,7 +99,7 @@ def read_sources(csv_path: str) -> Dict[int, List[Dict[str, Any]]]:
     return by_field
 
 
-def concat_source_csvs(part_paths: List[str], out_path: str) -> None:
+def concat_source_csvs(part_paths: list[str], out_path: str) -> None:
     """Concatenate shard CSVs (in the given order) into one, single header.
 
     Atomic: build a sibling temp file then ``os.replace`` it into place, so a

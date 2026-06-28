@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
-from typing import Any, Dict
+from dataclasses import asdict, dataclass
+from typing import Any
 
 CONFIG_DIR = os.path.expanduser("~/.euclid_polish")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "fasrc.json")
@@ -58,7 +58,7 @@ class FasrcConfig:
     batch_size:         int = 16
     steps:              int = 400_000
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -114,7 +114,7 @@ def save(cfg: FasrcConfig) -> None:
         pass
 
 
-def update(patch: Dict[str, Any]) -> FasrcConfig:
+def update(patch: dict[str, Any]) -> FasrcConfig:
     """Merge ``patch`` into the on-disk config and return the new state."""
     cfg = load()
     for k, v in patch.items():

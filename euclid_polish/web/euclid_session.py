@@ -7,14 +7,12 @@ download itself runs on FASRC; this is only the local UI's session state.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.catalog.client import EuclidCatalog
 
-_catalog: Optional[EuclidCatalog] = None
-_user: Optional[str] = None
+_catalog: EuclidCatalog | None = None
+_user: str | None = None
 
 
 def login(user: str, password: str) -> EuclidCatalog:
@@ -40,9 +38,9 @@ def is_authenticated() -> bool:
     return _catalog is not None
 
 
-def current_user() -> Optional[str]:
+def current_user() -> str | None:
     return _user
 
 
-def catalog() -> Optional[EuclidCatalog]:
+def catalog() -> EuclidCatalog | None:
     return _catalog

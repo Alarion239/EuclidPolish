@@ -225,7 +225,8 @@ class TestNoisePropagation:
 def _load_script_module():
     """Import the differential-kernel script as a module so we can
     unit-test its helpers without going through the CLI."""
-    import importlib.util, os
+    import importlib.util
+    import os
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(root, "scripts",
                         "fasrc_compute_differential_kernel.py")

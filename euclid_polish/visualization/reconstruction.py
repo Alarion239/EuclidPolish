@@ -12,8 +12,6 @@ imports visualization.) Two entry points:
 """
 from __future__ import annotations
 
-from typing import Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -113,15 +111,15 @@ def _residual_metrics(residual_stretched: np.ndarray,
 def plot_reconstruction(
     lr_data: np.ndarray,
     sr_data: np.ndarray,
-    hr_data: Optional[np.ndarray] = None,
+    hr_data: np.ndarray | None = None,
     output_path: str = "reconstruction.png",
     vmax: float | None = None,
-    lr_cube: Optional[np.ndarray] = None,
-    hr_cube: Optional[np.ndarray] = None,
+    lr_cube: np.ndarray | None = None,
+    hr_cube: np.ndarray | None = None,
     asinh_scale: float | None = None,
     show_all_bands: bool = False,
-    predicted_dirty: Optional[np.ndarray] = None,
-    residual: Optional[np.ndarray] = None,
+    predicted_dirty: np.ndarray | None = None,
+    residual: np.ndarray | None = None,
     rgb_mode: str = "eye",
     dirty_hi_pct: float | None = None,
 ) -> None:
@@ -422,7 +420,7 @@ def plot_reconstruction(
     vis.save_figure(output_path)
 
 
-def _first(images: ImageSet, role: Role) -> Optional[Image]:
+def _first(images: ImageSet, role: Role) -> Image | None:
     for im in images:
         if im.role is role:
             return im
@@ -430,7 +428,7 @@ def _first(images: ImageSet, role: Role) -> Optional[Image]:
 
 
 def plot_imageset(images: ImageSet, output_path: str, *, regime: str = "eye",
-                  asinh_scale: Optional[float] = None) -> str:
+                  asinh_scale: float | None = None) -> str:
     """Render the LR→SR(→HR) reconstruction figure for an :class:`ImageSet`.
 
         plot_imageset(ImageSet.from_images([lr, sr, hr]), "recon.png")

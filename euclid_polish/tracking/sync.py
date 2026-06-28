@@ -13,7 +13,7 @@ remote directory.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from euclid_polish.config import Config
 
@@ -28,8 +28,8 @@ def remote_tracking_dir(repo_path: str, override: str = "") -> str:
 
 
 def push(ssh, remote_dir: str, *,
-         local_root: Optional[str] = None,
-         timeout: int = 900) -> Dict[str, Any]:
+         local_root: str | None = None,
+         timeout: int = 900) -> dict[str, Any]:
     """Best-effort push of the local tracking root → ``remote_dir`` on holylabs.
 
     Returns a jsonify-able dict; never raises for the ordinary "not

@@ -9,14 +9,16 @@ import os
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator, ObservationSimulatorConfig,
-)
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig, SkySimulator,
-)
 from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
 from tests._tiny_catalog import TinyCosmosCatalog
 
 

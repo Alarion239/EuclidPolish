@@ -33,8 +33,9 @@ import re
 import shutil
 import sys
 import time
-from astroquery.mast import Observations
+
 from astropy.table import Table
+from astroquery.mast import Observations
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -42,7 +43,6 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
-
 
 # HLSP download constants now live on Config.HST (see
 # euclid_polish/config.py): HLSP_DIR_NAME, TARGET_NAME, FILTER,
@@ -108,7 +108,7 @@ def main() -> int:
     os.makedirs(out_dir, exist_ok=True)
 
     print("=" * 64)
-    print(f"  COSMOS HLSP F814W download")
+    print("  COSMOS HLSP F814W download")
     print("=" * 64)
     print(f"  target N tiles  = {args.n_tiles}")
     print(f"  output dir      = {out_dir}")

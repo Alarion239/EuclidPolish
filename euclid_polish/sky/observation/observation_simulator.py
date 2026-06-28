@@ -29,26 +29,27 @@ The output of :meth:`ObservationSimulator.process_hr_to_lr` is a pair of
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.psf import PSF
-from euclid_polish.psf.psf_set import PSFSet, PSFSample
-# Re-export the canonical noise function (defined in sky.observation.noise).
-from euclid_polish.sky.observation.noise import apply_band_noise   # noqa: F401
-from euclid_polish.sky.observation.saturation import (
-    StarSaturationModel, apply_star_saturation,
-)
-from euclid_polish.psf.psf_library import (
-    make_gaussian_psf, psf_side_pixels_for_band,
-)
-from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.image import Image, Role
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_library import (
+    make_gaussian_psf,
+    psf_side_pixels_for_band,
+)
+from euclid_polish.psf.psf_set import PSFSample, PSFSet
 
+# Re-export the canonical noise function (defined in sky.observation.noise).
+from euclid_polish.sky.observation.noise import apply_band_noise  # noqa: F401
+from euclid_polish.sky.observation.resample import upsample as resample_upsample
+from euclid_polish.sky.observation.saturation import (
+    StarSaturationModel,
+    apply_star_saturation,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -61,7 +62,7 @@ class ObservationSimulatorConfig:
     add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "lanczos3" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
-    artifact_config: Optional["ArtifactConfig"] = None        # type: ignore[name-defined]
+    artifact_config: ArtifactConfig | None = None        # type: ignore[name-defined]
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability
     # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope
@@ -115,10 +116,10 @@ class ObservationSimulator:
 
     def __init__(
         self,
-        psfs_by_band: Optional[Dict[str, PSF]] = None,
-        config: Optional[ObservationSimulatorConfig] = None,
+        psfs_by_band: dict[str, PSF] | None = None,
+        config: ObservationSimulatorConfig | None = None,
         *,
-        psf_sets_by_band: Optional[Dict[str, PSFSet]] = None,
+        psf_sets_by_band: dict[str, PSFSet] | None = None,
     ):
         """
         Parameters
@@ -136,7 +137,7 @@ class ObservationSimulator:
         """
         self.config = config or ObservationSimulatorConfig()
         # Unify on PSFSets internally; a 1-element set is a single fixed PSF.
-        sets: Dict[str, PSFSet] = (
+        sets: dict[str, PSFSet] = (
             dict(psf_sets_by_band) if psf_sets_by_band is not None else {})
         if psfs_by_band is not None:
             for name, psf in psfs_by_band.items():
@@ -182,7 +183,7 @@ class ObservationSimulator:
         """
         return Config.BAND_VIS.pixel_scale_lr_arcsec
 
-    def _draw_psf_sample(self, rng: np.random.Generator) -> "PSFSample":
+    def _draw_psf_sample(self, rng: np.random.Generator) -> PSFSample:
         """Draw ONE :class:`PSFSample` (cluster index + roll) for the whole
         scene, from the band with the most cluster PSFs (the reference for the
         common clustering). Applied to every band so all four share the field
@@ -196,7 +197,7 @@ class ObservationSimulator:
         hr_channel: np.ndarray,
         band: BandConfig,
         rng: np.random.Generator,
-        psf_spec: "Optional[PSFSample]" = None,
+        psf_spec: PSFSample | None = None,
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
         # Realise the scene's shared PSF sample against this band's set: cluster
@@ -255,8 +256,8 @@ class ObservationSimulator:
     def process(
         self,
         hr_4ch: Image,
-        rng: Optional[np.random.Generator] = None,
-    ) -> Tuple[Image, Image]:
+        rng: np.random.Generator | None = None,
+    ) -> tuple[Image, Image]:
         """Run the full forward model on one HR clean 4-channel field.
 
         Parameters

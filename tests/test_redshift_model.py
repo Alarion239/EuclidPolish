@@ -26,16 +26,15 @@ from euclid_polish.sky.generation.redshift_model import (
     sigma_v_from_stellar_mass,
     tolman_dimming_factor,
 )
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
 from euclid_polish.sky.generation.tng_galaxy import (
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulatorConfig,
-    SkySimulator,
-)
 from tests._tiny_catalog import TinyCosmosCatalog
-
 
 # ---------------------------------------------------------------------------
 # Cosmological geometry → downsample factor
@@ -261,8 +260,9 @@ def test_compactness_squeeze_conserves_flux(tmp_path):
     # The squeeze shrinks the stamp but must keep the total flux pinned to
     # the continuous geometric prediction (SB x C^2 boost): same luminosity,
     # smaller radius. Fake stamp: bright core only, so truncation is neutral.
-    from astropy.io import fits
     from unittest import mock
+
+    from astropy.io import fits
     tng = str(tmp_path / "tng")
     d = os.path.join(tng, "888")
     os.makedirs(d)
@@ -285,6 +285,7 @@ def test_compactness_squeeze_conserves_flux(tmp_path):
 
 def test_tng_stamp_sb_truncation_crops_faint_outskirts(tmp_path):
     from astropy.io import fits
+
     from euclid_polish.sky.generation.tng_galaxy import tng_stamp_at_redshift
     # Bright 4-px core + a whole box of ultra-faint "outskirts": the wings
     # sit far below the mu=28 cut, so the stamp must crop to the core.
@@ -314,6 +315,7 @@ def test_mass_rescale_dims_and_shrinks(tmp_path):
     # mass_scale s: flux x s (L ∝ M), size / s^alpha — a smaller galaxy of
     # similar morphology, NOT a flux-conserving squeeze.
     from astropy.io import fits
+
     from euclid_polish.sky.generation.tng_galaxy import tng_stamp_at_redshift
     tng = str(tmp_path / "tng")
     d = os.path.join(tng, "999")
@@ -461,8 +463,10 @@ def test_analytic_showability_predictors(tmp_path):
     # radius below the rendered half-size (mean-profile approximation ->
     # permissive, the post-render check is the backstop).
     from astropy.io import fits
+
     from euclid_polish.sky.generation.tng_galaxy import (
-        predict_vis_flux_e, predict_visible_radius_arcsec,
+        predict_vis_flux_e,
+        predict_visible_radius_arcsec,
         tng_stamp_at_redshift,
     )
     tng = str(tmp_path / "tng")
@@ -511,7 +515,8 @@ def test_lens_require_showable_smoke(tmp_path):
 
 def test_poster_lens_showability_cut():
     from scripts.fasrc_poster_cutout import (
-        LENS_MIN_SOURCE_VIS_E, LENS_MIN_THETA_E_VISIBLE_FRAC,
+        LENS_MIN_SOURCE_VIS_E,
+        LENS_MIN_THETA_E_VISIBLE_FRAC,
         _lens_is_showable,
     )
     base = {"theta_E_arcsec": 1.5, "lens_visible_r_arcsec": 2.0,

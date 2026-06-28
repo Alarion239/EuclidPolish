@@ -22,6 +22,7 @@ def _gauss(n=9):
 
 def test_fits_stamp_cards_round_trip():
     from astropy.io import fits
+
     from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
     hdr = fits.Header()
     stamp = Stamp(id=ProvId("4b1e7a90"), produced_by=ProvId("7f3a9c21"),
@@ -32,6 +33,7 @@ def test_fits_stamp_cards_round_trip():
 
 def test_fits_no_cards_reads_none():
     from astropy.io import fits
+
     from euclid_polish.provenance.fits import read_stamp_cards
     assert read_stamp_cards(fits.Header()) is None
 
