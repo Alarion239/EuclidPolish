@@ -38,3 +38,42 @@ ignore_names = [
     "experimental_lanes_on", "no_env", "cfg_path", "four_band_cutouts",
     "self_inner", "pl_module", "batch_idx", "dataloader_idx", "crval", "ctype",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + import sorter. Run: `ruff check .`  (auto-fix: `ruff check --fix .`)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import-sort, B bugbear, UP pyupgrade,
+# C4 comprehensions, SIM simplifications.
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    "E741",   # ambiguous var names (l, O) — common for loop/index vars here
+    "B008",   # function call in argument default (Config.* defaults are intentional)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately import inside functions (lazy heavy deps / isolation) and
+# bind unused fixtures; don't flag those.
+"tests/*" = ["E402", "F401", "F811"]
+"__init__.py" = ["F401"]   # re-export modules
+
+
+# ---------------------------------------------------------------------------
+# Pyright — static type checker, strict mode. Run: `pyright`
+# ---------------------------------------------------------------------------
+
+[tool.pyright]
+include = ["euclid_polish"]
+exclude = ["**/__pycache__", "**/node_modules"]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+# Third-party scientific stack ships without type stubs; don't fail strict on
+# that one axis (the rest of strict still applies to our own code).
+reportMissingTypeStubs = false

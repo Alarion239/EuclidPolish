@@ -330,8 +330,5 @@ _PROCESS_KINDS = ("process", "generationrun", "trainingrun", "inferencerun")
 _ARTIFACT_KINDS = ("artifact", "skytfrecordartifact", "sourcecatalogartifact",
                    "checkpointartifact", "srcutoutartifact")
 
-for _k in _PROCESS_KINDS:
-    _REGISTRY[_k] = Process
-for _k in _ARTIFACT_KINDS:
-    _REGISTRY[_k] = Artifact
-del _k
+_REGISTRY.update(dict.fromkeys(_PROCESS_KINDS, Process))
+_REGISTRY.update(dict.fromkeys(_ARTIFACT_KINDS, Artifact))
