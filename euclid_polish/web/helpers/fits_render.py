@@ -80,10 +80,7 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
         abort(415)
 
     finite = np.isfinite(data)
-    if not finite.any():
-        data = np.zeros_like(data)
-    else:
-        data = np.where(finite, data, np.nanmedian(data[finite]))
+    data = np.zeros_like(data) if not finite.any() else np.where(finite, data, np.nanmedian(data[finite]))
 
     # ``clip=True`` guarantees the output stays in [0, 1] even when the
     # underlying stretch would push values outside (signed residuals
@@ -128,11 +125,8 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
         abort(415)
 
     finite = np.isfinite(data)
-    if not finite.any():
-        data = np.zeros_like(data)
-    else:
-        # Replace NaN/inf with the median of finite pixels so the stretch is well-defined.
-        data = np.where(finite, data, np.nanmedian(data[finite]))
+    # Replace NaN/inf with the median of finite pixels so the stretch is well-defined.
+    data = np.zeros_like(data) if not finite.any() else np.where(finite, data, np.nanmedian(data[finite]))
 
     stretched = np.arcsinh(data / float(band.asinh_stretch_scale_e))
     lo, hi = np.percentile(stretched, [1.0, 99.7])

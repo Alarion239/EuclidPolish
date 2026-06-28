@@ -83,12 +83,10 @@ class ImageSet:
             else:
                 yield from self._images
         else:
-            count = 0
-            for raw in tf.data.TFRecordDataset(self._path):
+            for count, raw in enumerate(tf.data.TFRecordDataset(self._path)):
                 if self._max_images is not None and count >= self._max_images:
                     break
                 yield Image.from_tfrecord(raw.numpy())
-                count += 1
 
     def __len__(self) -> int:
         if self._images is not None:

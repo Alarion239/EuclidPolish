@@ -9,6 +9,7 @@ inference (it bypasses any catalog).
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
 import re
@@ -68,10 +69,8 @@ def query_mosaic_tiles(query: str, *, retries: int = 2,
             last = f"{type(e).__name__}: {e}"
         if attempt + 1 < retries:
             if relogin is not None:
-                try:
+                with contextlib.suppress(Exception):
                     relogin()
-                except Exception:                    # noqa: BLE001
-                    pass
             time.sleep(3.0)
     return None, last
 

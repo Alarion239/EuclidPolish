@@ -29,6 +29,7 @@ The output of :meth:`ObservationSimulator.process_hr_to_lr` is a pair of
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -51,6 +52,9 @@ from euclid_polish.sky.observation.saturation import (
     apply_star_saturation,
 )
 
+if TYPE_CHECKING:
+    from euclid_polish.sky.observation.artifacts import ArtifactConfig
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -62,7 +66,7 @@ class ObservationSimulatorConfig:
     add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "lanczos3" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
-    artifact_config: ArtifactConfig | None = None        # type: ignore[name-defined]
+    artifact_config: ArtifactConfig | None = None
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability
     # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope

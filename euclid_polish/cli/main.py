@@ -693,7 +693,7 @@ class InteractiveCLI:
             by_id = {o.id: o for o in objects}
 
             # Update star status based on validation — per-size, not whole-star
-            for filepath, error_msg in results['corrupted']:
+            for filepath, _error_msg in results['corrupted']:
                 filename = os.path.basename(filepath)
                 parts = filename.split('_')
                 if len(parts) >= 3 and parts[0] == 'star':
@@ -971,9 +971,13 @@ class InteractiveCLI:
                   f"The pipeline requires the real Shuntov+ 2025 master catalog.")
             return
 
-        ntrain     = input(f"Number of training images (default {Config.DEFAULT_NIMAGES}): ").strip() or str(Config.DEFAULT_NIMAGES)
-        nvalid     = input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip() or str(Config.DEFAULT_NIMAGES // 5)
-        pixel_scale = input(f"HR pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip() or str(Config.DEFAULT_PIXEL_SCALE)
+        ntrain     = (input(f"Number of training images (default {Config.DEFAULT_NIMAGES}): ").strip()
+                      or str(Config.DEFAULT_NIMAGES))
+        nvalid     = (
+            input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip()
+            or str(Config.DEFAULT_NIMAGES // 5))
+        pixel_scale = (input(f"HR pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip()
+                       or str(Config.DEFAULT_PIXEL_SCALE))
         image_size  = input(
             "HR image side in pixels (prefer a multiple of 6 to avoid edge trim; "
             "default 252): "
@@ -1079,12 +1083,20 @@ class InteractiveCLI:
 
     def _train_model(self):
         """Train WDSR model on multi-band (4-channel LR → 4-channel VIS+NISP HR) data."""
-        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
-        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
-        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
-        steps = input(f"Training steps (default {Config.DEFAULT_TRAIN_STEPS}): ").strip() or str(Config.DEFAULT_TRAIN_STEPS)
-        batch_size = input(f"Batch size (default {Config.DEFAULT_BATCH_SIZE}): ").strip() or str(Config.DEFAULT_BATCH_SIZE)
-        evaluate_every = input(f"Evaluate every N steps (default {Config.DEFAULT_EVALUATE_EVERY}): ").strip() or str(Config.DEFAULT_EVALUATE_EVERY)
+        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
+                 or str(Config.DEFAULT_REBIN_FACTOR))
+        num_res_blocks = (
+            input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
+            or str(Config.DEFAULT_NUM_RES_BLOCKS))
+        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
+                          or Config.DEFAULT_CHECKPOINT_DIR)
+        steps = (input(f"Training steps (default {Config.DEFAULT_TRAIN_STEPS}): ").strip()
+                 or str(Config.DEFAULT_TRAIN_STEPS))
+        batch_size = (input(f"Batch size (default {Config.DEFAULT_BATCH_SIZE}): ").strip()
+                      or str(Config.DEFAULT_BATCH_SIZE))
+        evaluate_every = (
+            input(f"Evaluate every N steps (default {Config.DEFAULT_EVALUATE_EVERY}): ").strip()
+            or str(Config.DEFAULT_EVALUATE_EVERY))
 
         try:
             scale_val = int(scale)
@@ -1168,9 +1180,13 @@ class InteractiveCLI:
 
     def _evaluate_model(self):
         """Evaluate a trained model on the validation set."""
-        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
-        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
-        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
+        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
+                          or Config.DEFAULT_CHECKPOINT_DIR)
+        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
+                 or str(Config.DEFAULT_REBIN_FACTOR))
+        num_res_blocks = (
+            input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
+            or str(Config.DEFAULT_NUM_RES_BLOCKS))
 
         try:
             scale_val = int(scale)
@@ -1215,7 +1231,8 @@ class InteractiveCLI:
 
     def _inspect_checkpoints(self):
         """List available checkpoints in a directory."""
-        checkpoint_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
+                          or Config.DEFAULT_CHECKPOINT_DIR)
 
         if not os.path.isdir(checkpoint_dir):
             print(f"\n✗ Directory not found: {checkpoint_dir}")
@@ -1333,8 +1350,11 @@ class InteractiveCLI:
             ]
         ).ask()
 
-        scale = input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip() or str(Config.DEFAULT_REBIN_FACTOR)
-        num_res_blocks = input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip() or str(Config.DEFAULT_NUM_RES_BLOCKS)
+        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
+                 or str(Config.DEFAULT_REBIN_FACTOR))
+        num_res_blocks = (
+            input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
+            or str(Config.DEFAULT_NUM_RES_BLOCKS))
 
         try:
             scale_val = int(scale)
@@ -1346,7 +1366,8 @@ class InteractiveCLI:
         try:
 
             if source == "checkpoint":
-                ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+                ckpt_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
+                            or Config.DEFAULT_CHECKPOINT_DIR)
                 if not tf.train.latest_checkpoint(ckpt_dir):
                     print(f"\n✗ No checkpoints found in {ckpt_dir}")
                     return
@@ -1424,7 +1445,8 @@ class InteractiveCLI:
         ra_str = input("RA in degrees (ICRS): ").strip()
         dec_str = input("Dec in degrees (ICRS): ").strip()
         size_str = input("Cutout side in VIS pixels (default 256): ").strip() or "256"
-        ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+        ckpt_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
+                    or Config.DEFAULT_CHECKPOINT_DIR)
 
         try:
             ra = float(ra_str)

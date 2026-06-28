@@ -23,6 +23,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.nddata import NDData
 from astropy.stats import sigma_clipped_stats
+from astropy.table import Table
 from photutils.detection import DAOStarFinder
 from photutils.psf import EPSFBuilder, EPSFStar, EPSFStars, extract_stars
 
@@ -240,7 +241,8 @@ def _is_clean_star_stamp(arr: np.ndarray) -> bool:
     py, px = np.unravel_index(int(np.argmax(arr)), arr.shape)
     cy = (arr.shape[0] - 1) / 2.0
     cx = (arr.shape[1] - 1) / 2.0
-    return not (abs(py - cy) > Config.HST.MAX_PEAK_OFFCENTER_PX or abs(px - cx) > Config.HST.MAX_PEAK_OFFCENTER_PX)
+    return not (abs(py - cy) > Config.HST.MAX_PEAK_OFFCENTER_PX
+                or abs(px - cx) > Config.HST.MAX_PEAK_OFFCENTER_PX)
 
 
 def _extract_stamps_from_tile(
@@ -505,7 +507,8 @@ def main() -> int:
     hdu.writeto(out_path, overwrite=True)
     print(f"  wrote ePSF → {out_path}")
     print(f"    shape    = {psf_arr.shape}")
-    print(f"    pix scale = {psf_pix_scale:.4f}\"/pix  (tile {pix_scale_observed:.4f}\"/pix, oversample ×{Config.HST.EPSF_OVERSAMPLING})")
+    print(f"    pix scale = {psf_pix_scale:.4f}\"/pix  "
+          f"(tile {pix_scale_observed:.4f}\"/pix, oversample ×{Config.HST.EPSF_OVERSAMPLING})")
     print(f"    flux sum  = {psf_arr.sum():.6f}  (should be 1.0)")
 
     runtime = time.time() - t0

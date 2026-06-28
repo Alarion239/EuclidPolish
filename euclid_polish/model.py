@@ -185,10 +185,7 @@ class Model:
         """
         _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.data)
         sr_data = np.asarray(sr_data, dtype=np.float32)
-        if sr_data.ndim == 3 and sr_data.shape[-1] == len(lr.band_names):
-            bands = lr.band_names
-        else:
-            bands = ("VIS",)
+        bands = lr.band_names if sr_data.ndim == 3 and sr_data.shape[-1] == len(lr.band_names) else ("VIS",)
         lr_id = lr.stamp.id if lr.stamp is not None else None
         parents = tuple(p for p in (self.id, lr_id) if p is not None)
         return Image(

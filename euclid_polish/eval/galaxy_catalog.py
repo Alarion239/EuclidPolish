@@ -137,10 +137,7 @@ def _run_query(query: str) -> tuple[Any, str]:
 def _near_any_lens(ra: float, dec: float, lenses: list[dict[str, Any]],
                    radius_arcsec: float) -> bool:
     """True if (ra, dec) is within ``radius_arcsec`` of any lens position."""
-    for lens in lenses:
-        if angular_separation_arcsec(ra, dec, lens["ra"], lens["dec"]) < radius_arcsec:
-            return True
-    return False
+    return any(angular_separation_arcsec(ra, dec, lens["ra"], lens["dec"]) < radius_arcsec for lens in lenses)
 
 
 def _read_cached(out_csv: str) -> list[dict[str, Any]]:

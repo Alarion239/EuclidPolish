@@ -27,6 +27,7 @@ use ``from euclid_polish.image import Image``.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
@@ -278,10 +279,9 @@ class Image(StampCarrier):
             hdr["BANDS"] = (",".join(self.band_names),
                             "Band order (NAXIS3 plane 0 = first band)")
         if self.stamp is not None:
-            try:
+            # provenance cards are best-effort
+            with contextlib.suppress(Exception):
                 write_stamp_cards(hdr, self.stamp)
-            except Exception:   # noqa: BLE001 — provenance cards are best-effort
-                pass
         _fits.PrimaryHDU(arr, header=hdr).writeto(
             path, overwrite=True, output_verify="silentfix")
 

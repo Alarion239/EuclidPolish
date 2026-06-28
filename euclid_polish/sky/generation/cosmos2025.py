@@ -33,7 +33,7 @@ from astropy.cosmology import Planck15 as _COSMO
 from astropy.io import fits
 from scipy.special import gammainc, gammaincinv
 
-from euclid_polish.config import Config
+from euclid_polish.config import BandConfig, Config
 
 #: Radians subtended by 1 arcsec — for the arcsec → proper-kpc conversion.
 _RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0

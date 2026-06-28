@@ -12,8 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import pytest
 
 from euclid_polish.observability import JobLog, JobRecord

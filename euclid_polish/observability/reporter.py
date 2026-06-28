@@ -10,7 +10,7 @@ Each line in the events file is a single JSON object::
 
     {"ts": 1731234567.89, "kind": "stage",  "value": "Downloading HLSP tiles"}
     {"ts": 1731234568.12, "kind": "step",   "value": {"current": 3, "total": 25, "label": "tile 3"}}
-    {"ts": 1731234568.15, "kind": "metric", "value": {"step": 1500, "total": 200000, "loss": 0.042, "psnr_stretched": 38.1, "psnr_raw": 41.7, "saved": true}}
+    {"ts": 1731234568.15, "kind": "metric", "value": {"step": 1500, "loss": 0.042, "psnr_stretched": 38.1}}
     {"ts": 1731234568.15, "kind": "warn",   "value": "tile 12 checksum mismatch"}
     {"ts": 1731234568.20, "kind": "error",  "value": "tile 14 missing from MAST"}
 

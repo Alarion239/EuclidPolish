@@ -130,10 +130,7 @@ def commit(message: str, paths: list[str] | None = None
     if not message.strip():
         return {"ok": False, "error": "empty commit message"}
 
-    if paths:
-        add = _run(["git", "add", "--", *paths], cwd=root)
-    else:
-        add = _run(["git", "add", "-A"], cwd=root)
+    add = _run(["git", "add", "--", *paths], cwd=root) if paths else _run(["git", "add", "-A"], cwd=root)
     if add.returncode != 0:
         return {"ok": False, "error": f"git add failed: {add.stderr.strip()}"}
 

@@ -6,8 +6,6 @@ SLURM string formats (memory suffixes, TRES, time stamps, CANCELLED-by).
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import pytest
 
 from euclid_polish.web.sacct import (

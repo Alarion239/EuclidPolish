@@ -10,7 +10,6 @@ Covers:
 from __future__ import annotations
 
 import json
-from typing import Tuple
 
 import pytest
 

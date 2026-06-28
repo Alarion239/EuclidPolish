@@ -483,7 +483,8 @@ def register(app):
         )
         if rc != 0 or not out_bytes:
             return jsonify({"ok": False,
-                            "error": (err if isinstance(err, str) else err.decode(errors="replace")).strip() or "empty cutout"}), 502
+                            "error": (err if isinstance(err, str)
+                                      else err.decode(errors="replace")).strip() or "empty cutout"}), 502
         resp = send_file(
             io.BytesIO(out_bytes), mimetype="image/png", max_age=0,
         )

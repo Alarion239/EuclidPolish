@@ -458,7 +458,7 @@ def submit_sbatch_script(
     # params (n_stars, n_tiles, hst_fraction, …) are JSON-encoded into
     # the ``params_json`` column. Errors here must not break the
     # submit response, so swallow + log instead of raising.
-    try:
+    try:  # noqa: SIM105 — suppress() would awkwardly wrap a 25-line JobRecord(...)
         JOBLOG.record_submission(JobRecord(
             jobid=slurm_id,
             step_id=step_id or "",

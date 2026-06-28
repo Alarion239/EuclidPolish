@@ -269,10 +269,8 @@ def _job_generate_reconstruct(
         return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
     finally:
         # Best-effort cleanup: remote throwaway dir + local temp pull.
-        try:
+        with contextlib.suppress(Exception):
             STATE.ssh.run(f"rm -rf {shlex.quote(remote_tmp)}", timeout=30)
-        except Exception:  # noqa: BLE001
-            pass
         shutil.rmtree(local_tmp, ignore_errors=True)
 
 

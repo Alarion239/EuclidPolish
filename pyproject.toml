@@ -45,7 +45,8 @@ ignore_names = [
 # ---------------------------------------------------------------------------
 
 [tool.ruff]
-line-length = 100
+# 110, not 88: the codebase was authored to ~100-108; 110 is the house width.
+line-length = 110
 target-version = "py312"
 extend-exclude = ["*.ipynb"]
 
@@ -58,12 +59,18 @@ ignore = [
     "B008",   # function call in argument default (Config.* defaults are intentional)
     "UP042",  # str,Enum -> StrEnum changes str()/format() of Role/Format, which
               # resolve.py (f"{role}_...") and core.py (Role(str(role))) rely on
+    "E701",   # compound `if x: y` — used deliberately for terse guards
+    "E702",   # paired statements on one line (ax.set_xticks([]); set_yticks([]),
+              # test setup a=...; b=...) read better together than split
+    "SIM115", # open() without a context manager — the hits are a writer class
+              # that owns the handle, a handle passed to Popen, and throwaway
+              # open(p).read() in tests; none are context-manageable
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests deliberately import inside functions (lazy heavy deps / isolation) and
 # bind unused fixtures; don't flag those.
-"tests/*" = ["E402", "F401", "F811"]
+"tests/*" = ["E402", "F401", "F811", "E501"]   # E501: long fixture data lines
 "__init__.py" = ["F401"]   # re-export modules
 # Scripts set os.environ (BLAS thread caps) + sys.path BEFORE importing numpy /
 # the package, so their imports are necessarily below that bootstrap.

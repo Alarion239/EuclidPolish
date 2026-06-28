@@ -180,10 +180,7 @@ def _download(url: str, key: str, out_dir: str, *,
               euclid_only: bool = True) -> str:
     r = _request(url, key, stream=True)         # follows redirects → data host
     cd = r.headers.get("content-disposition", "")
-    if "filename=" in cd:
-        name = cd.split("filename=")[1].strip().strip('";')
-    else:
-        name = _name_from_url(url)
+    name = cd.split("filename=")[1].strip().strip('";') if "filename=" in cd else _name_from_url(url)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name)
     total = int(r.headers.get("content-length", 0))
@@ -247,7 +244,7 @@ def main() -> int:
 
     if args.list or (not args.name and args.index is None):
         print(f"files/skirt_atlas/ — {len(files)} entries:\n")
-        for i, (name, url, size) in enumerate(files):
+        for i, (name, _url, size) in enumerate(files):
             sz = f"  ({int(size)/1e6:.0f} MB)" if size else ""
             print(f"  [{i}] {name}{sz}")
         if not files:
