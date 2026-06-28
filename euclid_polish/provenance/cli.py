@@ -21,7 +21,7 @@ from euclid_polish.provenance.store import ProvStore
 
 def _kind_of(store: ProvStore, pid: ProvId) -> str:
     rec = store.get_or_none(pid)
-    return rec.KIND if rec is not None else "?"
+    return rec.kind if rec is not None else "?"
 
 
 def _print_ids(store: ProvStore, ids: List[ProvId]) -> None:
@@ -72,7 +72,7 @@ def main(argv: Optional[List[str]] = None, store: Optional[ProvStore] = None) ->
         ]
         print(f"{len(stale)} artifact(s) stale vs current model {current}:")
         for rec in sorted(stale, key=lambda r: str(r.id)):
-            print(f"  {rec.id}  {rec.KIND}")
+            print(f"  {rec.id}  {rec.kind}")
         return 0
 
     if args.cmd == "rebuild":

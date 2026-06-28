@@ -26,7 +26,7 @@ from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
-    Format, InferenceRun, SRCutoutArtifact, Stamp,
+    Artifact, Format, Process, Stamp,
 )
 from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.image import Image
@@ -64,14 +64,14 @@ def run_sr_inference(records_dir: str, subset: str, sr_fn, *,
         return n_fields
     ds = tf.data.TFRecordDataset(in_path)
 
-    # Provenance context (best-effort): one InferenceRun + one sr file id.
+    # Provenance context (best-effort): one inference run + one sr file id.
     prov = None
     try:
         store = default_store()
         model_id = model_id_of_checkpoint(checkpoint) if checkpoint else None
         git = capture_git()
-        run = InferenceRun(id=store.mint(), git=git, status="ok",
-                           inputs=tuple(x for x in (model_id,) if x is not None))
+        run = Process.inference(id=store.mint(), git=git, status="ok",
+                                inputs=tuple(x for x in (model_id,) if x is not None))
         store.put(run)
         prov = (store, run.id, model_id, git, store.mint())
     except Exception:
@@ -109,7 +109,7 @@ def run_sr_inference(records_dir: str, subset: str, sr_fn, *,
             store, run_id, model_id, git, sr_file_id = prov
             file_parents = tuple(
                 x for x in (model_id, input_parent) if x is not None)
-            store.put(SRCutoutArtifact(
+            store.put(Artifact.sr_cutout(
                 id=sr_file_id, git=git, produced_by=run_id,
                 format=Format.TFRECORD,
                 path=tfrecord_path(records_dir, f"sr_{subset}"),

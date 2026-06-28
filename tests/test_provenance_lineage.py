@@ -7,27 +7,24 @@ from __future__ import annotations
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.lineage import Lineage
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.provenance.records import (
-    GenerationRun, TrainingRun, InferenceRun,
-    SkyTFRecordArtifact, CheckpointArtifact, SRCutoutArtifact, Format,
-)
+from euclid_polish.provenance.records import Artifact, Process, Format
 
 
 def _build_chain(store, *, model_id=None):
     """Persist a generate→convolve→train→super-resolve chain. Returns ids."""
-    gen = GenerationRun(id=store.mint(), git=None, status="ok")
-    clean = SkyTFRecordArtifact(id=store.mint(), git=None, produced_by=gen.id,
-                                format=Format.TFRECORD)
-    fwd = GenerationRun(id=store.mint(), git=None, parents=(clean.id,), status="ok")
-    dirty = SkyTFRecordArtifact(id=store.mint(), git=None, produced_by=fwd.id,
-                                format=Format.TFRECORD, parents=(clean.id,))
-    train = TrainingRun(id=store.mint(), git=None, inputs=(dirty.id,), status="ok")
-    model = CheckpointArtifact(id=model_id or store.mint(), git=None,
-                               produced_by=train.id, format=Format.CKPT)
-    infer = InferenceRun(id=store.mint(), git=None, inputs=(model.id, dirty.id),
-                         status="ok")
-    sr = SRCutoutArtifact(id=store.mint(), git=None, produced_by=infer.id,
-                          format=Format.FITS, parents=(model.id, dirty.id))
+    gen = Process.generation(id=store.mint(), git=None, status="ok")
+    clean = Artifact.sky_tfrecord(id=store.mint(), git=None, produced_by=gen.id,
+                                  format=Format.TFRECORD)
+    fwd = Process.generation(id=store.mint(), git=None, parents=(clean.id,), status="ok")
+    dirty = Artifact.sky_tfrecord(id=store.mint(), git=None, produced_by=fwd.id,
+                                  format=Format.TFRECORD, parents=(clean.id,))
+    train = Process.training(id=store.mint(), git=None, inputs=(dirty.id,), status="ok")
+    model = Artifact.checkpoint(id=model_id or store.mint(), git=None,
+                                produced_by=train.id, format=Format.CKPT)
+    infer = Process.inference(id=store.mint(), git=None, inputs=(model.id, dirty.id),
+                              status="ok")
+    sr = Artifact.sr_cutout(id=store.mint(), git=None, produced_by=infer.id,
+                            format=Format.FITS, parents=(model.id, dirty.id))
     for r in (gen, clean, fwd, dirty, train, model, infer, sr):
         store.put(r)
     return dict(gen=gen.id, clean=clean.id, dirty=dirty.id, train=train.id,
@@ -43,9 +40,9 @@ def test_sr_is_stale_after_retraining(tmp_path):
     assert lin.is_stale(ids["sr"], current_model_id=ids["model"]) is False
 
     # Retrain: a new model exists → the old SR is now stale.
-    new_train = TrainingRun(id=store.mint(), git=None, status="ok")
-    new_model = CheckpointArtifact(id=store.mint(), git=None,
-                                   produced_by=new_train.id, format=Format.CKPT)
+    new_train = Process.training(id=store.mint(), git=None, status="ok")
+    new_model = Artifact.checkpoint(id=store.mint(), git=None,
+                                    produced_by=new_train.id, format=Format.CKPT)
     store.put(new_train)
     store.put(new_model)
     assert lin.is_stale(ids["sr"], current_model_id=new_model.id) is True

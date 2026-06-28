@@ -1,7 +1,7 @@
 """Provenance helpers for the synthetic generation pipeline.
 
 A generation run (one ``run_pipeline`` invocation, per subset) mints a
-:class:`GenerationRun` whose config is frozen from the live
+:meth:`Process.generation` record whose config is frozen from the live
 ``SkySimulatorConfig`` / ``ObservationSimulatorConfig``. Every record it
 writes is stamped with its *file-level* artifact id (so all records in
 ``clean_train.tfrecord`` share one id, addressed individually by their index)
@@ -19,7 +19,7 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import (
-    ConfigSnapshot, Format, GenerationRun, SkyTFRecordArtifact,
+    Artifact, ConfigSnapshot, Format, Process,
 )
 from euclid_polish.provenance.store import ProvStore
 from euclid_polish.provenance.records import Stamp
@@ -55,9 +55,9 @@ class GenerationContext:
         )
 
     def finalize(self, kind: str, subset: str, path: str, *,
-                 parents: Sequence[ProvId] = ()) -> SkyTFRecordArtifact:
-        """Persist the file-level :class:`SkyTFRecordArtifact` next to the data."""
-        art = SkyTFRecordArtifact(
+                 parents: Sequence[ProvId] = ()) -> Artifact:
+        """Persist the file-level sky-TFRecord :class:`Artifact` next to the data."""
+        art = Artifact.sky_tfrecord(
             id=self.file_id(kind, subset),
             git=self.git,
             produced_by=self.run_id,
@@ -101,8 +101,8 @@ class ShardStampPlan:
 def begin_generation_run(store: ProvStore, cfg: Any, *,
                          parents: Sequence[ProvId] = (),
                          git: Optional[Dict[str, Any]] = None) -> GenerationContext:
-    """Mint + persist a :class:`GenerationRun` and return its context."""
-    run = GenerationRun(
+    """Mint + persist a generation :class:`Process` and return its context."""
+    run = Process.generation(
         id=store.mint(),
         git=git,
         parents=tuple(parents),

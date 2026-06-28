@@ -81,7 +81,7 @@ class Lineage:
             if cand.is_sentinel:
                 return None
             cand_rec = self.store.get_or_none(cand)
-            if cand_rec is not None and cand_rec.KIND in _MODEL_KINDS:
+            if cand_rec is not None and cand_rec.kind in _MODEL_KINDS:
                 return cand
         return None
 

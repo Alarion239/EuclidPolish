@@ -25,7 +25,7 @@ def test_begin_generation_run_persists_run_with_config(tmp_path):
     ctx = begin_generation_run(store, FakeCfg(), git=None)
     assert isinstance(ctx, GenerationContext)
     run = store.get(ctx.run_id)
-    assert run.KIND == "generationrun"
+    assert run.kind == "generationrun"
     assert run.config.config_type == "FakeCfg"
     assert run.config.fields["image_size"] == 96
 

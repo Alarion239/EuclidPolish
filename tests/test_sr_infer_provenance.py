@@ -62,4 +62,4 @@ def test_run_sr_inference_stamps_records(tmp_path, monkeypatch):
     assert st is not None
     assert ProvId("2f9c81aa") in st.parents      # the producing model
     assert ProvId("4b1e7a90") in st.parents      # the input dirty file
-    assert st.produced_by is not None            # an InferenceRun
+    assert st.produced_by is not None            # an inference run

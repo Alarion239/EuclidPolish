@@ -1,7 +1,7 @@
 """Provenance for super-resolved FITS outputs (the eval / web SR path).
 
 An ``SR.fits`` gets PROVID/PRODBY/PROVPAR header cards plus a persisted
-:class:`SRCutoutArtifact`, parented on the producing model (read from the
+SR-cutout :class:`Artifact`, parented on the producing model (read from the
 checkpoint's ``provenance.json``). All best-effort: callers wrap the call so a
 provenance hiccup never blocks reconstruction.
 """
@@ -16,7 +16,7 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.fits import write_stamp_cards
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.records import (
-    Format, InferenceRun, SRCutoutArtifact, Stamp,
+    Artifact, Format, Process, Stamp,
 )
 from euclid_polish.provenance.store import ProvStore
 
@@ -40,14 +40,14 @@ def write_sr_provenance(header, *, checkpoint_dir: str, sr_fits_path: str,
     model_id = model_id_of_checkpoint(checkpoint_dir)
     parents = tuple(m for m in (model_id,) if m is not None)
 
-    run = InferenceRun(id=store.mint(), git=git, status="ok", inputs=parents)
+    run = Process.inference(id=store.mint(), git=git, status="ok", inputs=parents)
     store.put(run)
 
     sr_id = store.mint()
     stamp = Stamp(id=sr_id, produced_by=run.id, parents=parents, schema_version=3)
     write_stamp_cards(header, stamp)
 
-    art = SRCutoutArtifact(
+    art = Artifact.sr_cutout(
         id=sr_id, git=git, produced_by=run.id, format=Format.FITS,
         path=sr_fits_path, parents=parents, descriptors=descriptors or {},
     )

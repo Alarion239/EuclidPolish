@@ -135,17 +135,19 @@ def test_config_snapshot_from_dataclass_captures_fields():
 def test_generation_run_round_trip():
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.provenance.records import (
-        GenerationRun, ConfigSnapshot, record_from_dict,
+        Process, ConfigSnapshot, record_from_dict,
     )
-    run = GenerationRun(
+    run = Process.generation(
         id=ProvId("7f3a9c21"),
         config=ConfigSnapshot("SkySimulatorConfig", {"n_galaxies": 12}),
         outputs=(ProvId("4b1e7a90"),),
         status="ok",
         created_at="2026-06-25T00:00:00+00:00",
     )
+    assert run.kind == "generationrun"
     back = record_from_dict(run.to_dict())
-    assert isinstance(back, GenerationRun)
+    assert isinstance(back, Process)
+    assert back.kind == "generationrun"
     assert back == run
     assert back.config.fields == {"n_galaxies": 12}
 
@@ -153,9 +155,9 @@ def test_generation_run_round_trip():
 def test_checkpoint_artifact_round_trip_preserves_kind():
     from euclid_polish.provenance.ids import ProvId
     from euclid_polish.provenance.records import (
-        CheckpointArtifact, Format, record_from_dict,
+        Artifact, Format, record_from_dict,
     )
-    art = CheckpointArtifact(
+    art = Artifact.checkpoint(
         id=ProvId("2f9c81aa"),
         produced_by=ProvId("2b8e44d1"),
         format=Format.CKPT,
@@ -166,7 +168,8 @@ def test_checkpoint_artifact_round_trip_preserves_kind():
     d = art.to_dict()
     assert d["kind"] == "checkpointartifact"
     back = record_from_dict(d)
-    assert isinstance(back, CheckpointArtifact)
+    assert isinstance(back, Artifact)
+    assert back.kind == "checkpointartifact"
     assert back == art
     assert back.format is Format.CKPT
 
@@ -176,8 +179,8 @@ def test_checkpoint_artifact_round_trip_preserves_kind():
 # --------------------------------------------------------------------------- #
 
 def _gen_run(store, **kw):
-    from euclid_polish.provenance.records import GenerationRun
-    return GenerationRun(id=store.mint(), git=None, **kw)
+    from euclid_polish.provenance.records import Process
+    return Process.generation(id=store.mint(), git=None, **kw)
 
 
 def test_store_put_get_round_trip(tmp_path):
@@ -207,12 +210,12 @@ def test_store_exists_false_before_put(tmp_path):
 
 
 def test_store_find_by_kind(tmp_path):
-    from euclid_polish.provenance.records import CheckpointArtifact, Format
+    from euclid_polish.provenance.records import Artifact, Format
     from euclid_polish.provenance.store import ProvStore
     store = ProvStore(str(tmp_path))
     run = _gen_run(store)
-    ckpt = CheckpointArtifact(id=store.mint(), git=None,
-                              produced_by=run.id, format=Format.CKPT)
+    ckpt = Artifact.checkpoint(id=store.mint(), git=None,
+                               produced_by=run.id, format=Format.CKPT)
     store.put(run)
     store.put(ckpt)
     found = store.find(kind="checkpointartifact")
@@ -247,16 +250,14 @@ def test_store_sidecar_next_to_data(tmp_path):
 
 def _build_sr_graph(store):
     """A model → inference → SR-cutout chain. Returns (model, infer, sr)."""
-    from euclid_polish.provenance.records import (
-        TrainingRun, InferenceRun, CheckpointArtifact, SRCutoutArtifact, Format,
-    )
-    train = TrainingRun(id=store.mint(), git=None, status="ok")
-    model = CheckpointArtifact(id=store.mint(), git=None,
-                               produced_by=train.id, format=Format.CKPT)
-    infer = InferenceRun(id=store.mint(), git=None,
-                         inputs=(model.id,), status="ok")
-    sr = SRCutoutArtifact(id=store.mint(), git=None, produced_by=infer.id,
-                          format=Format.FITS, parents=(model.id,))
+    from euclid_polish.provenance.records import Artifact, Process, Format
+    train = Process.training(id=store.mint(), git=None, status="ok")
+    model = Artifact.checkpoint(id=store.mint(), git=None,
+                                produced_by=train.id, format=Format.CKPT)
+    infer = Process.inference(id=store.mint(), git=None,
+                              inputs=(model.id,), status="ok")
+    sr = Artifact.sr_cutout(id=store.mint(), git=None, produced_by=infer.id,
+                            format=Format.FITS, parents=(model.id,))
     for r in (train, model, infer, sr):
         store.put(r)
     return model, infer, sr
@@ -283,7 +284,7 @@ def test_lineage_descendants_finds_outputs(tmp_path):
 
 def test_lineage_is_stale_current_vs_stale_vs_unknown(tmp_path):
     from euclid_polish.provenance.ids import ProvId
-    from euclid_polish.provenance.records import SRCutoutArtifact, Format
+    from euclid_polish.provenance.records import Artifact, Format
     from euclid_polish.provenance.store import ProvStore
     from euclid_polish.provenance.lineage import Lineage
     store = ProvStore(str(tmp_path))
@@ -292,8 +293,8 @@ def test_lineage_is_stale_current_vs_stale_vs_unknown(tmp_path):
     assert lin.is_stale(sr.id, current_model_id=model.id) is False
     assert lin.is_stale(sr.id, current_model_id=ProvId("aaaaaaaa")) is True
     # An SR with sentinel (unknown) model → unknown, not False.
-    legacy_sr = SRCutoutArtifact(id=store.mint(), git=None, format=Format.FITS,
-                                 parents=(ProvId.sentinel(),))
+    legacy_sr = Artifact.sr_cutout(id=store.mint(), git=None, format=Format.FITS,
+                                   parents=(ProvId.sentinel(),))
     store.put(legacy_sr)
     assert lin.is_stale(legacy_sr.id, current_model_id=model.id) is None
 

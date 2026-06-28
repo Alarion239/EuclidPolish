@@ -2,8 +2,9 @@
 
 A TensorFlow checkpoint's unit of identity is its *directory*, not a single
 file. ``<ckpt_dir>/provenance.json`` records the model artifact's
-:class:`~euclid_polish.provenance.records.Stamp` — its id, the ``TrainingRun``
-that produced it, and the input record ids it trained on. Absent the sidecar a
+:class:`~euclid_polish.provenance.records.Stamp` — its id, the training run
+(``Process`` of kind ``"trainingrun"``) that produced it, and the input record
+ids it trained on. Absent the sidecar a
 checkpoint is "legacy" (unknown provenance).
 """
 

@@ -14,7 +14,7 @@ from typing import List, Optional
 
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import tfrecord_path
-from euclid_polish.provenance.records import Format, SRCutoutArtifact
+from euclid_polish.provenance.records import Artifact, Format
 
 #: Subsets we generate SR for, in priority order.
 SUBSETS = ("validate", "train")
@@ -59,15 +59,15 @@ def present_subsets(records_dir: str) -> List[str]:
 
 def record_sr_cube(store, npy_path: str, subset: str, idx: int, *,
                    model_id=None, input_id=None, produced_by=None,
-                   git=None, sidecar_dir: Optional[str] = None) -> SRCutoutArtifact:
-    """Persist an :class:`SRCutoutArtifact` for one SR cube, next to the data.
+                   git=None, sidecar_dir: Optional[str] = None) -> Artifact:
+    """Persist an SR-cutout :class:`Artifact` for one SR cube, next to the data.
 
     Parents are ``(model_id, input_id)`` (whichever are known) so the cube can
     later be told apart from a stale one. The sidecar is named by the artifact's
     id; the ``.npy`` keeps its viewer-visible name.
     """
     parents = tuple(p for p in (model_id, input_id) if p is not None)
-    art = SRCutoutArtifact(
+    art = Artifact.sr_cutout(
         id=store.mint(), git=git, produced_by=produced_by,
         format=Format.NPY, path=npy_path, parents=parents,
         descriptors={"subset": subset, "index": int(idx)},

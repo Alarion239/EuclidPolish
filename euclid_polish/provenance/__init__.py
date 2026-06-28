@@ -19,18 +19,11 @@ from euclid_polish.provenance.lineage import Lineage
 from euclid_polish.provenance.persistable import Persistable, StampCarrier
 from euclid_polish.provenance.records import (
     Artifact,
-    CheckpointArtifact,
     ConfigSnapshot,
     Format,
-    GenerationRun,
-    InferenceRun,
     Process,
     ProvRecord,
-    SRCutoutArtifact,
-    SkyTFRecordArtifact,
-    SourceCatalogArtifact,
     Stamp,
-    TrainingRun,
     record_from_dict,
 )
 from euclid_polish.provenance.store import ProvStore
@@ -47,13 +40,6 @@ __all__ = [
     "ProvRecord",
     "Process",
     "Artifact",
-    "GenerationRun",
-    "TrainingRun",
-    "InferenceRun",
-    "SkyTFRecordArtifact",
-    "SourceCatalogArtifact",
-    "CheckpointArtifact",
-    "SRCutoutArtifact",
     "record_from_dict",
     "capture_git",
 ]

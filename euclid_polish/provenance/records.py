@@ -2,10 +2,17 @@
 
 Every object the system tracks is one of two things:
 
-* a :class:`Process` — something that *ran* (``GenerationRun``, ``TrainingRun``,
-  ``InferenceRun``), carrying the frozen :class:`ConfigSnapshot` that drove it;
+* a :class:`Process` — something that *ran*, carrying the frozen
+  :class:`ConfigSnapshot` that drove it;
 * an :class:`Artifact` — something *saved to disk* (a TFRecord, a checkpoint, a
   FITS cutout …), carrying a pointer to the process that produced it.
+
+The specific flavour is the ``kind`` *field* (a string such as
+``"generationrun"`` or ``"checkpointartifact"``), set via the named
+constructors :meth:`Process.generation` / :meth:`Artifact.checkpoint` / … —
+not a subclass per flavour. ``record_from_dict`` dispatches each ``kind`` to the
+``Process`` or ``Artifact`` deserializer, so the on-disk ``<id>.<kind>.json``
+sidecar round-trips byte-for-byte regardless.
 
 All records are frozen dataclasses with a ``SCHEMA_VERSION`` and a polymorphic
 ``to_dict`` / :func:`record_from_dict` JSON round-trip keyed on ``kind``. The
@@ -127,33 +134,33 @@ class ConfigSnapshot:
 # Record base + polymorphic registry
 # --------------------------------------------------------------------------- #
 
+#: kind string → the base class that knows how to (de)serialize it. Populated
+#: at the bottom of the module, after ``Process`` / ``Artifact`` are defined.
 _REGISTRY: Dict[str, type] = {}
 
 
 @dataclass(frozen=True)
 class ProvRecord:
-    """Base of every on-disk provenance object."""
+    """Base of every on-disk provenance object.
+
+    ``kind`` is the record's flavour string (e.g. ``"generationrun"``); it is a
+    field, not a per-subclass type, and is what the sidecar filename and the
+    ``record_from_dict`` dispatch key are built from.
+    """
 
     id: ProvId
     parents: Tuple[ProvId, ...] = ()
     git: Optional[Dict[str, Any]] = field(default=None)
     created_at: str = field(default_factory=_now_iso)
+    kind: str = "provrecord"
 
-    KIND: ClassVar[str] = "provrecord"
     SCHEMA_VERSION: ClassVar[int] = 3
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        # Register only classes that declare their own KIND, so the polymorphic
-        # loader can dispatch on it.
-        if "KIND" in cls.__dict__:
-            _REGISTRY[cls.KIND] = cls
 
     # -- serialization -- #
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
-            "kind": self.KIND,
+            "kind": self.kind,
             "schema_version": self.SCHEMA_VERSION,
             "id": str(self.id),
             "parents": [str(p) for p in self.parents],
@@ -173,6 +180,7 @@ class ProvRecord:
             parents=tuple(ProvId(p) for p in d.get("parents", [])),
             git=d.get("git"),
             created_at=d["created_at"],
+            kind=d.get("kind", "provrecord"),
         )
 
     @classmethod
@@ -181,7 +189,11 @@ class ProvRecord:
 
 
 def record_from_dict(d: Dict[str, Any]) -> ProvRecord:
-    """Reconstruct the concrete record for a serialized dict (keyed on ``kind``)."""
+    """Reconstruct the concrete record for a serialized dict (keyed on ``kind``).
+
+    The ``kind`` selects which base deserializer (``Process`` / ``Artifact``)
+    runs; the kind string itself is preserved verbatim on the returned record.
+    """
     kind = d["kind"]
     try:
         cls = _REGISTRY[kind]
@@ -196,7 +208,12 @@ def record_from_dict(d: Dict[str, Any]) -> ProvRecord:
 
 @dataclass(frozen=True)
 class Process(ProvRecord):
-    """A thing that ran, with the config that drove it and its I/O lineage."""
+    """A thing that ran, with the config that drove it and its I/O lineage.
+
+    Use the named constructors :meth:`generation` / :meth:`training` /
+    :meth:`inference` to stamp the conventional ``kind`` string; a bare
+    ``Process(...)`` is kind ``"process"``.
+    """
 
     config: Optional[ConfigSnapshot] = None
     inputs: Tuple[ProvId, ...] = ()
@@ -204,8 +221,22 @@ class Process(ProvRecord):
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     status: str = "running"
+    kind: str = "process"
 
-    KIND: ClassVar[str] = "process"
+    @classmethod
+    def generation(cls, **kwargs: Any) -> "Process":
+        """A generation run (``kind="generationrun"``)."""
+        return cls(kind="generationrun", **kwargs)
+
+    @classmethod
+    def training(cls, **kwargs: Any) -> "Process":
+        """A training run (``kind="trainingrun"``)."""
+        return cls(kind="trainingrun", **kwargs)
+
+    @classmethod
+    def inference(cls, **kwargs: Any) -> "Process":
+        """An inference / super-resolution run (``kind="inferencerun"``)."""
+        return cls(kind="inferencerun", **kwargs)
 
     def _payload(self) -> Dict[str, Any]:
         return {
@@ -231,35 +262,44 @@ class Process(ProvRecord):
         return cls(**kw)
 
 
-@dataclass(frozen=True)
-class GenerationRun(Process):
-    KIND: ClassVar[str] = "generationrun"
-
-
-@dataclass(frozen=True)
-class TrainingRun(Process):
-    KIND: ClassVar[str] = "trainingrun"
-
-
-@dataclass(frozen=True)
-class InferenceRun(Process):
-    KIND: ClassVar[str] = "inferencerun"
-
-
 # --------------------------------------------------------------------------- #
 # Artifact records
 # --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class Artifact(ProvRecord):
-    """A thing saved to disk, pointing back to the process that produced it."""
+    """A thing saved to disk, pointing back to the process that produced it.
+
+    Use the named constructors :meth:`sky_tfrecord` / :meth:`source_catalog` /
+    :meth:`checkpoint` / :meth:`sr_cutout` to stamp the conventional ``kind``
+    string; a bare ``Artifact(...)`` is kind ``"artifact"``.
+    """
 
     produced_by: Optional[ProvId] = None
     format: Optional[Format] = None
     path: Optional[str] = None
     descriptors: Dict[str, Any] = field(default_factory=dict)
+    kind: str = "artifact"
 
-    KIND: ClassVar[str] = "artifact"
+    @classmethod
+    def sky_tfrecord(cls, **kwargs: Any) -> "Artifact":
+        """A generated sky TFRecord file (``kind="skytfrecordartifact"``)."""
+        return cls(kind="skytfrecordartifact", **kwargs)
+
+    @classmethod
+    def source_catalog(cls, **kwargs: Any) -> "Artifact":
+        """A per-field source catalog (``kind="sourcecatalogartifact"``)."""
+        return cls(kind="sourcecatalogartifact", **kwargs)
+
+    @classmethod
+    def checkpoint(cls, **kwargs: Any) -> "Artifact":
+        """A trained model checkpoint (``kind="checkpointartifact"``)."""
+        return cls(kind="checkpointartifact", **kwargs)
+
+    @classmethod
+    def sr_cutout(cls, **kwargs: Any) -> "Artifact":
+        """A super-resolved cutout (``kind="srcutoutartifact"``)."""
+        return cls(kind="srcutoutartifact", **kwargs)
 
     def _payload(self) -> Dict[str, Any]:
         return {
@@ -281,21 +321,17 @@ class Artifact(ProvRecord):
         return cls(**kw)
 
 
-@dataclass(frozen=True)
-class SkyTFRecordArtifact(Artifact):
-    KIND: ClassVar[str] = "skytfrecordartifact"
+# --------------------------------------------------------------------------- #
+# Kind → deserializer dispatch. Every flavour string maps to the base class
+# that reconstructs it; the kind itself is preserved on the loaded record.
+# --------------------------------------------------------------------------- #
 
+_PROCESS_KINDS = ("process", "generationrun", "trainingrun", "inferencerun")
+_ARTIFACT_KINDS = ("artifact", "skytfrecordartifact", "sourcecatalogartifact",
+                   "checkpointartifact", "srcutoutartifact")
 
-@dataclass(frozen=True)
-class SourceCatalogArtifact(Artifact):
-    KIND: ClassVar[str] = "sourcecatalogartifact"
-
-
-@dataclass(frozen=True)
-class CheckpointArtifact(Artifact):
-    KIND: ClassVar[str] = "checkpointartifact"
-
-
-@dataclass(frozen=True)
-class SRCutoutArtifact(Artifact):
-    KIND: ClassVar[str] = "srcutoutartifact"
+for _k in _PROCESS_KINDS:
+    _REGISTRY[_k] = Process
+for _k in _ARTIFACT_KINDS:
+    _REGISTRY[_k] = Artifact
+del _k

@@ -78,7 +78,7 @@ class ProvStore:
         """Write ``record`` to a sidecar (next to its data if ``sidecar_dir``)."""
         directory = sidecar_dir or self.index_dir
         os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, f"{record.id}.{record.KIND}.json")
+        path = os.path.join(directory, f"{record.id}.{record.kind}.json")
         _atomic_write_json(path, record.to_dict())
         self._index[str(record.id)] = path
         return path
@@ -116,7 +116,7 @@ class ProvStore:
         """Return records matching the given filters (index scan)."""
         out = []
         for rec in self.all_records():
-            if kind is not None and rec.KIND != kind:
+            if kind is not None and rec.kind != kind:
                 continue
             if produced_by is not None and getattr(rec, "produced_by", None) != produced_by:
                 continue
