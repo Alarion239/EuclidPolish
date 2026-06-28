@@ -129,6 +129,52 @@ def test_rotate_quarter_conserves_flux_and_wraps():
     assert np.array_equal(rotate_quarter(arr, 1), np.rot90(arr, 1))
 
 
+def _fake_tng_galaxy(tng_dir, gid, *, size=64):
+    """A minimal 4-band / 5-orientation fake galaxy with a centred asymmetric
+    feature (so rotation is detectable and flux isn't clipped at the corners)."""
+    d = os.path.join(tng_dir, gid)
+    os.makedirs(d, exist_ok=True)
+    c = size // 2
+    arr = np.zeros((size, size), dtype=">f4")
+    arr[c - 8:c + 8, c - 2:c + 2] = 500.0          # vertical bar
+    arr[c - 2:c + 10, c - 6:c + 6] += 200.0        # off-centre block → asymmetric
+    for o in (1, 2, 3, 4, 5):
+        for b in ("VIS", "Y", "J", "H"):
+            _fits.PrimaryHDU(arr).writeto(
+                os.path.join(d, f"TNG{gid}_O{o}_Euclid_{b}.fits"), overwrite=True)
+    open(os.path.join(d, Config.Tng.DONE_MARKER), "w").close()
+    return d
+
+
+def test_rotate_arbitrary_preserves_flux_and_nonneg():
+    from euclid_polish.sky.generation.tng_galaxy import rotate_arbitrary
+    img = np.zeros((64, 64), np.float32)
+    img[24:40, 28:36] = (np.random.default_rng(0).random((16, 8)) + 0.1).astype(np.float32)
+    out = rotate_arbitrary(img, 37.0)
+    assert out.shape == img.shape
+    assert (out >= 0).all()                            # SB stays non-negative
+    assert out.sum() == pytest.approx(img.sum(), rel=0.03)   # flux ~conserved
+    assert not np.allclose(out, img)                   # actually rotated
+
+
+def test_prepare_arbitrary_rotation_gated_on_rebin(tmp_path):
+    d = _fake_tng_galaxy(str(tmp_path / "tng"), "424242", size=64)
+    # rebin ≥ 4 + an angle → arbitrary spline rotation.
+    _, m_hi = prepare_tng_galaxy(d, "424242", 1, rebin_factor=4, rot_angle=30.0)
+    assert m_hi["arbitrary_rotation"] is True
+    assert m_hi["rot_angle"] == pytest.approx(30.0)
+    # rebin < 4 → falls back to the exact quarter-turn even with an angle given.
+    _, m_lo = prepare_tng_galaxy(d, "424242", 1, rebin_factor=2, rot_angle=30.0)
+    assert m_lo["arbitrary_rotation"] is False and m_lo["rot_angle"] is None
+    # No angle → unchanged quarter-turn path regardless of rebin.
+    _, m_none = prepare_tng_galaxy(d, "424242", 1, rebin_factor=4)
+    assert m_none["arbitrary_rotation"] is False
+    # Arbitrary rotation ~conserves total flux vs the un-rotated stamp.
+    _, m0 = prepare_tng_galaxy(d, "424242", 1, rebin_factor=4)
+    assert (m_hi["flux_e_per_band"]["VIS"]
+            == pytest.approx(m0["flux_e_per_band"]["VIS"], rel=0.05))
+
+
 # --------------------------- end-to-end ----------------------------------
 
 @_needs_local

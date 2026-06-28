@@ -17,8 +17,13 @@ To place a galaxy into a synthetic field we run three steps (in this order):
    distant galaxy would appear. In redshift mode
    (:func:`tng_stamp_at_redshift`) the factor is computed from
    D_A(z) — see :mod:`euclid_polish.sky.redshift_model`.
-2. **Rotate** by a quarter turn (0/90/180/270°) — exact ``np.rot90``, an
-   orientation augmentation on top of the atlas's 5 physical viewpoints.
+2. **Rotate** for orientation augmentation on top of the atlas's 5 physical
+   viewpoints. When the rebin factor is ≥ ``ARBITRARY_ROTATION_MIN_REBIN`` (4)
+   an *arbitrary* 0–360° cubic-spline rotation is applied at native resolution
+   *before* the rebin — the ≥4× downsample averages out the interpolation blur
+   (validated by ``scripts/check_tng_rotation_downsample.py``), multiplying the
+   effective galaxy set by continuous orientation. Below the threshold an exact
+   ``np.rot90`` quarter-turn is used after the rebin (lossless, artefact-free).
 3. **Convert to electrons** over the Euclid stack via
    :func:`~euclid_polish.catalog.photometry.mjy_per_sr_to_electrons`, using the
    assigned HR pixel scale to turn MJy/sr into electrons-per-pixel. The result
@@ -35,6 +40,7 @@ import os
 
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import rotate as _ndi_rotate
 
 from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
@@ -114,6 +120,51 @@ def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
     flux is bit-exactly conserved.
     """
     return np.rot90(np.asarray(arr), k=int(k) % 4)
+
+
+#: Block-mean factor at/above which arbitrary-angle spline rotation is safe to
+#: apply *before* the downsample: the ≥K× averaging washes out the cubic-spline
+#: interpolation blur. K=4 is validated in
+#: ``scripts/check_tng_rotation_downsample.py`` (per-galaxy critical K of 2–6 for
+#: <1% RMS error even under 360 accumulated 1° rotations). Below it, only exact
+#: quarter-turns are used so low-downsample stamps stay artefact-free.
+ARBITRARY_ROTATION_MIN_REBIN = 4
+
+
+def rotate_arbitrary(arr: np.ndarray, angle_deg: float, *,
+                     order: int = 3) -> np.ndarray:
+    """Rotate ``arr`` by an arbitrary angle with cubic-spline interpolation.
+
+    Same array size (``reshape=False``), zero outside the frame, and clipped
+    non-negative (surface brightness can't go below zero from spline overshoot).
+    Apply only at native resolution with a ≥:data:`ARBITRARY_ROTATION_MIN_REBIN`×
+    downsample to follow — otherwise the interpolation blur is not averaged out.
+    """
+    out = _ndi_rotate(np.asarray(arr, dtype=np.float32), float(angle_deg),
+                      reshape=False, order=int(order), mode="constant", cval=0.0)
+    np.maximum(out, 0.0, out=out)
+    return out.astype(np.float32)
+
+
+def _rotation_crop_slices(frame: np.ndarray, rebin: int) -> tuple[slice, slice]:
+    """Centred crop that holds the galaxy inside its inscribed circle.
+
+    The SKIRT box is 160 kpc of mostly-empty sky; rotating the full frame is
+    wasteful and slow. Cropping to a square of half-side ``r99·√2·1.05`` (the
+    99%-flux radius padded so rotation never clips real light) makes the spline
+    rotation cheap. The side is snapped to a multiple of ``rebin`` for a clean
+    block-mean.
+    """
+    H, W = frame.shape
+    r = measure_halflight_radius_px(frame, frac=0.99)
+    half = (int(np.ceil(r * np.sqrt(2.0) * 1.05))
+            if np.isfinite(r) and r > 0.0 else min(H, W) // 2)
+    side = min(2 * half, H, W)
+    step = max(1, int(rebin))
+    side = max(step, side - side % step)
+    cy, cx = H // 2, W // 2
+    h = side // 2
+    return slice(cy - h, cy - h + side), slice(cx - h, cx - h + side)
 
 
 # ---------------------------------------------------------------------------
@@ -216,15 +267,23 @@ def prepare_tng_galaxy(
     *,
     rebin_factor: int = 2,
     rot_k: int = 0,
+    rot_angle: float | None = None,
+    min_rebin_for_angle: int = ARBITRARY_ROTATION_MIN_REBIN,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
 ) -> tuple[np.ndarray, dict]:
     """Build a 4-band, electron-calibrated TNG stamp ready to inject.
 
-    Loads the four Euclid frames for ``(subhalo_id, orientation)``, rebins each
-    by ``rebin_factor`` (block-mean, SB-preserving), rotates by ``rot_k``
-    quarter-turns, and converts MJy/sr → electrons at ``pixel_scale_arcsec``
-    (the HR clean-sky grid, 0.05″ by default).
+    Loads the four Euclid frames for ``(subhalo_id, orientation)`` and converts
+    MJy/sr → electrons at ``pixel_scale_arcsec`` (the HR clean-sky grid, 0.05″ by
+    default). Rotation depends on the downsample:
+
+    * ``rot_angle`` given **and** ``rebin_factor >= min_rebin_for_angle`` →
+      arbitrary-angle cubic-spline rotation at native resolution *before* the
+      block-mean (the ≥K× averaging washes out the interpolation blur — see
+      :func:`rotate_arbitrary`). This is the orientation-augmentation path.
+    * otherwise → block-mean first, then an exact ``rot_k`` quarter-turn (the
+      lossless fallback for low-downsample stamps / when no angle is requested).
 
     Returns
     -------
@@ -236,10 +295,15 @@ def prepare_tng_galaxy(
     """
     if rebin_factor < 1:
         raise ValueError(f"rebin_factor must be ≥ 1, got {rebin_factor}")
+    # Arbitrary-angle rotation only when requested AND enough downsample follows
+    # to wash out the spline blur; else the exact quarter-turn.
+    use_angle = (rot_angle is not None
+                 and rebin_factor >= int(min_rebin_for_angle))
     # Assemble in canonical model-band order so channel c is LR band c.
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
     channels: list[np.ndarray] = []
     flux_e: dict[str, float] = {}
+    rot_crop = None     # centred crop slices, computed once (from VIS) for all bands
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
         if fband not in fits_bands:
@@ -247,8 +311,14 @@ def prepare_tng_galaxy(
         band = Config.get_band(cfg_name)
         path = tng_fits_path(galaxy_dir, subhalo_id, orientation, fband)
         sb = load_tng_frame(path)                       # MJy/sr, 1600²
+        if use_angle:
+            if rot_crop is None:                        # size from the first (VIS) frame
+                rot_crop = _rotation_crop_slices(sb, rebin_factor)
+            # Crop to the galaxy core, then spline-rotate (cheap) at native res.
+            sb = rotate_arbitrary(sb[rot_crop], rot_angle)
         sb = block_mean(sb, rebin_factor)               # still MJy/sr
-        sb = rotate_quarter(sb, rot_k)
+        if not use_angle:
+            sb = rotate_quarter(sb, rot_k)              # exact 90° fallback
         e = surface_brightness_to_electrons(sb, band, pixel_scale_arcsec)
         channels.append(e)
         flux_e[cfg_name] = float(e.sum())
@@ -258,6 +328,8 @@ def prepare_tng_galaxy(
         "orientation": int(orientation),
         "rebin_factor": int(rebin_factor),
         "rot_k": int(rot_k) % 4,
+        "rot_angle": float(rot_angle) % 360.0 if use_angle else None,
+        "arbitrary_rotation": bool(use_angle),
         "pixel_scale_arcsec": float(pixel_scale_arcsec),
         "shape": tuple(stamp.shape),
         "flux_e_per_band": flux_e,
@@ -426,10 +498,14 @@ def tng_stamp_at_redshift(
     rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+    # Arbitrary orientation for the dataset-multiplying augmentation (applied by
+    # prepare_tng_galaxy only when rebin ≥ ARBITRARY_ROTATION_MIN_REBIN); rng=None
+    # → no angle → exact quarter-turn, preserving the deterministic path.
+    rot_angle = float(rng.uniform(0.0, 360.0)) if rng is not None else None
 
     stamp, meta = prepare_tng_galaxy(
         galaxy_dir, subhalo_id, orientation,
-        rebin_factor=rebin, rot_k=rot_k,
+        rebin_factor=rebin, rot_k=rot_k, rot_angle=rot_angle,
         pixel_scale_arcsec=pixel_scale_arcsec,
     )
     # The stamp's own rest-frame 4-point SED in relative f_ν: undo each
@@ -590,6 +666,7 @@ def sample_tng_stamp(
             return None
 
     rot_k = int(rng.integers(0, 4))
+    rot_angle = float(rng.uniform(0.0, 360.0))   # used when rebin ≥ threshold
 
     re_px: float | None = None
     if target_re_arcsec is not None and target_re_arcsec > 0.0:
@@ -608,7 +685,7 @@ def sample_tng_stamp(
     try:
         stamp, meta = prepare_tng_galaxy(
             gdir, gid, orientation,
-            rebin_factor=rebin, rot_k=rot_k,
+            rebin_factor=rebin, rot_k=rot_k, rot_angle=rot_angle,
             pixel_scale_arcsec=pixel_scale_arcsec,
         )
     except Exception:
