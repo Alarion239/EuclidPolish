@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,6 +26,9 @@ from tqdm import tqdm
 from euclid_polish.catalog.validator import FitsValidator, angular_separation_arcsec
 from euclid_polish.config import Config
 
+#: Matches ``star_<id>_<size>.fits``; ``:04d`` is a *minimum* width so IDs ≥ 10000
+#: render with 5+ digits — ``\d+`` matches any digit count.
+_FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
 
 #: Serialises the TAP mosaic-tile query across threads. ``astroquery``'s
 #: ``Euclid`` is a process-wide singleton wrapping one TAP session; firing
@@ -214,46 +218,26 @@ def scan_cutouts(
     positions: Dict[int, List[Tuple[float, float, int, str]]] = {}
     corrupted: List[Tuple[int, Optional[int], str]] = []
 
-    # ``star_{id:04d}_{size}.fits`` — ``:04d`` is a *minimum* width, so IDs
-    # ≥ 10000 render with 5+ digits; ``[0-9]*`` matches any digit count (the
-    # old fixed-4-digit glob silently skipped those, re-downloading them).
     fits_files = glob.glob(os.path.join(cutout_dir, "star_[0-9]*_*.fits"))
 
     for filepath in fits_files:
         filename = os.path.basename(filepath)
-        star_id: Optional[int] = None
-        size: Optional[int] = None
-        try:
-            parts = filename.split('_')
-            if len(parts) >= 3 and parts[0] == 'star':
-                star_id = int(parts[1])
-                size = int(parts[2].replace('.fits', ''))
-
-                header = validator.get_header(filepath)
-                if header and 'CRVAL1' in header and 'CRVAL2' in header:
-                    ra = float(header['CRVAL1'])
-                    dec = float(header['CRVAL2'])
-                    positions.setdefault(star_id, []).append(
-                        (ra, dec, size, filepath))
-                else:
-                    corrupted.append((star_id, size, filepath))
-        except (ValueError, IndexError, KeyError, OSError) as e:
-            if star_id is None:
-                parts = filename.split('_')
-                if len(parts) >= 2 and parts[0] == 'star':
-                    try:
-                        star_id = int(parts[1])
-                    except (ValueError, IndexError):
-                        star_id = None
-                if star_id is not None and len(parts) >= 3:
-                    try:
-                        size = int(parts[2].replace('.fits', ''))
-                    except (ValueError, IndexError):
-                        size = None
-            if star_id is not None:
-                corrupted.append((star_id, size, filepath))
-            print(f"Warning: Could not parse {filename}: {e}")
+        m = _FNAME_RE.search(filename)
+        if m is None:
+            print(f"Warning: unexpected cutout filename {filename!r}")
             continue
+        star_id = int(m.group(1))
+        size = int(m.group(2))
+        try:
+            header = validator.get_header(filepath)
+            if header and 'CRVAL1' in header and 'CRVAL2' in header:
+                positions.setdefault(star_id, []).append(
+                    (float(header['CRVAL1']), float(header['CRVAL2']), size, filepath))
+            else:
+                corrupted.append((star_id, size, filepath))
+        except (KeyError, OSError) as e:
+            corrupted.append((star_id, size, filepath))
+            print(f"Warning: Could not read {filename}: {e}")
 
     return positions, corrupted
 

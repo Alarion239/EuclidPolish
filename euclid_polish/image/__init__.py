@@ -6,6 +6,6 @@ the operator (simulator, forward model, trained model, archive).
 """
 
 from euclid_polish.image.collection import ImageSet
-from euclid_polish.image.core import Image, Role
+from euclid_polish.image.core import FitsWCS, Image, Role
 
-__all__ = ["Image", "ImageSet", "Role"]
+__all__ = ["FitsWCS", "Image", "ImageSet", "Role"]

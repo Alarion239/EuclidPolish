@@ -42,6 +42,61 @@ from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format, Stamp
 
 
+@dataclass
+class FitsWCS:
+    """WCS fields extracted from a real Euclid FITS header.
+
+    All fields are Optional — an all-None instance means no WCS was available.
+    Call :meth:`to_header` to get an astropy Header suitable for
+    :func:`~euclid_polish.training.inference.scaled_wcs_header`.
+    """
+
+    crpix1: Optional[float] = None   # reference pixel, axis 1
+    crpix2: Optional[float] = None   # reference pixel, axis 2
+    crval1: Optional[float] = None   # reference RA (deg)
+    crval2: Optional[float] = None   # reference Dec (deg)
+    cd1_1: Optional[float] = None    # CD matrix row 1 col 1
+    cd1_2: Optional[float] = None    # CD matrix row 1 col 2
+    cd2_1: Optional[float] = None    # CD matrix row 2 col 1
+    cd2_2: Optional[float] = None    # CD matrix row 2 col 2
+    cdelt1: Optional[float] = None   # pixel scale axis 1 (deg) — CDELT form
+    cdelt2: Optional[float] = None   # pixel scale axis 2 (deg) — CDELT form
+    ctype1: Optional[str] = None     # e.g. "RA---TAN"
+    ctype2: Optional[str] = None     # e.g. "DEC--TAN"
+    cunit1: Optional[str] = None     # e.g. "deg"
+    cunit2: Optional[str] = None     # e.g. "deg"
+
+    def to_header(self) -> "_fits.Header":
+        """Build an astropy Header containing the non-None WCS cards."""
+        hdr = _fits.Header()
+        mapping = {
+            "CRPIX1": self.crpix1, "CRPIX2": self.crpix2,
+            "CRVAL1": self.crval1, "CRVAL2": self.crval2,
+            "CD1_1":  self.cd1_1,  "CD1_2":  self.cd1_2,
+            "CD2_1":  self.cd2_1,  "CD2_2":  self.cd2_2,
+            "CDELT1": self.cdelt1, "CDELT2": self.cdelt2,
+            "CTYPE1": self.ctype1, "CTYPE2": self.ctype2,
+            "CUNIT1": self.cunit1, "CUNIT2": self.cunit2,
+        }
+        for key, value in mapping.items():
+            if value is not None:
+                hdr[key] = value
+        return hdr
+
+    @classmethod
+    def from_header(cls, header) -> "FitsWCS":
+        """Extract WCS fields from an astropy FITS Header (missing → None)."""
+        return cls(
+            crpix1=header.get("CRPIX1"), crpix2=header.get("CRPIX2"),
+            crval1=header.get("CRVAL1"), crval2=header.get("CRVAL2"),
+            cd1_1=header.get("CD1_1"),   cd1_2=header.get("CD1_2"),
+            cd2_1=header.get("CD2_1"),   cd2_2=header.get("CD2_2"),
+            cdelt1=header.get("CDELT1"), cdelt2=header.get("CDELT2"),
+            ctype1=header.get("CTYPE1"), ctype2=header.get("CTYPE2"),
+            cunit1=header.get("CUNIT1"), cunit2=header.get("CUNIT2"),
+        )
+
+
 class Role(str, Enum):
     """What kind of image this is — gates which operator verb applies.
 
@@ -91,6 +146,7 @@ class Image(StampCarrier):
     band_names: Tuple[str, ...]
     is_clean: bool
     role: Role = field(default=Role.UNKNOWN, kw_only=True)
+    fits_wcs: Optional[FitsWCS] = field(default=None, kw_only=True)
     index: Optional[int] = None
     subset: Optional[str] = None
     metadata: dict = field(default_factory=dict)
@@ -242,12 +298,13 @@ class Image(StampCarrier):
             clean = bool(hdr.get("ISCLEAN", True))
             role = Role(str(hdr.get("IMGROLE", "unknown")).strip())
             stamp = read_stamp_cards(hdr)
+            fits_wcs = FitsWCS.from_header(hdr)
         c = arr.shape[-1] if arr.ndim == 3 else 1
         bands = tuple(bands_card.split(",")) if bands_card else None
         if bands is None or len(bands) != c:
             bands = ("VIS",) if c == 1 else tuple(f"b{i}" for i in range(c))
         return cls(data=arr, pixel_scale_arcsec=ps, band_names=bands,
-                   is_clean=clean, role=role, stamp=stamp)
+                   is_clean=clean, role=role, stamp=stamp, fits_wcs=fits_wcs)
 
     # ------------------------------------------------------------------
     # Raw-bytes export (the WebUI cutout-viewer wire format)

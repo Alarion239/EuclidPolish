@@ -11,6 +11,7 @@ so the stars are re-attempted.
 from __future__ import annotations
 
 import os
+from unittest.mock import patch
 
 from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject
@@ -68,13 +69,13 @@ def test_retry_failed_clears_flags_and_reattempts(tmp_path, monkeypatch):
     # i.e. resolution was attempted at all rather than an instant early return).
     calls = {"resolve": 0}
 
-    def fake_resolve(objs, config):
+    def fake_resolve(objs, config, *, relogin):
         calls["resolve"] += 1
         return {}                       # nothing covered → all re-flag failed
-    monkeypatch.setattr(cat, "_resolve_mosaics", fake_resolve)
 
-    result = cat.download_cutouts(objects, output_dir, _cfg(),
-                                  show_progress=False, retry_failed=True)
+    with patch("euclid_polish.catalog.client.resolve_mosaics", fake_resolve):
+        result = cat.download_cutouts(objects, output_dir, _cfg(),
+                                      show_progress=False, retry_failed=True)
     assert calls["resolve"] == 1        # we got past the early return
     assert result["downloaded"] == 0
     # Persisted catalog: the objects are re-flagged failed (genuinely uncovered).
@@ -85,9 +86,12 @@ def test_retry_failed_clears_flags_and_reattempts(tmp_path, monkeypatch):
 def test_no_retry_takes_early_return_without_resolving(tmp_path, monkeypatch):
     output_dir, objects, cat = _seed_all_failed(tmp_path, 8)
     called = {"resolve": False}
-    monkeypatch.setattr(
-        cat, "_resolve_mosaics",
-        lambda objs, config: called.__setitem__("resolve", True) or {})
-    cat.download_cutouts(objects, output_dir, _cfg(),
-                         show_progress=False, retry_failed=False)
+
+    def fake_resolve(objs, config, *, relogin):
+        called["resolve"] = True
+        return {}
+
+    with patch("euclid_polish.catalog.client.resolve_mosaics", fake_resolve):
+        cat.download_cutouts(objects, output_dir, _cfg(),
+                             show_progress=False, retry_failed=False)
     assert called["resolve"] is False   # never resolved — all stayed failed

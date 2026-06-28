@@ -168,9 +168,8 @@ class CatalogObject:
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "CatalogObject":
         """Build a :class:`CatalogObject` from a CSV row dict."""
-        raw_id = row.get("id")
-        obj_id = (int(raw_id) if raw_id is not None
-                  and not (isinstance(raw_id, float) and np.isnan(raw_id)) else None)
+        v = _finite_float(row.get("id"))
+        obj_id = int(v) if v is not None else None
         flags: Dict[str, Dict[str, Dict[str, bool]]] = {k: {} for k in _FLAG_KINDS}
         for col, val in row.items():
             m = _FLAG_RE.match(str(col))
@@ -245,11 +244,10 @@ class CatalogObject:
                         pass
                 os.replace(tmp, path)
             finally:
-                if os.path.exists(tmp):
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
         cls._ensure_prov(path)
 
     # -- provenance: a stable id per catalog file (minted once, reused) -- #

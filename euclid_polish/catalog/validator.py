@@ -1,11 +1,5 @@
-"""
-Unified FITS file validation module.
+"""FITS file validation utilities used by the cutout downloader."""
 
-This module provides comprehensive FITS file validation functionality
-used across multiple scripts, eliminating code duplication.
-"""
-
-import os
 import numpy as np
 from astropy.io import fits
 from typing import Tuple, Optional
@@ -15,35 +9,14 @@ def angular_separation_arcsec(
     ra1: float, dec1: float,
     ra2: float, dec2: float,
 ) -> float:
-    """
-    Return the angular separation between two sky positions in arcseconds.
-
-    Uses the small-angle approximation (accurate to ~1% within a few degrees).
-
-    Parameters:
-    -----------
-    ra1, dec1 : float
-        First position (degrees).
-    ra2, dec2 : float
-        Second position (degrees).
-
-    Returns:
-    --------
-    float
-        Separation in arcseconds.
-    """
+    """Small-angle angular separation between two sky positions, in arcseconds."""
     ra_diff  = (ra1 - ra2) * np.cos(np.deg2rad((dec1 + dec2) / 2))
     dec_diff = dec1 - dec2
     return np.sqrt(ra_diff**2 + dec_diff**2) * 3600.0
 
 
 class FitsValidator:
-    """
-    Comprehensive FITS file validator.
-
-    Provides methods to validate FITS files for various issues including
-    corruption, data quality, and WCS header validation.
-    """
+    """Validates FITS cutout files for integrity, data quality, and WCS position."""
 
     def __init__(
         self,
@@ -51,82 +24,30 @@ class FitsValidator:
         zero_tolerance: float = 1e-10,
         constant_tolerance: float = 1e-10
     ):
-        """
-        Initialize the validator.
-
-        Parameters:
-        -----------
-        min_shape : int
-            Minimum acceptable dimension size.
-        zero_tolerance : float
-            Tolerance for considering values as zero.
-        constant_tolerance : float
-            Tolerance for detecting constant images.
-        """
         self.min_shape = min_shape
         self.zero_tolerance = zero_tolerance
         self.constant_tolerance = constant_tolerance
 
     def validate_basic_integrity(self, filepath: str) -> Tuple[bool, Optional[str]]:
-        """
-        Validate basic FITS file integrity.
-
-        Checks:
-        - File can be opened
-        - Has valid data
-        - 2D data array
-        - Minimum shape requirements
-        - No NaN values
-        - No Inf values
-        - Not all zeros
-        - Not constant image
-
-        Parameters:
-        -----------
-        filepath : str
-            Path to FITS file.
-
-        Returns:
-        --------
-        tuple
-            (is_valid, error_message)
-            - is_valid: True if file passes all checks
-            - error_message: Description of issue if failed
-        """
+        """Return ``(True, None)`` iff the file opens, is 2D, non-trivial, and finite."""
         try:
             with fits.open(filepath) as hdul:
                 data = self._extract_data(hdul)
                 if data is None:
                     return False, "No data found in any HDU"
-
-                # Check dimensions
                 if data.ndim != 2:
                     return False, f"Invalid dimensions: {data.ndim}D (expected 2D)"
-
-                # Check shape
                 if data.shape[0] < self.min_shape or data.shape[1] < self.min_shape:
                     return False, f"Invalid shape: {data.shape} (too small)"
-
-                # Check for NaN
                 if np.any(np.isnan(data)):
-                    nan_count = np.sum(np.isnan(data))
-                    return False, f"Contains {nan_count} NaN values"
-
-                # Check for Inf
+                    return False, f"Contains {np.sum(np.isnan(data))} NaN values"
                 if np.any(np.isinf(data)):
-                    inf_count = np.sum(np.isinf(data))
-                    return False, f"Contains {inf_count} Inf values"
-
-                # Check if all zeros
+                    return False, f"Contains {np.sum(np.isinf(data))} Inf values"
                 if np.all(np.abs(data) < self.zero_tolerance):
                     return False, "All values are zero"
-
-                # Check if constant image
                 if np.all(np.abs(data - data.flat[0]) < self.constant_tolerance):
                     return False, "All values are identical (constant image)"
-
                 return True, None
-
         except fits.VerifyError as e:
             return False, f"FITS verification error: {e}"
         except OSError as e:
@@ -141,63 +62,25 @@ class FitsValidator:
         expected_dec: float,
         tolerance_arcsec: float = 0.5
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Validate a FITS cutout against expected coordinates.
-
-        Includes all basic integrity checks plus WCS position validation.
-
-        Parameters:
-        -----------
-        filepath : str
-            Path to FITS file.
-        expected_ra : float
-            Expected RA (degrees).
-        expected_dec : float
-            Expected Dec (degrees).
-        tolerance_arcsec : float
-            Position tolerance (arcseconds).
-
-        Returns:
-        --------
-        tuple
-            (is_valid, error_message)
-        """
-        # First check basic integrity
+        """Basic integrity + WCS centre within ``tolerance_arcsec`` of expected."""
         is_valid, error_msg = self.validate_basic_integrity(filepath)
         if not is_valid:
             return False, error_msg
-
-        # Check WCS position
         try:
             with fits.open(filepath) as hdul:
                 header = hdul[0].header
                 if 'CRVAL1' in header and 'CRVAL2' in header:
-                    fits_ra = float(header['CRVAL1'])
-                    fits_dec = float(header['CRVAL2'])
-
-                    separation = angular_separation_arcsec(fits_ra, fits_dec, expected_ra, expected_dec)
-                    if separation >= tolerance_arcsec:
-                        return False, f"Center displaced: {separation:.2f} arcsec from expected"
-
+                    sep = angular_separation_arcsec(
+                        float(header['CRVAL1']), float(header['CRVAL2']),
+                        expected_ra, expected_dec)
+                    if sep >= tolerance_arcsec:
+                        return False, f"Center displaced: {sep:.2f} arcsec from expected"
         except Exception as e:
             return False, f"WCS validation error: {e}"
-
         return True, None
 
     def get_data(self, filepath: str) -> Optional[np.ndarray]:
-        """
-        Safely extract data array from FITS file.
-
-        Parameters:
-        -----------
-        filepath : str
-            Path to FITS file.
-
-        Returns:
-        --------
-        numpy.ndarray or None
-            Data array if successful, None otherwise.
-        """
+        """Safely return the first non-empty data array from a FITS file."""
         try:
             with fits.open(filepath) as hdul:
                 return self._extract_data(hdul)
@@ -205,19 +88,7 @@ class FitsValidator:
             return None
 
     def get_header(self, filepath: str) -> Optional[dict]:
-        """
-        Safely extract FITS header.
-
-        Parameters:
-        -----------
-        filepath : str
-            Path to FITS file.
-
-        Returns:
-        --------
-        dict or None
-            Header dictionary if successful, None otherwise.
-        """
+        """Safely return the primary HDU header as a plain dict."""
         try:
             with fits.open(filepath) as hdul:
                 return dict(hdul[0].header)
@@ -225,114 +96,8 @@ class FitsValidator:
             return None
 
     def _extract_data(self, hdul) -> Optional[np.ndarray]:
-        """
-        Extract data from FITS HDU list.
-
-        Parameters:
-        -----------
-        hdul : astropy.io.fits.HDUList
-            Opened FITS file.
-
-        Returns:
-        --------
-        numpy.ndarray or None
-            First valid data array found.
-        """
+        """Return the first HDU with non-empty data, or None."""
         for hdu in hdul:
-            if hdu.data is not None:
-                if hasattr(hdu.data, 'size') and hdu.data.size > 0:
-                    return hdu.data
+            if hdu.data is not None and hasattr(hdu.data, 'size') and hdu.data.size > 0:
+                return hdu.data
         return None
-
-
-def validate_file_exists(filepath: str, name: str = "File") -> Tuple[bool, Optional[str]]:
-    """
-    Validate that a file exists.
-
-    Parameters:
-    -----------
-    filepath : str
-        Path to check.
-    name : str
-        Name for error messages.
-
-    Returns:
-    --------
-    tuple
-        (is_valid, error_message)
-    """
-    if not os.path.exists(filepath):
-        return False, f"{name} not found: {filepath}"
-    return True, None
-
-
-def validate_directory_exists(dirpath: str, name: str = "Directory") -> Tuple[bool, Optional[str]]:
-    """
-    Validate that a directory exists.
-
-    Parameters:
-    -----------
-    dirpath : str
-        Path to check.
-    name : str
-        Name for error messages.
-
-    Returns:
-    --------
-    tuple
-        (is_valid, error_message)
-    """
-    if not os.path.isdir(dirpath):
-        return False, f"{name} does not exist: {dirpath}"
-    return True, None
-
-
-def validate_range(
-    value: float,
-    min_val: float,
-    max_val: float,
-    name: str = "Value"
-) -> Tuple[bool, Optional[str]]:
-    """
-    Validate that a value is within range.
-
-    Parameters:
-    -----------
-    value : float
-        Value to check.
-    min_val : float
-        Minimum allowed value (inclusive).
-    max_val : float
-        Maximum allowed value (inclusive).
-    name : str
-        Name for error messages.
-
-    Returns:
-    --------
-    tuple
-        (is_valid, error_message)
-    """
-    if not (min_val <= value <= max_val):
-        return False, f"{name} must be between {min_val} and {max_val}, got {value}"
-    return True, None
-
-
-def validate_positive(value: float, name: str = "Value") -> Tuple[bool, Optional[str]]:
-    """
-    Validate that a value is positive.
-
-    Parameters:
-    -----------
-    value : float
-        Value to check.
-    name : str
-        Name for error messages.
-
-    Returns:
-    --------
-    tuple
-        (is_valid, error_message)
-    """
-    if value <= 0:
-        return False, f"{name} must be positive, got {value}"
-    return True, None

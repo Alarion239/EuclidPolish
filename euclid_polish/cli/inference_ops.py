@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from euclid_polish.catalog.archive import EuclidArchive
+from euclid_polish.catalog import EuclidCatalog
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.visualization.reconstruction import plot_imageset
 
@@ -68,7 +68,7 @@ def fetch_and_superresolve(
     out_dir: str,
     regime: str = "eye",
     store=None,
-    fetch_plane=None,
+    catalog=None,
 ) -> tuple:
     """Fetch a real Euclid cutout at ``(ra, dec)``, super-resolve it, and save.
 
@@ -86,9 +86,9 @@ def fetch_and_superresolve(
         Colour regime for the PNG ("eye" or "calibrated").
     store : ProvStore, optional
         Provenance store threaded to fetch + upsample (defaults internally).
-    fetch_plane : callable, optional
-        ``(ra, dec, band_name, size) -> np.ndarray`` (electrons) for
-        tests/offline. ``None`` uses the real archive download.
+    catalog : EuclidCatalog, optional
+        Authenticated client; defaults to an unauthenticated instance that
+        reuses whatever astroquery session is active in the process.
 
     Returns
     -------
@@ -96,8 +96,8 @@ def fetch_and_superresolve(
         ``(sr_fits_path, sr_png_path)``.
     """
     os.makedirs(out_dir, exist_ok=True)
-    lr = EuclidArchive.fetch(ra=ra, dec=dec, size=size,
-                             store=store, fetch_plane=fetch_plane)
+    cat = catalog or EuclidCatalog._unauthenticated()
+    lr = cat.fetch(ra=ra, dec=dec, size=size, store=store)
     sr = model.upsample(lr, store=store)
     fits_path = os.path.join(out_dir, "SR.fits")
     png_path = os.path.join(out_dir, "SR.png")

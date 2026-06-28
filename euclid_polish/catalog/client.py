@@ -16,23 +16,27 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from astropy.io import fits as _fits
 from astroquery.esa.euclid import Euclid
 from tqdm import tqdm
 
-from euclid_polish.catalog.archive import EuclidArchive
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.downloader import (
     DownloadConfig, core_is_saturated, download_one_cutout, fetch_cutout_at,
     positions_match, resolve_mosaics, scan_cutouts,
 )
-from euclid_polish.catalog.photometry import uJy_to_ab_mag
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor, uJy_to_ab_mag
 from euclid_polish.catalog.validator import FitsValidator
 from euclid_polish.config import Config
+from euclid_polish.image import FitsWCS, Image, Role
+from euclid_polish.provenance.defaults import mint_id
+from euclid_polish.provenance.records import Stamp
 
 
 class EuclidAuthError(RuntimeError):
@@ -132,9 +136,11 @@ class EuclidCatalog:
 
         Magnitudes are AB (``Config.AB_ZP_UJY``); the raw PSF flux + error are
         kept on each object. ``require_unmasked`` adds ``det_quality_flag = 0``
-        (the MER clean-point-source cut). ``snr_min`` keeps ``flux ≥ snr·err``.
-        A cone (``ra``/``dec``/``radius``) is optional but must be given together.
-        Returns objects in flux order; persistence/dedup is the caller's job.
+        (the MER clean-point-source cut) and ``flag_vis = 0`` (excludes sources
+        with any SExtractor flag bits set, including saturation). ``snr_min``
+        keeps ``flux ≥ snr·err``. A cone (``ra``/``dec``/``radius``) is optional
+        but must be given together. Returns objects in flux order; persistence/dedup
+        is the caller's job.
         """
         if num_stars <= 0:
             raise ValueError("num_stars must be positive")
@@ -155,6 +161,7 @@ class EuclidCatalog:
             where.append(f"flux_vis_psf > {float(snr_min)} * fluxerr_vis_psf")
         if require_unmasked:
             where.append("det_quality_flag = 0")
+            where.append("flag_vis = 0")
         if all(cone):
             where.append(
                 f"CONTAINS(POINT('ICRS', right_ascension, declination), "
@@ -227,27 +234,70 @@ class EuclidCatalog:
     # Downloads
     # ------------------------------------------------------------------
 
-    def fetch_cutout(self, ra: float, dec: float, band: str, output_file: str,
-                     size: int = 512) -> "tuple[bool, Optional[str]]":
-        """Download one band's FITS cutout at ``(ra, dec)``. Returns ``(ok, err)``.
+    def fetch(
+        self, ra: float, dec: float, size: int,
+        *, bands: Sequence[str] = Config.LR_INPUT_BAND_NAMES,
+        store=None,
+    ) -> Image:
+        """Download a 4-band electron-unit :class:`~euclid_polish.image.Image` at ``(ra, dec)``.
 
-        ``size`` is the reference cutout side in VIS pixels (0.10″/pix grid).
+        Fetches each band, converts ADU s⁻¹ → electrons via the per-band
+        ``MAGZERO`` header keyword, stacks to ``(H, W, len(bands))`` and tags
+        the result ``role='real'`` with a freshly minted provenance stamp.
+        The VIS band WCS is stored on the returned ``Image.fits_wcs`` so callers
+        can build a scaled SR header via
+        :func:`~euclid_polish.training.inference.scaled_wcs_header`.
+        Pass the authenticated :class:`EuclidCatalog` instance from the calling
+        context rather than constructing a new one here.
+
+        Parameters
+        ----------
+        ra, dec : float
+            ICRS coordinates in degrees.
+        size : int
+            Cutout side in VIS pixels (0.10″/pix reference grid).
+        bands : sequence of str
+            Band names (default ``Config.LR_INPUT_BAND_NAMES``).
+        store : ProvStore, optional
+            Provenance store; defaults to ``default_store()`` (guarded).
         """
-        return fetch_cutout_at(ra=ra, dec=dec, band_name=band,
-                               output_file=output_file, cutout_size_vis_pixels=size)
-
-    def fetch_image(self, ra: float, dec: float, size: int):
-        """Download a 4-band electron-unit :class:`~euclid_polish.image.Image` at ``(ra, dec)``."""
-        return EuclidArchive.fetch(ra=ra, dec=dec, size=size)
+        planes: List[np.ndarray] = []
+        vis_wcs: Optional[FitsWCS] = None
+        for band_name in bands:
+            band = Config.get_band(band_name)
+            with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tf:
+                tmp_path = tf.name
+            try:
+                ok, err = fetch_cutout_at(
+                    ra=ra, dec=dec, band_name=band_name,
+                    output_file=tmp_path, cutout_size_vis_pixels=size,
+                )
+                if not ok:
+                    raise RuntimeError(
+                        f"EuclidCatalog.fetch: band {band_name} failed: {err}")
+                with _fits.open(tmp_path) as hdul:
+                    arr = hdul[0].data.astype(np.float32)
+                    magzero = float(
+                        hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
+                    if band_name == "VIS":
+                        vis_wcs = FitsWCS.from_header(hdul[0].header)
+                factor = np.float32(adu_per_s_to_electrons_factor(magzero, band))
+                planes.append((arr * factor).astype(np.float32))
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        data = np.stack(planes, axis=-1)
+        return Image(
+            data=data, pixel_scale_arcsec=Config.VIS_PIXEL_SCALE_ARCSEC,
+            band_names=tuple(bands), is_clean=False, role=Role.REAL,
+            stamp=Stamp(id=mint_id(store), schema_version=3),
+            fits_wcs=vis_wcs)
 
     # ------------------------------------------------------------------
     # Batch cutout download (a whole CatalogObject list, one band)
     # ------------------------------------------------------------------
-
-    def _resolve_mosaics(self, objects: List[CatalogObject],
-                         config: DownloadConfig) -> Dict[int, Dict[str, Any]]:
-        """Resolve each object's mosaic tile, refreshing the session on lapse."""
-        return resolve_mosaics(objects, config, relogin=self.relogin)
 
     def download_cutouts(
         self, objects: List[CatalogObject], output_dir: str,
@@ -279,9 +329,6 @@ class EuclidCatalog:
             band, root=os.path.join(output_dir, Config.CUTOUTS_SUBDIR))
         os.makedirs(cutout_dir, exist_ok=True)
 
-        def persist():
-            CatalogObject.write(objects, catalog_path)
-
         # Optionally un-stick objects wrongly flagged ``download_failed`` by a
         # transient resolution error, so they re-enter the pending set below.
         if retry_failed:
@@ -306,7 +353,7 @@ class EuclidCatalog:
                     os.remove(filepath)
                 except Exception:
                     pass
-            persist()
+            CatalogObject.write(objects, catalog_path)
 
         pixel_scale_arcmin = config.pixel_scale_arcsec / 60.0
         cutout_radius_arcmin = (cutout_size / 2.0) * pixel_scale_arcmin
@@ -336,7 +383,7 @@ class EuclidCatalog:
         needing = [o for o in pending
                    if o.id not in matched or not o.is_valid(cutout_size, band=band)]
 
-        persist()
+        CatalogObject.write(objects, catalog_path)
 
         if not needing:
             valid = sum(1 for o in objects if o.is_valid(cutout_size, band=band))
@@ -352,7 +399,7 @@ class EuclidCatalog:
 
         # Resolve every object → mosaic tile in ONE ADQL query.
         print(f"  Resolving mosaic tiles for {len(needing)} stars...")
-        mosaic_lookup = self._resolve_mosaics(needing, config)
+        mosaic_lookup = resolve_mosaics(needing, config, relogin=self.relogin)
         unmatched_ids = {o.id for o in needing if o.id not in mosaic_lookup}
         if unmatched_ids:
             print(f"  ⚠️  {len(unmatched_ids)} stars not covered by any "
@@ -377,12 +424,16 @@ class EuclidCatalog:
                     # of bright stars) — same check the PSF extractor applies.
                     data = validator.get_data(output_file)
                     if core_is_saturated(data, config.saturation_core_size):
-                        if os.path.exists(output_file):
-                            os.remove(output_file)
+                        try:
+                            os.unlink(output_file)
+                        except OSError:
+                            pass
                         return o.id, False
                     return o.id, True
-                if os.path.exists(output_file):
-                    os.remove(output_file)
+                try:
+                    os.unlink(output_file)
+                except OSError:
+                    pass
             return o.id, False
 
         if with_mosaics:
@@ -411,7 +462,7 @@ class EuclidCatalog:
             if o.id in unmatched_ids:
                 o.set_download_failed(cutout_size, band=band)
 
-        persist()
+        CatalogObject.write(objects, catalog_path)
 
         final_valid = sum(1 for o in objects if o.is_valid(cutout_size, band=band))
         final_corrupted = sum(1 for o in objects

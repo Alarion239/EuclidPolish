@@ -2,13 +2,17 @@
 
     hr = simulator.generate(rng)      -> Image role 'hr'
     lr = forward.apply(hr)            -> Image role 'lr', parented on hr
-    real = EuclidArchive.fetch(...)   -> Image role 'real'
+    real = EuclidCatalog().fetch(...) -> Image role 'real'
 
 (``Model.upsample`` is covered in test_model.py.) The operators are exercised
 with their heavy engines stubbed — only the thin verb wrapper is under test.
 """
 import numpy as np
+from unittest.mock import patch
+from astropy.io import fits as _fits
 
+from euclid_polish.catalog import EuclidCatalog
+from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.image import Image, Role
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.provenance.store import ProvStore
@@ -57,14 +61,19 @@ def test_apply_unstamped_hr_has_no_parents(tmp_path):
 
 
 def test_fetch_returns_real_image(tmp_path):
-    from euclid_polish.catalog.archive import EuclidArchive
     store = ProvStore(str(tmp_path))
 
-    def fake_plane(ra, dec, band, size):
-        return np.ones((size, size), np.float32)
+    def fake_fetch_cutout(ra, dec, band_name, output_file, cutout_size_vis_pixels):
+        hdr = _fits.Header()
+        hdr["MAGZERO"] = 25.0
+        _fits.PrimaryHDU(
+            np.ones((cutout_size_vis_pixels, cutout_size_vis_pixels), np.float32),
+            header=hdr,
+        ).writeto(output_file)
+        return True, None
 
-    img = EuclidArchive.fetch(ra=10.0, dec=-5.0, size=4, store=store,
-                              fetch_plane=fake_plane)
+    with patch("euclid_polish.catalog.client.fetch_cutout_at", side_effect=fake_fetch_cutout):
+        img = EuclidCatalog._unauthenticated().fetch(ra=10.0, dec=-5.0, size=4, store=store)
     assert isinstance(img, Image)
     assert img.role is Role.REAL
     assert img.band_names == BANDS

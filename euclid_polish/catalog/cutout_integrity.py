@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import glob
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -25,9 +24,7 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.catalog.catalog_object import CatalogObject, next_id
-
-#: Cutout filenames are ``star_<id>_<size>.fits`` (id zero-padded to ≥4).
-_FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
+from euclid_polish.catalog.downloader import _FNAME_RE
 
 
 def _catalog_path(output_dir: str) -> str:

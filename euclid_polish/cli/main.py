@@ -1443,6 +1443,7 @@ class InteractiveCLI:
                           num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
             fits_path, png_path = fetch_and_superresolve(
                 ra=ra, dec=dec, size=size, model=model, out_dir=out_dir,
+                catalog=self._euclid_client(),
             )
             print(f"\n✓ FITS: {fits_path}")
             print(f"  PNG:  {png_path}")
