@@ -181,6 +181,23 @@ def test_root_redirects_to_fasrc_hub(client):
     assert "/fasrc" in r.headers["Location"]
 
 
+def test_ensemble_page_renders(client):
+    r = client.get("/ensemble")
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert b"Ensemble" in r.data
+
+
+def test_ensemble_status_no_members(monkeypatch, tmp_path):
+    from euclid_polish.web.helpers.ensemble_viz import ensemble_status
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
+                        str(tmp_path / "ckpt" / "wdsr"))
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    st = ensemble_status()
+    assert st["n_members"] == 0 and st["members"] == []
+    assert st["result_pngs"] == [] and "eval_subset" in st
+    assert not os.path.isdir(str(tmp_path / "vis" / "ensemble"))   # read-only
+
+
 def test_catalog_page_renders(client):
     r = client.get("/catalog")
     assert r.status_code == 200

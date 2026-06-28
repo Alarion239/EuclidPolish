@@ -38,6 +38,7 @@ from euclid_polish.web.routes import (
     catalog,
     config,
     cutouts,
+    ensemble,
     evaluation,
     fasrc,
     files,
@@ -142,6 +143,8 @@ def create_app() -> Flask:
         "/api/config",           # (persists to ~/.euclid_polish; no SSH)
         "/evaluation",           # results gallery reads local eval_results/
         "/api/evaluation/",      # (only .../sync needs SSH; it 400s when down)
+        "/ensemble",             # local: runs ensemble checkpoints on local test
+        "/ensemble/",            # records; render + evaluate jobs need no SSH
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
     )
@@ -215,6 +218,7 @@ def create_app() -> Flask:
     tng.register(app)
     poster.register(app)
     model.register(app)
+    ensemble.register(app)
     evaluation.register(app)
     lensfinder.register(app)
     views.register(app)

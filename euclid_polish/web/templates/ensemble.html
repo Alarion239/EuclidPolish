@@ -1,0 +1,119 @@
+{% extends "base_split.html" %}
+{% block title %}Ensemble · EuclidPolish{% endblock %}
+
+{% block toolbar %}
+<div class="toolbar">
+  <span class="toolbar-label">Ensemble</span>
+  <span class="muted">{{ n_members }} member(s) in <code>{{ base_dir }}</code>
+    · eval subset <code>{{ eval_subset }}</code>
+    {% if test_present %}✓ present{% else %}✗ not synced{% endif %}</span>
+</div>
+{% endblock %}
+
+{% block viz %}
+<section class="card">
+  <h3>Members</h3>
+  {% if members %}
+  <table class="data-table">
+    <thead><tr><th>Checkpoint</th><th>Training seed</th></tr></thead>
+    <tbody>
+      {% for m in members %}
+      <tr><td><code>{{ m.name }}</code></td>
+          <td>{{ m.seed if m.seed is not none else "—" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No members found. Train an ensemble into
+    <code>{{ base_dir }}/member_NN/</code> (e.g.
+    <code>python scripts/train_ensemble.py --n-members 5</code>), then sync its
+    checkpoints here.</p>
+  {% endif %}
+</section>
+
+{% if eval_summary %}
+<section class="card">
+  <h3>Latest test-set evaluation
+    {% if eval_summary.subset %}<span class="muted">({{ eval_summary.subset }},
+      {{ eval_summary.n_scored }} fields){% endif %}</span></h3>
+  <table class="data-table">
+    <tbody>
+      <tr><td>Ensemble PSNR</td>
+          <td><b>{{ "%.3f"|format(eval_summary.ensemble_psnr) }} dB</b></td></tr>
+      <tr><td>Mean member PSNR</td>
+          <td>{{ "%.3f"|format(eval_summary.mean_member_psnr) }} dB</td></tr>
+      <tr><td>Ensemble gain vs best member</td>
+          <td>{{ "%+.3f"|format(eval_summary.ensemble_gain_db) }} dB</td></tr>
+      <tr><td>Per-member PSNR</td>
+          <td>{% for p in eval_summary.per_member_psnr %}{{ "%.2f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+      <tr><td>Mean disagreement (member std)</td>
+          <td>{{ "%.4g"|format(eval_summary.disagreement.mean_std_e) }} e⁻</td></tr>
+      <tr><td>Mean relative disagreement</td>
+          <td>{{ "%.3f"|format(eval_summary.disagreement.mean_rel_disagreement) }}</td></tr>
+      <tr><td>Fraction of SR flux hallucinated</td>
+          <td>{{ "%.1f"|format(eval_summary.disagreement.frac_flux_hallucinated * 100) }} %</td></tr>
+    </tbody>
+  </table>
+  <p class="hint">Ensemble &ge; mean member ⇒ averaging helps. High disagreement /
+     hallucinated-flux ⇒ the SR is inventing detail the LR doesn't constrain.</p>
+</section>
+{% endif %}
+
+{% if result_pngs %}
+<div class="gallery">
+  {% for p in result_pngs %}
+    <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}"
+       target="_blank" title="{{ p.name }}">
+      <img loading="lazy" src="{{ url_for('serve_vis', relpath=p.rel) }}"
+           alt="{{ p.name }}">
+      <span class="thumb-label">{{ p.name }}</span>
+    </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block actions %}
+<section class="card">
+  <h3>Disagreement (hallucination cross-check)</h3>
+  <form id="ens-render-form" action="/ensemble/render">
+    <label title="Index of the held-out test field to render.">
+      Test field index
+      <input type="number" name="index" value="0" min="0"></label>
+    <p class="hint" style="flex-basis:100%;">Renders LR | ensemble-mean SR |
+       per-pixel member disagreement | HR. Bright disagreement = invented detail.</p>
+    <button type="submit">Render field</button>
+  </form>
+  <div id="ens-render-status"></div>
+</section>
+
+<section class="card">
+  <h3>Evaluate on test set</h3>
+  <form id="ens-eval-form" action="/ensemble/evaluate">
+    <label title="How many held-out test fields to score.">
+      Number of fields
+      <input type="number" name="num_images" value="100" min="1" max="2000"></label>
+    <p class="hint" style="flex-basis:100%;">Per-member + ensemble PSNR and
+       disagreement stats on the held-out <code>{{ eval_subset }}</code> set.</p>
+    <button type="submit">Evaluate</button>
+  </form>
+  <div id="ens-eval-status"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("ens-render-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("ens-render-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("ens-eval-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+</script>
+{% endblock %}
