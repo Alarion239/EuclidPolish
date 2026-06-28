@@ -108,6 +108,7 @@ def run_synthetic_eval(
     from astropy.io import fits
 
     from euclid_polish.eval.catalog_runner import load_eval_model
+    from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
     from euclid_polish.training.inference import reconstruct
@@ -126,23 +127,25 @@ def run_synthetic_eval(
     rdir = records_dir or default_records_dir()
     if rdir is None:
         raise FileNotFoundError(
-            "validation records not found (dirty/hr_validate.tfrecord). Open the "
+            "eval records not found (dirty/hr_test.tfrecord). Open the "
             "/inference page once to sync them, or set Config.RECORDS_DIR_V2.")
-    src_csv = os.path.join(rdir, "sources_validate.csv")
+    # Held-out test split when present, else validate (pre-test-split datasets).
+    sub = eval_subset(rdir)
+    src_csv = os.path.join(rdir, f"sources_{sub}.csv")
     by_field = read_sources(src_csv)
     if not by_field:
-        _emit("source catalog not found (sources_validate.csv) — regenerate the "
-              "validation set with metadata; skipping syn-lens/syn-gal.")
+        _emit(f"source catalog not found (sources_{sub}.csv) — regenerate the "
+              f"{sub} set with metadata; skipping syn-lens/syn-gal.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}
 
     # Read a window of records (enough to find N of each subgroup).
     window = max(n * 12, 60)
-    lr_recs = read_images(tfrecord_path(rdir, "dirty_validate"),
+    lr_recs = read_images(tfrecord_path(rdir, f"dirty_{sub}"),
                                        num_images=window)
-    hr_recs = read_images(tfrecord_path(rdir, "hr_validate"),
+    hr_recs = read_images(tfrecord_path(rdir, f"hr_{sub}"),
                                        num_images=window)
     if not hr_recs:
-        _emit("no HR validation records read.")
+        _emit(f"no HR {sub} records read.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}
     hr_by = {h.index: h for h in hr_recs}
     lr_by = {r.index: r for r in lr_recs}

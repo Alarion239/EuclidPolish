@@ -15,8 +15,9 @@ from euclid_polish.config import Config
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.provenance.records import Artifact, Format
 
-#: Subsets we generate SR for, in priority order.
-SUBSETS = ("validate", "train")
+#: Subsets we generate SR for, in priority order. ``test`` first: it's the
+#: held-out set evals (e.g. the power-spectrum summary) prefer.
+SUBSETS = ("test", "validate", "train")
 
 
 def sky_sr_dir() -> str:

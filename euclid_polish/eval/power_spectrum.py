@@ -272,7 +272,7 @@ def _bands_from_cube(arr: np.ndarray) -> dict[int, np.ndarray]:
 # Renderer (matplotlib)                                                        #
 # --------------------------------------------------------------------------- #
 def render_power_spectrum_summary(
-    out_png: str, subset: str = "validate"
+    out_png: str, subset: str | None = None
 ) -> str | None:
     """Render the per-band HR-vs-SR power-spectrum figure → ``out_png``.
 
@@ -287,11 +287,15 @@ def render_power_spectrum_summary(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.web.helpers import sky_records
     from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
     records_dir = _sky_records_local_dir()
+    # Default to the held-out test split (else validate) when not specified.
+    if subset is None:
+        subset = eval_subset(records_dir)
     clean_path = tfrecord_path(records_dir, f"clean_{subset}")
     n_sr = sky_records.sr_count(subset)
     if not os.path.exists(clean_path) or n_sr == 0:

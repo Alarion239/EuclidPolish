@@ -39,6 +39,7 @@ from euclid_polish.cli.utils import (
     validate_ra,
 )
 from euclid_polish.config import Config
+from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image, ImageSet
 from euclid_polish.image.tfio import (
     open_writer,
@@ -904,7 +905,7 @@ class InteractiveCLI:
 
         # Discover which subsets have v2 clean TFRecords.
         subsets_to_run = []
-        for subset in ("train", "validate"):
+        for subset in ("train", "validate", "test"):
             clean_path = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
             if os.path.exists(clean_path):
                 n_images = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
@@ -976,6 +977,10 @@ class InteractiveCLI:
         nvalid     = (
             input(f"Number of validation images (default {Config.DEFAULT_NIMAGES // 5}): ").strip()
             or str(Config.DEFAULT_NIMAGES // 5))
+        ntest      = (
+            input(f"Number of test images — held-out, for evals "
+                  f"(default {Config.DEFAULT_NIMAGES // 5}): ").strip()
+            or str(Config.DEFAULT_NIMAGES // 5))
         pixel_scale = (input(f"HR pixel scale in arcsec (default {Config.DEFAULT_PIXEL_SCALE}): ").strip()
                        or str(Config.DEFAULT_PIXEL_SCALE))
         image_size  = input(
@@ -986,6 +991,7 @@ class InteractiveCLI:
         try:
             ntrain_val      = int(ntrain)
             nvalid_val      = int(nvalid)
+            ntest_val       = int(ntest)
             pixel_scale_val = float(pixel_scale)
             image_size_val  = int(image_size)
         except ValueError:
@@ -1004,11 +1010,13 @@ class InteractiveCLI:
         print(f"  Catalog:           {catalog_path}")
         print(f"  Training images:   {ntrain_val}")
         print(f"  Validation images: {nvalid_val}")
+        print(f"  Test images:       {ntest_val}  (held-out, for evals)")
         print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix (HR)")
         print(f"  Image size:        {image_size_val} x {image_size_val} (4 channels)")
         print(f"  Output (TFRecord): {Config.RECORDS_DIR_V2}/")
         print("    clean_train.tfrecord")
         print("    clean_validate.tfrecord")
+        print("    clean_test.tfrecord")
 
         if not confirm("\nGenerate clean multi-band sky data?", default=True).ask():
             return
@@ -1024,7 +1032,10 @@ class InteractiveCLI:
             sim = SkySimulator(catalog, cfg)
             os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
 
-            for subset, n in (("train", ntrain_val), ("validate", nvalid_val)):
+            for subset, n in (("train", ntrain_val), ("validate", nvalid_val),
+                              ("test", ntest_val)):
+                if n <= 0:
+                    continue
                 # Entropy-seeded master RNG: fresh fields every invocation.
                 # Master seed is logged for replay.
                 master_seed = int.from_bytes(os.urandom(8), "little")
@@ -1149,16 +1160,18 @@ class InteractiveCLI:
                     evaluate_every=evaluate_every_val,
                 )
 
-                # Post-training evaluation on best checkpoint
-                lr_val = ImageSet.read(tfrecord_path(records_dir, "dirty_validate"))
-                hr_val = ImageSet.read(tfrecord_path(records_dir, "clean_validate"))
+                # Post-training evaluation on the held-out test set (else
+                # validate, for datasets predating the test split).
+                eval_sub = eval_subset(records_dir)
+                lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
+                hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
                 valid_ds = m._build_training_pipeline(
                     lr_val.source_path, hr_val.source_path, 1, augment=False
                 )
                 metrics = Trainer(model=m._tf_model,
                                   checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
                 print(
-                    f"\nFinal metrics:\n"
+                    f"\nFinal metrics ({eval_sub} set):\n"
                     f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
                     f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
                 )
@@ -1179,7 +1192,7 @@ class InteractiveCLI:
                 traceback.print_exc()
 
     def _evaluate_model(self):
-        """Evaluate a trained model on the validation set."""
+        """Evaluate a trained model on the held-out test set (else validate)."""
         checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
                           or Config.DEFAULT_CHECKPOINT_DIR)
         scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
@@ -1199,11 +1212,12 @@ class InteractiveCLI:
             print(f"\n✗ No checkpoints found in {checkpoint_dir}")
             return
 
-        # Check that validation TFRecords exist (v2 multi-band)
+        # Evaluate on the held-out test set (else validate) — v2 multi-band.
         records_dir = Config.RECORDS_DIR_V2
-        dirty_valid = tfrecord_path(records_dir, "dirty_validate")
-        if not os.path.exists(dirty_valid):
-            print(f"\n✗ No validation data found in {records_dir}")
+        eval_sub = eval_subset(records_dir)
+        dirty_eval = tfrecord_path(records_dir, f"dirty_{eval_sub}")
+        if not os.path.exists(dirty_eval):
+            print(f"\n✗ No {eval_sub} data found in {records_dir}")
             return
 
         try:
@@ -1211,13 +1225,13 @@ class InteractiveCLI:
             print(f"\nLoading model from {checkpoint_dir}...")
             m = Model(checkpoint_dir, scale=scale_val,
                       num_res_blocks=num_res_blocks_val)
-            lr_val = ImageSet.read(tfrecord_path(records_dir, "dirty_validate"))
-            hr_val = ImageSet.read(tfrecord_path(records_dir, "clean_validate"))
+            lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
+            hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
             valid_ds = m._build_training_pipeline(
                 lr_val.source_path, hr_val.source_path, 1, augment=False
             )
 
-            print("Evaluating on validation set...")
+            print(f"Evaluating on {eval_sub} set...")
             metrics = Trainer(model=m._tf_model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
             print(
                 f"\n✓ Validation metrics:\n"

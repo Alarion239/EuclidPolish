@@ -108,6 +108,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--checkpoint-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
     ap.add_argument("--ntrain",         type=int, default=6400)
     ap.add_argument("--nvalid",         type=int, default=100)
+    ap.add_argument("--ntest",          type=int, default=100,
+                    help="Held-out test images (default 100). Evals run on this "
+                         "set, not validate (which the trainer keeps for "
+                         "save-best). 0 disables the test split.")
     ap.add_argument("--image-size",     type=int, default=252,
                     help="HR field side (HR pixels). Must be divisible by 6 "
                          "(LCM of VIS rebin=2 and NISP rebin=6).")
@@ -198,6 +202,20 @@ def parse_args() -> argparse.Namespace:
 _STREAM_GEN = 10_000   # clean-scene generation draws
 _STREAM_FWD = 10_001   # forward-model (noise / artifact) draws
 
+#: Distinct per-subset tags so train / validate / test draw independent RNG
+#: streams from the one run_seed (else test would alias validate's noise).
+_SUBSET_TAGS = {"train": 1, "validate": 2, "test": 3}
+
+
+def _subset_tag(subset: str) -> int:
+    return _SUBSET_TAGS.get(subset, 0)
+
+
+def _ntest(args: argparse.Namespace) -> int:
+    """Held-out test-set size; 0 when ``--ntest`` is absent (e.g. a partial
+    args built programmatically), so the test split is simply skipped."""
+    return int(getattr(args, "ntest", 0))
+
 
 def _resolve_run_seed(args: argparse.Namespace) -> int:
     """The run's master seed: ``--seed`` when >= 0, else a fresh entropy draw."""
@@ -210,8 +228,7 @@ def _resolve_run_seed(args: argparse.Namespace) -> int:
 def _subset_rng(run_seed: int, subset: str,
                 stream: int) -> np.random.Generator:
     """Deterministic RNG for one (subset, stream), derived from ``run_seed``."""
-    subset_tag = 1 if subset == "train" else 2
-    return np.random.default_rng([run_seed, subset_tag, stream])
+    return np.random.default_rng([run_seed, _subset_tag(subset), stream])
 
 
 # ---------------------------------------------------------------------------
@@ -268,10 +285,13 @@ def step_generate(args: argparse.Namespace) -> None:
     # generate workers are actually busy. Daemon thread; dies at exit.
     ResourceSampler(reporter).start()
     reporter.set_stage("generating clean HR fields")
-    grand_total = int(args.ntrain) + int(args.nvalid)
+    grand_total = int(args.ntrain) + int(args.nvalid) + _ntest(args)
     done = 0
 
-    for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
+    for subset, n in (("train", args.ntrain), ("validate", args.nvalid),
+                      ("test", _ntest(args))):
+        if n <= 0:
+            continue
         if not args.force and _subset_complete(
                 args.records_dir, subset, ("clean", "sources"), n):
             done += n
@@ -340,20 +360,22 @@ def step_convolve(args: argparse.Namespace) -> None:
     reporter = Reporter.from_env()
     reporter.set_stage("forward-modelling HR → LR")
     counts = {}
-    for subset in ("train", "validate"):
+    for subset in ("train", "validate", "test"):
         p = tfrecord_path(args.records_dir, f"clean_{subset}")
         counts[subset] = (sum(1 for _ in tf.data.TFRecordDataset(p))
                           if os.path.exists(p) else 0)
     grand_total = sum(counts.values())
     done = 0
 
-    for subset in ("train", "validate"):
+    n_expected_by_subset = {"train": args.ntrain, "validate": args.nvalid,
+                            "test": _ntest(args)}
+    for subset in ("train", "validate", "test"):
         clean_path = tfrecord_path(args.records_dir, f"clean_{subset}")
         if not os.path.exists(clean_path):
             _log(f"⚠️  {clean_path} not found, skipping {subset}")
             continue
 
-        n_expected = args.ntrain if subset == "train" else args.nvalid
+        n_expected = n_expected_by_subset[subset]
         if not args.force and _subset_complete(
                 args.records_dir, subset, ("hr", "dirty"), n_expected):
             done += counts[subset]
@@ -641,7 +663,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         _generator_config_from_args(args), seed=run_seed)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
-    for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
+    for subset, n in (("train", args.ntrain), ("validate", args.nvalid),
+                      ("test", _ntest(args))):
         if n <= 0:
             continue
         if not args.force and _subset_complete(
@@ -673,7 +696,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             if end > start:
                 # SeedSequence material → reproducible, independent per shard;
                 # all derived from the one recorded run_seed.
-                seed = [run_seed, (1 if subset == "train" else 2), sid]
+                seed = [run_seed, _subset_tag(subset), sid]
                 tasks.append((subset, start, end - start, sid, seed, plan))
 
         reporter.set_stage(f"generate+forward {subset} (×{workers})")
