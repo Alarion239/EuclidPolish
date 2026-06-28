@@ -30,7 +30,7 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import open_writer, tfrecord_path
 from euclid_polish.image import Image
-from euclid_polish.training.data_multiband import (
+from euclid_polish.training.augmentation import (
     asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
 )
 from euclid_polish.training.forward_op import HSTForwardOp

@@ -1,32 +1,4 @@
-"""
-Trainer module for WDSR super-resolution models.
-
-The model always estimates one quantity: the **deconvolved sky** ``SR``.
-Every source supervises that single estimate through its own
-instrument's forward operator, so the objective is consistent across
-sources (no source pulls ``SR`` toward a PSF-blurred image). The trainer
-drives this via two batch formats, dispatched on ``lane_counts`` in
-:meth:`Trainer.train`:
-
-  * 2-tuple ``(lr, hr)`` with ``lane_counts=None`` — the pure-supervised
-    path (``|SR - hr|``). Used by ``scripts/run_pipeline.py``,
-    ``cli/main.py``, the web inference helpers, and every validation
-    stream. → :meth:`train_step`.
-  * 2-tuple ``(lr, hr)`` with ``lane_counts=(n_syn, n_hst, n_anchor)`` — a
-    **fixed contiguous layout** batch (first ``n_syn`` synthetic, then
-    ``n_hst`` HST, then ``n_anchor`` star-anchor), produced by
-    :meth:`MultiBandEuclidDataset.dataset_fixed_layout`. →
-    :meth:`train_step_sky`, which slices each lane by its static count:
-
-      - synthetic — ``|SR - scene|`` (direct; the clean target is the sky).
-      - HST       — ``|asinh(H ⊛ SR) - HST_image|`` (HST F814W PSF, no rebin).
-      - star-anchor — masked ``|SR - delta_target|`` at the star pixel only
-        (catalog flux at a real Euclid star; operator-free, no PSF).
-
-The split is by fixed *position* (static Python-int slices), not a
-per-example ``tf.where`` mask — so there is no branching and each lane's
-conv is a single batched op over its block.
-"""
+"""Trainer module for WDSR super-resolution models."""
 import math
 import os
 import time

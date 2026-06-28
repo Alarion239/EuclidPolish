@@ -285,7 +285,7 @@ def test_bench_lens_render_one_band():
 def test_bench_asinh_stretch_lr_cached():
     """Per-band asinh stretch on a 64² 4-channel batch — should be cache-fast."""
     import tensorflow as tf
-    from euclid_polish.training.data_multiband import asinh_stretch_lr
+    from euclid_polish.training.augmentation import asinh_stretch_lr
 
     rng = np.random.default_rng(0)
     x = tf.constant(rng.normal(size=(4, 64, 64, 4), scale=500.0).astype(np.float32))
