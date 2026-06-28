@@ -106,7 +106,7 @@ def main() -> int:
         img_e = adu_per_s_to_electrons(arr, magzero, band)
         cat_e = _catalog_electrons(row, band)
         sums = [_aperture_sum(img_e, r) for r in args.radii]
-        for r, s in zip(args.radii, sums):
+        for r, s in zip(args.radii, sums, strict=False):
             if cat_e > 0:
                 ratios[r].append(s / cat_e)
         cells = "  ".join(f"{s / cat_e:7.3f}" for s in sums)

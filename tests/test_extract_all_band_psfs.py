@@ -103,11 +103,11 @@ class _FakeStar:
 
 
 def _fake_args(tmp_path, **over):
-    base = dict(
-        num_stars=None, cutout_size=64, vis_pixels=None, output_size=None,
-        psf_dir=str(tmp_path / "psf"), stars_per_psf=100, min_stars_per_psf=50,
-        stars_csv=str(tmp_path / "stars.csv"), max_procs=1,
-        bands="VIS,Y_E", cache_dir=None, keep_cache=False)
+    base = {
+        "num_stars": None, "cutout_size": 64, "vis_pixels": None, "output_size": None,
+        "psf_dir": str(tmp_path / "psf"), "stars_per_psf": 100, "min_stars_per_psf": 50,
+        "stars_csv": str(tmp_path / "stars.csv"), "max_procs": 1,
+        "bands": "VIS,Y_E", "cache_dir": None, "keep_cache": False}
     base.update(over)
     return argparse.Namespace(**base)
 

@@ -62,7 +62,7 @@ def test_load_band_psf_reads_empirical_when_present(tmp_path):
 def test_load_all_band_psfs_returns_one_per_band(tmp_path):
     psfs = load_all_band_psfs(psf_dir=str(tmp_path))
     assert set(psfs.keys()) == {b.name for b in Config.BANDS}
-    for name, psf in psfs.items():
+    for _name, psf in psfs.items():
         assert psf.data.sum() == pytest.approx(1.0, rel=1e-6)
         # All at the HR grid by default
         assert psf.pixel_scale == pytest.approx(Config.DEFAULT_PIXEL_SCALE)

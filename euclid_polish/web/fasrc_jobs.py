@@ -20,6 +20,7 @@ live.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -492,7 +493,7 @@ def submit_sbatch_script(
     # logged with parameters). Best-effort: a missing campaign falls back to
     # tracking/unassigned_fasrc_jobs.jsonl, and any failure is swallowed so
     # tracking never breaks a submit.
-    try:
+    with contextlib.suppress(Exception):
         default_store().log_fasrc_job({
             "jobid":       slurm_id,
             "step_id":     step_id or "",
@@ -503,8 +504,6 @@ def submit_sbatch_script(
             "err_path":    err_path,
             "events_path": events_path or "",
         })
-    except Exception:
-        pass
 
     payload: dict[str, Any] = {
         "ok":          True,
@@ -548,7 +547,7 @@ def parse_squeue(text: str) -> list[dict[str, str]]:
             parts = line.split()
         if len(parts) < len(keys):
             parts += [""] * (len(keys) - len(parts))
-        rows.append(dict(zip(keys, parts[: len(keys)])))
+        rows.append(dict(zip(keys, parts[: len(keys)], strict=False)))
     return rows
 
 
@@ -823,10 +822,8 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
             # terminal ``state`` (e.g. CANCELLED / TIMEOUT) from sacct —
             # squeue can't report those, so without this the per-step
             # history panel would show the job stuck on "pending".
-            try:
+            with contextlib.suppress(Exception):
                 target_log.record_post_mortem(jobid, stats)
-            except Exception:
-                pass
 
     return changes
 

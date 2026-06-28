@@ -59,6 +59,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import contextlib
+
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 
@@ -208,10 +210,8 @@ def _download_one(
                 os.remove(archive)
         except OSError:
             pass
-        try:
+        with contextlib.suppress(OSError):
             os.rmdir(tmp_dir)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -296,10 +296,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.executor == "process":
         Executor = concurrent.futures.ProcessPoolExecutor
         pool_kwargs = {"max_workers": max(1, args.workers)}
-        try:
+        with contextlib.suppress(ValueError):
             pool_kwargs["mp_context"] = multiprocessing.get_context("fork")
-        except ValueError:
-            pass
     else:
         Executor = concurrent.futures.ThreadPoolExecutor
         pool_kwargs = {"max_workers": max(1, args.workers)}

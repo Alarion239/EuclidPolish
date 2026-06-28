@@ -83,8 +83,8 @@ def test_add_sersic_to_bands_matches_per_band_loop():
     """Broadcast-add must produce the same result as N independent draws."""
     H = W = 96
     flux_per_band = np.array([1e5, 5e4, 3e4, 2e4], dtype=np.float32)
-    common = dict(n=4.0, r_e=0.10, q=0.8, theta_rad=0.3,
-                  x0=W / 2, y0=H / 2, pixel_scale=0.05)
+    common = {"n": 4.0, "r_e": 0.10, "q": 0.8, "theta_rad": 0.3,
+                  "x0": W / 2, "y0": H / 2, "pixel_scale": 0.05}
 
     # Broadcast path
     canvas_a = np.zeros((H, W, 4), dtype=np.float32)
@@ -194,8 +194,8 @@ def test_two_tier_matches_uniform_high_csub_on_total_flux():
     """The adaptive core+wings strategy must integrate to the same total
     flux as a uniform high-csub baseline (within their shared 5% tolerance).
     """
-    common = dict(n=4.0, r_e=0.20, q=0.8, theta_rad=0.3,
-                  x0=200, y0=200, pixel_scale=0.05)
+    common = {"n": 4.0, "r_e": 0.20, "q": 0.8, "theta_rad": 0.3,
+                  "x0": 200, "y0": 200, "pixel_scale": 0.05}
 
     adaptive_stamp, _ = compute_sersic_stamp((401, 401), **common)
     uniform_stamp,  _ = compute_sersic_stamp((401, 401), csub=21, **common)
@@ -220,8 +220,8 @@ def test_two_tier_matches_uniform_on_core_pixels():
     r_e_pix = r_e / pixel_scale
     csub_core = _default_csub(n, r_e_pix)
 
-    common = dict(n=n, r_e=r_e, q=q, theta_rad=0.0,
-                  x0=50, y0=50, pixel_scale=pixel_scale)
+    common = {"n": n, "r_e": r_e, "q": q, "theta_rad": 0.0,
+                  "x0": 50, "y0": 50, "pixel_scale": pixel_scale}
     adaptive_stamp, a_bounds = compute_sersic_stamp((101, 101), **common)
     uniform_stamp,  u_bounds = compute_sersic_stamp(
         (101, 101), csub=csub_core, **common,

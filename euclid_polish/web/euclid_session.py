@@ -7,6 +7,8 @@ download itself runs on FASRC; this is only the local UI's session state.
 
 from __future__ import annotations
 
+import contextlib
+
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.catalog.client import EuclidCatalog
@@ -28,10 +30,8 @@ def logout() -> None:
     global _catalog, _user
     _catalog = None
     _user = None
-    try:
+    with contextlib.suppress(Exception):
         Euclid.logout()
-    except Exception:
-        pass
 
 
 def is_authenticated() -> bool:

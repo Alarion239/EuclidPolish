@@ -23,6 +23,7 @@ Design
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -342,10 +343,8 @@ def fold_events(text: str) -> JobStatus:
             for key, bucket in (("cpu", res_cpu), ("gpu", res_gpu),
                                 ("gpu_mem", res_gpu_mem)):
                 if key in value:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         bucket.append(float(value[key]))
-                    except (TypeError, ValueError):
-                        pass
         elif kind == "metric" and isinstance(value, dict):
             # One evaluate's metrics. Stamp the event ts so a consumer can
             # plot against wall time even if the producer didn't include it.
@@ -399,8 +398,8 @@ def fold_events(text: str) -> JobStatus:
     step_rate_per_s: float | None = None
     step_eta_s:      float | None = None
     ema_spp: float | None = None        # EMA of seconds-per-step
-    for (t0, c0, _), (t1, c1, tot1) in zip(
-        rate_history, rate_history[1:]
+    for (t0, c0, _), (t1, c1, _tot1) in zip(
+        rate_history, rate_history[1:], strict=False
     ):
         d_t = t1 - t0
         d_n = c1 - c0

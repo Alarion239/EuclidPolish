@@ -266,7 +266,7 @@ def _protect_real_data_dir():
 
     snapshots: dict = {}
     if os.path.isdir(DATA_DIR):
-        for root, dirs, files in os.walk(DATA_DIR):
+        for root, _dirs, files in os.walk(DATA_DIR):
             # Skip the FASRC rsync cache — it's transient by design.
             if "_fasrc_cache" in root.split(os.sep):
                 continue

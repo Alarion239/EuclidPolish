@@ -97,7 +97,7 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     consume it without further translation.
     """
     rows = [
-        dict(zip(_SACCT_FIELDS, line.split("|")))
+        dict(zip(_SACCT_FIELDS, line.split("|"), strict=False))
         for line in text.splitlines()
         if line.strip() and "|" in line
     ]

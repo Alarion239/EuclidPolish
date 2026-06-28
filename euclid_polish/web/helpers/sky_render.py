@@ -125,7 +125,7 @@ def _render_saturation_view(objects):
     fig, axes = plt.subplots(nrows, ncols, figsize=(11, 4.0 * nrows))
     axes = np.atleast_1d(axes).ravel()
 
-    for ax, name in zip(axes, band_names):
+    for ax, name in zip(axes, band_names, strict=False):
         valid_mags, invalid_mags = [], []
         for o in objects:
             m = o.magnitude
@@ -232,7 +232,7 @@ def _render_psf_clusters_png(output_dir: str | None,
     sra, sdec = np.asarray(sra), np.asarray(sdec)
     if len(sra):
         labels = np.array([int(np.argmin(_great_circle_arcmin(r, d, cra, cdec)))
-                           for r, d in zip(sra, sdec)])
+                           for r, d in zip(sra, sdec, strict=False)])
     else:
         labels = np.zeros(0, dtype=int)
 

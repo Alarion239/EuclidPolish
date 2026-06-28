@@ -1,6 +1,7 @@
 """paths helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import contextlib
 import os
 
 from flask import abort
@@ -46,10 +47,8 @@ def _inspectable_roots() -> list[str]:
     for p in roots:
         if not p:
             continue
-        try:
+        with contextlib.suppress(OSError):
             out.append(os.path.realpath(p))
-        except OSError:
-            pass
     return out
 
 

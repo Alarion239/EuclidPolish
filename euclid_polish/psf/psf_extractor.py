@@ -404,13 +404,13 @@ class PSFExtractor:
         epsf_star_container = EPSFStars(list(epsf_stars))
 
         print("Building effective PSF...")
-        builder_kwargs = dict(
-            oversampling=self.config.oversampling,
-            maxiters=self.config.max_iters,
-            progress_bar=self.config.progress_bar,
-            center_accuracy=self.config.accuracy,
-            smoothing_kernel=None,
-        )
+        builder_kwargs = {
+            "oversampling": self.config.oversampling,
+            "maxiters": self.config.max_iters,
+            "progress_bar": self.config.progress_bar,
+            "center_accuracy": self.config.accuracy,
+            "smoothing_kernel": None,
+        }
         out_side = self.config.effective_output_size
         if out_side is not None:
             # Photutils accepts ``shape=(H, W)`` in *oversampled* pixels.

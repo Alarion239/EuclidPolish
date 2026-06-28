@@ -174,13 +174,13 @@ class ProvRecord:
 
     @staticmethod
     def _base_kwargs(d: dict[str, Any]) -> dict[str, Any]:
-        return dict(
-            id=ProvId(d["id"]),
-            parents=tuple(ProvId(p) for p in d.get("parents", [])),
-            git=d.get("git"),
-            created_at=d["created_at"],
-            kind=d.get("kind", "provrecord"),
-        )
+        return {
+            "id": ProvId(d["id"]),
+            "parents": tuple(ProvId(p) for p in d.get("parents", [])),
+            "git": d.get("git"),
+            "created_at": d["created_at"],
+            "kind": d.get("kind", "provrecord"),
+        }
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> ProvRecord:

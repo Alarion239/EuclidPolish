@@ -157,7 +157,7 @@ def test_forward_uses_band_specific_psf_sizes():
 def test_load_all_band_psfs_reports_consistent_resolutions(tmp_path):
     """All bands end up at the requested target scale."""
     psfs = load_all_band_psfs(target_pixel_scale=0.05, psf_dir=str(tmp_path))
-    for name, psf in psfs.items():
+    for _name, psf in psfs.items():
         assert psf.pixel_scale == pytest.approx(0.05, rel=1e-6)
         # Side is odd and sized to the band.
         assert psf.data.shape[0] == psf.data.shape[1]

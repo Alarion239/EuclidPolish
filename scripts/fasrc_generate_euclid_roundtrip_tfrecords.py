@@ -286,8 +286,8 @@ def main() -> int:
     rng = np.random.default_rng(args.seed)
     perm = rng.permutation(len(positions))
     n_valid = int(round(len(positions) * args.valid_fraction))
-    valid_pos_ids = set(int(positions.iloc[i]["id"]) for i in perm[:n_valid])
-    train_pos_ids = set(int(positions.iloc[i]["id"]) for i in perm[n_valid:])
+    valid_pos_ids = {int(positions.iloc[i]["id"]) for i in perm[:n_valid]}
+    train_pos_ids = {int(positions.iloc[i]["id"]) for i in perm[n_valid:]}
     print(f"      split: {len(train_pos_ids)} train / "
           f"{len(valid_pos_ids)} validate positions")
 

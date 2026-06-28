@@ -19,6 +19,7 @@ cell sets that flag, an empty cell means "no info".
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -236,16 +237,12 @@ class CatalogObject:
             try:
                 df.to_csv(tmp, index=False)
                 if os.path.exists(path):
-                    try:
+                    with contextlib.suppress(OSError):
                         shutil.copy2(path, path + ".bak")
-                    except OSError:
-                        pass
                 os.replace(tmp, path)
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp)
-                except OSError:
-                    pass
         cls._ensure_prov(path)
 
     # -- provenance: a stable id per catalog file (minted once, reused) -- #
@@ -289,10 +286,7 @@ def next_id(objects: list[CatalogObject]) -> int:
 def _is_duplicate(ra: float, dec: float, objects: list[CatalogObject],
                   tol_arcsec: float) -> bool:
     """True if ``(ra, dec)`` lies within ``tol_arcsec`` of any object's position."""
-    for o in objects:
-        if angular_separation_arcsec(ra, dec, o.ra, o.dec) < tol_arcsec:
-            return True
-    return False
+    return any(angular_separation_arcsec(ra, dec, o.ra, o.dec) < tol_arcsec for o in objects)
 
 
 def merge_new(existing: list[CatalogObject],

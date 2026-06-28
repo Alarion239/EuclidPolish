@@ -5,6 +5,7 @@ Unified Interactive CLI for EuclidPolish.
 This module provides an interactive command-line interface for all EuclidPolish operations.
 """
 
+import contextlib
 import getpass
 import glob
 import os
@@ -754,10 +755,8 @@ class InteractiveCLI:
             print_error("Not logged in.")
             return
         self._euclid = None
-        try:
+        with contextlib.suppress(Exception):
             Euclid.logout()
-        except Exception:
-            pass
         print_success("Logged out.")
 
     def _query_brightest_stars(self):
@@ -786,7 +785,7 @@ class InteractiveCLI:
             ra = input("RA (degrees): ").strip()
             dec = input("Dec (degrees): ").strip()
             radius = input("Radius (degrees, default 1): ").strip() or "1"
-            for raw, check, name in (
+            for _raw, check, _name in (
                 (ra, validate_ra(ra), "RA"),
                 (dec, validate_dec(dec), "Dec"),
                 (radius, validate_positive_number(radius, "Radius"), "Radius"),

@@ -240,10 +240,7 @@ def _is_clean_star_stamp(arr: np.ndarray) -> bool:
     py, px = np.unravel_index(int(np.argmax(arr)), arr.shape)
     cy = (arr.shape[0] - 1) / 2.0
     cx = (arr.shape[1] - 1) / 2.0
-    if (abs(py - cy) > Config.HST.MAX_PEAK_OFFCENTER_PX
-            or abs(px - cx) > Config.HST.MAX_PEAK_OFFCENTER_PX):
-        return False
-    return True
+    return not (abs(py - cy) > Config.HST.MAX_PEAK_OFFCENTER_PX or abs(px - cx) > Config.HST.MAX_PEAK_OFFCENTER_PX)
 
 
 def _extract_stamps_from_tile(

@@ -41,6 +41,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
+import contextlib
+
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
@@ -258,20 +260,16 @@ def step_generate(args: argparse.Namespace) -> None:
                 sky.index = i
                 sky.subset = subset
                 if gen_ctx is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         sky.stamp = gen_ctx.stamp("clean", subset)
-                    except Exception:
-                        pass
                 w.write(sky, index=i)
                 sources.add_field(i, meta)
                 done += 1
                 reporter.set_step(done, grand_total, f"generate {subset} {i + 1}/{n}")
             path, count = w.path, w.count
         if gen_ctx is not None:
-            try:
+            with contextlib.suppress(Exception):
                 gen_ctx.finalize("clean", subset, path)
-            except Exception:
-                pass
         _log(f"  {subset}: done — {count} → {path}  "
              f"({time.perf_counter() - t0:.1f} s)")
 
@@ -469,10 +467,8 @@ def _cleanup_parts(records_dir: str, subset: str) -> None:
     them before regenerating keeps the records dir clean."""
     for kind in ("clean", "hr", "dirty", "sources"):
         for p in glob.glob(os.path.join(records_dir, f"{kind}_{subset}.part*")):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(p)
-            except OSError:
-                pass
 
 
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
@@ -672,10 +668,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             _concat_tfrecords(parts, tfrecord_path(args.records_dir,
                                                    f"{kind}_{subset}"))
             for p in parts:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(p)
-                except OSError:
-                    pass
 
         # Concatenate the per-shard source sidecars in the same id order.
         src_parts = [tfrecord_path(args.records_dir,
@@ -685,10 +679,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         concat_source_csvs(src_parts, tfrecord_path(
             args.records_dir, f"sources_{subset}").replace(".tfrecord", ".csv"))
         for p in src_parts:
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(p)
-            except OSError:
-                pass
         # Persist the merged file-level artifacts (hr+dirty parent on clean).
         if gen_ctx is not None:
             try:
@@ -755,11 +747,11 @@ def main() -> int:
     timer = StageTimer(
         csv_path=stages_path,
         jobid=slurm_jobid,
-        params=dict(
-            n_train=args.ntrain, n_valid=args.nvalid,
-            image_size=args.image_size, batch_size=args.batch_size,
-            steps=args.steps,
-        ),
+        params={
+            "n_train": args.ntrain, "n_valid": args.nvalid,
+            "image_size": args.image_size, "batch_size": args.batch_size,
+            "steps": args.steps,
+        },
     )
     print(f"  stage timings → {stages_path}")
 

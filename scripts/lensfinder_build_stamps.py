@@ -93,7 +93,7 @@ def main(argv=None) -> int:
 
     paths = {k: tfrecord_path(rdir, f"{k}_{args.subset}")
              for k in ("dirty", "sr", "hr")}
-    for k, p in paths.items():
+    for _k, p in paths.items():
         if not os.path.exists(p):
             print(f"missing {p}")
             return 1

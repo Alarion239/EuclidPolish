@@ -122,7 +122,7 @@ def test_download_one_success_writes_marker(tmp_path, monkeypatch):
     fits = [f for f in os.listdir(gdir) if f.endswith(".fits")]
     assert len(fits) == 3
     assert not any(f.endswith(".tar.gz") for f in os.listdir(gdir))
-    assert [d for d in os.listdir(out_dir)] == ["777"]
+    assert list(os.listdir(out_dir)) == ["777"]
 
 
 def test_download_one_keep_archive(tmp_path, monkeypatch):

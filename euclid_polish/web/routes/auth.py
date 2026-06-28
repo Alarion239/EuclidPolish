@@ -1,6 +1,8 @@
 """auth routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import contextlib
+
 from flask import jsonify, request
 
 from euclid_polish.web import euclid_session
@@ -32,10 +34,8 @@ def register(app):
 
     @app.route("/auth/logout", methods=["POST"])
     def auth_logout():
-        try:
+        with contextlib.suppress(Exception):
             euclid_session.logout()
-        except Exception:
-            pass
         return jsonify({"ok": True})
 
     # ---------------- Euclid archive credentials (for FASRC download) -----

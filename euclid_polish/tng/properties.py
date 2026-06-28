@@ -301,7 +301,7 @@ def plot_histograms(props: dict[str, dict[str, float]]) -> bytes:
         ("reff",       "Effective radius",     "R$_{1/2,\\star}$ [kpc]", False),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
-    for ax, (key, title, xlabel, logx) in zip(axes.ravel(), panels):
+    for ax, (key, title, xlabel, logx) in zip(axes.ravel(), panels, strict=False):
         if key == "sfr":
             _plot_sfr_panel(ax, props, title, xlabel)
             continue

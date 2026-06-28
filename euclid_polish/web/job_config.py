@@ -13,6 +13,7 @@ user tweaks between runs.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -153,10 +154,8 @@ def save(cfg: JobConfig) -> None:
     with open(tmp, "w") as fp:
         json.dump(cfg.to_dict(), fp, indent=2, sort_keys=True)
     os.replace(tmp, CONFIG_PATH)
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass
 
 
 def update(patch: dict[str, Any]) -> JobConfig:

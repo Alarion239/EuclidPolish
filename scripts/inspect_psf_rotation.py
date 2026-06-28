@@ -65,7 +65,7 @@ def _write_rotation_stack(out: str, rotated, angles) -> None:
     pset.save(os.path.dirname(out) or ".", os.path.basename(out))
     with fits.open(out, mode="update") as hdul:
         image_hdus = [h for h in hdul if getattr(h, "data", None) is not None]
-        for ang, h in zip(angles, image_hdus[1:]):     # skip HDU0 (the mean)
+        for ang, h in zip(angles, image_hdus[1:], strict=False):     # skip HDU0 (the mean)
             h.header["ROTANGLE"] = (float(ang), "Rotation applied (deg)")
             h.header["EXTNAME"] = f"ROT_{ang:g}"
         hdul.flush()
@@ -82,7 +82,7 @@ def _write_diff_stack(out: str, ref: PSF, angles, diffs) -> None:
     primary.header["COMMENT"] = (
         "HDU0=original; HDU1..N = rotate(+n).rotate(-n) - original.")
     hdus = [primary]
-    for ang, diff in zip(angles, diffs):
+    for ang, diff in zip(angles, diffs, strict=False):
         h = fits.ImageHDU(data=diff.astype(np.float32), name=f"DIFF_{ang:g}")
         h.header["PXSCALE"]  = (float(ref.pixel_scale), "Pixel scale (arcsec/pixel)")
         h.header["ROTANGLE"] = (float(ang), "Round-trip angle: +n then -n (deg)")

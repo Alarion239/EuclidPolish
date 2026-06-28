@@ -463,7 +463,7 @@ class BaseVisualizer:
             0.05, 0.95, "\n".join(lines),
             transform=ax.transAxes, fontsize=10,
             verticalalignment="top", fontfamily="monospace",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
+            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.3},
         )
 
     def save_figure(self, output_path: str, dpi: int = 150, close: bool = True) -> None:

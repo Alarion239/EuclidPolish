@@ -413,7 +413,7 @@ def morphology_embedding_payload(
 
     def _method_payload(coords: np.ndarray, variance: list[float]):
         out = []
-        for point, xyz in zip(points, coords):
+        for point, xyz in zip(points, coords, strict=False):
             p = dict(point)
             p["xyz"] = [float(v) for v in xyz]
             out.append(p)
@@ -430,7 +430,7 @@ def morphology_embedding_payload(
             return {"points": [], "variance_pct": [0.0, 0.0, 0.0]}
         coords, var = _pca3(X[idx])
         out = []
-        for point, xyz in zip((points[i] for i in idx), coords):
+        for point, xyz in zip((points[i] for i in idx), coords, strict=False):
             p = dict(point)
             p["xyz"] = [float(v) for v in xyz]
             out.append(p)
@@ -484,7 +484,7 @@ def render_morphology_summary(run_dir: str, out_png: str) -> str | None:
     mode = mani[0].get("mode", "?")
     by_id = {r["id"]: r for r in mani}
     grade_of = read_grade_map(run_dir)
-    groups = [g for g in dict.fromkeys(grade_of.get(r["id"], "") for r in mani)]
+    groups = list(dict.fromkeys(grade_of.get(r["id"], "") for r in mani))
     multi = len([g for g in groups if g]) > 1
 
     # Optional 2-D embeddings from the raw predictions.
@@ -493,7 +493,7 @@ def render_morphology_summary(run_dir: str, out_png: str) -> str | None:
     if os.path.isfile(pred_path):
         ids, vecs = _read_predictions(pred_path)
         view = {}
-        for s, v in zip(ids, vecs):
+        for s, v in zip(ids, vecs, strict=False):
             obj, _, vw = s.rpartition("__")
             view.setdefault(obj, {})[vw] = v
         objs = [o for o, d in view.items() if "before" in d and "after" in d]
@@ -575,8 +575,8 @@ def render_morphology_summary(run_dir: str, out_png: str) -> str | None:
         a.scatter(method["pa"][:, 0], method["pa"][:, 1], c=gcol, s=34)
         for i in range(len(emb["objs"])):
             a.annotate("", xy=method["pa"][i], xytext=method["pb"][i],
-                       arrowprops=dict(arrowstyle="->", color=gcol[i],
-                                       alpha=.5, lw=1.1))
+                       arrowprops={"arrowstyle": "->", "color": gcol[i],
+                                       "alpha": .5, "lw": 1.1})
         if method.get("phr") is not None:
             pos = {o: j for j, o in enumerate(emb["objs"])}
             for j, o in enumerate(emb["hr_objs"]):
@@ -687,7 +687,7 @@ def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
                 if r.get("id") and str(r.get("ok", "")).lower() == "true"]
     if not rows:
         return None
-    groups = [g for g in dict.fromkeys(r.get("grade", "") for r in rows)]
+    groups = list(dict.fromkeys(r.get("grade", "") for r in rows))
 
     def _f(r, k):
         v = r.get(k, "")
@@ -709,7 +709,7 @@ def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
         ax[0].plot([lo, hi], [lo, hi], color="#888", ls="--", label="no change")
         ax[0].set_xlabel("PSNR  LR vs HR (dB)")
         ax[0].set_ylabel("PSNR  SR vs HR (dB)")
-        win = sum(b > a for a, b in zip(x, y))
+        win = sum(b > a for a, b in zip(x, y, strict=False))
         ax[0].set_title(f"SR vs HR recovery (synthetic)\nabove line = closer to "
                         f"truth: {win}/{len(syn)}")
         ax[0].legend(fontsize=9)

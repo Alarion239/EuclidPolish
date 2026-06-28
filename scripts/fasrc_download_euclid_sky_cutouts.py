@@ -55,6 +55,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import contextlib
+
 from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
@@ -104,7 +106,7 @@ def _uniform_disk_positions(
         dx = rng.uniform(-radius_deg, radius_deg, n_try)
         dy = rng.uniform(-radius_deg, radius_deg, n_try)
         keep = (dx ** 2 + dy ** 2) <= radius_deg ** 2
-        for x, y in zip(dx[keep], dy[keep]):
+        for x, y in zip(dx[keep], dy[keep], strict=False):
             ra  = (ra_centre_deg + x / cos_dec) % 360.0
             dec = dec_centre_deg + y
             accepted.append((ra, dec))
@@ -205,14 +207,10 @@ def _fetch_position_bundle(
         return {"status": "written", "id": pos_id, "errors": []}
     finally:
         for p in band_files.values():
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(p)
-            except OSError:
-                pass
-        try:
+        with contextlib.suppress(OSError):
             os.rmdir(tmp_dir)
-        except OSError:
-            pass
 
 
 def parse_args() -> argparse.Namespace:

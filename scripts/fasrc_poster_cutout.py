@@ -62,6 +62,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import contextlib
+
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
@@ -132,7 +134,7 @@ def _counts_for_mode(mode: str) -> dict[str, int]:
     exactly as the main training pipeline does."""
     if mode == "field":
         return {}
-    base = dict(n_sersic=0, n_tng=0, n_stars=0, n_lenses=0)
+    base = {"n_sersic": 0, "n_tng": 0, "n_stars": 0, "n_lenses": 0}
     if mode == "sersic":
         base["n_sersic"] = 1
     elif mode == "tng":
@@ -296,10 +298,8 @@ def build_cutout_hdul(
         if k == "flux_e_per_band":
             continue
         key = str(k).upper().replace("_", "")[:8]
-        try:
+        with contextlib.suppress(Exception):
             h[key] = (_header_value(v), str(k))
-        except Exception:
-            pass
 
     hdul = fits.HDUList([primary])
     flux = source_meta.get("flux_e_per_band")
@@ -419,7 +419,7 @@ def render_field_preview_png(
         panels.append(("super-resolved eye color (4-band)", None))
     n = len(panels)
     fig, axes = plt.subplots(1, n, figsize=(n * 3.0, 3.3))
-    for ax, (title, im) in zip(np.atleast_1d(axes), panels):
+    for ax, (title, im) in zip(np.atleast_1d(axes), panels, strict=False):
         if im is None:
             rgb = eye_rgb(sr_cube, band_names=BAND_NAMES, stretch="asinh",
                           asinh_scale_e=float(Config.STRETCH_SCALE_E))
@@ -457,7 +457,7 @@ def render_preview_png(
     """1×4 band montage (asinh-grayscale), titled with the object kind."""
     n = len(BAND_NAMES)
     fig, axes = plt.subplots(1, n, figsize=(n * 2.4, 2.7))
-    for k, (ax, name) in enumerate(zip(axes, BAND_NAMES)):
+    for k, (ax, name) in enumerate(zip(axes, BAND_NAMES, strict=False)):
         ax.imshow(_grayscale_norm(data[..., k]), origin="lower", cmap="gray")
         ax.set_title(name, fontsize=11)
         ax.set_xticks([]); ax.set_yticks([])

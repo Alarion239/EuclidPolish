@@ -28,6 +28,7 @@ Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
 """
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 from collections.abc import Callable
@@ -313,10 +314,8 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     asinh = float(Config.STRETCH_SCALE_E)
     with fits.open(path, memmap=False) as hdul:
         data = hdul[0].data
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             asinh = float(hdul[0].header.get("ASINH", asinh))
-        except (TypeError, ValueError):
-            pass
     cube = _as_hwc(data)
     info = {"label": f"{obj['label']} · {tier}", "asinh": asinh, "pixscale": 0.0}
     return cube, info

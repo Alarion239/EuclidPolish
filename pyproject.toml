@@ -56,6 +56,8 @@ select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
 ignore = [
     "E741",   # ambiguous var names (l, O) — common for loop/index vars here
     "B008",   # function call in argument default (Config.* defaults are intentional)
+    "UP042",  # str,Enum -> StrEnum changes str()/format() of Role/Format, which
+              # resolve.py (f"{role}_...") and core.py (Role(str(role))) rely on
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -63,6 +65,9 @@ ignore = [
 # bind unused fixtures; don't flag those.
 "tests/*" = ["E402", "F401", "F811"]
 "__init__.py" = ["F401"]   # re-export modules
+# Scripts set os.environ (BLAS thread caps) + sys.path BEFORE importing numpy /
+# the package, so their imports are necessarily below that bootstrap.
+"scripts/*" = ["E402"]
 
 
 # ---------------------------------------------------------------------------

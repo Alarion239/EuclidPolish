@@ -11,6 +11,7 @@ the UI on first use.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -108,10 +109,8 @@ def save(cfg: FasrcConfig) -> None:
         json.dump(cfg.to_dict(), fp, indent=2, sort_keys=True)
     os.replace(tmp, CONFIG_PATH)
     # Tighten perms — file may end up holding paths but never secrets.
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass
 
 
 def update(patch: dict[str, Any]) -> FasrcConfig:

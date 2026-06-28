@@ -1,6 +1,7 @@
 """views routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import threading as _t
@@ -105,10 +106,8 @@ def register(app):
                 # plot yet. Don't 500: serve the last good render if we have
                 # one, otherwise 404 so the page shows its placeholder.
                 if os.path.exists(tmp_png):
-                    try:
+                    with contextlib.suppress(OSError):
                         os.remove(tmp_png)
-                    except OSError:
-                        pass
                 if not os.path.exists(out_png):
                     print(f"  ⚠ training-log plot skipped: {type(e).__name__}: {e}")
                     abort(404)

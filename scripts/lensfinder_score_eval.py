@@ -28,6 +28,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import contextlib
+
 from euclid_polish.config import Config
 from euclid_polish.eval import zoobot_morph as zm
 from euclid_polish.lensfinder import stamps as lf_stamps
@@ -130,10 +132,8 @@ def main(argv=None) -> int:
                                "num_workers": args.num_workers},
             trainer_kwargs={"accelerator": args.device, "devices": 1})
         for _, r in preds.iterrows():
-            try:
+            with contextlib.suppress(TypeError, ValueError, KeyError):
                 scores[recon][str(r["id_str"])] = float(r["p_lens"])
-            except (TypeError, ValueError, KeyError):
-                pass
         print(f"  ✓ {recon}: scored {len(scores[recon])} object(s)")
 
     reporter.set_stage("writing lens_scores.csv")

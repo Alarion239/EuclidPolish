@@ -31,8 +31,8 @@ def _star(mag, per_band):
 
 def test_cutoff_finds_bright_saturation_boundary():
     # faint stars valid, bright (< 15) saturated
-    valid = [m for m in np.linspace(15.0, 22.0, 200)]
-    invalid = [m for m in np.linspace(10.0, 14.9, 200)]
+    valid = list(np.linspace(15.0, 22.0, 200))
+    invalid = list(np.linspace(10.0, 14.9, 200))
     bins = np.linspace(10, 22, 30)
     cut = _saturation_cutoff(valid, invalid, bins)
     assert cut is not None

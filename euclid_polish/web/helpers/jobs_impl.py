@@ -1,6 +1,7 @@
 """jobs_impl helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
 import shlex
@@ -259,10 +260,8 @@ def _job_generate_reconstruct(
             for _stale in (stem + "_lr.fits", stem + "_hr.fits",
                            stem + "_srforward.fits", stem + "_residual.fits",
                            stem + ".png"):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(os.path.join(out_dir, _stale))
-                except OSError:
-                    pass
             out_paths.extend(scene_pngs)
             cap.tick(k + 2, total, f"reconstructed scene {lr_img.index}")
             for out in scene_pngs:
@@ -585,12 +584,10 @@ def _job_reconstruct_euclid_cutout(
     # Drop stale Euclid-cutout renders (one used to be written per
     # position); leave the synthetic reconstruction PNGs alone.
     for stale in glob.glob(os.path.join(out_dir, "euclid_*.png")):
-        try:
+        with contextlib.suppress(OSError):
             os.remove(stale)
-        except OSError:
-            pass
     out_pngs = []
-    for regime, src in zip(("eye", "solar"), res["png_paths"]):
+    for regime, src in zip(("eye", "solar"), res["png_paths"], strict=False):
         dst = os.path.join(out_dir, f"euclid_latest_{regime}.png")
         shutil.copyfile(src, dst)
         out_pngs.append(dst)
@@ -620,7 +617,7 @@ def _plot_lr_input(lr_cube, output_path, asinh_scale, *, label=""):
     fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4.2))
     if len(names) == 1:
         axes = [axes]
-    for ax, name in zip(axes, names):
+    for ax, name in zip(axes, names, strict=False):
         plane = np.arcsinh(lr_cube[..., names.index(name)] / scale)
         ax.imshow(plane, origin="lower", cmap="gray", interpolation="nearest")
         ax.set_title(f"{name} (asinh)", fontsize=10)

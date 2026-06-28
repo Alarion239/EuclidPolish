@@ -1,6 +1,7 @@
 """fasrc routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import contextlib
 import csv
 import io as _io
 import json
@@ -61,7 +62,7 @@ def register(app):
     @app.route("/api/fasrc/config", methods=["GET", "POST"])
     def api_fasrc_config():
         if request.method == "POST":
-            patch = {k: v for k, v in request.form.items()}
+            patch = dict(request.form.items())
             cfg = fasrc_config.update(patch)
         else:
             cfg = fasrc_config.load()
@@ -94,10 +95,8 @@ def register(app):
         # squeue no longer lists them, so reconcile marks them DONE and
         # the ssh-passing path fetches their sacct accounting into the
         # CSV log. Best-effort — failures here must not block connect.
-        try:
+        with contextlib.suppress(Exception):
             fasrc_jobs.sync_pending_on_connect(STATE.ssh)
-        except Exception:
-            pass
         return jsonify({"ok": True, "status": STATE.public_status()})
 
     @app.route("/api/fasrc/disconnect", methods=["POST"])
@@ -1268,10 +1267,8 @@ def register(app):
             with open(tmp_png, "rb") as fh:
                 data = fh.read()
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_png)
-            except OSError:
-                pass
         return Response(data, mimetype="image/png",
                         headers={"Cache-Control": "no-cache"})
 
@@ -1586,10 +1583,8 @@ def register(app):
     def api_fasrc_mirror_start():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
-        try:
+        with contextlib.suppress(ValueError):
             MIRROR.period = max(15, int(request.form.get("period", 60)))
-        except ValueError:
-            pass
         MIRROR.start()
         return jsonify({"ok": True, "status": api_fasrc_mirror_status().json})
 

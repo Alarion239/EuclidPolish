@@ -212,8 +212,8 @@ def main() -> None:
             ax.text(0.5, 0.025, labels[k], transform=ax.transAxes,
                     ha="center", va="bottom", color=args.label_color,
                     fontsize=args.label_size, fontweight="bold",
-                    bbox=dict(facecolor="black", alpha=0.55, pad=2.5,
-                              edgecolor="none"))
+                    bbox={"facecolor": "black", "alpha": 0.55, "pad": 2.5,
+                              "edgecolor": "none"})
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     fig.savefig(args.out, dpi=dpi, facecolor=args.bg)
     plt.close(fig)

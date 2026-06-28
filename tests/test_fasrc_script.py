@@ -25,17 +25,17 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 
 
 def _params(**overrides):
-    p = dict(
-        n_train=6400, n_valid=200, image_size=510,
-        batch_size=16, steps=400_000, extra_flags="",
-    )
+    p = {
+        "n_train": 6400, "n_valid": 200, "image_size": 510,
+        "batch_size": 16, "steps": 400_000, "extra_flags": "",
+    }
     p.update(overrides)
     return p
 
 
 def _resources(**overrides):
-    r = dict(partition="gpu", n_gpus=1, n_cpus=8, memory="32G",
-             time_limit="12:00:00")
+    r = {"partition": "gpu", "n_gpus": 1, "n_cpus": 8, "memory": "32G",
+             "time_limit": "12:00:00"}
     r.update(overrides)
     return StepResources(**r)
 

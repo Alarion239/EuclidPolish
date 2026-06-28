@@ -133,7 +133,7 @@ def test_handles_multiple_records(tmp_path):
     path = write_images(imgs, "dirty_train", records_dir=str(tmp_path))
     back = read_images(path, num_images=5)
     assert len(back) == 5
-    for original, reread in zip(imgs, back):
+    for original, reread in zip(imgs, back, strict=False):
         np.testing.assert_array_equal(reread.data, original.data)
 
 

@@ -56,7 +56,8 @@ def test_continuous_rare_big_tail():
 
 
 def test_bigger_r0_shifts_distribution_up():
-    rng = lambda: np.random.default_rng(11)
+    def rng():
+        return np.random.default_rng(11)
     small = ApparentSizeModel(r0_kpc=1.5).sample(rng(), size=50000)
     big = ApparentSizeModel(r0_kpc=4.0).sample(rng(), size=50000)
     assert np.median(big) > np.median(small)

@@ -14,6 +14,7 @@ return cutout FITS / a multi-band :class:`~euclid_polish.image.Image`.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import tempfile
@@ -280,10 +281,8 @@ class EuclidCatalog:
                 factor = np.float32(adu_per_s_to_electrons_factor(magzero, band))
                 planes.append((arr * factor).astype(np.float32))
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
         data = np.stack(planes, axis=-1)
         return Image(
             data=data, pixel_scale_arcsec=Config.VIS_PIXEL_SCALE_ARCSEC,
@@ -345,10 +344,8 @@ class EuclidCatalog:
                 o = by_id.get(star_id)
                 if o is not None and size is not None:
                     o.set_corrupted(size, band=band)
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(filepath)
-                except Exception:
-                    pass
             CatalogObject.write(objects, catalog_path)
 
         pixel_scale_arcmin = config.pixel_scale_arcsec / 60.0
@@ -420,16 +417,12 @@ class EuclidCatalog:
                     # of bright stars) — same check the PSF extractor applies.
                     data = validator.get_data(output_file)
                     if core_is_saturated(data, config.saturation_core_size):
-                        try:
+                        with contextlib.suppress(OSError):
                             os.unlink(output_file)
-                        except OSError:
-                            pass
                         return o.id, False
                     return o.id, True
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(output_file)
-                except OSError:
-                    pass
             return o.id, False
 
         if with_mosaics:

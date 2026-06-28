@@ -28,6 +28,7 @@ compatibility; new code uses this module instead.
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 import textwrap
 import time
@@ -1122,10 +1123,8 @@ class SyntheticGenerateStep(RunPipelineStep):
                             ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms")):
             val = params.get(param)
             if val not in (None, ""):
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     cmd += [flag, f"{float(val):g}"]
-                except (TypeError, ValueError):
-                    pass
         return cmd
 
 

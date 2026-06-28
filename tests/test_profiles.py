@@ -160,7 +160,7 @@ def test_bulge_disk_additive_in_flux():
 
 def test_bulge_disk_equals_two_sersics():
     """draw_bulge_disk should match draw_sersic(n=4) + draw_sersic(n=1)."""
-    common = dict(theta_rad=0.3, x0=125, y0=125, pixel_scale=0.05)
+    common = {"theta_rad": 0.3, "x0": 125, "y0": 125, "pixel_scale": 0.05}
     img_bd = draw_bulge_disk(
         (251, 251),
         flux_bulge=3.0e5, r_e_bulge=0.15, q_bulge=0.8,
@@ -186,8 +186,8 @@ def test_stamp_cropping_preserves_total_for_typical_galaxy():
     img_crop = np.zeros((401, 401), dtype=np.float32)
     # Source at centre — both cropped (default) and uncropped (csub=1 fast path)
     # should integrate to the same total within numerical noise.
-    common = dict(n=2.5, r_e=0.30, q=0.7, theta_rad=0.3,
-                  x0=200, y0=200, pixel_scale=0.05)
+    common = {"n": 2.5, "r_e": 0.30, "q": 0.7, "theta_rad": 0.3,
+                  "x0": 200, "y0": 200, "pixel_scale": 0.05}
     draw_sersic(img_crop.shape, flux=flux, out=img_crop, **common)
     draw_sersic(img_full.shape, flux=flux, csub=3, out=img_full, **common)
     # Both methods should be within ~3% of each other (auto vs forced csub).
@@ -207,8 +207,8 @@ def test_source_outside_image_yields_zero():
 
 def test_circular_profile_is_rotationally_invariant():
     """For q=1, rotating by an arbitrary angle should leave the image bit-identical."""
-    common = dict(shape=(81, 81), flux=1.0e6, n=2.0, r_e=0.30, q=1.0,
-                  x0=40, y0=40, pixel_scale=0.05)
+    common = {"shape": (81, 81), "flux": 1.0e6, "n": 2.0, "r_e": 0.30, "q": 1.0,
+                  "x0": 40, "y0": 40, "pixel_scale": 0.05}
     a = draw_sersic(theta_rad=0.0, **common)
     b = draw_sersic(theta_rad=0.7, **common)
     np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)

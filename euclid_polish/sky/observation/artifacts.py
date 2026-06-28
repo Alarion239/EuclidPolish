@@ -171,7 +171,7 @@ def inject_cosmic_rays(
     lengths = np.clip(np.round(raw_len).astype(int),
                       1, cfg.cr_max_track_length)
 
-    for x0, y0, q, theta, L in zip(xs, ys, charges, thetas, lengths):
+    for x0, y0, q, theta, L in zip(xs, ys, charges, thetas, lengths, strict=False):
         # Distribute charge equally along the track for L > 1.
         per_step = q / max(L, 1)
         dx = np.cos(theta)

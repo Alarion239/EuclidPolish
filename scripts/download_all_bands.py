@@ -172,8 +172,8 @@ def run_bands(band_names, *, eclient, output_dir, vis_pixels, workers, arcsec,
             # mosaic query return None and fail.
             if logged_in and i > 0:
                 eclient.relogin()
-            cb = (lambda cur, tot, lbl, _b=bn:
-                  reporter.set_step(cur, tot, f"{_b} {lbl}"))
+            def cb(cur, tot, lbl, _b=bn):
+                return (reporter.set_step(cur, tot, f"{_b} {lbl}"))
             summary[bn] = _download_one_band(
                 bn, eclient=eclient, output_dir=output_dir, vis_pixels=vis_pixels,
                 workers=workers, arcsec=arcsec, progress_cb=cb, show_progress=True,

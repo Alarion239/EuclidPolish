@@ -26,6 +26,7 @@ Flask requests.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
@@ -124,19 +125,15 @@ class SSHSession:
 
     def disconnect(self) -> None:
         """Close the master socket cleanly."""
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             subprocess.run(
                 ["ssh", "-S", self.cfg.socket, "-O", "exit", self.cfg.target],
                 capture_output=True, timeout=5,
             )
-        except subprocess.TimeoutExpired:
-            pass
         # Best-effort cleanup if -O exit didn't remove it.
         if os.path.exists(self.cfg.socket):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(self.cfg.socket)
-            except OSError:
-                pass
         # Forget the cached "connected" answer so the next is_connected()
         # call re-probes the (now-missing) socket.
         self._invalidate_connection_cache()
@@ -167,10 +164,8 @@ class SSHSession:
 
         # Make sure no stale socket is lying around from a prior crash.
         if os.path.exists(self.cfg.socket):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(self.cfg.socket)
-            except OSError:
-                pass
 
         args = [
             "ssh",

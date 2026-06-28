@@ -232,8 +232,8 @@ def main() -> int:
                    help="extract every FITS, not just TNG*_O?_Euclid_*.fits")
     args = p.parse_args()
     key = _key(args)
-    dl = dict(extract=not args.no_extract, keep_archive=args.keep_archive,
-              euclid_only=not args.all_bands)
+    dl = {"extract": not args.no_extract, "keep_archive": args.keep_archive,
+              "euclid_only": not args.all_bands}
 
     # --- per-subhalo broadband image (documented endpoint) ---
     if args.subhalo is not None:

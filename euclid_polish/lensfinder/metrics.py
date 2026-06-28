@@ -103,7 +103,7 @@ def tpr_vs_theta_e(
     edges = np.asarray(bins, dtype=float)
     pos = y == 1
     out: list[dict[str, float]] = []
-    for lo, hi in zip(edges[:-1], edges[1:]):
+    for lo, hi in zip(edges[:-1], edges[1:], strict=False):
         m = pos & (te >= lo) & (te < hi)
         n = int(m.sum())
         tpr = float((s[m] >= thr).mean()) if n > 0 else float("nan")

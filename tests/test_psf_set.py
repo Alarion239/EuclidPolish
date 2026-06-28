@@ -137,7 +137,7 @@ def test_fits_roundtrip_primary_is_mean(tmp_path):
     loaded = PSFSet.from_fits(path)
     assert loaded.n == 3
     assert loaded.centroids is not None
-    for orig, got in zip(pset.psfs, loaded.psfs):
+    for orig, got in zip(pset.psfs, loaded.psfs, strict=False):
         np.testing.assert_allclose(orig.data, got.data, atol=1e-6)
 
     # HDU[0] is the mean → legacy PSF.from_fits gets a sensible single PSF.

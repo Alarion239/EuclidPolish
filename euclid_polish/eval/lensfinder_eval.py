@@ -126,7 +126,8 @@ def render_lensfinder_summary(run_dir: str, out_png: str) -> str | None:
     # negatives — does SR improve real lens-vs-galaxy separability?
     a = ax[0, 2]
     real = [r for r in rows if r["grade"] in ("A", "B", "C", "gal")]
-    is_lens = lambda r: 1 if r["grade"] in ("A", "B", "C") else 0
+    def is_lens(r):
+        return 1 if r["grade"] in ("A", "B", "C") else 0
     if real and any(is_lens(r) for r in real) and any(not is_lens(r) for r in real):
         for recon, color in (("lr", "#888888"), ("sr", "#2a5db0")):
             pairs = [(r[recon], is_lens(r)) for r in real if math.isfinite(r[recon])]

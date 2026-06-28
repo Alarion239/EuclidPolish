@@ -204,10 +204,10 @@ def plot_training_records(
     else:
         fig, axs = plt.subplots(
             len(panels), 1, figsize=(11, 3 * len(panels)), sharex=True,
-            gridspec_kw=dict(height_ratios=[ratios[p] for p in panels],
-                             hspace=0.12),
+            gridspec_kw={"height_ratios": [ratios[p] for p in panels],
+                             "hspace": 0.12},
         )
-        axmap = {p: ax for p, ax in zip(panels, np.atleast_1d(axs))}
+        axmap = dict(zip(panels, np.atleast_1d(axs), strict=False))
     ax_psnr  = axmap["psnr"]
     ax_bands = axmap.get("bands")
     ax_loss  = axmap.get("loss")

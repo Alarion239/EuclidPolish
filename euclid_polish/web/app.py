@@ -17,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import argparse
+import contextlib
 import os
 import os as _os
 import time
@@ -95,10 +96,8 @@ def _try_startup_ssh_connect() -> str | None:
     # while the server was offline get their state + sacct post-mortem
     # recorded now. Best-effort; failures here are swallowed so the
     # auto-connect message stays clean.
-    try:
+    with contextlib.suppress(Exception):
         fasrc_jobs.sync_pending_on_connect(STATE.ssh)
-    except Exception:
-        pass
     return None
 
 

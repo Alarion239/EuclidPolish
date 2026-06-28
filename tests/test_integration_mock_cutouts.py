@@ -306,7 +306,7 @@ def test_extracted_psfs_cover_same_angular_field(extracted_psfs):
     for band in Config.BANDS:
         p = PSF.from_fits(psf_path_for_band(band, str(extracted_psfs)))
         sides[band.name] = p.data.shape
-    unique_sides = {s for s in sides.values()}
+    unique_sides = set(sides.values())
     assert len(unique_sides) == 1, (
         f"VIS-equivalent cutouts produced inconsistent ePSF shapes: {sides}"
     )
@@ -332,7 +332,7 @@ def test_load_all_band_psfs_after_extraction(extracted_psfs):
         require_empirical=True,    # extraction succeeded → no fallback needed
     )
     assert set(psfs.keys()) == {b.name for b in Config.BANDS}
-    for name, psf in psfs.items():
+    for _name, psf in psfs.items():
         assert psf.pixel_scale == pytest.approx(Config.DEFAULT_PIXEL_SCALE, abs=1e-4)
         assert psf.data.sum() == pytest.approx(1.0, rel=1e-3)
 

@@ -121,6 +121,6 @@ def test_wdsr_runs_one_training_step():
         sr = model(lr)
         loss = loss_fn(hr, sr)
     grads = tape.gradient(loss, model.trainable_variables)
-    opt.apply_gradients(zip(grads, model.trainable_variables))
+    opt.apply_gradients(zip(grads, model.trainable_variables, strict=False))
     after = [v.numpy() for v in model.trainable_variables[:3]]
-    assert any(not np.allclose(a, b) for a, b in zip(before, after))
+    assert any(not np.allclose(a, b) for a, b in zip(before, after, strict=False))

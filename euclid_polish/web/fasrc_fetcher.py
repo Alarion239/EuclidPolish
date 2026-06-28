@@ -68,10 +68,7 @@ def is_allowed_remote_path(remote_path: str) -> bool:
     if not remote_path or ".." in remote_path.split("/"):
         return False
     rp = remote_path.rstrip("/")
-    for root in allowed_remote_roots():
-        if rp == root or rp.startswith(root + "/"):
-            return True
-    return False
+    return any(rp == root or rp.startswith(root + "/") for root in allowed_remote_roots())
 
 
 # ---------------------------------------------------------------------------

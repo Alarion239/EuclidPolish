@@ -31,6 +31,7 @@ writes the sandbox ``fasrc.json`` from the live config it already holds.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import signal
@@ -263,10 +264,8 @@ def write_home_fasrc_config(short: str, cfg_dict: dict[str, Any]) -> str:
     home = os.path.join(sandbox_dir(short), "home")
     path = os.path.join(home, ".euclid_polish", "fasrc.json")
     _write_json(path, cfg_dict)
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass
     return path
 
 
@@ -372,10 +371,8 @@ def stop_server(short: str) -> dict[str, Any]:
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except (OSError, ProcessLookupError):
-            try:
+            with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
     meta["pid"] = None
     meta["url"] = None
     meta["port"] = None
@@ -389,10 +386,8 @@ def remove_sandbox(short: str, *,
     root = sandbox_dir(short)
     if not os.path.isdir(root):
         raise TimeTravelError(f"no sandbox {short!r}")
-    try:
+    with contextlib.suppress(TimeTravelError):
         stop_server(short)
-    except TimeTravelError:
-        pass
     worktree = os.path.join(root, "worktree")
     if os.path.isdir(worktree):
         _git(repo_root, "worktree", "remove", "--force", worktree)

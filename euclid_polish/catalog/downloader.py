@@ -163,12 +163,12 @@ class DownloadConfig:
             )
             cutout_size = b.cutout_size_for_arcsec(arcsec_side)
 
-        defaults = dict(
-            band=b.name,
-            instrument=b.archive_instrument,
-            filter_name=b.archive_filter or None,
-            pixel_scale_arcsec=b.pixel_scale_lr_arcsec,
-        )
+        defaults = {
+            "band": b.name,
+            "instrument": b.archive_instrument,
+            "filter_name": b.archive_filter or None,
+            "pixel_scale_arcsec": b.pixel_scale_lr_arcsec,
+        }
         if cutout_size is not None:
             defaults["cutout_size"] = int(cutout_size)
         defaults.update(overrides)

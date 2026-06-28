@@ -90,11 +90,11 @@ def test_full_pipeline_round_trip(tmp_path):
         sr = model(lr)
         loss = loss_fn(hr, sr)
     grads = tape.gradient(loss, model.trainable_variables)
-    opt.apply_gradients(zip(grads, model.trainable_variables))
+    opt.apply_gradients(zip(grads, model.trainable_variables, strict=False))
     after = [v.numpy() for v in model.trainable_variables[:3]]
 
     # At least one weight moved → the gradient path is connected end-to-end.
-    assert any(not np.allclose(a, b) for a, b in zip(before, after))
+    assert any(not np.allclose(a, b) for a, b in zip(before, after, strict=False))
 
     # 6. Records on disk are readable & have the right schema.
     assert os.path.exists(tfrecord_path(records_dir, "clean_train"))

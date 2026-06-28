@@ -27,8 +27,8 @@ def _build_chain(store, *, model_id=None):
                             format=Format.FITS, parents=(model.id, dirty.id))
     for r in (gen, clean, fwd, dirty, train, model, infer, sr):
         store.put(r)
-    return dict(gen=gen.id, clean=clean.id, dirty=dirty.id, train=train.id,
-                model=model.id, infer=infer.id, sr=sr.id)
+    return {"gen": gen.id, "clean": clean.id, "dirty": dirty.id, "train": train.id,
+                "model": model.id, "infer": infer.id, "sr": sr.id}
 
 
 def test_sr_is_stale_after_retraining(tmp_path):

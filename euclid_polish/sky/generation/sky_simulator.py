@@ -146,10 +146,7 @@ def _sample_star_mag(
         return float(m_bright)
     beta = float(slope) * math.log(10.0)
     u = rng.random()
-    if abs(beta) < 1e-9:
-        t = u * span
-    else:
-        t = math.log1p(u * math.expm1(beta * span)) / beta
+    t = u * span if abs(beta) < 1e-09 else math.log1p(u * math.expm1(beta * span)) / beta
     return float(m_bright + t)
 
 

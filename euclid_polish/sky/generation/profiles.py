@@ -134,10 +134,7 @@ def _default_csub(n: float, r_e_pix: float) -> int:
     #    first matching rule wins.
     for r_e_pix_max, n_min, bump in Config.SERSIC_CSUB_COMPACTNESS_BUMPS:
         if r_e_pix < r_e_pix_max and n > n_min:
-            if bump == "x2_plus_1":
-                base = base * 2 + 1
-            else:
-                base = base + int(bump)
+            base = base * 2 + 1 if bump == "x2_plus_1" else base + int(bump)
             break
 
     base = min(int(Config.SERSIC_CSUB_MAX_CAP), max(1, base))
@@ -305,10 +302,10 @@ def compute_sersic_stamp(
     amp = sersic_amp_from_flux(flux=1.0, n=n, r_e=r_e_pix, q=q)
     b_n = sersic_b_n(n)
 
-    common = dict(
-        x0=x0, y0=y0, q=q, theta_rad=theta_rad,
-        r_e_pix=r_e_pix, n=n, amp=amp, b_n=b_n,
-    )
+    common = {
+        "x0": x0, "y0": y0, "q": q, "theta_rad": theta_rad,
+        "r_e_pix": r_e_pix, "n": n, "amp": amp, "b_n": b_n,
+    }
 
     # Fast path: low requested csub → uniform single-pass evaluation.
     if csub <= int(Config.SERSIC_CSUB_FAST_PATH_THRESHOLD):

@@ -16,6 +16,7 @@ the dispatch / parsing logic without leaving the box.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import threading
@@ -98,8 +99,7 @@ class LocalSSHSession:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 proc.wait(timeout=3)
             except Exception:
-                try: proc.kill()
-                except Exception: pass
+                with contextlib.suppress(Exception): proc.kill()
 
     def rsync_pull(self, remote_path: str, local_dir: str,
                    extra_args: list[str] | None = None,

@@ -83,7 +83,7 @@ def main() -> int:
 
     # Count what's on disk for the report.
     n_fits = 0
-    for dirpath, _, files in os.walk(cutouts_dir):
+    for _dirpath, _, files in os.walk(cutouts_dir):
         n_fits += sum(1 for f in files if f.lower().endswith(".fits"))
     print(f"will delete {n_fits} cutout FITS files under {cutouts_dir}")
 

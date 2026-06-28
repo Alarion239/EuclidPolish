@@ -226,7 +226,7 @@ def _render_psf_panel_png(band: str | None) -> bytes:
         abort(404)
     n = len(names)
     fig, axes = plt.subplots(1, n, figsize=(4 * n, 4.2), squeeze=False)
-    for ax, name in zip(axes[0], names):
+    for ax, name in zip(axes[0], names, strict=False):
         p = psfs[name]
         d = np.clip(p.data, 1e-8, None)
         ax.imshow(np.log10(d), cmap="viridis", origin="lower",
@@ -266,10 +266,7 @@ def _arrays_to_fits_bytes(
         raise ValueError("arrays dict is empty")
     for i, (name, arr) in enumerate(items):
         arr = np.asarray(arr, dtype=np.float32)
-        if i == 0:
-            hdu = _fits.PrimaryHDU(data=arr)
-        else:
-            hdu = _fits.ImageHDU(data=arr)
+        hdu = _fits.PrimaryHDU(data=arr) if i == 0 else _fits.ImageHDU(data=arr)
         # EXTNAME on the primary HDU isn't strictly required but lots
         # of viewers (DS9, ginga) treat it as the human-readable label
         # so set it consistently.

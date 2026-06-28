@@ -119,7 +119,7 @@ def _combined_loss(loss_syn, loss_hst, loss_anchor, weights) -> float:
     Returns ``+inf`` if no lane is active (nothing to score this eval).
     """
     parts = []
-    for w, v in zip(weights, (loss_syn, loss_hst, loss_anchor)):
+    for w, v in zip(weights, (loss_syn, loss_hst, loss_anchor), strict=False):
         if v != "" and v is not None:
             parts.append((float(w), float(v)))
     if not parts:
@@ -308,7 +308,7 @@ class Trainer:
         band_vals = metrics.get("psnr_band_stretched")
         psnr_bands: dict = dict.fromkeys(PER_BAND_PSNR_COLUMNS, "")
         if band_vals is not None:
-            for col, v in zip(PER_BAND_PSNR_COLUMNS, band_vals.numpy()):
+            for col, v in zip(PER_BAND_PSNR_COLUMNS, band_vals.numpy(), strict=False):
                 psnr_bands[col] = float(v)
         # Per-lane VALIDATION MAE (asinh space), gathered alongside PSNR from
         # the same forward pass. ``""`` for an unwired lane so the loss
@@ -848,7 +848,7 @@ class Trainer:
         gradients, gnorm = tf.clip_by_global_norm(
             gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
-            zip(gradients, self.checkpoint.model.trainable_variables)
+            zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
 
         return loss_value, gnorm
@@ -959,7 +959,7 @@ class Trainer:
         gradients, gnorm = tf.clip_by_global_norm(
             gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
-            zip(gradients, self.checkpoint.model.trainable_variables)
+            zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
         return loss_value, gnorm, (syn_loss, hst_loss, anchor_loss)
 

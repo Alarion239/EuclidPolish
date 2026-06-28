@@ -326,8 +326,8 @@ def test_bench_add_sersic_to_bands_vs_loop():
     flux_per_band = np.array([1e5, 5e4, 3e4, 2e4], dtype=np.float32)
     canvas_bcast = np.zeros((H, W, 4), dtype=np.float32)
     canvas_loop  = np.zeros((H, W, 4), dtype=np.float32)
-    common = dict(n=4.0, r_e=0.20, q=0.8, theta_rad=0.3,
-                  x0=W / 2, y0=H / 2, pixel_scale=0.05)
+    common = {"n": 4.0, "r_e": 0.20, "q": 0.8, "theta_rad": 0.3,
+                  "x0": W / 2, "y0": H / 2, "pixel_scale": 0.05}
 
     def call_bcast():
         canvas_bcast.fill(0)

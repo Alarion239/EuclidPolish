@@ -51,6 +51,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import contextlib
+
 import numpy as np
 from photutils.psf import EPSFStar
 from sklearn.cluster import KMeans
@@ -271,10 +273,8 @@ def _prepare_cache(cache_dir: str, signature: dict, reporter: Reporter) -> None:
             old = None
     if old != signature:
         for f in glob.glob(os.path.join(cache_dir, "*_PSF*.fits")):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(f)
-            except OSError:
-                pass
         with open(sig_path, "w") as f:
             json.dump(signature, f, indent=2, sort_keys=True)
         if old is not None:
@@ -599,19 +599,13 @@ def main() -> int:
     all_done = n_ok == len(succeeded)
     if all_done and not args.keep_cache:
         for f in glob.glob(os.path.join(cache_dir, "*_PSF*.fits")):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(f)
-            except OSError:
-                pass
         for extra in (os.path.join(cache_dir, "signature.json"),):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(extra)
-            except OSError:
-                pass
-        try:
+        with contextlib.suppress(OSError):
             os.rmdir(cache_dir)
-        except OSError:
-            pass
         print("  cache: cleared (all bands done).")
     elif not all_done:
         print(f"  cache: kept at {cache_dir} — re-submit to resume the rest.")

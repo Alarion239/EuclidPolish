@@ -62,7 +62,7 @@ def _count(path: str) -> int:
 def test_shard_bounds_partition_is_contiguous():
     b = rp._shard_bounds(10, 3)
     assert b[0][0] == 0 and b[-1][1] == 10
-    for (s0, e0), (s1, e1) in zip(b, b[1:]):
+    for (_s0, e0), (s1, _e1) in zip(b, b[1:], strict=False):
         assert e0 == s1                     # no gaps / overlaps
     assert sum(e - s for s, e in b) == 10   # full coverage
 

@@ -78,7 +78,7 @@ def test_save_best_score_adds_second_panel(tmp_path):
     score sequence."""
     scores = [30.0, 29.5, 31.0, 30.8]   # dips then recovers → tests max-accumulate
     records = []
-    for s, sc in zip((0, 100, 200, 300), scores):
+    for s, sc in zip((0, 100, 200, 300), scores, strict=False):
         r = _base_row(s)
         r["psnr_stretched_hst"] = 18.0 + s * 0.02
         r["anchor_val_psnr"] = 35.0
