@@ -138,6 +138,50 @@ def trainer_with_both_ops(tiny_model, tmp_path, tmp_psf_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# Reproducibility: seed application + provenance recording
+# ---------------------------------------------------------------------------
+
+def test_seed_everything_is_reproducible():
+    from euclid_polish.training.trainer import seed_everything
+    seed_everything(7)
+    a = tf.random.uniform([5]).numpy()
+    seed_everything(7)
+    b = tf.random.uniform([5]).numpy()
+    assert (a == b).all()
+
+
+def test_trainer_records_seed_and_links_checkpoint(tiny_model, tmp_path,
+                                                   monkeypatch):
+    """A seeded Trainer records a Process.training carrying the seed, and the
+    checkpoint identity stamp's produced_by points back to that run."""
+    import euclid_polish.training.trainer as trainer_mod
+    from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
+    from euclid_polish.provenance.store import ProvStore
+
+    store = ProvStore(str(tmp_path / "prov"))
+    monkeypatch.setattr(trainer_mod, "default_store", lambda: store)
+
+    ckpt = str(tmp_path / "ckpt")
+    tr = Trainer(tiny_model, checkpoint_dir=ckpt, seed=12345)
+    tr._begin_reproducible_run(steps=10, evaluate_every=5)
+
+    assert tr._training_run_id is not None
+    run = store.get(tr._training_run_id)
+    assert run.kind == "trainingrun" and run.seed == 12345
+
+    tr._emit_checkpoint_provenance()
+    stamp = read_checkpoint_provenance(ckpt)
+    assert stamp is not None and stamp.produced_by == tr._training_run_id
+
+
+def test_unseeded_trainer_records_no_run(tiny_model, tmp_path):
+    """Default (no seed) keeps prior behaviour: no Process.training recorded."""
+    tr = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+    tr._begin_reproducible_run(steps=10, evaluate_every=5)
+    assert tr._training_run_id is None
+
+
 def _rand_batch(batch_size: int = 2, lr_side: int = 8, hr_side: int = 16,
                 seed: int = 0):
     rng = np.random.default_rng(seed)

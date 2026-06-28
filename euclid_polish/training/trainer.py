@@ -1,6 +1,8 @@
 """Trainer module for WDSR super-resolution models."""
+import contextlib
 import math
 import os
+import random
 import time
 
 import numpy as np
@@ -17,13 +19,37 @@ from euclid_polish.provenance.checkpoint import (
     read_checkpoint_provenance,
     write_checkpoint_provenance,
 )
+from euclid_polish.provenance.defaults import default_store
+from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
-from euclid_polish.provenance.records import Stamp
+from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.augmentation import (
     asinh_stretch_hr,
     inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate
+
+
+def seed_everything(seed: int, *, deterministic: bool = False) -> None:
+    """Seed Python, NumPy and TensorFlow global RNGs for a reproducible run.
+
+    Covers the training stochasticity — data-pipeline shuffle order and
+    augmentation crops/flips — and weight initialisation *when called before the
+    model is built* (which :class:`~euclid_polish.model.Model` does).
+
+    CAVEAT — GPU nondeterminism: even with a fixed seed, cuDNN / cuBLAS kernels
+    can introduce small run-to-run differences on GPU. Pass ``deterministic=True``
+    to additionally enable TensorFlow op-determinism for bit-exact replay
+    (noticeably slower, and a few ops are unsupported). On CPU the seed alone is
+    fully reproducible.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    if deterministic:
+        # Older / unsupported TF: the seed still applies, just not op-determinism.
+        with contextlib.suppress(Exception):
+            tf.config.experimental.enable_op_determinism()
 
 # Append-only CSV — one row per evaluate_every batch — readable by Excel,
 # pandas, the FASRC dashboard, and the in-tree plot_training_log helper
@@ -144,6 +170,8 @@ class Trainer:
         hst_loss_weight: float = 1.0,
         star_anchor_loss_weight: float = 1.0,
         nonneg_sr_weight: float = Config.NONNEG_SR_WEIGHT,
+        seed: int | None = None,
+        deterministic: bool = False,
     ):
         """
         Initialize the trainer.
@@ -182,6 +210,19 @@ class Trainer:
             disables it. Default ``Config.NONNEG_SR_WEIGHT``. A soft
             penalty makes negatives rare/small, not impossible — clamp the
             delivered product for a hard guarantee.
+        seed : int, optional
+            Master RNG seed for the run. When set, ``train()`` seeds Python /
+            NumPy / TF and records the seed on a ``Process.training`` provenance
+            record (the checkpoint stamp then points back to it), so the run can
+            be replayed. ``None`` (default) keeps the previous entropy-driven
+            behaviour. NOTE: for weight-init reproducibility the seed must also
+            be applied *before the model is built* —
+            :class:`~euclid_polish.model.Model` does this when constructed with
+            ``seed=``.
+        deterministic : bool
+            Also enable TF op-determinism for bit-exact GPU replay (slower).
+            Without it, cuDNN may introduce small nondeterminism on GPU even
+            with a fixed seed; on CPU the seed alone is fully reproducible.
         """
         self.now = None
         self.loss = loss
@@ -236,6 +277,13 @@ class Trainer:
         # first save (or reused from an existing sidecar on resume).
         self.checkpoint_dir = checkpoint_dir
         self._model_prov_id = None
+        # Reproducibility: the run's master seed (or None). Recorded on a
+        # Process.training at train() start; the checkpoint stamp's produced_by
+        # then points to that run. Seeding the RNGs is the caller's job (Model
+        # does it before building the model); train() re-asserts it.
+        self._seed = seed
+        self._deterministic = bool(deterministic)
+        self._training_run_id: ProvId | None = None
 
         self.restore()
 
@@ -258,13 +306,47 @@ class Trainer:
                     existing.id if existing is not None
                     else ProvId.mint(lambda _id: False)
                 )
-            stamp = Stamp(id=self._model_prov_id, schema_version=3)
+            stamp = Stamp(id=self._model_prov_id,
+                          produced_by=self._training_run_id, schema_version=3)
             write_checkpoint_provenance(self.checkpoint_dir, stamp)
             loss_dir = os.path.join(self.checkpoint_dir, "loss_best")
             if os.path.isdir(loss_dir):
                 write_checkpoint_provenance(loss_dir, stamp)
         except Exception as exc:  # never break training over provenance
             tqdm.write(f"  [provenance] checkpoint id not written: {exc}")
+
+    def _begin_reproducible_run(self, *, steps: int, evaluate_every: int) -> None:
+        """Seed the RNGs and record a ``Process.training`` carrying the seed.
+
+        No-op when no seed was given. Best-effort on the provenance side — a
+        store hiccup must never break training; the seed is still applied so the
+        run is reproducible even if the record isn't written.
+        """
+        if self._seed is None:
+            return
+        seed_everything(self._seed, deterministic=self._deterministic)
+        tqdm.write(f"  [reproducibility] seed={self._seed}"
+                   + ("  (op-determinism on)" if self._deterministic else ""))
+        try:
+            store = default_store()
+            run = Process.training(
+                id=store.mint(),
+                git=capture_git(),
+                status="running",
+                seed=self._seed,
+                config=ConfigSnapshot("Training", {
+                    "steps": int(steps),
+                    "evaluate_every": int(evaluate_every),
+                    "deterministic": self._deterministic,
+                    "synthetic_loss_weight": self.synthetic_loss_weight,
+                    "hst_loss_weight": self.hst_loss_weight,
+                    "star_anchor_loss_weight": self.star_anchor_loss_weight,
+                }),
+            )
+            store.put(run)
+            self._training_run_id = run.id
+        except Exception as exc:  # noqa: BLE001 — provenance is best-effort
+            tqdm.write(f"  [provenance] training run not recorded: {exc}")
 
     def _apply_lr(self, step) -> float:
         """Set the optimiser LR for ``step`` = base schedule value × the
@@ -460,6 +542,11 @@ class Trainer:
             is reset and this run's first eval saves. No effect on a fresh
             run.
         """
+        # Reproducibility: apply the run's seed (if any) and record it on a
+        # Process.training so the run can be replayed. Done first, before any
+        # dataset iteration consumes randomness.
+        self._begin_reproducible_run(steps=steps, evaluate_every=evaluate_every)
+
         loss_mean = Mean()
         # Per-lane unweighted mean losses over the eval window — the
         # synthetic lane is always present; HST / star-anchor only when their

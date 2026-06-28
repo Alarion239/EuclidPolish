@@ -753,8 +753,12 @@ def step_train(args: argparse.Namespace) -> None:
     print(f"  TFRecords:   {args.records_dir}")
     print(f"  Checkpoints: {args.checkpoint_dir}")
 
+    # Same --seed knob as generation: a fixed value makes the run reproducible
+    # (recorded on a Process.training); -1 keeps fresh entropy.
+    run_seed = _resolve_run_seed(args)
+    print(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
     m = Model(args.checkpoint_dir, scale=scale,
-              num_res_blocks=args.num_res_blocks)
+              num_res_blocks=args.num_res_blocks, seed=run_seed)
     m.train(
         tfrecord_path(args.records_dir, "dirty_train"),
         tfrecord_path(args.records_dir, "clean_train"),

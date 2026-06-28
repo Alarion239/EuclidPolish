@@ -36,7 +36,7 @@ from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
-from euclid_polish.training.trainer import Trainer
+from euclid_polish.training.trainer import Trainer, seed_everything
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
 
@@ -60,6 +60,15 @@ class Model:
         Super-resolution upscale factor (default 2).
     num_res_blocks : int
         Number of residual blocks (default ``Config.DEFAULT_NUM_RES_BLOCKS``).
+    seed : int, optional
+        Master RNG seed. When set, the global RNGs are seeded *before* the model
+        is built (so weight initialisation is reproducible) and the seed flows
+        into :meth:`train`, which records it on a ``Process.training`` provenance
+        record. ``None`` (default) keeps the entropy-driven behaviour. See
+        :func:`~euclid_polish.training.trainer.seed_everything` for the GPU
+        determinism caveat.
+    deterministic : bool
+        Enable TF op-determinism for bit-exact GPU replay (slower).
     _load_fn, _reconstruct_fn : callable, optional
         Test injection points replacing ``load_model_from_checkpoint`` /
         ``reconstruct``.
@@ -71,12 +80,20 @@ class Model:
         *,
         scale: int = 2,
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
+        seed: int | None = None,
+        deterministic: bool = False,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
         self._checkpoint_dir = checkpoint_dir
         self._scale = scale
         self._num_res_blocks = num_res_blocks
+        self._seed = seed
+        self._deterministic = bool(deterministic)
+        # Seed BEFORE building so a from-scratch model's weight init is
+        # reproducible; train() re-asserts the seed for the data pipeline.
+        if seed is not None:
+            seed_everything(seed, deterministic=self._deterministic)
         self._load_fn: Callable = _load_fn if _load_fn is not None else _default_load
 
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
@@ -139,6 +156,11 @@ class Model:
         verbatim to :class:`~euclid_polish.training.trainer.Trainer.train`
         (e.g. ``evaluate_every``, ``step_callback``, ``eval_callback``).
         """
+        # Re-assert the seed before the data pipeline is defined so its shuffle
+        # / augmentation draws are reproducible (the model was already seeded +
+        # built in __init__).
+        if self._seed is not None:
+            seed_everything(self._seed, deterministic=self._deterministic)
         train_ds = self._build_training_pipeline(lr_path, hr_path, batch_size)
         valid_lr_path = lr_path.replace("_train.", "_validate.")
         valid_hr_path = hr_path.replace("_train.", "_validate.")
@@ -151,7 +173,8 @@ class Model:
             valid_lr_path, valid_hr_path, batch_size, augment=False
         )
 
-        trainer = Trainer(self._tf_model, checkpoint_dir=self._checkpoint_dir)
+        trainer = Trainer(self._tf_model, checkpoint_dir=self._checkpoint_dir,
+                          seed=self._seed, deterministic=self._deterministic)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
