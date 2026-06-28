@@ -633,7 +633,6 @@ def register(app):
                             f"step {step_id!r} is experimental and currently "
                             "disabled"}), 404
 
-        cfg_loaded = fasrc_config.load()
         form = request.form.to_dict()
 
         confirm_err = _require_confirm(form)

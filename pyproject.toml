@@ -66,14 +66,17 @@ ignore = [
 
 
 # ---------------------------------------------------------------------------
-# Pyright — static type checker, strict mode. Run: `pyright`
+# Pyright — static type checker. Run: `pyright`
+#
+# "standard" (not "strict"): on a numpy/TF/astropy codebase strict is ~80%
+# reportUnknown* noise from the untyped scientific stack. Standard keeps the
+# real-bug detectors (possibly-unbound, optional-access, argument/return-type,
+# unreachable code) and drops the Unknown-type flood.
 # ---------------------------------------------------------------------------
 
 [tool.pyright]
 include = ["euclid_polish"]
 exclude = ["**/__pycache__", "**/node_modules"]
-typeCheckingMode = "strict"
+typeCheckingMode = "standard"
 pythonVersion = "3.12"
-# Third-party scientific stack ships without type stubs; don't fail strict on
-# that one axis (the rest of strict still applies to our own code).
 reportMissingTypeStubs = false

@@ -1268,6 +1268,11 @@ class InteractiveCLI:
 
     def _reconstruct_image(self):
         """Apply super-resolution to a single LR image."""
+        # Branch-local inputs, pre-bound so the later `input_source`-guarded
+        # reads are always defined (one of the two branches below fills them).
+        chosen_lr = chosen_hr = None
+        num_reconstruct = 0
+        lr_data_input = lr_path = None
         input_source = select(
             "Load LR image from:",
             choices=[
@@ -1320,7 +1325,6 @@ class InteractiveCLI:
                 return
             lr_data_input = lr_file
             lr_path = lr_file
-            hr_data_auto = None
 
         source = select(
             "Load model from:",

@@ -61,7 +61,6 @@ def parse_stdout(text: str, *, max_lines: int = 2_000) -> dict[str, Any]:
     last_train_step: dict[str, Any] | None = None
     last_ckpt_line: str | None = None
     pipeline_done = False
-    last_banner_idx: int = -1
 
     for line in lines:
         m = _RE_BANNER.search(line)

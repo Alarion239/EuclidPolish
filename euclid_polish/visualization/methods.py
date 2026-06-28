@@ -224,7 +224,7 @@ def plot_star_positions(stars: list[dict], fig=None):
             c="red", marker="x", linewidths=1.5,
             label=f"corrupted ({int(corr.sum())})",
         )
-    cbar = fig.colorbar(sc, ax=ax_sky, shrink=0.65, pad=0.04, label="VIS magnitude (AB)")
+    fig.colorbar(sc, ax=ax_sky, shrink=0.65, pad=0.04, label="VIS magnitude (AB)")
     ax_sky.set_title(f"Sky positions — {len(stars)} stars (Aitoff)", pad=22)
     ax_sky.grid(True, color="#888", alpha=0.3)
     # X-axis tick labels: convert -π..π → 0..360° in standard astronomy convention

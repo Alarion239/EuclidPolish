@@ -481,7 +481,6 @@ def render_morphology_summary(run_dir: str, out_png: str) -> str | None:
         return np.array([float(r[name]) for r in mani
                          if r.get(name) not in (None, "")])
     pear = _col("pearson_before_after")
-    l2 = _col("l2_before_after")
     mode = mani[0].get("mode", "?")
     by_id = {r["id"]: r for r in mani}
     grade_of = read_grade_map(run_dir)

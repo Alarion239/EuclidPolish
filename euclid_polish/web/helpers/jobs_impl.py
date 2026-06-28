@@ -204,7 +204,7 @@ def _job_generate_reconstruct(
                                     rgb_mode=mode)
                 scene_pngs.append(out)
 
-            def _write_fits(path: str, data2d, label: str) -> None:
+            def _write_fits(path: str, data2d, label: str, *, lr_img=lr_img) -> None:
                 if data2d is None:
                     return
                 arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))

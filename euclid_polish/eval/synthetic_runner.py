@@ -226,7 +226,7 @@ def run_synthetic_eval(
             sr_vis_st = sr_cube_st[..., 0] if sr_cube_st.ndim == 3 else sr_cube_st
             lr_vis_st = lr_cube_st[..., 0]
 
-            def _wr(path, arr, obj, extra=None):
+            def _wr(path, arr, obj, extra=None, *, cx=cx, cy=cy):
                 hdr = fits.Header()
                 hdr["OBJECT"] = obj
                 hdr["BUNIT"] = "electron"

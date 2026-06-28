@@ -325,7 +325,6 @@ def test_training_status_returns_running_false_when_queue_empty(fake_remote, cli
 def test_git_pull_flags_env_update_when_environment_yml_changed(fake_remote, client):
     """When the pull's diff includes ``environment.yml``, the response
     sets ``env_update_needed: True`` so the UI auto-runs mamba env update."""
-    cfg = fake_remote["cfg"]
     # Fake `git` that pretends to pull successfully and lists one file.
     (fake_remote["bin_dir"] / "git").write_text(textwrap.dedent("""\
         #!/usr/bin/env bash
