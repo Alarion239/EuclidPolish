@@ -304,12 +304,15 @@ def test_tng_lens_components_when_enabled(tmp_path):
     assert img.data.sum() > 0
 
 
-def test_tng_zero_lens_components_are_sersic():
-    # tng_density_arcmin2=0.0, no TNG dir → lens components stay analytic Sersic.
+def test_tng_zero_lens_components_are_sersic(tmp_path):
+    # tng_density_arcmin2=0.0 + a TNG-free dir → lens components stay analytic
+    # Sersic. The dir is pinned to an empty tmp path so the test is hermetic:
+    # it must not depend on whether TNG data happens to be on disk locally.
     cat = TinyCosmosCatalog(n_galaxies=3000, seed=0)
     cfg = SkySimulatorConfig(image_size=96,
                              pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                             tng_density_arcmin2=0.0)
+                             tng_density_arcmin2=0.0,
+                             tng_galaxy_dir=str(tmp_path / "no_tng"))
     sim = SkySimulator(cat, cfg)
     _img, meta = sim.simulate_field(np.random.default_rng(3),
                                     n_sersic=0, n_tng=0, n_stars=0, n_lenses=4)
