@@ -211,7 +211,6 @@ class Config:
     #                                         flight chains measure 2.17–4.06 e⁻
     #                                         (Cropper+ 2024); 4.5 e⁻ was the
     #                                         requirement ceiling, not typical.
-    GAIN_E_PER_ADU               = 3.1      # documentation only; pipeline stays in e⁻
     DARK_E_PER_S_PER_PIX         = 0.001    # dark current (e⁻/pix/s)
     SKY_MAG_AB_ARCSEC2           = 22.35    # typical Wide Survey sky brightness
     VIS_AB_ZP_E_PER_S            = 25.50    # m_AB of source giving 1 e⁻/s

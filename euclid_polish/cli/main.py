@@ -69,7 +69,6 @@ load_model_from_weights,
 reconstruct,
 plot_reconstruction,
 )
-from euclid_polish.model import Model
 from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
 
 

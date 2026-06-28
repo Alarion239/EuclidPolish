@@ -26,7 +26,6 @@ from matplotlib.gridspec import GridSpec
 from euclid_polish.config import Config
 from typing import Dict, Any, Tuple
 
-from euclid_polish.config import Config as _Cfg
 from euclid_polish.visualization.color import (
     calibrated_rgb_panel, eye_rgb, planck_color_strip,
 )
@@ -252,9 +251,9 @@ class BaseVisualizer:
         a physical SED temperature.
         """
         if band_names is None:
-            band_names = _Cfg.LR_INPUT_BAND_NAMES
+            band_names = Config.LR_INPUT_BAND_NAMES
         scale = float(asinh_scale) if asinh_scale is not None \
-            else float(_Cfg.STRETCH_SCALE_E)
+            else float(Config.STRETCH_SCALE_E)
         if rgb_mode == "eye":
             rgb = eye_rgb(cube, band_names=band_names,
                           stretch=stretch, asinh_scale_e=scale)

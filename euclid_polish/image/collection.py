@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Iterator, List, Optional
 
 import numpy as np
+import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.image.core import Image, Role
@@ -82,7 +83,6 @@ class ImageSet:
             else:
                 yield from self._images
         else:
-            import tensorflow as tf
             count = 0
             for raw in tf.data.TFRecordDataset(self._path):
                 if self._max_images is not None and count >= self._max_images:

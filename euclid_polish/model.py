@@ -27,6 +27,16 @@ from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
 
+import tensorflow as tf
+from tensorflow.python.data.experimental import AUTOTUNE
+
+from euclid_polish.image.tfio import parse_example
+from euclid_polish.training.augmentation import (
+    asinh_stretch_lr, asinh_stretch_hr, _augment_multiband,
+)
+from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
+from euclid_polish.training.trainer import Trainer
+
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
 
 
@@ -74,7 +84,6 @@ class Model:
             self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
             self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
         else:
-            from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
             self._tf_model = _wdsr_build(scale=scale, num_res_blocks=num_res_blocks)
             self.id = None
 
@@ -104,12 +113,6 @@ class Model:
         augment: bool = True,
     ):
         """TF data pipeline: TFRecord → parse → asinh stretch → [augment] → batch."""
-        import tensorflow as tf
-        from tensorflow.python.data.experimental import AUTOTUNE
-        from euclid_polish.image.tfio import parse_example
-        from euclid_polish.training.augmentation import (
-            asinh_stretch_lr, asinh_stretch_hr, _augment_multiband,
-        )
         n_lr = Config.NUM_LR_CHANNELS
         n_hr = Config.NUM_HR_CHANNELS
 
@@ -157,7 +160,6 @@ class Model:
             valid_lr_path, valid_hr_path, batch_size, augment=False
         )
 
-        from euclid_polish.training.trainer import Trainer
         trainer = Trainer(self._tf_model, checkpoint_dir=self._checkpoint_dir)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 

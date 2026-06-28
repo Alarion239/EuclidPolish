@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
-from scipy import signal as scipy_signal
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
