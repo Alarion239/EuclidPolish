@@ -94,9 +94,9 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.sky.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.differential_kernel import DifferentialKernel
-from euclid_polish.sky.noise import apply_band_noise
+from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.observation.differential_kernel import DifferentialKernel
+from euclid_polish.sky.observation.noise import apply_band_noise
 from euclid_polish.image.tfio import open_writer
 from euclid_polish.image import Image
 

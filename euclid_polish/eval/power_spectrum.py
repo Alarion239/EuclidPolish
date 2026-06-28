@@ -287,13 +287,13 @@ def render_power_spectrum_summary(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from euclid_polish.sky import sr as sky_sr
+    from euclid_polish.web.helpers import sky_records
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
     records_dir = _sky_records_local_dir()
     clean_path = tfrecord_path(records_dir, f"clean_{subset}")
-    n_sr = sky_sr.sr_count(subset)
+    n_sr = sky_records.sr_count(subset)
     if not os.path.exists(clean_path) or n_sr == 0:
         return None
     records = read_images(clean_path, num_images=n_sr)
@@ -315,7 +315,7 @@ def render_power_spectrum_summary(
     field_n = 0
     n_used = 0
     for i, rec in enumerate(records):
-        sr_file = sky_sr.sr_path(subset, i)
+        sr_file = sky_records.sr_path(subset, i)
         if not os.path.isfile(sr_file):
             continue
         try:

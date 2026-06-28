@@ -47,7 +47,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.sky.tng_galaxy import (
+from euclid_polish.sky.generation.tng_galaxy import (
     TNG_FITS_BANDS,
     block_mean,
     load_tng_frame,

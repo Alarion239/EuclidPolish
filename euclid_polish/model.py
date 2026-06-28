@@ -8,6 +8,8 @@ atom), so the image layer never needs to import this module.
 
 from __future__ import annotations
 
+import glob as _glob
+import os as _os
 from typing import Callable, Optional
 
 import numpy as np
@@ -15,7 +17,7 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.eval import catalog_runner
 from euclid_polish.eval import grouped_runner
-from euclid_polish.image import Image, Role
+from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.ids import ProvId
@@ -26,6 +28,14 @@ from euclid_polish.training.inference import (
 )
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
+
+
+def _checkpoint_exists(checkpoint_dir: str) -> bool:
+    """Return True when a TF checkpoint is present in ``checkpoint_dir``."""
+    return (
+        _os.path.isfile(_os.path.join(checkpoint_dir, "checkpoint"))
+        or bool(_glob.glob(_os.path.join(checkpoint_dir, "*.index")))
+    )
 
 
 class Model:
@@ -53,12 +63,111 @@ class Model:
         _load_fn: Optional[Callable] = None,
         _reconstruct_fn: Optional[Callable] = None,
     ) -> None:
+        self._checkpoint_dir = checkpoint_dir
+        self._scale = scale
+        self._num_res_blocks = num_res_blocks
+        self._lr_images: Optional[ImageSet] = None
+        self._hr_images: Optional[ImageSet] = None
+
         load_fn = _load_fn if _load_fn is not None else _default_load
-        self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
+        if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
+            self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
+            self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
+        else:
+            from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
+            self._tf_model = _wdsr_build(scale=scale, num_res_blocks=num_res_blocks)
+            self.id = None
+
         self._reconstruct_fn: Callable = (
             _reconstruct_fn if _reconstruct_fn is not None else _default_reconstruct
         )
-        self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
+
+    # -- training interface --
+
+    def load(self, lr: ImageSet, hr: ImageSet) -> "Model":
+        """Register the LR and HR :class:`ImageSet` for training.
+
+        Returns ``self`` so calls can be chained::
+
+            model.load(lr, hr).train(steps=300_000)
+        """
+        self._lr_images = lr
+        self._hr_images = hr
+        return self
+
+    def _build_training_pipeline(
+        self,
+        dirty_path: str,
+        clean_path: str,
+        batch_size: int,
+        *,
+        augment: bool = True,
+    ):
+        """TF data pipeline: TFRecord → parse → asinh stretch → [augment] → batch."""
+        import tensorflow as tf
+        from tensorflow.python.data.experimental import AUTOTUNE
+        from euclid_polish.image.tfio import parse_example
+        from euclid_polish.training.augmentation import (
+            asinh_stretch_lr, asinh_stretch_hr, _augment_multiband,
+        )
+        n_lr = Config.NUM_LR_CHANNELS
+        n_hr = Config.NUM_HR_CHANNELS
+
+        def _parse_lr(raw):
+            return asinh_stretch_lr(parse_example(raw, n_lr))
+
+        def _parse_hr(raw):
+            return asinh_stretch_hr(parse_example(raw, n_hr))
+
+        lr_ds = (tf.data.TFRecordDataset(dirty_path)
+                 .map(_parse_lr, num_parallel_calls=AUTOTUNE))
+        hr_ds = (tf.data.TFRecordDataset(clean_path)
+                 .map(_parse_hr, num_parallel_calls=AUTOTUNE))
+        ds = tf.data.Dataset.zip((lr_ds, hr_ds))
+        if augment:
+            scale = self._scale
+            hr_crop = Config.DEFAULT_HR_CROP_SIZE
+            ds = (ds.shuffle(200)
+                    .map(lambda lr, hr: _augment_multiband(lr, hr, hr_crop, scale),
+                         num_parallel_calls=AUTOTUNE)
+                    .repeat())
+        return ds.batch(batch_size).prefetch(AUTOTUNE)
+
+    def train(self, steps: int = 300_000, batch_size: int = 16, **kwargs) -> None:
+        """Train the model on the datasets registered via :meth:`load`.
+
+        All extra ``kwargs`` are forwarded verbatim to
+        :class:`~euclid_polish.training.trainer.Trainer.train` (e.g.
+        ``evaluate_every``, ``step_callback``, ``eval_callback``).
+        """
+        if self._lr_images is None or self._hr_images is None:
+            raise RuntimeError("Call load(lr, hr) before train().")
+        lr_path = self._lr_images.source_path
+        hr_path = self._hr_images.source_path
+        if lr_path is None or hr_path is None:
+            raise RuntimeError(
+                "train() requires ImageSets constructed with ImageSet.read() "
+                "(source_path must be set)."
+            )
+
+        train_ds = self._build_training_pipeline(lr_path, hr_path, batch_size)
+        valid_lr_path = lr_path.replace("_train.", "_validate.")
+        valid_hr_path = hr_path.replace("_train.", "_validate.")
+        valid_ds = self._build_training_pipeline(
+            valid_lr_path, valid_hr_path, batch_size, augment=False
+        )
+
+        from euclid_polish.training.trainer import Trainer
+        trainer = Trainer(self._tf_model, checkpoint_dir=self._checkpoint_dir)
+        trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
+
+        if _checkpoint_exists(self._checkpoint_dir):
+            self._tf_model = _default_load(
+                self._checkpoint_dir, self._scale, self._num_res_blocks
+            )
+            self.id = model_id_of_checkpoint(self._checkpoint_dir)
+
+    # -- inference interface --
 
     def upsample_array(self, arr: np.ndarray) -> np.ndarray:
         """Super-resolve a bare numpy array (raw electrons); return the SR array.
@@ -94,6 +203,31 @@ class Model:
             is_clean=True, role=Role.SR, subset=lr.subset,
             stamp=Stamp(id=mint_id(store), parents=parents, schema_version=3,
                         subset=lr.subset))
+
+    def upsample_batch(
+        self,
+        lr_images: ImageSet,
+        *,
+        on_progress: Optional[Callable] = None,
+        log: Optional[Callable] = None,
+    ) -> ImageSet:
+        """Super-resolve each image in ``lr_images``; return an eager :class:`ImageSet`.
+
+        Streams ``lr_images`` lazily — if it is backed by a TFRecord, only one
+        image is held in memory at a time. The returned set is eager (all SR
+        results materialised in a list).
+        """
+        emit = log or (lambda m: None)
+        sr_list = []
+        for i, lr in enumerate(lr_images):
+            sr = self.upsample(lr)
+            sr_list.append(sr)
+            emit(f"SR idx {i} → {sr.data.shape}")
+            if on_progress:
+                on_progress(i + 1, None, f"idx {i}")
+        return ImageSet.from_images(sr_list)
+
+    # -- evaluation interface --
 
     def eval_catalog(self, *, out_dir, **kwargs):
         """Evaluate this model on a lens catalog.

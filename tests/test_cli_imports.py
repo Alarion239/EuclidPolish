@@ -62,10 +62,10 @@ def test_multiband_pipeline_components_wired():
     """The three pipeline steps can be wired together end-to-end."""
     import numpy as np
     from euclid_polish.config import Config
-    from euclid_polish.sky.sky_simulator import (
+    from euclid_polish.sky.generation.sky_simulator import (
         SkySimulatorConfig, SkySimulator,
     )
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.psf.psf_library import load_all_band_psfs

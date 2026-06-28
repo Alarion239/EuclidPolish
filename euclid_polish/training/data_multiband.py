@@ -33,88 +33,20 @@ from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import parse_example, tfrecord_path
+from euclid_polish.training.augmentation import (
+    _LR_STRETCH_SCALE_NP,
+    _HR_STRETCH_SCALE_NP,
+    _lr_stretch_scale,
+    _hr_stretch_scale,
+    _hr_scale_for,
+    asinh_stretch_lr,
+    asinh_stretch_hr,
+    inverse_asinh_stretch_lr,
+    inverse_asinh_stretch_hr,
+    _augment_multiband,
+)
 
 import os as _os
-
-
-# ---------------------------------------------------------------------------
-# Per-band asinh stretch (graph constants)
-# ---------------------------------------------------------------------------
-#
-# The stretch scales are immutable constants per-band. We materialise them
-# as float32 numpy arrays at import time and rely on TF's auto-conversion
-# from numpy → tensor inside ``tf.asinh`` / ``tf.sinh``. This is faster
-# than building a fresh ``tf.constant`` each call AND avoids the
-# lru_cache-across-test-fixtures pitfalls that would come from holding TF
-# tensors in module-level caches.
-
-_LR_STRETCH_SCALE_NP = np.array(
-    [Config.get_band(name).asinh_stretch_scale_e
-     for name in Config.LR_INPUT_BAND_NAMES],
-    dtype=np.float32,
-)  # shape (4,)
-
-_HR_STRETCH_SCALE_NP = np.array(
-    [Config.get_band(name).asinh_stretch_scale_e
-     for name in Config.HR_TARGET_BAND_NAMES],
-    dtype=np.float32,
-)  # shape (4,) — one knee per HR target band
-
-
-def _lr_stretch_scale() -> np.ndarray:
-    """Length-4 vector of asinh stretch scales, one per LR channel."""
-    return _LR_STRETCH_SCALE_NP
-
-
-def _hr_stretch_scale() -> np.ndarray:
-    """Length-4 vector of asinh stretch scales, one per HR target band.
-
-    Broadcasting note: a stretched/unstretched tensor with FEWER trailing
-    channels (the 1-channel HST / star-anchor HR sides, or a VIS-only
-    slice) still works — numpy/TF broadcasting aligns trailing dims, so
-    ``(..., 1) / (4,)`` would NOT be valid; those callers slice the scale
-    via :func:`asinh_stretch_hr`'s ``num_channels`` argument instead.
-    """
-    return _HR_STRETCH_SCALE_NP
-
-
-def asinh_stretch_lr(x: tf.Tensor) -> tf.Tensor:
-    """asinh(x / k) per channel; ``x`` has shape ``(..., 4)``."""
-    return tf.asinh(x / _lr_stretch_scale())
-
-
-def _hr_scale_for(x: tf.Tensor, num_channels: "int | None") -> np.ndarray:
-    """The per-band knee vector sliced to ``x``'s channel count.
-
-    The leading HR bands are ``(VIS, Y_E, J_E, H_E)``, so a C-channel
-    tensor (C ≤ 4) always means "the first C bands": full 4-band targets,
-    the 1-channel HST / star-anchor HR sides, and VIS-only slices all
-    resolve correctly. Slicing (instead of relying on broadcasting) is
-    load-bearing — broadcasting ``(..., 1)`` against the length-4 vector
-    would silently widen the tensor to 4 channels.
-    """
-    n = num_channels if num_channels is not None else x.shape[-1]
-    k = _hr_stretch_scale()
-    return k[:int(n)] if n is not None else k
-
-
-def asinh_stretch_hr(x: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
-    """asinh(x / k) per HR band; ``x`` has shape ``(..., C)``, C ≤ 4.
-
-    The knee count follows ``x``'s static channel dim (or an explicit
-    ``num_channels`` when that dim is dynamic).
-    """
-    return tf.asinh(x / _hr_scale_for(x, num_channels))
-
-
-def inverse_asinh_stretch_lr(y: tf.Tensor) -> tf.Tensor:
-    """Inverse of :func:`asinh_stretch_lr` (per-band)."""
-    return tf.sinh(y) * _lr_stretch_scale()
-
-
-def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: "int | None" = None) -> tf.Tensor:
-    """Inverse of :func:`asinh_stretch_hr` (per-band)."""
-    return tf.sinh(y) * _hr_scale_for(y, num_channels)
 
 
 # ---------------------------------------------------------------------------
@@ -491,28 +423,3 @@ def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:
     return ds.batch(batch_size).prefetch(AUTOTUNE)
 
 
-def _augment_multiband(
-    lr: tf.Tensor, hr: tf.Tensor, hr_patch_size: int, scale: int,
-) -> tuple[tf.Tensor, tf.Tensor]:
-    """Random aligned LR/HR crop.
-
-    Flips and rotations are intentionally disabled: the empirical VIS
-    ePSF is non-symmetric, so a flipped HR target is not what you would
-    obtain by convolving the flipped clean field with the same PSF.
-    """
-    lr_patch_size = hr_patch_size // scale
-    hr_h = tf.shape(hr)[0]
-    hr_w = tf.shape(hr)[1]
-
-    max_x = (hr_h - hr_patch_size) // scale * scale
-    max_y = (hr_w - hr_patch_size) // scale * scale
-    hr_x = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
-    hr_y = tf.random.uniform([], 0, max_y + 1, dtype=tf.int32)
-    hr_x = hr_x // scale * scale
-    hr_y = hr_y // scale * scale
-
-    hr = hr[hr_x : hr_x + hr_patch_size, hr_y : hr_y + hr_patch_size, :]
-    lr_x = hr_x // scale
-    lr_y = hr_y // scale
-    lr = lr[lr_x : lr_x + lr_patch_size, lr_y : lr_y + lr_patch_size, :]
-    return lr, hr

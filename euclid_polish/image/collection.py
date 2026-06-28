@@ -1,64 +1,116 @@
-"""``ImageSet`` — a collection of :class:`Image` persisted as TFRecords.
+"""``ImageSet`` — a lazy, streamable collection of :class:`Image`.
 
-The collection counterpart to the single-image atom. It owns the verbs that act
-on *many* images at once — write/read the TFRecord stack, iterate, filter by
-role, split into train/validate — and carries one optional set-level provenance
-:class:`Stamp` (e.g. the ``GenerationRun`` that produced the whole set).
+Constructed either from an in-memory list (:meth:`from_images`) or from a
+TFRecord path (:meth:`read`). In the lazy path no data is loaded until the
+set is iterated; gigabyte-scale training datasets can be referenced without
+consuming RAM.
 
-Like :class:`Image`, it imports nothing but third-party libs + the provenance
-value-types + its own ``image.tfio`` persistence layer; no operator.
+Callers see a uniform collection interface regardless of which mode is active.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Iterator, List, Optional
 
 import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image.core import Image, Role
-from euclid_polish.image.tfio import read_images, write_images
+from euclid_polish.image.tfio import write_images
 from euclid_polish.provenance.records import Stamp
 
 
-@dataclass
 class ImageSet:
     """An ordered collection of :class:`Image` with an optional set-level stamp.
 
-    Construct in memory with :meth:`from_images`, or load a TFRecord stack with
-    :meth:`read`. ``stamp`` identifies the whole set (the run that produced it).
+    Two construction modes:
+
+    * :meth:`from_images` — eager, backed by an in-memory list.
+    * :meth:`read` — **lazy**, backed by a TFRecord path; records are streamed
+      on demand and never fully materialised in RAM.
+
+    Both modes expose the same collection protocol (``__iter__``, ``__len__``,
+    ``__getitem__``, :meth:`write`, :meth:`by_role`, :meth:`split`).
     """
 
-    images: List[Image] = field(default_factory=list)
-    stamp: Optional[Stamp] = None
+    def __init__(
+        self,
+        *,
+        images: Optional[List[Image]] = None,
+        path: Optional[str] = None,
+        stamp: Optional[Stamp] = None,
+        max_images: Optional[int] = None,
+    ) -> None:
+        if (images is None) == (path is None):
+            raise ValueError("Exactly one of 'images' or 'path' must be provided.")
+        self._images = images
+        self._path = path
+        self._max_images = max_images
+        self.stamp = stamp
 
     # -- construction -- #
 
     @classmethod
     def from_images(cls, images, *, stamp: Optional[Stamp] = None) -> "ImageSet":
-        """Build a set from an iterable of :class:`Image`."""
+        """Build an eager set from an iterable of :class:`Image`."""
         return cls(images=list(images), stamp=stamp)
 
     @classmethod
-    def read(cls, path_or_glob: str, *, num_images: Optional[int] = None,
-             stamp: Optional[Stamp] = None) -> "ImageSet":
-        """Read every record under ``path_or_glob`` (or the first ``num_images``)."""
-        n = num_images if num_images is not None else (1 << 30)
-        return cls(images=read_images(path_or_glob, num_images=n), stamp=stamp)
+    def read(cls, path_or_glob: str, *, stamp: Optional[Stamp] = None,
+             num_images: Optional[int] = None) -> "ImageSet":
+        """Return a **lazy** set backed by ``path_or_glob``.
+
+        No records are read until the set is iterated. This is safe for
+        training-scale TFRecord files that would otherwise exhaust RAM.
+        ``num_images`` caps the number of records yielded when iterating.
+        """
+        return cls(path=path_or_glob, stamp=stamp, max_images=num_images)
+
+    # -- source access -- #
+
+    @property
+    def source_path(self) -> Optional[str]:
+        """TFRecord path when constructed with :meth:`read`; ``None`` otherwise."""
+        return self._path
 
     # -- collection protocol -- #
 
-    def __len__(self) -> int:
-        return len(self.images)
-
     def __iter__(self) -> Iterator[Image]:
-        return iter(self.images)
+        if self._images is not None:
+            if self._max_images is not None:
+                yield from self._images[:self._max_images]
+            else:
+                yield from self._images
+        else:
+            import tensorflow as tf
+            count = 0
+            for raw in tf.data.TFRecordDataset(self._path):
+                if self._max_images is not None and count >= self._max_images:
+                    break
+                yield Image.from_tfrecord(raw.numpy())
+                count += 1
 
-    def __getitem__(self, i):
-        if isinstance(i, slice):
-            return ImageSet(images=self.images[i], stamp=self.stamp)
-        return self.images[i]
+    def __len__(self) -> int:
+        if self._images is not None:
+            return len(self._images)
+        return sum(1 for _ in self)
+
+    def __getitem__(self, key):
+        if self._images is not None:
+            result = self._images[key]
+            if isinstance(result, list):
+                return ImageSet.from_images(result, stamp=self.stamp)
+            return result
+        images = list(self)
+        result = images[key]
+        if isinstance(result, list):
+            return ImageSet.from_images(result, stamp=self.stamp)
+        return result
+
+    def __repr__(self) -> str:
+        if self._images is not None:
+            return f"ImageSet(n={len(self._images)}, mode=eager)"
+        return f"ImageSet(path={self._path!r}, mode=lazy)"
 
     # -- persistence -- #
 
@@ -66,33 +118,34 @@ class ImageSet:
               name: str = "images") -> str:
         """Write the set to ``<records_dir>/<name>.tfrecord``; return the path.
 
-        Each image carries its own stamp into its record (the set-level stamp is
-        provenance metadata for the whole file, recorded in its sidecar).
+        Streams via ``__iter__`` so lazy sets never fully materialise in RAM.
         """
-        return write_images(self.images, name=name, records_dir=records_dir)
+        return write_images(self, name=name, records_dir=records_dir)
 
     # -- queries -- #
 
     def by_role(self, role: Role) -> "ImageSet":
         """The subset whose :attr:`Image.role` equals ``role``."""
-        return ImageSet(images=[im for im in self.images if im.role is role],
-                        stamp=self.stamp)
+        return ImageSet.from_images(
+            (img for img in self if img.role is role), stamp=self.stamp
+        )
 
     def split(self, train_frac: float, *,
               rng: Optional[np.random.Generator] = None) -> "tuple[ImageSet, ImageSet]":
         """Random disjoint split into ``(train, validate)`` by fraction.
 
-        ``train`` gets ``round(train_frac * len)`` images; the rest go to
-        ``validate``. Deterministic given ``rng``.
+        Materialises the full set once to shuffle indices. Deterministic given
+        ``rng``.
         """
         if not 0.0 <= train_frac <= 1.0:
             raise ValueError(f"train_frac must be in [0, 1], got {train_frac}")
+        images = list(self)
         rng = rng if rng is not None else np.random.default_rng()
-        n = len(self.images)
+        n = len(images)
         order = rng.permutation(n)
         k = int(round(train_frac * n))
         train_idx, val_idx = order[:k], order[k:]
         return (
-            ImageSet(images=[self.images[i] for i in train_idx], stamp=self.stamp),
-            ImageSet(images=[self.images[i] for i in val_idx], stamp=self.stamp),
+            ImageSet.from_images([images[i] for i in train_idx], stamp=self.stamp),
+            ImageSet.from_images([images[i] for i in val_idx], stamp=self.stamp),
         )

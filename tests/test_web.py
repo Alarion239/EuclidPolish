@@ -271,18 +271,18 @@ def test_viewer_cube_bad_tier_404(client):
 
 
 def test_sky_sr_checkpoint_and_records_detection(tmp_path):
-    from euclid_polish.sky import sr as sky_sr
+    from euclid_polish.web.helpers import sky_records
     # checkpoint: detected only when a 'checkpoint' pointer or *.index exists.
     ck = tmp_path / "ck"; ck.mkdir()
-    assert sky_sr.checkpoint_present(str(ck)) is False
+    assert sky_records.checkpoint_present(str(ck)) is False
     (ck / "checkpoint").write_text("x")
-    assert sky_sr.checkpoint_present(str(ck)) is True
+    assert sky_records.checkpoint_present(str(ck)) is True
     # records: detected when dirty_<subset>.tfrecord is in the cache dir.
     rd = tmp_path / "rec"; rd.mkdir()
-    assert sky_sr.records_present(str(rd), "validate") is False
+    assert sky_records.records_present(str(rd), "validate") is False
     (rd / "dirty_validate.tfrecord").write_text("x")
-    assert sky_sr.records_present(str(rd), "validate") is True
-    assert sky_sr.present_subsets(str(rd)) == ["validate"]
+    assert sky_records.records_present(str(rd), "validate") is True
+    assert sky_records.present_subsets(str(rd)) == ["validate"]
 
 
 def test_sky_sr_count_isolated(tmp_path, monkeypatch):
@@ -290,12 +290,12 @@ def test_sky_sr_count_isolated(tmp_path, monkeypatch):
 
     import numpy as np
 
-    from euclid_polish.sky import sr as sky_sr
+    from euclid_polish.web.helpers import sky_records
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path))
-    assert sky_sr.sr_count("validate") == 0
-    os.makedirs(sky_sr.sky_sr_dir(), exist_ok=True)
-    np.save(sky_sr.sr_path("validate", 0), np.zeros((4, 4, 4), dtype="float32"))
-    assert sky_sr.sr_count("validate") == 1
+    assert sky_records.sr_count("validate") == 0
+    os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
+    np.save(sky_records.sr_path("validate", 0), np.zeros((4, 4, 4), dtype="float32"))
+    assert sky_records.sr_count("validate") == 1
 
 
 def test_viewer_meta_sky_has_sr_tier_not_hr_target(client):

@@ -32,6 +32,8 @@ from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.training import Trainer
+# TODO: migrate pure-synthetic path to Model.load(lr, hr).train(); the
+# fixed-layout HST/anchor multi-source mixing still needs MultiBandEuclidDataset
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.forward_op import HSTForwardOp
 from euclid_polish.training.models.wdsr import wdsr

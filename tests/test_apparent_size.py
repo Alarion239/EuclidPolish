@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from euclid_polish.sky.apparent_size import ApparentSizeModel, CosmosSizeSampler
+from euclid_polish.sky.generation.apparent_size import ApparentSizeModel, CosmosSizeSampler
 
 
 def test_scalar_and_array_shapes():

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from euclid_polish.provenance.records import Format
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.sr import record_sr_cube
+from euclid_polish.web.helpers.sky_records import record_sr_cube
 
 
 def test_record_sr_cube_links_model_and_input(tmp_path):

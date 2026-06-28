@@ -75,7 +75,7 @@ def main(argv=None) -> int:
     import tensorflow as tf
     from tqdm import tqdm
 
-    from euclid_polish.sky.source_catalog import read_sources
+    from euclid_polish.sky.generation.source_catalog import read_sources
     from euclid_polish.image.tfio import tfrecord_path
     from euclid_polish.image import Image
 

@@ -7,7 +7,7 @@ import os
 import numpy as np
 import pytest
 
-from euclid_polish.sky.differential_kernel import (
+from euclid_polish.sky.observation.differential_kernel import (
     DifferentialKernel,
     _fourier_shift,
     _recenter_to_geometric,
@@ -118,7 +118,7 @@ class TestCentring:
     def test_pad_to_centres_odd_input_in_even_target(self):
         """The exact (even, odd) case that was buggy: pad odd→even and
         verify the input's centre pixel lands at ``target // 2``."""
-        from euclid_polish.sky.differential_kernel import _pad_to
+        from euclid_polish.sky.observation.differential_kernel import _pad_to
         # Distinguishable centre marker so we can find it after padding.
         a = np.zeros((5, 5))
         a[2, 2] = 1.0                       # centre of odd 5×5 is (2, 2)

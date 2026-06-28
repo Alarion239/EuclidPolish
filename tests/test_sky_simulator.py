@@ -7,7 +7,7 @@ import pytest
 
 from euclid_polish.config import Config
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
     SkySimulator,
 )
@@ -204,7 +204,7 @@ def test_tng_injection_with_redshift_mode(tmp_path):
 
 
 def test_composite_stamp_clipping():
-    from euclid_polish.sky.tng_galaxy import composite_stamp
+    from euclid_polish.sky.generation.tng_galaxy import composite_stamp
     # centred fully inside → full flux
     c = np.zeros((10, 10, 4), np.float32)
     composite_stamp(c, np.ones((4, 4, 4), np.float32), x0=5, y0=5)
@@ -224,7 +224,7 @@ def test_composite_stamp_clipping():
 
 
 def test_star_mag_smooth_power_law():
-    from euclid_polish.sky.sky_simulator import _sample_star_mag
+    from euclid_polish.sky.generation.sky_simulator import _sample_star_mag
     rng = np.random.default_rng(0)
     mags = np.array([_sample_star_mag(rng, slope=0.2, m_bright=16.0, m_faint=25.0)
                      for _ in range(200_000)])
@@ -240,7 +240,7 @@ def test_star_mag_smooth_power_law():
 
 
 def test_star_mag_slope_zero_is_uniform():
-    from euclid_polish.sky.sky_simulator import _sample_star_mag
+    from euclid_polish.sky.generation.sky_simulator import _sample_star_mag
     rng = np.random.default_rng(1)
     mags = np.array([_sample_star_mag(rng, slope=0.0, m_bright=18.0, m_faint=24.0)
                      for _ in range(100_000)])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from euclid_polish.sky.resample import (
+from euclid_polish.sky.observation.resample import (
     cubic_upsample,
     lanczos3_upsample,
     upsample,

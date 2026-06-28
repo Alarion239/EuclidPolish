@@ -20,7 +20,7 @@ import math
 import numpy as np
 import pytest
 
-from euclid_polish.sky.profiles import (
+from euclid_polish.sky.generation.profiles import (
     draw_bulge_disk,
     draw_sersic,
     sersic_amp_from_flux,

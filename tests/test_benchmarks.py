@@ -73,7 +73,7 @@ def test_bench_sersic_disk_small():
 
     Baseline ~0.4 ms (auto-csub picks csub=1 because n≤1.2).
     """
-    from euclid_polish.sky.profiles import draw_sersic
+    from euclid_polish.sky.generation.profiles import draw_sersic
     def call():
         draw_sersic((128, 128), flux=1e5, n=1.0, r_e=0.30, q=0.6,
                     theta_rad=0.5, x0=64, y0=64, pixel_scale=0.05)
@@ -88,7 +88,7 @@ def test_bench_sersic_bulge_small():
     a stamp of side ≈ 18·r_e_pix ≈ 72 → 72×31 = 2232 sub-pixel grid.
     This is the most expensive single-source case in normal use.
     """
-    from euclid_polish.sky.profiles import draw_sersic
+    from euclid_polish.sky.generation.profiles import draw_sersic
     def call():
         draw_sersic((128, 128), flux=1e5, n=4.0, r_e=0.10, q=0.8,
                     theta_rad=0.3, x0=64, y0=64, pixel_scale=0.05)
@@ -101,7 +101,7 @@ def test_bench_bulge_disk_typical_galaxy():
 
     Baseline ~285 ms (bulge ≈ 280 ms, disk ≈ 5 ms; the bulge dominates).
     """
-    from euclid_polish.sky.profiles import draw_bulge_disk
+    from euclid_polish.sky.generation.profiles import draw_bulge_disk
     def call():
         draw_bulge_disk((252, 252),
                         flux_bulge=3e5, r_e_bulge=0.15, q_bulge=0.8,
@@ -121,7 +121,7 @@ def test_bench_lanczos3_upsample_3x():
     Baseline ~0.6 ms. The Lanczos weight matrices are LRU-cached after
     first construction so steady-state cost is just the matrix multiplies.
     """
-    from euclid_polish.sky.resample import lanczos3_upsample
+    from euclid_polish.sky.observation.resample import lanczos3_upsample
     rng = np.random.default_rng(0)
     img = rng.normal(size=(84, 84)).astype(np.float32)
     def call():
@@ -137,7 +137,7 @@ def test_bench_cubic_upsample_3x():
     ``scipy.ndimage.zoom`` does generic spline interpolation on every call
     rather than amortising the kernel across calls.
     """
-    from euclid_polish.sky.resample import cubic_upsample
+    from euclid_polish.sky.observation.resample import cubic_upsample
     rng = np.random.default_rng(0)
     img = rng.normal(size=(84, 84)).astype(np.float32)
     def call():
@@ -156,7 +156,7 @@ def test_bench_forward_one_field_small():
     Baseline ~1 ms. Tiny because all PSFs are small Gaussians and the
     FFT-convolve on 96×96 is fast.
     """
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
@@ -184,7 +184,7 @@ def test_bench_forward_one_field_realistic():
     Baseline ~4 ms. The dominant cost is the four 252² FFT convolutions;
     Poisson + Gaussian sampling adds a constant ~1 ms.
     """
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
@@ -235,7 +235,7 @@ def test_bench_scene_generator_small():
     would speed this up at the cost of flux conservation accuracy.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.sky_simulator import (
+    from euclid_polish.sky.generation.sky_simulator import (
         SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=500, seed=0)
@@ -260,7 +260,7 @@ def test_bench_lens_render_one_band():
     smaller fraction of the total.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.lens_population import (
+    from euclid_polish.sky.generation.lens_population import (
         LensPopulation, render_lens_to_canvas,
     )
 
@@ -307,7 +307,7 @@ def test_bench_compute_sersic_stamp_n4_compact():
 
     Baseline ~5 ms with the adaptive core+wings sampling.
     """
-    from euclid_polish.sky.profiles import compute_sersic_stamp
+    from euclid_polish.sky.generation.profiles import compute_sersic_stamp
     def call():
         compute_sersic_stamp((256, 256), n=4.0, r_e=0.10, q=0.8, theta_rad=0.3,
                              x0=128, y0=128, pixel_scale=0.05)
@@ -317,7 +317,7 @@ def test_bench_compute_sersic_stamp_n4_compact():
 
 def test_bench_add_sersic_to_bands_vs_loop():
     """4-band broadcast vs naive per-band loop — quantifies the speedup."""
-    from euclid_polish.sky.profiles import add_sersic_to_bands, draw_sersic
+    from euclid_polish.sky.generation.profiles import add_sersic_to_bands, draw_sersic
     H = W = 252
     flux_per_band = np.array([1e5, 5e4, 3e4, 2e4], dtype=np.float32)
     canvas_bcast = np.zeros((H, W, 4), dtype=np.float32)
@@ -345,7 +345,7 @@ def test_bench_add_sersic_to_bands_vs_loop():
 
 def test_bench_evaluate_sersic_at_coords():
     """Arbitrary-coord evaluator on a 252² grid — used by the lens renderer."""
-    from euclid_polish.sky.profiles import evaluate_sersic_at_coords
+    from euclid_polish.sky.generation.profiles import evaluate_sersic_at_coords
     H = W = 252
     yy, xx = np.indices((H, W), dtype=np.float64)
     x_arcsec = (xx - W / 2) * 0.05
@@ -367,7 +367,7 @@ def test_bench_scene_generator_252():
     per arcmin² on this canvas size).
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.sky_simulator import (
+    from euclid_polish.sky.generation.sky_simulator import (
         SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
@@ -388,7 +388,7 @@ def test_bench_scene_generator_512():
     full training-set generation.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.sky_simulator import (
+    from euclid_polish.sky.generation.sky_simulator import (
         SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
@@ -407,7 +407,7 @@ def test_bench_forward_512_production():
 
     Baseline ~10-15 ms / field. FFT convolutions on 512² are the cost.
     """
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     from euclid_polish.image import Image
@@ -435,10 +435,10 @@ def test_bench_end_to_end_one_pair_252():
     full-pipeline wall time.
     """
     from tests._tiny_catalog import TinyCosmosCatalog
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
-    from euclid_polish.sky.sky_simulator import (
+    from euclid_polish.sky.generation.sky_simulator import (
         SkySimulatorConfig, SkySimulator,
     )
     cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)

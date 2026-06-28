@@ -5,7 +5,6 @@ Multi-band training pipeline (4-channel LR input, 1-channel VIS HR target).
 """
 
 from euclid_polish.training.trainer import Trainer
-from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.inference import (
     reconstruct,
@@ -16,7 +15,6 @@ from euclid_polish.training.inference import (
 
 __all__ = [
     "Trainer",
-    "MultiBandEuclidDataset",
     "wdsr",
     "reconstruct",
     "plot_reconstruction",

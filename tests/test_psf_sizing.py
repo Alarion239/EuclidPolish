@@ -17,7 +17,7 @@ from euclid_polish.psf.psf_library import (
     psf_side_pixels_for_band,
 )
 from euclid_polish.psf import PSF
-from euclid_polish.sky.observation_simulator import default_psf_for_band
+from euclid_polish.sky.observation.observation_simulator import default_psf_for_band
 
 
 # ---------------------------------------------------------------------------

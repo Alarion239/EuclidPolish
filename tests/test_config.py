@@ -233,7 +233,7 @@ def test_sersic_stamp_radius_increases_with_n():
 
 def test_default_csub_uses_config_table():
     """The runtime _default_csub should reflect a config edit."""
-    from euclid_polish.sky.profiles import _default_csub
+    from euclid_polish.sky.generation.profiles import _default_csub
     n = 4.0
     csub_default = _default_csub(n, r_e_pix=4.0)
     assert csub_default >= 1 and csub_default <= Config.SERSIC_CSUB_MAX_CAP

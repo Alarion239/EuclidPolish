@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from euclid_polish.provenance.records import Format
 from euclid_polish.provenance.store import ProvStore
-from euclid_polish.sky.gen_provenance import (
+from euclid_polish.sky.generation.gen_provenance import (
     GenerationContext, begin_generation_run, make_generation_context,
 )
 
@@ -85,7 +85,7 @@ def test_stamped_record_round_trips_through_tfrecord(tmp_path):
 
 
 def test_make_generation_context_is_guarded(monkeypatch):
-    import euclid_polish.sky.gen_provenance as gp
+    import euclid_polish.sky.generation.gen_provenance as gp
     monkeypatch.setattr(
         gp, "default_store",
         lambda: (_ for _ in ()).throw(OSError("no store")),
@@ -95,7 +95,7 @@ def test_make_generation_context_is_guarded(monkeypatch):
 
 def test_shard_stamp_plan_is_store_free_and_correct():
     from euclid_polish.provenance.ids import ProvId
-    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    from euclid_polish.sky.generation.gen_provenance import ShardStampPlan
     plan = ShardStampPlan(
         run_id=ProvId("aaaaaaaa"), clean_id=ProvId("bbbbbbbb"),
         hr_id=ProvId("cccccccc"), dirty_id=ProvId("dddddddd"),
@@ -113,7 +113,7 @@ def test_shard_stamp_plan_is_picklable():
     """Workers run in separate processes — the plan must pickle."""
     import pickle
     from euclid_polish.provenance.ids import ProvId
-    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    from euclid_polish.sky.generation.gen_provenance import ShardStampPlan
     plan = ShardStampPlan(ProvId("aaaaaaaa"), ProvId("bbbbbbbb"),
                           ProvId("cccccccc"), ProvId("dddddddd"))
     assert pickle.loads(pickle.dumps(plan)) == plan

@@ -88,7 +88,7 @@ def _make_synthetic_tile(
 def _make_synthetic_kernel(tmp_path, *, side: int = 63) -> str:
     """Build a unit-flux Gaussian as a stand-in for the differential
     kernel — just so the worker's fftconvolve has something to run."""
-    from euclid_polish.sky.differential_kernel import DifferentialKernel
+    from euclid_polish.sky.observation.differential_kernel import DifferentialKernel
     sigma = 2.0
     y, x = np.mgrid[:side, :side]
     cy = cx = (side - 1) / 2.0

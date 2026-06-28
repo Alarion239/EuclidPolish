@@ -1,6 +1,6 @@
 import os
 
-from euclid_polish.sky import source_catalog as sc
+from euclid_polish.sky.generation import source_catalog as sc
 
 
 def _meta():

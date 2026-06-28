@@ -9,7 +9,7 @@ import pytest
 
 from euclid_polish.config import Config
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.lens_population import (
+from euclid_polish.sky.generation.lens_population import (
     LensParams,
     LensPopulation,
     einstein_radius_sis,
@@ -181,7 +181,7 @@ def test_lensed_source_stamp_is_magnified(stub_population: LensPopulation):
     lensed_flux = canvas.sum()
     assert lensed_flux > 0
     # Unlensed reference: the same stamp composited directly.
-    from euclid_polish.sky.tng_galaxy import composite_stamp
+    from euclid_polish.sky.generation.tng_galaxy import composite_stamp
     ref = np.zeros_like(canvas)
     composite_stamp(ref, src, 64.0, 64.0)
     assert lensed_flux > 1.05 * ref.sum()      # genuine magnification (μ>1)

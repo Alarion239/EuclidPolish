@@ -3,7 +3,7 @@ sparse shards (a field that rendered no galaxies/lenses writes no row)."""
 
 import os
 
-from euclid_polish.sky.source_catalog import SOURCE_COLS, concat_source_csvs
+from euclid_polish.sky.generation.source_catalog import SOURCE_COLS, concat_source_csvs
 
 
 def _write_part(path, field_indices):

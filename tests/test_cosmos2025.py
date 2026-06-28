@@ -16,8 +16,8 @@ import pytest
 import time
 
 from euclid_polish.config import Config
-from euclid_polish.sky import cosmos2025 as P
-from euclid_polish.sky.cosmos2025 import (
+from euclid_polish.sky.generation import cosmos2025 as P
+from euclid_polish.sky.generation.cosmos2025 import (
     Cosmos2025Catalog,
     CosmosCatalog,
     GalaxyParams,

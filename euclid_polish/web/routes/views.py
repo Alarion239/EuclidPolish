@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
-from euclid_polish.sky import sr as sky_sr
+from euclid_polish.web.helpers import sky_records
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
@@ -167,14 +167,14 @@ def register(app):
         checkpoint are present; ``sr`` reports how many SR cubes exist per
         subset (which drives the SR tier's enabled state in the viewer)."""
         records_dir = _sky_records_local_dir()
-        subsets = sky_sr.present_subsets(records_dir)
-        ckpt = sky_sr.checkpoint_present()
+        subsets = sky_records.present_subsets(records_dir)
+        ckpt = sky_records.checkpoint_present()
         return jsonify({
             "records": bool(subsets),
             "checkpoint": ckpt,
             "can_generate": bool(subsets) and ckpt,
             "subsets": subsets,
-            "sr": {s: sky_sr.sr_count(s) for s in sky_sr.SUBSETS},
+            "sr": {s: sky_records.sr_count(s) for s in sky_records.SUBSETS},
         })
 
     @app.route("/api/sky/generate-sr", methods=["POST"])
@@ -184,19 +184,38 @@ def register(app):
         Gated on records + checkpoint (refuses 400 otherwise). Returns a
         ``job_id`` the page polls; the SR tier enables once cubes land."""
         records_dir = _sky_records_local_dir()
-        subsets = sky_sr.present_subsets(records_dir)
+        subsets = sky_records.present_subsets(records_dir)
         if not subsets:
             return jsonify({"error": "no sky records — sync them first"}), 400
-        if not sky_sr.checkpoint_present():
+        if not sky_records.checkpoint_present():
             return jsonify({"error": "no checkpoint in ./ckpt/wdsr"}), 400
         overwrite = (str(request.values.get("overwrite", "")).lower()
                      in ("1", "true", "yes", "on"))
 
         def _run(cap):
-            return sky_sr.generate(
-                records_dir, subsets, overwrite=overwrite,
-                on_progress=lambda i, t, l: cap.tick(i, t, l),
-                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
+            import numpy as np
+            from euclid_polish.model import Model
+            from euclid_polish.image import ImageSet
+            from euclid_polish.image.tfio import tfrecord_path as _trp
+            model = Model(Config.DEFAULT_CHECKPOINT_DIR)
+            os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
+            done = 0
+            for subset in subsets:
+                lr_path = _trp(records_dir, f"dirty_{subset}")
+                if not os.path.exists(lr_path) or (
+                    not overwrite and sky_records.sr_count(subset) > 0
+                ):
+                    continue
+                lr = ImageSet.read(lr_path)
+                sr_set = model.upsample_batch(
+                    lr,
+                    on_progress=lambda i, t, l: cap.tick(i, t, l),
+                    log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"),
+                )
+                for i, sr in enumerate(sr_set):
+                    np.save(sky_records.sr_path(subset, i), sr.data)
+                    done += 1
+            return done
 
         job_id = JOB_REGISTRY.spawn("sky: generate SR", _run)
         return jsonify({"job_id": job_id})

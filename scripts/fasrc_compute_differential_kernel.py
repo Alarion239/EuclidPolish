@@ -8,7 +8,7 @@ Loads:
 
 Resamples both onto the project HR grid (``Config.DEFAULT_PIXEL_SCALE`` =
 0.05″/pix) and solves the differential-kernel equation via
-:func:`euclid_polish.sky.differential_kernel.compute_differential_kernel`.
+:func:`euclid_polish.sky.observation.differential_kernel.compute_differential_kernel`.
 
 The output kernel is what we apply to HST cutouts at training time to
 generate "Euclid-equivalent" LR — see
@@ -35,7 +35,7 @@ from euclid_polish.config import Config
 from euclid_polish.psf.psf_library import psf_path_for_band
 from euclid_polish.psf import PSF
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.sky.differential_kernel import (
+from euclid_polish.sky.observation.differential_kernel import (
     DifferentialKernel, compute_differential_kernel,
 )
 

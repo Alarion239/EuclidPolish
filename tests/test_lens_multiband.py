@@ -7,7 +7,7 @@ import pytest
 
 from euclid_polish.config import Config
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.lens_population import (
+from euclid_polish.sky.generation.lens_population import (
     LensPopulation,
     render_lens_to_canvas,
     render_lens_to_multiband_canvas,

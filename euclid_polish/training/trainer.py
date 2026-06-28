@@ -47,7 +47,7 @@ from euclid_polish.provenance.checkpoint import (
 )
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
-from euclid_polish.training.data_multiband import (
+from euclid_polish.training.augmentation import (
     asinh_stretch_hr, inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate

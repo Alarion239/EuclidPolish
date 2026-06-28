@@ -37,7 +37,7 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.eval.lensfinder_eval import per_object_plens
-from euclid_polish.sky import sr as sky_sr
+from euclid_polish.web.helpers import sky_records
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
@@ -133,7 +133,7 @@ def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
     count = max(counts.values()) if counts else 0
     # SR is always offered so the user can see it exists; it's disabled until
     # the model has been run over the records (the "Generate SR" button).
-    n_sr = sky_sr.sr_count(subset)
+    n_sr = sky_records.sr_count(subset)
     tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0})
     counts["sr"] = n_sr
     default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
@@ -150,7 +150,7 @@ def _sky_meta(params: Dict[str, str]) -> Dict[str, Any]:
 def _sky_cube(index: int, tier: str, params: Dict[str, str]):
     subset = _sky_subset(params)
     if tier == "sr":
-        path = sky_sr.sr_path(subset, index)
+        path = sky_records.sr_path(subset, index)
         if not os.path.isfile(path):
             raise ViewerError(404, "SR not generated for this record")
         cube = _as_hwc(np.load(path))

@@ -15,7 +15,7 @@ import math
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.cosmos2025 import CosmosCatalog, GalaxyParams
+from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog, GalaxyParams
 
 
 def _mag_to_electrons_per_stack(mag: np.ndarray, band) -> np.ndarray:

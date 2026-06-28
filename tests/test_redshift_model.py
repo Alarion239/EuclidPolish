@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.sky.redshift_model import (
+from euclid_polish.sky.generation.redshift_model import (
     PIVOT_WAVELENGTH_UM,
     TNG_NATIVE_PC_PER_PIXEL,
     angular_diameter_distance,
@@ -26,11 +26,11 @@ from euclid_polish.sky.redshift_model import (
     sigma_v_from_stellar_mass,
     tolman_dimming_factor,
 )
-from euclid_polish.sky.tng_galaxy import (
+from euclid_polish.sky.generation.tng_galaxy import (
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
     SkySimulator,
 )
@@ -275,7 +275,7 @@ def test_compactness_squeeze_conserves_flux(tmp_path):
 
     z = 0.5
     squeezed, ms = tng_stamp_at_redshift(d, "888", 1, z, rng=None)
-    with mock.patch("euclid_polish.sky.tng_galaxy.compactness_factor",
+    with mock.patch("euclid_polish.sky.generation.tng_galaxy.compactness_factor",
                     lambda z, **k: 1.0):
         plain, mp = tng_stamp_at_redshift(d, "888", 1, z, rng=None)
     assert ms["rebin_factor"] > mp["rebin_factor"]      # more compact
@@ -285,7 +285,7 @@ def test_compactness_squeeze_conserves_flux(tmp_path):
 
 def test_tng_stamp_sb_truncation_crops_faint_outskirts(tmp_path):
     from astropy.io import fits
-    from euclid_polish.sky.tng_galaxy import tng_stamp_at_redshift
+    from euclid_polish.sky.generation.tng_galaxy import tng_stamp_at_redshift
     # Bright 4-px core + a whole box of ultra-faint "outskirts": the wings
     # sit far below the mu=28 cut, so the stamp must crop to the core.
     tng = str(tmp_path / "tng")
@@ -314,7 +314,7 @@ def test_mass_rescale_dims_and_shrinks(tmp_path):
     # mass_scale s: flux x s (L ∝ M), size / s^alpha — a smaller galaxy of
     # similar morphology, NOT a flux-conserving squeeze.
     from astropy.io import fits
-    from euclid_polish.sky.tng_galaxy import tng_stamp_at_redshift
+    from euclid_polish.sky.generation.tng_galaxy import tng_stamp_at_redshift
     tng = str(tmp_path / "tng")
     d = os.path.join(tng, "999")
     os.makedirs(d)
@@ -461,7 +461,7 @@ def test_analytic_showability_predictors(tmp_path):
     # radius below the rendered half-size (mean-profile approximation ->
     # permissive, the post-render check is the backstop).
     from astropy.io import fits
-    from euclid_polish.sky.tng_galaxy import (
+    from euclid_polish.sky.generation.tng_galaxy import (
         predict_vis_flux_e, predict_visible_radius_arcsec,
         tng_stamp_at_redshift,
     )
@@ -610,7 +610,7 @@ def test_catalog_none_requires_zero_sersic_density(tmp_path):
 
 
 def test_sample_lens_geometry_priors():
-    from euclid_polish.sky.lens_population import sample_lens_geometry
+    from euclid_polish.sky.generation.lens_population import sample_lens_geometry
     rng = np.random.default_rng(11)
     for _ in range(20):
         lp = sample_lens_geometry(rng, 250.0)

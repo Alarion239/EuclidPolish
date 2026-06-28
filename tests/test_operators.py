@@ -27,7 +27,7 @@ def _img(side, scale, *, role=Role.UNKNOWN, clean=True, stamp=None):
 
 
 def test_generate_returns_stamped_hr_image(tmp_path):
-    from euclid_polish.sky.sky_simulator import SkySimulator
+    from euclid_polish.sky.generation.sky_simulator import SkySimulator
     sim = SkySimulator.__new__(SkySimulator)   # bypass heavy __init__
     sim.simulate_field = lambda rng, **kw: (_img(8, 0.05, clean=True), {})
     store = ProvStore(str(tmp_path))
@@ -38,7 +38,7 @@ def test_generate_returns_stamped_hr_image(tmp_path):
 
 
 def test_apply_returns_lr_image_parented_on_hr(tmp_path):
-    from euclid_polish.sky.observation_simulator import ObservationSimulator
+    from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
     fwd = ObservationSimulator.__new__(ObservationSimulator)
     fwd.process = lambda hr, rng: (_img(4, 0.10, clean=False), hr)
     store = ProvStore(str(tmp_path))
@@ -51,7 +51,7 @@ def test_apply_returns_lr_image_parented_on_hr(tmp_path):
 
 
 def test_apply_unstamped_hr_has_no_parents(tmp_path):
-    from euclid_polish.sky.observation_simulator import ObservationSimulator
+    from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
     fwd = ObservationSimulator.__new__(ObservationSimulator)
     fwd.process = lambda hr, rng: (_img(4, 0.10, clean=False), hr)
     store = ProvStore(str(tmp_path))

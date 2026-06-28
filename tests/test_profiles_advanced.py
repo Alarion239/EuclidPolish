@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.sky.profiles import (
+from euclid_polish.sky.generation.profiles import (
     add_sersic_to_bands,
     compute_sersic_stamp,
     draw_sersic,
@@ -215,7 +215,7 @@ def test_two_tier_matches_uniform_on_core_pixels():
     should match a uniform pass at the same effective csub to float32
     precision.
     """
-    from euclid_polish.sky.profiles import _default_csub
+    from euclid_polish.sky.generation.profiles import _default_csub
     n, r_e, q = 4.0, 0.10, 0.8
     pixel_scale = 0.05
     r_e_pix = r_e / pixel_scale

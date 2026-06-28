@@ -16,10 +16,10 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.sky.observation_simulator import (
+from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig, SkySimulator,
 )
 from euclid_polish.image.tfio import tfrecord_path
@@ -122,7 +122,7 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
     """A pre-minted ShardStampPlan stamps clean/hr/dirty in the worker; hr+dirty
     parent on the clean file id."""
     from euclid_polish.provenance.ids import ProvId
-    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    from euclid_polish.sky.generation.gen_provenance import ShardStampPlan
     from euclid_polish.image.tfio import read_images
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)

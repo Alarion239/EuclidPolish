@@ -65,12 +65,12 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
-from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.observation_simulator import (
+from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
     SkySimulator,
 )

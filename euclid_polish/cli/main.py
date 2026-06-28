@@ -47,8 +47,9 @@ from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.training import Trainer
-from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
+from euclid_polish.model import Model
+from euclid_polish.image import ImageSet
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
@@ -1118,38 +1119,23 @@ class InteractiveCLI:
             print("\n⚠️  Training will run until interrupted (Ctrl+C) or completion")
 
             try:
-                model = wdsr(
-                    scale=scale_val,
-                    num_res_blocks=num_res_blocks_val,
-                    nchan_in=Config.NUM_LR_CHANNELS,
-                    nchan_out=Config.NUM_HR_CHANNELS,
-                )
-
-                learning_rate = PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4])
-                trainer = Trainer(
-                    model=model,
-                    loss=MeanAbsoluteError(),
-                    learning_rate=learning_rate,
-                    checkpoint_dir=checkpoint_dir,
-                )
-
-                train_loader = MultiBandEuclidDataset(
-                    scale=scale_val, subset='train', records_dir=records_dir,
-                )
-                valid_loader = MultiBandEuclidDataset(
-                    scale=scale_val, subset='validate', records_dir=records_dir,
-                )
-
-                train_ds = train_loader.dataset(batch_size=batch_size_val, random_transform=True)
-                valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
+                lr = ImageSet.read(tfrecord_path(records_dir, "dirty_train"))
+                hr = ImageSet.read(tfrecord_path(records_dir, "clean_train"))
+                m = Model(checkpoint_dir, scale=scale_val,
+                          num_res_blocks=num_res_blocks_val)
 
                 # Train
                 print("\nStarting training...")
-                trainer.train(train_ds, valid_ds, steps=steps_val, evaluate_every=evaluate_every_val)
+                m.load(lr, hr).train(steps=steps_val, evaluate_every=evaluate_every_val)
 
-                # Restore and evaluate
-                trainer.restore()
-                metrics = trainer.evaluate(valid_ds)
+                # Post-training evaluation on best checkpoint
+                lr_val = ImageSet.read(tfrecord_path(records_dir, "dirty_validate"))
+                hr_val = ImageSet.read(tfrecord_path(records_dir, "clean_validate"))
+                valid_ds = m._build_training_pipeline(
+                    lr_val.source_path, hr_val.source_path, 1, augment=False
+                )
+                metrics = Trainer(model=m._tf_model,
+                                  checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
                 print(
                     f"\nFinal metrics:\n"
                     f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
@@ -1160,7 +1146,7 @@ class InteractiveCLI:
                 if confirm("\nExport trained weights to .h5 file?", default=True).ask():
                     weights_dir = os.path.dirname(checkpoint_dir) or "."
                     weights_path = os.path.join(weights_dir, f"wdsr_x{scale_val}.h5")
-                    trainer.model.save_weights(weights_path)
+                    m._tf_model.save_weights(weights_path)
                     print(f"  ✓ Weights saved to: {weights_path}")
 
                 print("\n✓ Training completed!")
@@ -1198,18 +1184,16 @@ class InteractiveCLI:
         try:
 
             print(f"\nLoading model from {checkpoint_dir}...")
-            model = load_model_from_checkpoint(
-                checkpoint_dir, scale_val, num_res_blocks_val,
-                nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
+            m = Model(checkpoint_dir, scale=scale_val,
+                      num_res_blocks=num_res_blocks_val)
+            lr_val = ImageSet.read(tfrecord_path(records_dir, "dirty_validate"))
+            hr_val = ImageSet.read(tfrecord_path(records_dir, "clean_validate"))
+            valid_ds = m._build_training_pipeline(
+                lr_val.source_path, hr_val.source_path, 1, augment=False
             )
-
-            valid_loader = MultiBandEuclidDataset(
-                scale=scale_val, subset='validate', records_dir=records_dir,
-            )
-            valid_ds = valid_loader.dataset(batch_size=1, random_transform=False, repeat_count=1)
 
             print("Evaluating on validation set...")
-            metrics = Trainer(model=model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
+            metrics = Trainer(model=m._tf_model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
             print(
                 f"\n✓ Validation metrics:\n"
                 f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"

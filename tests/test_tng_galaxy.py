@@ -15,7 +15,7 @@ from euclid_polish.catalog.photometry import (
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
-from euclid_polish.sky.tng_galaxy import (
+from euclid_polish.sky.generation.tng_galaxy import (
     block_mean,
     list_tng_galaxies,
     load_tng_frame,

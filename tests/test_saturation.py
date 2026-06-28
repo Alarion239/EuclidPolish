@@ -1,4 +1,4 @@
-"""Bright-star detector saturation (euclid_polish.sky.saturation)."""
+"""Bright-star detector saturation (euclid_polish.sky.observation.saturation)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.sky.saturation import (
+from euclid_polish.sky.observation.saturation import (
     StarSaturationModel, apply_star_saturation,
 )
 
@@ -133,7 +133,7 @@ def _hr_field_with_star(mag_vis: float, n: int = 48):
 
 
 def test_forward_bakes_saturation_into_dirty_not_target():
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     fwd = ObservationSimulator(config=ObservationSimulatorConfig(
@@ -148,7 +148,7 @@ def test_forward_bakes_saturation_into_dirty_not_target():
 
 
 def test_forward_saturation_can_be_disabled():
-    from euclid_polish.sky.observation_simulator import (
+    from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator, ObservationSimulatorConfig,
     )
     fwd = ObservationSimulator(config=ObservationSimulatorConfig(

@@ -25,7 +25,7 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
 
     monkeypatch.setattr("euclid_polish.image.tfio.read_images",
                         fake_read)
-    monkeypatch.setattr("euclid_polish.sky.source_catalog.read_sources",
+    monkeypatch.setattr("euclid_polish.sky.generation.source_catalog.read_sources",
                         lambda p: {0: [{"type": "lens", "x_pix": 64.0,
                                         "y_pix": 64.0, "flux_vis_e": 1.0}]})
     monkeypatch.setattr("euclid_polish.training.inference.reconstruct",

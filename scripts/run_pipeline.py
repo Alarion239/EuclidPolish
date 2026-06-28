@@ -52,24 +52,24 @@ from euclid_polish.config import Config
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
-from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.observation_simulator import (
+from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.source_catalog import (
+from euclid_polish.sky.generation.source_catalog import (
     SourceCatalogWriter, concat_source_csvs,
 )
-from euclid_polish.sky.gen_provenance import (
+from euclid_polish.sky.generation.gen_provenance import (
     ShardStampPlan, make_generation_context,
 )
 from euclid_polish.image.tfio import (
     open_writer, tfrecord_path, write_images,
 )
-from euclid_polish.image import Image
-from euclid_polish.training.data_multiband import MultiBandEuclidDataset
+from euclid_polish.image import Image, ImageSet
+from euclid_polish.model import Model
 from euclid_polish.training import Trainer
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.stage_timer import StageTimer
@@ -718,35 +718,14 @@ def step_train(args: argparse.Namespace) -> None:
 
     scale = Config.DEFAULT_REBIN_FACTOR
 
-    train_loader = MultiBandEuclidDataset(
-        scale=scale, subset="train", records_dir=args.records_dir,
-    )
-    valid_loader = MultiBandEuclidDataset(
-        scale=scale, subset="validate", records_dir=args.records_dir,
-    )
-    train_ds = train_loader.dataset(batch_size=args.batch_size,
-                                    random_transform=True)
-    valid_ds = valid_loader.dataset(batch_size=1,
-                                    random_transform=False,
-                                    repeat_count=1)
-
     print(f"  TFRecords:   {args.records_dir}")
     print(f"  Checkpoints: {args.checkpoint_dir}")
 
-    model = wdsr(
-        scale=scale,
-        num_res_blocks=args.num_res_blocks,
-        nchan_in=Config.NUM_LR_CHANNELS,
-        nchan_out=Config.NUM_HR_CHANNELS,
-    )
-
-    learning_rate = PiecewiseConstantDecay(boundaries=[200_000],
-                                           values=[1e-3, 5e-4])
-    trainer = Trainer(model=model, learning_rate=learning_rate,
-                      checkpoint_dir=args.checkpoint_dir)
-    trainer.train(train_ds, valid_ds,
-                  steps=args.steps,
-                  evaluate_every=args.evaluate_every)
+    lr = ImageSet.read(tfrecord_path(args.records_dir, "dirty_train"))
+    hr = ImageSet.read(tfrecord_path(args.records_dir, "clean_train"))
+    m = Model(args.checkpoint_dir, scale=scale,
+              num_res_blocks=args.num_res_blocks)
+    m.load(lr, hr).train(steps=args.steps, evaluate_every=args.evaluate_every)
 
 
 # ---------------------------------------------------------------------------
