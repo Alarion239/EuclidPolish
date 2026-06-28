@@ -9,10 +9,10 @@ checkpoint is "legacy" (unknown provenance).
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Optional
 
+from euclid_polish.provenance._util import _atomic_write_json
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -27,11 +27,7 @@ def write_checkpoint_provenance(ckpt_dir: str, stamp: Stamp) -> str:
     """Write (atomically) the checkpoint's provenance stamp; return its path."""
     os.makedirs(ckpt_dir, exist_ok=True)
     path = checkpoint_provenance_path(ckpt_dir)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fp:
-        json.dump(stamp.to_dict(), fp, indent=2, sort_keys=True)
-        fp.write("\n")
-    os.replace(tmp, path)
+    _atomic_write_json(path, stamp.to_dict())
     return path
 
 

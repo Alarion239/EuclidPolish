@@ -14,20 +14,12 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from euclid_polish.provenance._util import _atomic_write_json
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ProvRecord, record_from_dict
 
 # Sidecar filename: <8-hex id>.<kind>.json
 _SIDECAR_RE = re.compile(r"([0-9a-f]{8})\.[a-z0-9_]+\.json")
-
-
-def _atomic_write_json(path: str, obj: Any) -> None:
-    """Atomic JSON write (tmp + os.replace) — the tracking-store idiom."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fp:
-        json.dump(obj, fp, indent=2, sort_keys=True)
-        fp.write("\n")
-    os.replace(tmp, path)
 
 
 class ProvStore:
@@ -76,7 +68,7 @@ class ProvStore:
                 return True
             # Defensive: an id-tokenized artifact (e.g. clean_train.<id>.tfrecord)
             # may exist before its sidecar is indexed.
-            if _glob.glob(os.path.join(root, "**", f"*{s}*"), recursive=True):
+            if _glob.glob(os.path.join(root, "**", f"*.{s}.*"), recursive=True):
                 return True
         return False
 

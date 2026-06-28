@@ -31,8 +31,6 @@ writes the sandbox ``fasrc.json`` from the live config it already holds.
 
 from __future__ import annotations
 
-import datetime
-import json
 import os
 import shutil
 import signal
@@ -43,6 +41,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from euclid_polish.config import Config
+from ._utils import _now_iso, _write_json, _read_json
 
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -77,12 +76,6 @@ class TimeTravelError(RuntimeError):
 # small helpers
 # ---------------------------------------------------------------------------
 
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-
-
 def _git(repo_root: str, *args: str,
          timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -110,23 +103,6 @@ def timetravel_root() -> str:
 
 def sandbox_dir(short: str) -> str:
     return os.path.join(timetravel_root(), short)
-
-
-def _write_json(path: str, obj: Any) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fp:
-        json.dump(obj, fp, indent=2, sort_keys=True)
-        fp.write("\n")
-    os.replace(tmp, path)
-
-
-def _read_json(path: str) -> Optional[Dict[str, Any]]:
-    try:
-        with open(path) as fp:
-            return json.load(fp)
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def read_sandbox(short: str) -> Optional[Dict[str, Any]]:

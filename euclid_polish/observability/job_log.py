@@ -222,10 +222,13 @@ class JobLog:
         the file with the full schema and blank values for new columns.
         Keeps old logs readable across :class:`JobRecord` evolutions."""
         with self._lock:
-            rows = self._read_all_locked()
+            if not os.path.exists(self.csv_path):
+                return
             with open(self.csv_path, "r", newline="", encoding="utf-8") as f:
-                header = next(csv.reader(f), [])
-            if list(header) == self.COLUMNS:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                header = list(reader.fieldnames or [])
+            if header == self.COLUMNS:
                 return
             self._write_all_locked(rows)
 

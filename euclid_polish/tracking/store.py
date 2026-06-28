@@ -29,16 +29,16 @@ multi-threaded Flask server can't race on unique-name allocation or
 
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import re
 import shutil
-import subprocess
 import threading
 from typing import Any, Dict, List, Optional
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.gitinfo import capture_git as git_commit_info
+from ._utils import _now_iso, _write_json, _read_json
 
 # Project root = three levels up from this file (…/euclid_polish/tracking/).
 # Used as the cwd for the git-commit stamp so it works regardless of where
@@ -63,34 +63,11 @@ class TrackingError(RuntimeError):
 # small helpers
 # ---------------------------------------------------------------------------
 
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-
-
 def _slugify(text: str, *, default: str = "campaign") -> str:
     """Filesystem-safe slug: lowercase, alnum + dashes, collapsed."""
     text = (text or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     return text or default
-
-
-def _write_json(path: str, obj: Any) -> None:
-    """Atomic JSON write (tmp + os.replace)."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fp:
-        json.dump(obj, fp, indent=2, sort_keys=True)
-        fp.write("\n")
-    os.replace(tmp, path)
-
-
-def _read_json(path: str) -> Optional[Dict[str, Any]]:
-    try:
-        with open(path) as fp:
-            return json.load(fp)
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def _unique_path(directory: str, name: str) -> str:
@@ -106,33 +83,6 @@ def _unique_path(directory: str, name: str) -> str:
         candidate = os.path.join(directory, f"{base}-{i}{ext}")
         i += 1
     return candidate
-
-
-def git_commit_info(repo_root: str = _PROJECT_ROOT) -> Optional[Dict[str, Any]]:
-    """Current HEAD as ``{hash, short, branch, dirty}`` — ``None`` if no repo.
-
-    Best-effort: any git failure (not a repo, git missing) returns ``None``
-    so tracking never hard-depends on version control being present.
-    """
-    def _git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", "-C", repo_root, *args],
-            capture_output=True, text=True, timeout=10,
-        )
-
-    try:
-        head = _git("rev-parse", "HEAD")
-        if head.returncode != 0:
-            return None
-        status = _git("status", "--porcelain")
-        return {
-            "hash":   head.stdout.strip(),
-            "short":  _git("rev-parse", "--short", "HEAD").stdout.strip(),
-            "branch": _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
-            "dirty":  bool(status.stdout.strip()),
-        }
-    except (OSError, subprocess.SubprocessError):
-        return None
 
 
 def _commit_str(commit: Optional[Dict[str, Any]]) -> str:
