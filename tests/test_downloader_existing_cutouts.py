@@ -1,4 +1,4 @@
-"""``get_existing_cutouts`` must find cutouts for *all* star IDs.
+"""``scan_cutouts`` must find cutouts for *all* star IDs.
 
 Regression: the on-disk scan globbed ``star_[0-9][0-9][0-9][0-9]_*.fits`` —
 exactly four digits — but filenames come from ``f"star_{id:04d}_{size}.fits"``,
@@ -14,8 +14,10 @@ import os
 import numpy as np
 from astropy.io import fits
 
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import DownloadConfig, EuclidCutoutDownloader
+from euclid_polish.config import Config
+from euclid_polish.catalog.downloader import (
+    DownloadConfig, positions_match, scan_cutouts,
+)
 
 
 def _write_cutout(path: str, ra: float, dec: float, size: int = 16) -> None:
@@ -25,26 +27,26 @@ def _write_cutout(path: str, ra: float, dec: float, size: int = 16) -> None:
     hdu.writeto(path, overwrite=True)
 
 
-def _downloader(tmp_path, size_px):
-    cat = StarCatalog(str(tmp_path))
-    cfg = DownloadConfig.for_band("VIS", cutout_size=size_px)
-    return EuclidCutoutDownloader(cat, cfg)
+def _cutout_dir(tmp_path) -> str:
+    d = Config.cutout_dir_for_band(
+        "VIS", root=os.path.join(str(tmp_path), Config.CUTOUTS_SUBDIR))
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def test_finds_four_and_five_digit_ids(tmp_path):
-    dl = _downloader(tmp_path, 16)
+    cutout_dir = _cutout_dir(tmp_path)
     # One 4-digit id, one 5-digit id (the previously-skipped case), one 6-digit.
     ids = [42, 10002, 123456]
     for sid in ids:
         _write_cutout(
-            os.path.join(dl.cutout_dir, f"star_{sid:04d}_16.fits"),
+            os.path.join(cutout_dir, f"star_{sid:04d}_16.fits"),
             150.0 + sid * 1e-5, 2.0 + sid * 1e-5)
 
-    existing, corrupted = dl.get_existing_cutouts()
+    existing, corrupted = scan_cutouts(cutout_dir)
     assert set(existing) == set(ids), (
         f"missed ids {set(ids) - set(existing)} — 5-digit glob regression")
     assert corrupted == []
-    # Each maps to one (ra, dec, size, path) tuple at the right size.
     for sid in ids:
         (ra, dec, size, path), = existing[sid]
         assert size == 16
@@ -52,14 +54,12 @@ def test_finds_four_and_five_digit_ids(tmp_path):
 
 
 def test_five_digit_cutout_is_matched_not_redownloaded(tmp_path):
-    # End-to-end of the reconciliation: a 5-digit star whose cutout is on disk
-    # (position-matching the catalog) must NOT end up in stars_needing_download.
-    dl = _downloader(tmp_path, 16)
+    cutout_dir = _cutout_dir(tmp_path)
     sid, ra, dec = 10005, 187.5, -3.25
-    _write_cutout(os.path.join(dl.cutout_dir, f"star_{sid:04d}_16.fits"), ra, dec)
+    _write_cutout(os.path.join(cutout_dir, f"star_{sid:04d}_16.fits"), ra, dec)
 
-    existing, _ = dl.get_existing_cutouts()
+    existing, _ = scan_cutouts(cutout_dir)
     assert sid in existing
-    star = {"id": sid, "ra": ra, "dec": dec}
+    cfg = DownloadConfig.for_band("VIS", cutout_size=16)
     fra, fdec, fsize, _ = existing[sid][0]
-    assert dl.positions_match(fra, fdec, star["ra"], star["dec"])
+    assert positions_match(fra, fdec, ra, dec, cfg.position_tolerance)

@@ -15,14 +15,14 @@ import os
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psfs
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from tests._tiny_catalog import TinyCosmosCatalog
 
@@ -43,13 +43,13 @@ rp = _load_run_pipeline()
 
 def _sim_fwd():
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=96,
+    sim = SkySimulator(
+        cat, SkySimulatorConfig(image_size=96,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE),
     )
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")  # Gaussian
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     return sim, fwd
 
 
@@ -116,3 +116,29 @@ def test_parallel_shards_merge_into_paired_records(tmp_path):
     lr, hr = pairs[0]
     assert lr.shape[-1] == Config.NUM_LR_CHANNELS
     assert hr.shape[-1] == Config.NUM_HR_CHANNELS
+
+
+def test_worker_stamps_records_when_plan_given(tmp_path):
+    """A pre-minted ShardStampPlan stamps clean/hr/dirty in the worker; hr+dirty
+    parent on the clean file id."""
+    from euclid_polish.provenance.ids import ProvId
+    from euclid_polish.sky.gen_provenance import ShardStampPlan
+    from euclid_polish.image.tfio import read_images
+    sim, fwd = _sim_fwd()
+    rdir = str(tmp_path)
+    plan = ShardStampPlan(run_id=ProvId("7f3a9c21"), clean_id=ProvId("4b1e7a90"),
+                          hr_id=ProvId("2b8e44d1"), dirty_id=ProvId("9c1f0a7d"))
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], plan=plan)
+
+    def _one(kind):
+        return read_images(
+            tfrecord_path(rdir, f"{kind}_train.part0000"), num_images=1)[0]
+
+    clean, hr, dirty = _one("clean"), _one("hr"), _one("dirty")
+    assert clean.prov_stamp().id == ProvId("4b1e7a90")
+    assert hr.prov_stamp().id == ProvId("2b8e44d1")
+    assert dirty.prov_stamp().id == ProvId("9c1f0a7d")
+    assert hr.prov_stamp().parents == (ProvId("4b1e7a90"),)
+    assert dirty.prov_stamp().parents == (ProvId("4b1e7a90"),)
+    assert clean.prov_stamp().produced_by == ProvId("7f3a9c21")

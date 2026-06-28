@@ -45,8 +45,8 @@ def _ok(band):
 
 
 def _fake_one_band_recorder(seen, lock):
-    def fake(band_name, *, cat, vis_pixels, workers, arcsec, progress_cb,
-             show_progress, retry_failed=False):
+    def fake(band_name, *, eclient, output_dir, vis_pixels, workers, arcsec,
+             progress_cb, show_progress, retry_failed=False):
         with lock:
             seen.append((band_name, show_progress))
         # Drive the progress callback so the combined-bar aggregation runs.
@@ -64,7 +64,7 @@ def test_parallel_runs_all_bands(monkeypatch):
                         _fake_one_band_recorder(seen, lock))
     rep = _FakeReporter()
     summary = dab.run_bands(
-        BANDS, cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+        BANDS, eclient=object(), output_dir="x", vis_pixels=255, workers=8, arcsec=25.5,
         reporter=rep, band_workers=4, logged_in=True)
 
     assert set(summary) == set(BANDS)
@@ -75,47 +75,52 @@ def test_parallel_runs_all_bands(monkeypatch):
     assert rep.steps[-1] == (len(BANDS), len(BANDS), "done")
 
 
+class _FakeEclient:
+    """Counts ``relogin`` calls (the between-band TAP-session refresh)."""
+
+    def __init__(self):
+        self.relogins = 0
+
+    def relogin(self):
+        self.relogins += 1
+        return True
+
+
 def test_parallel_relogin_not_called_per_band(monkeypatch):
     # In parallel mode the per-band re-login loop must NOT run (the initial
     # login + the downloader's own session-refresh retry cover it).
-    calls = {"n": 0}
-    monkeypatch.setattr(dab.auth, "login",
-                        lambda **k: calls.__setitem__("n", calls["n"] + 1) or True)
+    eclient = _FakeEclient()
     monkeypatch.setattr(dab, "_download_one_band",
                         _fake_one_band_recorder([], threading.Lock()))
-    dab.run_bands(BANDS, cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+    dab.run_bands(BANDS, eclient=eclient, output_dir="x", vis_pixels=255, workers=8, arcsec=25.5,
                   reporter=_FakeReporter(), band_workers=4, logged_in=True)
-    assert calls["n"] == 0
+    assert eclient.relogins == 0
 
 
 def test_sequential_relogins_between_bands(monkeypatch):
     # band_workers=1 keeps the old path: re-login before every band after the
     # first (i > 0), so a long band can't leave a stale TAP session.
-    calls = {"n": 0}
-    monkeypatch.setattr(dab.auth, "login",
-                        lambda **k: calls.__setitem__("n", calls["n"] + 1) or True)
+    eclient = _FakeEclient()
     seen, lock = [], threading.Lock()
     monkeypatch.setattr(dab, "_download_one_band",
                         _fake_one_band_recorder(seen, lock))
     rep = _FakeReporter()
-    dab.run_bands(["VIS", "Y_E", "J_E"], cat=object(), vis_pixels=255,
+    dab.run_bands(["VIS", "Y_E", "J_E"], eclient=eclient, output_dir="x", vis_pixels=255,
                   workers=8, arcsec=25.5, reporter=rep, band_workers=1,
                   logged_in=True)
-    assert calls["n"] == 2                       # before band 2 and band 3
+    assert eclient.relogins == 2                  # before band 2 and band 3
     # Sequential path keeps tqdm on.
     assert all(show is True for _, show in seen)
 
 
 def test_sequential_no_relogin_when_not_logged_in(monkeypatch):
-    calls = {"n": 0}
-    monkeypatch.setattr(dab.auth, "login",
-                        lambda **k: calls.__setitem__("n", calls["n"] + 1) or True)
+    eclient = _FakeEclient()
     monkeypatch.setattr(dab, "_download_one_band",
                         _fake_one_band_recorder([], threading.Lock()))
-    dab.run_bands(["VIS", "Y_E"], cat=object(), vis_pixels=255, workers=8,
+    dab.run_bands(["VIS", "Y_E"], eclient=eclient, output_dir="x", vis_pixels=255, workers=8,
                   arcsec=25.5, reporter=_FakeReporter(), band_workers=1,
                   logged_in=False)
-    assert calls["n"] == 0
+    assert eclient.relogins == 0
 
 
 def test_band_workers_clamped_to_band_count(monkeypatch):
@@ -123,7 +128,7 @@ def test_band_workers_clamped_to_band_count(monkeypatch):
     seen, lock = [], threading.Lock()
     monkeypatch.setattr(dab, "_download_one_band",
                         _fake_one_band_recorder(seen, lock))
-    summary = dab.run_bands(["VIS", "Y_E"], cat=object(), vis_pixels=255,
+    summary = dab.run_bands(["VIS", "Y_E"], eclient=object(), output_dir="x", vis_pixels=255,
                             workers=4, arcsec=25.5, reporter=_FakeReporter(),
                             band_workers=99, logged_in=True)
     assert set(summary) == {"VIS", "Y_E"}
@@ -137,7 +142,7 @@ def test_one_band_failing_does_not_sink_the_rest(monkeypatch):
         return _ok(band_name)
     monkeypatch.setattr(dab, "_download_one_band", fake)
     rep = _FakeReporter()
-    summary = dab.run_bands(BANDS, cat=object(), vis_pixels=255, workers=8,
+    summary = dab.run_bands(BANDS, eclient=object(), output_dir="x", vis_pixels=255, workers=8,
                             arcsec=25.5, reporter=rep, band_workers=4,
                             logged_in=True)
     assert set(summary) == set(BANDS)
@@ -156,14 +161,14 @@ def test_retry_failed_forwarded_to_each_band(monkeypatch):
     monkeypatch.setattr(dab, "_download_one_band", fake)
 
     # Parallel mode.
-    dab.run_bands(BANDS, cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+    dab.run_bands(BANDS, eclient=object(), output_dir="x", vis_pixels=255, workers=8, arcsec=25.5,
                   reporter=_FakeReporter(), band_workers=4, logged_in=True,
                   retry_failed=True)
     assert all(rf is True for _, rf in seen)
 
     # Sequential mode (default retry_failed=False when omitted).
     seen.clear()
-    dab.run_bands(["VIS"], cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
+    dab.run_bands(["VIS"], eclient=object(), output_dir="x", vis_pixels=255, workers=8, arcsec=25.5,
                   reporter=_FakeReporter(), band_workers=1, logged_in=True)
     assert seen == [("VIS", False)]
 
@@ -175,6 +180,6 @@ def test_warns_on_corrupted_or_failed(monkeypatch):
         return _ok(band_name)
     monkeypatch.setattr(dab, "_download_one_band", fake)
     rep = _FakeReporter()
-    dab.run_bands(BANDS, cat=object(), vis_pixels=255, workers=8, arcsec=25.5,
-                  reporter=rep, band_workers=1, logged_in=True)
+    dab.run_bands(BANDS, eclient=_FakeEclient(), output_dir="x", vis_pixels=255,
+                  workers=8, arcsec=25.5, reporter=rep, band_workers=1, logged_in=True)
     assert any("H_E" in w and "corrupted=2" in w for w in rep.warnings)

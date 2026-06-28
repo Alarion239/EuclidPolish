@@ -325,20 +325,21 @@ class TestRegistry:
         """`field` overrides no counts and accepts any non-empty scene."""
         from scripts.fasrc_poster_cutout import _counts_for_mode, _record_ok
         assert _counts_for_mode("field") == {}
-        assert _counts_for_mode("tng")["n_galaxies"] == 1
+        assert _counts_for_mode("tng")["n_tng"] == 1
+        assert _counts_for_mode("sersic")["n_sersic"] == 1
         meta = {"n_galaxies": 3, "n_stars": 0, "n_lenses": 1}
         assert _record_ok("field", meta)
         assert not _record_ok("field",
                               {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
 
-    def test_synthetic_generate_tng_fraction_flag(self):
-        """The synthetic generator always runs pure-TNG mode: --tng-fraction 1
-        regardless of params (the UI control was removed; we always use 1)."""
+    def test_synthetic_generate_tng_density_flags(self):
+        """The synthetic generator uses all-TNG mode: --sersic-density-arcmin2 0."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100}
         argv = step.build_command(base)
-        assert argv[argv.index("--tng-fraction") + 1] == "1"
+        assert argv[argv.index("--sersic-density-arcmin2") + 1] == "0"
+        assert "--tng-density-arcmin2" in argv
 
     def test_synthetic_generate_star_field_flags(self):
         """Star field knobs from /config reach run_pipeline; absent → omitted."""

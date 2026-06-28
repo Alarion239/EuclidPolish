@@ -76,8 +76,8 @@ def main(argv=None) -> int:
     from tqdm import tqdm
 
     from euclid_polish.sky.source_catalog import read_sources
-    from euclid_polish.sky.tfrecord import tfrecord_path
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image.tfio import tfrecord_path
+    from euclid_polish.image import Image
 
     m = int(args.stamp_m)
     if m % 2:
@@ -116,9 +116,9 @@ def main(argv=None) -> int:
     for raw_lr, raw_sr, raw_hr in tqdm(ds, desc="fields", total=total):
         if args.max_fields and processed >= args.max_fields:
             break
-        lr_img = MultiBandSkyImage.from_tfrecord(raw_lr)
-        sr_img = MultiBandSkyImage.from_tfrecord(raw_sr)
-        hr_img = MultiBandSkyImage.from_tfrecord(raw_hr)
+        lr_img = Image.from_tfrecord(raw_lr)
+        sr_img = Image.from_tfrecord(raw_sr)
+        hr_img = Image.from_tfrecord(raw_hr)
         idx = lr_img.index
         if sr_img.index != idx or hr_img.index != idx:
             raise RuntimeError(

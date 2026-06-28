@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import read_multiband_skyimages
-from euclid_polish.sky.tfrecord import tfrecord_path
-from euclid_polish.sky.types import MultiBandSkyImage
-from euclid_polish.visualization.color import calibrated_rgb_panel
+from euclid_polish.image.tfio import read_images
+from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.image import Image
 from euclid_polish.web import experimental
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
@@ -27,12 +26,9 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 import io
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import os
 from euclid_polish.web.helpers.fits_render import _arrays_to_fits_bytes
-from euclid_polish.web.helpers.sky_render import _render_sky_record_pair_png, _render_sky_record_png
 from euclid_polish.web.helpers.status import _record_count, _tfrecords_status
 
 
@@ -105,7 +101,7 @@ def register(app):
                 clean_hr_data[..., c].astype(np.float32), kernel,
                 mode="same",
             )
-        return MultiBandSkyImage.rebin_array(out_hr, rebin)
+        return Image.rebin_array(out_hr, rebin)
 
     def _compute_hst_pair_arrays(subset, kind, index, records_dir):
         """Raw-array companion to ``_render_sky_record_png`` /
@@ -131,7 +127,7 @@ def register(app):
             path = tfrecord_path(records_dir, name)
             if not os.path.exists(path):
                 abort(404)
-            recs = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+            recs = read_images(path, num_images=max(index + 1, 1))
             if not recs or index >= len(recs):
                 abort(404)
             return recs[min(index, len(recs) - 1)]
@@ -177,101 +173,6 @@ def register(app):
             {kind.upper(): np.asarray(rec.data, dtype=np.float32)},
             {**meta_base, "PXSCALE": float(rec.pixel_scale_arcsec)},
         )
-
-    def _render_hst_dirty_analytic_png(
-        subset: str, band: str, index: int, records_dir: str,
-    ) -> bytes:
-        """Render ``sum_rebin(A ⊛ clean_HR)`` for one index — live, no CNN.
-
-        Same asinh / Lupton conventions as :func:`_render_sky_record_png`
-        so the output is directly comparable to the cached ``dirty``
-        record; the only difference is which forward operator produced
-        the LR side.
-        """
-        matplotlib.use("Agg")
-        if subset not in ("train", "validate"):
-            abort(400)
-        if band not in Config.LR_INPUT_BAND_NAMES and band != "color":
-            abort(400)
-        arrays, meta = _compute_hst_pair_arrays(
-            subset, "dirty_analytic", index, records_dir,
-        )
-        data = arrays["DIRTY_ANALYTIC"]
-        pxscale = float(meta["PXSCALE"])
-
-        if band == "color" and data.shape[-1] >= len(Config.LR_INPUT_BAND_NAMES):
-            rgb = calibrated_rgb_panel(
-                data, band_names=Config.LR_INPUT_BAND_NAMES,
-                scheme="vis_nisp", reference="solar", stretch="asinh",
-                asinh_scale_e=float(Config.BAND_VIS.asinh_stretch_scale_e),
-            )
-            fig, ax = plt.subplots(figsize=(6.5, 6.5))
-            ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
-                      interpolation="nearest")
-            ax.set_title(
-                f"dirty (analytic A, no CNN, no noise) {subset} · color "
-                f"· idx {index}  ({data.shape[0]}×{data.shape[1]} @ "
-                f"{pxscale:.3f}\"/pix)", fontsize=10,
-            )
-        else:
-            if data.shape[-1] == 1:
-                plane, band_name = data[..., 0], "VIS"
-            else:
-                k = list(Config.LR_INPUT_BAND_NAMES).index(band)
-                plane, band_name = data[..., k], band
-            bcfg = Config.get_band(band_name)
-            stretched = np.arcsinh(plane / float(bcfg.asinh_stretch_scale_e))
-            lo, hi = np.percentile(stretched, [1.0, 99.7])
-            if hi <= lo:
-                hi = lo + 1.0
-            fig, ax = plt.subplots(figsize=(6.5, 6.5))
-            ax.imshow(stretched, cmap="gray_r", origin="lower",
-                      vmin=lo, vmax=hi, interpolation="nearest")
-            ax.set_title(
-                f"dirty (analytic A, no CNN, no noise) {subset} · "
-                f"{band_name} · idx {index}  "
-                f"({data.shape[0]}×{data.shape[1]} @ "
-                f"{pxscale:.3f}\"/pix)", fontsize=10,
-            )
-        ax.set_xticks([]); ax.set_yticks([])
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
-
-    @app.route("/view/hst-pair")
-    def view_hst_pair():
-        subset = request.args.get("subset", "validate")
-        kind   = request.args.get("kind",   "clean")
-        band   = request.args.get("band",   "VIS")
-        try:
-            idx = int(request.args.get("i", 0))
-        except ValueError:
-            idx = 0
-        # kind="pair" routes to the side-by-side triptych so the user
-        # can compare HR clean / LR dirty / HR target at one index
-        # without chip-toggling. ``dirty_analytic`` runs the bare
-        # differential kernel live (no CNN, no noise) on the matching
-        # ``clean`` HR record; everything else uses the single-image
-        # renderer reading directly from the cached TFRecords.
-        if kind == "pair":
-            png = _render_sky_record_pair_png(
-                subset, band, idx,
-                records_dir=_hst_pairs_local_dir(),
-            )
-        elif kind == "dirty_analytic":
-            png = _render_hst_dirty_analytic_png(
-                subset, band, idx,
-                records_dir=_hst_pairs_local_dir(),
-            )
-        else:
-            png = _render_sky_record_png(
-                subset, kind, band, idx,
-                records_dir=_hst_pairs_local_dir(),
-            )
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/hst-pair.fits")
     def view_hst_pair_fits():

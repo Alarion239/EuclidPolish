@@ -279,23 +279,23 @@ def test_streak_orientation_is_isotropic_over_many_streaks():
 # ---------------------------------------------------------------------------
 
 def test_forward_model_with_artifacts_changes_image():
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     H = W = 128
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
     )
 
-    fwd_off = MultiBandForward(
-        config=MultiBandForwardConfig(add_noise=True, add_artifacts=False)
+    fwd_off = ObservationSimulator(
+        config=ObservationSimulatorConfig(add_noise=True, add_artifacts=False)
     )
-    fwd_on  = MultiBandForward(
-        config=MultiBandForwardConfig(add_noise=True, add_artifacts=True)
+    fwd_on  = ObservationSimulator(
+        config=ObservationSimulatorConfig(add_noise=True, add_artifacts=True)
     )
 
     lr_off, _ = fwd_off.process(blank, rng=np.random.default_rng(0))
@@ -312,19 +312,19 @@ def test_forward_model_with_artifacts_changes_image():
 
 def test_forward_model_artifact_off_matches_old_behaviour():
     """With artifacts off, output should be reproducible from the same RNG seed."""
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    from euclid_polish.sky.types import MultiBandSkyImage
+    from euclid_polish.image import Image
 
     H = W = 64
-    blank = MultiBandSkyImage(
+    blank = Image(
         data=np.zeros((H, W, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
     )
-    fwd = MultiBandForward(
-        config=MultiBandForwardConfig(add_noise=True, add_artifacts=False)
+    fwd = ObservationSimulator(
+        config=ObservationSimulatorConfig(add_noise=True, add_artifacts=False)
     )
     a, _ = fwd.process(blank, rng=np.random.default_rng(123))
     b, _ = fwd.process(blank, rng=np.random.default_rng(123))

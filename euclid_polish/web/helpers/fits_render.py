@@ -9,7 +9,7 @@ from astropy.visualization import ImageNormalize
 from astropy.visualization import MinMaxInterval
 from euclid_polish.config import BandConfig
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
 from flask import abort
 from typing import Any

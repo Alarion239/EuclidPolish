@@ -11,16 +11,16 @@ these are idealized, dust-attenuated intrinsic images.
 To place a galaxy into a synthetic field we run three steps (in this order):
 
 1. **Rebin** by an integer factor with a *block-mean*, which keeps the
-   surface brightness (MJy/sr is intensive). Because the output pixel is then
-   mapped to a fixed angular scale (the 0.05″ HR grid), the rebin factor is
-   an effective distance knob: a coarser rebin makes the galaxy both smaller
-   and fainter, as a more distant galaxy would appear. In redshift mode
-   (:func:`tng_stamp_at_redshift`) the factor is literally computed from
+   surface brightness (MJy/sr is intensive). The output pixel maps to a fixed
+   angular scale (the 0.05″ HR grid), so the rebin factor acts as a distance
+   knob: a coarser rebin makes the galaxy both smaller and fainter, as a more
+   distant galaxy would appear. In redshift mode
+   (:func:`tng_stamp_at_redshift`) the factor is computed from
    D_A(z) — see :mod:`euclid_polish.sky.redshift_model`.
-2. **Rotate** by a quarter turn (0/90/180/270°) — exact ``np.rot90``, a free
+2. **Rotate** by a quarter turn (0/90/180/270°) — exact ``np.rot90``, an
    orientation augmentation on top of the atlas's 5 physical viewpoints.
 3. **Convert to electrons** over the Euclid stack via
-   :func:`~euclid_polish.euclid.photometry.mjy_per_sr_to_electrons`, using the
+   :func:`~euclid_polish.catalog.photometry.mjy_per_sr_to_electrons`, using the
    assigned HR pixel scale to turn MJy/sr into electrons-per-pixel. The result
    is a clean, pre-PSF source ready to drop onto the HR sky; the existing
    forward model supplies the Euclid PSF, noise, and LR rebin.
@@ -38,7 +38,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.photometry import (
+from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
@@ -52,7 +52,7 @@ from euclid_polish.sky.redshift_model import (
 
 # FITS band token (in the filename) → simulation BandConfig. The atlas frames
 # are named with the short Euclid band labels; the model's bands carry the
-# ``_E`` suffix for the NISP filters.
+# ``_E`` suffix on the NISP filters.
 TNG_FITS_BANDS: Tuple[str, ...] = ("VIS", "Y", "J", "H")
 _FITS_BAND_TO_CONFIG: Dict[str, str] = {
     "VIS": "VIS", "Y": "Y_E", "J": "J_E", "H": "H_E",
@@ -69,9 +69,9 @@ def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
 def load_tng_frame(path: str) -> np.ndarray:
     """Read a SKIRT mock FITS as a native-endian float32 MJy/sr array.
 
-    SKIRT writes big-endian ``>f4``; we byte-swap to the host order so
-    downstream numpy/TF ops don't choke. Non-finite pixels (rare edge NaNs)
-    are zeroed — they are sky, i.e. no flux.
+    SKIRT writes big-endian ``>f4``; the array is converted to host order for
+    downstream numpy/TF ops. Non-finite pixels are zeroed (treated as sky,
+    i.e. no flux).
     """
     with fits.open(path) as hdul:
         data = hdul[0].data
@@ -88,8 +88,7 @@ def block_mean(arr: np.ndarray, factor: int, *,
 
     Unlike :meth:`MultiBandSkyImage.rebin_array` (a flux-conserving *sum*),
     this keeps the intensive MJy/sr brightness unchanged, so a rebinned frame
-    is still a valid surface-brightness image (matching the atlas's own
-    ``2x2 block-mean … (SB-preserving, MJy/sr)`` downsamples).
+    is still a valid surface-brightness image.
     """
     if factor < 1:
         raise ValueError(f"factor must be ≥ 1, got {factor}")
@@ -169,7 +168,7 @@ def stochastic_round_factor(f: float,
     """Round a continuous rebin factor to an integer ≥ 1. With an ``rng`` the
     fractional part is a Bernoulli draw, so the *mean* factor is unbiased even
     where integer granularity is coarse (F ≈ 2–4); without one, plain
-    rounding."""
+    rounding to nearest."""
     lo = int(np.floor(f))
     rem = f - lo
     if rng is not None and rem > 0.0:
@@ -351,10 +350,9 @@ def truncate_below_sb(
     crop to the surviving footprint, kept square and centred so the galaxy
     stays at the stamp centre.
 
-    The SKIRT box is 160 kpc with nonzero light everywhere; on a noiseless
-    clean field that makes every stamp look enormous, while the outskirts
-    sit far below anything Euclid can detect. Modifies per-band channels in
-    place and returns the (possibly smaller) cropped view.
+    The SKIRT box is 160 kpc with nonzero light everywhere, with outskirts
+    far below Euclid's detection limit. Modifies per-band channels in place
+    and returns the (possibly smaller) cropped view.
     """
     if not (sb_cut_mag_arcsec2 > 0.0):
         return stamp
@@ -369,8 +367,8 @@ def truncate_below_sb(
     if not keep.any():
         return stamp
     # Crop at the radius enclosing 99.5% of the surviving (band-summed)
-    # flux — a max-radius crop would let one faint outlying satellite blob
-    # hold the whole 160 kpc box open.
+    # flux, so a faint outlying satellite blob doesn't hold the whole
+    # 160 kpc box open.
     total = stamp.sum(axis=2, dtype=np.float64)
     H, W = total.shape
     rint = _radius_int_grid((H, W))
@@ -575,7 +573,7 @@ def sample_tng_stamp(
       on the measured native size), giving a realistic, mostly-small angular
       size with occasional big resolved galaxies. ``meta`` then also carries
       ``target_re_arcsec`` / ``native_halflight_px`` / ``apparent_re_arcsec``.
-    * otherwise → legacy uniform draw from ``downsample_choices`` (×1/×2/×3/×4);
+    * otherwise → uniform draw from ``downsample_choices`` (×1/×2/×3/×4);
       coarser = smaller and fainter, like a more distant galaxy.
     """
     if not galaxies:

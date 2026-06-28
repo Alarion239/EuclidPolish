@@ -82,7 +82,7 @@ def _list_catalogs() -> List[Dict[str, Any]]:
     Skips the raw Zenodo download (``q1_discovery_engine_lens_catalog.csv``) so
     only the normalized ``id,ra,dec`` catalogs the pipeline consumes are shown.
     """
-    from euclid_polish.euclid.lens_catalog import SOURCE_CSV
+    from euclid_polish.eval.lens_catalog import SOURCE_CSV
 
     root = Config.EVAL_CATALOG_DIR
     out: List[Dict[str, Any]] = []
@@ -347,7 +347,7 @@ def register(app):
         ``lens_catalog/lenses.csv`` so the page is self-sufficient (no CLI
         step needed). Network failures surface as a 502 with the message.
         """
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
 
         try:
             out_csv, n = lens_catalog.fetch()

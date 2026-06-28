@@ -1,11 +1,10 @@
-"""Central home for image-space noise models.
+"""Image-space noise models.
 
-:func:`apply_band_noise` is Euclid VIS/NISP per-band Poisson photon +
-sky + dark + (optional artifacts) + Gaussian read. It lives here so
-:mod:`euclid_polish.sky.types` can import it at module scope without
-re-introducing the triangular import cycle through
-:mod:`euclid_polish.sky.multiband_forward` (which itself imports
-``MultiBandSkyImage``).
+:func:`apply_band_noise` is the Euclid VIS/NISP per-band Poisson photon +
+sky + dark + (optional artifacts) + Gaussian read noise model. It lives here
+so :mod:`euclid_polish.image` can import it at module scope without an import
+cycle through :mod:`euclid_polish.sky.observation_simulator` (which itself
+imports ``Image``).
 """
 
 from __future__ import annotations
@@ -19,15 +18,12 @@ from euclid_polish.config import BandConfig
 from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
 
 if TYPE_CHECKING:
-    # Only needed for type hints — actual ArtifactConfig is fetched
-    # lazily through the artifacts module to keep this file free of
-    # the heavy artifacts machinery when noise is the only thing
-    # the caller wants.
+    # Type-hint-only import.
     from euclid_polish.sky.artifacts import ArtifactConfig
 
 
 # ---------------------------------------------------------------------------
-# Euclid per-band noise (was: sky/multiband_forward.py:apply_band_noise)
+# Euclid per-band noise
 # ---------------------------------------------------------------------------
 
 def apply_band_noise(
@@ -40,16 +36,15 @@ def apply_band_noise(
 ) -> np.ndarray:
     """Per-band Poisson + (optional) detector artifacts + Gaussian read noise.
 
-    Order matches the physical readout chain: photons + sky + dark
+    Order follows the physical readout chain: photons + sky + dark
     accumulate → cosmic rays / hot pixels / interpolation residuals
     deposit charge → ramp is read with Gaussian read noise →
     sky-subtracted on the ground.
 
     Module-level so non-class callers (e.g. the HST→Euclid TFRecord
     generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
-    :class:`MultiBandForward` per-band pipeline, the
-    :meth:`MultiBandSkyImage.with_band_noise` method) can use the
-    exact same noise model.
+    :class:`ObservationSimulator` per-band pipeline, the
+    :meth:`Image.with_band_noise` method) share one noise model.
     """
 
     t_total = band.t_total_s

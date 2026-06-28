@@ -20,7 +20,11 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.eval.catalog_runner import load_eval_model
-from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
+from euclid_polish.provenance.defaults import default_store
+from euclid_polish.provenance.gitinfo import capture_git
+from euclid_polish.provenance.records import Format, InferenceRun, SRCutoutArtifact
+from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.training.inference import reconstruct
 
 #: Subsets we generate SR for, in priority order.
@@ -64,6 +68,25 @@ def present_subsets(records_dir: str) -> List[str]:
     return [s for s in SUBSETS if records_present(records_dir, s)]
 
 
+def record_sr_cube(store, npy_path: str, subset: str, idx: int, *,
+                   model_id=None, input_id=None, produced_by=None,
+                   git=None, sidecar_dir: Optional[str] = None) -> SRCutoutArtifact:
+    """Persist an :class:`SRCutoutArtifact` for one SR cube, next to the data.
+
+    Parents are ``(model_id, input_id)`` (whichever are known) so the cube can
+    later be told apart from a stale one. The sidecar is named by the artifact's
+    id; the ``.npy`` keeps its viewer-visible name.
+    """
+    parents = tuple(p for p in (model_id, input_id) if p is not None)
+    art = SRCutoutArtifact(
+        id=store.mint(), git=git, produced_by=produced_by,
+        format=Format.NPY, path=npy_path, parents=parents,
+        descriptors={"subset": subset, "index": int(idx)},
+    )
+    store.put(art, sidecar_dir=sidecar_dir or sky_sr_dir())
+    return art
+
+
 def generate(records_dir: str, subsets: Iterable[str],
              checkpoint: Optional[str] = None,
              overwrite: bool = False,
@@ -86,7 +109,7 @@ def generate(records_dir: str, subsets: Iterable[str],
         path = tfrecord_path(records_dir, f"dirty_{subset}")
         if not os.path.exists(path):
             continue
-        records = read_multiband_skyimages(path, num_images=10 ** 9)
+        records = read_images(path, num_images=10 ** 9)
         if limit is not None:
             records = records[:limit]
         for i, rec in enumerate(records):
@@ -101,6 +124,22 @@ def generate(records_dir: str, subsets: Iterable[str],
     emit(f"Loading model from {checkpoint or Config.DEFAULT_CHECKPOINT_DIR} …")
     model = load_eval_model(checkpoint=checkpoint)
 
+    # Provenance context (best-effort): one InferenceRun per call, the model's
+    # id from its checkpoint sidecar, and a single git stamp. Never fatal.
+    prov = None
+    try:
+        store = default_store()
+        model_id = model_id_of_checkpoint(checkpoint or Config.DEFAULT_CHECKPOINT_DIR)
+        git = capture_git()
+        run = InferenceRun(
+            id=store.mint(), git=git, status="ok",
+            inputs=tuple(x for x in (model_id,) if x is not None),
+        )
+        store.put(run)
+        prov = (store, run.id, model_id, git)
+    except Exception as exc:  # provenance must never block SR generation
+        emit(f"[provenance] SR provenance disabled: {exc}")
+
     done = 0
     for subset, i, rec in work:
         cube = np.asarray(rec.data, dtype=np.float32)        # (H, W, C) LR
@@ -109,6 +148,15 @@ def generate(records_dir: str, subsets: Iterable[str],
         if sr.ndim == 2:
             sr = sr[..., None]
         np.save(sr_path(subset, i), sr)
+        if prov is not None:
+            try:
+                store, run_id, model_id, git = prov
+                input_id = rec.prov_stamp().id if rec.prov_stamp() else None
+                record_sr_cube(store, sr_path(subset, i), subset, i,
+                               model_id=model_id, input_id=input_id,
+                               produced_by=run_id, git=git)
+            except Exception as exc:
+                emit(f"[provenance] SR cube {subset} {i} not recorded: {exc}")
         done += 1
         prog(done, total, f"{subset} idx {i}")
         emit(f"SR {subset} idx {i} → {tuple(sr.shape)}")

@@ -3,17 +3,11 @@ Strong-lens population sampling and rasterisation.
 
 Implements the Collett 2015 (arXiv:1507.02657) galaxy-galaxy lens population:
 each lens is a Singular Isothermal Ellipsoid (SIE) lens galaxy plus a small
-external shear, lensing a Sersic source. We use ``lenstronomy`` *only* for the
+external shear, lensing a Sersic source. ``lenstronomy`` provides *only* the
 ray-tracing (``LensModel(['SIE','SHEAR']).ray_shooting``); the rasterisation
 of light (both the lens-galaxy's own light and the lensed source) uses the
 project's custom Sersic implementation in :mod:`euclid_polish.sky.profiles`.
-
-Why the split:
-  * Lenstronomy's ``ImageModel`` works fine but couples PSF + pixel-response
-    into the renderer. We already have a tested empirical PSF pipeline and a
-    fast custom Sersic — we just want the deflection field.
-  * Keeping one Sersic implementation across galaxies and lenses means there
-    is exactly one place to fix if the photometry is ever wrong.
+A single Sersic implementation is shared across galaxies and lenses.
 
 Coordinate conventions:
   * The HR canvas is in pixels at ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
@@ -77,7 +71,7 @@ class LensParams:
 
     # Lens-galaxy and source-galaxy parametric descriptions. None in the
     # pure-TNG (catalog-free) path, where both lights are real stamps and
-    # no Sersic fallback exists.
+    # there is no Sersic fallback.
     lens_galaxy:      Optional[GalaxyParams]
     source_galaxy:    Optional[GalaxyParams]
 
@@ -90,8 +84,8 @@ class LensParams:
 # Cosmological distance helpers (flat ΛCDM, Collett-2015 cosmology)
 # ---------------------------------------------------------------------------
 
-# The distance helpers moved to :mod:`euclid_polish.sky.redshift_model`
-# (shared with the TNG redshift model); the historical private names stay
+# The distance helpers live in :mod:`euclid_polish.sky.redshift_model`
+# (shared with the TNG redshift model); these private aliases keep them
 # importable from here.
 _comoving_distance_mpc = comoving_distance_mpc
 _angular_diameter_distance = angular_diameter_distance
@@ -141,11 +135,9 @@ class LensPopulation:
     def _sample_sigma_v(self, rng: np.random.Generator) -> float:
         """Velocity dispersion — uniform in σ_v over the truncation range.
 
-        Collett 2015 uses a Schechter-like distribution; for our simulation
-        the precise functional form doesn't matter as long as the *range*
-        of θ_E we produce is realistic. Uniform σ_v ∈ [min, max] km/s (default
-        [150, 350]) gives θ_E ∈ roughly [0.3″, 2.0″] at typical lens redshifts
-        — σ_v² sets θ_E via the SIS law, so this is the knob on the θ_E spread.
+        Uniform σ_v ∈ [min, max] km/s (default [150, 350]) gives θ_E ∈
+        roughly [0.3″, 2.0″] at typical lens redshifts. σ_v² sets θ_E via
+        the SIS law, so this is the knob on the θ_E spread.
         """
         return float(rng.uniform(self.sigma_v_min_kms, self.sigma_v_max_kms))
 
@@ -344,7 +336,7 @@ def render_lens_to_multiband_canvas(
 
     Renders the morphology *once* (band-independent geometry) and scales
     it into every band by the corresponding per-band flux. This is the
-    fast path used by :class:`MultiBandSimulator`; cuts cost from
+    fast path used by :class:`SkySimulator`; cuts cost from
     ``4 × (2 Sersic + ray-shoot + 2 source-evals)`` down to
     ``2 Sersic + 1 ray-shoot + 2 source-evals`` per lens system.
 
@@ -437,9 +429,9 @@ def render_lens_to_canvas(
     band_index: int,
     pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
 ) -> np.ndarray:
-    """Single-band wrapper kept for tests & inspection.
+    """Single-band wrapper for tests & inspection.
 
-    Production code should use :func:`render_lens_to_multiband_canvas` —
+    Production code uses :func:`render_lens_to_multiband_canvas` —
     rendering 4 bands at once is ~4× faster because the morphology is
     band-independent. This wrapper synthesises a 4-channel canvas, calls
     the multi-band path, then copies the requested channel back.

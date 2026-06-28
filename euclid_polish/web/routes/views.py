@@ -20,7 +20,7 @@ import os
 import threading as _t
 from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
-from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png, _render_sky_record_png
+from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png
 from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir, _fasrc_catalog_dir, _list_vis_pngs, _record_count, _resolve_training_log
 
 
@@ -52,26 +52,6 @@ def register(app):
                     if psf_dir else None)
         out = _fasrc_catalog_dir(force=False)
         png = _render_psf_clusters_png(out, psf_path)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/view/sky")
-    def view_sky():
-        subset = request.args.get("subset", "validate")
-        kind   = request.args.get("kind",   "clean")
-        band   = request.args.get("band",   "VIS")
-        # Color-composite mode: "calibrated" (adaptive solar) or "eye"
-        # (physical blackbody-T colors). Only meaningful for band=color.
-        cmode  = request.args.get("cmode",  "calibrated")
-        try:
-            idx = int(request.args.get("i", 0))
-        except ValueError:
-            idx = 0
-        # Render from the FASRC-synced records cache (populated by
-        # /api/sky/sync), not the local data dir.
-        png = _render_sky_record_png(
-            subset, kind, band, idx, records_dir=_sky_records_local_dir(),
-            color_mode=cmode,
-        )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/catalog")

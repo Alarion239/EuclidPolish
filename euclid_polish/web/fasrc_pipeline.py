@@ -263,8 +263,8 @@ def render_sbatch_body(
         First echoed line inside the script (after the ``====`` rule).
         Caller picks the wording so log greps stay stable per step family.
     step_id :
-        If given, an ``STEP_ID=…`` echo is emitted at the tail so
-        :func:`fasrc_jobs.parse_step_id` can tag the runtime.
+        If given, an ``STEP_ID=…`` echo is emitted at the tail of the
+        script.
 
     Returns
     -------
@@ -1119,8 +1119,10 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
-        # Always pure-TNG generation (redshift realism, COSMOS skipped).
-        cmd += ["--tng-fraction", "1"]
+        # All-TNG generation (redshift realism, COSMOS skipped).
+        cmd += ["--sersic-density-arcmin2", "0",
+                "--tng-density-arcmin2",
+                str(Config.DEFAULT_GAL_DENSITY_ARCMIN2)]
         # Star field knobs (from /config). Emit only when supplied so a default
         # submit stays unchanged.
         for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),

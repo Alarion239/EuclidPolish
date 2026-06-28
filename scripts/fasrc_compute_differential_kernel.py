@@ -32,8 +32,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import psf_path_for_band
-from euclid_polish.euclid.types import PSF
+from euclid_polish.psf.psf_library import psf_path_for_band
+from euclid_polish.psf import PSF
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.differential_kernel import (
     DifferentialKernel, compute_differential_kernel,

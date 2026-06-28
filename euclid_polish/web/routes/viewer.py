@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from flask import Response, abort, jsonify, request
 
+from euclid_polish.image import Image
 from euclid_polish.web.helpers import viewer_data
 from euclid_polish.web.helpers.viewer_data import ViewerError
 
@@ -47,10 +48,16 @@ def register(app):
         except ViewerError as e:
             abort(e.code)
 
-        # Force little-endian float32, C-contiguous, so the browser reads
-        # the raw bytes straight into a Float32Array.
-        body = cube.astype("<f4", copy=False).tobytes(order="C")
-        h, w, c = cube.shape
+        # Serialize via the Image atom: little-endian float32, C-contiguous,
+        # so the browser reads the raw bytes straight into a Float32Array.
+        # One source of truth for the wire format (Image.to_raw_bytes).
+        c = cube.shape[-1]
+        img = Image(data=cube,
+                    pixel_scale_arcsec=float(info.get("pixscale", 0.0)),
+                    band_names=tuple(viewer_data.BAND_NAMES[:c]),
+                    is_clean=True)
+        body = img.to_raw_bytes()
+        h, w, c = img.wire_meta()["shape"]
         resp = Response(body, mimetype="application/octet-stream")
         resp.headers["X-Cube-Shape"] = f"{h},{w},{c}"
         resp.headers["X-Cube-Bands"] = ",".join(viewer_data.BAND_NAMES)

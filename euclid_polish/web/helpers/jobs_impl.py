@@ -4,12 +4,13 @@ from __future__ import annotations
 from astropy.io import fits
 from astropy.io import fits as _fits
 from euclid_polish.config import Config
-from euclid_polish.euclid.downloader import fetch_cutout_at
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
-from euclid_polish.euclid.psf_library import load_all_band_psfs
-from euclid_polish.sky.multiband_forward import MultiBandForward
-from euclid_polish.sky.tfrecord import read_multiband_skyimages
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.eval.sr_provenance import stamp_sr_fits
+from euclid_polish.catalog.downloader import fetch_cutout_at
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.psf.psf_library import load_all_band_psfs
+from euclid_polish.sky.observation_simulator import ObservationSimulator
+from euclid_polish.image.tfio import read_images
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.inference import plot_reconstruction
 from euclid_polish.training.inference import reconstruct
@@ -49,8 +50,8 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # Always pure-TNG mode (redshift realism, COSMOS catalog skipped).
-    tng_flag = " --tng-fraction 1"
+    # All-TNG mode (redshift realism, COSMOS catalog skipped).
+    tng_flag = f" --sersic-density-arcmin2 0 --tng-density-arcmin2 {Config.DEFAULT_GAL_DENSITY_ARCMIN2}"
     return textwrap.dedent(f"""
         set -e
         export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
@@ -136,10 +137,10 @@ def _job_generate_reconstruct(
         if not os.path.exists(lr_path):
             raise FileNotFoundError(
                 f"login-node generation produced no dirty records in {local_tmp}")
-        lr_records    = read_multiband_skyimages(lr_path, num_images=10_000)
-        hr_records    = (read_multiband_skyimages(hr_path, num_images=10_000)
+        lr_records    = read_images(lr_path, num_images=10_000)
+        hr_records    = (read_images(hr_path, num_images=10_000)
                          if os.path.exists(hr_path) else [])
-        clean_records = (read_multiband_skyimages(clean_path, num_images=10_000)
+        clean_records = (read_images(clean_path, num_images=10_000)
                          if os.path.exists(clean_path) else [])
         hr_by_idx    = {h.index: h for h in hr_records}
         clean_by_idx = {c.index: c for c in clean_records}
@@ -319,7 +320,7 @@ def _forward_model_sr_residual(
     rebin_factor = int(round(
         Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
     ))
-    predicted = MultiBandForward.sum_rebin(sr_hr, rebin_factor)
+    predicted = ObservationSimulator.sum_rebin(sr_hr, rebin_factor)
     # ``sum_rebin`` may trim a row/col if HR isn't divisible by the rebin
     # factor — match the LR shape by cropping to the smaller.
     h = min(predicted.shape[0], lr_vis.shape[0])
@@ -487,6 +488,17 @@ def reconstruct_cutout_at(
     sr_hdu.header["CKPT"]     = (str(checkpoint_dir)[:60], "Checkpoint dir")
     sr_hdu.header["ASINH"]    = (float(asinh_scale or Config.STRETCH_SCALE_E),
                                  "asinh stretch knee used for plot")
+    # Provenance: stamp the SR with its model lineage (best-effort, before write).
+    try:
+        stamp_sr_fits(
+            sr_hdu.header, checkpoint_dir=str(checkpoint_dir),
+            sr_fits_path=sr_fits_path,
+            descriptors={"ra": float(ra), "dec": float(dec),
+                         "cutout_size": int(cutout_size_vis_pixels),
+                         "bands": ",".join(band_names)},
+        )
+    except Exception as exc:
+        print(f"  [provenance] SR.fits not stamped: {exc}")
     sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
 

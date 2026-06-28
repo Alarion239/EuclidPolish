@@ -28,8 +28,8 @@ import tensorflow as tf
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import open_multiband_writer, tfrecord_path
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_writer, tfrecord_path
+from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import (
     asinh_stretch_hr, asinh_stretch_lr, lr_only_dataset,
 )
@@ -424,10 +424,10 @@ def _write_lr_only_tfrecord(path_dir: str, subset: str = "validate",
                             n: int = 3, side: int = 8, seed: int = 3) -> str:
     """Write a tiny LR-only ``dirty_{subset}.tfrecord`` and return its path."""
     rng = np.random.default_rng(seed)
-    with open_multiband_writer(f"dirty_{subset}", records_dir=path_dir) as w:
+    with open_writer(f"dirty_{subset}", records_dir=path_dir) as w:
         for i in range(n):
             data = rng.normal(size=(side, side, 4)).astype(np.float32)
-            img = MultiBandSkyImage(
+            img = Image(
                 data=data,
                 pixel_scale_arcsec=0.10,
                 band_names=Config.LR_INPUT_BAND_NAMES,

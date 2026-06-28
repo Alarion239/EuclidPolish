@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.downloader import DownloadConfig, core_is_saturated
+from euclid_polish.catalog.downloader import DownloadConfig, core_is_saturated
 
 
 def _clean(n: int = 21) -> np.ndarray:

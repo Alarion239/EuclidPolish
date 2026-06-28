@@ -17,7 +17,7 @@ This script handles the data-acquisition half of that path:
   2. Write the positions to ``$output_dir/sky_positions.csv`` (columns
      ``id, ra, dec``).
   3. For each position, fetch all four Euclid bands (VIS + NISP Y/J/H)
-     via :func:`euclid_polish.euclid.downloader.fetch_cutout_at` and
+     via :func:`euclid_polish.catalog.downloader.fetch_cutout_at` and
      bundle them into a single multi-HDU FITS at
      ``$output_dir/cutouts/sky_NNNN.fits`` with one ``ImageHDU`` per
      band (``EXTNAME`` in ``VIS``, ``Y_E``, ``J_E``, ``H_E``).
@@ -58,7 +58,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.downloader import fetch_cutout_at
+from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.observability.reporter import Reporter
 
 

@@ -172,15 +172,6 @@ def _parse_int(s: Any) -> Optional[int]:
         return None
 
 
-def _parse_float(s: Any) -> Optional[float]:
-    if s is None or s == "":
-        return None
-    try:
-        return float(str(s).strip())
-    except (TypeError, ValueError):
-        return None
-
-
 def _parse_slurm_duration_secs(s: Any) -> Optional[float]:
     """Parse a SLURM duration (e.g. ``TotalCPU``) into seconds.
 

@@ -29,11 +29,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import ClassVar, List, Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
 
+from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
+from euclid_polish.provenance.persistable import StampCarrier
+from euclid_polish.provenance.records import Format
 from euclid_polish.psf.core import PSF
 
 
@@ -52,7 +55,7 @@ class PSFSample:
 
 
 @dataclass
-class PSFSet:
+class PSFSet(StampCarrier):
     """An ordered ensemble of K :class:`PSF` kernels for one band.
 
     Parameters
@@ -83,6 +86,8 @@ class PSFSet:
     centroids: Optional[List[Tuple[float, float]]] = None
     n_stars: Optional[List[int]] = None
     oversampling: Optional[int] = None
+
+    PROV_FORMAT: ClassVar[Format] = Format.FITS
 
     def __post_init__(self) -> None:
         if not self.psfs:
@@ -223,6 +228,30 @@ class PSFSet:
                                 angle_min=angle_min, angle_max=angle_max)
         return self.apply_sample(spec, rotation_order=rotation_order)
 
+    def draw_random(
+        self,
+        rng: np.random.Generator,
+        *,
+        use_unrotated_prob: float = 0.3,
+        angle_min: int = 1,
+        angle_max: int = 359,
+        rotation_order: int = 3,
+    ) -> PSF:
+        """Return one PSF sampled at random for a synthetic scene.
+
+        Convenience wrapper over :meth:`sample_for_generation` (which is
+        itself ``apply_sample(draw_sample(rng))``). Prefer this when a single
+        random kernel is needed without the multi-band :class:`PSFSample`
+        bookkeeping.
+        """
+        return self.sample_for_generation(
+            rng,
+            use_unrotated_prob=use_unrotated_prob,
+            angle_min=angle_min,
+            angle_max=angle_max,
+            rotation_order=rotation_order,
+        )
+
     # ------------------------------------------------------------------
     # Grid operations — map over members, return a new PSFSet
     # ------------------------------------------------------------------
@@ -297,6 +326,8 @@ class PSFSet:
                 float(mean.fwhm_arcsec), "Mean PSF FWHM (arcsec)")
         primary.header["COMMENT"] = (
             "PSFSet: HDU0=mean (sum=1), HDU1..N=cluster PSFs (sum=1).")
+        if self.stamp is not None:
+            write_stamp_cards(primary.header, self.stamp)
 
         hdus = [primary]
         for i, psf in enumerate(self.psfs):
@@ -337,7 +368,9 @@ class PSFSet:
         star_counts: List[int] = []
         have_centroids = False
         have_counts = False
+        stamp = None
         with fits.open(fits_path) as hdul:
+            stamp = read_stamp_cards(hdul[0].header)
             image_hdus = [h for h in hdul
                           if getattr(h, "data", None) is not None]
             cluster_hdus = image_hdus[1:] if len(image_hdus) > 1 else image_hdus
@@ -361,10 +394,13 @@ class PSFSet:
                     star_counts.append(0)
         if normalise:
             members = [p.with_unit_sum() for p in members]
-        return cls(
+        result = cls(
             psfs=members,
             pixel_scale=float(members[0].pixel_scale),
             centroids=centroids if have_centroids else None,
             n_stars=star_counts if have_counts else None,
             oversampling=members[0].oversampling,
         )
+        if stamp is not None:
+            result = result.with_stamp(stamp)
+        return result

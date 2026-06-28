@@ -1,19 +1,16 @@
 """
 Vectorised Sersic-profile rasterisation.
 
-This module replaces GalSim's ``SBProfile`` for the simulator's hot path.
 Galaxies are rendered as one or two analytic Sersic profiles (bulge n=4,
-disk n=1 — both fixed; the joint Sersic-with-free-n option is supported
-for single-component fits). The implementation is intentionally small and
-self-contained so we can audit photometric correctness end-to-end without
-trusting an external rendering library:
+disk n=1 — both fixed; a joint Sersic with free n is supported for
+single-component fits):
 
 * ``sersic_b_n(n)``           — Ciotti & Bertin 1999 inverse-Gamma constant b_n.
 * ``sersic_amp_from_flux(...)``— closed-form amplitude given the total flux.
 * ``draw_sersic(...)``        — rasterise one elliptical Sersic onto a grid.
 * ``draw_bulge_disk(...)``    — convenience: sum of n=4 bulge + n=1 disk.
 
-The amplitude convention matches the standard intensity-at-half-light-radius
+The amplitude convention is the standard intensity-at-half-light-radius
 definition of Sersic:
 
     I(r) = amp · exp(-b_n · ((r / R_e)^(1/n) - 1))
@@ -26,10 +23,9 @@ with the total flux through an elliptical aperture being
 intensity being defined along the major axis while ``R_e`` is also the
 major-axis half-light radius.
 
-No flux is lost or gained when the same total ``F`` is used to set ``amp``
-and then ``I(r)`` is integrated to infinity; integration over a finite stamp
-captures whatever fraction of the analytic profile happens to fall on it.
-This is the same convention GalSim's ``Sersic.withFlux()`` uses.
+The same total ``F`` is used to set ``amp`` and analytically conserves flux
+when ``I(r)`` is integrated to infinity; integration over a finite stamp
+captures whatever fraction of the analytic profile falls on it.
 """
 
 from __future__ import annotations
@@ -50,9 +46,7 @@ from euclid_polish.config import Config
 def sersic_b_n(n: float) -> float:
     """Sersic constant b_n, defined by γ(2n, b_n) = Γ(2n) / 2.
 
-    For n in [0.5, 8] this is well-approximated by
-    ``2n - 1/3 + 4/(405n) + ...``, but ``scipy.special.gammaincinv`` gives
-    the exact value cheaply, so we use it directly.
+    Computed exactly via ``scipy.special.gammaincinv``.
     """
     if n <= 0:
         raise ValueError(f"Sersic n must be positive, got {n}")
@@ -125,9 +119,8 @@ def _default_csub(n: float, r_e_pix: float) -> int:
     odd (so the centre sub-pixel coincides with the pixel centre) and
     capped at ``Config.SERSIC_CSUB_MAX_CAP``.
 
-    Tuned empirically against the analytic Sersic integral. Accuracy is
-    better than 1% for n ≤ 4 and r_e_pix ≥ 2 — the regime of physical
-    relevance for COSMOS galaxies on the 0.05″ HR grid.
+    Accuracy is better than 1% for n ≤ 4 and r_e_pix ≥ 2 — the regime of
+    physical relevance for COSMOS galaxies on the 0.05″ HR grid.
     """
     # 1. Base csub by n.
     base = None
@@ -138,8 +131,8 @@ def _default_csub(n: float, r_e_pix: float) -> int:
     if base is None:
         base = int(Config.SERSIC_CSUB_BASE_BY_N[-1][1])
 
-    # 2. Compactness bumps. The ordering of rules in the config is
-    #    significant: most-compact-first; the first matching rule wins.
+    # 2. Compactness bumps. Rules are ordered most-compact-first; the
+    #    first matching rule wins.
     for r_e_pix_max, n_min, bump in Config.SERSIC_CSUB_COMPACTNESS_BUMPS:
         if r_e_pix < r_e_pix_max and n > n_min:
             if bump == "x2_plus_1":
@@ -204,8 +197,7 @@ def draw_sersic(
                      the core; ``csub`` sub-pixels per pixel cures this at
                      cost ``csub²``. ``csub=1`` disables oversampling.
     out            : pre-allocated output array; created zeros if None.
-    add            : if True, ADD into ``out`` (default — matches the
-                     existing simulator's behaviour); if False, OVERWRITE.
+    add            : if True, ADD into ``out`` (default); if False, OVERWRITE.
 
     Returns the output array.
     """
@@ -275,9 +267,7 @@ def compute_sersic_stamp(
     Uses a **core+wings** adaptive sampler: the central few R_e where the
     Sersic profile varies steeply gets sampled at the full auto-csub level,
     while the wings (which are smooth and contribute little to per-pixel
-    integration error) get csub=1. For typical bulge parameters this is
-    ~5–20× faster than uniform high-csub with no measurable loss of flux
-    conservation accuracy.
+    integration error) get csub=1.
 
     Returns
     -------
@@ -373,10 +363,9 @@ def add_sersic_to_bands(
     """Render a Sersic at unit flux ONCE, then scatter-add into every band.
 
     For a galaxy whose only band-to-band difference is the total flux (i.e.
-    same morphology), this is **N_bands × cheaper** than calling
-    :func:`draw_sersic` once per band. The canvas shape is
-    ``(H, W, n_bands)`` and ``flux_per_band`` is a length-``n_bands`` vector
-    of per-channel electrons.
+    same morphology), this renders the morphology a single time. The canvas
+    shape is ``(H, W, n_bands)`` and ``flux_per_band`` is a length-``n_bands``
+    vector of per-channel electrons.
     """
     if canvas_multi.ndim != 3:
         raise ValueError(f"canvas_multi must be (H, W, C); got {canvas_multi.shape}")
@@ -449,7 +438,7 @@ def draw_bulge_disk(
     """Convenience: bulge (n=4) + disk (n=1) at a shared centroid + PA.
 
     The bulge and disk share the same centroid and position angle but have
-    independent half-light radii, axis ratios, and fluxes. This mirrors the
+    independent half-light radii, axis ratios, and fluxes. This matches the
     COSMOS2025 B+D decomposition (HDU 6 of the master catalog) where
     ``angle_bd`` is shared but the per-component radii and axis ratios differ.
     """

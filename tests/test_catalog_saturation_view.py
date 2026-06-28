@@ -11,6 +11,7 @@ import io
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.web.helpers.sky_render import (
     _render_saturation_view,
     _saturation_cutoff,
@@ -18,11 +19,14 @@ from euclid_polish.web.helpers.sky_render import (
 
 
 def _star(mag, per_band):
-    """per_band: {band: 'valid'|'corrupted'} → nested flag dict."""
-    s = {"magnitude": mag, "valid": {}, "corrupted": {}, "download_failed": {}}
+    """per_band: {band: 'valid'|'corrupted'} → CatalogObject with those flags."""
+    o = CatalogObject(ra=150.0, dec=2.0, magnitude=mag)
     for band, kind in per_band.items():
-        s[kind].setdefault(band, {})["511"] = True
-    return s
+        if kind == "valid":
+            o.set_valid(511, band=band)
+        else:
+            o.set_corrupted(511, band=band)
+    return o
 
 
 def test_cutoff_finds_bright_saturation_boundary():
@@ -61,9 +65,7 @@ def test_render_saturation_view_all_bands():
 
 def test_render_saturation_view_handles_empty_band():
     # a star with no processed flag in any band → "no processed stars" panel
-    fig = _render_saturation_view([
-        {"magnitude": 18.0, "valid": {}, "corrupted": {}, "download_failed": {}},
-    ])
+    fig = _render_saturation_view([CatalogObject(ra=150.0, dec=2.0, magnitude=18.0)])
     buf = io.BytesIO()
     fig.savefig(buf, format="png")
     assert buf.getvalue()[:8] == b"\x89PNG\r\n\x1a\n"

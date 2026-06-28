@@ -5,6 +5,7 @@ Unified Interactive CLI for EuclidPolish.
 This module provides an interactive command-line interface for all EuclidPolish operations.
 """
 
+import getpass
 import glob
 import os
 import sys
@@ -15,6 +16,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 from astropy.io import fits
+from astroquery.esa.euclid import Euclid
 from tf_keras.losses import MeanAbsoluteError
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
@@ -23,41 +25,40 @@ from questionary import select, confirm, checkbox
 
 from euclid_polish.config import Config
 from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
-from euclid_polish.euclid import (
-    StarCatalog,
-    EuclidCutoutDownloader,
+from euclid_polish.catalog import (
+    EuclidCatalog,
+    EuclidAuthError,
+    CatalogObject,
     DownloadConfig,
-    PSFExtractor,
-    PSFExtractionConfig,
     FitsValidator,
-    auth,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.catalog.catalog_object import merge_new, summarize
+from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
+from euclid_polish.image import Image
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.euclid.types import PSF
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf import PSF
+from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets, psf_inventory, psf_path_for_band,
 )
 from euclid_polish.training import Trainer
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization import BaseVisualizer
-from euclid_polish.euclid import estimate_fwhm
+from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
 from euclid_polish.visualization.methods import draw_clean_image, draw_dirty_image, draw_clean_dirty_pair, draw_star_positions
-from euclid_polish.sky.tfrecord import (
-    open_multiband_writer,
-    read_multiband_skyimages,
+from euclid_polish.image.tfio import (
+    open_writer,
+    read_images,
     tfrecord_path,
-    write_multiband_skyimages,
+    write_images,
 )
 
-from euclid_polish.training.inference import load_model_from_checkpoint
 from euclid_polish.training.log_plot import (
 default_log_path, plot_training_log,
 )
@@ -67,6 +68,8 @@ load_model_from_weights,
 reconstruct,
 plot_reconstruction,
 )
+from euclid_polish.model import Model
+from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
 
 
 class InteractiveCLI:
@@ -104,6 +107,23 @@ class InteractiveCLI:
         """Initialize the CLI."""
         self.config = Config
         self.display = DisplayFormatter
+        #: The logged-in Euclid client (set by the login menu), or None.
+        self._euclid = None
+
+    def _euclid_client(self):
+        """The logged-in client, or an unauthenticated one that reuses whatever
+        astroquery session is active (so queries work after an external login)."""
+        return self._euclid or EuclidCatalog._unauthenticated()
+
+    def _ingest_query(self, output_dir, candidates, *, limit=None):
+        """Dedupe queried ``CatalogObject``s into the on-disk catalog + persist."""
+        path = os.path.join(output_dir, Config.CATALOG_FILE)
+        existing = CatalogObject.read(path)
+        res = merge_new(existing, candidates, limit=limit)
+        CatalogObject.write(existing, path)
+        return {**res, "total": len(existing),
+                "message": f"Added {res['added']} stars → "
+                           f"{len(existing)} total in catalog"}
 
     def run(self):
         """Run the interactive CLI."""
@@ -144,8 +164,8 @@ class InteractiveCLI:
                 {"name": "📂 Show per-band PSF inventory", "value": "psf_inventory"},
                 {"name": "✔️  Check cutouts integrity", "value": "check"},
             ]
-            if auth.is_authenticated():
-                user = auth.current_user() or "authenticated"
+            if self._euclid is not None:
+                user = self._euclid.user or "authenticated"
                 choices.append({"name": f"🔓 Logout ({user})", "value": "logout"})
             else:
                 choices.append({"name": "🔐 Login to Euclid archive", "value": "login"})
@@ -199,16 +219,15 @@ class InteractiveCLI:
         if output_dir == "custom":
             output_dir = input("Enter path: ").strip()
 
-        catalog = StarCatalog(output_dir)
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
 
-        if not catalog.exists():
-            print(f"\n⚠️  Catalog not found at {catalog.catalog_path}")
+        if not os.path.exists(catalog_path):
+            print(f"\n⚠️  Catalog not found at {catalog_path}")
             if confirm("Query the catalog first?", default=True).ask():
                 self._query_catalog()
             return
 
-        summary = catalog.get_summary()
-        status = catalog.get_stars_by_status()
+        summary = summarize(CatalogObject.read(catalog_path))
 
         DisplayFormatter.print_header("📊 Star Catalog Summary")
         print(f"Total stars:        {summary['total']}")
@@ -221,7 +240,7 @@ class InteractiveCLI:
             print(f"\nMagnitude range:   {summary['mag_min']:.2f} - {summary['mag_max']:.2f}")
 
         print(f"\nNext ID:            {summary['next_id']}")
-        print(f"Catalog file:       {catalog.catalog_path}")
+        print(f"Catalog file:       {catalog_path}")
 
     def _query_catalog(self):
         """Query Euclid archive for bright stars."""
@@ -285,14 +304,15 @@ class InteractiveCLI:
             print(f"\nQuerying RA={ra_val:.1f}°, Dec={dec_val:.1f}°, radius={radius_val}°, {window}...")
 
             try:
-                catalog = StarCatalog(output_dir)
-                result = catalog.query_euclid_catalog(
+                candidates = self._euclid_client().query_bright_stars(
+                    100000,
                     ra=ra_val,
                     dec=dec_val,
                     radius=radius_val,
                     magnitude_limit=mag_val,
                     magnitude_min=mag_min_val,
                 )
+                result = self._ingest_query(output_dir, candidates)
 
                 print(f"\n{result['message']}")
                 if result['skipped'] > 0:
@@ -324,9 +344,9 @@ class InteractiveCLI:
             output_dir = input("Enter path: ").strip()
 
         # Check if catalog exists
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             if confirm("Query the catalog first?", default=True).ask():
                 self._query_catalog()
             return
@@ -377,17 +397,16 @@ class InteractiveCLI:
             max_workers = default_workers
 
         # --- Pre-flight summary: pending per (band, native_size) ---
-        catalog_data = catalog.load()
-        stars = catalog_data.get('stars', [])
-        total = len(stars)
+        objects = CatalogObject.read(catalog_path)
+        total = len(objects)
         print(f"\n📊 Catalog: {total} stars  |  field = {arcsec_side:.2f}\" "
               f"(= {cutout_size_vis} VIS px)")
         any_pending = False
         for band_name in selected_bands:
             native_size = per_band_native[band_name]
-            v = sum(1 for s in stars if StarCatalog.is_valid(s, native_size, band=band_name))
-            c = sum(1 for s in stars if StarCatalog.is_corrupted(s, native_size, band=band_name))
-            f = sum(1 for s in stars if StarCatalog.is_download_failed(s, native_size, band=band_name))
+            v = sum(1 for o in objects if o.is_valid(native_size, band=band_name))
+            c = sum(1 for o in objects if o.is_corrupted(native_size, band=band_name))
+            f = sum(1 for o in objects if o.is_download_failed(native_size, band=band_name))
             p = total - v - c - f
             mark = "—" if p <= 0 else f"{p} to fetch"
             print(f"  {band_name:5s}  native_size={native_size:4d}  "
@@ -407,8 +426,9 @@ class InteractiveCLI:
         ).ask():
             return
 
-        # --- Loop over bands; one downloader instance per band ---
+        # --- Loop over bands; the shared object list accumulates flags ---
         try:
+            eclient = EuclidCatalog._unauthenticated()
             band_results = {}
             for band_name in selected_bands:
                 native_size = per_band_native[band_name]
@@ -418,8 +438,8 @@ class InteractiveCLI:
                     cutout_size_vis_pixels=cutout_size_vis,
                     max_workers=max_workers,
                 )
-                downloader = EuclidCutoutDownloader(catalog, cfg)
-                result = downloader.download(show_progress=True)
+                result = eclient.download_cutouts(
+                    objects, output_dir, cfg, show_progress=True)
                 band_results[band_name] = result
                 print(f"  → downloaded {result['downloaded']}, "
                       f"valid={result['valid']}, corrupted={result['corrupted']}, "
@@ -658,40 +678,36 @@ class InteractiveCLI:
                 print(f"  ... and {len(results['corrupted']) - 10} more")
 
         # Update catalog if stars.csv exists
-        catalog = StarCatalog(output_dir)
-        if catalog.exists():
-            catalog_data = catalog.load()
-            stars = catalog_data.get('stars', [])
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if os.path.exists(catalog_path):
+            objects = CatalogObject.read(catalog_path)
+            by_id = {o.id: o for o in objects}
 
             # Update star status based on validation — per-size, not whole-star
             for filepath, error_msg in results['corrupted']:
                 filename = os.path.basename(filepath)
                 parts = filename.split('_')
-                if len(parts) >= 2 and parts[0] == 'star':
+                if len(parts) >= 3 and parts[0] == 'star':
                     try:
                         star_id = int(parts[1])
-                        size = int(parts[2].replace('.fits', '')) if len(parts) >= 3 else None
-                        for star in stars:
-                            if star.get('id') == star_id:
-                                if size is not None:
-                                    StarCatalog.set_corrupted(star, size)
-                                else:
-                                    # Size unknown — fall back to legacy whole-star flag
-                                    star['corrupted'] = True
-                                break
+                        size = int(parts[2].replace('.fits', ''))
                     except ValueError:
-                        pass
+                        continue
+                    o = by_id.get(star_id)
+                    if o is not None:
+                        o.set_corrupted(size)
 
-            catalog.save(catalog_data)
+            CatalogObject.write(objects, catalog_path)
             print(f"\n✓ Updated catalog with validation results")
 
         print(f"\n✓ Integrity check completed!")
 
     def _login_euclid(self):
-        """Log into the Euclid archive via env / file / interactive prompt."""
-        if auth.is_authenticated():
+        """Log into the Euclid archive via env vars or an explicit username/password."""
+        if self._euclid is not None:
             DisplayFormatter.print_success(
-                f"Already logged in as {auth.current_user() or '(unknown)'}. Logout first to switch accounts."
+                f"Already logged in as {self._euclid.user or '(unknown)'}. "
+                f"Logout first to switch accounts."
             )
             return
 
@@ -699,7 +715,6 @@ class InteractiveCLI:
             "Login method:",
             choices=[
                 {"name": "Environment variables (EUCLID_USER / EUCLID_PASSWORD)", "value": "env"},
-                {"name": f"Credentials file (2 lines: user, password)", "value": "file"},
                 {"name": "Enter username and password now", "value": "interactive"},
                 {"name": "Cancel", "value": "cancel"},
             ]
@@ -709,34 +724,33 @@ class InteractiveCLI:
             DisplayFormatter.print_cancelled()
             return
 
-        if method == "env":
-            ok = auth.login_from_env()
-            if not ok:
-                DisplayFormatter.print_error(
-                    "EUCLID_USER and/or EUCLID_PASSWORD not set, or login was rejected."
-                )
-        elif method == "file":
-            default_path = Config.DEFAULT_CREDENTIALS_FILE
-            path = input(f"Credentials file (default {default_path}): ").strip() or default_path
-            ok = auth.login_with_file(path)
-        else:
-            ok = auth.login_interactive()
+        try:
+            if method == "env":
+                self._euclid = EuclidCatalog()
+            else:
+                user = input("Euclid username: ").strip()
+                password = getpass.getpass("Euclid password: ")
+                self._euclid = EuclidCatalog(login=user, password=password)
+        except EuclidAuthError as e:
+            DisplayFormatter.print_error(str(e))
+            return
 
-        if ok:
-            DisplayFormatter.print_success(
-                f"Logged in as {auth.current_user() or '(unknown)'}. "
-                f"All subsequent Euclid queries will use this session."
-            )
+        DisplayFormatter.print_success(
+            f"Logged in as {self._euclid.user or '(unknown)'}. "
+            f"All subsequent Euclid queries will use this session."
+        )
 
     def _logout_euclid(self):
         """Log out from the Euclid archive."""
-        if not auth.is_authenticated():
+        if self._euclid is None:
             DisplayFormatter.print_error("Not logged in.")
             return
-        if auth.logout():
-            DisplayFormatter.print_success("Logged out.")
-        else:
-            DisplayFormatter.print_error("Logout raised — local session cleared anyway.")
+        self._euclid = None
+        try:
+            Euclid.logout()
+        except Exception:
+            pass
+        DisplayFormatter.print_success("Logged out.")
 
     def _query_brightest_stars(self):
         """Query the brightest N stars from the Euclid archive (async)."""
@@ -804,7 +818,7 @@ class InteractiveCLI:
             default=True,
         ).ask()
 
-        if not auth.is_authenticated():
+        if self._euclid is None:
             print("\n⚠️  Not logged in: async job results are still fetched now, but")
             print("    the job record is garbage-collected after 72h on the server.")
 
@@ -813,10 +827,9 @@ class InteractiveCLI:
             return
 
         try:
-            catalog = StarCatalog(output_dir)
             print("\nSubmitting async query...")
-            result = catalog.query_brightest_stars(
-                num_stars=num_stars,
+            candidates = self._euclid_client().query_bright_stars(
+                num_stars,
                 ra=ra_val,
                 dec=dec_val,
                 radius=radius_val,
@@ -824,6 +837,7 @@ class InteractiveCLI:
                 magnitude_min=mag_min_val,
                 require_unmasked=require_unmasked,
             )
+            result = self._ingest_query(output_dir, candidates, limit=num_stars)
             print(f"\n{result['message']}")
             if result.get('skipped', 0) > 0:
                 print(f"  (Skipped {result['skipped']} duplicate stars)")
@@ -906,9 +920,9 @@ class InteractiveCLI:
         if not confirm(f"\nRun forward model on {total} images?", default=True).ask():
             return
 
-        forward = MultiBandForward(
+        forward = ObservationSimulator(
             psf_sets_by_band=psf_sets,
-            config=MultiBandForwardConfig(add_noise=True),
+            config=ObservationSimulatorConfig(add_noise=True),
         )
 
         for subset, clean_file, n_images in subsets_to_run:
@@ -921,15 +935,15 @@ class InteractiveCLI:
 
             # Stream LR + HR pairs directly to disk so memory scales with
             # one image (≈5 MB) instead of the whole set (~13 GB at 6400).
-            with open_multiband_writer(
+            with open_writer(
                     f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as hr_w, \
-                 open_multiband_writer(
+                 open_writer(
                     f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2) as lr_w:
                 for raw in tqdm(tf.data.TFRecordDataset(clean_file),
                                 total=n_images, desc=f"Forward {subset}",
                                 unit="img"):
                     try:
-                        hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                        hr_4ch = Image.from_tfrecord(raw)
                         lr, hr = forward.process(hr_4ch, rng=rng)
                         hr_w.write(hr, index=n_ok)
                         lr_w.write(lr, index=n_ok)
@@ -992,11 +1006,11 @@ class InteractiveCLI:
             catalog = open_cosmos2025(path=catalog_path)
             print(f"\nCatalog: {type(catalog).__name__} — {len(catalog)} galaxies usable")
 
-            cfg = MultiBandGeneratorConfig(
+            cfg = SkySimulatorConfig(
                 image_size=image_size_val,
                 pixel_scale=pixel_scale_val,
             )
-            sim = MultiBandSimulator(catalog, cfg)
+            sim = SkySimulator(catalog, cfg)
             os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
 
             for subset, n in (("train", ntrain_val), ("validate", nvalid_val)):
@@ -1008,7 +1022,7 @@ class InteractiveCLI:
                       f"[master_seed={master_seed}]...")
                 # Stream so memory bounded to ~one image (otherwise 6400
                 # 510² × 4-channel fields cost ~26 GB).
-                with open_multiband_writer(
+                with open_writer(
                         f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as w:
                     for i in tqdm(range(n), desc=subset):
                         sky, _ = sim.simulate_field(rng)
@@ -1033,6 +1047,7 @@ class InteractiveCLI:
                     {"name": "🏋️  Train WDSR model", "value": "train"},
                     {"name": "📈 Evaluate model", "value": "evaluate"},
                     {"name": "🔬 Reconstruct image (inference)", "value": "reconstruct"},
+                    {"name": "🌐 Fetch a sky position & super-resolve", "value": "fetch_sr"},
                     {"name": "🔄 Inspect checkpoints", "value": "inspect"},
                     {"name": "📉 Plot training log", "value": "plot_log"},
                     {"name": "🔙 Back to main menu", "value": "back"},
@@ -1048,6 +1063,8 @@ class InteractiveCLI:
                 self._evaluate_model()
             elif choice == "reconstruct":
                 self._reconstruct_image()
+            elif choice == "fetch_sr":
+                self._fetch_and_superresolve()
             elif choice == "inspect":
                 self._inspect_checkpoints()
             elif choice == "plot_log":
@@ -1283,7 +1300,7 @@ class InteractiveCLI:
             except ValueError:
                 print("\n✗ Invalid number")
                 return
-            images = read_multiband_skyimages(tfr_path, num_images=9999)
+            images = read_images(tfr_path, num_images=9999)
             if not images:
                 print(f"\n✗ No images found in {tfr_path}")
                 return
@@ -1296,12 +1313,12 @@ class InteractiveCLI:
             clean_file = tfr_path.replace("dirty_", "clean_")
             chosen_hr = [None] * num_reconstruct
             if os.path.exists(clean_file):
-                clean_images = read_multiband_skyimages(clean_file, num_images=9999)
+                clean_images = read_images(clean_file, num_images=9999)
                 clean_by_idx = {img.index: img for img in clean_images}
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
                     if hr_match is not None:
-                        chosen_hr[i] = hr_match.data
+                        chosen_hr[i] = hr_match
         else:
             lr_file = input("Path to LR image (.npy or .png): ").strip()
             if not lr_file or not os.path.exists(lr_file):
@@ -1337,10 +1354,22 @@ class InteractiveCLI:
                     print(f"\n✗ No checkpoints found in {ckpt_dir}")
                     return
                 print(f"\nLoading model from checkpoint {ckpt_dir}...")
-                model = load_model_from_checkpoint(
-                    ckpt_dir, scale_val, num_res_blocks_val,
-                    nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-                )
+                if input_source == "tfrecord":
+                    model = Model(ckpt_dir, scale=scale_val, num_res_blocks=num_res_blocks_val)
+                    hr_for_render = [h for h in chosen_hr if h is not None]
+                    saved = reconstruct_and_render(
+                        chosen_lr, model, Config.VIS_RECONSTRUCTION_DIR,
+                        hr_images=hr_for_render if len(hr_for_render) == len(chosen_lr) else None,
+                    )
+                    for p in saved:
+                        print(f"  saved {p}")
+                    print(f"\n✓ {len(saved)} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
+                    return
+                else:
+                    model = load_model_from_checkpoint(
+                        ckpt_dir, scale_val, num_res_blocks_val,
+                        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
+                    )
             else:
                 weights_path = input("Path to .h5 weights file: ").strip()
                 if not weights_path or not os.path.exists(weights_path):
@@ -1359,7 +1388,7 @@ class InteractiveCLI:
                 print(f"Running super-resolution on {num_reconstruct} images...")
                 for i, lr_img in enumerate(chosen_lr):
                     lr_data, sr_data = reconstruct(model, lr_img.data)
-                    hr_data = chosen_hr[i]
+                    hr_data = chosen_hr[i].data if chosen_hr[i] is not None else None
                     output_path = os.path.join(
                         Config.VIS_RECONSTRUCTION_DIR,
                         f"reconstruct_idx{lr_img.index}.png",
@@ -1392,6 +1421,35 @@ class InteractiveCLI:
             print(f"\n✗ Reconstruction failed: {e}")
             traceback.print_exc()
 
+
+    def _fetch_and_superresolve(self):
+        """Fetch a real Euclid sky position from the archive and super-resolve it."""
+        ra_str = input("RA in degrees (ICRS): ").strip()
+        dec_str = input("Dec in degrees (ICRS): ").strip()
+        size_str = input("Cutout side in VIS pixels (default 256): ").strip() or "256"
+        ckpt_dir = input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip() or Config.DEFAULT_CHECKPOINT_DIR
+
+        try:
+            ra = float(ra_str)
+            dec = float(dec_str)
+            size = int(size_str)
+        except ValueError:
+            print("\n✗ Invalid input: RA/Dec must be floats, size must be an integer")
+            return
+
+        out_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "adhoc")
+        try:
+            model = Model(ckpt_dir, scale=Config.DEFAULT_REBIN_FACTOR,
+                          num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
+            fits_path, png_path = fetch_and_superresolve(
+                ra=ra, dec=dec, size=size, model=model, out_dir=out_dir,
+                catalog=self._euclid_client(),
+            )
+            print(f"\n✓ FITS: {fits_path}")
+            print(f"  PNG:  {png_path}")
+        except Exception as e:
+            print(f"\n✗ Fetch/super-resolve failed: {e}")
+            traceback.print_exc()
 
     @staticmethod
     def _ask_vmax(default: float | None = None) -> float | None:
@@ -1452,17 +1510,18 @@ class InteractiveCLI:
             if output_dir == "custom":
                 output_dir = input("Enter path: ").strip()
 
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             return
 
-        data = catalog.load()
-        stars = data.get("stars", [])
-        if not stars:
+        objects = CatalogObject.read(catalog_path)
+        if not objects:
             print("\n✗ Catalog is empty — nothing to plot")
             return
 
+        stars = [{"ra": o.ra, "dec": o.dec, "magnitude": o.magnitude,
+                  "corrupted": o.has_any("corrupted")} for o in objects]
         output_path = Config.VIS_STAR_POSITIONS
         draw_star_positions(stars, output_path)
         print(f"\n✓ Star positions plot saved to {output_path} ({len(stars)} stars)")
@@ -1490,13 +1549,12 @@ class InteractiveCLI:
 
 
         # Load catalog
-        catalog = StarCatalog(output_dir)
-        if not catalog.exists():
-            print(f"\n✗ Catalog not found at {catalog.catalog_path}")
+        catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+        if not os.path.exists(catalog_path):
+            print(f"\n✗ Catalog not found at {catalog_path}")
             return
 
-        catalog_data = catalog.load()
-        stars = catalog_data.get('stars', [])
+        stars = CatalogObject.read(catalog_path)
 
         if len(stars) == 0:
             print(f"\n✗ No stars found in catalog")
@@ -1514,9 +1572,9 @@ class InteractiveCLI:
 
         for star in tqdm(selected_stars, desc="Creating visualizations"):
             # Load FITS data
-            fits_files = glob.glob(os.path.join(cutout_dir, f"star_{star['id']:04d}_*.fits"))
+            fits_files = glob.glob(os.path.join(cutout_dir, f"star_{star.id:04d}_*.fits"))
             if not fits_files:
-                print(f"  Warning: No cutout for star {star['id']}")
+                print(f"  Warning: No cutout for star {star.id}")
                 continue
 
             try:
@@ -1528,24 +1586,24 @@ class InteractiveCLI:
                 visualizer.add_scale_panel(data)
                 visualizer.add_scale_panel(data, log_scale=True)
 
-                mag_str = f"{star['magnitude']:.2f}" if star.get('magnitude') else "N/A"
+                mag_str = f"{star.magnitude:.2f}" if star.magnitude is not None else "N/A"
                 visualizer.add_statistics_panel(data, {
                     'title': 'Star Information:',
                     'stats': {
-                        'ID': f"{star['id']:04d}",
-                        'RA': f"{star['ra']:.6f}°",
-                        'Dec': f"{star['dec']:.6f}°",
+                        'ID': f"{star.id:04d}",
+                        'RA': f"{star.ra:.6f}°",
+                        'Dec': f"{star.dec:.6f}°",
                         'Magnitude': mag_str,
                     },
                     'include_data_stats': True,
                 })
 
                 # Save figure
-                output_path = os.path.join(vis_dir, f'star_{star["id"]:04d}.png')
+                output_path = os.path.join(vis_dir, f'star_{star.id:04d}.png')
                 visualizer.save_figure(output_path)
 
             except Exception as e:
-                print(f"  Warning: Failed to visualize star {star['id']}: {e}")
+                print(f"  Warning: Failed to visualize star {star.id}: {e}")
 
         print(f"\n✓ Visualizations saved to {vis_dir}")
 
@@ -1670,7 +1728,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in clean_files:
-                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
+                    all_images.extend(read_images(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1684,7 +1742,7 @@ class InteractiveCLI:
                 os.makedirs(vis_dir, exist_ok=True)
                 all_images = []
                 for _, path in dirty_files:
-                    all_images.extend(read_multiband_skyimages(path, num_images=9999))
+                    all_images.extend(read_images(path, num_images=9999))
                 rng = np.random.default_rng(42)
                 chosen = rng.choice(len(all_images), min(num_images, len(all_images)), replace=False)
                 for i in chosen:
@@ -1700,7 +1758,7 @@ class InteractiveCLI:
 
                 # Collect matched pairs per subset to avoid index-space collisions.
                 # Multi-band v2 records: HR is 1-channel (VIS), LR is 4-channel.
-                all_pairs: list[tuple[MultiBandSkyImage, MultiBandSkyImage]] = []
+                all_pairs: list[tuple[Image, Image]] = []
                 for subset in ("train", "validate"):
                     clean_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
                     dirty_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
@@ -1708,9 +1766,9 @@ class InteractiveCLI:
                         continue
                     dirty_by_index = {
                         img.index: img
-                        for img in read_multiband_skyimages(dirty_sub, num_images=9999)
+                        for img in read_images(dirty_sub, num_images=9999)
                     }
-                    for hr in read_multiband_skyimages(clean_sub, num_images=9999):
+                    for hr in read_images(clean_sub, num_images=9999):
                         lr = dirty_by_index.get(hr.index)
                         if lr is not None:
                             all_pairs.append((hr, lr))

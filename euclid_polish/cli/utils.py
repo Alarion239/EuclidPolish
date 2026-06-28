@@ -2,12 +2,8 @@
 Shared CLI utilities for EuclidPolish CLI.
 
 This module provides common functionality used across multiple CLI commands,
-including validation, subprocess execution, and display formatting.
+including input validation and display formatting.
 """
-
-import subprocess
-
-import questionary
 
 from euclid_polish.config import Config
 
@@ -92,27 +88,6 @@ class ValidationResult:
             return f'{field_name} must be a number'
         return True
 
-    @staticmethod
-    def validate_digit(value: str) -> bool | str:
-        """
-        Validate that input is a digit (for IDs).
-
-        Parameters:
-        -----------
-        value : str
-            User input string.
-
-        Returns:
-        --------
-        bool or str
-            True if valid, error message string if invalid.
-        """
-        if len(value) == 0:
-            return 'This field is required'
-        if not value.isdigit():
-            return 'Must be a number'
-        return True
-
 
 class DisplayFormatter:
     """Utility class for consistent display formatting."""
@@ -145,112 +120,6 @@ class DisplayFormatter:
     def print_cancelled() -> None:
         """Print a cancelled message."""
         print(f"\n{Config.ERROR_PREFIX} Cancelled")
-
-
-class CommandRunner:
-    """
-    Centralized command execution with user confirmation and error handling.
-
-    This class eliminates the repetitive subprocess execution pattern
-    found throughout the original CLI code.
-    """
-
-    def run_command(
-        self,
-        cmd: list,
-        prompt_msg: str,
-        show_output: bool = False,
-        capture: bool = False
-    ) -> bool:
-        """
-        Run a command with user confirmation and error handling.
-
-        Parameters:
-        -----------
-        cmd : list
-            Command list to execute (e.g., ['python', 'script.py', '--arg', 'value'])
-        prompt_msg : str
-            Message to show in confirmation prompt.
-        show_output : bool
-            Whether to display command output.
-        capture : bool
-            Whether to capture output for error reporting.
-
-        Returns:
-        --------
-        bool
-            True if command succeeded, False otherwise.
-        """
-        # Get user confirmation
-        if not questionary.confirm(prompt_msg, default=True).ask():
-            DisplayFormatter.print_cancelled()
-            return False
-
-        # Execute command
-        print("\nRunning...")
-        try:
-            if capture:
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if show_output and result.stdout:
-                    print(result.stdout)
-
-                if result.returncode == 0:
-                    DisplayFormatter.print_success("Complete!")
-                    return True
-                else:
-                    if result.stderr:
-                        DisplayFormatter.print_error(f"Error: {result.stderr}")
-                    else:
-                        DisplayFormatter.print_error(f"Command failed with return code {result.returncode}")
-                    return False
-            else:
-                subprocess.run(cmd)
-                DisplayFormatter.print_success("Complete!")
-                return True
-
-        except FileNotFoundError as e:
-            DisplayFormatter.print_error(f"File not found: {e}")
-            return False
-        except Exception as e:
-            DisplayFormatter.print_error(f"Exception: {e}")
-            return False
-
-    def run_command_no_confirm(
-        self,
-        cmd: list,
-        success_msg: str = "Complete!",
-        capture_output: bool = False
-    ) -> bool:
-        """
-        Run a command without confirmation (always executes).
-
-        Parameters:
-        -----------
-        cmd : list
-            Command list to execute.
-        success_msg : str
-            Message to show on success.
-        capture_output : bool
-            Whether to capture output (default: False to show progress bars).
-
-        Returns:
-        --------
-        bool
-            True if command succeeded, False otherwise.
-        """
-        print("\nRunning...")
-        try:
-            result = subprocess.run(cmd, capture_output=capture_output, text=capture_output)
-            if result.returncode == 0:
-                DisplayFormatter.print_success(success_msg)
-                return True
-            else:
-                if result.stderr:
-                    DisplayFormatter.print_error(f"Error: {result.stderr}")
-                return False
-        except Exception as e:
-            DisplayFormatter.print_error(f"Exception: {e}")
-            return False
 
 
 def build_command_args(arg_dict: dict) -> list:

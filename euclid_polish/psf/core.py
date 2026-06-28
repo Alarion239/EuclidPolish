@@ -17,16 +17,13 @@ Every operation that changes the data returns a NEW ``PSF`` — the
 class is treated as immutable so consumers can chain operations
 ``psf.resampled_to(0.05).centre_cropped_to(421).with_unit_sum()``
 without worrying about which step mutates what.
-
-The legacy thin dataclass at ``euclid_polish.euclid.types.PSF`` now
-re-exports this class for back-compat.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
@@ -34,6 +31,9 @@ from scipy.ndimage import zoom, shift as ndi_shift, rotate as ndi_rotate
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
+from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
+from euclid_polish.provenance.persistable import StampCarrier
+from euclid_polish.provenance.records import Format
 from euclid_polish.psf import measurements as _meas
 
 
@@ -44,7 +44,7 @@ DEFAULT_HR_PIXEL_SCALE: float = float(Config.DEFAULT_PIXEL_SCALE)
 
 
 @dataclass
-class PSF:
+class PSF(StampCarrier):
     """A PSF kernel + its physical metadata, with operations.
 
     Parameters
@@ -59,7 +59,7 @@ class PSF:
         know whether they need to resample before convolution.
     fwhm_arcsec
         Optional cached FWHM measurement (from the FITS header, or
-        computed via :meth:`measured_fwhm_arcsec` and stored).
+        computed from :meth:`fwhm_pixels` and stored).
     oversampling
         Optional EPSFBuilder oversampling factor (integer ≥ 1).
         Purely informational — it tells you "this kernel was built
@@ -79,6 +79,8 @@ class PSF:
     fwhm_arcsec: Optional[float] = None
     oversampling: Optional[int] = None
 
+    PROV_FORMAT: ClassVar[Format] = Format.FITS
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -94,10 +96,6 @@ class PSF:
     @property
     def peak(self) -> float:
         return float(np.asarray(self.data).max())
-
-    @property
-    def is_normalised(self, *, atol: float = 1e-4) -> bool:
-        return abs(self.total_flux - 1.0) < atol
 
     # ------------------------------------------------------------------
     # Measurements (delegate to the standalone helpers so the same
@@ -130,10 +128,6 @@ class PSF:
             f"choose row | radial | area_eq"
         )
 
-    def measured_fwhm_arcsec(self, method: str = "radial") -> float:
-        """FWHM converted to arcsec via :attr:`pixel_scale`."""
-        return self.fwhm_pixels(method) * float(self.pixel_scale)
-
     def flux_centroid(self) -> Tuple[float, float]:
         return _meas.flux_centroid(self.data)
 
@@ -161,12 +155,6 @@ class PSF:
             self,
             data=(self.data / s).astype(self.data.dtype, copy=False),
         )
-
-    def normalized(self) -> PSF:
-        """Alias for :meth:`with_unit_sum`. Kept so the legacy API
-        (``PSF.from_fits`` calls ``.normalized()``) still works after
-        this consolidation."""
-        return self.with_unit_sum()
 
     def background_cleaned(
         self,
@@ -441,6 +429,8 @@ class PSF:
         hdu.header["COMMENT"] = (
             "Written by euclid_polish.psf.PSF.save -- sum=1 normalised."
         )
+        if self.stamp is not None:
+            write_stamp_cards(hdu.header, self.stamp)
         fits.HDUList([hdu]).writeto(fits_path, overwrite=True)
         return fits_path
 
@@ -461,6 +451,7 @@ class PSF:
         with fits.open(fits_path) as hdul:
             header = hdul[0].header
             data = np.asarray(hdul[0].data, dtype=np.float32)
+        stamp = read_stamp_cards(header)
         # Two historical FITS conventions — PXSCALE (our save) and
         # PIXSCALE (HST extractor + HLSP WCS). Accept either.
         pix = header.get("PXSCALE", None)
@@ -475,4 +466,8 @@ class PSF:
             fwhm_arcsec=fwhm_arcsec,
             oversampling=oversampling,
         )
-        return psf.with_unit_sum() if normalise else psf
+        if normalise:
+            psf = psf.with_unit_sum()
+        if stamp is not None:
+            psf = psf.with_stamp(stamp)
+        return psf

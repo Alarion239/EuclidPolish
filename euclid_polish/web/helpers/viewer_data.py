@@ -38,7 +38,7 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.sky import sr as sky_sr
-from euclid_polish.sky.tfrecord import read_multiband_skyimages, tfrecord_path
+from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
     _ensure_local_star_cutout,
@@ -164,7 +164,7 @@ def _sky_cube(index: int, tier: str, params: Dict[str, str]):
     path = tfrecord_path(_sky_records_local_dir(), f"{tier}_{subset}")
     if not os.path.exists(path):
         raise ViewerError(404, "records not synced")
-    records = read_multiband_skyimages(path, num_images=max(index + 1, 1))
+    records = read_images(path, num_images=max(index + 1, 1))
     if not records or index >= len(records):
         raise ViewerError(404, "index out of range")
     rec = records[index]

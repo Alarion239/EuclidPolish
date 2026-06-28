@@ -1,7 +1,7 @@
 """auth routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from euclid_polish.euclid import auth
+from euclid_polish.web import euclid_session
 from euclid_polish.web.remote import STATE
 from flask import jsonify
 from flask import request
@@ -25,15 +25,15 @@ def register(app):
         if not user or not pwd:
             return jsonify({"ok": False, "error": "Missing username or password"}), 400
         try:
-            auth.login(user, pwd)
-            return jsonify({"ok": True, "user": auth.current_user()})
+            euclid_session.login(user, pwd)
+            return jsonify({"ok": True, "user": euclid_session.current_user()})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.route("/auth/logout", methods=["POST"])
     def auth_logout():
         try:
-            auth.logout()
+            euclid_session.logout()
         except Exception:
             pass
         return jsonify({"ok": True})

@@ -10,7 +10,7 @@ generator pulls the four images by ``EXTNAME``, stacks them into
 ``(H, W, 4)`` cubes in the canonical
 :attr:`~euclid_polish.config.Config.LR_INPUT_BAND_NAMES` order, chops
 each cube into many smaller training stamps, and writes them as
-:class:`~euclid_polish.sky.types.MultiBandSkyImage` records
+:class:`~euclid_polish.image.Image` records
 (``is_clean=False``).
 
 These records have *no HR side*. The round-trip training path
@@ -40,10 +40,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.sky.tfrecord import open_multiband_writer
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_writer
+from euclid_polish.image import Image
 
 
 # Input dir (bundled per-position cutouts), output records dir, and the
@@ -315,7 +315,7 @@ def main() -> int:
     ]
 
     for subset, pos_ids in splits:
-        with open_multiband_writer(f"dirty_{subset}", args.output_dir) as w:
+        with open_writer(f"dirty_{subset}", args.output_dir) as w:
             sorted_pos_ids = sorted(pos_ids)
             n_pos = len(sorted_pos_ids)
             for pos_i, pid in enumerate(sorted_pos_ids):
@@ -337,7 +337,7 @@ def main() -> int:
                     ):
                         dropped_bad_stamp += 1
                         continue
-                    sky = MultiBandSkyImage(
+                    sky = Image(
                         data=stamp.astype(np.float32, copy=False),
                         pixel_scale_arcsec=Config.BAND_VIS.pixel_scale_lr_arcsec,
                         band_names=Config.LR_INPUT_BAND_NAMES,

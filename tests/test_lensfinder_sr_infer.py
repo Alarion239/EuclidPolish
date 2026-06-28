@@ -9,9 +9,9 @@ import os
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import (open_multiband_writer,
-                                        read_multiband_skyimages, tfrecord_path)
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import (open_writer,
+                                        read_images, tfrecord_path)
+from euclid_polish.image import Image
 
 
 def _load():
@@ -28,10 +28,10 @@ sri = _load()
 
 
 def _write_dirty(rdir, subset, n, shape=(16, 16, 4)):
-    with open_multiband_writer(f"dirty_{subset}", records_dir=rdir) as w:
+    with open_writer(f"dirty_{subset}", records_dir=rdir) as w:
         for i in range(n):
             data = np.full(shape, float(i + 1), np.float32)
-            w.write(MultiBandSkyImage(
+            w.write(Image(
                 data=data, pixel_scale_arcsec=0.1,
                 band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False,
                 index=i, subset=subset), index=i)
@@ -42,7 +42,7 @@ def test_run_sr_inference_writes_4band_records(tmp_path):
     _write_dirty(rdir, "train", 3)
     n = sri.run_sr_inference(rdir, "train", sr_fn=lambda lr: lr)   # identity SR
     assert n == 3
-    out = read_multiband_skyimages(tfrecord_path(rdir, "sr_train"), num_images=10)
+    out = read_images(tfrecord_path(rdir, "sr_train"), num_images=10)
     assert len(out) == 3
     assert out[0].data.shape[-1] == 4              # 4-band preserved
 
@@ -53,8 +53,8 @@ def test_run_sr_inference_resume_skips_complete(tmp_path, monkeypatch):
     sri.run_sr_inference(rdir, "train", sr_fn=lambda lr: lr)
 
     opened = []
-    real = sri.open_multiband_writer
-    monkeypatch.setattr(sri, "open_multiband_writer",
+    real = sri.open_writer
+    monkeypatch.setattr(sri, "open_writer",
                         lambda name, **kw: opened.append(name) or real(name, **kw))
     n = sri.run_sr_inference(rdir, "train", sr_fn=lambda lr: lr)   # second run
     assert n == 3 and opened == []                 # skipped, nothing rewritten

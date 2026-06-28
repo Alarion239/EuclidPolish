@@ -33,7 +33,7 @@ paint the NISP HR channels. For each grid chunk:
      and move to the next grid cell.
   5. Apply the pre-computed differential kernel A to get the Euclid-PSF
      view, sum-rebin to LR scale (0.10″/pix), add per-band Euclid noise.
-  6. Write the (HR, LR) pair into the standard ``MultiBandSkyImage``
+  6. Write the (HR, LR) pair into the standard ``Image``
      TFRecord layout — same schema the synthetic generator uses.
 
 Output records land under ``$DATA_DIR/images/records_v2_hst/`` so the
@@ -97,8 +97,8 @@ from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.differential_kernel import DifferentialKernel
 from euclid_polish.sky.noise import apply_band_noise
-from euclid_polish.sky.tfrecord import open_multiband_writer
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import open_writer
+from euclid_polish.image import Image
 
 
 def parse_args() -> argparse.Namespace:
@@ -470,7 +470,7 @@ def _make_pair(
         band = Config.get_band(band_name)
         convolved = _kernel_forward(hr_cutout_4ch[..., k], diff_kernel)
         # Sum-rebin ×2 (photometric: conserves total electrons per LR pixel).
-        rebinned = MultiBandSkyImage.rebin_array(convolved, 2)
+        rebinned = Image.rebin_array(convolved, 2)
         # Apply per-band Euclid noise (Poisson + read; artifacts off for
         # synthetic HST templates).
         lr_cube[..., k] = apply_band_noise(rebinned, band, rng,
@@ -594,7 +594,7 @@ def _process_one_tile(
         # ``crop_array``'s zero-padding behaviour here because a partial
         # cutout would leak zero-valued sky into the training pair.
         return None, "cutout-too-small"
-    hr_clean_rate = MultiBandSkyImage.crop_array(hr_resampled, H_hr)
+    hr_clean_rate = Image.crop_array(hr_resampled, H_hr)
 
     # No sky-offset subtraction here. HLSP COSMOS F814W mosaics are
     # already sky-subtracted by HAP, so the cutout median is ≈ 0 by
@@ -854,18 +854,18 @@ def main() -> int:
         _provenance, hr_cube, lr_cube = result
         cw, dw, hw = subset_writers
         meta = {"source": "hst_hlsp_tile"}
-        clean_img = MultiBandSkyImage(
+        clean_img = Image(
             data=hr_cube, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
             metadata=meta,
         )
-        dirty_img = MultiBandSkyImage(
+        dirty_img = Image(
             data=lr_cube,
             pixel_scale_arcsec=Config.VIS_PIXEL_SCALE_ARCSEC,
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False,
             metadata=meta,
         )
-        hr_vis_only = MultiBandSkyImage(
+        hr_vis_only = Image(
             data=hr_cube[..., :1].copy(),
             pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
             band_names=("VIS",), is_clean=True,
@@ -893,11 +893,11 @@ def main() -> int:
 
     for subset, target_n in pairs_per_subset.items():
         sub_done = 0
-        with open_multiband_writer(
+        with open_writer(
             f"clean_{subset}", records_dir=args.output_dir,
-        ) as cw, open_multiband_writer(
+        ) as cw, open_writer(
             f"dirty_{subset}", records_dir=args.output_dir,
-        ) as dw, open_multiband_writer(
+        ) as dw, open_writer(
             f"hr_{subset}", records_dir=args.output_dir,
         ) as hw:
             writers = (cw, dw, hw)

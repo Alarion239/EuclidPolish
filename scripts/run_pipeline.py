@@ -49,23 +49,26 @@ from tqdm import tqdm
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psf_sets
+from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.sky.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
 from euclid_polish.sky.source_catalog import (
     SourceCatalogWriter, concat_source_csvs,
 )
-from euclid_polish.sky.tfrecord import (
-    open_multiband_writer, tfrecord_path, write_multiband_skyimages,
+from euclid_polish.sky.gen_provenance import (
+    ShardStampPlan, make_generation_context,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import (
+    open_writer, tfrecord_path, write_images,
+)
+from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training import Trainer
 from euclid_polish.training.models.wdsr import wdsr
@@ -122,19 +125,18 @@ def parse_args() -> argparse.Namespace:
                          "Requires both generate and convolve (i.e. neither "
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
-    ap.add_argument("--tng-fraction", type=float, default=0.0,
-                    help="Fraction of synthetic galaxies drawn as real TNG50 "
-                         "SKIRT stamps instead of analytic Sersic profiles. "
-                         "0 = all Sersic (unchanged); 1 = pure-TNG mode "
-                         "(implies --tng-redshift-mode and skips the COSMOS "
-                         "catalog entirely). Needs TNG galaxies downloaded "
-                         "under $DATA_DIR/tng_skirt/.")
-    ap.add_argument("--tng-dwarf-density-arcmin2", type=float,
-                    default=Config.TNG_DWARF_SERSIC_DENSITY_ARCMIN2,
-                    help="Pure-TNG mode only: surface density of small "
-                         "COSMOS Sersic galaxies backfilling the faint "
-                         "dwarf population the atlas lacks. 0 disables "
-                         "(then tng-fraction 1 needs no COSMOS catalog).")
+    ap.add_argument("--tng-density-arcmin2", type=float, default=0.0,
+                    help="Surface density of TNG50 SKIRT stamp galaxies "
+                         "(TNG population, galaxies/arcmin²). 0 = all-Sersic "
+                         "baseline; set > 0 to mix in resolved TNG stamps. "
+                         "Independent of --sersic-density-arcmin2. "
+                         "Needs TNG galaxies downloaded under "
+                         "$DATA_DIR/tng_skirt/.")
+    ap.add_argument("--sersic-density-arcmin2", type=float,
+                    default=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+                    help="Surface density of analytic Sersic (COSMOS) "
+                         "galaxies (galaxies/arcmin²). Set to 0 to run "
+                         "TNG-only without a COSMOS catalog.")
     ap.add_argument("--tng-redshift-mode", action="store_true",
                     help="Physical-redshift treatment of TNG stamps: one z "
                          "draw per stamp sets its downsample factor (via "
@@ -180,36 +182,44 @@ def parse_args() -> argparse.Namespace:
 # Step 1: clean multi-band scene generation
 # ---------------------------------------------------------------------------
 
+def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
+    """Build the generator config from CLI args (shared by serial + parallel)."""
+    return SkySimulatorConfig(
+        image_size=args.image_size,
+        pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        sersic_density_arcmin2=args.sersic_density_arcmin2,
+        tng_density_arcmin2=args.tng_density_arcmin2,
+        tng_redshift_mode=args.tng_redshift_mode,
+        star_density_arcmin2=args.star_density_arcmin2,
+        star_mag_slope=args.star_mag_slope,
+        star_mag_bright=args.star_mag_bright,
+        star_mag_faint=args.star_mag_faint,
+        lens_density_arcmin2=args.lens_density_arcmin2,
+        lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
+        lens_sigma_v_max_kms=args.lens_sigma_v_max_kms,
+    )
+
+
 def step_generate(args: argparse.Namespace) -> None:
     _banner(f"STEP 1: Generate clean 4-band HR fields  "
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    # Pure-TNG mode with the dwarf backfill disabled renders nothing Sersic,
-    # so the 10 GB COSMOS master FITS is not needed at all. Otherwise
-    # pre-filter it to a small cached .npz once, then load that — instant on
-    # repeat runs (and shared by the parallel path).
-    if args.tng_fraction >= 1.0 and args.tng_dwarf_density_arcmin2 <= 0.0:
+    # Skip the 10 GB COSMOS master FITS when the Sersic population is disabled.
+    # Otherwise pre-filter it to a small cached .npz once → instant on repeat runs.
+    if args.sersic_density_arcmin2 <= 0.0:
         cat = None
-        _log("Catalog: skipped (pure-TNG mode, dwarf backfill off)")
+        _log("Catalog: skipped (sersic_density_arcmin2=0)")
     else:
         cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
         _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
 
-    cfg = MultiBandGeneratorConfig(image_size=args.image_size,
-                                   pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                   tng_fraction=args.tng_fraction,
-                                   tng_redshift_mode=args.tng_redshift_mode,
-                                   tng_dwarf_density_arcmin2=args.tng_dwarf_density_arcmin2,
-                                   star_density_arcmin2=args.star_density_arcmin2,
-                                   star_mag_slope=args.star_mag_slope,
-                                   star_mag_bright=args.star_mag_bright,
-                                   star_mag_faint=args.star_mag_faint,
-                                   lens_density_arcmin2=args.lens_density_arcmin2,
-                                   lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
-                                   lens_sigma_v_max_kms=args.lens_sigma_v_max_kms)
-    sim = MultiBandSimulator(cat, cfg)
+    cfg = _generator_config_from_args(args)
+    sim = SkySimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
+
+    # Provenance (best-effort): one generation run; clean records carry its id.
+    gen_ctx = make_generation_context(cfg)
 
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).
     # One cumulative bar across train + validate.
@@ -239,7 +249,7 @@ def step_generate(args: argparse.Namespace) -> None:
         # Stream each image to disk as it's generated — accumulating
         # 6400 510² × 4-channel float32 fields would cost ~26 GB of RSS
         # and OOM-kill on the FASRC default --mem=32G.
-        with open_multiband_writer(f"clean_{subset}",
+        with open_writer(f"clean_{subset}",
                                    records_dir=args.records_dir) as w, \
              SourceCatalogWriter(
                  tfrecord_path(args.records_dir, f"sources_{subset}")
@@ -248,11 +258,21 @@ def step_generate(args: argparse.Namespace) -> None:
                 sky, meta = sim.simulate_field(rng)
                 sky.index = i
                 sky.subset = subset
+                if gen_ctx is not None:
+                    try:
+                        sky.stamp = gen_ctx.stamp("clean", subset)
+                    except Exception:
+                        pass
                 w.write(sky, index=i)
                 sources.add_field(i, meta)
                 done += 1
                 reporter.set_step(done, grand_total, f"generate {subset} {i + 1}/{n}")
             path, count = w.path, w.count
+        if gen_ctx is not None:
+            try:
+                gen_ctx.finalize("clean", subset, path)
+            except Exception:
+                pass
         _log(f"  {subset}: done — {count} → {path}  "
              f"({time.perf_counter() - t0:.1f} s)")
 
@@ -273,8 +293,12 @@ def step_convolve(args: argparse.Namespace) -> None:
         _log(f"  PSF[{name}]: {pset.n} kernel(s), shape={pset.shape}, "
              f"{pset.pixel_scale}\"/pix")
 
-    fwd = MultiBandForward(psf_sets_by_band=psf_sets,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psf_sets_by_band=psf_sets,
+                           config=ObservationSimulatorConfig(add_noise=True))
+
+    # Provenance (best-effort): one forward-model run; hr+dirty records carry
+    # its id and parent on the clean record file they came from.
+    conv_ctx = make_generation_context(fwd.config)
 
     # Structured progress for the WebUI — one cumulative bar across both
     # subsets present. Pre-count the clean records (re-iterating is ~ms).
@@ -305,6 +329,17 @@ def step_convolve(args: argparse.Namespace) -> None:
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
+
+        # The clean record file id (if stamped) is the lineage parent of the
+        # hr+dirty files produced from it. Peek the first record once.
+        clean_parent = None
+        if conv_ctx is not None:
+            try:
+                first = Image.from_tfrecord(next(iter(clean_ds)))
+                cs = first.prov_stamp()
+                clean_parent = cs.id if cs is not None else None
+            except Exception:
+                clean_parent = None
         n_total = counts[subset]
         # Entropy-seeded forward-model RNG — different noise / artifact
         # realisation every run. Master seed is logged for replay.
@@ -316,22 +351,40 @@ def step_convolve(args: argparse.Namespace) -> None:
         t0 = time.perf_counter()
         # Two streaming writers (one for hr_, one for dirty_); clean_ is
         # NOT rewritten — the 4-band record is kept for inspection.
-        with open_multiband_writer(f"hr_{subset}",
+        with open_writer(f"hr_{subset}",
                                    records_dir=args.records_dir) as hr_w, \
-             open_multiband_writer(f"dirty_{subset}",
+             open_writer(f"dirty_{subset}",
                                    records_dir=args.records_dir) as lr_w:
             for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
                                          unit="img", total=n_total)):
-                hr_4ch = MultiBandSkyImage.from_tfrecord(raw)
+                hr_4ch = Image.from_tfrecord(raw)
                 lr, hr = fwd.process(hr_4ch, rng=rng)
                 lr.index = i
                 hr.index = i
                 lr.subset = subset
                 hr.subset = subset
+                if conv_ctx is not None:
+                    try:
+                        parents = (clean_parent,) if clean_parent is not None else ()
+                        hr.stamp = conv_ctx.stamp("hr", subset, parents=parents)
+                        lr.stamp = conv_ctx.stamp("dirty", subset, parents=parents)
+                    except Exception:
+                        pass
                 hr_w.write(hr, index=i)
                 lr_w.write(lr, index=i)
                 done += 1
                 reporter.set_step(done, grand_total, f"forward {subset} {i + 1}/{n_total}")
+        if conv_ctx is not None:
+            try:
+                parents = (clean_parent,) if clean_parent is not None else ()
+                conv_ctx.finalize("hr", subset,
+                                  tfrecord_path(args.records_dir, f"hr_{subset}"),
+                                  parents=parents)
+                conv_ctx.finalize("dirty", subset,
+                                  tfrecord_path(args.records_dir, f"dirty_{subset}"),
+                                  parents=parents)
+            except Exception:
+                pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ kept clean + wrote hr + dirty {subset}")
 
@@ -425,7 +478,7 @@ def _cleanup_parts(records_dir: str, subset: str) -> None:
 
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
                              start: int, count: int, shard_id: int,
-                             seed) -> Tuple[str, int, int]:
+                             seed, plan=None) -> Tuple[str, int, int]:
     """Generate clean → forward to hr+dirty for ``[start, start+count)`` and
     write the triple to per-shard TFRecords.
 
@@ -444,9 +497,9 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     last_emit = time.perf_counter()
     sources_part = tfrecord_path(records_dir,
                                  f"sources_{tag}").replace(".tfrecord", ".csv")
-    with open_multiband_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
-         open_multiband_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
-         open_multiband_writer(f"dirty_{tag}", records_dir=records_dir) as dw, \
+    with open_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
+         open_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
+         open_writer(f"dirty_{tag}", records_dir=records_dir) as dw, \
          SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
             sky, meta = sim.simulate_field(rng)
@@ -457,6 +510,13 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
             hr.subset = subset
             lr.index = i
             lr.subset = subset
+            if plan is not None:
+                try:
+                    sky.stamp = plan.clean_stamp(subset)
+                    hr.stamp = plan.hr_stamp(subset)
+                    lr.stamp = plan.dirty_stamp(subset)
+                except Exception:
+                    pass
             cw.write(sky, index=i)
             hw.write(hr, index=i)
             dw.write(lr, index=i)
@@ -476,9 +536,9 @@ _W_RECORDS_DIR = ""
 
 def _gen_init_worker(catalog_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
-                     tng_fraction=0.0,
+                     sersic_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+                     tng_density_arcmin2=0.0,
                      tng_redshift_mode=False,
-                     tng_dwarf_density_arcmin2=Config.TNG_DWARF_SERSIC_DENSITY_ARCMIN2,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                      star_mag_slope=Config.STAR_MAG_SLOPE,
                      star_mag_bright=Config.STAR_MAG_BRIGHT,
@@ -491,15 +551,15 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     memmapped and only the filtered columns are held, so each worker's copy
     is a few MB — no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
-    # catalog_path is None in pure-TNG mode (tng_fraction == 1): nothing
-    # Sersic is rendered, so COSMOS never loads.
+    # catalog_path is None when sersic_density_arcmin2=0: nothing Sersic is
+    # rendered so COSMOS never loads.
     cat = open_cosmos2025(path=catalog_path) if catalog_path else None
-    _W_SIM = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=image_size,
+    _W_SIM = SkySimulator(
+        cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                      tng_fraction=tng_fraction,
+                                      sersic_density_arcmin2=sersic_density_arcmin2,
+                                      tng_density_arcmin2=tng_density_arcmin2,
                                       tng_redshift_mode=tng_redshift_mode,
-                                      tng_dwarf_density_arcmin2=tng_dwarf_density_arcmin2,
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
@@ -512,17 +572,18 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
-    _W_FWD = MultiBandForward(psf_sets_by_band=psf_sets,
-                              config=MultiBandForwardConfig(add_noise=True))
+    _W_FWD = ObservationSimulator(psf_sets_by_band=psf_sets,
+                              config=ObservationSimulatorConfig(add_noise=True))
     _W_RECORDS_DIR = records_dir
 
 
 def _gen_convolve_shard(task) -> Tuple[str, int, int]:
     """Top-level pool entry point → ``_generate_convolve_range`` with the
     worker-global sim/fwd."""
-    subset, start, count, shard_id, seed = task
+    subset, start, count, shard_id, seed, plan = task
     return _generate_convolve_range(
         _W_SIM, _W_FWD, _W_RECORDS_DIR, subset, start, count, shard_id, seed,
+        plan=plan,
     )
 
 
@@ -536,10 +597,13 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     # Pre-filter the 10 GB master FITS to a small cached .npz ONCE (in the
     # parent), so each per-subset, per-worker pool initializer reloads a few-MB
     # file in milliseconds instead of re-parsing 784k rows every time.
-    # Pure-TNG mode with the dwarf backfill off needs no catalog at all.
-    catalog_path = (None if (args.tng_fraction >= 1.0
-                             and args.tng_dwarf_density_arcmin2 <= 0.0)
+    # sersic_density=0 needs no COSMOS catalog at all.
+    catalog_path = (None if args.sersic_density_arcmin2 <= 0.0
                     else ensure_prefiltered_catalog(args.catalog))
+
+    # Provenance (best-effort): one generation run for the whole parallel step;
+    # per-subset ids are pre-minted in this parent and shipped to the workers.
+    gen_ctx = make_generation_context(_generator_config_from_args(args))
 
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:
@@ -556,12 +620,25 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         n_shards = min(n, max(workers, math.ceil(n / 256)))
         bounds = _shard_bounds(n, n_shards)
         master_seed = int.from_bytes(os.urandom(8), "little")
+        # Pre-mint this subset's three file ids in the parent; every shard
+        # stamps with the same plan (records share one id per file).
+        plan = None
+        if gen_ctx is not None:
+            try:
+                plan = ShardStampPlan(
+                    run_id=gen_ctx.run_id,
+                    clean_id=gen_ctx.file_id("clean", subset),
+                    hr_id=gen_ctx.file_id("hr", subset),
+                    dirty_id=gen_ctx.file_id("dirty", subset),
+                )
+            except Exception:
+                plan = None
         tasks = []
         for sid, (start, end) in enumerate(bounds):
             if end > start:
                 # SeedSequence material → reproducible, independent per shard.
                 seed = [master_seed, (1 if subset == "train" else 2), sid]
-                tasks.append((subset, start, end - start, sid, seed))
+                tasks.append((subset, start, end - start, sid, seed, plan))
 
         reporter.set_stage(f"generate+forward {subset} (×{workers})")
         # Announce the parallel phase: total items + worker count. The
@@ -575,8 +652,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             max_workers=workers, initializer=_gen_init_worker,
             initargs=(catalog_path, args.image_size, args.psf_dir,
                       args.require_empirical_psf, args.records_dir,
-                      args.tng_fraction, args.tng_redshift_mode,
-                      args.tng_dwarf_density_arcmin2,
+                      args.sersic_density_arcmin2, args.tng_density_arcmin2,
+                      args.tng_redshift_mode,
                       args.star_density_arcmin2,
                       args.star_mag_slope, args.star_mag_bright,
                       args.star_mag_faint, args.lens_density_arcmin2,
@@ -612,6 +689,20 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             try:
                 os.remove(p)
             except OSError:
+                pass
+        # Persist the merged file-level artifacts (hr+dirty parent on clean).
+        if gen_ctx is not None:
+            try:
+                clean_id = gen_ctx.file_id("clean", subset)
+                gen_ctx.finalize("clean", subset,
+                                 tfrecord_path(args.records_dir, f"clean_{subset}"))
+                gen_ctx.finalize("hr", subset,
+                                 tfrecord_path(args.records_dir, f"hr_{subset}"),
+                                 parents=(clean_id,))
+                gen_ctx.finalize("dirty", subset,
+                                 tfrecord_path(args.records_dir, f"dirty_{subset}"),
+                                 parents=(clean_id,))
+            except Exception:
                 pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s "
              f"→ clean + hr + dirty {subset}")

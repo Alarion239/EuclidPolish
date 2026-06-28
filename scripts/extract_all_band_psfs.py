@@ -57,7 +57,7 @@ from photutils.psf import EPSFStar
 from sklearn.cluster import KMeans
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.psf_extractor import (
+from euclid_polish.psf.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
 )
 from euclid_polish.psf import PSF, PSFSet

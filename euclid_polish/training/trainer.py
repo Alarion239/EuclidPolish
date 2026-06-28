@@ -42,6 +42,11 @@ from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
+from euclid_polish.provenance.checkpoint import (
+    read_checkpoint_provenance, write_checkpoint_provenance,
+)
+from euclid_polish.provenance.ids import ProvId
+from euclid_polish.provenance.records import Stamp
 from euclid_polish.training.data_multiband import (
     asinh_stretch_hr, inverse_asinh_stretch_hr,
 )
@@ -254,12 +259,39 @@ class Trainer:
             max_to_keep=3,
         )
 
+        # Provenance: this checkpoint dir's identity. Resolved lazily on the
+        # first save (or reused from an existing sidecar on resume).
+        self.checkpoint_dir = checkpoint_dir
+        self._model_prov_id = None
+
         self.restore()
 
     @property
     def model(self):
         """Get the model."""
         return self.checkpoint.model
+
+    def _emit_checkpoint_provenance(self) -> None:
+        """Write this checkpoint dir's identity sidecar (best-effort).
+
+        Mints the model :class:`ProvId` once, or reuses the id already on disk
+        so a resumed run keeps its identity. Any failure is swallowed — a
+        provenance hiccup must never break a training run.
+        """
+        try:
+            if self._model_prov_id is None:
+                existing = read_checkpoint_provenance(self.checkpoint_dir)
+                self._model_prov_id = (
+                    existing.id if existing is not None
+                    else ProvId.mint(lambda _id: False)
+                )
+            stamp = Stamp(id=self._model_prov_id, schema_version=3)
+            write_checkpoint_provenance(self.checkpoint_dir, stamp)
+            loss_dir = os.path.join(self.checkpoint_dir, "loss_best")
+            if os.path.isdir(loss_dir):
+                write_checkpoint_provenance(loss_dir, stamp)
+        except Exception as exc:  # never break training over provenance
+            tqdm.write(f"  [provenance] checkpoint id not written: {exc}")
 
     def _apply_lr(self, step) -> float:
         """Set the optimiser LR for ``step`` = base schedule value × the
@@ -809,6 +841,12 @@ class Trainer:
                         f"  ✓ Checkpoint saved [best LOSS] → loss_best/ "
                         f"(combined_loss={combined_loss:.5f})"
                     )
+
+                # Stamp the checkpoint dir with its model identity whenever a
+                # track saved, so SR outputs can later tell this model apart
+                # from a stale one. Best-effort; never raises.
+                if psnr_improved or loss_improved:
+                    self._emit_checkpoint_provenance()
 
                 self.now = time.perf_counter()
 

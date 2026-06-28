@@ -30,9 +30,9 @@ from euclid_polish.sky.tng_galaxy import (
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig,
-    MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig,
+    SkySimulator,
 )
 from tests._tiny_catalog import TinyCosmosCatalog
 
@@ -340,8 +340,8 @@ def test_z_mode_field_galaxies_draw_mass_scale(tmp_path):
     # the Schechter target is mostly ~1e9-1e10, so the drawn mass scales are
     # small and varied.
     sim = _z_mode_sim(tmp_path)
-    _, meta = sim.simulate_field(np.random.default_rng(9), n_galaxies=6,
-                                 n_stars=0, n_lenses=0, n_big=0, n_dwarfs=0)
+    _, meta = sim.simulate_field(np.random.default_rng(9), n_tng=6,
+                                 n_sersic=0, n_stars=0, n_lenses=0)
     s = [r["mass_scale"] for r in meta["galaxies"]]
     assert all(0.0 < v <= 1.0 for v in s)
     assert len(set(s)) > 1                      # actually randomized
@@ -383,28 +383,27 @@ def test_sample_tng_stamp_z_mode(tmp_path):
 # Generator integration: redshift mode
 # ---------------------------------------------------------------------------
 
-def _z_mode_sim(tmp_path, *, lens_density=0.0, tng_fraction=1.0,
-                dwarf_density=0.0):
+def _z_mode_sim(tmp_path, *, lens_density=0.0, sersic_density=0.0):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11), ("222", 1.0e11)])
-    cat = TinyCosmosCatalog(n_galaxies=400, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cat = TinyCosmosCatalog(n_galaxies=400, seed=0) if sersic_density > 0.0 else None
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         lens_density_arcmin2=lens_density,
-        tng_fraction=tng_fraction, tng_galaxy_dir=tng,
-        tng_redshift_mode=True, tng_properties_csv=csv_path,
-        tng_dwarf_density_arcmin2=dwarf_density)
-    return MultiBandSimulator(cat, cfg)
+        sersic_density_arcmin2=sersic_density,
+        tng_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+        tng_galaxy_dir=tng,
+        tng_redshift_mode=True, tng_properties_csv=csv_path)
+    return SkySimulator(cat, cfg)
 
 
 def test_generator_z_mode_field_galaxies(tmp_path):
     sim = _z_mode_sim(tmp_path)
     img, meta = sim.simulate_field(np.random.default_rng(1),
-                                   n_galaxies=5, n_stars=0, n_lenses=0,
-                                   n_big=0, n_dwarfs=0)
+                                   n_tng=5, n_sersic=0, n_stars=0, n_lenses=0)
     assert img.data.sum() > 0
     recs = meta["galaxies"]
     # Undetectably faint draws (predicted m_VIS > the skip cut) drop their
@@ -415,20 +414,16 @@ def test_generator_z_mode_field_galaxies(tmp_path):
         assert Config.TNG_Z_MIN <= r["z"] <= Config.TNG_Z_MAX
         assert r["rebin_factor"] >= 1
         assert np.isfinite(r["drift_eps"])
-        # z-mode replaces the COSMOS target-size draw entirely.
+        # z-mode replaces the log-uniform target-size draw entirely.
         assert math.isnan(r["target_re_arcsec"])
 
 
-def test_z_mode_has_no_big_galaxy_population(tmp_path):
-    # The realistic n(z) already yields big nearby galaxies — the separate
-    # fixed-density "big" population is legacy-only, even when explicitly
-    # requested via n_big.
+def test_z_mode_tng_only_no_sersic(tmp_path):
+    # When sersic_density_arcmin2=0, all galaxy records are TNG stamps.
     sim = _z_mode_sim(tmp_path)
     _, meta = sim.simulate_field(np.random.default_rng(2),
-                                 n_galaxies=2, n_stars=0, n_lenses=0,
-                                 n_big=4)
-    assert meta["n_big_galaxies"] == 0
-    assert not any(r["big"] for r in meta["galaxies"])
+                                 n_tng=4, n_sersic=0, n_stars=0, n_lenses=0)
+    assert all(r["render"] == "tng" for r in meta["galaxies"])
 
 
 def test_generator_z_mode_lens_mass_and_visibility(tmp_path):
@@ -436,13 +431,13 @@ def test_generator_z_mode_lens_mass_and_visibility(tmp_path):
     rng = np.random.default_rng(3)
     tng_lenses = []
     for _ in range(40):
-        _, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0,
-                                     n_lenses=1, n_big=0)
+        _, meta = sim.simulate_field(rng, n_tng=0, n_sersic=0, n_stars=0,
+                                     n_lenses=1)
         tng_lenses += [r for r in meta["lenses"]
                        if r["lens_light_render"] == "tng"]
         if len(tng_lenses) >= 5:
             break
-    assert tng_lenses, "no TNG-lit lens drawn in 40 fields at tng_fraction=1"
+    assert tng_lenses, "no TNG-lit lens drawn in 40 fields with tng loaded"
     kappa = sim.config.lens_theta_e_min_re_ratio
     for r in tng_lenses:
         # σ_v derived from the subhalo's stellar mass (FJ, with scatter).
@@ -496,15 +491,17 @@ def test_lens_require_showable_smoke(tmp_path):
     _write_fake_tng_galaxy(tng, "111")
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11)])
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=1.0, tng_fraction=1.0, tng_galaxy_dir=tng,
+        sersic_density_arcmin2=0.0,
+        tng_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+        lens_density_arcmin2=1.0, tng_galaxy_dir=tng,
         tng_properties_csv=csv_path, lens_require_showable=True)
-    sim = MultiBandSimulator(None, cfg)
+    sim = SkySimulator(None, cfg)
     rng = np.random.default_rng(4)
     for _ in range(30):
-        _, meta = sim.simulate_field(rng, n_galaxies=0, n_stars=0,
-                                     n_lenses=1, n_big=0, n_dwarfs=0)
+        _, meta = sim.simulate_field(rng, n_tng=0, n_sersic=0, n_stars=0,
+                                     n_lenses=1)
         if meta["lenses"]:
             assert _lens_is_showable(meta["lenses"][0])
             break
@@ -529,43 +526,25 @@ def test_poster_lens_showability_cut():
     assert LENS_MIN_THETA_E_VISIBLE_FRAC > 0 and LENS_MIN_SOURCE_VIS_E > 0
 
 
-def test_pure_tng_mode_forces_redshift_mode(tmp_path):
-    sim = _z_mode_sim(tmp_path)          # tng_fraction=1
-    assert sim.pure_tng
+def test_tng_only_has_no_lens_population(tmp_path):
+    # catalog=None → no catalog-backed lens priors.
+    sim = _z_mode_sim(tmp_path)
     assert sim.config.tng_redshift_mode
     assert sim.lens_population is None   # catalog-backed priors unused
 
 
-def test_pure_tng_dwarf_backfill(tmp_path):
-    # Optional (default off): with a catalog and the knob > 0, small COSMOS
-    # Sersic rows mix into the faint population alongside the rescaled TNGs.
-    sim = _z_mode_sim(tmp_path, dwarf_density=102.0)
-    _, meta = sim.simulate_field(np.random.default_rng(7), n_galaxies=2,
-                                 n_stars=0, n_lenses=0, n_big=0, n_dwarfs=6)
-    dwarfs = [g for g in meta["galaxies"] if g.get("dwarf")]
-    assert len(dwarfs) == 6 and meta["n_dwarf_galaxies"] == 6
-    assert all(g["render"] == "sersic" for g in dwarfs)
-    # TNG slots may drop to the faint skip; the survivors are TNG stamps.
-    assert sum(1 for g in meta["galaxies"] if g["render"] == "tng") <= 2
+def test_mixed_tng_sersic_in_z_mode(tmp_path):
+    # With sersic_density > 0 AND tng_density > 0, both populations appear.
+    sim = _z_mode_sim(tmp_path, sersic_density=5.0)
+    _, meta = sim.simulate_field(np.random.default_rng(7), n_tng=2, n_sersic=4,
+                                 n_stars=0, n_lenses=0)
+    renders = {g["render"] for g in meta["galaxies"]}
+    assert "tng" in renders
+    assert "sersic" in renders
 
 
-def test_pure_tng_dwarfs_need_a_catalog(tmp_path):
-    tng = str(tmp_path / "tng")
-    _write_fake_tng_galaxy(tng, "111")
-    cfg = MultiBandGeneratorConfig(
-        image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=0.0, tng_fraction=1.0, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(None, cfg)
-    # Explicit n_dwarfs is ignored without a catalog (nothing to sample).
-    _, meta = sim.simulate_field(np.random.default_rng(0), n_galaxies=1,
-                                 n_stars=0, n_lenses=0, n_dwarfs=5)
-    assert meta["n_dwarf_galaxies"] == 0
-
-
-def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):
-    # The atlas holds only massive galaxies; their sky density (~9/arcmin²)
-    # must drive the Poisson count, not the full COSMOS 111/arcmin² — else
-    # every field fills up with giants.
+def test_tng_density_drives_poisson_count(tmp_path):
+    # The explicit tng_density_arcmin2 drives the TNG Poisson rate.
     sim = _z_mode_sim(tmp_path)
     lams = []
 
@@ -578,32 +557,32 @@ def test_pure_tng_mode_uses_massive_galaxy_density(tmp_path):
 
     sim.simulate_field(SpyRng(np.random.default_rng(0)))
     area = sim._field_area_arcmin2()
-    # First Poisson draw is the galaxy count.
-    assert lams[0] == pytest.approx(
-        sim.config.tng_gal_density_arcmin2 * area)
-    # The physical density of the logM >= 8.5 population — below the full
-    # COSMOS 111/arcmin² (undetectable draws are additionally skipped).
-    assert sim.config.tng_gal_density_arcmin2 < Config.DEFAULT_GAL_DENSITY_ARCMIN2
+    # First Poisson draw is the Sersic count (= 0 × area = 0), second is TNG.
+    assert len(lams) >= 2
+    assert lams[0] == pytest.approx(0.0)  # sersic_density=0
+    assert lams[1] == pytest.approx(sim.config.tng_density_arcmin2 * area)
 
 
-def test_pure_tng_mode_works_without_catalog(tmp_path):
-    # tng_fraction=1 never renders anything Sersic, so COSMOS is optional:
+def test_tng_only_works_without_catalog(tmp_path):
+    # sersic_density=0 never renders anything Sersic, so COSMOS is not needed:
     # field galaxies, stars AND lens systems all come out of catalog=None.
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     _write_fake_tng_galaxy(tng, "222")
     csv_path = str(tmp_path / "tng_properties.csv")
     _write_props_csv(csv_path, [("111", 2.0e11), ("222", 1.0e11)])
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=1.0, tng_fraction=1.0, tng_galaxy_dir=tng,
+        sersic_density_arcmin2=0.0,
+        tng_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
+        lens_density_arcmin2=1.0, tng_galaxy_dir=tng,
         tng_properties_csv=csv_path)
-    sim = MultiBandSimulator(None, cfg)
+    sim = SkySimulator(None, cfg)
     rng = np.random.default_rng(5)
     lenses = []
     for _ in range(20):
-        img, meta = sim.simulate_field(rng, n_galaxies=3, n_stars=1,
-                                       n_lenses=1, n_big=0)
+        img, meta = sim.simulate_field(rng, n_tng=3, n_sersic=0, n_stars=1,
+                                       n_lenses=1)
         assert img.data.sum() > 0
         assert all(r["render"] == "tng" for r in meta["galaxies"])
         lenses += meta["lenses"]
@@ -621,16 +600,13 @@ def test_pure_tng_mode_works_without_catalog(tmp_path):
             * L["lens_apparent_re_arcsec"] - 1e-9)
 
 
-def test_catalog_none_requires_pure_tng(tmp_path):
+def test_catalog_none_requires_zero_sersic_density(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
-    with pytest.raises(ValueError, match="pure-TNG"):
-        MultiBandSimulator(None, MultiBandGeneratorConfig(
-            tng_fraction=0.5, tng_galaxy_dir=tng))
-    # No downloaded galaxies → not pure either, whatever the fraction.
-    with pytest.raises(ValueError, match="pure-TNG"):
-        MultiBandSimulator(None, MultiBandGeneratorConfig(
-            tng_fraction=1.0, tng_galaxy_dir=str(tmp_path / "empty")))
+    # Default sersic_density_arcmin2 > 0 → must provide a catalog.
+    with pytest.raises(ValueError, match="sersic_density_arcmin2"):
+        SkySimulator(None, SkySimulatorConfig(
+            tng_density_arcmin2=1.0, tng_galaxy_dir=tng))
 
 
 def test_sample_lens_geometry_priors():
@@ -649,22 +625,24 @@ def test_sample_lens_geometry_priors():
         assert r <= Config.LENS_SOURCE_OFFSET_FRAC * lp.theta_E_arcsec + 1e-12
 
 
-def test_z_mode_off_keeps_legacy_metadata(tmp_path):
-    # Fractional tng_fraction without tng_redshift_mode: the legacy
-    # COSMOS-target-size path is untouched (tng_fraction=1 would force
-    # pure/redshift mode instead).
+def test_tng_without_redshift_mode_uses_log_uniform_re(tmp_path):
+    # tng_redshift_mode=False: R_e is drawn log-uniformly from tng_re_arcsec_range;
+    # no z is assigned (nan) and target_re_arcsec is the sampled value.
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    cfg = MultiBandGeneratorConfig(
+    cfg = SkySimulatorConfig(
         image_size=64, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        lens_density_arcmin2=0.0, tng_fraction=0.9, tng_galaxy_dir=tng)
-    sim = MultiBandSimulator(cat, cfg)
-    assert not sim.pure_tng and not sim.config.tng_redshift_mode
+        lens_density_arcmin2=0.0, tng_density_arcmin2=1.0,
+        tng_redshift_mode=False, tng_galaxy_dir=tng)
+    sim = SkySimulator(cat, cfg)
+    assert not sim.config.tng_redshift_mode
     _, meta = sim.simulate_field(np.random.default_rng(0),
-                                 n_galaxies=8, n_stars=0, n_lenses=0)
+                                 n_tng=8, n_sersic=0, n_stars=0, n_lenses=0)
     tng_recs = [r for r in meta["galaxies"] if r["render"] == "tng"]
     assert tng_recs
+    lo, hi = cfg.tng_re_arcsec_range
     for r in tng_recs:
-        assert math.isnan(r["z"])                       # no redshift assigned
-        assert np.isfinite(r["target_re_arcsec"])       # legacy sizing intact
+        assert math.isnan(r["z"])                             # no redshift assigned
+        assert np.isfinite(r["target_re_arcsec"])             # log-uniform sizing
+        assert lo <= r["target_re_arcsec"] <= hi

@@ -52,7 +52,7 @@ def test_cli_class_constructs():
 def test_psf_inventory_helper_works():
     """The CLI's PSF inventory helper returns a dict over all known bands."""
     from euclid_polish.config import Config
-    from euclid_polish.euclid.psf_library import psf_inventory
+    from euclid_polish.psf.psf_library import psf_inventory
     inv = psf_inventory(psf_dir="/nonexistent_dir_for_test")
     assert set(inv.keys()) == {b.name for b in Config.BANDS}
     assert all(v is None for v in inv.values())
@@ -62,23 +62,23 @@ def test_multiband_pipeline_components_wired():
     """The three pipeline steps can be wired together end-to-end."""
     import numpy as np
     from euclid_polish.config import Config
-    from euclid_polish.sky.multiband_generator import (
-        MultiBandGeneratorConfig, MultiBandSimulator,
+    from euclid_polish.sky.sky_simulator import (
+        SkySimulatorConfig, SkySimulator,
     )
-    from euclid_polish.sky.multiband_forward import (
-        MultiBandForward, MultiBandForwardConfig,
+    from euclid_polish.sky.observation_simulator import (
+        ObservationSimulator, ObservationSimulatorConfig,
     )
-    from euclid_polish.euclid.psf_library import load_all_band_psfs
+    from euclid_polish.psf.psf_library import load_all_band_psfs
     from tests._tiny_catalog import TinyCosmosCatalog
 
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = MultiBandSimulator(cat, MultiBandGeneratorConfig(image_size=96))
+    sim = SkySimulator(cat, SkySimulatorConfig(image_size=96))
     psfs = load_all_band_psfs(psf_dir="/nonexistent_for_test")
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=False))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=False))
 
     rng = np.random.default_rng(0)
-    hr, _ = sim.simulate_field(rng, n_galaxies=3, n_stars=1, n_lenses=0)
+    hr, _ = sim.simulate_field(rng, n_sersic=3, n_stars=1, n_lenses=0)
     lr, hr_target = fwd.process(hr, rng=rng)
 
     assert lr.shape[-1] == Config.NUM_LR_CHANNELS

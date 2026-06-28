@@ -14,16 +14,16 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.psf_library import load_all_band_psfs
+from euclid_polish.psf.psf_library import load_all_band_psfs
 from tests._tiny_catalog import TinyCosmosCatalog
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.multiband_generator import (
-    MultiBandGeneratorConfig, MultiBandSimulator,
+from euclid_polish.sky.sky_simulator import (
+    SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.tfrecord import (
-    tfrecord_path, write_multiband_skyimages,
+from euclid_polish.image.tfio import (
+    tfrecord_path, write_images,
 )
 from euclid_polish.training.data_multiband import MultiBandEuclidDataset
 from euclid_polish.training.models.wdsr import wdsr
@@ -33,13 +33,13 @@ def test_full_pipeline_round_trip(tmp_path):
     """Phase 0–7 wired together: generate → forward-model → load → train one step."""
     # 1. Generate clean HR fields (multi-band).
     cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = MultiBandSimulator(
-        cat, MultiBandGeneratorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+    sim = SkySimulator(
+        cat, SkySimulatorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE),
     )
     clean_imgs = []
     for i in range(3):
         rng = np.random.default_rng(i)
-        sky, _ = sim.simulate_field(rng, n_galaxies=2, n_stars=1, n_lenses=0)
+        sky, _ = sim.simulate_field(rng, n_sersic=2, n_stars=1, n_lenses=0)
         sky.index = i
         clean_imgs.append(sky)
 
@@ -47,8 +47,8 @@ def test_full_pipeline_round_trip(tmp_path):
 
     # 2. Run forward model (HR 4-ch → LR 4-ch + HR 4-ch clean target).
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     rng = np.random.default_rng(0)
     lr_imgs, hr_imgs = [], []
     for sky in clean_imgs:
@@ -58,8 +58,8 @@ def test_full_pipeline_round_trip(tmp_path):
 
     # 3. Write v2 TFRecords.
     for subset in ("train", "validate"):
-        write_multiband_skyimages(lr_imgs, f"dirty_{subset}", records_dir=records_dir)
-        write_multiband_skyimages(hr_imgs, f"clean_{subset}", records_dir=records_dir)
+        write_images(lr_imgs, f"dirty_{subset}", records_dir=records_dir)
+        write_images(hr_imgs, f"clean_{subset}", records_dir=records_dir)
 
     # 4. Build the multi-band data loader.
     ds = MultiBandEuclidDataset(

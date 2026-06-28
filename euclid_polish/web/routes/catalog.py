@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from euclid_polish.config import Config
-from euclid_polish.euclid import auth
+from euclid_polish.web import euclid_session
 from flask import render_template
 from euclid_polish.web.helpers.status import _catalog_status, _cutout_layout_status
 
@@ -16,7 +16,7 @@ def register(app):
             "catalog.html",
             status=_catalog_status(),
             bands=Config.BANDS,
-            authenticated=auth.is_authenticated(),
-            current_user=auth.current_user(),
+            authenticated=euclid_session.is_authenticated(),
+            current_user=euclid_session.current_user(),
             cutout_layout=_cutout_layout_status(),
         )

@@ -21,8 +21,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.cutout_integrity import validate_all_cutouts
+from euclid_polish.catalog.cutout_integrity import validate_all_cutouts
 from euclid_polish.observability.reporter import Reporter
 
 
@@ -35,14 +34,13 @@ def main() -> int:
     reporter = Reporter.from_env()
     reporter.set_stage("validating cutouts (integrity)")
 
-    cat = StarCatalog(args.output_dir)
-    if not cat.exists():
-        reporter.error(f"no catalog at {cat.catalog_path}")
-        print(f"✗ no catalog at {cat.catalog_path}")
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    if not os.path.exists(catalog_path):
+        reporter.error(f"no catalog at {catalog_path}")
+        print(f"✗ no catalog at {catalog_path}")
         return 1
 
-    catalog = cat.load()
-    summary = validate_all_cutouts(cat, catalog, reporter=reporter)
+    summary = validate_all_cutouts(args.output_dir, reporter=reporter)
     print(f"✓ checked {summary['checked']} cutouts; "
           f"{summary['unopenable']} unopenable; "
           f"{summary['valid_all_bands']} stars valid in all "

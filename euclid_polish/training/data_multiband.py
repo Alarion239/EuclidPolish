@@ -32,7 +32,7 @@ import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import parse_record_graph_v2, tfrecord_path
+from euclid_polish.image.tfio import parse_example, tfrecord_path
 
 import os as _os
 
@@ -295,11 +295,11 @@ class MultiBandEuclidDataset:
             # Always parse the 4 stored channels and stretch with the
             # per-band (length-4) scale, then slice VIS (channel 0) when
             # vis_only so VIS keeps its own asinh knee.
-            lr = asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
+            lr = asinh_stretch_lr(parse_example(raw, n_lr))
             return lr[..., :1] if vis_only else lr
 
         def _parse_hr(raw):
-            hr = asinh_stretch_hr(parse_record_graph_v2(raw, n_hr),
+            hr = asinh_stretch_hr(parse_example(raw, n_hr),
                                   num_channels=n_hr)
             if vis_only:
                 # VIS-only model: 1-channel target (channel 0 = VIS).
@@ -483,7 +483,7 @@ def lr_only_dataset(dirty_file: str, *, batch_size: int) -> tf.data.Dataset:
     n_lr = Config.NUM_LR_CHANNELS
 
     def _parse_lr(raw):
-        return asinh_stretch_lr(parse_record_graph_v2(raw, n_lr))
+        return asinh_stretch_lr(parse_example(raw, n_lr))
 
     ds = tf.data.TFRecordDataset(dirty_file).map(
         _parse_lr, num_parallel_calls=AUTOTUNE,

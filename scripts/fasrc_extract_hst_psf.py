@@ -4,7 +4,7 @@
 Scans each HLSP tile for bright unsaturated point sources, then runs
 :class:`photutils.psf.EPSFBuilder` to construct a high-S/N empirical
 PSF. Mirrors the Euclid VIS ePSF flow in
-:mod:`euclid_polish.euclid.psf_extractor`.
+:mod:`euclid_polish.psf.psf_extractor`.
 
 Output: ``$DATA_DIR/hst_psf/F814W.fits`` — a single FITS file with the
 oversampled empirical PSF + provenance headers (n_stars used, tile

@@ -13,7 +13,7 @@ loss to do the right thing:
      gradient of the forward-op output w.r.t. its input — without this,
      the round-trip loss couldn't backprop into M.
   4. **Numerical parity** with the numpy synthetic forward path
-     (``MultiBandForward._process_one_band`` for VIS, noise off). Same
+     (``ObservationSimulator._process_one_band`` for VIS, noise off). Same
      PSF, same input → same output to within float32 round-off across
      the bulk of the array.
 
@@ -156,7 +156,7 @@ class TestGradientFlow:
 class TestNumpyParity:
     """Pin the TF op against the existing scipy-based forward.
 
-    The TF op MUST agree with ``MultiBandForward._process_one_band`` (VIS,
+    The TF op MUST agree with ``ObservationSimulator._process_one_band`` (VIS,
     noise off) so the round-trip loss isn't training the model to undo
     a *different* Conv from the one applied at synthetic generation
     time. Boundary pixels diverge by O(1) ULP because of how float32
@@ -176,7 +176,7 @@ class TestNumpyParity:
         # TF path.
         lr_tf = op(tf.constant(hr_np[np.newaxis, :, :, np.newaxis])).numpy()[0, :, :, 0]
 
-        # Numpy reference (matches MultiBandForward._process_one_band:223-228
+        # Numpy reference (matches ObservationSimulator._process_one_band:223-228
         # for VIS, noise off — fftconvolve mode='same' + sum-rebin by 2).
         conv = scipy_signal.fftconvolve(hr_np, psf, mode="same").astype(np.float32)
         h_t, w_t = (128 // 2) * 2, (128 // 2) * 2

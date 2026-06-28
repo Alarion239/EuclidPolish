@@ -1,0 +1,123 @@
+"""The :class:`Model` operator — the public face of a trained checkpoint.
+
+Wraps :func:`~euclid_polish.training.inference.load_model_from_checkpoint`
+and :func:`~euclid_polish.training.inference.reconstruct`. ``upsample`` consumes
+and produces plain :class:`~euclid_polish.image.Image` objects (the leaf data
+atom), so the image layer never needs to import this module.
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+import numpy as np
+
+from euclid_polish.config import Config
+from euclid_polish.eval import catalog_runner
+from euclid_polish.eval import grouped_runner
+from euclid_polish.image import Image, Role
+from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
+from euclid_polish.provenance.defaults import mint_id
+from euclid_polish.provenance.ids import ProvId
+from euclid_polish.provenance.records import Stamp
+from euclid_polish.training.inference import (
+    load_model_from_checkpoint as _default_load,
+    reconstruct as _default_reconstruct,
+)
+
+_HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
+
+
+class Model:
+    """The public face of a trained WDSR checkpoint.
+
+    Parameters
+    ----------
+    checkpoint_dir : str
+        Path to the TF checkpoint directory.
+    scale : int
+        Super-resolution upscale factor (default 2).
+    num_res_blocks : int
+        Number of residual blocks (default ``Config.DEFAULT_NUM_RES_BLOCKS``).
+    _load_fn, _reconstruct_fn : callable, optional
+        Test injection points replacing ``load_model_from_checkpoint`` /
+        ``reconstruct``.
+    """
+
+    def __init__(
+        self,
+        checkpoint_dir: str,
+        *,
+        scale: int = 2,
+        num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
+        _load_fn: Optional[Callable] = None,
+        _reconstruct_fn: Optional[Callable] = None,
+    ) -> None:
+        load_fn = _load_fn if _load_fn is not None else _default_load
+        self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
+        self._reconstruct_fn: Callable = (
+            _reconstruct_fn if _reconstruct_fn is not None else _default_reconstruct
+        )
+        self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
+
+    def upsample_array(self, arr: np.ndarray) -> np.ndarray:
+        """Super-resolve a bare numpy array (raw electrons); return the SR array.
+
+        Input is 2D ``(H, W)`` or 3D ``(H, W, C)``. Output is
+        ``(H·scale, W·scale)`` (single-output) or ``(H·scale, W·scale, C)``
+        (4-band model).
+        """
+        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, arr)
+        return np.asarray(sr_data, dtype=np.float32)
+
+    def upsample(self, lr: Image, *, store=None) -> Image:
+        """Super-resolve an LR :class:`Image` into an SR Image (role ``'sr'``).
+
+            sr = model.upsample(lr)
+
+        The SR image's stamp parents are ``(self.id, lr's id)`` (``self.id`` is
+        omitted when ``None`` — a legacy checkpoint with no provenance sidecar;
+        ``lr``'s id comes from its embedded stamp when present). The new id is
+        minted via ``store`` (or ``default_store()``), guarded so a store
+        failure degrades to an unstamped-but-correct artifact.
+        """
+        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.data)
+        sr_data = np.asarray(sr_data, dtype=np.float32)
+        if sr_data.ndim == 3 and sr_data.shape[-1] == len(lr.band_names):
+            bands = lr.band_names
+        else:
+            bands = ("VIS",)
+        lr_id = lr.stamp.id if lr.stamp is not None else None
+        parents = tuple(p for p in (self.id, lr_id) if p is not None)
+        return Image(
+            data=sr_data, pixel_scale_arcsec=_HR_SCALE, band_names=bands,
+            is_clean=True, role=Role.SR, subset=lr.subset,
+            stamp=Stamp(id=mint_id(store), parents=parents, schema_version=3,
+                        subset=lr.subset))
+
+    def eval_catalog(self, *, out_dir, **kwargs):
+        """Evaluate this model on a lens catalog.
+
+        Thin wrapper over
+        :func:`~euclid_polish.eval.catalog_runner.run_catalog_eval`, passing
+        this model's loaded TF graph so it is not re-loaded from disk. All
+        other keyword args (``catalog_path``, ``checkpoint``, ``cutout_size``,
+        ``grade``, ``max_n``, ``render``, ``on_progress``, ``log`` …) pass
+        straight through. Returns the run summary dict.
+        """
+        return catalog_runner.run_catalog_eval(
+            out_dir=out_dir, model=self._tf_model, **kwargs)
+
+    def eval_grouped(self, out_dir, n, **kwargs):
+        """Run grouped evaluation (lens grades A/B/C + real galaxies +
+        synthetic) with this model.
+
+        Thin wrapper over
+        :func:`~euclid_polish.eval.grouped_runner.run_grouped_analysis`,
+        passing this model's loaded TF graph so it is not re-loaded. All
+        other kwargs (``catalog_path``, ``checkpoint``, ``include_synthetic``,
+        ``include_galaxies``, ``seed``, ``on_progress``, ``log`` …) pass
+        through. Returns the run summary dict.
+        """
+        return grouped_runner.run_grouped_analysis(
+            out_dir, n, model=self._tf_model, **kwargs)

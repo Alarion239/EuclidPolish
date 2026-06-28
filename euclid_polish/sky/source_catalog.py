@@ -1,6 +1,6 @@
 """Per-source sidecar catalog for synthetic fields.
 
-``MultiBandSimulator.simulate_field`` knows every galaxy/lens it places, but the
+``SkySimulator.simulate_field`` knows every galaxy/lens it places, but the
 TFRecord schema stores only pixels. This module persists that source list as a
 CSV next to the records (``sources_<subset>.csv``) so the evaluation can crop
 postage stamps centered on a known lens or galaxy. One row per galaxy and per
@@ -104,7 +104,7 @@ def concat_source_csvs(part_paths: List[str], out_path: str) -> None:
 
     Atomic: build a sibling temp file then ``os.replace`` it into place, so a
     crash mid-merge never leaves a truncated ``sources_<subset>.csv`` that a
-    resumed run would mistake for complete (see the resume design doc)."""
+    resumed run would mistake for complete."""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     tmp_path = out_path + ".tmp"
     with open(tmp_path, "w", newline="") as out:

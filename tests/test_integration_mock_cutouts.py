@@ -5,11 +5,11 @@ NISP bands at their native pixel scales, then push them through the
 full downstream chain:
 
     mock cutouts on disk
-        → StarCatalog flags per (band, size)
+        → CatalogObject flags per (band, size)
         → PSFExtractor builds the ePSF (per-band oversampling)
         → ePSF saved at 0.05"/pix
         → load_band_psf reads the FITS back
-        → MultiBandForward convolves a synthetic clean HR field
+        → ObservationSimulator convolves a synthetic clean HR field
 
 If any link in this chain breaks (file layout, catalog schema, PSF
 oversampling, scale resampling, kernel sizing), one of these tests
@@ -31,19 +31,19 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.downloader import DownloadConfig
-from euclid_polish.euclid.psf_extractor import (
+from euclid_polish.catalog.catalog_object import CatalogObject, summarize
+from euclid_polish.catalog.downloader import DownloadConfig
+from euclid_polish.psf.psf_extractor import (
     PSFExtractionConfig, PSFExtractor,
 )
-from euclid_polish.euclid.psf_library import (
+from euclid_polish.psf.psf_library import (
     load_all_band_psfs, load_band_psf, psf_path_for_band,
 )
-from euclid_polish.euclid.types import PSF
-from euclid_polish.sky.multiband_forward import (
-    MultiBandForward, MultiBandForwardConfig,
+from euclid_polish.psf import PSF
+from euclid_polish.sky.observation_simulator import (
+    ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image import Image
 
 
 # ---------------------------------------------------------------------------
@@ -201,31 +201,31 @@ def test_per_band_native_sizes_match_angular_field(stars_root, four_band_cutouts
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: StarCatalog tracks per-band, per-size flags from mock downloads
+# Stage 2: CatalogObject tracks per-band, per-size flags from mock downloads
 # ---------------------------------------------------------------------------
 
 def test_catalog_records_per_band_validity(stars_root, four_band_cutouts):
-    """Mark each band's cutouts valid via StarCatalog and read them back."""
+    """Mark each band's cutouts valid via CatalogObject and read them back."""
     arcsec_side = CUTOUT_SIZE_VIS * Config.BAND_VIS.pixel_scale_lr_arcsec
-    catalog = StarCatalog(str(stars_root))
-    stars = [{"id": i, "ra": 150.0 + 0.001 * i, "dec": 2.5 + 0.001 * i}
-             for i in range(8)]
+    path = os.path.join(str(stars_root), Config.CATALOG_FILE)
+    objects = [CatalogObject(ra=150.0 + 0.001 * i, dec=2.5 + 0.001 * i, id=i)
+               for i in range(8)]
 
     for band in Config.BANDS:
         size = band.cutout_size_for_arcsec(arcsec_side)
-        for s in stars:
-            StarCatalog.set_valid(s, size, band=band.name)
+        for o in objects:
+            o.set_valid(size, band=band.name)
 
-    catalog.save({"stars": stars, "next_id": 8})
-    loaded = catalog.load()
-    for s in loaded["stars"]:
+    CatalogObject.write(objects, path)
+    loaded = CatalogObject.read(path)
+    for o in loaded:
         for band in Config.BANDS:
             size = band.cutout_size_for_arcsec(arcsec_side)
-            assert StarCatalog.is_valid(s, size, band=band.name), (
-                f"star {s['id']} not valid for {band.name} at size={size}"
+            assert o.is_valid(size, band=band.name), (
+                f"star {o.id} not valid for {band.name} at size={size}"
             )
 
-    summary = catalog.get_summary()
+    summary = summarize(loaded)
     for band in Config.BANDS:
         assert summary["valid_by_band"][band.name] == 8
 
@@ -335,7 +335,7 @@ def test_load_all_band_psfs_after_extraction(extracted_psfs):
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: MultiBandForward consumes the per-band PSFs end-to-end
+# Stage 5: ObservationSimulator consumes the per-band PSFs end-to-end
 # ---------------------------------------------------------------------------
 
 def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
@@ -344,16 +344,16 @@ def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(extracted_psfs),
     )
-    fwd = MultiBandForward(
+    fwd = ObservationSimulator(
         psfs_by_band=psfs,
-        config=MultiBandForwardConfig(add_noise=False),
+        config=ObservationSimulatorConfig(add_noise=False),
     )
 
     # Tiny synthetic HR scene: a single 1e6-electron source per band at centre.
     H = W = 96
     data = np.zeros((H, W, 4), dtype=np.float32)
     data[H // 2, W // 2, :] = 1.0e6
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
     )
@@ -376,10 +376,10 @@ def test_forward_model_lr_grid_is_vis_aligned(extracted_psfs):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(extracted_psfs),
     )
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=True))
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=True))
     H = W = 96
-    hr = MultiBandSkyImage(
+    hr = Image(
         data=np.random.default_rng(0).normal(size=(H, W, 4)).astype(np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
@@ -400,9 +400,9 @@ def test_forward_model_runs_with_only_gaussian_fallbacks(tmp_path):
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         psf_dir=str(tmp_path),
     )
-    fwd = MultiBandForward(psfs_by_band=psfs,
-                           config=MultiBandForwardConfig(add_noise=False))
-    hr = MultiBandSkyImage(
+    fwd = ObservationSimulator(psfs_by_band=psfs,
+                           config=ObservationSimulatorConfig(add_noise=False))
+    hr = Image(
         data=np.zeros((96, 96, 4), dtype=np.float32),
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,

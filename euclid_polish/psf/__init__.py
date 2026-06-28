@@ -18,9 +18,6 @@ disk into a kernel ready to convolve a scene with:
 Naming convention: file uses ``psf``/``ePSF`` interchangeably. The
 class is :class:`PSF` (covers both empirical ePSFs from photutils
 and synthetic Gaussian PSFs).
-
-Back-compat shim: ``euclid_polish.euclid.types.PSF`` re-exports
-:class:`PSF` from this package so legacy imports keep working.
 """
 
 from euclid_polish.psf.core import (

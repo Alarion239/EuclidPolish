@@ -139,7 +139,7 @@ def test_generation_run_round_trip():
     )
     run = GenerationRun(
         id=ProvId("7f3a9c21"),
-        config=ConfigSnapshot("MultiBandGeneratorConfig", {"n_galaxies": 12}),
+        config=ConfigSnapshot("SkySimulatorConfig", {"n_galaxies": 12}),
         outputs=(ProvId("4b1e7a90"),),
         status="ok",
         created_at="2026-06-25T00:00:00+00:00",

@@ -1,0 +1,40 @@
+# Project tooling config. (No build-system/project table — the package is run
+# in-place from a conda env, not pip-installed.)
+
+[tool.vulture]
+# Dead-code scan. Confidence stays at the default 60 so genuinely-unused
+# functions/methods (reported at 60%) still surface; the false positives that
+# vulture can't see through — decorator-registered Flask routes, pytest
+# fixtures, and framework-invoked callbacks — are suppressed below instead.
+paths = ["euclid_polish", "scripts", "tests"]
+min_confidence = 60
+ignore_decorators = [
+    # Flask route handlers + lifecycle hooks (registered, not called by name).
+    "@app.route",
+    "@*.route",
+    "@*.errorhandler",
+    "@*.before_request",
+    "@*.after_request",
+    "@*.context_processor",
+    "@*.teardown_appcontext",
+    # pytest fixtures (injected by name).
+    "@pytest.fixture",
+    "@_pytest.fixture",
+]
+ignore_names = [
+    # Structural members invoked by a framework / the language, not by name.
+    "_missing_",          # Enum lookup hook
+    "PROV_FORMAT",        # Persistable protocol attribute
+    "row_factory",        # sqlite3.Connection attribute
+    "CLEAN", "CSV",       # Role / Format enum members (kept for completeness)
+    # PyTorch Lightning / Keras module hooks.
+    "on_train_epoch_end", "predict_step", "training_step", "validation_step",
+    "configure_optimizers", "tqdm_hook",
+    # JobRecord dataclass fields (written via record_post_mortem / serialised).
+    "req_cpus", "req_gpus", "req_memory", "req_time_limit", "exit_code",
+    "alloc_memory_mb", "gpu_util_mean", "gpu_util_peak", "cpu_util_mean",
+    "cpu_util_peak",
+    # pytest fixture params injected by name (used via side effects, not body).
+    "experimental_lanes_on", "no_env", "cfg_path", "four_band_cutouts",
+    "self_inner", "pl_module", "batch_idx", "dataloader_idx", "crval", "ctype",
+]

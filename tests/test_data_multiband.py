@@ -9,8 +9,8 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.sky.tfrecord import write_multiband_skyimages
-from euclid_polish.sky.types import MultiBandSkyImage
+from euclid_polish.image.tfio import write_images
+from euclid_polish.image import Image
 from euclid_polish.training.data_multiband import (
     MultiBandEuclidDataset,
     asinh_stretch_hr,
@@ -60,7 +60,7 @@ def _write_test_records(tmp_path) -> str:
     rng = np.random.default_rng(0)
     # Two records each: HR at 0.05" (64x64, 4ch), LR at 0.10" (32x32, 4ch).
     hr_imgs = [
-        MultiBandSkyImage(
+        Image(
             data=(rng.normal(size=(64, 64, 4)) * 100.0).astype(np.float32),
             pixel_scale_arcsec=0.05,
             band_names=Config.HR_TARGET_BAND_NAMES,
@@ -69,7 +69,7 @@ def _write_test_records(tmp_path) -> str:
         for _ in range(2)
     ]
     lr_imgs = [
-        MultiBandSkyImage(
+        Image(
             data=(rng.normal(size=(32, 32, 4)) * 100.0).astype(np.float32),
             pixel_scale_arcsec=0.10,
             band_names=Config.LR_INPUT_BAND_NAMES,
@@ -77,8 +77,8 @@ def _write_test_records(tmp_path) -> str:
         )
         for _ in range(2)
     ]
-    write_multiband_skyimages(hr_imgs, "clean_train", records_dir=str(tmp_path))
-    write_multiband_skyimages(lr_imgs, "dirty_train", records_dir=str(tmp_path))
+    write_images(hr_imgs, "clean_train", records_dir=str(tmp_path))
+    write_images(lr_imgs, "dirty_train", records_dir=str(tmp_path))
     return str(tmp_path)
 
 
@@ -140,13 +140,13 @@ def _write_anchor_records(tmp_path, subset: str = "train") -> str:
         lr = (rng.normal(size=(12, 12, 4)) * 100.0).astype(np.float32)
         hr = np.zeros((24, 24, 1), dtype=np.float32)
         hr[12, 12, 0] = 5.0e5                      # one star pixel at the centre
-        lr_imgs.append(MultiBandSkyImage(
+        lr_imgs.append(Image(
             data=lr, pixel_scale_arcsec=0.10,
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False))
-        hr_imgs.append(MultiBandSkyImage(
+        hr_imgs.append(Image(
             data=hr, pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True))
-    write_multiband_skyimages(lr_imgs, f"dirty_anchor_{subset}", records_dir=str(tmp_path))
-    write_multiband_skyimages(hr_imgs, f"hr_anchor_{subset}", records_dir=str(tmp_path))
+    write_images(lr_imgs, f"dirty_anchor_{subset}", records_dir=str(tmp_path))
+    write_images(hr_imgs, f"hr_anchor_{subset}", records_dir=str(tmp_path))
     return str(tmp_path)
 
 
@@ -155,20 +155,20 @@ def _write_hst_records(tmp_path, subset: str = "train") -> str:
     observed HST image — the experimental HST lane's record shape)."""
     rng = np.random.default_rng(3)
     hr_imgs = [
-        MultiBandSkyImage(
+        Image(
             data=(rng.normal(size=(64, 64, 1)) * 100.0).astype(np.float32),
             pixel_scale_arcsec=0.05, band_names=("VIS",), is_clean=True)
         for _ in range(2)
     ]
     lr_imgs = [
-        MultiBandSkyImage(
+        Image(
             data=(rng.normal(size=(32, 32, 4)) * 100.0).astype(np.float32),
             pixel_scale_arcsec=0.10,
             band_names=Config.LR_INPUT_BAND_NAMES, is_clean=False)
         for _ in range(2)
     ]
-    write_multiband_skyimages(hr_imgs, f"hr_{subset}", records_dir=str(tmp_path))
-    write_multiband_skyimages(lr_imgs, f"dirty_{subset}", records_dir=str(tmp_path))
+    write_images(hr_imgs, f"hr_{subset}", records_dir=str(tmp_path))
+    write_images(lr_imgs, f"dirty_{subset}", records_dir=str(tmp_path))
     return str(tmp_path)
 
 

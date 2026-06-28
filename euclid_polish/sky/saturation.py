@@ -1,10 +1,10 @@
 """Bright-star detector saturation for the synthetic LR (dirty) image.
 
-Real Euclid frames show *saturated* cores for bright stars: once a star's peak
-detector pixel exceeds the well depth, the charge clips (and blooms into a small
-blocky region). This module bakes that into the forward-modelled LR image.
+Bright stars in Euclid frames have *saturated* cores: once a star's peak
+detector pixel exceeds the well depth, the charge clips and blooms into a small
+blocky region. This module applies that to the forward-modelled LR image.
 
-Physics (derived from the project zeropoints, not hand-tuned):
+Physics (derived from the project zeropoints):
 
 * A star of VIS magnitude ``m`` deposits ``E = 10^(-0.4·(m + band_offset −
   ZP_e))`` electrons over the stack in a given band (``ZP_e`` = that band's
@@ -13,23 +13,23 @@ Physics (derived from the project zeropoints, not hand-tuned):
   Gaussian of FWHM ``STAR_SATURATION_FWHM_ARCSEC`` at the band's native pixel
   ``p`` (VIS 0.10″, NISP 0.30″).
 * The per-band **well depth** ``S`` is calibrated so the peak reaches ``S`` at
-  the observed 50%-saturation magnitudes (``STAR_SATURATION_CALIB_MAG``: VIS≈14,
-  NISP≈17). This recovers a realistic VIS well (~197k e⁻, CCD full well) and
-  effective stack-referred NISP clip levels of ~4.6–9.5k e⁻ (these scale with
-  the 4×87.2 s MACC integration; the physical H2RG well is much larger).
+  the 50%-saturation magnitudes (``STAR_SATURATION_CALIB_MAG``: VIS≈14,
+  NISP≈17). This gives a VIS well of ~197k e⁻ (CCD full well) and effective
+  stack-referred NISP clip levels of ~4.6–9.5k e⁻ (scaling with the
+  4×87.2 s MACC integration; the physical H2RG well is larger).
 * A star **saturates** a band when ``Poisson(peak) ≥ S``. A per-star log-normal
   jitter on ``peak`` (sub-pixel position + PSF variation,
-  ``STAR_SATURATION_JITTER_DEX``) turns the otherwise razor-sharp onset into a
-  smooth ~1-mag transition, so ``P(saturate) = ½`` at the calibration magnitude
-  is a genuine probability. **Drawn independently per band.**
+  ``STAR_SATURATION_JITTER_DEX``) spreads the onset into a smooth ~1-mag
+  transition, so ``P(saturate) = ½`` at the calibration magnitude is a genuine
+  probability. **Drawn independently per band.**
 
 Shape: the saturated region is the union of 1–3 overlapping rectangles (sides
 ``STAR_SATURATION_RECT_{MIN,MAX}_PX`` px), the first containing the peak pixel
-and the rest offset uniformly but overlapping — clipped to ``S`` (flat-topped
-core + blocky bloom), modelling the unpredictable saturation footprint.
+and the rest offset uniformly but overlapping, clipped to ``S`` (flat-topped
+core + blocky bloom).
 
-The value-preserving NISP→VIS-LR resample means the native well depth ``S`` is
-the right clip level on the shared 0.10″ LR grid, so saturation is applied there.
+The value-preserving NISP→VIS-LR resample makes the native well depth ``S`` the
+correct clip level on the shared 0.10″ LR grid, where saturation is applied.
 """
 
 from __future__ import annotations

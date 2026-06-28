@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from astropy.io import fits
 from euclid_polish.config import Config
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.psf_library import psf_inventory
-from euclid_polish.euclid.types import PSF
-from euclid_polish.sky.tfrecord import tfrecord_path
+from euclid_polish.catalog.catalog_object import CatalogObject, summarize
+from euclid_polish.psf.psf_library import psf_inventory
+from euclid_polish.psf import PSF
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
@@ -29,8 +29,8 @@ def _fasrc_catalog_remote_path() -> str:
 
 def _fasrc_catalog_dir(force: bool = True) -> Optional[str]:
     """Pull the FASRC ``stars.csv`` into the local cache; return the dir
-    holding it (for ``StarCatalog(<dir>)``), or None if the remote catalog
-    isn't there / can't be fetched.
+    holding it (the ``<dir>/stars.csv`` the catalog reads), or None if the
+    remote catalog isn't there / can't be fetched.
 
     The brightest-N query runs on the FASRC login node and writes the
     catalog to netscratch ``$DATA_DIR/euclid_stars``. The laptop UI must
@@ -51,32 +51,25 @@ def _valid_4band_stars(force: bool = False):
     cat_dir = _fasrc_catalog_dir(force=force)
     if cat_dir is None:
         return None, []
-    cat = StarCatalog(cat_dir)
-    if not cat.exists():
+    objects = CatalogObject.read(os.path.join(cat_dir, Config.CATALOG_FILE))
+    if not objects:
         return None, []
     band_names = [b.name for b in Config.BANDS]
     by_size: Dict[int, List[int]] = {}
-    for s in cat.load().get("stars", []):
-        valid = s.get("valid", {})
-        if not isinstance(valid, dict):
-            continue
+    for o in objects:
         # Sizes valid in EVERY band = intersection of each band's valid sizes;
         # any band with no valid size disqualifies the star.
         per_band: List[set] = []
         for bn in band_names:
-            sizes = {int(k) for k, v in (valid.get(bn) or {}).items() if v}
+            sizes = set(o.valid_sizes(bn))
             if not sizes:
                 per_band = None
                 break
             per_band.append(sizes)
-        if per_band is None:
-            continue
-        try:
-            sid = int(s["id"])
-        except (KeyError, TypeError, ValueError):
+        if per_band is None or o.id is None:
             continue
         for sz in set.intersection(*per_band):
-            by_size.setdefault(sz, []).append(sid)
+            by_size.setdefault(sz, []).append(int(o.id))
     if not by_size:
         return None, []
     best = max(by_size, key=lambda sz: len(by_size[sz]))
@@ -111,10 +104,10 @@ def _catalog_status() -> Dict[str, Any]:
     cat_dir = _fasrc_catalog_dir()
     if cat_dir is None:
         return {"present": False}
-    cat = StarCatalog(cat_dir)
-    if not cat.exists():
+    path = os.path.join(cat_dir, Config.CATALOG_FILE)
+    if not os.path.exists(path):
         return {"present": False}
-    summary = cat.get_summary()
+    summary = summarize(CatalogObject.read(path))
     # Show the *remote* path so the page makes clear this is the FASRC
     # (netscratch) catalog, not the local cache copy we render from.
     return {"present": True, "summary": summary,

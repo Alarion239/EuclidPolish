@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Download cutouts for every Euclid band sharing one angular field size.
 
-Multi-band wrapper around :class:`EuclidCutoutDownloader`. Picks one
+Multi-band wrapper around :meth:`EuclidCatalog.download_cutouts`. Picks one
 ``cutout_size_vis_pixels`` value, converts it to each band's native
 pixel count via :meth:`BandConfig.cutout_size_for_arcsec`, and runs the
 downloader once per band. Each band's catalog flags are tracked
@@ -32,13 +32,32 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.euclid import auth
-from euclid_polish.euclid.catalog import StarCatalog
-from euclid_polish.euclid.cutout_integrity import validate_all_cutouts
-from euclid_polish.euclid.downloader import (
-    DownloadConfig, EuclidCutoutDownloader,
-)
+from euclid_polish.catalog.client import EuclidCatalog, EuclidAuthError
+from euclid_polish.catalog.catalog_object import CatalogObject
+from euclid_polish.catalog.cutout_integrity import validate_all_cutouts
+from euclid_polish.catalog.downloader import DownloadConfig
 from euclid_polish.observability.reporter import Reporter
+
+
+def _ensure_euclid_env() -> None:
+    """Populate EUCLID_USER/EUCLID_PASSWORD from ~/.euclid_credentials if unset.
+
+    The WebUI writes that two-line file on FASRC; :class:`EuclidCatalog` reads
+    only the environment, so we bridge the file into env at the script boundary.
+    """
+    if os.environ.get("EUCLID_USER") and os.environ.get("EUCLID_PASSWORD"):
+        return
+    path = os.path.expanduser(Config.DEFAULT_CREDENTIALS_FILE)
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path) as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return
+    if len(lines) >= 2:
+        os.environ.setdefault("EUCLID_USER", lines[0])
+        os.environ.setdefault("EUCLID_PASSWORD", lines[1])
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,14 +84,14 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
-                       progress_cb, show_progress, retry_failed=False):
-    """Download every cutout for one band. Returns the downloader result dict.
+def _download_one_band(band_name, *, eclient, output_dir, vis_pixels, workers,
+                       arcsec, progress_cb, show_progress, retry_failed=False):
+    """Download every cutout for one band. Returns the result dict.
 
-    Self-contained (own ``DownloadConfig`` + ``EuclidCutoutDownloader``) so it is
-    safe to run several of these concurrently — each band writes to its own
+    Self-contained (loads its own ``CatalogObject`` list + ``DownloadConfig``) so
+    it is safe to run several of these concurrently — each band writes to its own
     ``cutouts/<band>/`` directory and tracks distinct per-(band, size) catalog
-    flags, and ``StarCatalog.save`` is atomic.
+    flags, and ``CatalogObject.write`` is atomic.
     """
     band = Config.get_band(band_name)
     native = band.cutout_size_for_arcsec(arcsec)
@@ -82,10 +101,11 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
     cfg = DownloadConfig.for_band(
         band_name, cutout_size_vis_pixels=vis_pixels, max_workers=workers,
     )
-    downloader = EuclidCutoutDownloader(cat, cfg)
+    objects = CatalogObject.read(os.path.join(output_dir, Config.CATALOG_FILE))
     t_band = time.perf_counter()
-    result = downloader.download(show_progress=show_progress,
-                                 progress_cb=progress_cb, retry_failed=retry_failed)
+    result = eclient.download_cutouts(
+        objects, output_dir, cfg, show_progress=show_progress,
+        progress_cb=progress_cb, retry_failed=retry_failed)
     print(f"  → {band_name}: downloaded={result['downloaded']}, "
           f"valid={result['valid']}, corrupted={result['corrupted']}, "
           f"failed={result.get('failed', 0)}  "
@@ -93,8 +113,8 @@ def _download_one_band(band_name, *, cat, vis_pixels, workers, arcsec,
     return result
 
 
-def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
-              band_workers, logged_in, retry_failed=False):
+def run_bands(band_names, *, eclient, output_dir, vis_pixels, workers, arcsec,
+              reporter, band_workers, logged_in, retry_failed=False):
     """Download all bands, sequentially or several at once.
 
     ``band_workers == 1`` keeps the old one-band-at-a-time path (with a TAP
@@ -128,8 +148,9 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
 
         with ThreadPoolExecutor(max_workers=band_workers) as pool:
             futs = {
-                pool.submit(_download_one_band, bn, cat=cat,
-                            vis_pixels=vis_pixels, workers=workers, arcsec=arcsec,
+                pool.submit(_download_one_band, bn, eclient=eclient,
+                            output_dir=output_dir, vis_pixels=vis_pixels,
+                            workers=workers, arcsec=arcsec,
                             progress_cb=make_cb(bn), show_progress=False,
                             retry_failed=retry_failed): bn
                 for bn in band_names
@@ -150,12 +171,12 @@ def run_bands(band_names, *, cat, vis_pixels, workers, arcsec, reporter,
             # take ~1h) lets the session lapse, which made the next band's
             # mosaic query return None and fail.
             if logged_in and i > 0:
-                auth.login(allow_interactive=False)
+                eclient.relogin()
             cb = (lambda cur, tot, lbl, _b=bn:
                   reporter.set_step(cur, tot, f"{_b} {lbl}"))
             summary[bn] = _download_one_band(
-                bn, cat=cat, vis_pixels=vis_pixels, workers=workers,
-                arcsec=arcsec, progress_cb=cb, show_progress=True,
+                bn, eclient=eclient, output_dir=output_dir, vis_pixels=vis_pixels,
+                workers=workers, arcsec=arcsec, progress_cb=cb, show_progress=True,
                 retry_failed=retry_failed)
 
     for bn, r in summary.items():
@@ -178,20 +199,24 @@ def main() -> int:
     print(f"workers / band  = {args.workers}")
     print(f"bands in parallel = {max(1, min(len(band_names), args.band_workers))}\n")
 
-    cat = StarCatalog(args.output_dir)
-    if not cat.exists():
-        reporter.error(f"no catalog at {cat.catalog_path}")
-        print(f"✗ no catalog at {cat.catalog_path}")
+    catalog_path = os.path.join(args.output_dir, Config.CATALOG_FILE)
+    if not os.path.exists(catalog_path):
+        reporter.error(f"no catalog at {catalog_path}")
+        print(f"✗ no catalog at {catalog_path}")
         return 1
 
-    # Log in to the Euclid archive (proprietary cutouts need it). Tries
-    # EUCLID_USER/EUCLID_PASSWORD env, then ~/.euclid_credentials (written
-    # by the WebUI "Euclid archive login" form). Non-interactive on FASRC.
+    # Log in to the Euclid archive (proprietary cutouts need it). Reads
+    # EUCLID_USER/EUCLID_PASSWORD env, bridging ~/.euclid_credentials (written
+    # by the WebUI "Euclid archive login" form) into env first. Non-interactive.
     reporter.set_stage("authenticating with Euclid archive")
-    logged_in = auth.login(allow_interactive=False)
-    if logged_in:
-        print(f"✓ Euclid archive login OK (user={auth.current_user()})")
-    else:
+    _ensure_euclid_env()
+    try:
+        eclient = EuclidCatalog()
+        logged_in = True
+        print(f"✓ Euclid archive login OK (user={eclient.user})")
+    except EuclidAuthError:
+        eclient = EuclidCatalog._unauthenticated()
+        logged_in = False
         reporter.warn(
             "not authenticated with the Euclid archive — proprietary "
             "cutouts will fail. Set credentials in the WebUI (Cutouts page)."
@@ -200,7 +225,8 @@ def main() -> int:
 
     t0 = time.perf_counter()
     summary = run_bands(
-        band_names, cat=cat, vis_pixels=args.vis_pixels, workers=args.workers,
+        band_names, eclient=eclient, output_dir=args.output_dir,
+        vis_pixels=args.vis_pixels, workers=args.workers,
         arcsec=arcsec, reporter=reporter, band_workers=args.band_workers,
         logged_in=logged_in, retry_failed=args.retry_failed,
     )
@@ -216,7 +242,7 @@ def main() -> int:
     # catalog's per-(band, size) validity, so downstream tasks can trust
     # "valid in all 4 bands" without re-opening every file themselves.
     reporter.set_stage("validating cutouts (integrity)")
-    integ = validate_all_cutouts(cat, cat.load(), band_names, reporter=reporter)
+    integ = validate_all_cutouts(args.output_dir, band_names, reporter=reporter)
     print(f"\nIntegrity: checked {integ['checked']} cutouts, "
           f"{integ['unopenable']} unopenable → "
           f"{integ['valid_all_bands']} stars valid in all "

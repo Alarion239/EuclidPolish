@@ -41,7 +41,7 @@ _RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0
 
 #: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample —
 #: everything ``_row_to_params`` / the lens+source samplers read. Persisting just
-#: these (post-quality-cut) gives a few-MB ``.npz`` that loads ~100× faster than
+#: these (post-quality-cut) gives a few-MB ``.npz`` that loads much faster than
 #: re-parsing the 10 GB master FITS, which matters when every parallel worker
 #: rebuilds the catalog.
 _FILTERED_ARRAYS = (
@@ -142,12 +142,11 @@ class CosmosCatalog(ABC):
         """Draw a background source galaxy for a lens at ``z_lens``.
 
         Candidates must sit behind the lens (``z ≥ z_lens + offset``), within
-        ``LENS_Z_SOURCE_MAX``, and — crucially — be **physically small**. A real
-        lensed source is a compact background galaxy; capping the *physical*
+        ``LENS_Z_SOURCE_MAX``, and be **physically small** (a real lensed
+        source is a compact background galaxy). Capping the *physical*
         half-light radius (``LENS_SOURCE_MAX_PHYS_RE_KPC``) rather than the
         angular one means the rendered angular size ``r_phys / d_A(z)`` shrinks
-        with distance, so a more distant source naturally appears smaller —
-        instead of an unphysically large nearby galaxy being lensed."""
+        with distance, so a more distant source appears smaller."""
         z_min = z_lens + Config.LENS_Z_SOURCE_OFFSET
         z_max = Config.LENS_Z_SOURCE_MAX
         mask = (self.z_phot >= z_min) & (self.z_phot <= z_max)
@@ -394,9 +393,9 @@ class Cosmos2025Catalog(CosmosCatalog):
         good_fit = np.isfinite(bd_chi2) & (bd_chi2 < self.max_bd_chi2)
 
         # Total VIS flux = bulge + disk in the HST F814W (= VIS proxy) channel.
-        # Using the *total* flux rather than each component independently is
-        # the honest detectability cut: a galaxy is "Euclid-visible" iff its
-        # combined bulge + disk flux clears the VIS magnitude limit.
+        # The detectability cut uses the *total* flux: a galaxy is
+        # "Euclid-visible" iff its combined bulge + disk flux clears the VIS
+        # magnitude limit.
         vis_idx = Config.LR_INPUT_BAND_NAMES.index("VIS")
         vis_band = Config.BAND_VIS
         # Need finite per-component VIS mags to compute the total mag safely.

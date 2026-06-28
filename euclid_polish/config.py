@@ -217,7 +217,7 @@ class Config:
     VIS_AB_ZP_E_PER_S            = 25.50    # m_AB of source giving 1 e⁻/s
 
     # Simulator zeropoint: m_AB of a source contributing 1 e⁻ over the full
-    # stacked integration. Used by sky/multiband_generator.py to convert
+    # stacked integration. Used by sky/sky_simulator.py to convert
     # magnitude → expected electrons over the stack for each source class.
     SIM_VIS_ZEROPOINT_E          = VIS_AB_ZP_E_PER_S + 2.5 * math.log10(T_TOTAL_S)
 
@@ -418,7 +418,7 @@ class Config:
     # 16 to avoid ill-posed saturated deltas, but real fields contain a few bright
     # stars, so it now extends to 12 (the power law keeps them rare — a few per
     # many stamps). Faint limit ≈ the VIS noise floor. All three are tunable per
-    # run (web /config; MultiBandGeneratorConfig.star_mag_*).
+    # run (web /config; SkySimulatorConfig.star_mag_*).
     STAR_MAG_SLOPE               = 0.20     # d log N / dm (high Galactic latitude)
     STAR_MAG_BRIGHT              = 12.0     # brightest synthetic star (was a 16 cap)
     STAR_MAG_FAINT               = 25.0     # faint limit (≈ VIS 5σ point-source)
@@ -815,7 +815,6 @@ class Config:
     # versioned so a reader can check it got what it expected.
 
     RECORDS_DIR_V2          = os.path.join(DATA_DIR, "images/records_v2")
-    TFRECORD_SCHEMA_VERSION = 2
 
     # ---------------------------------------------------------------------
     # Provenance & identity
@@ -940,6 +939,18 @@ class Config:
         CATALOG_POSITION_TOL_ARCSEC: float  = 0.05  # euclid/catalog.py dedup
         DOWNLOAD_POSITION_TOL_ARCSEC: float = 0.5   # euclid/downloader.py reuse
         DOWNLOAD_SIZE_TOL_PIXELS: int       = 10
+
+    @dataclass(frozen=True)
+    class GalaxySelection:
+        """Real-field-galaxy eval selection window (``EuclidCatalog.query_galaxies``
+        + ``eval.galaxy_catalog``). Picks clean, resolved, bigger-end galaxies
+        that are confidently *not* lenses. ``DIAM_*`` are on-sky diameters (″),
+        turned into a ``segmentation_area`` band via the VIS pixel scale;
+        ``MAG_FLOOR`` drops sources fainter than this AB VIS-PSF magnitude."""
+        DIAM_LO_ARCSEC: float = 2.0   # bigger-end lower bound
+        DIAM_HI_ARCSEC: float = 5.0   # hard cap (must fit the LR stamp)
+        MAG_FLOOR: float      = 23.0  # keep galaxies brighter than this
+        MAX_RESULTS: int      = 100000  # ADQL TOP-N row cap per cone query
 
     @dataclass(frozen=True)
     class WebFetch:

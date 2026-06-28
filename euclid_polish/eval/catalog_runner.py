@@ -21,7 +21,7 @@ import traceback
 from typing import Any, Callable, Dict, List, Optional
 
 from euclid_polish.config import Config
-from euclid_polish.euclid.eval_catalog import read_eval_catalog
+from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 # Per-object metric keys (from reconstruct_cutout_at) + the manifest columns.
 _METRIC_KEYS = ("lr_total_e", "sr_total_e", "flux_ratio_sr_over_lr")
@@ -345,6 +345,7 @@ def run_catalog_eval(
     render: bool = False,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     log: Optional[Callable[[str], None]] = None,
+    model: Any = None,
 ) -> Dict[str, Any]:
     """Evaluate the model over a catalog into ``out_dir``; return a summary.
 
@@ -369,7 +370,7 @@ def run_catalog_eval(
     if not os.path.isfile(catalog):
         if catalog_path:
             raise FileNotFoundError(f"catalog not found: {catalog}")
-        from euclid_polish.euclid import lens_catalog
+        from euclid_polish.eval import lens_catalog
         _emit(f"catalog {catalog} not found — fetching from Zenodo…")
         lens_catalog.fetch(catalog)
 
@@ -387,11 +388,10 @@ def run_catalog_eval(
         not can_reuse_eval_object(object_output_dir(out_dir, row["id"]))
         for row in rows
     )
-    model = None
-    if needs_model:
+    if needs_model and model is None:
         _emit(f"loading model from {checkpoint}")
         model = load_eval_model(checkpoint, num_res_blocks)
-    else:
+    elif not needs_model:
         _emit("all catalog outputs already present — reusing cached FITS")
 
     manifest_path = os.path.join(out_dir, "manifest.csv")
