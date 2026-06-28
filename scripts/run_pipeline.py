@@ -68,7 +68,7 @@ from euclid_polish.sky.generation.gen_provenance import (
 from euclid_polish.image.tfio import (
     open_writer, tfrecord_path, write_images,
 )
-from euclid_polish.image import Image, ImageSet
+from euclid_polish.image import Image
 from euclid_polish.model import Model
 from euclid_polish.training import Trainer
 from euclid_polish.training.models.wdsr import wdsr
@@ -721,11 +721,14 @@ def step_train(args: argparse.Namespace) -> None:
     print(f"  TFRecords:   {args.records_dir}")
     print(f"  Checkpoints: {args.checkpoint_dir}")
 
-    lr = ImageSet.read(tfrecord_path(args.records_dir, "dirty_train"))
-    hr = ImageSet.read(tfrecord_path(args.records_dir, "clean_train"))
     m = Model(args.checkpoint_dir, scale=scale,
               num_res_blocks=args.num_res_blocks)
-    m.load(lr, hr).train(steps=args.steps, evaluate_every=args.evaluate_every)
+    m.train(
+        tfrecord_path(args.records_dir, "dirty_train"),
+        tfrecord_path(args.records_dir, "clean_train"),
+        steps=args.steps,
+        evaluate_every=args.evaluate_every,
+    )
 
 
 # ---------------------------------------------------------------------------

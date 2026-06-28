@@ -24,7 +24,7 @@ def test_iter_yields_images():
 def test_write_read_roundtrip(tmp_path):
     s = ImageSet.from_images([_img(0), _img(1), _img(2)])
     path = s.write(str(tmp_path), "hr_train")
-    back = ImageSet.read(path)
+    back = list(ImageSet.read(path))
     assert len(back) == 3
     assert sorted(im.data[0, 0, 0] for im in back) == [0.0, 1.0, 2.0]
 
@@ -32,8 +32,24 @@ def test_write_read_roundtrip(tmp_path):
 def test_read_limit(tmp_path):
     s = ImageSet.from_images([_img(i) for i in range(5)])
     path = s.write(str(tmp_path), "hr_train")
-    back = ImageSet.read(path, num_images=2)
+    back = list(ImageSet.read(path, num_images=2))
     assert len(back) == 2
+
+
+def test_lazy_len_raises():
+    """len() on a lazy (TFRecord-backed) ImageSet must raise TypeError."""
+    import pytest
+    lazy = ImageSet.read("/nonexistent/path.tfrecord")
+    with pytest.raises(TypeError, match="len\\(\\) not supported for lazy"):
+        len(lazy)
+
+
+def test_lazy_getitem_raises():
+    """Indexing a lazy ImageSet must raise TypeError."""
+    import pytest
+    lazy = ImageSet.read("/nonexistent/path.tfrecord")
+    with pytest.raises(TypeError, match="Indexing not supported for lazy"):
+        _ = lazy[0]
 
 
 def test_by_role():

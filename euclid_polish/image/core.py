@@ -365,8 +365,14 @@ class Image(StampCarrier):
         return self.data[..., self.band_index(band)]
 
     def with_role(self, role: Role) -> "Image":
-        """A copy tagged with ``role`` (the original is unchanged)."""
-        return dataclasses.replace(self, role=role)
+        """A copy tagged with ``role`` (the original is unchanged).
+
+        ``is_clean`` is derived from ``role``: clean target roles (CLEAN, HR,
+        SR) set it to ``True``; noisy/dirty roles (LR, REAL, UNKNOWN) set it
+        to ``False``.
+        """
+        is_clean = role in (Role.CLEAN, Role.HR, Role.SR)
+        return dataclasses.replace(self, role=role, is_clean=is_clean)
 
     # ------------------------------------------------------------------
     # Shape / sampling — pure-numpy geometry (no operator needed)

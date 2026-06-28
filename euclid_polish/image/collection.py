@@ -93,7 +93,10 @@ class ImageSet:
     def __len__(self) -> int:
         if self._images is not None:
             return len(self._images)
-        return sum(1 for _ in self)
+        raise TypeError(
+            "len() not supported for lazy ImageSet — materialise first with "
+            "list(image_set) or pass num_images= to ImageSet.read()"
+        )
 
     def __getitem__(self, key):
         if self._images is not None:
@@ -101,11 +104,10 @@ class ImageSet:
             if isinstance(result, list):
                 return ImageSet.from_images(result, stamp=self.stamp)
             return result
-        images = list(self)
-        result = images[key]
-        if isinstance(result, list):
-            return ImageSet.from_images(result, stamp=self.stamp)
-        return result
+        raise TypeError(
+            "Indexing not supported for lazy ImageSet — materialise first with "
+            "list(image_set)"
+        )
 
     def __repr__(self) -> str:
         if self._images is not None:

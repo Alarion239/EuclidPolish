@@ -1118,14 +1118,17 @@ class InteractiveCLI:
             print("\n⚠️  Training will run until interrupted (Ctrl+C) or completion")
 
             try:
-                lr = ImageSet.read(tfrecord_path(records_dir, "dirty_train"))
-                hr = ImageSet.read(tfrecord_path(records_dir, "clean_train"))
                 m = Model(checkpoint_dir, scale=scale_val,
                           num_res_blocks=num_res_blocks_val)
 
                 # Train
                 print("\nStarting training...")
-                m.load(lr, hr).train(steps=steps_val, evaluate_every=evaluate_every_val)
+                m.train(
+                    tfrecord_path(records_dir, "dirty_train"),
+                    tfrecord_path(records_dir, "clean_train"),
+                    steps=steps_val,
+                    evaluate_every=evaluate_every_val,
+                )
 
                 # Post-training evaluation on best checkpoint
                 lr_val = ImageSet.read(tfrecord_path(records_dir, "dirty_validate"))

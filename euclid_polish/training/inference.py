@@ -16,6 +16,7 @@ from euclid_polish.config import Config
 # plot_reconstruction now lives in the visualization layer; re-exported here so
 # ``from euclid_polish.training.inference import plot_reconstruction`` keeps working.
 from euclid_polish.visualization.reconstruction import plot_reconstruction  # noqa: F401
+from euclid_polish.training.augmentation import asinh_stretch_lr, inverse_asinh_stretch_hr
 from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.visualization.color import lupton_rgb
@@ -291,15 +292,17 @@ def reconstruct(
             f"input has only {c}"
         )
 
-    scale_e = float(Config.STRETCH_SCALE_E)
-
     # Stretch → model → unstretch. ``clip(±20)`` is a defensive guard against
     # an untrained / pathological model output: ``sinh(20) ≈ 2.4×10⁸``, well
     # above any realistic source, but finite in float32 (sinh overflows at ~89).
-    lr_stretched = np.arcsinh(lr_for_model / scale_e).astype(np.float32)
+    # Per-band asinh stretch mirrors the training pipeline (different scale per
+    # band) rather than a single scalar Config.STRETCH_SCALE_E.
+    lr_stretched = asinh_stretch_lr(tf.constant(lr_for_model)).numpy().astype(np.float32)
     sr_stretched = resolve_single(model, tf.constant(lr_stretched)).numpy().astype(np.float32)
     sr_stretched = np.clip(sr_stretched, -20.0, 20.0)
-    sr_data = (np.sinh(sr_stretched.astype(np.float64)) * scale_e).astype(np.float32)
+    sr_data = inverse_asinh_stretch_hr(
+        tf.constant(sr_stretched)
+    ).numpy().astype(np.float32)
     # Single-output models: squeeze the channel axis for the 2-D
     # visualizers downstream. The 4-band model keeps its (H, W, 4) cube —
     # callers slice channel 0 for VIS or feed the cube to color panels.

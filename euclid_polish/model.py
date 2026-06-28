@@ -76,12 +76,10 @@ class Model:
         self._checkpoint_dir = checkpoint_dir
         self._scale = scale
         self._num_res_blocks = num_res_blocks
-        self._lr_images: Optional[ImageSet] = None
-        self._hr_images: Optional[ImageSet] = None
+        self._load_fn: Callable = _load_fn if _load_fn is not None else _default_load
 
-        load_fn = _load_fn if _load_fn is not None else _default_load
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
-            self._tf_model = load_fn(checkpoint_dir, scale, num_res_blocks)
+            self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
             self.id: Optional[ProvId] = model_id_of_checkpoint(checkpoint_dir)
         else:
             self._tf_model = _wdsr_build(scale=scale, num_res_blocks=num_res_blocks)
@@ -92,17 +90,6 @@ class Model:
         )
 
     # -- training interface --
-
-    def load(self, lr: ImageSet, hr: ImageSet) -> "Model":
-        """Register the LR and HR :class:`ImageSet` for training.
-
-        Returns ``self`` so calls can be chained::
-
-            model.load(lr, hr).train(steps=300_000)
-        """
-        self._lr_images = lr
-        self._hr_images = hr
-        return self
 
     def _build_training_pipeline(
         self,
@@ -136,26 +123,29 @@ class Model:
                     .repeat())
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 
-    def train(self, steps: int = 300_000, batch_size: int = 16, **kwargs) -> None:
-        """Train the model on the datasets registered via :meth:`load`.
+    def train(
+        self,
+        lr_path: str,
+        hr_path: str,
+        steps: int = 300_000,
+        batch_size: int = 16,
+        **kwargs,
+    ) -> None:
+        """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
 
-        All extra ``kwargs`` are forwarded verbatim to
-        :class:`~euclid_polish.training.trainer.Trainer.train` (e.g.
-        ``evaluate_every``, ``step_callback``, ``eval_callback``).
+        Validation paths are derived by replacing ``_train.`` with
+        ``_validate.`` in the filenames. All extra ``kwargs`` are forwarded
+        verbatim to :class:`~euclid_polish.training.trainer.Trainer.train`
+        (e.g. ``evaluate_every``, ``step_callback``, ``eval_callback``).
         """
-        if self._lr_images is None or self._hr_images is None:
-            raise RuntimeError("Call load(lr, hr) before train().")
-        lr_path = self._lr_images.source_path
-        hr_path = self._hr_images.source_path
-        if lr_path is None or hr_path is None:
-            raise RuntimeError(
-                "train() requires ImageSets constructed with ImageSet.read() "
-                "(source_path must be set)."
-            )
-
         train_ds = self._build_training_pipeline(lr_path, hr_path, batch_size)
         valid_lr_path = lr_path.replace("_train.", "_validate.")
         valid_hr_path = hr_path.replace("_train.", "_validate.")
+        if valid_lr_path == lr_path:
+            raise ValueError(
+                "Cannot derive validation path: expected _train. in filename "
+                f"(got {lr_path!r})"
+            )
         valid_ds = self._build_training_pipeline(
             valid_lr_path, valid_hr_path, batch_size, augment=False
         )
@@ -164,7 +154,7 @@ class Model:
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
-            self._tf_model = _default_load(
+            self._tf_model = self._load_fn(
                 self._checkpoint_dir, self._scale, self._num_res_blocks
             )
             self.id = model_id_of_checkpoint(self._checkpoint_dir)
@@ -242,7 +232,7 @@ class Model:
         straight through. Returns the run summary dict.
         """
         return catalog_runner.run_catalog_eval(
-            out_dir=out_dir, model=self._tf_model, **kwargs)
+            out_dir=out_dir, model=self, **kwargs)
 
     def eval_grouped(self, out_dir, n, **kwargs):
         """Run grouped evaluation (lens grades A/B/C + real galaxies +
@@ -256,4 +246,4 @@ class Model:
         through. Returns the run summary dict.
         """
         return grouped_runner.run_grouped_analysis(
-            out_dir, n, model=self._tf_model, **kwargs)
+            out_dir, n, model=self, **kwargs)
