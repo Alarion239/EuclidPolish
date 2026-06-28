@@ -270,8 +270,9 @@ def read_grade_map(run_dir: str) -> Dict[str, str]:
     p = os.path.join(run_dir, "manifest.csv")
     if not os.path.isfile(p):
         return {}
-    return {r["id"]: (r.get("grade") or "")
-            for r in csv.DictReader(open(p)) if r.get("id")}
+    with open(p, newline="") as f:
+        return {r["id"]: (r.get("grade") or "")
+                for r in csv.DictReader(f) if r.get("id")}
 
 
 def _pad3(coords: np.ndarray) -> np.ndarray:
@@ -470,7 +471,8 @@ def render_morphology_summary(run_dir: str, out_png: str) -> Optional[str]:
     mani_path = os.path.join(run_dir, "morphology_manifest.csv")
     if not os.path.isfile(mani_path):
         return None
-    mani = [r for r in csv.DictReader(open(mani_path)) if r.get("id")]
+    with open(mani_path, newline="") as f:
+        mani = [r for r in csv.DictReader(f) if r.get("id")]
     if not mani:
         return None
 
@@ -680,8 +682,9 @@ def render_transformation_summary(run_dir: str, out_png: str) -> Optional[str]:
     mani_path = os.path.join(run_dir, "manifest.csv")
     if not os.path.isfile(mani_path):
         return None
-    rows = [r for r in csv.DictReader(open(mani_path))
-            if r.get("id") and str(r.get("ok", "")).lower() == "true"]
+    with open(mani_path, newline="") as f:
+        rows = [r for r in csv.DictReader(f)
+                if r.get("id") and str(r.get("ok", "")).lower() == "true"]
     if not rows:
         return None
     groups = [g for g in dict.fromkeys(r.get("grade", "") for r in rows)]

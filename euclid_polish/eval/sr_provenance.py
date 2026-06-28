@@ -21,15 +21,17 @@ from euclid_polish.provenance.records import (
 from euclid_polish.provenance.store import ProvStore
 
 
-def stamp_sr_fits(header, *, checkpoint_dir: str, sr_fits_path: str,
-                  store: Optional[ProvStore] = None,
-                  git: Optional[Dict[str, Any]] = None,
-                  descriptors: Optional[Dict[str, Any]] = None) -> Stamp:
+def write_sr_provenance(header, *, checkpoint_dir: str, sr_fits_path: str,
+                        store: Optional[ProvStore] = None,
+                        git: Optional[Dict[str, Any]] = None,
+                        descriptors: Optional[Dict[str, Any]] = None) -> Stamp:
     """Write provenance cards into ``header`` and persist the SR artifact.
 
     Returns the :class:`Stamp` written (caller may ignore it). The model id —
     when the checkpoint carries one — becomes the SR's parent, so staleness can
     be checked later.
+
+    ``stamp_sr_fits`` is a deprecated alias for this function.
     """
     store = store if store is not None else default_store()
     if git is None:
@@ -51,3 +53,7 @@ def stamp_sr_fits(header, *, checkpoint_dir: str, sr_fits_path: str,
     )
     store.put(art, sidecar_dir=os.path.dirname(sr_fits_path) or None)
     return stamp
+
+
+# Deprecated alias so callers outside this file still work.
+stamp_sr_fits = write_sr_provenance

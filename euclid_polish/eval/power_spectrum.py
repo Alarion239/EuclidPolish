@@ -140,7 +140,8 @@ def ratios_from_powers(
     return t, r
 
 
-class SpectrumAccumulator:
+# test-only; production uses BandStat
+class _SpectrumAccumulator:
     """Raw-sum stacked auto/cross power on a fixed physical k-grid.
 
     Sums power across objects, the standard stacked-spectrum estimator. NOTE:

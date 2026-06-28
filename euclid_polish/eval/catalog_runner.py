@@ -136,40 +136,6 @@ def center_crop(arr, size: int):
     return a[..., sy:sy + size, sx:sx + size]
 
 
-def crop_object_fits(obj_dir: str, vis_size: int, *,
-                     log: Optional[Callable[[str], None]] = None) -> bool:
-    """Center-crop an object's LR/SR FITS in place to ``vis_size`` VIS pixels.
-
-    ``original_stack.fits`` lives on the VIS (LR) grid and is cropped to
-    ``vis_size``; ``SR.fits`` is on the 2× HR grid and is cropped to
-    ``2*vis_size``. Idempotent — already-small files are left untouched — so the
-    same object can be re-cropped across reruns without shrinking further.
-    Returns ``True`` if any file was rewritten.
-    """
-    import numpy as np
-    from astropy.io import fits
-
-    emit = log or (lambda m: None)
-    changed = False
-    for name, size in (("original_stack.fits", vis_size),
-                       ("SR.fits", 2 * vis_size)):
-        path = os.path.join(obj_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with fits.open(path) as hdul:
-            data = np.asarray(hdul[0].data)
-            header = hdul[0].header
-        cropped = center_crop(data, size)
-        if cropped.shape == data.shape:
-            continue
-        fits.PrimaryHDU(np.ascontiguousarray(cropped), header=header).writeto(
-            path, overwrite=True, output_verify="silentfix")
-        changed = True
-    if changed:
-        emit(f"  ✂ {os.path.basename(obj_dir)}: cropped to {vis_size}px VIS")
-    return changed
-
-
 def enforce_object_sizes(obj_dir: str, *,
                          log: Optional[Callable[[str], None]] = None) -> bool:
     """Crop an object's FITS to the canonical eval sizes; signal drop if smaller.
@@ -314,6 +280,7 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     obj_id = obj["id"]
     rec = _base_manifest_row(obj, grade=grade)
     if can_reuse_eval_object(object_output_dir(out_dir, obj_id)):
+        enforce_object_sizes(object_output_dir(out_dir, obj_id), log=emit)
         return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
     try:
         from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at

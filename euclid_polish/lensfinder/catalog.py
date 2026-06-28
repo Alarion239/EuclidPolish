@@ -75,6 +75,10 @@ def assign_splits(
     information leakage). Deterministic for a given ``seed``. Mutates ``rows``
     in place and returns them.
     """
+    if val_frac + test_frac >= 1.0:
+        raise ValueError(
+            f"val_frac + test_frac must be < 1.0 (got {val_frac + test_frac})"
+        )
     import random
 
     groups = sorted({str(r.get(group_key, "")) for r in rows})
