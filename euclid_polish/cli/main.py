@@ -24,7 +24,10 @@ from questionary import select, confirm, checkbox
 
 
 from euclid_polish.config import Config
-from euclid_polish.cli.utils import DisplayFormatter, ValidationResult
+from euclid_polish.cli.utils import (
+    print_cancelled, print_error, print_header, print_success,
+    validate_dec, validate_positive_number, validate_ra,
+)
 from euclid_polish.catalog import (
     EuclidCatalog,
     EuclidAuthError,
@@ -106,7 +109,6 @@ class InteractiveCLI:
     def __init__(self):
         """Initialize the CLI."""
         self.config = Config
-        self.display = DisplayFormatter
         #: The logged-in Euclid client (set by the login menu), or None.
         self._euclid = None
 
@@ -201,7 +203,7 @@ class InteractiveCLI:
             f"PSF directory (default {Config.EUCLID_PSF_DIR}): "
         ).strip() or Config.EUCLID_PSF_DIR
         inv = psf_inventory(psf_dir=psf_dir)
-        DisplayFormatter.print_header(f"PSF inventory @ {psf_dir}")
+        print_header(f"PSF inventory @ {psf_dir}")
         for name, path in inv.items():
             tag = "✓ empirical" if path else "✗ Gaussian fallback"
             print(f"  {name:5s}  {tag}  {path or ''}")
@@ -229,7 +231,7 @@ class InteractiveCLI:
 
         summary = summarize(CatalogObject.read(catalog_path))
 
-        DisplayFormatter.print_header("📊 Star Catalog Summary")
+        print_header("📊 Star Catalog Summary")
         print(f"Total stars:        {summary['total']}")
         print(f"Valid:              {summary['valid']} ✓")
         print(f"Corrupted:          {summary['corrupted']} 🔴")
@@ -264,22 +266,22 @@ class InteractiveCLI:
         ).strip()
 
         # Validate inputs
-        ra_valid = ValidationResult.validate_ra(ra)
+        ra_valid = validate_ra(ra)
         if ra_valid is not True:
             print(f"\n✗ {ra_valid}")
             return
 
-        dec_valid = ValidationResult.validate_dec(dec)
+        dec_valid = validate_dec(dec)
         if dec_valid is not True:
             print(f"\n✗ {dec_valid}")
             return
 
-        radius_valid = ValidationResult.validate_positive_number(radius, "Radius")
+        radius_valid = validate_positive_number(radius, "Radius")
         if radius_valid is not True:
             print(f"\n✗ {radius_valid}")
             return
 
-        mag_valid = ValidationResult.validate_positive_number(magnitude, "Magnitude limit")
+        mag_valid = validate_positive_number(magnitude, "Magnitude limit")
         if mag_valid is not True:
             print(f"\n✗ {mag_valid}")
             return
@@ -291,7 +293,7 @@ class InteractiveCLI:
         mag_val = float(magnitude)
         mag_min_val = None
         if magnitude_min_raw:
-            mmv = ValidationResult.validate_positive_number(magnitude_min_raw, "Min magnitude")
+            mmv = validate_positive_number(magnitude_min_raw, "Min magnitude")
             if mmv is not True:
                 print(f"\n✗ {mmv}")
                 return
@@ -664,7 +666,7 @@ class InteractiveCLI:
                 results["corrupted"].append((filepath, error_msg))
 
         # Display results
-        DisplayFormatter.print_header("Integrity Check Results")
+        print_header("Integrity Check Results")
         print(f"Total files:      {len(fits_files)}")
         print(f"Valid:            {len(results['valid'])} ✓")
         print(f"Corrupted:        {len(results['corrupted'])} 🔴")
@@ -705,7 +707,7 @@ class InteractiveCLI:
     def _login_euclid(self):
         """Log into the Euclid archive via env vars or an explicit username/password."""
         if self._euclid is not None:
-            DisplayFormatter.print_success(
+            print_success(
                 f"Already logged in as {self._euclid.user or '(unknown)'}. "
                 f"Logout first to switch accounts."
             )
@@ -721,7 +723,7 @@ class InteractiveCLI:
         ).ask()
 
         if method in (None, "cancel"):
-            DisplayFormatter.print_cancelled()
+            print_cancelled()
             return
 
         try:
@@ -732,10 +734,10 @@ class InteractiveCLI:
                 password = getpass.getpass("Euclid password: ")
                 self._euclid = EuclidCatalog(login=user, password=password)
         except EuclidAuthError as e:
-            DisplayFormatter.print_error(str(e))
+            print_error(str(e))
             return
 
-        DisplayFormatter.print_success(
+        print_success(
             f"Logged in as {self._euclid.user or '(unknown)'}. "
             f"All subsequent Euclid queries will use this session."
         )
@@ -743,14 +745,14 @@ class InteractiveCLI:
     def _logout_euclid(self):
         """Log out from the Euclid archive."""
         if self._euclid is None:
-            DisplayFormatter.print_error("Not logged in.")
+            print_error("Not logged in.")
             return
         self._euclid = None
         try:
             Euclid.logout()
         except Exception:
             pass
-        DisplayFormatter.print_success("Logged out.")
+        print_success("Logged out.")
 
     def _query_brightest_stars(self):
         """Query the brightest N stars from the Euclid archive (async)."""
@@ -766,9 +768,9 @@ class InteractiveCLI:
 
         num_raw = input(f"Number of brightest stars (default {Config.DEFAULT_BRIGHTEST_N}): ").strip() \
             or str(Config.DEFAULT_BRIGHTEST_N)
-        num_check = ValidationResult.validate_positive_number(num_raw, "num_stars")
+        num_check = validate_positive_number(num_raw, "num_stars")
         if num_check is not True:
-            DisplayFormatter.print_error(num_check)
+            print_error(num_check)
             return
         num_stars = int(float(num_raw))
 
@@ -779,12 +781,12 @@ class InteractiveCLI:
             dec = input("Dec (degrees): ").strip()
             radius = input("Radius (degrees, default 1): ").strip() or "1"
             for raw, check, name in (
-                (ra, ValidationResult.validate_ra(ra), "RA"),
-                (dec, ValidationResult.validate_dec(dec), "Dec"),
-                (radius, ValidationResult.validate_positive_number(radius, "Radius"), "Radius"),
+                (ra, validate_ra(ra), "RA"),
+                (dec, validate_dec(dec), "Dec"),
+                (radius, validate_positive_number(radius, "Radius"), "Radius"),
             ):
                 if check is not True:
-                    DisplayFormatter.print_error(check)
+                    print_error(check)
                     return
             ra_val, dec_val, radius_val = float(ra), float(dec), float(radius)
 
@@ -793,9 +795,9 @@ class InteractiveCLI:
         if use_mag:
             mag = input(f"Magnitude limit (default {Config.DEFAULT_MAGNITUDE_LIMIT}): ").strip() \
                 or str(Config.DEFAULT_MAGNITUDE_LIMIT)
-            mag_check = ValidationResult.validate_positive_number(mag, "Magnitude limit")
+            mag_check = validate_positive_number(mag, "Magnitude limit")
             if mag_check is not True:
-                DisplayFormatter.print_error(mag_check)
+                print_error(mag_check)
                 return
             mag_val = float(mag)
 
@@ -806,9 +808,9 @@ class InteractiveCLI:
         mag_min_val = None
         if use_mag_min:
             mag_min = input("Min magnitude (brighter than this rejected, e.g. 15): ").strip()
-            check = ValidationResult.validate_positive_number(mag_min, "Min magnitude")
+            check = validate_positive_number(mag_min, "Min magnitude")
             if check is not True:
-                DisplayFormatter.print_error(check)
+                print_error(check)
                 return
             mag_min_val = float(mag_min)
 
@@ -823,7 +825,7 @@ class InteractiveCLI:
             print("    the job record is garbage-collected after 72h on the server.")
 
         if not confirm(f"\nQuery brightest {num_stars} stars (async)?", default=True).ask():
-            DisplayFormatter.print_cancelled()
+            print_cancelled()
             return
 
         try:
@@ -844,7 +846,7 @@ class InteractiveCLI:
 
             self._visualize_star_positions(output_dir=output_dir)
         except Exception as e:
-            DisplayFormatter.print_error(f"Query failed: {e}")
+            print_error(f"Query failed: {e}")
             traceback.print_exc()
 
     def _sky_menu(self):
