@@ -35,11 +35,11 @@ from euclid_polish.catalog import (
 from euclid_polish.catalog.catalog_object import merge_new, summarize
 from euclid_polish.psf.psf_extractor import PSFExtractor, PSFExtractionConfig
 from euclid_polish.image import Image
-from euclid_polish.sky.cosmos2025 import open_cosmos2025
-from euclid_polish.sky.sky_simulator import (
+from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig, SkySimulator,
 )
-from euclid_polish.sky.observation_simulator import (
+from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )
 from euclid_polish.psf import PSF

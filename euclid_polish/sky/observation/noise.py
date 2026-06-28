@@ -15,11 +15,11 @@ import numpy as np
 
 from euclid_polish.config import BandConfig
 
-from euclid_polish.sky.artifacts import inject_artifacts, ArtifactConfig
+from euclid_polish.sky.observation.artifacts import inject_artifacts, ArtifactConfig
 
 if TYPE_CHECKING:
     # Type-hint-only import.
-    from euclid_polish.sky.artifacts import ArtifactConfig
+    from euclid_polish.sky.observation.artifacts import ArtifactConfig
 
 
 # ---------------------------------------------------------------------------

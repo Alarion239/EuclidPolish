@@ -42,7 +42,7 @@ from euclid_polish.catalog.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
-from euclid_polish.sky.redshift_model import (
+from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     band_drift_factors,
     compactness_factor,

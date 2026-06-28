@@ -37,15 +37,15 @@ from scipy import signal as scipy_signal
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_set import PSFSet, PSFSample
-# Re-export the canonical noise function (defined in sky.noise).
-from euclid_polish.sky.noise import apply_band_noise   # noqa: F401
-from euclid_polish.sky.saturation import (
+# Re-export the canonical noise function (defined in sky.observation.noise).
+from euclid_polish.sky.observation.noise import apply_band_noise   # noqa: F401
+from euclid_polish.sky.observation.saturation import (
     StarSaturationModel, apply_star_saturation,
 )
 from euclid_polish.psf.psf_library import (
     make_gaussian_psf, psf_side_pixels_for_band,
 )
-from euclid_polish.sky.resample import upsample as resample_upsample
+from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.image import Image, Role
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp

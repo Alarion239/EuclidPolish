@@ -25,17 +25,17 @@ from typing import Optional, Tuple
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.cosmos2025 import CosmosCatalog, GalaxyParams
-from euclid_polish.sky.profiles import (
+from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog, GalaxyParams
+from euclid_polish.sky.generation.profiles import (
     add_sersic_to_bands,
     draw_sersic,
     evaluate_sersic_at_coords,
 )
-from euclid_polish.sky.redshift_model import (
+from euclid_polish.sky.generation.redshift_model import (
     angular_diameter_distance,
     comoving_distance_mpc,
 )
-from euclid_polish.sky.tng_galaxy import composite_stamp
+from euclid_polish.sky.generation.tng_galaxy import composite_stamp
 
 from scipy.ndimage import map_coordinates
 from lenstronomy.LensModel.lens_model import LensModel

@@ -32,13 +32,13 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.sky.cosmos2025 import CosmosCatalog
-from euclid_polish.sky.lens_population import (
+from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog
+from euclid_polish.sky.generation.lens_population import (
     LensPopulation, render_lens_to_multiband_canvas, sample_lens_geometry,
 )
-from euclid_polish.sky.cosmos2025 import circularized_effective_radius_arcsec
-from euclid_polish.sky.profiles import add_sersic_to_bands
-from euclid_polish.sky.redshift_model import (
+from euclid_polish.sky.generation.cosmos2025 import circularized_effective_radius_arcsec
+from euclid_polish.sky.generation.profiles import add_sersic_to_bands
+from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     compactness_factor,
     load_tng_properties,
@@ -48,7 +48,7 @@ from euclid_polish.sky.redshift_model import (
     sample_target_logmass,
     sigma_v_from_stellar_mass,
 )
-from euclid_polish.sky.tng_galaxy import (
+from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS, composite_stamp, list_tng_galaxies, native_halflight_px,
     predict_vis_flux_e, predict_visible_radius_arcsec, sample_tng_stamp,
     tng_stamp_at_redshift,

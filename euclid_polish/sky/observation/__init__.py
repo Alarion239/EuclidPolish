@@ -1,20 +1,15 @@
 """
 Observation sub-package: forward model.
-
-Re-exports the observation-side public API from the flat ``euclid_polish.sky``
-modules. All ``from euclid_polish.sky.<module> import X`` paths continue to
-work unchanged; this namespace just adds ``euclid_polish.sky.observation.X``
-as an alternative.
 """
 
-from euclid_polish.sky.observation_simulator import (
+from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator, ObservationSimulatorConfig,
 )
-from euclid_polish.sky.noise import apply_band_noise
-from euclid_polish.sky.saturation import StarSaturationModel
-from euclid_polish.sky.resample import upsample, lanczos3_upsample, cubic_upsample
-from euclid_polish.sky.artifacts import inject_artifacts, inject_cosmic_rays, inject_hot_pixels
-from euclid_polish.sky.differential_kernel import (
+from euclid_polish.sky.observation.noise import apply_band_noise
+from euclid_polish.sky.observation.saturation import StarSaturationModel
+from euclid_polish.sky.observation.resample import upsample, lanczos3_upsample, cubic_upsample
+from euclid_polish.sky.observation.artifacts import inject_artifacts, inject_cosmic_rays, inject_hot_pixels
+from euclid_polish.sky.observation.differential_kernel import (
     DifferentialKernel, compute_differential_kernel,
 )
 
