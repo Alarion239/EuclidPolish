@@ -36,6 +36,9 @@ class GenerationContext:
     store: ProvStore
     run_id: ProvId
     git: dict[str, Any] | None = None
+    #: The run's master RNG seed (recorded on the ``Process.generation``); the
+    #: single value needed to replay the run. ``None`` if the run is unseeded.
+    seed: int | None = None
     _file_ids: dict[tuple[str, str], ProvId] = field(default_factory=dict)
 
     def file_id(self, kind: str, subset: str) -> ProvId:
@@ -104,24 +107,36 @@ class ShardStampPlan:
 
 def begin_generation_run(store: ProvStore, cfg: Any, *,
                          parents: Sequence[ProvId] = (),
-                         git: dict[str, Any] | None = None) -> GenerationContext:
-    """Mint + persist a generation :class:`Process` and return its context."""
+                         git: dict[str, Any] | None = None,
+                         seed: int | None = None) -> GenerationContext:
+    """Mint + persist a generation :class:`Process` and return its context.
+
+    ``seed`` is the run's master RNG seed; it is recorded on the persisted
+    ``Process.generation`` so the run can be replayed deterministically.
+    """
     run = Process.generation(
         id=store.mint(),
         git=git,
         parents=tuple(parents),
         config=ConfigSnapshot.from_dataclass(cfg),
         status="ok",
+        seed=seed,
     )
     store.put(run)
-    return GenerationContext(store=store, run_id=run.id, git=git)
+    return GenerationContext(store=store, run_id=run.id, git=git, seed=seed)
 
 
 def make_generation_context(cfg: Any, *,
-                            parents: Sequence[ProvId] = ()) -> GenerationContext | None:
-    """Best-effort context using the project's default store; ``None`` on failure."""
+                            parents: Sequence[ProvId] = (),
+                            seed: int | None = None) -> GenerationContext | None:
+    """Best-effort context using the project's default store; ``None`` on failure.
+
+    ``seed`` (the run's master RNG seed) is recorded on the ``Process.generation``
+    so the run is reproducible from provenance alone.
+    """
     try:
         store = default_store()
-        return begin_generation_run(store, cfg, parents=parents, git=capture_git())
+        return begin_generation_run(store, cfg, parents=parents,
+                                    git=capture_git(), seed=seed)
     except Exception:
         return None

@@ -165,6 +165,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--lens-sigma-v-max-kms", type=float,
                     default=Config.LENS_SIGMA_V_MAX_KMS,
                     help="Max lens velocity dispersion (km/s); σ_v² sets θ_E.")
+    ap.add_argument("--seed", type=int, default=-1,
+                    help="Master RNG seed for generation/forward-model. "
+                         "-1 (default) draws a fresh entropy seed each run. The "
+                         "seed actually used is recorded on the run's "
+                         "Process.generation provenance record, so passing the "
+                         "stored value here replays a run deterministically.")
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
@@ -177,6 +183,35 @@ def parse_args() -> argparse.Namespace:
                          "Default: <records-dir>/stages_${SLURM_JOB_ID}.csv "
                          "(or stages_local.csv outside SLURM).")
     return ap.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Reproducible seeding
+#
+# One master ``run_seed`` per invocation (``--seed`` when >= 0, else entropy)
+# is recorded on the run's Process.generation provenance and used to derive
+# every per-(subset, stream) / per-shard RNG. Storing the one int is enough to
+# replay the whole run. Stream tags are kept large so they never collide with
+# the small shard ids the parallel path threads through the 3rd seed slot.
+# ---------------------------------------------------------------------------
+
+_STREAM_GEN = 10_000   # clean-scene generation draws
+_STREAM_FWD = 10_001   # forward-model (noise / artifact) draws
+
+
+def _resolve_run_seed(args: argparse.Namespace) -> int:
+    """The run's master seed: ``--seed`` when >= 0, else a fresh entropy draw."""
+    s = getattr(args, "seed", -1)
+    if s is not None and int(s) >= 0:
+        return int(s)
+    return int.from_bytes(os.urandom(8), "little")
+
+
+def _subset_rng(run_seed: int, subset: str,
+                stream: int) -> np.random.Generator:
+    """Deterministic RNG for one (subset, stream), derived from ``run_seed``."""
+    subset_tag = 1 if subset == "train" else 2
+    return np.random.default_rng([run_seed, subset_tag, stream])
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +254,11 @@ def step_generate(args: argparse.Namespace) -> None:
     sim = SkySimulator(cat, cfg)
     os.makedirs(args.records_dir, exist_ok=True)
 
-    # Provenance (best-effort): one generation run; clean records carry its id.
-    gen_ctx = make_generation_context(cfg)
+    # One master seed for the whole step, recorded on the generation run so it
+    # can be replayed via --seed; every per-subset RNG is derived from it.
+    run_seed = _resolve_run_seed(args)
+    gen_ctx = make_generation_context(cfg, seed=run_seed)
+    _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).
     # One cumulative bar across train + validate.
@@ -240,12 +278,10 @@ def step_generate(args: argparse.Namespace) -> None:
             _log(f"  {subset}: clean already complete ({n} records) — skipping")
             reporter.set_step(done, grand_total, f"{subset} already complete")
             continue
-        # Entropy-seeded master RNG so repeat runs see fresh randomness.
-        # The seed is logged so a curious-looking run can be replayed
-        # later by hard-coding the printed value here.
-        master_seed = int.from_bytes(os.urandom(8), "little")
-        rng = np.random.default_rng(master_seed)
-        _log(f"  {subset}: generating {n} images  (master_seed={master_seed})")
+        # Per-subset RNG derived from the run's master seed → the whole run
+        # replays from the single recorded run_seed.
+        rng = _subset_rng(run_seed, subset, _STREAM_GEN)
+        _log(f"  {subset}: generating {n} images  (run_seed={run_seed})")
         t0 = time.perf_counter()
         # Stream each image to disk as it's generated — accumulating
         # 6400 510² × 4-channel float32 fields would cost ~26 GB of RSS
@@ -293,9 +329,11 @@ def step_convolve(args: argparse.Namespace) -> None:
     fwd = ObservationSimulator(psf_sets_by_band=psf_sets,
                            config=ObservationSimulatorConfig(add_noise=True))
 
-    # Provenance (best-effort): one forward-model run; hr+dirty records carry
-    # its id and parent on the clean record file they came from.
-    conv_ctx = make_generation_context(fwd.config)
+    # One master seed for the forward step, recorded on its run so the noise /
+    # artifact realisations can be replayed via --seed.
+    run_seed = _resolve_run_seed(args)
+    conv_ctx = make_generation_context(fwd.config, seed=run_seed)
+    _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     # Structured progress for the WebUI — one cumulative bar across both
     # subsets present. Pre-count the clean records (re-iterating is ~ms).
@@ -338,13 +376,11 @@ def step_convolve(args: argparse.Namespace) -> None:
             except Exception:
                 clean_parent = None
         n_total = counts[subset]
-        # Entropy-seeded forward-model RNG — different noise / artifact
-        # realisation every run. Master seed is logged for replay.
-        master_seed = int.from_bytes(os.urandom(8), "little")
-        rng = np.random.default_rng(master_seed)
+        # Per-subset forward-model RNG derived from the run's master seed.
+        rng = _subset_rng(run_seed, subset, _STREAM_FWD)
 
         _log(f"  {subset}: forward-modelling {n_total} fields  "
-             f"(master_seed={master_seed})")
+             f"(run_seed={run_seed})")
         t0 = time.perf_counter()
         # Two streaming writers (one for hr_, one for dirty_); clean_ is
         # NOT rewritten — the 4-band record is kept for inspection.
@@ -596,9 +632,14 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     catalog_path = (None if args.sersic_density_arcmin2 <= 0.0
                     else ensure_prefiltered_catalog(args.catalog))
 
+    # One master seed for the whole parallel step, recorded on the generation
+    # run; every shard's RNG is derived from it, so the run replays via --seed.
+    run_seed = _resolve_run_seed(args)
     # Provenance (best-effort): one generation run for the whole parallel step;
     # per-subset ids are pre-minted in this parent and shipped to the workers.
-    gen_ctx = make_generation_context(_generator_config_from_args(args))
+    gen_ctx = make_generation_context(
+        _generator_config_from_args(args), seed=run_seed)
+    _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     for subset, n in (("train", args.ntrain), ("validate", args.nvalid)):
         if n <= 0:
@@ -614,7 +655,6 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         # more shards than images.
         n_shards = min(n, max(workers, math.ceil(n / 256)))
         bounds = _shard_bounds(n, n_shards)
-        master_seed = int.from_bytes(os.urandom(8), "little")
         # Pre-mint this subset's three file ids in the parent; every shard
         # stamps with the same plan (records share one id per file).
         plan = None
@@ -631,8 +671,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         tasks = []
         for sid, (start, end) in enumerate(bounds):
             if end > start:
-                # SeedSequence material → reproducible, independent per shard.
-                seed = [master_seed, (1 if subset == "train" else 2), sid]
+                # SeedSequence material → reproducible, independent per shard;
+                # all derived from the one recorded run_seed.
+                seed = [run_seed, (1 if subset == "train" else 2), sid]
                 tasks.append((subset, start, end - start, sid, seed, plan))
 
         reporter.set_stage(f"generate+forward {subset} (×{workers})")
@@ -641,7 +682,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         # bar and counts active processes.
         reporter.set_parallel(n, workers, label=subset)
         _log(f"  {subset}: {n} pairs across {len(tasks)} shards, "
-             f"{workers} workers (master_seed={master_seed})")
+             f"{workers} workers (run_seed={run_seed})")
         t0 = time.perf_counter()
         with ProcessPoolExecutor(
             max_workers=workers, initializer=_gen_init_worker,

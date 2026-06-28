@@ -32,6 +32,24 @@ def test_begin_generation_run_persists_run_with_config(tmp_path):
     assert run.config.fields["image_size"] == 96
 
 
+def test_generation_run_records_seed(tmp_path):
+    """The run's master seed is persisted on the Process.generation so the run
+    can be replayed; it round-trips through the on-disk sidecar."""
+    store = ProvStore(str(tmp_path))
+    ctx = begin_generation_run(store, FakeCfg(), git=None, seed=987654321)
+    assert ctx.seed == 987654321
+    assert store.get(ctx.run_id).seed == 987654321
+    # A fresh store over the same dir rediscovers the seed by scanning sidecars.
+    assert ProvStore(str(tmp_path)).get(ctx.run_id).seed == 987654321
+
+
+def test_generation_run_seed_optional(tmp_path):
+    """An unseeded run records seed=None (legacy / best-effort) without error."""
+    store = ProvStore(str(tmp_path))
+    ctx = begin_generation_run(store, FakeCfg(), git=None)
+    assert ctx.seed is None and store.get(ctx.run_id).seed is None
+
+
 def test_stamp_shares_one_id_per_kind_subset(tmp_path):
     store = ProvStore(str(tmp_path))
     ctx = begin_generation_run(store, FakeCfg(), git=None)

@@ -59,6 +59,26 @@ def _count(path: str) -> int:
     return sum(1 for _ in tf.data.TFRecordDataset(path))
 
 
+def test_subset_rng_deterministic_from_run_seed():
+    """The whole run is reproducible from one run_seed: same seed -> identical
+    draws; different subset or run_seed -> different draws."""
+    a = rp._subset_rng(42, "train", rp._STREAM_GEN).random(5)
+    b = rp._subset_rng(42, "train", rp._STREAM_GEN).random(5)
+    assert (a == b).all()                                 # same seed -> identical
+    assert not (a == rp._subset_rng(42, "validate", rp._STREAM_GEN).random(5)).all()
+    assert not (a == rp._subset_rng(43, "train", rp._STREAM_GEN).random(5)).all()
+    # Distinct streams (gen vs forward) don't share a sequence for one seed.
+    assert not (a == rp._subset_rng(42, "train", rp._STREAM_FWD).random(5)).all()
+
+
+def test_resolve_run_seed_honours_arg_else_entropy():
+    import argparse
+    assert rp._resolve_run_seed(argparse.Namespace(seed=123)) == 123
+    s1 = rp._resolve_run_seed(argparse.Namespace(seed=-1))
+    s2 = rp._resolve_run_seed(argparse.Namespace(seed=-1))
+    assert s1 != s2                                       # -1 -> fresh entropy
+
+
 def test_shard_bounds_partition_is_contiguous():
     b = rp._shard_bounds(10, 3)
     assert b[0][0] == 0 and b[-1][1] == 10

@@ -220,6 +220,9 @@ class Process(ProvRecord):
     started_at: str | None = None
     ended_at: str | None = None
     status: str = "running"
+    #: The master RNG seed this run was driven by — the single value needed to
+    #: replay it deterministically. ``None`` for legacy / un-seeded runs.
+    seed: int | None = None
     kind: str = "process"
 
     @classmethod
@@ -245,11 +248,13 @@ class Process(ProvRecord):
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "status": self.status,
+            "seed": self.seed,
         }
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> Process:
         kw = cls._base_kwargs(d)
+        seed = d.get("seed")
         kw.update(
             config=ConfigSnapshot.from_dict(d["config"]) if d.get("config") else None,
             inputs=tuple(ProvId(x) for x in d.get("inputs", [])),
@@ -257,6 +262,7 @@ class Process(ProvRecord):
             started_at=d.get("started_at"),
             ended_at=d.get("ended_at"),
             status=d.get("status", "running"),
+            seed=int(seed) if seed is not None else None,
         )
         return cls(**kw)
 
