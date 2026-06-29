@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.psf import PSF
+from euclid_polish.psf.fast_epsf import FastEPSFBuilder
 
 
 @dataclass
@@ -41,6 +42,9 @@ class PSFExtractionConfig:
     progress_bar: bool = True
     oversampling: int = Config.DEFAULT_REBIN_FACTOR
     output_size: int | None = None
+    # Use the faster, numerically-identical FastEPSFBuilder (gridded-spline
+    # residual resampling) instead of stock photutils EPSFBuilder.
+    fast_builder: bool = Config.PSF_FAST_EPSF_BUILDER
     # Saturation rejection: Euclid MER zeros out detector pixels that
     # exceed well capacity. A star is rejected if its central
     # ``saturation_core_size × saturation_core_size`` region (centred on
@@ -104,6 +108,10 @@ class PSFExtractor:
         self.n_rejected_saturated: int = 0
         self.n_rejected_edge:      int = 0
         self.n_rejected_load:      int = 0
+
+    def _epsf_builder_cls(self) -> type[EPSFBuilder]:
+        """The ePSF builder class selected by ``config.fast_builder``."""
+        return FastEPSFBuilder if self.config.fast_builder else EPSFBuilder
 
     def get_cutout_files(
         self,
@@ -414,7 +422,7 @@ class PSFExtractor:
             # Photutils accepts ``shape=(H, W)`` in *oversampled* pixels.
             builder_kwargs["shape"] = (out_side, out_side)
             print(f"  requesting output PSF shape {out_side}×{out_side}")
-        epsf_builder = EPSFBuilder(**builder_kwargs)
+        epsf_builder = self._epsf_builder_cls()(**builder_kwargs)
 
         epsf, fitted_stars = epsf_builder(epsf_star_container)
 

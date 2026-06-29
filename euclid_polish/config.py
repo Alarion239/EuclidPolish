@@ -603,6 +603,10 @@ class Config:
     DEFAULT_PSF_MAX_ITERS = 10
     DEFAULT_PSF_ACCURACY = 0.001
     DEFAULT_PSF_FITS_FILENAME = "euclid_psf.fits"
+    # Use FastEPSFBuilder (gridded-spline residual resampling, ~2-3x faster,
+    # output numerically identical to stock photutils). Escape hatch: set
+    # False to fall back to the stock photutils EPSFBuilder.
+    PSF_FAST_EPSF_BUILDER = True
 
     # Euclid archive authentication
     DEFAULT_CREDENTIALS_FILE = "~/.euclid_credentials"   # two lines: username, password
