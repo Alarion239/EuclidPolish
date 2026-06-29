@@ -26,6 +26,17 @@ def test_galaxy_adql_has_cuts():
     assert "CIRCLE('ICRS', 10.0, -5.0, 0.05)" in q  # the cone
 
 
+def test_galaxy_adql_relax_drops_flag_cuts():
+    strict = gc.galaxy_adql(10.0, -5.0, 0.05)
+    relaxed = gc.galaxy_adql(10.0, -5.0, 0.05, relax=True)
+    assert f"{gc._POINTLIKE_COL} = 0" in strict          # strict has both flags
+    assert f"{gc._SPURIOUS_COL} = 0" in strict
+    assert f"{gc._POINTLIKE_COL} = 0" not in relaxed     # relaxed drops them
+    assert f"{gc._SPURIOUS_COL} = 0" not in relaxed
+    assert f"{gc._QUALITY_COL} = 0" in relaxed           # clean cut kept
+    assert f"{gc._SIZE_COL} BETWEEN" in relaxed          # size cut kept (widened)
+
+
 def test_candidates_parse_and_mag_floor():
     rows = [
         # flux 50 µJy → mag ~19.65 → kept
@@ -141,6 +152,16 @@ def test_build_diagnoses_zero_cone(monkeypatch, tmp_path):
     assert any(gc._POINTLIKE_COL in m and "0" in m for m in logs)   # culprit named
     # The cascade runs once, not once per field.
     assert sum("diagnosing" in m for m in logs) == 1
+
+
+def test_build_relaxed_logs_profile(monkeypatch, tmp_path):
+    # The default (exploratory) profile is relaxed and must say so in the log.
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    logs = []
+    gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    assert any("relaxed" in m.lower() for m in logs)
 
 
 def test_build_requires_auth(monkeypatch, tmp_path):

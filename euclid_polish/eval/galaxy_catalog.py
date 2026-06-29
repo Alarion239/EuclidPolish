@@ -60,24 +60,40 @@ def _diam_to_area_px(diam_arcsec: float) -> float:
 
 
 def galaxy_adql(ra: float, dec: float, radius_deg: float,
-                limit: int = Config.GalaxySelection.MAX_RESULTS) -> str:
-    """ADQL cone query for clean, resolved, bigger-end galaxies at ``(ra, dec)``."""
-    area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
+                limit: int = Config.GalaxySelection.MAX_RESULTS,
+                *, relax: bool = False) -> str:
+    """ADQL cone query for clean, resolved, bigger-end galaxies at ``(ra, dec)``.
+
+    ``relax`` is an exploratory profile used while the live MER cut semantics are
+    unconfirmed: it drops the two unproven galaxy-only flag cuts
+    (``point_like_flag``/``spurious_flag`` — the most likely to silently zero a
+    cone if their values/units differ from what we assume) and halves the size
+    floor, while keeping the proven ``det_quality_flag = 0`` clean cut, the flux
+    cut, and the (widened) size window. Strict (``relax=False``) is the original
+    profile; the diagnostic cascade always counts the strict cuts.
+    """
+    diam_lo = (Config.GalaxySelection.DIAM_LO_ARCSEC / 2.0 if relax
+               else Config.GalaxySelection.DIAM_LO_ARCSEC)
+    area_lo = _diam_to_area_px(diam_lo)
     area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
+    preds = [
+        f"CONTAINS(POINT('ICRS', {_RA_COL}, {_DEC_COL}), "
+        f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) = 1",
+    ]
+    if not relax:
+        preds += [f"{_POINTLIKE_COL} = 0", f"{_SPURIOUS_COL} = 0"]
+    preds += [
+        f"{_QUALITY_COL} = 0",
+        f"{_SIZE_COL} BETWEEN {area_lo:.1f} AND {area_hi:.1f}",
+        f"{_FLUX_COL} IS NOT NULL",
+        f"{_FLUX_COL} > 0",
+    ]
+    where = "\n      AND ".join(preds)
     return f"""
     SELECT TOP {limit}
         {_ID_COL}, {_RA_COL}, {_DEC_COL}, {_SIZE_COL}, {_FLUX_COL}
     FROM catalogue.mer_catalogue
-    WHERE CONTAINS(
-        POINT('ICRS', {_RA_COL}, {_DEC_COL}),
-        CIRCLE('ICRS', {ra}, {dec}, {radius_deg})
-    ) = 1
-      AND {_POINTLIKE_COL} = 0
-      AND {_SPURIOUS_COL} = 0
-      AND {_QUALITY_COL} = 0
-      AND {_SIZE_COL} BETWEEN {area_lo:.1f} AND {area_hi:.1f}
-      AND {_FLUX_COL} IS NOT NULL
-      AND {_FLUX_COL} > 0
+    WHERE {where}
     """
 
 
@@ -211,7 +227,7 @@ def _write(out_csv: str, rows: list[dict[str, Any]]) -> None:
 def build(out_csv: str | None = None, *, n_galaxies: int,
           lens_catalog_path: str, seed: int = 0,
           cone_radius_arcmin: float = 3.0, oversample: int = 4,
-          regenerate: bool = False,
+          regenerate: bool = False, relax: bool = True,
           client: EuclidCatalog | None = None,
           log: Callable[[str], None] | None = None) -> tuple[str, int]:
     """Build (or top up) the galaxy catalog to ``n_galaxies`` rows; return ``(path, n)``.
@@ -256,9 +272,15 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
     emit(f"querying {len(fields)} lens field(s) from {lens_catalog_path}; "
          f"cone r={cone_radius_arcmin:g}', target pool {target_pool} "
          f"(oversample {oversample}× of {n_galaxies}); {len(cached)} cached")
+    if relax:
+        emit("⚠ RELAXED cut profile: point_like/spurious flags OFF, size floor "
+             "halved (det_quality + flux + mag floor kept) — exploratory pass to "
+             "confirm the archive returns galaxies; tighten once the diagnostic "
+             "names the offending cut")
     if fields:
         f0 = fields[0]
-        emit("ADQL (per field):" + galaxy_adql(f0["ra"], f0["dec"], radius_deg))
+        emit("ADQL (per field):"
+             + galaxy_adql(f0["ra"], f0["dec"], radius_deg, relax=relax))
 
     queried = 0
     diagnosed = False                                # run the 0-cone cascade once
@@ -268,7 +290,8 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
                  f"stopping after {queried} field(s)")
             break
         queried += 1
-        results, err = _run_query(galaxy_adql(fld["ra"], fld["dec"], radius_deg))
+        results, err = _run_query(
+            galaxy_adql(fld["ra"], fld["dec"], radius_deg, relax=relax))
         if err:
             emit(f"  field ({fld['ra']:.4f}, {fld['dec']:.4f}): query failed: {err}")
             continue
