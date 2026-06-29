@@ -725,7 +725,7 @@ class Trainer:
                 # Repeated divergence ⇒ the LR is too hot ⇒ HALVE it and keep
                 # going, rather than aborting. Give up only after too many
                 # halvings (LR cut to a useless fraction of the original).
-                if n_rollbacks > GRAD_SPIKE_MAX_ROLLBACKS:
+                if n_rollbacks >= GRAD_SPIKE_MAX_ROLLBACKS:
                     n_halvings += 1
                     self._lr_scale *= 0.5
                     n_rollbacks = 0

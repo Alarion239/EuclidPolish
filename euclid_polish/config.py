@@ -521,7 +521,8 @@ class Config:
     # model (it can't recover), whereas a restore continues from before the
     # spike. After this many rollbacks the LR is clearly too hot, so the
     # trainer HALVES the learning rate and keeps going (instead of aborting).
-    GRAD_SPIKE_MAX_ROLLBACKS     = 5
+    # The guard halves ON the Nth rollback (``n_rollbacks >= this``).
+    GRAD_SPIKE_MAX_ROLLBACKS     = 2
     # …but don't halve forever: after this many halvings (LR cut to 1/2^N of
     # the original) it's hopeless, so abort with a clear message.
     GRAD_SPIKE_MAX_LR_HALVINGS   = 8
