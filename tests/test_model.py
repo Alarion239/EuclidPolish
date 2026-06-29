@@ -169,3 +169,15 @@ def test_eval_grouped_threads_model(monkeypatch):
     assert captured["out_dir"] == "outX"
     assert captured["n"] == 3
     assert captured["kwargs"].get("include_synthetic") is False
+
+
+def test_fresh_model_builds_multiband_net(tmp_path):
+    """A from-scratch Model (no checkpoint, no injected loader) must build a
+    4-band WDSR matching the current pipeline, not the legacy 1-channel wdsr
+    default — otherwise a fresh ensemble member crashes on 4-band data
+    ('expected shape (..., 1), found (..., 4)')."""
+    from euclid_polish.config import Config
+    from euclid_polish.model import Model
+    m = Model(str(tmp_path / "fresh_ckpt"), scale=2, num_res_blocks=2)
+    assert int(m._tf_model.inputs[0].shape[-1]) == Config.NUM_LR_CHANNELS
+    assert int(m._tf_model.outputs[0].shape[-1]) == Config.NUM_HR_CHANNELS

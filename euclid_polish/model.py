@@ -100,7 +100,17 @@ class Model:
             self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         else:
-            self._tf_model = _wdsr_build(scale=scale, num_res_blocks=num_res_blocks)
+            # Fresh build (no checkpoint to introspect): match the current
+            # multi-band pipeline (VIS+NISP → VIS+NISP). The wdsr default is
+            # 1-channel (legacy VIS-only); without this a from-scratch model —
+            # e.g. each fresh ensemble member_NN/ dir — builds a 1-channel net
+            # and dies on 4-band data ("expected shape (…, 1), found (…, 4)").
+            # Resumed checkpoints introspect their own nchan in load_model_from_
+            # checkpoint, so they are unaffected.
+            self._tf_model = _wdsr_build(
+                scale=scale, num_res_blocks=num_res_blocks,
+                nchan_in=Config.NUM_LR_CHANNELS,
+                nchan_out=Config.NUM_HR_CHANNELS)
             self.id = None
 
         self._reconstruct_fn: Callable = (
