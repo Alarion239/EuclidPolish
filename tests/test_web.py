@@ -873,6 +873,9 @@ def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
     assert any(p.endswith("/sources_validate.csv") for p in pulled)
     assert not any(p.endswith("/sources_train.csv") for p in pulled)
     assert body["files"]["sources_validate"]["ok"] is True
+    # The held-out test split (the eval set) is pulled alongside validate.
+    assert any(p.endswith("/dirty_test.tfrecord") for p in pulled)
+    assert any(p.endswith("/sources_test.csv") for p in pulled)
 
     pulled.clear()
     r = client.post("/api/sky/sync", data={"include_train": "1"})

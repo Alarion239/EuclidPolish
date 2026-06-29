@@ -131,7 +131,9 @@ def register(app):
         cache so the preview can render them.
 
         ``include_train`` (default false) controls whether the large
-        train-split files are pulled; validate shards are always included.
+        train-split files are pulled; the validate and held-out test shards
+        (the eval set) are always included. Missing shards (e.g. a dataset
+        generated before the test split) just report not-ok and are skipped.
         Lifts the fetcher's 50 MB cap to 5 GB since TFRecords are large and
         this is an explicit user-requested transfer."""
         remote_dir = _sky_records_remote_dir()
@@ -139,10 +141,12 @@ def register(app):
                          .lower() in ("1", "true", "yes", "on"))
         targets: dict[str, str] = {}
         for kind in ("clean", "dirty", "hr"):
-            targets[f"{kind}_validate"] = f"{remote_dir}/{kind}_validate.tfrecord"
+            for sub in ("validate", "test"):
+                targets[f"{kind}_{sub}"] = f"{remote_dir}/{kind}_{sub}.tfrecord"
             if include_train:
                 targets[f"{kind}_train"] = f"{remote_dir}/{kind}_train.tfrecord"
-        targets["sources_validate"] = f"{remote_dir}/sources_validate.csv"
+        for sub in ("validate", "test"):
+            targets[f"sources_{sub}"] = f"{remote_dir}/sources_{sub}.csv"
         if include_train:
             targets["sources_train"] = f"{remote_dir}/sources_train.csv"
         max_bytes = 5 * 1024 * 1024 * 1024
