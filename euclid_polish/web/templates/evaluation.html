@@ -350,6 +350,51 @@ window.__evalJumpTo = (sub) => {
     .scrollIntoView({ behavior: "smooth", block: "start" });
   return true;
 };
+
+// ── Morphology hover preview ─────────────────────────────────────────
+// One reusable, compact cutout viewer in a floating, follow-cursor box.
+// Hovering a point in any morphology canvas shows that object rendered at
+// the tier matching the point's view (before→LR, after→SR, hr→HR). The box
+// is pointer-events:none so it never steals the hover; it's ephemeral.
+const VIEW_TO_TIER = { before: "LR", after: "SR", hr: "HR" };
+const previewBox = document.createElement("div");
+previewBox.id = "morphPreview";
+previewBox.style.cssText =
+  "position:fixed;z-index:1000;display:none;pointer-events:none;width:240px;" +
+  "background:var(--card-bg,#fff);border:1px solid rgba(0,0,0,.28);" +
+  "border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.30);padding:6px;";
+const previewLabel = document.createElement("div");
+previewLabel.style.cssText =
+  "font:11px/1.4 ui-monospace,monospace;margin-bottom:4px;color:var(--fg,#222);" +
+  "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+const previewMount = document.createElement("div");
+previewBox.append(previewLabel, previewMount);
+document.body.appendChild(previewBox);
+const previewViewer = mountCutoutViewer(previewMount,
+  { collection: "evaluation", compact: true });
+
+let previewIdx = null, previewTier = null;
+function positionPreview(x, y) {
+  const w = 252, h = previewBox.offsetHeight || 252, pad = 12, off = 18;
+  let left = x + off, top = y + off;
+  if (left + w > window.innerWidth) left = x - w - off;
+  if (top + h > window.innerHeight) top = window.innerHeight - h - pad;
+  previewBox.style.left = Math.max(pad, left) + "px";
+  previewBox.style.top = Math.max(pad, top) + "px";
+}
+window.__evalPreview = {
+  showAt(subdir, view, x, y) {
+    const idx = window.__evalSubIndex[subdir];
+    const tier = VIEW_TO_TIER[view];
+    if (idx === undefined || !tier || !previewViewer.isReady()) { this.hide(); return; }
+    if (idx !== previewIdx) { previewViewer.goTo(idx); previewIdx = idx; }
+    if (tier !== previewTier) { previewViewer.setTiers([tier]); previewTier = tier; }
+    previewLabel.textContent = subdir + " · " + tier;
+    positionPreview(x, y);
+    previewBox.style.display = "block";
+  },
+  hide() { previewBox.style.display = "none"; },
+};
 </script>
 
 <script>
@@ -578,8 +623,16 @@ window.__evalJumpTo = (sub) => {
       });
       return best;
     }
+    // Drive the shared hover preview (before→LR, after→SR, hr→HR), if present.
+    const showPreview = (e) => {
+      if (!window.__evalPreview) return;
+      if (hover) window.__evalPreview.showAt(hover.id, hover.view, e.clientX, e.clientY);
+      else window.__evalPreview.hide();
+    };
+    const hidePreview = () => { if (window.__evalPreview) window.__evalPreview.hide(); };
     canvas.addEventListener('pointerdown', e => {
       dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId);
+      hidePreview();                           // no preview while rotating/panning
     });
     canvas.addEventListener('pointermove', e => {
       const rect = canvas.getBoundingClientRect();
@@ -596,13 +649,14 @@ window.__evalJumpTo = (sub) => {
         lastX = e.clientX; lastY = e.clientY;
       } else {
         hover = nearest(e.clientX - rect.left, e.clientY - rect.top);
+        showPreview(e);
       }
       draw();
     });
     canvas.addEventListener('pointerup', e => {
       dragging = false; canvas.releasePointerCapture(e.pointerId);
     });
-    canvas.addEventListener('pointerleave', () => { dragging = false; hover = null; draw(); });
+    canvas.addEventListener('pointerleave', () => { dragging = false; hover = null; hidePreview(); draw(); });
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       zoom *= Math.exp(-e.deltaY * 0.001);

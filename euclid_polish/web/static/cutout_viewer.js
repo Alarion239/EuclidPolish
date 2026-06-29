@@ -153,6 +153,9 @@ export function mountCutoutViewer(root, opts = {}) {
   const framesRow = el("div", { class: "cv-frames" });
   const nav = el("div", { class: "cv-nav" });
   root.append(toolbar, framesRow, nav);
+  // Compact mode (e.g. the morphology hover preview): hide the toolbar/nav
+  // chrome so only the image frame shows.
+  if (opts.compact) { toolbar.style.display = "none"; nav.style.display = "none"; }
 
   // --- helpers -------------------------------------------------------------
   const band = (name) => state.meta.color.bands[name];
@@ -647,7 +650,21 @@ export function mountCutoutViewer(root, opts = {}) {
 
   const api = {
     goTo(i) { go(i, false); },
+    /** Programmatically set the selected tier(s), mirroring a chip click:
+     *  keep only tiers that exist and aren't disabled, then re-render. */
+    setTiers(keys) {
+      if (!state.meta) return;
+      const wanted = (Array.isArray(keys) ? keys : [keys])
+        .filter((k) => !tierDisabled(k));
+      const next = (state.meta.tiers || [])
+        .map((t) => t.key).filter((k) => wanted.includes(k));
+      if (!next.length) return;              // nothing valid → leave as-is
+      state.tiers = next;
+      syncChips();
+      show();
+    },
     getIndex() { return state.index; },
+    isReady() { return !!state.meta; },
     getState() {
       return { index: state.index, tier: state.tiers[0],
                tiers: state.tiers.slice(), color: state.color,
