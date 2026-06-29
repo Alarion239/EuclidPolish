@@ -12,6 +12,7 @@ from euclid_polish.sky.observation.artifacts import (
     expected_streak_count,
     inject_artifacts,
     inject_cosmic_rays,
+    inject_dead_pixels,
     inject_hot_pixels,
     inject_streaks,
 )
@@ -173,6 +174,67 @@ def test_inject_hot_pixels_zero_fraction():
     rng = np.random.default_rng(0)
     out = inject_hot_pixels(img, rng, cfg)
     np.testing.assert_array_equal(out, img)
+
+
+# ---------------------------------------------------------------------------
+# Dead pixels
+# ---------------------------------------------------------------------------
+
+def test_inject_dead_pixels_count_matches_fraction_and_destroys_signal():
+    """A fraction of pixels are REPLACED (not added) by ~0, destroying the
+    bright signal that was there."""
+    img = np.full((1024, 1024), 5000.0, dtype=np.float32)   # bright everywhere
+    cfg = ArtifactConfig(dead_pixel_fraction=0.005, dead_pixel_jitter_sigma=0.3)
+    rng = np.random.default_rng(0)
+    out = inject_dead_pixels(img, rng, cfg, local_sigma_e=10.0)
+    n_dead = int((out < 100.0).sum())                       # pulled to ~0
+    expected = cfg.dead_pixel_fraction * img.size
+    assert abs(n_dead - expected) < 250                     # ~3σ binomial
+    # The dead pixels are jittered around zero, not a single constant.
+    dead_vals = out[out < 100.0]
+    assert dead_vals.std() > 0.0
+
+
+def test_inject_dead_pixels_value_near_zero_scaled_to_noise():
+    img = np.full((512, 512), 1e6, dtype=np.float32)
+    cfg = ArtifactConfig(dead_pixel_fraction=0.01, dead_pixel_jitter_sigma=0.3)
+    rng = np.random.default_rng(1)
+    sigma = 20.0
+    out = inject_dead_pixels(img, rng, cfg, local_sigma_e=sigma)
+    dead = out[out < 1e5]
+    # Values cluster around 0 with spread ≈ jitter_sigma · local_sigma_e.
+    assert abs(float(dead.mean())) < sigma
+    assert 0.5 * 0.3 * sigma < float(dead.std()) < 2.0 * 0.3 * sigma
+
+
+def test_inject_dead_pixels_exact_zero_without_noise():
+    img = np.full((128, 128), 1000.0, dtype=np.float32)
+    cfg = ArtifactConfig(dead_pixel_fraction=0.02)
+    rng = np.random.default_rng(2)
+    out = inject_dead_pixels(img, rng, cfg, local_sigma_e=0.0)
+    assert np.any(out == 0.0)                                # exactly zero floor
+    assert set(np.unique(out)).issubset({0.0, 1000.0})
+
+
+def test_inject_dead_pixels_disabled_and_zero_fraction():
+    img = np.full((128, 128), 7.0, dtype=np.float32)
+    rng = np.random.default_rng(0)
+    np.testing.assert_array_equal(
+        inject_dead_pixels(img, rng, ArtifactConfig(add_dead_pixels=False),
+                           local_sigma_e=5.0), img)
+    np.testing.assert_array_equal(
+        inject_dead_pixels(img, rng, ArtifactConfig(dead_pixel_fraction=0.0),
+                           local_sigma_e=5.0), img)
+
+
+@pytest.mark.parametrize("bad_kwargs", [
+    {"dead_pixel_fraction": 1.5},
+    {"dead_pixel_fraction": -0.1},
+    {"dead_pixel_jitter_sigma": -1.0},
+])
+def test_invalid_dead_pixel_config_rejected(bad_kwargs):
+    with pytest.raises(ValueError):
+        ArtifactConfig(**bad_kwargs)
 
 
 # ---------------------------------------------------------------------------

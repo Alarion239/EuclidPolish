@@ -774,6 +774,17 @@ class Config:
     # large positive offset (effective additional well filling).
     HOT_PIXEL_FRACTION     = 1.0e-3
     HOT_PIXEL_CHARGE_MEAN_E = 10000.0
+    # Dead / unresponsive pixels: a small fraction of detector pixels collect
+    # ~no charge, so they read at the background floor (≈0 after sky/dark
+    # subtraction) regardless of what light fell on them. Their real signal is
+    # DESTROYED (replacement, not additive), so the network must inpaint the
+    # value from neighbours. Rarer than hot pixels; the value is jittered
+    # around zero (× the local per-pixel noise σ) so the model keys on the
+    # spatial anomaly rather than a magic constant. Randomized per frame so it
+    # learns position-independent robustness, not a fixed mask. 3e-4 ≈ a few
+    # dozen per 510px band frame.
+    DEAD_PIXEL_FRACTION     = 3.0e-4
+    DEAD_PIXEL_JITTER_SIGMA = 0.3       # dead-pixel value ~ N(0, this·σ_floor)
 
     # ---------------------------------------------------------------------
     # Long faint "interpolation-residual" streaks

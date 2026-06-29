@@ -5,6 +5,7 @@ Observation sub-package: forward model.
 from euclid_polish.sky.observation.artifacts import (
     inject_artifacts,
     inject_cosmic_rays,
+    inject_dead_pixels,
     inject_hot_pixels,
 )
 from euclid_polish.sky.observation.differential_kernel import (
@@ -25,5 +26,6 @@ __all__ = [
     "StarSaturationModel",
     "upsample", "lanczos3_upsample", "cubic_upsample",
     "inject_artifacts", "inject_cosmic_rays", "inject_hot_pixels",
+    "inject_dead_pixels",
     "DifferentialKernel", "compute_differential_kernel",
 ]

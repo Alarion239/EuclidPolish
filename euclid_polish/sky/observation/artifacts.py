@@ -10,6 +10,9 @@ does not reproduce. Three classes are modelled here:
   by the MER cross-dither median; this models the post-rejection survivors.
 * **Hot pixels** — ~0.1% of detector pixels show anomalously high dark
   current and effectively saturate over a typical exposure.
+* **Dead pixels** — a rarer set of unresponsive pixels collect ~no charge,
+  reading at the background floor (≈0) regardless of incident light; their
+  real signal is destroyed so the network must inpaint from neighbours.
 * **Long faint streaks** — the MER pipeline (Q1 paper, Romelli+ 2025
   arXiv:2503.15305) masks pixels affected by long oblique CR trails,
   satellite/asteroid trails, and NISP persistence, then interpolates
@@ -59,6 +62,11 @@ class ArtifactConfig:
     hot_pixel_fraction:     float = Config.HOT_PIXEL_FRACTION
     hot_pixel_charge_mean_e: float = Config.HOT_PIXEL_CHARGE_MEAN_E
 
+    # Dead / unresponsive pixels (see :func:`inject_dead_pixels`).
+    add_dead_pixels:         bool  = True
+    dead_pixel_fraction:     float = Config.DEAD_PIXEL_FRACTION
+    dead_pixel_jitter_sigma: float = Config.DEAD_PIXEL_JITTER_SIGMA
+
     # Long faint masked-trail streaks (see module docstring).
     add_streaks:               bool  = True
     streak_rate_per_kpix2:     float = Config.STREAK_RATE_PER_KPIX2
@@ -81,6 +89,10 @@ class ArtifactConfig:
             raise ValueError("hot_pixel_fraction must be in [0, 1]")
         if self.hot_pixel_charge_mean_e <= 0:
             raise ValueError("hot_pixel_charge_mean_e must be > 0")
+        if not (0.0 <= self.dead_pixel_fraction <= 1.0):
+            raise ValueError("dead_pixel_fraction must be in [0, 1]")
+        if self.dead_pixel_jitter_sigma < 0:
+            raise ValueError("dead_pixel_jitter_sigma must be ≥ 0")
         if self.cr_max_track_length < 1:
             raise ValueError("cr_max_track_length must be ≥ 1")
         if self.streak_rate_per_kpix2 < 0:
@@ -214,6 +226,47 @@ def inject_hot_pixels(
     charges = rng.exponential(scale=cfg.hot_pixel_charge_mean_e, size=n).astype(image_e.dtype)
     out = image_e.copy()
     out[mask] = out[mask] + charges
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Dead / unresponsive pixels
+# ---------------------------------------------------------------------------
+
+def inject_dead_pixels(
+    image_e: np.ndarray,
+    rng: np.random.Generator,
+    cfg: ArtifactConfig,
+    local_sigma_e: float = 0.0,
+) -> np.ndarray:
+    """Zero out random pixels, modelling dead/unresponsive detector pixels.
+
+    Each pixel independently goes dead with probability
+    ``cfg.dead_pixel_fraction``. A dead pixel collects ~no charge, so it reads
+    at the background floor (≈0 after sky/dark subtraction) no matter what
+    light fell on it — its real signal is **destroyed** (replacement, not
+    additive), forcing the network to inpaint the value from its neighbours
+    (and, as a side effect, to learn the local pixel correlations).
+
+    The replacement value is drawn from ``N(0, dead_pixel_jitter_sigma ·
+    local_sigma_e)`` rather than being exactly zero, so the model keys on the
+    spatial anomaly instead of memorising a magic constant. (Read noise, added
+    downstream, jitters it further.) ``local_sigma_e <= 0`` → exactly zero.
+
+    Positions are randomized per frame (like the hot-pixel mask) so the network
+    learns position-independent robustness, not a fixed dead-pixel map.
+    """
+    if not cfg.add_dead_pixels or cfg.dead_pixel_fraction <= 0:
+        return image_e
+    mask = rng.random(image_e.shape) < cfg.dead_pixel_fraction
+    if not mask.any():
+        return image_e
+    n = int(mask.sum())
+    sigma = max(0.0, cfg.dead_pixel_jitter_sigma * float(local_sigma_e))
+    vals = (rng.normal(0.0, sigma, size=n) if sigma > 0
+            else np.zeros(n)).astype(image_e.dtype)
+    out = image_e.copy()
+    out[mask] = vals
     return out
 
 
@@ -353,4 +406,7 @@ def inject_artifacts(
     out = inject_cosmic_rays(image_e, band, rng, cfg)
     out = inject_hot_pixels(out, rng, cfg)
     out = inject_streaks(out, rng, cfg, local_sigma_e)
+    # Dead pixels LAST: an unresponsive pixel reads ~0 regardless of any CR /
+    # hot / streak charge that "landed" on it, so it overwrites them.
+    out = inject_dead_pixels(out, rng, cfg, local_sigma_e)
     return out
