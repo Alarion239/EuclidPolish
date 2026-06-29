@@ -1152,10 +1152,17 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
-        # All-TNG generation (redshift realism, COSMOS skipped).
+        # All-TNG generation with full redshift realism (COSMOS skipped). The
+        # physical n(z) + mass-function forward model reproduces the deep-field
+        # apparent-size distribution (median R_e ≈ 0.22″, only ~2% > 1″).
+        # WITHOUT --tng-redshift-mode the generator sizes stamps log-uniformly
+        # over [0.3,4]″ at full atlas mass (median ~1.1″, ~half > 1″) → fields
+        # full of arcsec-scale giants. TNG_GAL_DENSITY_ARCMIN2 (60) is the
+        # pure-TNG sky density of log M*≥8.5 galaxies, not the COSMOS Sersic
+        # density (111) — using the latter over-populates the field ~2×.
         cmd += ["--sersic-density-arcmin2", "0",
-                "--tng-density-arcmin2",
-                str(Config.DEFAULT_GAL_DENSITY_ARCMIN2)]
+                "--tng-density-arcmin2", f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}",
+                "--tng-redshift-mode"]
         # Star field knobs (from /config). Emit only when supplied so a default
         # submit stays unchanged.
         for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),

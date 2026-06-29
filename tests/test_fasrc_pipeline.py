@@ -351,13 +351,18 @@ class TestRegistry:
                               {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
 
     def test_synthetic_generate_tng_density_flags(self):
-        """The synthetic generator uses all-TNG mode: --sersic-density-arcmin2 0."""
+        """All-TNG mode with redshift realism: COSMOS off, pure-TNG density,
+        and --tng-redshift-mode (the physical n(z) + mass-function size model,
+        not log-uniform[0.3,4]″ giants)."""
+        from euclid_polish.config import Config
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100}
         argv = step.build_command(base)
         assert argv[argv.index("--sersic-density-arcmin2") + 1] == "0"
-        assert "--tng-density-arcmin2" in argv
+        assert (argv[argv.index("--tng-density-arcmin2") + 1]
+                == f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}")
+        assert "--tng-redshift-mode" in argv
 
     def test_synthetic_generate_star_field_flags(self):
         """Star field knobs from /config reach run_pipeline; absent → omitted."""

@@ -52,8 +52,14 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # All-TNG mode (redshift realism, COSMOS catalog skipped).
-    tng_flag = f" --sersic-density-arcmin2 0 --tng-density-arcmin2 {Config.DEFAULT_GAL_DENSITY_ARCMIN2}"
+    # All-TNG mode with full redshift realism (COSMOS catalog skipped): the
+    # n(z) + mass-function model gives the deep-field apparent-size distribution
+    # (median R_e ≈ 0.22″). Without --tng-redshift-mode sizes are log-uniform
+    # [0.3,4]″ (median ~1.1″) → arcsec-scale giants; 60/arcmin² is the pure-TNG
+    # density, not the COSMOS Sersic 111.
+    tng_flag = (f" --sersic-density-arcmin2 0"
+                f" --tng-density-arcmin2 {Config.TNG_GAL_DENSITY_ARCMIN2:g}"
+                f" --tng-redshift-mode")
     _conda_block = _conda_activate_snippet(cfg.conda_env_path)
     return textwrap.dedent(f"""
         set -e

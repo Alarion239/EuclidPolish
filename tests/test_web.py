@@ -637,15 +637,17 @@ def test_post_inference_generate_reconstruct_returns_job_id(client):
 
 
 def test_login_node_generate_cmd_injects_tng_density():
-    """The inference login-node generation always runs all-TNG mode:
-    --sersic-density-arcmin2 0 and --tng-density-arcmin2 >0."""
+    """The inference login-node generation always runs all-TNG mode with
+    redshift realism: COSMOS off, pure-TNG density, --tng-redshift-mode."""
+    from euclid_polish.config import Config
     from euclid_polish.web.fasrc_config import FasrcConfig
     from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
     base = _login_node_generate_cmd(cfg, "/n/tmp", 510, 2)
     assert "scripts/run_pipeline.py" in base
     assert "--sersic-density-arcmin2 0" in base
-    assert "--tng-density-arcmin2" in base
+    assert f"--tng-density-arcmin2 {Config.TNG_GAL_DENSITY_ARCMIN2:g}" in base
+    assert "--tng-redshift-mode" in base
 
 
 # ---------------------------------------------------------------------------
