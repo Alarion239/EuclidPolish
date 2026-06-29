@@ -44,6 +44,23 @@ from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 # Resource preset (subset of SLURM knobs the user can override per submit)
 # ---------------------------------------------------------------------------
 
+def _normalize_memory(mem: str) -> str:
+    """Give a bare-number SLURM memory string a gigabyte unit.
+
+    SLURM reads a unitless ``--mem`` as MEGABYTES, so a memory field set to
+    ``"16"`` silently becomes 16 MB — far too little for Python+TensorFlow to
+    even import, and the job is OOM-killed before it prints a single line
+    (a real, baffling footgun: the wrapper banner appears, then nothing).
+    On these nodes a bare number always means gigabytes, so append ``G`` when
+    no letter unit is present. Values that already carry a unit (``64G``,
+    ``64GB``, ``512M``) pass through unchanged; blank stays blank.
+    """
+    s = str(mem).strip()
+    if not s or s[-1].isalpha():        # already has a K/M/G/T(B) unit letter
+        return s
+    return s + "G"
+
+
 @dataclass
 class StepResources:
     """One SLURM allocation profile.
@@ -58,6 +75,9 @@ class StepResources:
     n_gpus:      int = 0
     memory:      str = "16G"
     time_limit:  str = "2:00:00"
+
+    def __post_init__(self) -> None:
+        self.memory = _normalize_memory(self.memory)
 
     def to_dict(self) -> dict[str, Any]:
         return {

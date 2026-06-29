@@ -48,6 +48,21 @@ class TestStepResources:
         with pytest.raises(ValueError, match="invalid resource"):
             StepResources.from_form({"n_cpus": "twelve"}, StepResources())
 
+    def test_bare_number_memory_gets_gigabyte_unit(self):
+        """A unitless memory value would be MEGABYTES to SLURM (16 → 16 MB,
+        OOM-kill before Python imports). It must become gigabytes."""
+        assert StepResources(memory="16").memory == "16G"
+        r = StepResources.from_form({"memory": "16"}, StepResources())
+        assert r.memory == "16G"
+        r2 = StepResources.from_form_strict(
+            {"partition": "shared", "n_cpus": "8", "n_gpus": "0",
+             "memory": "16", "time_limit": "15"})
+        assert r2.memory == "16G"
+
+    def test_memory_with_unit_passes_through(self):
+        for val in ("64G", "64GB", "512M", "16g"):
+            assert StepResources(memory=val).memory == val
+
 
 # ---------------------------------------------------------------------------
 # Registry shape
