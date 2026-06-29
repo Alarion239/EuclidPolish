@@ -15,6 +15,7 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
 )
+from euclid_polish.sky.generation.source_catalog import read_sources
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -234,3 +235,146 @@ def test_step_convolve_resumes_then_force_regenerates(tmp_path, monkeypatch):
     opened.clear()
     rp.step_convolve(_convolve_args(rdir, ntrain=4, nvalid=0, force=True))
     assert "hr_train" in opened and "dirty_train" in opened
+
+
+# --------------------------------------------------------------------------
+# Shard-level resume helpers: salvage intact records from a killed run
+# --------------------------------------------------------------------------
+
+def test_salvage_tfrecord_drops_truncated_tail(tmp_path):
+    p = str(tmp_path / "clean_train.part0000.tfrecord")
+    _write_dummy_tfrecord(p, 4)
+    with open(p, "r+b") as f:                 # chop into the 4th record
+        f.truncate(os.path.getsize(p) - 6)
+    assert rp._salvage_tfrecord(p) == 3       # bad tail dropped
+    assert rp._count_tfrecords(p) == 3        # file is valid again
+
+
+def test_salvage_tfrecord_intact_keeps_all(tmp_path):
+    p = str(tmp_path / "clean_train.part0000.tfrecord")
+    _write_dummy_tfrecord(p, 5)
+    assert rp._salvage_tfrecord(p) == 5
+    assert rp._count_tfrecords(p) == 5
+
+
+def test_salvage_tfrecord_missing_or_empty_returns_zero(tmp_path):
+    assert rp._salvage_tfrecord(str(tmp_path / "nope.tfrecord")) == 0
+    empty = str(tmp_path / "empty.tfrecord")
+    open(empty, "wb").close()
+    assert rp._salvage_tfrecord(empty) == 0
+
+
+def test_truncate_tfrecord_keeps_first_k(tmp_path):
+    p = str(tmp_path / "x.tfrecord")
+    _write_dummy_tfrecord(p, 6)
+    rp._truncate_tfrecord(p, 2)
+    assert rp._count_tfrecords(p) == 2
+
+
+def test_filter_sources_part_keeps_valid_rows_in_set(tmp_path):
+    p = str(tmp_path / "sources_train.part0000.csv")
+    full = ",".join(["0", "galaxy", "sersic", "1.0", "2.0", "3.0", "0.5", "", ""])
+    rows = [
+        ",".join(rp.SOURCE_COLS),                 # header
+        full,                                     # field 0 — keep
+        full.replace("0,galaxy", "1,lens", 1),    # field 1 — drop (not in set)
+        full.replace("0,galaxy", "2,galaxy", 1),  # field 2 — keep
+        "2,galaxy,sersic,1.0",                    # truncated final row — drop
+    ]
+    open(p, "w", newline="").write("\r\n".join(rows) + "\r\n")
+    rp._filter_sources_part(p, {0, 2})
+    out = open(p, newline="").read()
+    kept = [ln for ln in out.splitlines() if ln and not ln.startswith("field_index")]
+    assert len(kept) == 2                         # field-1 row + partial row gone
+    assert all(ln.split(",")[0] in ("0", "2") for ln in kept)
+    assert "1,lens" not in out                    # filtered out
+
+
+def test_existing_part_sids_finds_clean_parts(tmp_path):
+    rdir = str(tmp_path)
+    for sid in (0, 3, 1):
+        open(tfrecord_path(rdir, f"clean_train.part{sid:04d}"), "w").close()
+    open(tfrecord_path(rdir, "clean_validate.part0000"), "w").close()  # other subset
+    assert rp._existing_part_sids(rdir, "train") == [0, 1, 3]
+
+
+# --------------------------------------------------------------------------
+# Integration: salvage a half-written shard, then resume + merge to complete
+# --------------------------------------------------------------------------
+
+def _kill_part_tail(path, nbytes):
+    """Simulate a SIGKILL mid-record by chopping bytes off a part file."""
+    with open(path, "r+b") as f:
+        f.truncate(os.path.getsize(path) - nbytes)
+
+
+def test_salvage_shard_aligns_views_and_filters_sources(tmp_path):
+    rdir = str(tmp_path)
+    sim, fwd = _sim_fwd()
+    # One shard of 3 fields (indices 0,1,2). Simulate a kill that left dirty
+    # one record short of clean/hr.
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 3, 0, seed=[1, 1, 0])
+    _kill_part_tail(tfrecord_path(rdir, "dirty_train.part0000"), 6)
+
+    kept, idx = rp._salvage_shard(rdir, "train", 0, cap=99)
+    assert kept == 2 and idx == [0, 1]                  # aligned down to dirty
+    for kind in ("clean", "hr", "dirty"):
+        assert rp._count_tfrecords(
+            tfrecord_path(rdir, f"{kind}_train.part0000")) == 2
+    # Sources sidecar keeps only rows for the surviving fields {0, 1}.
+    src = tfrecord_path(rdir, "sources_train.part0000").replace(
+        ".tfrecord", ".csv")
+    for r in read_sources(src):
+        assert r in (0, 1)
+
+
+def test_salvage_shard_cap_caps_kept_records(tmp_path):
+    rdir = str(tmp_path)
+    sim, fwd = _sim_fwd()
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 4, 0, seed=[1, 1, 0])
+    kept, idx = rp._salvage_shard(rdir, "train", 0, cap=1)
+    assert kept == 1 and idx == [0]
+    assert rp._count_tfrecords(tfrecord_path(rdir, "clean_train.part0000")) == 1
+
+
+def test_salvage_subset_then_resume_and_merge_to_complete(tmp_path):
+    rdir = str(tmp_path)
+    sim, fwd = _sim_fwd()
+    n = 4
+    # Killed-run state: shard 0 done over [0,2); shard 1 over [2,4) but its
+    # dirty view lost its last record to a mid-write kill.
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0, seed=[1, 1, 0])
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 2, 2, 1, seed=[1, 1, 1])
+    _kill_part_tail(tfrecord_path(rdir, "dirty_train.part0001"), 6)
+
+    done, used, next_sid = rp._salvage_subset(rdir, "train", n)
+    assert done == 3                       # 2 (shard0) + 1 (shard1 salvaged)
+    assert sorted(used) == [0, 1, 2]
+    assert next_sid == 2                   # new shards start above salvaged ids
+
+    # Resume: generate the 1 missing pair as a new shard with a fresh index
+    # above every salvaged one (exactly what the parallel step does).
+    base_idx = max(used) + 1
+    rp._generate_convolve_range(sim, fwd, rdir, "train", base_idx, n - done,
+                                next_sid, seed=[1, 1, next_sid])
+    rp._merge_subset(rdir, "train")
+
+    kinds = ("clean", "hr", "dirty", "sources")
+    assert rp._subset_complete(rdir, "train", kinds, n) is True
+    for kind in ("clean", "hr", "dirty"):
+        assert rp._count_tfrecords(tfrecord_path(rdir, f"{kind}_train")) == n
+    # Stored indices are unique across the merge (no salvaged/new collision).
+    merged_idx = rp._part_indices(tfrecord_path(rdir, "clean_train"))
+    assert len(merged_idx) == n and len(set(merged_idx)) == n
+    # Parts are cleaned up once the merge succeeds.
+    assert rp._existing_part_sids(rdir, "train") == []
+
+
+def test_force_path_discards_salvageable_parts(tmp_path):
+    """--force wipes prior parts rather than resuming them."""
+    rdir = str(tmp_path)
+    sim, fwd = _sim_fwd()
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0, seed=[1, 1, 0])
+    assert rp._existing_part_sids(rdir, "train") == [0]
+    rp._cleanup_parts(rdir, "train")       # what the --force branch calls
+    assert rp._existing_part_sids(rdir, "train") == []

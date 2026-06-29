@@ -67,6 +67,7 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.source_catalog import (
+    SOURCE_COLS,
     SourceCatalogWriter,
     concat_source_csvs,
 )
@@ -529,6 +530,164 @@ def _cleanup_parts(records_dir: str, subset: str) -> None:
                 os.remove(p)
 
 
+# ---------------------------------------------------------------------------
+# Shard-level resume: salvage the intact records a killed run left on disk so a
+# resubmit only regenerates the shortfall, instead of redoing the whole subset.
+# A SLURM SIGKILL can leave a part file with a half-written final record; we
+# drop that bad tail, align the clean/hr/dirty views to a common length, and
+# filter the source sidecar to the surviving fields.
+# ---------------------------------------------------------------------------
+
+def _salvage_tfrecord(path: str) -> int:
+    """Rewrite ``path`` keeping only its leading run of intact records.
+
+    Streams the good records into a sibling temp and atomically replaces the
+    original, stopping at the first truncated/corrupt record (which a killed
+    writer leaves as a ``tf.errors.DataLossError`` at the tail). Returns the
+    surviving record count (0 for a missing/empty file)."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return 0
+    tmp = path + ".salvage"
+    n = 0
+    writer = tf.io.TFRecordWriter(tmp)
+    try:
+        for raw in tf.data.TFRecordDataset(path):
+            writer.write(raw.numpy())          # raw serialized record bytes
+            n += 1
+    except tf.errors.DataLossError:
+        pass                                   # truncated/corrupt tail — stop
+    finally:
+        writer.close()
+    os.replace(tmp, path)
+    return n
+
+
+def _truncate_tfrecord(path: str, keep: int) -> None:
+    """Keep only the first ``keep`` records of ``path`` (rewrite in place).
+
+    Aligns the clean/hr/dirty views of a shard when a kill landed between
+    writing the three views of one field, so they stay position-paired."""
+    tmp = path + ".trunc"
+    n = 0
+    with tf.io.TFRecordWriter(tmp) as w:
+        for raw in tf.data.TFRecordDataset(path):
+            if n >= keep:
+                break
+            w.write(raw.numpy())
+            n += 1
+    os.replace(tmp, path)
+
+
+def _part_indices(path: str) -> list[int]:
+    """Stored ``index`` of every record in ``path`` (decodes only that
+    feature, never the pixel array)."""
+    feats = {"index": tf.io.FixedLenFeature([], tf.int64)}
+    return [int(tf.io.parse_single_example(raw, feats)["index"].numpy())
+            for raw in tf.data.TFRecordDataset(path)]
+
+
+def _filter_sources_part(csv_path: str, keep: set[int]) -> None:
+    """Keep the header plus only complete rows whose ``field_index`` is in
+    ``keep``. Drops a half-written final line from a killed run (wrong column
+    count) and orphan rows for fields whose image was not saved."""
+    if not os.path.isfile(csv_path):
+        return
+    ncommas = len(SOURCE_COLS) - 1
+    tmp = csv_path + ".tmp"
+    with open(csv_path, newline="") as fin, open(tmp, "w", newline="") as fout:
+        first = True
+        for line in fin:
+            if first:                          # header
+                fout.write(line)
+                first = False
+                continue
+            head = line.split(",", 1)[0].strip()
+            if line.count(",") == ncommas and head.isdigit() and int(head) in keep:
+                fout.write(line)
+    os.replace(tmp, csv_path)
+
+
+def _existing_part_sids(records_dir: str, subset: str) -> list[int]:
+    """Ascending shard ids that have a ``clean_<subset>.partNNNN`` on disk."""
+    prefix = os.path.join(records_dir, f"clean_{subset}.part")
+    sids = []
+    for p in glob.glob(prefix + "*"):
+        tail = p[len(prefix):].split(".", 1)[0]
+        if tail.isdigit():
+            sids.append(int(tail))
+    return sorted(sids)
+
+
+def _salvage_shard(records_dir: str, subset: str, sid: int,
+                   cap: int) -> tuple[int, list[int]]:
+    """Salvage one shard's clean/hr/dirty/sources parts to a common, intact
+    prefix of at most ``cap`` records. Returns ``(kept, index_list)``.
+
+    The three views are truncated to the shortest that survived (a kill
+    between writing clean/hr/dirty of one field), and the sources sidecar is
+    filtered to the surviving field indices. A shard with nothing salvageable
+    (or ``cap <= 0``) is deleted and returns ``(0, [])``."""
+    paths = {k: tfrecord_path(records_dir, f"{k}_{subset}.part{sid:04d}")
+             for k in ("clean", "hr", "dirty")}
+    src = tfrecord_path(
+        records_dir, f"sources_{subset}.part{sid:04d}").replace(
+            ".tfrecord", ".csv")
+    counts = {k: _salvage_tfrecord(p) for k, p in paths.items()}
+    keep = min(min(counts.values()), max(0, cap))
+    if keep <= 0:
+        for p in (*paths.values(), src):
+            with contextlib.suppress(OSError):
+                os.remove(p)
+        return 0, []
+    for k, p in paths.items():
+        if counts[k] > keep:
+            _truncate_tfrecord(p, keep)
+    idx = _part_indices(paths["clean"])
+    _filter_sources_part(src, set(idx))
+    return keep, idx
+
+
+def _salvage_subset(records_dir: str, subset: str,
+                    n: int) -> tuple[int, list[int], int]:
+    """Salvage every prior-run shard for ``subset`` to a clean prefix, capped
+    so the kept total never exceeds ``n`` (a resubmit with a smaller ``n``
+    discards the surplus). Returns ``(total_kept, used_indices,
+    next_free_shard_id)`` — new shards take ids at/above ``next_free_shard_id``
+    so they never clobber a salvaged part."""
+    sids = _existing_part_sids(records_dir, subset)
+    done = 0
+    used: list[int] = []
+    for sid in sids:
+        kept, idx = _salvage_shard(records_dir, subset, sid, cap=n - done)
+        done += kept
+        used.extend(idx)
+    next_sid = (max(sids) + 1) if sids else 0
+    return done, used, next_sid
+
+
+def _merge_subset(records_dir: str, subset: str) -> None:
+    """Concatenate every on-disk shard for ``subset`` into the final clean/hr/
+    dirty TFRecords + sources CSV, then delete the parts.
+
+    Shards merge in ascending id order, shared across clean/hr/dirty so records
+    stay position-aligned (the dataset pairs by position). Each output is built
+    in a temp then atomically renamed, and parts are deleted only after every
+    kind is merged — so a kill mid-merge leaves the parts intact for the next
+    resume rather than a half-merged final file."""
+    sids = _existing_part_sids(records_dir, subset)
+    for kind in ("clean", "hr", "dirty"):
+        parts = [tfrecord_path(records_dir, f"{kind}_{subset}.part{sid:04d}")
+                 for sid in sids]
+        out = tfrecord_path(records_dir, f"{kind}_{subset}")
+        _concat_tfrecords(parts, out + ".tmp")
+        os.replace(out + ".tmp", out)
+    src_parts = [tfrecord_path(records_dir, f"sources_{subset}.part{sid:04d}")
+                 .replace(".tfrecord", ".csv") for sid in sids]
+    concat_source_csvs(src_parts, tfrecord_path(
+        records_dir, f"sources_{subset}").replace(".tfrecord", ".csv"))
+    _cleanup_parts(records_dir, subset)
+
+
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
                              start: int, count: int, shard_id: int,
                              seed, plan=None) -> tuple[str, int, int]:
@@ -672,12 +831,20 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                 ("clean", "hr", "dirty", "sources"), n):
             _log(f"  {subset}: already complete ({n} records) — skipping")
             continue
-        _cleanup_parts(args.records_dir, subset)
-        # More shards than workers → finer progress + load balancing.
-        # ~256 images/shard, but at least one shard per worker and never
-        # more shards than images.
-        n_shards = min(n, max(workers, math.ceil(n / 256)))
-        bounds = _shard_bounds(n, n_shards)
+
+        # Resume: salvage the intact records a killed run left on disk so we
+        # only regenerate the shortfall. --force discards them and starts clean.
+        if args.force:
+            _cleanup_parts(args.records_dir, subset)
+            done, used_idx, base_sid = 0, [], 0
+        else:
+            done, used_idx, base_sid = _salvage_subset(
+                args.records_dir, subset, n)
+            if done:
+                _log(f"  {subset}: resuming — salvaged {done}/{n} pairs from a "
+                     f"prior run; generating {n - done} more")
+        remaining = n - done
+
         # Pre-mint this subset's three file ids in the parent; every shard
         # stamps with the same plan (records share one id per file).
         plan = None
@@ -691,60 +858,57 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                 )
             except Exception:
                 plan = None
+
+        # New fields take indices above every salvaged one and shard ids above
+        # every salvaged shard, so the index↔sources map stays unique and new
+        # parts never clobber a kept one.
         tasks = []
-        for sid, (start, end) in enumerate(bounds):
-            if end > start:
-                # SeedSequence material → reproducible, independent per shard;
-                # all derived from the one recorded run_seed.
-                seed = [run_seed, _subset_tag(subset), sid]
-                tasks.append((subset, start, end - start, sid, seed, plan))
+        if remaining > 0:
+            base_idx = (max(used_idx) + 1) if used_idx else 0
+            # More shards than workers → finer progress + load balancing AND a
+            # finer resume granularity (completed shards survive a later kill).
+            # ~256 images/shard, but at least one per worker, never more than
+            # there are images.
+            n_shards = min(remaining, max(workers, math.ceil(remaining / 256)))
+            for k, (start, end) in enumerate(_shard_bounds(remaining, n_shards)):
+                if end > start:
+                    sid = base_sid + k
+                    # SeedSequence material → reproducible, independent per
+                    # shard; all derived from the one recorded run_seed.
+                    seed = [run_seed, _subset_tag(subset), sid]
+                    tasks.append((subset, base_idx + start, end - start,
+                                  sid, seed, plan))
 
-        reporter.set_stage(f"generate+forward {subset} (×{workers})")
-        # Announce the parallel phase: total items + worker count. The
-        # workers report their own progress; the consumer sums a cumulative
-        # bar and counts active processes.
-        reporter.set_parallel(n, workers, label=subset)
-        _log(f"  {subset}: {n} pairs across {len(tasks)} shards, "
-             f"{workers} workers (run_seed={run_seed})")
         t0 = time.perf_counter()
-        with ProcessPoolExecutor(
-            max_workers=workers, initializer=_gen_init_worker,
-            initargs=(catalog_path, args.image_size, args.psf_dir,
-                      args.require_empirical_psf, args.records_dir,
-                      args.sersic_density_arcmin2, args.tng_density_arcmin2,
-                      args.tng_redshift_mode,
-                      args.star_density_arcmin2,
-                      args.star_mag_slope, args.star_mag_bright,
-                      args.star_mag_faint, args.lens_density_arcmin2,
-                      args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms),
-        ) as pool:
-            futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
-            for fut in as_completed(futs):
-                fut.result()   # surface worker exceptions; progress is
-                               # driven by the workers' set_worker_step.
+        if tasks:
+            reporter.set_stage(f"generate+forward {subset} (×{workers})")
+            # Announce the parallel phase: total items + worker count. The
+            # workers report their own progress; the consumer sums a cumulative
+            # bar and counts active processes.
+            reporter.set_parallel(remaining, workers, label=subset)
+            _log(f"  {subset}: {remaining} pairs across {len(tasks)} shards, "
+                 f"{workers} workers (run_seed={run_seed})")
+            with ProcessPoolExecutor(
+                max_workers=workers, initializer=_gen_init_worker,
+                initargs=(catalog_path, args.image_size, args.psf_dir,
+                          args.require_empirical_psf, args.records_dir,
+                          args.sersic_density_arcmin2, args.tng_density_arcmin2,
+                          args.tng_redshift_mode,
+                          args.star_density_arcmin2,
+                          args.star_mag_slope, args.star_mag_bright,
+                          args.star_mag_faint, args.lens_density_arcmin2,
+                          args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms),
+            ) as pool:
+                futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
+                for fut in as_completed(futs):
+                    fut.result()   # surface worker exceptions; progress is
+                                   # driven by the workers' set_worker_step.
 
-        # Merge shards IN ID ORDER so clean/hr/dirty stay position-aligned.
+        # Merge salvaged + new shards IN ID ORDER (atomic; parts kept until the
+        # whole merge succeeds, so a mid-merge kill resumes cleanly).
         reporter.set_stage(f"merging {subset} shards")
-        for kind in ("clean", "hr", "dirty"):
-            parts = [tfrecord_path(args.records_dir,
-                                   f"{kind}_{subset}.part{sid:04d}")
-                     for sid, (s, e) in enumerate(bounds) if e > s]
-            _concat_tfrecords(parts, tfrecord_path(args.records_dir,
-                                                   f"{kind}_{subset}"))
-            for p in parts:
-                with contextlib.suppress(OSError):
-                    os.remove(p)
+        _merge_subset(args.records_dir, subset)
 
-        # Concatenate the per-shard source sidecars in the same id order.
-        src_parts = [tfrecord_path(args.records_dir,
-                                   f"sources_{subset}.part{sid:04d}")
-                     .replace(".tfrecord", ".csv")
-                     for sid, (s, e) in enumerate(bounds) if e > s]
-        concat_source_csvs(src_parts, tfrecord_path(
-            args.records_dir, f"sources_{subset}").replace(".tfrecord", ".csv"))
-        for p in src_parts:
-            with contextlib.suppress(OSError):
-                os.remove(p)
         # Persist the merged file-level artifacts (hr+dirty parent on clean).
         if gen_ctx is not None:
             try:
