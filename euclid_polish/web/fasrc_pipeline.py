@@ -1021,6 +1021,49 @@ class HSTTrainStep(FASRCPipelineStep):
         return cmd
 
 
+class EnsembleTrainStep(FASRCPipelineStep):
+    """Sequential ensemble training: ``N`` WDSR members, distinct seeds.
+
+    Shells out to ``scripts/train_ensemble.py``, which trains each member into
+    ``$EUCLID_POLISH_CKPT_DIR/../ensemble/member_NN/`` (member ``i`` seeded
+    ``base_seed+i``) and evaluates the ensemble on the held-out test set at the
+    end. Pull the trained members back via the ensemble page's download action.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="ensemble_train",
+            label="Train ensemble (N members, distinct seeds)",
+            job_name="ensemble-train",
+            defaults=StepResources(
+                partition="gpu", n_cpus=4, n_gpus=1,
+                memory="32G", time_limit="48:00:00",
+            ),
+            needs_gpu=True,
+        )
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        n_members = int(params.get("n_members", 5) or 5)
+        steps     = int(params.get("steps", Config.DEFAULT_TRAIN_STEPS) or
+                        Config.DEFAULT_TRAIN_STEPS)
+        cmd = [
+            "scripts/train_ensemble.py",
+            "--n-members", str(max(1, n_members)),
+            "--steps",     str(steps),
+        ]
+        # Fixed base seed → fully reproducible ensemble; blank / -1 → entropy
+        # (the value used is still recorded on each member's provenance).
+        base_seed = str(params.get("base_seed", "")).strip()
+        if base_seed not in ("", "-1"):
+            with contextlib.suppress(ValueError):
+                cmd += ["--base-seed", str(int(base_seed))]
+        eval_images = str(params.get("eval_images", "")).strip()
+        if eval_images:
+            with contextlib.suppress(ValueError):
+                cmd += ["--eval-images", str(int(eval_images))]
+        return cmd
+
+
 # ---------------------------------------------------------------------------
 # ``run_pipeline.py`` step base
 # ---------------------------------------------------------------------------
@@ -1315,6 +1358,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     HSTTrainStep,
+    EnsembleTrainStep,
     LensfinderGenerateStep,
     LensfinderSRInferStep,
     LensfinderBuildStampsStep,

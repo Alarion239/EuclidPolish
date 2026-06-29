@@ -24,6 +24,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble import EnsembleModel, evaluate_on_records  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
+from euclid_polish.observability import Reporter  # noqa: E402
 
 
 def _default_base_dir() -> str:
@@ -66,6 +67,22 @@ def main() -> int:
     print(f"Training {args.n_members}-member ensemble → {base}  "
           f"(base_seed={'entropy' if base_seed is None else base_seed})")
 
+    # Structured progress for the WebUI (no terminal for tqdm under SLURM).
+    # One cumulative bar across all members × steps.
+    reporter = Reporter.from_env()
+    reporter.set_stage(f"training {args.n_members}-member ensemble")
+    total = max(1, args.n_members) * max(1, args.steps)
+    done_members = [0]                          # members finished so far
+
+    def _step_cb(s: int, _t: int) -> None:
+        reporter.set_step(done_members[0] * args.steps + s, total,
+                          f"member {done_members[0] + 1}/{args.n_members} · step {s}")
+
+    def _on_member(i: int, n: int, _m) -> None:
+        done_members[0] = i                     # ``i`` is 1-indexed (members done)
+        print(f"\n=== member {i}/{n} done ===\n")
+        reporter.set_step(i * args.steps, total, f"member {i}/{n} done")
+
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
                         num_res_blocks=args.num_res_blocks)
     ens.train(
@@ -73,7 +90,7 @@ def main() -> int:
         n_members=args.n_members, base_seed=base_seed,
         steps=args.steps, batch_size=args.batch_size,
         evaluate_every=args.evaluate_every,
-        on_member=lambda i, n, _m: print(f"\n=== member {i}/{n} done ===\n"),
+        step_callback=_step_cb, on_member=_on_member,
     )
 
     if args.eval_images > 0:

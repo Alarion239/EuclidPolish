@@ -9,6 +9,7 @@ from flask import jsonify, render_template, request
 from euclid_polish.web.helpers.ensemble_viz import (
     ensemble_status,
     job_ensemble_evaluate,
+    job_ensemble_pull,
     job_ensemble_render,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -41,5 +42,13 @@ def register(app):
         job_id = REGISTRY.spawn(
             f"ensemble: evaluate on {num_images} test fields",
             target=lambda cap: job_ensemble_evaluate(cap, num_images=num_images),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/ensemble/pull", methods=["POST"])
+    def ensemble_pull():
+        job_id = REGISTRY.spawn(
+            "ensemble: download from FASRC",
+            target=job_ensemble_pull,
         )
         return jsonify({"job_id": job_id})

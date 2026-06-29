@@ -322,6 +322,20 @@ large cutout don't leak across train/validate."></label>`;
              with this job.</p>`;
       case 'train':
         return _hstTrainFields();
+      case 'ensemble_train':
+        // EnsembleTrainStep.build_command reads n_members / steps / base_seed.
+        return `
+          <label title="How many WDSR members to train sequentially, each on the same data with a different seed. More members = better mean + sharper hallucination signal, but linearly more GPU-hours.">
+            Members
+            <input type="number" name="n_members" value="5" min="2" max="20"></label>
+          <label>Steps / member
+            <input type="number" name="steps" value="200000" min="1000" max="2000000"></label>
+          <label title="Member i is seeded base_seed+i. Blank / -1 draws a fresh entropy base seed (still recorded on each member's provenance for replay).">
+            Base seed
+            <input type="number" name="base_seed" value="" placeholder="blank = entropy"></label>
+          <p class="hint" style="flex-basis:100%;">Trains into
+             <code>&lt;ckpt&gt;/../ensemble/member_NN/</code> on FASRC, then evaluates
+             on the held-out test set. Download the members back below when it finishes.</p>`;
       default:
         return '';
     }

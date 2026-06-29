@@ -73,9 +73,28 @@ class TestRegistry:
             "download_tng_skirt",
             "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
+            "ensemble_train",
             "lensfinder_generate", "lensfinder_sr_infer",
             "lensfinder_build_stamps", "lensfinder_train",
         }
+
+    def test_ensemble_train_step_build_command(self):
+        step = REGISTRY.get("ensemble_train")
+        assert step.needs_gpu and step.defaults.n_gpus == 1
+        argv = step.build_command({"n_members": 7, "steps": 150000,
+                                   "base_seed": 42})
+        assert "scripts/train_ensemble.py" in argv
+        assert argv[argv.index("--n-members") + 1] == "7"
+        assert argv[argv.index("--steps") + 1] == "150000"
+        assert argv[argv.index("--base-seed") + 1] == "42"
+
+    def test_ensemble_train_step_entropy_seed_omits_flag(self):
+        # Blank / -1 base seed → no --base-seed (entropy on the cluster).
+        step = REGISTRY.get("ensemble_train")
+        assert "--base-seed" not in step.build_command(
+            {"n_members": 5, "base_seed": ""})
+        assert "--base-seed" not in step.build_command(
+            {"n_members": 5, "base_seed": "-1"})
 
     def test_tfrecords_step_passes_max_relative_noise(self):
         """The bright-stamp rejection threshold must reach the
@@ -388,7 +407,8 @@ class TestRegistry:
         (download, kernel, PSF extract, synthetic generate, catalog eval,
         Zoobot morphology, …) is CPU by default."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train", "lensfinder_sr_infer", "lensfinder_train"}
+        assert gpu_steps == {"train", "ensemble_train",
+                             "lensfinder_sr_infer", "lensfinder_train"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -482,6 +502,7 @@ class TestSbatchRendering:
         feature reshuffles."""
         expected = {
             "train":                        "train",
+            "ensemble_train":               "ensemble-train",
             "synthetic_generate":           "synthetic-data",
             "euclid_query":                 "star-catalog",
             "euclid_verify_photometry":     "verify-photometry",

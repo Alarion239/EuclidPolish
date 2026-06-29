@@ -75,6 +75,22 @@
 
 {% block actions %}
 <section class="card">
+  <h3>Train ensemble on FASRC</h3>
+  {% with step_id="ensemble_train" %}{% include "_step_card_mount.html" %}{% endwith %}
+</section>
+
+<section class="card">
+  <h3>Download ensemble from FASRC</h3>
+  <form id="ens-pull-form" action="/ensemble/pull">
+    <p class="hint" style="flex-basis:100%;">When the <code>ensemble_train</code> job
+       finishes, pull <code>member_NN/</code> from FASRC into the local checkpoint
+       tree so the render + evaluate actions below can run them.</p>
+    <button type="submit">⬇️ Download from FASRC</button>
+  </form>
+  <div id="ens-pull-status"></div>
+</section>
+
+<section class="card">
   <h3>Disagreement (hallucination cross-check)</h3>
   <form id="ens-render-form" action="/ensemble/render">
     <label title="Index of the held-out test field to render.">
@@ -103,6 +119,12 @@
 
 {% block scripts %}
 <script>
+document.getElementById("ens-pull-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  polishUI.run(e.target, document.getElementById("ens-pull-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
 document.getElementById("ens-render-form").addEventListener("submit", (e) => {
   e.preventDefault();
   polishUI.run(e.target, document.getElementById("ens-render-status"), {

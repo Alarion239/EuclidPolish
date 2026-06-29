@@ -22,7 +22,9 @@ from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.visualization.base import BaseVisualizer
+from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.remote import STATE
 
 _MEMBER_GLOB = "member_*"
 
@@ -169,3 +171,34 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
     return out
+
+
+def remote_ensemble_dir() -> str:
+    """The ensemble dir on FASRC: sibling of the remote checkpoint dir."""
+    cfg = fasrc_config.load()
+    parent = os.path.dirname(cfg.ckpt_dir.rstrip("/")) or "."
+    return os.path.join(parent, "ensemble")
+
+
+def job_ensemble_pull(cap) -> dict:
+    """Download the trained ensemble (``member_NN/``) from FASRC to the local
+    checkpoint tree, so the render / evaluate actions can run it locally."""
+    if STATE.ssh is None or not STATE.ssh.is_connected():
+        raise RuntimeError("not connected to FASRC — connect on the FASRC tab first.")
+    remote = remote_ensemble_dir()
+    local = ensemble_dir()
+    os.makedirs(local, exist_ok=True)
+    cap.tick(0, 0, f"rsync {remote} → {local}")
+    # rsync -a can exit non-zero on perm-preserve (Linux→macOS) while still
+    # copying every file; the member count below is the real success gate.
+    rc, _out, err = STATE.ssh.rsync_pull(remote.rstrip("/") + "/", local,
+                                         timeout=3600)
+    n = len([d for d in glob.glob(os.path.join(local, _MEMBER_GLOB))
+             if _checkpoint_exists(d)])
+    if n == 0:
+        raise RuntimeError(
+            f"pulled 0 members (rsync rc={rc}: {err.strip()[:300]}). Has the "
+            "ensemble_train job finished and written members at "
+            f"{remote} on FASRC?")
+    print(f"  ✓ pulled {n} ensemble member(s) → {local}")
+    return {"local": local, "n_members": n}
