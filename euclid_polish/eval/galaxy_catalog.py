@@ -65,23 +65,31 @@ def galaxy_adql(ra: float, dec: float, radius_deg: float,
                 *, relax: bool = False) -> str:
     """ADQL cone query for clean, resolved, bigger-end galaxies at ``(ra, dec)``.
 
-    ``relax`` is an exploratory profile used while the live MER cut semantics are
-    unconfirmed: it drops the two unproven galaxy-only flag cuts
-    (``point_like_flag``/``spurious_flag`` — the most likely to silently zero a
-    cone if their values/units differ from what we assume) and halves the size
-    floor, while keeping the proven ``det_quality_flag = 0`` clean cut, the flux
-    cut, and the (widened) size window. Strict (``relax=False``) is the original
-    profile; the diagnostic cascade always counts the strict cuts.
+    Strict (``relax=False``) requires ``point_like_flag = 0`` and
+    ``spurious_flag = 0`` — but that bare equality returned **zero** rows on cones
+    with hundreds of sources, because in the live MER catalogue these classifier
+    flags are NULL (unset) for ordinary sources and only set (``= 1``) for the
+    point-like / spurious ones, so ``= 0`` matched nothing.
+
+    ``relax=True`` (the default profile) is therefore NULL-safe: keep sources NOT
+    flagged point-like or spurious (``flag IS NULL OR flag = 0`` ⇒ *extended,
+    non-spurious*) while still dropping anything explicitly flagged ``= 1``. This
+    is what keeps the set galaxies rather than stars. Both profiles keep the
+    ``det_quality_flag = 0`` clean cut and the full resolved-size window — the
+    extendedness flag and the segmentation-area floor each independently exclude
+    point sources. The diagnostic breakdown counts the strict cuts plus the flag
+    value distribution so the encoding stays visible.
     """
-    diam_lo = (Config.GalaxySelection.DIAM_LO_ARCSEC / 2.0 if relax
-               else Config.GalaxySelection.DIAM_LO_ARCSEC)
-    area_lo = _diam_to_area_px(diam_lo)
+    area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
     area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
     preds = [
         f"CONTAINS(POINT('ICRS', {_RA_COL}, {_DEC_COL}), "
         f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) = 1",
     ]
-    if not relax:
+    if relax:                                    # NULL-safe "not point-like / not spurious"
+        preds += [f"({_POINTLIKE_COL} IS NULL OR {_POINTLIKE_COL} = 0)",
+                  f"({_SPURIOUS_COL} IS NULL OR {_SPURIOUS_COL} = 0)"]
+    else:                                        # strict bare equality (zeroed the cone)
         preds += [f"{_POINTLIKE_COL} = 0", f"{_SPURIOUS_COL} = 0"]
     preds += [
         f"{_QUALITY_COL} = 0",
@@ -189,18 +197,27 @@ def _diagnose_zero_cone(ra: float, dec: float, radius_deg: float,
     """
     area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
     area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
+    # Bare cone + each cut alone, plus the flag VALUE distribution (=0 / =1 / IS
+    # NULL) so the encoding is unambiguous: if `= 0` reads ≈0 while `= 1` and
+    # `IS NULL` carry the rows, the flag marks point sources (=1) and leaves
+    # ordinary sources NULL — so extended = (IS NULL OR = 0).
     cuts = [
         ("bare cone (no cuts)", ""),
-        (f"{_FLUX_COL} > 0", f"{_FLUX_COL} IS NOT NULL AND {_FLUX_COL} > 0"),
         (f"{_QUALITY_COL} = 0", f"{_QUALITY_COL} = 0"),
         (f"{_POINTLIKE_COL} = 0", f"{_POINTLIKE_COL} = 0"),
+        (f"{_POINTLIKE_COL} = 1", f"{_POINTLIKE_COL} = 1"),
+        (f"{_POINTLIKE_COL} IS NULL", f"{_POINTLIKE_COL} IS NULL"),
         (f"{_SPURIOUS_COL} = 0", f"{_SPURIOUS_COL} = 0"),
+        (f"{_SPURIOUS_COL} = 1", f"{_SPURIOUS_COL} = 1"),
+        (f"{_SPURIOUS_COL} IS NULL", f"{_SPURIOUS_COL} IS NULL"),
+        ("extended (IS NULL OR = 0)",
+         f"({_POINTLIKE_COL} IS NULL OR {_POINTLIKE_COL} = 0)"),
         (f"{_SIZE_COL} in [{area_lo:.0f},{area_hi:.0f}]",
          f"{_SIZE_COL} BETWEEN {area_lo:.1f} AND {area_hi:.1f}"),
     ]
-    emit(f"⟐ strict-cut COUNT(*) breakdown at ({ra:.4f}, {dec:.4f}) — bare cone "
-         "+ each strict cut alone; a cut reading ≈0 while the bare cone is high "
-         "is what zeroed the strict profile:")
+    emit(f"⟐ cut COUNT(*) breakdown at ({ra:.4f}, {dec:.4f}) — bare cone + each "
+         "cut alone + the flag value distribution; a `= 0` reading ≈0 while "
+         "`= 1`/`IS NULL` carry the rows means the flag marks point sources:")
     for name, pred in cuts:
         n, err = _cone_count(ra, dec, radius_deg, pred)
         emit(f"    {name:<42} → {('ERROR: ' + err) if err else n}")
@@ -282,10 +299,11 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
          f"cone r={cone_radius_arcmin:g}', target pool {target_pool} "
          f"(oversample {oversample}× of {n_galaxies}); {len(cached)} cached")
     if relax:
-        emit("⚠ RELAXED cut profile: point_like/spurious flags OFF, size floor "
-             "halved (det_quality + flux + mag floor kept) — exploratory pass to "
-             "confirm the archive returns galaxies; tighten once the diagnostic "
-             "names the offending cut")
+        emit("galaxy profile: NULL-safe extendedness — keep sources NOT flagged "
+             "point-like/spurious (flag IS NULL OR = 0 ⇒ extended), clean "
+             "(det_quality=0), within the resolved size window + mag floor. "
+             "(Strict flag = 0 returned 0: the flags are NULL for unflagged "
+             "sources, =1 for point-like — so = 0 matched nothing.)")
     if fields:
         f0 = fields[0]
         emit("ADQL (per field):"

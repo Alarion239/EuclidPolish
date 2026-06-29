@@ -26,15 +26,28 @@ def test_galaxy_adql_has_cuts():
     assert "CIRCLE('ICRS', 10.0, -5.0, 0.05)" in q  # the cone
 
 
-def test_galaxy_adql_relax_drops_flag_cuts():
+def test_galaxy_adql_relax_is_null_safe():
+    # Strict equality `= 0` excludes NULL-encoded flags (which zeroed the cone);
+    # the relaxed profile is NULL-safe: keep sources NOT flagged point-like or
+    # spurious (flag IS NULL OR = 0) so genuine extended galaxies survive while
+    # explicit point sources (flag = 1) are still dropped.
     strict = gc.galaxy_adql(10.0, -5.0, 0.05)
     relaxed = gc.galaxy_adql(10.0, -5.0, 0.05, relax=True)
-    assert f"{gc._POINTLIKE_COL} = 0" in strict          # strict has both flags
-    assert f"{gc._SPURIOUS_COL} = 0" in strict
-    assert f"{gc._POINTLIKE_COL} = 0" not in relaxed     # relaxed drops them
-    assert f"{gc._SPURIOUS_COL} = 0" not in relaxed
-    assert f"{gc._QUALITY_COL} = 0" in relaxed           # clean cut kept
-    assert f"{gc._SIZE_COL} BETWEEN" in relaxed          # size cut kept (widened)
+    assert f"{gc._POINTLIKE_COL} IS NULL" not in strict        # strict: bare equality
+    assert f"{gc._POINTLIKE_COL} IS NULL" in relaxed           # relaxed: NULL-safe
+    assert f"{gc._SPURIOUS_COL} IS NULL" in relaxed
+    assert f"{gc._QUALITY_COL} = 0" in relaxed                 # clean cut kept
+    assert f"{gc._SIZE_COL} BETWEEN" in relaxed                # resolved-size cut kept
+
+
+def test_galaxy_adql_relax_keeps_full_size_floor():
+    # The relaxed profile no longer halves the size floor — "galaxies should be
+    # galaxies" means we still require a genuinely resolved source.
+    strict = gc.galaxy_adql(10.0, -5.0, 0.05)
+    relaxed = gc.galaxy_adql(10.0, -5.0, 0.05, relax=True)
+    import re
+    lo = lambda q: float(re.search(rf"{gc._SIZE_COL} BETWEEN ([\d.]+) AND", q).group(1))
+    assert lo(relaxed) == pytest.approx(lo(strict))
 
 
 def test_candidates_parse_and_mag_floor():
@@ -150,6 +163,10 @@ def test_build_diagnoses_zero_cone(monkeypatch, tmp_path):
     assert "breakdown" in blob and "bare cone" in blob
     assert any("42" in m for m in logs)                # bare cone count surfaced
     assert any(gc._POINTLIKE_COL in m and "0" in m for m in logs)   # culprit named
+    # The breakdown probes the flag's value distribution so the NULL/polarity
+    # encoding is visible (= 0 vs = 1 vs IS NULL).
+    assert any(f"{gc._POINTLIKE_COL} IS NULL" in m for m in logs)
+    assert any(f"{gc._POINTLIKE_COL} = 1" in m for m in logs)
     # The cascade runs once, not once per field.
     assert sum("breakdown" in m for m in logs) == 1
 
@@ -161,7 +178,7 @@ def test_build_relaxed_logs_profile(monkeypatch, tmp_path):
     logs = []
     gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
              lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
-    assert any("relaxed" in m.lower() for m in logs)
+    assert any("extended" in m.lower() for m in logs)
 
 
 def test_build_relax_forces_breakdown_even_with_data(monkeypatch, tmp_path):

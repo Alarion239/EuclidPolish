@@ -319,6 +319,8 @@
     <div class="form-row" style="align-items:flex-end; margin-top:8px;">
       <label># galaxies
         <input type="number" id="gqN" value="15" min="1" max="500"></label>
+      <label title="Discard the cached galaxies.csv and re-query from scratch — use after the selection criteria change so a stale set isn't kept">
+        <input type="checkbox" id="gqRegen"> regenerate</label>
       <button id="queryGalaxiesBtn" type="button">🌌 Query galaxies</button>
     </div>
     <span class="hint" style="display:block; margin-top:6px;">Runs a verbose cone
@@ -993,6 +995,7 @@ window.__evalPreview = {
   if (queryGalaxiesBtn) queryGalaxiesBtn.addEventListener('click', () => {
     const fd = new FormData();
     fd.set('n_galaxies', $('gqN').value);
+    if ($('gqRegen') && $('gqRegen').checked) fd.set('regenerate', '1');
     startJob('/api/evaluation/query-galaxies', fd,
              'Galaxies: eval_results', queryGalaxiesBtn);
   });

@@ -312,6 +312,11 @@ def register(app):
             return jsonify({"ok": False, "error": "n_galaxies must be an int"}), 400
         if n_gal <= 0:
             return jsonify({"ok": False, "error": "n_galaxies must be positive"}), 400
+        # The drawn set is cached and only topped up; toggle this to discard the
+        # cache and re-query (needed after a selection-criteria change so a stale
+        # set isn't kept).
+        regenerate = str(request.form.get("regenerate", "")).lower() in (
+            "1", "true", "on", "yes")
 
         from euclid_polish.eval import catalog_runner, galaxy_catalog, lens_catalog
 
@@ -329,7 +334,7 @@ def register(app):
             out_csv = galaxy_catalog.default_out_csv()
             path, n = galaxy_catalog.build(
                 out_csv, n_galaxies=n_gal, lens_catalog_path=catalog,
-                client=client, log=_log)
+                regenerate=regenerate, client=client, log=_log)
             return {"path": path, "n": n, "n_galaxies": n_gal}
         job_id = JOB_REGISTRY.spawn("galaxies: eval_results", _run)
         return jsonify({"ok": True, "job_id": job_id})

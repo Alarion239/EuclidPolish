@@ -19,6 +19,21 @@ from euclid_polish.eval.eval_catalog import CatalogError, read_eval_catalog
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
+@pytest.fixture(autouse=True)
+def _isolate_galaxy_cache(tmp_path_factory, monkeypatch):
+    """Keep grouped-runner tests hermetic against the machine's galaxy cache.
+
+    ``grouped_runner._cached_galaxy_rows`` reads ``galaxy_catalog.default_out_csv``
+    (the real data-dir ``galaxies.csv``). If that file exists, it injects real
+    ``gal`` rows into every grouped run — forcing a model load / download and
+    breaking the lens-reuse tests. Point it at an absent path by default; the
+    galaxy-specific tests re-patch it to their own fixture CSV.
+    """
+    from euclid_polish.eval import galaxy_catalog
+    absent = tmp_path_factory.mktemp("nogal") / "galaxies.csv"
+    monkeypatch.setattr(galaxy_catalog, "default_out_csv", lambda: str(absent))
+
+
 # --------------------------------------------------------------------------- #
 # Catalog reader
 # --------------------------------------------------------------------------- #

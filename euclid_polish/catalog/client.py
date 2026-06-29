@@ -192,7 +192,10 @@ class EuclidCatalog:
                        ) -> list[CatalogObject]:
         """Clean, resolved, bigger-end galaxies in a cone (``kind='galaxy'``).
 
-        Server-side cuts: extended (``point_like_flag = 0``), not spurious, clean
+        Server-side cuts: extended + non-spurious via NULL-safe flag tests
+        (``point_like_flag``/``spurious_flag`` ``IS NULL OR = 0`` — the MER flags
+        are NULL for ordinary sources and only set ``= 1`` for point-like /
+        spurious ones, so a bare ``= 0`` matched nothing), clean
         (``det_quality_flag = 0``), segmentation area within the
         ``diam_lo_arcsec``–``diam_hi_arcsec`` diameter window, capped at ``limit``
         rows. Here we drop sources fainter than ``mag_floor``. All four default to
@@ -207,7 +210,9 @@ class EuclidCatalog:
             "segmentation_area, flux_vis_psf FROM catalogue.mer_catalogue "
             f"WHERE CONTAINS(POINT('ICRS', right_ascension, declination), "
             f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) = 1 "
-            "AND point_like_flag = 0 AND spurious_flag = 0 AND det_quality_flag = 0 "
+            "AND (point_like_flag IS NULL OR point_like_flag = 0) "
+            "AND (spurious_flag IS NULL OR spurious_flag = 0) "
+            "AND det_quality_flag = 0 "
             f"AND segmentation_area BETWEEN {area_lo:.1f} AND {area_hi:.1f} "
             "AND flux_vis_psf IS NOT NULL AND flux_vis_psf > 0")
         job = Euclid.launch_job(query)
