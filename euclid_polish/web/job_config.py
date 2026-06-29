@@ -32,6 +32,7 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
     "extract_euclid_psf":      {"vis_pixels": "vis_pixels"},
     "synthetic_generate":      {"n_train": "n_train",
                                 "n_valid": "n_valid",
+                                "n_test": "n_test",
                                 "image_size": "hr_image_size",
                                 "star_density_arcmin2": "star_density_arcmin2",
                                 "star_mag_slope": "star_mag_slope",
@@ -91,6 +92,8 @@ class JobConfig:
     # Synthetic scene counts for generation (/sky).
     n_train:       int = 6400
     n_valid:       int = 100
+    # Held-out test scenes — the eval set (train/save-best never touch it).
+    n_test:        int = 100
     # HR scene side in 0.05″/pix pixels — feeds both synthetic generation
     # and inference. Kept a multiple of 6 (the NISP rebin factor).
     hr_image_size: int = 510

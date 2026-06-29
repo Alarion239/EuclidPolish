@@ -41,6 +41,13 @@
     <p class="muted">empty — run the generator on the right.</p>
   {% endif %}
   <form id="sky-sync-form">
+    <p class="muted" style="margin:0 0 4px;">
+      Pulls the held-out <strong>test</strong> split (the eval set) by default.
+      Validate and the large train split are opt-in.
+    </p>
+    <label style="display:inline-flex; align-items:center; gap:6px;">
+      <input type="checkbox" name="include_validate"> also pull validate shards
+    </label>
     <label style="display:inline-flex; align-items:center; gap:6px;">
       <input type="checkbox" name="include_train"> also pull train shards
     </label>

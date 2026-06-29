@@ -130,25 +130,34 @@ def register(app):
         """Rsync the synthetic TFRecord shards from FASRC into the local
         cache so the preview can render them.
 
-        ``include_train`` (default false) controls whether the large
-        train-split files are pulled; the validate and held-out test shards
-        (the eval set) are always included. Missing shards (e.g. a dataset
-        generated before the test split) just report not-ok and are skipped.
-        Lifts the fetcher's 50 MB cap to 5 GB since TFRecords are large and
-        this is an explicit user-requested transfer."""
+        The held-out **test** split is the eval set, so it is what we pull —
+        ``validate`` and the large ``train`` split are opt-in (the evals no
+        longer need them): ``include_validate`` / ``include_train`` (default
+        false) add those. Missing shards (e.g. a dataset generated before the
+        test split) just report not-ok and are skipped. Lifts the fetcher's
+        50 MB cap to 5 GB since TFRecords are large and this is an explicit
+        user-requested transfer."""
         remote_dir = _sky_records_remote_dir()
-        include_train = (request.values.get("include_train", "false")
-                         .lower() in ("1", "true", "yes", "on"))
+
+        def _flag(name: str) -> bool:
+            return request.values.get(name, "false").lower() in (
+                "1", "true", "yes", "on")
+
+        include_train = _flag("include_train")
+        include_validate = _flag("include_validate")
+        subsets = ["test"]
+        if include_validate:
+            subsets.append("validate")
+        if include_train:
+            subsets.append("train")
+
         targets: dict[str, str] = {}
         for kind in ("clean", "dirty", "hr"):
-            for sub in ("validate", "test"):
+            for sub in subsets:
                 targets[f"{kind}_{sub}"] = f"{remote_dir}/{kind}_{sub}.tfrecord"
-            if include_train:
-                targets[f"{kind}_train"] = f"{remote_dir}/{kind}_train.tfrecord"
-        for sub in ("validate", "test"):
+        for sub in subsets:
             targets[f"sources_{sub}"] = f"{remote_dir}/sources_{sub}.csv"
-        if include_train:
-            targets["sources_train"] = f"{remote_dir}/sources_train.csv"
+
         max_bytes = 5 * 1024 * 1024 * 1024
         results: dict[str, dict[str, Any]] = {}
         any_ok = False
@@ -161,7 +170,8 @@ def register(app):
                 entry["error"] = r.error
             results[key] = entry
         return jsonify({"ok": any_ok, "files": results,
-                        "include_train": include_train})
+                        "include_train": include_train,
+                        "include_validate": include_validate})
 
     @app.route("/api/sky/sr-status")
     def api_sky_sr_status():

@@ -1105,6 +1105,7 @@ class RunPipelineStep(FASRCPipelineStep):
             "scripts/run_pipeline.py",
             "--ntrain",     str(int(params.get("n_train",    0))),
             "--nvalid",     str(int(params.get("n_valid",    0))),
+            "--ntest",      str(int(params.get("n_test",     0))),
             "--image-size", str(int(params.get("image_size", 0))),
             "--batch-size", str(int(params.get("batch_size", 0))),
             "--steps",      str(int(params.get("steps",      0))),

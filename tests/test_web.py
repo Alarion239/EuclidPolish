@@ -866,21 +866,25 @@ def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
 
     monkeypatch.setattr(views_mod._fasrc_fetcher, "fetch_one_file", fake_fetch)
 
+    # Default: only the held-out test split (the eval set) is pulled —
+    # validate and the large train split are opt-in.
     r = client.post("/api/sky/sync")
     assert r.status_code == 200
     body = r.get_json()
     assert body["ok"] is True
-    assert any(p.endswith("/sources_validate.csv") for p in pulled)
-    assert not any(p.endswith("/sources_train.csv") for p in pulled)
-    assert body["files"]["sources_validate"]["ok"] is True
-    # The held-out test split (the eval set) is pulled alongside validate.
     assert any(p.endswith("/dirty_test.tfrecord") for p in pulled)
     assert any(p.endswith("/sources_test.csv") for p in pulled)
+    assert body["files"]["sources_test"]["ok"] is True
+    assert not any(p.endswith("/sources_validate.csv") for p in pulled)
+    assert not any(p.endswith("/sources_train.csv") for p in pulled)
 
+    # include_validate / include_train opt in to the other splits.
     pulled.clear()
-    r = client.post("/api/sky/sync", data={"include_train": "1"})
+    r = client.post("/api/sky/sync",
+                    data={"include_train": "1", "include_validate": "1"})
     assert r.status_code == 200
     body = r.get_json()
+    assert any(p.endswith("/sources_test.csv") for p in pulled)
     assert any(p.endswith("/sources_validate.csv") for p in pulled)
     assert any(p.endswith("/sources_train.csv") for p in pulled)
     assert body["files"]["sources_train"]["ok"] is True

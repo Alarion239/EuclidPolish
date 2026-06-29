@@ -38,6 +38,11 @@
           <input type="number" name="n_valid" value="{{ cfg.n_valid }}"
                  min="1" max="5000" required>
         </label>
+        <label title="Held-out test scenes — the eval set. Training and save-best never touch it; the /ensemble and synthetic evals run on this split. 0 disables the test split.">
+          Test scenes
+          <input type="number" name="n_test" value="{{ cfg.n_test }}"
+                 min="0" max="5000" required>
+        </label>
         <label title="HR scene side in 0.05″/pix pixels. Kept a multiple of 6 (the NISP rebin factor). Feeds both synthetic generation and inference.">
           HR image size (px)
           <input type="number" name="hr_image_size" value="{{ cfg.hr_image_size }}"

@@ -368,6 +368,7 @@ def register(app):
             params = {
                 "n_train":     int(form.get("n_train",    cfg.n_train)),
                 "n_valid":     int(form.get("n_valid",    cfg.n_valid)),
+                "n_test":      int(form.get("n_test",     cfg.n_test)),
                 "image_size":  int(form.get("image_size", cfg.image_size)),
                 "batch_size":  int(form.get("batch_size", cfg.batch_size)),
                 "steps":       int(form.get("steps",      cfg.steps)),

@@ -55,6 +55,7 @@ class FasrcConfig:
     # ── Default training knobs ─────────────────────────────────────────────
     n_train:            int = 6400
     n_valid:            int = 200
+    n_test:             int = 100
     image_size:         int = 510
     batch_size:         int = 16
     steps:              int = 400_000
