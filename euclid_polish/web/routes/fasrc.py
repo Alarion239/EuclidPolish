@@ -1229,28 +1229,41 @@ def register(app):
         csv_path   = f"{base}/{TrainingLog.FILENAME}"
         jsonl_path = f"{base}/training_log.jsonl"
 
-        # Fetch whichever log file exists. Cap to 50k lines (~20 MB) so
-        # the SSH payload stays bounded for very long training histories.
-        cmd = (
-            f"{{ "
-            f"  if [ -f {shlex.quote(csv_path)} ]; then "
-            f"    head -n 50000 {shlex.quote(csv_path)} ; "
-            f"  elif [ -f {shlex.quote(jsonl_path)} ]; then "
-            f"    head -n 50000 {shlex.quote(jsonl_path)} ; "
-            f"  fi ; "
-            f"}}; exit 0"
-        )
-        rc, text, _err = STATE.ssh.run(cmd, timeout=30)
-        if rc != 0 or not text.strip():
-            return jsonify({"ok": False,
-                            "error": "training log not found on remote"}), 404
+        # Fetch a log file (cap 50k lines ~20 MB so the SSH payload stays
+        # bounded) and return only the rows inside this run's wall-time window.
+        def _windowed(csv_p: str, jsonl_p: str = "") -> list[dict]:
+            parts = [f" if [ -f {shlex.quote(csv_p)} ]; then "
+                     f"head -n 50000 {shlex.quote(csv_p)};"]
+            if jsonl_p:
+                parts.append(f" elif [ -f {shlex.quote(jsonl_p)} ]; then "
+                             f"head -n 50000 {shlex.quote(jsonl_p)};")
+            parts.append(" fi")
+            rc, text, _err = STATE.ssh.run("{" + "".join(parts) + " ; }; exit 0",
+                                           timeout=30)
+            if rc != 0 or not text.strip():
+                return []
+            allr = fasrc_log_parser.parse_training_log(text, max_records=10_000_000)
+            return [r for r in allr
+                    if started_at <= r.get("wall_time", 0.0) <= ended_at]
 
-        # Parse + filter by wall-time window.
-        all_rows = fasrc_log_parser.parse_training_log(
-            text, max_records=10_000_000,
-        )
-        rows = [r for r in all_rows
-                if started_at <= r.get("wall_time", 0.0) <= ended_at]
+        member_label = ""
+        rows = _windowed(csv_path, jsonl_path)
+        if not rows:
+            # An ensemble_train run logs into <ckpt parent>/ensemble/member_NN/,
+            # not the single-model ckpt dir — so the read above finds nothing in
+            # this window. Fall back to the ACTIVE member (the most-recently
+            # modified member log) so the live plot works during ensemble runs.
+            ens_dir = f"{os.path.dirname(base)}/ensemble"
+            pick = (f"ls -t {shlex.quote(ens_dir)}/member_*/"
+                    f"{shlex.quote(TrainingLog.FILENAME)} 2>/dev/null | head -n1; "
+                    f"exit 0")
+            _rc, picked, _e = STATE.ssh.run(pick, timeout=15)
+            member_csv = (picked.strip().splitlines()[0].strip()
+                          if picked.strip() else "")
+            if member_csv:
+                rows = _windowed(member_csv)
+                if rows:
+                    member_label = os.path.basename(os.path.dirname(member_csv))
         if not rows:
             return jsonify({"ok": False,
                             "error": f"no training-log rows in window "
@@ -1267,7 +1280,11 @@ def register(app):
         try:
             plot_training_records(
                 rows, tmp_png,
-                title_suffix=f"\n(this run only: {len(rows)} evals)",
+                title_suffix=(
+                    f"\n(ensemble {member_label}, this run: {len(rows)} evals)"
+                    if member_label else
+                    f"\n(this run only: {len(rows)} evals)"
+                ),
             )
             with open(tmp_png, "rb") as fh:
                 data = fh.read()
