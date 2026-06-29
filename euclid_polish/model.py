@@ -127,15 +127,23 @@ class Model:
         *,
         augment: bool = True,
     ):
-        """TF data pipeline: TFRecord → parse → asinh stretch → [augment] → batch."""
+        """TF data pipeline: TFRecord → parse → [crop] → asinh stretch → batch.
+
+        The asinh stretch is applied AFTER the random crop, so the (per-band,
+        elementwise) transcendental runs on the small training patch rather than
+        the full field — ~28x less work for a 96px crop out of a 512px field.
+        ``asinh`` is elementwise, so this is bit-identical to stretching first:
+        ``asinh(crop(x)) == crop(asinh(x))``. With ``augment=False`` (validation)
+        there is no crop, so the full field is stretched as before.
+        """
         n_lr = Config.NUM_LR_CHANNELS
         n_hr = Config.NUM_HR_CHANNELS
 
         def _parse_lr(raw):
-            return asinh_stretch_lr(parse_example(raw, n_lr))
+            return parse_example(raw, n_lr)
 
         def _parse_hr(raw):
-            return asinh_stretch_hr(parse_example(raw, n_hr))
+            return parse_example(raw, n_hr)
 
         lr_ds = (tf.data.TFRecordDataset(dirty_path)
                  .map(_parse_lr, num_parallel_calls=AUTOTUNE))
@@ -145,10 +153,17 @@ class Model:
         if augment:
             scale = self._scale
             hr_crop = Config.DEFAULT_HR_CROP_SIZE
+
+            def _crop_then_stretch(lr, hr):
+                lr, hr = _augment_multiband(lr, hr, hr_crop, scale)
+                return asinh_stretch_lr(lr), asinh_stretch_hr(hr)
+
             ds = (ds.shuffle(200)
-                    .map(lambda lr, hr: _augment_multiband(lr, hr, hr_crop, scale),
-                         num_parallel_calls=AUTOTUNE)
+                    .map(_crop_then_stretch, num_parallel_calls=AUTOTUNE)
                     .repeat())
+        else:
+            ds = ds.map(lambda lr, hr: (asinh_stretch_lr(lr), asinh_stretch_hr(hr)),
+                        num_parallel_calls=AUTOTUNE)
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 
     def train(
