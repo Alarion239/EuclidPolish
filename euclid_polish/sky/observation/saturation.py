@@ -1,8 +1,13 @@
-"""Bright-star detector saturation for the synthetic LR (dirty) image.
+"""Detector saturation masking for the synthetic LR (dirty) image.
 
-Bright stars in Euclid frames have *saturated* cores: once a star's peak
-detector pixel exceeds the well depth, the charge clips and blooms into a small
-blocky region. This module applies that to the forward-modelled LR image.
+Any source bright enough to drive a detector pixel past the full well —
+bright stars AND bright galaxy nuclei — saturates. In the Euclid (MER)
+pipeline the saturated pixels are *masked*: a rectangular patch around the
+source is set to a fill value (≈0), NOT recorded at the clipped well level.
+This module reproduces that on the forward-modelled LR image: it finds the
+pixels that exceed each band's well depth and zeros a blocky rectangular
+patch around them, so nothing in the dirty image sits above the physical
+well and the masked region reads ~0.
 
 Physics (derived from the project zeropoints):
 
@@ -38,6 +43,7 @@ import math
 from collections.abc import Sequence
 
 import numpy as np
+from scipy.ndimage import find_objects, label
 
 from euclid_polish.config import BandConfig, Config
 
@@ -148,37 +154,51 @@ class StarSaturationModel:
         return rects
 
 
-def apply_star_saturation(
+def apply_saturation_masking(
     lr_4ch: np.ndarray,
-    stars: Sequence[dict],
     model: StarSaturationModel,
     rng: np.random.Generator,
     *,
-    hr_to_lr_scale: float,
     band_names: Sequence[str],
 ) -> None:
-    """Stamp saturated rectangles onto the LR dirty image in place.
+    """Zero a blocky rectangular patch over every saturated region (in place).
 
-    For every star, each band independently draws ``model.saturates``; if it
-    does, the rectangle-union mask (centred on the star's LR pixel) is clipped to
-    that band's well depth.
-    ``hr_to_lr_scale`` maps the star's HR pixel position to the LR grid."""
+    The trigger is the rendered pixel value, not the source type: any pixel at
+    or above a band's well depth is saturated, so **bright stars and bright
+    galaxy nuclei alike** are masked. For each band:
+
+    1. label the connected regions of pixels ``>= well_depth``;
+    2. zero each region's bounding box (so nothing stays above the well), then
+    3. zero a union of 1–3 small overlapping rectangles
+       (:meth:`StarSaturationModel.rectangles`, the current 3–6 px scale) at
+       the region's peak, for the characteristic blocky mask edge.
+
+    The masked patch reads ~0 (the MER fill value on the sky-subtracted LR
+    grid), so the network must inpaint the source from its surroundings. The
+    clean HR target is untouched."""
     H, W = lr_4ch.shape[:2]
-    for star in stars:
-        try:
-            cx = int(round(float(star["x_pix"]) * hr_to_lr_scale))
-            cy = int(round(float(star["y_pix"]) * hr_to_lr_scale))
-            m_vis = float(star["mag_vis"])
-        except (KeyError, TypeError, ValueError):
+    for k, bn in enumerate(band_names):
+        well = np.float32(model.well_depth_e(Config.get_band(bn)))
+        ch = lr_4ch[..., k]                      # view → writes propagate
+        sat = ch >= well
+        if not sat.any():
             continue
-        for k, bn in enumerate(band_names):
-            band = Config.get_band(bn)
-            if not model.saturates(m_vis, band, rng):
+        labelled, n_regions = label(sat)
+        if n_regions == 0:
+            continue
+        for sl in find_objects(labelled):
+            if sl is None:
                 continue
-            well = np.float32(model.well_depth_e(band))
+            ys, xs = sl                          # bounding-box slices
+            sub = ch[ys, xs]
+            pj, pi = np.unravel_index(int(np.argmax(sub)), sub.shape)
+            cy, cx = ys.start + int(pj), xs.start + int(pi)
+            # Zero the whole bounding box → no pixel survives above the well.
+            ch[ys, xs] = 0.0
+            # Blocky border: 1–3 small rectangles around the saturated peak.
             for (x0, y0, w, h) in model.rectangles(rng):
                 i0, j0 = cy + y0, cx + x0
                 ii0, ii1 = max(0, i0), min(H, i0 + h)
                 jj0, jj1 = max(0, j0), min(W, j0 + w)
                 if ii0 < ii1 and jj0 < jj1:
-                    lr_4ch[ii0:ii1, jj0:jj1, k] = well
+                    ch[ii0:ii1, jj0:jj1] = 0.0

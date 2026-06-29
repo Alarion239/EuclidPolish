@@ -31,7 +31,11 @@ def hr_field():
 
 @pytest.fixture
 def forward():
-    return ObservationSimulator(config=ObservationSimulatorConfig(add_noise=False))
+    # These tests probe the deterministic PSF/resample/flux path; the bright
+    # 1e6 delta would otherwise trip detector-saturation masking (covered in
+    # test_saturation.py), so disable it here.
+    return ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_saturation=False))
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +199,8 @@ def test_randomized_psf_varies_scene_to_scene(hr_field):
     sets[Config.BAND_VIS.name] = _vis_psf_set(2, [1.0, 5.0])
     fwd = ObservationSimulator(
         psf_sets_by_band=sets,
-        config=ObservationSimulatorConfig(add_noise=False, randomize_psf=True,
-                                      psf_unrotated_prob=0.0),
+        config=ObservationSimulatorConfig(add_noise=False, add_saturation=False,
+                                      randomize_psf=True, psf_unrotated_prob=0.0),
     )
     a, _ = fwd.process(hr_field, rng=np.random.default_rng(1))
     b, _ = fwd.process(hr_field, rng=np.random.default_rng(2))
@@ -230,7 +234,8 @@ def test_randomize_off_uses_mean_deterministically(hr_field):
     sets[Config.BAND_VIS.name] = _vis_psf_set(3, [1.0, 3.0, 5.0])
     fwd = ObservationSimulator(
         psf_sets_by_band=sets,
-        config=ObservationSimulatorConfig(add_noise=False, randomize_psf=False),
+        config=ObservationSimulatorConfig(add_noise=False, add_saturation=False,
+                                      randomize_psf=False),
     )
     a, _ = fwd.process(hr_field, rng=np.random.default_rng(1))
     b, _ = fwd.process(hr_field, rng=np.random.default_rng(2))

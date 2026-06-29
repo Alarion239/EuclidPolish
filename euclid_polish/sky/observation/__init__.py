@@ -18,12 +18,15 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulatorConfig,
 )
 from euclid_polish.sky.observation.resample import cubic_upsample, lanczos3_upsample, upsample
-from euclid_polish.sky.observation.saturation import StarSaturationModel
+from euclid_polish.sky.observation.saturation import (
+    StarSaturationModel,
+    apply_saturation_masking,
+)
 
 __all__ = [
     "ObservationSimulator", "ObservationSimulatorConfig",
     "apply_band_noise",
-    "StarSaturationModel",
+    "StarSaturationModel", "apply_saturation_masking",
     "upsample", "lanczos3_upsample", "cubic_upsample",
     "inject_artifacts", "inject_cosmic_rays", "inject_hot_pixels",
     "inject_dead_pixels",

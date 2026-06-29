@@ -49,7 +49,7 @@ from euclid_polish.sky.observation.noise import apply_band_noise  # noqa: F401
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
-    apply_star_saturation,
+    apply_saturation_masking,
 )
 
 if TYPE_CHECKING:
@@ -326,18 +326,14 @@ class ObservationSimulator:
                 )
         lr_stack = np.stack(lr_channels, axis=-1)
 
-        # Bright-star detector saturation: clip a blocky region per saturating
-        # (star, band) onto the dirty LR image. Independent per band; the clean
-        # HR target is untouched. The native well depth is the clip level on
-        # this shared 0.10″ grid.
+        # Detector saturation masking: any pixel past the band well depth
+        # (bright stars OR bright galaxy nuclei) is masked to ~0 over a blocky
+        # rectangular patch, mirroring the MER pipeline — NOT clipped to the
+        # well. Per band; the clean HR target is untouched.
         if self._sat_model is not None:
-            stars = (getattr(hr_4ch, "metadata", None) or {}).get("stars", [])
-            if stars:
-                hr_to_lr = self.config.hr_pixel_scale / self.target_lr_pixel_scale_arcsec
-                apply_star_saturation(
-                    lr_stack, stars, self._sat_model, rng,
-                    hr_to_lr_scale=hr_to_lr,
-                    band_names=Config.LR_INPUT_BAND_NAMES)
+            apply_saturation_masking(
+                lr_stack, self._sat_model, rng,
+                band_names=Config.LR_INPUT_BAND_NAMES)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

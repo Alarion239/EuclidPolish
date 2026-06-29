@@ -8,7 +8,7 @@ import pytest
 from euclid_polish.config import Config
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
-    apply_star_saturation,
+    apply_saturation_masking,
 )
 
 _BANDS = Config.LR_INPUT_BAND_NAMES
@@ -87,66 +87,74 @@ def test_rectangles_shape_and_overlap():
             assert _rects_overlap(rects[0], r)
 
 
-def test_apply_saturation_stamps_bright_star_only():
+def test_apply_saturation_masking_zeros_over_well_regions():
+    """Pixels at/above the well depth (any source) are masked to ~0 over a
+    rectangular patch — nothing stays above the well."""
     m = StarSaturationModel()
     H = W = 64
     lr = np.zeros((H, W, len(_BANDS)), dtype=np.float32)
-    # mag-13 star at HR (64,64) → LR (32,32) with hr_to_lr=0.5; saturates all bands.
-    stars = [{"type": "star", "x_pix": 64.0, "y_pix": 64.0, "mag_vis": 13.0}]
-    apply_star_saturation(lr, stars, m, np.random.default_rng(0),
-                          hr_to_lr_scale=0.5, band_names=_BANDS)
-    # all bands saturated: each channel clipped to its well depth
     for k, bn in enumerate(_BANDS):
         well = m.well_depth_e(Config.get_band(bn))
-        assert lr[..., k].max() == pytest.approx(well, rel=1e-5)
-        assert (lr[..., k] == np.float32(well)).sum() >= 9      # a rectangle's worth
-
-    # A faint star leaves the image untouched.
-    lr2 = np.zeros((H, W, len(_BANDS)), dtype=np.float32)
-    faint = [{"type": "star", "x_pix": 64.0, "y_pix": 64.0, "mag_vis": 22.0}]
-    apply_star_saturation(lr2, faint, m, np.random.default_rng(0),
-                          hr_to_lr_scale=0.5, band_names=_BANDS)
-    assert lr2.max() == 0.0
+        lr[30:34, 30:34, k] = np.float32(well * 50.0)      # 50× over the well
+    apply_saturation_masking(lr, m, np.random.default_rng(0), band_names=_BANDS)
+    for k, bn in enumerate(_BANDS):
+        well = m.well_depth_e(Config.get_band(bn))
+        assert lr[..., k].max() < well                     # nothing above well
+        assert lr[30:34, 30:34, k].max() == 0.0            # core masked to 0
+        assert (lr[..., k] == 0.0).sum() >= 16             # a patch's worth
 
 
-def test_apply_saturation_clips_out_of_bounds():
+def test_apply_saturation_masking_leaves_subwell_untouched():
     m = StarSaturationModel()
-    lr = np.zeros((16, 16, len(_BANDS)), dtype=np.float32)
-    # star far off-canvas → nothing stamped, no crash
-    stars = [{"type": "star", "x_pix": 9000.0, "y_pix": 9000.0, "mag_vis": 12.0}]
-    apply_star_saturation(lr, stars, m, np.random.default_rng(0),
-                          hr_to_lr_scale=0.5, band_names=_BANDS)
-    assert lr.max() == 0.0
+    lr = np.zeros((32, 32, len(_BANDS)), dtype=np.float32)
+    for k, bn in enumerate(_BANDS):
+        well = m.well_depth_e(Config.get_band(bn))
+        lr[10:14, 10:14, k] = np.float32(well * 0.5)       # below the well
+    before = lr.copy()
+    apply_saturation_masking(lr, m, np.random.default_rng(0), band_names=_BANDS)
+    np.testing.assert_array_equal(lr, before)              # no saturation → no-op
+
+
+def test_apply_saturation_masking_galaxy_core_not_just_stars():
+    """A bright EXTENDED source (no star metadata) still saturates and is
+    masked — the trigger is the pixel value, not the source type."""
+    m = StarSaturationModel()
+    lr = np.zeros((40, 40, len(_BANDS)), dtype=np.float32)
+    well = m.well_depth_e(Config.get_band(_BANDS[0]))
+    lr[15:25, 15:25, 0] = np.float32(well * 5.0)           # 10×10 bright core
+    apply_saturation_masking(lr, m, np.random.default_rng(1), band_names=_BANDS)
+    assert lr[..., 0].max() < well                         # whole core masked
 
 
 # ---------------------------------------------------------------------------
 # Forward-model integration
 # ---------------------------------------------------------------------------
 
-def _hr_field_with_star(mag_vis: float, n: int = 48):
+def _hr_field_with_bright_source(flux_e: float, n: int = 48):
+    """An HR field with a bright core that drives the LR past the well."""
     from euclid_polish.image import Image
     data = np.zeros((n, n, len(_BANDS)), dtype=np.float32)
+    data[n // 2 - 4:n // 2 + 4, n // 2 - 4:n // 2 + 4, :] = np.float32(flux_e)
     return Image(
         data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
-        band_names=_BANDS, is_clean=True,
-        metadata={"stars": [{"type": "star", "x_pix": n / 2.0,
-                             "y_pix": n / 2.0, "mag_vis": mag_vis}]})
+        band_names=_BANDS, is_clean=True, metadata={"stars": []})
 
 
-def test_forward_bakes_saturation_into_dirty_not_target():
+def test_forward_masks_saturation_in_dirty_not_target():
     from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator,
         ObservationSimulatorConfig,
     )
     fwd = ObservationSimulator(config=ObservationSimulatorConfig(
         add_noise=False, add_artifacts=False, add_saturation=True))
-    lr, hr = fwd.process(_hr_field_with_star(13.0),
+    lr, hr = fwd.process(_hr_field_with_bright_source(1e6),
                          np.random.default_rng(0))
-    # VIS dirty carries the clipped (well-depth) saturated core...
     well_vis = StarSaturationModel().well_depth_e(Config.BAND_VIS)
-    assert lr.data[..., 0].max() == pytest.approx(well_vis, rel=1e-4)
-    # ...but the clean HR target is untouched (all zero).
-    assert hr.data.max() == 0.0
+    # Dirty VIS: the saturated core is masked to ~0 — nothing above the well.
+    assert lr.data[..., 0].max() < well_vis
+    assert float(lr.data[..., 0].min()) <= 0.0
+    # Clean HR target keeps the bright source (untouched).
+    assert hr.data.max() == pytest.approx(1e6, rel=1e-4)
 
 
 def test_forward_saturation_can_be_disabled():
@@ -154,7 +162,9 @@ def test_forward_saturation_can_be_disabled():
         ObservationSimulator,
         ObservationSimulatorConfig,
     )
+    well_vis = StarSaturationModel().well_depth_e(Config.BAND_VIS)
     fwd = ObservationSimulator(config=ObservationSimulatorConfig(
         add_noise=False, add_artifacts=False, add_saturation=False))
-    lr, _ = fwd.process(_hr_field_with_star(13.0), np.random.default_rng(0))
-    assert lr.data.max() == 0.0          # no saturation stamped
+    lr, _ = fwd.process(_hr_field_with_bright_source(1e6), np.random.default_rng(0))
+    # Saturation off → the over-well core is NOT masked (stays far above well).
+    assert lr.data[..., 0].max() > well_vis

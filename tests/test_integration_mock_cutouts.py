@@ -349,7 +349,9 @@ def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
     )
     fwd = ObservationSimulator(
         psfs_by_band=psfs,
-        config=ObservationSimulatorConfig(add_noise=False),
+        # Flux-conservation check: disable saturation so the bright 1e6 source
+        # isn't masked away (saturation masking is covered in test_saturation).
+        config=ObservationSimulatorConfig(add_noise=False, add_saturation=False),
     )
 
     # Tiny synthetic HR scene: a single 1e6-electron source per band at centre.
