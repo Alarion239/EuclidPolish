@@ -563,6 +563,11 @@ class Trainer:
         ckpt = self.checkpoint
 
         start_step = int(ckpt.step.numpy())
+        # Surface resume to the structured stream too — restore() only prints to
+        # stdout, so without this the WebUI gives no sign a run picked up from a
+        # checkpoint (it looks like a fresh start).
+        if start_step > 0 and warn_callback is not None:
+            warn_callback(f"resumed from checkpoint at step {start_step}")
 
         os.makedirs(ckpt_mgr.directory, exist_ok=True)
         # The structured, resume-continuous metrics CSV lives with the

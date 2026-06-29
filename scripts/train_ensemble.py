@@ -78,6 +78,24 @@ def main() -> int:
         reporter.set_step(done_members[0] * args.steps + s, total,
                           f"member {done_members[0] + 1}/{args.n_members} · step {s}")
 
+    def _eval_cb(row: dict) -> None:
+        # Forward per-member eval metrics to the WebUI's structured stream as
+        # ONE cumulative curve: offset the step by members already finished so
+        # the validation history is continuous across members (the trainer only
+        # knows its own member-local step). Tag the member for the UI.
+        m = done_members[0]
+        cum = dict(row)
+        if cum.get("step") is not None:
+            cum["step"] = m * args.steps + int(cum["step"])
+        cum["total"] = total
+        cum["member"] = m + 1
+        reporter.metric(cum)
+
+    def _warn_cb(msg: str) -> None:
+        # Surface restore/resume notices, gradient-spike rollbacks and LR
+        # halvings (which otherwise only reached stdout) to the WebUI.
+        reporter.warn(f"member {done_members[0] + 1}/{args.n_members}: {msg}")
+
     def _on_member(i: int, n: int, _m) -> None:
         done_members[0] = i                     # ``i`` is 1-indexed (members done)
         print(f"\n=== member {i}/{n} done ===\n")
@@ -90,7 +108,8 @@ def main() -> int:
         n_members=args.n_members, base_seed=base_seed,
         steps=args.steps, batch_size=args.batch_size,
         evaluate_every=args.evaluate_every,
-        step_callback=_step_cb, on_member=_on_member,
+        step_callback=_step_cb, eval_callback=_eval_cb, warn_callback=_warn_cb,
+        on_member=_on_member,
     )
 
     if args.eval_images > 0:
