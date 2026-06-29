@@ -360,25 +360,41 @@ class Config:
         "H_E": 0.85,
     }
 
-    # --- Bright-star detector saturation (synthetic LR dirty image) ------------
-    # A star saturates a band when its peak detector-pixel electron count exceeds
-    # the well depth. We DERIVE the per-band well depth so the 50% points land at
-    # the observed magnitudes (STAR_SATURATION_CALIB_MAG, in VIS mag): VIS 14,
-    # Y_E 17, H_E 16.5, J_E 17.5 → peak-pixel clip levels of ~198k e⁻ (VIS),
-    # ~10.0k/12.3k/5.9k e⁻ (Y_E/H_E/J_E). P=½ at the calib mag, ~0.4% one mag
-    # fainter, ~99.6% one mag brighter (set by STAR_SATURATION_JITTER_DEX). The
-    # peak fraction uses an effective FWHM (STAR_SATURATION_FWHM_ARCSEC) at each
-    # band's native detector pixel; the recovered wells are ~198k e⁻ (VIS CCD) and
-    # ~8-10k e⁻ (NISP H2RG). Onset = Poisson(peak) ≥ well, with a per-star
-    # log-normal jitter (sub-pixel position + PSF variation) of
-    # STAR_SATURATION_JITTER_DEX so the probability transitions smoothly (~1 mag)
-    # rather than as a step. Drawn INDEPENDENTLY per band. The saturated region is
-    # a union of 1-3 overlapping rectangles (sides 3-6 px, one containing the peak
-    # pixel), clipped to the well depth.
+    # --- Detector saturation masking (synthetic LR dirty image) ----------------
+    # Any pixel at/above the band well depth saturates; the forward model masks a
+    # blocky rectangular patch around it to ~0 (the Euclid/MER behaviour), for
+    # bright stars AND bright galaxy nuclei alike (see saturation.py).
+    #
+    # Per-band well depth (electrons), referred to the CO-ADDED LR STACK our
+    # forward model produces (VIS = 4 exposures), NOT a single readout.
+    #
+    #  • VIS — McCracken et al. (2025), Euclid Q1 VIS processing (OU-VIS):
+    #    blooming/bleeding sets in at 40–61 kADU (mean 51 kADU) PER READOUT, and
+    #    the 16-bit ADC hard-saturates at 65 535 ADU, at a Q1 gain of
+    #    3.48 e⁻/ADU. McCracken delivers ADU; we work in electrons, so we apply
+    #    the gain: per-readout blooming = 51 000 × 3.48 ≈ 177 480 e⁻. But each of
+    #    our 4 exposures saturates independently at that level, and the masked
+    #    stack therefore saturates at n_exposures × it ≈ 710 ke⁻. This
+    #    stack-referred well reproduces the known VIS saturation magnitude
+    #    (m_AB ≈ 17.8, Euclid Q1); a per-readout 177 ke⁻ compared to our stacked
+    #    electrons would saturate ~1.5 mag too faint.
+    #  • NISP (Y_E/J_E/H_E) — effective stack-referred clip levels for the
+    #    4×87.2 s MACC integration (physical H2RG well is larger), from the
+    #    STAR_SATURATION_CALIB_MAG calibration (scripts/measure_star_saturation.py).
+    VIS_SATURATION_GAIN_E_PER_ADU = 3.48          # McCracken+25 Q1 VIS gain
+    VIS_SATURATION_BLOOMING_ADU   = 51_000.0      # per-readout blooming (40–61 kADU)
+    STAR_SATURATION_WELL_E = {
+        # Per-readout blooming × gain × n_exposures → stack-referred (≈709 920 e⁻).
+        "VIS": (BAND_VIS.n_exposures * VIS_SATURATION_BLOOMING_ADU
+                * VIS_SATURATION_GAIN_E_PER_ADU),
+        "Y_E": 7798.0, "J_E": 4571.0, "H_E": 9550.0,
+    }
+    # Calibration inputs retained for scripts/measure_star_saturation.py (which
+    # re-derives the NISP wells above) and for star rendering (STAR_BAND_OFFSETS_MAG).
     STAR_SATURATION_FWHM_ARCSEC  = 2.0
     STAR_SATURATION_CALIB_MAG    = {"VIS": 14.0, "Y_E": 17.0,
                                     "J_E": 17.5, "H_E": 16.5}
-    STAR_SATURATION_JITTER_DEX   = 0.15     # log-normal peak jitter (≈1 mag onset)
+    STAR_SATURATION_JITTER_DEX   = 0.15
     STAR_SATURATION_RECT_MIN_PX  = 3
     STAR_SATURATION_RECT_MAX_PX  = 6
     STAR_SATURATION_MAX_RECTS    = 3        # 1..3 overlapping rectangles

@@ -14,53 +14,28 @@ from euclid_polish.sky.observation.saturation import (
 _BANDS = Config.LR_INPUT_BAND_NAMES
 
 
-def test_well_depths_recover_detector_full_wells():
+def test_vis_well_is_stack_referred_mccracken_blooming():
+    """VIS well = McCracken+25 Q1 per-readout blooming (51 kADU × 3.48 e⁻/ADU)
+    × the 4 VIS exposures our forward model co-adds = stack-referred ≈710 ke⁻.
+    The per-readout value alone (177 ke⁻) would saturate ~1.5 mag too faint."""
     m = StarSaturationModel()
-    assert 1.7e5 < m.well_depth_e(Config.BAND_VIS) < 2.2e5      # VIS CCD ~198k e-
+    vis = m.well_depth_e(Config.BAND_VIS)
+    n_exp = Config.BAND_VIS.n_exposures
+    assert vis == pytest.approx(n_exp * 51_000.0 * 3.48, rel=1e-6)   # 709 920 e-
+    assert vis == pytest.approx(n_exp * 177_480.0, rel=1e-6)
+
+
+def test_nisp_wells_are_effective_stack_referred_levels():
+    m = StarSaturationModel()
     for b in (Config.BAND_Y_E, Config.BAND_J_E, Config.BAND_H_E):
-        # Effective stack-referred clip level (calibrated from the observed
-        # 50%-saturation mags, so it scales with t_total — 4×87.2 s MACC
-        # integration), not the physical H2RG full well. Y/J/H ≈ 7.8/4.6/9.5k.
+        # Effective stack-referred clip level for the 4×87.2 s MACC integration
+        # (not the physical H2RG full well). Y/J/H ≈ 7.8/4.6/9.5k e-.
         assert 4e3 < m.well_depth_e(b) < 1.5e4
 
 
-def test_probability_half_at_calibration_magnitudes():
-    m = StarSaturationModel()
-    assert m.saturation_probability(14.0, Config.BAND_VIS) == pytest.approx(0.5, abs=1e-6)
-    assert m.saturation_probability(17.0, Config.BAND_Y_E) == pytest.approx(0.5, abs=1e-6)
-
-
-def test_probability_monotonic_and_soft():
-    m = StarSaturationModel()
-    b = Config.BAND_VIS
-    # brighter ⇒ higher saturation probability
-    p = [m.saturation_probability(mv, b) for mv in (12, 13, 14, 15, 16)]
-    assert p[0] >= p[1] >= p[2] >= p[3] >= p[4]
-    assert p[0] > 0.99 and p[-1] < 0.01
-    # SOFT onset: ±0.3 mag around the 50% point is strictly between 0 and 1.
-    assert 0.6 < m.saturation_probability(13.7, b) < 0.95
-    assert 0.05 < m.saturation_probability(14.3, b) < 0.4
-
-
-def test_saturates_empirical_rate_matches_probability():
-    m = StarSaturationModel()
-    rng = np.random.default_rng(0)
-    frac = np.mean([m.saturates(14.0, Config.BAND_VIS, rng) for _ in range(6000)])
-    assert frac == pytest.approx(0.5, abs=0.03)
-
-
-def test_bands_saturate_independently():
-    # A mag-15 star: well above NISP onset, well below VIS onset.
-    m = StarSaturationModel()
-    assert m.saturation_probability(15.0, Config.BAND_VIS) < 0.01
-    assert m.saturation_probability(15.0, Config.BAND_Y_E) > 0.99
-
-
-def test_sharp_onset_when_jitter_zero():
-    m = StarSaturationModel(jitter_dex=0.0)
-    b = Config.BAND_VIS
-    assert m.saturation_probability(13.9, b) == 1.0
-    assert m.saturation_probability(14.1, b) == 0.0
+def test_well_override_is_honoured():
+    m = StarSaturationModel(well_e={"VIS": 1234.0})
+    assert m.well_depth_e(Config.BAND_VIS) == 1234.0
 
 
 def _rects_overlap(a, b) -> bool:
