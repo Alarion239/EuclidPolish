@@ -14,6 +14,7 @@ from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.visualization.methods import plot_star_positions
+from euclid_polish.web.helpers.sky_records import SUBSETS
 
 
 def _export_sky_record_fits(
@@ -28,7 +29,7 @@ def _export_sky_record_fits(
     ``RECORDS_DIR_V2``; the /sky viewer passes the FASRC cache dir.
     """
 
-    if subset not in ("train", "validate"):
+    if subset not in SUBSETS:
         abort(400)
     if kind not in ("clean", "dirty", "hr"):
         abort(400)

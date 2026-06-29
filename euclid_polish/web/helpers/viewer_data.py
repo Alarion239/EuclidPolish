@@ -119,9 +119,10 @@ _SKY_RECORD_TIERS = [
 
 
 def _sky_subset(params: dict[str, str]) -> str:
-    subset = (params.get("subset") or "validate").strip()
-    if subset not in ("train", "validate"):
-        raise ViewerError(400, "subset must be train|validate")
+    # Default to the held-out test split — the eval set the /sky sync pulls.
+    subset = (params.get("subset") or "test").strip()
+    if subset not in sky_records.SUBSETS:
+        raise ViewerError(400, f"subset must be {'|'.join(sky_records.SUBSETS)}")
     return subset
 
 

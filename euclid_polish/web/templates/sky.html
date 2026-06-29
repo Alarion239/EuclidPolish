@@ -70,10 +70,14 @@ const note    = document.getElementById("inspect-disabled");
 // Tier key → /sky/inspect "kind" arg (LR=dirty, HR=clean, target=hr).
 window.__skyViewer = mountCutoutViewer(document.getElementById("cutout-viewer"), {
   collection: "sky",
-  params: { subset: "validate" },
+  params: { subset: "test" },
   paramControls: [{
     key: "subset", label: "Subset",
-    options: [{ value: "validate", label: "validate" }, { value: "train", label: "train" }],
+    options: [
+      { value: "test", label: "test" },
+      { value: "validate", label: "validate" },
+      { value: "train", label: "train" },
+    ],
   }],
   onChange: (s) => {
     if (!inspect) return;
