@@ -305,6 +305,21 @@ class TestEvaluationRoutes:
         assert r.status_code == 200
         assert captured["include_galaxies"] is True
 
+    def test_run_grouped_passes_session_client(self, client, tmp_path, monkeypatch):
+        """The run forwards the WebUI's authenticated Euclid session, so the
+        galaxy build uses it instead of re-demanding env credentials."""
+        from euclid_polish.eval import grouped_runner
+        from euclid_polish.web import euclid_session
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        sentinel = object()
+        monkeypatch.setattr(euclid_session, "catalog", lambda: sentinel)
+        captured = {}
+        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
+                            lambda **k: captured.update(k) or {"n": 0})
+        r = client.post("/api/evaluation/run-grouped", data={"n": "3"})
+        assert r.status_code == 200
+        assert captured["catalog_client"] is sentinel
+
     def test_transformation_404_then_renders(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         run = Config.EVAL_RESULTS_DIR

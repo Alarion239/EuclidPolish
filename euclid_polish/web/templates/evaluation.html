@@ -302,6 +302,28 @@
   </div>
 </section>
 
+{# Euclid archive login — the real-galaxy cone queries need an authenticated
+   session (Euclid.login on the process-global singleton). The grouped run is
+   in-process, so logging in here authenticates it. #}
+<section class="card" id="euclidAuthCard" style="grid-column: 1 / -1;">
+  <h3>Euclid archive login
+    <span class="muted" style="font-weight:normal;">— required to download the real field galaxies</span></h3>
+  {% if authenticated %}
+    <p style="margin:6px 0;">✓ Logged in as <code>{{ current_user or 'authenticated user' }}</code>.
+      Real galaxies will be queried &amp; downloaded with the grouped run.</p>
+    <button id="euclidLogoutBtn" class="secondary" type="button">Logout</button>
+  {% else %}
+    <p class="hint" style="margin:6px 0;">Not logged in — A/B/C lenses and the synthetic
+      stamps still run, but the real-galaxy group is skipped until you authenticate.</p>
+    <form id="euclidLoginForm" class="form-row" style="align-items:flex-end;">
+      <label>Username <input type="text" name="username" autocomplete="username" required></label>
+      <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+      <button type="submit">Login</button>
+    </form>
+  {% endif %}
+  <div id="euclidAuthStatus" class="hint" style="margin-top:6px;"></div>
+</section>
+
 <section class="card" style="grid-column: 1 / -1;">
   <h3>Run Zoobot morphology <span class="muted" style="font-weight:normal;">— representation vectors, locally (CPU)</span></h3>
   <div style="margin-top:10px;">
@@ -929,6 +951,26 @@ window.__evalPreview = {
     startJob('/api/evaluation/run-grouped', fd,
              'Grouped: eval_results', $('runGroupedBtn'),
              () => { refreshRuns(); });
+  });
+
+  // Euclid archive login (shared session via /auth/login) — authenticates the
+  // in-process grouped run so its real-galaxy cone queries can reach the archive.
+  const euclidLoginForm = $('euclidLoginForm');
+  if (euclidLoginForm) euclidLoginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const st = $('euclidAuthStatus');
+    st.textContent = '⏳ logging in…';
+    try {
+      const r = await fetch('/auth/login', { method: 'POST', body: new FormData(euclidLoginForm) });
+      const d = await r.json();
+      st.innerHTML = d.ok ? '✓ Logged in.' : '✗ ' + (d.error || 'login failed');
+      if (d.ok) setTimeout(() => location.reload(), 700);
+    } catch (err) { st.textContent = '✗ ' + err; }
+  });
+  const euclidLogoutBtn = $('euclidLogoutBtn');
+  if (euclidLogoutBtn) euclidLogoutBtn.addEventListener('click', async () => {
+    await fetch('/auth/logout', { method: 'POST' });
+    location.reload();
   });
 
   $('runZoobotBtn').addEventListener('click', () => {

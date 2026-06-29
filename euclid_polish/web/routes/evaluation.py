@@ -24,7 +24,7 @@ from typing import Any
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import euclid_session, fasrc_config
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
 
@@ -250,6 +250,8 @@ def register(app):
             run_summary=_shared_run_summary(),
             default_asinh=float(Config.STRETCH_SCALE_E),
             default_clip=_DEFAULT_CLIP,
+            authenticated=euclid_session.is_authenticated(),
+            current_user=euclid_session.current_user(),
         )
 
     @app.route("/api/evaluation/run-grouped", methods=["POST"])
@@ -271,10 +273,17 @@ def register(app):
 
         from euclid_polish.eval import grouped_runner
 
+        # The galaxy build needs an authenticated archive session for its cone
+        # queries. The WebUI logs in via euclid_session (Euclid.login on the
+        # process-global singleton, no env vars), so pass that client through;
+        # the in-process job shares the same authenticated singleton.
+        catalog_client = euclid_session.catalog()
+
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
                 out_dir=out_dir, n=n, include_synthetic=include_synth,
                 include_galaxies=True,           # real galaxies always included (fixed control)
+                catalog_client=catalog_client,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
         job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)

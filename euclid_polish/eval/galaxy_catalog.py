@@ -165,12 +165,20 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
           lens_catalog_path: str, seed: int = 0,
           cone_radius_arcmin: float = 3.0, oversample: int = 4,
           regenerate: bool = False,
+          client: EuclidCatalog | None = None,
           log: Callable[[str], None] | None = None) -> tuple[str, int]:
     """Build (or top up) the galaxy catalog to ``n_galaxies`` rows; return ``(path, n)``.
 
     Drawn from the same fields as the lenses (cone queries around each lens
     RA/Dec). The CSV is cached: already-drawn galaxies are kept (stable ids →
     their cutouts are reused, never re-downloaded); only the shortfall is queried.
+
+    Authentication: the cone queries run on astroquery's process-global
+    ``Euclid`` session. Pass ``client`` to supply an already-authenticated
+    :class:`EuclidCatalog` (e.g. the WebUI's ``euclid_session`` login, which has
+    no env vars); when given, the env-var ``_login()`` guard is skipped. With no
+    ``client`` (the CLI path), credentials fall back to ``EUCLID_USER`` /
+    ``EUCLID_PASSWORD``.
     """
     emit = log or (lambda m: None)
     out = out_csv or default_out_csv()
@@ -179,11 +187,11 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
     if len(cached) >= n_galaxies:
         return out, len(cached)                     # cache already satisfies the request
 
-    if not _login():
+    if client is None and not _login():
         raise RuntimeError(
-            "Euclid archive login required to build the galaxy catalog. Set "
-            "EUCLID_USER/EUCLID_PASSWORD or a credentials file (same credentials "
-            "the lens-cutout downloads use).")
+            "Euclid archive login required to build the galaxy catalog. Log in "
+            "on the Evaluation page, or set EUCLID_USER/EUCLID_PASSWORD (same "
+            "credentials the lens-cutout downloads use).")
 
     lenses = read_eval_catalog(lens_catalog_path)
     rng = random.Random(seed)

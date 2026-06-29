@@ -100,6 +100,20 @@ def test_build_requires_auth(monkeypatch, tmp_path):
                  lens_catalog_path=_lens_csv(tmp_path), seed=0)
 
 
+def test_build_with_client_skips_env_login(monkeypatch, tmp_path):
+    # The WebUI authenticates via euclid_session (Euclid.login on the global
+    # singleton), not env vars. When an already-authenticated client is passed,
+    # build must NOT re-demand EUCLID_USER/PASSWORD — it should query and write.
+    monkeypatch.setattr(gc, "_login", lambda **k: False)   # env login unavailable
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    out = tmp_path / "galaxies.csv"
+    path, n = gc.build(str(out), n_galaxies=3,
+                       lens_catalog_path=_lens_csv(tmp_path), seed=0,
+                       client=object())   # truthy stand-in for an authed EuclidCatalog
+    ids = {r["id"] for r in csv.DictReader(open(path))}
+    assert n == 3 and ids == {"gal_1", "gal_3", "gal_4"}
+
+
 def test_build_reuses_cache_without_requery(monkeypatch, tmp_path):
     out = tmp_path / "galaxies.csv"
     out.write_text("id,ra,dec,grade\n"
