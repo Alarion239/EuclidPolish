@@ -212,7 +212,14 @@ class Config:
     #                                         requirement ceiling, not typical.
     DARK_E_PER_S_PER_PIX         = 0.001    # dark current (e⁻/pix/s)
     SKY_MAG_AB_ARCSEC2           = 22.35    # typical Wide Survey sky brightness
-    VIS_AB_ZP_E_PER_S            = 25.50    # m_AB of source giving 1 e⁻/s
+    # m_AB of a source giving 1 e⁻/s. McCracken+ 2025 (Q1 VIS PF) deliver VIS
+    # frames in ADU with a zero-point of 24.57 s⁻¹ (i.e. 1 ADU/s = m_AB 24.57)
+    # and a gain of 3.48 e⁻/ADU, so the electron-rate zero-point is
+    # 24.57 + 2.5·log10(3.48) = 25.92. Keeping this in lock-step with the gain
+    # used for saturation puts synthetic flux, the real-cutout ADU/s→e⁻
+    # conversion, and the saturation well all on the one Q1 calibration. (Was
+    # 25.50 — ~0.42 mag fainter, implying an inconsistent ~2.36 e⁻/ADU gain.)
+    VIS_AB_ZP_E_PER_S            = 25.92
 
     # Simulator zeropoint: m_AB of a source contributing 1 e⁻ over the full
     # stacked integration. Used by sky/sky_simulator.py to convert

@@ -363,12 +363,16 @@ def test_forward_model_with_artifacts_changes_image():
     lr_off, _ = fwd_off.process(blank, rng=np.random.default_rng(0))
     lr_on,  _ = fwd_on.process( blank, rng=np.random.default_rng(0))
 
-    # With artifacts on, max pixel value should be much higher (CR + hot pixels).
-    p99_off = float(np.percentile(lr_off.data, 99.9))
-    p99_on  = float(np.percentile(lr_on.data,  99.9))
-    assert p99_on > p99_off * 5, (
-        f"artifact-on p99.9 ({p99_on:.1f}) should clearly exceed "
-        f"artifact-off p99.9 ({p99_off:.1f})"
+    # With artifacts on, the brightest pixel (a cosmic ray / hot pixel, thousands
+    # of e⁻) vastly exceeds the artifact-off max (just the sky-noise floor). The
+    # MAX is the robust discriminator; the 99.9 percentile is brittle because it
+    # lands at the faint tail of the hot-pixel exponential, right above the noise
+    # floor (which scales with the photometric zeropoint).
+    max_off = float(lr_off.data.max())
+    max_on  = float(lr_on.data.max())
+    assert max_on > max_off * 5, (
+        f"artifact-on max ({max_on:.1f}) should clearly exceed "
+        f"artifact-off max ({max_off:.1f})"
     )
 
 
