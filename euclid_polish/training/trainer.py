@@ -1172,9 +1172,32 @@ class Trainer:
                 "mae_stretched": mae_mean.result()}
 
     def restore(self):
-        """Restore model from checkpoint if available."""
-        if self.checkpoint_manager.latest_checkpoint:
-            self.checkpoint.restore(self.checkpoint_manager.latest_checkpoint)
-            print(
-                f"Model restored from checkpoint at step {self.checkpoint.step.numpy()}."
-            )
+        """Resume from the MOST RECENT checkpoint, across both save-best tracks.
+
+        The PSNR track (root dir) and the LOSS track (``loss_best/``) wrap the
+        same checkpoint object but save on different triggers, so the higher
+        ``step`` is whichever metric improved most recently. Restoring only the
+        PSNR track (the historical behaviour) silently rewinds to the last PSNR
+        improvement — which, when PSNR plateaus early, can throw away tens of
+        thousands of steps and look like a from-scratch restart. Pick the
+        candidate with the largest restored ``step`` so resume continues at the
+        true last checkpoint.
+        """
+        candidates = [
+            m.latest_checkpoint
+            for m in (self.checkpoint_manager, self.loss_checkpoint_manager)
+            if m.latest_checkpoint
+        ]
+        if not candidates:
+            return
+        best, best_step = None, -1
+        for path in candidates:
+            # Restore is cheap (small model); read the authoritative step the
+            # same way the rollback path does, then keep the latest one.
+            self.checkpoint.restore(path).expect_partial()
+            s = int(self.checkpoint.step.numpy())
+            if s >= best_step:
+                best, best_step = path, s
+        if best != candidates[-1]:
+            self.checkpoint.restore(best).expect_partial()
+        print(f"Model restored from checkpoint at step {self.checkpoint.step.numpy()}.")
