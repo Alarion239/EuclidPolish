@@ -134,6 +134,53 @@ def _run_query(query: str) -> tuple[Any, str]:
         return None, f"{type(e).__name__}: {e}"
 
 
+def _cone_count(ra: float, dec: float, radius_deg: float,
+                where_extra: str = "") -> tuple[int | None, str]:
+    """COUNT(*) of ``catalogue.mer_catalogue`` in a cone, with one extra cut.
+
+    Returns ``(count_or_None, error)``. Used by :func:`_diagnose_zero_cone` to
+    attribute an empty galaxy query to the specific WHERE cut responsible.
+    """
+    q = (f"SELECT COUNT(*) FROM catalogue.mer_catalogue "
+         f"WHERE CONTAINS(POINT('ICRS', {_RA_COL}, {_DEC_COL}), "
+         f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) = 1"
+         + (f" AND {where_extra}" if where_extra else ""))
+    results, err = _run_query(q)
+    if err:
+        return None, err
+    try:
+        return int(results[0][0]), ""
+    except (TypeError, IndexError, KeyError, ValueError):
+        return None, "unparseable count"
+
+
+def _diagnose_zero_cone(ra: float, dec: float, radius_deg: float,
+                        emit: Callable[[str], None]) -> None:
+    """Log a COUNT(*) for the bare cone and each galaxy cut in isolation.
+
+    Run once when a cone unexpectedly yields no galaxies: a cut whose count is 0
+    while the bare cone is non-zero is the one eliminating everything (a wrong
+    column *value*/unit — a wrong column *name* would error instead). The bare
+    cone reading 0 points at coverage/coordinates rather than the cuts.
+    """
+    area_lo = _diam_to_area_px(Config.GalaxySelection.DIAM_LO_ARCSEC)
+    area_hi = _diam_to_area_px(Config.GalaxySelection.DIAM_HI_ARCSEC)
+    cuts = [
+        ("bare cone (no cuts)", ""),
+        (f"{_FLUX_COL} > 0", f"{_FLUX_COL} IS NOT NULL AND {_FLUX_COL} > 0"),
+        (f"{_QUALITY_COL} = 0", f"{_QUALITY_COL} = 0"),
+        (f"{_POINTLIKE_COL} = 0", f"{_POINTLIKE_COL} = 0"),
+        (f"{_SPURIOUS_COL} = 0", f"{_SPURIOUS_COL} = 0"),
+        (f"{_SIZE_COL} in [{area_lo:.0f},{area_hi:.0f}]",
+         f"{_SIZE_COL} BETWEEN {area_lo:.1f} AND {area_hi:.1f}"),
+    ]
+    emit(f"⟐ diagnosing 0-result cone at ({ra:.4f}, {dec:.4f}) — COUNT(*) per "
+         "cut in isolation; the cut reading 0 (while bare cone > 0) is the culprit:")
+    for name, pred in cuts:
+        n, err = _cone_count(ra, dec, radius_deg, pred)
+        emit(f"    {name:<42} → {('ERROR: ' + err) if err else n}")
+
+
 def _near_any_lens(ra: float, dec: float, lenses: list[dict[str, Any]],
                    radius_arcsec: float) -> bool:
     """True if (ra, dec) is within ``radius_arcsec`` of any lens position."""
@@ -214,6 +261,7 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
         emit("ADQL (per field):" + galaxy_adql(f0["ra"], f0["dec"], radius_deg))
 
     queried = 0
+    diagnosed = False                                # run the 0-cone cascade once
     for fld in fields:
         if len(cached) + len(pool) >= target_pool:
             emit(f"pool target reached ({len(cached) + len(pool)}) — "
@@ -227,17 +275,24 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
         raw = len(results) if results is not None else 0
         cands = _candidates_from_results(results)
         kept = 0
+        lens_excl = 0                                # dropped: too close to a lens
         for cand in cands:
             if cand["id"] in seen_ids:
                 continue
             if _near_any_lens(cand["ra"], cand["dec"], lenses, LENS_EXCLUDE_ARCSEC):
+                lens_excl += 1                       # never include the lenses themselves
                 continue
             seen_ids.add(cand["id"])
             pool.append(cand)
             kept += 1
         emit(f"  field ({fld['ra']:.4f}, {fld['dec']:.4f}): "
              f"{raw} raw → {len(cands)} passed mag floor → "
-             f"+{kept} new (pool {len(pool)})")
+             f"+{kept} new ({lens_excl} dropped as lens-coincident) "
+             f"(pool {len(pool)})")
+        # First empty cone → attribute it to a specific cut (once).
+        if raw == 0 and not diagnosed:
+            _diagnose_zero_cone(fld["ra"], fld["dec"], radius_deg, emit)
+            diagnosed = True
 
     rng.shuffle(pool)
     need = n_galaxies - len(cached)

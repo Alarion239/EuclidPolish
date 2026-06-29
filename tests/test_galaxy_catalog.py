@@ -117,6 +117,32 @@ def test_build_logs_shortfall(monkeypatch, tmp_path):
     assert any("only" in m and "50" in m for m in logs)
 
 
+def test_build_diagnoses_zero_cone(monkeypatch, tmp_path):
+    # When a cone returns 0 galaxies, build re-counts each cut in isolation so
+    # the offending cut is named in the log (the one reading 0 while the bare
+    # cone has sources).
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+
+    def fake_launch(query):
+        if "COUNT(*)" in query:
+            # The bare cone has 42 sources; the point_like cut is what zeroes it.
+            if f"{gc._POINTLIKE_COL} = 0" in query:
+                return _FakeJob([[0]])
+            return _FakeJob([[42]])
+        return _FakeJob([])                            # galaxy SELECT finds nothing
+
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(fake_launch))
+    logs = []
+    gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    blob = "\n".join(logs)
+    assert "diagnosing" in blob and "bare cone" in blob
+    assert any("42" in m for m in logs)                # bare cone count surfaced
+    assert any(gc._POINTLIKE_COL in m and "0" in m for m in logs)   # culprit named
+    # The cascade runs once, not once per field.
+    assert sum("diagnosing" in m for m in logs) == 1
+
+
 def test_build_requires_auth(monkeypatch, tmp_path):
     monkeypatch.setattr(gc, "_login", lambda **k: False)
     with pytest.raises(RuntimeError):
