@@ -373,6 +373,10 @@ def register(app):
                 "batch_size":  int(form.get("batch_size", cfg.batch_size)),
                 "steps":       int(form.get("steps",      cfg.steps)),
                 "extra_flags": (form.get("extra_flags", "") or "").strip(),
+                # "Override existing data" checkbox → run_pipeline --force
+                # (regenerate from scratch instead of resuming prior shards).
+                "force": str(form.get("force", "")).strip().lower() in (
+                    "1", "true", "yes", "on"),
             }
             params.update(resources.to_dict())
             label = _spec_label(kind, step_ref, form)

@@ -1131,6 +1131,13 @@ class RunPipelineStep(FASRCPipelineStep):
             "--steps",      str(int(params.get("steps",      0))),
         ]
         cmd.extend(self.skip_flags)
+        # Override: discard any prior on-disk data for this dataset and
+        # regenerate from scratch. The default resumes from salvaged shards
+        # (reusing previous data); the /sky "Override existing data" checkbox
+        # forces a clean run so new parameters aren't mixed with old fields.
+        if str(params.get("force", "")).strip().lower() in (
+                "1", "true", "yes", "on"):
+            cmd.append("--force")
         # Free-form user-supplied flags. ``shlex.split`` so individual
         # tokens get re-quoted by ``render_sbatch_body`` instead of being
         # smuggled in as one shell-expandable string.

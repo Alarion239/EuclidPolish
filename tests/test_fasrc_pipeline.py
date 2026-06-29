@@ -379,6 +379,18 @@ class TestRegistry:
                 == f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}")
         assert "--tng-redshift-mode" in argv
 
+    def test_synthetic_generate_force_flag(self):
+        """The "Override existing data" checkbox adds --force (regenerate from
+        scratch); absent / falsey → resume (no --force)."""
+        step = REGISTRY.get("synthetic_generate")
+        base = {"n_train": 10, "n_valid": 2, "image_size": 252,
+                "batch_size": 4, "steps": 100}
+        assert "--force" not in step.build_command(base)
+        assert "--force" in step.build_command({**base, "force": "1"})
+        assert "--force" in step.build_command({**base, "force": True})
+        assert "--force" not in step.build_command({**base, "force": "0"})
+        assert "--force" not in step.build_command({**base, "force": ""})
+
     def test_synthetic_generate_star_field_flags(self):
         """Star field knobs from /config reach run_pipeline; absent → omitted."""
         step = REGISTRY.get("synthetic_generate")

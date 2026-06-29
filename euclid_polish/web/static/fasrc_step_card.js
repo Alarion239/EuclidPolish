@@ -317,6 +317,10 @@ large cutout don't leak across train/validate."></label>`;
         // reads n_train / n_valid / image_size). Renders synthetic clean HR
         // scenes + forward-models to dirty Euclid LR.
         return `
+          <label class="checkbox-field" style="flex-basis:100%;"
+                 title="Discard the existing sky dataset and regenerate from scratch (run_pipeline --force). Default OFF — a resubmit RESUMES from previously generated shards, reusing old fields. Check this whenever you change generation parameters so new fields are not mixed with old ones.">
+            <input type="checkbox" name="force" value="1">
+            Override existing data — regenerate from scratch</label>
           <p class="hint" style="flex-basis:100%;">Train scenes, Validate scenes and
              HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
              with this job.</p>`;
