@@ -15,6 +15,7 @@ from collections.abc import Callable
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
+from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
 from euclid_polish.config import Config
 from euclid_polish.eval import catalog_runner, grouped_runner
@@ -198,7 +199,21 @@ class Model:
             valid_lr_path, valid_hr_path, batch_size, augment=False
         )
 
-        trainer = Trainer(self._tf_model, checkpoint_dir=self._checkpoint_dir,
+        # Anneal the LR WITHIN this run. The Trainer default decays at step
+        # 200k, but a typical run (e.g. a 50k-step ensemble member) never
+        # reaches it, so the LR stays flat — too hot to settle into the sharp
+        # good minimum, so PSNR climbs then drifts back to the degenerate
+        # skip-only floor and never recovers. Scale the decay to `steps`:
+        # 5e-4 → 1e-4 (at 50%) → 2e-5 (at 80%). The lower 5e-4 start also tames
+        # the gradient spikes seen on the regenerated (saturation-masked) data.
+        # (The divergence guard's halving still applies on top of this.)
+        b1 = max(1, int(0.5 * steps))
+        b2 = max(b1 + 1, int(0.8 * steps))
+        lr_schedule = PiecewiseConstantDecay(
+            boundaries=[b1, b2], values=[5e-4, 1e-4, 2e-5],
+        )
+        trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
+                          checkpoint_dir=self._checkpoint_dir,
                           seed=self._seed, deterministic=self._deterministic)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
