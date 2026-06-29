@@ -26,6 +26,12 @@ GROUPED_COLS = [
 ]
 LENS_GRADES = ("A", "B", "C")
 
+#: The Euclid cutout service can round a pixel-size request DOWN (a 53-px request
+#: comes back 52²), which enforce_object_sizes would then drop. Request a couple
+#: of extra VIS px so the stamp always lands ≥ EVAL_LR_SIZE; it is center-cropped
+#: back to the canonical geometry afterwards, so the pad never reaches the output.
+DOWNLOAD_PAD = 2
+
 
 def _galaxy_plan(log: Callable[[str], None]) -> list[dict[str, Any]]:
     """Rows for the real-galaxy group, read from the cached galaxy catalog.
@@ -138,6 +144,10 @@ def run_grouped_analysis(
         if on_progress:
             on_progress(done[0], total, label)
 
+    # Download a hair larger than the canonical LR side so the archive's
+    # round-down never lands below it (enforce_object_sizes crops back to target).
+    download_size = max(cutout_size, EVAL_LR_SIZE + DOWNLOAD_PAD)
+
     all_rows: list[dict[str, Any]] = []
     for g, rows in lens_plan:
         for obj in rows:
@@ -152,7 +162,7 @@ def run_grouped_analysis(
                 produced, err = True, ""
             else:
                 r0 = catalog_runner.eval_catalog_object(
-                    model, obj, out_dir, cutout_size=cutout_size,
+                    model, obj, out_dir, cutout_size=download_size,
                     asinh_scale=asinh_scale, checkpoint=checkpoint, grade=g,
                     log=_emit)
                 produced, err = bool(r0.get("ok")), r0.get("error", "")

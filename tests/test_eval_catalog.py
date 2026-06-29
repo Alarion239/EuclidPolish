@@ -1126,3 +1126,23 @@ def test_galaxy_plan_empty_when_no_cache(monkeypatch, tmp_path):
     rows = grouped_runner._galaxy_plan(msgs.append)
     assert rows == []                              # galaxies must not kill A/B/C
     assert any("Query-galaxies" in m for m in msgs)   # actionable hint logged
+
+
+def test_grouped_downloads_padded_size(monkeypatch, tmp_path):
+    """Real cutouts are requested a few px larger than the canonical LR side, so
+    the Euclid cutout service's round-down never drops them below EVAL_LR_SIZE."""
+    from euclid_polish.eval import catalog_runner, grouped_runner
+    cat = tmp_path / "lenses.csv"
+    cat.write_text("id,ra,dec,grade\na0,1.0,2.0,A\n")
+    seen = {}
+
+    def fake_eval(model, obj, out_dir, *, cutout_size, **kw):
+        seen["cutout_size"] = cutout_size
+        return {"ok": False, "error": "stub"}      # not produced → harmless drop
+
+    monkeypatch.setattr(catalog_runner, "eval_catalog_object", fake_eval)
+    monkeypatch.setattr(catalog_runner, "load_eval_model", lambda *a, **k: object())
+    grouped_runner.run_grouped_analysis(
+        str(tmp_path / "out"), n=1, catalog_path=str(cat),
+        include_synthetic=False, include_galaxies=False, log=lambda m: None)
+    assert seen["cutout_size"] == grouped_runner.EVAL_LR_SIZE + grouped_runner.DOWNLOAD_PAD

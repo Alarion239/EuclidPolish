@@ -147,11 +147,11 @@ def test_build_diagnoses_zero_cone(monkeypatch, tmp_path):
     gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
              lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
     blob = "\n".join(logs)
-    assert "diagnosing" in blob and "bare cone" in blob
+    assert "breakdown" in blob and "bare cone" in blob
     assert any("42" in m for m in logs)                # bare cone count surfaced
     assert any(gc._POINTLIKE_COL in m and "0" in m for m in logs)   # culprit named
     # The cascade runs once, not once per field.
-    assert sum("diagnosing" in m for m in logs) == 1
+    assert sum("breakdown" in m for m in logs) == 1
 
 
 def test_build_relaxed_logs_profile(monkeypatch, tmp_path):
@@ -162,6 +162,27 @@ def test_build_relaxed_logs_profile(monkeypatch, tmp_path):
     gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
              lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
     assert any("relaxed" in m.lower() for m in logs)
+
+
+def test_build_relax_forces_breakdown_even_with_data(monkeypatch, tmp_path):
+    # Under the relaxed (investigation) profile the strict-cut breakdown runs on
+    # the first field even though the relaxed cones return galaxies, so the
+    # offending strict cut is still named.
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+
+    def fake_launch(query):
+        if "COUNT(*)" in query:
+            return _FakeJob([[42]])
+        return _FakeJob([
+            {"object_id": 7, "right_ascension": 10.05, "declination": -5.0,
+             "segmentation_area": 800.0, "flux_vis_psf": 50.0}])
+
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(fake_launch))
+    logs = []
+    gc.build(str(tmp_path / "g.csv"), n_galaxies=1,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    assert any("breakdown" in m for m in logs)         # ran despite non-empty cones
+    assert any("raw" in m for m in logs)               # cones did return data
 
 
 def test_build_requires_auth(monkeypatch, tmp_path):

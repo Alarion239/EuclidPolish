@@ -18,6 +18,7 @@ import random
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.catalog.client import EuclidAuthError, EuclidCatalog
@@ -98,7 +99,14 @@ def galaxy_adql(ra: float, dec: float, radius_deg: float,
 
 
 def _unmask_float(value: Any) -> float | None:
-    """Float from a possibly-masked/None TAP cell, or None if not finite."""
+    """Float from a possibly-masked/None TAP cell, or None if not finite.
+
+    A masked astropy/numpy cell is treated as missing up front: ``float()`` on a
+    masked element warns ("converting a masked element to nan") before yielding
+    nan, so we short-circuit on the mask to keep the per-field log clean.
+    """
+    if value is None or value is np.ma.masked or np.ma.is_masked(value):
+        return None
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -190,8 +198,9 @@ def _diagnose_zero_cone(ra: float, dec: float, radius_deg: float,
         (f"{_SIZE_COL} in [{area_lo:.0f},{area_hi:.0f}]",
          f"{_SIZE_COL} BETWEEN {area_lo:.1f} AND {area_hi:.1f}"),
     ]
-    emit(f"⟐ diagnosing 0-result cone at ({ra:.4f}, {dec:.4f}) — COUNT(*) per "
-         "cut in isolation; the cut reading 0 (while bare cone > 0) is the culprit:")
+    emit(f"⟐ strict-cut COUNT(*) breakdown at ({ra:.4f}, {dec:.4f}) — bare cone "
+         "+ each strict cut alone; a cut reading ≈0 while the bare cone is high "
+         "is what zeroed the strict profile:")
     for name, pred in cuts:
         n, err = _cone_count(ra, dec, radius_deg, pred)
         emit(f"    {name:<42} → {('ERROR: ' + err) if err else n}")
@@ -312,8 +321,10 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
              f"{raw} raw → {len(cands)} passed mag floor → "
              f"+{kept} new ({lens_excl} dropped as lens-coincident) "
              f"(pool {len(pool)})")
-        # First empty cone → attribute it to a specific cut (once).
-        if raw == 0 and not diagnosed:
+        # Show the strict per-cut breakdown once: on the first empty cone, or —
+        # under the relaxed investigation profile — on the first queried field
+        # even when it yields data, so the offending strict cut is still named.
+        if not diagnosed and (raw == 0 or (relax and queried == 1)):
             _diagnose_zero_cone(fld["ra"], fld["dec"], radius_deg, emit)
             diagnosed = True
 
