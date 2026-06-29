@@ -203,20 +203,41 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
     target_pool = oversample * n_galaxies
     radius_deg = cone_radius_arcmin / 60.0
 
+    # Up-front context so a sparse/empty result is diagnosable from the log
+    # alone: how many fields, how big a cone, and the exact ADQL (a wrong MER
+    # column name surfaces here as the SQL beside the server's error).
+    emit(f"querying {len(fields)} lens field(s) from {lens_catalog_path}; "
+         f"cone r={cone_radius_arcmin:g}', target pool {target_pool} "
+         f"(oversample {oversample}× of {n_galaxies}); {len(cached)} cached")
+    if fields:
+        f0 = fields[0]
+        emit("ADQL (per field):" + galaxy_adql(f0["ra"], f0["dec"], radius_deg))
+
+    queried = 0
     for fld in fields:
         if len(cached) + len(pool) >= target_pool:
+            emit(f"pool target reached ({len(cached) + len(pool)}) — "
+                 f"stopping after {queried} field(s)")
             break
+        queried += 1
         results, err = _run_query(galaxy_adql(fld["ra"], fld["dec"], radius_deg))
         if err:
-            emit(f"  galaxy query failed at ({fld['ra']:.4f}, {fld['dec']:.4f}): {err}")
+            emit(f"  field ({fld['ra']:.4f}, {fld['dec']:.4f}): query failed: {err}")
             continue
-        for cand in _candidates_from_results(results):
+        raw = len(results) if results is not None else 0
+        cands = _candidates_from_results(results)
+        kept = 0
+        for cand in cands:
             if cand["id"] in seen_ids:
                 continue
             if _near_any_lens(cand["ra"], cand["dec"], lenses, LENS_EXCLUDE_ARCSEC):
                 continue
             seen_ids.add(cand["id"])
             pool.append(cand)
+            kept += 1
+        emit(f"  field ({fld['ra']:.4f}, {fld['dec']:.4f}): "
+             f"{raw} raw → {len(cands)} passed mag floor → "
+             f"+{kept} new (pool {len(pool)})")
 
     rng.shuffle(pool)
     need = n_galaxies - len(cached)
@@ -226,4 +247,5 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
     if len(rows) < n_galaxies:
         emit(f"⚠ only {len(rows)} galaxies found (< {n_galaxies} requested); using all")
     _write(out, rows)
+    emit(f"✓ wrote {len(rows)} galaxies ({len(drawn)} new this run) → {out}")
     return out, len(rows)

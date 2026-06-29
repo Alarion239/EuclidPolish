@@ -93,6 +93,30 @@ def test_build_draws_3n_and_excludes_lenses(monkeypatch, tmp_path):
     assert all(r["grade"] == "gal" for r in rows)
 
 
+def test_build_emits_verbose_log(monkeypatch, tmp_path):
+    # The standalone Query-galaxies step relies on build's log to be diagnosable:
+    # the ADQL, the field count, and per-field raw/kept/pool counts must surface.
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    logs = []
+    gc.build(str(tmp_path / "galaxies.csv"), n_galaxies=3,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    blob = "\n".join(logs)
+    assert "catalogue.mer_catalogue" in blob          # ADQL echoed once
+    assert "2 lens field" in blob                      # field count up front
+    assert any("raw" in m and "pool" in m for m in logs)   # per-field counts
+
+
+def test_build_logs_shortfall(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(_fake_launch))
+    logs = []
+    # The fake fields supply only 3 unique good galaxies; ask for far more.
+    gc.build(str(tmp_path / "g.csv"), n_galaxies=50,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    assert any("only" in m and "50" in m for m in logs)
+
+
 def test_build_requires_auth(monkeypatch, tmp_path):
     monkeypatch.setattr(gc, "_login", lambda **k: False)
     with pytest.raises(RuntimeError):

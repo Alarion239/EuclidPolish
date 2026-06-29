@@ -305,20 +305,49 @@ class TestEvaluationRoutes:
         assert r.status_code == 200
         assert captured["include_galaxies"] is True
 
-    def test_run_grouped_passes_session_client(self, client, tmp_path, monkeypatch):
-        """The run forwards the WebUI's authenticated Euclid session, so the
-        galaxy build uses it instead of re-demanding env credentials."""
-        from euclid_polish.eval import grouped_runner
+    def test_query_galaxies_requires_login(self, client, monkeypatch):
+        """The standalone galaxy step needs an authenticated session; without
+        one it returns 400 rather than silently doing nothing."""
         from euclid_polish.web import euclid_session
-        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
+        monkeypatch.setattr(euclid_session, "catalog", lambda: None)
+        r = client.post("/api/evaluation/query-galaxies", data={"n_galaxies": "5"})
+        assert r.status_code == 400
+        assert "log in" in r.get_json()["error"].lower()
+
+    def test_query_galaxies_spawns_job_with_session(self, client, tmp_path, monkeypatch):
+        """When logged in, the step spawns a job that runs galaxy_catalog.build
+        with the WebUI's session client and this step's own n_galaxies."""
+        import time as _time
+
+        from euclid_polish.eval import catalog_runner, galaxy_catalog
+        from euclid_polish.web import euclid_session
         sentinel = object()
         monkeypatch.setattr(euclid_session, "catalog", lambda: sentinel)
+        lenses = tmp_path / "lenses.csv"
+        lenses.write_text("id,ra,dec,grade\nL1,10.0,-5.0,A\n")
+        monkeypatch.setattr(catalog_runner, "default_catalog_path",
+                            lambda: str(lenses))
+        monkeypatch.setattr(galaxy_catalog, "default_out_csv",
+                            lambda: str(tmp_path / "galaxies.csv"))
         captured = {}
-        monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
-                            lambda **k: captured.update(k) or {"n": 0})
-        r = client.post("/api/evaluation/run-grouped", data={"n": "3"})
-        assert r.status_code == 200
-        assert captured["catalog_client"] is sentinel
+
+        def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path,
+                       client=None, log=None, **kw):
+            captured.update(n_galaxies=n_galaxies, client=client,
+                            lens=lens_catalog_path)
+            return out_csv, n_galaxies
+
+        monkeypatch.setattr(galaxy_catalog, "build", fake_build)
+        r = client.post("/api/evaluation/query-galaxies", data={"n_galaxies": "9"})
+        assert r.status_code == 200 and r.get_json()["job_id"]
+        # The build runs in a background thread; give it a moment to land.
+        for _ in range(100):
+            if captured:
+                break
+            _time.sleep(0.02)
+        assert captured["n_galaxies"] == 9
+        assert captured["client"] is sentinel
+        assert captured["lens"] == str(lenses)
 
     def test_transformation_404_then_renders(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
@@ -1069,38 +1098,31 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
     assert result["n_ok"] >= 1
 
 
-def test_galaxy_plan_counts_3x_grade_a(monkeypatch, tmp_path):
+def test_galaxy_plan_reads_all_cached(monkeypatch, tmp_path):
+    """Cache-only: _galaxy_plan reads every row of the galaxies.csv the
+    standalone Query-galaxies step wrote — it never queries the archive."""
     import csv as _csv
 
     from euclid_polish.eval import galaxy_catalog, grouped_runner
-    calls = {}
-
-    def fake_build(out_csv=None, *, n_galaxies, lens_catalog_path, seed=0, **kw):
-        calls["n_galaxies"] = n_galaxies
-        os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
-        with open(out_csv, "w", newline="") as f:
-            w = _csv.writer(f)
-            w.writerow(["id", "ra", "dec", "grade"])
-            for i in range(n_galaxies):
-                w.writerow([f"gal_{i}", 10.0 + i * 1e-3, -5.0, "gal"])
-        return out_csv, n_galaxies
-
-    monkeypatch.setattr(galaxy_catalog, "build", fake_build)
-    monkeypatch.setattr(galaxy_catalog, "default_out_csv",
-                        lambda: str(tmp_path / "galaxies.csv"))
-    lens_plan = [("A", [{}, {}, {}, {}]), ("B", [{}] * 10), ("C", [{}] * 10)]
-    rows = grouped_runner._galaxy_plan(lens_plan, catalog="lenses.csv",
-                                       seed=0, log=lambda m: None)
-    assert calls["n_galaxies"] == 12               # 3 × 4 grade-A
-    assert len(rows) == 12 and all(r["grade"] == "gal" for r in rows)
+    gal_csv = tmp_path / "galaxies.csv"
+    with open(gal_csv, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["id", "ra", "dec", "grade"])
+        for i in range(7):
+            w.writerow([f"gal_{i}", 10.0 + i * 1e-3, -5.0, "gal"])
+    monkeypatch.setattr(galaxy_catalog, "default_out_csv", lambda: str(gal_csv))
+    # build() must never be reached on the grouped (cache-only) path.
+    monkeypatch.setattr(galaxy_catalog, "build",
+                        lambda *a, **k: pytest.fail("grouped run must not query"))
+    rows = grouped_runner._galaxy_plan(lambda m: None)
+    assert len(rows) == 7 and all(r["grade"] == "gal" for r in rows)
 
 
-def test_galaxy_plan_graceful_when_build_fails(monkeypatch, tmp_path):
+def test_galaxy_plan_empty_when_no_cache(monkeypatch, tmp_path):
     from euclid_polish.eval import galaxy_catalog, grouped_runner
     monkeypatch.setattr(galaxy_catalog, "default_out_csv",
-                        lambda: str(tmp_path / "g.csv"))
-    monkeypatch.setattr(galaxy_catalog, "build",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no auth")))
-    rows = grouped_runner._galaxy_plan([("A", [{}, {}])], catalog="l.csv",
-                                       seed=0, log=lambda m: None)
+                        lambda: str(tmp_path / "absent.csv"))
+    msgs = []
+    rows = grouped_runner._galaxy_plan(msgs.append)
     assert rows == []                              # galaxies must not kill A/B/C
+    assert any("Query-galaxies" in m for m in msgs)   # actionable hint logged

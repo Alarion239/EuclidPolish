@@ -285,7 +285,7 @@
    in its own torch env) with a live progress bar + log below. No cluster. #}
 <section class="card" style="grid-column: 1 / -1;">
   <h3>① Prepare grouped analysis
-    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + 3×(grade-A) real galaxies + N syn-lens + N syn-gal (with HR), one run</span></h3>
+    <span class="muted" style="font-weight:normal;">— N each of A / B / C lenses + cached real galaxies + N syn-lens + N syn-gal (with HR), one run</span></h3>
   <div class="form-row">
     <label>N per group
       <input type="number" id="gpN" value="10" min="1" max="500"></label>
@@ -295,26 +295,38 @@
   <div style="margin-top:10px;">
     <button id="runGroupedBtn" type="button">▶ Prepare</button>
     <span class="hint" style="margin-left:8px;">A/B/C = real lens cutouts (LR+SR);
-      real galaxies = clean field galaxies from the same fields (3× the grade-A
-      count) — a fixed negative control, always included; syn-lens / syn-gal =
-      stamps centered on a synthetic lens / field galaxy (LR+SR+HR). Every object
-      is held at 53² LR / 106² SR·HR. Then ② Run Zoobot, ③ view the plots.</span>
+      real galaxies = the clean field-galaxy set <b>cached by the Query-galaxies
+      step</b> (Euclid archive login, below) — this run is cache-only and never
+      queries the archive, so run that step first or the galaxy group is absent;
+      syn-lens / syn-gal = stamps centered on a synthetic lens / field galaxy
+      (LR+SR+HR). Every object is held at 53² LR / 106² SR·HR. Then ② Run Zoobot,
+      ③ view the plots.</span>
   </div>
 </section>
 
-{# Euclid archive login — the real-galaxy cone queries need an authenticated
-   session (Euclid.login on the process-global singleton). The grouped run is
-   in-process, so logging in here authenticates it. #}
+{# Euclid archive login + the standalone Query-galaxies step. The real-galaxy
+   cone queries need an authenticated session (Euclid.login on the process-global
+   singleton). Querying is its own explicit, logged step — it downloads + caches
+   galaxies.csv, which the cache-only grouped run (①) then consumes. #}
 <section class="card" id="euclidAuthCard" style="grid-column: 1 / -1;">
-  <h3>Euclid archive login
-    <span class="muted" style="font-weight:normal;">— required to download the real field galaxies</span></h3>
+  <h3>Euclid archive login &amp; galaxy query
+    <span class="muted" style="font-weight:normal;">— log in, then query + cache the real field galaxies</span></h3>
   {% if authenticated %}
     <p style="margin:6px 0;">✓ Logged in as <code>{{ current_user or 'authenticated user' }}</code>.
-      Real galaxies will be queried &amp; downloaded with the grouped run.</p>
-    <button id="euclidLogoutBtn" class="secondary" type="button">Logout</button>
+      <button id="euclidLogoutBtn" class="secondary" type="button" style="margin-left:6px;">Logout</button></p>
+    <div class="form-row" style="align-items:flex-end; margin-top:8px;">
+      <label># galaxies
+        <input type="number" id="gqN" value="15" min="1" max="500"></label>
+      <button id="queryGalaxiesBtn" type="button">🌌 Query galaxies</button>
+    </div>
+    <span class="hint" style="display:block; margin-top:6px;">Runs a verbose cone
+      query over the strong-lens fields (ADQL + per-field counts stream to the
+      job log below) and caches the drawn set to
+      <code>galaxies.csv</code>. The grouped run (①) consumes this cache — re-run
+      this step to refresh or grow it.</span>
   {% else %}
     <p class="hint" style="margin:6px 0;">Not logged in — A/B/C lenses and the synthetic
-      stamps still run, but the real-galaxy group is skipped until you authenticate.</p>
+      stamps still run, but the real-galaxy query is unavailable until you authenticate.</p>
     <form id="euclidLoginForm" class="form-row" style="align-items:flex-end;">
       <label>Username <input type="text" name="username" autocomplete="username" required></label>
       <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
@@ -954,7 +966,7 @@ window.__evalPreview = {
   });
 
   // Euclid archive login (shared session via /auth/login) — authenticates the
-  // in-process grouped run so its real-galaxy cone queries can reach the archive.
+  // in-process session so the standalone Query-galaxies step can reach the archive.
   const euclidLoginForm = $('euclidLoginForm');
   if (euclidLoginForm) euclidLoginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -971,6 +983,16 @@ window.__evalPreview = {
   if (euclidLogoutBtn) euclidLogoutBtn.addEventListener('click', async () => {
     await fetch('/auth/logout', { method: 'POST' });
     location.reload();
+  });
+
+  // Standalone galaxy query: its own count, verbose log streamed to the job
+  // panel. Caches galaxies.csv that the cache-only grouped run (①) consumes.
+  const queryGalaxiesBtn = $('queryGalaxiesBtn');
+  if (queryGalaxiesBtn) queryGalaxiesBtn.addEventListener('click', () => {
+    const fd = new FormData();
+    fd.set('n_galaxies', $('gqN').value);
+    startJob('/api/evaluation/query-galaxies', fd,
+             'Galaxies: eval_results', queryGalaxiesBtn);
   });
 
   $('runZoobotBtn').addEventListener('click', () => {

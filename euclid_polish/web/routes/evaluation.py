@@ -262,6 +262,12 @@ def register(app):
         validation triptychs → one run dir with a single grouped manifest. Every
         object is held at the canonical eval geometry (53² LR, 106² SR/HR), so
         there are no size knobs.
+
+        The real-galaxy group is **cache-only**: it consumes whatever the
+        standalone Query-galaxies step (``/api/evaluation/query-galaxies``) has
+        already downloaded into ``galaxies.csv``. This run never logs in or
+        queries the archive — if no galaxies are cached, that group is simply
+        absent (the job log says so).
         """
         f = request.form
         try:
@@ -273,20 +279,59 @@ def register(app):
 
         from euclid_polish.eval import grouped_runner
 
-        # The galaxy build needs an authenticated archive session for its cone
-        # queries. The WebUI logs in via euclid_session (Euclid.login on the
-        # process-global singleton, no env vars), so pass that client through;
-        # the in-process job shares the same authenticated singleton.
-        catalog_client = euclid_session.catalog()
-
         def _run(cap):
             return grouped_runner.run_grouped_analysis(
                 out_dir=out_dir, n=n, include_synthetic=include_synth,
                 include_galaxies=True,           # real galaxies always included (fixed control)
-                catalog_client=catalog_client,
                 on_progress=lambda i, t, lbl: cap.tick(i, t, lbl),
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
         job_id = JOB_REGISTRY.spawn("grouped: eval_results", _run)
+        return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route("/api/evaluation/query-galaxies", methods=["POST"])
+    def api_evaluation_query_galaxies():
+        """Query + cache the real-galaxy eval catalog as its own LOCAL step.
+
+        Split out of the grouped run so the archive query is observable in
+        isolation: this spawns a background job that runs
+        :func:`~euclid_polish.eval.galaxy_catalog.build` with verbose logging
+        (ADQL echo + per-field raw/kept/pool counts), streamed to the shared job
+        panel. Needs the WebUI's authenticated Euclid session (``euclid_session``
+        — ``Euclid.login`` on the process-global singleton); 400 if not logged
+        in. The drawn set is cached to ``galaxies.csv``, which the grouped run
+        then consumes (cache-only). ``n_galaxies`` is this step's own count.
+        """
+        client = euclid_session.catalog()
+        if client is None:
+            return jsonify({"ok": False, "error": (
+                "Log in to the Euclid archive first — the galaxy cone queries "
+                "need an authenticated session.")}), 400
+        try:
+            n_gal = int(request.form.get("n_galaxies", 15) or 15)
+        except ValueError:
+            return jsonify({"ok": False, "error": "n_galaxies must be an int"}), 400
+        if n_gal <= 0:
+            return jsonify({"ok": False, "error": "n_galaxies must be positive"}), 400
+
+        from euclid_polish.eval import catalog_runner, galaxy_catalog, lens_catalog
+
+        # Galaxies are drawn from the strong-lens fields, so the lens catalog
+        # must exist; fetch it from Zenodo if it's missing (same as the grouped
+        # run), so this step is self-sufficient.
+        catalog = catalog_runner.default_catalog_path()
+
+        def _run(cap):
+            def _log(m):
+                cap.write(m if m.endswith("\n") else m + "\n")
+            if not os.path.isfile(catalog):
+                _log(f"lens catalog {catalog} not found — fetching from Zenodo…")
+                lens_catalog.fetch(catalog)
+            out_csv = galaxy_catalog.default_out_csv()
+            path, n = galaxy_catalog.build(
+                out_csv, n_galaxies=n_gal, lens_catalog_path=catalog,
+                client=client, log=_log)
+            return {"path": path, "n": n, "n_galaxies": n_gal}
+        job_id = JOB_REGISTRY.spawn("galaxies: eval_results", _run)
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/run-zoobot", methods=["POST"])

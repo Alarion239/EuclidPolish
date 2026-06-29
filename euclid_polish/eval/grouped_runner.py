@@ -27,33 +27,25 @@ GROUPED_COLS = [
 LENS_GRADES = ("A", "B", "C")
 
 
-def _galaxy_plan(lens_plan, *, catalog: str, seed: int,
-                 log: Callable[[str], None],
-                 client: Any = None) -> list[dict[str, Any]]:
-    """Rows for the real-galaxy group: 3 × the realized grade-A lens count.
+def _galaxy_plan(log: Callable[[str], None]) -> list[dict[str, Any]]:
+    """Rows for the real-galaxy group, read from the cached galaxy catalog.
 
-    Galaxies are drawn from the same fields as the lenses and cached, so each
-    cutout is downloaded at most once. ``client`` is an already-authenticated
-    :class:`EuclidCatalog` (e.g. the WebUI session) passed through to the cone
-    queries so they don't re-demand env credentials. Any failure (no archive
-    auth, sparse fields) logs and yields an empty plan — galaxies must never
-    kill the A/B/C run.
+    Cache-only: the Euclid archive is queried solely by the standalone
+    Query-galaxies step (``/api/evaluation/query-galaxies`` →
+    :func:`galaxy_catalog.build`), which writes ``galaxies.csv``. The grouped run
+    never logs in or queries — it just consumes whatever that step has already
+    built (all of it, honoring the count chosen there). A missing or empty cache
+    yields an empty plan with a hint, so galaxies never kill the A/B/C run.
     """
-    n_a = next((len(rows) for g, rows in lens_plan if g == "A"), 0)
-    n_gal = 3 * n_a
-    if n_gal <= 0:
+    gal_csv = galaxy_catalog.default_out_csv()
+    if not os.path.isfile(gal_csv):
+        log(f"real galaxies: no cached catalog at {gal_csv} — run the "
+            "Query-galaxies step (Euclid archive login) first")
         return []
-    try:
-        gal_csv = galaxy_catalog.default_out_csv()
-        galaxy_catalog.build(gal_csv, n_galaxies=n_gal,
-                             lens_catalog_path=catalog, seed=seed,
-                             client=client, log=log)
-        rows = read_eval_catalog(gal_csv, max_n=n_gal)
-        log(f"galaxies: {len(rows)} (3 × {n_a} grade-A) from {gal_csv}")
-        return rows
-    except Exception as e:  # noqa: BLE001 — galaxies must not kill A/B/C
-        log(f"galaxies skipped: {type(e).__name__}: {e}")
-        return []
+    rows = read_eval_catalog(gal_csv)
+    log(f"real galaxies: {len(rows)} cached from {gal_csv}" if rows
+        else f"real galaxies: cached catalog empty ({gal_csv})")
+    return rows
 
 
 def run_grouped_analysis(
@@ -68,7 +60,6 @@ def run_grouped_analysis(
     grades=LENS_GRADES,
     include_synthetic: bool = True,
     include_galaxies: bool = True,
-    catalog_client: Any = None,
     lens_source_dir: str | None = None,
     unique_fields: bool = True,
     on_progress: Callable[[int, int, str], None] | None = None,
@@ -111,8 +102,7 @@ def run_grouped_analysis(
         lens_plan.append((g, rows))
         _emit(f"grade {g}: {len(rows)} lens(es)")
     if include_galaxies:
-        gal_rows = _galaxy_plan(lens_plan, catalog=catalog, seed=seed,
-                                log=_emit, client=catalog_client)
+        gal_rows = _galaxy_plan(_emit)             # cache-only (Query-galaxies step)
         if gal_rows:
             lens_plan.append(("gal", gal_rows))    # processed by the same A/B/C loop
     n_lens = sum(len(r) for _, r in lens_plan)     # now includes galaxies
