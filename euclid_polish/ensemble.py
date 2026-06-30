@@ -44,6 +44,37 @@ def member_dir(base_dir: str, i: int) -> str:
     return os.path.join(base_dir, MEMBER_DIR_FMT.format(int(i)))
 
 
+def pca_field(members: np.ndarray, n_components: int = 3
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """PCA of the per-member residuals about the ensemble mean.
+
+    ``members`` is the ``(M, H, W, C)`` stack of member SR cubes. Returns
+    ``(mean, components, amplitudes)``:
+
+    * ``mean``        — ``(H, W, C)`` ensemble mean,
+    * ``components``  — ``(K, H, W, C)`` unit-norm eigen-images, K = min(
+      ``n_components``, M-1),
+    * ``amplitudes``  — ``(K,)`` population std of the member projections along
+      each component (how far the members actually spread that way).
+
+    A smooth animation ``mean + Σ aᵢ·sin(2π fᵢ t)·componentᵢ`` then morphs
+    through the ensemble's *real* (spatially-correlated) disagreement subspace —
+    unlike per-pixel Gaussian draws, which would be spatial white noise.
+    """
+    mem = np.asarray(members, dtype=np.float32)
+    m = int(mem.shape[0])
+    mean = mem.mean(axis=0)
+    k = int(min(n_components, max(0, m - 1)))
+    if k == 0:
+        return mean, np.zeros((0, *mean.shape), np.float32), np.zeros((0,), np.float32)
+    resid = (mem - mean).reshape(m, -1)                 # (M, D)
+    # SVD: resid = U·diag(S)·Vt; Vt rows are unit eigen-images (principal dirs).
+    _u, s, vt = np.linalg.svd(resid, full_matrices=False)
+    comps = vt[:k].reshape((k, *mean.shape)).astype(np.float32)
+    amps = (s[:k] / np.sqrt(m)).astype(np.float32)      # population std along comp
+    return mean, comps, amps
+
+
 def _psnr(a: np.ndarray, b: np.ndarray, peak: float) -> float:
     """PSNR (dB) over the overlapping region; raw electrons, peak ``peak``."""
     h = min(a.shape[0], b.shape[0])
@@ -242,7 +273,8 @@ class EnsembleModel:
         rel_floor_e: float = Config.STRETCH_SCALE_E,
         hallucination_rel_tol: float = 0.5,
         on_field: Callable[
-            [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None], None
+            [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+             np.ndarray | None], None
         ] | None = None,
         on_progress: Callable[[int, int, str], None] | None = None,
     ) -> dict:
@@ -311,11 +343,12 @@ class EnsembleModel:
                 ens_sum += _psnr(mean, hr_data, peak)
                 n_scored += 1
 
-            # Per-field hook: hand back LR, ensemble mean SR, per-pixel std and
-            # HR so a caller can persist cubes for the client-side viewer.
+            # Per-field hook: hand back LR, the full member stack, ensemble mean
+            # SR, per-pixel std and HR so a caller can persist cubes + the PCA
+            # disagreement basis for the client-side viewer/animation.
             if on_field is not None:
                 on_field(int(lr.index), np.asarray(lr.data, np.float32),
-                         mean, std, hr_data)
+                         preds, mean, std, hr_data)
 
             if on_progress is not None:
                 on_progress(i + 1, total, f"field {lr.index}")
@@ -375,7 +408,8 @@ def evaluate_on_records(
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     include_loss_best: bool = True,
     on_field: Callable[
-        [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None], None
+        [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+         np.ndarray | None], None
     ] | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:

@@ -74,6 +74,15 @@
      “Evaluate on test set” run (first {{ ensemble_viz_fields or 24 }} fields).</p>
 </section>
 
+<section class="card" id="ens-anim-card" style="display:none;">
+  <h3>Disagreement movie <span class="muted">— morphing through the PCA subspace</span></h3>
+  <div id="ens-anim"></div>
+  <p class="hint">A smooth path through the ensemble's real disagreement basis
+     (mean + Σ aᵢ·sin·componentᵢ, the top {{ 3 }} PCA components of the member
+     residuals). Regions the members hallucinate <b>morph</b>; LR-constrained
+     structure stays still. Amplitude is in units of member σ. VIS band.</p>
+</section>
+
 {% if result_pngs %}
 <div class="gallery">
   {% for p in result_pngs %}
@@ -157,6 +166,7 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
 // Mount the unified cutout viewer on the ensemble cubes cached by the last
 // evaluate (LR · SR mean · stdSR · HR). Hidden until at least one field exists.
 import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
+import { mountEnsembleAnim } from "{{ url_for('static', filename='ensemble_anim.js') }}";
 fetch("/viewer/meta/ensemble")
   .then((r) => (r.ok ? r.json() : null))
   .then((m) => {
@@ -164,6 +174,10 @@ fetch("/viewer/meta/ensemble")
     document.getElementById("ens-viewer-card").style.display = "";
     mountCutoutViewer(document.getElementById("ensemble-viewer"),
                       { collection: "ensemble" });
+    if (m.pca_n) {
+      document.getElementById("ens-anim-card").style.display = "";
+      mountEnsembleAnim(document.getElementById("ens-anim"));
+    }
   })
   .catch(() => {});
 </script>

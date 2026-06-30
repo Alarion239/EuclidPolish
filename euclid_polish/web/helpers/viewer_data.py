@@ -361,12 +361,21 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     has_hr = bool(sub) and bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
+    # PCA disagreement basis for the morphing animation: per-field amplitudes
+    # (population std the members span along each component), aligned to the
+    # viewer index order. The pcaN cubes are fetched on demand (not listed as
+    # static tiers). JSON keys are strings.
+    pca_n = int(man.get("pca_n", 0) or 0)
+    amps_by = man.get("pca_amps", {}) or {}
+    pca_amps = [list(amps_by.get(str(int(i)), [])) for i in idxs]
     return {
         "count": len(idxs),
         "tiers": tiers,
         "default_tier": "sr",
         "band_names": list(BAND_NAMES),
         "subset": sub,
+        "pca_n": pca_n,
+        "pca_amps": pca_amps,
     }
 
 
@@ -394,7 +403,10 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
-    if tier in ("sr", "std"):
+    # sr / std and the PCA eigen-images (pca0, pca1, …) are cached .npy cubes;
+    # lr / hr come from the records. pcaN are served on demand for the animation
+    # (not advertised as static tiers).
+    if tier in ("sr", "std") or (tier.startswith("pca") and tier[3:].isdigit()):
         path = os.path.join(_ensemble_cubes_dir(), f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
@@ -407,7 +419,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(400, "bad tier")
     labels = {"lr": "LR", "sr": "SR (ensemble mean)",
               "std": "stdSR (member std)", "hr": "HR"}
-    return cube, {"label": f"{labels[tier]} · {sub} · idx {rec_index}",
+    return cube, {"label": f"{labels.get(tier, tier)} · {sub} · idx {rec_index}",
                   "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
 
 

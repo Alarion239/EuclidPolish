@@ -16,7 +16,7 @@ import shutil
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.ensemble import EnsembleModel, evaluate_on_records
+from euclid_polish.ensemble import EnsembleModel, evaluate_on_records, pca_field
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.model import _checkpoint_exists
@@ -168,6 +168,11 @@ def job_ensemble_render(cap, *, index: int) -> dict:
 #: cache is capped so data/vis stays bounded.
 ENSEMBLE_VIZ_FIELDS = 24
 
+#: How many PCA components of the member-residual subspace to cache per field
+#: for the morphing animation (M=5 members → residuals span M-1=4 dims; the top
+#: 3 carry the disagreement).
+ENSEMBLE_PCA_COMPONENTS = 3
+
 
 def _ensemble_cubes_dir() -> str:
     return os.path.join(_ensemble_out_dir(), "cubes")
@@ -190,17 +195,25 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     shutil.rmtree(cubes_dir, ignore_errors=True)      # fresh viz set per eval
     os.makedirs(cubes_dir, exist_ok=True)
     saved: list[int] = []
+    pca_amps: dict[int, list[float]] = {}        # rec_index → [a0, a1, a2]
 
-    def _on_field(rec_index, _lr_cube, mean, std, _hr_cube):
-        # LR/HR are read back from the records by the viewer; only the computed
-        # mean (SR) + std (stdSR) need persisting. Cap the cached set.
+    def _on_field(rec_index, _lr_cube, preds, mean, std, _hr_cube):
+        # LR/HR are read back from the records by the viewer; persist the
+        # computed mean (SR) + std (stdSR) and the PCA disagreement basis
+        # (mean + Σ aᵢ·sin·compᵢ powers the morphing animation). Cap the set.
         if len(saved) >= ENSEMBLE_VIZ_FIELDS:
             return
-        np.save(os.path.join(cubes_dir, f"sr_{int(rec_index):05d}.npy"),
+        rec = int(rec_index)
+        np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
                 np.asarray(mean, dtype=np.float32))
-        np.save(os.path.join(cubes_dir, f"std_{int(rec_index):05d}.npy"),
+        np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
                 np.asarray(std, dtype=np.float32))
-        saved.append(int(rec_index))
+        _m, comps, amps = pca_field(preds, n_components=ENSEMBLE_PCA_COMPONENTS)
+        for i, comp in enumerate(comps):
+            np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
+                    np.asarray(comp, dtype=np.float32))
+        pca_amps[rec] = [float(a) for a in amps]
+        saved.append(rec)
 
     def _prog(i, n, lbl):
         cap.tick(i, n, lbl)
@@ -208,7 +221,8 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
                               on_field=_on_field, on_progress=_prog)
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
-        json.dump({"subset": sub, "indices": saved}, f)
+        json.dump({"subset": sub, "indices": saved,
+                   "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps}, f)
     with open(os.path.join(_ensemble_out_dir(), "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
