@@ -16,14 +16,19 @@
   <h3>Members</h3>
   {% if members %}
   <table class="data-table">
-    <thead><tr><th>Checkpoint</th><th>Training seed</th></tr></thead>
+    <thead><tr><th>Checkpoint</th><th>Training seed</th>
+      <th title="Each seed also has a best-LOSS checkpoint in loss_best/; the ensemble loads + uses both.">loss-best ckpt</th></tr></thead>
     <tbody>
       {% for m in members %}
       <tr><td><code>{{ m.name }}</code></td>
-          <td>{{ m.seed if m.seed is not none else "—" }}</td></tr>
+          <td>{{ m.seed if m.seed is not none else "—" }}</td>
+          <td>{% if m.has_loss_best %}✓ loaded{% else %}—{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  <p class="hint">Every seed contributes two models — its PSNR-best checkpoint and
+     its loss-best (<code>loss_best/</code>) checkpoint — and the ensemble mean /
+     std / PSNR table use all of them.</p>
   {% else %}
   <p class="muted">No members found. Train an ensemble into
     <code>{{ base_dir }}/member_NN/</code> (e.g.
