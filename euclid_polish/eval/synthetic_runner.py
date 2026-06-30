@@ -81,6 +81,32 @@ def select_central_source(
     return best
 
 
+def _fitting_sources(sources, want_type: str, *, field: int, m: int):
+    """All sources of ``want_type`` whose ``m``-px stamp fits in the field,
+    brightest (VIS flux) first.
+
+    Crowded synthetic fields host many galaxies; returning every fittable one
+    (not just the central pick) lets the planner take several per field to meet
+    the target. A source is fittable when its center is ≥ ``m/2`` from each edge
+    so the centered crop stays on-grid.
+    """
+    half = m / 2.0
+    out = []
+    for s in sources:
+        if s.get("type") != want_type:
+            continue
+        x, y = float(s["x_pix"]), float(s["y_pix"])
+        if x < half or x > field - half or y < half or y > field - half:
+            continue
+        try:
+            flux = float(s.get("flux_vis_e", 0.0))
+        except (TypeError, ValueError):
+            flux = 0.0
+        out.append((flux, s))
+    out.sort(key=lambda t: -t[0])               # brightest first
+    return [s for _, s in out]
+
+
 #: Analysis subgroups: (manifest grade, source ``type`` to center on).
 _SUBGROUPS = (("syn-lens", "lens"), ("syn-gal", "galaxy"))
 
@@ -157,30 +183,44 @@ def run_synthetic_eval(
     # HR field size (HR is 2× LR; sources carry HR-grid coords).
     field = int(np.asarray(hr_recs[0].data, np.float32).shape[0])
 
-    # Assign fields to subgroups (each field used at most once). Seeded order.
+    # Plan up to N stamps per subgroup. To hit the target we take MULTIPLE
+    # sources per field (crowded fields host many galaxies) — the brightest
+    # first — distributed round-robin across fields, so on average ≈ N / #fields
+    # come from each. (``unique_fields`` is retained for back-compat but no
+    # longer caps to one-per-field; lens fields carry ~one lens, so syn-lens is
+    # still bounded by the number of lens-bearing fields.)
     rng = np.random.default_rng(seed)
     order = list(common)
     rng.shuffle(order)
-    plan: list[tuple] = []                      # (field_index, grade, source)
-    used = set()
+    plan: list[tuple] = []                      # (field_index, grade, source, rank)
     for grade, stype in _SUBGROUPS:
-        taken = 0
-        for idx in order:
-            if taken >= n or (unique_fields and idx in used):
-                continue
-            pick = select_central_source(
-                by_field[idx], stype, field=field, m=m,
-                prefer_bright=(grade == "syn-gal"))
-            if pick is None:
-                continue
-            plan.append((idx, grade, pick))
-            used.add(idx); taken += 1
-        if taken < n:
-            _emit(f"{grade}: only {taken}/{n} fields had a fitting {stype}.")
+        by_idx = {idx: _fitting_sources(by_field[idx], stype, field=field, m=m)
+                  for idx in order}
+        by_idx = {idx: lst for idx, lst in by_idx.items() if lst}
+        taken, rank = 0, 0
+        while taken < n:
+            advanced = False
+            for idx in order:                   # one (the next-brightest) per field
+                lst = by_idx.get(idx)
+                if lst is not None and rank < len(lst):
+                    plan.append((idx, grade, lst[rank], rank))
+                    taken += 1
+                    advanced = True
+                    if taken >= n:
+                        break
+            if not advanced:
+                break                           # every field exhausted
+            rank += 1
+        msg = (f"{grade}: {taken}/{n} stamps across {len(by_idx)} field(s)"
+               + (" (brightest first)" if taken == n else
+                  " — short of target (brightest taken first)"))
+        _emit(msg)
 
     if not plan:
         _emit("no fittable sources found in the window.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}
+
+    plan.sort(key=lambda t: (t[0], t[1], t[3]))  # group by field → reconstruct once
 
     if model is None:
         model = load_eval_model(checkpoint, num_res_blocks)
@@ -190,9 +230,11 @@ def run_synthetic_eval(
     rows: list[dict[str, Any]] = []
     n_ok = n_skip = 0
     total = len(plan)
-    for j, (idx, grade, src) in enumerate(plan):
+    cur_idx = None                              # SR is per-field; reconstruct once
+    lr_cube = sr_arr = None
+    for j, (idx, grade, src, rank) in enumerate(plan):
         _tick(j, total, f"{grade} idx {idx}")
-        sub = f"{grade}_{idx:04d}"
+        sub = f"{grade}_{idx:04d}_{rank}"       # unique per (field, brightness rank)
         obj_dir = os.path.join(out_dir, sub)
         rec: dict[str, Any] = {
             "id": sub, "ra": "", "dec": "", "grade": grade,
@@ -202,10 +244,12 @@ def run_synthetic_eval(
         }
         try:
             os.makedirs(obj_dir, exist_ok=True)
-            lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
+            if idx != cur_idx:                  # same field → reuse the SR cube
+                lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
+                _, sr_data = reconstruct(model, lr_cube)
+                sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
+                cur_idx = idx
             hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
-            _, sr_data = reconstruct(model, lr_cube)
-            sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
 
             cx, cy = float(src["x_pix"]), float(src["y_pix"])
             # HR & SR live on the HR grid; the LR cube is half-resolution.
