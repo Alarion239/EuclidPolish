@@ -339,12 +339,18 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
              f"{raw} raw → {len(cands)} passed mag floor → "
              f"+{kept} new ({lens_excl} dropped as lens-coincident) "
              f"(pool {len(pool)})")
-        # Show the strict per-cut breakdown once: on the first empty cone, or —
-        # under the relaxed investigation profile — on the first queried field
-        # even when it yields data, so the offending strict cut is still named.
-        if not diagnosed and (raw == 0 or (relax and queried == 1)):
-            _diagnose_zero_cone(fld["ra"], fld["dec"], radius_deg, emit)
-            diagnosed = True
+        # Show the per-cut breakdown once, on a field that actually HAS MER
+        # coverage so the flag value distribution is meaningful. A 0-raw field
+        # whose bare cone is also empty is just a coverage gap (Q1's footprint is
+        # patchy) — note it in one line and keep looking for a populated field.
+        if not diagnosed and (raw == 0 or relax):
+            bare, berr = _cone_count(fld["ra"], fld["dec"], radius_deg)
+            if not berr and bare == 0:
+                emit(f"  (coverage gap at ({fld['ra']:.4f}, {fld['dec']:.4f}): "
+                     "0 MER sources in this cone — not a cut)")
+            else:
+                _diagnose_zero_cone(fld["ra"], fld["dec"], radius_deg, emit)
+                diagnosed = True
 
     rng.shuffle(pool)
     need = n_galaxies - len(cached)

@@ -181,6 +181,26 @@ def test_build_relaxed_logs_profile(monkeypatch, tmp_path):
     assert any("extended" in m.lower() for m in logs)
 
 
+def test_build_notes_coverage_gap_without_breakdown(monkeypatch, tmp_path):
+    # A 0-raw field whose bare cone is also empty is a coverage gap, not a cut:
+    # it gets a one-line note and NOT the full per-cut breakdown (which would be
+    # all-zeros and uninformative).
+    monkeypatch.setattr(gc, "_login", lambda **k: True)
+
+    def fake_launch(query):
+        if "COUNT(*)" in query:
+            return _FakeJob([[0]])                     # bare cone empty everywhere
+        return _FakeJob([])                            # no galaxies anywhere
+
+    monkeypatch.setattr(gc.Euclid, "launch_job", staticmethod(fake_launch))
+    logs = []
+    gc.build(str(tmp_path / "g.csv"), n_galaxies=1,
+             lens_catalog_path=_lens_csv(tmp_path), seed=0, log=logs.append)
+    blob = "\n".join(logs)
+    assert "coverage gap" in blob
+    assert "breakdown" not in blob                     # no breakdown on an empty cone
+
+
 def test_build_relax_forces_breakdown_even_with_data(monkeypatch, tmp_path):
     # Under the relaxed (investigation) profile the strict-cut breakdown runs on
     # the first field even though the relaxed cones return galaxies, so the
