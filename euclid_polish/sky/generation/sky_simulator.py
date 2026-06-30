@@ -288,6 +288,7 @@ class SkySimulator:
         **Redshift mode**: z drawn from survey n(z); D_A(z) sets the downsample
         factor with Tolman dimming and spectral drift.
         """
+        lm_eff = None                               # target log stellar mass (Msun)
         if self.config.tng_redshift_mode:
             if z is None:
                 z = sample_galaxy_redshift(rng)
@@ -326,6 +327,10 @@ class SkySimulator:
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
+            # Unified half-light radius + log stellar mass persisted to the
+            # source catalog for later analysis.
+            "re_arcsec":    float(tmeta.get("apparent_re_arcsec", float("nan"))),
+            "logmass":      float(lm_eff) if lm_eff is not None else float("nan"),
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
         }
@@ -357,6 +362,9 @@ class SkySimulator:
             "z_phot": float(g.z_phot),
             "bulge_re_arcsec": float(g.bulge_r_e_arcsec),
             "disk_re_arcsec":  float(g.disk_r_e_arcsec),
+            # Circularized combined bulge+disk half-light radius persisted as the
+            # unified re_arcsec; COSMOS carries no stellar mass, so logmass stays ''.
+            "re_arcsec": self._galaxy_effective_re(g),
             "flux_e_per_band": list(map(float, [g.total_flux_e(k) for k in range(4)])),
         }
 

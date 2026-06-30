@@ -42,3 +42,27 @@ def test_concat_leaves_no_temp_file(tmp_path):
                  if n.startswith("sources_train.csv") and n != "sources_train.csv"]
     assert leftovers == []                       # temp file replaced, not left
     assert os.path.exists(out)
+
+
+def test_galaxy_row_persists_size_and_mass(tmp_path):
+    """The enriched galaxy truth (re_arcsec / logmass / mass_scale) round-trips
+    through the writer and read_sources."""
+    from euclid_polish.sky.generation.source_catalog import (
+        SourceCatalogWriter, read_sources)
+
+    path = str(tmp_path / "sources_train.csv")
+    tng = {"type": "galaxy", "render": "tng", "x_pix": 10.0, "y_pix": 20.0,
+           "subhalo_id": "99", "flux_e_per_band": [123.0, 1, 2, 3],
+           "apparent_re_arcsec": 0.85, "logmass": 10.4, "mass_scale": 0.7}
+    sersic = {"type": "galaxy", "render": "sersic", "x_pix": 30.0, "y_pix": 40.0,
+              "flux_e_per_band": [50.0, 1, 2, 3], "re_arcsec": 1.2}  # no mass
+    with SourceCatalogWriter(path) as w:
+        w.add_field(0, {"galaxies": [tng, sersic], "lenses": []})
+
+    rows = read_sources(path)[0]
+    by_render = {r["render"]: r for r in rows}
+    assert by_render["tng"]["re_arcsec"] == 0.85
+    assert by_render["tng"]["logmass"] == 10.4
+    assert by_render["tng"]["mass_scale"] == 0.7
+    assert by_render["sersic"]["re_arcsec"] == 1.2
+    assert by_render["sersic"]["logmass"] is None      # COSMOS has no stellar mass

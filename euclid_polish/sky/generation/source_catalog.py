@@ -15,12 +15,26 @@ import os
 from typing import Any
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
-               "flux_vis_e", "z", "subhalo_id", "theta_E_arcsec"]
+               "flux_vis_e", "z", "subhalo_id", "theta_E_arcsec",
+               # Extra galaxy truth persisted for later analysis (empty for
+               # lenses, and for whichever render path doesn't provide it):
+               "re_arcsec", "logmass", "mass_scale"]
 
 
 def _flux_vis(src: dict[str, Any]):
     f = src.get("flux_e_per_band")
     return float(f[0]) if f else ""
+
+
+def _num(v: Any):
+    """A finite float for the CSV, or '' for None/NaN/unparseable."""
+    if v is None:
+        return ""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return "" if math.isnan(f) else f
 
 
 def _z(src: dict[str, Any]):
@@ -38,6 +52,12 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "x_pix": float(g["x_pix"]), "y_pix": float(g["y_pix"]),
         "flux_vis_e": _flux_vis(g), "z": _z(g),
         "subhalo_id": g.get("subhalo_id", ""), "theta_E_arcsec": "",
+        # Half-light radius (arcsec): TNG apparent R_e, or the Sersic
+        # circularized combined R_e; log10 stellar mass (Msun) where known
+        # (TNG redshift-mode target); TNG stamp mass-scaling factor.
+        "re_arcsec":  _num(g.get("re_arcsec", g.get("apparent_re_arcsec"))),
+        "logmass":    _num(g.get("logmass")),
+        "mass_scale": _num(g.get("mass_scale")),
     }
 
 
@@ -49,6 +69,8 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         "flux_vis_e": _flux_vis(lens), "z": _z(lens),
         "subhalo_id": lens.get("lens_subhalo_id", ""),
         "theta_E_arcsec": float(theta) if theta is not None else "",
+        # Galaxy-truth columns are not meaningful for the lens row.
+        "re_arcsec": "", "logmass": "", "mass_scale": "",
     }
 
 
@@ -81,7 +103,8 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {"type": row["type"], "render": row["render"],
                            "subhalo_id": row["subhalo_id"] or None}
     out["field_index"] = int(row["field_index"])
-    for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec"):
+    for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
+              "re_arcsec", "logmass", "mass_scale"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
     return out
