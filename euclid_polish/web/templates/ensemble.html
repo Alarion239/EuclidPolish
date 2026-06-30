@@ -4,7 +4,8 @@
 {% block toolbar %}
 <div class="toolbar">
   <span class="toolbar-label">Ensemble</span>
-  <span class="muted">{{ n_members }} member(s) in <code>{{ base_dir }}</code>
+  <span class="muted">{{ n_members }} seed(s) → <b>{{ n_models or n_members }}</b>
+    model(s) (PSNR-best + loss-best) in <code>{{ base_dir }}</code>
     · eval subset <code>{{ eval_subset }}</code>
     {% if test_present %}✓ present{% else %}✗ not synced{% endif %}</span>
 </div>

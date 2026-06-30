@@ -26,6 +26,12 @@ GROUPED_COLS = [
 ]
 LENS_GRADES = ("A", "B", "C")
 
+#: Each non-lens class (real-gal, syn-lens, syn-gal) is sized to match the real
+#: lens total: N lenses per grade across the 3 A/B/C grades = 3N. So all four
+#: groups are balanced at 3N — 3N real lenses, 3N real galaxies, 3N syn-lens, 3N
+#: syn-gal — by drawing ``CLASS_MULT × n`` of each non-lens class.
+CLASS_MULT = len(LENS_GRADES)
+
 #: The Euclid cutout service can round a pixel-size request DOWN (a 53-px request
 #: comes back 52²), which enforce_object_sizes would then drop. Request a couple
 #: of extra VIS px so the stamp always lands ≥ EVAL_LR_SIZE; it is center-cropped
@@ -33,24 +39,28 @@ LENS_GRADES = ("A", "B", "C")
 DOWNLOAD_PAD = 2
 
 
-def _galaxy_plan(log: Callable[[str], None]) -> list[dict[str, Any]]:
+def _galaxy_plan(log: Callable[[str], None],
+                 max_n: int | None = None) -> list[dict[str, Any]]:
     """Rows for the real-galaxy group, read from the cached galaxy catalog.
 
     Cache-only: the Euclid archive is queried solely by the standalone
     Query-galaxies step (``/api/evaluation/query-galaxies`` →
     :func:`galaxy_catalog.build`), which writes ``galaxies.csv``. The grouped run
-    never logs in or queries — it just consumes whatever that step has already
-    built (all of it, honoring the count chosen there). A missing or empty cache
-    yields an empty plan with a hint, so galaxies never kill the A/B/C run.
+    never logs in or queries — it just consumes that cache, capped at ``max_n``
+    (the balanced 3N target; ``None`` = all). A missing or empty cache yields an
+    empty plan with a hint, so galaxies never kill the A/B/C run.
     """
     gal_csv = galaxy_catalog.default_out_csv()
     if not os.path.isfile(gal_csv):
         log(f"real galaxies: no cached catalog at {gal_csv} — run the "
             "Query-galaxies step (Euclid archive login) first")
         return []
-    rows = read_eval_catalog(gal_csv)
-    log(f"real galaxies: {len(rows)} cached from {gal_csv}" if rows
-        else f"real galaxies: cached catalog empty ({gal_csv})")
+    rows = read_eval_catalog(gal_csv, max_n=max_n)
+    if rows:
+        log(f"real galaxies: {len(rows)} cached from {gal_csv}"
+            + (f" (capped at {max_n})" if max_n is not None else ""))
+    else:
+        log(f"real galaxies: cached catalog empty ({gal_csv})")
     return rows
 
 
@@ -108,11 +118,13 @@ def run_grouped_analysis(
         lens_plan.append((g, rows))
         _emit(f"grade {g}: {len(rows)} lens(es)")
     if include_galaxies:
-        gal_rows = _galaxy_plan(_emit)             # cache-only (Query-galaxies step)
+        # Balance to 3N real galaxies (matches the 3N real lenses).
+        gal_rows = _galaxy_plan(_emit, max_n=CLASS_MULT * n)
         if gal_rows:
             lens_plan.append(("gal", gal_rows))    # processed by the same A/B/C loop
     n_lens = sum(len(r) for _, r in lens_plan)     # now includes galaxies
-    total = n_lens + (2 * n if include_synthetic else 0)
+    # Synthetic contributes 3N syn-lens + 3N syn-gal = 2·3N stamps.
+    total = n_lens + (2 * CLASS_MULT * n if include_synthetic else 0)
     if total == 0:
         _emit("nothing to evaluate")
         return {"out_dir": out_dir, "n": 0, "manifest": None}
@@ -195,7 +207,8 @@ def run_grouped_analysis(
         base = n_lens
         try:
             syn = synthetic_runner.run_synthetic_eval(
-                out_dir, n, model=model, asinh_scale=asinh_scale, stamp_m=stamp_m,
+                out_dir, CLASS_MULT * n,            # 3N syn-lens + 3N syn-gal
+                model=model, asinh_scale=asinh_scale, stamp_m=stamp_m,
                 seed=seed, unique_fields=unique_fields,
                 on_progress=(lambda i, t, lbl: on_progress(base + i, base + t, lbl))
                 if on_progress else None,

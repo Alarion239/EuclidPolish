@@ -63,7 +63,13 @@ def ensemble_status() -> dict:
     members = []
     for d in sorted(glob.glob(os.path.join(base, _MEMBER_GLOB))):
         if os.path.isdir(d) and _checkpoint_exists(d):
-            members.append({"name": os.path.basename(d), "seed": _member_seed(d)})
+            lb = os.path.join(d, "loss_best")
+            has_lb = os.path.isdir(lb) and _checkpoint_exists(lb)
+            members.append({"name": os.path.basename(d), "seed": _member_seed(d),
+                            "has_loss_best": has_lb})
+    # Each seed contributes its PSNR-best checkpoint and (when present) its
+    # loss-best one — the ensemble loads/uses BOTH (include_loss_best=True).
+    n_models = sum(1 + (1 if m["has_loss_best"] else 0) for m in members)
 
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
@@ -90,6 +96,7 @@ def ensemble_status() -> dict:
         "base_dir": base,
         "members": members,
         "n_members": len(members),
+        "n_models": n_models,
         "records_dir": rdir,
         "eval_subset": sub,
         "test_present": test_present,

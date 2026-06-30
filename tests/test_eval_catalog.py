@@ -1152,6 +1152,9 @@ def test_galaxy_plan_reads_all_cached(monkeypatch, tmp_path):
                         lambda *a, **k: pytest.fail("grouped run must not query"))
     rows = grouped_runner._galaxy_plan(lambda m: None)
     assert len(rows) == 7 and all(r["grade"] == "gal" for r in rows)
+    # The grouped run caps the cache at the balanced 3N target.
+    capped = grouped_runner._galaxy_plan(lambda m: None, max_n=3)
+    assert len(capped) == 3
 
 
 def test_galaxy_plan_empty_when_no_cache(monkeypatch, tmp_path):
