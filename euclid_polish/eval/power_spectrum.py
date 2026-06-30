@@ -166,6 +166,7 @@ class EnsembleSpectrumAccumulator:
         z = lambda: np.zeros(nbins, dtype=np.float64)   # noqa: E731
         self.bh, self.bs, self.bx, self.bd, self.bc = z(), z(), z(), z(), z()
         self.n_fields = 0
+        self.n_members = 0
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
             members: np.ndarray) -> None:
@@ -186,6 +187,7 @@ class EnsembleSpectrumAccumulator:
                     resid, resid, self.pix, self.k_edges, self.window)
                 dacc += ph
             self.bd += dacc / float(len(members))
+            self.n_members = max(self.n_members, int(len(members)))
         self.n_fields += 1
 
     def curves(self) -> dict[str, np.ndarray]:
@@ -195,11 +197,35 @@ class EnsembleSpectrumAccumulator:
             p_dis = self.bd / self.bc
             r = self.bx / np.sqrt(self.bh * self.bs)
             t = np.sqrt(self.bs / self.bh)
+            # HR-FREE inter-model coherence: average pairwise power correlation
+            # between members. From the variance identity ⟨P_member⟩ = P_mean +
+            # P_disagree and ρ = (M·coherent_frac − 1)/(M−1), with coherent_frac
+            # = P_mean/⟨P_member⟩. ρ→1 = members agree (real), ρ→0 = decorrelated
+            # (hallucination). Needs NO HR, so it applies to real images too.
+            coherent_frac = self.bs / (self.bs + self.bd)
+            m = max(self.n_members, 2)
+            rho = (m * coherent_frac - 1.0) / (m - 1.0)
         empty = self.bc <= 0
-        for arr in (p_hr, p_sr, p_dis, r, t):
+        for arr in (p_hr, p_sr, p_dis, r, t, coherent_frac, rho):
             arr[empty] = np.nan
         return {"k": self.k_cen, "P_hr": p_hr, "P_sr": p_sr,
-                "P_disagree": p_dis, "r": r, "T": t}
+                "P_disagree": p_dis, "r": r, "T": t,
+                "coherent_frac": coherent_frac, "rho": rho}
+
+
+def coherence_half_scale(k: np.ndarray, c: np.ndarray) -> float | None:
+    """The k (cyc/arcsec) where coherence ``c`` first drops below 0.5 — an
+    HR-free "effective resolution". Log-interpolated; ``None`` if never crossed.
+    """
+    k = np.asarray(k, float)
+    c = np.asarray(c, float)
+    good = np.isfinite(k) & np.isfinite(c)
+    k, c = k[good], c[good]
+    for i in range(1, len(k)):
+        if c[i - 1] >= 0.5 > c[i]:
+            f = (0.5 - c[i - 1]) / (c[i] - c[i - 1])
+            return float(np.exp(np.log(k[i - 1]) + f * (np.log(k[i]) - np.log(k[i - 1]))))
+    return None
 
 
 def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
@@ -239,14 +265,27 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
     ax_p.legend(fontsize=9, frameon=False)
     ax_p.grid(True, which="both", alpha=0.15)
 
-    ax_r.plot(k, r, color="#3b6fb0", lw=2.0)
+    rho = np.asarray(curves.get("rho", np.full_like(k, np.nan)), float)
+    has_hr = np.isfinite(r).any()
+    # ρ(k): inter-model coherence — needs NO HR, so it also works on real data.
+    ax_r.plot(k, rho, color="#5aae61", lw=2.3, label="ρ(k): inter-model (HR-free)")
+    if has_hr:
+        ax_r.plot(k, r, color="#3b6fb0", lw=2.0, ls="--",
+                  label="r(k): vs HR (truth)")
+    k_half = coherence_half_scale(k, rho)
+    if k_half:
+        ax_r.axvline(k_half, color="#3a7d3a", ls="-.", lw=1.0, alpha=0.8)
+        ax_r.text(k_half * 1.04, 0.04, f"ρ=½ @ {k_half:.1f}", rotation=90,
+                  va="bottom", ha="left", fontsize=8, color="#3a7d3a")
     ax_r.axvline(LR_NYQUIST_CYC_ARCSEC, color="grey", ls=":", lw=1.2)
+    ax_r.axhline(0.5, color="grey", lw=0.6, alpha=0.4)
     ax_r.axhline(1.0, color="grey", lw=0.8, alpha=0.5)
     ax_r.set_xscale("log")
     ax_r.set_ylim(0.0, 1.02)
     ax_r.set_xlabel("k  [cycles / arcsec]")
-    ax_r.set_ylabel("r(k) — corr(ensemble mean, HR)")
-    ax_r.set_title("Spectral coherence: recovered (r→1) vs invented (r→0)")
+    ax_r.set_ylabel("coherence")
+    ax_r.set_title("Coherence: agree (→1) vs invent (→0) — HR-free ρ vs truth r")
+    ax_r.legend(fontsize=8, frameon=False, loc="lower left")
     ax_r.grid(True, which="both", alpha=0.15)
 
     fig.tight_layout()

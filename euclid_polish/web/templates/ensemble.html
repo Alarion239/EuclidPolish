@@ -73,10 +73,12 @@
          src="{{ url_for('serve_vis', relpath=power_spectrum_png) }}"
          alt="ensemble power spectrum"></a>
   <p class="hint"><b>Left:</b> power P(k) — HR vs ensemble-mean SR vs member
-     disagreement, per spatial scale. <b>Right:</b> coherence r(k) = corr(mean SR,
-     HR) — where r→1 the SR recovers <i>real</i> structure, where r→0 it invents
-     decorrelated detail. The roll-off scale (vs the LR-Nyquist line) is where
-     super-resolution stops recovering and starts hallucinating.</p>
+     disagreement, per spatial scale. <b>Right:</b> coherence — <b>ρ(k)</b> is the
+     inter-model agreement (the members' power-spectrum correlation; needs <i>no
+     HR</i>, so it works on real Euclid images too), and <b>r(k)</b> is the
+     truth-based corr(mean SR, HR). Where the two track, ρ is a validated stand-in
+     for “did we recover real structure?” when there's no ground truth. ρ→1 =
+     agree/real, ρ→0 = invented; <b>ρ=½</b> marks the effective resolution.</p>
 </section>
 {% endif %}
 
