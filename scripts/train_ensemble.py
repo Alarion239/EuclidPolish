@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +26,7 @@ from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble import EnsembleModel, evaluate_on_records  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
+from euclid_polish.training.staging import stage_records  # noqa: E402
 
 
 def _default_base_dir() -> str:
@@ -75,6 +77,26 @@ def main() -> int:
     # log records gpu_util_mean/peak (the "GPU util" column). Daemon thread;
     # stopped after the eval below.
     sampler = ResourceSampler(reporter).start()
+
+    # Stage the hot train + validate records onto node-local scratch (fast NVMe,
+    # no shared-netscratch contention — the input-pipeline stall behind the
+    # 48s-vs-100s/1000-step variance). Best-effort: falls back to the original
+    # dir if local scratch is missing/too small. Test records stay on netscratch
+    # (read once by the post-training eval, not the hot loop).
+    def _stage_log(m: str) -> None:
+        print(m)
+        if m.lstrip().startswith("⚠"):      # surface staging fallbacks to the WebUI
+            reporter.warn(m.strip())
+
+    records_dir = stage_records(
+        args.records_dir,
+        ["dirty_train", "clean_train", "dirty_validate", "clean_validate"],
+        on_log=_stage_log,
+    )
+    staged = records_dir != args.records_dir
+    lr = tfrecord_path(records_dir, "dirty_train")
+    hr = tfrecord_path(records_dir, "clean_train")
+
     total = max(1, args.n_members) * max(1, args.steps)
     done_members = [0]                          # members finished so far
 
@@ -107,27 +129,32 @@ def main() -> int:
 
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
                         num_res_blocks=args.num_res_blocks)
-    ens.train(
-        lr, hr,
-        n_members=args.n_members, base_seed=base_seed,
-        steps=args.steps, batch_size=args.batch_size,
-        evaluate_every=args.evaluate_every,
-        step_callback=_step_cb, eval_callback=_eval_cb, warn_callback=_warn_cb,
-        on_member=_on_member,
-    )
+    try:
+        ens.train(
+            lr, hr,
+            n_members=args.n_members, base_seed=base_seed,
+            steps=args.steps, batch_size=args.batch_size,
+            evaluate_every=args.evaluate_every,
+            step_callback=_step_cb, eval_callback=_eval_cb, warn_callback=_warn_cb,
+            on_member=_on_member,
+        )
 
-    if args.eval_images > 0:
-        print("\nEvaluating ensemble on the held-out test set...")
-        out = evaluate_on_records(base, args.records_dir,
-                                  num_images=args.eval_images)
-        print(f"  subset:            {out['subset']}  ({out['n_scored']} scored)")
-        print(f"  ensemble PSNR:     {out['ensemble_psnr']:.3f} dB")
-        print(f"  mean member PSNR:  {out['mean_member_psnr']:.3f} dB")
-        print(f"  ensemble gain:     {out['ensemble_gain_db']:+.3f} dB")
-        d = out["disagreement"]
-        print(f"  mean disagreement: {d['mean_std_e']:.4g} e⁻  "
-              f"({d['frac_flux_hallucinated'] * 100:.1f}% of flux hallucinated)")
-    sampler.stop()
+        if args.eval_images > 0:
+            print("\nEvaluating ensemble on the held-out test set...")
+            # Test records read once here — keep them on the original dir.
+            out = evaluate_on_records(base, args.records_dir,
+                                      num_images=args.eval_images)
+            print(f"  subset:            {out['subset']}  ({out['n_scored']} scored)")
+            print(f"  ensemble PSNR:     {out['ensemble_psnr']:.3f} dB")
+            print(f"  mean member PSNR:  {out['mean_member_psnr']:.3f} dB")
+            print(f"  ensemble gain:     {out['ensemble_gain_db']:+.3f} dB")
+            d = out["disagreement"]
+            print(f"  mean disagreement: {d['mean_std_e']:.4g} e⁻  "
+                  f"({d['frac_flux_hallucinated'] * 100:.1f}% of flux hallucinated)")
+    finally:
+        sampler.stop()
+        if staged:                          # remove the node-local staged copy
+            shutil.rmtree(records_dir, ignore_errors=True)
     print("\n✓ Ensemble training complete.")
     return 0
 
