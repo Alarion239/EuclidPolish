@@ -65,7 +65,16 @@ class EnsembleModel:
     scale, num_res_blocks : int
         Architecture of every member (shared).
     n_members : int, optional
-        Cap on how many members to load (for eval); ``None`` loads all found.
+        Cap on how many member *directories* to load (for eval); ``None`` loads
+        all found. (With ``include_loss_best`` each directory yields two models.)
+    include_loss_best : bool, optional
+        Also load each member's ``loss_best/`` checkpoint as a separate model,
+        roughly doubling the ensemble (default ``True``). The PSNR-best and
+        LOSS-best checkpoints of one seed are correlated — they share weights
+        history — so the extra model is not a fully independent vote, but it adds
+        a cheap, already-trained member. Each model is tagged ``NN·psnr`` /
+        ``NN·loss`` in :attr:`member_labels`. Set ``False`` for pure
+        seed-diversity (e.g. an unbiased disagreement/hallucination map).
     """
 
     def __init__(
@@ -75,6 +84,7 @@ class EnsembleModel:
         scale: int = Config.DEFAULT_REBIN_FACTOR,
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
         n_members: int | None = None,
+        include_loss_best: bool = True,
         _models: Sequence[Model] | None = None,
     ) -> None:
         self.base_dir = base_dir
@@ -82,15 +92,30 @@ class EnsembleModel:
         self._num_res_blocks = int(num_res_blocks)
         if _models is not None:                      # test / explicit injection
             self._models: list[Model] = list(_models)
+            self._member_labels: list[str] = [
+                f"m{i:02d}" for i in range(len(self._models))
+            ]
             return
         dirs = sorted(glob.glob(os.path.join(base_dir, _MEMBER_GLOB)))
         dirs = [d for d in dirs if os.path.isdir(d) and _checkpoint_exists(d)]
         if n_members is not None:
             dirs = dirs[: int(n_members)]
-        self._models = [
-            Model(d, scale=self._scale, num_res_blocks=self._num_res_blocks)
-            for d in dirs
-        ]
+        models: list[Model] = []
+        labels: list[str] = []
+        for d in dirs:
+            idx = os.path.basename(d).removeprefix("member_")
+            models.append(
+                Model(d, scale=self._scale, num_res_blocks=self._num_res_blocks))
+            labels.append(f"{idx}·psnr")
+            if include_loss_best:
+                lb = os.path.join(d, "loss_best")
+                if os.path.isdir(lb) and _checkpoint_exists(lb):
+                    models.append(Model(
+                        lb, scale=self._scale,
+                        num_res_blocks=self._num_res_blocks))
+                    labels.append(f"{idx}·loss")
+        self._models = models
+        self._member_labels = labels
 
     # -- introspection -- #
 
@@ -106,6 +131,13 @@ class EnsembleModel:
     def member_ids(self) -> list[str | None]:
         """Each member's model :class:`ProvId` (or ``None`` for a legacy ckpt)."""
         return [str(m.id) if m.id is not None else None for m in self._models]
+
+    @property
+    def member_labels(self) -> list[str]:
+        """Per-model tag aligned with :attr:`members` — e.g. ``00·psnr`` (the
+        best-PSNR checkpoint) and ``00·loss`` (the best-LOSS checkpoint of the
+        same seed)."""
+        return list(self._member_labels)
 
     def _require_members(self) -> None:
         if not self._models:
@@ -222,6 +254,7 @@ class EnsembleModel:
             {
               "n_members", "n_fields",
               "per_member_psnr": [...],          # mean over fields, raw e⁻
+              "per_member_labels": [...],        # NN·psnr / NN·loss, aligned
               "mean_member_psnr", "ensemble_psnr",
               "ensemble_gain_db",                # ensemble − best member
               "disagreement": {
@@ -287,6 +320,7 @@ class EnsembleModel:
             "n_fields": n_fields,
             "n_scored": n_scored,
             "per_member_psnr": per_member,
+            "per_member_labels": list(self._member_labels),
             "mean_member_psnr": mean_member,
             "ensemble_psnr": ensemble_psnr,
             "ensemble_gain_db": (ensemble_psnr - best_member
@@ -307,14 +341,19 @@ def load_ensemble(
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     n_members: int | None = None,
+    include_loss_best: bool = True,
 ) -> EnsembleModel:
-    """Load the ensemble under ``base_dir`` (default: ``<ckpt>/ensemble``)."""
+    """Load the ensemble under ``base_dir`` (default: ``<ckpt>/ensemble``).
+
+    ``include_loss_best`` (default ``True``) adds each member's ``loss_best/``
+    checkpoint as a second model — see :class:`EnsembleModel`.
+    """
     if base_dir is None:
         base_dir = os.path.join(
             os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
             "ensemble")
     return EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
-                         n_members=n_members)
+                         n_members=n_members, include_loss_best=include_loss_best)
 
 
 def evaluate_on_records(
@@ -325,19 +364,23 @@ def evaluate_on_records(
     num_images: int = 200,
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
+    include_loss_best: bool = True,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Convenience: evaluate the ensemble on a generated subset's TFRecords.
 
     Reads ``dirty_<subset>`` (LR) + ``hr_<subset>`` (HR target) from
     ``records_dir`` — defaulting ``subset`` to the held-out eval split — and runs
-    :meth:`EnsembleModel.evaluate`.
+    :meth:`EnsembleModel.evaluate`. ``include_loss_best`` (default ``True``)
+    scores each member's PSNR-best AND loss-best checkpoint — see
+    :class:`EnsembleModel`.
     """
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import tfrecord_path
 
     sub = subset or eval_subset(records_dir)
-    ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks)
+    ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
+                        include_loss_best=include_loss_best)
     lr = ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                        num_images=num_images)
     hr = ImageSet.read(tfrecord_path(records_dir, f"hr_{sub}"),

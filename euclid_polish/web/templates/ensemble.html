@@ -45,7 +45,7 @@
       <tr><td>Ensemble gain vs best member</td>
           <td>{{ "%+.3f"|format(eval_summary.ensemble_gain_db) }} dB</td></tr>
       <tr><td>Per-member PSNR</td>
-          <td>{% for p in eval_summary.per_member_psnr %}{{ "%.2f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+          <td>{% for p in eval_summary.per_member_psnr %}{% if eval_summary.per_member_labels and eval_summary.per_member_labels|length == eval_summary.per_member_psnr|length %}{{ eval_summary.per_member_labels[loop.index0] }}: {% endif %}{{ "%.2f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
       <tr><td>Mean disagreement (member std)</td>
           <td>{{ "%.4g"|format(eval_summary.disagreement.mean_std_e) }} e⁻</td></tr>
       <tr><td>Mean relative disagreement</td>
