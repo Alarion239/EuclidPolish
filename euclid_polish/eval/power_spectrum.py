@@ -139,6 +139,122 @@ def ratios_from_powers(
     return t, r
 
 
+# --------------------------------------------------------------------------- #
+# Ensemble power spectrum: HR vs ensemble-mean + the disagreement spectrum     #
+# --------------------------------------------------------------------------- #
+class EnsembleSpectrumAccumulator:
+    """Stacked HR / ensemble-mean / disagreement power on a fixed k-grid.
+
+    Fed one field at a time (single band, HR-grid resolution). Accumulates, per
+    azimuthal k-bin: HR auto-power, ensemble-mean SR auto-power, the HR×mean
+    cross-power, and the **disagreement** power — the mean over members of the
+    residual ``(member − mean)`` auto-power (the spectral decomposition of the
+    per-pixel variance: *at which scales the members disagree / hallucinate*).
+
+    :meth:`curves` then yields ``P_hr(k)``, ``P_sr(k)``, ``P_disagree(k)``, the
+    cross-correlation coefficient ``r(k)`` (how correlated the ensemble mean is
+    with the truth at scale k) and the transfer function ``T(k)``.
+    """
+
+    def __init__(self, n: int, pixel_scale_arcsec: float, *,
+                 kmin: float = 0.2, nbins: int = 24) -> None:
+        self.n = int(n)
+        self.pix = float(pixel_scale_arcsec)
+        self.k_edges = log_k_edges(self.pix, kmin, nbins)
+        self.k_cen = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
+        self.window = tukey_window_2d(self.n)
+        z = lambda: np.zeros(nbins, dtype=np.float64)   # noqa: E731
+        self.bh, self.bs, self.bx, self.bd, self.bc = z(), z(), z(), z(), z()
+        self.n_fields = 0
+
+    def add(self, hr: np.ndarray, mean: np.ndarray,
+            members: np.ndarray) -> None:
+        """Accumulate one field. ``hr``/``mean`` are ``(n, n)``; ``members`` is
+        ``(M, n, n)`` — all single-band, HR-grid."""
+        hr = np.asarray(hr, np.float64)
+        mean = np.asarray(mean, np.float64)
+        if hr.shape != (self.n, self.n) or mean.shape != hr.shape:
+            return
+        bh, bs, bx, bc = bin_powers(hr, mean, self.pix, self.k_edges, self.window)
+        self.bh += bh; self.bs += bs; self.bx += bx; self.bc += bc
+        members = np.asarray(members, np.float64)
+        if members.ndim == 3 and members.shape[1:] == hr.shape and len(members):
+            dacc = np.zeros_like(bh)
+            for m in members:
+                resid = m - mean
+                ph, _ps, _px, _bc = bin_powers(
+                    resid, resid, self.pix, self.k_edges, self.window)
+                dacc += ph
+            self.bd += dacc / float(len(members))
+        self.n_fields += 1
+
+    def curves(self) -> dict[str, np.ndarray]:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            p_hr = self.bh / self.bc
+            p_sr = self.bs / self.bc
+            p_dis = self.bd / self.bc
+            r = self.bx / np.sqrt(self.bh * self.bs)
+            t = np.sqrt(self.bs / self.bh)
+        empty = self.bc <= 0
+        for arr in (p_hr, p_sr, p_dis, r, t):
+            arr[empty] = np.nan
+        return {"k": self.k_cen, "P_hr": p_hr, "P_sr": p_sr,
+                "P_disagree": p_dis, "r": r, "T": t}
+
+
+def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
+                                   *, n_fields: int = 0) -> str | None:
+    """Two-panel ensemble power-spectrum figure (VIS band).
+
+    Left: P(k) for HR, ensemble-mean SR, and the member disagreement (log-log).
+    Right: r(k) — cross-correlation of ensemble mean with HR per scale (the
+    "how correlated are the features" curve). A guide line marks the LR Nyquist
+    (the super-resolution boundary). Returns the path, or ``None`` if empty.
+    """
+    k = np.asarray(curves.get("k", []), float)
+    if k.size == 0 or not np.isfinite(np.asarray(curves.get("P_hr", []), float)).any():
+        return None
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax_p, ax_r) = plt.subplots(1, 2, figsize=(13.0, 5.2))
+
+    p_hr = np.asarray(curves["P_hr"], float)
+    p_sr = np.asarray(curves["P_sr"], float)
+    p_dis = np.asarray(curves["P_disagree"], float)
+    r = np.asarray(curves["r"], float)
+
+    ax_p.loglog(k, p_hr, color="#222", lw=2.0, label="HR (truth)")
+    ax_p.loglog(k, p_sr, color=BAND_COLORS["VIS"], lw=2.0, label="ensemble mean SR")
+    ax_p.loglog(k, p_dis, color="#d6604d", lw=1.8, ls="--",
+                label="member disagreement")
+    ax_p.axvline(LR_NYQUIST_CYC_ARCSEC, color="grey", ls=":", lw=1.2)
+    ax_p.text(LR_NYQUIST_CYC_ARCSEC * 1.04, ax_p.get_ylim()[0], "LR Nyquist",
+              rotation=90, va="bottom", ha="left", fontsize=8, color="grey")
+    ax_p.set_xlabel("k  [cycles / arcsec]")
+    ax_p.set_ylabel("power  P(k)  [arb.]")
+    ax_p.set_title("Angular power spectrum — VIS"
+                   + (f"  ({n_fields} fields)" if n_fields else ""))
+    ax_p.legend(fontsize=9, frameon=False)
+    ax_p.grid(True, which="both", alpha=0.15)
+
+    ax_r.plot(k, r, color="#3b6fb0", lw=2.0)
+    ax_r.axvline(LR_NYQUIST_CYC_ARCSEC, color="grey", ls=":", lw=1.2)
+    ax_r.axhline(1.0, color="grey", lw=0.8, alpha=0.5)
+    ax_r.set_xscale("log")
+    ax_r.set_ylim(0.0, 1.02)
+    ax_r.set_xlabel("k  [cycles / arcsec]")
+    ax_r.set_ylabel("r(k) — corr(ensemble mean, HR)")
+    ax_r.set_title("Spectral coherence: recovered (r→1) vs invented (r→0)")
+    ax_r.grid(True, which="both", alpha=0.15)
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_png
+
+
 # test-only; production uses BandStat
 class _SpectrumAccumulator:
     """Raw-sum stacked auto/cross power on a fixed physical k-grid.

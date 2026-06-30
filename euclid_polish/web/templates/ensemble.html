@@ -65,6 +65,21 @@
 </section>
 {% endif %}
 
+{% if power_spectrum_png %}
+<section class="card">
+  <h3>Angular power spectrum <span class="muted">— ensemble mean vs HR (VIS)</span></h3>
+  <a href="{{ url_for('serve_vis', relpath=power_spectrum_png) }}" target="_blank">
+    <img loading="lazy" style="max-width:100%;height:auto;"
+         src="{{ url_for('serve_vis', relpath=power_spectrum_png) }}"
+         alt="ensemble power spectrum"></a>
+  <p class="hint"><b>Left:</b> power P(k) — HR vs ensemble-mean SR vs member
+     disagreement, per spatial scale. <b>Right:</b> coherence r(k) = corr(mean SR,
+     HR) — where r→1 the SR recovers <i>real</i> structure, where r→0 it invents
+     decorrelated detail. The roll-off scale (vs the LR-Nyquist line) is where
+     super-resolution stops recovering and starts hallucinating.</p>
+</section>
+{% endif %}
+
 <section class="card" id="ens-viewer-card" style="display:none;">
   <h3>Field viewer <span class="muted">— LR · SR (mean) · stdSR · HR</span></h3>
   <div id="ensemble-viewer"></div>

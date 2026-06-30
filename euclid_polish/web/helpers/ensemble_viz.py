@@ -17,6 +17,10 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel, evaluate_on_records, pca_field
+from euclid_polish.eval.power_spectrum import (
+    EnsembleSpectrumAccumulator,
+    render_ensemble_power_spectrum,
+)
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.model import _checkpoint_exists
@@ -77,9 +81,15 @@ def ensemble_status() -> dict:
         tfrecord_path(rdir, f"dirty_{sub}"))
 
     out_dir = os.path.join(Config.VIS_DIR, "ensemble")   # read-only here
+    # The power-spectrum summary gets its own card; keep it out of the gallery.
+    ps_path = os.path.join(out_dir, "ensemble_power_spectrum.png")
+    power_spectrum_png = (os.path.relpath(ps_path, Config.VIS_DIR)
+                          if os.path.isfile(ps_path) else None)
     pngs = []
     for p in sorted(glob.glob(os.path.join(out_dir, "*.png")),
                     key=os.path.getmtime, reverse=True)[:24]:
+        if os.path.basename(p) == "ensemble_power_spectrum.png":
+            continue
         pngs.append({"name": os.path.basename(p),
                      "rel": os.path.relpath(p, Config.VIS_DIR)})
 
@@ -101,6 +111,7 @@ def ensemble_status() -> dict:
         "eval_subset": sub,
         "test_present": test_present,
         "result_pngs": pngs,
+        "power_spectrum_png": power_spectrum_png,
         "eval_summary": summary,
     }
 
@@ -196,8 +207,20 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     os.makedirs(cubes_dir, exist_ok=True)
     saved: list[int] = []
     pca_amps: dict[int, list[float]] = {}        # rec_index → [a0, a1, a2]
+    ps_acc: list = [None]                        # lazy EnsembleSpectrumAccumulator
 
-    def _on_field(rec_index, _lr_cube, preds, mean, std, _hr_cube):
+    def _on_field(rec_index, _lr_cube, preds, mean, std, hr_cube):
+        # Power spectrum over ALL fields that have HR (VIS band): HR vs
+        # ensemble-mean (+ coherence r(k)) and the member-disagreement spectrum.
+        if hr_cube is not None:
+            hr_v, mean_v = _vis(hr_cube), _vis(mean)
+            mem = np.asarray(preds, np.float32)
+            mem_v = mem[..., 0] if mem.ndim == 4 else mem      # (M, H, W)
+            if ps_acc[0] is None:
+                ps_acc[0] = EnsembleSpectrumAccumulator(
+                    int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
+            ps_acc[0].add(hr_v, mean_v, mem_v)
+
         # LR/HR are read back from the records by the viewer; persist the
         # computed mean (SR) + std (stdSR) and the PCA disagreement basis
         # (mean + Σ aᵢ·sin·compᵢ powers the morphing animation). Cap the set.
@@ -223,6 +246,19 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps}, f)
+
+    # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
+    if ps_acc[0] is not None and float(ps_acc[0].bc.sum()) > 0:
+        curves = ps_acc[0].curves()
+        ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
+        render_ensemble_power_spectrum(ps_png, curves, n_fields=ps_acc[0].n_fields)
+        with open(os.path.join(_ensemble_out_dir(),
+                               "ensemble_power_spectrum.json"), "w") as f:
+            json.dump({k: [None if not np.isfinite(x) else round(float(x), 6)
+                           for x in np.asarray(v, float)]
+                       for k, v in curves.items()}, f)
+        out["power_spectrum_fields"] = int(ps_acc[0].n_fields)
+
     with open(os.path.join(_ensemble_out_dir(), "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
