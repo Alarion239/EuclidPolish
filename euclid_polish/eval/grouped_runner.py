@@ -158,7 +158,11 @@ def run_grouped_analysis(
             if lens_source_dir and not catalog_runner.can_reuse_eval_object(obj_dir):
                 catalog_runner.seed_object_from_cache(
                     lens_source_dir, out_dir, obj["id"])
-            if catalog_runner.can_reuse_eval_object(obj_dir):
+            # Existence is checked BEFORE any archive download: a cutout already
+            # on disk is reused as-is and never re-fetched.
+            from_cache = catalog_runner.can_reuse_eval_object(obj_dir)
+            if from_cache:
+                _emit(f"  • {obj['id']}: already present locally — skipping download")
                 produced, err = True, ""
             else:
                 r0 = catalog_runner.eval_catalog_object(
@@ -172,7 +176,7 @@ def run_grouped_analysis(
             # out smaller than the target is dropped.
             if produced and catalog_runner.enforce_object_sizes(obj_dir, log=_emit):
                 rec = catalog_runner.reuse_catalog_object(
-                    obj, out_dir, grade=g, log=_emit)
+                    obj, out_dir, grade=g, from_cache=from_cache, log=_emit)
             else:
                 if produced:                    # produced but below target → drop
                     shutil.rmtree(obj_dir, ignore_errors=True)

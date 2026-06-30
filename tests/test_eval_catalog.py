@@ -869,11 +869,16 @@ class TestSyntheticCutouts:
         monkeypatch.setattr(catalog_runner, "eval_catalog_object",
                             lambda *a, **k: pytest.fail("lens should be reused"))
 
+        logs = []
         res = grouped_runner.run_grouped_analysis(
             str(out), n=1, catalog_path=str(catalog), include_synthetic=False,
-            log=lambda m: None)
+            log=logs.append)
 
         assert res["n_ok"] == 3
+        # Existence is checked before download: each present object logs a skip,
+        # never a "freshly-downloaded" line.
+        assert sum("skipping download" in m for m in logs) == 3
+        assert not any("freshly-downloaded" in m for m in logs)
         rows = read_eval_catalog(str(out / "manifest.csv"))
         assert [r["id"] for r in rows] == ["a0", "b0", "c0"]
         # Reused FITS are held at the canonical eval geometry.
@@ -951,6 +956,22 @@ class TestCenterCropAndReuse:
         assert cr.enforce_object_sizes(str(small)) is False
         with fits.open(small / "SR.fits") as h:
             assert h[0].data.shape == (4, 64, 64)
+
+    def test_reuse_catalog_object_log_distinguishes_cache_from_download(self, tmp_path):
+        from euclid_polish.eval import catalog_runner as cr
+        d = cr.object_output_dir(str(tmp_path), "obj1")
+        os.makedirs(d)
+        fits.PrimaryHDU(np.ones((4, 53, 53), np.float32)).writeto(
+            os.path.join(d, "original_stack.fits"))
+        fits.PrimaryHDU(np.ones((4, 106, 106), np.float32)).writeto(
+            os.path.join(d, "SR.fits"))
+        obj = {"id": "obj1", "ra": 1.0, "dec": 2.0}
+        cached, fresh = [], []
+        cr.reuse_catalog_object(obj, str(tmp_path), from_cache=True, log=cached.append)
+        cr.reuse_catalog_object(obj, str(tmp_path), from_cache=False, log=fresh.append)
+        assert any("reusing existing" in m for m in cached)
+        assert any("freshly-downloaded" in m for m in fresh)
+        assert not any("reusing existing" in m for m in fresh)
 
     def test_seed_object_from_cache(self, tmp_path):
         from euclid_polish.eval import catalog_runner
@@ -1092,7 +1113,7 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_runner, "enforce_object_sizes",
                         lambda obj_dir, **kw: True)
 
-    def _fake_reuse(obj, out_dir, *, grade=None, log=None):
+    def _fake_reuse(obj, out_dir, *, grade=None, from_cache=True, log=None):
         rec = dict.fromkeys(catalog_runner.MANIFEST_COLS, "")
         rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
                     "grade": grade or obj.get("grade", ""), "ok": True,

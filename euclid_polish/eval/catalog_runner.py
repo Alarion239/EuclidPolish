@@ -85,9 +85,18 @@ def _vis_plane(arr):
 
 
 def reuse_catalog_object(obj, out_dir: str, *, grade: str | None = None,
+                         from_cache: bool = True,
                          log: Callable[[str], None] | None = None
                          ) -> dict[str, Any]:
-    """Build a manifest row from existing LR/SR FITS without downloading."""
+    """Build a manifest row from on-disk LR/SR FITS (the flux metrics).
+
+    ``from_cache`` only affects the log wording: ``True`` (the default) means the
+    FITS were already present from a prior run (a genuine cache hit — no download
+    happened), ``False`` means they were just downloaded this run and we are only
+    reading them back to compute the post-crop metrics. The wording matters
+    because this is called in both branches and a "reusing" line after a fresh
+    download otherwise reads as wasteful re-downloading.
+    """
     import numpy as np
     from astropy.io import fits
 
@@ -107,7 +116,9 @@ def reuse_catalog_object(obj, out_dir: str, *, grade: str | None = None,
             "sr_total_e": sr_sum,
             "flux_ratio_sr_over_lr": (sr_sum / lr_sum) if lr_sum else "",
         })
-        emit(f"  ↻ {obj['id']}: reusing existing LR/SR FITS")
+        emit(f"  ↻ {obj['id']}: reusing existing LR/SR FITS (no download)"
+             if from_cache else
+             f"  ✓ {obj['id']}: metrics from freshly-downloaded FITS")
     except Exception as e:  # noqa: BLE001 — keep batch semantics
         rec["error"] = f"{type(e).__name__}: {e}"
         emit(f"  ! {obj['id']} cache unusable: {rec['error']}")
