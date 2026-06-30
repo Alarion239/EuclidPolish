@@ -59,6 +59,15 @@
 </section>
 {% endif %}
 
+<section class="card" id="ens-viewer-card" style="display:none;">
+  <h3>Field viewer <span class="muted">— LR · SR (mean) · stdSR · HR</span></h3>
+  <div id="ensemble-viewer"></div>
+  <p class="hint">SR is the ensemble mean; <b>stdSR</b> is the per-pixel std across
+     members (disagreement ≈ hallucination). Rendered client-side — band / colour /
+     asinh / brightness controls are instant. Cached by the latest
+     “Evaluate on test set” run (first {{ ensemble_viz_fields or 24 }} fields).</p>
+</section>
+
 {% if result_pngs %}
 <div class="gallery">
   {% for p in result_pngs %}
@@ -137,5 +146,19 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });
+</script>
+<script type="module">
+// Mount the unified cutout viewer on the ensemble cubes cached by the last
+// evaluate (LR · SR mean · stdSR · HR). Hidden until at least one field exists.
+import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
+fetch("/viewer/meta/ensemble")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((m) => {
+    if (!m || !m.count) return;
+    document.getElementById("ens-viewer-card").style.display = "";
+    mountCutoutViewer(document.getElementById("ensemble-viewer"),
+                      { collection: "ensemble" });
+  })
+  .catch(() => {});
 </script>
 {% endblock %}

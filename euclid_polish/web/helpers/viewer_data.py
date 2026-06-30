@@ -29,6 +29,7 @@ Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import os
 from collections.abc import Callable
@@ -323,6 +324,94 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+# ensemble — LR / SR(mean) / stdSR(std) / HR for the disagreement viewer
+# ---------------------------------------------------------------------------
+#
+# The /ensemble "Evaluate" job caches the ensemble-mean (SR) and per-pixel std
+# (stdSR) cubes under <vis>/ensemble/cubes/{sr,std}_<recidx>.npy plus a
+# viz_index.json {subset, indices}. LR/HR are read back from the sky records by
+# record index, so only the computed cubes are duplicated.
+
+_ENSEMBLE_TIERS = [
+    {"key": "lr", "label": "LR"},
+    {"key": "sr", "label": "SR (mean)"},
+    {"key": "std", "label": "stdSR"},
+    {"key": "hr", "label": "HR"},
+]
+
+
+def _ensemble_cubes_dir() -> str:
+    return os.path.join(Config.VIS_DIR, "ensemble", "cubes")
+
+
+def _ensemble_manifest() -> dict[str, Any]:
+    p = os.path.join(_ensemble_cubes_dir(), "viz_index.json")
+    if os.path.isfile(p):
+        with contextlib.suppress(OSError, ValueError):
+            with open(p) as f:
+                return json.load(f)
+    return {"subset": "", "indices": []}
+
+
+def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
+    man = _ensemble_manifest()
+    idxs = man.get("indices", [])
+    sub = man.get("subset", "")
+    rdir = _sky_records_local_dir()
+    has_hr = bool(sub) and bool(rdir) and os.path.exists(
+        tfrecord_path(rdir, f"hr_{sub}"))
+    tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
+    return {
+        "count": len(idxs),
+        "tiers": tiers,
+        "default_tier": "sr",
+        "band_names": list(BAND_NAMES),
+        "subset": sub,
+    }
+
+
+def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
+    """LR (``kind='dirty'``) or HR (``kind='hr'``) record matched by ``.index``."""
+    rdir = _sky_records_local_dir()
+    path = tfrecord_path(rdir, f"{kind}_{sub}") if rdir else ""
+    if not rdir or not os.path.exists(path):
+        raise ViewerError(404, f"{kind} records not available")
+    recs = read_images(path, num_images=max(n_read, 1))
+    rec = {r.index: r for r in recs}.get(rec_index)
+    if rec is None:
+        raise ViewerError(404, f"record {rec_index} not found")
+    return (_as_hwc(rec.data),
+            float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0))
+
+
+def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
+    man = _ensemble_manifest()
+    idxs = man.get("indices", [])
+    sub = man.get("subset", "")
+    if index < 0 or index >= len(idxs):
+        raise ViewerError(404, "index out of range")
+    rec_index = int(idxs[index])
+    # Records are written index==position from 0, so reading up to the largest
+    # cached index covers every LR/HR field we need.
+    n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
+    if tier in ("sr", "std"):
+        path = os.path.join(_ensemble_cubes_dir(), f"{tier}_{rec_index:05d}.npy")
+        if not os.path.isfile(path):
+            raise ViewerError(404, f"{tier} cube missing")
+        cube, pix = _as_hwc(np.load(path)), 0.0
+    elif tier == "lr":
+        cube, pix = _ensemble_record_cube(sub, n_read, "dirty", rec_index)
+    elif tier == "hr":
+        cube, pix = _ensemble_record_cube(sub, n_read, "hr", rec_index)
+    else:
+        raise ViewerError(400, "bad tier")
+    labels = {"lr": "LR", "sr": "SR (ensemble mean)",
+              "std": "stdSR (member std)", "hr": "HR"}
+    return cube, {"label": f"{labels[tier]} · {sub} · idx {rec_index}",
+                  "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
@@ -333,6 +422,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "sky": (_sky_meta, _sky_cube),
     "cutouts": (_cutouts_meta, _cutouts_cube),
     "evaluation": (_eval_meta, _eval_cube),
+    "ensemble": (_ensemble_meta, _ensemble_cube),
 }
 
 

@@ -241,6 +241,9 @@ class EnsembleModel:
         *,
         rel_floor_e: float = Config.STRETCH_SCALE_E,
         hallucination_rel_tol: float = 0.5,
+        on_field: Callable[
+            [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None], None
+        ] | None = None,
         on_progress: Callable[[int, int, str], None] | None = None,
     ) -> dict:
         """Evaluate the ensemble on (test) fields.
@@ -301,12 +304,18 @@ class EnsembleModel:
 
             # Accuracy vs HR (when present).
             hr = hr_by.get(lr.index)
-            if hr is not None:
-                hr_data = np.asarray(hr.data, np.float32)
+            hr_data = np.asarray(hr.data, np.float32) if hr is not None else None
+            if hr_data is not None:
                 for k in range(self.n_members):
                     per_member_sum[k] += _psnr(preds[k], hr_data, peak)
                 ens_sum += _psnr(mean, hr_data, peak)
                 n_scored += 1
+
+            # Per-field hook: hand back LR, ensemble mean SR, per-pixel std and
+            # HR so a caller can persist cubes for the client-side viewer.
+            if on_field is not None:
+                on_field(int(lr.index), np.asarray(lr.data, np.float32),
+                         mean, std, hr_data)
 
             if on_progress is not None:
                 on_progress(i + 1, total, f"field {lr.index}")
@@ -365,6 +374,9 @@ def evaluate_on_records(
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     include_loss_best: bool = True,
+    on_field: Callable[
+        [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None], None
+    ] | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Convenience: evaluate the ensemble on a generated subset's TFRecords.
@@ -385,6 +397,7 @@ def evaluate_on_records(
                        num_images=num_images)
     hr = ImageSet.read(tfrecord_path(records_dir, f"hr_{sub}"),
                        num_images=num_images)
-    out = ens.evaluate(list(lr), list(hr), on_progress=on_progress)
+    out = ens.evaluate(list(lr), list(hr), on_field=on_field,
+                       on_progress=on_progress)
     out["subset"] = sub
     return out

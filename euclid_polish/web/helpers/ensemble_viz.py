@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import shutil
 
 import numpy as np
 
@@ -155,21 +156,56 @@ def job_ensemble_render(cap, *, index: int) -> dict:
     return {"png": out_png, "n_members": ens.n_members, "index": lr.index}
 
 
+#: How many of the scored fields to persist as float cubes for the client-side
+#: viewer (LR/SR/stdSR/HR). The metrics still use every field; only the viewer
+#: cache is capped so data/vis stays bounded.
+ENSEMBLE_VIZ_FIELDS = 24
+
+
+def _ensemble_cubes_dir() -> str:
+    return os.path.join(_ensemble_out_dir(), "cubes")
+
+
 def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
-    """Evaluate the ensemble on the held-out test set; persist + return the summary."""
+    """Evaluate the ensemble on the held-out test set; persist + return the summary.
+
+    Also caches the first :data:`ENSEMBLE_VIZ_FIELDS` fields' ensemble-mean (SR)
+    and per-pixel std (stdSR) cubes under ``<vis>/ensemble/cubes/`` so the
+    ``ensemble`` viewer collection can show LR · SR · stdSR · HR client-side.
+    """
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     if not rdir:
         raise RuntimeError("no local sky records — sync them on the /sky page.")
+    sub = eval_subset(rdir)
+
+    cubes_dir = _ensemble_cubes_dir()
+    shutil.rmtree(cubes_dir, ignore_errors=True)      # fresh viz set per eval
+    os.makedirs(cubes_dir, exist_ok=True)
+    saved: list[int] = []
+
+    def _on_field(rec_index, _lr_cube, mean, std, _hr_cube):
+        # LR/HR are read back from the records by the viewer; only the computed
+        # mean (SR) + std (stdSR) need persisting. Cap the cached set.
+        if len(saved) >= ENSEMBLE_VIZ_FIELDS:
+            return
+        np.save(os.path.join(cubes_dir, f"sr_{int(rec_index):05d}.npy"),
+                np.asarray(mean, dtype=np.float32))
+        np.save(os.path.join(cubes_dir, f"std_{int(rec_index):05d}.npy"),
+                np.asarray(std, dtype=np.float32))
+        saved.append(int(rec_index))
 
     def _prog(i, n, lbl):
         cap.tick(i, n, lbl)
 
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
-                              on_progress=_prog)
+                              on_field=_on_field, on_progress=_prog)
+    with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
+        json.dump({"subset": sub, "indices": saved}, f)
     with open(os.path.join(_ensemble_out_dir(), "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
+    out["viz_fields"] = len(saved)
     return out
 
 
