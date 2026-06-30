@@ -51,6 +51,10 @@ _SACCT_FIELDS: tuple[str, ...] = (
     "AllocCPUS",
     "AllocTRES",
     "Timelimit",
+    # NVML job accounting (on FASRC's gpu partition): mean GPU compute util %
+    # and peak GPU memory live here as gres/gpuutil + gres/gpumem on the batch
+    # step — so GPU util is recoverable post-mortem for any job sacct still has.
+    "TRESUsageInTot",
 )
 
 
@@ -129,11 +133,18 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     alloc_gpus  = _gres_count_from_tres(alloc_tres, "gres/gpu")
     alloc_mem_mb = _tres_mem_mb(alloc_tres)
 
-    # MaxRSS typically lives on the batch step.
+    # MaxRSS + GPU usage typically live on the batch step.
     max_rss_mb = _parse_mem_mb((batch_row or {}).get("MaxRSS"))
     req_mem_mb = _parse_mem_mb(main_row.get("ReqMem"))
 
-    return {
+    # GPU util/mem from NVML job accounting (gres/gpuutil = mean compute %,
+    # gres/gpumem = peak GPU memory). On the batch step; fall back to main.
+    gpu_tres = ((batch_row or {}).get("TRESUsageInTot")
+                or main_row.get("TRESUsageInTot") or "")
+    gpu_util = _parse_float(_tres_field(gpu_tres, "gres/gpuutil"))
+    gpu_mem_mb = _parse_mem_mb(_tres_field(gpu_tres, "gres/gpumem"))
+
+    out: dict[str, Any] = {
         "state":           _clean_state(main_row.get("State")),
         "exit_code":       (main_row.get("ExitCode") or "").strip(),
         "started_at":      _normalise_sacct_time(main_row.get("Start")),
@@ -146,6 +157,13 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
         "alloc_gpus":      alloc_gpus,
         "alloc_memory_mb": alloc_mem_mb if alloc_mem_mb is not None else req_mem_mb,
     }
+    # Only emit GPU keys when present so a CPU-only job (or pre-NVML cluster)
+    # leaves the columns blank rather than zeroed.
+    if gpu_util is not None:
+        out["gpu_util_mean"] = gpu_util
+    if gpu_mem_mb is not None:
+        out["gpu_mem_peak"] = gpu_mem_mb
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +187,28 @@ def _parse_int(s: Any) -> int | None:
         return int(str(s).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _parse_float(s: Any) -> float | None:
+    if s is None or s == "":
+        return None
+    try:
+        return float(str(s).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _tres_field(tres: str | None, key: str) -> str | None:
+    """Value of ``key`` in a comma-separated TRES string.
+
+    e.g. ``_tres_field("cpu=1,gres/gpuutil=42,gres/gpumem=79638M", "gres/gpuutil")
+    -> "42"``. Returns ``None`` when the key is absent.
+    """
+    for part in (tres or "").split(","):
+        k, sep, v = part.partition("=")
+        if sep and k.strip() == key:
+            return v.strip()
+    return None
 
 
 def _parse_slurm_duration_secs(s: Any) -> float | None:
