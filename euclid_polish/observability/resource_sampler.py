@@ -15,6 +15,7 @@ swallowed so the sampler never disturbs the work it's measuring.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import threading
@@ -49,6 +50,27 @@ def read_cpu_percent() -> float | None:
         return None
 
 
+#: ``nvidia-smi`` locations to try when it isn't on ``PATH``. SLURM batch +
+#: conda activation routinely drop ``/usr/bin`` from ``PATH``, so
+#: ``shutil.which`` fails even though the driver tool is installed there — which
+#: silently disabled all GPU-utilisation sampling.
+_NVIDIA_SMI_FALLBACKS = (
+    "/usr/bin/nvidia-smi", "/bin/nvidia-smi",
+    "/usr/local/bin/nvidia-smi", "/opt/nvidia/bin/nvidia-smi",
+)
+
+
+def find_nvidia_smi() -> str | None:
+    """Locate ``nvidia-smi`` on ``PATH`` or at a known absolute fallback."""
+    exe = shutil.which("nvidia-smi")
+    if exe:
+        return exe
+    for cand in _NVIDIA_SMI_FALLBACKS:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
 def read_gpu() -> tuple[float, float, float, float] | None:
     """Return ``(util%, mem_util%, mem_used_mb, mem_total_mb)`` or ``None``.
 
@@ -56,7 +78,7 @@ def read_gpu() -> tuple[float, float, float, float] | None:
     ``None`` when ``nvidia-smi`` is absent (CPU-only node) or every row is
     unparseable (``[N/A]`` / ``[Not Supported]`` on some drivers).
     """
-    exe = shutil.which("nvidia-smi")
+    exe = find_nvidia_smi()
     if not exe:
         return None
     try:

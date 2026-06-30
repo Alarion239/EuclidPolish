@@ -24,7 +24,7 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble import EnsembleModel, evaluate_on_records  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
-from euclid_polish.observability import Reporter  # noqa: E402
+from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
 
 
 def _default_base_dir() -> str:
@@ -71,6 +71,10 @@ def main() -> int:
     # One cumulative bar across all members × steps.
     reporter = Reporter.from_env()
     reporter.set_stage(f"training {args.n_members}-member ensemble")
+    # Sample CPU + GPU utilisation every 10 s into the events stream so the job
+    # log records gpu_util_mean/peak (the "GPU util" column). Daemon thread;
+    # stopped after the eval below.
+    sampler = ResourceSampler(reporter).start()
     total = max(1, args.n_members) * max(1, args.steps)
     done_members = [0]                          # members finished so far
 
@@ -123,6 +127,7 @@ def main() -> int:
         d = out["disagreement"]
         print(f"  mean disagreement: {d['mean_std_e']:.4g} e⁻  "
               f"({d['frac_flux_hallucinated'] * 100:.1f}% of flux hallucinated)")
+    sampler.stop()
     print("\n✓ Ensemble training complete.")
     return 0
 
