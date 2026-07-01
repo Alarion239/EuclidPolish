@@ -16,6 +16,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_evaluate,
     job_ensemble_pull,
     job_ensemble_render,
+    regenerate_power_spectrum,
 )
 from euclid_polish.web.jobs import REGISTRY
 
@@ -57,6 +58,17 @@ def register(app):
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
             if plot_ensemble_training_curves(ensemble_dir(), out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/ensemble/power-spectrum.png")
+    def ensemble_power_spectrum():
+        """Serve the ensemble power-spectrum PNG. ``?fresh=1`` re-renders it from
+        the cached per-field cubes (no full re-run / inference)."""
+        out_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            if regenerate_power_spectrum() is None and not os.path.isfile(out_png):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

@@ -282,6 +282,53 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     return out
 
 
+def regenerate_power_spectrum() -> str | None:
+    """Re-render the ensemble power spectrum from the CACHED per-field cubes.
+
+    Uses the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``) cubes
+    the last Evaluate wrote, plus HR from the records — so the spectrum can be
+    recomputed (e.g. after a code fix) in seconds with NO model inference and no
+    full re-run. Returns the PNG path, or ``None`` if nothing is cached.
+    """
+    cubes_dir = _ensemble_cubes_dir()
+    man_path = os.path.join(cubes_dir, "viz_index.json")
+    if not os.path.isfile(man_path):
+        return None
+    with open(man_path) as f:
+        man = json.load(f)
+    idxs = [int(i) for i in man.get("indices", [])]
+    sub = man.get("subset", "")
+    n_members = len(man.get("member_labels", []))
+    rdir = _sky_records_local_dir()
+    hr_path = tfrecord_path(rdir, f"hr_{sub}") if rdir else ""
+    if not idxs or n_members == 0 or not rdir or not os.path.exists(hr_path):
+        return None
+
+    hr_by = {r.index: r for r in read_images(hr_path, num_images=max(idxs) + 1)}
+    acc = None
+    for rec in idxs:
+        sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
+        hr = hr_by.get(rec)
+        if not os.path.isfile(sr_f) or hr is None:
+            continue
+        members = [np.load(mf) for i in range(n_members)
+                   if os.path.isfile(mf := os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"))]
+        if not members:
+            continue
+        hr_v = _vis(np.asarray(hr.data, np.float32))
+        mean_v = _vis(np.load(sr_f))
+        mem_v = np.stack([_vis(m) for m in members], 0)
+        if acc is None:
+            acc = EnsembleSpectrumAccumulator(
+                int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
+        acc.add(hr_v, mean_v, mem_v)
+    if acc is None or float(acc.bc.sum()) <= 0:
+        return None
+    ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
+    render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields)
+    return ps_png
+
+
 def remote_ensemble_dir() -> str:
     """The ensemble dir on FASRC: sibling of the remote checkpoint dir."""
     cfg = fasrc_config.load()
