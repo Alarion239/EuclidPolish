@@ -331,10 +331,14 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
         path = os.path.join(root, obj["subdir"], f"{tier}.fits")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} not available for this object")
-    elif tier in _EVAL_TIER_FILES and tier in obj["tiers"]:
-        path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[tier])
     else:
-        raise ViewerError(404, f"{tier} not available for this object")
+        # The shared morph animation fetches the ensemble mean as lower-case
+        # "sr", but eval tier keys are upper-case (LR/SR/HR); resolve case-
+        # insensitively so the disagreement movie works on the eval page too.
+        key = next((k for k in _EVAL_TIER_FILES if k.lower() == tier.lower()), None)
+        if key is None or key not in obj["tiers"]:
+            raise ViewerError(404, f"{tier} not available for this object")
+        path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[key])
     with fits.open(path, memmap=False) as hdul:
         data = hdul[0].data
         with contextlib.suppress(TypeError, ValueError):

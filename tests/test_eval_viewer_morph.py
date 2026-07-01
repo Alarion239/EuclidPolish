@@ -52,6 +52,22 @@ def test_eval_cube_serves_pca(tmp_path, monkeypatch):
     assert float(np.asarray(cube).max()) > 0
 
 
+def test_eval_cube_serves_sr_lowercase(tmp_path, monkeypatch):
+    # The shared morph animation fetches the ensemble mean as lower-case "sr";
+    # the eval SR tier key is upper-case "SR". _eval_cube must resolve it
+    # case-insensitively, else startMorph shows "movie unavailable".
+    d = tmp_path / "obj_a"
+    d.mkdir()
+    _obj(d)
+    monkeypatch.setattr(vd.Config, "EVAL_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(vd, "_eval_objects", lambda: [{
+        "subdir": "obj_a", "label": "a", "grade": "A",
+        "tiers": ["LR", "SR", "std"], "plens": {},
+        "pca_n": 3, "pca_amps": [0.3, 0.2, 0.1]}])
+    cube, info = vd._eval_cube(0, "sr", {})          # lower-case, as the morph does
+    assert cube.shape[:2] == (16, 16)
+
+
 def test_eval_meta_no_morph_without_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(vd, "_eval_objects", lambda: [{
         "subdir": "obj_b", "label": "b", "grade": "B",
