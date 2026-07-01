@@ -231,7 +231,7 @@ def run_synthetic_eval(
     n_ok = n_skip = 0
     total = len(plan)
     cur_idx = None                              # SR is per-field; reconstruct once
-    lr_cube = sr_arr = None
+    lr_cube = sr_arr = members_full = None
     for j, (idx, grade, src, rank) in enumerate(plan):
         _tick(j, total, f"{grade} idx {idx}")
         sub = f"{grade}_{idx:04d}_{rank}"       # unique per (field, brightness rank)
@@ -246,7 +246,8 @@ def run_synthetic_eval(
             os.makedirs(obj_dir, exist_ok=True)
             if idx != cur_idx:                  # same field → reuse the SR cube
                 lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
-                _, sr_data = reconstruct(model, lr_cube)
+                from euclid_polish.eval.ensemble_infer import sr_from_model
+                _, sr_data, members_full = sr_from_model(model, lr_cube)
                 sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
                 cur_idx = idx
             hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
@@ -298,6 +299,21 @@ def run_synthetic_eval(
                 else hr_cube_st,
                 f"{grade} HR truth (electrons)",
                 {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
+
+            # Ensemble disagreement cubes, cropped to the SAME source stamp as
+            # SR.fits (crop_stamp at cx,cy) so the movie overlays exactly. No-op
+            # for a single model. members_full is (M, 2H, 2W, C).
+            if members_full is not None:
+                try:
+                    from euclid_polish.eval.disagreement import write_disagreement_cubes
+                    mem_st = np.stack([
+                        np.stack([crop_stamp(mem[..., b], cx=cx, cy=cy, m=m)
+                                  for b in range(mem.shape[-1])], axis=-1)
+                        for mem in np.asarray(members_full, dtype=np.float32)
+                    ], axis=0)                                   # (M, m, m, C)
+                    write_disagreement_cubes(obj_dir, mem_st)
+                except Exception as exc:  # noqa: BLE001
+                    _emit(f"  [disagreement] {sub}: cubes not written: {exc}")
 
             # Hold the canonical eval geometry (LR EVAL_LR_SIZE², SR/HR
             # EVAL_HR_SIZE²); a stamp truncated below the target at a field edge

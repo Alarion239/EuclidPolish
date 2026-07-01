@@ -28,7 +28,7 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
     monkeypatch.setattr("euclid_polish.sky.generation.source_catalog.read_sources",
                         lambda p: {0: [{"type": "lens", "x_pix": 64.0,
                                         "y_pix": 64.0, "flux_vis_e": 1.0}]})
-    monkeypatch.setattr("euclid_polish.training.inference.reconstruct",
+    monkeypatch.setattr("euclid_polish.eval.ensemble_infer.reconstruct",
                         lambda model, lr: (None, np.ones((128, 128, 4), np.float32)))
 
     out_dir = str(tmp_path / "eval")
@@ -70,7 +70,7 @@ def test_multiple_galaxies_extracted_per_field(tmp_path, monkeypatch):
     def fake_recon(model, lr):
         calls["n"] += 1
         return None, np.ones((128, 128, 4), np.float32)
-    monkeypatch.setattr("euclid_polish.training.inference.reconstruct", fake_recon)
+    monkeypatch.setattr("euclid_polish.eval.ensemble_infer.reconstruct", fake_recon)
 
     out_dir = str(tmp_path / "eval")
     res = sr.run_synthetic_eval(
