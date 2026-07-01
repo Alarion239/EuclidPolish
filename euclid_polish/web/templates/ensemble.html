@@ -98,21 +98,22 @@
 {% endif %}
 
 <section class="card" id="ens-viewer-card" style="display:none;">
-  <h3>Field viewer <span class="muted">— LR · SR (mean) · stdSR · HR</span></h3>
+  <h3>Field viewer
+    <span class="muted">— LR · SR (mean) · stdSR · HR · individual members</span></h3>
   <div id="ensemble-viewer"></div>
   <p class="hint">SR is the ensemble mean; <b>stdSR</b> is the per-pixel std across
-     members (disagreement ≈ hallucination). Rendered client-side — band / colour /
-     asinh / brightness controls are instant. Cached for every field of the
-     latest “Evaluate on test set” run.</p>
-</section>
+     members (disagreement ≈ hallucination); each member's SR is its own tier.
+     Rendered client-side — band / colour / asinh / brightness controls are
+     instant. Cached for every field of the latest “Evaluate on test set” run.</p>
 
-<section class="card" id="ens-anim-card" style="display:none;">
-  <h3>Disagreement movie <span class="muted">— morphing through the PCA subspace</span></h3>
+  <h4 style="margin-top:16px;">Disagreement movie
+    <span class="muted">— morphing through the PCA disagreement subspace</span></h4>
   <div id="ens-anim"></div>
   <p class="hint">A smooth path through the ensemble's real disagreement basis
      (mean + Σ aᵢ·sin·componentᵢ, the top {{ 3 }} PCA components of the member
      residuals). Regions the members hallucinate <b>morph</b>; LR-constrained
-     structure stays still. Amplitude is in units of member σ. VIS band.</p>
+     structure stays still. Amplitude is in units of member σ; band + colour map
+     (incl. a temperature LUT) are selectable — single-band so it stays cheap.</p>
 </section>
 
 {% if result_pngs %}
@@ -206,10 +207,7 @@ fetch("/viewer/meta/ensemble")
     document.getElementById("ens-viewer-card").style.display = "";
     mountCutoutViewer(document.getElementById("ensemble-viewer"),
                       { collection: "ensemble" });
-    if (m.pca_n) {
-      document.getElementById("ens-anim-card").style.display = "";
-      mountEnsembleAnim(document.getElementById("ens-anim"));
-    }
+    if (m.pca_n) mountEnsembleAnim(document.getElementById("ens-anim"));
   })
   .catch(() => {});
 </script>
