@@ -34,3 +34,28 @@ def test_eval_meta_advertises_morph(tmp_path, monkeypatch):
     assert any(t["key"] == "morph" for t in meta["tiers"])
     assert meta["pca_n"] == 3
     assert meta["pca_amps"] == [[0.3, 0.2, 0.1]]
+
+
+def test_eval_cube_serves_pca(tmp_path, monkeypatch):
+    d = tmp_path / "obj_a"
+    d.mkdir()
+    _obj(d)
+    monkeypatch.setattr(vd.Config, "EVAL_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(vd, "_eval_objects", lambda: [{
+        "subdir": "obj_a", "label": "a", "grade": "A",
+        "tiers": ["LR", "SR", "std"], "plens": {},
+        "pca_n": 3, "pca_amps": [0.3, 0.2, 0.1]}])
+    cube, info = vd._eval_cube(0, "pca1", {})
+    # _as_hwc returns (H, W, C); pca1.fits was written (4, 16, 16) -> (16, 16, 4).
+    assert cube.shape[:2] == (16, 16)
+    # pca1.fits was written as ones*2 -> non-zero content.
+    assert float(np.asarray(cube).max()) > 0
+
+
+def test_eval_meta_no_morph_without_sidecar(tmp_path, monkeypatch):
+    monkeypatch.setattr(vd, "_eval_objects", lambda: [{
+        "subdir": "obj_b", "label": "b", "grade": "B",
+        "tiers": ["LR", "SR"], "plens": {}, "pca_n": 0, "pca_amps": []}])
+    meta = vd._eval_meta({})
+    assert meta["pca_n"] == 0
+    assert not any(t["key"] == "morph" for t in meta["tiers"])
