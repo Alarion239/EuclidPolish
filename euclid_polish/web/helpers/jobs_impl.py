@@ -420,7 +420,7 @@ def reconstruct_cutout_at(
     lr_cube = np.stack([bands_data[n] for n in band_names], axis=-1)  # (H,W,4)
     _tick(len(band_names), "running model")
     from euclid_polish.eval.ensemble_infer import sr_from_model
-    _, sr_data, _members = sr_from_model(model, lr_cube)
+    _, sr_data, members = sr_from_model(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
     # ESA cutout headers carry an EXTNAME that's invalid on a PrimaryHDU;
@@ -499,10 +499,10 @@ def reconstruct_cutout_at(
     print(f"  ✓ saved SR  → {sr_fits_path}")
     # Ensemble disagreement cubes (full-field; enforce_object_sizes center-crops
     # them alongside SR so they stay pixel-aligned). No-op for a single model.
-    if _members is not None:
-        from euclid_polish.eval.disagreement import write_disagreement_cubes
+    if members is not None:
         try:
-            write_disagreement_cubes(out_dir, _members)
+            from euclid_polish.eval.disagreement import write_disagreement_cubes
+            write_disagreement_cubes(out_dir, members)
             print("  ✓ saved disagreement cubes (std + pca)")
         except Exception as exc:  # noqa: BLE001 — never kill a run over the movie
             print(f"  [disagreement] cubes not written: {exc}")
