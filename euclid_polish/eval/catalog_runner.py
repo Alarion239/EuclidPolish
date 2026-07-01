@@ -168,7 +168,11 @@ def enforce_object_sizes(obj_dir: str, *,
     tag = os.path.basename(obj_dir.rstrip(os.sep))
     plan = (("original_stack.fits", EVAL_LR_SIZE, True),
             ("SR.fits", EVAL_HR_SIZE, True),
-            ("HR.fits", EVAL_HR_SIZE, False))
+            ("HR.fits", EVAL_HR_SIZE, False),
+            ("std.fits", EVAL_HR_SIZE, False),
+            ("pca0.fits", EVAL_HR_SIZE, False),
+            ("pca1.fits", EVAL_HR_SIZE, False),
+            ("pca2.fits", EVAL_HR_SIZE, False))
 
     # 1) Validate every plane's size before touching anything on disk.
     loaded = []
