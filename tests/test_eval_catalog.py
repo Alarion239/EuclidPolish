@@ -156,13 +156,14 @@ class TestReconstructCutoutAt:
             fits.PrimaryHDU(data, header=hdr).writeto(output_file, overwrite=True)
             return True, None
 
-        def fake_reconstruct(model, lr_cube):
+        def fake_sr_from_model(model, lr_cube):
             # SR cube is 2× the LR grid, 4 bands — matches the real model shape.
             sr = np.ones((2 * h, 2 * w, lr_cube.shape[-1]), dtype=np.float32)
-            return lr_cube[..., 0], sr
+            return lr_cube[..., 0], sr, None
 
         monkeypatch.setattr(jobs_impl, "fetch_cutout_at", fake_fetch)
-        monkeypatch.setattr(jobs_impl, "reconstruct", fake_reconstruct)
+        import euclid_polish.eval.ensemble_infer as _ei
+        monkeypatch.setattr(_ei, "sr_from_model", fake_sr_from_model)
 
         out_dir = str(tmp_path / "obj")
         res = jobs_impl.reconstruct_cutout_at(
@@ -210,11 +211,12 @@ class TestReconstructCutoutAt:
             jobs_impl, "fetch_cutout_at",
             lambda *a, **k: pytest.fail("cached band FITS should be reused"))
 
-        def fake_reconstruct(model, lr_cube):
+        def fake_sr_from_model(model, lr_cube):
             sr = np.ones((2 * h, 2 * w, lr_cube.shape[-1]), dtype=np.float32)
-            return lr_cube[..., 0], sr
+            return lr_cube[..., 0], sr, None
 
-        monkeypatch.setattr(jobs_impl, "reconstruct", fake_reconstruct)
+        import euclid_polish.eval.ensemble_infer as _ei
+        monkeypatch.setattr(_ei, "sr_from_model", fake_sr_from_model)
 
         res = jobs_impl.reconstruct_cutout_at(
             model=None, ra=12.3, dec=-4.5, cutout_size_vis_pixels=h,
