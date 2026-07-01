@@ -18,6 +18,7 @@ from euclid_polish.eval.power_spectrum import (
     ensemble_ps_plot_curves,
     k_magnitude_2d,
     log_k_edges,
+    render_ensemble_power_spectrum,
 )
 
 PIXEL_SCALE = 0.05  # arcsec/pixel (HR/SR grid)
@@ -141,3 +142,30 @@ def test_ensemble_ps_plot_curves_handles_no_members():
     out = ensemble_ps_plot_curves(curves)
     assert out["T_members"].shape == (0, 2)
     assert out["r_members"].shape == (0, 2)
+
+
+def test_render_ensemble_power_spectrum_writes_png(tmp_path):
+    k = np.geomspace(0.2, 10.0, 24)
+    rng = np.random.default_rng(0)
+    curves = {
+        "k": k,
+        "P_hr": np.abs(rng.normal(1e3, 10, k.size)),
+        "P_sr": np.abs(rng.normal(5e2, 10, k.size)),
+        "P_disagree": np.abs(rng.normal(10, 1, k.size)),
+        "r": np.clip(1.0 - k / 20.0, 0, 1),
+        "T": np.clip(1.0 - k / 40.0, 0, 1),
+        "P_members": np.abs(rng.normal(5e2, 20, (5, k.size))),
+        "r_members": np.clip(
+            1.0 - k[None, :] / 20.0 + rng.normal(0, 0.02, (5, k.size)), 0, 1),
+    }
+    out = tmp_path / "ps.png"
+    res = render_ensemble_power_spectrum(str(out), curves, n_fields=12)
+    assert res == str(out)
+    assert out.is_file() and out.stat().st_size > 0
+
+
+def test_render_ensemble_power_spectrum_empty_returns_none(tmp_path):
+    out = tmp_path / "ps.png"
+    assert render_ensemble_power_spectrum(
+        str(out), {"k": np.array([]), "P_hr": np.array([])}) is None
+    assert not out.exists()

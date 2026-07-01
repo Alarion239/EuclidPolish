@@ -277,12 +277,13 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
 
 def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
                                    *, n_fields: int = 0) -> str | None:
-    """Two-panel ensemble power-spectrum figure (VIS band).
+    """VIS ensemble power spectrum in the evaluation-page idiom (test fields).
 
-    Left: P(k) for HR, ensemble-mean SR, and the member disagreement (log-log).
-    Right: r(k) — cross-correlation of ensemble mean with HR per scale (the
-    "how correlated are the features" curve). A guide line marks the LR Nyquist
-    (the super-resolution boundary). Returns the path, or ``None`` if empty.
+    Two panels — left the transfer function ``T(k) = sqrt(P_SR/P_HR)``, right the
+    cross-correlation ``r(k)`` — each drawn against angular scale ``theta =
+    1/(2k)`` (arcsec) on a log axis. Every ensemble member is a faint line; the
+    ensemble mean is bold. Guides: LR sampling (0.10\") and the VIS PSF FWHM.
+    Returns the path, or ``None`` when there is no finite HR power.
     """
     k = np.asarray(curves.get("k", []), float)
     if k.size == 0 or not np.isfinite(np.asarray(curves.get("P_hr", []), float)).any():
@@ -290,63 +291,53 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter, NullFormatter
 
-    fig, (ax_p, ax_r) = plt.subplots(1, 2, figsize=(13.0, 5.2))
+    cv = ensemble_ps_plot_curves(curves)
+    x = cv["theta"]
+    vis_color = BAND_COLORS["VIS"]
+    vis_fwhm = float(Config.get_band("VIS").psf_fwhm_arcsec)
+    lr_scale = 0.5 / LR_NYQUIST_CYC_ARCSEC                 # 0.10" LR sampling
+    scale_lo = float(Config.DEFAULT_PIXEL_SCALE)           # 0.05" HR pixel
+    scale_hi = float(np.nanmax(x)) if np.isfinite(x).any() else 1.0
+    xticks = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
-    p_hr = np.asarray(curves["P_hr"], float)
-    p_sr = np.asarray(curves["P_sr"], float)
-    p_dis = np.asarray(curves["P_disagree"], float)
-    r = np.asarray(curves["r"], float)
-
-    # Individual members (faint, behind the summary lines).
-    p_members = np.asarray(curves.get("P_members", np.empty((0, k.size))), float)
-    for j, row in enumerate(p_members):
-        ax_p.loglog(k, row, color=BAND_COLORS["VIS"], lw=0.6, alpha=0.28,
-                    label=("individual members" if j == 0 else None))
-
-    ax_p.loglog(k, p_hr, color="#222", lw=2.0, label="HR (truth)")
-    ax_p.loglog(k, p_sr, color=BAND_COLORS["VIS"], lw=2.0, label="ensemble mean SR")
-    ax_p.loglog(k, p_dis, color="#d6604d", lw=1.8, ls="--",
-                label="member disagreement")
-    ax_p.axvline(LR_NYQUIST_CYC_ARCSEC, color="grey", ls=":", lw=1.2)
-    ax_p.text(LR_NYQUIST_CYC_ARCSEC * 1.04, ax_p.get_ylim()[0], "LR Nyquist",
-              rotation=90, va="bottom", ha="left", fontsize=8, color="grey")
-    ax_p.set_xlabel("k  [cycles / arcsec]")
-    ax_p.set_ylabel("power  P(k)  [arb.]")
-    ax_p.set_title("Angular power spectrum — VIS"
-                   + (f"  ({n_fields} fields)" if n_fields else ""))
-    ax_p.legend(fontsize=9, frameon=False)
-    ax_p.grid(True, which="both", alpha=0.15)
-
-    rho = np.asarray(curves.get("rho", np.full_like(k, np.nan)), float)
-    has_hr = np.isfinite(r).any()
-    # Individual members vs HR (faint, behind the summary lines).
-    r_members = np.asarray(curves.get("r_members", np.empty((0, k.size))), float)
-    for j, row in enumerate(r_members):
-        ax_r.plot(k, row, color="#3b6fb0", lw=0.6, alpha=0.22,
-                  label=("individual members vs HR" if j == 0 else None))
-    # ρ(k): inter-model coherence — needs NO HR, so it also works on real data.
-    ax_r.plot(k, rho, color="#5aae61", lw=2.3, label="ρ(k): inter-model (HR-free)")
-    if has_hr:
-        ax_r.plot(k, r, color="#3b6fb0", lw=2.0, ls="--",
-                  label="r(k): vs HR (truth)")
-    k_half = coherence_half_scale(k, rho)
-    if k_half:
-        ax_r.axvline(k_half, color="#3a7d3a", ls="-.", lw=1.0, alpha=0.8)
-        ax_r.text(k_half * 1.04, 0.04, f"ρ=½ @ {k_half:.1f}", rotation=90,
-                  va="bottom", ha="left", fontsize=8, color="#3a7d3a")
-    ax_r.axvline(LR_NYQUIST_CYC_ARCSEC, color="grey", ls=":", lw=1.2)
-    ax_r.axhline(0.5, color="grey", lw=0.6, alpha=0.4)
-    ax_r.axhline(1.0, color="grey", lw=0.8, alpha=0.5)
-    ax_r.set_xscale("log")
-    ax_r.set_ylim(0.0, 1.02)
-    ax_r.set_xlabel("k  [cycles / arcsec]")
-    ax_r.set_ylabel("coherence")
-    ax_r.set_title("Coherence: agree (→1) vs invent (→0) — HR-free ρ vs truth r")
-    ax_r.legend(fontsize=8, frameon=False, loc="lower left")
-    ax_r.grid(True, which="both", alpha=0.15)
-
-    fig.tight_layout()
+    fig, (ax_t, ax_r) = plt.subplots(1, 2, figsize=(13.0, 5.2))
+    panels = (
+        (ax_t, cv["T"], cv["T_members"],
+         "transfer function  T = √(P_SR/P_HR)", (0.0, 1.45), "T(k)  [VIS]"),
+        (ax_r, cv["r"], cv["r_members"],
+         "cross-correlation  r = P_HR×SR/√(P_HR·P_SR)", (0.0, 1.05), "r(k)  [VIS]"),
+    )
+    for ax, mean_curve, member_curves, title, ylim, ylabel in panels:
+        for j, row in enumerate(member_curves):
+            ax.plot(x, row, color=vis_color, lw=0.7, alpha=0.30,
+                    label=("individual models" if j == 0 else None))
+        ax.plot(x, mean_curve, "-o", ms=3.0, lw=2.0, color=vis_color,
+                label="ensemble mean")
+        ax.axhline(1.0, ls=":", color="#888", lw=1.0)
+        ax.axvline(lr_scale, ls="--", color="#333", lw=1.3,
+                   label="LR sampling (0.1″)")
+        ax.axvline(vis_fwhm, ls=(0, (5, 2)), lw=1.5, alpha=0.55, color=vis_color,
+                   label="VIS PSF FWHM")
+        ax.set_xscale("log")
+        ax.set_xlim(scale_lo, scale_hi)
+        ax.set_ylim(*ylim)
+        ax.set_xticks(xticks)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel("angular scale  θ = 1/2k  [arcsec]   (0.05″ = HR pixel)")
+        ax.set_ylabel(ylabel)
+        ax.grid(alpha=0.2)
+        ax.set_title(title)
+    ax_r.legend(fontsize=8, loc="lower left")
+    fig.suptitle(
+        "Ensemble angular power spectrum — VIS (test fields"
+        + (f", {n_fields} fields" if n_fields else "") + ")\n"
+        "each line = one model · bold = ensemble mean · finer (smaller θ) → left",
+        fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
     fig.savefig(out_png, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_png
