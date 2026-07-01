@@ -236,6 +236,7 @@ _EVAL_TIER_FILES = {
     "LR": "original_stack.fits",
     "SR": "SR.fits",
     "HR": "HR.fits",
+    "std": "std.fits",
 }
 #: Viewer tier key → ``lens_scores.csv`` recon column for the P(lens) lookup.
 _EVAL_TIER_PLENS = {"LR": "lr", "SR": "sr", "HR": "hr"}
@@ -272,22 +273,37 @@ def _eval_objects() -> list[dict[str, Any]]:
         plens = {tier: float(scores[col])
                  for tier, col in _EVAL_TIER_PLENS.items()
                  if math.isfinite(scores.get(col, float("nan")))}
+        pca_n, pca_amps = 0, []
+        dj = os.path.join(obj_dir, "disagreement.json")
+        if os.path.isfile(dj):
+            with contextlib.suppress(OSError, ValueError):
+                with open(dj) as f:
+                    _dmeta = json.load(f)
+                pca_n = int(_dmeta.get("pca_n", 0) or 0)
+                pca_amps = list(_dmeta.get("pca_amps", []) or [])
         objs.append({
             "subdir": sub,
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
             "grade": grade,
             "tiers": tiers,
             "plens": plens,
+            "pca_n": pca_n,
+            "pca_amps": pca_amps,
         })
     return objs
 
 
 def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
     objs = _eval_objects()
-    # All tiers seen across the run, ordered LR→SR→HR, for the chip strip.
-    order = ["LR", "SR", "HR"]
+    # All tiers seen across the run, ordered LR→SR→HR→std, for the chip strip.
+    order = ["LR", "SR", "HR", "std"]
     seen = {t for o in objs for t in o["tiers"]}
-    tiers = [{"key": k, "label": k} for k in order if k in seen]
+    tiers = [{"key": k, "label": ("stdSR" if k == "std" else k)}
+             for k in order if k in seen]
+    pca_n = max((int(o.get("pca_n", 0) or 0) for o in objs), default=0)
+    pca_amps = [list(o.get("pca_amps", []) or []) for o in objs]
+    if pca_n > 0:
+        tiers.append({"key": "morph", "label": "disagreement movie"})
     default = "SR" if any(t["key"] == "SR" for t in tiers) else (
         tiers[0]["key"] if tiers else "SR")
     return {
@@ -295,6 +311,8 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         "tiers": tiers,
         "default_tier": default,
         "band_names": list(BAND_NAMES),
+        "pca_n": pca_n,
+        "pca_amps": pca_amps,
         "objects": [{"label": o["label"], "grade": o["grade"],
                      "tiers": o["tiers"], "subdir": o["subdir"],
                      "plens": o["plens"]}
@@ -307,13 +325,16 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     if index < 0 or index >= len(objs):
         raise ViewerError(404, "index out of range")
     obj = objs[index]
-    if tier not in _EVAL_TIER_FILES:
-        raise ViewerError(400, "bad tier")
-    if tier not in obj["tiers"]:
-        raise ViewerError(404, f"{tier} not available for this object")
-    path = os.path.join(os.path.abspath(Config.EVAL_RESULTS_DIR),
-                        obj["subdir"], _EVAL_TIER_FILES[tier])
+    root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     asinh = float(Config.STRETCH_SCALE_E)
+    if tier.startswith("pca") and tier[3:].isdigit():
+        path = os.path.join(root, obj["subdir"], f"{tier}.fits")
+        if not os.path.isfile(path):
+            raise ViewerError(404, f"{tier} not available for this object")
+    elif tier in _EVAL_TIER_FILES and tier in obj["tiers"]:
+        path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[tier])
+    else:
+        raise ViewerError(404, f"{tier} not available for this object")
     with fits.open(path, memmap=False) as hdul:
         data = hdul[0].data
         with contextlib.suppress(TypeError, ValueError):
