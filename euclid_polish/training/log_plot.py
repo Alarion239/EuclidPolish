@@ -416,9 +416,14 @@ def plot_ensemble_training_curves(base_dir: str, output_path: str) -> str | None
         if not os.path.isfile(log):
             continue
         try:
-            recs = dedupe_latest_per_step(read_training_log(log))
+            recs = read_training_log(log)
         except (FileNotFoundError, ValueError):
             continue
+        # Drop resume "baseline" rows: they record a RESTORED checkpoint's score
+        # at its step (not a training step), and otherwise inject up-blips.
+        recs = [r for r in recs
+                if str(r.get("is_baseline", "")).strip() not in ("1", "1.0", "true", "True")]
+        recs = dedupe_latest_per_step(recs)
         if recs:
             members.append((os.path.basename(d), recs))
     if not members:
@@ -442,9 +447,9 @@ def plot_ensemble_training_curves(base_dir: str, output_path: str) -> str | None
     ax_p.grid(alpha=0.15)
     ax_p.legend(fontsize=8, ncol=2, frameon=False)
     ax_l.set_xlabel("step")
-    ax_l.set_ylabel("combined loss")
+    ax_l.set_ylabel("combined validation loss")
     ax_l.set_yscale("log")
-    ax_l.set_title("Per-member loss")
+    ax_l.set_title("Per-member validation loss (held-out; checkpoint metric)")
     ax_l.grid(alpha=0.15)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
