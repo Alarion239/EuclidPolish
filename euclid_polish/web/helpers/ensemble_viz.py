@@ -177,7 +177,11 @@ def job_ensemble_render(cap, *, index: int) -> dict:
 #: How many of the scored fields to persist as float cubes for the client-side
 #: viewer (LR/SR/stdSR/HR). The metrics still use every field; only the viewer
 #: cache is capped so data/vis stays bounded.
-ENSEMBLE_VIZ_FIELDS = 24
+#: Safety ceiling on how many evaluated fields to cache as viewer/animation
+#: cubes (5 npy per field). ALL evaluated fields up to this are cached — raised
+#: from a flat 24 so the browser + morph aren't limited to a slice of the test
+#: set. ``data/vis`` is transient (cleared each eval).
+ENSEMBLE_VIZ_FIELDS_MAX = 200
 
 #: How many PCA components of the member-residual subspace to cache per field
 #: for the morphing animation (M=5 members → residuals span M-1=4 dims; the top
@@ -192,15 +196,17 @@ def _ensemble_cubes_dir() -> str:
 def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
 
-    Also caches the first :data:`ENSEMBLE_VIZ_FIELDS` fields' ensemble-mean (SR)
-    and per-pixel std (stdSR) cubes under ``<vis>/ensemble/cubes/`` so the
-    ``ensemble`` viewer collection can show LR · SR · stdSR · HR client-side.
+    Also caches every evaluated field's ensemble-mean (SR), per-pixel std
+    (stdSR) and PCA cubes under ``<vis>/ensemble/cubes/`` (up to
+    :data:`ENSEMBLE_VIZ_FIELDS_MAX`) so the ``ensemble`` viewer + morph can show
+    the whole test set client-side.
     """
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     if not rdir:
         raise RuntimeError("no local sky records — sync them on the /sky page.")
     sub = eval_subset(rdir)
+    viz_cap = min(int(num_images), ENSEMBLE_VIZ_FIELDS_MAX)
 
     cubes_dir = _ensemble_cubes_dir()
     shutil.rmtree(cubes_dir, ignore_errors=True)      # fresh viz set per eval
@@ -224,7 +230,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
         # LR/HR are read back from the records by the viewer; persist the
         # computed mean (SR) + std (stdSR) and the PCA disagreement basis
         # (mean + Σ aᵢ·sin·compᵢ powers the morphing animation). Cap the set.
-        if len(saved) >= ENSEMBLE_VIZ_FIELDS:
+        if len(saved) >= viz_cap:
             return
         rec = int(rec_index)
         np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
