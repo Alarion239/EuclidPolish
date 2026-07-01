@@ -434,4 +434,5 @@ def evaluate_on_records(
     out = ens.evaluate(list(lr), list(hr), on_field=on_field,
                        on_progress=on_progress)
     out["subset"] = sub
+    out["member_labels"] = ens.member_labels     # aligned with member_arrays order
     return out

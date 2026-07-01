@@ -242,6 +242,9 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
             np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
                     np.asarray(comp, dtype=np.float32))
         pca_amps[rec] = [float(a) for a in amps]
+        # Individual member SR cubes → per-member viewer tiers.
+        for i, mem in enumerate(np.asarray(preds, dtype=np.float32)):
+            np.save(os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"), mem)
         saved.append(rec)
 
     def _prog(i, n, lbl):
@@ -249,20 +252,27 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
 
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
                               on_field=_on_field, on_progress=_prog)
+    member_labels = list(out.get("member_labels", []))
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
-                   "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps}, f)
+                   "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
+                   "member_labels": member_labels}, f)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
     if ps_acc[0] is not None and float(ps_acc[0].bc.sum()) > 0:
         curves = ps_acc[0].curves()
         ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
         render_ensemble_power_spectrum(ps_png, curves, n_fields=ps_acc[0].n_fields)
+
+        def _jsonable(v):                       # curves are 1-D or (M, nbins) 2-D
+            a = np.asarray(v, float)
+            fmt = lambda x: None if not np.isfinite(x) else round(float(x), 6)  # noqa: E731
+            return ([fmt(x) for x in a] if a.ndim <= 1
+                    else [[fmt(x) for x in row] for row in a])
+
         with open(os.path.join(_ensemble_out_dir(),
                                "ensemble_power_spectrum.json"), "w") as f:
-            json.dump({k: [None if not np.isfinite(x) else round(float(x), 6)
-                           for x in np.asarray(v, float)]
-                       for k, v in curves.items()}, f)
+            json.dump({k: _jsonable(v) for k, v in curves.items()}, f)
         out["power_spectrum_fields"] = int(ps_acc[0].n_fields)
 
     with open(os.path.join(_ensemble_out_dir(), "eval_summary.json"), "w") as f:

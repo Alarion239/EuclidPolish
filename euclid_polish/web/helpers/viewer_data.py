@@ -361,6 +361,10 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     has_hr = bool(sub) and bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
+    # Individual member SR tiers (per-seed / loss-best), labelled from the eval.
+    member_labels = man.get("member_labels", []) or []
+    tiers += [{"key": f"member{i}", "label": f"SR {lab}"}
+              for i, lab in enumerate(member_labels)]
     # PCA disagreement basis for the morphing animation: per-field amplitudes
     # (population std the members span along each component), aligned to the
     # viewer index order. The pcaN cubes are fetched on demand (not listed as
@@ -403,10 +407,13 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
-    # sr / std and the PCA eigen-images (pca0, pca1, …) are cached .npy cubes;
-    # lr / hr come from the records. pcaN are served on demand for the animation
-    # (not advertised as static tiers).
-    if tier in ("sr", "std") or (tier.startswith("pca") and tier[3:].isdigit()):
+    # sr / std, the PCA eigen-images (pca0…) and individual member SRs
+    # (member0…) are cached .npy cubes; lr / hr come from the records. pcaN are
+    # served on demand for the animation (not advertised as static tiers).
+    is_npy = (tier in ("sr", "std")
+              or (tier.startswith("pca") and tier[3:].isdigit())
+              or (tier.startswith("member") and tier[6:].isdigit()))
+    if is_npy:
         path = os.path.join(_ensemble_cubes_dir(), f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
@@ -419,7 +426,13 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(400, "bad tier")
     labels = {"lr": "LR", "sr": "SR (ensemble mean)",
               "std": "stdSR (member std)", "hr": "HR"}
-    return cube, {"label": f"{labels.get(tier, tier)} · {sub} · idx {rec_index}",
+    if tier.startswith("member") and tier[6:].isdigit():
+        mlabels = man.get("member_labels", []) or []
+        mi = int(tier[6:])
+        label = f"SR {mlabels[mi]}" if mi < len(mlabels) else tier
+    else:
+        label = labels.get(tier, tier)
+    return cube, {"label": f"{label} · {sub} · idx {rec_index}",
                   "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
 
 

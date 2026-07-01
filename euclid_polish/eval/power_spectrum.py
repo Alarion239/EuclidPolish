@@ -163,8 +163,11 @@ class EnsembleSpectrumAccumulator:
         self.k_edges = log_k_edges(self.pix, kmin, nbins)
         self.k_cen = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
         self.window = tukey_window_2d(self.n)
+        self.nbins = int(nbins)
         z = lambda: np.zeros(nbins, dtype=np.float64)   # noqa: E731
         self.bh, self.bs, self.bx, self.bd, self.bc = z(), z(), z(), z(), z()
+        self.member_bs: np.ndarray | None = None        # (M, nbins) per-member auto
+        self.member_bx: np.ndarray | None = None        # (M, nbins) per-member ×HR
         self.n_fields = 0
         self.n_members = 0
 
@@ -180,14 +183,24 @@ class EnsembleSpectrumAccumulator:
         self.bh += bh; self.bs += bs; self.bx += bx; self.bc += bc
         members = np.asarray(members, np.float64)
         if members.ndim == 3 and members.shape[1:] == hr.shape and len(members):
+            mm = int(len(members))
+            if self.member_bs is None:
+                self.member_bs = np.zeros((mm, self.nbins))
+                self.member_bx = np.zeros((mm, self.nbins))
+            per_member = mm == self.member_bs.shape[0]   # consistent M across fields
             dacc = np.zeros_like(bh)
-            for m in members:
+            for i, m in enumerate(members):
                 resid = m - mean
                 ph, _ps, _px, _bc = bin_powers(
                     resid, resid, self.pix, self.k_edges, self.window)
                 dacc += ph
-            self.bd += dacc / float(len(members))
-            self.n_members = max(self.n_members, int(len(members)))
+                if per_member:                            # each member vs HR
+                    _bh_i, bs_i, bx_i, _bc2 = bin_powers(
+                        hr, m, self.pix, self.k_edges, self.window)
+                    self.member_bs[i] += bs_i
+                    self.member_bx[i] += bx_i
+            self.bd += dacc / float(mm)
+            self.n_members = max(self.n_members, mm)
         self.n_fields += 1
 
     def curves(self) -> dict[str, np.ndarray]:
@@ -208,9 +221,18 @@ class EnsembleSpectrumAccumulator:
         empty = self.bc <= 0
         for arr in (p_hr, p_sr, p_dis, r, t, coherent_frac, rho):
             arr[empty] = np.nan
-        return {"k": self.k_cen, "P_hr": p_hr, "P_sr": p_sr,
-                "P_disagree": p_dis, "r": r, "T": t,
-                "coherent_frac": coherent_frac, "rho": rho}
+        out = {"k": self.k_cen, "P_hr": p_hr, "P_sr": p_sr,
+               "P_disagree": p_dis, "r": r, "T": t,
+               "coherent_frac": coherent_frac, "rho": rho}
+        if self.member_bs is not None:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                p_mem = self.member_bs / self.bc                       # (M, nb)
+                r_mem = self.member_bx / np.sqrt(self.bh[None, :] * self.member_bs)
+            p_mem[:, empty] = np.nan
+            r_mem[:, empty] = np.nan
+            out["P_members"] = p_mem
+            out["r_members"] = r_mem
+        return out
 
 
 def coherence_half_scale(k: np.ndarray, c: np.ndarray) -> float | None:
@@ -251,6 +273,12 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
     p_dis = np.asarray(curves["P_disagree"], float)
     r = np.asarray(curves["r"], float)
 
+    # Individual members (faint, behind the summary lines).
+    p_members = np.asarray(curves.get("P_members", np.empty((0, k.size))), float)
+    for j, row in enumerate(p_members):
+        ax_p.loglog(k, row, color=BAND_COLORS["VIS"], lw=0.6, alpha=0.28,
+                    label=("individual members" if j == 0 else None))
+
     ax_p.loglog(k, p_hr, color="#222", lw=2.0, label="HR (truth)")
     ax_p.loglog(k, p_sr, color=BAND_COLORS["VIS"], lw=2.0, label="ensemble mean SR")
     ax_p.loglog(k, p_dis, color="#d6604d", lw=1.8, ls="--",
@@ -267,6 +295,11 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
 
     rho = np.asarray(curves.get("rho", np.full_like(k, np.nan)), float)
     has_hr = np.isfinite(r).any()
+    # Individual members vs HR (faint, behind the summary lines).
+    r_members = np.asarray(curves.get("r_members", np.empty((0, k.size))), float)
+    for j, row in enumerate(r_members):
+        ax_r.plot(k, row, color="#3b6fb0", lw=0.6, alpha=0.22,
+                  label=("individual members vs HR" if j == 0 else None))
     # ρ(k): inter-model coherence — needs NO HR, so it also works on real data.
     ax_r.plot(k, rho, color="#5aae61", lw=2.3, label="ρ(k): inter-model (HR-free)")
     if has_hr:
