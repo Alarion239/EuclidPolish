@@ -870,6 +870,10 @@ class TestSyntheticCutouts:
                             lambda *a, **k: pytest.fail("model should not load"))
         monkeypatch.setattr(catalog_runner, "eval_catalog_object",
                             lambda *a, **k: pytest.fail("lens should be reused"))
+        # This test exercises the single-model reuse path: declare no ensemble so
+        # the runner doesn't re-run these SR-only objects to add disagreement cubes.
+        monkeypatch.setattr("euclid_polish.ensemble.ensemble_available",
+                            lambda *a, **k: False)
 
         logs = []
         res = grouped_runner.run_grouped_analysis(
@@ -1011,6 +1015,9 @@ class TestCenterCropAndReuse:
                             lambda *a, **k: pytest.fail("model should not load"))
         monkeypatch.setattr(catalog_runner, "eval_catalog_object",
                             lambda *a, **k: pytest.fail("should not download"))
+        # Single-model reuse path: no ensemble → don't re-run to add movie cubes.
+        monkeypatch.setattr("euclid_polish.ensemble.ensemble_available",
+                            lambda *a, **k: False)
 
         out = tmp_path / "run"
         res = grouped_runner.run_grouped_analysis(
@@ -1187,3 +1194,33 @@ def test_grouped_downloads_padded_size(monkeypatch, tmp_path):
         str(tmp_path / "out"), n=1, catalog_path=str(cat),
         include_synthetic=False, include_galaxies=False, log=lambda m: None)
     assert seen["cutout_size"] == grouped_runner.EVAL_LR_SIZE + grouped_runner.DOWNLOAD_PAD
+
+
+def test_can_reuse_requires_disagreement_cubes(tmp_path):
+    """An SR-only object is reusable by default, but must be re-run (not reused)
+    when the disagreement cubes are required (ensemble runs)."""
+    from euclid_polish.eval.catalog_runner import can_reuse_eval_object
+
+    d = str(tmp_path)
+    for name in ("original_stack.fits", "SR.fits"):
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(b"x")
+    assert can_reuse_eval_object(d) is True
+    assert can_reuse_eval_object(d, require_disagreement=True) is False
+    for name in ("std.fits", "pca0.fits"):
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(b"x")
+    assert can_reuse_eval_object(d, require_disagreement=True) is True
+
+
+def test_ensemble_available_probe(tmp_path):
+    """Cheap availability probe: a member dir counts only with a checkpoint."""
+    from euclid_polish.ensemble import ensemble_available
+
+    base = tmp_path / "ensemble"
+    (base / "member_00").mkdir(parents=True)
+    assert ensemble_available(str(base)) is False           # dir but no checkpoint
+    with open(base / "member_00" / "ckpt.index", "wb") as f:
+        f.write(b"x")                                        # a *.index → checkpoint
+    assert ensemble_available(str(base)) is True
+    assert ensemble_available(str(tmp_path / "missing")) is False

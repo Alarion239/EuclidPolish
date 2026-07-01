@@ -61,9 +61,18 @@ def _base_manifest_row(obj, grade: str | None = None) -> dict[str, Any]:
     }
 
 
-def can_reuse_eval_object(obj_dir: str) -> bool:
-    """True when an object already has the real-lens evaluation FITS outputs."""
-    needed = ("original_stack.fits", "SR.fits")
+def can_reuse_eval_object(obj_dir: str, *,
+                          require_disagreement: bool = False) -> bool:
+    """True when an object already has the real-lens evaluation FITS outputs.
+
+    With ``require_disagreement`` (set when the eval model is an ensemble), also
+    require the disagreement cubes (``std.fits`` + ``pca0.fits``) so an object
+    that only carries a single-model ``SR.fits`` is re-run — letting the ensemble
+    add the stdSR + disagreement-movie cubes — instead of being skipped as done.
+    """
+    needed = ["original_stack.fits", "SR.fits"]
+    if require_disagreement:
+        needed += ["std.fits", "pca0.fits"]
     return all(
         os.path.isfile(os.path.join(obj_dir, name))
         and os.path.getsize(os.path.join(obj_dir, name)) > 0
@@ -296,7 +305,8 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     emit = log or (lambda m: None)
     obj_id = obj["id"]
     rec = _base_manifest_row(obj, grade=grade)
-    if can_reuse_eval_object(object_output_dir(out_dir, obj_id)):
+    if can_reuse_eval_object(object_output_dir(out_dir, obj_id),
+                             require_disagreement=hasattr(model, "member_arrays")):
         enforce_object_sizes(object_output_dir(out_dir, obj_id), log=emit)
         return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
     try:

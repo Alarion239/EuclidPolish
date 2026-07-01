@@ -377,6 +377,23 @@ class EnsembleModel:
         }
 
 
+def _default_ensemble_dir() -> str:
+    return os.path.join(
+        os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
+        "ensemble")
+
+
+def ensemble_available(base_dir: str | None = None) -> bool:
+    """Cheap check (no model loading) for whether a trained ensemble exists —
+    at least one ``member_NN/`` directory with a checkpoint. Mirrors the member
+    discovery in :class:`EnsembleModel` without constructing any keras models, so
+    callers can decide *whether* to run the ensemble before paying to load it."""
+    base_dir = base_dir or _default_ensemble_dir()
+    return any(
+        os.path.isdir(d) and _checkpoint_exists(d)
+        for d in glob.glob(os.path.join(base_dir, _MEMBER_GLOB)))
+
+
 def load_ensemble(
     base_dir: str | None = None,
     *,

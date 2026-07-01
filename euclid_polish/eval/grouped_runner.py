@@ -132,12 +132,21 @@ def run_grouped_analysis(
     # Load the SR model only for real lenses that do not already have cached
     # LR/SR FITS. Synthetic can be regenerated cheaply; A/B/C cutouts should
     # not be redownloaded when their existing outputs are present.
+    # When the eval model is an ensemble we (re)generate the disagreement cubes
+    # (stdSR + movie), so an object that only has a single-model SR.fits must be
+    # re-run to add them — not treated as done. Cheap probe, no model load.
+    from euclid_polish.ensemble import ensemble_available
+    want_disagreement = (hasattr(model, "member_arrays") if model is not None
+                         else ensemble_available())
+
     def _reusable(obj_id: str) -> bool:
         if catalog_runner.can_reuse_eval_object(
-                catalog_runner.object_output_dir(out_dir, obj_id)):
+                catalog_runner.object_output_dir(out_dir, obj_id),
+                require_disagreement=want_disagreement):
             return True
         return bool(lens_source_dir) and catalog_runner.can_reuse_eval_object(
-            catalog_runner.object_output_dir(lens_source_dir, obj_id))
+            catalog_runner.object_output_dir(lens_source_dir, obj_id),
+            require_disagreement=want_disagreement)
 
     needs_lens_model = any(
         not _reusable(obj["id"])
@@ -172,7 +181,8 @@ def run_grouped_analysis(
                     lens_source_dir, out_dir, obj["id"])
             # Existence is checked BEFORE any archive download: a cutout already
             # on disk is reused as-is and never re-fetched.
-            from_cache = catalog_runner.can_reuse_eval_object(obj_dir)
+            from_cache = catalog_runner.can_reuse_eval_object(
+                obj_dir, require_disagreement=want_disagreement)
             if from_cache:
                 _emit(f"  • {obj['id']}: already present locally — skipping download")
                 produced, err = True, ""
