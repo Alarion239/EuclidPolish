@@ -235,21 +235,6 @@ class EnsembleSpectrumAccumulator:
         return out
 
 
-def coherence_half_scale(k: np.ndarray, c: np.ndarray) -> float | None:
-    """The k (cyc/arcsec) where coherence ``c`` first drops below 0.5 — an
-    HR-free "effective resolution". Log-interpolated; ``None`` if never crossed.
-    """
-    k = np.asarray(k, float)
-    c = np.asarray(c, float)
-    good = np.isfinite(k) & np.isfinite(c)
-    k, c = k[good], c[good]
-    for i in range(1, len(k)):
-        if c[i - 1] >= 0.5 > c[i]:
-            f = (0.5 - c[i - 1]) / (c[i] - c[i - 1])
-            return float(np.exp(np.log(k[i - 1]) + f * (np.log(k[i]) - np.log(k[i - 1]))))
-    return None
-
-
 def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """Derive the VIS T(k)/r(k) plot arrays (per-member + ensemble mean).
 
