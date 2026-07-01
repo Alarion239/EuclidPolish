@@ -167,3 +167,66 @@ def test_training_mode_default_and_string_update(cfg_path):
 def test_training_mode_mapped_for_train_step():
     m = job_config.FASRC_STEP_PARAMS["lensfinder_train"]
     assert m["training_mode"] == "lensfinder_training_mode"
+
+
+# -- WDSR LR schedule + plateau guard knobs -------------------------------- #
+
+def test_lr_and_plateau_defaults_from_config(cfg_path):
+    from euclid_polish.config import Config
+    c = job_config.load()
+    assert c.lr_peak == Config.LR_PEAK
+    assert c.lr_final == Config.LR_FINAL
+    assert c.lr_warmup_steps == Config.LR_WARMUP_STEPS
+    assert c.plateau_lr_enabled == int(Config.PLATEAU_LR_ENABLED)
+    assert c.plateau_lr_metric == Config.PLATEAU_LR_METRIC
+
+
+def test_lr_and_plateau_update_and_persist(cfg_path):
+    c = job_config.update({
+        "lr_peak": "3e-4", "lr_final": "1e-5", "lr_warmup_steps": "1500",
+        "plateau_lr_enabled": "0", "plateau_lr_factor": "0.3",
+        "plateau_lr_patience": "8000", "plateau_lr_min_delta": "0.05",
+        "plateau_lr_cooldown": "3000", "plateau_lr_min_lr": "1e-7",
+        "plateau_lr_metric": "psnr_stretched",
+    })
+    assert c.lr_peak == 3e-4 and c.lr_final == 1e-5 and c.lr_warmup_steps == 1500
+    assert c.plateau_lr_enabled == 0                    # "off" coerced to int 0
+    assert c.plateau_lr_factor == 0.3 and c.plateau_lr_patience == 8000
+    assert c.plateau_lr_min_delta == 0.05 and c.plateau_lr_cooldown == 3000
+    assert c.plateau_lr_min_lr == 1e-7
+    assert c.plateau_lr_metric == "psnr_stretched"     # string kept verbatim
+    again = job_config.load()
+    assert again.lr_peak == 3e-4 and again.plateau_lr_enabled == 0
+    assert again.plateau_lr_metric == "psnr_stretched"
+
+
+def test_lr_plateau_mapped_for_ensemble_train():
+    m = job_config.FASRC_STEP_PARAMS["ensemble_train"]
+    for k in ("lr_peak", "lr_final", "lr_warmup_steps", "plateau_lr_enabled",
+              "plateau_lr_factor", "plateau_lr_patience", "plateau_lr_min_delta",
+              "plateau_lr_cooldown", "plateau_lr_min_lr", "plateau_lr_metric"):
+        assert m[k] == k                               # identity mapping
+
+
+def test_config_page_renders_lr_plateau_section(client, cfg_path):
+    r = client.get("/config")
+    assert r.status_code == 200
+    assert b"warmup" in r.data.lower()
+    assert b"plateau_lr_patience" in r.data
+    assert b"plateau_lr_metric" in r.data
+
+
+def test_ensemble_train_build_command_injects_lr_plateau_flags():
+    from euclid_polish.web.fasrc_pipeline import EnsembleTrainStep
+    params = {
+        "n_members": "5", "steps": "100000",
+        "lr_peak": "3e-4", "lr_warmup_steps": "1500",
+        "plateau_lr_enabled": "0", "plateau_lr_metric": "psnr_stretched",
+    }
+    cmd = EnsembleTrainStep().build_command(params)
+    assert "--lr-peak" in cmd and cmd[cmd.index("--lr-peak") + 1] == "3e-4"
+    assert "--lr-warmup-steps" in cmd
+    assert cmd[cmd.index("--plateau-lr-enabled") + 1] == "0"
+    assert cmd[cmd.index("--plateau-lr-metric") + 1] == "psnr_stretched"
+    # Absent knobs contribute no flags (blank-safe).
+    assert "--lr-final" not in cmd

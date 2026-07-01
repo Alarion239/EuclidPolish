@@ -15,7 +15,6 @@ from collections.abc import Callable
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
-from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 
 from euclid_polish.config import Config
 from euclid_polish.eval import catalog_runner, grouped_runner
@@ -36,6 +35,7 @@ from euclid_polish.training.inference import (
 from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
+from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.trainer import Trainer, seed_everything
 
@@ -173,6 +173,16 @@ class Model:
         hr_path: str,
         steps: int = 300_000,
         batch_size: int = 16,
+        lr_peak: float = Config.LR_PEAK,
+        lr_final: float = Config.LR_FINAL,
+        lr_warmup_steps: int = Config.LR_WARMUP_STEPS,
+        plateau_lr_enabled: bool = Config.PLATEAU_LR_ENABLED,
+        plateau_lr_factor: float = Config.PLATEAU_LR_FACTOR,
+        plateau_lr_patience: int = Config.PLATEAU_LR_PATIENCE,
+        plateau_lr_min_delta: float = Config.PLATEAU_LR_MIN_DELTA,
+        plateau_lr_cooldown: int = Config.PLATEAU_LR_COOLDOWN,
+        plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
+        plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -199,22 +209,28 @@ class Model:
             valid_lr_path, valid_hr_path, batch_size, augment=False
         )
 
-        # Anneal the LR WITHIN this run. The Trainer default decays at step
-        # 200k, but a typical run (e.g. a 50k-step ensemble member) never
-        # reaches it, so the LR stays flat — too hot to settle into the sharp
-        # good minimum, so PSNR climbs then drifts back to the degenerate
-        # skip-only floor and never recovers. Scale the decay to `steps`:
-        # 5e-4 → 1e-4 (at 50%) → 2e-5 (at 80%). The lower 5e-4 start also tames
-        # the gradient spikes seen on the regenerated (saturation-masked) data.
-        # (The divergence guard's halving still applies on top of this.)
-        b1 = max(1, int(0.5 * steps))
-        b2 = max(b1 + 1, int(0.8 * steps))
-        lr_schedule = PiecewiseConstantDecay(
-            boundaries=[b1, b2], values=[5e-4, 1e-4, 2e-5],
+        # Warmup → cosine LR, scaled to THIS run's `steps`. The old flat 5e-4
+        # head (piecewise, step-downs at 50%/80%) was too hot to settle, so
+        # PSNR climbed then drifted back to the degenerate skip-only floor and
+        # sat there until the fixed 50%-of-steps step-down — the long ~43.5 dB
+        # plateau. Decaying smoothly from the start removes that flat region.
+        # The warmup also tames the early gradient spikes on the regenerated
+        # (saturation-masked) data. Both LR guards (spike + plateau) apply on
+        # top of this schedule.
+        lr_schedule = WarmupCosineDecay(
+            peak_lr=lr_peak, final_lr=lr_final,
+            warmup_steps=lr_warmup_steps, total_steps=steps,
         )
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
-                          seed=self._seed, deterministic=self._deterministic)
+                          seed=self._seed, deterministic=self._deterministic,
+                          plateau_lr_enabled=plateau_lr_enabled,
+                          plateau_lr_factor=plateau_lr_factor,
+                          plateau_lr_patience=plateau_lr_patience,
+                          plateau_lr_min_delta=plateau_lr_min_delta,
+                          plateau_lr_cooldown=plateau_lr_cooldown,
+                          plateau_lr_min_lr=plateau_lr_min_lr,
+                          plateau_lr_metric=plateau_lr_metric)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):

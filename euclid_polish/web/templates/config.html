@@ -169,6 +169,74 @@
       <p class="hint">→ <code>/inference</code> (both reconstruction forms).</p>
     </fieldset>
 
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">SR training · LR schedule (warmup → cosine)</legend>
+      <div class="form-row">
+        <label title="Peak learning rate at the end of warmup. The cosine decay starts here. Old flat value was 5e-4; the flat head caused the long ~43.5 dB skip-only plateau.">
+          Peak LR
+          <input type="number" name="lr_peak" value="{{ cfg.lr_peak }}"
+                 min="0" max="1" step="any" required>
+        </label>
+        <label title="Final learning rate at the last step (the cosine floor). Old schedule ended at 2e-5.">
+          Final LR
+          <input type="number" name="lr_final" value="{{ cfg.lr_final }}"
+                 min="0" max="1" step="any" required>
+        </label>
+        <label title="Linear warmup length (steps): LR ramps from a small start up to Peak LR over this many steps, then cosine-decays. Also tames early gradient spikes. Default 2000 (matches the spike-guard warmup).">
+          Warmup steps
+          <input type="number" name="lr_warmup_steps" value="{{ cfg.lr_warmup_steps }}"
+                 min="0" max="100000" step="1" required>
+        </label>
+      </div>
+      <p class="hint">→ the <code>ensemble-train</code> FASRC step (and all local WDSR training). Decays smoothly from step 0, so there is no hot flat region to get stuck on. Scaled to each run's total <code>steps</code>.</p>
+    </fieldset>
+
+    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">SR training · reduce-LR-on-plateau guard</legend>
+      <div class="form-row">
+        <label title="Cut the LR when the validation metric stalls (the complement of the gradient-spike guard, which cuts on divergence). Lets a spike-free member leave the plateau early instead of waiting for the schedule.">
+          Plateau guard
+          <select name="plateau_lr_enabled">
+            <option value="1" {{ 'selected' if cfg.plateau_lr_enabled else '' }}>on</option>
+            <option value="0" {{ '' if cfg.plateau_lr_enabled else 'selected' }}>off</option>
+          </select>
+        </label>
+        <label title="Metric to watch. combined_loss (held-out, lower better) is the checkpoint metric and is the least noisy; psnr_stretched (higher better) is the dB curve.">
+          Monitor
+          <select name="plateau_lr_metric">
+            <option value="combined_loss" {{ 'selected' if cfg.plateau_lr_metric == 'combined_loss' else '' }}>combined_loss (min)</option>
+            <option value="psnr_stretched" {{ 'selected' if cfg.plateau_lr_metric == 'psnr_stretched' else '' }}>psnr_stretched (max)</option>
+          </select>
+        </label>
+        <label title="Multiply the LR by this on each plateau cut. 0.5 = halve (matches the spike guard).">
+          Factor
+          <input type="number" name="plateau_lr_factor" value="{{ cfg.plateau_lr_factor }}"
+                 min="0.05" max="0.99" step="any" required>
+        </label>
+        <label title="Steps of no metric progress before a cut fires.">
+          Patience (steps)
+          <input type="number" name="plateau_lr_patience" value="{{ cfg.plateau_lr_patience }}"
+                 min="100" max="100000" step="1" required>
+        </label>
+        <label title="Minimum metric change that counts as progress (absolute, in metric units). Micro-creep smaller than this does NOT reset patience. Default 1e-4 suits combined_loss; for psnr_stretched use ~0.05 dB.">
+          Min Δ (progress)
+          <input type="number" name="plateau_lr_min_delta" value="{{ cfg.plateau_lr_min_delta }}"
+                 min="0" max="10" step="any" required>
+        </label>
+        <label title="Steps to wait after a cut before the stall counter re-arms, so one stall doesn't fire repeatedly.">
+          Cooldown (steps)
+          <input type="number" name="plateau_lr_cooldown" value="{{ cfg.plateau_lr_cooldown }}"
+                 min="0" max="100000" step="1" required>
+        </label>
+        <label title="Absolute LR floor. Neither guard (spike or plateau) reduces the effective LR below this.">
+          Min LR
+          <input type="number" name="plateau_lr_min_lr" value="{{ cfg.plateau_lr_min_lr }}"
+                 min="0" max="1" step="any" required>
+        </label>
+      </div>
+      <p class="hint">→ the <code>ensemble-train</code> FASRC step. Shares the same LR-scale knob as the gradient-spike guard; halvings from both compound.</p>
+    </fieldset>
+
     <div style="margin-top:12px;">
       <button type="submit">Save config</button>
       <span id="cfg-msg" class="muted" style="margin-left:10px;"></span>

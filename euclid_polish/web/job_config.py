@@ -56,6 +56,18 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "batch_size": "lensfinder_batch_size",
                                 "learning_rate": "lensfinder_learning_rate",
                                 "training_mode": "lensfinder_training_mode"},
+    # WDSR SR training: LR schedule (warmup → cosine) + reduce-LR-on-plateau
+    # guard. build_command translates these into --lr-* / --plateau-lr-* flags.
+    "ensemble_train":          {"lr_peak": "lr_peak",
+                                "lr_final": "lr_final",
+                                "lr_warmup_steps": "lr_warmup_steps",
+                                "plateau_lr_enabled": "plateau_lr_enabled",
+                                "plateau_lr_factor": "plateau_lr_factor",
+                                "plateau_lr_patience": "plateau_lr_patience",
+                                "plateau_lr_min_delta": "plateau_lr_min_delta",
+                                "plateau_lr_cooldown": "plateau_lr_cooldown",
+                                "plateau_lr_min_lr": "plateau_lr_min_lr",
+                                "plateau_lr_metric": "plateau_lr_metric"},
 }
 
 
@@ -99,6 +111,20 @@ class JobConfig:
     hr_image_size: int = 510
     # Brightness knee (e⁻) for the asinh display panels in inference.
     asinh_scale:   float = 1000.0
+    # WDSR SR training — LR schedule (warmup → cosine) that decays smoothly from
+    # the start (kills the old flat-5e-4 "skip-only" plateau) + reduce-LR-on-
+    # plateau guard (cut the LR when the val metric stalls). Feed the
+    # ensemble_train FASRC step. plateau_lr_enabled is 0/1 (form-coerced int).
+    lr_peak:              float = Config.LR_PEAK
+    lr_final:             float = Config.LR_FINAL
+    lr_warmup_steps:      int   = Config.LR_WARMUP_STEPS
+    plateau_lr_enabled:   int   = int(Config.PLATEAU_LR_ENABLED)
+    plateau_lr_factor:    float = Config.PLATEAU_LR_FACTOR
+    plateau_lr_patience:  int   = Config.PLATEAU_LR_PATIENCE
+    plateau_lr_min_delta: float = Config.PLATEAU_LR_MIN_DELTA
+    plateau_lr_cooldown:  int   = Config.PLATEAU_LR_COOLDOWN
+    plateau_lr_min_lr:    float = Config.PLATEAU_LR_MIN_LR
+    plateau_lr_metric:    str   = Config.PLATEAU_LR_METRIC
     # Star field: surface density (stars/arcmin²) + the smooth magnitude
     # distribution dN/dm ∝ 10^(slope·m) over [bright, faint] VIS mag.
     star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2

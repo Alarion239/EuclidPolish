@@ -28,6 +28,7 @@ from euclid_polish.training.augmentation import (
     inverse_asinh_stretch_hr,
 )
 from euclid_polish.training.models.common import evaluate
+from euclid_polish.training.plateau import PlateauLRReducer
 
 
 def seed_everything(seed: int, *, deterministic: bool = False) -> None:
@@ -172,6 +173,13 @@ class Trainer:
         nonneg_sr_weight: float = Config.NONNEG_SR_WEIGHT,
         seed: int | None = None,
         deterministic: bool = False,
+        plateau_lr_enabled: bool = Config.PLATEAU_LR_ENABLED,
+        plateau_lr_factor: float = Config.PLATEAU_LR_FACTOR,
+        plateau_lr_patience: int = Config.PLATEAU_LR_PATIENCE,
+        plateau_lr_min_delta: float = Config.PLATEAU_LR_MIN_DELTA,
+        plateau_lr_cooldown: int = Config.PLATEAU_LR_COOLDOWN,
+        plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
+        plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
     ):
         """
         Initialize the trainer.
@@ -245,7 +253,23 @@ class Trainer:
         else:                                  # a LearningRateSchedule (callable)
             self._lr_schedule = learning_rate
             self._initial_lr  = float(learning_rate(tf.constant(0, tf.int64)))
-        self._lr_scale = 1.0                   # halved by the divergence guard
+        # ``_lr_scale`` is the shared multiplicative LR knob: the schedule value
+        # at each step is multiplied by it. BOTH guards drive it down — the
+        # gradient-spike guard (on divergence) and the plateau guard below (on
+        # stagnation) — and ``_apply_lr`` clamps the product at ``_min_lr``.
+        self._lr_scale = 1.0
+        self._min_lr = float(plateau_lr_min_lr)
+        self._plateau_lr_factor = float(plateau_lr_factor)
+        self._plateau_lr_metric = str(plateau_lr_metric)
+        self._plateau = (
+            PlateauLRReducer(
+                mode="max" if self._plateau_lr_metric == "psnr_stretched" else "min",
+                patience=int(plateau_lr_patience),
+                min_delta=float(plateau_lr_min_delta),
+                cooldown=int(plateau_lr_cooldown),
+            )
+            if plateau_lr_enabled else None
+        )
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -350,18 +374,19 @@ class Trainer:
 
     def _apply_lr(self, step) -> float:
         """Set the optimiser LR for ``step`` = base schedule value × the
-        divergence guard's halving scale, and return it.
+        guards' halving scale, clamped at ``_min_lr``, and return it.
 
         The optimiser was built with a constant LR, whose backing variable
         assigns in place, so the traced train step picks up the new value with
         no retracing. Called every step when a schedule is active (to follow
         the decay) and after every rollback/halving (a restore can reset the
-        optimiser LR, so re-assert the intended value)."""
+        optimiser LR, so re-assert the intended value). ``_lr_scale`` is driven
+        by BOTH the gradient-spike guard and the plateau guard."""
         if self._lr_schedule is not None:
             base = float(self._lr_schedule(tf.constant(int(step), tf.int64)))
         else:
             base = self._initial_lr
-        lr = base * self._lr_scale
+        lr = max(self._min_lr, base * self._lr_scale)
         self.checkpoint.optimizer.learning_rate = lr
         return lr
 
@@ -727,6 +752,11 @@ class Trainer:
                 loss_anchor_mean.reset_state()
                 gnorm_mean.reset_state()
                 gnorm_max.assign(0.0)
+                # A rollback rewinds ckpt.step, so forget the plateau guard's
+                # stall history — otherwise ``step - best_step`` goes negative
+                # and the guard silently disarms until the step catches back up.
+                if self._plateau is not None:
+                    self._plateau.reset(step)
                 # Repeated divergence ⇒ the LR is too hot ⇒ HALVE it and keep
                 # going, rather than aborting. Give up only after too many
                 # halvings (LR cut to a useless fraction of the original).
@@ -912,6 +942,30 @@ class Trainer:
                 # from a stale one. Best-effort; never raises.
                 if psnr_improved or loss_improved:
                     self._emit_checkpoint_provenance()
+
+                # Reduce-LR-on-plateau: if the watched validation metric has
+                # stalled for ``patience`` steps, cut the LR (× factor) via the
+                # SAME ``_lr_scale`` the spike guard uses. Skip the cut once the
+                # effective LR is already at the ``min_lr`` floor (nothing to
+                # gain). This is what lets a spike-free member leave the
+                # skip-only floor early instead of waiting for the schedule.
+                if self._plateau is not None:
+                    metric = (combined_loss
+                              if self._plateau_lr_metric == "combined_loss"
+                              else psnr_str)
+                    if self._plateau.should_reduce(step, metric):
+                        before = self._apply_lr(step)
+                        floored = before <= self._min_lr * (1.0 + 1e-9)
+                        if not floored:
+                            self._lr_scale *= self._plateau_lr_factor
+                            after = self._apply_lr(step)
+                            pmsg = (f"↓ plateau ({self._plateau_lr_metric} flat "
+                                    f"for ≥{self._plateau.patience} steps) — "
+                                    f"reduced learning rate {before:.3g} → "
+                                    f"{after:.3g}")
+                            tqdm.write("  " + pmsg)
+                            if warn_callback is not None:
+                                warn_callback(pmsg)
 
                 self.now = time.perf_counter()
 

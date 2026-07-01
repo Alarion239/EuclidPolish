@@ -52,6 +52,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--eval-images", type=int, default=200,
                    help="Test fields to score after training (0 = skip eval).")
+    # LR schedule (warmup → cosine) + reduce-LR-on-plateau guard. Defaults from
+    # Config; the WebUI /config page injects these on FASRC submission.
+    p.add_argument("--lr-peak", type=float, default=Config.LR_PEAK)
+    p.add_argument("--lr-final", type=float, default=Config.LR_FINAL)
+    p.add_argument("--lr-warmup-steps", type=int, default=Config.LR_WARMUP_STEPS)
+    p.add_argument("--plateau-lr-enabled", type=int,
+                   default=int(Config.PLATEAU_LR_ENABLED),
+                   help="1/0 — reduce LR when the val metric stalls.")
+    p.add_argument("--plateau-lr-factor", type=float,
+                   default=Config.PLATEAU_LR_FACTOR)
+    p.add_argument("--plateau-lr-patience", type=int,
+                   default=Config.PLATEAU_LR_PATIENCE)
+    p.add_argument("--plateau-lr-min-delta", type=float,
+                   default=Config.PLATEAU_LR_MIN_DELTA)
+    p.add_argument("--plateau-lr-cooldown", type=int,
+                   default=Config.PLATEAU_LR_COOLDOWN)
+    p.add_argument("--plateau-lr-min-lr", type=float,
+                   default=Config.PLATEAU_LR_MIN_LR)
+    p.add_argument("--plateau-lr-metric", default=Config.PLATEAU_LR_METRIC,
+                   choices=["combined_loss", "psnr_stretched"])
     return p.parse_args()
 
 
@@ -137,6 +157,16 @@ def main() -> int:
             evaluate_every=args.evaluate_every,
             step_callback=_step_cb, eval_callback=_eval_cb, warn_callback=_warn_cb,
             on_member=_on_member,
+            # LR schedule + plateau guard (forwarded to each member's Model.train).
+            lr_peak=args.lr_peak, lr_final=args.lr_final,
+            lr_warmup_steps=args.lr_warmup_steps,
+            plateau_lr_enabled=bool(args.plateau_lr_enabled),
+            plateau_lr_factor=args.plateau_lr_factor,
+            plateau_lr_patience=args.plateau_lr_patience,
+            plateau_lr_min_delta=args.plateau_lr_min_delta,
+            plateau_lr_cooldown=args.plateau_lr_cooldown,
+            plateau_lr_min_lr=args.plateau_lr_min_lr,
+            plateau_lr_metric=args.plateau_lr_metric,
         )
 
         if args.eval_images > 0:

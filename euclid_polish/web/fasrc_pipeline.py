@@ -1081,6 +1081,17 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if eval_images:
             with contextlib.suppress(ValueError):
                 cmd += ["--eval-images", str(int(eval_images))]
+        # LR schedule + plateau-guard knobs, injected from the /config page via
+        # FASRC_STEP_PARAMS. Passed through verbatim as --lr-* / --plateau-lr-*
+        # flags (train_ensemble.py's argparse validates/typechecks them).
+        for name in ("lr_peak", "lr_final", "lr_warmup_steps",
+                     "plateau_lr_enabled", "plateau_lr_factor",
+                     "plateau_lr_patience", "plateau_lr_min_delta",
+                     "plateau_lr_cooldown", "plateau_lr_min_lr",
+                     "plateau_lr_metric"):
+            val = str(params.get(name, "")).strip()
+            if val:
+                cmd += [f"--{name.replace('_', '-')}", val]
         return cmd
 
 

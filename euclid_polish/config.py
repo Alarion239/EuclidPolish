@@ -527,6 +527,35 @@ class Config:
     # the original) it's hopeless, so abort with a clear message.
     GRAD_SPIKE_MAX_LR_HALVINGS   = 8
 
+    # LR schedule (warmup → cosine) for WDSR SR training. Replaces the old
+    # piecewise-constant (flat 5e-4 → step-downs at 50%/80%). The flat 5e-4 head
+    # was the cause of the long ~43.5 dB "skip-only" plateau: too hot to settle,
+    # so members sat on the degenerate floor until the fixed 50%-of-steps step-
+    # down. Warmup then cosine decays smoothly from the start, so the hot flat
+    # region — and its plateau — is gone. LR(step) = start→PEAK over WARMUP_STEPS
+    # (linear), then PEAK→FINAL over the rest (cosine).
+    LR_PEAK                      = 5e-4
+    LR_FINAL                     = 2e-5
+    LR_WARMUP_STEPS              = 2000
+
+    # Reduce-LR-on-plateau guard (the symmetric complement of the gradient-spike
+    # guard above: cut the LR on *stagnation*, not just on divergence). Standard
+    # ReduceLROnPlateau, phrased in STEPS. On the plateau the model can't settle
+    # at the hot LR; cutting it early — as soon as the metric stalls — lets it
+    # settle without waiting for the schedule. On by default.
+    PLATEAU_LR_ENABLED           = True
+    PLATEAU_LR_FACTOR            = 0.5      # multiply the LR by this on a stall
+    PLATEAU_LR_PATIENCE          = 5000     # steps of no metric progress → cut
+    # Minimum metric change that counts as progress. Defaulted for the
+    # combined_loss metric (plateau floor ~6e-3, drifting ~1e-5/eval → counts as
+    # no progress). Switch PLATEAU_LR_METRIC to psnr_stretched → raise to ~0.05.
+    PLATEAU_LR_MIN_DELTA         = 1e-4
+    PLATEAU_LR_COOLDOWN          = 2000     # steps after a cut before re-arming
+    PLATEAU_LR_MIN_LR            = 1e-6     # absolute LR floor (both guards)
+    # Which held-out validation metric to watch: "combined_loss" (lower better)
+    # or "psnr_stretched" (higher better).
+    PLATEAU_LR_METRIC            = "combined_loss"
+
     # Non-negativity regularisation on SR (the model's deconvolved-sky
     # output). Surface brightness is physically >= 0, but the WDSR head is
     # unconstrained, so SR can go slightly negative. A soft penalty
