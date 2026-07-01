@@ -4,9 +4,14 @@
 
 from __future__ import annotations
 
-from flask import jsonify, render_template, request
+import os
 
+from flask import abort, jsonify, render_template, request, send_file
+
+from euclid_polish.training.log_plot import plot_ensemble_training_curves
 from euclid_polish.web.helpers.ensemble_viz import (
+    _ensemble_out_dir,
+    ensemble_dir,
     ensemble_status,
     job_ensemble_evaluate,
     job_ensemble_pull,
@@ -44,6 +49,16 @@ def register(app):
             target=lambda cap: job_ensemble_evaluate(cap, num_images=num_images),
         )
         return jsonify({"job_id": job_id})
+
+    @app.route("/ensemble/training-curves.png")
+    def ensemble_training_curves():
+        """Per-member PSNR + loss curves (rollback-deduped). 404 → card hides."""
+        out_png = os.path.join(_ensemble_out_dir(), "training_curves.png")
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            if plot_ensemble_training_curves(ensemble_dir(), out_png) is None:
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
 
     @app.route("/ensemble/pull", methods=["POST"])
     def ensemble_pull():

@@ -12,6 +12,21 @@
 {% endblock %}
 
 {% block viz %}
+<section class="card" id="ens-train-curves-card">
+  <h3>Training curves <span class="muted">— per member, latest value per step
+      (rollbacks discarded)</span></h3>
+  <a href="{{ url_for('ensemble_training_curves') }}?fresh=1" target="_blank">
+    <img style="max-width:100%;height:auto;"
+         src="{{ url_for('ensemble_training_curves') }}"
+         alt="per-member training curves"
+         onerror="document.getElementById('ens-train-curves-card').style.display='none'">
+  </a>
+  <p class="hint">Each member's PSNR (left) and combined loss (right) vs step.
+     Where the model rolled back after a gradient spike, only the value from the
+     final pass through each step is shown. Populated once members are pulled
+     from FASRC.</p>
+</section>
+
 <section class="card">
   <h3>Members</h3>
   {% if members %}

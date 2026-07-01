@@ -1,6 +1,7 @@
 """Visualize the training-time validation log written by ``Trainer.train``."""
 
 import csv
+import glob
 import json
 import os
 
@@ -385,3 +386,67 @@ def plot_training_log(
 def default_log_path(checkpoint_dir: str) -> str:
     """Convention for where the trainer writes its log."""
     return os.path.join(checkpoint_dir, TRAINING_LOG_FILENAME)
+
+
+def dedupe_latest_per_step(records: list[dict]) -> list[dict]:
+    """Keep the LAST-logged record per step, sorted by step.
+
+    Rollbacks rewind the step counter and re-log earlier steps; taking the last
+    write per step keeps the value from the *final* pass through it and discards
+    the rolled-back ones, so the curve is monotonic in step (no backward jumps).
+    """
+    by_step: dict[int, dict] = {}
+    for rec in records:
+        s = rec.get("step")
+        if s is None:
+            continue
+        by_step[int(s)] = rec          # append order is chronological → last wins
+    return [by_step[s] for s in sorted(by_step)]
+
+
+def plot_ensemble_training_curves(base_dir: str, output_path: str) -> str | None:
+    """Overlay every ensemble member's PSNR + loss training curve.
+
+    Each member's log is rollback-deduped (latest value per step). Returns the
+    PNG path, or ``None`` when no ``member_*/training_log.csv`` exists yet.
+    """
+    members: list[tuple[str, list[dict]]] = []
+    for d in sorted(glob.glob(os.path.join(base_dir, "member_*"))):
+        log = os.path.join(d, TRAINING_LOG_FILENAME)
+        if not os.path.isfile(log):
+            continue
+        try:
+            recs = dedupe_latest_per_step(read_training_log(log))
+        except (FileNotFoundError, ValueError):
+            continue
+        if recs:
+            members.append((os.path.basename(d), recs))
+    if not members:
+        return None
+
+    fig, (ax_p, ax_l) = plt.subplots(1, 2, figsize=(13.0, 5.0))
+    cmap = plt.get_cmap("viridis")
+    for i, (name, recs) in enumerate(members):
+        color = cmap(i / max(1, len(members) - 1))
+        sp = [(r["step"], r["psnr_stretched"]) for r in recs if "psnr_stretched" in r]
+        sl = [(r["step"], r["combined_loss"]) for r in recs if "combined_loss" in r]
+        if sp:
+            xs, ys = zip(*sp)
+            ax_p.plot(xs, ys, lw=1.3, color=color, label=name)
+        if sl:
+            xs, ys = zip(*sl)
+            ax_l.plot(xs, ys, lw=1.3, color=color, label=name)
+    ax_p.set_xlabel("step")
+    ax_p.set_ylabel("PSNR stretched [dB]")
+    ax_p.set_title("Per-member PSNR — latest value per step (rollbacks discarded)")
+    ax_p.grid(alpha=0.15)
+    ax_p.legend(fontsize=8, ncol=2, frameon=False)
+    ax_l.set_xlabel("step")
+    ax_l.set_ylabel("combined loss")
+    ax_l.set_yscale("log")
+    ax_l.set_title("Per-member loss")
+    ax_l.grid(alpha=0.15)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
