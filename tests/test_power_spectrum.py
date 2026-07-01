@@ -15,6 +15,7 @@ from euclid_polish.eval.power_spectrum import (
 )
 from euclid_polish.eval.power_spectrum import (
     cross_power_2d,
+    ensemble_ps_plot_curves,
     k_magnitude_2d,
     log_k_edges,
 )
@@ -110,3 +111,33 @@ def test_accumulator_combines_mixed_stamp_sizes():
     res = acc.finalize()
     assert acc.n_obj == 2
     assert np.isfinite(res["r"][res["count"] > 0]).all()
+
+
+def test_ensemble_ps_plot_curves_derives_per_member_transfer():
+    k = np.array([0.5, 1.0, 2.0])
+    curves = {
+        "k": k,
+        "P_hr": np.array([4.0, 4.0, 4.0]),
+        "P_sr": np.array([1.0, 1.0, 1.0]),
+        "r": np.array([0.9, 0.8, 0.7]),
+        "P_members": np.array([[4.0, 1.0, 0.25],
+                               [16.0, 4.0, 1.0]]),
+        "r_members": np.array([[0.90, 0.80, 0.70],
+                               [0.85, 0.75, 0.65]]),
+    }
+    out = ensemble_ps_plot_curves(curves)
+    assert np.allclose(out["theta"], 0.5 / k)
+    assert np.allclose(out["T"], np.sqrt(np.array([0.25, 0.25, 0.25])))
+    assert np.allclose(out["T_members"][0], np.sqrt(np.array([1.0, 0.25, 0.0625])))
+    assert np.allclose(out["T_members"][1], np.sqrt(np.array([4.0, 1.0, 0.25])))
+    assert np.allclose(out["r"], curves["r"])
+    assert out["r_members"].shape == (2, 3)
+
+
+def test_ensemble_ps_plot_curves_handles_no_members():
+    k = np.array([0.5, 1.0])
+    curves = {"k": k, "P_hr": np.array([1.0, 1.0]),
+              "P_sr": np.array([1.0, 1.0]), "r": np.array([1.0, 1.0])}
+    out = ensemble_ps_plot_curves(curves)
+    assert out["T_members"].shape == (0, 2)
+    assert out["r_members"].shape == (0, 2)

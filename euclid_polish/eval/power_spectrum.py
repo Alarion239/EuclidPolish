@@ -250,6 +250,31 @@ def coherence_half_scale(k: np.ndarray, c: np.ndarray) -> float | None:
     return None
 
 
+def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Derive the VIS T(k)/r(k) plot arrays (per-member + ensemble mean).
+
+    Pure transform of an :meth:`EnsembleSpectrumAccumulator.curves` dict. Returns
+    ``{theta, T, T_members, r, r_members}`` where ``theta = 1/(2k)`` arcsec,
+    ``T = sqrt(P_sr/P_hr)`` (mean), ``T_members[j] = sqrt(P_members[j]/P_hr)``,
+    ``r`` is the ensemble mean vs HR, ``r_members`` the per-member correlations.
+    Member arrays are ``(M, nbins)`` and empty ``(0, nbins)`` when <2 members.
+    """
+    k = np.asarray(curves.get("k", []), float)
+    nan_k = np.full(k.size, np.nan)
+    p_hr = np.asarray(curves.get("P_hr", nan_k), float)
+    p_sr = np.asarray(curves.get("P_sr", nan_k), float)
+    r = np.asarray(curves.get("r", nan_k), float)
+    p_members = np.asarray(curves.get("P_members", np.empty((0, k.size))), float)
+    r_members = np.asarray(curves.get("r_members", np.empty((0, k.size))), float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        theta = 0.5 / k
+        t_mean = np.sqrt(p_sr / p_hr)
+        t_members = (np.sqrt(p_members / p_hr[None, :])
+                     if p_members.size else np.empty((0, k.size)))
+    return {"theta": theta, "T": t_mean, "T_members": t_members,
+            "r": r, "r_members": r_members}
+
+
 def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
                                    *, n_fields: int = 0) -> str | None:
     """Two-panel ensemble power-spectrum figure (VIS band).
