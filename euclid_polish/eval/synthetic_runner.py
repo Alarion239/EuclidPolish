@@ -137,7 +137,7 @@ def run_synthetic_eval(
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
-    from euclid_polish.training.inference import reconstruct
+    from euclid_polish.eval.ensemble_infer import sr_from_model
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
@@ -246,7 +246,6 @@ def run_synthetic_eval(
             os.makedirs(obj_dir, exist_ok=True)
             if idx != cur_idx:                  # same field → reuse the SR cube
                 lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
-                from euclid_polish.eval.ensemble_infer import sr_from_model
                 _, sr_data, members_full = sr_from_model(model, lr_cube)
                 sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
                 cur_idx = idx
