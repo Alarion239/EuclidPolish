@@ -145,8 +145,8 @@ def run_grouped_analysis(
         for obj in rows
     )
     if needs_lens_model and model is None:
-        _emit(f"loading model from {checkpoint}")
-        model = catalog_runner.load_eval_model(checkpoint, num_res_blocks)
+        from euclid_polish.eval.ensemble_infer import load_eval_ensemble_or_single
+        model = load_eval_ensemble_or_single(checkpoint, num_res_blocks, log=_emit)
     elif n_lens and not needs_lens_model:
         _emit("A/B/C lens outputs already present — reusing cached FITS")
     os.makedirs(out_dir, exist_ok=True)
