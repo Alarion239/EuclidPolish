@@ -1,7 +1,11 @@
 # Ensemble → Evaluation integration: power-spectrum parity, mean-model default, disagreement movies
 
 Date: 2026-07-01
-Status: approved (pending spec review)
+Status: approved → planned
+
+Implementation split into two independent plans (per writing-plans decomposition):
+- `docs/superpowers/plans/2026-07-01-ensemble-power-spectrum-replot.md` (§1)
+- `docs/superpowers/plans/2026-07-01-ensemble-mean-eval-and-movies.md` (§2 + §3)
 
 ## Goal
 
