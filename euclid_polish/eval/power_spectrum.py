@@ -35,6 +35,7 @@ imports matplotlib and the TFRecord/sky loaders.
 from __future__ import annotations
 
 import os
+import warnings
 
 import numpy as np
 
@@ -157,81 +158,108 @@ class EnsembleSpectrumAccumulator:
     """
 
     def __init__(self, n: int, pixel_scale_arcsec: float, *,
-                 kmin: float = 0.2, nbins: int = 24) -> None:
+                 kmin: float = 0.06, nbins: int = 28,
+                 stretch: float | None = None) -> None:
         self.n = int(n)
         self.pix = float(pixel_scale_arcsec)
+        # asinh compression scale — matches the /evaluation power spectrum, so a
+        # few saturated/bright sources (≈ white spectrum in raw electrons) don't
+        # dominate and decorrelate the cross-power at every scale.
+        self.stretch = float(stretch if stretch is not None else Config.STRETCH_SCALE_E)
         self.k_edges = log_k_edges(self.pix, kmin, nbins)
         self.k_cen = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
         self.window = tukey_window_2d(self.n)
         self.nbins = int(nbins)
-        z = lambda: np.zeros(nbins, dtype=np.float64)   # noqa: E731
-        self.bh, self.bs, self.bx, self.bd, self.bc = z(), z(), z(), z(), z()
-        self.member_bs: np.ndarray | None = None        # (M, nbins) per-member auto
-        self.member_bx: np.ndarray | None = None        # (M, nbins) per-member ×HR
+        self.bc = np.zeros(nbins, dtype=np.float64)     # summed mode counts
+        # Per-FIELD rows → median-aggregated in curves() (robust to flux outliers,
+        # like the evaluation's BandStat). Each holds one bounded curve per field.
+        self._p_hr: list[np.ndarray] = []
+        self._p_sr: list[np.ndarray] = []
+        self._p_dis: list[np.ndarray] = []
+        self._r: list[np.ndarray] = []
+        self._t: list[np.ndarray] = []
+        self._rho: list[np.ndarray] = []
+        self._r_members: list[np.ndarray] = []          # each (M, nbins)
+        self._p_members: list[np.ndarray] = []          # each (M, nbins)
         self.n_fields = 0
         self.n_members = 0
 
+    def _asinh(self, x: np.ndarray) -> np.ndarray:
+        return np.arcsinh(np.asarray(x, np.float64) / self.stretch)
+
     def add(self, hr: np.ndarray, mean: np.ndarray,
             members: np.ndarray) -> None:
-        """Accumulate one field. ``hr``/``mean`` are ``(n, n)``; ``members`` is
-        ``(M, n, n)`` — all single-band, HR-grid."""
+        """Accumulate one field (asinh space). ``hr``/``mean`` are ``(n, n)``;
+        ``members`` is ``(M, n, n)`` — all single-band, HR-grid."""
         hr = np.asarray(hr, np.float64)
         mean = np.asarray(mean, np.float64)
         if hr.shape != (self.n, self.n) or mean.shape != hr.shape:
             return
-        bh, bs, bx, bc = bin_powers(hr, mean, self.pix, self.k_edges, self.window)
-        self.bh += bh; self.bs += bs; self.bx += bx; self.bc += bc
+        ah = self._asinh(hr)
         members = np.asarray(members, np.float64)
-        if members.ndim == 3 and members.shape[1:] == hr.shape and len(members):
-            mm = int(len(members))
-            if self.member_bs is None:
-                self.member_bs = np.zeros((mm, self.nbins))
-                self.member_bx = np.zeros((mm, self.nbins))
-            per_member = mm == self.member_bs.shape[0]   # consistent M across fields
-            dacc = np.zeros_like(bh)
-            for i, m in enumerate(members):
-                resid = m - mean
-                ph, _ps, _px, _bc = bin_powers(
-                    resid, resid, self.pix, self.k_edges, self.window)
+        have = members.ndim == 3 and members.shape[1:] == hr.shape and len(members)
+        # asinh-space ensemble "mean" = mean of the asinh members (keeps the
+        # variance identity ⟨P_member⟩ = P_mean + P_disagree exact); falls back to
+        # asinh(raw mean) with no members.
+        am = [self._asinh(m) for m in members] if have else None
+        asm = np.mean(np.stack(am, 0), 0) if have else self._asinh(mean)
+
+        bh, bs, bx, bc = bin_powers(ah, asm, self.pix, self.k_edges, self.window)
+        self.bc += bc
+        with np.errstate(divide="ignore", invalid="ignore"):
+            p_hr, p_sr = bh / bc, bs / bc
+        t, r = ratios_from_powers(bh, bs, bx, bc)
+
+        p_dis = np.full(self.nbins, np.nan)
+        rho = np.full(self.nbins, np.nan)
+        if have:
+            mm = len(am)
+            dacc = np.zeros(self.nbins)
+            r_rows, p_rows = [], []
+            for amk in am:
+                resid = amk - asm
+                ph, _ps, _px, _bc = bin_powers(resid, resid, self.pix, self.k_edges, self.window)
                 dacc += ph
-                if per_member:                            # each member vs HR
-                    _bh_i, bs_i, bx_i, _bc2 = bin_powers(
-                        hr, m, self.pix, self.k_edges, self.window)
-                    self.member_bs[i] += bs_i
-                    self.member_bx[i] += bx_i
-            self.bd += dacc / float(mm)
-            self.n_members = max(self.n_members, mm)
+                _bh, bsk, bxk, bck = bin_powers(ah, amk, self.pix, self.k_edges, self.window)
+                _tk, rk = ratios_from_powers(_bh, bsk, bxk, bck)
+                r_rows.append(rk)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    p_rows.append(bsk / bck)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                p_dis = (dacc / float(mm)) / bc
+                coh = p_sr / (p_sr + p_dis)
+                mfac = max(mm, 2)
+                rho = (mfac * coh - 1.0) / (mfac - 1.0)
+            if not self.n_members or mm == self.n_members:
+                self._r_members.append(np.vstack(r_rows))
+                self._p_members.append(np.vstack(p_rows))
+                self.n_members = mm
+
+        empty = bc <= 0
+        for a in (p_hr, p_sr, p_dis, r, t, rho):
+            a[empty] = np.nan
+        self._p_hr.append(p_hr); self._p_sr.append(p_sr); self._p_dis.append(p_dis)
+        self._r.append(r); self._t.append(t); self._rho.append(rho)
         self.n_fields += 1
 
+    def _med(self, rows: list[np.ndarray]) -> np.ndarray:
+        if not rows:
+            return np.full(self.nbins, np.nan)
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN low-k bins
+            return np.nanmedian(np.vstack(rows), axis=0)
+
     def curves(self) -> dict[str, np.ndarray]:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            p_hr = self.bh / self.bc
-            p_sr = self.bs / self.bc
-            p_dis = self.bd / self.bc
-            r = self.bx / np.sqrt(self.bh * self.bs)
-            t = np.sqrt(self.bs / self.bh)
-            # HR-FREE inter-model coherence: average pairwise power correlation
-            # between members. From the variance identity ⟨P_member⟩ = P_mean +
-            # P_disagree and ρ = (M·coherent_frac − 1)/(M−1), with coherent_frac
-            # = P_mean/⟨P_member⟩. ρ→1 = members agree (real), ρ→0 = decorrelated
-            # (hallucination). Needs NO HR, so it applies to real images too.
-            coherent_frac = self.bs / (self.bs + self.bd)
-            m = max(self.n_members, 2)
-            rho = (m * coherent_frac - 1.0) / (m - 1.0)
-        empty = self.bc <= 0
-        for arr in (p_hr, p_sr, p_dis, r, t, coherent_frac, rho):
-            arr[empty] = np.nan
-        out = {"k": self.k_cen, "P_hr": p_hr, "P_sr": p_sr,
-               "P_disagree": p_dis, "r": r, "T": t,
-               "coherent_frac": coherent_frac, "rho": rho}
-        if self.member_bs is not None:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                p_mem = self.member_bs / self.bc                       # (M, nb)
-                r_mem = self.member_bx / np.sqrt(self.bh[None, :] * self.member_bs)
-            p_mem[:, empty] = np.nan
-            r_mem[:, empty] = np.nan
-            out["P_members"] = p_mem
-            out["r_members"] = r_mem
+        out = {"k": self.k_cen,
+               "P_hr": self._med(self._p_hr), "P_sr": self._med(self._p_sr),
+               "P_disagree": self._med(self._p_dis),
+               "r": self._med(self._r), "T": self._med(self._t),
+               "rho": self._med(self._rho)}
+        if self._r_members:
+            with np.errstate(all="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                out["r_members"] = np.nanmedian(np.stack(self._r_members, 0), axis=0)
+                out["P_members"] = np.nanmedian(np.stack(self._p_members, 0), axis=0)
         return out
 
 
