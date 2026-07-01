@@ -22,7 +22,8 @@ def test_write_disagreement_cubes(tmp_path):
     assert np.allclose(np.moveaxis(std, 0, -1), members.std(axis=0), atol=1e-4)
     for i in range(3):
         assert (tmp_path / f"pca{i}.fits").is_file()
-    meta = json.load(open(tmp_path / "disagreement.json"))
+    with open(tmp_path / "disagreement.json") as f:
+        meta = json.load(f)
     assert meta["pca_n"] == 3 and len(meta["pca_amps"]) == 3
 
 
