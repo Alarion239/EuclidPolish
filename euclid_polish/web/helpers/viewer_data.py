@@ -372,6 +372,10 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     pca_n = int(man.get("pca_n", 0) or 0)
     amps_by = man.get("pca_amps", {}) or {}
     pca_amps = [list(amps_by.get(str(int(i)), [])) for i in idxs]
+    # The morphing "disagreement movie" is a client-animated tier (mean + PCA
+    # components); the viewer special-cases it (no fetchable cube).
+    if pca_n > 0:
+        tiers.append({"key": "morph", "label": "disagreement movie"})
     return {
         "count": len(idxs),
         "tiers": tiers,

@@ -145,6 +145,7 @@ export function mountCutoutViewer(root, opts = {}) {
     playMs: PLAY_INTERVAL_MS,   // auto-run cadence (live-tunable via the nav slider)
     hot: false,
   };
+  let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
 
   // --- DOM scaffold --------------------------------------------------------
   root.classList.add("cutout-viewer");
@@ -207,7 +208,7 @@ export function mountCutoutViewer(root, opts = {}) {
     for (const di of [1, -1, 2]) {
       const j = index + di;
       if (j >= 0 && j < state.meta.count) {
-        for (const t of state.tiers) if (tierAvail(t)) jobs.push([t, j]);
+        for (const t of state.tiers) if (tierAvail(t) && t !== "morph") jobs.push([t, j]);
       }
     }
     for (const [t, j] of jobs) fetchCube(t, j).catch(() => {});
@@ -219,7 +220,8 @@ export function mountCutoutViewer(root, opts = {}) {
   // happens here; transfer() is cheap on every slider tick.
   function prepare(rec) {
     const key = `${rec.key}:${state.color}`;
-    if (state.prepCache.has(key)) return state.prepCache.get(key);
+    // The morph frame's data changes every tick (rec.noCache) → never cache it.
+    if (!rec.noCache && state.prepCache.has(key)) return state.prepCache.get(key);
 
     const C = state.meta.color;
     const names = C.band_names;
@@ -284,8 +286,10 @@ export function mountCutoutViewer(root, opts = {}) {
       prepared = { mode: "gray", I, factor: 1.0 };
     }
     prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
-    state.prepCache.set(key, prepared);
-    if (state.prepCache.size > 48) state.prepCache.delete(state.prepCache.keys().next().value);
+    if (!rec.noCache) {
+      state.prepCache.set(key, prepared);
+      if (state.prepCache.size > 48) state.prepCache.delete(state.prepCache.keys().next().value);
+    }
     return prepared;
   }
 
@@ -402,6 +406,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const want = orderedSelected().map((t) => t.key);
     const have = state.frames.map((f) => f.tier);
     if (want.length === have.length && want.every((t, i) => t === have[i])) return;
+    stopMorph();               // frames are being recreated → drop the old loop
     framesRow.innerHTML = "";
     state.frames = want.map((t) => {
       const fr = makeFrame(t);
@@ -409,6 +414,49 @@ export function mountCutoutViewer(root, opts = {}) {
       return fr;
     });
     framesRow.classList.toggle("cv-multi", state.frames.length > 1);
+  }
+
+  // --- "morph" tier: an animated frame in the row (ensemble disagreement) ---
+  function stopMorph() {
+    if (morphRaf != null) cancelAnimationFrame(morphRaf);
+    morphRaf = null;
+  }
+
+  // Drive one frame with mean + Σ aᵢ·sin(2π fᵢ t)·componentᵢ, rendered through
+  // the SAME colour pipeline as the static frames (so band/colour/asinh match).
+  async function startMorph(fr, index) {
+    stopMorph();
+    const n = (state.meta && state.meta.pca_n) | 0;
+    let sr;
+    const comps = [];
+    try {
+      sr = await fetchCube("sr", index);
+      for (let k = 0; k < n; k++) {
+        try { comps.push(await fetchCube(`pca${k}`, index)); } catch { /* <2 members */ }
+      }
+    } catch { setFrameMsg(fr, "movie unavailable"); return; }
+    fr.frame.classList.remove("cv-loading");
+    const amps = (state.meta.pca_amps && state.meta.pca_amps[index]) || [];
+    const len = sr.data.length;
+    const data = new Float32Array(len);
+    const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
+                  label: "disagreement movie", asinh: sr.asinh, noCache: true };
+    const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
+    const SPEED = 0.5, AMP = 1.6;                     // fixed, resource-light
+    const t0 = performance.now();
+    const tick = (now) => {
+      const t = ((now - t0) / 1000) * SPEED;
+      data.set(sr.data);                             // mean
+      for (let k = 0; k < comps.length; k++) {
+        const ck = (amps[k] || 0) * AMP
+          * Math.sin(2 * Math.PI * FRQ[k % 3] * t + PH[k % 3]);
+        const cd = comps[k].data;
+        for (let i = 0; i < len; i++) data[i] += ck * cd[i];
+      }
+      renderInto(fr, rec);
+      morphRaf = requestAnimationFrame(tick);
+    };
+    morphRaf = requestAnimationFrame(tick);
   }
 
   // --- load + show current index across all selected tiers -----------------
@@ -420,10 +468,12 @@ export function mountCutoutViewer(root, opts = {}) {
       return;
     }
     state.index = Math.max(0, Math.min(state.index, state.meta.count - 1));
+    stopMorph();
     rebuildFrames();
     state.shown.clear();
     await Promise.all(state.frames.map(async (fr) => {
       if (!tierAvail(fr.tier)) { setFrameMsg(fr, `no ${fr.tier} for this object`); return; }
+      if (fr.tier === "morph") { await startMorph(fr, state.index); return; }
       fr.frame.classList.add("cv-loading");
       try {
         const rec = await fetchCube(fr.tier, state.index);

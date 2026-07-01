@@ -98,22 +98,17 @@
 {% endif %}
 
 <section class="card" id="ens-viewer-card" style="display:none;">
-  <h3>Field viewer
-    <span class="muted">— LR · SR (mean) · stdSR · HR · individual members</span></h3>
+  <h3>Field viewer <span class="muted">— LR · SR · stdSR · HR · members ·
+      disagreement movie</span></h3>
   <div id="ensemble-viewer"></div>
-  <p class="hint">SR is the ensemble mean; <b>stdSR</b> is the per-pixel std across
-     members (disagreement ≈ hallucination); each member's SR is its own tier.
-     Rendered client-side — band / colour / asinh / brightness controls are
-     instant. Cached for every field of the latest “Evaluate on test set” run.</p>
-
-  <h4 style="margin-top:16px;">Disagreement movie
-    <span class="muted">— morphing through the PCA disagreement subspace</span></h4>
-  <div id="ens-anim"></div>
-  <p class="hint">A smooth path through the ensemble's real disagreement basis
-     (mean + Σ aᵢ·sin·componentᵢ, the top {{ 3 }} PCA components of the member
-     residuals). Regions the members hallucinate <b>morph</b>; LR-constrained
-     structure stays still. Amplitude is in units of member σ; band + colour map
-     (incl. a temperature LUT) are selectable — single-band so it stays cheap.</p>
+  <p class="hint">Multi-select tiers to view <b>side-by-side</b>. SR is the
+     ensemble mean; <b>stdSR</b> is the per-pixel std (disagreement ≈
+     hallucination); each member's SR is its own tier; and <b>disagreement
+     movie</b> is an <i>animated</i> tier — mean + Σ aᵢ·sin·componentᵢ (top
+     {{ 3 }} PCA components) — so hallucinated regions morph in the same row
+     while LR-constrained structure stays still. It renders through the shared
+     colour pipeline, so band / colour / asinh apply to it too. Cached for every
+     field of the latest “Evaluate on test set” run.</p>
 </section>
 
 {% if result_pngs %}
@@ -199,7 +194,6 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
 // Mount the unified cutout viewer on the ensemble cubes cached by the last
 // evaluate (LR · SR mean · stdSR · HR). Hidden until at least one field exists.
 import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
-import { mountEnsembleAnim } from "{{ url_for('static', filename='ensemble_anim.js') }}";
 fetch("/viewer/meta/ensemble")
   .then((r) => (r.ok ? r.json() : null))
   .then((m) => {
@@ -207,7 +201,6 @@ fetch("/viewer/meta/ensemble")
     document.getElementById("ens-viewer-card").style.display = "";
     mountCutoutViewer(document.getElementById("ensemble-viewer"),
                       { collection: "ensemble" });
-    if (m.pca_n) mountEnsembleAnim(document.getElementById("ens-anim"));
   })
   .catch(() => {});
 </script>
