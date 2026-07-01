@@ -138,6 +138,7 @@ def run_synthetic_eval(
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
     from euclid_polish.eval.ensemble_infer import sr_from_model
+    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
@@ -157,6 +158,8 @@ def run_synthetic_eval(
             "/inference page once to sync them, or set Config.RECORDS_DIR_V2.")
     # Held-out test split when present, else validate (pre-test-split datasets).
     sub = eval_subset(rdir)
+    field_subset = sub                          # preserve subset; `sub` is reused as the
+                                                # per-object id inside the loop below
     src_csv = os.path.join(rdir, f"sources_{sub}.csv")
     by_field = read_sources(src_csv)
     if not by_field:
@@ -244,10 +247,18 @@ def run_synthetic_eval(
         }
         try:
             os.makedirs(obj_dir, exist_ok=True)
-            if idx != cur_idx:                  # same field → reuse the SR cube
+            if idx != cur_idx:                  # same field → reuse per-field arrays
                 lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
-                _, sr_data, members_full = sr_from_model(model, lr_cube)
-                sr_arr = np.asarray(sr_data, dtype=np.float32)            # (2H,2W,4)
+                cached = load_cached_member_stack(idx, subset=field_subset)
+                if cached is not None:          # reuse the ensemble page's cubes
+                    members_full = cached                              # (M,2H,2W,C)
+                    sr_arr = members_full.mean(axis=0).astype(np.float32)
+                    _emit(f"  field {idx}: reused ensemble cache "
+                          f"({members_full.shape[0]} members)")
+                else:                           # no cache → run inference on the field
+                    _, sr_data, members_full = sr_from_model(model, lr_cube)
+                    sr_arr = np.asarray(sr_data, dtype=np.float32)     # (2H,2W,C)
+                    _emit(f"  field {idx}: inference")
                 cur_idx = idx
             hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
 
