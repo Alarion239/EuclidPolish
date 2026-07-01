@@ -144,6 +144,8 @@ export function mountCutoutViewer(root, opts = {}) {
     playTimer: null,
     playMs: PLAY_INTERVAL_MS,   // auto-run cadence (live-tunable via the nav slider)
     hot: false,
+    morphAmp: 1.6,              // "morph" tier: amplitude (member-σ) + speed
+    morphSpeed: 0.5,
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
 
@@ -442,14 +444,15 @@ export function mountCutoutViewer(root, opts = {}) {
     const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
                   label: "disagreement movie", asinh: sr.asinh, noCache: true };
     const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
-    const SPEED = 0.5, AMP = 1.6;                     // fixed, resource-light
-    const t0 = performance.now();
-    const tick = (now) => {
-      const t = ((now - t0) / 1000) * SPEED;
+    let phase = 0, last = performance.now();          // accumulate phase so a
+    const tick = (now) => {                            // speed change never jumps
+      phase += ((now - last) / 1000) * state.morphSpeed;
+      last = now;
+      const amp = state.morphAmp;                     // live from the sliders
       data.set(sr.data);                             // mean
       for (let k = 0; k < comps.length; k++) {
-        const ck = (amps[k] || 0) * AMP
-          * Math.sin(2 * Math.PI * FRQ[k % 3] * t + PH[k % 3]);
+        const ck = (amps[k] || 0) * amp
+          * Math.sin(2 * Math.PI * FRQ[k % 3] * phase + PH[k % 3]);
         const cd = comps[k].data;
         for (let i = 0; i < len; i++) data[i] += ck * cd[i];
       }
@@ -517,6 +520,8 @@ export function mountCutoutViewer(root, opts = {}) {
       c.classList.toggle("active", on);
       if (g === "tier") c.classList.toggle("cv-disabled", tierDisabled(c.dataset.value));
     });
+    if (toolbar._morphGroup)
+      toolbar._morphGroup.style.display = state.tiers.includes("morph") ? "" : "none";
   }
 
   function onChip(group, value) {
@@ -588,6 +593,22 @@ export function mountCutoutViewer(root, opts = {}) {
         (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); }),
     );
     toolbar.append(sg);
+
+    // "morph" tier controls — amplitude + speed (live; the rAF loop reads them).
+    // Shown only while the disagreement-movie tier is selected (see syncChips).
+    if ((state.meta.tiers || []).some((t) => t.key === "morph")) {
+      const mg = el("div", { class: "cv-group cv-sliders cv-morph-ctl", style: "display:none;" });
+      mg.append(
+        slider("morph amplitude", 0.05, 3, state.morphAmp,
+          (v) => `${v.toFixed(2)}σ`, (v) => { state.morphAmp = v; }),
+        slider("morph speed", 0.1, 2, state.morphSpeed,
+          (v) => `${v.toFixed(2)}×`, (v) => { state.morphSpeed = v; }),
+      );
+      toolbar.append(mg);
+      toolbar._morphGroup = mg;
+    } else {
+      toolbar._morphGroup = null;
+    }
   }
 
   // --- nav (prev / editable index / next / play) ---------------------------
