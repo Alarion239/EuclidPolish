@@ -12,20 +12,87 @@
 {% endblock %}
 
 {% block viz %}
-<section class="card" id="ens-train-curves-card">
+<section class="card" id="ens-viewer-card" style="display:none;">
+  <h3>Field viewer <span class="muted">— LR · SR · stdSR · HR · members ·
+      disagreement movie</span></h3>
+  <div id="ensemble-viewer"></div>
+  <p class="hint">Multi-select tiers to view <b>side-by-side</b>. SR is the
+     ensemble mean; <b>stdSR</b> is the per-pixel std (disagreement ≈
+     hallucination); each member's SR is its own tier; and <b>disagreement
+     movie</b> is an <i>animated</i> tier — mean + Σ aᵢ·sin·componentᵢ (top
+     {{ 3 }} PCA components) — so hallucinated regions morph in the same row
+     while LR-constrained structure stays still. It renders through the shared
+     colour pipeline, so band / colour / asinh apply to it too. Cached for every
+     field of the latest “Evaluate on test set” run.</p>
+</section>
+
+<section class="card" id="ens-train-curves-card" style="display:none;">
   <h3>Training curves <span class="muted">— per member, latest value per step
       (rollbacks discarded)</span></h3>
-  <a href="{{ url_for('ensemble_training_curves') }}?fresh=1" target="_blank">
-    <img style="max-width:100%;height:auto;"
-         src="{{ url_for('ensemble_training_curves') }}"
-         alt="per-member training curves"
-         onerror="document.getElementById('ens-train-curves-card').style.display='none'">
-  </a>
-  <p class="hint">Each member's PSNR (left) and combined loss (right) vs step.
-     Where the model rolled back after a gradient spike, only the value from the
-     final pass through each step is shown. Populated once members are pulled
-     from FASRC.</p>
+  <div id="ens-train-curves"></div>
+  <p class="hint">Each member's PSNR (left) and combined loss (right, log scale)
+     vs step, drawn live in the browser. Where a model rolled back after a
+     gradient spike, only the value from the final pass through each step is
+     shown. Populated once members are pulled from FASRC.</p>
 </section>
+
+{% if eval_summary %}
+{% set es = eval_summary %}
+{% set have_labels = es.per_member_labels and es.per_member_labels|length == es.per_member_psnr|length %}
+<section class="card">
+  <h3>Latest test-set evaluation
+    {% if es.subset %}<span class="muted">({{ es.subset }},
+      {{ es.n_scored }} fields)</span>{% endif %}</h3>
+  <table class="data-table">
+    <thead><tr><th>Model</th><th>PSNR (dB)</th>
+      <th title="Signed gap to the ensemble mean; positive ⇒ this model alone beats the average.">Δ vs ensemble</th></tr></thead>
+    <tbody>
+      <tr style="background:rgba(120,160,255,0.12);font-weight:600;">
+        <td>Ensemble mean</td>
+        <td>{{ "%.3f"|format(es.ensemble_psnr) }}</td>
+        <td>—</td></tr>
+      {% for p in es.per_member_psnr %}
+      <tr><td><code>{{ es.per_member_labels[loop.index0] if have_labels else "member %02d"|format(loop.index0) }}</code></td>
+          <td>{{ "%.3f"|format(p) }}</td>
+          <td>{{ "%+.3f"|format(p - es.ensemble_psnr) }}</td></tr>
+      {% endfor %}
+      <tr style="font-style:italic;color:var(--muted);">
+        <td>Mean of members</td>
+        <td>{{ "%.3f"|format(es.mean_member_psnr) }}</td>
+        <td>{{ "%+.3f"|format(es.mean_member_psnr - es.ensemble_psnr) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="hint">Ensemble gain vs best member
+     <b>{{ "%+.3f"|format(es.ensemble_gain_db) }} dB</b> ⇒ averaging
+     {{ "helps" if es.ensemble_gain_db >= 0 else "hurts" }}. Disagreement: member
+     std <b>{{ "%.4g"|format(es.disagreement.mean_std_e) }} e⁻</b> · mean relative
+     <b>{{ "%.3f"|format(es.disagreement.mean_rel_disagreement) }}</b> ·
+     <b>{{ "%.1f"|format(es.disagreement.frac_flux_hallucinated * 100) }}%</b> of
+     SR flux hallucinated. High disagreement / hallucinated-flux ⇒ the SR is
+     inventing detail the LR doesn't constrain.</p>
+</section>
+{% endif %}
+
+{% if power_spectrum_png %}
+<section class="card">
+  <h3>Angular power spectrum <span class="muted">— ensemble mean vs HR (VIS)</span>
+    <button type="button" id="ens-ps-regen" class="mini-btn"
+            title="Recompute from the cached per-field cubes (no re-run / inference), applying the latest asinh + per-field-median fix."
+            style="float:right;">↻ Regenerate</button></h3>
+  <a id="ens-ps-link" href="{{ url_for('ensemble_power_spectrum') }}" target="_blank">
+    <img id="ens-ps-img" loading="lazy" style="max-width:100%;height:auto;"
+         src="{{ url_for('ensemble_power_spectrum') }}"
+         alt="ensemble power spectrum"></a>
+  <p class="hint"><b>Left:</b> power P(k) — HR vs ensemble-mean SR vs member
+     disagreement, per spatial scale. <b>Right:</b> coherence — <b>ρ(k)</b> is the
+     inter-model agreement (the members' power-spectrum correlation; needs <i>no
+     HR</i>, so it works on real Euclid images too), and <b>r(k)</b> is the
+     truth-based corr(mean SR, HR). Where the two track, ρ is a validated stand-in
+     for “did we recover real structure?” when there's no ground truth. ρ→1 =
+     agree/real, ρ→0 = invented; <b>ρ=½</b> marks the effective resolution.
+     <i>Regenerate</i> re-renders from cached cubes — seconds, no inference.</p>
+</section>
+{% endif %}
 
 <section class="card">
   <h3>Members</h3>
@@ -50,65 +117,6 @@
     <code>python scripts/train_ensemble.py --n-members 5</code>), then sync its
     checkpoints here.</p>
   {% endif %}
-</section>
-
-{% if eval_summary %}
-<section class="card">
-  <h3>Latest test-set evaluation
-    {% if eval_summary.subset %}<span class="muted">({{ eval_summary.subset }},
-      {{ eval_summary.n_scored }} fields){% endif %}</span></h3>
-  <table class="data-table">
-    <tbody>
-      <tr><td>Ensemble PSNR</td>
-          <td><b>{{ "%.3f"|format(eval_summary.ensemble_psnr) }} dB</b></td></tr>
-      <tr><td>Mean member PSNR</td>
-          <td>{{ "%.3f"|format(eval_summary.mean_member_psnr) }} dB</td></tr>
-      <tr><td>Ensemble gain vs best member</td>
-          <td>{{ "%+.3f"|format(eval_summary.ensemble_gain_db) }} dB</td></tr>
-      <tr><td>Per-member PSNR</td>
-          <td>{% for p in eval_summary.per_member_psnr %}{% if eval_summary.per_member_labels and eval_summary.per_member_labels|length == eval_summary.per_member_psnr|length %}{{ eval_summary.per_member_labels[loop.index0] }}: {% endif %}{{ "%.2f"|format(p) }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
-      <tr><td>Mean disagreement (member std)</td>
-          <td>{{ "%.4g"|format(eval_summary.disagreement.mean_std_e) }} e⁻</td></tr>
-      <tr><td>Mean relative disagreement</td>
-          <td>{{ "%.3f"|format(eval_summary.disagreement.mean_rel_disagreement) }}</td></tr>
-      <tr><td>Fraction of SR flux hallucinated</td>
-          <td>{{ "%.1f"|format(eval_summary.disagreement.frac_flux_hallucinated * 100) }} %</td></tr>
-    </tbody>
-  </table>
-  <p class="hint">Ensemble &ge; mean member ⇒ averaging helps. High disagreement /
-     hallucinated-flux ⇒ the SR is inventing detail the LR doesn't constrain.</p>
-</section>
-{% endif %}
-
-{% if power_spectrum_png %}
-<section class="card">
-  <h3>Angular power spectrum <span class="muted">— ensemble mean vs HR (VIS)</span></h3>
-  <a href="{{ url_for('serve_vis', relpath=power_spectrum_png) }}" target="_blank">
-    <img loading="lazy" style="max-width:100%;height:auto;"
-         src="{{ url_for('serve_vis', relpath=power_spectrum_png) }}"
-         alt="ensemble power spectrum"></a>
-  <p class="hint"><b>Left:</b> power P(k) — HR vs ensemble-mean SR vs member
-     disagreement, per spatial scale. <b>Right:</b> coherence — <b>ρ(k)</b> is the
-     inter-model agreement (the members' power-spectrum correlation; needs <i>no
-     HR</i>, so it works on real Euclid images too), and <b>r(k)</b> is the
-     truth-based corr(mean SR, HR). Where the two track, ρ is a validated stand-in
-     for “did we recover real structure?” when there's no ground truth. ρ→1 =
-     agree/real, ρ→0 = invented; <b>ρ=½</b> marks the effective resolution.</p>
-</section>
-{% endif %}
-
-<section class="card" id="ens-viewer-card" style="display:none;">
-  <h3>Field viewer <span class="muted">— LR · SR · stdSR · HR · members ·
-      disagreement movie</span></h3>
-  <div id="ensemble-viewer"></div>
-  <p class="hint">Multi-select tiers to view <b>side-by-side</b>. SR is the
-     ensemble mean; <b>stdSR</b> is the per-pixel std (disagreement ≈
-     hallucination); each member's SR is its own tier; and <b>disagreement
-     movie</b> is an <i>animated</i> tier — mean + Σ aᵢ·sin·componentᵢ (top
-     {{ 3 }} PCA components) — so hallucinated regions morph in the same row
-     while LR-constrained structure stays still. It renders through the shared
-     colour pipeline, so band / colour / asinh apply to it too. Cached for every
-     field of the latest “Evaluate on test set” run.</p>
 </section>
 
 {% if result_pngs %}
@@ -136,23 +144,10 @@
   <form id="ens-pull-form" action="/ensemble/pull">
     <p class="hint" style="flex-basis:100%;">When the <code>ensemble_train</code> job
        finishes, pull <code>member_NN/</code> from FASRC into the local checkpoint
-       tree so the render + evaluate actions below can run them.</p>
+       tree so the evaluate action below can run them.</p>
     <button type="submit">⬇️ Download from FASRC</button>
   </form>
   <div id="ens-pull-status"></div>
-</section>
-
-<section class="card">
-  <h3>Disagreement (hallucination cross-check)</h3>
-  <form id="ens-render-form" action="/ensemble/render">
-    <label title="Index of the held-out test field to render.">
-      Test field index
-      <input type="number" name="index" value="0" min="0"></label>
-    <p class="hint" style="flex-basis:100%;">Renders LR | ensemble-mean SR |
-       per-pixel member disagreement | HR. Bright disagreement = invented detail.</p>
-    <button type="submit">Render field</button>
-  </form>
-  <div id="ens-render-status"></div>
 </section>
 
 <section class="card">
@@ -177,17 +172,44 @@ document.getElementById("ens-pull-form").addEventListener("submit", (e) => {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });
-document.getElementById("ens-render-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  polishUI.run(e.target, document.getElementById("ens-render-status"), {
-    onDone: () => setTimeout(() => location.reload(), 1500),
-  });
-});
 document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
   e.preventDefault();
   polishUI.run(e.target, document.getElementById("ens-eval-status"), {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
+});
+// Power-spectrum "Regenerate": re-render from cached cubes (?fresh=1), cache-bust.
+(function () {
+  const btn = document.getElementById("ens-ps-regen");
+  const img = document.getElementById("ens-ps-img");
+  const link = document.getElementById("ens-ps-link");
+  if (!btn || !img) return;
+  btn.addEventListener("click", () => {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "↻ Regenerating…";
+    const url = img.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
+    img.onload = img.onerror = () => {
+      btn.disabled = false;
+      btn.textContent = label;
+    };
+    img.src = url;
+    if (link) link.href = img.src.split("?")[0] + "?fresh=1";
+  });
+})();
+</script>
+<script type="module">
+// In-browser per-member training curves (PSNR + loss). Card hides itself when
+// the JSON endpoint returns no members.
+import { mountEnsembleTrainCurves } from "{{ url_for('static', filename='ensemble_train_curves.js') }}";
+mountEnsembleTrainCurves(
+  document.getElementById("ens-train-curves"),
+  "{{ url_for('ensemble_training_curves_json') }}",
+).then(() => {
+  const c = document.getElementById("ens-train-curves");
+  if (c && c.style.display !== "none") {
+    document.getElementById("ens-train-curves-card").style.display = "";
+  }
 });
 </script>
 <script type="module">

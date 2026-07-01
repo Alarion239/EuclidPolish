@@ -8,7 +8,10 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
-from euclid_polish.training.log_plot import plot_ensemble_training_curves
+from euclid_polish.training.log_plot import (
+    ensemble_training_series,
+    plot_ensemble_training_curves,
+)
 from euclid_polish.web.helpers.ensemble_viz import (
     _ensemble_out_dir,
     ensemble_dir,
@@ -60,6 +63,12 @@ def register(app):
             if plot_ensemble_training_curves(ensemble_dir(), out_png) is None:
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/ensemble/training-curves.json")
+    def ensemble_training_curves_json():
+        """Per-member PSNR + loss series (rollback-deduped) for the in-browser
+        chart. Empty ``members`` → the client hides the card."""
+        return jsonify({"members": ensemble_training_series(ensemble_dir())})
 
     @app.route("/ensemble/power-spectrum.png")
     def ensemble_power_spectrum():

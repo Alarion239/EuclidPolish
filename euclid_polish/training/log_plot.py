@@ -404,6 +404,34 @@ def dedupe_latest_per_step(records: list[dict]) -> list[dict]:
     return [by_step[s] for s in sorted(by_step)]
 
 
+def ensemble_training_series(base_dir: str) -> list[dict]:
+    """Per-member training series for a client-side chart.
+
+    Each entry: ``{"name", "psnr": [[step, dB], ...], "loss": [[step, loss], ...]}``,
+    rollback-deduped (latest value per step) with resume-baseline rows dropped —
+    the same cleaning as :func:`plot_ensemble_training_curves`, but JSON-able.
+    """
+    out: list[dict] = []
+    for d in sorted(glob.glob(os.path.join(base_dir, "member_*"))):
+        log = os.path.join(d, TRAINING_LOG_FILENAME)
+        if not os.path.isfile(log):
+            continue
+        try:
+            recs = read_training_log(log)
+        except (FileNotFoundError, ValueError):
+            continue
+        recs = [r for r in recs
+                if str(r.get("is_baseline", "")).strip() not in ("1", "1.0", "true", "True")]
+        recs = dedupe_latest_per_step(recs)
+        psnr = [[int(r["step"]), float(r["psnr_stretched"])]
+                for r in recs if "psnr_stretched" in r]
+        loss = [[int(r["step"]), float(r["combined_loss"])]
+                for r in recs if "combined_loss" in r]
+        if psnr or loss:
+            out.append({"name": os.path.basename(d), "psnr": psnr, "loss": loss})
+    return out
+
+
 def plot_ensemble_training_curves(base_dir: str, output_path: str) -> str | None:
     """Overlay every ensemble member's PSNR + loss training curve.
 
