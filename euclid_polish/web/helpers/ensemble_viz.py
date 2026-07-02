@@ -16,7 +16,12 @@ import shutil
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.ensemble import EnsembleModel, evaluate_on_records, pca_field
+from euclid_polish.ensemble import (
+    EnsembleModel,
+    default_ensemble_dir,
+    evaluate_on_records,
+    pca_field,
+)
 from euclid_polish.eval.power_spectrum import (
     EnsembleSpectrumAccumulator,
     render_ensemble_power_spectrum,
@@ -35,10 +40,9 @@ _MEMBER_GLOB = "member_*"
 
 
 def ensemble_dir() -> str:
-    """Base directory of the ensemble: ``<ckpt parent>/ensemble`` (members in
-    ``member_NN/`` beside the single-model ``wdsr`` checkpoint)."""
-    parent = os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or "."
-    return os.path.join(parent, "ensemble")
+    """Base directory of the ensemble — the canonical
+    :func:`euclid_polish.ensemble.default_ensemble_dir`."""
+    return default_ensemble_dir()
 
 
 def _ensemble_out_dir() -> str:

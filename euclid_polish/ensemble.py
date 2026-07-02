@@ -24,12 +24,12 @@ disagreement quantifies how much a run is hallucinating.
 
 from __future__ import annotations
 
-import glob
 import os
 from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
 
+from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.model import Model, _checkpoint_exists
@@ -127,8 +127,10 @@ class EnsembleModel:
                 f"m{i:02d}" for i in range(len(self._models))
             ]
             return
-        dirs = sorted(glob.glob(os.path.join(base_dir, _MEMBER_GLOB)))
-        dirs = [d for d in dirs if os.path.isdir(d) and _checkpoint_exists(d)]
+        # Registry-active members only — an archived member's directory may
+        # still sit on disk (e.g. mirrored back from FASRC) but never loads.
+        dirs = [d for d in ensemble_registry.active_member_dirs(base_dir)
+                if os.path.isdir(d) and _checkpoint_exists(d)]
         if n_members is not None:
             dirs = dirs[: int(n_members)]
         models: list[Model] = []
@@ -249,6 +251,22 @@ class EnsembleModel:
                      pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                      band_names=bands, is_clean=True, role=Role.SR,
                      subset=lr.subset)
+
+    def upsample_batch(self, lr_images, *, on_progress=None, log=None):
+        """Ensemble-mean SR :class:`Image` for every LR image, in order.
+
+        Drop-in for :meth:`Model.upsample_batch` at the call sites that used
+        to run the single model (e.g. the sky-SR job)."""
+        self._require_members()
+        lr_list = list(lr_images)
+        out = []
+        for i, lr in enumerate(lr_list):
+            out.append(self.upsample(lr))
+            if on_progress is not None:
+                on_progress(i + 1, len(lr_list), f"field {lr.index}")
+            if log is not None:
+                log(f"field {lr.index}: ensemble mean of {self.n_members}\n")
+        return out
 
     def predict_images(self, lr: Image) -> tuple[Image, Image]:
         """``(mean_sr, disagreement)`` as :class:`Image` on the HR grid."""
@@ -377,21 +395,25 @@ class EnsembleModel:
         }
 
 
-def _default_ensemble_dir() -> str:
+def default_ensemble_dir() -> str:
+    """THE model location: ``<ckpt parent>/ensemble`` (members in
+    ``member_NN/``). The single canonical path — web helpers and eval all
+    resolve through here."""
     return os.path.join(
         os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
         "ensemble")
 
 
 def ensemble_available(base_dir: str | None = None) -> bool:
-    """Cheap check (no model loading) for whether a trained ensemble exists —
-    at least one ``member_NN/`` directory with a checkpoint. Mirrors the member
-    discovery in :class:`EnsembleModel` without constructing any keras models, so
-    callers can decide *whether* to run the ensemble before paying to load it."""
-    base_dir = base_dir or _default_ensemble_dir()
+    """Cheap check (no model loading) for whether a usable ensemble exists —
+    at least one registry-ACTIVE member with a checkpoint. Mirrors the member
+    discovery in :class:`EnsembleModel` without constructing any keras models,
+    so callers can decide *whether* to run the ensemble before paying to load
+    it. Archived members (dir possibly still on disk) do not count."""
+    base_dir = base_dir or default_ensemble_dir()
     return any(
         os.path.isdir(d) and _checkpoint_exists(d)
-        for d in glob.glob(os.path.join(base_dir, _MEMBER_GLOB)))
+        for d in ensemble_registry.active_member_dirs(base_dir))
 
 
 def load_ensemble(
@@ -408,9 +430,7 @@ def load_ensemble(
     checkpoint as a second model — see :class:`EnsembleModel`.
     """
     if base_dir is None:
-        base_dir = os.path.join(
-            os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
-            "ensemble")
+        base_dir = default_ensemble_dir()
     return EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
                          n_members=n_members, include_loss_best=include_loss_best)
 
