@@ -18,9 +18,11 @@ class _FakeModel:
         self.checkpoint_dir = checkpoint_dir
         self.kwargs = {"seed": seed, "init_weights_from": init_weights_from}
 
-    def train(self, lr, hr, steps=0, batch_size=16, **kw):
+    def train(self, lr, hr, steps=0, batch_size=16, resume_track="latest",
+              **kw):
         _FakeModel.calls.append(
-            {"dir": self.checkpoint_dir, "steps": steps, **self.kwargs})
+            {"dir": self.checkpoint_dir, "steps": steps,
+             "resume_track": resume_track, **self.kwargs})
 
 
 @pytest.fixture(autouse=True)
@@ -47,9 +49,13 @@ def test_train_members_runs_specs_in_order(tmp_path):
         ["member_09", "member_03", "member_10"]
     assert _FakeModel.calls[0] == {
         "dir": os.path.join(base, "member_09"), "steps": 1000,
-        "seed": 7, "init_weights_from": None}
+        "seed": 7, "init_weights_from": None, "resume_track": "latest"}
     assert _FakeModel.calls[2]["init_weights_from"] == \
         os.path.join(base, "member_03")
+    # continue resumes from the PSNR-best track (the model eval uses);
+    # add/fork keep max-step resume for crash recovery.
+    assert [c["resume_track"] for c in _FakeModel.calls] == \
+        ["latest", "psnr", "latest"]
 
 
 def test_train_members_writes_origin_for_created_members(tmp_path):

@@ -136,6 +136,29 @@ def _is_grad_spike(gnorm, step) -> bool:
 ANCHOR_PSNR_MAX_DB = 80.0
 
 
+def _plateau_wants_rollback(current_score, best_score, *, min_gap: float,
+                            has_best_ckpt: bool, save_best_only: bool) -> bool:
+    """True iff a firing plateau is DEGENERATE — the score sits ≥ ``min_gap``
+    below the run's best — and a rollback target exists.
+
+    Two plateau regimes need different responses. A *converged* plateau
+    (score ≈ best) wants the LR reduced in place. A *degenerate* plateau
+    (e.g. the ~43.5 dB skip-only basin, entered from a hot restart) must NOT
+    be cooled in place: that polishes the collapsed solution deeper. The fix
+    is restore-best-then-cool — continue from the pre-collapse weights at the
+    reduced LR. Pure function so the decision is unit-testable.
+    """
+    if not save_best_only or not has_best_ckpt:
+        return False
+    try:
+        cur, best = float(current_score), float(best_score)
+    except (TypeError, ValueError):
+        return False
+    if not (np.isfinite(cur) and np.isfinite(best)):
+        return False
+    return (best - cur) >= float(min_gap)
+
+
 def _combined_loss(loss_syn, loss_hst, loss_anchor, weights) -> float:
     """Weighted blend of the per-lane *losses* (lower = better), keyed on the
     SAME ``(w_syn, w_hst, w_anchor)`` the PSNR save-best composite uses.
@@ -180,6 +203,8 @@ class Trainer:
         plateau_lr_cooldown: int = Config.PLATEAU_LR_COOLDOWN,
         plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
         plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
+        plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
+        resume_track: str = "latest",
     ):
         """
         Initialize the trainer.
@@ -261,6 +286,11 @@ class Trainer:
         self._min_lr = float(plateau_lr_min_lr)
         self._plateau_lr_factor = float(plateau_lr_factor)
         self._plateau_lr_metric = str(plateau_lr_metric)
+        self._plateau_rollback_min_gap = float(plateau_rollback_min_gap)
+        if resume_track not in ("latest", "psnr"):
+            raise ValueError(f"resume_track must be 'latest' or 'psnr', "
+                             f"got {resume_track!r}")
+        self._resume_track = resume_track
         self._plateau = (
             PlateauLRReducer(
                 mode="max" if self._plateau_lr_metric == "psnr_stretched" else "min",
@@ -309,7 +339,7 @@ class Trainer:
         self._deterministic = bool(deterministic)
         self._training_run_id: ProvId | None = None
 
-        self.restore()
+        self.restore(self._resume_track)
 
     @property
     def model(self):
@@ -943,12 +973,16 @@ class Trainer:
                 if psnr_improved or loss_improved:
                     self._emit_checkpoint_provenance()
 
-                # Reduce-LR-on-plateau: if the watched validation metric has
-                # stalled for ``patience`` steps, cut the LR (× factor) via the
-                # SAME ``_lr_scale`` the spike guard uses. Skip the cut once the
-                # effective LR is already at the ``min_lr`` floor (nothing to
-                # gain). This is what lets a spike-free member leave the
-                # skip-only floor early instead of waiting for the schedule.
+                # Reduce-LR-on-plateau, two regimes. CONVERGED plateau (score
+                # ≈ run best): cut the LR in place (× factor) via the SAME
+                # ``_lr_scale`` the spike guard uses. DEGENERATE plateau
+                # (score sits ≥ rollback_min_gap below the run's best — e.g.
+                # the ~43.5 dB skip-only basin entered from a hot restart):
+                # cutting in place would only polish the collapsed solution,
+                # so restore the best-PSNR checkpoint FIRST and continue from
+                # the pre-collapse weights at the reduced LR ("cool from the
+                # best"). Skip entirely once the effective LR is at the
+                # ``min_lr`` floor (nothing to gain).
                 if self._plateau is not None:
                     metric = (combined_loss
                               if self._plateau_lr_metric == "combined_loss"
@@ -957,12 +991,47 @@ class Trainer:
                         before = self._apply_lr(step)
                         floored = before <= self._min_lr * (1.0 + 1e-9)
                         if not floored:
+                            rollback = _plateau_wants_rollback(
+                                save_best_score, float(ckpt.psnr.numpy()),
+                                min_gap=self._plateau_rollback_min_gap,
+                                has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
+                                save_best_only=save_best_only)
                             self._lr_scale *= self._plateau_lr_factor
+                            if rollback:
+                                # Same mechanics as the gradient-spike
+                                # rollback: weights + optimizer + step rewind
+                                # to the best-PSNR checkpoint; the eval-window
+                                # stats came from the collapsed model, so
+                                # discard them; re-arm the stall counter at
+                                # the rewound step.
+                                best_score = float(ckpt.psnr.numpy())
+                                self.checkpoint.restore(
+                                    ckpt_mgr.latest_checkpoint).expect_partial()
+                                step = int(ckpt.step.numpy())
+                                pbar.n = max(0, step)
+                                pbar.refresh()
+                                if step_callback is not None:
+                                    step_callback(step, int(steps))
+                                loss_mean.reset_state()
+                                loss_syn_mean.reset_state()
+                                loss_hst_mean.reset_state()
+                                loss_anchor_mean.reset_state()
+                                gnorm_mean.reset_state()
+                                gnorm_max.assign(0.0)
+                                self._plateau.reset(step)
                             after = self._apply_lr(step)
-                            pmsg = (f"↓ plateau ({self._plateau_lr_metric} flat "
-                                    f"for ≥{self._plateau.patience} steps) — "
-                                    f"reduced learning rate {before:.3g} → "
-                                    f"{after:.3g}")
+                            if rollback:
+                                pmsg = (f"↺ degenerate plateau (score "
+                                        f"{float(save_best_score):.3f} vs best "
+                                        f"{best_score:.3f}) — restored "
+                                        f"best-PSNR checkpoint @ step {step} "
+                                        f"and reduced learning rate "
+                                        f"{before:.3g} → {after:.3g}")
+                            else:
+                                pmsg = (f"↓ plateau ({self._plateau_lr_metric} "
+                                        f"flat for ≥{self._plateau.patience} "
+                                        f"steps) — reduced learning rate "
+                                        f"{before:.3g} → {after:.3g}")
                             tqdm.write("  " + pmsg)
                             if warn_callback is not None:
                                 warn_callback(pmsg)
@@ -1230,22 +1299,25 @@ class Trainer:
                 "psnr_raw": raw_mean.result(),
                 "mae_stretched": mae_mean.result()}
 
-    def restore(self):
-        """Resume from the MOST RECENT checkpoint, across both save-best tracks.
+    def restore(self, track: str = "latest"):
+        """Resume from a checkpoint.
 
-        The PSNR track (root dir) and the LOSS track (``loss_best/``) wrap the
-        same checkpoint object but save on different triggers, so the higher
-        ``step`` is whichever metric improved most recently. Restoring only the
-        PSNR track (the historical behaviour) silently rewinds to the last PSNR
-        improvement — which, when PSNR plateaus early, can throw away tens of
-        thousands of steps and look like a from-scratch restart. Pick the
-        candidate with the largest restored ``step`` so resume continues at the
-        true last checkpoint.
+        ``track="latest"`` (default): the MOST RECENT checkpoint across both
+        save-best tracks. The PSNR track (root dir) and the LOSS track
+        (``loss_best/``) wrap the same checkpoint object but save on different
+        triggers, so the higher ``step`` is whichever metric improved most
+        recently.
+
+        ``track="psnr"``: the PSNR-best track ONLY — the model evaluation
+        actually uses. Continue-mode training resumes here: after a degenerate
+        stretch (skip-only collapse) the loss track holds the collapsed
+        weights at a HIGHER step, so max-step resume would continue from the
+        wrong model.
         """
+        managers = ((self.checkpoint_manager,) if track == "psnr"
+                    else (self.checkpoint_manager, self.loss_checkpoint_manager))
         candidates = [
-            m.latest_checkpoint
-            for m in (self.checkpoint_manager, self.loss_checkpoint_manager)
-            if m.latest_checkpoint
+            m.latest_checkpoint for m in managers if m.latest_checkpoint
         ]
         if not candidates:
             return

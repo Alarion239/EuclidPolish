@@ -1024,7 +1024,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
                      "plateau_lr_enabled", "plateau_lr_factor",
                      "plateau_lr_patience", "plateau_lr_min_delta",
                      "plateau_lr_cooldown", "plateau_lr_min_lr",
-                     "plateau_lr_metric"):
+                     "plateau_lr_metric", "plateau_rollback_min_gap"):
             val = str(params.get(name, "")).strip()
             if val:
                 cmd += [f"--{name.replace('_', '-')}", val]

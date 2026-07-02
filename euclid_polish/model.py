@@ -206,6 +206,8 @@ class Model:
         plateau_lr_cooldown: int = Config.PLATEAU_LR_COOLDOWN,
         plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
         plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
+        plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
+        resume_track: str = "latest",
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -253,7 +255,9 @@ class Model:
                           plateau_lr_min_delta=plateau_lr_min_delta,
                           plateau_lr_cooldown=plateau_lr_cooldown,
                           plateau_lr_min_lr=plateau_lr_min_lr,
-                          plateau_lr_metric=plateau_lr_metric)
+                          plateau_lr_metric=plateau_lr_metric,
+                          plateau_rollback_min_gap=plateau_rollback_min_gap,
+                          resume_track=resume_track)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):

@@ -552,6 +552,11 @@ class Config:
     PLATEAU_LR_MIN_DELTA         = 1e-4
     PLATEAU_LR_COOLDOWN          = 2000     # steps after a cut before re-arming
     PLATEAU_LR_MIN_LR            = 1e-6     # absolute LR floor (both guards)
+    # A plateau firing while the score sits at least this far (score units ≈
+    # dB) below the run's best is DEGENERATE (e.g. the ~43.5 dB skip-only
+    # basin): the guard restores the best-PSNR checkpoint before cooling,
+    # instead of polishing the collapsed solution in place.
+    PLATEAU_ROLLBACK_MIN_GAP     = 0.2
     # Which held-out validation metric to watch: "combined_loss" (lower better)
     # or "psnr_stretched" (higher better).
     PLATEAU_LR_METRIC            = "combined_loss"

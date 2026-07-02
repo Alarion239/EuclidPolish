@@ -110,6 +110,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                    default=Config.PLATEAU_LR_MIN_LR)
     p.add_argument("--plateau-lr-metric", default=Config.PLATEAU_LR_METRIC,
                    choices=["combined_loss", "psnr_stretched"])
+    p.add_argument("--plateau-rollback-min-gap", type=float,
+                   default=Config.PLATEAU_ROLLBACK_MIN_GAP,
+                   help="A plateau firing this far (dB) below the run's best "
+                        "restores the best-PSNR checkpoint before cooling "
+                        "(degenerate-basin escape) instead of reducing the "
+                        "LR in place.")
     return p.parse_args(argv)
 
 
@@ -304,6 +310,7 @@ def main() -> int:
             plateau_lr_cooldown=args.plateau_lr_cooldown,
             plateau_lr_min_lr=args.plateau_lr_min_lr,
             plateau_lr_metric=args.plateau_lr_metric,
+            plateau_rollback_min_gap=args.plateau_rollback_min_gap,
         )
 
         if args.eval_images > 0:

@@ -276,8 +276,14 @@ class EnsembleModel:
             m = Model(d, scale=self._scale,
                       num_res_blocks=self._num_res_blocks,
                       seed=int(spec.seed), init_weights_from=spec.init_from)
+            # Continue resumes from the PSNR-best track — the model eval
+            # actually uses. Max-step resume would pick loss_best/ when that
+            # track ran ahead during a degenerate (skip-only) stretch.
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
-                    batch_size=batch_size, **train_kwargs)
+                    batch_size=batch_size,
+                    resume_track=("psnr" if spec.op == "continue"
+                                  else "latest"),
+                    **train_kwargs)
             self._models.append(m)
             if on_member is not None:
                 on_member(i + 1, len(specs), m)
