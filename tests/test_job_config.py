@@ -216,8 +216,11 @@ def test_config_page_renders_lr_plateau_section(client, cfg_path):
     assert b"plateau_lr_metric" in r.data
 
 
-def test_ensemble_train_build_command_injects_lr_plateau_flags():
+def test_ensemble_train_build_command_injects_lr_plateau_flags(monkeypatch):
     from euclid_polish.web.fasrc_pipeline import EnsembleTrainStep
+    monkeypatch.setattr(
+        "euclid_polish.web.fasrc_pipeline.next_member_names",
+        lambda base, k: [f"member_{i:02d}" for i in range(k)])
     params = {
         "n_members": "5", "steps": "100000",
         "lr_peak": "3e-4", "lr_warmup_steps": "1500",

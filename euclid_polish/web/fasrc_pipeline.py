@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 
@@ -953,12 +954,20 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
 
 
 class EnsembleTrainStep(FASRCPipelineStep):
-    """Sequential ensemble training: ``N`` WDSR members, distinct seeds.
+    """Ensemble training with three modes (sequential, one GPU job).
 
-    Shells out to ``scripts/train_ensemble.py``, which trains each member into
-    ``$EUCLID_POLISH_CKPT_DIR/../ensemble/member_NN/`` (member ``i`` seeded
-    ``base_seed+i``) and evaluates the ensemble on the held-out test set at the
-    end. Pull the trained members back via the ensemble page's download action.
+    Shells out to ``scripts/train_ensemble.py``:
+
+    * ``add`` — create N NEW members (fresh names allocated from the LOCAL
+      registry at submit time, so archived/tombstoned indices are never
+      reused) and train only them;
+    * ``continue`` — train selected existing members ``extra_steps`` more
+      steps each (warm cosine restart over the new absolute total);
+    * ``fork`` — create N new members initialized from an existing member's
+      weights (psnr or loss track), step 0, fresh optimizer + LR schedule.
+
+    Evaluates the ensemble on the held-out test set at the end. Pull the
+    trained members back via the ensemble page's download action.
     """
 
     def __init__(self) -> None:
@@ -974,14 +983,30 @@ class EnsembleTrainStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
-        n_members = int(params.get("n_members", 5) or 5)
-        steps     = int(params.get("steps", Config.DEFAULT_TRAIN_STEPS) or
-                        Config.DEFAULT_TRAIN_STEPS)
-        cmd = [
-            "scripts/train_ensemble.py",
-            "--n-members", str(max(1, n_members)),
-            "--steps",     str(steps),
-        ]
+        mode = str(params.get("mode", "add") or "add").strip()
+        steps = int(params.get("steps", Config.DEFAULT_TRAIN_STEPS) or
+                    Config.DEFAULT_TRAIN_STEPS)
+        cmd = ["scripts/train_ensemble.py", "--mode", mode]
+        if mode == "continue":
+            members = str(params.get("members", "")).strip()
+            cmd += ["--members", members,
+                    "--extra-steps",
+                    str(int(params.get("extra_steps", 50_000) or 50_000))]
+        else:
+            # add / fork create members → allocate names from the LOCAL
+            # registry now (tombstones must never be reused, and the remote
+            # dir still holds archived members' directories).
+            count = int(params.get("count", params.get("n_members", 0)) or
+                        (1 if mode == "fork" else 5))
+            names = next_member_names(default_ensemble_dir(), count)
+            cmd += ["--count", str(count),
+                    "--member-names", ",".join(names),
+                    "--steps", str(steps)]
+            if mode == "fork":
+                cmd += ["--fork-from",
+                        str(params.get("fork_from", "")).strip(),
+                        "--fork-track",
+                        str(params.get("fork_track", "psnr") or "psnr")]
         # Fixed base seed → fully reproducible ensemble; blank / -1 → entropy
         # (the value used is still recorded on each member's provenance).
         base_seed = str(params.get("base_seed", "")).strip()

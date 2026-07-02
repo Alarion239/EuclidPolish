@@ -92,23 +92,54 @@ class TestRegistry:
             "lensfinder_build_stamps", "lensfinder_train",
         }
 
-    def test_ensemble_train_step_build_command(self):
+    def test_ensemble_train_step_build_command(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: [f"member_{9 + i:02d}" for i in range(k)])
         step = REGISTRY.get("ensemble_train")
         assert step.needs_gpu and step.defaults.n_gpus == 1
         argv = step.build_command({"n_members": 7, "steps": 150000,
                                    "base_seed": 42})
         assert "scripts/train_ensemble.py" in argv
-        assert argv[argv.index("--n-members") + 1] == "7"
+        assert argv[argv.index("--mode") + 1] == "add"      # legacy default
+        assert argv[argv.index("--count") + 1] == "7"
+        assert argv[argv.index("--member-names") + 1] == \
+            ",".join(f"member_{9 + i:02d}" for i in range(7))
         assert argv[argv.index("--steps") + 1] == "150000"
         assert argv[argv.index("--base-seed") + 1] == "42"
 
-    def test_ensemble_train_step_entropy_seed_omits_flag(self):
+    def test_ensemble_train_step_entropy_seed_omits_flag(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: [f"member_{i:02d}" for i in range(k)])
         # Blank / -1 base seed → no --base-seed (entropy on the cluster).
         step = REGISTRY.get("ensemble_train")
         assert "--base-seed" not in step.build_command(
             {"n_members": 5, "base_seed": ""})
         assert "--base-seed" not in step.build_command(
             {"n_members": 5, "base_seed": "-1"})
+
+    def test_ensemble_train_continue_mode(self):
+        # Continue never allocates names (and thus never reads the registry).
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "continue", "members": "member_03,member_05",
+             "extra_steps": 500})
+        assert argv[argv.index("--mode") + 1] == "continue"
+        assert argv[argv.index("--members") + 1] == "member_03,member_05"
+        assert argv[argv.index("--extra-steps") + 1] == "500"
+        assert "--member-names" not in argv and "--count" not in argv
+
+    def test_ensemble_train_fork_mode(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_11"])
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "fork", "fork_from": "member_02", "fork_track": "loss",
+             "count": 1, "steps": 2000})
+        assert argv[argv.index("--fork-from") + 1] == "member_02"
+        assert argv[argv.index("--fork-track") + 1] == "loss"
+        assert argv[argv.index("--member-names") + 1] == "member_11"
+        assert argv[argv.index("--count") + 1] == "1"
 
     def test_tfrecords_step_passes_max_relative_noise(self):
         """The bright-stamp rejection threshold must reach the
