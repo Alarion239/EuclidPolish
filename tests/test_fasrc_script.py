@@ -169,9 +169,9 @@ def test_cpu_only_step_omits_gres():
 
 
 def test_gpu_step_keeps_gres_line():
-    """The HST/WDSR trainer is a GPU step and keeps its --gres line."""
-    built = REGISTRY.get("train").build_sbatch_body(
-        params={"n_syn": 4}, resources=_resources(n_gpus=1, partition="gpu"),
+    """The ensemble trainer is a GPU step and keeps its --gres line."""
+    built = REGISTRY.get("ensemble_train").build_sbatch_body(
+        params={"n_members": 2}, resources=_resources(n_gpus=1, partition="gpu"),
         cfg=FasrcConfig(), label="x",
     )
     assert "#SBATCH --gres=gpu:1" in built["body"]

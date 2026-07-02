@@ -30,6 +30,7 @@ from euclid_polish.sky.observation.observation_simulator import ObservationSimul
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
     plot_reconstruction,
+    reconstruct,  # experimental round-trip lane only (raw keras model)
     scaled_wcs_header,
 )
 from euclid_polish.web import fasrc_config

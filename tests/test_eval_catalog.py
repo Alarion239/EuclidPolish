@@ -162,8 +162,8 @@ class TestReconstructCutoutAt:
             return lr_cube[..., 0], sr, None
 
         monkeypatch.setattr(jobs_impl, "fetch_cutout_at", fake_fetch)
-        import euclid_polish.eval.ensemble_infer as _ei
-        monkeypatch.setattr(_ei, "sr_from_model", fake_sr_from_model)
+        # jobs_impl imports sr_from_model at module scope — patch it there.
+        monkeypatch.setattr(jobs_impl, "sr_from_model", fake_sr_from_model)
 
         out_dir = str(tmp_path / "obj")
         res = jobs_impl.reconstruct_cutout_at(
@@ -215,8 +215,8 @@ class TestReconstructCutoutAt:
             sr = np.ones((2 * h, 2 * w, lr_cube.shape[-1]), dtype=np.float32)
             return lr_cube[..., 0], sr, None
 
-        import euclid_polish.eval.ensemble_infer as _ei
-        monkeypatch.setattr(_ei, "sr_from_model", fake_sr_from_model)
+        # jobs_impl imports sr_from_model at module scope — patch it there.
+        monkeypatch.setattr(jobs_impl, "sr_from_model", fake_sr_from_model)
 
         res = jobs_impl.reconstruct_cutout_at(
             model=None, ra=12.3, dec=-4.5, cutout_size_vis_pixels=h,
@@ -866,14 +866,14 @@ class TestSyntheticCutouts:
             fits.PrimaryHDU(stack).writeto(d / "original_stack.fits")
             fits.PrimaryHDU(sr).writeto(d / "SR.fits")
 
-        monkeypatch.setattr(catalog_runner, "load_eval_model",
+        monkeypatch.setattr(grouped_runner, "load_eval_ensemble",
                             lambda *a, **k: pytest.fail("model should not load"))
         monkeypatch.setattr(catalog_runner, "eval_catalog_object",
                             lambda *a, **k: pytest.fail("lens should be reused"))
-        # This test exercises the single-model reuse path: declare no ensemble so
-        # the runner doesn't re-run these SR-only objects to add disagreement cubes.
-        monkeypatch.setattr("euclid_polish.ensemble.ensemble_available",
-                            lambda *a, **k: False)
+        # 1-member reuse path: a single active label ⇒ no disagreement cubes
+        # demanded, so these SR-only objects are reused as-is.
+        monkeypatch.setattr(grouped_runner, "active_labels",
+                            lambda *a, **k: ["00·psnr"])
 
         logs = []
         res = grouped_runner.run_grouped_analysis(
@@ -1011,13 +1011,13 @@ class TestCenterCropAndReuse:
         fits.PrimaryHDU(np.ones((4, 512, 512), np.float32)).writeto(
             sd / "SR.fits")
 
-        monkeypatch.setattr(catalog_runner, "load_eval_model",
+        monkeypatch.setattr(grouped_runner, "load_eval_ensemble",
                             lambda *a, **k: pytest.fail("model should not load"))
         monkeypatch.setattr(catalog_runner, "eval_catalog_object",
                             lambda *a, **k: pytest.fail("should not download"))
-        # Single-model reuse path: no ensemble → don't re-run to add movie cubes.
-        monkeypatch.setattr("euclid_polish.ensemble.ensemble_available",
-                            lambda *a, **k: False)
+        # 1-member reuse path: single active label → no movie cubes demanded.
+        monkeypatch.setattr(grouped_runner, "active_labels",
+                            lambda *a, **k: ["00·psnr"])
 
         out = tmp_path / "run"
         res = grouped_runner.run_grouped_analysis(
@@ -1069,7 +1069,7 @@ class TestCenterCropAndReuse:
 
 
 def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
-    """When a model is passed in, load_eval_model is NOT called and the
+    """When a model is passed in, load_eval_ensemble is NOT called and the
     supplied model object is threaded to eval_catalog_object."""
     from euclid_polish.eval import catalog_runner
 
@@ -1078,8 +1078,8 @@ def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
     cat.write_text("id,ra,dec,grade\nobj1,10.0,-5.0,A\n")
 
     def _boom(*a, **k):
-        raise AssertionError("load_eval_model must NOT be called when model= is supplied")
-    monkeypatch.setattr(catalog_runner, "load_eval_model", _boom)
+        raise AssertionError("load_eval_ensemble must NOT be called when model= is supplied")
+    monkeypatch.setattr(catalog_runner, "load_eval_ensemble", _boom)
 
     seen = {}
 
@@ -1100,12 +1100,12 @@ def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
 
 
 def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
-    """A supplied model= skips load_eval_model and threads through to eval_catalog_object."""
+    """A supplied model= skips load_eval_ensemble and threads through to eval_catalog_object."""
     from euclid_polish.eval import catalog_runner, grouped_runner
 
     def _boom(*a, **k):
-        raise AssertionError("load_eval_model must NOT be called when model= supplied")
-    monkeypatch.setattr(catalog_runner, "load_eval_model", _boom)
+        raise AssertionError("load_eval_ensemble must NOT be called when model= supplied")
+    monkeypatch.setattr(grouped_runner, "load_eval_ensemble", _boom)
 
     seen = {}
 
@@ -1134,7 +1134,11 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
     cat = tmp_path / "lenses.csv"
     cat.write_text("id,ra,dec,grade\nlensA,10.0,-5.0,A\n")
 
-    sentinel = object()
+    class _StubEnsemble:
+        n_members = 1
+        member_labels = ["00·psnr"]
+
+    sentinel = _StubEnsemble()
     result = grouped_runner.run_grouped_analysis(
         str(tmp_path / "out"), 0, catalog_path=str(cat),
         include_synthetic=False, include_galaxies=False, model=sentinel,
@@ -1189,7 +1193,7 @@ def test_grouped_downloads_padded_size(monkeypatch, tmp_path):
         return {"ok": False, "error": "stub"}      # not produced → harmless drop
 
     monkeypatch.setattr(catalog_runner, "eval_catalog_object", fake_eval)
-    monkeypatch.setattr(catalog_runner, "load_eval_model", lambda *a, **k: object())
+    monkeypatch.setattr(grouped_runner, "load_eval_ensemble", lambda *a, **k: object())
     grouped_runner.run_grouped_analysis(
         str(tmp_path / "out"), n=1, catalog_path=str(cat),
         include_synthetic=False, include_galaxies=False, log=lambda m: None)

@@ -586,6 +586,11 @@ class Config:
     DEFAULT_EVALUATE_EVERY       = 1000
     DEFAULT_VALIDATE_IMAGES      = 100
     DEFAULT_NUM_RES_BLOCKS       = 32
+    # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
+    # model from this dir anymore — THE model is the ensemble at
+    # ``<parent>/ensemble`` (ensemble_registry.default_ensemble_dir()),
+    # with active members tracked in ``<parent>/ensemble_registry.json``.
+    # The env override keeps steering where that parent is.
     DEFAULT_CHECKPOINT_DIR       = os.environ.get(
         "EUCLID_POLISH_CKPT_DIR", "./ckpt/wdsr",
     )

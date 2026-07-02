@@ -411,20 +411,26 @@ def test_log_stream_emits_lines(fake_remote, client):
 # ---------------------------------------------------------------------------
 
 def test_mirror_trigger_rsyncs_remote_ckpts(fake_remote, client, tmp_path):
-    # Pretend training wrote a checkpoint file into the "remote" ckpt dir.
-    (fake_remote["ckpt_dir"] / "ckpt-12345.h5").write_bytes(b"hello world")
-    (fake_remote["ckpt_dir"] / "training_log.jsonl").write_text('{"step": 1}\n')
+    # Pretend ensemble training wrote a member on FASRC — since the
+    # ensemble-only refactor the mirror pulls the remote ENSEMBLE dir
+    # (sibling of ckpt_dir), so members land under member_NN/ locally.
+    member = fake_remote["ckpt_dir"].parent / "ensemble" / "member_00"
+    member.mkdir(parents=True)
+    (member / "ckpt-12345.h5").write_bytes(b"hello world")
+    (member / "training_log.jsonl").write_text('{"step": 1}\n')
 
     r = client.post("/api/fasrc/mirror/trigger")
     assert r.status_code == 200
 
     mirror = Path(fake_remote["cfg"].local_ckpt_mirror)
-    assert (mirror / "ckpt-12345.h5").read_bytes() == b"hello world"
-    assert (mirror / "training_log.jsonl").exists()
+    assert (mirror / "member_00" / "ckpt-12345.h5").read_bytes() == b"hello world"
+    assert (mirror / "member_00" / "training_log.jsonl").exists()
 
 
 def test_mirror_status_reflects_last_sync(fake_remote, client):
-    (fake_remote["ckpt_dir"] / "a.bin").write_bytes(b"x")
+    ens = fake_remote["ckpt_dir"].parent / "ensemble"
+    ens.mkdir(exist_ok=True)
+    (ens / "a.bin").write_bytes(b"x")
     client.post("/api/fasrc/mirror/trigger")
     s = client.get("/api/fasrc/mirror/status").get_json()
     assert s["last_run_at"] is not None
