@@ -98,6 +98,29 @@ def test_ensemble_page_renders(client):
     assert b"Ensemble" in r.data
 
 
+def test_ensemble_power_spectrum_serves_with_relative_vis_dir(
+        client, tmp_path, monkeypatch):
+    """Relative VIS_DIR must not make Flask send_file look under app.root_path."""
+    from euclid_polish.web.helpers.ensemble_viz import _ensemble_out_dir
+
+    monkeypatch.setattr(Config, "VIS_DIR",
+                        os.path.relpath(str(tmp_path / "vis")))
+    out_dir = _ensemble_out_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    minimal_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\rIDATx\x9cc\xfc\xcf\xc0\x00\x00\x00\x03\x00\x01\x9b\xc8"
+        b"\x9d\xed\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    with open(os.path.join(out_dir, "ensemble_power_spectrum.png"), "wb") as f:
+        f.write(minimal_png)
+
+    r = client.get("/ensemble/power-spectrum.png")
+    assert r.status_code == 200
+    assert r.content_type.startswith("image/png")
+
+
 def test_ensemble_status_no_members(monkeypatch, tmp_path):
     from euclid_polish.web.helpers.ensemble_viz import ensemble_status
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
@@ -150,6 +173,16 @@ def test_cutouts_page_renders(client):
     # than as server-rendered band chips.
     assert 'id="cutout-viewer"' in body
     assert "cutout_viewer.js" in body
+
+
+def test_cutout_viewer_exports_capture_all_visible_frames():
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              "euclid_polish", "web", "static")
+    source = open(os.path.join(static_dir, "cutout_viewer.js")).read()
+
+    assert "function compositeVisibleFrames" in source
+    assert "state.frames.find((f) => f.canvas.width > 1)" not in source
+    assert "Record the current view (all selected tiers, side by side)" in source
 
 
 def test_viewer_meta_unknown_collection_404(client):

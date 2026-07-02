@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 
 import numpy as np
@@ -52,7 +53,10 @@ def ensemble_dir() -> str:
 
 
 def _ensemble_out_dir() -> str:
-    d = os.path.join(Config.VIS_DIR, "ensemble")
+    # Config.VIS_DIR may be relative (the default is "./data/vis"). Flask's
+    # send_file resolves relative paths against app.root_path, so keep all
+    # ensemble artifacts pinned to the process cwd instead.
+    d = os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble"))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -136,7 +140,9 @@ def ensemble_status() -> dict:
     test_present = bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"dirty_{sub}"))
 
-    out_dir = os.path.join(Config.VIS_DIR, "ensemble")   # read-only here
+    # Same abspath as _ensemble_out_dir() but WITHOUT the makedirs — a page
+    # render is read-only and must not create directories.
+    out_dir = os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble"))
     # The power-spectrum summary gets its own card; keep it out of the gallery.
     ps_path = os.path.join(out_dir, "ensemble_power_spectrum.png")
     power_spectrum_png = (os.path.relpath(ps_path, Config.VIS_DIR)
@@ -404,12 +410,37 @@ def regenerate_power_spectrum() -> str | None:
     return ps_png
 
 
+def _delete_remote_member(name: str) -> str:
+    """Best-effort ``rm -rf`` of the member's dir on FASRC; returns a status
+    line for the job output + campaign log. Never raises — the local archive
+    already succeeded, so a remote hiccup only downgrades to a reminder."""
+    remote = f"{remote_ensemble_dir().rstrip('/')}/{name}"
+    if STATE.ssh is None or not STATE.ssh.is_connected():
+        return (f"NOT deleted on FASRC (not connected) — remove {remote} "
+                "there manually.")
+    # rm -rf guard: absolute, reasonably deep, and unmistakably a member dir.
+    if not (remote.startswith("/") and remote.count("/") >= 4
+            and "/ensemble/member_" in remote):
+        return f"NOT deleted on FASRC (refused unsafe path {remote!r})."
+    try:
+        rc, _out, err = STATE.ssh.run(f"rm -rf {shlex.quote(remote)}",
+                                      timeout=120)
+        if rc == 0:
+            return f"deleted on FASRC ({remote})."
+        return (f"FASRC delete failed (rc={rc}: {err.strip()[:200]}) — "
+                f"remove {remote} manually.")
+    except Exception as e:  # noqa: BLE001 — remote cleanup is best-effort
+        return (f"FASRC delete failed ({type(e).__name__}: {e}) — "
+                f"remove {remote} manually.")
+
+
 def job_archive_member(cap, *, name: str) -> dict:
     """Retire one ensemble member: zip → tracking, tombstone, delete, purge.
 
     The zip lands in the active tracking campaign's ``models/``; the registry
     gets a permanent tombstone (so a FASRC mirror pulling the dir back never
-    re-activates it); the local member dir is deleted; and the position-keyed
+    re-activates it); the local member dir is deleted; the FASRC-side copy is
+    deleted too (best-effort, needs the SSH session); and the position-keyed
     ensemble cube cache is purged eagerly (eval summaries/plots invalidate
     lazily via the membership fingerprint).
     """
@@ -437,16 +468,19 @@ def job_archive_member(cap, *, name: str) -> dict:
     ensemble_registry.archive_member_entry(
         base, name, zip_path=os.path.join("models", meta["name"]),
         commit=commit)
-    cap.tick(2, 3, "deleting member dir + caches")
+    cap.tick(2, 4, "deleting member dir + caches")
     shutil.rmtree(src, ignore_errors=True)
     shutil.rmtree(_ensemble_cubes_dir(), ignore_errors=True)  # position-keyed
+    cap.tick(3, 4, "deleting FASRC copy")
+    remote_status = _delete_remote_member(name)
     store.append_log(
         f"Archived ensemble member `{name}` → `models/{meta['name']}` "
         f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
-        "cube cache purged. REMINDER: the FASRC-side copy of this member "
-        "still exists remotely — remove it there when convenient.")
-    print(f"  ✓ {name} → tracking {meta['name']}; caches purged")
-    return {"zip": meta["name"], "member": name}
+        f"cube cache purged. FASRC copy: {remote_status}")
+    print(f"  ✓ {name} → tracking {meta['name']}; caches purged; "
+          f"FASRC copy: {remote_status}")
+    return {"zip": meta["name"], "member": name,
+            "remote": remote_status}
 
 
 def remote_ensemble_dir() -> str:

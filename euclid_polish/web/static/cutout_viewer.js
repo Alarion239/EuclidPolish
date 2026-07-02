@@ -651,7 +651,7 @@ export function mountCutoutViewer(root, opts = {}) {
       title: "Save the current view (all selected tiers, side by side) as a PNG",
       onclick: savePNG });
     const rec = el("button", { class: "cv-navbtn cv-rec", type: "button", text: "⏺ video",
-      title: "Record the first selected tier (e.g. the disagreement movie) — click to start, click again to stop and download a .webm clip",
+      title: "Record the current view (all selected tiers, side by side) — click to start, click again to stop and download a .webm clip",
       onclick: () => toggleRecord(rec) });
     nav.append(prev, idxWrap, next, play, speed, hint, png, rec);
   }
@@ -670,38 +670,109 @@ export function mountCutoutViewer(root, opts = {}) {
       + `${state.tiers.join("-") || "view"}_${state.color}`;
   }
 
-  function savePNG() {
-    const frames = state.frames.filter((f) => f.canvas.width > 1);
-    if (!frames.length) return;
-    let out = frames[0].canvas;
-    if (frames.length > 1) {
-      const gap = 4;
-      const h = Math.max(...frames.map((f) => f.canvas.height));
-      const w = frames.reduce((a, f) => a + f.canvas.width, 0)
-        + gap * (frames.length - 1);
-      out = document.createElement("canvas");
-      out.width = w; out.height = h;
-      const ctx = out.getContext("2d");
-      let x = 0;
-      for (const f of frames) { ctx.drawImage(f.canvas, x, 0); x += f.canvas.width + gap; }
+  function exportFrames() {
+    return state.frames.map((fr) => {
+      const rect = fr.frame.getBoundingClientRect();
+      return { fr, rect };
+    }).filter(({ fr, rect }) => fr.canvas.width > 1 && rect.width > 1 && rect.height > 1);
+  }
+
+  function drawLabel(ctx, text, x, y, maxW, opts = {}) {
+    if (!text) return;
+    ctx.save();
+    ctx.font = opts.font || '11px "JetBrains Mono", Menlo, monospace';
+    const padX = opts.padX || 8;
+    const padY = opts.padY || 4;
+    const lineH = opts.lineH || 15;
+    let label = text;
+    const limit = Math.max(20, maxW - 18);
+    while (label.length > 1 && ctx.measureText(label).width + 2 * padX > limit) {
+      label = `${label.slice(0, -2)}…`;
     }
+    const w = Math.min(limit, ctx.measureText(label).width + 2 * padX);
+    ctx.fillStyle = opts.background || "rgba(6, 9, 16, 0.68)";
+    ctx.fillRect(x, y, w, lineH);
+    ctx.fillStyle = opts.color || "#cdd6e6";
+    ctx.fillText(label, x + padX, y + lineH - padY);
+    ctx.restore();
+  }
+
+  function compositeVisibleFrames(target) {
+    const frames = exportFrames();
+    if (!frames.length) return null;
+    const left = Math.min(...frames.map(({ rect }) => rect.left));
+    const top = Math.min(...frames.map(({ rect }) => rect.top));
+    const right = Math.max(...frames.map(({ rect }) => rect.right));
+    const bottom = Math.max(...frames.map(({ rect }) => rect.bottom));
+    const cssW = Math.max(1, right - left);
+    const cssH = Math.max(1, bottom - top);
+    const scale = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+    const out = target || document.createElement("canvas");
+    const pxW = Math.max(1, Math.round(cssW * scale));
+    const pxH = Math.max(1, Math.round(cssH * scale));
+    if (out.width !== pxW || out.height !== pxH) {
+      out.width = pxW;
+      out.height = pxH;
+    }
+    const ctx = out.getContext("2d");
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = "#05070d";
+    ctx.fillRect(0, 0, cssW, cssH);
+    for (const { fr, rect } of frames) {
+      const x = rect.left - left;
+      const y = rect.top - top;
+      ctx.fillStyle = "#05070d";
+      ctx.fillRect(x, y, rect.width, rect.height);
+      ctx.drawImage(fr.canvas, x, y, rect.width, rect.height);
+      drawLabel(ctx, fr.overlay.textContent, x + 9, y + 8, rect.width);
+      if (fr.plens.style.display !== "none") {
+        drawLabel(ctx, fr.plens.textContent, x + 9, y + rect.height - 27,
+          rect.width, {
+            font: '600 12px "JetBrains Mono", Menlo, monospace',
+            background: "rgba(6, 9, 16, 0.74)",
+            color: "#e6ecf7",
+          });
+      }
+      if (fr.msg.style.display !== "none") {
+        drawLabel(ctx, fr.msg.textContent, x + 20, y + rect.height / 2 - 8,
+          rect.width - 40, { background: "rgba(6, 9, 16, 0.82)" });
+      }
+    }
+    return out;
+  }
+
+  function savePNG() {
+    const out = compositeVisibleFrames();
+    if (!out) return;
     out.toBlob((b) => { if (b) _download(b, `${_stem()}.png`); }, "image/png");
   }
 
   let recorder = null;
+  let recordRaf = null;
+  function stopRecordPainter() {
+    if (recordRaf != null) cancelAnimationFrame(recordRaf);
+    recordRaf = null;
+  }
+
   function toggleRecord(btn) {
     if (recorder) { recorder.stop(); return; }
-    const fr = state.frames.find((f) => f.canvas.width > 1);
-    if (!fr || typeof MediaRecorder === "undefined") return;
-    // captureStream only emits frames when the canvas repaints — perfect for
-    // the rAF-driven movie tier; a static tier records a still clip.
-    const stream = fr.canvas.captureStream(30);
+    if (!exportFrames().length || typeof MediaRecorder === "undefined") return;
+    const out = document.createElement("canvas");
+    const paint = () => {
+      compositeVisibleFrames(out);
+      recordRaf = requestAnimationFrame(paint);
+    };
+    paint();
+    const stream = out.captureStream(30);
     const mime = ["video/webm;codecs=vp9", "video/webm"]
       .find((m) => MediaRecorder.isTypeSupported(m));
     const chunks = [];
     recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = () => {
+      stopRecordPainter();
+      stream.getTracks().forEach((track) => track.stop());
       _download(new Blob(chunks, { type: "video/webm" }), `${_stem()}.webm`);
       recorder = null;
       btn.textContent = "⏺ video";

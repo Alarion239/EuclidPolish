@@ -41,6 +41,11 @@ def test_archive_member_full_flow(env, monkeypatch):
     from euclid_polish.config import Config
     from euclid_polish.tracking import default_store
     from euclid_polish.web.helpers import ensemble_viz as ev
+    from euclid_polish.web.remote import STATE
+
+    # Genuinely disconnected (the conftest session stub PRETENDS connected
+    # and swallows commands with rc=0, which would read as a remote delete).
+    monkeypatch.setattr(STATE, "ssh", None)
 
     base = ev.ensemble_dir()
     _mk_members(base, 0, 1)
@@ -61,7 +66,61 @@ def test_archive_member_full_flow(env, monkeypatch):
     zpath = os.path.join(default_store().current_dir, "models", out["zip"])
     with zipfile.ZipFile(zpath) as z:
         assert "checkpoint" in z.namelist()
-    assert "member_01" in default_store().read_log()            # campaign note
+    log = default_store().read_log()
+    assert "member_01" in log                                   # campaign note
+    # No SSH in the test env → the remote copy is flagged, not silently kept.
+    assert "NOT deleted on FASRC" in out["remote"]
+    assert "FASRC copy:" in log
+
+
+def test_archive_member_deletes_fasrc_copy_when_connected(env, monkeypatch):
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    from euclid_polish.web.remote import STATE
+
+    base = ev.ensemble_dir()
+    _mk_members(base, 0, 1)
+
+    ran = {}
+
+    class _FakeSSH:
+        def is_connected(self):
+            return True
+
+        def run(self, cmd, timeout=0):
+            ran["cmd"] = cmd
+            return 0, "", ""
+
+    class _Cfg:
+        ckpt_dir = "/n/netscratch/lab/user/EuclidPolish/ckpt/wdsr"
+
+    monkeypatch.setattr(STATE, "ssh", _FakeSSH())
+    monkeypatch.setattr("euclid_polish.web.helpers.ensemble_viz.fasrc_config.load",
+                        lambda: _Cfg())
+
+    out = ev.job_archive_member(_Cap(), name="member_01")
+    assert "deleted on FASRC" in out["remote"]
+    assert ran["cmd"] == ("rm -rf /n/netscratch/lab/user/EuclidPolish/ckpt/"
+                          "ensemble/member_01")
+
+
+def test_remote_delete_refuses_unsafe_path(env, monkeypatch):
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    from euclid_polish.web.remote import STATE
+
+    class _FakeSSH:
+        def is_connected(self):
+            return True
+
+        def run(self, cmd, timeout=0):  # pragma: no cover — must not be hit
+            raise AssertionError("rm must not run on an unsafe path")
+
+    class _Cfg:
+        ckpt_dir = "ckpt/wdsr"          # relative → unsafe remote path
+
+    monkeypatch.setattr(STATE, "ssh", _FakeSSH())
+    monkeypatch.setattr("euclid_polish.web.helpers.ensemble_viz.fasrc_config.load",
+                        lambda: _Cfg())
+    assert "refused unsafe path" in ev._delete_remote_member("member_01")
 
 
 def test_archive_member_rejects_bad_names(env):

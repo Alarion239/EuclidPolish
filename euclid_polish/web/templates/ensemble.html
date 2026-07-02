@@ -122,7 +122,7 @@
                       title="Start new member(s) initialized from this member's weights, at step 0 with a fresh LR schedule.">⑂ fork</button>
               <button type="button" class="mini-btn ens-archive-btn"
                       data-member="{{ m.name }}"
-                      title="Retire this member: zip its checkpoints into the active tracking campaign, remove it from the ensemble (registry tombstone), delete the local dir and purge its caches.">📦 archive</button></td></tr>
+                      title="Retire this member: zip its checkpoints into the active tracking campaign, remove it from the ensemble (registry tombstone), delete the local dir AND its FASRC copy, and purge its caches.">📦 archive</button></td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -247,7 +247,8 @@ document.querySelectorAll(".ens-archive-btn").forEach((btn) => {
     const name = btn.dataset.member;
     if (!confirm(`Archive ${name}?\n\nIts checkpoints are zipped into the active `
         + `tracking campaign, it is removed from the ensemble (permanent `
-        + `tombstone), and the local directory is deleted.`)) return;
+        + `tombstone), and BOTH the local directory and the FASRC copy are `
+        + `deleted.`)) return;
     const form = document.createElement("form");
     form.action = "/ensemble/archive-member";
     const inp = document.createElement("input");
