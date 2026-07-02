@@ -14,7 +14,10 @@ from collections.abc import Callable
 from typing import Any
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.ensemble_registry import active_labels
 from euclid_polish.eval import catalog_runner, galaxy_catalog, synthetic_runner
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
 from euclid_polish.eval.eval_catalog import read_eval_catalog
 
@@ -68,7 +71,7 @@ def run_grouped_analysis(
     out_dir: str, n: int, *,
     cutout_size: int = EVAL_LR_SIZE,
     catalog_path: str | None = None,
-    checkpoint: str | None = None,
+    ensemble_dir: str | None = None,
     num_res_blocks: int | None = None,
     asinh_scale: float | None = None,
     stamp_m: int = EVAL_HR_SIZE,
@@ -102,7 +105,7 @@ def run_grouped_analysis(
         from euclid_polish.eval.progress import tqdm_progress
         on_progress = tqdm_progress("grouped")
 
-    checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
+    ensemble_dir = ensemble_dir or default_ensemble_dir()
     catalog = catalog_path or catalog_runner.default_catalog_path()
     if not os.path.isfile(catalog):
         if catalog_path:
@@ -132,21 +135,23 @@ def run_grouped_analysis(
     # Load the SR model only for real lenses that do not already have cached
     # LR/SR FITS. Synthetic can be regenerated cheaply; A/B/C cutouts should
     # not be redownloaded when their existing outputs are present.
-    # When the eval model is an ensemble we (re)generate the disagreement cubes
-    # (stdSR + movie), so an object that only has a single-model SR.fits must be
-    # re-run to add them — not treated as done. Cheap probe, no model load.
-    from euclid_polish.ensemble import ensemble_available
-    want_disagreement = (hasattr(model, "member_arrays") if model is not None
-                         else ensemble_available())
+    # With >1 members we (re)generate the disagreement cubes (stdSR + movie),
+    # so an object that only has a plain SR.fits — or one produced by a
+    # DIFFERENT membership (fingerprint mismatch) — is re-run, not skipped.
+    # Cheap probe via the registry, no model load.
+    labels = (list(model.member_labels) if model is not None
+              else active_labels(ensemble_dir))
+    want_disagreement = len(labels) > 1
+    fp = labels if want_disagreement else None
 
     def _reusable(obj_id: str) -> bool:
         if catalog_runner.can_reuse_eval_object(
                 catalog_runner.object_output_dir(out_dir, obj_id),
-                require_disagreement=want_disagreement):
+                require_disagreement=want_disagreement, member_labels=fp):
             return True
         return bool(lens_source_dir) and catalog_runner.can_reuse_eval_object(
             catalog_runner.object_output_dir(lens_source_dir, obj_id),
-            require_disagreement=want_disagreement)
+            require_disagreement=want_disagreement, member_labels=fp)
 
     needs_lens_model = any(
         not _reusable(obj["id"])
@@ -154,8 +159,7 @@ def run_grouped_analysis(
         for obj in rows
     )
     if needs_lens_model and model is None:
-        from euclid_polish.eval.ensemble_infer import load_eval_ensemble_or_single
-        model = load_eval_ensemble_or_single(checkpoint, num_res_blocks, log=_emit)
+        model = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
     elif n_lens and not needs_lens_model:
         _emit("A/B/C lens outputs already present — reusing cached FITS")
     os.makedirs(out_dir, exist_ok=True)
@@ -182,14 +186,15 @@ def run_grouped_analysis(
             # Existence is checked BEFORE any archive download: a cutout already
             # on disk is reused as-is and never re-fetched.
             from_cache = catalog_runner.can_reuse_eval_object(
-                obj_dir, require_disagreement=want_disagreement)
+                obj_dir, require_disagreement=want_disagreement,
+                member_labels=fp)
             if from_cache:
                 _emit(f"  • {obj['id']}: already present locally — skipping download")
                 produced, err = True, ""
             else:
                 r0 = catalog_runner.eval_catalog_object(
                     model, obj, out_dir, cutout_size=download_size,
-                    asinh_scale=asinh_scale, checkpoint=checkpoint, grade=g,
+                    asinh_scale=asinh_scale, checkpoint=ensemble_dir, grade=g,
                     log=_emit)
                 produced, err = bool(r0.get("ok")), r0.get("error", "")
             # Hold the canonical geometry (LR EVAL_LR_SIZE², SR EVAL_HR_SIZE²),

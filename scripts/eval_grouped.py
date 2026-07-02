@@ -57,7 +57,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
                         "syn-gal stamp, maximizing yield)")
     p.add_argument("--catalog", default=None,
                    help="lens catalog CSV (default: the bundled lens catalog)")
-    p.add_argument("--checkpoint", default=Config.DEFAULT_CHECKPOINT_DIR)
+    p.add_argument("--ensemble-dir", default=None,
+                   help="ensemble base dir (default: <ckpt parent>/ensemble)")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args(argv)
 
@@ -70,7 +71,7 @@ def main(argv=None) -> int:
         out_dir, n=args.n,
         cutout_size=args.cutout_size,
         catalog_path=args.catalog,
-        checkpoint=args.checkpoint,
+        ensemble_dir=args.ensemble_dir,
         seed=args.seed,
         include_synthetic=not args.no_synthetic,
         lens_source_dir=args.lens_source,

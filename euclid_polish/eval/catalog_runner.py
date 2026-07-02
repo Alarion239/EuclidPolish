@@ -15,6 +15,7 @@ the WebUI job's progress bar / log panel and the CLI's stdout:
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import traceback
@@ -22,6 +23,8 @@ from collections.abc import Callable
 from typing import Any
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 # Per-object metric keys (from reconstruct_cutout_at) + the manifest columns.
@@ -62,22 +65,38 @@ def _base_manifest_row(obj, grade: str | None = None) -> dict[str, Any]:
 
 
 def can_reuse_eval_object(obj_dir: str, *,
-                          require_disagreement: bool = False) -> bool:
+                          require_disagreement: bool = False,
+                          member_labels: list[str] | None = None) -> bool:
     """True when an object already has the real-lens evaluation FITS outputs.
 
-    With ``require_disagreement`` (set when the eval model is an ensemble), also
+    With ``require_disagreement`` (set when the ensemble has >1 models), also
     require the disagreement cubes (``std.fits`` + ``pca0.fits``) so an object
-    that only carries a single-model ``SR.fits`` is re-run — letting the ensemble
-    add the stdSR + disagreement-movie cubes — instead of being skipped as done.
+    that only carries a plain ``SR.fits`` is re-run — letting the ensemble add
+    the stdSR + disagreement-movie cubes — instead of being skipped as done.
+
+    ``member_labels`` is the membership fingerprint: when given (alongside
+    ``require_disagreement``), the object's ``members.json`` must exist and
+    record the SAME labels — outputs produced by a different membership (e.g.
+    before a member was archived) are stale and must be regenerated.
     """
     needed = ["original_stack.fits", "SR.fits"]
     if require_disagreement:
         needed += ["std.fits", "pca0.fits"]
-    return all(
+    if not all(
         os.path.isfile(os.path.join(obj_dir, name))
         and os.path.getsize(os.path.join(obj_dir, name)) > 0
         for name in needed
-    )
+    ):
+        return False
+    if require_disagreement and member_labels is not None:
+        try:
+            with open(os.path.join(obj_dir, "members.json")) as f:
+                recorded = json.load(f).get("member_labels")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return False
+        if list(recorded or []) != list(member_labels):
+            return False
+    return True
 
 
 def _vis_plane(arr):
@@ -272,24 +291,6 @@ def write_manifest_upsert(
             writer.writerow({key: row.get(key, "") for key in cols})
 
 
-def load_eval_model(checkpoint: str | None = None,
-                    num_res_blocks: int | None = None):
-    """Load the local SR model once (raises if no checkpoint). Shared by the
-    single-catalog and grouped runners."""
-    import tensorflow as tf
-
-    from euclid_polish.training.inference import load_model_from_checkpoint
-
-    checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
-    num_res_blocks = num_res_blocks or Config.DEFAULT_NUM_RES_BLOCKS
-    if not tf.train.latest_checkpoint(checkpoint):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint}")
-    return load_model_from_checkpoint(
-        checkpoint, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
-        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-    )
-
-
 def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
                         asinh_scale: float | None, checkpoint: str,
                         grade: str | None = None, render: bool = False,
@@ -306,7 +307,9 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     obj_id = obj["id"]
     rec = _base_manifest_row(obj, grade=grade)
     if can_reuse_eval_object(object_output_dir(out_dir, obj_id),
-                             require_disagreement=hasattr(model, "member_arrays")):
+                             require_disagreement=model.n_members > 1,
+                             member_labels=(list(model.member_labels)
+                                            if model.n_members > 1 else None)):
         enforce_object_sizes(object_output_dir(out_dir, obj_id), log=emit)
         return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
     try:
@@ -330,7 +333,7 @@ def run_catalog_eval(
     *,
     out_dir: str,
     catalog_path: str | None = None,
-    checkpoint: str | None = None,
+    ensemble_dir: str | None = None,
     num_res_blocks: int | None = None,
     cutout_size: int = 256,
     grade: str | None = None,
@@ -358,7 +361,7 @@ def run_catalog_eval(
         if on_progress is not None:
             on_progress(done, total, label)
 
-    checkpoint = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
+    ensemble_dir = ensemble_dir or default_ensemble_dir()
     catalog = catalog_path or default_catalog_path()
 
     if not os.path.isfile(catalog):
@@ -383,8 +386,7 @@ def run_catalog_eval(
         for row in rows
     )
     if needs_model and model is None:
-        _emit(f"loading model from {checkpoint}")
-        model = load_eval_model(checkpoint, num_res_blocks)
+        model = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
     elif not needs_model:
         _emit("all catalog outputs already present — reusing cached FITS")
 
@@ -397,7 +399,7 @@ def run_catalog_eval(
               f"dec={row['dec']:.5f}")
         rec = eval_catalog_object(
             model, row, out_dir, cutout_size=cutout_size,
-            asinh_scale=asinh_scale, checkpoint=checkpoint,
+            asinh_scale=asinh_scale, checkpoint=ensemble_dir,
             render=render, log=_emit)
         n_ok, n_skip = (n_ok + 1, n_skip) if rec["ok"] else (n_ok, n_skip + 1)
         out_rows.append(rec)

@@ -1,45 +1,38 @@
+"""load_eval_ensemble(): always an EnsembleModel; clear error when empty."""
 from __future__ import annotations
 
-import euclid_polish.eval.ensemble_infer as ei
+import numpy as np
+import pytest
+
+from euclid_polish.eval import ensemble_infer as ei
 
 
-def test_loader_falls_back_to_single_when_no_ensemble(monkeypatch):
-    calls = {}
-
-    class _Empty:
-        n_members = 0
-
-    # load_ensemble is imported function-locally from euclid_polish.ensemble,
-    # so patch the true source symbol there.
-    monkeypatch.setattr("euclid_polish.ensemble.load_ensemble", lambda **k: _Empty())
-    def _fake_single(c, n):
-        calls["single"] = (c, n)
-        return "SINGLE_MODEL"
-
-    monkeypatch.setattr(
-        "euclid_polish.eval.catalog_runner.load_eval_model",
-        _fake_single)
-    out = ei.load_eval_ensemble_or_single("ckpt/x", 8, log=lambda m: None)
-    assert out == "SINGLE_MODEL"
-    assert "single" in calls
+class _FakeEns:
+    def __init__(self, n):
+        self.n_members = n
 
 
-def test_loader_uses_ensemble_when_present(monkeypatch):
-    class _Ens:
-        n_members = 5
+def test_returns_ensemble(monkeypatch):
+    monkeypatch.setattr(ei, "load_ensemble", lambda *a, **kw: _FakeEns(3))
+    logged = []
+    out = ei.load_eval_ensemble(log=logged.append)
+    assert out.n_members == 3
+    assert any("3 models" in m for m in logged)
 
-    monkeypatch.setattr("euclid_polish.ensemble.load_ensemble", lambda **k: _Ens())
-    out = ei.load_eval_ensemble_or_single(log=lambda m: None)
-    assert isinstance(out, _Ens)
+
+def test_zero_members_raises(monkeypatch):
+    monkeypatch.setattr(ei, "load_ensemble", lambda *a, **kw: _FakeEns(0))
+    with pytest.raises(RuntimeError, match="no active ensemble members"):
+        ei.load_eval_ensemble(log=lambda m: None)
 
 
-def test_loader_falls_back_on_exception(monkeypatch):
-    def _boom(**k):
-        raise RuntimeError("no ensemble dir")
+def test_sr_from_model_hides_members_for_singleton():
+    class _One:
+        n_members = 1
 
-    monkeypatch.setattr("euclid_polish.ensemble.load_ensemble", _boom)
-    monkeypatch.setattr(
-        "euclid_polish.eval.catalog_runner.load_eval_model",
-        lambda c, n: "SINGLE_MODEL")
-    out = ei.load_eval_ensemble_or_single(log=lambda m: None)
-    assert out == "SINGLE_MODEL"
+        def member_arrays(self, lr):
+            return np.zeros((1, 4, 4, 1), np.float32)
+
+    _lr_vis, sr, members = ei.sr_from_model(_One(), np.zeros((2, 2, 1)))
+    assert members is None                      # single member → no std cubes
+    assert sr.shape == (4, 4, 1)

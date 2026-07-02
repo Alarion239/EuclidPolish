@@ -15,6 +15,7 @@ import shutil
 
 import numpy as np
 
+from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble import (
     EnsembleModel,
@@ -300,6 +301,11 @@ def regenerate_power_spectrum() -> str | None:
         return None
     with open(man_path) as f:
         man = json.load(f)
+    # Stale membership (a member archived/added since the cubes were written)
+    # → the position-keyed cubes are invalid; don't render from them.
+    if ([str(x) for x in man.get("member_labels", []) or []]
+            != ensemble_registry.active_labels(ensemble_dir())):
+        return None
     idxs = [int(i) for i in man.get("indices", [])]
     sub = man.get("subset", "")
     n_members = len(man.get("member_labels", []))

@@ -502,7 +502,9 @@ def reconstruct_cutout_at(
     if members is not None:
         try:
             from euclid_polish.eval.disagreement import write_disagreement_cubes
-            write_disagreement_cubes(out_dir, members)
+            write_disagreement_cubes(
+                out_dir, members,
+                member_labels=list(getattr(model, "member_labels", []) or []))
             print("  ✓ saved disagreement cubes (std + pca)")
         except Exception as exc:  # noqa: BLE001 — never kill a run over the movie
             print(f"  [disagreement] cubes not written: {exc}")

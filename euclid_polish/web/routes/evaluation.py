@@ -280,7 +280,7 @@ def register(app):
         from euclid_polish.eval import grouped_runner
 
         def _run(cap):
-            cap.write("model: ensemble mean if trained, else single checkpoint\n")
+            cap.write("model: ensemble mean (registry-active members)\n")
             return grouped_runner.run_grouped_analysis(
                 out_dir=out_dir, n=n, include_synthetic=include_synth,
                 include_galaxies=True,           # real galaxies always included (fixed control)

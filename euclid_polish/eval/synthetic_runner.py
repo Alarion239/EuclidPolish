@@ -19,6 +19,8 @@ from typing import Any
 
 from euclid_polish.config import Config
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE, enforce_object_sizes
+from euclid_polish.eval.disagreement import write_disagreement_cubes
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
 
 
@@ -115,7 +117,7 @@ def run_synthetic_eval(
     out_dir: str, n: int, *,
     model=None,
     records_dir: str | None = None,
-    checkpoint: str | None = None,
+    ensemble_dir: str | None = None,
     num_res_blocks: int | None = None,
     asinh_scale: float | None = None,
     stamp_m: int = EVAL_HR_SIZE,
@@ -133,12 +135,14 @@ def run_synthetic_eval(
     import numpy as np
     from astropy.io import fits
 
-    from euclid_polish.eval.catalog_runner import load_eval_model
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
     from euclid_polish.eval.ensemble_infer import sr_from_model
-    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
+    from euclid_polish.eval.ensemble_cube_cache import (
+        cached_member_labels,
+        load_cached_member_stack,
+    )
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
@@ -226,7 +230,7 @@ def run_synthetic_eval(
     plan.sort(key=lambda t: (t[0], t[1], t[3]))  # group by field → reconstruct once
 
     if model is None:
-        model = load_eval_model(checkpoint, num_res_blocks)
+        model = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
     scale_hdr = float(asinh_scale or Config.STRETCH_SCALE_E)
     bands = ",".join(Config.LR_INPUT_BAND_NAMES)
 
@@ -235,6 +239,7 @@ def run_synthetic_eval(
     total = len(plan)
     cur_idx = None                              # SR is per-field; reconstruct once
     lr_cube = sr_arr = members_full = None
+    member_labels: list[str] = []               # fingerprint for members.json
     for j, (idx, grade, src, rank) in enumerate(plan):
         _tick(j, total, f"{grade} idx {idx}")
         sub = f"{grade}_{idx:04d}_{rank}"       # unique per (field, brightness rank)
@@ -252,11 +257,15 @@ def run_synthetic_eval(
                 cached = load_cached_member_stack(idx, subset=field_subset)
                 if cached is not None:          # reuse the ensemble page's cubes
                     members_full = cached                              # (M,2H,2W,C)
+                    member_labels = cached_member_labels() or []
                     sr_arr = members_full.mean(axis=0).astype(np.float32)
                     _emit(f"  field {idx}: reused ensemble cache "
                           f"({members_full.shape[0]} members)")
+                    if members_full.shape[0] < 2:   # ensemble of 1 → no cubes
+                        members_full = None
                 else:                           # no cache → run inference on the field
                     _, sr_data, members_full = sr_from_model(model, lr_cube)
+                    member_labels = list(model.member_labels)
                     sr_arr = np.asarray(sr_data, dtype=np.float32)     # (2H,2W,C)
                     _emit(f"  field {idx}: inference")
                 cur_idx = idx
@@ -315,13 +324,13 @@ def run_synthetic_eval(
             # for a single model. members_full is (M, 2H, 2W, C).
             if members_full is not None:
                 try:
-                    from euclid_polish.eval.disagreement import write_disagreement_cubes
                     mem_st = np.stack([
                         np.stack([crop_stamp(mem[..., b], cx=cx, cy=cy, m=m)
                                   for b in range(mem.shape[-1])], axis=-1)
                         for mem in np.asarray(members_full, dtype=np.float32)
                     ], axis=0)                                   # (M, m, m, C)
-                    write_disagreement_cubes(obj_dir, mem_st)
+                    write_disagreement_cubes(obj_dir, mem_st,
+                                             member_labels=member_labels)
                 except Exception as exc:  # noqa: BLE001
                     _emit(f"  [disagreement] {sub}: cubes not written: {exc}")
 

@@ -138,37 +138,6 @@ def test_upsample_implicit_store(tmp_path):
     assert isinstance(sr, Image)
 
 
-def test_eval_catalog_threads_model(monkeypatch):
-    """Model.eval_catalog delegates to run_catalog_eval with model=self (the Model instance)."""
-    from euclid_polish.eval import catalog_runner
-    m = _bare_model()
-    captured = {}
-    def _fake_run(*, out_dir, model=None, **kwargs):
-        captured.update(out_dir=out_dir, model=model, kwargs=kwargs)
-        return {"sentinel": True}
-    monkeypatch.setattr(catalog_runner, "run_catalog_eval", _fake_run)
-    result = m.eval_catalog(out_dir="outX", catalog_path="catY")
-    assert result == {"sentinel": True}
-    assert captured["model"] is m
-    assert captured["out_dir"] == "outX"
-    assert captured["kwargs"].get("catalog_path") == "catY"
-
-
-def test_eval_grouped_threads_model(monkeypatch):
-    """Model.eval_grouped delegates to run_grouped_analysis with model=self (the Model instance)."""
-    from euclid_polish.eval import grouped_runner
-    m = _bare_model()
-    captured = {}
-    def _fake_run(out_dir, n, *, model=None, **kwargs):
-        captured.update(out_dir=out_dir, n=n, model=model, kwargs=kwargs)
-        return {"sentinel": True}
-    monkeypatch.setattr(grouped_runner, "run_grouped_analysis", _fake_run)
-    result = m.eval_grouped("outX", 3, include_synthetic=False)
-    assert result == {"sentinel": True}
-    assert captured["model"] is m
-    assert captured["out_dir"] == "outX"
-    assert captured["n"] == 3
-    assert captured["kwargs"].get("include_synthetic") is False
 
 
 def test_fresh_model_builds_multiband_net(tmp_path):

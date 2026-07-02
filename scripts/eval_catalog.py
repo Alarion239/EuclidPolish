@@ -41,7 +41,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="output dir (default: Config.EVAL_RESULTS_DIR)")
     p.add_argument("--run-name", default="run",
                    help="deprecated; evaluation now accumulates in Config.EVAL_RESULTS_DIR")
-    p.add_argument("--checkpoint", default=Config.DEFAULT_CHECKPOINT_DIR)
+    p.add_argument("--ensemble-dir", default=None,
+                   help="ensemble base dir (default: <ckpt parent>/ensemble)")
     p.add_argument("--num-res-blocks", type=int,
                    default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--cutout-size", type=int, default=256)
@@ -60,7 +61,7 @@ def main(argv=None) -> int:
     catalog_runner.run_catalog_eval(
         out_dir=out_dir,
         catalog_path=args.catalog,
-        checkpoint=args.checkpoint,
+        ensemble_dir=args.ensemble_dir,
         num_res_blocks=args.num_res_blocks,
         cutout_size=args.cutout_size,
         grade=args.grade,

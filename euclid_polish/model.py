@@ -17,7 +17,6 @@ import tensorflow as tf
 from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.eval import catalog_runner, grouped_runner
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.image.tfio import parse_example
 from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
@@ -296,31 +295,6 @@ class Model:
                 on_progress(i + 1, None, f"idx {i}")
         return ImageSet.from_images(sr_list)
 
-    # -- evaluation interface --
-
-    def eval_catalog(self, *, out_dir, **kwargs):
-        """Evaluate this model on a lens catalog.
-
-        Thin wrapper over
-        :func:`~euclid_polish.eval.catalog_runner.run_catalog_eval`, passing
-        this model's loaded TF graph so it is not re-loaded from disk. All
-        other keyword args (``catalog_path``, ``checkpoint``, ``cutout_size``,
-        ``grade``, ``max_n``, ``render``, ``on_progress``, ``log`` …) pass
-        straight through. Returns the run summary dict.
-        """
-        return catalog_runner.run_catalog_eval(
-            out_dir=out_dir, model=self, **kwargs)
-
-    def eval_grouped(self, out_dir, n, **kwargs):
-        """Run grouped evaluation (lens grades A/B/C + real galaxies +
-        synthetic) with this model.
-
-        Thin wrapper over
-        :func:`~euclid_polish.eval.grouped_runner.run_grouped_analysis`,
-        passing this model's loaded TF graph so it is not re-loaded. All
-        other kwargs (``catalog_path``, ``checkpoint``, ``include_synthetic``,
-        ``include_galaxies``, ``seed``, ``on_progress``, ``log`` …) pass
-        through. Returns the run summary dict.
-        """
-        return grouped_runner.run_grouped_analysis(
-            out_dir, n, model=self, **kwargs)
+    # NOTE: the eval interface lives on the runners (run_catalog_eval /
+    # run_grouped_analysis) and loads the ENSEMBLE — Model is the internal
+    # per-member implementation and is never evaluated directly anymore.
