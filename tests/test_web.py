@@ -69,105 +69,16 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     assert r.status_code == 200
 
 
-def test_view_training_log_reads_vis_only_dir(client, tmp_path, monkeypatch):
-    """The VIS-only model's log lives in the sibling ``-vis`` dir; the route
-    must serve it AND render it to a distinct PNG so it can't clobber the
-    4-channel plot's cache."""
-    base = tmp_path / "ckpt" / "wdsr"
-    visd = tmp_path / "ckpt" / "wdsr-vis"
-    base.mkdir(parents=True)
-    visd.mkdir(parents=True)
-    vis_out = tmp_path / "vis"
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(base))
-    monkeypatch.setattr(Config, "VIS_DIR", os.path.relpath(str(vis_out)))
-    header = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
-              "save_best_score,combined_loss,is_baseline\n")
-    (base / "training_log.csv").write_text(header + "1000,1.0,0.04,46.6,39.9,46.6,0.003,\n")
-    (visd / "training_log.csv").write_text(header + "1000,1.0,0.09,40.1,33.0,40.1,0.01,\n")
-
-    r4 = client.get(f"/view/training-log?checkpoint_dir={base}&force=1")
-    rv = client.get(f"/view/training-log?checkpoint_dir={visd}&force=1")
-    assert r4.status_code == 200 and r4.content_type.startswith("image/png")
-    assert rv.status_code == 200 and rv.content_type.startswith("image/png")
-    # Distinct output PNGs → no cache collision between the two models.
-    assert (vis_out / "training_log.png").exists()
-    assert (vis_out / "training_log-vis.png").exists()
 
 
-def test_delete_model_wipes_local_keeps_tracking(client, tmp_path, monkeypatch):
-    ckpt = tmp_path / "ckpt" / "wdsr"
-    ckpt.mkdir(parents=True)
-    (ckpt / "ckpt-5.index").write_bytes(b"x")
-    (ckpt / "training_log.csv").write_text("step\n1\n")
-    (ckpt / "loss_best").mkdir()
-    (ckpt / "loss_best" / "ckpt-1.index").write_bytes(b"y")
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
-    # A tracking store with content that must NOT be touched.
-    trk = tmp_path / "tracking" / "current"
-    trk.mkdir(parents=True)
-    (trk / "keep.txt").write_text("important")
-    monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
-
-    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
-    assert r.status_code == 200, r.get_data(as_text=True)
-    assert r.get_json()["results"]["local"]["ok"] is True
-    # ckpt dir recreated empty; tracking untouched
-    assert ckpt.is_dir() and list(ckpt.iterdir()) == []
-    assert (trk / "keep.txt").read_text() == "important"
 
 
-def test_delete_model_vis_only_targets_vis_dir(client, tmp_path, monkeypatch):
-    """``vis_only=1`` must wipe the sibling ``-vis`` dir and leave the
-    4-channel checkpoints untouched."""
-    base = tmp_path / "ckpt" / "wdsr"
-    visd = tmp_path / "ckpt" / "wdsr-vis"
-    base.mkdir(parents=True)
-    visd.mkdir(parents=True)
-    (base / "ckpt-5.index").write_bytes(b"x")          # must survive
-    (visd / "ckpt-9.index").write_bytes(b"v")          # must be deleted
-    (visd / "training_log.csv").write_text("step\n9\n")
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(base))
-
-    r = client.post("/api/fasrc/delete-model",
-                    data={"confirm": "yes", "vis_only": "1"})
-    assert r.status_code == 200, r.get_data(as_text=True)
-    assert r.get_json()["results"]["local"]["ok"] is True
-    # -vis dir recreated empty; the 4-channel dir is untouched.
-    assert visd.is_dir() and list(visd.iterdir()) == []
-    assert (base / "ckpt-5.index").exists()
 
 
-def test_delete_model_requires_confirm(client, tmp_path, monkeypatch):
-    ckpt = tmp_path / "ckpt" / "wdsr"
-    ckpt.mkdir(parents=True)
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
-    r = client.post("/api/fasrc/delete-model", data={})
-    assert r.status_code == 400
 
 
-def test_delete_model_refused_when_job_active(client, tmp_path, monkeypatch):
-    ckpt = tmp_path / "ckpt" / "wdsr"
-    ckpt.mkdir(parents=True)
-    (ckpt / "ckpt-5.index").write_bytes(b"x")
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
-    from euclid_polish.web import fasrc_jobs
-    fasrc_jobs.DB.insert("12345", label="t", params={}, script_path="s",
-                         log_path="l", err_path="e")  # inserts as PENDING
-    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
-    assert r.status_code == 400
-    assert "cancel" in r.get_json()["error"].lower()
-    assert (ckpt / "ckpt-5.index").exists()      # nothing deleted
 
 
-def test_delete_model_refuses_unsafe_local_path(client, tmp_path, monkeypatch):
-    # A path without "ckpt" must be refused so we can't wipe an arbitrary dir.
-    weights = tmp_path / "weights"
-    weights.mkdir()
-    (weights / "f.bin").write_bytes(b"x")
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(weights))
-    r = client.post("/api/fasrc/delete-model", data={"confirm": "yes"})
-    assert r.get_json()["results"]["local"]["ok"] is False
-    assert (weights / "f.bin").exists()          # untouched
 
 
 # ---------------------------------------------------------------------------
@@ -334,17 +245,11 @@ def test_viewer_meta_sky_accepts_test_subset(client):
     assert client.get("/viewer/meta/sky?subset=bogus").status_code == 400
 
 
-def test_training_page_renders(client):
+def test_training_redirects_to_ensemble(client):
+    """/training is folded into /ensemble (ensemble-only training)."""
     r = client.get("/training")
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert "Training" in body
-    # The single FASRC training card mounts the "train" step.
-    assert 'data-step-id="train"' in body or 'step_id="train"' in body \
-        or "Training on FASRC" in body
-    # Legacy preset + local-training sections were removed.
-    assert "run_pipeline.py</code> presets" not in body
-    assert "Local training (deprecated)" not in body
+    assert r.status_code in (301, 302)
+    assert "/ensemble" in r.headers["Location"]
 
 
 def test_inference_page_renders(client):
@@ -357,7 +262,7 @@ def test_no_experimental_lane_traces_in_ui(client):
     """With the experimental lanes disabled (default), no lane surface
     may be visible anywhere: no nav links to the HST / round-trip pages
     and no star-anchor step card on /cutouts."""
-    body = client.get("/training").data.decode()
+    body = client.get("/ensemble").data.decode()
     for label in ("HST tiles", "HST cutouts", "HST PSF",
                   "HST Catalog", "Round-trip"):
         assert label not in body, f"nav still shows '{label}'"

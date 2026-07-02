@@ -16,6 +16,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     _ensemble_out_dir,
     ensemble_dir,
     ensemble_status,
+    job_archive_member,
     job_ensemble_evaluate,
     job_ensemble_pull,
     job_ensemble_render,
@@ -80,6 +81,17 @@ def register(app):
             if regenerate_power_spectrum() is None and not os.path.isfile(out_png):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/ensemble/archive-member", methods=["POST"])
+    def ensemble_archive_member():
+        """Retire one member: zip → tracking campaign, registry tombstone,
+        member dir deleted, cube cache purged. Reduces the ensemble."""
+        name = (request.form.get("member") or "").strip()
+        job_id = REGISTRY.spawn(
+            f"ensemble: archive {name} → tracking",
+            target=lambda cap: job_archive_member(cap, name=name),
+        )
+        return jsonify({"job_id": job_id})
 
     @app.route("/ensemble/pull", methods=["POST"])
     def ensemble_pull():

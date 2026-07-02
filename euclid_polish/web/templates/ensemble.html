@@ -42,7 +42,9 @@
 <section class="card">
   <h3>Latest test-set evaluation
     {% if es.subset %}<span class="muted">({{ es.subset }},
-      {{ es.n_scored }} fields)</span>{% endif %}</h3>
+      {{ es.n_scored }} fields)</span>{% endif %}
+    {% if eval_summary_stale %}<span class="tag" style="background:#a65;color:#fff;"
+      title="A member was archived or added since this eval ran — these numbers describe a different ensemble. Re-run Evaluate.">stale: membership changed</span>{% endif %}</h3>
   <table class="data-table">
     <thead><tr><th>Model</th><th>PSNR (dB)</th>
       <th title="Signed gap to the ensemble mean; positive ⇒ this model alone beats the average.">Δ vs ensemble</th></tr></thead>
@@ -99,23 +101,69 @@
   {% if members %}
   <table class="data-table">
     <thead><tr><th>Checkpoint</th><th>Training seed</th>
-      <th title="Each seed also has a best-LOSS checkpoint in loss_best/; the ensemble loads + uses both.">loss-best ckpt</th></tr></thead>
+      <th title="Each seed also has a best-LOSS checkpoint in loss_best/; the ensemble loads + uses both.">loss-best ckpt</th>
+      <th>Size</th><th></th></tr></thead>
     <tbody>
       {% for m in members %}
       <tr><td><code>{{ m.name }}</code></td>
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
-          <td>{% if m.has_loss_best %}✓ loaded{% else %}—{% endif %}</td></tr>
+          <td>{% if m.has_loss_best %}✓ loaded{% else %}—{% endif %}</td>
+          <td class="muted">{{ m.size_mb }} MB</td>
+          <td><button type="button" class="mini-btn ens-archive-btn"
+                      data-member="{{ m.name }}"
+                      title="Retire this member: zip its checkpoints into the active tracking campaign, remove it from the ensemble (registry tombstone), delete the local dir and purge its caches.">📦 archive</button></td></tr>
       {% endfor %}
     </tbody>
   </table>
   <p class="hint">Every seed contributes two models — its PSNR-best checkpoint and
      its loss-best (<code>loss_best/</code>) checkpoint — and the ensemble mean /
-     std / PSNR table use all of them.</p>
+     std / PSNR table use all of them. <b>Archive</b> shrinks the ensemble: the
+     member's zip lands in the tracking campaign, and stale caches (cubes, eval
+     products) clean themselves up lazily on next use.</p>
+  <div id="ens-archive-status"></div>
   {% else %}
-  <p class="muted">No members found. Train an ensemble into
-    <code>{{ base_dir }}/member_NN/</code> (e.g.
+  <p class="muted">No active members. Train an ensemble into
+    <code>{{ base_dir }}/member_NN/</code> (a single model is just
+    <code>--n-members 1</code>; e.g.
     <code>python scripts/train_ensemble.py --n-members 5</code>), then sync its
     checkpoints here.</p>
+  {% endif %}
+  {% if archived %}
+  <details>
+    <summary>Archived members ({{ archived|length }})</summary>
+    <table class="data-table">
+      <thead><tr><th>Member</th><th>Archived</th><th>Zip (tracking campaign)</th><th>Commit</th></tr></thead>
+      <tbody>
+        {% for t in archived %}
+        <tr><td><code>{{ t.name }}</code></td>
+            <td class="muted">{{ t.archived_at }}</td>
+            <td><code>{{ t.zip }}</code></td>
+            <td class="muted">{{ t.commit or "—" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="hint">Tombstones are permanent: even if a member's directory
+       reappears (e.g. mirrored back from FASRC) it stays out of the ensemble.
+       Unzip from the tracking campaign to restore one by hand.</p>
+  </details>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Training data <span class="muted">— local TFRecords</span></h3>
+  {% if tfrecords.files %}
+  <table class="data-table">
+    <thead><tr><th>File</th><th>Size</th></tr></thead>
+    <tbody>
+      {% for f in tfrecords.files %}
+      <tr><td><code>{{ f.name }}</code></td>
+          <td class="muted">{{ f.size_mb }} MB</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">empty — generate synthetic data first
+    (<code>{{ tfrecords.dir }}</code>).</p>
   {% endif %}
 </section>
 
@@ -176,6 +224,23 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
   e.preventDefault();
   polishUI.run(e.target, document.getElementById("ens-eval-status"), {
     onDone: () => setTimeout(() => location.reload(), 1500),
+  });
+});
+// Per-member archive: confirm, POST /ensemble/archive-member, reload on done.
+document.querySelectorAll(".ens-archive-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const name = btn.dataset.member;
+    if (!confirm(`Archive ${name}?\n\nIts checkpoints are zipped into the active `
+        + `tracking campaign, it is removed from the ensemble (permanent `
+        + `tombstone), and the local directory is deleted.`)) return;
+    const form = document.createElement("form");
+    form.action = "/ensemble/archive-member";
+    const inp = document.createElement("input");
+    inp.name = "member"; inp.value = name;
+    form.appendChild(inp);
+    polishUI.run(form, document.getElementById("ens-archive-status"), {
+      onDone: () => setTimeout(() => location.reload(), 1500),
+    });
   });
 });
 // Power-spectrum "Regenerate": re-render from cached cubes (?fresh=1), cache-bust.

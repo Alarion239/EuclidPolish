@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 
 import numpy as np
@@ -32,9 +33,13 @@ from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
 from euclid_polish.provenance.defaults import default_store
+from euclid_polish.provenance.gitinfo import capture_git
+from euclid_polish.tracking import TrackingError
+from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.helpers.status import _tfrecords_status
 from euclid_polish.web.remote import STATE
 
 _MEMBER_GLOB = "member_*"
@@ -65,20 +70,35 @@ def _member_seed(member_dir: str) -> int | None:
         return None
 
 
+def _dir_size_mb(d: str) -> float:
+    total = 0
+    for dp, _dirs, fns in os.walk(d):
+        for fn in fns:
+            try:
+                total += os.path.getsize(os.path.join(dp, fn))
+            except OSError:
+                pass
+    return total / 1e6
+
+
 def ensemble_status() -> dict:
-    """Everything the ensemble page renders: members (+ seeds), test-data
-    presence, recent disagreement PNGs, and the latest eval summary."""
+    """Everything the ensemble page renders: registry-active members
+    (+ seeds, sizes), archived tombstones, test-data presence, TFRecords,
+    recent disagreement PNGs, and the latest eval summary (+ staleness)."""
     base = ensemble_dir()
+    reg = ensemble_registry.load_registry(base)
     members = []
-    for d in sorted(glob.glob(os.path.join(base, _MEMBER_GLOB))):
+    for d in [os.path.join(base, n) for n in reg["active"]]:
         if os.path.isdir(d) and _checkpoint_exists(d):
             lb = os.path.join(d, "loss_best")
             has_lb = os.path.isdir(lb) and _checkpoint_exists(lb)
             members.append({"name": os.path.basename(d), "seed": _member_seed(d),
-                            "has_loss_best": has_lb})
+                            "has_loss_best": has_lb,
+                            "size_mb": round(_dir_size_mb(d), 1)})
     # Each seed contributes its PSNR-best checkpoint and (when present) its
     # loss-best one — the ensemble loads/uses BOTH (include_loss_best=True).
     n_models = sum(1 + (1 if m["has_loss_best"] else 0) for m in members)
+    active_labels = ensemble_registry.active_labels(base)
 
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
@@ -99,6 +119,7 @@ def ensemble_status() -> dict:
                      "rel": os.path.relpath(p, Config.VIS_DIR)})
 
     summary = None
+    summary_stale = False
     summary_path = os.path.join(out_dir, "eval_summary.json")
     if os.path.isfile(summary_path):
         try:
@@ -106,10 +127,17 @@ def ensemble_status() -> dict:
                 summary = json.load(f)
         except (OSError, json.JSONDecodeError):
             summary = None
+    if summary is not None:
+        # Membership changed since this eval ran → numbers describe a
+        # different ensemble. Shown as a badge, not silently deleted.
+        recorded = [str(x) for x in (summary.get("member_labels")
+                    or summary.get("per_member_labels") or [])]
+        summary_stale = recorded != active_labels
 
     return {
         "base_dir": base,
         "members": members,
+        "archived": list(reg["archived"]),
         "n_members": len(members),
         "n_models": n_models,
         "records_dir": rdir,
@@ -118,6 +146,8 @@ def ensemble_status() -> dict:
         "result_pngs": pngs,
         "power_spectrum_png": power_spectrum_png,
         "eval_summary": summary,
+        "eval_summary_stale": summary_stale,
+        "tfrecords": _tfrecords_status(),
     }
 
 
@@ -337,6 +367,51 @@ def regenerate_power_spectrum() -> str | None:
     ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
     render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields)
     return ps_png
+
+
+def job_archive_member(cap, *, name: str) -> dict:
+    """Retire one ensemble member: zip → tracking, tombstone, delete, purge.
+
+    The zip lands in the active tracking campaign's ``models/``; the registry
+    gets a permanent tombstone (so a FASRC mirror pulling the dir back never
+    re-activates it); the local member dir is deleted; and the position-keyed
+    ensemble cube cache is purged eagerly (eval summaries/plots invalidate
+    lazily via the membership fingerprint).
+    """
+    if not re.fullmatch(r"member_\d{2,}", name or ""):
+        raise RuntimeError(f"invalid member name {name!r}")
+    base = ensemble_dir()
+    reg = ensemble_registry.load_registry(base)
+    if name not in reg["active"]:
+        raise RuntimeError(f"{name} is not an active ensemble member")
+    src = os.path.join(base, name)
+    store = tracking_default_store()
+    if not store.has_current():
+        raise RuntimeError(
+            "no active tracking campaign — start one on the /tracking page "
+            "so the archived member has somewhere to go.")
+    cap.tick(0, 3, f"zipping {name}")
+    try:
+        meta = store.archive_model_zip(
+            src, f"ensemble-{name}",
+            comment=f"archived from ensemble ({base})")
+    except TrackingError as e:
+        raise RuntimeError(f"archive failed: {e}") from e
+    commit = (capture_git() or {}).get("short")
+    cap.tick(1, 3, "updating registry")
+    ensemble_registry.archive_member_entry(
+        base, name, zip_path=os.path.join("models", meta["name"]),
+        commit=commit)
+    cap.tick(2, 3, "deleting member dir + caches")
+    shutil.rmtree(src, ignore_errors=True)
+    shutil.rmtree(_ensemble_cubes_dir(), ignore_errors=True)  # position-keyed
+    store.append_log(
+        f"Archived ensemble member `{name}` → `models/{meta['name']}` "
+        f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
+        "cube cache purged. REMINDER: the FASRC-side copy of this member "
+        "still exists remotely — remove it there when convenient.")
+    print(f"  ✓ {name} → tracking {meta['name']}; caches purged")
+    return {"zip": meta["name"], "member": name}
 
 
 def remote_ensemble_dir() -> str:

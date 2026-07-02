@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 from astropy.io import fits
-from flask import jsonify, render_template, request
+from flask import jsonify, redirect, render_template, request
 
 from euclid_polish.config import Config
 from euclid_polish.web import job_config
@@ -24,14 +24,12 @@ from euclid_polish.web.jobs import REGISTRY
 
 def register(app):
 
-    # ---------------- Training page ----------------
+    # ---------------- Training (folded into /ensemble) ----------------
     @app.route("/training")
     def training_page():
-        return render_template(
-            "training.html",
-            tfrecords=_tfrecords_status(),
-            checkpoints=_checkpoints_status(),
-        )
+        """Training is ensemble-only now — the /ensemble page owns TFRecord
+        status, the ensemble_train step card, curves and member management."""
+        return redirect("/ensemble", code=302)
 
     # ---------------- Inference page ----------------
     @app.route("/inference")
