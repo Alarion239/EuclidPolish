@@ -24,7 +24,7 @@ Key discovered facts the plan relies on:
 - Create: `euclid_polish/ensemble_registry.py`
 - Test: `tests/test_ensemble_registry.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 # tests/test_ensemble_registry.py
@@ -90,9 +90,9 @@ def test_archive_unknown_member_raises(tmp_path):
         er.archive_member_entry(base, "member_09", zip_path="z", commit=None)
 ```
 
-- [ ] **Step 2: Run tests, verify they fail** — `pytest tests/test_ensemble_registry.py -x -q` → ImportError.
+- [x] **Step 2: Run tests, verify they fail** — `pytest tests/test_ensemble_registry.py -x -q` → ImportError.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # euclid_polish/ensemble_registry.py
@@ -196,8 +196,8 @@ def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
 
 (Check `euclid_polish/tracking/_utils.py` exports `_read_json`/`_write_json`; they are imported by `store.py` from there.)
 
-- [ ] **Step 4: Run tests** — `pytest tests/test_ensemble_registry.py -q` → all pass.
-- [ ] **Step 5: Commit** — `git add -A && git commit -m "feat(ensemble): member registry with archive tombstones"`
+- [x] **Step 4: Run tests** — `pytest tests/test_ensemble_registry.py -q` → all pass.
+- [x] **Step 5: Commit** — `git add -A && git commit -m "feat(ensemble): member registry with archive tombstones"`
 
 ---
 
@@ -208,7 +208,7 @@ def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
 - Modify: `euclid_polish/web/helpers/ensemble_viz.py:37-41` (`ensemble_dir()` delegates)
 - Test: `tests/test_ensemble_registry.py` (extend), existing ensemble tests must stay green
 
-- [ ] **Step 1: Write failing test** (in `tests/test_ensemble_registry.py`)
+- [x] **Step 1: Write failing test** (in `tests/test_ensemble_registry.py`)
 
 ```python
 def test_ensemble_available_respects_registry(tmp_path, monkeypatch):
@@ -228,8 +228,8 @@ def test_default_ensemble_dir_is_ckpt_sibling(monkeypatch, tmp_path):
     assert ens.default_ensemble_dir() == str(tmp_path / "ckpt/ensemble")
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.** In `ensemble.py`:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.** In `ensemble.py`:
   - Rename `_default_ensemble_dir` → `default_ensemble_dir` (public), keep body.
   - `__init__` discovery block: replace the glob two-liner with `dirs = ensemble_registry.active_member_dirs(base_dir)`; keep the `n_members` cap and the rest (loss_best loading unchanged). Filter still guards `_checkpoint_exists`.
   - `ensemble_available()`: `return bool(ensemble_registry.load_registry(base_dir or default_ensemble_dir())["active"])` — but keep the checkpoint check via `active_member_dirs` (registry already verifies on-disk presence).
@@ -250,8 +250,8 @@ def test_default_ensemble_dir_is_ckpt_sibling(monkeypatch, tmp_path):
 ```
 
   - In `ensemble_viz.py`: `def ensemble_dir(): return default_ensemble_dir()` (import from `euclid_polish.ensemble`).
-- [ ] **Step 4: Run** — `pytest tests/test_ensemble_registry.py tests/test_ensemble*.py -q` (plus any existing ensemble tests found via `pytest -q -k ensemble`).
-- [ ] **Step 5: Commit** — `git commit -m "refactor(ensemble): registry-driven member discovery, public default_ensemble_dir"`
+- [x] **Step 4: Run** — `pytest tests/test_ensemble_registry.py tests/test_ensemble*.py -q` (plus any existing ensemble tests found via `pytest -q -k ensemble`).
+- [x] **Step 5: Commit** — `git commit -m "refactor(ensemble): registry-driven member discovery, public default_ensemble_dir"`
 
 ---
 
@@ -261,7 +261,7 @@ def test_default_ensemble_dir_is_ckpt_sibling(monkeypatch, tmp_path):
 - Modify: `euclid_polish/tracking/store.py` (new method after `backup_model`, ~line 336)
 - Test: `tests/test_tracking_store_zip.py`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_tracking_store_zip.py
@@ -303,8 +303,8 @@ def test_archive_model_zip_missing_src(tmp_path):
 
 (Adjust the campaign-creation call to the real method name — check `store.py` for it, e.g. `new_campaign`/`start_campaign`, and whether `TrackingStore(...)` takes a root path; mimic `tests/test_tracking_routes.py` fixtures.)
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement** in `store.py`:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement** in `store.py`:
 
 ```python
     def archive_model_zip(self, src_dir: str, name: str,
@@ -346,8 +346,8 @@ def test_archive_model_zip_missing_src(tmp_path):
 
 Also update `_backups_in` (store.py:344-367) so `models/` picks up zip sidecars: in the models loop, additionally scan for `*.zip.meta.json` files in `models_dir` (like the fits/images loop) and append them. The tracking page then lists archived zips alongside dir backups. Guard `model_backup_dir`'s time-travel path: zips have no dir — time-travel button should not render for `kind == "model-zip"` (template check in `tracking.html` where backups render, line ~88: wrap the ⏱ button in `{% if m.kind != 'model-zip' %}`).
 
-- [ ] **Step 4: Run** — `pytest tests/test_tracking_store_zip.py tests/test_tracking_routes.py -q`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(tracking): archive_model_zip — zip a checkpoint tree into the campaign"`
+- [x] **Step 4: Run** — `pytest tests/test_tracking_store_zip.py tests/test_tracking_routes.py -q`.
+- [x] **Step 5: Commit** — `git commit -m "feat(tracking): archive_model_zip — zip a checkpoint tree into the campaign"`
 
 ---
 
@@ -361,7 +361,7 @@ Also update `_backups_in` (store.py:344-367) so `models/` picks up zip sidecars:
 - Modify: `scripts/eval_catalog.py`, `scripts/eval_grouped.py` (`--checkpoint` → `--ensemble-dir`)
 - Test: rewrite `tests/test_grouped_runner_model_default.py`
 
-- [ ] **Step 1: Rewrite the loader test** (failing):
+- [x] **Step 1: Rewrite the loader test** (failing):
 
 ```python
 # tests/test_grouped_runner_model_default.py  (replace file)
@@ -400,8 +400,8 @@ def test_sr_from_model_hides_members_for_singleton():
     assert members is None                      # single member → no std cubes
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.** `ensemble_infer.py` becomes:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.** `ensemble_infer.py` becomes:
 
 ```python
 """Ensemble inference for the evaluators: mean SR + (multi-member) stack."""
@@ -453,8 +453,8 @@ def load_eval_ensemble(base_dir: str | None = None,
   - `catalog_runner.py`: same rename in `run_catalog_eval`; `eval_catalog_object` reuse check → `require_disagreement=model.n_members > 1`; delete `load_eval_model` (only remaining caller was the old fallback); the `checkpoint` arg it forwards to `reconstruct_cutout_at(..., checkpoint_dir=...)` becomes the ensemble base dir (only used for provenance labeling — verify with grep inside `reconstruct_cutout_at`).
   - `evaluation.py:283` log line → `cap.write("model: ensemble mean (registry-active members)\n")`.
   - Scripts: `--checkpoint` → `--ensemble-dir`, default `None` (loader resolves).
-- [ ] **Step 4: Run** — `pytest tests/test_grouped_runner_model_default.py -q` + `pytest -q -k "grouped or catalog_runner or evaluation" `.
-- [ ] **Step 5: Commit** — `git commit -m "refactor(eval): ensemble-only loader; disagreement gated on n_members>1"`
+- [x] **Step 4: Run** — `pytest tests/test_grouped_runner_model_default.py -q` + `pytest -q -k "grouped or catalog_runner or evaluation" `.
+- [x] **Step 5: Commit** — `git commit -m "refactor(eval): ensemble-only loader; disagreement gated on n_members>1"`
 
 ---
 
@@ -466,7 +466,7 @@ def load_eval_ensemble(base_dir: str | None = None,
 - Modify: `euclid_polish/eval/grouped_runner.py` / `synthetic_runner.py` (pass labels)
 - Test: `tests/test_eval_reuse_fingerprint.py`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_eval_reuse_fingerprint.py
@@ -504,13 +504,13 @@ def test_single_member_reuse_unchanged(tmp_path):
     assert can_reuse_eval_object(d, require_disagreement=False)
 ```
 
-- [ ] **Step 2: Run, verify fail** (unexpected kwarg).
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run, verify fail** (unexpected kwarg).
+- [x] **Step 3: Implement.**
   - `can_reuse_eval_object(obj_dir, *, require_disagreement=False, member_labels=None)`: after the existing file checks, when `require_disagreement and member_labels is not None`, also require `members.json` present with `member_labels == list(member_labels)` (json read wrapped, any error → False).
   - `write_disagreement_cubes(out_dir, members, *, member_labels=None)` in `disagreement.py`: after writing cubes, when labels given dump `{"member_labels": member_labels}` to `members.json`.
   - Thread labels: `grouped_runner` computes `labels = model.member_labels if model is not None else active_labels(default_ensemble_dir())` once and passes `member_labels=labels if want_disagreement else None` into its `_reusable`; `catalog_runner.eval_catalog_object` passes `model.member_labels` when `model.n_members > 1`; `jobs_impl.reconstruct_cutout_at` (line ~502) and `synthetic_runner.py` (line ~316) pass `member_labels=model.member_labels` / the loaded stack's labels into `write_disagreement_cubes`. For the synthetic cache-reuse path the labels come from the cube-cache manifest (Task 6 returns them).
-- [ ] **Step 4: Run** — `pytest tests/test_eval_reuse_fingerprint.py -q` and touched suites.
-- [ ] **Step 5: Commit** — `git commit -m "feat(eval): membership fingerprint gates eval-object reuse"`
+- [x] **Step 4: Run** — `pytest tests/test_eval_reuse_fingerprint.py -q` and touched suites.
+- [x] **Step 5: Commit** — `git commit -m "feat(eval): membership fingerprint gates eval-object reuse"`
 
 ---
 
@@ -522,7 +522,7 @@ def test_single_member_reuse_unchanged(tmp_path):
 - Modify: `euclid_polish/web/helpers/ensemble_viz.py` (`ensemble_status` marks stale summary)
 - Test: `tests/test_ensemble_cube_cache.py` (extend or create)
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_ensemble_cube_cache.py (add)
@@ -563,15 +563,15 @@ def test_matching_membership_hits(tmp_path):
     assert out is not None and out.shape[0] == 1
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.** In `ensemble_cube_cache.py`:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.** In `ensemble_cube_cache.py`:
   - Signature: `load_cached_member_stack(field_index, *, subset, cubes_dir=None, active_labels=None) -> np.ndarray | None`; add `cached_member_labels(cubes_dir=None) -> list[str] | None` (reads manifest labels; used by synthetic runner for fingerprints).
   - When `active_labels is None`, compute from the registry: `active_labels = ensemble_registry.active_labels(default_ensemble_dir())`.
   - After loading the manifest: `if list(man.get("member_labels", [])) != list(active_labels): shutil.rmtree(d, ignore_errors=True); return None` — the lazy delete the user asked for (whole dir: files are position-keyed).
   - `synthetic_runner.py`: pass nothing extra (default registry path is right); where it reuses `cached`, fetch labels via `cached_member_labels()` for the `write_disagreement_cubes(member_labels=...)` call from Task 5.
   - `ensemble_viz.ensemble_status()`: after loading `eval_summary.json`, compare `summary.get("member_labels") or summary.get("per_member_labels")` with `active_labels(base)`; add `"eval_summary_stale": bool(mismatch)` to the returned dict (UI in Task 8 renders a badge). Same check for `regenerate_power_spectrum` is unnecessary — it reads the cubes dir, which self-purges via the loader path; but guard it: if manifest labels mismatch registry, return None.
-- [ ] **Step 4: Run** — `pytest tests/test_ensemble_cube_cache.py -q` + synthetic runner tests.
-- [ ] **Step 5: Commit** — `git commit -m "feat(eval): cube cache self-purges when ensemble membership changes"`
+- [x] **Step 4: Run** — `pytest tests/test_ensemble_cube_cache.py -q` + synthetic runner tests.
+- [x] **Step 5: Commit** — `git commit -m "feat(eval): cube cache self-purges when ensemble membership changes"`
 
 ---
 
@@ -582,7 +582,7 @@ def test_matching_membership_hits(tmp_path):
 - Modify: `euclid_polish/web/routes/ensemble.py` (new POST route)
 - Test: `tests/test_ensemble_archive_route.py`
 
-- [ ] **Step 1: Failing test** (pattern-match the Flask client fixtures in `tests/test_web.py`):
+- [x] **Step 1: Failing test** (pattern-match the Flask client fixtures in `tests/test_web.py`):
 
 ```python
 # tests/test_ensemble_archive_route.py
@@ -628,8 +628,8 @@ def test_archive_member_zips_tombstones_and_purges(tmp_path, monkeypatch):
     assert not os.path.isdir(cubes)             # eager purge
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.** In `ensemble_viz.py`:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.** In `ensemble_viz.py`:
 
 ```python
 def job_archive_member(cap, *, name: str) -> dict:
@@ -677,8 +677,8 @@ Route in `routes/ensemble.py`:
         return jsonify({"job_id": job_id})
 ```
 
-- [ ] **Step 4: Run** — `pytest tests/test_ensemble_archive_route.py -q`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(ensemble): archive-member job — zip to tracking, tombstone, purge caches"`
+- [x] **Step 4: Run** — `pytest tests/test_ensemble_archive_route.py -q`.
+- [x] **Step 5: Commit** — `git commit -m "feat(ensemble): archive-member job — zip to tracking, tombstone, purge caches"`
 
 ---
 
@@ -692,7 +692,7 @@ Route in `routes/ensemble.py`:
 - Modify: `euclid_polish/web/templates/base.html` (drop the Training nav link if present; check `grep -rn training base.html`)
 - Test: `tests/test_web.py` (update `/training` expectations), quick route smoke test
 
-- [ ] **Step 1: Failing test** — add to an appropriate web test module:
+- [x] **Step 1: Failing test** — add to an appropriate web test module:
 
 ```python
 def test_training_redirects_to_ensemble(client):
@@ -700,14 +700,14 @@ def test_training_redirects_to_ensemble(client):
     assert r.status_code in (301, 302) and "/ensemble" in r.headers["Location"]
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.**
   - `ensemble_status()` additions: per member `size_mb` (walk dir), and top-level `archived: reg["archived"]` + `tfrecords: _tfrecords_status()`.
   - `ensemble.html`: members list becomes a table — name · seed · tracks (psnr/+loss) · size · **📦 archive** button posting `member=<name>` to `/ensemble/archive-member` with a `confirm()` naming the zip destination; collapsed `<details>` "Archived members" section from tombstones (name, date, zip, commit); a TFRecords card (copy the file-list markup pattern from `training.html` before deleting it); keep the existing `ensemble_train` step card (it is already the only working train path). Render the `eval_summary_stale` badge next to the eval table when set ("membership changed since this eval — re-run Evaluate").
   - `routes/model.py`: replace the training page handler with `return redirect("/ensemble", code=302)` (`from flask import redirect`); remove the now-unused `_tfrecords_status`/`_checkpoints_status` imports *if* unused after Task 9.
   - Delete `training.html`; grep for `url_for('training_page')`/`"/training"` references (`base.html`, docs) and update.
-- [ ] **Step 4: Run** — `pytest tests/test_web.py -q`; then `python scripts/serve.py` smoke + `curl -sI localhost:PORT/training | head -3` if a quick manual check is cheap.
-- [ ] **Step 5: Commit** — `git commit -m "feat(ensemble page): member manager with archive; fold /training in"`
+- [x] **Step 4: Run** — `pytest tests/test_web.py -q`; then `python scripts/serve.py` smoke + `curl -sI localhost:PORT/training | head -3` if a quick manual check is cheap.
+- [x] **Step 5: Commit** — `git commit -m "feat(ensemble page): member manager with archive; fold /training in"`
 
 ---
 
@@ -723,7 +723,7 @@ def test_training_redirects_to_ensemble(client):
 - Modify: `euclid_polish/web/routes/files.py` (status uses new `_checkpoints_status`)
 - Test: `tests/test_web.py` (vis-only tests removed/replaced)
 
-- [ ] **Step 1: Adjust tests first.** In `tests/test_web.py`: delete `test_view_training_log_reads_vis_only_dir` and `test_delete_model_vis_only_targets_vis_dir` (delete-model route goes away in Task 10); update any `_ckpt_dir_for_kind` tests to the new discovery. Add:
+- [x] **Step 1: Adjust tests first.** In `tests/test_web.py`: delete `test_view_training_log_reads_vis_only_dir` and `test_delete_model_vis_only_targets_vis_dir` (delete-model route goes away in Task 10); update any `_ckpt_dir_for_kind` tests to the new discovery. Add:
 
 ```python
 def test_checkpoints_status_lists_ensemble_members(tmp_path, monkeypatch):
@@ -742,8 +742,8 @@ def test_checkpoints_status_lists_ensemble_members(tmp_path, monkeypatch):
     assert any(f["subdir"] == "loss_best" for f in out["files"])
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement.**
   - `_checkpoints_status()`: root = `default_ensemble_dir()`; walk each `active_member_dirs()`; entry keys: `name`, `rel`, `member` (replaces `variant`), `subdir`, `folder`, `size_mb`.
   - Delete `_ckpt_dir_for_kind` (grep confirms only `routes/model.py` imports it).
   - `jobs_impl._job_generate_reconstruct`: drop `checkpoint_dir`/`num_res_blocks` params; replace the `load_model_from_checkpoint` block with `model = load_eval_ensemble(log=...)`; replace `lr_data, sr_data = reconstruct(model, lr_img.data)` with `lr_data, sr_data, _members = sr_from_model(model, lr_img.data)` (VIS plane semantics match — verify `reconstruct` returns the VIS-only lr; `sr_from_model` does the same).
@@ -752,8 +752,8 @@ def test_checkpoints_status_lists_ensemble_members(tmp_path, monkeypatch):
   - `views.py api_sky_generate_sr`: gate on `ensemble_available()`; `model = load_eval_ensemble()`; `model.upsample_batch(lr, on_progress=..., log=...)` — EnsembleModel's version accepts these kwargs (Task 2); error string → "no active ensemble members".
   - `sky_records.checkpoint_present()` → keep name, body: `from euclid_polish.ensemble import ensemble_available; return ensemble_available()` when no explicit `checkpoint` given (explicit arg keeps old dir check for callers that pass one — grep callers).
   - `views.py view_training_log`: remove the `-vis` branch (png name always `training_log.png`).
-- [ ] **Step 4: Run** — `pytest tests/test_web.py tests/test_inference_shapes.py -q`.
-- [ ] **Step 5: Commit** — `git commit -m "refactor(web): inference + sky + status are ensemble-only"`
+- [x] **Step 4: Run** — `pytest tests/test_web.py tests/test_inference_shapes.py -q`.
+- [x] **Step 5: Commit** — `git commit -m "refactor(web): inference + sky + status are ensemble-only"`
 
 ---
 
@@ -766,14 +766,14 @@ def test_checkpoints_status_lists_ensemble_members(tmp_path, monkeypatch):
 - Modify: `euclid_polish/web/templates/fasrc.html` (drop vis toggles at lines ~190, ~578; relabel mirror copy)
 - Test: `tests/test_web.py` (delete-model tests removed in Task 9 step 1); pipeline-step tests if any (`grep -rn "HSTTrainStep\|step_id=\"train\"" tests/`)
 
-- [ ] **Step 1: Failing check** — `grep -rn "fasrc_train_with_hst" euclid_polish/` should end empty after the change; add/adjust a step-registry test if one exists (`pytest -q -k fasrc_pipeline`).
-- [ ] **Step 2: Implement.**
+- [x] **Step 1: Failing check** — `grep -rn "fasrc_train_with_hst" euclid_polish/` should end empty after the change; add/adjust a step-registry test if one exists (`pytest -q -k fasrc_pipeline`).
+- [x] **Step 2: Implement.**
   - Delete the `HSTTrainStep` class (fasrc_pipeline.py:955-1042) and remove it from the step registry (find where instances are listed, near the bottom of the module or in `fasrc.py`); the comment block at line ~1105 ("training now goes exclusively through HSTTrainStep") → "…through EnsembleTrainStep".
   - `fasrc_mirror._sync_once` + `start`: `remote_base = remote_ensemble_dir()` (import from `ensemble_viz` — or inline the same sibling-of-`cfg.ckpt_dir` logic to avoid a web-helper import cycle; check imports) and `local_base = default_ensemble_dir()`; `cfg.local_ckpt_mirror` override keeps working when set. Keep `--delete-after` (registry lives outside the dir — Task 1).
   - Remove `api_fasrc_delete_model` wholesale (superseded by per-member archive; single-ckpt dirs no longer exist locally). Grep `delete-model` in templates/JS (`training.html` was the only consumer; it is deleted).
   - `fasrc.py` training-log fetch: remove `vis_only` query handling; log path = remote ensemble member? Simplest: keep it reading `cfg.ckpt_dir`'s log for legacy runs but drop only the `-vis` branch.
-- [ ] **Step 3: Run** — `pytest -q -k "fasrc or web"`.
-- [ ] **Step 4: Commit** — `git commit -m "cleanup(fasrc): drop dead single-model train step + delete-model; mirror ensemble dir"`
+- [x] **Step 3: Run** — `pytest -q -k "fasrc or web"`.
+- [x] **Step 4: Commit** — `git commit -m "cleanup(fasrc): drop dead single-model train step + delete-model; mirror ensemble dir"`
 
 ---
 
@@ -784,7 +784,7 @@ def test_checkpoints_status_lists_ensemble_members(tmp_path, monkeypatch):
 - Modify: `euclid_polish/config.py:589-591` (comment: the dir is now only the path anchor for `ensemble/`)
 - Test: `tests/test_migrate_single_model.py`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_migrate_single_model.py
@@ -809,8 +809,8 @@ def test_migrate_zips_and_deletes(tmp_path, monkeypatch):
     assert out2["archived"] == []
 ```
 
-- [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement** `scripts/migrate_single_model.py`:
+- [x] **Step 2: Run, verify fail.**
+- [x] **Step 3: Implement** `scripts/migrate_single_model.py`:
 
 ```python
 #!/usr/bin/env python
@@ -862,14 +862,14 @@ if __name__ == "__main__":
 
 (Fill the store accessor from the real code; auto-start a campaign when none is active — check `TrackingStore` for the create API and `has_current()`.)
 
-- [ ] **Step 4: Run tests.**
-- [ ] **Step 5: Commit** — `git commit -m "feat: single-model → tracking migration script"`
+- [x] **Step 4: Run tests.**
+- [x] **Step 5: Commit** — `git commit -m "feat: single-model → tracking migration script"`
 
 ---
 
 ### Task 12: Full test sweep, run migration, docs, push
 
-- [ ] **Step 1:** `pytest -q` full suite; fix fallout (expect: tests importing `load_eval_ensemble_or_single`, `_ckpt_dir_for_kind`, training-page templates).
-- [ ] **Step 2:** Run the migration locally: `python scripts/migrate_single_model.py` (verify `ckpt/wdsr*` gone, zips in `tracking/current/models/`, campaign log updated). `ls ckpt/` should show only `ensemble/` (+ registry after first load).
-- [ ] **Step 3:** Update `README.md` / docs mentions of `/training` and single-model checkpoints (`grep -rn "ckpt/wdsr\|/training" README.md docs/ --include=*.md | grep -v superpowers`).
-- [ ] **Step 4:** Commit + push; suggest `scripts/track.py sync` to mirror the new zips to holylabs.
+- [x] **Step 1:** `pytest -q` full suite; fix fallout (expect: tests importing `load_eval_ensemble_or_single`, `_ckpt_dir_for_kind`, training-page templates).
+- [x] **Step 2:** Run the migration locally: `python scripts/migrate_single_model.py` (verify `ckpt/wdsr*` gone, zips in `tracking/current/models/`, campaign log updated). `ls ckpt/` should show only `ensemble/` (+ registry after first load).
+- [x] **Step 3:** Update `README.md` / docs mentions of `/training` and single-model checkpoints (`grep -rn "ckpt/wdsr\|/training" README.md docs/ --include=*.md | grep -v superpowers`).
+- [x] **Step 4:** Commit + push; suggest `scripts/track.py sync` to mirror the new zips to holylabs.
