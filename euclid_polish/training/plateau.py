@@ -31,6 +31,12 @@ class PlateauLRReducer:
         improvement. Micro-creep smaller than this does NOT reset patience — the
         whole point, since the skip-only plateau's loss drifts down by ~1e-5 per
         eval while genuinely flat.
+    min_delta_rel : float
+        RELATIVE improvement threshold, as a fraction of ``|best|``; the
+        effective threshold is ``max(min_delta, |best| · min_delta_rel)``.
+        An absolute threshold calibrated for one loss scale (1e-4 at the
+        ~0.006 basin loss) becomes 10% of a converged ~0.001 loss and flags
+        genuine progress as a stall — a relative one tracks the scale.
     cooldown : int
         Steps to wait after a cut before the stall counter re-arms, so one
         stall doesn't fire repeatedly on the next few evals.
@@ -48,6 +54,7 @@ class PlateauLRReducer:
         mode: str = "min",
         patience: int = 5000,
         min_delta: float = 1e-4,
+        min_delta_rel: float = 0.0,
         cooldown: int = 2000,
     ) -> None:
         if mode not in ("min", "max"):
@@ -55,6 +62,7 @@ class PlateauLRReducer:
         self.mode = mode
         self.patience = int(patience)
         self.min_delta = abs(float(min_delta))
+        self.min_delta_rel = abs(float(min_delta_rel))
         self.cooldown = int(cooldown)
         self._best: float | None = None
         self._best_step = 0
@@ -63,9 +71,10 @@ class PlateauLRReducer:
     def _is_improvement(self, metric: float) -> bool:
         if self._best is None:
             return True
+        thr = max(self.min_delta, abs(self._best) * self.min_delta_rel)
         if self.mode == "min":
-            return metric < self._best - self.min_delta
-        return metric > self._best + self.min_delta
+            return metric < self._best - thr
+        return metric > self._best + thr
 
     def should_reduce(self, step: int, metric: float) -> bool:
         """Feed one eval; return ``True`` iff the LR should be cut now.

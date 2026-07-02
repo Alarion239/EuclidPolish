@@ -546,17 +546,28 @@ class Config:
     PLATEAU_LR_ENABLED           = True
     PLATEAU_LR_FACTOR            = 0.5      # multiply the LR by this on a stall
     PLATEAU_LR_PATIENCE          = 5000     # steps of no metric progress → cut
+    # RELATIVE improvement threshold (fraction of |best|): the effective
+    # threshold is max(MIN_DELTA, |best|·MIN_DELTA_REL). The old absolute
+    # 1e-4 was calibrated for the ~0.006 basin-era loss; at a converged
+    # ~0.001 loss it is 10% and flags genuine progress as a stall (the
+    # sawtooth of cut→best→raise cycles in job 27315806).
+    PLATEAU_LR_MIN_DELTA_REL     = 0.01
     # Minimum metric change that counts as progress. Defaulted for the
     # combined_loss metric (plateau floor ~6e-3, drifting ~1e-5/eval → counts as
-    # no progress). Switch PLATEAU_LR_METRIC to psnr_stretched → raise to ~0.05.
-    PLATEAU_LR_MIN_DELTA         = 1e-4
+    # no progress). Switch PLATEAU_LR_METRIC to psnr_stretched → set this to
+    # ~0.05 and MIN_DELTA_REL to 0 (dB is already a log scale).
+    PLATEAU_LR_MIN_DELTA         = 0.0
     PLATEAU_LR_COOLDOWN          = 2000     # steps after a cut before re-arming
     PLATEAU_LR_MIN_LR            = 1e-6     # absolute LR floor (both guards)
-    # A plateau firing while the score sits at least this far (score units ≈
-    # dB) below the run's best is DEGENERATE (e.g. the ~43.5 dB skip-only
-    # basin): the guard restores the best-PSNR checkpoint before cooling,
-    # instead of polishing the collapsed solution in place.
+    # Degenerate-basin detector (PSNR-based — the basin shows as a FLAT PSNR
+    # pinned below the run's best, e.g. the frozen ~43.5 dB skip-only floor):
+    # when PSNR has made no new best for PATIENCE steps AND sits at least
+    # MIN_GAP (dB) below the best on MIN_EVALS consecutive evals, restore the
+    # best-PSNR checkpoint and cool — cutting in place would only polish the
+    # collapsed solution. MIN_EVALS=2 debounces single-eval validation noise
+    # (a lone 51.9 dip between 53.x evals must not trigger a rollback).
     PLATEAU_ROLLBACK_MIN_GAP     = 0.2
+    PLATEAU_ROLLBACK_MIN_EVALS   = 2
     # Plateau cuts are provisional: once a NEW best PSNR proves the model is
     # improving again, undo one cut per new best (raise LR back ×1/factor,
     # never above the schedule value). The cut exists to escape a stall, not

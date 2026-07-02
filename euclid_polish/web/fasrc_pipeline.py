@@ -1030,6 +1030,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
         for name in ("lr_peak", "lr_final", "lr_warmup_steps",
                      "plateau_lr_enabled", "plateau_lr_factor",
                      "plateau_lr_patience", "plateau_lr_min_delta",
+                     "plateau_lr_min_delta_rel",
                      "plateau_lr_cooldown", "plateau_lr_min_lr",
                      "plateau_lr_metric", "plateau_rollback_min_gap",
                      "plateau_lr_recovery"):

@@ -214,6 +214,7 @@ class Trainer:
         plateau_lr_factor: float = Config.PLATEAU_LR_FACTOR,
         plateau_lr_patience: int = Config.PLATEAU_LR_PATIENCE,
         plateau_lr_min_delta: float = Config.PLATEAU_LR_MIN_DELTA,
+        plateau_lr_min_delta_rel: float = Config.PLATEAU_LR_MIN_DELTA_REL,
         plateau_lr_cooldown: int = Config.PLATEAU_LR_COOLDOWN,
         plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
         plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
@@ -313,10 +314,16 @@ class Trainer:
                 mode="max" if self._plateau_lr_metric == "psnr_stretched" else "min",
                 patience=int(plateau_lr_patience),
                 min_delta=float(plateau_lr_min_delta),
+                min_delta_rel=float(plateau_lr_min_delta_rel),
                 cooldown=int(plateau_lr_cooldown),
             )
             if plateau_lr_enabled else None
         )
+        # Degenerate-basin detector state (PSNR-based; see the eval loop):
+        # last step a new best PSNR was saved, and how many CONSECUTIVE evals
+        # scored >= rollback_min_gap below the best.
+        self._psnr_best_step = 0
+        self._gap_streak = 0
         # ``psnr`` tracks the best PSNR_stretched seen so far (used by
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
@@ -635,6 +642,11 @@ class Trainer:
         ckpt = self.checkpoint
 
         start_step = int(ckpt.step.numpy())
+        # The degenerate-basin detector measures "steps since the last new
+        # best PSNR" — anchor it at the resume point so a resumed run isn't
+        # instantly "stalled" (best_step would otherwise read 0).
+        self._psnr_best_step = start_step
+        self._gap_streak = 0
         # Surface resume to the structured stream too — restore() only prints to
         # stdout, so without this the WebUI gives no sign a run picked up from a
         # checkpoint (it looks like a fresh start).
@@ -804,6 +816,8 @@ class Trainer:
                 # and the guard silently disarms until the step catches back up.
                 if self._plateau is not None:
                     self._plateau.reset(step)
+                self._psnr_best_step = min(self._psnr_best_step, step)
+                self._gap_streak = 0
                 # Repeated divergence ⇒ the LR is too hot ⇒ HALVE it and keep
                 # going, rather than aborting. Give up only after too many
                 # halvings (LR cut to a useless fraction of the original).
@@ -971,6 +985,8 @@ class Trainer:
                 if psnr_improved:
                     ckpt.psnr.assign(save_best_score)
                     ckpt_mgr.save()
+                    self._psnr_best_step = step
+                    self._gap_streak = 0
                     tqdm.write(
                         f"  ✓ Checkpoint saved [best PSNR] "
                         f"(score={save_best_score:.3f}; "
@@ -988,6 +1004,12 @@ class Trainer:
                                 self._lr_scale, self._plateau_lr_factor,
                                 self._plateau_cuts)
                         after = self._apply_lr(step)
+                        # A recovery is proof of progress — re-arm the stall
+                        # counter, so the loss watcher can't cut the LR back
+                        # in the very same eval (the ↑…↓ churn at the end of
+                        # job 27315806).
+                        if self._plateau is not None:
+                            self._plateau.reset(step)
                         rmsg = (f"↑ new best at reduced LR — raised learning "
                                 f"rate back {before:.3g} → {after:.3g} "
                                 f"({self._plateau_cuts} plateau cut(s) "
@@ -1009,16 +1031,67 @@ class Trainer:
                 if psnr_improved or loss_improved:
                     self._emit_checkpoint_provenance()
 
-                # Reduce-LR-on-plateau, two regimes. CONVERGED plateau (score
-                # ≈ run best): cut the LR in place (× factor) via the SAME
-                # ``_lr_scale`` the spike guard uses. DEGENERATE plateau
-                # (score sits ≥ rollback_min_gap below the run's best — e.g.
-                # the ~43.5 dB skip-only basin entered from a hot restart):
-                # cutting in place would only polish the collapsed solution,
-                # so restore the best-PSNR checkpoint FIRST and continue from
-                # the pre-collapse weights at the reduced LR ("cool from the
-                # best"). Skip entirely once the effective LR is at the
-                # ``min_lr`` floor (nothing to gain).
+                # ── Degenerate-basin detector (PSNR-based). The basin's
+                # signature lives in PSNR, not the loss: the score sits FLAT
+                # and well below the run's best (the frozen ~43.5 dB skip-only
+                # floor) while combined_loss micro-creeps. Fire only when the
+                # PSNR has made no new best for ``patience`` steps AND the
+                # gap persisted for ``PLATEAU_ROLLBACK_MIN_EVALS`` consecutive
+                # evals (a single noisy validation dip must not trigger).
+                # Response: restore the best-PSNR checkpoint and cool — an
+                # in-place cut would only polish the collapsed solution.
+                if save_best_only and self._plateau is not None:
+                    below = _plateau_wants_rollback(
+                        save_best_score, float(ckpt.psnr.numpy()),
+                        min_gap=self._plateau_rollback_min_gap,
+                        has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
+                        save_best_only=save_best_only)
+                    self._gap_streak = self._gap_streak + 1 if below else 0
+                    stalled = (step - self._psnr_best_step
+                               >= self._plateau.patience)
+                    before = self._apply_lr(step)
+                    floored = before <= self._min_lr * (1.0 + 1e-9)
+                    if (stalled and not floored and self._gap_streak
+                            >= int(Config.PLATEAU_ROLLBACK_MIN_EVALS)):
+                        best_score = float(ckpt.psnr.numpy())
+                        self._lr_scale *= self._plateau_lr_factor
+                        self._plateau_cuts += 1
+                        # Same mechanics as the gradient-spike rollback:
+                        # weights + optimizer + step rewind to the best-PSNR
+                        # checkpoint; the eval-window stats came from the
+                        # collapsed model, so discard them; re-arm both
+                        # watchers at the rewound step.
+                        self.checkpoint.restore(
+                            ckpt_mgr.latest_checkpoint).expect_partial()
+                        step = int(ckpt.step.numpy())
+                        pbar.n = max(0, step)
+                        pbar.refresh()
+                        if step_callback is not None:
+                            step_callback(step, int(steps))
+                        loss_mean.reset_state()
+                        loss_syn_mean.reset_state()
+                        loss_hst_mean.reset_state()
+                        loss_anchor_mean.reset_state()
+                        gnorm_mean.reset_state()
+                        gnorm_max.assign(0.0)
+                        self._plateau.reset(step)
+                        self._psnr_best_step = step
+                        self._gap_streak = 0
+                        after = self._apply_lr(step)
+                        pmsg = (f"↺ degenerate plateau (PSNR stalled "
+                                f"≥{self._plateau.patience} steps at "
+                                f"{float(save_best_score):.3f} vs best "
+                                f"{best_score:.3f}) — restored best-PSNR "
+                                f"checkpoint @ step {step} and reduced "
+                                f"learning rate {before:.3g} → {after:.3g}")
+                        tqdm.write("  " + pmsg)
+                        if warn_callback is not None:
+                            warn_callback(pmsg)
+
+                # ── Converged plateau (the watched metric, combined_loss by
+                # default, flat for ``patience`` steps with a RELATIVE
+                # min-delta): cut the LR in place via the SAME ``_lr_scale``
+                # the spike guard uses. Skip once at the ``min_lr`` floor.
                 if self._plateau is not None:
                     metric = (combined_loss
                               if self._plateau_lr_metric == "combined_loss"
@@ -1027,48 +1100,13 @@ class Trainer:
                         before = self._apply_lr(step)
                         floored = before <= self._min_lr * (1.0 + 1e-9)
                         if not floored:
-                            rollback = _plateau_wants_rollback(
-                                save_best_score, float(ckpt.psnr.numpy()),
-                                min_gap=self._plateau_rollback_min_gap,
-                                has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
-                                save_best_only=save_best_only)
                             self._lr_scale *= self._plateau_lr_factor
                             self._plateau_cuts += 1
-                            if rollback:
-                                # Same mechanics as the gradient-spike
-                                # rollback: weights + optimizer + step rewind
-                                # to the best-PSNR checkpoint; the eval-window
-                                # stats came from the collapsed model, so
-                                # discard them; re-arm the stall counter at
-                                # the rewound step.
-                                best_score = float(ckpt.psnr.numpy())
-                                self.checkpoint.restore(
-                                    ckpt_mgr.latest_checkpoint).expect_partial()
-                                step = int(ckpt.step.numpy())
-                                pbar.n = max(0, step)
-                                pbar.refresh()
-                                if step_callback is not None:
-                                    step_callback(step, int(steps))
-                                loss_mean.reset_state()
-                                loss_syn_mean.reset_state()
-                                loss_hst_mean.reset_state()
-                                loss_anchor_mean.reset_state()
-                                gnorm_mean.reset_state()
-                                gnorm_max.assign(0.0)
-                                self._plateau.reset(step)
                             after = self._apply_lr(step)
-                            if rollback:
-                                pmsg = (f"↺ degenerate plateau (score "
-                                        f"{float(save_best_score):.3f} vs best "
-                                        f"{best_score:.3f}) — restored "
-                                        f"best-PSNR checkpoint @ step {step} "
-                                        f"and reduced learning rate "
-                                        f"{before:.3g} → {after:.3g}")
-                            else:
-                                pmsg = (f"↓ plateau ({self._plateau_lr_metric} "
-                                        f"flat for ≥{self._plateau.patience} "
-                                        f"steps) — reduced learning rate "
-                                        f"{before:.3g} → {after:.3g}")
+                            pmsg = (f"↓ plateau ({self._plateau_lr_metric} "
+                                    f"flat for ≥{self._plateau.patience} "
+                                    f"steps) — reduced learning rate "
+                                    f"{before:.3g} → {after:.3g}")
                             tqdm.write("  " + pmsg)
                             if warn_callback is not None:
                                 warn_callback(pmsg)

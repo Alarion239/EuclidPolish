@@ -78,3 +78,27 @@ def test_reset_clears_history():
     series = [(600, 0.006)] + [(s, 0.006) for s in range(700, 2601, 100)]
     fires = _feed(r, series)
     assert fires and fires[0] == 2600                      # 600 + 2000
+
+
+def test_relative_min_delta_tracks_loss_scale():
+    """A converged ~0.001 loss improving by ~4% per window is PROGRESS under
+    the relative threshold — the absolute 1e-4 (10% of the loss) called it a
+    stall and produced the cut→best→raise sawtooth of job 27315806."""
+    r = PlateauLRReducer(mode="min", patience=5000, min_delta=0.0,
+                         min_delta_rel=0.01, cooldown=2000)
+    assert not r.should_reduce(0, 0.00120)
+    # steady ~5e-5 improvements (≈4% of best, >> the 1% threshold) keep
+    # resetting patience — no cut fires.
+    for i, v in enumerate((0.00114, 0.00108, 0.00105, 0.00101), start=1):
+        assert not r.should_reduce(i * 5000, v)
+
+
+def test_relative_min_delta_still_catches_microcreep():
+    """Basin-style micro-creep (~0.2% per window) stays a stall under the
+    relative threshold, so the guard still fires there."""
+    r = PlateauLRReducer(mode="min", patience=5000, min_delta=0.0,
+                         min_delta_rel=0.01, cooldown=2000)
+    assert not r.should_reduce(0, 0.00600)
+    assert not r.should_reduce(2000, 0.00599)   # 0.17% — below 1%
+    assert not r.should_reduce(4000, 0.00598)
+    assert r.should_reduce(5000, 0.00597)       # patience elapsed → cut
