@@ -161,15 +161,19 @@
 {% endif %}
 
 <section class="card">
-  <h3>Checkpoints</h3>
+  <h3>Model <span class="muted">— the ensemble</span></h3>
   {% if checkpoints.files %}
+    <p>Inference runs the <b>ensemble mean</b> over the registry-active
+       members in <code>{{ checkpoints.dir }}</code> — manage them on the
+       <a href="/ensemble">🎛 Ensemble</a> page.</p>
     <ul>
       {% for f in checkpoints.files[:6] %}
-        <li><code>{{ f.name }}</code> · {{ f.size_mb }} MB</li>
+        <li><code>{{ f.member }}/{{ f.rel }}</code> · {{ f.size_mb }} MB</li>
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted">no checkpoints — train first.</p>
+    <p class="muted">no active ensemble members — train or pull them on the
+      <a href="/ensemble">🎛 Ensemble</a> page first.</p>
   {% endif %}
 </section>
 
@@ -191,20 +195,12 @@
 <section class="card">
   <h3>Generate + Reconstruct (synthetic)</h3>
   <form id="gen-recon-form" action="/inference/generate-reconstruct">
-    <label>Checkpoint
-      <select name="ckpt_kind">
-        <option value="psnr">PSNR-best</option>
-        <option value="loss">Loss-best (loss_best/)</option>
-      </select></label>
-    <label style="display:flex; align-items:center; gap:6px;"
-           title="Use the VIS-only (1-channel) model from the sibling '-vis' checkpoint dir instead of the 4-channel VIS+NISP model. The model self-describes its channel count on load and is fed VIS only.">
-      <input type="checkbox" name="vis_only" value="1" style="margin:0;">
-      <span>VIS-only model (-vis)</span></label>
     <label title="Number of independent scenes to generate + reconstruct in one run.">
       Number of pairs
       <input type="number" name="n_pairs" value="1" min="1" max="8"></label>
-    <p class="hint" style="flex-basis:100%;">HR image size + asinh scale come from the
-       <a href="/config">⚙️ Config</a> tab; residual blocks + checkpoint dir use defaults.</p>
+    <p class="hint" style="flex-basis:100%;">Runs the <b>ensemble mean</b>.
+       HR image size + asinh scale come from the
+       <a href="/config">⚙️ Config</a> tab.</p>
     <button type="submit">Generate &amp; Reconstruct</button>
   </form>
   <div id="gen-recon-status"></div>
@@ -219,17 +215,9 @@
       <input type="text" name="dec" value="64.8873" size="12" required></label>
     <label>Cutout size (VIS px)
       <input type="number" name="cutout_size" value="512" min="64" max="2048"></label>
-    <label>Checkpoint
-      <select name="ckpt_kind">
-        <option value="psnr">PSNR-best</option>
-        <option value="loss">Loss-best (loss_best/)</option>
-      </select></label>
-    <label style="display:flex; align-items:center; gap:6px;"
-           title="Use the VIS-only (1-channel) model from the sibling '-vis' checkpoint dir instead of the 4-channel VIS+NISP model. The model self-describes its channel count on load and is fed VIS only.">
-      <input type="checkbox" name="vis_only" value="1" style="margin:0;">
-      <span>VIS-only model (-vis)</span></label>
-    <p class="hint" style="flex-basis:100%;">asinh scale comes from the
-       <a href="/config">⚙️ Config</a> tab; residual blocks + checkpoint dir use defaults.</p>
+    <p class="hint" style="flex-basis:100%;">Runs the <b>ensemble mean</b>
+       (+ disagreement cubes when the ensemble has &gt;1 models). asinh scale
+       comes from the <a href="/config">⚙️ Config</a> tab.</p>
     <label style="display:flex; align-items:center; gap:6px;"
            title="Show each of the four LR bands (VIS, Y_E, J_E, H_E) as its own grayscale panel alongside SR, instead of the color composite. Useful for diagnosing per-band artefacts (saturation, NISP persistence, etc.).">
       <input type="checkbox" name="show_all_bands" value="1"

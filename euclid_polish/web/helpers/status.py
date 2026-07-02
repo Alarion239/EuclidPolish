@@ -9,6 +9,8 @@ from astropy.io import fits
 
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.ensemble_registry import active_member_dirs
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.psf import PSF
@@ -208,23 +210,18 @@ def _tfrecords_status(records_dir: str | None = None) -> dict[str, Any]:
 
 
 def _checkpoints_status() -> dict[str, Any]:
-    """Every checkpoint file on disk, recursing into sub-tracks.
+    """Every checkpoint file of every ACTIVE ensemble member, recursing into
+    sub-tracks.
 
-    Walks the whole checkpoint dir (not just the top level) so the second
-    save-best track under ``loss_best/`` is listed alongside the root
-    (save-best-score / PSNR) track. Each entry carries the ``folder`` it
-    lives in so the UI can group + show locations.
+    THE model is the ensemble: files live in ``<ensemble>/member_NN/`` (plus
+    the ``loss_best/`` second save-best track inside each member). Each entry
+    carries its ``member`` and ``folder`` so the UI can group + show
+    locations. Archived members (registry tombstones) are not listed.
     """
-    ckpt_dir = Config.DEFAULT_CHECKPOINT_DIR
-    out: dict[str, Any] = {"dir": ckpt_dir, "files": []}
-    # The standard 4-channel model lives in ``ckpt_dir``; the VIS-only
-    # (1-channel) model in the sibling ``ckpt_dir-vis``. List both so the UI
-    # shows whichever exist. Each entry's ``variant`` ("" / "vis") +
-    # ``subdir`` (""/"loss_best") locate it unambiguously.
-    roots = [("", ckpt_dir), ("vis", ckpt_dir.rstrip("/") + "-vis")]
-    for variant, root in roots:
-        if not os.path.isdir(root):
-            continue
+    base = default_ensemble_dir()
+    out: dict[str, Any] = {"dir": base, "files": []}
+    for root in active_member_dirs(base):
+        member = os.path.basename(root)
         for dirpath, _dirs, files in os.walk(root):
             subdir = os.path.relpath(dirpath, root)
             subdir = "" if subdir == "." else subdir
@@ -235,13 +232,13 @@ def _checkpoints_status() -> dict[str, Any]:
                     out["files"].append({
                         "name":    fname,
                         "rel":     rel,                       # loss_best/ckpt-11.index
-                        "variant": variant,                   # "" (4ch) or "vis"
+                        "member":  member,                    # member_00
                         "subdir":  subdir,                    # "" (root) or "loss_best"
-                        "folder":  os.path.normpath(dirpath),  # ckpt/wdsr/loss_best
+                        "folder":  os.path.normpath(dirpath),  # …/member_00/loss_best
                         "size_mb": round(os.path.getsize(full) / 1e6, 1),
                     })
-    # 4-channel first, then VIS-only; root track before sub-tracks; sorted.
-    out["files"].sort(key=lambda f: (f["variant"], f["subdir"], f["name"]))
+    # Members in order; root track before sub-tracks; sorted.
+    out["files"].sort(key=lambda f: (f["member"], f["subdir"], f["name"]))
     return out
 
 
@@ -320,29 +317,6 @@ def _resolve_training_log(checkpoint_dir: str) -> str | None:
         if os.path.exists(p):
             return p
     return None
-
-
-def _ckpt_dir_for_kind(checkpoint_dir: str, kind: str | None,
-                       vis_only: Any = False) -> str:
-    """Resolve the inference checkpoint dir for the chosen save-best track.
-
-    The trainer keeps two checkpoint sets: PSNR-best at ``checkpoint_dir``
-    and combined-loss-best in the ``loss_best/`` subfolder. ``kind="loss"``
-    selects the latter; anything else (incl. None) → the PSNR-best root.
-
-    ``vis_only`` (truthy, incl. the form strings "1"/"on"/"true"/"yes")
-    selects the VIS-only (1-channel) model, whose checkpoints live in the
-    sibling ``<checkpoint_dir>-vis`` directory. The ``-vis`` suffix is applied
-    to the *base* before the ``loss_best`` subfolder, so both tracks of the
-    VIS-only model are reachable. The model itself self-describes its channel
-    count on load, so only the path needs steering here.
-    """
-    truthy = str(vis_only).strip().lower() in ("1", "on", "true", "yes") \
-        if not isinstance(vis_only, bool) else vis_only
-    base = checkpoint_dir.rstrip("/") + "-vis" if truthy else checkpoint_dir
-    if (kind or "").strip().lower() == "loss":
-        return os.path.join(base, "loss_best")
-    return base
 
 
 def _record_count(name: str, records_dir: str | None = None) -> int | None:

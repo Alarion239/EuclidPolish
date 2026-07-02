@@ -24,10 +24,21 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from euclid_polish.config import Config
 from euclid_polish.tracking._utils import _read_json, _write_json
 
 _MEMBER_GLOB = "member_*"
 REGISTRY_FILENAME = "ensemble_registry.json"
+
+
+def default_ensemble_dir() -> str:
+    """THE model location: ``<ckpt parent>/ensemble`` (members in
+    ``member_NN/``). Lives here (not in :mod:`euclid_polish.ensemble`) so
+    cheap status paths can resolve it without importing TensorFlow;
+    ``euclid_polish.ensemble`` re-exports it."""
+    return os.path.join(
+        os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
+        "ensemble")
 
 
 def _checkpoint_exists(d: str) -> bool:

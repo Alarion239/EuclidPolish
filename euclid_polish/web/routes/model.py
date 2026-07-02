@@ -16,7 +16,6 @@ from euclid_polish.web.helpers.jobs_impl import (
 )
 from euclid_polish.web.helpers.status import (
     _checkpoints_status,
-    _ckpt_dir_for_kind,
     _tfrecords_status,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -154,14 +153,10 @@ def register(app):
 
     @app.route("/inference/generate-reconstruct", methods=["POST"])
     def inference_generate_reconstruct():
-        # Checkpoint dir + residual blocks are delegated to defaults (their
-        # fields were removed from the page); HR size + asinh come from the
-        # universal /config tab. Only ckpt_kind / n_pairs remain page-level.
+        # The model is THE ensemble (registry-active members, mean
+        # prediction); HR size + asinh come from the universal /config tab.
+        # Only n_pairs remains page-level.
         jc = job_config.load()
-        ckpt_dir = _ckpt_dir_for_kind(
-            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"),
-            request.form.get("vis_only"))
-        nrb = Config.DEFAULT_NUM_RES_BLOCKS
         asinh = _parse_asinh_scale(str(jc.asinh_scale))
         hr_size = jc.hr_image_size
         # The generator rebins NISP ×6, so the HR side must be a multiple of
@@ -178,7 +173,7 @@ def register(app):
         job_id = REGISTRY.spawn(
             label=f"gen+reconstruct {n_pairs}×{hr_size}px (FASRC login-node gen)",
             target=lambda cap: _job_generate_reconstruct(
-                cap, ckpt_dir, nrb, hr_size, n_pairs, asinh_scale=asinh,
+                cap, hr_size, n_pairs, asinh_scale=asinh,
             ),
         )
         return jsonify({"job_id": job_id})
@@ -194,13 +189,8 @@ def register(app):
             return jsonify({"error": f"ra={ra} out of range [0, 360)"}), 400
         if not (-90.0 <= dec <= 90.0):
             return jsonify({"error": f"dec={dec} out of range [-90, 90]"}), 400
-        # Checkpoint dir + residual blocks delegated to defaults; asinh comes
-        # from the universal /config tab. ckpt_kind / cutout_size stay
-        # page-level (cutout_size is a real-cutout knob, not delegated).
-        ckpt_dir = _ckpt_dir_for_kind(
-            Config.DEFAULT_CHECKPOINT_DIR, request.form.get("ckpt_kind"),
-            request.form.get("vis_only"))
-        nrb = Config.DEFAULT_NUM_RES_BLOCKS
+        # The model is THE ensemble; asinh comes from the universal /config
+        # tab. cutout_size stays page-level (a real-cutout knob).
         size = int(request.form.get("cutout_size", 512))
         if not (32 <= size <= 4096):
             return jsonify({"error": f"cutout_size={size} out of range [32, 4096]"}), 400
@@ -213,7 +203,7 @@ def register(app):
         job_id = REGISTRY.spawn(
             label=f"infer Euclid cutout @ ({ra:.4f}, {dec:+.4f})",
             target=lambda cap: _job_reconstruct_euclid_cutout(
-                cap, ra, dec, ckpt_dir, nrb, size,
+                cap, ra, dec, size,
                 asinh_scale=asinh, show_all_bands=show_all,
             ),
         )

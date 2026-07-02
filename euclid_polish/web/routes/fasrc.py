@@ -690,90 +690,6 @@ def register(app):
             return jsonify({"ok": False, "error": "not connected"}), 400
         return jsonify(fasrc_jobs.refresh_all_post_mortems(STATE.ssh))
 
-    @app.route("/api/fasrc/delete-model", methods=["POST"])
-    def api_fasrc_delete_model():
-        """Erase the current model checkpoints (FASRC + local) for a fresh
-        start: wipes ``cfg.ckpt_dir`` on FASRC and
-        ``Config.DEFAULT_CHECKPOINT_DIR`` locally (checkpoints,
-        ``training_log.csv``, ``loss_best/``), then recreates each empty.
-
-        Tracking folders live elsewhere (``./tracking`` / holylabs) and are
-        never touched. Refuses while a job is active (would corrupt the
-        running model) and guards the ``rm -rf`` against unsafe paths.
-        """
-        confirm_err = _require_confirm(request.form)
-        if confirm_err is not None:
-            return confirm_err
-
-        # Don't pull the rug from under a live training job.
-        active = next((r for r in fasrc_jobs.DB.list_recent(10)
-                       if (r.get("state") or "").upper() in ("PENDING", "RUNNING")),
-                      None)
-        if active is not None:
-            return jsonify({"ok": False, "error":
-                f"job {active.get('jobid')} is {active.get('state')} — cancel "
-                "it before deleting its checkpoints."}), 400
-
-        def _safe_ckpt(p: str, *, require_abs: bool) -> bool:
-            p = (p or "").strip().rstrip("/")
-            if not p or "ckpt" not in p.lower():
-                return False
-            if require_abs:
-                # Absolute + reasonably deep so we can never rm -rf "/", "/n", …
-                return p.startswith("/") and p.count("/") >= 4
-            return True
-
-        cfg = fasrc_config.load()
-        results: dict[str, Any] = {}
-
-        # VIS-only model lives in the sibling "<ckpt_dir>-vis" dir; deleting it
-        # must target that dir on both FASRC and local, never the 4-channel one.
-        vis_only = request.form.get("vis_only", "").strip().lower() in (
-            "1", "on", "true", "yes")
-
-        # --- FASRC first, so the auto-mirror can't repopulate local from a
-        #     still-present remote between the two deletes. ---
-        remote = (cfg.ckpt_dir or "").strip()
-        if vis_only and remote:
-            remote = remote.rstrip("/") + "-vis"
-        if not (STATE.ssh and STATE.ssh.is_connected()):
-            results["remote"] = {"ok": False, "error": "not connected — FASRC "
-                "checkpoints NOT deleted (the mirror would restore local on "
-                "its next sync). Connect, then retry."}
-        elif not _safe_ckpt(remote, require_abs=True):
-            results["remote"] = {"ok": False,
-                                  "error": f"refused unsafe remote path {remote!r}"}
-        else:
-            try:
-                rc, _out, err = STATE.ssh.run(
-                    f"rm -rf {shlex.quote(remote)} && mkdir -p {shlex.quote(remote)}",
-                    timeout=120)
-                results["remote"] = ({"ok": True, "path": remote} if rc == 0
-                                     else {"ok": False,
-                                           "error": err.strip() or f"rm exit {rc}"})
-            except Exception as e:
-                results["remote"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-        # --- local ---
-        local = Config.DEFAULT_CHECKPOINT_DIR
-        if vis_only:
-            local = local.rstrip("/") + "-vis"
-        if not _safe_ckpt(local, require_abs=False):
-            results["local"] = {"ok": False,
-                                "error": f"refused unsafe local path {local!r}"}
-        else:
-            try:
-                if os.path.isdir(local):
-                    shutil.rmtree(local)
-                os.makedirs(local, exist_ok=True)
-                results["local"] = {"ok": True, "path": os.path.abspath(local)}
-            except Exception as e:
-                results["local"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-        ok = bool(results.get("local", {}).get("ok")
-                  and results.get("remote", {}).get("ok"))
-        return jsonify({"ok": ok, "results": results})
-
     @app.route("/api/fasrc/hst/<step_id>/history", methods=["GET", "POST"])
     def api_fasrc_hst_step_history(step_id: str):
         """Per-step run history + best-match prefill suggestion.
@@ -1220,12 +1136,7 @@ def register(app):
             return jsonify({"ok": False, "error": "missing started_at"}), 400
 
         cfg = fasrc_config.load()
-        # VIS-only runs train into the sibling "<ckpt_dir>-vis" dir, so their
-        # training_log.csv lives there. ``vis_only`` steers the remote read.
         base = cfg.ckpt_dir.rstrip("/")
-        if request.args.get("vis_only", "").strip().lower() in (
-                "1", "on", "true", "yes"):
-            base += "-vis"
         csv_path   = f"{base}/{TrainingLog.FILENAME}"
         jsonl_path = f"{base}/training_log.jsonl"
 

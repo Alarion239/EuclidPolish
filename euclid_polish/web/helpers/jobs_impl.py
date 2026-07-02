@@ -21,6 +21,8 @@ from scipy import signal as scipy_signal
 from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 from euclid_polish.eval.sr_provenance import stamp_sr_fits
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.psf_library import load_all_band_psfs
@@ -28,7 +30,6 @@ from euclid_polish.sky.observation.observation_simulator import ObservationSimul
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
     plot_reconstruction,
-    reconstruct,
     scaled_wcs_header,
 )
 from euclid_polish.web import fasrc_config
@@ -75,13 +76,12 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
 
 
 def _job_generate_reconstruct(
-    cap, checkpoint_dir: str, num_res_blocks: int,
-    hr_image_size: int, n_pairs: int,
+    cap, hr_image_size: int, n_pairs: int,
     asinh_scale: float | None = None,
 ) -> dict[str, Any]:
     """Generate fresh synthetic pair(s) on the FASRC login node, pull them
-    down, run the model locally, and render LR | SR | HR | forward(SR) |
-    residual with the FASRC PSF the checkpoint trained against.
+    down, run the ensemble locally, and render LR | SR | HR | forward(SR) |
+    residual with the FASRC PSF the checkpoints trained against.
 
     Flow: (1) pull the Euclid ePSFs from FASRC; (2) run ``run_pipeline.py``
     on the **login node** (not sbatch) writing one-or-more validate pairs to
@@ -144,14 +144,8 @@ def _job_generate_reconstruct(
         hr_by_idx    = {h.index: h for h in hr_records}
         clean_by_idx = {c.index: c for c in clean_records}
 
-        # 4. Model — load once.
-        scale = Config.DEFAULT_REBIN_FACTOR
-        if not tf.train.latest_checkpoint(checkpoint_dir):
-            raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
-        model = load_model_from_checkpoint(
-            checkpoint_dir, scale, num_res_blocks,
-            nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-        )
+        # 4. Model — the ensemble, loaded once (mean is the prediction).
+        model = load_eval_ensemble(log=print)
 
         out_dir = Config.VIS_RECONSTRUCTION_DIR
         os.makedirs(out_dir, exist_ok=True)
@@ -163,7 +157,7 @@ def _job_generate_reconstruct(
                                  if lr_img.data.ndim == 3
                                     and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
                                  else None)
-            lr_data, sr_data = reconstruct(model, lr_img.data)
+            lr_data, sr_data, _members = sr_from_model(model, lr_img.data)
 
             # HR color from the CLEAN (noise-free) record; residual/PSNR from
             # the 1-channel hr_<subset>, falling back to clean channel 0.
@@ -230,7 +224,8 @@ def _job_generate_reconstruct(
                                         "panel label")
                 hdu.header["IDX"]    = (int(lr_img.index), "scene index")
                 hdu.header["HRSIZE"] = (int(hr_image_size), "HR side px (0.05in/px)")
-                hdu.header["CKPT"]   = (str(checkpoint_dir)[:60], "checkpoint dir")
+                hdu.header["CKPT"]   = (str(default_ensemble_dir())[:60],
+                                        "ensemble dir")
                 hdu.header["PSFSRC"] = ("FASRC", "ePSF pulled from FASRC (training PSF)")
                 hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
                                         "asinh stretch knee used for the plot")
@@ -419,7 +414,6 @@ def reconstruct_cutout_at(
 
     lr_cube = np.stack([bands_data[n] for n in band_names], axis=-1)  # (H,W,4)
     _tick(len(band_names), "running model")
-    from euclid_polish.eval.ensemble_infer import sr_from_model
     _, sr_data, members = sr_from_model(model, lr_cube)
     lr_vis = lr_cube[..., 0]
 
@@ -557,28 +551,20 @@ def _job_reconstruct_euclid_cutout(
     cap,
     ra: float,
     dec: float,
-    checkpoint_dir: str,
-    num_res_blocks: int,
     cutout_size_vis_pixels: int,
     asinh_scale: float | None = None,
     show_all_bands: bool = False,
 ) -> dict[str, Any]:
     """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
 
-    Thin wrapper over :func:`reconstruct_cutout_at`: it loads the model, wipes
-    the single ``Config.EUCLID_INFERENCE_DIR/cutouts/latest/`` overwrite slot
-    (so each run *replaces* the previous record), runs the shared per-object
-    body into it, then copies the two color renders to the gallery's fixed
-    ``euclid_latest_{eye,solar}.png`` names. The input RA/Dec/size are
-    preserved in the SR FITS header for provenance.
+    Thin wrapper over :func:`reconstruct_cutout_at`: it loads the ensemble,
+    wipes the single ``Config.EUCLID_INFERENCE_DIR/cutouts/latest/`` overwrite
+    slot (so each run *replaces* the previous record), runs the shared
+    per-object body into it, then copies the two color renders to the
+    gallery's fixed ``euclid_latest_{eye,solar}.png`` names. The input
+    RA/Dec/size are preserved in the SR FITS header for provenance.
     """
-    if not tf.train.latest_checkpoint(checkpoint_dir):
-        raise FileNotFoundError(f"no checkpoint in {checkpoint_dir}")
-    scale = Config.DEFAULT_REBIN_FACTOR
-    model = load_model_from_checkpoint(
-        checkpoint_dir, scale, num_res_blocks,
-        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-    )
+    model = load_eval_ensemble(log=print)
 
     # Single overwrite slot: wipe every previous cutout record so each call
     # replaces the prior run rather than accumulating one directory per
@@ -591,7 +577,7 @@ def _job_reconstruct_euclid_cutout(
     res = reconstruct_cutout_at(
         model, ra, dec, cutout_size_vis_pixels, cache_dir,
         asinh_scale=asinh_scale, show_all_bands=show_all_bands,
-        checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=default_ensemble_dir(),
         progress=lambda done, total, label: cap.tick(done, total, label),
     )
 

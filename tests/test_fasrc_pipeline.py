@@ -15,7 +15,6 @@ from euclid_polish.web.fasrc_pipeline import (
     HSTDownloadStep,
     HSTPSFExtractStep,
     HSTTFRecordStep,
-    HSTTrainStep,
     StepRegistry,
     StepResources,
 )
@@ -80,7 +79,7 @@ class TestRegistry:
         removed."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
-            "download", "extract_psf", "kernel", "tfrecords", "train",
+            "download", "extract_psf", "kernel", "tfrecords",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
@@ -428,7 +427,6 @@ class TestRegistry:
     def test_lookup_by_id(self):
         assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
         assert isinstance(REGISTRY.get("download"), HSTDownloadStep)
-        assert isinstance(REGISTRY.get("train"), HSTTrainStep)
 
     def test_unknown_step_raises(self):
         with pytest.raises(KeyError, match="unknown"):
@@ -439,7 +437,7 @@ class TestRegistry:
         (download, kernel, PSF extract, synthetic generate, catalog eval,
         Zoobot morphology, …) is CPU by default."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"train", "ensemble_train",
+        assert gpu_steps == {"ensemble_train",
                              "lensfinder_sr_infer", "lensfinder_train"}
 
     def test_extract_psf_is_single_threaded(self):
@@ -579,9 +577,9 @@ class TestSbatchRendering:
         }
 
     def test_gpu_step_emits_gres_line(self, cfg):
-        step = REGISTRY.get("train")
+        step = REGISTRY.get("ensemble_train")
         out = step.build_sbatch_body(
-            params={"steps": 1000, "batch_size": 8, "hst_fraction": 0.1},
+            params={"steps": 1000, "n_members": 2},
             resources=step.defaults, cfg=cfg, label="x",
         )
         assert "--gres=gpu:1" in out["body"]
@@ -598,7 +596,7 @@ class TestSbatchRendering:
         Any GPU configuration must produce a body that LITERALLY
         starts with ``#!/bin/bash\\n``. No leading whitespace, no
         empty line, no BOM."""
-        for step_id in ("train",):
+        for step_id in ("ensemble_train",):
             step = REGISTRY.get(step_id)
             # Force n_gpus to a non-zero value even if the default is 0,
             # so the test exercises the gres branch regardless of step
@@ -685,28 +683,7 @@ class TestSbatchRendering:
         assert "EUCLID_POLISH_DATA_DIR" in out["body"]
         assert shlex.quote(cfg.data_dir) in out["body"]
 
-    def test_train_step_omits_lane_flags_when_zero(self, cfg):
-        """A pure-synthetic submit (no HST / star-anchor counts) emits only
-        the synthetic lane — no HST or anchor flags leak in and enable a
-        lane whose records may not exist."""
-        step = REGISTRY.get("train")
-        out = step.build_sbatch_body(
-            params={"steps": 100, "n_syn": 8},
-            resources=step.defaults, cfg=cfg, label="x",
-        )
-        body = out["body"]
-        assert "--n-anchor" not in body
-        assert "--n-hst" not in body
 
-    def test_train_step_emits_lane_flags_when_positive(self, cfg):
-        step = REGISTRY.get("train")
-        out = step.build_sbatch_body(
-            params={"steps": 100, "n_syn": 6, "n_hst": 2, "n_anchor": 2},
-            resources=step.defaults, cfg=cfg, label="x",
-        )
-        body = out["body"]
-        assert "--n-hst" in body
-        assert "--n-anchor" in body
 
     def test_euclid_sky_download_step_args(self, cfg):
         step = REGISTRY.get("euclid_sky_download")
@@ -760,7 +737,7 @@ class TestConcreteSteps:
 
     @pytest.mark.parametrize("step_cls", [
         HSTDownloadStep, HSTPSFExtractStep,
-        DifferentialKernelStep, HSTTFRecordStep, HSTTrainStep,
+        DifferentialKernelStep, HSTTFRecordStep,
     ])
     def test_builds_nonempty_command(self, step_cls):
         step = step_cls()
@@ -769,65 +746,13 @@ class TestConcreteSteps:
         assert argv[0].startswith("scripts/")
         assert all(isinstance(a, str) for a in argv)
 
-    def test_train_passes_lane_counts(self):
-        argv = HSTTrainStep().build_command(
-            {"n_syn": 24, "n_hst": 8, "n_anchor": 0})
-        assert argv[argv.index("--n-syn") + 1] == "24"
-        assert argv[argv.index("--n-hst") + 1] == "8"
-        # HST lane on → its loss-weight flag rides along.
-        assert "--hst-loss-weight" in argv
-        # Star-anchor lane off → no anchor flags.
-        assert "--n-anchor" not in argv
-        assert "--star-anchor-loss-weight" not in argv
 
-    def test_train_default_is_pure_synthetic(self):
-        # No counts given → synthetic-only (n_syn default), no HST/anchor lanes.
-        argv = HSTTrainStep().build_command({})
-        assert "--n-syn" in argv
-        assert "--n-hst" not in argv
-        assert "--n-anchor" not in argv
 
-    def test_train_emits_anchor_flags_when_n_anchor_set(self):
-        argv = HSTTrainStep().build_command({"n_syn": 6, "n_anchor": 2})
-        assert argv[argv.index("--n-anchor") + 1] == "2"
-        assert "--star-anchor-loss-weight" in argv
-        # forward-op-crop-half belongs to the HST lane now, not anchor.
-        assert "--forward-op-crop-half" not in argv
 
-    def test_train_emits_hst_crop_flag_when_n_hst_set(self):
-        argv = HSTTrainStep().build_command({"n_syn": 6, "n_hst": 2})
-        assert argv[argv.index("--n-hst") + 1] == "2"
-        assert "--hst-loss-weight" in argv
-        assert "--forward-op-crop-half" in argv
 
-    def test_train_emits_constant_learning_rate_when_set(self):
-        argv = HSTTrainStep().build_command({"learning_rate": 0.001})
-        assert "--learning-rate" in argv
-        idx = argv.index("--learning-rate")
-        assert float(argv[idx + 1]) == pytest.approx(0.001)
 
-    def test_train_emits_nonneg_sr_weight_when_set(self):
-        # Non-blank → emitted (0 is valid and disables the penalty).
-        for val, expect in ((2.5, 2.5), (0, 0.0)):
-            argv = HSTTrainStep().build_command({"nonneg_sr_weight": val})
-            assert "--nonneg-sr-weight" in argv
-            idx = argv.index("--nonneg-sr-weight")
-            assert float(argv[idx + 1]) == pytest.approx(expect)
 
-    def test_train_omits_nonneg_sr_weight_when_blank(self):
-        # Blank → not emitted (script falls back to Config.NONNEG_SR_WEIGHT).
-        assert "--nonneg-sr-weight" not in HSTTrainStep().build_command({})
-        assert "--nonneg-sr-weight" not in HSTTrainStep().build_command(
-            {"nonneg_sr_weight": ""})
 
-    def test_train_omits_learning_rate_when_blank(self):
-        # Blank / 0 keeps the default decay schedule — no flag emitted, so an
-        # unspecified submit stays byte-identical to before.
-        assert "--learning-rate" not in HSTTrainStep().build_command({})
-        assert "--learning-rate" not in HSTTrainStep().build_command(
-            {"learning_rate": 0})
-        assert "--learning-rate" not in HSTTrainStep().build_command(
-            {"learning_rate": ""})
 
     def test_tfrecords_passes_image_size(self):
         argv = HSTTFRecordStep().build_command({"image_size": 256})

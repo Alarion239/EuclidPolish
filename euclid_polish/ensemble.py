@@ -31,6 +31,7 @@ import numpy as np
 
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
+from euclid_polish.ensemble_registry import default_ensemble_dir  # re-export
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.model import Model, _checkpoint_exists
 
@@ -393,15 +394,6 @@ class EnsembleModel:
                 if total_flux > 0 else float("nan"),
             },
         }
-
-
-def default_ensemble_dir() -> str:
-    """THE model location: ``<ckpt parent>/ensemble`` (members in
-    ``member_NN/``). The single canonical path — web helpers and eval all
-    resolve through here."""
-    return os.path.join(
-        os.path.dirname(Config.DEFAULT_CHECKPOINT_DIR.rstrip("/")) or ".",
-        "ensemble")
 
 
 def ensemble_available(base_dir: str | None = None) -> bool:

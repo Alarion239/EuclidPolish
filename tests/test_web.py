@@ -1051,8 +1051,8 @@ def test_hst_status_hides_experimental_lane_steps_by_default(client):
         assert gated not in step_ids, (
             f"experimental step '{gated}' leaked into the UI listing"
         )
-    # The active pipeline is untouched.
-    for kept in ("train", "synthetic_generate", "euclid_query",
+    # The active pipeline is untouched (training is ensemble-only).
+    for kept in ("ensemble_train", "synthetic_generate", "euclid_query",
                  "download_euclid_cutouts", "extract_euclid_psf"):
         assert kept in step_ids
 

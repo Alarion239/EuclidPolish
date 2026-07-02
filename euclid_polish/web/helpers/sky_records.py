@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob
 import os
 
+from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.provenance.records import Artifact, Format
@@ -35,17 +36,21 @@ def sr_count(subset: str) -> int:
 
 
 def checkpoint_present(checkpoint: str | None = None) -> bool:
-    """True when a usable checkpoint is on disk (cheap; no TensorFlow import).
+    """True when a usable model is on disk (cheap; no TensorFlow import).
 
-    Mirrors ``tf.train.latest_checkpoint`` without paying its import cost:
-    a TF checkpoint dir carries a ``checkpoint`` pointer file plus per-step
-    ``*.index`` shards.
+    With no argument this asks the ensemble registry — THE model is the
+    ensemble, so "a checkpoint exists" means "at least one active member".
+    An explicit ``checkpoint`` dir keeps the old single-dir probe (a TF
+    checkpoint dir carries a ``checkpoint`` pointer file plus per-step
+    ``*.index`` shards).
     """
-    ck = checkpoint or Config.DEFAULT_CHECKPOINT_DIR
-    if not os.path.isdir(ck):
+    if checkpoint is None:
+        base = ensemble_registry.default_ensemble_dir()
+        return bool(ensemble_registry.load_registry(base)["active"])
+    if not os.path.isdir(checkpoint):
         return False
-    return (os.path.isfile(os.path.join(ck, "checkpoint"))
-            or bool(glob.glob(os.path.join(ck, "*.index"))))
+    return (os.path.isfile(os.path.join(checkpoint, "checkpoint"))
+            or bool(glob.glob(os.path.join(checkpoint, "*.index"))))
 
 
 def records_present(records_dir: str, subset: str = "validate") -> bool:

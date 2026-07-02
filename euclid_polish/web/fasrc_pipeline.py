@@ -952,95 +952,6 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
         return cmd
 
 
-class HSTTrainStep(FASRCPipelineStep):
-    """The WDSR training job.
-
-    The HST / star-anchor lane knobs (``n_hst`` / ``n_anchor`` / lane
-    weights) are EXPERIMENTAL and currently hidden from the WebUI form
-    (see :mod:`euclid_polish.web.experimental`); an unsubmitted knob
-    defaults to 0, so the emitted command stays synthetic-only.
-    """
-
-    def __init__(self):
-        super().__init__(
-            step_id="train",
-            label="Train WDSR (synthetic supervision)",
-            job_name="train",
-            defaults=StepResources(
-                partition="gpu", n_cpus=4, n_gpus=1,
-                memory="32G", time_limit="24:00:00",
-            ),
-            needs_gpu=True,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        steps               = int(params.get("steps", 400_000))
-        # Explicit per-lane batch composition (the batch is their sum). The
-        # synthetic lane is always present; HST / star-anchor lanes are on
-        # only when their count > 0.
-        n_syn               = int(params.get("n_syn", Config.DEFAULT_BATCH_SIZE))
-        n_hst               = int(params.get("n_hst", 0) or 0)
-        n_anchor            = int(params.get("n_anchor", 0) or 0)
-        w_syn               = float(params.get("save_best_w_syn", 1.0))
-        w_hst               = float(params.get("save_best_w_hst", 1.0))
-        w_anchor            = float(params.get("save_best_w_anchor", 0.0))
-        lw_syn              = float(params.get("synthetic_loss_weight", 1.0))
-        lw_hst              = float(params.get("hst_loss_weight", 1.0))
-        lw_anchor           = float(params.get("star_anchor_loss_weight", 1.0))
-        fwd_crop            = int(params.get("forward_op_crop_half", 0))
-        learning_rate       = float(params.get("learning_rate", 0.0) or 0.0)
-        nonneg_raw          = str(params.get("nonneg_sr_weight", "")).strip()
-        # Checkbox: when checked the form sends a truthy value; unchecked →
-        # absent → default (compute the resume baseline). Programmatic
-        # callers that omit it keep the default too.
-        overwrite_best      = str(params.get("overwrite_best", "")).strip() \
-            in ("1", "true", "True", "on", "yes")
-        # Checkbox: feed VIS only (1 channel) instead of VIS+NISP (4). The
-        # training script slices the data and builds a 1-channel model, and
-        # isolates the checkpoints under a '-vis' suffix.
-        vis_only            = str(params.get("vis_only", "")).strip() \
-            in ("1", "true", "True", "on", "yes")
-        cmd = [
-            "scripts/fasrc_train_with_hst.py",
-            "--steps", str(steps),
-            "--n-syn", str(n_syn),
-            "--save-best-w-syn", f"{w_syn:g}",
-            "--save-best-w-hst", f"{w_hst:g}",
-            "--save-best-w-anchor", f"{w_anchor:g}",
-            "--synthetic-loss-weight", f"{lw_syn:g}",
-        ]
-        # Constant LR only when explicitly set; blank/0 keeps the default
-        # decay schedule so an unspecified submit stays byte-identical.
-        if learning_rate > 0:
-            cmd += ["--learning-rate", f"{learning_rate:g}"]
-        # SR non-negativity penalty weight, only when the form provides one
-        # (blank → the script's Config.NONNEG_SR_WEIGHT default). 0 is a
-        # valid value (disables the penalty), so emit on any non-blank.
-        if nonneg_raw != "":
-            cmd += ["--nonneg-sr-weight", f"{float(nonneg_raw):g}"]
-        # Overwrite the previous best instead of computing a resume baseline
-        # (e.g. after an architecture change). Default keeps the baseline.
-        if overwrite_best:
-            cmd += ["--no-resume-baseline"]
-        if vis_only:
-            cmd += ["--vis-only"]
-        # Emit a lane's flags only when its count > 0, so a supervised-only
-        # submission stays minimal. ``--forward-op-crop-half`` now belongs to
-        # the HST forward op (the anchor lane is operator-free).
-        if n_hst > 0:
-            cmd += [
-                "--n-hst", str(n_hst),
-                "--hst-loss-weight", f"{lw_hst:g}",
-                "--forward-op-crop-half", str(fwd_crop),
-            ]
-        if n_anchor > 0:
-            cmd += [
-                "--n-anchor", str(n_anchor),
-                "--star-anchor-loss-weight", f"{lw_anchor:g}",
-            ]
-        return cmd
-
-
 class EnsembleTrainStep(FASRCPipelineStep):
     """Sequential ensemble training: ``N`` WDSR members, distinct seeds.
 
@@ -1103,7 +1014,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
 # only surviving concrete step is :class:`SyntheticGenerateStep` (the
 # synthetic training-pair generator). The old four-preset training form
 # (gen_convolve / convolve_only / train_only / custom) was removed —
-# training now goes exclusively through :class:`HSTTrainStep`.
+# training now goes exclusively through :class:`EnsembleTrainStep`.
 
 
 @dataclass
@@ -1403,7 +1314,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     PosterCutoutStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
-    HSTTrainStep,
     EnsembleTrainStep,
     LensfinderGenerateStep,
     LensfinderSRInferStep,

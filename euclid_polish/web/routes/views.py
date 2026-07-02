@@ -10,6 +10,9 @@ from typing import Any
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.ensemble_registry import active_member_dirs
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.helpers import sky_records
@@ -69,20 +72,19 @@ def register(app):
 
     @app.route("/view/training-log")
     def view_training_log():
-        ckpt = request.args.get("checkpoint_dir", Config.DEFAULT_CHECKPOINT_DIR)
-        log_path = _resolve_training_log(ckpt)
+        # Default: the first active ensemble member's log (members carry
+        # their own training_log.csv; the /ensemble page's JS curves cover
+        # the whole ensemble — this single-plot route serves explicit dirs).
+        default_dirs = active_member_dirs(default_ensemble_dir())
+        ckpt = request.args.get(
+            "checkpoint_dir", default_dirs[0] if default_dirs else "")
+        log_path = _resolve_training_log(ckpt) if ckpt else None
         # ABSOLUTE path: Config.VIS_DIR is "./data/vis" (relative), but Flask's
         # send_file() resolves a *relative* path against app.root_path
         # (euclid_polish/web/), not the CWD — so a relative out_png renders to
         # one dir and is served from another → 500. abspath pins both to CWD.
-        # The VIS-only model logs to ``<ckpt>-vis``; give its plot a distinct
-        # filename so it doesn't clobber (or get clobbered by) the 4-channel
-        # plot's cache. The default dir keeps the canonical name for
-        # back-compat (tracking image backups reference it).
-        is_vis = any(part.endswith("-vis")
-                     for part in os.path.normpath(ckpt).split(os.sep))
-        png_name = "training_log-vis.png" if is_vis else "training_log.png"
-        out_png  = os.path.abspath(os.path.join(Config.VIS_DIR, png_name))
+        out_png  = os.path.abspath(os.path.join(Config.VIS_DIR,
+                                                "training_log.png"))
         if log_path is None:
             abort(404)
         # Render if missing, stale, or explicitly forced (``?force=1`` — used
@@ -202,7 +204,8 @@ def register(app):
         if not subsets:
             return jsonify({"error": "no sky records — sync them first"}), 400
         if not sky_records.checkpoint_present():
-            return jsonify({"error": "no checkpoint in ./ckpt/wdsr"}), 400
+            return jsonify({"error": "no active ensemble members — train or "
+                            "pull them on the /ensemble page"}), 400
         overwrite = (str(request.values.get("overwrite", "")).lower()
                      in ("1", "true", "yes", "on"))
 
@@ -211,8 +214,8 @@ def register(app):
 
             from euclid_polish.image import ImageSet
             from euclid_polish.image.tfio import tfrecord_path as _trp
-            from euclid_polish.model import Model
-            model = Model(Config.DEFAULT_CHECKPOINT_DIR)
+            model = load_eval_ensemble(
+                log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
             os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
             done = 0
             for subset in subsets:

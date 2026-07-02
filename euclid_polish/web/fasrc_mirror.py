@@ -1,8 +1,13 @@
-"""Background poller that rsync's new checkpoint files from FASRC.
+"""Background poller that rsync's new ENSEMBLE checkpoints from FASRC.
 
 One mirror thread per Flask process; ``start()`` / ``stop()`` toggle it.
 We don't try to detect "new" files ourselves — rsync's incremental
 transfer handles that natively. We just call it on a timer.
+
+The mirror syncs the remote *ensemble* dir (sibling of ``cfg.ckpt_dir``) into
+the local ensemble dir. The member registry lives OUTSIDE the ensemble dir
+precisely so this mirror's ``--delete-after`` can't wipe it, and its archived
+tombstones keep a mirrored-back member from re-activating.
 """
 
 from __future__ import annotations
@@ -12,9 +17,15 @@ import threading
 import time
 from dataclasses import dataclass
 
-from euclid_polish.config import Config
+from euclid_polish.ensemble_registry import default_ensemble_dir
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.remote import STATE
+
+
+def _remote_ensemble_dir(cfg) -> str:
+    """The ensemble dir on FASRC: sibling of the remote checkpoint dir."""
+    parent = os.path.dirname(cfg.ckpt_dir.rstrip("/")) or "."
+    return os.path.join(parent, "ensemble")
 
 
 @dataclass
@@ -51,9 +62,9 @@ class Mirror:
             self._stop_evt.clear()
             cfg = fasrc_config.load()
             self.status.enabled = True
-            self.status.remote_dir = cfg.ckpt_dir
+            self.status.remote_dir = _remote_ensemble_dir(cfg)
             self.status.local_dir  = (cfg.local_ckpt_mirror or
-                                      Config.DEFAULT_CHECKPOINT_DIR)
+                                      default_ensemble_dir())
             self._thread = threading.Thread(
                 target=self._loop, name="fasrc-mirror", daemon=True,
             )
@@ -85,9 +96,9 @@ class Mirror:
             self.status.last_run_at = time.time()
             return
         cfg = fasrc_config.load()
-        remote_base = cfg.ckpt_dir.rstrip("/")
+        remote_base = _remote_ensemble_dir(cfg).rstrip("/")
         local_base  = (cfg.local_ckpt_mirror or
-                       Config.DEFAULT_CHECKPOINT_DIR).rstrip("/")
+                       default_ensemble_dir()).rstrip("/")
         remote = remote_base + "/"
         local  = local_base
         os.makedirs(local, exist_ok=True)
