@@ -60,6 +60,10 @@ class Model:
         Super-resolution upscale factor (default 2).
     num_res_blocks : int
         Number of residual blocks (default ``Config.DEFAULT_NUM_RES_BLOCKS``).
+    init_weights_from : str, optional
+        Checkpoint dir of an EXISTING model whose weights seed this one
+        ("fork"). Requires a virgin ``checkpoint_dir`` — the trainer then
+        starts at step 0 with a fresh optimizer and LR schedule.
     seed : int, optional
         Master RNG seed. When set, the global RNGs are seeded *before* the model
         is built (so weight initialisation is reproducible) and the seed flows
@@ -82,6 +86,7 @@ class Model:
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
         seed: int | None = None,
         deterministic: bool = False,
+        init_weights_from: str | None = None,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
@@ -95,6 +100,17 @@ class Model:
         if seed is not None:
             seed_everything(seed, deterministic=self._deterministic)
         self._load_fn: Callable = _load_fn if _load_fn is not None else _default_load
+
+        # Fork guard: starting from another member's weights only makes sense
+        # for a NEW member — step 0, fresh optimizer, a fresh LR schedule.
+        if init_weights_from is not None:
+            if _checkpoint_exists(checkpoint_dir):
+                raise ValueError(
+                    "init_weights_from requires a virgin target dir; "
+                    f"{checkpoint_dir!r} already has a checkpoint.")
+            if not _checkpoint_exists(init_weights_from):
+                raise ValueError(
+                    f"init_weights_from: no checkpoint in {init_weights_from!r}")
 
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
             self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
@@ -112,6 +128,14 @@ class Model:
                 nchan_in=Config.NUM_LR_CHANNELS,
                 nchan_out=Config.NUM_HR_CHANNELS)
             self.id = None
+
+        if init_weights_from is not None:
+            # Fork: copy weights from the source member's checkpoint into the
+            # freshly-built net. Nothing else carries over — the trainer's
+            # ckpt.step stays 0 and the warmup→cosine schedule restarts.
+            src = self._load_fn(init_weights_from, scale, num_res_blocks)
+            self._tf_model.set_weights(src.get_weights())
+            print(f"  ✓ fork: weights initialized from {init_weights_from}")
 
         self._reconstruct_fn: Callable = (
             _reconstruct_fn if _reconstruct_fn is not None else _default_reconstruct

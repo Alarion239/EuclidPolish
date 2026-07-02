@@ -1,0 +1,86 @@
+"""EnsembleModel.train_members: spec-driven sequential training."""
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from euclid_polish import ensemble as ens_mod
+from euclid_polish.ensemble import EnsembleModel, MemberTrainSpec
+
+
+class _FakeModel:
+    calls: list = []
+
+    def __init__(self, checkpoint_dir, *, scale=2, num_res_blocks=32,
+                 seed=None, init_weights_from=None):
+        self.checkpoint_dir = checkpoint_dir
+        self.kwargs = {"seed": seed, "init_weights_from": init_weights_from}
+
+    def train(self, lr, hr, steps=0, batch_size=16, **kw):
+        _FakeModel.calls.append(
+            {"dir": self.checkpoint_dir, "steps": steps, **self.kwargs})
+
+
+@pytest.fixture(autouse=True)
+def _patch_model(monkeypatch):
+    _FakeModel.calls = []
+    monkeypatch.setattr(ens_mod, "Model", _FakeModel)
+
+
+def test_train_members_runs_specs_in_order(tmp_path):
+    base = str(tmp_path / "ensemble")
+    specs = [
+        MemberTrainSpec(name="member_09", seed=7, target_steps=1000,
+                        op="add", run_steps=1000),
+        MemberTrainSpec(name="member_03", seed=3, target_steps=1500,
+                        op="continue", run_steps=500),
+        MemberTrainSpec(name="member_10", seed=8, target_steps=1000,
+                        op="fork", run_steps=1000,
+                        init_from=os.path.join(base, "member_03"),
+                        forked_from="member_03·psnr"),
+    ]
+    ens = EnsembleModel(base, _models=[])
+    ens.train_members("lr.tfrecord", "hr.tfrecord", specs)
+    assert [os.path.basename(c["dir"]) for c in _FakeModel.calls] == \
+        ["member_09", "member_03", "member_10"]
+    assert _FakeModel.calls[0] == {
+        "dir": os.path.join(base, "member_09"), "steps": 1000,
+        "seed": 7, "init_weights_from": None}
+    assert _FakeModel.calls[2]["init_weights_from"] == \
+        os.path.join(base, "member_03")
+
+
+def test_train_members_writes_origin_for_created_members(tmp_path):
+    base = str(tmp_path / "ensemble")
+    specs = [MemberTrainSpec(name="member_09", seed=7, target_steps=100,
+                             op="fork", run_steps=100, init_from="x",
+                             forked_from="member_03·loss")]
+    EnsembleModel(base, _models=[]).train_members("lr", "hr", specs)
+    with open(os.path.join(base, "member_09", "origin.json")) as f:
+        o = json.load(f)
+    assert o["op"] == "fork" and o["forked_from"] == "member_03·loss"
+    assert o["seed"] == 7 and o["target_steps"] == 100
+    assert "created_at" in o
+    # continue never writes/overwrites origin
+    specs2 = [MemberTrainSpec(name="member_09", seed=7, target_steps=200,
+                              op="continue", run_steps=100)]
+    EnsembleModel(base, _models=[]).train_members("lr", "hr", specs2)
+    with open(os.path.join(base, "member_09", "origin.json")) as f:
+        assert json.load(f)["op"] == "fork"        # untouched
+
+
+def test_train_members_empty_specs_raises(tmp_path):
+    with pytest.raises(ValueError, match="no member specs"):
+        EnsembleModel(str(tmp_path / "e"), _models=[]).train_members(
+            "lr", "hr", [])
+
+
+def test_legacy_train_wraps_add_specs(tmp_path):
+    base = str(tmp_path / "ensemble")
+    EnsembleModel(base, _models=[]).train("lr", "hr", n_members=2,
+                                          base_seed=100, steps=50)
+    assert [os.path.basename(c["dir"]) for c in _FakeModel.calls] == \
+        ["member_00", "member_01"]
+    assert [c["seed"] for c in _FakeModel.calls] == [100, 101]

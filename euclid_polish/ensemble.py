@@ -24,8 +24,11 @@ disagreement quantifies how much a run is hallucinating.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -34,6 +37,7 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir  # re-export
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.model import Model, _checkpoint_exists
+from euclid_polish.provenance.gitinfo import capture_git
 
 #: Per-member checkpoint sub-directory name, e.g. ``member_03``.
 MEMBER_DIR_FMT = "member_{:02d}"
@@ -43,6 +47,25 @@ _MEMBER_GLOB = "member_*"
 def member_dir(base_dir: str, i: int) -> str:
     """Checkpoint directory for ensemble member ``i`` under ``base_dir``."""
     return os.path.join(base_dir, MEMBER_DIR_FMT.format(int(i)))
+
+
+@dataclass
+class MemberTrainSpec:
+    """One member's training job within a run.
+
+    ``target_steps`` is the ABSOLUTE step target (the trainer's ``steps``);
+    ``run_steps`` is how many steps this run actually executes (=
+    ``target_steps`` for add/fork, the extra for continue) — used only for
+    cumulative progress accounting. ``init_from`` is a checkpoint dir to copy
+    weights from (fork). ``op`` ∈ {"add", "continue", "fork"}.
+    """
+    name: str
+    seed: int
+    target_steps: int
+    op: str = "add"
+    run_steps: int = 0
+    init_from: str | None = None
+    forked_from: str | None = None
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -206,17 +229,58 @@ class EnsembleModel:
             raise ValueError(f"n_members must be >= 1, got {n_members}")
         if base_seed is None:
             base_seed = int.from_bytes(os.urandom(4), "little")
+        specs = [MemberTrainSpec(
+                     name=MEMBER_DIR_FMT.format(i), seed=int(base_seed) + i,
+                     target_steps=int(steps), op="add", run_steps=int(steps))
+                 for i in range(int(n_members))]
+        return self.train_members(lr_path, hr_path, specs,
+                                  batch_size=batch_size,
+                                  on_member=on_member, **train_kwargs)
+
+    def train_members(
+        self,
+        lr_path: str,
+        hr_path: str,
+        specs: Sequence[MemberTrainSpec],
+        *,
+        batch_size: int = 16,
+        on_member: Callable[[int, int, Model], None] | None = None,
+        **train_kwargs,
+    ) -> EnsembleModel:
+        """Run an explicit list of member training jobs sequentially.
+
+        Unlike the legacy :meth:`train` (which blindly loops member_00..N-1),
+        each spec names its member, seed, absolute step target and optional
+        fork source. Members CREATED here (op add/fork) get an
+        ``origin.json`` provenance sidecar that syncs down with the member.
+        """
+        if not specs:
+            raise ValueError("no member specs to train")
         self._models = []
-        for i in range(int(n_members)):
-            d = member_dir(self.base_dir, i)
+        for i, spec in enumerate(specs):
+            d = os.path.join(self.base_dir, spec.name)
+            created = not (os.path.isdir(d) and _checkpoint_exists(d))
             os.makedirs(d, exist_ok=True)
-            m = Model(d, scale=self._scale, num_res_blocks=self._num_res_blocks,
-                      seed=int(base_seed) + i)
-            m.train(lr_path, hr_path, steps=steps, batch_size=batch_size,
-                    **train_kwargs)
+            if created and spec.op in ("add", "fork"):
+                commit = (capture_git() or {}).get("short")
+                with open(os.path.join(d, "origin.json"), "w") as f:
+                    json.dump({
+                        "op": spec.op,
+                        "forked_from": spec.forked_from,
+                        "seed": int(spec.seed),
+                        "target_steps": int(spec.target_steps),
+                        "created_at": datetime.now(UTC).isoformat(
+                            timespec="seconds"),
+                        "commit": commit,
+                    }, f, indent=2)
+            m = Model(d, scale=self._scale,
+                      num_res_blocks=self._num_res_blocks,
+                      seed=int(spec.seed), init_weights_from=spec.init_from)
+            m.train(lr_path, hr_path, steps=int(spec.target_steps),
+                    batch_size=batch_size, **train_kwargs)
             self._models.append(m)
             if on_member is not None:
-                on_member(i + 1, int(n_members), m)
+                on_member(i + 1, len(specs), m)
         return self
 
     # -- prediction + disagreement -- #
