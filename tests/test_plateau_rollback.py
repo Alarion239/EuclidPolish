@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from euclid_polish.training.trainer import Trainer, _plateau_wants_rollback
+from euclid_polish.training.trainer import (
+    Trainer,
+    _plateau_recovery_step,
+    _plateau_wants_rollback,
+)
 
 
 # ── pure regime decision ────────────────────────────────────────────────────
@@ -32,6 +36,27 @@ def test_no_rollback_on_nonfinite_scores():
                                        has_best_ckpt=True, save_best_only=True)
     assert not _plateau_wants_rollback(43.0, float("-inf"), min_gap=0.2,
                                        has_best_ckpt=True, save_best_only=True)
+
+
+# ── LR recovery: plateau cuts are provisional ───────────────────────────────
+
+def test_recovery_undoes_one_cut_per_new_best():
+    # two cuts (0.5² = 0.25), then two new bests → back to 1.0
+    scale, cuts = 0.25, 2
+    scale, cuts = _plateau_recovery_step(scale, 0.5, cuts)
+    assert (scale, cuts) == (0.5, 1)
+    scale, cuts = _plateau_recovery_step(scale, 0.5, cuts)
+    assert (scale, cuts) == (1.0, 0)
+
+
+def test_recovery_never_exceeds_schedule_value():
+    # a spike halving (not counted) keeps the cap meaningful
+    scale, cuts = _plateau_recovery_step(0.9, 0.5, 1)
+    assert scale == 1.0 and cuts == 0
+
+
+def test_recovery_noop_without_cuts():
+    assert _plateau_recovery_step(0.5, 0.5, 0) == (0.5, 0)
 
 
 # ── Trainer.restore resume_track ────────────────────────────────────────────

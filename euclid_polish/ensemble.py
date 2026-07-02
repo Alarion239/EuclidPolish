@@ -69,17 +69,20 @@ class MemberTrainSpec:
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
-              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """PCA of the per-member residuals about the ensemble mean.
 
     ``members`` is the ``(M, H, W, C)`` stack of member SR cubes. Returns
-    ``(mean, components, amplitudes)``:
+    ``(mean, components, amplitudes, var_explained)``:
 
-    * ``mean``        — ``(H, W, C)`` ensemble mean,
-    * ``components``  — ``(K, H, W, C)`` unit-norm eigen-images, K = min(
+    * ``mean``          — ``(H, W, C)`` ensemble mean,
+    * ``components``    — ``(K, H, W, C)`` unit-norm eigen-images, K = min(
       ``n_components``, M-1),
-    * ``amplitudes``  — ``(K,)`` population std of the member projections along
-      each component (how far the members actually spread that way).
+    * ``amplitudes``    — ``(K,)`` population std of the member projections
+      along each component (how far the members actually spread that way),
+    * ``var_explained`` — ``(K,)`` fraction of the TOTAL residual variance
+      each kept component carries (``sᵢ²/Σs²``); their sum is how much of the
+      ensemble's real disagreement the movie shows.
 
     A smooth animation ``mean + Σ aᵢ·sin(2π fᵢ t)·componentᵢ`` then morphs
     through the ensemble's *real* (spatially-correlated) disagreement subspace —
@@ -90,13 +93,18 @@ def pca_field(members: np.ndarray, n_components: int = 3
     mean = mem.mean(axis=0)
     k = int(min(n_components, max(0, m - 1)))
     if k == 0:
-        return mean, np.zeros((0, *mean.shape), np.float32), np.zeros((0,), np.float32)
+        return (mean, np.zeros((0, *mean.shape), np.float32),
+                np.zeros((0,), np.float32), np.zeros((0,), np.float32))
     resid = (mem - mean).reshape(m, -1)                 # (M, D)
     # SVD: resid = U·diag(S)·Vt; Vt rows are unit eigen-images (principal dirs).
     _u, s, vt = np.linalg.svd(resid, full_matrices=False)
     comps = vt[:k].reshape((k, *mean.shape)).astype(np.float32)
     amps = (s[:k] / np.sqrt(m)).astype(np.float32)      # population std along comp
-    return mean, comps, amps
+    s2 = s.astype(np.float64) ** 2
+    total = float(s2.sum())
+    var_explained = ((s2[:k] / total) if total > 0
+                     else np.zeros(k)).astype(np.float32)
+    return mean, comps, amps, var_explained
 
 
 def _psnr(a: np.ndarray, b: np.ndarray, peak: float) -> float:

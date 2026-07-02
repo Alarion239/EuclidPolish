@@ -42,12 +42,13 @@ def write_disagreement_cubes(obj_dir: str, members: np.ndarray,
     mem = np.asarray(members, dtype=np.float32)
     os.makedirs(obj_dir, exist_ok=True)
     _write_cube_fits(os.path.join(obj_dir, "std.fits"), mem.std(axis=0))
-    _mean, comps, amps = pca_field(mem, n_components=n_components)
+    _mean, comps, amps, var_exp = pca_field(mem, n_components=n_components)
     for i, comp in enumerate(comps):
         _write_cube_fits(os.path.join(obj_dir, f"pca{i}.fits"), comp)
     amps_l = [float(a) for a in amps]
     with open(os.path.join(obj_dir, "disagreement.json"), "w") as f:
-        json.dump({"pca_n": int(len(comps)), "pca_amps": amps_l}, f)
+        json.dump({"pca_n": int(len(comps)), "pca_amps": amps_l,
+                   "pca_var": [float(v) for v in var_exp]}, f)
     if member_labels is not None:
         with open(os.path.join(obj_dir, "members.json"), "w") as f:
             json.dump({"member_labels": list(member_labels)}, f)

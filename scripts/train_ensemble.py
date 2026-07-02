@@ -116,6 +116,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "restores the best-PSNR checkpoint before cooling "
                         "(degenerate-basin escape) instead of reducing the "
                         "LR in place.")
+    p.add_argument("--plateau-lr-recovery", type=int,
+                   default=int(Config.PLATEAU_LR_RECOVERY),
+                   help="1/0 — undo one plateau LR cut per NEW best PSNR "
+                        "(cuts are provisional; the LR climbs back toward "
+                        "the schedule value once training moves again).")
     return p.parse_args(argv)
 
 
@@ -311,6 +316,7 @@ def main() -> int:
             plateau_lr_min_lr=args.plateau_lr_min_lr,
             plateau_lr_metric=args.plateau_lr_metric,
             plateau_rollback_min_gap=args.plateau_rollback_min_gap,
+            plateau_lr_recovery=bool(args.plateau_lr_recovery),
         )
 
         if args.eval_images > 0:

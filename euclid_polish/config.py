@@ -557,6 +557,11 @@ class Config:
     # basin): the guard restores the best-PSNR checkpoint before cooling,
     # instead of polishing the collapsed solution in place.
     PLATEAU_ROLLBACK_MIN_GAP     = 0.2
+    # Plateau cuts are provisional: once a NEW best PSNR proves the model is
+    # improving again, undo one cut per new best (raise LR back ×1/factor,
+    # never above the schedule value). The cut exists to escape a stall, not
+    # to end the run cold; if raising it re-stalls, the guard just cuts again.
+    PLATEAU_LR_RECOVERY          = True
     # Which held-out validation metric to watch: "combined_loss" (lower better)
     # or "psnr_stretched" (higher better).
     PLATEAU_LR_METRIC            = "combined_loss"

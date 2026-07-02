@@ -279,6 +279,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     os.makedirs(cubes_dir, exist_ok=True)
     saved: list[int] = []
     pca_amps: dict[int, list[float]] = {}        # rec_index → [a0, a1, a2]
+    pca_var: dict[int, list[float]] = {}         # rec_index → variance explained
     ps_acc: list = [None]                        # lazy EnsembleSpectrumAccumulator
 
     def _on_field(rec_index, _lr_cube, preds, mean, std, hr_cube):
@@ -303,11 +304,13 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
                 np.asarray(mean, dtype=np.float32))
         np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
                 np.asarray(std, dtype=np.float32))
-        _m, comps, amps = pca_field(preds, n_components=ENSEMBLE_PCA_COMPONENTS)
+        _m, comps, amps, var_exp = pca_field(
+            preds, n_components=ENSEMBLE_PCA_COMPONENTS)
         for i, comp in enumerate(comps):
             np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
                     np.asarray(comp, dtype=np.float32))
         pca_amps[rec] = [float(a) for a in amps]
+        pca_var[rec] = [float(v) for v in var_exp]
         # Individual member SR cubes → per-member viewer tiers.
         for i, mem in enumerate(np.asarray(preds, dtype=np.float32)):
             np.save(os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"), mem)
@@ -322,6 +325,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
+                   "pca_var": pca_var,
                    "member_labels": member_labels}, f)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).

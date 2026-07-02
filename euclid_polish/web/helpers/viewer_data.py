@@ -273,7 +273,7 @@ def _eval_objects() -> list[dict[str, Any]]:
         plens = {tier: float(scores[col])
                  for tier, col in _EVAL_TIER_PLENS.items()
                  if math.isfinite(scores.get(col, float("nan")))}
-        pca_n, pca_amps = 0, []
+        pca_n, pca_amps, pca_var = 0, [], []
         dj = os.path.join(obj_dir, "disagreement.json")
         if os.path.isfile(dj):
             with contextlib.suppress(OSError, ValueError):
@@ -281,6 +281,7 @@ def _eval_objects() -> list[dict[str, Any]]:
                     _dmeta = json.load(f)
                 pca_n = int(_dmeta.get("pca_n", 0) or 0)
                 pca_amps = list(_dmeta.get("pca_amps", []) or [])
+                pca_var = list(_dmeta.get("pca_var", []) or [])
         objs.append({
             "subdir": sub,
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
@@ -289,6 +290,7 @@ def _eval_objects() -> list[dict[str, Any]]:
             "plens": plens,
             "pca_n": pca_n,
             "pca_amps": pca_amps,
+            "pca_var": pca_var,
         })
     return objs
 
@@ -302,6 +304,7 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
              for k in order if k in seen]
     pca_n = max((int(o.get("pca_n", 0) or 0) for o in objs), default=0)
     pca_amps = [list(o.get("pca_amps", []) or []) for o in objs]
+    pca_var = [list(o.get("pca_var", []) or []) for o in objs]
     if pca_n > 0:
         tiers.append({"key": "morph", "label": "disagreement movie"})
     default = "SR" if any(t["key"] == "SR" for t in tiers) else (
@@ -313,6 +316,7 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         "band_names": list(BAND_NAMES),
         "pca_n": pca_n,
         "pca_amps": pca_amps,
+        "pca_var": pca_var,
         "objects": [{"label": o["label"], "grade": o["grade"],
                      "tiers": o["tiers"], "subdir": o["subdir"],
                      "plens": o["plens"]}

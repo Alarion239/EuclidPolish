@@ -439,10 +439,17 @@ export function mountCutoutViewer(root, opts = {}) {
     } catch { setFrameMsg(fr, "movie unavailable"); return; }
     fr.frame.classList.remove("cv-loading");
     const amps = (state.meta.pca_amps && state.meta.pca_amps[index]) || [];
+    // How much of the ensemble's real disagreement the kept PCs carry.
+    const varExp = (state.meta.pca_var && state.meta.pca_var[index]) || [];
+    const varTot = varExp.reduce((a, v) => a + v, 0);
+    const varLbl = varTot > 0
+      ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance`
+      : "";
     const len = sr.data.length;
     const data = new Float32Array(len);
     const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
-                  label: "disagreement movie", asinh: sr.asinh, noCache: true };
+                  label: `disagreement movie${varLbl}`, asinh: sr.asinh,
+                  noCache: true };
     const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
     let phase = 0, last = performance.now();          // accumulate phase so a
     const tick = (now) => {                            // speed change never jumps
@@ -640,7 +647,69 @@ export function mountCutoutViewer(root, opts = {}) {
     speed.classList.add("cv-speed");
     speed.title = "auto-run cadence — seconds per slide";
     const hint = el("span", { class: "cv-kbd", text: "← →  ·  Space to run" });
-    nav.append(prev, idxWrap, next, play, speed, hint);
+    const png = el("button", { class: "cv-navbtn", type: "button", text: "⬇ PNG",
+      title: "Save the current view (all selected tiers, side by side) as a PNG",
+      onclick: savePNG });
+    const rec = el("button", { class: "cv-navbtn cv-rec", type: "button", text: "⏺ video",
+      title: "Record the first selected tier (e.g. the disagreement movie) — click to start, click again to stop and download a .webm clip",
+      onclick: () => toggleRecord(rec) });
+    nav.append(prev, idxWrap, next, play, speed, hint, png, rec);
+  }
+
+  // --- save PNG / record video ----------------------------------------------
+  function _download(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  function _stem() {
+    return `${collection || "cutout"}_idx${state.index}_`
+      + `${state.tiers.join("-") || "view"}_${state.color}`;
+  }
+
+  function savePNG() {
+    const frames = state.frames.filter((f) => f.canvas.width > 1);
+    if (!frames.length) return;
+    let out = frames[0].canvas;
+    if (frames.length > 1) {
+      const gap = 4;
+      const h = Math.max(...frames.map((f) => f.canvas.height));
+      const w = frames.reduce((a, f) => a + f.canvas.width, 0)
+        + gap * (frames.length - 1);
+      out = document.createElement("canvas");
+      out.width = w; out.height = h;
+      const ctx = out.getContext("2d");
+      let x = 0;
+      for (const f of frames) { ctx.drawImage(f.canvas, x, 0); x += f.canvas.width + gap; }
+    }
+    out.toBlob((b) => { if (b) _download(b, `${_stem()}.png`); }, "image/png");
+  }
+
+  let recorder = null;
+  function toggleRecord(btn) {
+    if (recorder) { recorder.stop(); return; }
+    const fr = state.frames.find((f) => f.canvas.width > 1);
+    if (!fr || typeof MediaRecorder === "undefined") return;
+    // captureStream only emits frames when the canvas repaints — perfect for
+    // the rAF-driven movie tier; a static tier records a still clip.
+    const stream = fr.canvas.captureStream(30);
+    const mime = ["video/webm;codecs=vp9", "video/webm"]
+      .find((m) => MediaRecorder.isTypeSupported(m));
+    const chunks = [];
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+      _download(new Blob(chunks, { type: "video/webm" }), `${_stem()}.webm`);
+      recorder = null;
+      btn.textContent = "⏺ video";
+      btn.classList.remove("cv-recording");
+    };
+    recorder.start();
+    btn.textContent = "⏹ stop";
+    btn.classList.add("cv-recording");
   }
 
   function updateNav() {

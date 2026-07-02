@@ -136,6 +136,20 @@ def _is_grad_spike(gnorm, step) -> bool:
 ANCHOR_PSNR_MAX_DB = 80.0
 
 
+def _plateau_recovery_step(lr_scale: float, factor: float,
+                           cuts: int) -> tuple[float, int]:
+    """Undo ONE plateau LR cut after a new-best PSNR (proof the stall broke).
+
+    Returns ``(new_scale, remaining_cuts)``. Only cuts the plateau guard made
+    are undone (the counter), so spike-guard halvings — which exist because
+    the LR was outright divergent — are never re-raised, and the scale never
+    exceeds the schedule value (cap at 1.0).
+    """
+    if cuts <= 0:
+        return lr_scale, 0
+    return min(lr_scale / float(factor), 1.0), cuts - 1
+
+
 def _plateau_wants_rollback(current_score, best_score, *, min_gap: float,
                             has_best_ckpt: bool, save_best_only: bool) -> bool:
     """True iff a firing plateau is DEGENERATE — the score sits ≥ ``min_gap``
@@ -204,6 +218,7 @@ class Trainer:
         plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
         plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
         plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
+        plateau_lr_recovery: bool = Config.PLATEAU_LR_RECOVERY,
         resume_track: str = "latest",
     ):
         """
@@ -287,6 +302,8 @@ class Trainer:
         self._plateau_lr_factor = float(plateau_lr_factor)
         self._plateau_lr_metric = str(plateau_lr_metric)
         self._plateau_rollback_min_gap = float(plateau_rollback_min_gap)
+        self._plateau_lr_recovery = bool(plateau_lr_recovery)
+        self._plateau_cuts = 0          # cuts the plateau guard made (undoable)
         if resume_track not in ("latest", "psnr"):
             raise ValueError(f"resume_track must be 'latest' or 'psnr', "
                              f"got {resume_track!r}")
@@ -959,6 +976,25 @@ class Trainer:
                         f"(score={save_best_score:.3f}; "
                         f"PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
                     )
+                    # Plateau cuts are provisional: a NEW best at the reduced
+                    # LR proves the stall broke, so hand back one cut (raise
+                    # the LR ×1/factor toward the schedule value). Only in
+                    # save-best mode — save-every "improves" each eval.
+                    if (save_best_only and self._plateau_lr_recovery
+                            and self._plateau_cuts > 0):
+                        before = self._apply_lr(step)
+                        self._lr_scale, self._plateau_cuts = \
+                            _plateau_recovery_step(
+                                self._lr_scale, self._plateau_lr_factor,
+                                self._plateau_cuts)
+                        after = self._apply_lr(step)
+                        rmsg = (f"↑ new best at reduced LR — raised learning "
+                                f"rate back {before:.3g} → {after:.3g} "
+                                f"({self._plateau_cuts} plateau cut(s) "
+                                f"still applied)")
+                        tqdm.write("  " + rmsg)
+                        if warn_callback is not None:
+                            warn_callback(rmsg)
                 if loss_improved and np.isfinite(combined_loss):
                     ckpt.best_loss.assign(combined_loss)
                     self.loss_checkpoint_manager.save()
@@ -997,6 +1033,7 @@ class Trainer:
                                 has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
                                 save_best_only=save_best_only)
                             self._lr_scale *= self._plateau_lr_factor
+                            self._plateau_cuts += 1
                             if rollback:
                                 # Same mechanics as the gradient-spike
                                 # rollback: weights + optimizer + step rewind

@@ -207,6 +207,7 @@ class Model:
         plateau_lr_min_lr: float = Config.PLATEAU_LR_MIN_LR,
         plateau_lr_metric: str = Config.PLATEAU_LR_METRIC,
         plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
+        plateau_lr_recovery: bool = Config.PLATEAU_LR_RECOVERY,
         resume_track: str = "latest",
         **kwargs,
     ) -> None:
@@ -257,6 +258,7 @@ class Model:
                           plateau_lr_min_lr=plateau_lr_min_lr,
                           plateau_lr_metric=plateau_lr_metric,
                           plateau_rollback_min_gap=plateau_rollback_min_gap,
+                          plateau_lr_recovery=plateau_lr_recovery,
                           resume_track=resume_track)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 

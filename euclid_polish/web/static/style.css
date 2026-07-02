@@ -486,3 +486,6 @@ button.secondary:hover { background: #565e64; }
   display: inline-block; width: 16px; height: 4px;
   border-radius: 2px; flex: none;
 }
+
+/* Field-viewer export buttons (cutout_viewer.js): recording state. */
+.cv-navbtn.cv-recording { color: #e05555; border-color: #e05555; }
