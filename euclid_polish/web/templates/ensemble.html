@@ -102,14 +102,25 @@
   <table class="data-table">
     <thead><tr><th>Checkpoint</th><th>Training seed</th>
       <th title="Each seed also has a best-LOSS checkpoint in loss_best/; the ensemble loads + uses both.">loss-best ckpt</th>
+      <th title="Last logged training step (from training_log.csv).">Step</th>
       <th>Size</th><th></th></tr></thead>
     <tbody>
       {% for m in members %}
-      <tr><td><code>{{ m.name }}</code></td>
+      <tr><td><code>{{ m.name }}</code>
+          {% if m.origin and m.origin.op == 'fork' %}
+          <span title="forked from {{ m.origin.forked_from }}{% if m.origin.created_at %} ({{ m.origin.created_at }}){% endif %}">⑂</span>
+          {% endif %}</td>
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
           <td>{% if m.has_loss_best %}✓ loaded{% else %}—{% endif %}</td>
+          <td class="muted">{{ "{:,}".format(m.step) if m.step else "—" }}</td>
           <td class="muted">{{ m.size_mb }} MB</td>
-          <td><button type="button" class="mini-btn ens-archive-btn"
+          <td><button type="button" class="mini-btn ens-continue-btn"
+                      data-member="{{ m.name }}"
+                      title="Continue training this member for N more steps (warm cosine restart — LR lifts moderately, then decays back).">▶ continue</button>
+              <button type="button" class="mini-btn ens-fork-btn"
+                      data-member="{{ m.name }}"
+                      title="Start new member(s) initialized from this member's weights, at step 0 with a fresh LR schedule.">⑂ fork</button>
+              <button type="button" class="mini-btn ens-archive-btn"
                       data-member="{{ m.name }}"
                       title="Retire this member: zip its checkpoints into the active tracking campaign, remove it from the ensemble (registry tombstone), delete the local dir and purge its caches.">📦 archive</button></td></tr>
       {% endfor %}
@@ -214,6 +225,9 @@
 
 {% block scripts %}
 <script>
+// The train step card's Continue/Fork field groups read the member list.
+window.ENSEMBLE_MEMBERS = {{ members | tojson }};
+
 document.getElementById("ens-pull-form").addEventListener("submit", (e) => {
   e.preventDefault();
   polishUI.run(e.target, document.getElementById("ens-pull-status"), {
@@ -243,6 +257,29 @@ document.querySelectorAll(".ens-archive-btn").forEach((btn) => {
     });
   });
 });
+// ▶/⑂ shortcuts: set the train card's mode, prefill the member, scroll to it.
+function _prefillTrainCard(mode, member) {
+  const form = document.querySelector('form[data-step-id="ensemble_train"]');
+  if (!form) { alert("train card still loading — try again in a second"); return; }
+  const sel = form.querySelector('select[name="mode"]');
+  if (!sel) return;
+  sel.value = mode;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  if (mode === "continue") {
+    form.querySelectorAll('input[name="members"]').forEach((cb) => {
+      cb.checked = cb.value === member;
+    });
+  } else {
+    const src = form.querySelector('select[name="fork_from"]');
+    if (src) src.value = member;
+  }
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+document.querySelectorAll(".ens-continue-btn").forEach((b) =>
+  b.addEventListener("click", () => _prefillTrainCard("continue", b.dataset.member)));
+document.querySelectorAll(".ens-fork-btn").forEach((b) =>
+  b.addEventListener("click", () => _prefillTrainCard("fork", b.dataset.member)));
+
 // Power-spectrum "Regenerate": re-render from cached cubes (?fresh=1), cache-bust.
 (function () {
   const btn = document.getElementById("ens-ps-regen");

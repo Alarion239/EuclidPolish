@@ -638,6 +638,13 @@ def register(app):
                             "disabled"}), 404
 
         form = request.form.to_dict()
+        # Multi-valued fields (the ensemble continue-mode member checkboxes)
+        # flatten to a comma-joined string — to_dict() alone keeps only the
+        # first value.
+        for key in ("members",):
+            vals = request.form.getlist(key)
+            if len(vals) > 1:
+                form[key] = ",".join(vals)
 
         confirm_err = _require_confirm(form)
         if confirm_err is not None:

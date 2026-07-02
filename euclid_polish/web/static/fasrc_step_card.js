@@ -327,22 +327,64 @@ large cutout don't leak across train/validate."></label>`;
       case 'train':
         return _hstTrainFields();
       case 'ensemble_train':
-        // EnsembleTrainStep.build_command reads n_members / steps / base_seed.
-        return `
-          <label title="How many WDSR members to train sequentially, each on the same data with a different seed. More members = better mean + sharper hallucination signal, but linearly more GPU-hours.">
-            Members
-            <input type="number" name="n_members" value="5" min="2" max="20"></label>
-          <label>Steps / member
-            <input type="number" name="steps" value="200000" min="1000" max="2000000"></label>
-          <label title="Member i is seeded base_seed+i. Blank / -1 draws a fresh entropy base seed (still recorded on each member's provenance for replay).">
-            Base seed
-            <input type="number" name="base_seed" value="" placeholder="blank = entropy"></label>
-          <p class="hint" style="flex-basis:100%;">Trains into
-             <code>&lt;ckpt&gt;/../ensemble/member_NN/</code> on FASRC, then evaluates
-             on the held-out test set. Download the members back below when it finishes.</p>`;
+        return _ensembleTrainFields();
       default:
         return '';
     }
+  }
+
+  function _ensembleTrainFields() {
+    // EnsembleTrainStep.build_command reads: mode, then per mode —
+    // add: count/steps/base_seed · continue: members/extra_steps ·
+    // fork: fork_from/fork_track/count/steps/base_seed.
+    // The member list is injected by the /ensemble template.
+    const members = window.ENSEMBLE_MEMBERS || [];
+    const memberChecks = members.map((m) => `
+        <label style="font-weight:normal;">
+          <input type="checkbox" name="members" value="${m.name}">
+          <code>${m.name}</code>
+          <span class="muted">${m.step ? '@ ' + m.step.toLocaleString() : ''}</span>
+        </label>`).join('') ||
+      '<p class="muted">no local members — pull the ensemble first.</p>';
+    const memberOpts = members.map((m) =>
+      `<option value="${m.name}">${m.name}</option>`).join('');
+    return `
+      <label>Mode
+        <select name="mode"
+                title="Add: train brand-new members only (existing ones untouched). Continue: N more steps on selected members (warm cosine restart). Fork: new member(s) initialized from an existing member's weights, LR schedule reset to step 0.">
+          <option value="add">Add new members</option>
+          <option value="continue">Continue existing</option>
+          <option value="fork">Fork from member</option>
+        </select></label>
+      <span data-mode-group="add fork">
+        <label>Count
+          <input type="number" name="count" value="1" min="1" max="20"></label>
+        <label>Steps (total)
+          <input type="number" name="steps" value="200000" min="1000" max="2000000"></label>
+        <label title="Member i is seeded base_seed+i. Blank = fresh entropy seed (recorded on provenance).">
+          Base seed
+          <input type="number" name="base_seed" value="" placeholder="blank = entropy"></label>
+      </span>
+      <span data-mode-group="fork" style="display:none;">
+        <label>Fork source
+          <select name="fork_from">${memberOpts}</select></label>
+        <label title="Which of the source's two save-best checkpoints seeds the new member's weights.">
+          Track
+          <select name="fork_track">
+            <option value="psnr">PSNR-best</option>
+            <option value="loss">Loss-best</option>
+          </select></label>
+      </span>
+      <span data-mode-group="continue" style="display:none;">
+        <div class="form-row" style="flex-direction:column; gap:4px;">${memberChecks}</div>
+        <label>Extra steps
+          <input type="number" name="extra_steps" value="50000" min="1000" max="1000000"></label>
+      </span>
+      <p class="hint" style="flex-basis:100%;">One GPU job, members trained
+         sequentially into <code>&lt;ckpt&gt;/../ensemble/member_NN/</code> on
+         FASRC. New-member names are allocated from the local registry at
+         submit (archived indices are never reused). Pull the members back
+         below when it finishes.</p>`;
   }
 
   function _tngModeFields() {
@@ -894,6 +936,21 @@ large cutout don't leak across train/validate."></label>`;
       );
       form.addEventListener('submit', e => _onSubmit(e, form, statusEl, opts));
     });
+    // ensemble_train: the Mode selector shows/hides its field groups.
+    // Hidden groups still submit their values; build_command ignores fields
+    // that don't belong to the chosen mode, so no clearing is needed.
+    const modeSel = scope.querySelector(
+      'form[data-step-id="ensemble_train"] select[name="mode"]');
+    if (modeSel) {
+      const applyMode = () => {
+        scope.querySelectorAll('[data-mode-group]').forEach((g) => {
+          g.style.display =
+            g.dataset.modeGroup.split(' ').includes(modeSel.value) ? '' : 'none';
+        });
+      };
+      modeSel.addEventListener('change', applyMode);
+      applyMode();
+    }
   }
 
   // ── Public entry points ────────────────────────────────────────────

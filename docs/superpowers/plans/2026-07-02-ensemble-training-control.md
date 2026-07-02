@@ -33,7 +33,7 @@ Mechanics this plan relies on (verified):
 - Modify: `euclid_polish/ensemble_registry.py`
 - Test: `tests/test_ensemble_registry.py` (append)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def test_next_member_names_skips_tombstones_and_gaps(tmp_path):
@@ -57,8 +57,8 @@ def test_next_member_names_empty_ensemble(tmp_path):
     assert er.next_member_names(base, 2) == ["member_00", "member_01"]
 ```
 
-- [ ] **Step 2: Run** — `pytest tests/test_ensemble_registry.py -q -k next_member` → AttributeError.
-- [ ] **Step 3: Implement** (append to `ensemble_registry.py`)
+- [x] **Step 2: Run** — `pytest tests/test_ensemble_registry.py -q -k next_member` → AttributeError.
+- [x] **Step 3: Implement** (append to `ensemble_registry.py`)
 
 ```python
 def _member_index(name: str) -> int | None:
@@ -83,8 +83,8 @@ def next_member_names(base_dir: str, k: int) -> list[str]:
     return [f"member_{i:02d}" for i in range(start, start + int(k))]
 ```
 
-- [ ] **Step 4: Run** — same command → 3 passed (plus existing tests stay green: `pytest tests/test_ensemble_registry.py -q`).
-- [ ] **Step 5: Commit** — `git commit -m "feat(registry): next_member_names — fresh indices past tombstones"`
+- [x] **Step 4: Run** — same command → 3 passed (plus existing tests stay green: `pytest tests/test_ensemble_registry.py -q`).
+- [x] **Step 5: Commit** — `git commit -m "feat(registry): next_member_names — fresh indices past tombstones"`
 
 ---
 
@@ -94,7 +94,7 @@ def next_member_names(base_dir: str, k: int) -> list[str]:
 - Modify: `euclid_polish/training/inference.py` (new helper beside `infer_checkpoint_nchan_in`)
 - Test: `tests/test_checkpoint_step.py`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_checkpoint_step.py
@@ -117,8 +117,8 @@ def test_checkpoint_step_none_when_missing(tmp_path):
     assert checkpoint_step(str(tmp_path / "nope")) is None
 ```
 
-- [ ] **Step 2: Run** — `pytest tests/test_checkpoint_step.py -q` → ImportError.
-- [ ] **Step 3: Implement** in `training/inference.py`:
+- [x] **Step 2: Run** — `pytest tests/test_checkpoint_step.py -q` → ImportError.
+- [x] **Step 3: Implement** in `training/inference.py`:
 
 ```python
 def checkpoint_step(checkpoint_dir: str) -> int | None:
@@ -138,8 +138,8 @@ def checkpoint_step(checkpoint_dir: str) -> int | None:
         return None
 ```
 
-- [ ] **Step 4: Run** — 2 passed.
-- [ ] **Step 5: Commit** — `git commit -m "feat(training): checkpoint_step reader (no model build)"`
+- [x] **Step 4: Run** — 2 passed.
+- [x] **Step 5: Commit** — `git commit -m "feat(training): checkpoint_step reader (no model build)"`
 
 ---
 
@@ -149,7 +149,7 @@ def checkpoint_step(checkpoint_dir: str) -> int | None:
 - Modify: `euclid_polish/model.py:77-118` (`__init__`)
 - Test: `tests/test_model_fork_init.py`
 
-- [ ] **Step 1: Failing test** (tiny net: `num_res_blocks=1` keeps it fast)
+- [x] **Step 1: Failing test** (tiny net: `num_res_blocks=1` keeps it fast)
 
 ```python
 # tests/test_model_fork_init.py
@@ -198,8 +198,8 @@ def test_fork_refuses_missing_source(tmp_path):
               init_weights_from=str(tmp_path / "empty_src"))
 ```
 
-- [ ] **Step 2: Run** — `pytest tests/test_model_fork_init.py -q` → TypeError (unexpected kwarg).
-- [ ] **Step 3: Implement.** In `Model.__init__`: add kwarg `init_weights_from: str | None = None` after `deterministic`. After the fresh-build `else:` branch completes (and BEFORE `_reconstruct_fn` is set), add:
+- [x] **Step 2: Run** — `pytest tests/test_model_fork_init.py -q` → TypeError (unexpected kwarg).
+- [x] **Step 3: Implement.** In `Model.__init__`: add kwarg `init_weights_from: str | None = None` after `deterministic`. After the fresh-build `else:` branch completes (and BEFORE `_reconstruct_fn` is set), add:
 
 ```python
         if init_weights_from is not None:
@@ -220,8 +220,8 @@ def test_fork_refuses_missing_source(tmp_path):
 
 Note the virgin check uses `_checkpoint_exists(checkpoint_dir)` — but the load branch above already ran when a checkpoint exists, so put the `init_weights_from` block FIRST in `__init__` body order: raise on non-virgin before any load. Concretely: insert the two `raise` guards right after `self._load_fn` is assigned, and the `set_weights` copy right after the fresh `_wdsr_build` branch.
 
-- [ ] **Step 4: Run** — 3 passed; `pytest tests/test_model.py -q` stays green.
-- [ ] **Step 5: Commit** — `git commit -m "feat(model): init_weights_from — fork a member from existing weights at step 0"`
+- [x] **Step 4: Run** — 3 passed; `pytest tests/test_model.py -q` stays green.
+- [x] **Step 5: Commit** — `git commit -m "feat(model): init_weights_from — fork a member from existing weights at step 0"`
 
 ---
 
@@ -231,7 +231,7 @@ Note the virgin check uses `_checkpoint_exists(checkpoint_dir)` — but the load
 - Modify: `euclid_polish/ensemble.py` (dataclass + method; `train()` becomes a wrapper)
 - Test: `tests/test_ensemble_train_members.py`
 
-- [ ] **Step 1: Failing tests** (fake `Model` records construction/train calls)
+- [x] **Step 1: Failing tests** (fake `Model` records construction/train calls)
 
 ```python
 # tests/test_ensemble_train_members.py
@@ -314,8 +314,8 @@ def test_legacy_train_wraps_add_specs(tmp_path):
     assert [c["seed"] for c in _FakeModel.calls] == [100, 101]
 ```
 
-- [ ] **Step 2: Run** — `pytest tests/test_ensemble_train_members.py -q` → ImportError (`MemberTrainSpec`).
-- [ ] **Step 3: Implement** in `ensemble.py`:
+- [x] **Step 2: Run** — `pytest tests/test_ensemble_train_members.py -q` → ImportError (`MemberTrainSpec`).
+- [x] **Step 3: Implement** in `ensemble.py`:
 
 ```python
 @dataclass
@@ -405,8 +405,8 @@ Rewrite `train()` body as a wrapper (keep signature + docstring note):
                                   on_member=on_member, **train_kwargs)
 ```
 
-- [ ] **Step 4: Run** — new tests pass; `pytest -q -k ensemble` green.
-- [ ] **Step 5: Commit** — `git commit -m "feat(ensemble): MemberTrainSpec + train_members; legacy train() wraps add specs"`
+- [x] **Step 4: Run** — new tests pass; `pytest -q -k ensemble` green.
+- [x] **Step 5: Commit** — `git commit -m "feat(ensemble): MemberTrainSpec + train_members; legacy train() wraps add specs"`
 
 ---
 
@@ -416,7 +416,7 @@ Rewrite `train()` body as a wrapper (keep signature + docstring note):
 - Modify: `scripts/train_ensemble.py` (args + a testable `build_specs()`; main uses `train_members`)
 - Test: `tests/test_train_ensemble_specs.py`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 # tests/test_train_ensemble_specs.py
@@ -505,8 +505,8 @@ def test_n_members_is_add_count_alias(tmp_path):
     assert len(specs) == 3 and all(s.op == "add" for s in specs)
 ```
 
-- [ ] **Step 2: Run** — `pytest tests/test_train_ensemble_specs.py -q` → ImportError (`build_specs`) / parse_args signature (add `argv=None` param).
-- [ ] **Step 3: Implement.** In `train_ensemble.py`:
+- [x] **Step 2: Run** — `pytest tests/test_train_ensemble_specs.py -q` → ImportError (`build_specs`) / parse_args signature (add `argv=None` param).
+- [x] **Step 3: Implement.** In `train_ensemble.py`:
   - `parse_args(argv=None)`; new args:
 
 ```python
@@ -631,8 +631,8 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
     evaluate_every=…, step_callback=…, eval_callback=…, warn_callback=…,
     on_member=…, lr_peak=… <all knobs unchanged>)`. Keep staging + post-train
     eval untouched.
-- [ ] **Step 4: Run** — `pytest tests/test_train_ensemble_specs.py -q` green; `pytest tests/test_job_config.py -q` still green.
-- [ ] **Step 5: Commit** — `git commit -m "feat(train_ensemble): add/continue/fork modes via MemberTrainSpec"`
+- [x] **Step 4: Run** — `pytest tests/test_train_ensemble_specs.py -q` green; `pytest tests/test_job_config.py -q` still green.
+- [x] **Step 5: Commit** — `git commit -m "feat(train_ensemble): add/continue/fork modes via MemberTrainSpec"`
 
 ---
 
@@ -642,7 +642,7 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
 - Modify: `euclid_polish/web/fasrc_pipeline.py` (`EnsembleTrainStep`)
 - Test: `tests/test_fasrc_pipeline.py` (append to `TestConcreteSteps` region)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def test_ensemble_train_add_mode_allocates_names(monkeypatch):
@@ -688,8 +688,8 @@ def test_ensemble_train_default_is_legacy_add():
     assert argv[argv.index("--count") + 1] == "5"
 ```
 
-- [ ] **Step 2: Run** — fail (no `--mode` emitted).
-- [ ] **Step 3: Implement.** Top of `fasrc_pipeline.py`: `from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names`. Replace `EnsembleTrainStep.build_command` body:
+- [x] **Step 2: Run** — fail (no `--mode` emitted).
+- [x] **Step 3: Implement.** Top of `fasrc_pipeline.py`: `from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names`. Replace `EnsembleTrainStep.build_command` body:
 
 ```python
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -736,8 +736,8 @@ def test_ensemble_train_default_is_legacy_add():
 ```
 
 Keep the class docstring updated (three modes). Check the existing `test_ensemble_train_step_build_command` (test_fasrc_pipeline.py:~95) and `tests/test_job_config.py:220` — update their expectations to include `--mode add` + `--member-names` (monkeypatch `next_member_names` there too so they don't touch the real registry).
-- [ ] **Step 4: Run** — `pytest tests/test_fasrc_pipeline.py tests/test_job_config.py -q` green.
-- [ ] **Step 5: Commit** — `git commit -m "feat(fasrc): EnsembleTrainStep modes with submit-time name allocation"`
+- [x] **Step 4: Run** — `pytest tests/test_fasrc_pipeline.py tests/test_job_config.py -q` green.
+- [x] **Step 5: Commit** — `git commit -m "feat(fasrc): EnsembleTrainStep modes with submit-time name allocation"`
 
 ---
 
@@ -747,7 +747,7 @@ Keep the class docstring updated (three modes). Check the existing `test_ensembl
 - Modify: `euclid_polish/web/helpers/ensemble_viz.py` (`ensemble_status` member loop)
 - Test: `tests/test_ensemble_status_training.py`
 
-- [ ] **Step 1: Failing test**
+- [x] **Step 1: Failing test**
 
 ```python
 # tests/test_ensemble_status_training.py
@@ -793,8 +793,8 @@ def test_status_step_blank_when_no_log(tmp_path, monkeypatch):
     assert st["members"][0]["origin"] is None
 ```
 
-- [ ] **Step 2: Run** — KeyError `step`.
-- [ ] **Step 3: Implement.** In `ensemble_viz.py` add helpers + extend the member dict:
+- [x] **Step 2: Run** — KeyError `step`.
+- [x] **Step 3: Implement.** In `ensemble_viz.py` add helpers + extend the member dict:
 
 ```python
 def _member_last_step(member_dir: str) -> int | None:
@@ -825,8 +825,8 @@ def _member_origin(member_dir: str) -> dict | None:
 ```
 
 Member dict gains `"step": _member_last_step(d), "origin": _member_origin(d)`.
-- [ ] **Step 4: Run** — new tests + `pytest tests/test_web.py -q -k ensemble` green.
-- [ ] **Step 5: Commit** — `git commit -m "feat(ensemble status): per-member step + origin provenance"`
+- [x] **Step 4: Run** — new tests + `pytest tests/test_web.py -q -k ensemble` green.
+- [x] **Step 5: Commit** — `git commit -m "feat(ensemble status): per-member step + origin provenance"`
 
 ---
 
@@ -837,7 +837,7 @@ Member dict gains `"step": _member_last_step(d), "origin": _member_origin(d)`.
 - Modify: `euclid_polish/web/templates/ensemble.html` (window.ENSEMBLE_MEMBERS, Step column, ⑂ badge, ▶/⑂ row buttons)
 - Test: manual smoke via dev server + `pytest tests/test_web.py -q` (page renders)
 
-- [ ] **Step 1: Template data + table.** In `ensemble.html`:
+- [x] **Step 1: Template data + table.** In `ensemble.html`:
   - In the `{% block scripts %}`, FIRST script tag:
 
 ```html
@@ -897,7 +897,7 @@ document.querySelectorAll(".ens-fork-btn").forEach((b) =>
   b.addEventListener("click", () => _prefillTrainCard("fork", b.dataset.member)));
 ```
 
-- [ ] **Step 2: Step-card fields.** In `fasrc_step_card.js`, replace the `case 'ensemble_train':` return with a call to a new `_ensembleTrainFields()`:
+- [x] **Step 2: Step-card fields.** In `fasrc_step_card.js`, replace the `case 'ensemble_train':` return with a call to a new `_ensembleTrainFields()`:
 
 ```js
   function _ensembleTrainFields() {
@@ -969,13 +969,13 @@ document.querySelectorAll(".ens-fork-btn").forEach((b) =>
 ```
 
   (Adapt `el` to the actual container variable at that point in the module; unchecked checkboxes simply don't submit, and hidden groups' values are ignored by `build_command` per mode, so no field clearing is needed.)
-- [ ] **Step 3: Smoke.** `pytest tests/test_web.py -q` (page renders with the new template vars); then start the dev server and eyeball: mode switch toggles groups, ▶/⑂ prefill, submit posts `mode` + fields (check the sbatch script preview / job label in the FASRC panel if connected, else just the form POST payload in devtools).
-- [ ] **Step 4: Commit** — `git commit -m "feat(ensemble UI): mode-switching train card + per-row continue/fork"`
+- [x] **Step 3: Smoke.** `pytest tests/test_web.py -q` (page renders with the new template vars); then start the dev server and eyeball: mode switch toggles groups, ▶/⑂ prefill, submit posts `mode` + fields (check the sbatch script preview / job label in the FASRC panel if connected, else just the form POST payload in devtools).
+- [x] **Step 4: Commit** — `git commit -m "feat(ensemble UI): mode-switching train card + per-row continue/fork"`
 
 ---
 
 ### Task 9: Full sweep + push
 
-- [ ] **Step 1:** `~/miniforge3/envs/EuclidPolishEnv/bin/python -m pytest tests/ -q --ignore=tests/test_zoobot_morphology.py` → all green (fix fallout; expected: the old `test_ensemble_train_step_build_command` expectations).
-- [ ] **Step 2:** Update the memory note + check the spec's job-label item: `EnsembleTrainStep` label — the submit route builds labels from step metadata; if a per-mode label is trivial (label param in build_sbatch_body callers), set it; otherwise skip (job history already shows the argv).
-- [ ] **Step 3:** Commit remaining changes, push. FASRC validation of an actual add/continue/fork run stays pending (like the LR-schedule work) — note in the final report.
+- [x] **Step 1:** `~/miniforge3/envs/EuclidPolishEnv/bin/python -m pytest tests/ -q --ignore=tests/test_zoobot_morphology.py` → all green (fix fallout; expected: the old `test_ensemble_train_step_build_command` expectations).
+- [x] **Step 2:** Update the memory note + check the spec's job-label item: `EnsembleTrainStep` label — the submit route builds labels from step metadata; if a per-mode label is trivial (label param in build_sbatch_body callers), set it; otherwise skip (job history already shows the argv).
+- [x] **Step 3:** Commit remaining changes, push. FASRC validation of an actual add/continue/fork run stays pending (like the LR-schedule work) — note in the final report.

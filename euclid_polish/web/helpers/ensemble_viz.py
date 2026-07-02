@@ -70,6 +70,35 @@ def _member_seed(member_dir: str) -> int | None:
         return None
 
 
+def _member_last_step(member_dir: str) -> int | None:
+    """Last logged step from the tail of training_log.csv (cheap; None when
+    unreadable). Good enough for display — the trainer reads the
+    authoritative step from the checkpoint itself."""
+    p = os.path.join(member_dir, "training_log.csv")
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            lines = f.read().decode(errors="replace").strip().splitlines()
+        for line in reversed(lines):
+            head = line.split(",", 1)[0]
+            if head.isdigit():
+                return int(head)
+        return None
+    except OSError:
+        return None
+
+
+def _member_origin(member_dir: str) -> dict | None:
+    """The ``origin.json`` a training run wrote when it CREATED the member
+    (op add/fork, fork source, seed, commit) — synced down with the member."""
+    try:
+        with open(os.path.join(member_dir, "origin.json")) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _dir_size_mb(d: str) -> float:
     total = 0
     for dp, _dirs, fns in os.walk(d):
@@ -94,7 +123,9 @@ def ensemble_status() -> dict:
             has_lb = os.path.isdir(lb) and _checkpoint_exists(lb)
             members.append({"name": os.path.basename(d), "seed": _member_seed(d),
                             "has_loss_best": has_lb,
-                            "size_mb": round(_dir_size_mb(d), 1)})
+                            "size_mb": round(_dir_size_mb(d), 1),
+                            "step": _member_last_step(d),
+                            "origin": _member_origin(d)})
     # Each seed contributes its PSNR-best checkpoint and (when present) its
     # loss-best one — the ensemble loads/uses BOTH (include_loss_best=True).
     n_models = sum(1 + (1 if m["has_loss_best"] else 0) for m in members)
