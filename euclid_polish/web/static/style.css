@@ -469,3 +469,20 @@ button.secondary:hover { background: #565e64; }
 .hst-step-form table.history-table th {
   font-size: 11px; color: #777; font-weight: 600;
 }
+
+/* ── Ensemble training curves (ensemble_train_curves.js) ─────────────────
+   The JS emits .etc-panels (two SVG charts), .etc-legend and per-member
+   .etc-swatch color chips. Without this block the swatches are zero-width
+   inline spans — the legend showed names with no way to match them to
+   lines. Swatches render as short line segments to match the charts. */
+.etc-panels { display: flex; flex-wrap: wrap; gap: 12px; }
+.etc-panels .etc-panel { flex: 1 1 320px; min-width: 280px; max-width: 560px; height: auto; }
+.etc-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+.etc-legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-family: "JetBrains Mono", Menlo, monospace;
+}
+.etc-swatch {
+  display: inline-block; width: 16px; height: 4px;
+  border-radius: 2px; flex: none;
+}

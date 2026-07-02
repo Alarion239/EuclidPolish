@@ -126,9 +126,9 @@ def ensemble_status() -> dict:
                             "size_mb": round(_dir_size_mb(d), 1),
                             "step": _member_last_step(d),
                             "origin": _member_origin(d)})
-    # Each seed contributes its PSNR-best checkpoint and (when present) its
-    # loss-best one — the ensemble loads/uses BOTH (include_loss_best=True).
-    n_models = sum(1 + (1 if m["has_loss_best"] else 0) for m in members)
+    # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
+    # stays on disk as a fork source but is not an ensemble model.
+    n_models = len(members)
     active_labels = ensemble_registry.active_labels(base)
 
     rdir = _sky_records_local_dir()

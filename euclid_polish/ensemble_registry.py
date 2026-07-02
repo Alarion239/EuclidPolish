@@ -85,16 +85,12 @@ def active_member_dirs(base_dir: str) -> list[str]:
 
 def active_labels(base_dir: str) -> list[str]:
     """Model labels the ensemble will load, aligned with member order:
-    ``NN·psnr`` always, plus ``NN·loss`` when ``loss_best/`` has a checkpoint.
-    This is the membership fingerprint caches are validated against."""
-    labels: list[str] = []
-    for d in active_member_dirs(base_dir):
-        idx = os.path.basename(d).removeprefix("member_")
-        labels.append(f"{idx}·psnr")
-        lb = os.path.join(d, "loss_best")
-        if os.path.isdir(lb) and _checkpoint_exists(lb):
-            labels.append(f"{idx}·loss")
-    return labels
+    one ``NN·psnr`` per active member. This is the membership fingerprint
+    caches are validated against. Evaluation uses only each member's
+    PSNR-best checkpoint — the ``loss_best/`` sub-track is still saved during
+    training (and can seed forks) but is NOT part of the ensemble."""
+    return [os.path.basename(d).removeprefix("member_") + "·psnr"
+            for d in active_member_dirs(base_dir)]
 
 
 def _member_index(name: str) -> int | None:

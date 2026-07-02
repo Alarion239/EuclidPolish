@@ -52,7 +52,9 @@ def test_active_member_dirs_and_labels(tmp_path):
     _mk_member(base, 2)
     dirs = er.active_member_dirs(base)
     assert [os.path.basename(d) for d in dirs] == ["member_00", "member_02"]
-    assert er.active_labels(base) == ["00·psnr", "00·loss", "02·psnr"]
+    # PSNR-best only: loss_best/ stays on disk (fork source) but is not an
+    # ensemble model, so it never appears in the fingerprint.
+    assert er.active_labels(base) == ["00·psnr", "02·psnr"]
 
 
 def test_archive_unknown_member_raises(tmp_path):

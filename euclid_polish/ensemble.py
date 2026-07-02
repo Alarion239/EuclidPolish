@@ -121,15 +121,15 @@ class EnsembleModel:
         Architecture of every member (shared).
     n_members : int, optional
         Cap on how many member *directories* to load (for eval); ``None`` loads
-        all found. (With ``include_loss_best`` each directory yields two models.)
+        all found.
     include_loss_best : bool, optional
-        Also load each member's ``loss_best/`` checkpoint as a separate model,
-        roughly doubling the ensemble (default ``True``). The PSNR-best and
-        LOSS-best checkpoints of one seed are correlated — they share weights
-        history — so the extra model is not a fully independent vote, but it adds
-        a cheap, already-trained member. Each model is tagged ``NN·psnr`` /
-        ``NN·loss`` in :attr:`member_labels`. Set ``False`` for pure
-        seed-diversity (e.g. an unbiased disagreement/hallucination map).
+        Also load each member's ``loss_best/`` checkpoint as a separate model
+        (tagged ``NN·loss``), roughly doubling the ensemble. Default ``False``:
+        the PSNR-best and LOSS-best checkpoints of one seed share weight
+        history, so the extra model is a correlated vote that mostly makes
+        evaluation ~2× slower now that training converges well. The
+        ``loss_best/`` track is still SAVED during training and can seed
+        forks — it just isn't part of the ensemble unless opted in.
     """
 
     def __init__(
@@ -139,7 +139,7 @@ class EnsembleModel:
         scale: int = Config.DEFAULT_REBIN_FACTOR,
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
         n_members: int | None = None,
-        include_loss_best: bool = True,
+        include_loss_best: bool = False,
         _models: Sequence[Model] | None = None,
     ) -> None:
         self.base_dir = base_dir
@@ -478,12 +478,13 @@ def load_ensemble(
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     n_members: int | None = None,
-    include_loss_best: bool = True,
+    include_loss_best: bool = False,
 ) -> EnsembleModel:
     """Load the ensemble under ``base_dir`` (default: ``<ckpt>/ensemble``).
 
-    ``include_loss_best`` (default ``True``) adds each member's ``loss_best/``
-    checkpoint as a second model — see :class:`EnsembleModel`.
+    ``include_loss_best`` (default ``False``) would add each member's
+    ``loss_best/`` checkpoint as a second, correlated model — see
+    :class:`EnsembleModel`. Evaluation uses PSNR-best only.
     """
     if base_dir is None:
         base_dir = default_ensemble_dir()
@@ -499,7 +500,7 @@ def evaluate_on_records(
     num_images: int = 200,
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-    include_loss_best: bool = True,
+    include_loss_best: bool = False,
     on_field: Callable[
         [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
          np.ndarray | None], None
@@ -510,9 +511,9 @@ def evaluate_on_records(
 
     Reads ``dirty_<subset>`` (LR) + ``hr_<subset>`` (HR target) from
     ``records_dir`` — defaulting ``subset`` to the held-out eval split — and runs
-    :meth:`EnsembleModel.evaluate`. ``include_loss_best`` (default ``True``)
-    scores each member's PSNR-best AND loss-best checkpoint — see
-    :class:`EnsembleModel`.
+    :meth:`EnsembleModel.evaluate`. Scores each member's PSNR-best checkpoint
+    only; ``include_loss_best=True`` opts the correlated ``loss_best/`` models
+    back in — see :class:`EnsembleModel`.
     """
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import tfrecord_path
