@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import threading
+import zipfile
 from typing import Any
 
 from euclid_polish.config import Config
@@ -335,6 +336,42 @@ class TrackingStore:
             _write_json(os.path.join(dest_dir, "meta.json"), meta)
             return meta
 
+    def archive_model_zip(self, src_dir: str, name: str,
+                          comment: str = "") -> dict[str, Any]:
+        """Zip a checkpoint directory tree into ``current/models/<name>.zip``.
+
+        Unlike :meth:`backup_model` (restorable loose copy of the primary
+        tracks), this captures the FULL tree verbatim — used when a model is
+        retired (ensemble-member archive / single-model migration), so the
+        source dir can be deleted afterwards. Not time-travelable: it is an
+        archive, not a live checkpoint.
+        """
+        with _LOCK:
+            self._require_current()
+            if not os.path.isdir(src_dir):
+                raise TrackingError(f"source dir not found: {src_dir}")
+            stem = _slugify(name, default="model")
+            dest_dir = os.path.join(self.current_dir, "models")
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = _unique_path(dest_dir, stem + ".zip")
+            files: list[str] = []
+            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+                for dp, _dirs, fns in os.walk(src_dir):
+                    for fn in sorted(fns):
+                        full = os.path.join(dp, fn)
+                        rel = os.path.relpath(full, src_dir)
+                        zf.write(full, rel)
+                        files.append(rel)
+            if not files:
+                os.remove(dest)
+                raise TrackingError(f"nothing to archive under {src_dir}")
+            meta = self._record_meta(
+                kind="model-zip", name=os.path.basename(dest), comment=comment,
+                source_path=src_dir, files=files,
+                size_bytes=os.path.getsize(dest))
+            _write_json(dest + ".meta.json", meta)
+            return meta
+
     def list_backups(self) -> dict[str, list[dict[str, Any]]]:
         """Enumerate the active campaign's ``{models, fits, images}`` backups."""
         if not self.has_current():
@@ -345,11 +382,16 @@ class TrackingStore:
         out: dict[str, list[dict[str, Any]]] = {
             "models": [], "fits": [], "images": [],
         }
-        # Models: one sub-dir each, meta.json inside.
+        # Models: one sub-dir each with meta.json inside, plus retired-model
+        # zips with a sidecar <name>.zip.meta.json.
         models_dir = os.path.join(campaign_dir, "models")
         if os.path.isdir(models_dir):
             for name in sorted(os.listdir(models_dir)):
-                meta = _read_json(os.path.join(models_dir, name, "meta.json"))
+                if name.endswith(".zip.meta.json"):
+                    meta = _read_json(os.path.join(models_dir, name))
+                else:
+                    meta = _read_json(
+                        os.path.join(models_dir, name, "meta.json"))
                 if meta:
                     out["models"].append(meta)
         # Files: sidecar *.meta.json next to each stored artifact.

@@ -90,8 +90,9 @@
         <td>{{ commit_badge(m.commit) }}</td>
         <td class="muted">{{ (m.size_bytes / 1048576)|round(1) }} MB</td>
         <td class="muted">{{ m.created_at }}</td>
-        <td><button class="tk-track-btn" onclick="timeTravel('current', '{{ m.name }}')"
-                title="Re-run this model's exact code + checkpoint in an isolated sandbox">⏱ time-travel</button></td></tr>
+        <td>{% if m.kind != 'model-zip' %}<button class="tk-track-btn" onclick="timeTravel('current', '{{ m.name }}')"
+                title="Re-run this model's exact code + checkpoint in an isolated sandbox">⏱ time-travel</button>
+            {% else %}<span class="muted" title="retired-model archive (zip) — unzip manually to restore">📦 archive</span>{% endif %}</td></tr>
     {% endfor %}
   </table>
   {% else %}<p class="muted">no model backups yet — use 📌 track on the Training page.</p>{% endif %}
