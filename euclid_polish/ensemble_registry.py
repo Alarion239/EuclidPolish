@@ -97,6 +97,28 @@ def active_labels(base_dir: str) -> list[str]:
     return labels
 
 
+def _member_index(name: str) -> int | None:
+    tail = str(name).removeprefix("member_")
+    return int(tail) if tail.isdigit() else None
+
+
+def next_member_names(base_dir: str, k: int) -> list[str]:
+    """``k`` fresh consecutive member names that can never collide.
+
+    Starts at max(index over active ∪ archived tombstones ∪ ``member_*`` on
+    disk) + 1 — tombstoned indices are skipped FOREVER (the bootstrap ignores
+    a reincarnated archived name, so reuse would create a ghost member).
+    Called locally at FASRC submit time; the job receives explicit names.
+    """
+    reg = load_registry(base_dir)
+    names = set(reg["active"]) | {str(t.get("name")) for t in reg["archived"]}
+    names |= {os.path.basename(d)
+              for d in glob.glob(os.path.join(base_dir, _MEMBER_GLOB))}
+    used = [i for i in (_member_index(n) for n in names) if i is not None]
+    start = (max(used) + 1) if used else 0
+    return [f"member_{i:02d}" for i in range(start, start + int(k))]
+
+
 def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
                          commit: str | None) -> dict[str, Any]:
     """Move ``name`` from active → archived tombstone. Returns the registry."""

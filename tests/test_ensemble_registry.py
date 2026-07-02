@@ -63,6 +63,27 @@ def test_archive_unknown_member_raises(tmp_path):
         er.archive_member_entry(base, "member_09", zip_path="z", commit=None)
 
 
+def test_next_member_names_skips_tombstones_and_gaps(tmp_path):
+    base = str(tmp_path / "ensemble")
+    _mk_member(base, 0)
+    _mk_member(base, 2)                       # gap at 1 stays a gap
+    er.load_registry(base)
+    er.archive_member_entry(base, "member_02", zip_path="z", commit=None)
+    # active: member_00; archived: member_02 → next index is 3, never 1 or 2
+    assert er.next_member_names(base, 2) == ["member_03", "member_04"]
+
+
+def test_next_member_names_counts_unregistered_disk_dirs(tmp_path):
+    base = str(tmp_path / "ensemble")
+    _mk_member(base, 5)                       # on disk, not yet in registry
+    assert er.next_member_names(base, 1) == ["member_06"]
+
+
+def test_next_member_names_empty_ensemble(tmp_path):
+    base = str(tmp_path / "ensemble")
+    assert er.next_member_names(base, 2) == ["member_00", "member_01"]
+
+
 def test_ensemble_available_respects_registry(tmp_path):
     from euclid_polish import ensemble as ens
     base = str(tmp_path / "ensemble")

@@ -86,6 +86,23 @@ def infer_checkpoint_nchan_in(
     return int(min(in_dims)) if in_dims else None
 
 
+def checkpoint_step(checkpoint_dir: str) -> int | None:
+    """The persisted ``ckpt.step`` of the latest checkpoint, or ``None``.
+
+    Reads the step variable straight off the checkpoint file (no model
+    build) — the authoritative "how far has this member trained" used by
+    continue-mode target computation.
+    """
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        return int(reader.get_tensor("step/.ATTRIBUTES/VARIABLE_VALUE"))
+    except Exception:            # unreadable / legacy layout → caller decides
+        return None
+
+
 def infer_checkpoint_nchan_out(
     checkpoint_dir: str, scale: int, nchan_in: int,
     skip_kernel_size: int = 5,
