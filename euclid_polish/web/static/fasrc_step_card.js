@@ -365,6 +365,11 @@ large cutout don't leak across train/validate."></label>`;
           Base seed
           <input type="number" name="base_seed" value="" placeholder="blank = entropy"></label>
       </span>
+      <span data-mode-group="add">
+        <label title="Trunk depth of the NEW members (residual blocks). Members of different depths coexist in the ensemble — each checkpoint self-describes its depth on load. Forks inherit their source's depth; continues keep the member's existing depth.">
+          Res blocks
+          <input type="number" name="num_res_blocks" value="32" min="1" max="128"></label>
+      </span>
       <span data-mode-group="fork" style="display:none;">
         <label>Fork source
           <select name="fork_from">${memberOpts}</select></label>

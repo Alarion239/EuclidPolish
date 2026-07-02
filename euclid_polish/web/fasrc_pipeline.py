@@ -1002,6 +1002,13 @@ class EnsembleTrainStep(FASRCPipelineStep):
             cmd += ["--count", str(count),
                     "--member-names", ",".join(names),
                     "--steps", str(steps)]
+            if mode == "add":
+                # Trunk depth for the NEW members (mixed-depth ensembles are
+                # supported; fork inherits its source's depth instead).
+                blocks = str(params.get("num_res_blocks", "")).strip()
+                if blocks:
+                    with contextlib.suppress(ValueError):
+                        cmd += ["--num-res-blocks", str(int(blocks))]
             if mode == "fork":
                 cmd += ["--fork-from",
                         str(params.get("fork_from", "")).strip(),

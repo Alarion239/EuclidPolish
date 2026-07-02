@@ -103,6 +103,7 @@
     <thead><tr><th>Checkpoint</th><th>Training seed</th>
       <th title="Training also saves a best-LOSS checkpoint in loss_best/. It is NOT part of the ensemble (correlated with the PSNR-best one — it just doubled eval time), but it can seed a fork.">loss-best ckpt</th>
       <th title="Last logged training step (from training_log.csv).">Step</th>
+      <th title="Trunk depth (residual blocks), introspected from the checkpoint. Members of different depths coexist — the ensemble mean doesn't care.">Depth</th>
       <th>Size</th><th></th></tr></thead>
     <tbody>
       {% for m in members %}
@@ -113,6 +114,7 @@
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
           <td>{% if m.has_loss_best %}✓ on disk{% else %}—{% endif %}</td>
           <td class="muted">{{ "{:,}".format(m.step) if m.step else "—" }}</td>
+          <td class="muted">{{ m.blocks if m.blocks else "—" }}</td>
           <td class="muted">{{ m.size_mb }} MB</td>
           <td><button type="button" class="mini-btn ens-continue-btn"
                       data-member="{{ m.name }}"

@@ -29,6 +29,9 @@ from euclid_polish.training.augmentation import (
     asinh_stretch_lr,
 )
 from euclid_polish.training.inference import (
+    infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
+)
+from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
 )
 from euclid_polish.training.inference import (
@@ -111,9 +114,23 @@ class Model:
             if not _checkpoint_exists(init_weights_from):
                 raise ValueError(
                     f"init_weights_from: no checkpoint in {init_weights_from!r}")
+            # A fork inherits the SOURCE's depth — weights are copied verbatim,
+            # so the fresh build must match it whatever the run default says.
+            src_blocks = _infer_num_res_blocks(init_weights_from)
+            if src_blocks is not None and src_blocks != num_res_blocks:
+                print(f"  note: fork source has num_res_blocks={src_blocks} "
+                      f"(requested {num_res_blocks}); using the source's.")
+                num_res_blocks = src_blocks
+                self._num_res_blocks = src_blocks
 
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
             self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
+            # The load introspects the checkpoint's own depth (members of
+            # different depths coexist in one ensemble) — reflect the actual
+            # architecture, not the caller's default.
+            actual = _infer_num_res_blocks(checkpoint_dir)
+            if actual is not None:
+                self._num_res_blocks = actual
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         else:
             # Fresh build (no checkpoint to introspect): match the current

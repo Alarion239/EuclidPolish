@@ -58,6 +58,9 @@ class MemberTrainSpec:
     ``target_steps`` for add/fork, the extra for continue) — used only for
     cumulative progress accounting. ``init_from`` is a checkpoint dir to copy
     weights from (fork). ``op`` ∈ {"add", "continue", "fork"}.
+    ``num_res_blocks`` sets a NEW member's trunk depth (``None`` → the run
+    default); members of different depths coexist — continue/fork ignore it
+    because the existing checkpoint / fork source dictates the depth.
     """
     name: str
     seed: int
@@ -66,6 +69,7 @@ class MemberTrainSpec:
     run_steps: int = 0
     init_from: str | None = None
     forked_from: str | None = None
+    num_res_blocks: int | None = None
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -269,6 +273,10 @@ class EnsembleModel:
             d = os.path.join(self.base_dir, spec.name)
             created = not (os.path.isdir(d) and _checkpoint_exists(d))
             os.makedirs(d, exist_ok=True)
+            m = Model(d, scale=self._scale,
+                      num_res_blocks=(spec.num_res_blocks
+                                      or self._num_res_blocks),
+                      seed=int(spec.seed), init_weights_from=spec.init_from)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
                 with open(os.path.join(d, "origin.json"), "w") as f:
@@ -277,13 +285,12 @@ class EnsembleModel:
                         "forked_from": spec.forked_from,
                         "seed": int(spec.seed),
                         "target_steps": int(spec.target_steps),
+                        # The ACTUAL depth (a fork inherits its source's).
+                        "num_res_blocks": int(m._num_res_blocks),
                         "created_at": datetime.now(UTC).isoformat(
                             timespec="seconds"),
                         "commit": commit,
                     }, f, indent=2)
-            m = Model(d, scale=self._scale,
-                      num_res_blocks=self._num_res_blocks,
-                      seed=int(spec.seed), init_weights_from=spec.init_from)
             # Continue resumes from the PSNR-best track — the model eval
             # actually uses. Max-step resume would pick loss_best/ when that
             # track ran ahead during a degenerate (skip-only) stretch.

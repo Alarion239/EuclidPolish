@@ -35,6 +35,7 @@ from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
+from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.visualization.base import BaseVisualizer
@@ -129,6 +130,7 @@ def ensemble_status() -> dict:
                             "has_loss_best": has_lb,
                             "size_mb": round(_dir_size_mb(d), 1),
                             "step": _member_last_step(d),
+                            "blocks": infer_checkpoint_num_res_blocks(d),
                             "origin": _member_origin(d)})
     # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
     # stays on disk as a fork source but is not an ensemble model.

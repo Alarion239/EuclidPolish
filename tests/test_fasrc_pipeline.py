@@ -119,6 +119,19 @@ class TestRegistry:
         assert "--base-seed" not in step.build_command(
             {"n_members": 5, "base_seed": "-1"})
 
+    def test_ensemble_train_add_mode_passes_depth(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_11"])
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "add", "count": 1, "steps": 1000, "num_res_blocks": 64})
+        assert argv[argv.index("--num-res-blocks") + 1] == "64"
+        # fork ignores depth (inherits its source's) — the flag is not emitted
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "fork", "fork_from": "member_02", "count": 1,
+             "steps": 1000, "num_res_blocks": 64})
+        assert "--num-res-blocks" not in argv
+
     def test_ensemble_train_continue_mode(self):
         # Continue never allocates names (and thus never reads the registry).
         argv = REGISTRY.get("ensemble_train").build_command(

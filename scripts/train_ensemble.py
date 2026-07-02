@@ -197,10 +197,14 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         init_from = src
         forked_from = f"{args.fork_from}·{args.fork_track}"
     names = _fresh_names(args, base, k)
+    # Depth applies to ADD only: a fork inherits its source's depth (weights
+    # are copied verbatim), and continue is dictated by the existing ckpt.
+    blocks = int(args.num_res_blocks) if args.mode == "add" else None
     return [MemberTrainSpec(
                 name=n, seed=base_seed + i, op=args.mode,
                 target_steps=int(args.steps), run_steps=int(args.steps),
-                init_from=init_from, forked_from=forked_from)
+                init_from=init_from, forked_from=forked_from,
+                num_res_blocks=blocks)
             for i, n in enumerate(names)]
 
 

@@ -6,6 +6,8 @@ images and visualizing the results.
 """
 
 
+import re
+
 import numpy as np
 import tensorflow as tf
 from astropy.wcs import WCS
@@ -84,6 +86,50 @@ def infer_checkpoint_nchan_in(
                and not (shp[0] == skip_kernel_size
                         and shp[1] == skip_kernel_size)]
     return int(min(in_dims)) if in_dims else None
+
+
+def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
+                                    skip_kernel_size: int = 5) -> int | None:
+    """Trunk depth (``num_res_blocks``) a saved checkpoint's model has, or None.
+
+    WDSR's weighted layers are: 1 entry conv + 3 convs per res block + 1
+    main-branch output conv + the skip conv(s) — and the skip convs are the
+    only ``skip_kernel_size``-sided kernels in the model. Counting the
+    distinct ``layer_with_weights-N`` indices under the checkpoint's
+    ``model/`` prefix (which excludes optimizer slot duplicates) therefore
+    gives ``L = 3·B + 2 + n_skip`` → ``B = (L - 2 - n_skip) / 3``.
+
+    This is what lets members of DIFFERENT depths coexist in one ensemble:
+    every load path asks the checkpoint how deep it is instead of trusting a
+    global default. Returns None when there is no checkpoint, it is
+    unreadable, or the layer count doesn't match the WDSR layout.
+    """
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        shapes = reader.get_variable_to_shape_map()
+    except Exception:    # pragma: no cover — unreadable ckpt → caller default
+        return None
+    layer_re = re.compile(r"^model/layer_with_weights-(\d+)/")
+    layers: set[int] = set()
+    skip_layers: set[int] = set()
+    for key, shp in shapes.items():
+        m = layer_re.match(key)
+        if m is None:
+            continue
+        idx = int(m.group(1))
+        layers.add(idx)
+        if (len(shp) == 4 and shp[0] == skip_kernel_size
+                and shp[1] == skip_kernel_size):
+            skip_layers.add(idx)
+    if not layers or not skip_layers:
+        return None
+    trunk = len(layers) - 2 - len(skip_layers)
+    if trunk <= 0 or trunk % 3:
+        return None
+    return trunk // 3
 
 
 def checkpoint_step(checkpoint_dir: str) -> int | None:
@@ -188,6 +234,17 @@ def load_model_from_checkpoint(
     if nchan_out is None:
         # New-style default: band k in → band k out.
         nchan_out = nchan_in
+
+    # Trunk depth likewise comes from the checkpoint — members of different
+    # depths (e.g. 32- and 64-block) coexist in one ensemble, so the caller's
+    # value is only a fallback. A depth mismatch would restore a prefix of the
+    # trunk and leave the rest at random init under ``expect_partial``.
+    ckpt_blocks = infer_checkpoint_num_res_blocks(checkpoint_dir)
+    if ckpt_blocks is not None:
+        if ckpt_blocks != num_res_blocks:
+            print(f"  note: checkpoint has num_res_blocks={ckpt_blocks} "
+                  f"(requested {num_res_blocks}); using the checkpoint's.")
+        num_res_blocks = ckpt_blocks
 
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
