@@ -64,9 +64,12 @@ class Model:
     num_res_blocks : int
         Number of residual blocks (default ``Config.DEFAULT_NUM_RES_BLOCKS``).
     init_weights_from : str, optional
-        Checkpoint dir of an EXISTING model whose weights seed this one
-        ("fork"). Requires a virgin ``checkpoint_dir`` — the trainer then
-        starts at step 0 with a fresh optimizer and LR schedule.
+        Checkpoint dir of an EXISTING model this one is forked from. The new
+        member is built AS the source — its whole architecture (trunk depth,
+        channel counts, skip structure) is introspected from the source
+        checkpoint and the weights are copied verbatim. Requires a virgin
+        ``checkpoint_dir`` — the trainer then starts at step 0 with a fresh
+        optimizer and LR schedule.
     seed : int, optional
         Master RNG seed. When set, the global RNGs are seeded *before* the model
         is built (so weight initialisation is reproducible) and the seed flows
@@ -114,14 +117,6 @@ class Model:
             if not _checkpoint_exists(init_weights_from):
                 raise ValueError(
                     f"init_weights_from: no checkpoint in {init_weights_from!r}")
-            # A fork inherits the SOURCE's depth — weights are copied verbatim,
-            # so the fresh build must match it whatever the run default says.
-            src_blocks = _infer_num_res_blocks(init_weights_from)
-            if src_blocks is not None and src_blocks != num_res_blocks:
-                print(f"  note: fork source has num_res_blocks={src_blocks} "
-                      f"(requested {num_res_blocks}); using the source's.")
-                num_res_blocks = src_blocks
-                self._num_res_blocks = src_blocks
 
         if _load_fn is not None or _checkpoint_exists(checkpoint_dir):
             self._tf_model = self._load_fn(checkpoint_dir, scale, num_res_blocks)
@@ -132,6 +127,24 @@ class Model:
             if actual is not None:
                 self._num_res_blocks = actual
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
+        elif init_weights_from is not None:
+            # Fork: build the new member AS the source model — loading the
+            # source checkpoint directly preserves its WHOLE architecture
+            # (trunk depth, channel counts, skip structure; the loader
+            # introspects all of them) and copies the weights in one step.
+            # Nothing else carries over — the trainer's ckpt.step stays 0
+            # and the warmup→cosine LR schedule restarts.
+            self._tf_model = self._load_fn(init_weights_from, scale,
+                                           num_res_blocks)
+            src_blocks = _infer_num_res_blocks(init_weights_from)
+            if src_blocks is not None:
+                if src_blocks != num_res_blocks:
+                    print(f"  note: fork source has num_res_blocks="
+                          f"{src_blocks} (requested {num_res_blocks}); "
+                          "the source's architecture is preserved.")
+                self._num_res_blocks = src_blocks
+            self.id = None
+            print(f"  ✓ fork: architecture + weights from {init_weights_from}")
         else:
             # Fresh build (no checkpoint to introspect): match the current
             # multi-band pipeline (VIS+NISP → VIS+NISP). The wdsr default is
@@ -145,14 +158,6 @@ class Model:
                 nchan_in=Config.NUM_LR_CHANNELS,
                 nchan_out=Config.NUM_HR_CHANNELS)
             self.id = None
-
-        if init_weights_from is not None:
-            # Fork: copy weights from the source member's checkpoint into the
-            # freshly-built net. Nothing else carries over — the trainer's
-            # ckpt.step stays 0 and the warmup→cosine schedule restarts.
-            src = self._load_fn(init_weights_from, scale, num_res_blocks)
-            self._tf_model.set_weights(src.get_weights())
-            print(f"  ✓ fork: weights initialized from {init_weights_from}")
 
         self._reconstruct_fn: Callable = (
             _reconstruct_fn if _reconstruct_fn is not None else _default_reconstruct

@@ -42,6 +42,22 @@ def test_load_model_corrects_requested_depth(tmp_path):
         assert np.array_equal(a, b)
 
 
+def test_fork_preserves_channel_architecture(tmp_path):
+    """A fork is built AS the source: channel counts come from the source
+    checkpoint, not from Config — the whole architecture is preserved."""
+    src_net = wdsr(scale=2, num_res_blocks=1, nchan_in=1, nchan_out=1)
+    src_dir = str(tmp_path / "src")
+    _save_model_ckpt(src_net, src_dir)
+
+    dst = Model(str(tmp_path / "dst"), num_res_blocks=1, seed=2,
+                init_weights_from=src_dir)
+    assert dst._tf_model.input_shape[-1] == 1          # not Config's 4
+    assert dst._tf_model.output_shape[-1] == 1
+    for a, b in zip(src_net.get_weights(),
+                    dst._tf_model.get_weights(), strict=True):
+        assert np.array_equal(a, b)
+
+
 def test_fork_inherits_source_depth(tmp_path):
     src_dir = str(tmp_path / "src")
     src = Model(src_dir, num_res_blocks=2, seed=1)
