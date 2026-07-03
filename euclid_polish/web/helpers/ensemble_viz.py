@@ -36,6 +36,7 @@ from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
+from euclid_polish.training.trainer import prune_orphaned_checkpoints
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.visualization.base import BaseVisualizer
@@ -512,5 +513,14 @@ def job_ensemble_pull(cap) -> dict:
             f"pulled 0 members (rsync rc={rc}: {err.strip()[:300]}). Has the "
             "ensemble_train job finished and written members at "
             f"{remote} on FASRC?")
-    print(f"  ✓ pulled {n} ensemble member(s) → {local}")
+    # The pull rsyncs WITHOUT --delete, so checkpoint generations from
+    # earlier pulls accumulate locally (member dirs doubled: 44.6 → 89.2 MB).
+    # Sweep files no manifest references after every pull.
+    pruned = 0
+    for d in glob.glob(os.path.join(local, _MEMBER_GLOB)):
+        for track in (d, os.path.join(d, "loss_best")):
+            if os.path.isdir(track):
+                pruned += prune_orphaned_checkpoints(track)
+    print(f"  ✓ pulled {n} ensemble member(s) → {local}"
+          + (f"; pruned {pruned} stale checkpoint file(s)" if pruned else ""))
     return {"local": local, "n_members": n}

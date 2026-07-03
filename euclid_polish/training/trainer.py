@@ -3,6 +3,7 @@ import contextlib
 import math
 import os
 import random
+import re
 import time
 
 import numpy as np
@@ -134,6 +135,38 @@ def _is_grad_spike(gnorm, step) -> bool:
 # to this ceiling — "≥ this = essentially exact" — so it stays finite and on
 # the same scale as the other PSNRs.
 ANCHOR_PSNR_MAX_DB = 80.0
+
+
+def prune_orphaned_checkpoints(ckpt_dir: str) -> int:
+    """Delete ``ckpt-N.*`` files no manifest references; return files removed.
+
+    ``CheckpointManager`` only prunes files listed in ITS manifest — a
+    timeout-killed run that resumes leaves the pre-resume files orphaned
+    forever (member dirs doubled: 44.6 → 89.2 MB). Called at train start on
+    each track dir. Only touches ``ckpt-<digits>.*`` files, and never one the
+    manifest still tracks.
+    """
+    state = tf.train.get_checkpoint_state(ckpt_dir)
+    if state is None:
+        return 0
+    keep = {os.path.basename(p)
+            for p in (state.all_model_checkpoint_paths or [])}
+    keep.add(os.path.basename(state.model_checkpoint_path or ""))
+    removed = 0
+    stem_re = re.compile(r"^(ckpt-\d+)\.(index|data-\d+-of-\d+)$")
+    for fn in os.listdir(ckpt_dir):
+        m = stem_re.match(fn)
+        if m is None or m.group(1) in keep:
+            continue
+        try:
+            os.remove(os.path.join(ckpt_dir, fn))
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        print(f"  ✓ pruned {removed} orphaned checkpoint file(s) in "
+              f"{ckpt_dir} (pre-resume leftovers no manifest tracks)")
+    return removed
 
 
 def _plateau_recovery_step(lr_scale: float, factor: float,
@@ -642,6 +675,11 @@ class Trainer:
         ckpt = self.checkpoint
 
         start_step = int(ckpt.step.numpy())
+        # Resumed runs leave the pre-resume checkpoint files orphaned (no
+        # manager's manifest tracks them) — sweep both tracks so member dirs
+        # stop doubling across timeout+resubmit cycles.
+        prune_orphaned_checkpoints(ckpt_mgr.directory)
+        prune_orphaned_checkpoints(self.loss_checkpoint_manager.directory)
         # The degenerate-basin detector measures "steps since the last new
         # best PSNR" — anchor it at the resume point so a resumed run isn't
         # instantly "stalled" (best_step would otherwise read 0).
