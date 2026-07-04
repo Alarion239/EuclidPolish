@@ -612,19 +612,76 @@ def remote_ensemble_dir() -> str:
     return os.path.join(parent, "ensemble")
 
 
+def changed_members_from_itemize(out: str) -> set[str]:
+    """Member names with CONTENT changes in ``rsync --itemize-changes`` output.
+
+    A member counts as changed when a file under it would be created (``+``)
+    or transferred for a checksum/size/time difference (``c``/``s``/``t``).
+    Attribute-only lines (perms/owner — chronic on Linux→macOS pulls, where
+    ``-a``'s perm-preserve half-fails) are ignored, else every member would
+    read "changed" on every pull and the skip would never fire.
+
+    Flag strings are 11 chars on rsync 3.x but 9 on macOS openrsync
+    (protocol 29, no ACL/xattr columns) — accept both.
+    """
+    changed: set[str] = set()
+    for line in out.splitlines():
+        parts = line.rstrip().split(" ", 1)
+        if len(parts) != 2:
+            continue
+        flags, path = parts
+        if not path.startswith("member_") or len(flags) < 9:
+            continue
+        if flags[0] in ("<", ">", "c") and any(
+                ch in flags[2:] for ch in ("+", "c", "s", "t")):
+            changed.add(path.split("/", 1)[0])
+    return changed
+
+
 def job_ensemble_pull(cap) -> dict:
     """Download the trained ensemble (``member_NN/``) from FASRC to the local
-    checkpoint tree, so the render / evaluate actions can run it locally."""
+    checkpoint tree, so the render / evaluate actions can run it locally.
+
+    Member-aware: one ``--dry-run --itemize-changes`` probe decides which
+    members actually changed on FASRC; only those are downloaded (and orphan-
+    pruned). An unchanged ensemble downloads nothing — and the PSNR refresh
+    afterwards is fingerprint-cached, so it re-scores only what was pulled.
+    """
     if STATE.ssh is None or not STATE.ssh.is_connected():
         raise RuntimeError("not connected to FASRC — connect on the FASRC tab first.")
     remote = remote_ensemble_dir()
     local = ensemble_dir()
     os.makedirs(local, exist_ok=True)
-    cap.tick(0, 0, f"rsync {remote} → {local}")
-    # rsync -a can exit non-zero on perm-preserve (Linux→macOS) while still
-    # copying every file; the member count below is the real success gate.
-    rc, _out, err = STATE.ssh.rsync_pull(remote.rstrip("/") + "/", local,
-                                         timeout=3600)
+
+    cap.tick(0, 0, "probing FASRC for changed members (rsync dry-run)")
+    probe_rc, probe_out, _perr = STATE.ssh.rsync_pull(
+        remote.rstrip("/") + "/", local,
+        extra_args=["--dry-run", "--itemize-changes"], timeout=600)
+    changed = changed_members_from_itemize(probe_out)
+
+    rc, err = 0, ""
+    if probe_rc != 0 and not probe_out.strip():
+        # Probe itself failed (transport error, not perm noise) — fall back to
+        # the old full-tree pull rather than wrongly concluding "no changes".
+        cap.tick(0, 0, f"rsync {remote} → {local}")
+        # rsync -a can exit non-zero on perm-preserve (Linux→macOS) while
+        # still copying every file; the member count below is the success gate.
+        rc, _out, err = STATE.ssh.rsync_pull(remote.rstrip("/") + "/", local,
+                                             timeout=3600)
+        changed = {os.path.basename(d)
+                   for d in glob.glob(os.path.join(local, _MEMBER_GLOB))}
+        print("  • change probe failed — pulled the full tree")
+    elif not changed:
+        print("  ✓ all members up to date on FASRC — nothing to download")
+    else:
+        for i, name in enumerate(sorted(changed)):
+            cap.tick(i, len(changed), f"pull {name}")
+            rc, _out, err = STATE.ssh.rsync_pull(
+                f"{remote.rstrip('/')}/{name}/", os.path.join(local, name),
+                timeout=3600)
+        print(f"  ✓ downloaded {len(changed)} changed member(s): "
+              + ", ".join(sorted(changed)))
+
     n = len([d for d in glob.glob(os.path.join(local, _MEMBER_GLOB))
              if _checkpoint_exists(d)])
     if n == 0:
@@ -634,14 +691,15 @@ def job_ensemble_pull(cap) -> dict:
             f"{remote} on FASRC?")
     # The pull rsyncs WITHOUT --delete, so checkpoint generations from
     # earlier pulls accumulate locally (member dirs doubled: 44.6 → 89.2 MB).
-    # Sweep files no manifest references after every pull.
+    # Sweep files no manifest references — only where something was pulled.
     pruned = 0
-    for d in glob.glob(os.path.join(local, _MEMBER_GLOB)):
+    for name in sorted(changed):
+        d = os.path.join(local, name)
         for track in (d, os.path.join(d, "loss_best")):
             if os.path.isdir(track):
                 pruned += prune_orphaned_checkpoints(track)
-    print(f"  ✓ pulled {n} ensemble member(s) → {local}"
-          + (f"; pruned {pruned} stale checkpoint file(s)" if pruned else ""))
+    if pruned:
+        print(f"  • pruned {pruned} stale checkpoint file(s)")
     # Refresh the per-member test PSNRs — fingerprint-cached, so only members
     # the pull actually changed get re-scored (nothing new → costs nothing).
     psnr: dict = {}
@@ -649,4 +707,5 @@ def job_ensemble_pull(cap) -> dict:
         psnr = job_member_psnr(cap)
     except Exception as e:  # noqa: BLE001 — the pull itself succeeded
         print(f"  ! member PSNR refresh skipped: {type(e).__name__}: {e}")
-    return {"local": local, "n_members": n, "psnr": psnr}
+    return {"local": local, "n_members": n,
+            "changed": sorted(changed), "psnr": psnr}

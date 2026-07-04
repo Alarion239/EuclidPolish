@@ -185,7 +185,9 @@
   <form id="ens-pull-form" action="/ensemble/pull">
     <p class="hint" style="flex-basis:100%;">When the <code>ensemble_train</code> job
        finishes, pull <code>member_NN/</code> from FASRC into the local checkpoint
-       tree so the evaluate action below can run them.</p>
+       tree so the evaluate action below can run them. Member-aware: a dry-run
+       probe finds what changed on FASRC — unchanged members are neither
+       downloaded nor PSNR re-scored.</p>
     <button type="submit">⬇️ Download from FASRC</button>
   </form>
   <div id="ens-pull-status"></div>
