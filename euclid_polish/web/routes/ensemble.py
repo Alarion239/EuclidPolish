@@ -8,7 +8,6 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
-from euclid_polish.training.log_plot import ensemble_training_series
 from euclid_polish.web.helpers.ensemble_viz import (
     _ensemble_out_dir,
     ensemble_dir,
@@ -19,6 +18,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_render,
     job_member_psnr,
     regenerate_power_spectrum,
+    training_curves_payload,
 )
 from euclid_polish.web.jobs import REGISTRY
 
@@ -66,8 +66,9 @@ def register(app):
     @app.route("/ensemble/training-curves.json")
     def ensemble_training_curves_json():
         """Per-member PSNR + loss series (rollback-deduped) for the in-browser
-        chart. Empty ``members`` → the client hides the card."""
-        return jsonify({"members": ensemble_training_series(ensemble_dir())})
+        chart — registry-active members only, with depth + cached test PSNR
+        for the coloring modes. Empty ``members`` → the client hides the card."""
+        return jsonify({"members": training_curves_payload()})
 
     @app.route("/ensemble/power-spectrum.png")
     def ensemble_power_spectrum():

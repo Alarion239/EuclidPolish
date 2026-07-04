@@ -20,6 +20,51 @@ function memberColor(i, total) {
   return `hsl(${hue.toFixed(1)}, 62%, 58%)`;
 }
 
+const NO_DATA = "#7a8292";                 // members missing depth / test PSNR
+
+// Categorical palette for depths (few distinct values expected).
+const DEPTH_PALETTE = ["#4e9cf5", "#f5a54e", "#5fd08a", "#e06c9f",
+                       "#b48cf2", "#e8d44d", "#59c7d6", "#e07356"];
+
+// Compact viridis for the test-PSNR gradient (t ∈ [0,1] → low..high).
+const VIRIDIS = [[68, 1, 84], [59, 82, 139], [33, 145, 140],
+                 [94, 201, 98], [253, 231, 37]];
+function viridis(t) {
+  const x = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const i = Math.min(VIRIDIS.length - 2, Math.floor(x));
+  const f = x - i;
+  const c = VIRIDIS[i].map((a, k) => Math.round(a + (VIRIDIS[i + 1][k] - a) * f));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
+// mode ∈ {"distinct", "depth", "psnr"} → per-series color fn + legend suffix.
+function makeColoring(series, mode) {
+  if (mode === "depth") {
+    const depths = [...new Set(series.map((s) => s.blocks).filter((b) => b))]
+      .sort((a, b) => a - b);
+    const byDepth = new Map(depths.map((d, i) =>
+      [d, DEPTH_PALETTE[i % DEPTH_PALETTE.length]]));
+    return {
+      color: (s) => (s.blocks ? byDepth.get(s.blocks) : NO_DATA),
+      suffix: (s) => (s.blocks ? ` · ${s.blocks}b` : ""),
+    };
+  }
+  if (mode === "psnr") {
+    const vals = series.map((s) => s.test_psnr).filter((v) => v != null);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    return {
+      color: (s) => (s.test_psnr == null ? NO_DATA
+        : viridis(hi > lo ? (s.test_psnr - lo) / (hi - lo) : 0.5)),
+      suffix: (s) => (s.test_psnr == null ? " · —"
+        : ` · ${s.test_psnr.toFixed(2)} dB`),
+    };
+  }
+  return {
+    color: (s, i) => memberColor(i, series.length),
+    suffix: () => "",
+  };
+}
+
 function niceTicks(min, max, n) {
   if (!(max > min)) return [min];
   const span = max - min;
@@ -61,6 +106,7 @@ function fmtVal(v, logY) {
 }
 
 // Draw one panel. `key` selects series[i][key] = [[step, value], ...].
+// `opts.color(s, i)` gives each member's stroke.
 function drawPanel(series, key, opts) {
   const W = 520, H = 300;
   const m = { t: 30, r: 14, b: 40, l: 54 };
@@ -128,7 +174,7 @@ function drawPanel(series, key, opts) {
     if (pts.length < 2) return;
     const d = pts.map(([x, y], j) => `${j ? "L" : "M"}${X(x).toFixed(1)},${Y(y).toFixed(1)}`).join(" ");
     kids.push(svg("path", {
-      d, fill: "none", stroke: memberColor(i, series.length),
+      d, fill: "none", stroke: opts.color(s, i),
       "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-opacity": 0.9,
     }));
   });
@@ -136,7 +182,7 @@ function drawPanel(series, key, opts) {
   return svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "etc-panel", preserveAspectRatio: "xMidYMid meet" }, kids);
 }
 
-function legend(series) {
+function legend(series, coloring) {
   const wrap = document.createElement("div");
   wrap.className = "etc-legend";
   series.forEach((s, i) => {
@@ -144,13 +190,43 @@ function legend(series) {
     item.className = "etc-legend-item";
     const sw = document.createElement("span");
     sw.className = "etc-swatch";
-    sw.style.background = memberColor(i, series.length);
+    sw.style.background = coloring.color(s, i);
     const lbl = document.createElement("span");
-    lbl.textContent = s.name;
+    lbl.textContent = s.name + coloring.suffix(s);
     item.appendChild(sw);
     item.appendChild(lbl);
     wrap.appendChild(item);
   });
+  return wrap;
+}
+
+const MODES = [
+  ["distinct", "distinct",
+   "One evenly-spread hue per member (golden-angle)."],
+  ["depth", "by depth",
+   "One color per trunk depth (residual blocks) — mixed-depth ensembles at a glance."],
+  ["psnr", "by test PSNR",
+   "Viridis gradient over each member's cached test-set PSNR (asinh space); gray = not scored yet."],
+];
+
+function modeToggle(current, onPick) {
+  const wrap = document.createElement("div");
+  wrap.className = "etc-modes";
+  wrap.style.cssText = "display:flex;gap:6px;align-items:center;margin:4px 0;";
+  const cap = document.createElement("span");
+  cap.textContent = "color:";
+  cap.style.cssText = "font-size:12px;color:var(--muted,#8a94a6);";
+  wrap.appendChild(cap);
+  for (const [key, label, title] of MODES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini-btn";
+    b.textContent = label;
+    b.title = title;
+    if (key === current) b.style.cssText = "font-weight:700;text-decoration:underline;";
+    b.addEventListener("click", () => onPick(key));
+    wrap.appendChild(b);
+  }
   return wrap;
 }
 
@@ -168,11 +244,19 @@ export async function mountEnsembleTrainCurves(el, jsonUrl) {
   const series = (data && data.members) || [];
   if (!series.length) { el.style.display = "none"; return; }
 
-  el.innerHTML = "";
-  const panels = document.createElement("div");
-  panels.className = "etc-panels";
-  panels.appendChild(drawPanel(series, "psnr", { title: "PSNR (stretched, dB)" }));
-  panels.appendChild(drawPanel(series, "loss", { title: "Combined loss (held-out)", logY: true }));
-  el.appendChild(panels);
-  el.appendChild(legend(series));
+  let mode = "distinct";
+  const render = () => {
+    const coloring = makeColoring(series, mode);
+    el.innerHTML = "";
+    el.appendChild(modeToggle(mode, (m) => { mode = m; render(); }));
+    const panels = document.createElement("div");
+    panels.className = "etc-panels";
+    panels.appendChild(drawPanel(series, "psnr",
+      { title: "PSNR (stretched, dB)", color: coloring.color }));
+    panels.appendChild(drawPanel(series, "loss",
+      { title: "Combined loss (held-out)", logY: true, color: coloring.color }));
+    el.appendChild(panels);
+    el.appendChild(legend(series, coloring));
+  };
+  render();
 }

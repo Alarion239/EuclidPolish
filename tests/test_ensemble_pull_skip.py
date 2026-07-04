@@ -123,6 +123,28 @@ def test_only_changed_members_are_downloaded(tmp_path, monkeypatch):
     assert [r for r, _ in pulls] == ["/remote/ensemble/member_01/"]
 
 
+def test_tombstoned_members_are_never_pulled(tmp_path, monkeypatch):
+    """An archived member's FASRC leftover must not resurrect: it is excluded
+    from the rsync and dropped from the changed set even if the probe (or a
+    stale exclude) reports it."""
+    from euclid_polish import ensemble_registry
+    ev, STATE = _setup(tmp_path, monkeypatch)
+    base = ev.ensemble_dir()
+    _member(base, "member_00")
+    ensemble_registry.load_registry(base)
+    ensemble_registry.archive_member_entry(base, "member_09",
+                                           zip_path="models/m09.zip",
+                                           commit="abc")
+    ssh = _FakeSSH(probe=(0, ">f.st.... member_09/checkpoint\n", ""))
+    monkeypatch.setattr(STATE, "ssh", ssh)
+
+    out = ev.job_ensemble_pull(_Cap())
+    assert out["changed"] == []                      # tombstone wins
+    probe_args = ssh.calls[0][1]
+    assert "--exclude=/member_09/" in probe_args     # not even listed
+    assert len(ssh.calls) == 1                       # and never downloaded
+
+
 def test_probe_failure_falls_back_to_full_pull(tmp_path, monkeypatch):
     """A dead probe (transport error, no output) must NOT read as 'no changes'
     — it falls back to the old full-tree rsync."""

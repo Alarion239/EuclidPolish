@@ -149,6 +149,35 @@ def test_status_hides_psnr_after_checkpoint_change(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# training_curves_payload — registry-filtered + enriched for coloring modes
+# --------------------------------------------------------------------------- #
+
+def test_curves_exclude_tombstoned_members(tmp_path, monkeypatch):
+    """An archived member's dir (with its training_log.csv) can linger on disk
+    or come back from a FASRC leftover — the curves must not show it.
+    Regression: member_09 was archived but still plotted."""
+    from euclid_polish import ensemble_registry
+    ev = _setup(tmp_path, monkeypatch)
+    base = ev.ensemble_dir()
+    log = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
+           "save_best_score,combined_loss,is_baseline\n"
+           "1000,1,0.1,40,33,40,0.01,\n")
+    for name in ("member_00", "member_09"):
+        d = _member(base, name)
+        with open(os.path.join(d, "training_log.csv"), "w") as f:
+            f.write(log)
+    ensemble_registry.load_registry(base)          # bootstrap both as active
+    ensemble_registry.archive_member_entry(base, "member_09",
+                                           zip_path="models/m09.zip",
+                                           commit="abc")
+
+    payload = ev.training_curves_payload()
+    assert [s["name"] for s in payload] == ["member_00"]
+    # Enrichment for the coloring modes is present (None on fake ckpts is fine).
+    assert "blocks" in payload[0] and "test_psnr" in payload[0]
+
+
+# --------------------------------------------------------------------------- #
 # EnsembleModel.evaluate — stretched per-member PSNR (feeds the cache for free)
 # --------------------------------------------------------------------------- #
 

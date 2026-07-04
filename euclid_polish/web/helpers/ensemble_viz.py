@@ -176,6 +176,33 @@ def update_member_psnr_cache(scores: dict[str, dict], subset: str) -> None:
         json.dump(cache, f, indent=2)
 
 
+def training_curves_payload() -> list[dict]:
+    """Training series for the in-browser curves — registry-ACTIVE members
+    only. An archived member's directory can linger on disk (or come back from
+    a FASRC leftover), and the series reader globs ``member_*`` — without this
+    filter a tombstoned member kept showing in the PSNR curves. Each entry is
+    enriched with trunk depth and the cached test PSNR so the chart can color
+    lines by depth or by a test-PSNR gradient."""
+    from euclid_polish.training.log_plot import ensemble_training_series
+
+    base = ensemble_dir()
+    active = {os.path.basename(d)
+              for d in ensemble_registry.active_member_dirs(base)}
+    rdir = _sky_records_local_dir()
+    sub = eval_subset(rdir) if rdir else "test"
+    cache = _load_member_psnr_cache()
+    out = []
+    for s in ensemble_training_series(base):
+        if s["name"] not in active:
+            continue
+        d = os.path.join(base, s["name"])
+        entry = _member_psnr_entry(cache, s["name"], d, sub)
+        s["blocks"] = infer_checkpoint_num_res_blocks(d)
+        s["test_psnr"] = (entry or {}).get("psnr")
+        out.append(s)
+    return out
+
+
 def job_member_psnr(cap) -> dict:
     """Score each active member's test-set PSNR (asinh space), skipping members
     whose checkpoint fingerprint already has a cached score — so re-running
@@ -653,11 +680,19 @@ def job_ensemble_pull(cap) -> dict:
     local = ensemble_dir()
     os.makedirs(local, exist_ok=True)
 
+    # Tombstones win: an archived member may still have a leftover dir on
+    # FASRC (archives predating the remote-delete feature) — excluding it from
+    # the rsync keeps it from resurrecting locally (which is exactly how a
+    # tombstoned member reappeared in the training curves).
+    tombstoned = {t["name"]
+                  for t in ensemble_registry.load_registry(local)["archived"]}
+    excludes = [f"--exclude=/{n}/" for n in sorted(tombstoned)]
+
     cap.tick(0, 0, "probing FASRC for changed members (rsync dry-run)")
     probe_rc, probe_out, _perr = STATE.ssh.rsync_pull(
         remote.rstrip("/") + "/", local,
-        extra_args=["--dry-run", "--itemize-changes"], timeout=600)
-    changed = changed_members_from_itemize(probe_out)
+        extra_args=["--dry-run", "--itemize-changes", *excludes], timeout=600)
+    changed = changed_members_from_itemize(probe_out) - tombstoned
 
     rc, err = 0, ""
     if probe_rc != 0 and not probe_out.strip():
@@ -667,9 +702,10 @@ def job_ensemble_pull(cap) -> dict:
         # rsync -a can exit non-zero on perm-preserve (Linux→macOS) while
         # still copying every file; the member count below is the success gate.
         rc, _out, err = STATE.ssh.rsync_pull(remote.rstrip("/") + "/", local,
-                                             timeout=3600)
+                                             extra_args=excludes, timeout=3600)
         changed = {os.path.basename(d)
-                   for d in glob.glob(os.path.join(local, _MEMBER_GLOB))}
+                   for d in glob.glob(os.path.join(local, _MEMBER_GLOB))
+                   } - tombstoned
         print("  • change probe failed — pulled the full tree")
     elif not changed:
         print("  ✓ all members up to date on FASRC — nothing to download")
