@@ -337,10 +337,42 @@ export function mountCutoutViewer(root, opts = {}) {
       }
     }
     fr.ctx.putImageData(img, 0, 0);
-    fr.overlay.textContent = rec.label;
+    fr.overlay.textContent = rec.label + fluxLabel(rec);
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
     showPlens(fr);
+  }
+
+  /** " · ΣVIS 1.23e5 e⁻ ≈ 21.43 AB": the cube's INTEGRATED flux in the shown
+   *  band (falls back to band 0 for colour composites) and its approximate AB
+   *  magnitude, mag = ZP − 2.5·log₁₀(Σe⁻ / t_total). On an SR frame that is
+   *  the source's total-flux magnitude; on stdSR it is the magnitude of the
+   *  ONE-SIGMA ensemble disagreement — how bright the hallucinated flux is.
+   *  Sums are cached per cube+band; the morph tier (data mutates every
+   *  animation tick) shows nothing. */
+  function fluxLabel(rec) {
+    const bands = state.meta && state.meta.color && state.meta.color.bands;
+    if (!bands || rec.noCache || !rec.data) return "";
+    const names = state.meta.band_names || [];
+    const bi = Math.max(0, names.indexOf(state.color));   // composite → band 0
+    const c = rec.c || 1;
+    const idx = Math.min(bi, c - 1);
+    if (!rec._sums) rec._sums = {};
+    if (!(idx in rec._sums)) {
+      let s = 0;
+      const d = rec.data;
+      for (let i = idx; i < d.length; i += c) s += d[i];
+      rec._sums[idx] = s;
+    }
+    const tot = rec._sums[idx];
+    const name = names[Math.min(idx, names.length - 1)] || "VIS";
+    const b = bands[name];
+    let magTxt = "";
+    if (b && tot > 0 && b.t_total_s > 0) {
+      const mag = b.zeropoint_ab - 2.5 * Math.log10(tot / b.t_total_s);
+      magTxt = ` ≈ ${mag.toFixed(2)} AB`;
+    }
+    return ` · Σ${name} ${tot.toExponential(2)} e⁻${magTxt}`;
   }
 
   /** Show the headed lens-finder's P(lens) for this frame's tier (eval only). */
