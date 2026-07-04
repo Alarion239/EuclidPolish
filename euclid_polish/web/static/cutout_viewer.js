@@ -337,22 +337,20 @@ export function mountCutoutViewer(root, opts = {}) {
       }
     }
     fr.ctx.putImageData(img, 0, 0);
-    fr.overlay.textContent = rec.label + fluxLabel(rec);
+    fr.overlay.textContent = rec.label + magLabel(rec);
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
     showPlens(fr);
+    addSigmaToSR(fr, rec);
   }
 
-  /** " · ΣVIS 1.23e5 e⁻ ≈ 21.43 AB": the cube's INTEGRATED flux in the shown
-   *  band (falls back to band 0 for colour composites) and its approximate AB
-   *  magnitude, mag = ZP − 2.5·log₁₀(Σe⁻ / t_total). On an SR frame that is
-   *  the source's total-flux magnitude; on stdSR it is the magnitude of the
-   *  ONE-SIGMA ensemble disagreement — how bright the hallucinated flux is.
-   *  Sums are cached per cube+band; the morph tier (data mutates every
-   *  animation tick) shows nothing. */
-  function fluxLabel(rec) {
+  /** Integrated flux of the cube in the shown band (colour composites fall
+   *  back to band 0) and its approximate AB magnitude,
+   *  mag = ZP − 2.5·log₁₀(Σe⁻ / t_total). Sums cached per cube+band; the
+   *  morph tier (data mutates every animation tick) is excluded. */
+  function magInfo(rec) {
     const bands = state.meta && state.meta.color && state.meta.color.bands;
-    if (!bands || rec.noCache || !rec.data) return "";
+    if (!bands || rec.noCache || !rec.data) return null;
     const names = state.meta.band_names || [];
     const bi = Math.max(0, names.indexOf(state.color));   // composite → band 0
     const c = rec.c || 1;
@@ -367,12 +365,37 @@ export function mountCutoutViewer(root, opts = {}) {
     const tot = rec._sums[idx];
     const name = names[Math.min(idx, names.length - 1)] || "VIS";
     const b = bands[name];
-    let magTxt = "";
-    if (b && tot > 0 && b.t_total_s > 0) {
-      const mag = b.zeropoint_ab - 2.5 * Math.log10(tot / b.t_total_s);
-      magTxt = ` ≈ ${mag.toFixed(2)} AB`;
-    }
-    return ` · Σ${name} ${tot.toExponential(2)} e⁻${magTxt}`;
+    const mag = (b && tot > 0 && b.t_total_s > 0)
+      ? b.zeropoint_ab - 2.5 * Math.log10(tot / b.t_total_s) : null;
+    return { name, tot, mag };
+  }
+
+  /** " · VIS 21.43 AB" — on stdSR that is the magnitude of the ONE-SIGMA
+   *  ensemble disagreement (how bright the hallucinated flux is). */
+  function magLabel(rec) {
+    const mi = magInfo(rec);
+    return mi && mi.mag != null ? ` · ${mi.name} ${mi.mag.toFixed(2)} AB` : "";
+  }
+
+  /** On the ensemble-mean SR frame, extend the magnitude with a ± from the
+   *  stdSR cube: δm = 1.0857·(Σσ/ΣSR) — the one-sigma disagreement expressed
+   *  as a magnitude error. The std cube is fetched (cached) on demand; stale
+   *  responses (index/band/frame moved on) are dropped. */
+  async function addSigmaToSR(fr, rec) {
+    if (fr.tier.toLowerCase() !== "sr") return;
+    if (!(state.meta.tiers || []).some((t) => t.key === "std")) return;
+    const mi = magInfo(rec);
+    if (!mi || mi.mag == null) return;
+    const idx = state.index, color0 = state.color;
+    let std;
+    try { std = await fetchCube("std", idx); } catch { return; }
+    if (state.index !== idx || state.color !== color0
+        || state.shown.get(fr.tier) !== rec) return;
+    const si = magInfo(std);
+    if (!si || !(si.tot > 0)) return;
+    const dm = (2.5 / Math.LN10) * (si.tot / mi.tot);
+    fr.overlay.textContent =
+      `${rec.label} · ${mi.name} ${mi.mag.toFixed(2)} ± ${dm.toFixed(2)} AB`;
   }
 
   /** Show the headed lens-finder's P(lens) for this frame's tier (eval only). */
