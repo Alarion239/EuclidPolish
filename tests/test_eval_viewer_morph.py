@@ -68,6 +68,32 @@ def test_eval_cube_serves_sr_lowercase(tmp_path, monkeypatch):
     assert cube.shape[:2] == (16, 16)
 
 
+def test_eval_objects_advertise_morph_per_object(tmp_path, monkeypatch):
+    """The morph tier must appear in each object's OWN tier list (when its
+    disagreement sidecar exists) — the viewer gates tiers per object, so a
+    global-only "morph" entry leaves the movie chip disabled everywhere.
+    Regression: the eval page offered the movie globally but every object
+    said "no morph for this object"."""
+    for sub, with_pca in (("obj_a", True), ("obj_b", False)):
+        d = tmp_path / sub
+        d.mkdir()
+        _obj(d, with_pca=with_pca)
+    with open(tmp_path / "manifest.csv", "w") as f:
+        f.write("id,ok,out_subdir\n"
+                "obj_a,true,obj_a\n"
+                "obj_b,true,obj_b\n")
+    monkeypatch.setattr(vd.Config, "EVAL_RESULTS_DIR", str(tmp_path))
+    objs = vd._eval_objects()
+    tiers = {o["subdir"]: o["tiers"] for o in objs}
+    assert "morph" in tiers["obj_a"]          # has disagreement.json + pca fits
+    assert "morph" not in tiers["obj_b"]      # no sidecar → legitimately gated
+    # And the meta serialization forwards the per-object list to the client.
+    meta = vd._eval_meta({})
+    by_sub = {o["subdir"]: o for o in meta["objects"]}
+    assert "morph" in by_sub["obj_a"]["tiers"]
+    assert "morph" not in by_sub["obj_b"]["tiers"]
+
+
 def test_eval_meta_no_morph_without_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(vd, "_eval_objects", lambda: [{
         "subdir": "obj_b", "label": "b", "grade": "B",

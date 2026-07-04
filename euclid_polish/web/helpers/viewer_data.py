@@ -282,6 +282,11 @@ def _eval_objects() -> list[dict[str, Any]]:
                 pca_n = int(_dmeta.get("pca_n", 0) or 0)
                 pca_amps = list(_dmeta.get("pca_amps", []) or [])
                 pca_var = list(_dmeta.get("pca_var", []) or [])
+        # The morph tier is client-animated (SR mean + pca cubes), so it has no
+        # file of its own — advertise it per object or the viewer's per-object
+        # availability gate keeps the movie chip disabled for every object.
+        if pca_n > 0 and "SR" in tiers:
+            tiers.append("morph")
         objs.append({
             "subdir": sub,
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
