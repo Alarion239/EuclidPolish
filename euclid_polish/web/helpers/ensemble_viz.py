@@ -22,7 +22,9 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble import (
     EnsembleModel,
     default_ensemble_dir,
+    evaluate_member_on_records,
     evaluate_on_records,
+    member_fingerprint,
     pca_field,
 )
 from euclid_polish.eval.power_spectrum import (
@@ -42,7 +44,6 @@ from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
-from euclid_polish.web.helpers.status import _tfrecords_status
 from euclid_polish.web.remote import STATE
 
 _MEMBER_GLOB = "member_*"
@@ -116,47 +117,150 @@ def _dir_size_mb(d: str) -> float:
     return total / 1e6
 
 
+# --------------------------------------------------------------------------- #
+# Per-member test PSNR (asinh space) — fingerprint-cached, so an unchanged
+# member is never re-scored. The members table shows these with a rank.
+# --------------------------------------------------------------------------- #
+
+#: Held-out fields per member score. Fixed so cached values stay comparable
+#: across refreshes (a different count would be a different metric).
+MEMBER_PSNR_FIELDS = 100
+
+
+def _member_psnr_cache_path() -> str:
+    # abspath WITHOUT makedirs — read on every page render.
+    return os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble",
+                                        "member_psnr.json"))
+
+
+def _load_member_psnr_cache() -> dict:
+    try:
+        with open(_member_psnr_cache_path()) as f:
+            cache = json.load(f)
+        return cache if isinstance(cache, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _member_psnr_entry(cache: dict, name: str, mdir: str,
+                       subset: str) -> dict | None:
+    """The member's cached score, or ``None`` when it must be (re)computed —
+    missing, different subset/field count, or the checkpoint changed."""
+    if (cache.get("subset") != subset
+            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS):
+        return None
+    e = (cache.get("members") or {}).get(name)
+    if not e:
+        return None
+    fp = member_fingerprint(mdir)
+    if fp is None or e.get("fingerprint") != fp:
+        return None
+    return e
+
+
+def update_member_psnr_cache(scores: dict[str, dict], subset: str) -> None:
+    """Merge ``{member_name: {fingerprint, psnr, n_scored}}`` into the cache.
+
+    A subset/field-count change invalidates wholesale (different metric);
+    entries for members no longer on disk are left alone — they are ignored on
+    read and rewritten on the next refresh.
+    """
+    cache = _load_member_psnr_cache()
+    if (cache.get("subset") != subset
+            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS):
+        cache = {"subset": subset, "num_images": MEMBER_PSNR_FIELDS,
+                 "members": {}}
+    cache.setdefault("members", {}).update(scores)
+    path = os.path.join(_ensemble_out_dir(), "member_psnr.json")
+    with open(path, "w") as f:
+        json.dump(cache, f, indent=2)
+
+
+def job_member_psnr(cap) -> dict:
+    """Score each active member's test-set PSNR (asinh space), skipping members
+    whose checkpoint fingerprint already has a cached score — so re-running
+    after nothing changed costs nothing, and after a pull only the members that
+    actually changed are re-evaluated."""
+    base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    if not rdir:
+        raise RuntimeError("no local sky records — sync them on the /sky page.")
+    sub = eval_subset(rdir)
+    cache = _load_member_psnr_cache()
+    dirs = [d for d in ensemble_registry.active_member_dirs(base)
+            if os.path.isdir(d) and _checkpoint_exists(d)]
+    todo = [d for d in dirs
+            if _member_psnr_entry(cache, os.path.basename(d), d, sub) is None]
+    reused = [os.path.basename(d) for d in dirs if d not in todo]
+    if reused:
+        print(f"  • cached (checkpoint unchanged): {', '.join(reused)}")
+    scores: dict[str, dict] = {}
+    for i, d in enumerate(todo):
+        name = os.path.basename(d)
+        fp = member_fingerprint(d)
+        cap.tick(i, len(todo), name)
+        out = evaluate_member_on_records(
+            d, rdir, subset=sub, num_images=MEMBER_PSNR_FIELDS,
+            on_progress=lambda j, n, lbl, _i=i: cap.tick(
+                _i, len(todo), f"{name}: {lbl}"))
+        scores[name] = {"fingerprint": fp,
+                        "psnr": out["psnr_stretched"],
+                        "n_scored": out["n_scored"]}
+        print(f"  ✓ {name}: {out['psnr_stretched']:.3f} dB "
+              f"(asinh, {out['n_scored']} {sub} fields)")
+    if scores:
+        update_member_psnr_cache(scores, sub)
+    cap.tick(len(todo), len(todo), "done")
+    return {"evaluated": sorted(scores), "reused": reused, "subset": sub}
+
+
 def ensemble_status() -> dict:
     """Everything the ensemble page renders: registry-active members
-    (+ seeds, sizes), archived tombstones, test-data presence, TFRecords,
-    recent disagreement PNGs, and the latest eval summary (+ staleness)."""
+    (+ seeds, sizes, cached test PSNR + rank), archived tombstones,
+    test-data presence, and the latest eval summary (+ staleness)."""
     base = ensemble_dir()
     reg = ensemble_registry.load_registry(base)
-    members = []
-    for d in [os.path.join(base, n) for n in reg["active"]]:
-        if os.path.isdir(d) and _checkpoint_exists(d):
-            lb = os.path.join(d, "loss_best")
-            has_lb = os.path.isdir(lb) and _checkpoint_exists(lb)
-            members.append({"name": os.path.basename(d), "seed": _member_seed(d),
-                            "has_loss_best": has_lb,
-                            "size_mb": round(_dir_size_mb(d), 1),
-                            "step": _member_last_step(d),
-                            "blocks": infer_checkpoint_num_res_blocks(d),
-                            "origin": _member_origin(d)})
-    # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
-    # stays on disk as a fork source but is not an ensemble model.
-    n_models = len(members)
-    active_labels = ensemble_registry.active_labels(base)
 
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
     test_present = bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"dirty_{sub}"))
 
+    psnr_cache = _load_member_psnr_cache()
+    members = []
+    for d in [os.path.join(base, n) for n in reg["active"]]:
+        if os.path.isdir(d) and _checkpoint_exists(d):
+            lb = os.path.join(d, "loss_best")
+            has_lb = os.path.isdir(lb) and _checkpoint_exists(lb)
+            name = os.path.basename(d)
+            # Cached test PSNR (asinh space): only shown while the checkpoint
+            # it was scored on is the one on disk — a changed member reads "—"
+            # until the next refresh re-scores it (and only it).
+            entry = _member_psnr_entry(psnr_cache, name, d, sub)
+            members.append({"name": name, "seed": _member_seed(d),
+                            "has_loss_best": has_lb,
+                            "size_mb": round(_dir_size_mb(d), 1),
+                            "step": _member_last_step(d),
+                            "blocks": infer_checkpoint_num_res_blocks(d),
+                            "origin": _member_origin(d),
+                            "psnr": (entry or {}).get("psnr")})
+    # Rank by cached PSNR (1 = best); unscored members rank last, unranked.
+    by_psnr = sorted((m for m in members if m["psnr"] is not None),
+                     key=lambda m: -m["psnr"])
+    ranks = {m["name"]: i + 1 for i, m in enumerate(by_psnr)}
+    for m in members:
+        m["psnr_rank"] = ranks.get(m["name"])
+    # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
+    # stays on disk as a fork source but is not an ensemble model.
+    n_models = len(members)
+    active_labels = ensemble_registry.active_labels(base)
+
     # Same abspath as _ensemble_out_dir() but WITHOUT the makedirs — a page
     # render is read-only and must not create directories.
     out_dir = os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble"))
-    # The power-spectrum summary gets its own card; keep it out of the gallery.
     ps_path = os.path.join(out_dir, "ensemble_power_spectrum.png")
     power_spectrum_png = (os.path.relpath(ps_path, Config.VIS_DIR)
                           if os.path.isfile(ps_path) else None)
-    pngs = []
-    for p in sorted(glob.glob(os.path.join(out_dir, "*.png")),
-                    key=os.path.getmtime, reverse=True)[:24]:
-        if os.path.basename(p) == "ensemble_power_spectrum.png":
-            continue
-        pngs.append({"name": os.path.basename(p),
-                     "rel": os.path.relpath(p, Config.VIS_DIR)})
 
     summary = None
     summary_stale = False
@@ -183,11 +287,10 @@ def ensemble_status() -> dict:
         "records_dir": rdir,
         "eval_subset": sub,
         "test_present": test_present,
-        "result_pngs": pngs,
+        "psnr_fields": MEMBER_PSNR_FIELDS,
         "power_spectrum_png": power_spectrum_png,
         "eval_summary": summary,
         "eval_summary_stale": summary_stale,
-        "tfrecords": _tfrecords_status(),
     }
 
 
@@ -331,6 +434,22 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
                               on_field=_on_field, on_progress=_prog)
     member_labels = list(out.get("member_labels", []))
+
+    # The full eval already scored every member — bank the stretched PSNRs in
+    # the per-member cache (free ride: no extra inference), but only when this
+    # eval used the cache's canonical field count, so the numbers stay one
+    # metric. Labels are "NN·psnr" → dir "member_NN".
+    if int(num_images) == MEMBER_PSNR_FIELDS and out.get("n_scored"):
+        scores = {}
+        for lbl, p in zip(member_labels,
+                          out.get("per_member_psnr_stretched", [])):
+            name = f"member_{lbl.split('·')[0]}"
+            fp = member_fingerprint(os.path.join(base, name))
+            if fp is not None:
+                scores[name] = {"fingerprint": fp, "psnr": float(p),
+                                "n_scored": int(out["n_scored"])}
+        if scores:
+            update_member_psnr_cache(scores, sub)
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
@@ -523,4 +642,11 @@ def job_ensemble_pull(cap) -> dict:
                 pruned += prune_orphaned_checkpoints(track)
     print(f"  ✓ pulled {n} ensemble member(s) → {local}"
           + (f"; pruned {pruned} stale checkpoint file(s)" if pruned else ""))
-    return {"local": local, "n_members": n}
+    # Refresh the per-member test PSNRs — fingerprint-cached, so only members
+    # the pull actually changed get re-scored (nothing new → costs nothing).
+    psnr: dict = {}
+    try:
+        psnr = job_member_psnr(cap)
+    except Exception as e:  # noqa: BLE001 — the pull itself succeeded
+        print(f"  ! member PSNR refresh skipped: {type(e).__name__}: {e}")
+    return {"local": local, "n_members": n, "psnr": psnr}

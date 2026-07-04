@@ -97,20 +97,29 @@
 {% endif %}
 
 <section class="card">
-  <h3>Members</h3>
+  <h3>Members
+    <button type="button" id="ens-psnr-refresh" class="mini-btn" style="float:right;"
+            title="Score each member's PSNR on the held-out {{ eval_subset }} set ({{ psnr_fields }} fields, asinh space). Cached per checkpoint — members whose checkpoint hasn't changed are NOT re-evaluated.">↻ PSNR</button>
+  </h3>
   {% if members %}
   <table class="data-table">
-    <thead><tr><th>Checkpoint</th><th>Training seed</th>
+    <thead><tr>
+      <th title="Rank by test-set PSNR (1 = best). Unscored members are unranked.">#</th>
+      <th>Checkpoint</th>
+      <th title="Mean PSNR over {{ psnr_fields }} held-out {{ eval_subset }} fields, computed in asinh (stretched) space — the same metric as the training curves. Cached per checkpoint fingerprint; a member is only re-scored when its checkpoint changes.">PSNR (asinh, {{ eval_subset }})</th>
+      <th>Training seed</th>
       <th title="Training also saves a best-LOSS checkpoint in loss_best/. It is NOT part of the ensemble (correlated with the PSNR-best one — it just doubled eval time), but it can seed a fork.">loss-best ckpt</th>
       <th title="Last logged training step (from training_log.csv).">Step</th>
       <th title="Trunk depth (residual blocks), introspected from the checkpoint. Members of different depths coexist — the ensemble mean doesn't care.">Depth</th>
       <th>Size</th><th></th></tr></thead>
     <tbody>
       {% for m in members %}
-      <tr><td><code>{{ m.name }}</code>
+      <tr><td>{% if m.psnr_rank %}<b>{{ m.psnr_rank }}</b>{% else %}—{% endif %}</td>
+          <td><code>{{ m.name }}</code>
           {% if m.origin and m.origin.op == 'fork' %}
           <span title="forked from {{ m.origin.forked_from }}{% if m.origin.created_at %} ({{ m.origin.created_at }}){% endif %}">⑂</span>
           {% endif %}</td>
+          <td>{% if m.psnr is not none %}{{ "%.3f"|format(m.psnr) }} dB{% else %}<span class="muted" title="not scored yet, or the checkpoint changed since its last score — press ↻ PSNR (only changed members are evaluated)">—</span>{% endif %}</td>
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
           <td>{% if m.has_loss_best %}✓ on disk{% else %}—{% endif %}</td>
           <td class="muted">{{ "{:,}".format(m.step) if m.step else "—" }}</td>
@@ -163,36 +172,6 @@
   {% endif %}
 </section>
 
-<section class="card">
-  <h3>Training data <span class="muted">— local TFRecords</span></h3>
-  {% if tfrecords.files %}
-  <table class="data-table">
-    <thead><tr><th>File</th><th>Size</th></tr></thead>
-    <tbody>
-      {% for f in tfrecords.files %}
-      <tr><td><code>{{ f.name }}</code></td>
-          <td class="muted">{{ f.size_mb }} MB</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">empty — generate synthetic data first
-    (<code>{{ tfrecords.dir }}</code>).</p>
-  {% endif %}
-</section>
-
-{% if result_pngs %}
-<div class="gallery">
-  {% for p in result_pngs %}
-    <a class="thumb" href="{{ url_for('serve_vis', relpath=p.rel) }}"
-       target="_blank" title="{{ p.name }}">
-      <img loading="lazy" src="{{ url_for('serve_vis', relpath=p.rel) }}"
-           alt="{{ p.name }}">
-      <span class="thumb-label">{{ p.name }}</span>
-    </a>
-  {% endfor %}
-</div>
-{% endif %}
 {% endblock %}
 
 {% block actions %}
@@ -259,6 +238,14 @@ document.querySelectorAll(".ens-archive-btn").forEach((btn) => {
     polishUI.run(form, document.getElementById("ens-archive-status"), {
       onDone: () => setTimeout(() => location.reload(), 1500),
     });
+  });
+});
+// ↻ PSNR: score changed/unscored members on the test set (cached otherwise).
+document.getElementById("ens-psnr-refresh").addEventListener("click", () => {
+  const form = document.createElement("form");
+  form.action = "/ensemble/member-psnr";
+  polishUI.run(form, document.getElementById("ens-archive-status"), {
+    onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });
 // ▶/⑂ shortcuts: set the train card's mode, prefill the member, scroll to it.

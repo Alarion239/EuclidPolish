@@ -8,10 +8,7 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
-from euclid_polish.training.log_plot import (
-    ensemble_training_series,
-    plot_ensemble_training_curves,
-)
+from euclid_polish.training.log_plot import ensemble_training_series
 from euclid_polish.web.helpers.ensemble_viz import (
     _ensemble_out_dir,
     ensemble_dir,
@@ -20,6 +17,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_evaluate,
     job_ensemble_pull,
     job_ensemble_render,
+    job_member_psnr,
     regenerate_power_spectrum,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -55,15 +53,15 @@ def register(app):
         )
         return jsonify({"job_id": job_id})
 
-    @app.route("/ensemble/training-curves.png")
-    def ensemble_training_curves():
-        """Per-member PSNR + loss curves (rollback-deduped). 404 → card hides."""
-        out_png = os.path.join(_ensemble_out_dir(), "training_curves.png")
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        if fresh or not os.path.isfile(out_png):
-            if plot_ensemble_training_curves(ensemble_dir(), out_png) is None:
-                abort(404)
-        return send_file(out_png, mimetype="image/png", max_age=0)
+    @app.route("/ensemble/member-psnr", methods=["POST"])
+    def ensemble_member_psnr():
+        """Refresh the members table's test PSNRs (asinh space). Fingerprint-
+        cached per checkpoint — only changed/unscored members are evaluated."""
+        job_id = REGISTRY.spawn(
+            "ensemble: member test PSNR (changed members only)",
+            target=job_member_psnr,
+        )
+        return jsonify({"job_id": job_id})
 
     @app.route("/ensemble/training-curves.json")
     def ensemble_training_curves_json():

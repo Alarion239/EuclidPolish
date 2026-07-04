@@ -128,7 +128,8 @@ def test_ensemble_status_no_members(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
     st = ensemble_status()
     assert st["n_members"] == 0 and st["members"] == []
-    assert st["result_pngs"] == [] and "eval_subset" in st
+    assert "result_pngs" not in st and "tfrecords" not in st   # cards removed
+    assert "eval_subset" in st
     assert not os.path.isdir(str(tmp_path / "vis" / "ensemble"))   # read-only
 
 

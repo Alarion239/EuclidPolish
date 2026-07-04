@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,6 +48,39 @@ _MEMBER_GLOB = "member_*"
 def member_dir(base_dir: str, i: int) -> str:
     """Checkpoint directory for ensemble member ``i`` under ``base_dir``."""
     return os.path.join(base_dir, MEMBER_DIR_FMT.format(int(i)))
+
+
+def member_fingerprint(mdir: str) -> str | None:
+    """Cheap identity of a member's PSNR-best checkpoint (no TF, no loading).
+
+    ``<ckpt-name>:<bytes>:<index-mtime>`` of the manifest's current checkpoint.
+    Any further training saves a new ``ckpt-N`` (new name); a re-pull of
+    identical files keeps name/size/mtime (rsync preserves times), so the
+    fingerprint changes iff the served weights change. ``None`` when the member
+    has no checkpoint yet. Used to cache per-member eval results — a member is
+    only re-scored when this changes.
+    """
+    manifest = os.path.join(mdir, "checkpoint")
+    if not os.path.isfile(manifest):
+        return None
+    name = None
+    with open(manifest) as f:
+        for line in f:
+            m = re.match(r'model_checkpoint_path:\s*"(.+)"', line.strip())
+            if m:
+                name = os.path.basename(m.group(1))
+                break
+    if not name:
+        return None
+    index = os.path.join(mdir, f"{name}.index")
+    if not os.path.isfile(index):
+        return None
+    total = 0
+    for fn in os.listdir(mdir):
+        if fn == f"{name}.index" or re.fullmatch(
+                re.escape(name) + r"\.data-\d+-of-\d+", fn):
+            total += os.path.getsize(os.path.join(mdir, fn))
+    return f"{name}:{total}:{int(os.path.getmtime(index))}"
 
 
 @dataclass
@@ -393,6 +427,8 @@ class EnsembleModel:
             {
               "n_members", "n_fields",
               "per_member_psnr": [...],          # mean over fields, raw e⁻
+              "per_member_psnr_stretched": [...],# same, asinh space (the
+                                                 #   training psnr_stretched)
               "per_member_labels": [...],        # NN·psnr / NN·loss, aligned
               "mean_member_psnr", "ensemble_psnr",
               "ensemble_gain_db",                # ensemble − best member
@@ -411,8 +447,11 @@ class EnsembleModel:
         self._require_members()
         hr_by = {h.index: h for h in (hr_images or [])}
         peak = float(Config.PSNR_PEAK_E)
+        knee = float(Config.STRETCH_SCALE_E)
+        peak_str = float(Config.PSNR_PEAK_STRETCHED)
 
         per_member_sum = np.zeros(self.n_members, dtype=np.float64)
+        per_member_str_sum = np.zeros(self.n_members, dtype=np.float64)
         ens_sum = 0.0
         n_scored = 0                       # fields with a matched HR (for PSNR)
         n_fields = 0
@@ -442,8 +481,13 @@ class EnsembleModel:
             hr = hr_by.get(lr.index)
             hr_data = np.asarray(hr.data, np.float32) if hr is not None else None
             if hr_data is not None:
+                hr_str = np.arcsinh(hr_data / knee)
                 for k in range(self.n_members):
                     per_member_sum[k] += _psnr(preds[k], hr_data, peak)
+                    # asinh space — the training metric (psnr_stretched), so
+                    # the per-member number is comparable to the curves.
+                    per_member_str_sum[k] += _psnr(
+                        np.arcsinh(preds[k] / knee), hr_str, peak_str)
                 ens_sum += _psnr(mean, hr_data, peak)
                 n_scored += 1
 
@@ -458,6 +502,8 @@ class EnsembleModel:
                 on_progress(i + 1, total, f"field {lr.index}")
 
         per_member = (per_member_sum / n_scored).tolist() if n_scored else []
+        per_member_str = ((per_member_str_sum / n_scored).tolist()
+                          if n_scored else [])
         ensemble_psnr = (ens_sum / n_scored) if n_scored else float("nan")
         mean_member = float(np.mean(per_member)) if per_member else float("nan")
         best_member = float(np.max(per_member)) if per_member else float("nan")
@@ -466,6 +512,7 @@ class EnsembleModel:
             "n_fields": n_fields,
             "n_scored": n_scored,
             "per_member_psnr": per_member,
+            "per_member_psnr_stretched": per_member_str,
             "per_member_labels": list(self._member_labels),
             "mean_member_psnr": mean_member,
             "ensemble_psnr": ensemble_psnr,
@@ -551,3 +598,47 @@ def evaluate_on_records(
     out["subset"] = sub
     out["member_labels"] = ens.member_labels     # aligned with member_arrays order
     return out
+
+
+def evaluate_member_on_records(
+    mdir: str,
+    records_dir: str,
+    *,
+    subset: str | None = None,
+    num_images: int = 100,
+    scale: int = Config.DEFAULT_REBIN_FACTOR,
+    num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """ONE member's test-set PSNR in asinh space (the training metric).
+
+    Loads just this member (depth self-corrects from the checkpoint) and scores
+    it over the subset's first ``num_images`` LR/HR pairs — so a single changed
+    member can be re-scored without paying for the whole ensemble. Returns
+    ``{"subset", "n_scored", "psnr_stretched"}``.
+    """
+    from euclid_polish.eval.subsets import eval_subset
+    from euclid_polish.image.tfio import tfrecord_path
+
+    sub = subset or eval_subset(records_dir)
+    m = Model(mdir, scale=scale, num_res_blocks=num_res_blocks)
+    lr = list(ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
+                            num_images=num_images))
+    hr_by = {h.index: h for h in
+             ImageSet.read(tfrecord_path(records_dir, f"hr_{sub}"),
+                           num_images=num_images)}
+    knee = float(Config.STRETCH_SCALE_E)
+    peak_str = float(Config.PSNR_PEAK_STRETCHED)
+    vals: list[float] = []
+    for i, l in enumerate(lr):
+        hr = hr_by.get(l.index)
+        if hr is None:
+            continue
+        sr = m.upsample_array(np.asarray(l.data, np.float32))
+        vals.append(_psnr(np.arcsinh(sr / knee),
+                          np.arcsinh(np.asarray(hr.data, np.float32) / knee),
+                          peak_str))
+        if on_progress is not None:
+            on_progress(i + 1, len(lr), f"field {l.index}")
+    return {"subset": sub, "n_scored": len(vals),
+            "psnr_stretched": (float(np.mean(vals)) if vals else float("nan"))}
