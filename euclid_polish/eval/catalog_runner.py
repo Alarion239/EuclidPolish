@@ -257,12 +257,20 @@ def write_manifest_upsert(
     manifest_path: str,
     rows: list[dict[str, Any]],
     fieldnames=MANIFEST_COLS,
+    drop_ids: set[str] | None = None,
 ) -> None:
-    """Write ``rows`` into a shared manifest, preserving unrelated objects."""
+    """Write ``rows`` into a shared manifest, preserving unrelated objects.
+
+    ``drop_ids`` removes those existing rows instead of preserving them —
+    used to retire objects superseded by a regeneration (a plain upsert keys
+    by id, so rows whose ids never recur would otherwise live forever).
+    """
     existing: list[dict[str, Any]] = []
     if os.path.isfile(manifest_path):
         with open(manifest_path, newline="") as f:
             existing = list(csv.DictReader(f))
+    if drop_ids:
+        existing = [r for r in existing if str(r.get("id", "")) not in drop_ids]
 
     order: list[str] = []
     by_id: dict[str, dict[str, Any]] = {}

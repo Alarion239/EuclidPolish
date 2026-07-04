@@ -138,6 +138,90 @@ class TestRunCatalogEval:
         rows = read_eval_catalog(str(manifest))
         assert [r["id"] for r in rows] == ["old", "new"]
 
+    def test_manifest_upsert_drop_ids_retires_rows(self, tmp_path):
+        from euclid_polish.eval import catalog_runner
+
+        manifest = tmp_path / "manifest.csv"
+        catalog_runner.write_manifest_upsert(str(manifest), [
+            {"id": "keep", "ra": 1.0, "dec": 2.0, "grade": "A", "ok": True,
+             "error": "", "out_subdir": "keep", "lr_total_e": 1,
+             "sr_total_e": 2, "flux_ratio_sr_over_lr": 2},
+            {"id": "stale", "ra": 3.0, "dec": 4.0, "grade": "syn-lens",
+             "ok": True, "error": "", "out_subdir": "stale", "lr_total_e": 2,
+             "sr_total_e": 2, "flux_ratio_sr_over_lr": 1},
+        ], catalog_runner.MANIFEST_COLS)
+        catalog_runner.write_manifest_upsert(str(manifest), [
+            {"id": "fresh", "ra": 5.0, "dec": 6.0, "grade": "syn-lens",
+             "ok": True, "error": "", "out_subdir": "fresh", "lr_total_e": 1,
+             "sr_total_e": 1, "flux_ratio_sr_over_lr": 1},
+        ], catalog_runner.MANIFEST_COLS, drop_ids={"stale"})
+
+        rows = read_eval_catalog(str(manifest))
+        assert [r["id"] for r in rows] == ["keep", "fresh"]
+
+
+class TestRetireStaleSynthetic:
+    """A synthetic regen must retire the previous generation's rows + dirs —
+    stamp ids encode the sampling plan, so a plan/naming change strands the
+    old ids in the id-keyed upsert forever (cube-less objects that can never
+    show the disagreement movie)."""
+
+    def _seed_manifest(self, tmp_path):
+        from euclid_polish.eval import catalog_runner
+
+        manifest = tmp_path / "manifest.csv"
+        rows = [
+            {"id": "real_a", "grade": "A", "ok": True, "out_subdir": "real_a"},
+            {"id": "syn-lens_0016", "grade": "syn-lens", "ok": True,
+             "out_subdir": "syn-lens_0016"},
+            {"id": "syn-gal_0034", "grade": "syn-gal", "ok": True,
+             "out_subdir": "syn-gal_0034"},
+        ]
+        catalog_runner.write_manifest_upsert(
+            str(manifest), rows, catalog_runner.MANIFEST_COLS)
+        for r in rows:
+            (tmp_path / r["out_subdir"]).mkdir()
+        return manifest
+
+    def test_supersedes_old_generation(self, tmp_path):
+        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
+
+        manifest = self._seed_manifest(tmp_path)
+        new_rows = [
+            {"id": "syn-lens_0001_0", "grade": "syn-lens", "ok": True},
+            {"id": "syn-gal_0002_0", "grade": "syn-gal", "ok": True},
+        ]
+        stale = retire_stale_synthetic(
+            str(tmp_path), str(manifest), new_rows, lambda m: None)
+        assert stale == {"syn-lens_0016", "syn-gal_0034"}
+        assert not (tmp_path / "syn-lens_0016").exists()
+        assert not (tmp_path / "syn-gal_0034").exists()
+        assert (tmp_path / "real_a").exists()       # non-syn grades untouched
+
+    def test_failed_grade_keeps_previous_stamps(self, tmp_path):
+        """No ok rows for a grade (e.g. source catalog missing) → its previous
+        stamps survive rather than emptying the group."""
+        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
+
+        manifest = self._seed_manifest(tmp_path)
+        new_rows = [
+            {"id": "syn-lens_0001_0", "grade": "syn-lens", "ok": True},
+            {"id": "syn-gal_0002_0", "grade": "syn-gal", "ok": False,
+             "error": "boom"},
+        ]
+        stale = retire_stale_synthetic(
+            str(tmp_path), str(manifest), new_rows, lambda m: None)
+        assert stale == {"syn-lens_0016"}
+        assert (tmp_path / "syn-gal_0034").exists()
+
+    def test_empty_run_is_a_noop(self, tmp_path):
+        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
+
+        manifest = self._seed_manifest(tmp_path)
+        assert retire_stale_synthetic(
+            str(tmp_path), str(manifest), [], lambda m: None) == set()
+        assert (tmp_path / "syn-lens_0016").exists()
+
 
 # --------------------------------------------------------------------------- #
 # Shared per-object helper (no network, no TF weights)

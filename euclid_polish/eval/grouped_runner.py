@@ -8,6 +8,7 @@ Shares the SR model load across all groups and runs locally, in-process.
 
 from __future__ import annotations
 
+import csv
 import os
 import shutil
 from collections.abc import Callable
@@ -40,6 +41,45 @@ CLASS_MULT = len(LENS_GRADES)
 #: of extra VIS px so the stamp always lands ≥ EVAL_LR_SIZE; it is center-cropped
 #: back to the canonical geometry afterwards, so the pad never reaches the output.
 DOWNLOAD_PAD = 2
+
+
+def retire_stale_synthetic(out_dir: str, manifest_path: str,
+                           new_rows: list[dict[str, Any]],
+                           log: Callable[[str], None]) -> set[str]:
+    """Ids of manifest synthetic rows superseded by this regen (+ delete dirs).
+
+    Stamp ids encode the sampling plan (field, source rank), so a regeneration
+    that changes the plan or the naming scheme produces fresh ids and the plain
+    id-keyed upsert would keep the previous generation's rows forever — e.g.
+    the pre-source-centered ``syn-lens_0016`` stamps, which predate the
+    disagreement cubes and so can never show the movie. A grade's old rows are
+    retired only when the new run produced at least one ok row for that grade,
+    so a failed/empty regen keeps the previous stamps instead of emptying the
+    group.
+    """
+    if not os.path.isfile(manifest_path):
+        return set()
+    new_by_grade: dict[str, set[str]] = {}
+    for r in new_rows:
+        if r.get("ok"):
+            new_by_grade.setdefault(str(r.get("grade", "")), set()).add(
+                str(r.get("id", "")))
+    if not new_by_grade:
+        return set()
+    with open(manifest_path, newline="") as f:
+        existing = list(csv.DictReader(f))
+    stale: set[str] = set()
+    new_ids = {i for ids in new_by_grade.values() for i in ids}
+    for r in existing:
+        rid = str(r.get("id", ""))
+        if r.get("grade") in new_by_grade and rid and rid not in new_ids:
+            stale.add(rid)
+            sub = r.get("out_subdir") or rid
+            shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
+    if stale:
+        log(f"retired {len(stale)} superseded synthetic stamp(s) "
+            "from a previous run")
+    return stale
 
 
 def _galaxy_plan(log: Callable[[str], None],
@@ -217,6 +257,8 @@ def run_grouped_analysis(
             done[0] += 1
             _tick(f"{g}: {obj['id']}")
 
+    manifest_path = os.path.join(out_dir, "manifest.csv")
+    stale_syn: set[str] = set()
     if include_synthetic:
         _emit("synthetic subgroups (syn-lens / syn-gal)…")
         base = n_lens
@@ -229,12 +271,14 @@ def run_grouped_analysis(
                 if on_progress else None,
                 log=_emit)
             all_rows.extend(syn["rows"])
+            stale_syn = retire_stale_synthetic(
+                out_dir, manifest_path, syn["rows"], _emit)
         except Exception as e:  # noqa: BLE001 — synthetic must not kill A/B/C
             _emit(f"synthetic subgroups skipped: {type(e).__name__}: {e}")
         done[0] = total
 
-    manifest_path = os.path.join(out_dir, "manifest.csv")
-    catalog_runner.write_manifest_upsert(manifest_path, all_rows, GROUPED_COLS)
+    catalog_runner.write_manifest_upsert(manifest_path, all_rows, GROUPED_COLS,
+                                         drop_ids=stale_syn)
 
     if on_progress:
         on_progress(total, total, "done")
