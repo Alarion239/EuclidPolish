@@ -15,8 +15,8 @@ It aggregates by VIS magnitude so you can read off the **empirical saturation
 ceiling** per band (the value to clip synthetic saturation to) and whether MER
 **masks** saturated cores (NaN). Reports only — changes nothing.
 
-Imports ONLY ``euclid_polish.config`` (no astroquery / network), so it runs on an
-offline compute node. Run on FASRC where the cutouts live:
+Imports ONLY ``euclid_polish.config`` + ``euclid_polish.photometry`` (both
+astroquery-free), so it runs on an offline compute node. Run on FASRC where the cutouts live:
 
     python scripts/measure_star_saturation.py --n 600 --size 255
     python scripts/measure_star_saturation.py --output-dir $DATA_DIR/euclid_stars
@@ -39,6 +39,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config  # config-only: no astroquery
+from euclid_polish.photometry import (  # config+numpy only: no astroquery
+    ab_mag_to_electrons,
+    adu_per_s_to_electrons_factor,
+)
 
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
 
@@ -47,17 +51,12 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _adu_to_e_factor(magzero: float, band) -> float:
-    """Archive ADU/s → electrons-over-stack (inlined photometry, no imports)."""
-    return 10.0 ** ((band.sim_zeropoint_e - float(magzero)) / 2.5)
-
-
 def load_cutout_electrons(path: str, band) -> tuple[np.ndarray, float]:
     """Read a star cutout → electrons-over-stack (via the header MAGZERO)."""
     with fits.open(path, memmap=False) as hdul:
         arr = np.asarray(hdul[0].data, dtype=np.float64)
         magzero = float(hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
-    return arr * _adu_to_e_factor(magzero, band), magzero
+    return arr * adu_per_s_to_electrons_factor(magzero, band), magzero
 
 
 def measure_core_saturation(img_e: np.ndarray, *, window_px: int = 51,
@@ -214,8 +213,7 @@ def model_clip_e(band) -> float:
     f_peak = math.erf(pix / (2.0 * math.sqrt(2.0) * sigma)) ** 2
     calib = Config.STAR_SATURATION_CALIB_MAG[band.name]
     offset = Config.STAR_BAND_OFFSETS_MAG.get(band.name, 0.0)
-    e_total = 10.0 ** (-0.4 * (calib + offset - band.sim_zeropoint_e))
-    return e_total * f_peak
+    return ab_mag_to_electrons(calib + offset, band) * f_peak
 
 
 _MAG_BINS = [(-99, 13), (13, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 99)]

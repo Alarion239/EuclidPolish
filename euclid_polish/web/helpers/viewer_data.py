@@ -74,6 +74,11 @@ def color_constants() -> dict[str, Any]:
         bands[name] = {
             "t_total_s": float(b.t_total_s),
             "zeropoint_ab": float(b.zeropoint_ab_e_per_s),
+            # Stack zeropoint (AB mag of 1 e⁻ over the full integration) —
+            # precomputed server-side so the JS magnitude readout consumes the
+            # SAME BandConfig.sim_zeropoint_e anchor as all Python photometry
+            # instead of re-deriving it from zeropoint_ab + t_total.
+            "zeropoint_ab_e_total": float(b.sim_zeropoint_e),
             "solar_ab_mag": float(Config.Color.SOLAR_AB_MAG[name]),
             "pivot_um": float(Config.Color.PIVOT_WAVELENGTH_UM[name]),
             "asinh_scale_e": float(b.asinh_stretch_scale_e),

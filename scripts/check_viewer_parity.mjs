@@ -28,6 +28,7 @@ const PYBIN = process.env.PYBIN || "python3";
 const consts = JSON.parse(execSync(
   `${PYBIN} -c "import json;from euclid_polish.config import Config as C;` +
   `print(json.dumps({n:{'t_total_s':b.t_total_s,'zeropoint_ab':b.zeropoint_ab_e_per_s,` +
+  `'zeropoint_ab_e_total':b.sim_zeropoint_e,` +
   `'solar_ab_mag':C.Color.SOLAR_AB_MAG[n],'pivot_um':C.Color.PIVOT_WAVELENGTH_UM[n]} ` +
   `for n,b in ((x.name,x) for x in C.BANDS)}))"`,
   { encoding: "utf8" }));

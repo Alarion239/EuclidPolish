@@ -25,7 +25,7 @@ To place a galaxy into a synthetic field we run three steps (in this order):
    effective galaxy set by continuous orientation. Below the threshold an exact
    ``np.rot90`` quarter-turn is used after the rebin (lossless, artefact-free).
 3. **Convert to electrons** over the Euclid stack via
-   :func:`~euclid_polish.catalog.photometry.mjy_per_sr_to_electrons`, using the
+   :func:`~euclid_polish.photometry.mjy_per_sr_to_electrons`, using the
    assigned HR pixel scale to turn MJy/sr into electrons-per-pixel. The result
    is a clean, pre-PSF source ready to drop onto the HR sky; the existing
    forward model supplies the Euclid PSF, noise, and LR rebin.
@@ -42,7 +42,8 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import rotate as _ndi_rotate
 
-from euclid_polish.catalog.photometry import (
+from euclid_polish.photometry import (
+    ab_mag_to_electrons,
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
@@ -430,8 +431,9 @@ def truncate_below_sb(
     pix2 = pixel_scale_arcsec ** 2
     keep = np.zeros(stamp.shape[:2], dtype=bool)
     for k, name in enumerate(Config.LR_INPUT_BAND_NAMES):
-        zp = Config.get_band(name).sim_zeropoint_e
-        thr = 10.0 ** (-0.4 * (sb_cut_mag_arcsec2 - zp)) * pix2  # e⁻/pixel
+        # SB cut (mag/arcsec²) → e⁻/arcsec² → e⁻/pixel via the pixel area.
+        thr = ab_mag_to_electrons(sb_cut_mag_arcsec2,
+                                  Config.get_band(name)) * pix2
         ch = stamp[..., k]
         ch[ch < thr] = 0.0
         keep |= ch > 0.0
@@ -594,7 +596,7 @@ def predict_visible_radius_arcsec(
     compact = compactness_factor(z)
     fac = mjy_per_sr_to_electrons_factor(band, pixel_scale_arcsec)
     sb_e = profile * fac * factors[0] * compact ** 2      # e⁻/HR-pixel
-    thr = (10.0 ** (-0.4 * (sb_cut_mag_arcsec2 - band.sim_zeropoint_e))
+    thr = (ab_mag_to_electrons(sb_cut_mag_arcsec2, band)
            * pixel_scale_arcsec ** 2)
     above = np.nonzero(sb_e >= thr)[0]
     if above.size == 0:

@@ -21,7 +21,6 @@ pipeline does not run without it.
 
 from __future__ import annotations
 
-import math
 import os
 import tempfile
 from abc import ABC, abstractmethod
@@ -33,7 +32,8 @@ from astropy.cosmology import Planck15 as _COSMO
 from astropy.io import fits
 from scipy.special import gammainc, gammaincinv
 
-from euclid_polish.config import BandConfig, Config
+from euclid_polish.config import Config
+from euclid_polish.photometry import ab_mag_to_electrons, electrons_to_ab_mag
 
 #: Radians subtended by 1 arcsec — for the arcsec → proper-kpc conversion.
 _RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0
@@ -227,19 +227,6 @@ class CosmosCatalog(ABC):
         return med.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Photometric helpers
-# ---------------------------------------------------------------------------
-
-def _mag_to_electrons_per_stack(mag_ab: np.ndarray, band: BandConfig) -> np.ndarray:
-    """Convert AB magnitude → total electrons over the band's stack integration.
-
-    ``mag = ZP_E - 2.5 log10(electrons_total)`` with ``ZP_E`` = the band's
-    stack zeropoint.
-    """
-    return 10.0 ** (-0.4 * (mag_ab - band.sim_zeropoint_e))
-
-
 def circularized_effective_radius_arcsec(
     bulge_re: np.ndarray, bulge_q: np.ndarray, bulge_flux: np.ndarray,
     disk_re: np.ndarray, disk_q: np.ndarray, disk_flux: np.ndarray,
@@ -400,15 +387,14 @@ class Cosmos2025Catalog(CosmosCatalog):
         # Need finite per-component VIS mags to compute the total mag safely.
         finite_vis = np.isfinite(mag_bulge[:, vis_idx]) & np.isfinite(mag_disk[:, vis_idx])
         with np.errstate(invalid="ignore"):
-            flux_bulge_vis = _mag_to_electrons_per_stack(mag_bulge[:, vis_idx], vis_band)
-            flux_disk_vis  = _mag_to_electrons_per_stack(mag_disk[:,  vis_idx], vis_band)
+            flux_bulge_vis = ab_mag_to_electrons(mag_bulge[:, vis_idx], vis_band)
+            flux_disk_vis  = ab_mag_to_electrons(mag_disk[:,  vis_idx], vis_band)
             total_flux_vis = np.where(finite_vis,
                                       np.nan_to_num(flux_bulge_vis, nan=0.0)
                                       + np.nan_to_num(flux_disk_vis, nan=0.0),
                                       0.0)
-            mag_total_vis = (vis_band.zeropoint_ab_e_per_s
-                             + 2.5 * math.log10(vis_band.exposure_time_s * vis_band.n_exposures)
-                             - 2.5 * np.log10(np.maximum(total_flux_vis, 1e-30)))
+            mag_total_vis = electrons_to_ab_mag(
+                np.maximum(total_flux_vis, 1e-30), vis_band)
         bright_enough = finite_vis & (mag_total_vis < self.max_mag)
         is_galaxy = (obj_type == 0) & np.isfinite(z_phot) & (z_phot > 0.0)
         clean = (flag_star == 0) & (flag_blend == 0) & (warn_flag == 0)
@@ -434,8 +420,8 @@ class Cosmos2025Catalog(CosmosCatalog):
         self.disk_flux_e  = np.empty_like(mag_disk[mask])
         for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
-            self.bulge_flux_e[:, k] = _mag_to_electrons_per_stack(mag_bulge[mask][:, k], band)
-            self.disk_flux_e[:,  k] = _mag_to_electrons_per_stack(mag_disk[mask][:,  k], band)
+            self.bulge_flux_e[:, k] = ab_mag_to_electrons(mag_bulge[mask][:, k], band)
+            self.disk_flux_e[:,  k] = ab_mag_to_electrons(mag_disk[mask][:,  k], band)
 
         if verbose:
             n_total = int(mask.size)

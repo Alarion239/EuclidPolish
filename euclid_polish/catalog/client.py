@@ -38,7 +38,11 @@ from euclid_polish.catalog.downloader import (
     resolve_mosaics,
     scan_cutouts,
 )
-from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor, uJy_to_ab_mag
+from euclid_polish.photometry import (
+    ab_mag_to_uJy,
+    adu_per_s_to_electrons_factor,
+    uJy_to_ab_mag,
+)
 from euclid_polish.catalog.validator import FitsValidator
 from euclid_polish.config import Config
 from euclid_polish.image import FitsWCS, Image, Role
@@ -151,10 +155,11 @@ class EuclidCatalog:
 
         where = ["flux_vis_psf IS NOT NULL", "flux_vis_psf > 0",
                  "fluxerr_vis_psf IS NOT NULL", "fluxerr_vis_psf > 0"]
+        # MER flux columns are µJy — magnitude limits become flux bounds.
         if magnitude_limit is not None:
-            where.append(f"flux_vis_psf > {10 ** ((Config.AB_ZP_UJY - magnitude_limit) / 2.5)}")
+            where.append(f"flux_vis_psf > {ab_mag_to_uJy(magnitude_limit)}")
         if magnitude_min is not None:
-            where.append(f"flux_vis_psf < {10 ** ((Config.AB_ZP_UJY - magnitude_min) / 2.5)}")
+            where.append(f"flux_vis_psf < {ab_mag_to_uJy(magnitude_min)}")
         if snr_min is not None and snr_min > 0:
             where.append(f"flux_vis_psf > {float(snr_min)} * fluxerr_vis_psf")
         if require_unmasked:

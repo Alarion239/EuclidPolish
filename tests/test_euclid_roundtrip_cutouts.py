@@ -217,7 +217,7 @@ class TestLoadFourBandCube:
         different brightness than synthetic LR after asinh stretch, skewing
         the round-trip vs supervised loss balance.
         """
-        from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
+        from euclid_polish.photometry import adu_per_s_to_electrons_factor
         from euclid_polish.config import Config
 
         _layout_one_position(tmp_path, pid=7, side=64)   # MAGZERO=24.6 per band

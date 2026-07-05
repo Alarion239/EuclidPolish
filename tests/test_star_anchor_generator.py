@@ -11,7 +11,7 @@ import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from euclid_polish.catalog.photometry import ab_mag_to_electrons
+from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.config import Config
 
 gen = importlib.import_module("scripts.fasrc_generate_star_anchor_tfrecords")
@@ -125,7 +125,7 @@ def test_anchor_flux_matches_catalog_magnitude():
 
 
 def test_anchor_flux_e_prefers_psf_flux():
-    from euclid_polish.catalog.photometry import uJy_to_electrons
+    from euclid_polish.photometry import uJy_to_electrons
     # Both present + a deliberately inconsistent magnitude → the raw PSF flux wins.
     row = {"flux_psf_uJy": "12.5", "fluxerr_psf_uJy": "0.1", "magnitude": "99"}
     assert gen.anchor_flux_e(row) == pytest.approx(

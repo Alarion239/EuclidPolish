@@ -22,9 +22,13 @@
 const EYE_T_MIN = 1667.0;
 const EYE_T_MAX = 25000.0;
 
-/** AB-flux normalisation: e⁻-over-stack → proportional AB flux density. */
+/** AB-flux normalisation: e⁻-over-stack → proportional AB flux density.
+ *  1 / (electrons of an AB=0 source over the stack), anchored on the served
+ *  zeropoint_ab_e_total (= BandConfig.sim_zeropoint_e) — the same single
+ *  anchor as euclid_polish/photometry.py; equals the historical
+ *  1/(t_total · 10^(0.4·zp_rate)). */
 function abFluxNorm(band) {
-  return 1.0 / (band.t_total_s * Math.pow(10, 0.4 * band.zeropoint_ab));
+  return 1.0 / Math.pow(10, 0.4 * band.zeropoint_ab_e_total);
 }
 /** Solar-balance factor (whitens a G2V SED on top of abFluxNorm). */
 function solarBalance(band) {
@@ -346,8 +350,11 @@ export function mountCutoutViewer(root, opts = {}) {
 
   /** Integrated flux of the cube in the shown band (colour composites fall
    *  back to band 0) and its approximate AB magnitude,
-   *  mag = ZP − 2.5·log₁₀(Σe⁻ / t_total). Sums cached per cube+band; the
-   *  morph tier (data mutates every animation tick) is excluded. */
+   *  mag = zeropoint_ab_e_total − 2.5·log₁₀(Σe⁻), where the stack zeropoint
+   *  is served precomputed (BandConfig.sim_zeropoint_e — the same anchor as
+   *  euclid_polish/photometry.py; never re-derive it here). Sums cached per
+   *  cube+band; the morph tier (data mutates every animation tick) is
+   *  excluded. */
   function magInfo(rec) {
     const bands = state.meta && state.meta.color && state.meta.color.bands;
     if (!bands || rec.noCache || !rec.data) return null;
@@ -365,8 +372,8 @@ export function mountCutoutViewer(root, opts = {}) {
     const tot = rec._sums[idx];
     const name = names[Math.min(idx, names.length - 1)] || "VIS";
     const b = bands[name];
-    const mag = (b && tot > 0 && b.t_total_s > 0)
-      ? b.zeropoint_ab - 2.5 * Math.log10(tot / b.t_total_s) : null;
+    const mag = (b && tot > 0 && b.zeropoint_ab_e_total)
+      ? b.zeropoint_ab_e_total - 2.5 * Math.log10(tot) : null;
     return { name, tot, mag };
   }
 

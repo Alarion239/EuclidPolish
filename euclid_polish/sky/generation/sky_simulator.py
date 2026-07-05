@@ -32,6 +32,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image, Role
+from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.sky.generation.cosmos2025 import (
@@ -162,8 +163,7 @@ def _deposit_star(
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
         mag_k = mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
-        flux_k = 10.0 ** (-0.4 * (mag_k - band.sim_zeropoint_e))
-        canvas_4ch[iy, ix, k] += np.float32(flux_k)
+        canvas_4ch[iy, ix, k] += np.float32(ab_mag_to_electrons(mag_k, band))
 
 
 # ---------------------------------------------------------------------------

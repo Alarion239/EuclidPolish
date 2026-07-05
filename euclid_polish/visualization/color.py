@@ -35,6 +35,7 @@ from __future__ import annotations
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.photometry import ab_mag_to_electrons
 
 # Calibration constants (solar AB mags + default RGB band picks) now live
 # in Config.Color — see Config.Color.SOLAR_AB_MAG / Config.Color.RGB_SCHEMES.
@@ -47,12 +48,14 @@ from euclid_polish.config import Config
 def _ab_flux_norm(band_name: str) -> float:
     """Multiplier that takes e⁻-over-stack → proportional AB flux density.
 
-    Specifically: ``norm = 1 / (t_total_s · 10^(0.4 · zp_AB))``. Pixel
-    values multiplied by this constant are in units where an AB-flat
-    source has the same value in every band.
+    ``norm = 1 / ab_mag_to_electrons(0, band)`` — one over the electrons an
+    AB = 0 source deposits over the band's stack, so pixel values multiplied
+    by this constant are the flux relative to an AB-0 source and an AB-flat
+    SED has the same value in every band. (Algebraically identical to the
+    historical ``1 / (t_total_s · 10^(0.4·zp_rate))`` — same anchor, now
+    routed through the canonical conversion.)
     """
-    band = Config.get_band(band_name)
-    return 1.0 / (band.t_total_s * 10 ** (0.4 * band.zeropoint_ab_e_per_s))
+    return 1.0 / ab_mag_to_electrons(0.0, Config.get_band(band_name))
 
 
 def _solar_balance(band_name: str) -> float:

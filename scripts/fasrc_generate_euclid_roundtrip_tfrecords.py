@@ -38,7 +38,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import open_writer
@@ -141,7 +141,7 @@ def _load_4band_cube(
     archive **e⁻/s** calibrated to each header's ``MAGZERO`` (≈24.6 for
     VIS). To land on the synthetic/HST/star-anchor **total-electron**
     scale we apply the band's zeropoint factor
-    ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (≈5130 for VIS) — the
+    ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (VIS: ≈7.6e3 at MAGZERO 24.6) — the
     exact conversion ``verify_star_photometry.py`` validates against
     catalogue fluxes (measured/catalog ratio ≈ 1) and the same factor
     the direct-cutout reconstruct uses. This replaces the earlier

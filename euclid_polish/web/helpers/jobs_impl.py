@@ -19,7 +19,7 @@ from astropy.io import fits as _fits
 from scipy import signal as scipy_signal
 
 from euclid_polish.catalog.downloader import fetch_cutout_at
-from euclid_polish.catalog.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
