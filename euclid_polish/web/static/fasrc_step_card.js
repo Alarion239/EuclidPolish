@@ -405,9 +405,9 @@ large cutout don't leak across train/validate."></label>`;
                title="Train on the LIVE forward model instead of the baked dirty records: every visit of a clean field re-draws the PSF (from the member's bagged pre-rotated pool — build it on the Euclid PSFs page), noise and artifacts on the FULL field, then cuts K crops. Out-of-crop bright stars contaminate the crops exactly as in a real exposure. Needs clean_train records; validation still uses the records.">
           <input type="checkbox" name="forward_onthefly" value="1">
           Forward on-the-fly (live PSF + noise per visit)</label>
-        <label title="On-the-fly only: crops cut per forward-modelled field. One ~350 ms full-field forward is amortised over this many examples — a batch of 16 with K=4 costs 4 field forwards. Raise it if the input pipeline starves the GPU.">
+        <label title="On-the-fly only: crops cut per forward-modelled field. One ~350 ms full-field forward is amortised over this many examples — the default 16 makes one batch of 16 cost ONE forward. A 510² field holds 25 non-overlapping 96² crops, so up to ~25 barely re-samples pixels; raise toward that if the input pipeline still starves the GPU.">
           Crops / field
-          <input type="number" name="crops_per_field" value="4" min="1" max="32"></label>
+          <input type="number" name="crops_per_field" value="16" min="1" max="64"></label>
         <label title="PSF bagging (on-the-fly only): each member draws its kernels from this many source clusters of the pre-rotated pool, subset keyed by ITS seed — so members with different seeds train against different instrument-response sub-populations. Blank = 64.">
           PSF subset
           <input type="number" name="psf_subset" value="" placeholder="64"

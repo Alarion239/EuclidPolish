@@ -119,7 +119,7 @@ class MemberTrainSpec:
     bootstrap: float | None = None
     forward_onthefly: bool = False
     psf_subset: int | None = None
-    crops_per_field: int = 4
+    crops_per_field: int = 16
 
 
 def pca_field(members: np.ndarray, n_components: int = 3

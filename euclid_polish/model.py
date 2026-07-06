@@ -40,6 +40,7 @@ from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
 from euclid_polish.training.forward_onthefly import (
+    DEFAULT_CROPS_PER_FIELD,
     OnTheFlyForward,
     member_psf_sets,
 )
@@ -303,11 +304,12 @@ class Model:
 
         # Field-level shuffle is small (each element is a full 510² field);
         # the crop-level shuffle after unbatch de-correlates the K siblings
-        # of one field so a batch isn't K consecutive same-exposure crops.
+        # of one field so a batch isn't K consecutive same-exposure crops —
+        # sized to hold ≥16 fields' worth of crops whatever K is.
         return (ds.shuffle(32)
                   .map(_fwd, num_parallel_calls=AUTOTUNE)
                   .unbatch()
-                  .shuffle(max(256, 4 * batch_size))
+                  .shuffle(max(256, 4 * batch_size, 16 * k))
                   .map(_augment_then_stretch, num_parallel_calls=AUTOTUNE)
                   .repeat()
                   .batch(batch_size)
@@ -338,7 +340,7 @@ class Model:
         bootstrap: float | None = None,
         forward_onthefly: bool = False,
         psf_subset: int | None = None,
-        crops_per_field: int = 4,
+        crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.

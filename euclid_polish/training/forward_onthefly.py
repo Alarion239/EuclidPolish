@@ -15,9 +15,13 @@ Design points (why full-field, why multiple crops):
   crop-local convolution. Full-field pays the wings exactly.
 * One full-field forward (~350 ms CPU) is amortised over K crops, so the
   per-example cost is ``full/K`` and a batch of B needs only ``B/K`` field
-  forwards. Crops from one field share that visit's PSF draw + noise
-  realization (they are one exposure — physically consistent), while every
-  EPOCH re-draws both.
+  forwards. A 510² field fits a 5×5 grid of non-overlapping 96² crops, so
+  K up to ~25 reuses the forward without materially re-sampling the same
+  pixels; the default K=16 makes one batch of 16 cost ONE field forward.
+  Crops from one field share that visit's PSF draw + noise realization
+  (they are one exposure — physically consistent), while every EPOCH
+  re-draws both; the pipeline's crop-level shuffle spreads the siblings
+  across batches.
 
 PSFs come from :func:`member_psf_sets`: the member's seeded random subset of
 the pre-rotated kernel pools (PSF bagging — each ensemble member trains
@@ -49,6 +53,11 @@ from euclid_polish.sky.observation.observation_simulator import (
 #: pool is available. Bounded so a member never loads the whole multi-GB
 #: pool; ~64 clusters × (rolls+1) kernels is plenty of diversity.
 DEFAULT_PSF_SUBSET = 64
+
+#: Default crops per forward-modelled field: one batch of 16 costs one
+#: ~350 ms field forward. A 510² field holds 25 non-overlapping 96² crops,
+#: so 16 random crops barely re-sample pixels.
+DEFAULT_CROPS_PER_FIELD = 16
 
 
 def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,
@@ -92,7 +101,7 @@ class OnTheFlyForward:
         psf_sets: dict[str, PSFSet],
         *,
         seed: int | None = None,
-        crops_per_field: int = 4,
+        crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
         hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE,
         scale: int = Config.DEFAULT_REBIN_FACTOR,
         add_noise: bool = True,

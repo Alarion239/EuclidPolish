@@ -119,10 +119,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(subset keyed by the member's seed; different "
                         "members → different instrument-response bags). "
                         "0 = default (64). Only with --forward-onthefly.")
-    p.add_argument("--crops-per-field", type=int, default=4,
+    p.add_argument("--crops-per-field", type=int, default=16,
                    help="On-the-fly mode: crops cut per forward-modelled "
                         "field — one field forward is amortised over this "
-                        "many examples (a batch of B costs B/K forwards).")
+                        "many examples (a batch of B costs B/K forwards; "
+                        "the default 16 makes one batch = one forward). A "
+                        "510² field holds 25 non-overlapping 96² crops, so "
+                        "up to ~25 barely re-samples pixels.")
     p.add_argument("--member-spec", default="",
                    help='Per-member override JSON, applied positionally: '
                         '\'[{"loss":"l2","noise_aug":1.0,"bootstrap":0.7,'
@@ -252,7 +255,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
                                               args.forward_onthefly)),
             "psf_subset": subset if subset > 0 else None,
             "crops_per_field": int(over.get("crops_per_field",
-                                            args.crops_per_field) or 4)}
+                                            args.crops_per_field) or 16)}
 
 
 def build_specs(args, base: str) -> list[MemberTrainSpec]:
