@@ -36,63 +36,73 @@
      shown. Populated once members are pulled from FASRC.</p>
 </section>
 
-{% if eval_summary %}
-{% set es = eval_summary %}
-{% set have_labels = es.per_member_labels and es.per_member_labels|length == es.per_member_psnr|length %}
-<section class="card">
-  <h3>Latest test-set evaluation
-    {% if es.subset %}<span class="muted">({{ es.subset }},
-      {{ es.n_scored }} fields)</span>{% endif %}
-    {% if eval_summary_stale %}<span class="tag" style="background:#a65;color:#fff;"
-      title="A member was archived or added since this eval ran — these numbers describe a different ensemble. Re-run Evaluate.">stale: membership changed</span>{% endif %}</h3>
-  <table class="data-table">
-    <thead><tr><th>Model</th><th>PSNR (dB)</th>
-      <th title="Signed gap to the ensemble mean; positive ⇒ this model alone beats the average.">Δ vs ensemble</th></tr></thead>
-    <tbody>
-      <tr style="background:rgba(120,160,255,0.12);font-weight:600;">
-        <td>Ensemble mean</td>
-        <td>{{ "%.3f"|format(es.ensemble_psnr) }}</td>
-        <td>—</td></tr>
-      {% for p in es.per_member_psnr %}
-      <tr><td><code>{{ es.per_member_labels[loop.index0] if have_labels else "member %02d"|format(loop.index0) }}</code></td>
-          <td>{{ "%.3f"|format(p) }}</td>
-          <td>{{ "%+.3f"|format(p - es.ensemble_psnr) }}</td></tr>
-      {% endfor %}
-      <tr style="font-style:italic;color:var(--muted);">
-        <td>Mean of members</td>
-        <td>{{ "%.3f"|format(es.mean_member_psnr) }}</td>
-        <td>{{ "%+.3f"|format(es.mean_member_psnr - es.ensemble_psnr) }}</td></tr>
-    </tbody>
-  </table>
-  <p class="hint">Ensemble gain vs best member
-     <b>{{ "%+.3f"|format(es.ensemble_gain_db) }} dB</b> ⇒ averaging
-     {{ "helps" if es.ensemble_gain_db >= 0 else "hurts" }}. Disagreement: member
-     std <b>{{ "%.4g"|format(es.disagreement.mean_std_e) }} e⁻</b> · mean relative
-     <b>{{ "%.3f"|format(es.disagreement.mean_rel_disagreement) }}</b> ·
-     <b>{{ "%.1f"|format(es.disagreement.frac_flux_hallucinated * 100) }}%</b> of
-     SR flux hallucinated. High disagreement / hallucinated-flux ⇒ the SR is
-     inventing detail the LR doesn't constrain.</p>
-</section>
-{% endif %}
-
-{% if power_spectrum_png %}
-<section class="card">
-  <h3>Angular power spectrum <span class="muted">— ensemble mean vs HR (VIS)</span>
-    <button type="button" id="ens-ps-regen" class="mini-btn"
-            title="Recompute from the cached per-field cubes (no re-run / inference), applying the latest asinh + per-field-median fix."
+{% if evaluations_available %}
+<section class="card" id="ens-evals-card">
+  <h3>Evaluations <span class="muted">— from the cached cubes of the last
+      “Evaluate on test set” run (VIS)</span>
+    <button type="button" id="ens-eval-plot-regen" class="mini-btn"
+            title="Re-render the active figure from the cached per-field cubes (no re-run / inference) — seconds."
             style="float:right;">↻ Regenerate</button></h3>
-  <a id="ens-ps-link" href="{{ url_for('ensemble_power_spectrum') }}" target="_blank">
-    <img id="ens-ps-img" loading="lazy" style="max-width:100%;height:auto;"
-         src="{{ url_for('ensemble_power_spectrum') }}"
-         alt="ensemble power spectrum"></a>
-  <p class="hint"><b>Left:</b> power P(k) — HR vs ensemble-mean SR vs member
-     disagreement, per spatial scale. <b>Right:</b> coherence — <b>ρ(k)</b> is the
-     inter-model agreement (the members' power-spectrum correlation; needs <i>no
-     HR</i>, so it works on real Euclid images too), and <b>r(k)</b> is the
-     truth-based corr(mean SR, HR). Where the two track, ρ is a validated stand-in
-     for “did we recover real structure?” when there's no ground truth. ρ→1 =
-     agree/real, ρ→0 = invented; <b>ρ=½</b> marks the effective resolution.
-     <i>Regenerate</i> re-renders from cached cubes — seconds, no inference.</p>
+  <div id="ens-eval-tabs" class="toolbar" style="flex-wrap:wrap;gap:6px;">
+    <a class="chip active" data-eval-tab="power-spectrum">Power spectrum</a>
+    <a class="chip" data-eval-tab="std-error">Std vs error</a>
+    <a class="chip" data-eval-tab="std-brightness">Std vs brightness</a>
+    <a class="chip" data-eval-tab="calibration">Calibration</a>
+  </div>
+
+  <div class="ens-eval-panel" data-eval-tab="power-spectrum">
+    <a href="{{ url_for('ensemble_power_spectrum') }}" target="_blank">
+      <img loading="lazy" style="max-width:100%;height:auto;"
+           data-src="{{ url_for('ensemble_power_spectrum') }}"
+           alt="ensemble power spectrum"></a>
+    <p class="hint"><b>Left:</b> transfer function T(k) — does the ensemble mean
+       carry the right amount of power per scale (T&lt;1 over-smoothed, T&gt;1
+       hallucinated power). <b>Right:</b> correlation with the truth
+       <b>r(k)</b> per model + ensemble mean, and the <b>model–model</b>
+       cross-correlation r̃(k) (grey dashed; median over member pairs). r̃ needs
+       <i>no HR</i>, so where it tracks r(k) the inter-model agreement is a
+       validated stand-in for “did we recover real structure?” on real Euclid
+       images — where they split, the members agree with each other but not
+       with the truth (shared hallucination).</p>
+  </div>
+
+  <div class="ens-eval-panel" data-eval-tab="std-error" style="display:none;">
+    <a href="{{ url_for('ensemble_eval_plot', plot='std-error') }}" target="_blank">
+      <img loading="lazy" style="max-width:100%;height:auto;"
+           data-src="{{ url_for('ensemble_eval_plot', plot='std-error') }}"
+           alt="std vs error"></a>
+    <p class="hint">Per-pixel cross-member std vs the actual error
+       |ensemble&nbsp;mean − HR|. If disagreement is a usable error proxy the
+       red binned median tracks the <b>0.674·σ</b> guide (a calibrated Gaussian
+       puts half the |error| mass below it). A median far <i>above</i> the
+       guide at low σ = confidently-wrong pixels: the members agree on
+       something that isn't there.</p>
+  </div>
+
+  <div class="ens-eval-panel" data-eval-tab="std-brightness" style="display:none;">
+    <a href="{{ url_for('ensemble_eval_plot', plot='std-brightness') }}" target="_blank">
+      <img loading="lazy" style="max-width:100%;height:auto;"
+           data-src="{{ url_for('ensemble_eval_plot', plot='std-brightness') }}"
+           alt="std vs brightness"></a>
+    <p class="hint">Where the disagreement lives: member std against the HR
+       pixel value. Spread that rises with flux ~ photon-noise-driven (benign);
+       excess spread at faint/sky pixels = hallucination on structure the LR
+       doesn't constrain. The relative std (σ divided by brightness) falling
+       with flux ⇒ bright structure is trustworthy.</p>
+  </div>
+
+  <div class="ens-eval-panel" data-eval-tab="calibration" style="display:none;">
+    <a href="{{ url_for('ensemble_eval_plot', plot='calibration') }}" target="_blank">
+      <img loading="lazy" style="max-width:100%;height:auto;"
+           data-src="{{ url_for('ensemble_eval_plot', plot='calibration') }}"
+           alt="ensemble error calibration"></a>
+    <p class="hint"><b>Left:</b> z = (mean − HR)/σ over all pixels vs the
+       standard normal — σ(z) &gt; 1 or heavy tails ⇒ the ensemble spread
+       underestimates the true error (multiply σ by σ(z) to use it as an error
+       bar). <b>Right:</b> per-field mean σ vs per-field RMSE — a high
+       correlation means disagreement alone (no HR needed) can rank real fields
+       by reconstruction quality.</p>
+  </div>
 </section>
 {% endif %}
 
@@ -273,23 +283,43 @@ document.querySelectorAll(".ens-continue-btn").forEach((b) =>
 document.querySelectorAll(".ens-fork-btn").forEach((b) =>
   b.addEventListener("click", () => _prefillTrainCard("fork", b.dataset.member)));
 
-// Power-spectrum "Regenerate": re-render from cached cubes (?fresh=1), cache-bust.
+// Evaluations card: chip subtabs with lazy-loaded figures + a Regenerate
+// button that re-renders the ACTIVE figure from the cached cubes (?fresh=1).
 (function () {
-  const btn = document.getElementById("ens-ps-regen");
-  const img = document.getElementById("ens-ps-img");
-  const link = document.getElementById("ens-ps-link");
-  if (!btn || !img) return;
+  const card = document.getElementById("ens-evals-card");
+  if (!card) return;
+  const chips = card.querySelectorAll("#ens-eval-tabs .chip");
+  const panels = card.querySelectorAll(".ens-eval-panel");
+  const loadPanel = (panel) => {
+    const img = panel.querySelector("img[data-src]");
+    if (img && !img.src) img.src = img.dataset.src;
+  };
+  const activePanel = () =>
+    card.querySelector(".ens-eval-panel:not([style*='none'])");
+  chips.forEach((chip) => chip.addEventListener("click", () => {
+    chips.forEach((c) =>
+      c.classList.toggle("active", c === chip));
+    panels.forEach((p) => {
+      const on = p.dataset.evalTab === chip.dataset.evalTab;
+      p.style.display = on ? "" : "none";
+      if (on) loadPanel(p);
+    });
+  }));
+  loadPanel(panels[0]);
+
+  const btn = document.getElementById("ens-eval-plot-regen");
   btn.addEventListener("click", () => {
+    const panel = activePanel();
+    const img = panel && panel.querySelector("img[data-src]");
+    if (!img) return;
     const label = btn.textContent;
     btn.disabled = true;
     btn.textContent = "↻ Regenerating…";
-    const url = img.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
     img.onload = img.onerror = () => {
       btn.disabled = false;
       btn.textContent = label;
     };
-    img.src = url;
-    if (link) link.href = img.src.split("?")[0] + "?fresh=1";
+    img.src = img.dataset.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
   });
 })();
 </script>

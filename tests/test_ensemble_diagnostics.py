@@ -1,0 +1,111 @@
+"""Tests for the pixel-level ensemble disagreement diagnostics.
+
+The key property: for a *calibrated* synthetic ensemble — members = truth +
+independent N(0, σ) noise — the accumulator's derived statistics land on the
+Gaussian expectations (z-score width ≈ 1, coverage ≈ 68/95/99.7%, binned
+median |error| ≈ 0.674·σ of the *mean*), and the renderers write PNGs.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from euclid_polish.eval.ensemble_diagnostics import (
+    EnsembleDiagnosticsAccumulator,
+    render_calibration,
+    render_std_vs_brightness,
+    render_std_vs_error,
+)
+
+
+def _calibrated_ensemble(n=96, m=8, sigma=5.0, seed=0):
+    """(hr, mean, members) where members = hr + independent N(0, sigma)."""
+    rng = np.random.default_rng(seed)
+    hr = np.abs(rng.normal(50.0, 20.0, (n, n)))
+    members = hr[None] + rng.normal(0.0, sigma, (m, n, n))
+    return hr, members.mean(0), members
+
+
+def test_accumulator_counts_fields_and_members():
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble()
+    acc.add(hr, mean, members)
+    acc.add(hr, mean, members)
+    assert acc.n_fields == 2
+    assert acc.n_members == 8
+    assert len(acc.field_mean_std) == len(acc.field_rmse) == 2
+    assert acc.h_std_err.sum() == 2 * hr.size
+    assert acc.h_bright_std.sum() == 2 * hr.size
+
+
+def test_accumulator_rejects_bad_shapes():
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble(n=32)
+    acc.add(hr, mean[:16, :16], members)          # mean shape mismatch
+    acc.add(hr, mean, members[:1])                # single member: no std
+    assert acc.n_fields == 0
+
+
+def test_zscores_calibrated_ensemble_near_standard_normal():
+    """members = truth + N(0, σ) ⇒ error of the mean = N(0, σ/√M); dividing by
+    the member std (≈σ) gives z ~ N(0, 1/√M) — but the *calibration* question
+    uses std of the MEAN, so here we only check the z pipeline is consistent:
+    width ≈ 1/√M and coverage ≫ Gaussian (spread overestimates the mean's
+    error, as expected for a member-std error bar)."""
+    acc = EnsembleDiagnosticsAccumulator()
+    for seed in range(3):
+        hr, mean, members = _calibrated_ensemble(seed=seed)
+        acc.add(hr, mean, members)
+    st = acc.z_stats()
+    m = acc.n_members
+    assert abs(st["sigma_z"] - 1.0 / np.sqrt(m)) < 0.1
+    assert st["cover1"] > 0.95        # |z|<1 ⊃ almost everything at σ_z≈0.35
+    assert st["cover3"] > st["cover2"] >= st["cover1"]
+
+
+def test_binned_median_error_tracks_gaussian_expectation():
+    """Per std-bin median |mean − hr| ≈ 0.674·σ/√M for the synthetic case."""
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble(n=192, sigma=5.0)
+    acc.add(hr, mean, members)
+    cen, med = acc.binned_median_err()
+    ok = np.isfinite(med)
+    assert ok.any()
+    # the populated std bins sit near σ=5; their median error near 0.674·5/√8
+    i = int(np.nanargmax(acc.h_std_err.sum(axis=1) * ok))
+    expected = 0.6745 * 5.0 / np.sqrt(acc.n_members)
+    assert 0.5 * expected < med[i] < 2.0 * expected
+
+
+def test_binned_std_percentiles_ordered():
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble()
+    acc.add(hr, mean, members)
+    p = acc.binned_std_percentiles()
+    ok = np.isfinite(p["med"])
+    assert ok.any()
+    assert (p["lo"][ok] <= p["med"][ok]).all()
+    assert (p["med"][ok] <= p["hi"][ok]).all()
+
+
+def test_renderers_write_pngs(tmp_path):
+    acc = EnsembleDiagnosticsAccumulator()
+    for seed in range(2):
+        hr, mean, members = _calibrated_ensemble(seed=seed)
+        acc.add(hr, mean, members)
+    for render, name in ((render_std_vs_error, "se.png"),
+                         (render_std_vs_brightness, "sb.png"),
+                         (render_calibration, "cal.png")):
+        out = tmp_path / name
+        assert render(str(out), acc) == str(out)
+        assert out.is_file() and out.stat().st_size > 0
+
+
+def test_renderers_empty_accumulator_return_none(tmp_path):
+    acc = EnsembleDiagnosticsAccumulator()
+    for render, name in ((render_std_vs_error, "se.png"),
+                         (render_std_vs_brightness, "sb.png"),
+                         (render_calibration, "cal.png")):
+        out = tmp_path / name
+        assert render(str(out), acc) is None
+        assert not out.exists()

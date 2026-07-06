@@ -127,6 +127,52 @@ def bin_powers(
     return bh, bs, bx, bc
 
 
+def pairwise_cross_correlation(
+    images: list[np.ndarray],
+    pixel_scale_arcsec: float,
+    k_edges: np.ndarray,
+    window: np.ndarray | None = None,
+) -> np.ndarray:
+    """Azimuthally-binned cross-correlation ``r_ij(k)`` for every image pair.
+
+    One FFT per image (not per pair): each image is mean-subtracted, windowed
+    and transformed once, then the binned auto/cross powers come from the
+    cached spectra. Returns ``(n_pairs, nbins)`` rows ordered ``(0,1), (0,2),
+    …`` (``i < j``); empty k-bins are NaN. Fewer than two images → ``(0,
+    nbins)``.
+    """
+    k_edges = np.asarray(k_edges, float)
+    nb = len(k_edges) - 1
+    m = len(images)
+    if m < 2:
+        return np.empty((0, nb))
+    n = images[0].shape[0]
+    if window is None:
+        window = tukey_window_2d(n)
+    kmag = k_magnitude_2d(n, pixel_scale_arcsec).ravel()
+    idx = np.digitize(kmag, k_edges) - 1
+    keep = (idx >= 0) & (idx < nb)
+    idx = idx[keep]
+    ffts = []
+    for im in images:
+        a = np.asarray(im, np.float64)
+        ffts.append(np.fft.fft2((a - a.mean()) * window))
+    autos = [np.bincount(idx, weights=(f * np.conj(f)).real.ravel()[keep],
+                         minlength=nb) for f in ffts]
+    bc = np.bincount(idx, minlength=nb).astype(float)
+    rows = []
+    for i in range(m):
+        for j in range(i + 1, m):
+            bx = np.bincount(
+                idx, weights=(ffts[i] * np.conj(ffts[j])).real.ravel()[keep],
+                minlength=nb)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                r = bx / np.sqrt(autos[i] * autos[j])
+            r[bc <= 0] = np.nan
+            rows.append(r)
+    return np.vstack(rows)
+
+
 def ratios_from_powers(
     bh: np.ndarray, bs: np.ndarray, bx: np.ndarray, bc: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -181,6 +227,7 @@ class EnsembleSpectrumAccumulator:
         self._rho: list[np.ndarray] = []
         self._r_members: list[np.ndarray] = []          # each (M, nbins)
         self._p_members: list[np.ndarray] = []          # each (M, nbins)
+        self._r_pairs: list[np.ndarray] = []            # each (M·(M−1)/2, nbins)
         self.n_fields = 0
         self.n_members = 0
 
@@ -233,6 +280,10 @@ class EnsembleSpectrumAccumulator:
             if not self.n_members or mm == self.n_members:
                 self._r_members.append(np.vstack(r_rows))
                 self._p_members.append(np.vstack(p_rows))
+                # model–model cross-correlation per pair: the truth-free
+                # counterpart of r(k) — where members agree spectrally.
+                self._r_pairs.append(pairwise_cross_correlation(
+                    am, self.pix, self.k_edges, self.window))
                 self.n_members = mm
 
         empty = bc <= 0
@@ -260,6 +311,12 @@ class EnsembleSpectrumAccumulator:
                 warnings.simplefilter("ignore", RuntimeWarning)
                 out["r_members"] = np.nanmedian(np.stack(self._r_members, 0), axis=0)
                 out["P_members"] = np.nanmedian(np.stack(self._p_members, 0), axis=0)
+        if self._r_pairs:
+            with np.errstate(all="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                # per-pair median over fields, then a single median curve
+                out["r_pairs"] = np.nanmedian(np.stack(self._r_pairs, 0), axis=0)
+                out["r_cross"] = np.nanmedian(out["r_pairs"], axis=0)
         return out
 
 
@@ -269,8 +326,10 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     Pure transform of an :meth:`EnsembleSpectrumAccumulator.curves` dict. Returns
     ``{theta, T, T_members, r, r_members}`` where ``theta = 1/(2k)`` arcsec,
     ``T = sqrt(P_sr/P_hr)`` (mean), ``T_members[j] = sqrt(P_members[j]/P_hr)``,
-    ``r`` is the ensemble mean vs HR, ``r_members`` the per-member correlations.
-    Member arrays are ``(M, nbins)`` and empty ``(0, nbins)`` when <2 members.
+    ``r`` is the ensemble mean vs HR, ``r_members`` the per-member correlations,
+    ``r_pairs``/``r_cross`` the model–model cross-correlations (per pair /
+    median). Member arrays are ``(M, nbins)`` and empty ``(0, nbins)`` when <2
+    members.
     """
     k = np.asarray(curves.get("k", []), float)
     nan_k = np.full(k.size, np.nan)
@@ -279,13 +338,16 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     r = np.asarray(curves.get("r", nan_k), float)
     p_members = np.asarray(curves.get("P_members", np.empty((0, k.size))), float)
     r_members = np.asarray(curves.get("r_members", np.empty((0, k.size))), float)
+    r_pairs = np.asarray(curves.get("r_pairs", np.empty((0, k.size))), float)
+    r_cross = np.asarray(curves.get("r_cross", nan_k), float)
     with np.errstate(divide="ignore", invalid="ignore"):
         theta = 0.5 / k
         t_mean = np.sqrt(p_sr / p_hr)
         t_members = (np.sqrt(p_members / p_hr[None, :])
                      if p_members.size else np.empty((0, k.size)))
     return {"theta": theta, "T": t_mean, "T_members": t_members,
-            "r": r, "r_members": r_members}
+            "r": r, "r_members": r_members,
+            "r_pairs": r_pairs, "r_cross": r_cross}
 
 
 def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
@@ -328,6 +390,15 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
                     label=("individual models" if j == 0 else None))
         ax.plot(x, mean_curve, "-o", ms=3.0, lw=2.0, color=vis_color,
                 label="ensemble mean")
+        if ax is ax_r and cv["r_pairs"].size:
+            # model–model cross-correlation: the truth-free proxy for r(k).
+            # Where it tracks the HR curve, inter-model agreement predicts
+            # agreement with the truth — usable on real Euclid images.
+            for j, row in enumerate(cv["r_pairs"]):
+                ax.plot(x, row, color="#777", lw=0.6, alpha=0.18,
+                        label=("model pairs" if j == 0 else None))
+            ax.plot(x, cv["r_cross"], ls="--", lw=2.0, color="#555",
+                    label="model–model median r̃(k) (no HR needed)")
         ax.axhline(1.0, ls=":", color="#888", lw=1.0)
         ax.axvline(lr_scale, ls="--", color="#333", lw=1.3,
                    label="LR sampling (0.1″)")

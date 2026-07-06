@@ -27,6 +27,12 @@ from euclid_polish.ensemble import (
     member_fingerprint,
     pca_field,
 )
+from euclid_polish.eval.ensemble_diagnostics import (
+    EnsembleDiagnosticsAccumulator,
+    render_calibration,
+    render_std_vs_brightness,
+    render_std_vs_error,
+)
 from euclid_polish.eval.power_spectrum import (
     EnsembleSpectrumAccumulator,
     render_ensemble_power_spectrum,
@@ -288,6 +294,10 @@ def ensemble_status() -> dict:
     ps_path = os.path.join(out_dir, "ensemble_power_spectrum.png")
     power_spectrum_png = (os.path.relpath(ps_path, Config.VIS_DIR)
                           if os.path.isfile(ps_path) else None)
+    # The Evaluations card can render as long as EITHER a figure already
+    # exists or the per-field cube cache does (figures then render lazily).
+    evaluations_available = bool(power_spectrum_png) or os.path.isfile(
+        os.path.join(out_dir, "cubes", "viz_index.json"))
 
     summary = None
     summary_stale = False
@@ -316,6 +326,7 @@ def ensemble_status() -> dict:
         "test_present": test_present,
         "psnr_fields": MEMBER_PSNR_FIELDS,
         "power_spectrum_png": power_spectrum_png,
+        "evaluations_available": evaluations_available,
         "eval_summary": summary,
         "eval_summary_stale": summary_stale,
     }
@@ -500,6 +511,14 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
             json.dump({k: _jsonable(v) for k, v in curves.items()}, f)
         out["power_spectrum_fields"] = int(ps_acc[0].n_fields)
 
+    # The pixel-level diagnostic figures render lazily from the fresh cubes —
+    # drop the ones from the previous eval so the page never serves stale plots.
+    for png in EVAL_DIAGNOSTIC_PNGS.values():
+        try:
+            os.remove(os.path.join(_ensemble_out_dir(), png))
+        except FileNotFoundError:
+            pass
+
     with open(os.path.join(_ensemble_out_dir(), "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
@@ -507,35 +526,34 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     return out
 
 
-def regenerate_power_spectrum() -> str | None:
-    """Re-render the ensemble power spectrum from the CACHED per-field cubes.
+def _iter_cached_fields():
+    """Yield ``(hr_vis, mean_vis, members_vis)`` per cached evaluated field.
 
-    Uses the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``) cubes
-    the last Evaluate wrote, plus HR from the records — so the spectrum can be
-    recomputed (e.g. after a code fix) in seconds with NO model inference and no
-    full re-run. Returns the PNG path, or ``None`` if nothing is cached.
+    Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
+    cubes the last Evaluate wrote, paired with HR from the records — so any
+    evaluation figure can be recomputed (e.g. after a code fix) in seconds with
+    NO model inference and no full re-run. Yields nothing when the cache is
+    missing, or when the membership changed since the cubes were written (a
+    member archived/added → the position-keyed cubes are invalid).
     """
     cubes_dir = _ensemble_cubes_dir()
     man_path = os.path.join(cubes_dir, "viz_index.json")
     if not os.path.isfile(man_path):
-        return None
+        return
     with open(man_path) as f:
         man = json.load(f)
-    # Stale membership (a member archived/added since the cubes were written)
-    # → the position-keyed cubes are invalid; don't render from them.
     if ([str(x) for x in man.get("member_labels", []) or []]
             != ensemble_registry.active_labels(ensemble_dir())):
-        return None
+        return
     idxs = [int(i) for i in man.get("indices", [])]
     sub = man.get("subset", "")
     n_members = len(man.get("member_labels", []))
     rdir = _sky_records_local_dir()
     hr_path = tfrecord_path(rdir, f"hr_{sub}") if rdir else ""
     if not idxs or n_members == 0 or not rdir or not os.path.exists(hr_path):
-        return None
+        return
 
     hr_by = {r.index: r for r in read_images(hr_path, num_images=max(idxs) + 1)}
-    acc = None
     for rec in idxs:
         sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
         hr = hr_by.get(rec)
@@ -545,9 +563,16 @@ def regenerate_power_spectrum() -> str | None:
                    if os.path.isfile(mf := os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"))]
         if not members:
             continue
-        hr_v = _vis(np.asarray(hr.data, np.float32))
-        mean_v = _vis(np.load(sr_f))
-        mem_v = np.stack([_vis(m) for m in members], 0)
+        yield (_vis(np.asarray(hr.data, np.float32)), _vis(np.load(sr_f)),
+               np.stack([_vis(m) for m in members], 0))
+
+
+def regenerate_power_spectrum() -> str | None:
+    """Re-render the ensemble power spectrum from the CACHED per-field cubes
+    (see :func:`_iter_cached_fields`). Returns the PNG path, or ``None`` if
+    nothing is cached."""
+    acc = None
+    for hr_v, mean_v, mem_v in _iter_cached_fields():
         if acc is None:
             acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
@@ -557,6 +582,40 @@ def regenerate_power_spectrum() -> str | None:
     ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
     render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields)
     return ps_png
+
+
+#: Diagnostic figures rendered from the cached cubes: URL slug → PNG basename.
+#: One sweep renders all three (they share the same pixel statistics pass).
+EVAL_DIAGNOSTIC_PNGS = {
+    "std-error": "ensemble_std_vs_error.png",
+    "std-brightness": "ensemble_std_vs_brightness.png",
+    "calibration": "ensemble_calibration.png",
+}
+
+
+def regenerate_eval_diagnostics() -> dict[str, str] | None:
+    """Render the pixel-level diagnostic figures from the CACHED cubes.
+
+    One pass over :func:`_iter_cached_fields` feeds a single
+    :class:`EnsembleDiagnosticsAccumulator`; all figures in
+    :data:`EVAL_DIAGNOSTIC_PNGS` are (re)rendered together. Returns
+    ``{slug: png_path}`` or ``None`` when nothing is cached.
+    """
+    acc = EnsembleDiagnosticsAccumulator()
+    for hr_v, mean_v, mem_v in _iter_cached_fields():
+        acc.add(hr_v, mean_v, mem_v)
+    if acc.n_fields == 0:
+        return None
+    out_dir = _ensemble_out_dir()
+    renderers = {"std-error": render_std_vs_error,
+                 "std-brightness": render_std_vs_brightness,
+                 "calibration": render_calibration}
+    out = {}
+    for slug, render in renderers.items():
+        png = os.path.join(out_dir, EVAL_DIAGNOSTIC_PNGS[slug])
+        if render(png, acc):
+            out[slug] = png
+    return out or None
 
 
 def _delete_remote_member(name: str) -> str:

@@ -14,10 +14,12 @@ from euclid_polish.eval.power_spectrum import (
     _SpectrumAccumulator as SpectrumAccumulator,
 )
 from euclid_polish.eval.power_spectrum import (
+    EnsembleSpectrumAccumulator,
     cross_power_2d,
     ensemble_ps_plot_curves,
     k_magnitude_2d,
     log_k_edges,
+    pairwise_cross_correlation,
     render_ensemble_power_spectrum,
 )
 
@@ -114,6 +116,55 @@ def test_accumulator_combines_mixed_stamp_sizes():
     assert np.isfinite(res["r"][res["count"] > 0]).all()
 
 
+def test_pairwise_cross_correlation_identical_images_give_unity():
+    a = _smooth_field()
+    rows = pairwise_cross_correlation([a, a.copy(), a.copy()], PIXEL_SCALE,
+                                      log_k_edges(PIXEL_SCALE))
+    assert rows.shape[0] == 3          # (0,1), (0,2), (1,2)
+    finite = rows[np.isfinite(rows)]
+    assert finite.size and np.allclose(finite, 1.0, atol=1e-9)
+
+
+def test_pairwise_cross_correlation_independent_noise_decorrelates():
+    base = _smooth_field(sigma=1.0)
+    rng = np.random.default_rng(7)
+    members = [base + rng.standard_normal(base.shape) * base.std()
+               for _ in range(3)]
+    k_edges = log_k_edges(PIXEL_SCALE)
+    rows = pairwise_cross_correlation(members, PIXEL_SCALE, k_edges,
+                                      window=np.ones_like(base))
+    kc = np.sqrt(k_edges[:-1] * k_edges[1:])
+    med = np.nanmedian(rows, axis=0)
+    lo, hi = kc < 1.0, kc > 5.0
+    assert np.nanmedian(med[lo]) > np.nanmedian(med[hi])
+    assert np.nanmedian(med[hi]) < 0.8   # independent noise splits the pair
+
+
+def test_pairwise_cross_correlation_single_image_empty():
+    rows = pairwise_cross_correlation([_smooth_field()], PIXEL_SCALE,
+                                      log_k_edges(PIXEL_SCALE))
+    assert rows.shape[0] == 0
+
+
+def test_ensemble_accumulator_emits_cross_model_curves():
+    n = 64
+    rng = np.random.default_rng(3)
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1
+                        for _ in range(3)])
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, members.mean(0), members)
+    curves = acc.curves()
+    assert curves["r_pairs"].shape == (3, acc.nbins)
+    assert curves["r_cross"].shape == (acc.nbins,)
+    r_cross = curves["r_cross"]
+    m = np.isfinite(r_cross)
+    assert m.any()
+    # signal-dominated scales agree; the noise-dominated Nyquist bins decorrelate
+    assert np.nanmedian(r_cross[m & (acc.k_cen < 5.0)]) > 0.9
+    assert np.nanmin(r_cross[m]) < np.nanmax(r_cross[m])
+
+
 def test_ensemble_ps_plot_curves_derives_per_member_transfer():
     k = np.array([0.5, 1.0, 2.0])
     curves = {
@@ -157,6 +208,9 @@ def test_render_ensemble_power_spectrum_writes_png(tmp_path):
         "P_members": np.abs(rng.normal(5e2, 20, (5, k.size))),
         "r_members": np.clip(
             1.0 - k[None, :] / 20.0 + rng.normal(0, 0.02, (5, k.size)), 0, 1),
+        "r_pairs": np.clip(
+            1.0 - k[None, :] / 15.0 + rng.normal(0, 0.02, (10, k.size)), 0, 1),
+        "r_cross": np.clip(1.0 - k / 15.0, 0, 1),
     }
     out = tmp_path / "ps.png"
     res = render_ensemble_power_spectrum(str(out), curves, n_fields=12)

@@ -9,6 +9,7 @@ import os
 from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.web.helpers.ensemble_viz import (
+    EVAL_DIAGNOSTIC_PNGS,
     _ensemble_out_dir,
     ensemble_dir,
     ensemble_status,
@@ -17,6 +18,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_pull,
     job_ensemble_render,
     job_member_psnr,
+    regenerate_eval_diagnostics,
     regenerate_power_spectrum,
     training_curves_payload,
 )
@@ -78,6 +80,22 @@ def register(app):
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
             if regenerate_power_spectrum() is None and not os.path.isfile(out_png):
+                abort(404)
+        return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/ensemble/eval-plot/<plot>.png")
+    def ensemble_eval_plot(plot: str):
+        """Serve a pixel-level evaluation diagnostic (std-error /
+        std-brightness / calibration). Renders lazily from the cached
+        per-field cubes on first request; ``?fresh=1`` forces a re-render
+        (all three figures share one pass, so they regenerate together)."""
+        png_name = EVAL_DIAGNOSTIC_PNGS.get(plot)
+        if png_name is None:
+            abort(404)
+        out_png = os.path.join(_ensemble_out_dir(), png_name)
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(out_png):
+            if regenerate_eval_diagnostics() is None and not os.path.isfile(out_png):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 
