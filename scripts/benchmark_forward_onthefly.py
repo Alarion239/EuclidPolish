@@ -291,6 +291,40 @@ def main() -> int:
     print()
 
     # ---- extras ------------------------------------------------------------ #
+    # ---- design C: thread scaling of the SHIPPED training path ----------- #
+    # tf.data parallelizes the numpy_function forward with THREADS, so the
+    # scaling ceiling is set by how much of OnTheFlyForward releases the GIL
+    # (FFT convolution mostly does; numpy random sampling mostly doesn't).
+    # This measures aggregate throughput of the exact class training uses —
+    # the answer to "will more allocated CPUs be utilized?".
+    from concurrent.futures import ThreadPoolExecutor
+
+    from euclid_polish.training.forward_onthefly import OnTheFlyForward
+
+    print("— design C: OnTheFlyForward thread scaling (K=16 crops/field) —")
+    fwd_hook = OnTheFlyForward(psf_sets, seed=0, crops_per_field=16)
+    fld = np.asarray(fields[0].data, np.float32)
+    fwd_hook.crops(fld)                                    # warm-up / traces
+    base_rate = None
+    print(f"  {'threads':>8s} {'fields/s':>9s} {'ex/s (K=16)':>12s} "
+          f"{'speedup':>8s} {'ms/batch(16)':>13s}")
+    for nthreads in (1, 2, 4, 8, 16):
+        if nthreads > ncpu:
+            break
+        n_jobs = max(2 * nthreads, 6)
+        w0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=nthreads) as ex:
+            list(ex.map(lambda _i: fwd_hook.crops(fld), range(n_jobs)))
+        dt = time.perf_counter() - w0
+        rate = n_jobs / dt
+        base_rate = base_rate or rate
+        ex_s = rate * 16
+        print(f"  {nthreads:>8d} {rate:>9.2f} {ex_s:>12.0f} "
+              f"{rate / base_rate:>7.1f}x {16_000 / ex_s:>10.0f} ms")
+    print("  (speedup plateaus where the GIL-bound stages — numpy random "
+          "noise, python glue — saturate; allocate CPUs up to ~the plateau, "
+          "then raise crops/field instead)\n")
+
     print("— notes —")
     print("  · flux kept < 1 and trunc RMS are the PHYSICS cost of the pad: "
         "wing flux the truncated kernel redistributes. Safe when RMS ≪ read noise.")
