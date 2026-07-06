@@ -21,6 +21,7 @@ from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records
 from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png
 from euclid_polish.web.helpers.status import (
     _cached_fasrc_psf_dir,
+    _cached_psf_clusters_json,
     _fasrc_catalog_dir,
     _list_vis_pngs,
     _record_count,
@@ -46,17 +47,19 @@ def register(app):
 
     @app.route("/view/psf-clusters")
     def view_psf_clusters():
-        # Local sky map of the ePSF clusters + per-cluster diameter. Reads the
-        # VIS ePSF from the SAME synced FASRC cache the rest of the /psfs page
-        # uses (so the plot tracks a freshly-synced ePSF, not a stale local
-        # copy). 404s (via the renderer) when no ePSF is synced yet — the page
-        # hides the panel then. Uses the cached catalog for member diameters,
-        # degrading to a centroids-only map when absent.
+        # Local sky map of the ePSF clusters + per-cluster diameter. Prefers
+        # the synced cluster-metadata JSON (kilobytes, covers EVERY FASRC
+        # cluster — see /api/euclid-psf/sync-meta), falling back to the VIS
+        # ePSF headers in the synced FASRC cache. 404s (via the renderer)
+        # when neither is on disk — the page hides the panel then. Uses the
+        # cached catalog for member diameters, degrading to a centroids-only
+        # map when absent.
         psf_dir = _cached_fasrc_psf_dir()
         psf_path = (os.path.join(psf_dir, Config.BAND_VIS.psf_fits_filename)
                     if psf_dir else None)
         out = _fasrc_catalog_dir(force=False)
-        png = _render_psf_clusters_png(out, psf_path)
+        png = _render_psf_clusters_png(
+            out, psf_path, clusters_json=_cached_psf_clusters_json())
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/catalog")

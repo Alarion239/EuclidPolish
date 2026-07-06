@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 
 import matplotlib
@@ -187,33 +188,53 @@ def _great_circle_arcmin(ra1, dec1, ra2, dec2):
 
 
 def _render_psf_clusters_png(output_dir: str | None,
-                             psf_path: str | None) -> bytes:
+                             psf_path: str | None,
+                             clusters_json: str | None = None) -> bytes:
     """Local sky map of the ePSF-extraction clusters + per-cluster diameter.
 
-    ``psf_path`` is the VIS ePSF FITS to read cluster centroids from — pass
-    the *same* synced copy the rest of the /psfs page reads (the FASRC cache),
-    so the plot tracks a freshly-synced ePSF rather than a stale local file.
+    Centroid source, in preference order:
+
+    1. ``clusters_json`` — the kilobyte metadata sidecar synced from FASRC
+       (per-cluster RA/Dec + star count dumped from the VIS ePSF headers on
+       the login node). This shows EVERY cluster of the FASRC extraction,
+       even when the local ePSF FITS is a smaller/older synced copy.
+    2. ``psf_path`` — the locally-synced VIS ePSF FITS headers (legacy path).
+
     The spatial clustering is shared across bands, so VIS centroids suffice.
     Membership + angular diameter are reconstructed by assigning each catalog
     star valid in all four bands to its nearest centroid — exactly the Voronoi
     assignment K-Means used at extraction. Far-apart fields get their own
     panel (zoomed local view, not full sky).
 
-    Aborts 404 when the VIS ePSF FITS isn't on disk (PSFs not extracted /
-    synced yet) — the page hides the panel in that case. A missing catalog
-    degrades to a centroids-only map (diameters shown as "—").
+    Aborts 404 when neither source is on disk (PSFs not extracted / synced
+    yet) — the page hides the panel in that case. A missing catalog degrades
+    to a centroids-only map (diameters shown as "—").
     """
     matplotlib.use("Agg")
 
-    if not psf_path or not os.path.isfile(psf_path):
-        abort(404)
     cra, cdec = [], []
-    with fits.open(psf_path) as hdul:
-        for hdu in hdul[1:]:                       # HDU0 = mean PSF
-            ra = hdu.header.get("RA")
-            dec = hdu.header.get("DEC")
-            if ra is not None and dec is not None:
-                cra.append(float(ra)); cdec.append(float(dec))
+    source = None
+    if clusters_json and os.path.isfile(clusters_json):
+        try:
+            with open(clusters_json) as f:
+                meta = json.load(f)
+            for c in meta.get("clusters", []):
+                ra, dec = float(c["ra"]), float(c["dec"])
+                if np.isfinite(ra) and np.isfinite(dec):
+                    cra.append(ra); cdec.append(dec)
+            if cra:
+                source = "FASRC metadata JSON"
+        except (OSError, ValueError, KeyError, TypeError):
+            cra, cdec = [], []                     # corrupt → FITS fallback
+    if not cra and psf_path and os.path.isfile(psf_path):
+        with fits.open(psf_path) as hdul:
+            for hdu in hdul[1:]:                   # HDU0 = mean PSF
+                ra = hdu.header.get("RA")
+                dec = hdu.header.get("DEC")
+                if ra is not None and dec is not None:
+                    cra.append(float(ra)); cdec.append(float(dec))
+        if cra:
+            source = "local ePSF FITS"
     if not cra:
         abort(404)
     cra, cdec = np.asarray(cra), np.asarray(cdec)
@@ -232,8 +253,16 @@ def _render_psf_clusters_png(output_dir: str | None,
                 sra.append(float(ra)); sdec.append(float(dec))
     sra, sdec = np.asarray(sra), np.asarray(sdec)
     if len(sra):
-        labels = np.array([int(np.argmin(_great_circle_arcmin(r, d, cra, cdec)))
-                           for r, d in zip(sra, sdec, strict=False)])
+        labels = np.full(len(sra), -1, dtype=int)
+        for i, (r, d) in enumerate(zip(sra, sdec, strict=False)):
+            dist = _great_circle_arcmin(r, d, cra, cdec)
+            k = int(np.argmin(dist))
+            # Sanity cut: a star much farther than a cluster radius from
+            # EVERY centroid was not part of this extraction (the catalog can
+            # hold stars from other fields/sizes) — force-assigning it would
+            # inflate the diameter and stretch the panel axes.
+            if dist[k] <= 60.0:
+                labels[i] = k
     else:
         labels = np.zeros(0, dtype=int)
 
@@ -274,17 +303,26 @@ def _render_psf_clusters_png(output_dir: str | None,
         ax = axes[r]
         ks = [k for k in range(n_clusters) if region[k] == r]
         dec0 = float(np.mean(cdec[ks]))
+        # A FASRC-scale extraction has hundreds of clusters per region —
+        # per-cluster text becomes unreadable soup, so annotate only sparse
+        # regions and shrink the centroid markers on dense ones.
+        annotate = len(ks) <= 60
+        x_size = 70 if annotate else 18
         for k in ks:
             col = cmap(k % 20)
             mem = np.where(labels == k)[0]
             if len(mem):
                 ax.scatter(sra[mem], sdec[mem], s=6, color=col, alpha=0.55,
                            linewidths=0)
-            ax.scatter([cra[k]], [cdec[k]], marker="x", s=70, color="black",
-                       linewidths=1.5, zorder=5)
-            lbl = f"{k}\nØ{diam[k]:.1f}'" if diam[k] is not None else f"{k}\nØ—"
-            ax.annotate(lbl, (cra[k], cdec[k]), textcoords="offset points",
-                        xytext=(5, 4), fontsize=7, zorder=6)
+            ax.scatter([cra[k]], [cdec[k]], marker="x", s=x_size,
+                       color="black", linewidths=1.5 if annotate else 0.9,
+                       zorder=5)
+            if annotate:
+                lbl = (f"{k}\nØ{diam[k]:.1f}'" if diam[k] is not None
+                       else f"{k}\nØ—")
+                ax.annotate(lbl, (cra[k], cdec[k]),
+                            textcoords="offset points",
+                            xytext=(5, 4), fontsize=7, zorder=6)
         ax.set_xlabel("RA (deg)"); ax.set_ylabel("Dec (deg)")
         ax.set_aspect(1.0 / max(0.05, np.cos(np.radians(dec0))))
         ax.invert_xaxis()                          # RA increases to the left
@@ -297,7 +335,8 @@ def _render_psf_clusters_png(output_dir: str | None,
     summary = (f"{n_clusters} ePSF clusters in {n_regions} region(s)"
                + (f"; angular diameter {min(ds):.1f}–{max(ds):.1f}′ "
                   f"(median {float(np.median(ds)):.1f}′)"
-                  if ds else "; download the catalog to get diameters"))
+                  if ds else "; download the catalog to get diameters")
+               + (f"  ·  source: {source}" if source else ""))
     fig.suptitle("PSF extraction clusters — " + summary, fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     buf = io.BytesIO()

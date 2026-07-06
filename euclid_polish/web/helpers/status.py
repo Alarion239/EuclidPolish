@@ -136,6 +136,21 @@ def _fasrc_psf_dir(force: bool = True) -> str | None:
     return local_dir
 
 
+#: Cluster-metadata sidecar living next to the ePSF FITS on FASRC — per
+#: cluster centroid RA/Dec + star count, dumped from the VIS ePSF headers.
+#: Kilobytes, so the /psfs cluster map can show EVERY FASRC cluster without
+#: pulling the multi-hundred-MB kernel stack down.
+PSF_CLUSTERS_META = "euclid_psf_clusters.json"
+
+
+def _cached_psf_clusters_json() -> str | None:
+    """Local cached copy of the FASRC cluster-metadata JSON, or ``None`` when
+    it has not been synced yet. Read-only — no rsync on page load."""
+    cfg = fasrc_config.load()
+    local = _local_path_for(f"{cfg.data_dir}/euclid_psf/{PSF_CLUSTERS_META}")
+    return local if os.path.isfile(local) else None
+
+
 def _cached_fasrc_psf_dir() -> str | None:
     """Local cache dir holding the FASRC ePSFs **without** triggering a fetch.
 

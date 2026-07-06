@@ -83,3 +83,63 @@ def test_404_when_psf_missing(tmp_path):
         sky_render._render_psf_clusters_png(None, str(tmp_path / "nope.fits"))
     with pytest.raises(NotFound):
         sky_render._render_psf_clusters_png(None, None)
+
+
+def _write_clusters_json(path, centroids):
+    import json
+
+    with open(path, "w") as f:
+        json.dump({"source": "euclid_psf_VIS.fits",
+                   "n_clusters": len(centroids),
+                   "clusters": [{"ra": ra, "dec": dec, "n_stars": 100}
+                                for ra, dec in centroids]}, f)
+
+
+def test_json_metadata_renders_without_fits(tmp_path):
+    # The synced FASRC metadata alone (no local ePSF FITS) renders the map.
+    p = tmp_path / "euclid_psf_clusters.json"
+    _write_clusters_json(str(p), _CENTROIDS)
+    assert _is_png(sky_render._render_psf_clusters_png(
+        None, None, clusters_json=str(p)))
+
+
+def test_json_metadata_preferred_over_fits(psf_file, tmp_path):
+    # JSON carries MORE clusters than the local FITS → it wins (that's the
+    # point: FASRC has far more clusters than the synced kernel stack).
+    many = _CENTROIDS + [(150.0 + 0.1 * i, 2.0 + 0.05 * i) for i in range(20)]
+    p = tmp_path / "euclid_psf_clusters.json"
+    _write_clusters_json(str(p), many)
+    png = sky_render._render_psf_clusters_png(
+        None, str(psf_file), clusters_json=str(p))
+    assert _is_png(png)
+
+
+def test_corrupt_json_falls_back_to_fits(psf_file, tmp_path):
+    p = tmp_path / "euclid_psf_clusters.json"
+    p.write_text("{not json")
+    assert _is_png(sky_render._render_psf_clusters_png(
+        None, str(psf_file), clusters_json=str(p)))
+
+
+def test_dense_region_renders_without_annotations(tmp_path):
+    # >60 clusters in one region → annotation-free branch still renders.
+    rng = np.random.default_rng(1)
+    many = [(150.0 + rng.uniform(-0.5, 0.5), 2.0 + rng.uniform(-0.5, 0.5))
+            for _ in range(80)]
+    p = tmp_path / "euclid_psf_clusters.json"
+    _write_clusters_json(str(p), many)
+    assert _is_png(sky_render._render_psf_clusters_png(
+        None, None, clusters_json=str(p)))
+
+
+def test_remote_meta_cmd_contains_paths():
+    from euclid_polish.web import fasrc_config
+    from euclid_polish.web.routes.psfs import _clusters_meta_remote_cmd
+
+    cfg = fasrc_config.load()
+    cmd = _clusters_meta_remote_cmd(cfg)
+    assert "euclid_psf_VIS.fits" in cmd
+    assert "euclid_psf_clusters.json" in cmd
+    assert "astropy.io" in cmd and "PYEOF" in cmd
+    # headers only — the dump must never touch HDU data
+    assert ".data" not in cmd

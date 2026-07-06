@@ -88,6 +88,9 @@
 <section class="card">
   <h3>Synchronise from FASRC</h3>
   <button id="psf-sync-btn" type="button">⟳ Synchronise ePSFs</button>
+  <button id="psf-meta-sync-btn" type="button"
+          title="Metadata only: dump per-cluster centroids + star counts from the VIS ePSF headers on the FASRC login node (seconds — astropy reads headers lazily), then rsync the kilobyte JSON down. The cluster map below then shows EVERY cluster of the FASRC extraction without pulling the multi-hundred-MB kernel stack.">
+    ⟳ Cluster metadata only (light)</button>
   <div id="psf-sync-status" class="hint"></div>
 </section>
 
@@ -122,6 +125,36 @@ document.querySelector(".toolbar").addEventListener("click", (e) => {
   probe.onerror = () => { card.style.display = "none"; };
   probe.src = url;
 })();
+
+// ── Cluster-metadata-only sync (kilobyte JSON, not the kernel stack) ──
+const psfMetaBtn = document.getElementById("psf-meta-sync-btn");
+if (psfMetaBtn) {
+  psfMetaBtn.addEventListener("click", async () => {
+    const statusEl = document.getElementById("psf-sync-status");
+    psfMetaBtn.disabled = true;
+    statusEl.textContent =
+      "dumping cluster metadata on FASRC + rsyncing the JSON…";
+    try {
+      const r = await fetch("/api/euclid-psf/sync-meta", { method: "POST" });
+      const d = await r.json();
+      if (d.ok) {
+        statusEl.textContent =
+          `✓ ${d.n_clusters} clusters synced — refreshing the map…`;
+        const img = document.getElementById("psf-clusters-img");
+        const card = document.getElementById("psf-clusters-card");
+        const url = "/view/psf-clusters?_t=" + Date.now();
+        const probe = new Image();
+        probe.onload = () => { img.src = url; card.style.display = ""; };
+        probe.src = url;
+      } else {
+        statusEl.textContent = "✗ " + (d.error || "metadata sync failed");
+      }
+    } catch (e) {
+      statusEl.textContent = "✗ " + e;
+    }
+    psfMetaBtn.disabled = false;
+  });
+}
 
 // ── Manual ePSF synchronisation (rsync the band FITS from FASRC) ──────
 const psfSyncBtn = document.getElementById("psf-sync-btn");
