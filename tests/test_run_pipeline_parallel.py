@@ -160,3 +160,86 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
     assert hr.prov_stamp().parents == (ProvId("4b1e7a90"),)
     assert dirty.prov_stamp().parents == (ProvId("4b1e7a90"),)
     assert clean.prov_stamp().produced_by == ProvId("7f3a9c21")
+
+
+# ---------------------------------------------------------------------------
+# --skip-dirty-train: the train split never runs the forward model
+# ---------------------------------------------------------------------------
+
+def test_skip_dirty_shard_writes_no_dirty_and_hr_is_trimmed_clean(tmp_path):
+    """write_dirty=False: no dirty part, no forward-model call; hr is the
+    plain trim of the scene (position-paired with clean)."""
+    import numpy as np
+
+    from euclid_polish.image.tfio import read_images
+
+    sim, fwd = _sim_fwd()
+
+    class _Boom:                              # forward must NEVER run
+        def process(self, *a, **k):
+            raise AssertionError("forward model ran despite write_dirty=False")
+
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, _Boom(), rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], write_dirty=False)
+    assert not os.path.exists(tfrecord_path(rdir, "dirty_train.part0000"))
+    clean = read_images(tfrecord_path(rdir, "clean_train.part0000"), 2)
+    hr = read_images(tfrecord_path(rdir, "hr_train.part0000"), 2)
+    assert len(clean) == len(hr) == 2
+    for c, h in zip(clean, hr, strict=False):
+        np.testing.assert_array_equal(h.data, c.data)   # 96 % 2 == 0 → no-op trim
+    # sources sidecar still written
+    src = tfrecord_path(rdir, "sources_train.part0000").replace(".tfrecord", ".csv")
+    assert os.path.isfile(src)
+
+
+def test_merge_subset_kinds_skips_dirty(tmp_path):
+    sim, fwd = _sim_fwd()
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], write_dirty=False)
+    rp._merge_subset(rdir, "train", kinds=("clean", "hr"))
+    assert _count(tfrecord_path(rdir, "clean_train")) == 2
+    assert _count(tfrecord_path(rdir, "hr_train")) == 2
+    # no dirty output — not even an empty file
+    assert not os.path.exists(tfrecord_path(rdir, "dirty_train"))
+
+
+def test_salvage_with_kinds_ignores_missing_dirty(tmp_path):
+    sim, fwd = _sim_fwd()
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], write_dirty=False)
+    done, used, next_sid = rp._salvage_subset(rdir, "train", 4,
+                                              kinds=("clean", "hr"))
+    assert done == 2 and sorted(used) == [0, 1] and next_sid == 1
+
+
+def test_remove_final_dirty_deletes_file_and_sidecar(tmp_path):
+    import json as _json
+    rdir = str(tmp_path)
+    dirty = tfrecord_path(rdir, "dirty_train")
+    open(dirty, "w").write("stale")
+    keep = tfrecord_path(rdir, "dirty_validate")
+    open(keep, "w").write("keep")
+    for name, kind, subset in (("aa11.skytfrecordartifact.json", "dirty", "train"),
+                               ("bb22.skytfrecordartifact.json", "clean", "train"),
+                               ("cc33.skytfrecordartifact.json", "dirty", "validate")):
+        with open(os.path.join(rdir, name), "w") as f:
+            _json.dump({"descriptors": {"kind": kind, "subset": subset}}, f)
+    rp._remove_final_dirty(rdir, "train")
+    assert not os.path.exists(dirty)
+    assert os.path.exists(keep)                       # other subsets untouched
+    assert not os.path.exists(os.path.join(rdir, "aa11.skytfrecordartifact.json"))
+    assert os.path.exists(os.path.join(rdir, "bb22.skytfrecordartifact.json"))
+    assert os.path.exists(os.path.join(rdir, "cc33.skytfrecordartifact.json"))
+
+
+def test_synthetic_step_forwards_skip_dirty_flag():
+    from euclid_polish.web.fasrc_pipeline import REGISTRY
+    step = REGISTRY.get("synthetic_generate")
+    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+            "batch_size": 4, "steps": 10}
+    assert "--skip-dirty-train" in step.build_command(
+        {**base, "skip_dirty_train": "1"})
+    assert "--skip-dirty-train" not in step.build_command(base)

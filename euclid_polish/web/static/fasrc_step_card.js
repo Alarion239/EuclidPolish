@@ -343,6 +343,10 @@ large cutout don't leak across train/validate."></label>`;
                  title="Discard the existing sky dataset and regenerate from scratch (run_pipeline --force). Default OFF — a resubmit RESUMES from previously generated shards, reusing old fields. Check this whenever you change generation parameters so new fields are not mixed with old ones.">
             <input type="checkbox" name="force" value="1">
             Override existing data — regenerate from scratch</label>
+          <label class="checkbox-field" style="flex-basis:100%;"
+                 title="On-the-fly training reads clean_train and re-draws PSF + noise live, so dirty_train is dead weight (~6.6 GB + one full forward model per train field). Checking this skips forward-modelling the TRAIN split entirely — generation gets faster. validate/test still get dirty records (training validation and evaluation read them). Combined with Override, any existing dirty_train is DELETED so a stale-calibration file can't linger. Leave OFF if you still want record-mode training.">
+            <input type="checkbox" name="skip_dirty_train" value="1">
+            Skip dirty_train — for on-the-fly training only</label>
           <p class="hint" style="flex-basis:100%;">Train scenes, Validate scenes and
              HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
              with this job.</p>`;
