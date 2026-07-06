@@ -394,6 +394,13 @@ def render_sbatch_body(
         echo "RUNTIME_SECONDS=${{__FASRC_RUNTIME__}}"{step_id_echo}
         echo "============================================================"
     """).replace("__CONDA_BLOCK__", _conda_block)
+    # Repo-relative entry script (e.g. "scripts/train_ensemble.py") — the
+    # submitter checks it exists on FASRC BEFORE sbatching, so a repo that
+    # hasn't been pulled fails with an actionable message instead of a
+    # cryptic ENOENT after the job starts (and burns its queue slot).
+    entry = (cmd_argv[0]
+             if cmd_argv and not cmd_argv[0].startswith("/")
+             and cmd_argv[0].endswith(".py") else None)
     return {
         "body":   body,
         "script": script_rel,
@@ -401,6 +408,7 @@ def render_sbatch_body(
         "err":    err_rel,
         "events": events_rel,
         "name":   job_name,
+        "entry":  entry,
     }
 
 

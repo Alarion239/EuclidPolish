@@ -408,6 +408,23 @@ def submit_sbatch_script(
         On success ``payload`` has ``ok=True`` and the fields the JS
         client expects.
     """
+    # Fail fast when the job's entry script isn't in the FASRC repo yet — a
+    # freshly-added script needs a `git pull` there before the job can run
+    # (the sbatch template runs it from the repo checkout). Without this the
+    # job starts, dies on a cryptic python ENOENT, and burns its queue slot.
+    # `stat` (not a cached shell lookup) also nudges NFS to revalidate.
+    entry = built.get("entry")
+    if entry:
+        rc, _out, _err = ssh.run(
+            f"stat {shlex.quote(cfg.repo_path + '/' + entry)} >/dev/null 2>&1",
+            timeout=15)
+        if rc != 0:
+            return None, {"ok": False, "error": (
+                f"{entry} is not in the FASRC repo at {cfg.repo_path} — "
+                "the checkout there is behind. Run `git pull` in that "
+                "directory (or push your branch first), wait a few seconds "
+                "for NFS to catch up, then resubmit.")}
+
     remote_script = f"{cfg.repo_path}/{built['script']}"
     write_cmd = (
         f"mkdir -p {cfg.repo_path}/{os.path.dirname(built['script'])} && "
