@@ -100,9 +100,11 @@ class MemberTrainSpec:
     that members differ): ``loss_norm`` ∈ {"l1","l2","l3"} picks the
     reconstruction p-norm; ``noise_aug`` adds extra LR noise (read-noise
     units); ``bootstrap`` ∈ (0, 1) trains on that deterministic fraction of
-    the fields (keyed by the member's seed). They apply to every op —
-    continue/fork runs can adopt them too (they shape the *run*, not the
-    architecture).
+    the fields (keyed by the member's seed); ``forward_onthefly`` re-draws
+    PSF + noise live on the full field each visit (``psf_subset`` bags the
+    member's pre-rotated PSF pool, ``crops_per_field`` amortises one field
+    forward over K crops). They apply to every op — continue/fork runs can
+    adopt them too (they shape the *run*, not the architecture).
     """
     name: str
     seed: int
@@ -115,6 +117,9 @@ class MemberTrainSpec:
     loss_norm: str = "l1"
     noise_aug: float = 0.0
     bootstrap: float | None = None
+    forward_onthefly: bool = False
+    psf_subset: int | None = None
+    crops_per_field: int = 4
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -337,6 +342,9 @@ class EnsembleModel:
                         "loss_norm": spec.loss_norm,
                         "noise_aug": float(spec.noise_aug),
                         "bootstrap": spec.bootstrap,
+                        "forward_onthefly": bool(spec.forward_onthefly),
+                        "psf_subset": spec.psf_subset,
+                        "crops_per_field": int(spec.crops_per_field),
                         "created_at": datetime.now(UTC).isoformat(
                             timespec="seconds"),
                         "commit": commit,
@@ -351,6 +359,9 @@ class EnsembleModel:
                     loss_norm=spec.loss_norm,
                     noise_aug=spec.noise_aug,
                     bootstrap=spec.bootstrap,
+                    forward_onthefly=spec.forward_onthefly,
+                    psf_subset=spec.psf_subset,
+                    crops_per_field=spec.crops_per_field,
                     **train_kwargs)
             self._models.append(m)
             if on_member is not None:

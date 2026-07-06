@@ -400,6 +400,19 @@ large cutout don't leak across train/validate."></label>`;
         <label>Extra steps
           <input type="number" name="extra_steps" value="50000" min="1000" max="1000000"></label>
       </span>
+      <span data-mode-group="add fork continue">
+        <label class="checkbox-field"
+               title="Train on the LIVE forward model instead of the baked dirty records: every visit of a clean field re-draws the PSF (from the member's bagged pre-rotated pool — build it on the Euclid PSFs page), noise and artifacts on the FULL field, then cuts K crops. Out-of-crop bright stars contaminate the crops exactly as in a real exposure. Needs clean_train records; validation still uses the records.">
+          <input type="checkbox" name="forward_onthefly" value="1">
+          Forward on-the-fly (live PSF + noise per visit)</label>
+        <label title="On-the-fly only: crops cut per forward-modelled field. One ~350 ms full-field forward is amortised over this many examples — a batch of 16 with K=4 costs 4 field forwards. Raise it if the input pipeline starves the GPU.">
+          Crops / field
+          <input type="number" name="crops_per_field" value="4" min="1" max="32"></label>
+        <label title="PSF bagging (on-the-fly only): each member draws its kernels from this many source clusters of the pre-rotated pool, subset keyed by ITS seed — so members with different seeds train against different instrument-response sub-populations. Blank = 64.">
+          PSF subset
+          <input type="number" name="psf_subset" value="" placeholder="64"
+                 min="1" max="1000"></label>
+      </span>
       <div data-mode-group="add fork" style="flex-basis:100%;">
         <div style="font-weight:600;margin:8px 0 2px;">Models to train
           <span class="muted" style="font-weight:normal;">— one row per new

@@ -103,13 +103,34 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "training fields — a deterministic pseudo-random "
                         "subset keyed by the member's seed, stable across "
                         "epochs/resumes. 0/1 = off (all fields).")
+    p.add_argument("--forward-onthefly", type=int, default=0,
+                   help="1/0 — train on the LIVE forward model instead of "
+                        "the baked dirty records: each visit of a clean "
+                        "field re-draws PSF (from the member's bagged "
+                        "pre-rotated pool) + noise + artifacts on the FULL "
+                        "field (out-of-crop stars contaminate crops exactly "
+                        "as in a real exposure), then cuts crops-per-field "
+                        "training crops. Needs clean_train records; dirty "
+                        "records are ignored for training (validation "
+                        "still uses them).")
+    p.add_argument("--psf-subset", type=int, default=0,
+                   help="PSF bagging: each member draws its kernels from "
+                        "this many source clusters of the pre-rotated pool "
+                        "(subset keyed by the member's seed; different "
+                        "members → different instrument-response bags). "
+                        "0 = default (64). Only with --forward-onthefly.")
+    p.add_argument("--crops-per-field", type=int, default=4,
+                   help="On-the-fly mode: crops cut per forward-modelled "
+                        "field — one field forward is amortised over this "
+                        "many examples (a batch of B costs B/K forwards).")
     p.add_argument("--member-spec", default="",
                    help='Per-member override JSON, applied positionally: '
                         '\'[{"loss":"l2","noise_aug":1.0,"bootstrap":0.7,'
                         '"num_res_blocks":16}, {}, …]\'. Members beyond the '
                         "list length use the run-wide flags. Keys: loss, "
                         "noise_aug, bootstrap, num_res_blocks (add mode), "
-                        "seed.")
+                        "seed, forward_onthefly, psf_subset, "
+                        "crops_per_field.")
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -205,7 +226,8 @@ def _member_overrides(args, k: int) -> list[dict]:
     if not isinstance(spec, list) or not all(isinstance(o, dict) for o in spec):
         print("✗ --member-spec must be a JSON LIST of objects (one per member)")
         raise SystemExit(2)
-    allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed"}
+    allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
+               "forward_onthefly", "psf_subset", "crops_per_field"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -222,9 +244,15 @@ def _member_overrides(args, k: int) -> list[dict]:
 def _diversity_kwargs(args, over: dict) -> dict:
     """The spec kwargs shared by every mode: run-wide flag, member override."""
     boot = float(over.get("bootstrap", args.bootstrap) or 0.0)
+    subset = int(over.get("psf_subset", args.psf_subset) or 0)
     return {"loss_norm": str(over.get("loss", args.loss)),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
-            "bootstrap": boot if 0.0 < boot < 1.0 else None}
+            "bootstrap": boot if 0.0 < boot < 1.0 else None,
+            "forward_onthefly": bool(over.get("forward_onthefly",
+                                              args.forward_onthefly)),
+            "psf_subset": subset if subset > 0 else None,
+            "crops_per_field": int(over.get("crops_per_field",
+                                            args.crops_per_field) or 4)}
 
 
 def build_specs(args, base: str) -> list[MemberTrainSpec]:
@@ -309,6 +337,9 @@ def main() -> int:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
+        if s.forward_onthefly:
+            knobs += (f" forward=onthefly(psf_subset={s.psf_subset or 'dflt'},"
+                      f" {s.crops_per_field} crops/field)")
         print(f"  · {s.name}: seed={s.seed} target_steps={s.target_steps}"
               + knobs
               + (f" init_from={s.init_from}" if s.init_from else ""))

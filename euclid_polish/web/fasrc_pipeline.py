@@ -1081,6 +1081,16 @@ class EnsembleTrainStep(FASRCPipelineStep):
             if val not in ("", "0", "0.0"):
                 with contextlib.suppress(ValueError):
                     cmd += [flag, f"{float(val):g}"]
+        # Live forward model: full-field PSF+noise re-realization per visit.
+        if str(params.get("forward_onthefly", "")).strip().lower() in (
+                "1", "true", "yes", "on"):
+            cmd += ["--forward-onthefly", "1"]
+            for flag, key in (("--psf-subset", "psf_subset"),
+                              ("--crops-per-field", "crops_per_field")):
+                val = str(params.get(key, "")).strip()
+                if val not in ("", "0"):
+                    with contextlib.suppress(ValueError):
+                        cmd += [flag, str(int(float(val)))]
         member_spec = str(params.get("member_spec", "")).strip()
         if member_spec:
             try:

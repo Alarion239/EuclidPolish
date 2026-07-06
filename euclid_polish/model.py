@@ -39,6 +39,10 @@ from euclid_polish.training.inference import (
 from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
+from euclid_polish.training.forward_onthefly import (
+    OnTheFlyForward,
+    member_psf_sets,
+)
 from euclid_polish.training.losses import lp_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
@@ -242,6 +246,73 @@ class Model:
                         num_parallel_calls=AUTOTUNE)
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 
+    def _build_onthefly_pipeline(
+        self,
+        clean_path: str,
+        batch_size: int,
+        fwd: OnTheFlyForward,
+        *,
+        noise_aug_rn: float = 0.0,
+        bootstrap_keep: float | None = None,
+        bootstrap_seed: int = 0,
+    ):
+        """Training pipeline with the LIVE forward model: clean TFRecord →
+        parse → [bootstrap] → full-field forward (PSF + rebin + noise +
+        artifacts) → K crops → dihedral → asinh stretch → batch.
+
+        The dirty records are never read — every visit of a field re-draws
+        the PSF (from the member's bagged pool) and the noise realization on
+        the WHOLE field, then cuts ``fwd.crops_per_field`` aligned crops, so
+        out-of-crop bright stars contaminate the crops exactly as they would
+        a real exposure (no truncated-kernel approximation). A batch of B
+        examples costs B/K field forwards. Crops of one field share one
+        exposure; epochs re-realize everything.
+        """
+        n_lr = Config.NUM_LR_CHANNELS
+        n_hr = Config.NUM_HR_CHANNELS
+        c, s, k = fwd.hr_crop_size, fwd.scale, fwd.crops_per_field
+
+        ds = (tf.data.TFRecordDataset(clean_path)
+              .map(lambda raw: parse_example(raw, n_hr),
+                   num_parallel_calls=AUTOTUNE))
+        if bootstrap_keep is not None and 0.0 < float(bootstrap_keep) < 1.0:
+            keep = float(bootstrap_keep)
+            seed0 = int(bootstrap_seed) & 0x7FFFFFFF
+
+            def _keep(i, _field):
+                u = tf.random.stateless_uniform(
+                    [], seed=tf.stack([tf.constant(seed0, tf.int32),
+                                       tf.cast(i, tf.int32)]))
+                return u < keep
+
+            ds = ds.enumerate().filter(_keep).map(lambda _i, f: f)
+
+        def _fwd(field):
+            lr, hr = tf.numpy_function(
+                fwd.crops, [field], [tf.float32, tf.float32])
+            lr.set_shape((k, c // s, c // s, n_lr))
+            hr.set_shape((k, c, c, n_hr))
+            return lr, hr
+
+        noise_rn = float(noise_aug_rn)
+
+        def _augment_then_stretch(lr, hr):
+            lr, hr = random_dihedral(lr, hr)
+            lr = add_lr_noise(lr, noise_rn)
+            return asinh_stretch_lr(lr), asinh_stretch_hr(hr)
+
+        # Field-level shuffle is small (each element is a full 510² field);
+        # the crop-level shuffle after unbatch de-correlates the K siblings
+        # of one field so a batch isn't K consecutive same-exposure crops.
+        return (ds.shuffle(32)
+                  .map(_fwd, num_parallel_calls=AUTOTUNE)
+                  .unbatch()
+                  .shuffle(max(256, 4 * batch_size))
+                  .map(_augment_then_stretch, num_parallel_calls=AUTOTUNE)
+                  .repeat()
+                  .batch(batch_size)
+                  .prefetch(AUTOTUNE))
+
     def train(
         self,
         lr_path: str,
@@ -265,6 +336,9 @@ class Model:
         loss_norm: str = "l1",
         noise_aug: float = 0.0,
         bootstrap: float | None = None,
+        forward_onthefly: bool = False,
+        psf_subset: int | None = None,
+        crops_per_field: int = 4,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -279,19 +353,42 @@ class Model:
         :func:`~euclid_polish.training.losses.lp_loss`); ``noise_aug`` adds
         extra LR noise in read-noise units; ``bootstrap`` ∈ (0, 1) trains on
         that fraction of the fields (deterministic subset keyed by the seed).
-        Validation always uses the full set, no noise, and the L1 metric-space
-        pipeline — members with different knobs stay comparable.
+
+        ``forward_onthefly`` switches the TRAINING inputs to the live forward
+        model (see :class:`~euclid_polish.training.forward_onthefly
+        .OnTheFlyForward`): the dirty records are ignored; each visit of a
+        clean field re-draws PSF + noise on the FULL field and cuts
+        ``crops_per_field`` crops. ``psf_subset`` bags the member's PSF pool
+        to that many source clusters (keyed by the seed).
+
+        Validation always uses the record-based full set, no noise/forward
+        randomness, and the L1 metric-space pipeline — members with
+        different knobs stay comparable.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
         # built in __init__).
         if self._seed is not None:
             seed_everything(self._seed, deterministic=self._deterministic)
-        train_ds = self._build_training_pipeline(
-            lr_path, hr_path, batch_size,
-            noise_aug_rn=float(noise_aug),
-            bootstrap_keep=bootstrap,
-            bootstrap_seed=(self._seed if self._seed is not None else 0))
+        if forward_onthefly:
+            psf_sets, note = member_psf_sets(seed=self._seed,
+                                             psf_subset=psf_subset)
+            print(f"  on-the-fly forward: {note} · "
+                  f"{int(crops_per_field)} crops/field")
+            fwd = OnTheFlyForward(psf_sets, seed=self._seed,
+                                  crops_per_field=int(crops_per_field),
+                                  scale=self._scale)
+            train_ds = self._build_onthefly_pipeline(
+                hr_path, batch_size, fwd,
+                noise_aug_rn=float(noise_aug),
+                bootstrap_keep=bootstrap,
+                bootstrap_seed=(self._seed if self._seed is not None else 0))
+        else:
+            train_ds = self._build_training_pipeline(
+                lr_path, hr_path, batch_size,
+                noise_aug_rn=float(noise_aug),
+                bootstrap_keep=bootstrap,
+                bootstrap_seed=(self._seed if self._seed is not None else 0))
         valid_lr_path = lr_path.replace("_train.", "_validate.")
         valid_hr_path = hr_path.replace("_train.", "_validate.")
         if valid_lr_path == lr_path:
