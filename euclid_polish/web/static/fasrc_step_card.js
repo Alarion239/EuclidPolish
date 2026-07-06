@@ -379,18 +379,11 @@ large cutout don't leak across train/validate."></label>`;
           <option value="fork">Fork from member</option>
         </select></label>
       <span data-mode-group="add fork">
-        <label>Count
-          <input type="number" name="count" value="1" min="1" max="20"></label>
         <label>Steps (total)
           <input type="number" name="steps" value="200000" min="1000" max="2000000"></label>
-        <label title="Member i is seeded base_seed+i. Blank = fresh entropy seed (recorded on provenance).">
+        <label title="A model without its own seed is seeded base_seed+i. Blank = fresh entropy seed (recorded on provenance).">
           Base seed
           <input type="number" name="base_seed" value="" placeholder="blank = entropy"></label>
-      </span>
-      <span data-mode-group="add">
-        <label title="Trunk depth of the NEW members (residual blocks). Members of different depths coexist in the ensemble — each checkpoint self-describes its depth on load. Forks inherit their source's depth; continues keep the member's existing depth.">
-          Res blocks
-          <input type="number" name="num_res_blocks" value="32" min="1" max="128"></label>
       </span>
       <span data-mode-group="fork" style="display:none;">
         <label>Fork source
@@ -407,32 +400,24 @@ large cutout don't leak across train/validate."></label>`;
         <label>Extra steps
           <input type="number" name="extra_steps" value="50000" min="1000" max="1000000"></label>
       </span>
-      <label title="Reconstruction p-norm on the asinh residuals: (mean|SR−HR|^p)^(1/p). The root keeps all three on the L1 scale, so no LR retuning. L2/L3 weight the worst residuals harder — different norms train different estimators (posterior mean vs median), i.e. ensemble diversity.">
-        Loss norm
-        <select name="loss">
-          <option value="l1">L1 (median)</option>
-          <option value="l2">L2 (mean)</option>
-          <option value="l3">L3 (outlier-heavy)</option>
-        </select></label>
-      <label title="Extra Gaussian noise added to each LR training crop, in read-noise units (1.0 = one extra read noise: VIS 3.6 e⁻, NISP 6.1 e⁻), drawn fresh every crop on top of the record's baked-in realization. Decorrelates members (0.5–1.0 sane); 0 = off. Validation is never noised.">
-        Noise aug (RN units)
-        <input type="number" name="noise_aug" value="0" step="0.25" min="0" max="5"></label>
-      <label title="Train each member on this fraction of the training fields — a deterministic pseudo-random subset keyed by the member's seed (stable across epochs and resumes; different seed → different subset). Classic bagging: ~0.6–0.8. Blank/0/1 = all fields.">
-        Bootstrap frac
-        <input type="number" name="bootstrap" value="" placeholder="off"
-               step="0.05" min="0" max="1"></label>
-      <label style="flex-basis:100%;"
-             title='Optional per-member override JSON, applied positionally to the members this job trains — so one batch submits DISTINCT models. One object per member; members beyond the list use the fields above. Keys: loss ("l1"/"l2"/"l3"), noise_aug, bootstrap, num_res_blocks (add mode), seed. Example for 3 members: [{"loss":"l2"},{"noise_aug":1.0,"bootstrap":0.7},{"num_res_blocks":16}]'>
-        Per-member overrides (JSON, positional)
-        <textarea name="member_spec" rows="2" style="width:100%;font-family:monospace;"
-                  placeholder='[{"loss":"l2"},{"noise_aug":1.0,"bootstrap":0.7},{}]'></textarea></label>
-      <p class="hint" style="flex-basis:100%;">One GPU job, members trained
+      <div data-mode-group="add fork" style="flex-basis:100%;">
+        <div style="font-weight:600;margin:8px 0 2px;">Models to train
+          <span class="muted" style="font-weight:normal;">— one row per new
+          member; ＋ clones the previous row's knobs (seed stays blank so the
+          models differ)</span></div>
+        <div class="ens-member-list" style="flex-basis:100%;"></div>
+        <button type="button" class="ens-member-add"
+                style="margin-top:4px;">＋ Add model</button>
+        <input type="hidden" name="count" value="1">
+        <input type="hidden" name="member_spec" value="">
+      </div>
+      <p class="hint" style="flex-basis:100%;">One GPU job, models trained
          sequentially into <code>&lt;ckpt&gt;/../ensemble/member_NN/</code> on
          FASRC. New-member names are allocated from the local registry at
-         submit (archived indices are never reused). The loss / noise /
-         bootstrap knobs (and the per-member JSON) shape each member's
-         training distribution — recorded in its <code>origin.json</code>.
-         Pull the members back below when it finishes.</p>`;
+         submit (archived indices are never reused). Each row's loss / noise /
+         bootstrap / depth / seed shape that member's training distribution —
+         recorded in its <code>origin.json</code>. Pull the members back below
+         when the job finishes.</p>`;
   }
 
   function _tngModeFields() {
@@ -999,6 +984,137 @@ large cutout don't leak across train/validate."></label>`;
       modeSel.addEventListener('change', applyMode);
       applyMode();
     }
+    _wireEnsembleMembers(scope);
+  }
+
+  // ── ensemble_train: per-model row editor ───────────────────────────
+  // One row per NEW member (add/fork modes). ＋ appends a row autofilled
+  // from the previous row's knobs (seed excluded — cloning it would train
+  // the same model twice). The rows are the source of truth: every change
+  // rebuilds the hidden ``count`` + ``member_spec`` inputs the backend
+  // already consumes (build_command → --member-spec, positional).
+
+  function _ensMemberRowHtml() {
+    return `
+      <b class="ens-member-idx" style="min-width:2em;"></b>
+      <label style="font-weight:normal;"
+             title="Reconstruction p-norm on the asinh residuals: (mean|SR−HR|^p)^(1/p). The root keeps all three on the L1 scale, so no LR retuning. L2/L3 weight the worst residuals harder — different norms train different estimators (posterior median vs mean), i.e. ensemble diversity.">
+        loss
+        <select data-f="loss">
+          <option value="l1">L1 (median)</option>
+          <option value="l2">L2 (mean)</option>
+          <option value="l3">L3 (outlier-heavy)</option>
+        </select></label>
+      <label style="font-weight:normal;"
+             title="Extra Gaussian noise added to each LR training crop, in read-noise units (1.0 = one extra read noise: VIS 3.6 e⁻, NISP 6.1 e⁻), drawn fresh every crop on top of the record's baked-in realization. Decorrelates members (0.5–1.0 sane); 0 = off. Validation is never noised.">
+        noise aug
+        <input data-f="noise_aug" type="number" value="0" step="0.25" min="0"
+               max="5" style="width:5em;"></label>
+      <label style="font-weight:normal;"
+             title="Train this member on this fraction of the training fields — a deterministic pseudo-random subset keyed by its seed (stable across epochs and resumes). Classic bagging: ~0.6–0.8. Blank/0/1 = all fields.">
+        bootstrap
+        <input data-f="bootstrap" type="number" value="" placeholder="off"
+               step="0.05" min="0" max="1" style="width:5em;"></label>
+      <label data-mode-group="add" style="font-weight:normal;"
+             title="Trunk depth (residual blocks) of this member. Members of different depths coexist — each checkpoint self-describes its depth on load. Forks inherit their source's depth instead.">
+        blocks
+        <input data-f="num_res_blocks" type="number" value="32" min="1"
+               max="128" style="width:4.5em;"></label>
+      <label style="font-weight:normal;"
+             title="Explicit RNG seed for this member (weight init + data order + bootstrap subset). Blank = base_seed+i (or entropy). Intentionally NOT cloned by ＋ — two members with one seed are the same model.">
+        seed
+        <input data-f="seed" type="number" value="" placeholder="auto"
+               style="width:6em;"></label>
+      <button type="button" class="ens-member-del" title="Remove this model"
+              style="margin-left:auto;">×</button>`;
+  }
+
+  function _wireEnsembleMembers(scope) {
+    const form = scope.querySelector('form[data-step-id="ensemble_train"]');
+    if (!form) return;
+    const list = form.querySelector('.ens-member-list');
+    const addBtn = form.querySelector('.ens-member-add');
+    const countInp = form.querySelector('input[name="count"]');
+    const specInp = form.querySelector('input[name="member_spec"]');
+    const modeSel = form.querySelector('select[name="mode"]');
+    if (!list || !addBtn || !countInp || !specInp) return;
+
+    const rows = () => [...list.querySelectorAll('.ens-member-row')];
+
+    function sync() {
+      const rs = rows();
+      countInp.value = String(rs.length || 1);
+      const mode = modeSel ? modeSel.value : 'add';
+      if (mode === 'continue') {           // rows don't apply to continue
+        specInp.value = '';
+        return;
+      }
+      specInp.value = JSON.stringify(rs.map((r) => {
+        const g = (f) => r.querySelector(`[data-f="${f}"]`).value.trim();
+        const o = { loss: g('loss') };
+        const noise = parseFloat(g('noise_aug'));
+        if (noise > 0) o.noise_aug = noise;
+        const boot = parseFloat(g('bootstrap'));
+        if (boot > 0 && boot < 1) o.bootstrap = boot;
+        if (mode === 'add') {
+          const b = parseInt(g('num_res_blocks'), 10);
+          if (b > 0) o.num_res_blocks = b;
+        }
+        if (g('seed') !== '') o.seed = parseInt(g('seed'), 10);
+        return o;
+      }));
+    }
+
+    function renumber() {
+      rows().forEach((r, i) => {
+        r.querySelector('.ens-member-idx').textContent = `#${i + 1}`;
+        r.querySelector('.ens-member-del').style.visibility =
+          rows().length > 1 ? '' : 'hidden';
+      });
+    }
+
+    function addRow(src) {
+      const div = document.createElement('div');
+      div.className = 'ens-member-row';
+      div.style.cssText =
+        'display:flex;flex-wrap:wrap;gap:10px;align-items:center;' +
+        'padding:6px 10px;border:1px solid #dde3ee;border-radius:6px;' +
+        'margin:4px 0;';
+      div.innerHTML = _ensMemberRowHtml();
+      // Autofill from the previous row — everything EXCEPT the seed.
+      if (src) {
+        ['loss', 'noise_aug', 'bootstrap', 'num_res_blocks'].forEach((f) => {
+          div.querySelector(`[data-f="${f}"]`).value =
+            src.querySelector(`[data-f="${f}"]`).value;
+        });
+      }
+      // blocks apply to add mode only (a fork inherits its source's depth);
+      // the shared mode toggler keeps this in sync on later mode changes.
+      div.querySelector('[data-mode-group="add"]').style.display =
+        (modeSel && modeSel.value === 'fork') ? 'none' : '';
+      list.appendChild(div);
+      renumber();
+      sync();
+    }
+
+    addBtn.addEventListener('click', () => addRow(rows().at(-1) || null));
+    list.addEventListener('click', (e) => {
+      const del = e.target.closest('.ens-member-del');
+      if (del && rows().length > 1) {
+        del.closest('.ens-member-row').remove();
+        renumber();
+        sync();
+      }
+    });
+    list.addEventListener('input', sync);
+    list.addEventListener('keydown', (e) => {   // rows are added after the
+      if (e.key === 'Enter') {                  // global Enter-blocker ran
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    });
+    if (modeSel) modeSel.addEventListener('change', sync);
+    addRow(null);                               // start with one model
   }
 
   // ── Public entry points ────────────────────────────────────────────
