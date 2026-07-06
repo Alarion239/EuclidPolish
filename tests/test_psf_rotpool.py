@@ -131,3 +131,21 @@ def test_load_all_requires_every_band(pool_dir):
 def test_missing_pool_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="rotation pool"):
         load_band_rotpool(Config.BANDS[0], psf_dir=str(tmp_path))
+
+
+def test_fasrc_step_builds_command():
+    from euclid_polish.web.fasrc_pipeline import REGISTRY
+    step = REGISTRY.get("psf_rotation_pool")
+    cmd = step.build_command({"rotations": "16", "seed": "7",
+                              "crop": "257", "n_cpus": "16"})
+    assert cmd[0] == "scripts/pregenerate_psf_rotations.py"
+    joined = " ".join(cmd)
+    assert "--rotations 16" in joined
+    assert "--seed 7" in joined
+    assert "--crop 257" in joined
+    assert "--workers 16" in joined
+    # blank seed/crop are omitted; workers falls back to the CPU default
+    cmd = step.build_command({})
+    joined = " ".join(cmd)
+    assert "--seed" not in joined and "--crop" not in joined
+    assert "--rotations 12" in joined and "--workers 16" in joined

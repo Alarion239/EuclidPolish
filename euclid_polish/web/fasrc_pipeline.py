@@ -699,6 +699,52 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
         return cmd
 
 
+class PSFRotationPoolStep(FASRCPipelineStep):
+    """Precompute the pre-rotated PSF kernel pools (one job, all 4 bands).
+
+    Shells out to ``scripts/pregenerate_psf_rotations.py``: for every cluster
+    ePSF, K random telescope-roll rotations (one shared angle table across
+    bands, so a pool index is one physical pointing in all four channels) are
+    precomputed and streamed to ``euclid_psf_rotpool_<BAND>.fits`` next to
+    the source ePSFs. Amortises the ~92 ms/kernel order-3 rotation to a
+    one-time build; the pools feed roll augmentation in generation and the
+    per-member PSF bagging of on-the-fly training. Re-run after every ePSF
+    re-extraction (the pool is a derivative of the cluster kernels).
+    """
+
+    def __init__(self):
+        super().__init__(
+            step_id="psf_rotation_pool",
+            label="Pre-rotate ePSF kernel pools (all 4 bands)",
+            job_name="psf-rotpool",
+            defaults=StepResources(
+                partition="shared", n_cpus=16, n_gpus=0,
+                # Rotation workers each hold one 511² kernel; the writer
+                # batches one cluster (K+1 kernels) at a time. The source
+                # sets (~1.5 GB for 4×356 kernels) dominate.
+                memory="16G", time_limit="2:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        rotations = int(params.get("rotations", 12) or 12)
+        cmd = [
+            "scripts/pregenerate_psf_rotations.py",
+            "--rotations", str(rotations),
+            # Rotate on every allocated CPU.
+            "--workers", str(int(params.get("n_cpus", 16) or 16)),
+        ]
+        seed = str(params.get("seed", "")).strip()
+        if seed:
+            with contextlib.suppress(ValueError):
+                cmd += ["--seed", str(int(seed))]
+        crop = int(params.get("crop", 0) or 0)
+        if crop > 0:
+            cmd += ["--crop", str(crop)]
+        return cmd
+
+
 # NOTE: catalog evaluation and Zoobot morphology are NOT FASRC steps — they
 # run LOCALLY as background jobs (the SR model in-process, Zoobot in its own
 # torch env). See euclid_polish/web/routes/evaluation.py and the /evaluation
@@ -1368,6 +1414,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,
     EuclidPSFExtractStep,
+    PSFRotationPoolStep,
     TngSkirtAtlasDownloadStep,
     TngGridStep,
     TngStackStep,

@@ -172,6 +172,28 @@ large cutout don't leak across train/validate."></label>`;
           <p class="hint" style="flex-basis:100%;">VIS cutout (px) is set on the
              <a href="/config">⚙️ Config</a> tab; output ePSF size is locked to
              2·(VIS cutout)+1 oversampled px.</p>`;
+      case 'psf_rotation_pool':
+        // Mirrors PSFRotationPoolStep.build_command (rotations, seed, crop).
+        // One shared random angle table across bands → a pool index is one
+        // physical (cluster, roll) pointing in all four channels.
+        return `
+          <label>Rotations per kernel
+            <input type="number" name="rotations" value="12" min="1" max="50"
+                   title="Random roll angles drawn per cluster ePSF (the unrotated original is always stored too). 10–20 is the useful range; more rolls = more pool diversity but linearly more disk."></label>
+          <label>Seed <span class="muted">(blank = 0)</span>
+            <input type="number" name="seed" value="" placeholder="0"
+                   title="Seed for the shared angle table — fixed seed ⇒ bit-reproducible pool."></label>
+          <label>Crop (px, odd) <span class="muted">(blank = full 511²)</span>
+            <input type="number" name="crop" value="" min="0" max="511" step="2"
+                   placeholder="full"
+                   title="Centre-crop stored kernels to this odd side. 257 keeps 99.4% of the VIS flux at 4× less disk/RAM — enough for the crop-local on-the-fly training forward. Leave blank if the pool must also serve full-field generation."></label>
+          <p class="hint" style="flex-basis:100%;">Writes
+             <code>euclid_psf_rotpool_&lt;BAND&gt;.fits</code> next to the
+             extracted ePSFs (~19 GB full / ~4.7 GB at crop 257 for 356
+             clusters × 12 rolls). <b>Re-run after every ePSF re-extraction</b>
+             — the pool is a derivative of the cluster kernels. Loaded via
+             <code>rotpool.load_all_band_rotpools(subset_clusters, seed)</code>
+             for per-member PSF bagging.</p>`;
       case 'download_tng_skirt':
         // Mirrors TngSkirtAtlasDownloadStep.build_command (workers, limit,
         // keep_archive). Downloads the whole TNG50 SKIRT atlas (~1153
