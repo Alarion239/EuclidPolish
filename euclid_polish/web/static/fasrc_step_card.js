@@ -385,11 +385,32 @@ large cutout don't leak across train/validate."></label>`;
         <label>Extra steps
           <input type="number" name="extra_steps" value="50000" min="1000" max="1000000"></label>
       </span>
+      <label title="Reconstruction p-norm on the asinh residuals: (mean|SR−HR|^p)^(1/p). The root keeps all three on the L1 scale, so no LR retuning. L2/L3 weight the worst residuals harder — different norms train different estimators (posterior mean vs median), i.e. ensemble diversity.">
+        Loss norm
+        <select name="loss">
+          <option value="l1">L1 (median)</option>
+          <option value="l2">L2 (mean)</option>
+          <option value="l3">L3 (outlier-heavy)</option>
+        </select></label>
+      <label title="Extra Gaussian noise added to each LR training crop, in read-noise units (1.0 = one extra read noise: VIS 3.6 e⁻, NISP 6.1 e⁻), drawn fresh every crop on top of the record's baked-in realization. Decorrelates members (0.5–1.0 sane); 0 = off. Validation is never noised.">
+        Noise aug (RN units)
+        <input type="number" name="noise_aug" value="0" step="0.25" min="0" max="5"></label>
+      <label title="Train each member on this fraction of the training fields — a deterministic pseudo-random subset keyed by the member's seed (stable across epochs and resumes; different seed → different subset). Classic bagging: ~0.6–0.8. Blank/0/1 = all fields.">
+        Bootstrap frac
+        <input type="number" name="bootstrap" value="" placeholder="off"
+               step="0.05" min="0" max="1"></label>
+      <label style="flex-basis:100%;"
+             title='Optional per-member override JSON, applied positionally to the members this job trains — so one batch submits DISTINCT models. One object per member; members beyond the list use the fields above. Keys: loss ("l1"/"l2"/"l3"), noise_aug, bootstrap, num_res_blocks (add mode), seed. Example for 3 members: [{"loss":"l2"},{"noise_aug":1.0,"bootstrap":0.7},{"num_res_blocks":16}]'>
+        Per-member overrides (JSON, positional)
+        <textarea name="member_spec" rows="2" style="width:100%;font-family:monospace;"
+                  placeholder='[{"loss":"l2"},{"noise_aug":1.0,"bootstrap":0.7},{}]'></textarea></label>
       <p class="hint" style="flex-basis:100%;">One GPU job, members trained
          sequentially into <code>&lt;ckpt&gt;/../ensemble/member_NN/</code> on
          FASRC. New-member names are allocated from the local registry at
-         submit (archived indices are never reused). Pull the members back
-         below when it finishes.</p>`;
+         submit (archived indices are never reused). The loss / noise /
+         bootstrap knobs (and the per-member JSON) shape each member's
+         training distribution — recorded in its <code>origin.json</code>.
+         Pull the members back below when it finishes.</p>`;
   }
 
   function _tngModeFields() {

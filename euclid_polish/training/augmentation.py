@@ -69,15 +69,60 @@ def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: int | None = None) -> t
 # Random crop augmentation
 # ---------------------------------------------------------------------------
 
+#: Per-LR-band read noise (e⁻) — the natural unit for the noise-augmentation
+#: knob (one dimensionless multiplier covers all four bands sensibly).
+_LR_READ_NOISE_NP = np.array(
+    [Config.get_band(name).read_noise_e
+     for name in Config.LR_INPUT_BAND_NAMES],
+    dtype=np.float32,
+)
+
+
+def random_dihedral(lr: tf.Tensor, hr: tf.Tensor,
+                    ) -> tuple[tf.Tensor, tf.Tensor]:
+    """Apply the SAME random dihedral transform (rot90 ×k + optional flip) to
+    an aligned LR/HR pair — 8 orientations, uniform.
+
+    Valid since data generation randomises the PSF orientation (PSF and
+    galaxies are rotated together): ``flip(clean ⊛ PSF + n) = flip(clean) ⊛
+    flip(PSF) + flip(n)``, so a flipped/rotated pair is an exact (dirty,
+    clean) pair under the flipped PSF — within the training PSF distribution.
+    The 2×2 rebin to the LR grid commutes with these transforms exactly
+    (patches are square and block-aligned).
+    """
+    k = tf.random.uniform([], 0, 4, dtype=tf.int32)
+    lr = tf.image.rot90(lr, k)
+    hr = tf.image.rot90(hr, k)
+    flip = tf.random.uniform([], 0, 2, dtype=tf.int32)
+    lr = tf.cond(flip > 0, lambda: tf.image.flip_left_right(lr), lambda: lr)
+    hr = tf.cond(flip > 0, lambda: tf.image.flip_left_right(hr), lambda: hr)
+    return lr, hr
+
+
+def add_lr_noise(lr: tf.Tensor, noise_aug_rn: float) -> tf.Tensor:
+    """Add extra Gaussian noise to an LR patch, in ELECTRONS (pre-stretch).
+
+    ``noise_aug_rn`` is per-band: σ_band = noise_aug_rn · read_noise_band
+    (VIS 3.6 e⁻, NISP 6.1 e⁻). This is noise-LEVEL augmentation on top of the
+    realization already baked into the dirty records — it decorrelates
+    ensemble members (each sees different draws, and different levels when
+    the knob differs per member) at the cost of training at slightly higher
+    noise than test. True noise re-realization needs a noiseless-LR record
+    (TFRecord regen). 0 disables (identity).
+    """
+    if noise_aug_rn <= 0:
+        return lr
+    c = lr.shape[-1]
+    k = _LR_READ_NOISE_NP[:int(c)] if c is not None else _LR_READ_NOISE_NP
+    return lr + tf.random.normal(tf.shape(lr)) * (float(noise_aug_rn) * k)
+
+
 def _augment_multiband(
     lr: tf.Tensor, hr: tf.Tensor, hr_patch_size: int, scale: int,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Random aligned LR/HR crop.
-
-    Flips and rotations are intentionally disabled: the empirical VIS ePSF is
-    non-symmetric, so a flipped HR target is not what you would obtain by
-    convolving the flipped clean field with the same PSF.
-    """
+    """Random aligned LR/HR crop (dihedral flips/rotations live in
+    :func:`random_dihedral`, applied by the pipeline after the crop so the
+    transform runs on the small patch)."""
     lr_patch_size = hr_patch_size // scale
     hr_h = tf.shape(hr)[0]
     hr_w = tf.shape(hr)[1]

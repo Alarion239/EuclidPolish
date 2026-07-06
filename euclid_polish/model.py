@@ -25,8 +25,10 @@ from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.training.augmentation import (
     _augment_multiband,
+    add_lr_noise,
     asinh_stretch_hr,
     asinh_stretch_lr,
+    random_dihedral,
 )
 from euclid_polish.training.inference import (
     infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
@@ -37,6 +39,7 @@ from euclid_polish.training.inference import (
 from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
+from euclid_polish.training.losses import lp_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.trainer import Trainer, seed_everything
@@ -172,15 +175,26 @@ class Model:
         batch_size: int,
         *,
         augment: bool = True,
+        noise_aug_rn: float = 0.0,
+        bootstrap_keep: float | None = None,
+        bootstrap_seed: int = 0,
     ):
-        """TF data pipeline: TFRecord → parse → [crop] → asinh stretch → batch.
+        """TF data pipeline: TFRecord → parse → [bootstrap] → [crop + dihedral
+        + noise] → asinh stretch → batch.
 
         The asinh stretch is applied AFTER the random crop, so the (per-band,
         elementwise) transcendental runs on the small training patch rather than
         the full field — ~28x less work for a 96px crop out of a 512px field.
         ``asinh`` is elementwise, so this is bit-identical to stretching first:
         ``asinh(crop(x)) == crop(asinh(x))``. With ``augment=False`` (validation)
-        there is no crop, so the full field is stretched as before.
+        there is no crop/flip/noise, so the full field is stretched as before.
+
+        Ensemble-diversity knobs (training only, all default-off/neutral):
+        ``noise_aug_rn`` adds extra Gaussian noise to the LR patch in
+        read-noise units (electrons, pre-stretch); ``bootstrap_keep`` ∈ (0, 1)
+        keeps a deterministic pseudo-random subset of the training FIELDS —
+        keyed by (``bootstrap_seed``, field index), so the same member always
+        trains on the same subset across epochs and resumes.
         """
         n_lr = Config.NUM_LR_CHANNELS
         n_hr = Config.NUM_HR_CHANNELS
@@ -197,11 +211,27 @@ class Model:
                  .map(_parse_hr, num_parallel_calls=AUTOTUNE))
         ds = tf.data.Dataset.zip((lr_ds, hr_ds))
         if augment:
+            if bootstrap_keep is not None and 0.0 < float(bootstrap_keep) < 1.0:
+                keep = float(bootstrap_keep)
+                seed0 = int(bootstrap_seed) & 0x7FFFFFFF
+
+                def _keep(i, _pair):
+                    u = tf.random.stateless_uniform(
+                        [], seed=tf.stack([tf.constant(seed0, tf.int32),
+                                           tf.cast(i, tf.int32)]))
+                    return u < keep
+
+                ds = (ds.enumerate()
+                        .filter(_keep)
+                        .map(lambda _i, pair: pair))
             scale = self._scale
             hr_crop = Config.DEFAULT_HR_CROP_SIZE
+            noise_rn = float(noise_aug_rn)
 
             def _crop_then_stretch(lr, hr):
                 lr, hr = _augment_multiband(lr, hr, hr_crop, scale)
+                lr, hr = random_dihedral(lr, hr)
+                lr = add_lr_noise(lr, noise_rn)
                 return asinh_stretch_lr(lr), asinh_stretch_hr(hr)
 
             ds = (ds.shuffle(200)
@@ -232,6 +262,9 @@ class Model:
         plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
         plateau_lr_recovery: bool = Config.PLATEAU_LR_RECOVERY,
         resume_track: str = "latest",
+        loss_norm: str = "l1",
+        noise_aug: float = 0.0,
+        bootstrap: float | None = None,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -240,13 +273,25 @@ class Model:
         ``_validate.`` in the filenames. All extra ``kwargs`` are forwarded
         verbatim to :class:`~euclid_polish.training.trainer.Trainer.train`
         (e.g. ``evaluate_every``, ``step_callback``, ``eval_callback``).
+
+        Ensemble-diversity knobs: ``loss_norm`` picks the reconstruction
+        p-norm (``l1``/``l2``/``l3``, see
+        :func:`~euclid_polish.training.losses.lp_loss`); ``noise_aug`` adds
+        extra LR noise in read-noise units; ``bootstrap`` ∈ (0, 1) trains on
+        that fraction of the fields (deterministic subset keyed by the seed).
+        Validation always uses the full set, no noise, and the L1 metric-space
+        pipeline — members with different knobs stay comparable.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
         # built in __init__).
         if self._seed is not None:
             seed_everything(self._seed, deterministic=self._deterministic)
-        train_ds = self._build_training_pipeline(lr_path, hr_path, batch_size)
+        train_ds = self._build_training_pipeline(
+            lr_path, hr_path, batch_size,
+            noise_aug_rn=float(noise_aug),
+            bootstrap_keep=bootstrap,
+            bootstrap_seed=(self._seed if self._seed is not None else 0))
         valid_lr_path = lr_path.replace("_train.", "_validate.")
         valid_hr_path = hr_path.replace("_train.", "_validate.")
         if valid_lr_path == lr_path:
@@ -272,6 +317,7 @@ class Model:
         )
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
+                          loss=lp_loss(loss_norm),
                           seed=self._seed, deterministic=self._deterministic,
                           plateau_lr_enabled=plateau_lr_enabled,
                           plateau_lr_factor=plateau_lr_factor,

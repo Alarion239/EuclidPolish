@@ -29,6 +29,7 @@ compatibility; new code uses this module instead.
 from __future__ import annotations
 
 import contextlib
+import json
 import shlex
 import textwrap
 import time
@@ -1014,6 +1015,31 @@ class EnsembleTrainStep(FASRCPipelineStep):
                         str(params.get("fork_from", "")).strip(),
                         "--fork-track",
                         str(params.get("fork_track", "psnr") or "psnr")]
+        # Diversity knobs: run-wide loss norm / extra-noise / bootstrap, plus
+        # the per-member JSON override list (validated here so a typo 400s at
+        # submit instead of burning a queued GPU job on an argparse exit).
+        loss = str(params.get("loss", "")).strip()
+        if loss in ("l1", "l2", "l3"):
+            cmd += ["--loss", loss]
+        for flag, key in (("--noise-aug", "noise_aug"),
+                          ("--bootstrap", "bootstrap")):
+            val = str(params.get(key, "")).strip()
+            if val not in ("", "0", "0.0"):
+                with contextlib.suppress(ValueError):
+                    cmd += [flag, f"{float(val):g}"]
+        member_spec = str(params.get("member_spec", "")).strip()
+        if member_spec:
+            try:
+                spec = json.loads(member_spec)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"per-member spec is not valid JSON: {e}") from e
+            if not isinstance(spec, list) or not all(
+                    isinstance(o, dict) for o in spec):
+                raise ValueError("per-member spec must be a JSON list of "
+                                 "objects, one per member (e.g. "
+                                 '[{"loss":"l2"},{"noise_aug":1}])')
+            cmd += ["--member-spec", json.dumps(spec)]
         # Fixed base seed → fully reproducible ensemble; blank / -1 → entropy
         # (the value used is still recorded on each member's provenance).
         base_seed = str(params.get("base_seed", "")).strip()

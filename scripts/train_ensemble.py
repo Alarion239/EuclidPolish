@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import sys
@@ -85,6 +86,30 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "fresh entropy base seed; the value used is recorded on "
                         "each member's provenance for replay.")
     p.add_argument("--steps", type=int, default=Config.DEFAULT_TRAIN_STEPS)
+    # Diversity knobs — run-wide defaults; --member-spec overrides per member.
+    p.add_argument("--loss", choices=["l1", "l2", "l3"], default="l1",
+                   help="Reconstruction p-norm: (mean|SR−HR|^p)^(1/p) on the "
+                        "asinh residuals. The root keeps all three on the L1 "
+                        "scale (no LR retuning); L2/L3 weight large residuals "
+                        "harder — different norms → different estimators "
+                        "(posterior mean vs median) → ensemble diversity.")
+    p.add_argument("--noise-aug", type=float, default=0.0,
+                   help="Extra Gaussian LR noise in READ-NOISE units (VIS "
+                        "3.6 e⁻, NISP 6.1 e⁻ per unit), drawn fresh per crop "
+                        "on top of the baked-in realization. 0 = off. "
+                        "Decorrelates members; ~0.5–1.0 is a sane range.")
+    p.add_argument("--bootstrap", type=float, default=0.0,
+                   help="Train each member on this fraction (0<f<1) of the "
+                        "training fields — a deterministic pseudo-random "
+                        "subset keyed by the member's seed, stable across "
+                        "epochs/resumes. 0/1 = off (all fields).")
+    p.add_argument("--member-spec", default="",
+                   help='Per-member override JSON, applied positionally: '
+                        '\'[{"loss":"l2","noise_aug":1.0,"bootstrap":0.7,'
+                        '"num_res_blocks":16}, {}, …]\'. Members beyond the '
+                        "list length use the run-wide flags. Keys: loss, "
+                        "noise_aug, bootstrap, num_res_blocks (add mode), "
+                        "seed.")
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -163,6 +188,45 @@ def _fresh_names(args, base: str, k: int) -> list[str]:
     return out
 
 
+def _member_overrides(args, k: int) -> list[dict]:
+    """``--member-spec`` JSON → one (possibly empty) override dict per member.
+
+    Applied positionally; a short list pads with ``{}`` (run-wide flags), a
+    long one is truncated. Unknown keys are rejected loudly — a typo silently
+    training 5 members with default knobs would be an expensive no-op.
+    """
+    if not args.member_spec.strip():
+        return [{} for _ in range(k)]
+    try:
+        spec = json.loads(args.member_spec)
+    except json.JSONDecodeError as e:
+        print(f"✗ --member-spec is not valid JSON: {e}")
+        raise SystemExit(2) from e
+    if not isinstance(spec, list) or not all(isinstance(o, dict) for o in spec):
+        print("✗ --member-spec must be a JSON LIST of objects (one per member)")
+        raise SystemExit(2)
+    allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed"}
+    for i, o in enumerate(spec):
+        bad = set(o) - allowed
+        if bad:
+            print(f"✗ --member-spec[{i}]: unknown key(s) {sorted(bad)} "
+                  f"(allowed: {sorted(allowed)})")
+            raise SystemExit(2)
+        if o.get("loss") is not None and o["loss"] not in ("l1", "l2", "l3"):
+            print(f"✗ --member-spec[{i}]: loss must be l1/l2/l3, "
+                  f"got {o['loss']!r}")
+            raise SystemExit(2)
+    return [dict(spec[i]) if i < len(spec) else {} for i in range(k)]
+
+
+def _diversity_kwargs(args, over: dict) -> dict:
+    """The spec kwargs shared by every mode: run-wide flag, member override."""
+    boot = float(over.get("bootstrap", args.bootstrap) or 0.0)
+    return {"loss_norm": str(over.get("loss", args.loss)),
+            "noise_aug": float(over.get("noise_aug", args.noise_aug)),
+            "bootstrap": boot if 0.0 < boot < 1.0 else None}
+
+
 def build_specs(args, base: str) -> list[MemberTrainSpec]:
     """CLI args → the run's :class:`MemberTrainSpec` list (mode-dispatched)."""
     base_seed = (int.from_bytes(os.urandom(4), "little")
@@ -173,6 +237,7 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         if not names:
             print("✗ --mode continue needs --members")
             raise SystemExit(2)
+        overrides = _member_overrides(args, len(names))
         specs = []
         for i, name in enumerate(names):
             d = os.path.join(base, name)
@@ -181,9 +246,11 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
                 print(f"✗ {name}: no checkpoint to continue from in {d}")
                 raise SystemExit(2)
             specs.append(MemberTrainSpec(
-                name=name, seed=base_seed + i, op="continue",
+                name=name, seed=int(overrides[i].get("seed", base_seed + i)),
+                op="continue",
                 target_steps=cur + int(args.extra_steps),
-                run_steps=int(args.extra_steps)))
+                run_steps=int(args.extra_steps),
+                **_diversity_kwargs(args, overrides[i])))
         return specs
 
     k = int(args.count or args.n_members or (1 if args.mode == "fork" else 5))
@@ -201,15 +268,21 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         init_from = src
         forked_from = f"{args.fork_from}·{args.fork_track}"
     names = _fresh_names(args, base, k)
+    overrides = _member_overrides(args, k)
     # Depth applies to ADD only: a fork inherits its source's depth (weights
     # are copied verbatim), and continue is dictated by the existing ckpt.
-    blocks = int(args.num_res_blocks) if args.mode == "add" else None
-    return [MemberTrainSpec(
-                name=n, seed=base_seed + i, op=args.mode,
-                target_steps=int(args.steps), run_steps=int(args.steps),
-                init_from=init_from, forked_from=forked_from,
-                num_res_blocks=blocks)
-            for i, n in enumerate(names)]
+    specs = []
+    for i, n in enumerate(names):
+        over = overrides[i]
+        blocks = (int(over.get("num_res_blocks", args.num_res_blocks))
+                  if args.mode == "add" else None)
+        specs.append(MemberTrainSpec(
+            name=n, seed=int(over.get("seed", base_seed + i)), op=args.mode,
+            target_steps=int(args.steps), run_steps=int(args.steps),
+            init_from=init_from, forked_from=forked_from,
+            num_res_blocks=blocks,
+            **_diversity_kwargs(args, over)))
+    return specs
 
 
 def main() -> int:
@@ -231,7 +304,13 @@ def main() -> int:
     }[args.mode]
     print(f"Ensemble training ({label}) → {base}")
     for s in specs:
+        knobs = f" loss={s.loss_norm}"
+        if s.noise_aug:
+            knobs += f" noise_aug={s.noise_aug:g}"
+        if s.bootstrap:
+            knobs += f" bootstrap={s.bootstrap:g}"
         print(f"  · {s.name}: seed={s.seed} target_steps={s.target_steps}"
+              + knobs
               + (f" init_from={s.init_from}" if s.init_from else ""))
 
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).

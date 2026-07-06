@@ -95,6 +95,14 @@ class MemberTrainSpec:
     ``num_res_blocks`` sets a NEW member's trunk depth (``None`` → the run
     default); members of different depths coexist — continue/fork ignore it
     because the existing checkpoint / fork source dictates the depth.
+
+    Diversity knobs (all optional, per member — the point of an ensemble is
+    that members differ): ``loss_norm`` ∈ {"l1","l2","l3"} picks the
+    reconstruction p-norm; ``noise_aug`` adds extra LR noise (read-noise
+    units); ``bootstrap`` ∈ (0, 1) trains on that deterministic fraction of
+    the fields (keyed by the member's seed). They apply to every op —
+    continue/fork runs can adopt them too (they shape the *run*, not the
+    architecture).
     """
     name: str
     seed: int
@@ -104,6 +112,9 @@ class MemberTrainSpec:
     init_from: str | None = None
     forked_from: str | None = None
     num_res_blocks: int | None = None
+    loss_norm: str = "l1"
+    noise_aug: float = 0.0
+    bootstrap: float | None = None
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -321,6 +332,11 @@ class EnsembleModel:
                         "target_steps": int(spec.target_steps),
                         # The ACTUAL depth (a fork inherits its source's).
                         "num_res_blocks": int(m._num_res_blocks),
+                        # Diversity knobs, recorded so the member's training
+                        # distribution is reconstructible from its sidecar.
+                        "loss_norm": spec.loss_norm,
+                        "noise_aug": float(spec.noise_aug),
+                        "bootstrap": spec.bootstrap,
                         "created_at": datetime.now(UTC).isoformat(
                             timespec="seconds"),
                         "commit": commit,
@@ -332,6 +348,9 @@ class EnsembleModel:
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"
                                   else "latest"),
+                    loss_norm=spec.loss_norm,
+                    noise_aug=spec.noise_aug,
+                    bootstrap=spec.bootstrap,
                     **train_kwargs)
             self._models.append(m)
             if on_member is not None:
