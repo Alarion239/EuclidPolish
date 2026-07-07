@@ -160,7 +160,9 @@ def _sim_fwd():
 
 def _build_complete_subset(rdir, subset, n):
     """Generate one shard covering [0, n) and merge it to final files —
-    exactly the on-disk state of a completed subset."""
+    exactly the on-disk state of a completed subset (parts deleted: a
+    successful merge removes them last, and lingering parts now mark the
+    subset incomplete)."""
     sim, fwd = _sim_fwd()
     rp._generate_convolve_range(sim, fwd, rdir, subset, 0, n, 0, seed=[1, 1, 0])
     for kind in ("clean", "hr", "dirty"):
@@ -171,6 +173,7 @@ def _build_complete_subset(rdir, subset, n):
         [tfrecord_path(rdir, f"sources_{subset}.part0000").replace(
             ".tfrecord", ".csv")],
         tfrecord_path(rdir, f"sources_{subset}").replace(".tfrecord", ".csv"))
+    rp._cleanup_parts(rdir, subset)
 
 
 def test_completed_subset_detected_and_truncation_busts_it(tmp_path):
@@ -209,9 +212,9 @@ def test_step_convolve_resumes_then_force_regenerates(tmp_path, monkeypatch):
     rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 4, 0, seed=[1, 1, 0])
     rp._concat_tfrecords([tfrecord_path(rdir, "clean_train.part0000")],
                          tfrecord_path(rdir, "clean_train"))
-    # Remove hr/dirty so the first convolve must produce them.
-    for kind in ("hr", "dirty"):
-        os.remove(tfrecord_path(rdir, f"{kind}_train.part0000"))
+    # Drop ALL parts (a completed generation has none — lingering parts mark
+    # the subset incomplete) so the first convolve produces hr/dirty finals.
+    rp._cleanup_parts(rdir, "train")
 
     opened = []
     real = rp.open_writer

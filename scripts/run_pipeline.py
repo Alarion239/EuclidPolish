@@ -399,7 +399,7 @@ def step_convolve(args: argparse.Namespace) -> None:
             reporter.set_step(done, grand_total, f"{subset} already complete")
             continue
         if args.force and not write_dirty:
-            _remove_final_dirty(args.records_dir, subset)
+            _remove_subset_finals(args.records_dir, subset, kinds=("dirty",))
 
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
@@ -546,22 +546,34 @@ def _trimmed_hr(sky: Image) -> Image:
                  metadata=sky.metadata)
 
 
-def _remove_final_dirty(records_dir: str, subset: str) -> None:
-    """Delete a previously-generated ``dirty_<subset>.tfrecord`` and its
-    provenance sidecars. With ``--skip-dirty-train`` the file would never be
-    rewritten, and a stale-calibration dirty file silently lying around is
-    exactly the trap ``--force`` exists to prevent."""
-    path = tfrecord_path(records_dir, f"dirty_{subset}")
-    if os.path.isfile(path):
-        os.remove(path)
-        _log(f"  {subset}: deleted stale {os.path.basename(path)} "
-             "(--skip-dirty-train + --force)")
+def _remove_subset_finals(records_dir: str, subset: str,
+                          kinds: tuple[str, ...] = ("clean", "hr", "dirty",
+                                                    "sources")) -> None:
+    """Delete ``subset``'s FINAL record files (+ provenance sidecars).
+
+    ``--force`` means "discard the existing data" — deleting up-front (rather
+    than lazily overwriting at merge time) closes a real trap: a force run
+    that hits its wall-clock mid-way leaves the OLD finals on disk, and the
+    follow-up resume run counts them as "already complete" and skips the
+    subset with stale-calibration data. (Exactly what happened on FASRC jobs
+    28884305 → 28960256.)"""
+    removed = []
+    for kind in kinds:
+        path = tfrecord_path(records_dir, f"{kind}_{subset}")
+        if kind == "sources":
+            path = path.replace(".tfrecord", ".csv")
+        if os.path.isfile(path):
+            os.remove(path)
+            removed.append(os.path.basename(path))
+    if removed:
+        _log(f"  {subset}: deleted stale final(s) {', '.join(removed)} "
+             "(--force discards existing data up-front)")
     for sc in glob.glob(os.path.join(records_dir, "*.skytfrecordartifact.json")):
         try:
             with open(sc) as f:
                 meta = json.load(f)
             d = meta.get("descriptors", {})
-            if d.get("kind") == "dirty" and d.get("subset") == subset:
+            if d.get("kind") in kinds and d.get("subset") == subset:
                 os.remove(sc)
         except (OSError, ValueError):
             pass
@@ -573,6 +585,12 @@ def _subset_complete(records_dir: str, subset: str,
     records and, when 'sources' is requested, the sidecar exists. A count that
     differs from ``expected_n`` (e.g. a resubmit with a different n) is treated
     as incomplete, so the subset is regenerated to match the request."""
+    # Leftover shard parts = an UNFINISHED generation or merge (a successful
+    # merge deletes them last). Whatever the final files count, the subset is
+    # not done — without this, a run killed mid-merge leaves a mix of newly-
+    # merged and stale finals whose counts all "match" and the resume skips.
+    if glob.glob(os.path.join(records_dir, f"*_{subset}.part*")):
+        return False
     for kind in kinds:
         if kind == "sources":
             csv_path = tfrecord_path(records_dir, f"sources_{subset}").replace(
@@ -914,8 +932,20 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     skip_dirty_train = bool(getattr(args, "skip_dirty_train", False))
-    for subset, n in (("train", args.ntrain), ("validate", args.nvalid),
-                      ("test", _ntest(args))):
+    subsets = (("train", args.ntrain), ("validate", args.nvalid),
+               ("test", _ntest(args)))
+    # --force discards ALL requested subsets' data UP-FRONT (parts + final
+    # files + sidecars), before any generation starts. Deleting lazily (old
+    # finals overwritten only at merge time) left a trap: a force run killed
+    # by its wall-clock leaves stale finals whose record counts still match,
+    # and the follow-up resume "completes" instantly with old-calibration
+    # data for every subset the force run never reached.
+    if args.force:
+        for subset, n in subsets:
+            if n > 0:
+                _cleanup_parts(args.records_dir, subset)
+                _remove_subset_finals(args.records_dir, subset)
+    for subset, n in subsets:
         if n <= 0:
             continue
         # --skip-dirty-train: the TRAIN split gets no dirty records (on-the-
@@ -930,11 +960,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             continue
 
         # Resume: salvage the intact records a killed run left on disk so we
-        # only regenerate the shortfall. --force discards them and starts clean.
+        # only regenerate the shortfall. --force discarded them up-front.
         if args.force:
-            _cleanup_parts(args.records_dir, subset)
-            if not write_dirty:
-                _remove_final_dirty(args.records_dir, subset)
             done, used_idx, base_sid = 0, [], 0
         else:
             done, used_idx, base_sid = _salvage_subset(

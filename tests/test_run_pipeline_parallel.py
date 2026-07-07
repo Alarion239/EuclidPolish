@@ -215,7 +215,7 @@ def test_salvage_with_kinds_ignores_missing_dirty(tmp_path):
     assert done == 2 and sorted(used) == [0, 1] and next_sid == 1
 
 
-def test_remove_final_dirty_deletes_file_and_sidecar(tmp_path):
+def test_remove_subset_finals_dirty_only(tmp_path):
     import json as _json
     rdir = str(tmp_path)
     dirty = tfrecord_path(rdir, "dirty_train")
@@ -227,12 +227,47 @@ def test_remove_final_dirty_deletes_file_and_sidecar(tmp_path):
                                ("cc33.skytfrecordartifact.json", "dirty", "validate")):
         with open(os.path.join(rdir, name), "w") as f:
             _json.dump({"descriptors": {"kind": kind, "subset": subset}}, f)
-    rp._remove_final_dirty(rdir, "train")
+    rp._remove_subset_finals(rdir, "train", kinds=("dirty",))
     assert not os.path.exists(dirty)
     assert os.path.exists(keep)                       # other subsets untouched
     assert not os.path.exists(os.path.join(rdir, "aa11.skytfrecordartifact.json"))
     assert os.path.exists(os.path.join(rdir, "bb22.skytfrecordartifact.json"))
     assert os.path.exists(os.path.join(rdir, "cc33.skytfrecordartifact.json"))
+
+
+def test_remove_subset_finals_all_kinds_scoped_to_subset(tmp_path):
+    rdir = str(tmp_path)
+    for kind in ("clean", "hr", "dirty"):
+        open(tfrecord_path(rdir, f"{kind}_train"), "w").write("stale")
+        open(tfrecord_path(rdir, f"{kind}_validate"), "w").write("keep")
+    src_tr = tfrecord_path(rdir, "sources_train").replace(".tfrecord", ".csv")
+    src_va = tfrecord_path(rdir, "sources_validate").replace(".tfrecord", ".csv")
+    open(src_tr, "w").write("stale")
+    open(src_va, "w").write("keep")
+    rp._remove_subset_finals(rdir, "train")
+    for kind in ("clean", "hr", "dirty"):
+        assert not os.path.exists(tfrecord_path(rdir, f"{kind}_train"))
+        assert os.path.exists(tfrecord_path(rdir, f"{kind}_validate"))
+    assert not os.path.exists(src_tr)
+    assert os.path.exists(src_va)
+
+
+def test_subset_incomplete_while_parts_remain(tmp_path):
+    """Leftover shard parts = unfinished merge: the subset must read as
+    incomplete even when every FINAL file's record count matches — otherwise
+    a run killed mid-merge (new clean merged, stale hr not) resumes as
+    'already complete' with mixed-calibration finals."""
+    sim, fwd = _sim_fwd()
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0, seed=[1, 1, 0])
+    rp._merge_subset(rdir, "train")                   # parts deleted → complete
+    assert rp._subset_complete(rdir, "train", ("clean", "hr", "dirty"), 2)
+    # a lingering part from an interrupted follow-up run flips it back
+    part = tfrecord_path(rdir, "hr_train.part0007")
+    open(part, "w").write("x")
+    assert not rp._subset_complete(rdir, "train", ("clean", "hr", "dirty"), 2)
+    os.remove(part)
+    assert rp._subset_complete(rdir, "train", ("clean", "hr", "dirty"), 2)
 
 
 def test_synthetic_step_forwards_skip_dirty_flag():
