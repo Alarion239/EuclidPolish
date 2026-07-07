@@ -215,6 +215,10 @@ large cutout don't leak across train/validate."></label>`;
             <input type="number" name="limit" value="" min="1" max="2000"
                    placeholder="all"
                    title="Only download the first N atlas entries. Blank/0 = the full ~1153-galaxy atlas. Use a small value (e.g. 5) for a smoke test before committing the full multi-hour run."></label>
+          <label class="checkbox-field" style="flex-basis:100%;"
+                 title="Override: re-download EVERY galaxy, discarding whatever is on disk (.done markers included). Usually unnecessary — a galaxy whose .done marker exists but whose FITS were swept away (netscratch cleanup) re-downloads automatically thanks to the marker+FITS integrity check.">
+            <input type="checkbox" name="force" value="1">
+            Override — re-download everything (ignore .done markers)</label>
           <label class="checkbox-field"
                  title="Keep each galaxy's source .tar.gz next to its extracted FITS. Default OFF — the archive is deleted after the ~20 Euclid frames are extracted, so transient disk stays bounded by (workers × tarball size) instead of the full multi-TB atlas.">
             <input type="checkbox" name="keep_archive" value="1">

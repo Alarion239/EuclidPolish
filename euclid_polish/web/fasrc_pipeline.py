@@ -811,6 +811,12 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         if str(params.get("keep_archive", "")).strip() in (
                 "1", "true", "True", "on", "yes"):
             cmd += ["--keep-archive"]
+        # Override: re-download everything, ignoring .done markers. Without
+        # it a galaxy still re-downloads when its marker's FITS are missing
+        # (integrity check), so a swept atlas self-heals either way.
+        if str(params.get("force", "")).strip().lower() in (
+                "1", "true", "yes", "on"):
+            cmd += ["--force"]
         return cmd
 
 

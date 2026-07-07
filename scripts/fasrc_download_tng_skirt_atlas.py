@@ -48,8 +48,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import glob
 import multiprocessing
 import os
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -150,6 +152,23 @@ def _extract_euclid(archive: str, dest_dir: str) -> int:
     return n
 
 
+def _galaxy_complete(galaxy_dir: str) -> bool:
+    """True iff the ``.done`` sentinel exists AND the FITS it promises are on
+    disk. The sentinel alone is NOT proof: the 2026-07-06 netscratch sweep
+    deleted every FITS but spared the hidden marker, so a marker-only check
+    would treat all 1248 gutted galaxies as cached forever."""
+    marker = os.path.join(galaxy_dir, Config.Tng.DONE_MARKER)
+    if not os.path.isfile(marker):
+        return False
+    try:
+        with open(marker, encoding="utf-8") as f:
+            expected = int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        expected = 1                       # legacy marker → any FITS counts
+    have = len(glob.glob(os.path.join(galaxy_dir, "*.fits")))
+    return have >= max(expected, 1)
+
+
 def _download_one(
     *,
     name: str,
@@ -157,6 +176,7 @@ def _download_one(
     key: str,
     out_dir: str,
     keep_archive: bool,
+    force: bool = False,
 ) -> dict:
     """Fetch + extract one atlas galaxy. Returns a status dict for the tally.
 
@@ -174,7 +194,10 @@ def _download_one(
     done_marker = os.path.join(galaxy_dir, Config.Tng.DONE_MARKER)
     base = {"id": gid, "n_fits": 0, "bytes": 0,
             "dl_secs": 0.0, "ex_secs": 0.0, "errors": []}
-    if os.path.isfile(done_marker):
+    if force:
+        # Override: discard whatever is there (marker included) and re-fetch.
+        shutil.rmtree(galaxy_dir, ignore_errors=True)
+    elif _galaxy_complete(galaxy_dir):
         return {**base, "status": "cached"}
 
     if not url:                        # listing gave only a name → build the URL
@@ -236,6 +259,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=0,
                    help="Only download the first N atlas entries (0 = all "
                         "~1153). Use a small value for a smoke test.")
+    p.add_argument("--force", action="store_true",
+                   help="Override: re-download EVERY galaxy, discarding "
+                        "whatever is on disk (including .done markers). "
+                        "Without it, a galaxy is skipped only when its "
+                        "marker AND the FITS it promises are both present — "
+                        "a marker whose FITS were swept away re-downloads "
+                        "automatically.")
     p.add_argument("--keep-archive", action="store_true",
                    help="Keep each galaxy's .tar.gz (in its folder) after "
                         "extracting. Default: delete it to save disk.")
@@ -277,14 +307,16 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     if args.dry_run:
-        n_done = sum(
+        n_done = 0 if args.force else sum(
             1 for (name, _u, _s) in entries
-            if os.path.isfile(os.path.join(out_dir, _galaxy_id_from_name(name),
-                                           Config.Tng.DONE_MARKER))
+            if _galaxy_complete(
+                os.path.join(out_dir, _galaxy_id_from_name(name)))
         )
-        print(f"  DRY RUN — {n_done} already complete, "
+        print(f"  DRY RUN — {n_done} already complete (marker + FITS), "
               f"{n_total - n_done} would be downloaded "
-              f"(20 Euclid FITS each).")
+              f"(20 Euclid FITS each)"
+              + (" [--force: everything re-downloads]" if args.force else "")
+              + ".")
         return 0
 
     t0 = time.perf_counter()
@@ -312,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 _download_one,
                 name=name, url=url, key=key,
                 out_dir=out_dir, keep_archive=args.keep_archive,
+                force=args.force,
             ): _galaxy_id_from_name(name)
             for (name, url, _size) in entries
         }
