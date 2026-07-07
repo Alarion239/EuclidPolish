@@ -278,3 +278,20 @@ def test_synthetic_step_forwards_skip_dirty_flag():
     assert "--skip-dirty-train" in step.build_command(
         {**base, "skip_dirty_train": "1"})
     assert "--skip-dirty-train" not in step.build_command(base)
+
+
+def test_tng_density_with_empty_atlas_is_fatal(tmp_path):
+    """An empty/purged TNG atlas must ABORT generation, not silently render
+    star-only fields (netscratch purge incident, 2026-07-06)."""
+    import pytest
+
+    from euclid_polish.sky.generation.sky_simulator import (
+        SkySimulator,
+        SkySimulatorConfig,
+    )
+
+    with pytest.raises(RuntimeError, match="ZERO usable TNG galaxies"):
+        SkySimulator(None, SkySimulatorConfig(
+            image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            sersic_density_arcmin2=0.0, tng_density_arcmin2=60.0,
+            tng_galaxy_dir=str(tmp_path / "empty_atlas")))

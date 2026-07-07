@@ -205,10 +205,18 @@ class SkySimulator:
             if needs_tng else []
         )
         if self.config.tng_density_arcmin2 > 0.0 and not self.tng_galaxies:
-            sys.stderr.write(
-                f"[generator] tng_density_arcmin2={self.config.tng_density_arcmin2} "
-                f"but no downloaded galaxies under {self.config.tng_galaxy_dir} — "
-                "TNG population will be empty.\n")
+            # HARD failure, not a warning: with a TNG population requested and
+            # zero usable stamps, every field silently renders star-only — a
+            # buried stderr line shipped 200 galaxy-free validate/test fields
+            # when the netscratch purge deleted the SKIRT atlas (2026-07-06).
+            raise RuntimeError(
+                f"tng_density_arcmin2={self.config.tng_density_arcmin2:g} but "
+                f"ZERO usable TNG galaxies under "
+                f"{self.config.tng_galaxy_dir!r} (a galaxy needs its .done "
+                "marker + VIS O1 frame — an empty dir usually means the "
+                "atlas was purged from netscratch). Re-download it via the "
+                "TNG atlas page's download step, or set "
+                "tng_density_arcmin2=0 if star-only fields are intended.")
 
         # Catalog-backed lens priors (needed when catalog is available).
         self.lens_population: LensPopulation | None = (
