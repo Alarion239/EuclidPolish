@@ -139,6 +139,27 @@ def _member_psnr_cache_path() -> str:
                                         "member_psnr.json"))
 
 
+def _eval_records_fingerprint(records_dir: str | None,
+                              subset: str) -> str | None:
+    """Identity of the eval dataset itself: size+mtime of the ``dirty_`` and
+    ``hr_`` records the PSNR scores against. A regenerated test set keeps its
+    subset name, field count AND the member checkpoints unchanged — without
+    this in the cache key, every PSNR shown after a dataset regen silently
+    referred to the OLD records. rsync preserves mtimes, so a no-op sync
+    keeps the fingerprint stable while a real change bumps it."""
+    if not records_dir:
+        return None
+    parts = []
+    for kind in ("dirty", "hr"):
+        p = tfrecord_path(records_dir, f"{kind}_{subset}")
+        try:
+            st = os.stat(p)
+        except OSError:
+            return None
+        parts.append(f"{kind}:{st.st_size}:{st.st_mtime_ns}")
+    return "|".join(parts)
+
+
 def _load_member_psnr_cache() -> dict:
     try:
         with open(_member_psnr_cache_path()) as f:
@@ -148,12 +169,16 @@ def _load_member_psnr_cache() -> dict:
         return {}
 
 
-def _member_psnr_entry(cache: dict, name: str, mdir: str,
-                       subset: str) -> dict | None:
+def _member_psnr_entry(cache: dict, name: str, mdir: str, subset: str,
+                       records_fp: str | None = None) -> dict | None:
     """The member's cached score, or ``None`` when it must be (re)computed —
-    missing, different subset/field count, or the checkpoint changed."""
+    missing, different subset/field count, the checkpoint changed, or the
+    EVAL RECORDS themselves changed (a regenerated test set is a different
+    metric even though subset/count/checkpoint all stay the same)."""
     if (cache.get("subset") != subset
             or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS):
+        return None
+    if records_fp is not None and cache.get("records_fp") != records_fp:
         return None
     e = (cache.get("members") or {}).get(name)
     if not e:
@@ -164,18 +189,20 @@ def _member_psnr_entry(cache: dict, name: str, mdir: str,
     return e
 
 
-def update_member_psnr_cache(scores: dict[str, dict], subset: str) -> None:
+def update_member_psnr_cache(scores: dict[str, dict], subset: str,
+                             records_fp: str | None = None) -> None:
     """Merge ``{member_name: {fingerprint, psnr, n_scored}}`` into the cache.
 
-    A subset/field-count change invalidates wholesale (different metric);
-    entries for members no longer on disk are left alone — they are ignored on
-    read and rewritten on the next refresh.
+    A subset/field-count/eval-records change invalidates wholesale (different
+    metric); entries for members no longer on disk are left alone — they are
+    ignored on read and rewritten on the next refresh.
     """
     cache = _load_member_psnr_cache()
     if (cache.get("subset") != subset
-            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS):
+            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS
+            or cache.get("records_fp") != records_fp):
         cache = {"subset": subset, "num_images": MEMBER_PSNR_FIELDS,
-                 "members": {}}
+                 "records_fp": records_fp, "members": {}}
     cache.setdefault("members", {}).update(scores)
     path = os.path.join(_ensemble_out_dir(), "member_psnr.json")
     with open(path, "w") as f:
@@ -196,13 +223,15 @@ def training_curves_payload() -> list[dict]:
               for d in ensemble_registry.active_member_dirs(base)}
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
+    rec_fp = _eval_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     out = []
     for s in ensemble_training_series(base):
         if s["name"] not in active:
             continue
         d = os.path.join(base, s["name"])
-        entry = _member_psnr_entry(cache, s["name"], d, sub)
+        entry = _member_psnr_entry(cache, s["name"], d, sub,
+                                   records_fp=rec_fp)
         s["blocks"] = infer_checkpoint_num_res_blocks(d)
         s["test_psnr"] = (entry or {}).get("psnr")
         out.append(s)
@@ -219,11 +248,13 @@ def job_member_psnr(cap) -> dict:
     if not rdir:
         raise RuntimeError("no local sky records — sync them on the /sky page.")
     sub = eval_subset(rdir)
+    rec_fp = _eval_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     dirs = [d for d in ensemble_registry.active_member_dirs(base)
             if os.path.isdir(d) and _checkpoint_exists(d)]
     todo = [d for d in dirs
-            if _member_psnr_entry(cache, os.path.basename(d), d, sub) is None]
+            if _member_psnr_entry(cache, os.path.basename(d), d, sub,
+                                  records_fp=rec_fp) is None]
     reused = [os.path.basename(d) for d in dirs if d not in todo]
     if reused:
         print(f"  • cached (checkpoint unchanged): {', '.join(reused)}")
@@ -242,7 +273,7 @@ def job_member_psnr(cap) -> dict:
         print(f"  ✓ {name}: {out['psnr_stretched']:.3f} dB "
               f"(asinh, {out['n_scored']} {sub} fields)")
     if scores:
-        update_member_psnr_cache(scores, sub)
+        update_member_psnr_cache(scores, sub, records_fp=rec_fp)
     cap.tick(len(todo), len(todo), "done")
     return {"evaluated": sorted(scores), "reused": reused, "subset": sub}
 
@@ -258,6 +289,7 @@ def ensemble_status() -> dict:
     sub = eval_subset(rdir) if rdir else "test"
     test_present = bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"dirty_{sub}"))
+    status_rec_fp = _eval_records_fingerprint(rdir, sub)
 
     psnr_cache = _load_member_psnr_cache()
     members = []
@@ -269,7 +301,8 @@ def ensemble_status() -> dict:
             # Cached test PSNR (asinh space): only shown while the checkpoint
             # it was scored on is the one on disk — a changed member reads "—"
             # until the next refresh re-scores it (and only it).
-            entry = _member_psnr_entry(psnr_cache, name, d, sub)
+            entry = _member_psnr_entry(psnr_cache, name, d, sub,
+                                       records_fp=status_rec_fp)
             members.append({"name": name, "seed": _member_seed(d),
                             "has_loss_best": has_lb,
                             "size_mb": round(_dir_size_mb(d), 1),
@@ -487,12 +520,16 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
                 scores[name] = {"fingerprint": fp, "psnr": float(p),
                                 "n_scored": int(out["n_scored"])}
         if scores:
-            update_member_psnr_cache(scores, sub)
+            update_member_psnr_cache(
+                scores, sub, records_fp=_eval_records_fingerprint(rdir, sub))
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
                    "pca_var": pca_var,
-                   "member_labels": member_labels}, f)
+                   "member_labels": member_labels,
+                   # Eval-dataset identity: the cubes are position-keyed into
+                   # THESE records — regenerated records make them garbage.
+                   "records_fp": _eval_records_fingerprint(rdir, sub)}, f)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
     if ps_acc[0] is not None and float(ps_acc[0].bc.sum()) > 0:
@@ -551,6 +588,12 @@ def _iter_cached_fields():
     rdir = _sky_records_local_dir()
     hr_path = tfrecord_path(rdir, f"hr_{sub}") if rdir else ""
     if not idxs or n_members == 0 or not rdir or not os.path.exists(hr_path):
+        return
+    # Eval-dataset identity: the SR cubes were computed against the records
+    # named in the manifest — pairing them with REGENERATED records would
+    # silently mix two datasets (old SR vs new HR). Legacy manifests without
+    # the fingerprint are treated as stale for the same reason.
+    if man.get("records_fp") != _eval_records_fingerprint(rdir, sub):
         return
 
     hr_by = {r.index: r for r in read_images(hr_path, num_images=max(idxs) + 1)}

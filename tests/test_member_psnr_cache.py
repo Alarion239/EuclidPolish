@@ -207,3 +207,50 @@ def test_evaluate_reports_per_member_stretched_psnr():
     assert len(ps) == 2 and all(np.isfinite(p) for p in ps)
     assert ps[0] > ps[1]
     assert out["per_member_psnr"][0] > out["per_member_psnr"][1]
+
+
+def test_regenerated_eval_records_invalidate_cached_psnr(tmp_path, monkeypatch):
+    """Same subset, same field count, same checkpoint — but the eval RECORDS
+    were regenerated → the cached PSNR is a score against a different dataset
+    and must not be served (the 2026-07 zeropoint regen made every old score
+    silently stale)."""
+    from euclid_polish.ensemble import member_fingerprint
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    mdir = _member(str(tmp_path), "member_00")
+    fp = member_fingerprint(mdir)
+    cache = {"subset": "test", "num_images": ev.MEMBER_PSNR_FIELDS,
+             "records_fp": "dirty:100:1|hr:100:1",
+             "members": {"member_00": {"fingerprint": fp, "psnr": 50.0,
+                                       "n_scored": 100}}}
+    same = ev._member_psnr_entry(cache, "member_00", mdir, "test",
+                                 records_fp="dirty:100:1|hr:100:1")
+    assert same is not None and same["psnr"] == 50.0
+    # regenerated records → different fingerprint → cache miss
+    assert ev._member_psnr_entry(cache, "member_00", mdir, "test",
+                                 records_fp="dirty:999:2|hr:999:2") is None
+    # writing scores under the new fingerprint resets the cache wholesale
+    monkeypatch.setattr(ev.Config, "VIS_DIR", str(tmp_path / "vis"))
+    ev.update_member_psnr_cache(
+        {"member_00": {"fingerprint": fp, "psnr": 44.0, "n_scored": 100}},
+        "test", records_fp="dirty:999:2|hr:999:2")
+    fresh = ev._load_member_psnr_cache()
+    assert fresh["records_fp"] == "dirty:999:2|hr:999:2"
+    assert fresh["members"]["member_00"]["psnr"] == 44.0
+
+
+def test_eval_records_fingerprint_tracks_file_identity(tmp_path):
+    from euclid_polish.image.tfio import tfrecord_path
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    rdir = str(tmp_path)
+    assert ev._eval_records_fingerprint(rdir, "test") is None   # files absent
+    for kind in ("dirty", "hr"):
+        with open(tfrecord_path(rdir, f"{kind}_test"), "wb") as f:
+            f.write(b"x" * 10)
+    fp1 = ev._eval_records_fingerprint(rdir, "test")
+    assert fp1 and ev._eval_records_fingerprint(rdir, "test") == fp1
+    with open(tfrecord_path(rdir, "hr_test"), "wb") as f:       # regen
+        f.write(b"y" * 20)
+    assert ev._eval_records_fingerprint(rdir, "test") != fp1
+    assert ev._eval_records_fingerprint(None, "test") is None

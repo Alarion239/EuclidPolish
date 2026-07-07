@@ -365,7 +365,12 @@ def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch):
     assert d["ok"] is True
     assert set(d["files"]) == {b.name for b in Config.BANDS}
     assert all(force for _, force, _ in seen)               # force=True
-    assert all(mb == Config.WebFetch.MAX_PSF_PULL_BYTES for _, _, mb in seen)
+    # The sync also refreshes the cluster-metadata JSON (kilobytes, its own
+    # small cap) — the band FITS pulls are the ones needing the big cap.
+    band_pulls = [(rp, f, mb) for rp, f, mb in seen if rp.endswith(".fits")]
+    assert len(band_pulls) == len(Config.BANDS)
+    assert all(mb == Config.WebFetch.MAX_PSF_PULL_BYTES
+               for _, _, mb in band_pulls)
 
 
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
