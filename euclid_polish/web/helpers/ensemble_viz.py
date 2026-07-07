@@ -34,7 +34,9 @@ from euclid_polish.eval.ensemble_diagnostics import (
     render_std_vs_error,
 )
 from euclid_polish.eval.power_spectrum import (
+    LR_NYQUIST_CYC_ARCSEC,
     EnsembleSpectrumAccumulator,
+    ensemble_ps_plot_curves,
     render_ensemble_power_spectrum,
 )
 from euclid_polish.eval.subsets import eval_subset
@@ -448,6 +450,80 @@ def _ensemble_cubes_dir() -> str:
     return os.path.join(_ensemble_out_dir(), "cubes")
 
 
+def _jsonable(v):
+    """NaN-safe JSON conversion for 1-D or 2-D float arrays (NaN → None)."""
+    a = np.asarray(v, float)
+    fmt = lambda x: None if not np.isfinite(x) else round(float(x), 6)  # noqa: E731
+    return ([fmt(x) for x in a] if a.ndim <= 1
+            else [[fmt(x) for x in row] for row in a])
+
+
+def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
+                   member_labels: list, subset: str) -> dict:
+    """The complete Evaluations-card dataset, JSON-ready.
+
+    Everything the FRONTEND renderers draw — power-spectrum curves,
+    diagnostic histograms, calibration stats, per-member loss/depth meta and
+    the guide constants — so styling choices (member-line coloring, tab
+    switches) are instant client-side redraws; the cubes are only touched to
+    (re)compute this payload."""
+    payload: dict = {
+        "subset": subset,
+        "n_fields": int(diag.n_fields),
+        "n_members": int(diag.n_members),
+        "members": [{"label": str(lbl), **meta}
+                    for lbl, meta in zip(
+                        member_labels,
+                        _member_meta_from_labels(member_labels))],
+        "guides": {
+            "lr_scale": 0.5 / LR_NYQUIST_CYC_ARCSEC,
+            "vis_fwhm": float(Config.get_band("VIS").psf_fwhm_arcsec),
+            "theta_min": float(Config.DEFAULT_PIXEL_SCALE),
+            "rn_vis": float(Config.get_band("VIS").read_noise_e),
+        },
+        **diag.to_payload(),
+    }
+    payload["ps"] = None
+    if ps_curves is not None:
+        cv = ensemble_ps_plot_curves(ps_curves)
+        payload["ps"] = {k: _jsonable(v) for k, v in cv.items()}
+    return payload
+
+
+def _evals_payload_path() -> str:
+    return os.path.join(_ensemble_out_dir(), "ensemble_evals.json")
+
+
+def compute_evaluation_payload() -> dict | None:
+    """(Re)compute the Evaluations payload from the CACHED cubes — ONE sweep
+    fills both the spectrum and the pixel-diagnostics accumulators — and
+    persist it to ``ensemble_evals.json``. Returns the payload, or ``None``
+    when nothing (valid) is cached."""
+    ps_acc = None
+    diag = EnsembleDiagnosticsAccumulator()
+    for hr_v, mean_v, mem_v in _iter_cached_fields():
+        if ps_acc is None:
+            ps_acc = EnsembleSpectrumAccumulator(
+                int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
+        ps_acc.add(hr_v, mean_v, mem_v)
+        diag.add(hr_v, mean_v, mem_v)
+    if diag.n_fields == 0:
+        return None
+    man_path = os.path.join(_ensemble_cubes_dir(), "viz_index.json")
+    try:
+        with open(man_path) as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    curves = (ps_acc.curves() if ps_acc is not None
+              and float(ps_acc.bc.sum()) > 0 else None)
+    payload = _evals_payload(curves, diag, man.get("member_labels", []),
+                             man.get("subset", ""))
+    with open(_evals_payload_path(), "w") as f:
+        json.dump(payload, f)
+    return payload
+
+
 def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
 
@@ -470,6 +546,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
     pca_amps: dict[int, list[float]] = {}        # rec_index → [a0, a1, a2]
     pca_var: dict[int, list[float]] = {}         # rec_index → variance explained
     ps_acc: list = [None]                        # lazy EnsembleSpectrumAccumulator
+    diag_acc = EnsembleDiagnosticsAccumulator()  # pixel-level diagnostics
 
     def _on_field(rec_index, _lr_cube, preds, mean, std, hr_cube):
         # Power spectrum over ALL fields that have HR (VIS band): HR vs
@@ -482,6 +559,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
                 ps_acc[0] = EnsembleSpectrumAccumulator(
                     int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
             ps_acc[0].add(hr_v, mean_v, mem_v)
+            diag_acc.add(hr_v, mean_v, mem_v)
 
         # LR/HR are read back from the records by the viewer; persist the
         # computed mean (SR) + std (stdSR) and the PCA disagreement basis
@@ -538,21 +616,21 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
                    "records_fp": _eval_records_fingerprint(rdir, sub)}, f)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
+    curves = None
     if ps_acc[0] is not None and float(ps_acc[0].bc.sum()) > 0:
         curves = ps_acc[0].curves()
         ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
         render_ensemble_power_spectrum(ps_png, curves, n_fields=ps_acc[0].n_fields)
-
-        def _jsonable(v):                       # curves are 1-D or (M, nbins) 2-D
-            a = np.asarray(v, float)
-            fmt = lambda x: None if not np.isfinite(x) else round(float(x), 6)  # noqa: E731
-            return ([fmt(x) for x in a] if a.ndim <= 1
-                    else [[fmt(x) for x in row] for row in a])
-
         with open(os.path.join(_ensemble_out_dir(),
                                "ensemble_power_spectrum.json"), "w") as f:
             json.dump({k: _jsonable(v) for k, v in curves.items()}, f)
         out["power_spectrum_fields"] = int(ps_acc[0].n_fields)
+
+    # Frontend Evaluations payload — the SAME pass already filled both
+    # accumulators, so this is a free serialization (no cube re-read).
+    if diag_acc.n_fields:
+        with open(_evals_payload_path(), "w") as f:
+            json.dump(_evals_payload(curves, diag_acc, member_labels, sub), f)
 
     # The pixel-level diagnostic figures render lazily from the fresh cubes —
     # drop the ones from the previous eval so the page never serves stale plots.

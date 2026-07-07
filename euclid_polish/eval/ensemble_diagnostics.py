@@ -135,6 +135,48 @@ class EnsembleDiagnosticsAccumulator:
             out[name] = v
         return out
 
+    def to_payload(self) -> dict:
+        """JSON-ready dict of everything the frontend renderers need — the
+        2D histograms, binned curves and calibration stats, with NaN → None
+        (JSON has no NaN). Kilobytes, so the browser can redraw styling
+        changes instantly without touching the cubes again."""
+        def _l(a):
+            return [None if not np.isfinite(v) else float(v)
+                    for v in np.asarray(a, float)]
+
+        cen, med = self.binned_median_err()
+        pct = self.binned_std_percentiles()
+        n_z = max(self.n_z, 1)
+        width = self.z_edges[1] - self.z_edges[0]
+        return {
+            "n_fields": int(self.n_fields),
+            "n_members": int(self.n_members),
+            "std_err": {
+                "edges": _l(self.log_edges),           # log10 e⁻, both axes
+                "hist": self.h_std_err.astype(int).tolist(),
+                "med_std": _l(np.log10(cen)),
+                "med_err": _l(np.log10(med)),
+            },
+            "bright_std": {
+                "bright_edges": _l(self.bright_edges),  # asinh(x/stretch)
+                "std_edges": _l(self.log_edges),
+                "hist": self.h_bright_std.astype(int).tolist(),
+                "bright": _l(pct["bright"]),
+                "lo": _l(np.log10(pct["lo"])),
+                "med": _l(np.log10(pct["med"])),
+                "hi": _l(np.log10(pct["hi"])),
+                "stretch": float(self.stretch),
+            },
+            "calibration": {
+                "z_edges": _l(self.z_edges),
+                "pdf": _l(self.h_z / (n_z * width)),
+                "stats": {k: (None if not np.isfinite(v) else float(v))
+                          for k, v in self.z_stats().items()},
+                "field_std": _l(self.field_mean_std),
+                "field_rmse": _l(self.field_rmse),
+            },
+        }
+
     def z_stats(self) -> dict[str, float]:
         """Coverage fractions + robust z width (Gaussian ⇒ 0.683/0.954/0.997,
         sigma_z = 1)."""

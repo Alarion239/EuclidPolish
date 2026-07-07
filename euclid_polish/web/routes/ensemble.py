@@ -11,6 +11,8 @@ from flask import abort, jsonify, render_template, request, send_file
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
     _ensemble_out_dir,
+    _evals_payload_path,
+    compute_evaluation_payload,
     ensemble_dir,
     ensemble_status,
     job_archive_member,
@@ -85,6 +87,20 @@ def register(app):
                     and not os.path.isfile(out_png)):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.route("/ensemble/evals.json")
+    def ensemble_evals_json():
+        """The Evaluations card's dataset: power-spectrum curves, diagnostic
+        histograms, calibration stats and per-member loss/depth meta. The
+        FRONTEND renders all figures from this JSON, so styling (member-line
+        coloring, tab switches) never recomputes anything. ``?fresh=1``
+        recomputes the payload from the cached cubes (one sweep, seconds)."""
+        path = _evals_payload_path()
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(path):
+            if compute_evaluation_payload() is None and not os.path.isfile(path):
+                abort(404)
+        return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/eval-plot/<plot>.png")
     def ensemble_eval_plot(plot: str):

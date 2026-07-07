@@ -38,11 +38,11 @@
 
 {% if evaluations_available %}
 <section class="card" id="ens-evals-card">
-  <h3>Evaluations <span class="muted">— from the cached cubes of the last
-      “Evaluate on test set” run (VIS)</span>
+  <h3>Evaluations <span class="muted">— drawn in the browser from the numbers
+      of the last “Evaluate on test set” run (VIS)</span>
     <button type="button" id="ens-eval-plot-regen" class="mini-btn"
-            title="Re-render the active figure from the cached per-field cubes (no re-run / inference) — seconds."
-            style="float:right;">↻ Regenerate</button></h3>
+            title="Recompute the NUMBERS from the cached per-field cubes (one sweep, seconds — no inference). Styling changes (member-line coloring, tabs) never need this: they redraw instantly client-side."
+            style="float:right;">↻ Recompute</button></h3>
   <div id="ens-eval-tabs" class="toolbar" style="flex-wrap:wrap;gap:6px;">
     <a class="chip active" data-eval-tab="power-spectrum">Power spectrum</a>
     <a class="chip" data-eval-tab="std-error">Std vs error</a>
@@ -52,17 +52,14 @@
 
   <div class="ens-eval-panel" data-eval-tab="power-spectrum">
     <label class="muted" style="font-size:0.85em;"
-           title="Color the per-member T(k)/r(k) lines by reconstruction norm (L1 blue · L2 green · L3 orange) or trunk depth — applied on the next ↻ Regenerate.">
+           title="Color the per-member T(k)/r(k) lines by reconstruction norm (L1 blue · L2 green · L3 orange) or trunk depth — redraws instantly, no recompute.">
       member lines:
       <select id="ens-ps-color">
         <option value="">uniform</option>
         <option value="loss">by loss</option>
         <option value="depth">by depth</option>
       </select></label>
-    <a href="{{ url_for('ensemble_power_spectrum') }}" target="_blank">
-      <img loading="lazy" style="max-width:100%;height:auto;"
-           data-src="{{ url_for('ensemble_power_spectrum') }}"
-           alt="ensemble power spectrum"></a>
+    <div class="ens-eval-plot" data-plot="ps"></div>
     <p class="hint"><b>Left:</b> transfer function T(k) — does the ensemble mean
        carry the right amount of power per scale (T&lt;1 over-smoothed, T&gt;1
        hallucinated power). <b>Right:</b> correlation with the truth
@@ -75,10 +72,7 @@
   </div>
 
   <div class="ens-eval-panel" data-eval-tab="std-error" style="display:none;">
-    <a href="{{ url_for('ensemble_eval_plot', plot='std-error') }}" target="_blank">
-      <img loading="lazy" style="max-width:100%;height:auto;"
-           data-src="{{ url_for('ensemble_eval_plot', plot='std-error') }}"
-           alt="std vs error"></a>
+    <div class="ens-eval-plot" data-plot="std-err"></div>
     <p class="hint">Per-pixel cross-member std vs the actual error
        |ensemble&nbsp;mean − HR|. If disagreement is a usable error proxy the
        red binned median tracks the <b>0.674·σ</b> guide (a calibrated Gaussian
@@ -88,10 +82,7 @@
   </div>
 
   <div class="ens-eval-panel" data-eval-tab="std-brightness" style="display:none;">
-    <a href="{{ url_for('ensemble_eval_plot', plot='std-brightness') }}" target="_blank">
-      <img loading="lazy" style="max-width:100%;height:auto;"
-           data-src="{{ url_for('ensemble_eval_plot', plot='std-brightness') }}"
-           alt="std vs brightness"></a>
+    <div class="ens-eval-plot" data-plot="bright-std"></div>
     <p class="hint">Where the disagreement lives: member std against the HR
        pixel value. Spread that rises with flux ~ photon-noise-driven (benign);
        excess spread at faint/sky pixels = hallucination on structure the LR
@@ -100,10 +91,7 @@
   </div>
 
   <div class="ens-eval-panel" data-eval-tab="calibration" style="display:none;">
-    <a href="{{ url_for('ensemble_eval_plot', plot='calibration') }}" target="_blank">
-      <img loading="lazy" style="max-width:100%;height:auto;"
-           data-src="{{ url_for('ensemble_eval_plot', plot='calibration') }}"
-           alt="ensemble error calibration"></a>
+    <div class="ens-eval-plot" data-plot="calibration"></div>
     <p class="hint"><b>Left:</b> z = (mean − HR)/σ over all pixels vs the
        standard normal — σ(z) &gt; 1 or heavy tails ⇒ the ensemble spread
        underestimates the true error (multiply σ by σ(z) to use it as an error
@@ -293,49 +281,32 @@ document.querySelectorAll(".ens-continue-btn").forEach((b) =>
 document.querySelectorAll(".ens-fork-btn").forEach((b) =>
   b.addEventListener("click", () => _prefillTrainCard("fork", b.dataset.member)));
 
-// Evaluations card: chip subtabs with lazy-loaded figures + a Regenerate
-// button that re-renders the ACTIVE figure from the cached cubes (?fresh=1).
+// Evaluations card: chip subtabs. The figures themselves are drawn client-
+// side from /ensemble/evals.json by the ensemble_evals module (see the
+// module script below) — switching tabs or the member-line coloring never
+// touches the server; ↻ Recompute refetches fresh NUMBERS from the cubes.
 (function () {
   const card = document.getElementById("ens-evals-card");
   if (!card) return;
   const chips = card.querySelectorAll("#ens-eval-tabs .chip");
   const panels = card.querySelectorAll(".ens-eval-panel");
-  const loadPanel = (panel) => {
-    const img = panel.querySelector("img[data-src]");
-    if (img && !img.src) img.src = img.dataset.src;
-  };
-  const activePanel = () =>
-    card.querySelector(".ens-eval-panel:not([style*='none'])");
   chips.forEach((chip) => chip.addEventListener("click", () => {
     chips.forEach((c) =>
       c.classList.toggle("active", c === chip));
     panels.forEach((p) => {
-      const on = p.dataset.evalTab === chip.dataset.evalTab;
-      p.style.display = on ? "" : "none";
-      if (on) loadPanel(p);
+      p.style.display =
+        p.dataset.evalTab === chip.dataset.evalTab ? "" : "none";
     });
   }));
-  loadPanel(panels[0]);
-
-  const btn = document.getElementById("ens-eval-plot-regen");
-  btn.addEventListener("click", () => {
-    const panel = activePanel();
-    const img = panel && panel.querySelector("img[data-src]");
-    if (!img) return;
-    const label = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "↻ Regenerating…";
-    img.onload = img.onerror = () => {
-      btn.disabled = false;
-      btn.textContent = label;
-    };
-    let url = img.dataset.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
-    // Power-spectrum panel: apply the member-line coloring choice.
-    const colorSel = panel.querySelector("#ens-ps-color");
-    if (colorSel && colorSel.value) url += "&color=" + colorSel.value;
-    img.src = url;
-  });
 })();
+</script>
+<script type="module">
+// Frontend Evaluations figures — all four tabs drawn from one JSON payload.
+import { mountEnsembleEvals } from "{{ url_for('static', filename='ensemble_evals.js') }}";
+const evalsCard = document.getElementById("ens-evals-card");
+if (evalsCard) {
+  mountEnsembleEvals(evalsCard, "{{ url_for('ensemble_evals_json') }}");
+}
 </script>
 <script type="module">
 // In-browser per-member training curves (PSNR + loss). Card hides itself when

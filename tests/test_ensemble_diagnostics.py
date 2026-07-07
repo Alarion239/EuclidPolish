@@ -109,3 +109,32 @@ def test_renderers_empty_accumulator_return_none(tmp_path):
         out = tmp_path / name
         assert render(str(out), acc) is None
         assert not out.exists()
+
+
+def test_to_payload_is_json_ready(tmp_path):
+    import json
+
+    acc = EnsembleDiagnosticsAccumulator()
+    for seed in range(2):
+        hr, mean, members = _calibrated_ensemble(seed=seed)
+        acc.add(hr, mean, members)
+    p = acc.to_payload()
+    s = json.dumps(p)                      # no NaN anywhere → serializes
+    assert "NaN" not in s
+    assert p["n_fields"] == 2 and p["n_members"] == 8
+    assert len(p["std_err"]["hist"]) == len(p["std_err"]["edges"]) - 1
+    assert len(p["bright_std"]["hist"]) == len(p["bright_std"]["bright_edges"]) - 1
+    assert len(p["calibration"]["pdf"]) == len(p["calibration"]["z_edges"]) - 1
+    assert len(p["calibration"]["field_std"]) == 2
+    # binned curves are log10 values with None gaps, same length as bins
+    assert len(p["std_err"]["med_std"]) == len(p["std_err"]["hist"])
+    stats = p["calibration"]["stats"]
+    assert set(stats) >= {"cover1", "cover2", "cover3", "sigma_z"}
+
+
+def test_to_payload_empty_accumulator_serializes():
+    import json
+
+    p = EnsembleDiagnosticsAccumulator().to_payload()
+    json.dumps(p)
+    assert p["n_fields"] == 0
