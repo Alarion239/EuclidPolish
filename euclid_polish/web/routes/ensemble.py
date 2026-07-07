@@ -78,8 +78,11 @@ def register(app):
         the cached per-field cubes (no full re-run / inference)."""
         out_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        color = request.args.get("color", "").lower()
+        color_by = color if color in ("loss", "depth") else None
         if fresh or not os.path.isfile(out_png):
-            if regenerate_power_spectrum() is None and not os.path.isfile(out_png):
+            if (regenerate_power_spectrum(color_by=color_by) is None
+                    and not os.path.isfile(out_png)):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

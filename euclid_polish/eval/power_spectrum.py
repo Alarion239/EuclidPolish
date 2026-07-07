@@ -350,14 +350,51 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
             "r_pairs": r_pairs, "r_cross": r_cross}
 
 
+#: Categorical colors for the per-member line grouping in the ensemble
+#: power-spectrum figure. Loss norms get fixed colors; depths cycle.
+LOSS_LINE_COLORS = {"l1": "#3b6fb0", "l2": "#5aae61", "l3": "#e08214"}
+GROUP_PALETTE = ["#3b6fb0", "#5aae61", "#e08214", "#d6604d",
+                 "#9970ab", "#e8c944", "#59c7d6", "#e07356"]
+
+
+def _member_group_colors(member_meta, color_by):
+    """Per-member ``(group_label, color)`` for ``color_by`` ∈ {"loss",
+    "depth"}; ``None`` when grouping is off/unavailable."""
+    if not member_meta or color_by not in ("loss", "depth"):
+        return None
+    out = []
+    if color_by == "loss":
+        for m in member_meta:
+            loss = str(m.get("loss") or "l1").lower()
+            out.append((loss.upper(),
+                        LOSS_LINE_COLORS.get(loss, GROUP_PALETTE[0])))
+        return out
+    depths = sorted({int(m["blocks"]) for m in member_meta if m.get("blocks")})
+    by_depth = {d: GROUP_PALETTE[i % len(GROUP_PALETTE)]
+                for i, d in enumerate(depths)}
+    for m in member_meta:
+        b = m.get("blocks")
+        out.append((f"{int(b)}b", by_depth[int(b)]) if b
+                   else ("?", "#7a8292"))
+    return out
+
+
 def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
-                                   *, n_fields: int = 0) -> str | None:
+                                   *, n_fields: int = 0,
+                                   member_meta: list[dict] | None = None,
+                                   color_by: str | None = None) -> str | None:
     """VIS ensemble power spectrum in the evaluation-page idiom (test fields).
 
     Two panels — left the transfer function ``T(k) = sqrt(P_SR/P_HR)``, right the
     cross-correlation ``r(k)`` — each drawn against angular scale ``theta =
     1/(2k)`` (arcsec) on a log axis. Every ensemble member is a faint line; the
     ensemble mean is bold. Guides: LR sampling (0.10\") and the VIS PSF FWHM.
+
+    ``member_meta`` (one ``{"loss", "blocks"}`` dict per member, positional)
+    + ``color_by`` ∈ {"loss", "depth"} colors the member lines by that
+    grouping, one legend entry per group — a mixed L1/L2/L3 (or mixed-depth)
+    ensemble at a glance. Default: all members in the faint VIS blue.
+
     Returns the path, or ``None`` when there is no finite HR power.
     """
     k = np.asarray(curves.get("k", []), float)
@@ -384,10 +421,18 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
         (ax_r, cv["r"], cv["r_members"],
          "cross-correlation  r = P_HR×SR/√(P_HR·P_SR)", (0.0, 1.05), "r(k)  [VIS]"),
     )
+    groups = _member_group_colors(member_meta, color_by)
     for ax, mean_curve, member_curves, title, ylim, ylabel in panels:
+        seen_groups: set[str] = set()
         for j, row in enumerate(member_curves):
-            ax.plot(x, row, color=vis_color, lw=0.7, alpha=0.30,
-                    label=("individual models" if j == 0 else None))
+            if groups is not None and j < len(groups):
+                glabel, gcolor = groups[j]
+                ax.plot(x, row, color=gcolor, lw=0.9, alpha=0.55,
+                        label=(glabel if glabel not in seen_groups else None))
+                seen_groups.add(glabel)
+            else:
+                ax.plot(x, row, color=vis_color, lw=0.7, alpha=0.30,
+                        label=("individual models" if j == 0 else None))
         ax.plot(x, mean_curve, "-o", ms=3.0, lw=2.0, color=vis_color,
                 label="ensemble mean")
         if ax is ax_r and cv["r_pairs"].size:

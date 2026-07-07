@@ -234,6 +234,10 @@ def training_curves_payload() -> list[dict]:
                                    records_fp=rec_fp)
         s["blocks"] = infer_checkpoint_num_res_blocks(d)
         s["test_psnr"] = (entry or {}).get("psnr")
+        # Reconstruction norm from origin.json; members created before the
+        # loss knob existed all trained with the then-hardcoded L1.
+        origin = _member_origin(d)
+        s["loss"] = ((origin or {}).get("loss_norm") or "l1")
         out.append(s)
     return out
 
@@ -303,12 +307,14 @@ def ensemble_status() -> dict:
             # until the next refresh re-scores it (and only it).
             entry = _member_psnr_entry(psnr_cache, name, d, sub,
                                        records_fp=status_rec_fp)
+            origin = _member_origin(d)
             members.append({"name": name, "seed": _member_seed(d),
                             "has_loss_best": has_lb,
                             "size_mb": round(_dir_size_mb(d), 1),
                             "step": _member_last_step(d),
                             "blocks": infer_checkpoint_num_res_blocks(d),
-                            "origin": _member_origin(d),
+                            "origin": origin,
+                            "loss": ((origin or {}).get("loss_norm") or "l1"),
                             "psnr": (entry or {}).get("psnr")})
     # Rank by cached PSNR (1 = best); unscored members rank last, unranked.
     by_psnr = sorted((m for m in members if m["psnr"] is not None),
@@ -610,10 +616,24 @@ def _iter_cached_fields():
                np.stack([_vis(m) for m in members], 0))
 
 
-def regenerate_power_spectrum() -> str | None:
+def _member_meta_from_labels(labels) -> list[dict]:
+    """Per-member ``{"loss", "blocks"}`` for the power-spectrum line
+    grouping, positional with ``labels`` ("NN·psnr" → member_NN)."""
+    base = ensemble_dir()
+    meta = []
+    for lbl in labels:
+        d = os.path.join(base, f"member_{str(lbl).split('·')[0]}")
+        origin = _member_origin(d)
+        meta.append({"loss": ((origin or {}).get("loss_norm") or "l1"),
+                     "blocks": infer_checkpoint_num_res_blocks(d)})
+    return meta
+
+
+def regenerate_power_spectrum(color_by: str | None = None) -> str | None:
     """Re-render the ensemble power spectrum from the CACHED per-field cubes
-    (see :func:`_iter_cached_fields`). Returns the PNG path, or ``None`` if
-    nothing is cached."""
+    (see :func:`_iter_cached_fields`). ``color_by`` ∈ {"loss", "depth"}
+    colors the per-member lines by that grouping. Returns the PNG path, or
+    ``None`` if nothing is cached."""
     acc = None
     for hr_v, mean_v, mem_v in _iter_cached_fields():
         if acc is None:
@@ -622,8 +642,18 @@ def regenerate_power_spectrum() -> str | None:
         acc.add(hr_v, mean_v, mem_v)
     if acc is None or float(acc.bc.sum()) <= 0:
         return None
+    member_meta = None
+    if color_by in ("loss", "depth"):
+        man_path = os.path.join(_ensemble_cubes_dir(), "viz_index.json")
+        try:
+            with open(man_path) as f:
+                member_meta = _member_meta_from_labels(
+                    json.load(f).get("member_labels", []))
+        except (OSError, json.JSONDecodeError):
+            member_meta = None
     ps_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
-    render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields)
+    render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields,
+                                   member_meta=member_meta, color_by=color_by)
     return ps_png
 
 

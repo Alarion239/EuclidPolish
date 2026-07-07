@@ -254,3 +254,29 @@ def test_eval_records_fingerprint_tracks_file_identity(tmp_path):
         f.write(b"y" * 20)
     assert ev._eval_records_fingerprint(rdir, "test") != fp1
     assert ev._eval_records_fingerprint(None, "test") is None
+
+
+def test_training_curves_payload_carries_loss_norm(tmp_path, monkeypatch):
+    """The curves chart's "by loss" mode reads each member's reconstruction
+    norm from origin.json; members predating the knob default to L1."""
+    import json as _json
+
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    base = str(tmp_path / "ens")
+    d_new = _member(base, "member_00")
+    with open(os.path.join(d_new, "origin.json"), "w") as f:
+        _json.dump({"op": "add", "loss_norm": "l2"}, f)
+    d_old = _member(base, "member_01")          # no origin.json → legacy L1
+
+    monkeypatch.setattr(ev, "ensemble_dir", lambda: base)
+    monkeypatch.setattr(
+        "euclid_polish.ensemble_registry.active_member_dirs",
+        lambda b: [d_new, d_old])
+    monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: None)
+    monkeypatch.setattr(
+        "euclid_polish.training.log_plot.ensemble_training_series",
+        lambda b: [{"name": "member_00"}, {"name": "member_01"}])
+    out = ev.training_curves_payload()
+    assert {s["name"]: s["loss"] for s in out} == {
+        "member_00": "l2", "member_01": "l1"}

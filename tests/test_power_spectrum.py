@@ -223,3 +223,47 @@ def test_render_ensemble_power_spectrum_empty_returns_none(tmp_path):
     assert render_ensemble_power_spectrum(
         str(out), {"k": np.array([]), "P_hr": np.array([])}) is None
     assert not out.exists()
+
+
+def test_member_group_colors_by_loss_and_depth():
+    from euclid_polish.eval.power_spectrum import (
+        LOSS_LINE_COLORS,
+        _member_group_colors,
+    )
+    meta = [{"loss": "l1", "blocks": 32}, {"loss": "L2", "blocks": 16},
+            {"loss": None, "blocks": None}]
+    by_loss = _member_group_colors(meta, "loss")
+    assert by_loss[0] == ("L1", LOSS_LINE_COLORS["l1"])
+    assert by_loss[1] == ("L2", LOSS_LINE_COLORS["l2"])   # case-insensitive
+    assert by_loss[2][0] == "L1"                          # legacy → L1
+    by_depth = _member_group_colors(meta, "depth")
+    assert by_depth[0][0] == "32b" and by_depth[1][0] == "16b"
+    assert by_depth[0][1] != by_depth[1][1]               # distinct colors
+    assert by_depth[2][0] == "?"
+    assert _member_group_colors(meta, None) is None
+    assert _member_group_colors(None, "loss") is None
+
+
+def test_render_ensemble_power_spectrum_with_loss_coloring(tmp_path):
+    k = np.geomspace(0.2, 10.0, 24)
+    rng = np.random.default_rng(1)
+    curves = {
+        "k": k,
+        "P_hr": np.abs(rng.normal(1e3, 10, k.size)),
+        "P_sr": np.abs(rng.normal(5e2, 10, k.size)),
+        "r": np.clip(1.0 - k / 20.0, 0, 1),
+        "P_members": np.abs(rng.normal(5e2, 20, (3, k.size))),
+        "r_members": np.clip(
+            1.0 - k[None, :] / 20.0 + rng.normal(0, 0.02, (3, k.size)), 0, 1),
+    }
+    meta = [{"loss": "l1", "blocks": 32}, {"loss": "l2", "blocks": 32},
+            {"loss": "l3", "blocks": 16}]
+    out = tmp_path / "ps_loss.png"
+    assert render_ensemble_power_spectrum(
+        str(out), curves, n_fields=5, member_meta=meta,
+        color_by="loss") == str(out)
+    assert out.stat().st_size > 0
+    out2 = tmp_path / "ps_depth.png"
+    assert render_ensemble_power_spectrum(
+        str(out2), curves, n_fields=5, member_meta=meta,
+        color_by="depth") == str(out2)

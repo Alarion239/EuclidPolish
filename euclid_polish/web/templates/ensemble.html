@@ -51,6 +51,14 @@
   </div>
 
   <div class="ens-eval-panel" data-eval-tab="power-spectrum">
+    <label class="muted" style="font-size:0.85em;"
+           title="Color the per-member T(k)/r(k) lines by reconstruction norm (L1 blue · L2 green · L3 orange) or trunk depth — applied on the next ↻ Regenerate.">
+      member lines:
+      <select id="ens-ps-color">
+        <option value="">uniform</option>
+        <option value="loss">by loss</option>
+        <option value="depth">by depth</option>
+      </select></label>
     <a href="{{ url_for('ensemble_power_spectrum') }}" target="_blank">
       <img loading="lazy" style="max-width:100%;height:auto;"
            data-src="{{ url_for('ensemble_power_spectrum') }}"
@@ -117,6 +125,7 @@
       <th title="Rank by test-set PSNR (1 = best). Unscored members are unranked.">#</th>
       <th>Checkpoint</th>
       <th title="Mean PSNR over {{ psnr_fields }} held-out {{ eval_subset }} fields, computed in asinh (stretched) space — the same metric as the training curves. Cached per checkpoint fingerprint; a member is only re-scored when its checkpoint changes.">PSNR (asinh, {{ eval_subset }})</th>
+      <th title="Reconstruction p-norm the member trained with (origin.json). Members created before the loss knob all trained with L1.">Loss</th>
       <th>Training seed</th>
       <th title="Training also saves a best-LOSS checkpoint in loss_best/. It is NOT part of the ensemble (correlated with the PSNR-best one — it just doubled eval time), but it can seed a fork.">loss-best ckpt</th>
       <th title="Last logged training step (from training_log.csv).">Step</th>
@@ -130,6 +139,7 @@
           <span title="forked from {{ m.origin.forked_from }}{% if m.origin.created_at %} ({{ m.origin.created_at }}){% endif %}">⑂</span>
           {% endif %}</td>
           <td>{% if m.psnr is not none %}{{ "%.3f"|format(m.psnr) }} dB{% else %}<span class="muted" title="not scored yet, or the checkpoint changed since its last score — press ↻ PSNR (only changed members are evaluated)">—</span>{% endif %}</td>
+          <td><code>{{ m.loss | upper }}</code></td>
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
           <td>{% if m.has_loss_best %}✓ on disk{% else %}—{% endif %}</td>
           <td class="muted">{{ "{:,}".format(m.step) if m.step else "—" }}</td>
@@ -319,7 +329,11 @@ document.querySelectorAll(".ens-fork-btn").forEach((b) =>
       btn.disabled = false;
       btn.textContent = label;
     };
-    img.src = img.dataset.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
+    let url = img.dataset.src.split("?")[0] + "?fresh=1&_t=" + Date.now();
+    // Power-spectrum panel: apply the member-line coloring choice.
+    const colorSel = panel.querySelector("#ens-ps-color");
+    if (colorSel && colorSel.value) url += "&color=" + colorSel.value;
+    img.src = url;
   });
 })();
 </script>

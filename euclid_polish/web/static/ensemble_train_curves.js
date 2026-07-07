@@ -37,8 +37,18 @@ function viridis(t) {
   return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 }
 
-// mode ∈ {"distinct", "depth", "psnr"} → per-series color fn + legend suffix.
+// Fixed colors per reconstruction norm (matches the power-spectrum figure).
+const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214" };
+
+// mode ∈ {"distinct", "depth", "psnr", "loss"} → per-series color fn + legend
+// suffix.
 function makeColoring(series, mode) {
+  if (mode === "loss") {
+    return {
+      color: (s) => LOSS_COLORS[(s.loss || "l1").toLowerCase()] || NO_DATA,
+      suffix: (s) => ` · ${(s.loss || "l1").toUpperCase()}`,
+    };
+  }
   if (mode === "depth") {
     const depths = [...new Set(series.map((s) => s.blocks).filter((b) => b))]
       .sort((a, b) => a - b);
@@ -203,6 +213,8 @@ function legend(series, coloring) {
 const MODES = [
   ["distinct", "distinct",
    "One evenly-spread hue per member (golden-angle)."],
+  ["loss", "by loss",
+   "One color per reconstruction norm (L1 blue · L2 green · L3 orange) — members created before the loss knob all trained with L1."],
   ["depth", "by depth",
    "One color per trunk depth (residual blocks) — mixed-depth ensembles at a glance."],
   ["psnr", "by test PSNR",
