@@ -95,3 +95,21 @@ def test_n_members_is_add_count_alias(tmp_path):
     args = parse_args(["--n-members", "3", "--steps", "10"])
     specs = build_specs(args, str(tmp_path / "ens"))
     assert len(specs) == 3 and all(s.op == "add" for s in specs)
+
+
+def test_required_record_names_drops_dirty_when_all_onthefly(tmp_path):
+    from scripts.train_ensemble import required_record_names
+
+    args = parse_args(["--count", "2", "--steps", "10",
+                       "--forward-onthefly", "1"])
+    specs = build_specs(args, str(tmp_path / "a"))
+    names = required_record_names(specs)
+    assert "dirty_train" not in names          # skip-dirty generation is fine
+    assert {"clean_train", "dirty_validate", "clean_validate"} <= set(names)
+
+    # ONE record-mode member in the batch → dirty_train required again.
+    args = parse_args(["--count", "2", "--steps", "10",
+                       "--forward-onthefly", "1",
+                       "--member-spec", '[{"forward_onthefly": false}]'])
+    specs = build_specs(args, str(tmp_path / "b"))
+    assert "dirty_train" in required_record_names(specs)

@@ -316,17 +316,37 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
     return specs
 
 
+def required_record_names(specs) -> list[str]:
+    """The TFRecord basenames this run actually reads.
+
+    ``clean_train`` is the training target (and, on-the-fly, the scene the
+    live forward model consumes); the validate pair feeds the metric stream
+    for every member. ``dirty_train`` is only read by RECORD-mode members —
+    a ``--skip-dirty-train`` generation deliberately doesn't produce it, so
+    an all-on-the-fly run must not demand it.
+    """
+    names = ["clean_train", "dirty_validate", "clean_validate"]
+    if any(not s.forward_onthefly for s in specs):
+        names.insert(0, "dirty_train")
+    return names
+
+
 def main() -> int:
     args = parse_args()
     base = args.base_dir or _default_base_dir()
+    specs = build_specs(args, base)
     lr = tfrecord_path(args.records_dir, "dirty_train")
     hr = tfrecord_path(args.records_dir, "clean_train")
-    if not (os.path.exists(lr) and os.path.exists(hr)):
-        print(f"✗ training records not found in {args.records_dir} "
-              "(dirty_train / clean_train). Generate them first.")
+    needed = required_record_names(specs)
+    missing = [n for n in needed
+               if not os.path.exists(tfrecord_path(args.records_dir, n))]
+    if missing:
+        print(f"✗ training records missing in {args.records_dir}: "
+              + ", ".join(missing) + ". Generate them first."
+              + ("" if "dirty_train" in needed else
+                 " (dirty_train is NOT required — every member trains "
+                 "on-the-fly.)"))
         return 2
-
-    specs = build_specs(args, base)
     label = {
         "add": f"add {len(specs)} member(s)",
         "continue": "continue " + ",".join(s.name for s in specs),
@@ -368,7 +388,7 @@ def main() -> int:
 
     records_dir = stage_records(
         args.records_dir,
-        ["dirty_train", "clean_train", "dirty_validate", "clean_validate"],
+        needed,
         on_log=_stage_log,
     )
     staged = records_dir != args.records_dir
