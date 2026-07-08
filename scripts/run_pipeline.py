@@ -182,15 +182,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
-    ap.add_argument("--skip-dirty-train", action="store_true",
-                    help="Do not forward-model the TRAIN split: on-the-fly "
-                         "training reads clean_train and re-draws PSF+noise "
-                         "live, so dirty_train is dead weight (~6.6 GB + one "
-                         "forward per field). validate/test still get dirty "
-                         "records (training validation + evaluation read "
-                         "them). With --force any existing dirty_train "
-                         "(+ provenance sidecars) is DELETED — a stale-"
-                         "calibration file must not linger.")
+    ap.add_argument("--onthefly-train", action="store_true",
+                    help="On-the-fly training mode: generate the TRAIN split "
+                         "as clean_train ONLY — no hr_train, no dirty_train. "
+                         "On-the-fly training reads clean_train and builds the "
+                         "LR + target live (fresh PSF/noise/stars per visit), "
+                         "so both would be dead weight (~13 GB + a forward per "
+                         "field). validate/test still get the full clean + hr "
+                         "+ dirty triple (training validation + evaluation read "
+                         "them). Any stale hr_train/dirty_train (+ provenance "
+                         "sidecars) left by an earlier record-mode run is "
+                         "DELETED — they must not linger.")
     ap.add_argument("--force", action="store_true",
                     help="Regenerate every subset from scratch, ignoring "
                          "already-complete data on disk (default: resume — "
@@ -383,6 +385,7 @@ def step_convolve(args: argparse.Namespace) -> None:
     grand_total = sum(counts.values())
     done = 0
 
+    onthefly_train = bool(getattr(args, "onthefly_train", False))
     n_expected_by_subset = {"train": args.ntrain, "validate": args.nvalid,
                             "test": _ntest(args)}
     for subset in ("train", "validate", "test"):
@@ -391,36 +394,38 @@ def step_convolve(args: argparse.Namespace) -> None:
             _log(f"⚠️  {clean_path} not found, skipping {subset}")
             continue
 
-        # --skip-dirty-train: no dirty for the train split (see the parallel
-        # step) — the hr record is a plain trim of the clean scene.
-        write_dirty = not (bool(getattr(args, "skip_dirty_train", False))
-                           and subset == "train")
+        # --onthefly-train: the TRAIN split is clean-only. On-the-fly training
+        # reads clean_train and builds the LR + target live, so hr/dirty are
+        # dead weight — don't forward-model them at all. Drop any stale ones
+        # left by an earlier record-mode run (they must not linger).
+        if onthefly_train and subset == "train":
+            _remove_subset_finals(args.records_dir, "train", kinds=("hr", "dirty"))
+            done += counts[subset]
+            _log("  train: on-the-fly mode — clean only, skipping hr + dirty")
+            reporter.set_step(done, grand_total, "train clean-only (on-the-fly)")
+            continue
+
         n_expected = n_expected_by_subset[subset]
         if not args.force and _subset_complete(
-                args.records_dir, subset,
-                ("hr", "dirty") if write_dirty else ("hr",), n_expected):
+                args.records_dir, subset, ("hr", "dirty"), n_expected):
             done += counts[subset]
             _log(f"  {subset}: already complete — skipping")
             reporter.set_step(done, grand_total, f"{subset} already complete")
             continue
-        if args.force and not write_dirty:
-            _remove_subset_finals(args.records_dir, subset, kinds=("dirty",))
 
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
         # The scene records are starless; re-inject each field's FIXED stars
         # (recorded in the source CSV) before the forward so the LR carries
-        # star contamination while the HR target stays starless.
+        # star contamination while the HR target stays starfull.
         stars_by_field = {}
-        if write_dirty:
-            sources_csv = tfrecord_path(
-                args.records_dir, f"sources_{subset}").replace(".tfrecord",
-                                                               ".csv")
-            for fidx, rows in read_sources(sources_csv).items():
-                fld = [r for r in rows if r.get("type") == "star"]
-                if fld:
-                    stars_by_field[fidx] = fld
+        sources_csv = tfrecord_path(
+            args.records_dir, f"sources_{subset}").replace(".tfrecord", ".csv")
+        for fidx, rows in read_sources(sources_csv).items():
+            fld = [r for r in rows if r.get("type") == "star"]
+            if fld:
+                stars_by_field[fidx] = fld
 
         # The clean record file id (if stamped) is the lineage parent of the
         # hr+dirty files produced from it. Peek the first record once.
@@ -443,32 +448,24 @@ def step_convolve(args: argparse.Namespace) -> None:
         # NOT rewritten — the 4-band record is kept for inspection.
         with open_writer(f"hr_{subset}",
                                    records_dir=args.records_dir) as hr_w, \
-             (open_writer(f"dirty_{subset}", records_dir=args.records_dir)
-              if write_dirty else contextlib.nullcontext()) as lr_w:
+             open_writer(f"dirty_{subset}", records_dir=args.records_dir) as lr_w:
             for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
                                          unit="img", total=n_total)):
                 hr_4ch = Image.from_tfrecord(raw)
-                if write_dirty:
-                    lr, hr = _forward_with_stars(
-                        fwd, hr_4ch, stars_by_field.get(i), rng)
-                    lr.index = i
-                    lr.subset = subset
-                else:
-                    lr, hr = None, _trimmed_hr(hr_4ch)
-                hr.index = i
-                hr.subset = subset
+                lr, hr = _forward_with_stars(
+                    fwd, hr_4ch, stars_by_field.get(i), rng)
+                lr.index = hr.index = i
+                lr.subset = hr.subset = subset
                 if conv_ctx is not None:
                     try:
                         parents = (clean_parent,) if clean_parent is not None else ()
                         hr.stamp = conv_ctx.stamp("hr", subset, parents=parents)
-                        if lr is not None:
-                            lr.stamp = conv_ctx.stamp("dirty", subset,
-                                                      parents=parents)
+                        lr.stamp = conv_ctx.stamp("dirty", subset,
+                                                  parents=parents)
                     except Exception:
                         pass
                 hr_w.write(hr, index=i)
-                if lr is not None:
-                    lr_w.write(lr, index=i)
+                lr_w.write(lr, index=i)
                 done += 1
                 reporter.set_step(done, grand_total, f"forward {subset} {i + 1}/{n_total}")
         if conv_ctx is not None:
@@ -477,17 +474,14 @@ def step_convolve(args: argparse.Namespace) -> None:
                 conv_ctx.finalize("hr", subset,
                                   tfrecord_path(args.records_dir, f"hr_{subset}"),
                                   parents=parents)
-                if write_dirty:
-                    conv_ctx.finalize(
-                        "dirty", subset,
-                        tfrecord_path(args.records_dir, f"dirty_{subset}"),
-                        parents=parents)
+                conv_ctx.finalize(
+                    "dirty", subset,
+                    tfrecord_path(args.records_dir, f"dirty_{subset}"),
+                    parents=parents)
             except Exception:
                 pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s → kept "
-             + ("clean + wrote hr" if not write_dirty
-                else "clean + wrote hr + dirty")
-             + f" {subset}")
+             f"clean + wrote hr + dirty {subset}")
 
 
 # ---------------------------------------------------------------------------
@@ -542,26 +536,6 @@ def _sources_complete(csv_path: str, expected_n: int) -> bool:
     if expected_n <= 0:
         return True
     return os.path.exists(csv_path)
-
-
-def _trimmed_hr(sky: Image) -> Image:
-    """The 4-band HR target WITHOUT running the forward model.
-
-    Exactly the trim :meth:`ObservationSimulator.process` applies to produce
-    its clean HR output (``hr_clean = scene[:H_trim, :W_trim]``) — used by
-    ``--skip-dirty-train``, where the LR side is never needed but the ``hr_``
-    record must stay position-paired with ``clean_``.
-    """
-    max_rebin = max(
-        int(round(b.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE))
-        for b in Config.BANDS)
-    h, w = sky.data.shape[:2]
-    ht, wt = (h // max_rebin) * max_rebin, (w // max_rebin) * max_rebin
-    return Image(data=sky.data[:ht, :wt, :].astype(np.float32, copy=True),
-                 pixel_scale_arcsec=sky.pixel_scale_arcsec,
-                 band_names=Config.HR_TARGET_BAND_NAMES,
-                 is_clean=True, index=sky.index, subset=sky.subset,
-                 metadata=sky.metadata)
 
 
 def _forward_with_stars(fwd, sky_starless: Image, stars, rng) -> tuple:
@@ -755,9 +729,9 @@ def _salvage_shard(records_dir: str, subset: str, sid: int,
 
     The views are truncated to the shortest that survived (a kill between
     writing the views of one field), and the sources sidecar is filtered to
-    the surviving field indices. ``kinds`` drops ``dirty`` for a
-    ``--skip-dirty-train`` run (its shards never write dirty parts). A shard
-    with nothing salvageable (or ``cap <= 0``) is deleted and returns
+    the surviving field indices. ``kinds`` is just ``("clean",)`` for an
+    ``--onthefly-train`` run (its train shards write only the clean part). A
+    shard with nothing salvageable (or ``cap <= 0``) is deleted and returns
     ``(0, [])``."""
     paths = {k: tfrecord_path(records_dir, f"{k}_{subset}.part{sid:04d}")
              for k in kinds}
@@ -806,9 +780,9 @@ def _merge_subset(records_dir: str, subset: str,
     dirty TFRecords + sources CSV, then delete the parts.
 
     Shards merge in ascending id order, shared across the kinds so records
-    stay position-aligned (the dataset pairs by position). ``kinds`` drops
-    ``dirty`` on a ``--skip-dirty-train`` run — an empty merged dirty file
-    would silently read as 0 records. Each output is built in a temp then
+    stay position-aligned (the dataset pairs by position). ``kinds`` is just
+    ``("clean",)`` on an ``--onthefly-train`` run — merging an absent hr/dirty
+    kind would silently produce a 0-record file. Each output is built in a temp then
     atomically renamed, and parts are deleted only after every kind is
     merged — so a kill mid-merge leaves the parts intact for the next resume
     rather than a half-merged final file."""
@@ -829,7 +803,8 @@ def _merge_subset(records_dir: str, subset: str,
 def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
                              start: int, count: int, shard_id: int,
                              seed, plan=None,
-                             write_dirty: bool = True) -> tuple[str, int, int]:
+                             write_forward: bool = True,
+                             ) -> tuple[str, int, int]:
     """Generate clean → forward to hr+dirty for ``[start, start+count)`` and
     write the triple to per-shard TFRecords.
 
@@ -838,10 +813,10 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     order, so concatenating shards in id order keeps clean/hr/dirty
     position-aligned (the dataset pairs by position, not by stored index).
 
-    ``write_dirty=False`` (``--skip-dirty-train``): the forward model never
-    runs — ``hr`` is the plain trim of the scene (identical to what
-    ``fwd.process`` would return as its clean target) and no dirty part is
-    written, saving the per-field convolution+noise entirely.
+    ``write_forward=False`` (``--onthefly-train``): the forward model never
+    runs and ONLY the clean part is written — no hr, no dirty. On-the-fly
+    training reads ``clean_train`` and builds the LR + target live (injecting a
+    fresh star realization per visit), so both would be dead weight.
     """
     rng = np.random.default_rng(seed)
     tag = f"{subset}.part{shard_id:04d}"
@@ -855,38 +830,35 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     sources_part = tfrecord_path(records_dir,
                                  f"sources_{tag}").replace(".tfrecord", ".csv")
     with open_writer(f"clean_{tag}", records_dir=records_dir) as cw, \
-         open_writer(f"hr_{tag}",    records_dir=records_dir) as hw, \
+         (open_writer(f"hr_{tag}", records_dir=records_dir)
+          if write_forward else contextlib.nullcontext()) as hw, \
          (open_writer(f"dirty_{tag}", records_dir=records_dir)
-          if write_dirty else contextlib.nullcontext()) as dw, \
+          if write_forward else contextlib.nullcontext()) as dw, \
          SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
-            # Scene is starless. The training split (no dirty) draws no fixed
+            # Scene is starless. The training split (clean-only) draws no fixed
             # stars — on-the-fly training injects a fresh realization per
             # visit; validate/test draw + record fixed stars for a
             # reproducible LR.
-            sky, meta = sim.simulate_field(rng, n_stars=(0 if not write_dirty
-                                                         else None))
+            sky, meta = sim.simulate_field(rng, n_stars=(None if write_forward
+                                                         else 0))
             sky.index = i
             sky.subset = subset
-            if write_dirty:
-                lr, hr = _forward_with_stars(fwd, sky, meta.get("stars"), rng)
-                lr.index = i
-                lr.subset = subset
-            else:
-                lr, hr = None, _trimmed_hr(sky)
-            hr.index = i
-            hr.subset = subset
             if plan is not None:
-                try:
+                with contextlib.suppress(Exception):
                     sky.stamp = plan.clean_stamp(subset)
-                    hr.stamp = plan.hr_stamp(subset)
-                    if lr is not None:
-                        lr.stamp = plan.dirty_stamp(subset)
-                except Exception:
-                    pass
             cw.write(sky, index=i)
-            hw.write(hr, index=i)
-            if lr is not None:
+            if write_forward:
+                lr, hr = _forward_with_stars(fwd, sky, meta.get("stars"), rng)
+                lr.index = hr.index = i
+                lr.subset = hr.subset = subset
+                if plan is not None:
+                    try:
+                        hr.stamp = plan.hr_stamp(subset)
+                        lr.stamp = plan.dirty_stamp(subset)
+                    except Exception:
+                        pass
+                hw.write(hr, index=i)
                 dw.write(lr, index=i)
             sources.add_field(i, meta)
             now = time.perf_counter()
@@ -948,10 +920,10 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
 def _gen_convolve_shard(task) -> tuple[str, int, int]:
     """Top-level pool entry point → ``_generate_convolve_range`` with the
     worker-global sim/fwd."""
-    subset, start, count, shard_id, seed, plan, write_dirty = task
+    subset, start, count, shard_id, seed, plan, write_forward = task
     return _generate_convolve_range(
         _W_SIM, _W_FWD, _W_RECORDS_DIR, subset, start, count, shard_id, seed,
-        plan=plan, write_dirty=write_dirty,
+        plan=plan, write_forward=write_forward,
     )
 
 
@@ -978,7 +950,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         _generator_config_from_args(args), seed=run_seed)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
-    skip_dirty_train = bool(getattr(args, "skip_dirty_train", False))
+    onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
                ("test", _ntest(args)))
     # --force discards ALL requested subsets' data UP-FRONT (parts + final
@@ -995,12 +967,16 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     for subset, n in subsets:
         if n <= 0:
             continue
-        # --skip-dirty-train: the TRAIN split gets no dirty records (on-the-
-        # fly training re-draws PSF+noise from clean_train); validate/test
-        # keep theirs (training validation + evaluation read them).
-        write_dirty = not (skip_dirty_train and subset == "train")
-        rec_kinds = (("clean", "hr", "dirty") if write_dirty
-                     else ("clean", "hr"))
+        # --onthefly-train: the TRAIN split gets clean records ONLY (on-the-fly
+        # training reads clean_train and builds LR+target live); validate/test
+        # keep the full triple (training validation + evaluation read them).
+        write_forward = not (onthefly_train and subset == "train")
+        rec_kinds = (("clean", "hr", "dirty") if write_forward
+                     else ("clean",))
+        # Clean-only train split: drop any stale hr/dirty finals a prior
+        # record-mode run left behind so nothing downstream reads them.
+        if not write_forward:
+            _remove_subset_finals(args.records_dir, subset, kinds=("hr", "dirty"))
         if not args.force and _subset_complete(
                 args.records_dir, subset, (*rec_kinds, "sources"), n):
             _log(f"  {subset}: already complete ({n} records) — skipping")
@@ -1050,7 +1026,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                     # shard; all derived from the one recorded run_seed.
                     seed = [run_seed, _subset_tag(subset), sid]
                     tasks.append((subset, base_idx + start, end - start,
-                                  sid, seed, plan, write_dirty))
+                                  sid, seed, plan, write_forward))
 
         t0 = time.perf_counter()
         if tasks:
@@ -1088,10 +1064,10 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                 clean_id = gen_ctx.file_id("clean", subset)
                 gen_ctx.finalize("clean", subset,
                                  tfrecord_path(args.records_dir, f"clean_{subset}"))
-                gen_ctx.finalize("hr", subset,
-                                 tfrecord_path(args.records_dir, f"hr_{subset}"),
-                                 parents=(clean_id,))
-                if write_dirty:
+                if write_forward:
+                    gen_ctx.finalize("hr", subset,
+                                     tfrecord_path(args.records_dir, f"hr_{subset}"),
+                                     parents=(clean_id,))
                     gen_ctx.finalize(
                         "dirty", subset,
                         tfrecord_path(args.records_dir, f"dirty_{subset}"),
@@ -1099,7 +1075,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             except Exception:
                 pass
         _log(f"  {subset}: done in {time.perf_counter() - t0:.1f} s → "
-             + ("clean + hr" if not write_dirty else "clean + hr + dirty")
+             + ("clean only" if not write_forward else "clean + hr + dirty")
              + f" {subset}")
 
 

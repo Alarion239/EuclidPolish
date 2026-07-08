@@ -1199,12 +1199,12 @@ class RunPipelineStep(FASRCPipelineStep):
         if str(params.get("force", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
             cmd.append("--force")
-        # On-the-fly training reads clean_train directly — skip forward-
-        # modelling the train split (validate/test keep their dirty records).
-        # With --force the stale dirty_train is deleted, never left behind.
-        if str(params.get("skip_dirty_train", "")).strip().lower() in (
+        # On-the-fly training reads clean_train directly and builds LR+target
+        # live — generate the train split as clean-only (no hr, no dirty);
+        # validate/test keep the full triple. Stale hr/dirty_train are deleted.
+        if str(params.get("onthefly_train", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
-            cmd.append("--skip-dirty-train")
+            cmd.append("--onthefly-train")
         # Free-form user-supplied flags. ``shlex.split`` so individual
         # tokens get re-quoted by ``render_sbatch_body`` instead of being
         # smuggled in as one shell-expandable string.

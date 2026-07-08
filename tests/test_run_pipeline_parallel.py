@@ -166,32 +166,29 @@ def test_worker_stamps_records_when_plan_given(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# --skip-dirty-train: the train split never runs the forward model
+# on-the-fly training: the train split generates clean ONLY (no hr, no dirty)
 # ---------------------------------------------------------------------------
 
-def test_skip_dirty_shard_writes_no_dirty_and_hr_is_trimmed_clean(tmp_path):
-    """write_dirty=False: no dirty part, no forward-model call; hr is the
-    plain trim of the scene (position-paired with clean)."""
-    import numpy as np
-
+def test_onthefly_shard_writes_clean_only(tmp_path):
+    """write_forward=False: only the clean part is written — no hr, no dirty,
+    and the forward model never runs. On-the-fly training reads clean_train
+    and builds the LR + target live, so hr/dirty would be dead weight."""
     from euclid_polish.image.tfio import read_images
 
-    sim, fwd = _sim_fwd()
+    sim, _fwd = _sim_fwd()
 
     class _Boom:                              # forward must NEVER run
         def process(self, *a, **k):
-            raise AssertionError("forward model ran despite write_dirty=False")
+            raise AssertionError("forward model ran despite write_forward=False")
 
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, _Boom(), rdir, "train", 0, 2, 0,
-                                seed=[1, 1, 0], write_dirty=False)
+                                seed=[1, 1, 0], write_forward=False)
     assert not os.path.exists(tfrecord_path(rdir, "dirty_train.part0000"))
+    assert not os.path.exists(tfrecord_path(rdir, "hr_train.part0000"))
     clean = read_images(tfrecord_path(rdir, "clean_train.part0000"), 2)
-    hr = read_images(tfrecord_path(rdir, "hr_train.part0000"), 2)
-    assert len(clean) == len(hr) == 2
-    for c, h in zip(clean, hr, strict=False):
-        np.testing.assert_array_equal(h.data, c.data)   # 96 % 2 == 0 → no-op trim
-    # sources sidecar still written
+    assert len(clean) == 2
+    # sources sidecar still written (empty stars for the train split)
     src = tfrecord_path(rdir, "sources_train.part0000").replace(".tfrecord", ".csv")
     assert os.path.isfile(src)
 
@@ -237,7 +234,7 @@ def test_validate_shard_clean_is_starless_hr_is_starfull(tmp_path):
     sim, fwd = _sim_fwd_dense_stars()
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, fwd, rdir, "validate", 0, 2, 0,
-                                seed=[1, 1, 0], write_dirty=True)
+                                seed=[1, 1, 0], write_forward=True)
     src = tfrecord_path(rdir, "sources_validate.part0000").replace(
         ".tfrecord", ".csv")
     stars = [r for rows in read_sources(src).values()
@@ -256,7 +253,7 @@ def test_train_shard_draws_no_fixed_stars(tmp_path):
     sim, fwd = _sim_fwd_dense_stars()
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
-                                seed=[1, 1, 0], write_dirty=False)
+                                seed=[1, 1, 0], write_forward=False)
     src = tfrecord_path(rdir, "sources_train.part0000").replace(
         ".tfrecord", ".csv")
     stars = [r for rows in read_sources(src).values()
@@ -264,25 +261,25 @@ def test_train_shard_draws_no_fixed_stars(tmp_path):
     assert stars == []
 
 
-def test_merge_subset_kinds_skips_dirty(tmp_path):
+def test_merge_subset_kinds_clean_only(tmp_path):
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
-                                seed=[1, 1, 0], write_dirty=False)
-    rp._merge_subset(rdir, "train", kinds=("clean", "hr"))
+                                seed=[1, 1, 0], write_forward=False)
+    rp._merge_subset(rdir, "train", kinds=("clean",))
     assert _count(tfrecord_path(rdir, "clean_train")) == 2
-    assert _count(tfrecord_path(rdir, "hr_train")) == 2
-    # no dirty output — not even an empty file
+    # no hr, no dirty output — not even empty files
+    assert not os.path.exists(tfrecord_path(rdir, "hr_train"))
     assert not os.path.exists(tfrecord_path(rdir, "dirty_train"))
 
 
-def test_salvage_with_kinds_ignores_missing_dirty(tmp_path):
+def test_salvage_with_kinds_clean_only(tmp_path):
     sim, fwd = _sim_fwd()
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
-                                seed=[1, 1, 0], write_dirty=False)
+                                seed=[1, 1, 0], write_forward=False)
     done, used, next_sid = rp._salvage_subset(rdir, "train", 4,
-                                              kinds=("clean", "hr"))
+                                              kinds=("clean",))
     assert done == 2 and sorted(used) == [0, 1] and next_sid == 1
 
 
@@ -341,14 +338,14 @@ def test_subset_incomplete_while_parts_remain(tmp_path):
     assert rp._subset_complete(rdir, "train", ("clean", "hr", "dirty"), 2)
 
 
-def test_synthetic_step_forwards_skip_dirty_flag():
+def test_synthetic_step_forwards_onthefly_flag():
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     step = REGISTRY.get("synthetic_generate")
     base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
             "batch_size": 4, "steps": 10}
-    assert "--skip-dirty-train" in step.build_command(
-        {**base, "skip_dirty_train": "1"})
-    assert "--skip-dirty-train" not in step.build_command(base)
+    assert "--onthefly-train" in step.build_command(
+        {**base, "onthefly_train": "1"})
+    assert "--onthefly-train" not in step.build_command(base)
 
 
 def test_tng_density_with_empty_atlas_is_fatal(tmp_path):

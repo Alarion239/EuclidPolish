@@ -344,8 +344,8 @@ def required_record_names(specs) -> list[str]:
     ``clean_train`` is the training target (and, on-the-fly, the scene the
     live forward model consumes); the validate pair feeds the metric stream
     for every member. ``dirty_train`` is only read by RECORD-mode members —
-    a ``--skip-dirty-train`` generation deliberately doesn't produce it, so
-    an all-on-the-fly run must not demand it.
+    an ``--onthefly-train`` generation deliberately doesn't produce it (the
+    train split is clean-only), so an all-on-the-fly run must not demand it.
     """
     names = ["clean_train", "dirty_validate", "clean_validate"]
     if any(not s.forward_onthefly for s in specs):

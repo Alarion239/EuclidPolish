@@ -348,9 +348,9 @@ large cutout don't leak across train/validate."></label>`;
             <input type="checkbox" name="force" value="1">
             Override existing data — regenerate from scratch</label>
           <label class="checkbox-field" style="flex-basis:100%;"
-                 title="On-the-fly training reads clean_train and re-draws PSF + noise live, so dirty_train is dead weight (~6.6 GB + one full forward model per train field). Checking this skips forward-modelling the TRAIN split entirely — generation gets faster. validate/test still get dirty records (training validation and evaluation read them). Combined with Override, any existing dirty_train is DELETED so a stale-calibration file can't linger. Leave OFF if you still want record-mode training.">
-            <input type="checkbox" name="skip_dirty_train" value="1">
-            Skip dirty_train — for on-the-fly training only</label>
+                 title="On-the-fly training reads clean_train and builds the LR + target live (fresh PSF, noise and stars per visit), so hr_train and dirty_train are dead weight (~13 GB + a full forward model per train field). Checking this generates the TRAIN split as clean-only — no hr, no dirty — so generation is faster. validate/test still get the full clean + hr + dirty triple (training validation and evaluation read them). Any stale hr_train/dirty_train from an earlier record-mode run is DELETED so it can't linger. Leave OFF for record-mode training.">
+            <input type="checkbox" name="onthefly_train" value="1">
+            on-the-fly training</label>
           <p class="hint" style="flex-basis:100%;">Train scenes, Validate scenes and
              HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
              with this job.</p>`;

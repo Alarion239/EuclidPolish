@@ -377,10 +377,11 @@ def register(app):
                 # (regenerate from scratch instead of resuming prior shards).
                 "force": str(form.get("force", "")).strip().lower() in (
                     "1", "true", "yes", "on"),
-                # "Skip dirty_train" checkbox → --skip-dirty-train (on-the-fly
-                # training reads clean_train; train split is never forwarded).
-                "skip_dirty_train": str(form.get("skip_dirty_train", "")
-                                        ).strip().lower() in (
+                # "on-the-fly training" checkbox → --onthefly-train (train
+                # split generated clean-only; no hr/dirty — training builds
+                # both live from clean_train).
+                "onthefly_train": str(form.get("onthefly_train", "")
+                                      ).strip().lower() in (
                     "1", "true", "yes", "on"),
             }
             params.update(resources.to_dict())
