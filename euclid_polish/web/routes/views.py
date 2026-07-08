@@ -135,13 +135,13 @@ def register(app):
         """Rsync the synthetic TFRecord shards from FASRC into the local
         cache so the preview can render them.
 
-        The held-out **test** split is the eval set, so it is what we pull —
-        ``validate`` and the large ``train`` split are opt-in (the evals no
-        longer need them): ``include_validate`` / ``include_train`` (default
-        false) add those. Missing shards (e.g. a dataset generated before the
-        test split) just report not-ok and are skipped. Lifts the fetcher's
-        50 MB cap to 5 GB since TFRecords are large and this is an explicit
-        user-requested transfer."""
+        The held-out **test** split is the eval set and **validate** is what the
+        ensemble combiner fits on, so both are pulled by default; only the large
+        ``train`` split is opt-in via ``include_train`` (``include_validate`` is
+        kept for backward-compat but validate is now always included). Missing
+        shards (e.g. a dataset generated before the test split) just report
+        not-ok and are skipped. Lifts the fetcher's 50 MB cap to 5 GB since
+        TFRecords are large and this is an explicit user-requested transfer."""
         remote_dir = _sky_records_remote_dir()
 
         def _flag(name: str) -> bool:
@@ -149,10 +149,8 @@ def register(app):
                 "1", "true", "yes", "on")
 
         include_train = _flag("include_train")
-        include_validate = _flag("include_validate")
-        subsets = ["test"]
-        if include_validate:
-            subsets.append("validate")
+        include_validate = _flag("include_validate")   # kept for back-compat
+        subsets = ["test", "validate"]                 # combiner fits on validate
         if include_train:
             subsets.append("train")
 
