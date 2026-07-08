@@ -187,6 +187,34 @@ def test_member_spec_icnr_override(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Star regime tag (starless / starfull)                                        #
+# --------------------------------------------------------------------------- #
+def test_member_is_starless_reads_origin(tmp_path):
+    from euclid_polish.ensemble import member_is_starless
+    d = tmp_path / "member_00"
+    d.mkdir()
+    assert member_is_starless(str(d)) is False          # no origin → starfull
+    (d / "origin.json").write_text('{"starless": true}')
+    assert member_is_starless(str(d)) is True
+    (d / "origin.json").write_text('{"starless": false}')
+    assert member_is_starless(str(d)) is False
+
+
+def test_build_specs_starless_default_and_flag(tmp_path):
+    on = parse_args(["--count", "2", "--steps", "10"])   # default --starless 1
+    assert all(s.starless for s in build_specs(on, str(tmp_path / "a")))
+    off = parse_args(["--count", "1", "--steps", "10", "--starless", "0"])
+    assert build_specs(off, str(tmp_path / "b"))[0].starless is False
+
+
+def test_member_spec_starless_override(tmp_path):
+    args = parse_args(["--count", "2", "--steps", "10",
+                       "--member-spec", '[{"starless": false}, {}]'])
+    specs = build_specs(args, str(tmp_path / "ens"))
+    assert specs[0].starless is False and specs[1].starless is True
+
+
+# --------------------------------------------------------------------------- #
 # Plateau LR guard is L1-only (degenerate-basin escape)                        #
 # --------------------------------------------------------------------------- #
 def test_plateau_guard_applies_l1_only():

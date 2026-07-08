@@ -240,6 +240,10 @@ def training_curves_payload() -> list[dict]:
         # loss knob existed all trained with the then-hardcoded L1.
         origin = _member_origin(d)
         s["loss"] = ((origin or {}).get("loss_norm") or "l1")
+        # Star regime (origin.json): starless members erase stars (clean
+        # target), starfull reconstruct them (hr target). Pre-knob members
+        # have no field → starfull. Drives the /ensemble mode toggle + filter.
+        s["starless"] = bool((origin or {}).get("starless", False))
         out.append(s)
     return out
 
@@ -524,8 +528,14 @@ def compute_evaluation_payload() -> dict | None:
     return payload
 
 
-def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
+def job_ensemble_evaluate(cap, *, num_images: int,
+                          starless: bool = True) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
+
+    ``starless`` selects the regime: STARLESS members scored against the
+    starless ``clean`` target (erase stars), STARFULL against the starfull
+    ``hr`` target (reconstruct them). Only members of the matching regime are
+    evaluated together (their targets differ, so a mixed mean is meaningless).
 
     Also caches every evaluated field's ensemble-mean (SR), per-pixel std
     (stdSR) and PCA cubes under ``<vis>/ensemble/cubes/`` (up to
@@ -587,6 +597,7 @@ def job_ensemble_evaluate(cap, *, num_images: int) -> dict:
         cap.tick(i, n, lbl)
 
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
+                              starless=bool(starless),
                               on_field=_on_field, on_progress=_prog)
     member_labels = list(out.get("member_labels", []))
 

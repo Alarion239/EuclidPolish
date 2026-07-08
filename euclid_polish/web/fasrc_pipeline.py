@@ -1092,6 +1092,10 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if str(params.get("icnr", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
             cmd += ["--icnr"]
+        # Star regime (default starless): 0 = starfull (reconstruct stars).
+        if str(params.get("starless", "1")).strip().lower() in (
+                "0", "false", "no", "off"):
+            cmd += ["--starless", "0"]
         # Live forward model: full-field PSF+noise re-realization per visit.
         if str(params.get("forward_onthefly", "")).strip().lower() in (
                 "1", "true", "yes", "on"):

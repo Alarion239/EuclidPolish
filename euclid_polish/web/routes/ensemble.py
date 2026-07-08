@@ -51,9 +51,14 @@ def register(app):
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
             num_images = 100
+        # Star regime: starfull (reconstruct stars, hr target) vs starless
+        # (erase them, clean target). Default starless (the current regime).
+        starless = (request.form.get("mode", "starless").lower() != "starfull")
+        regime = "starless" if starless else "starfull"
         job_id = REGISTRY.spawn(
-            f"ensemble: evaluate on {num_images} test fields",
-            target=lambda cap: job_ensemble_evaluate(cap, num_images=num_images),
+            f"ensemble: evaluate {regime} on {num_images} test fields",
+            target=lambda cap: job_ensemble_evaluate(
+                cap, num_images=num_images, starless=starless),
         )
         return jsonify({"job_id": job_id})
 

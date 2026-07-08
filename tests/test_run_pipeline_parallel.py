@@ -211,9 +211,10 @@ def _sim_fwd_dense_stars():
     return sim, fwd
 
 
-def test_forward_starless_injects_into_lr_not_target():
-    """The shared helper forwards the WITH-stars scene (→ LR carries the star
-    flux) but returns the STARLESS scene as the target."""
+def test_forward_with_stars_puts_stars_in_lr_and_hr():
+    """The shared helper re-deposits the fixed stars, then forwards → BOTH lr
+    and hr are STARFULL (the pair generated second). The starless scene is the
+    separate ``clean`` record, not this hr."""
     _sim, fwd = _sim_fwd_dense_stars()
     field = np.abs(np.random.default_rng(0).normal(
         10, 2, (96, 96, 4))).astype(np.float32)
@@ -221,18 +222,18 @@ def test_forward_starless_injects_into_lr_not_target():
                 band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
                 index=0, subset="validate")
     star = [{"x_pix": 48.0, "y_pix": 48.0, "mag_vis": 17.0}]
-    lr_s, hr_s = rp._forward_starless(fwd, sky, star, np.random.default_rng(1))
-    lr_0, hr_0 = rp._forward_starless(fwd, sky, None, np.random.default_rng(1))
-    # target is the starless scene either way (no star flux, no rng)...
-    np.testing.assert_array_equal(hr_s.data, field)     # 96 % rebin == 0 → no-op
-    np.testing.assert_array_equal(hr_s.data, hr_0.data)
-    # ...but the injected star lifts the LR flux (same noise seed).
+    lr_s, hr_s = rp._forward_with_stars(fwd, sky, star, np.random.default_rng(1))
+    lr_0, hr_0 = rp._forward_with_stars(fwd, sky, None, np.random.default_rng(1))
+    # the star lifts BOTH the LR and the (starfull) HR target vs the star-free
+    # forward of the same scene.
     assert lr_s.data.sum() > lr_0.data.sum()
+    assert hr_s.data.sum() > hr_0.data.sum()
+    assert hr_s.data.sum() > field.sum()                # hr carries the star
 
 
-def test_validate_shard_records_stars_target_starless(tmp_path):
-    """Validate split: fixed stars land in the CSV and the LR (dirty), but the
-    clean/hr target is the starless scene."""
+def test_validate_shard_clean_is_starless_hr_is_starfull(tmp_path):
+    """Validate split: fixed stars land in the CSV. ``clean`` (generated first)
+    is the starless target; ``hr`` (generated second, with lr) is starfull."""
     sim, fwd = _sim_fwd_dense_stars()
     rdir = str(tmp_path)
     rp._generate_convolve_range(sim, fwd, rdir, "validate", 0, 2, 0,
@@ -244,8 +245,9 @@ def test_validate_shard_records_stars_target_starless(tmp_path):
     assert len(stars) > 0                                   # fixed stars recorded
     clean = read_images(tfrecord_path(rdir, "clean_validate.part0000"), 2)
     hr = read_images(tfrecord_path(rdir, "hr_validate.part0000"), 2)
-    for c, h in zip(clean, hr, strict=False):
-        np.testing.assert_array_equal(h.data, c.data)      # target = starless scene
+    # hr (starfull) carries strictly more flux than the starless clean target.
+    assert sum(float(h.data.sum()) for h in hr) > \
+        sum(float(c.data.sum()) for c in clean)
 
 
 def test_train_shard_draws_no_fixed_stars(tmp_path):

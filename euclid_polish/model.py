@@ -347,6 +347,7 @@ class Model:
         forward_onthefly: bool = False,
         psf_subset: int | None = None,
         crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
+        starless: bool = True,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -390,9 +391,13 @@ class Model:
                                              psf_subset=psf_subset)
             print(f"  on-the-fly forward: {note} · "
                   f"{int(crops_per_field)} crops/field")
+            # Starless members erase stars: inject a fresh star realization
+            # each visit (target stays the starless scene). Starfull members
+            # keep the scene's own sources (no injection).
             fwd = OnTheFlyForward(psf_sets, seed=self._seed,
                                   crops_per_field=int(crops_per_field),
-                                  scale=self._scale)
+                                  scale=self._scale,
+                                  inject_stars=bool(starless))
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

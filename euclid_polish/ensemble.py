@@ -126,6 +126,7 @@ class MemberTrainSpec:
     psf_subset: int | None = None
     crops_per_field: int = 16
     icnr: bool = False
+    starless: bool = False
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -178,6 +179,17 @@ def _psnr(a: np.ndarray, b: np.ndarray, peak: float) -> float:
     return float(10.0 * np.log10(peak * peak / mse))
 
 
+def member_is_starless(member_dir: str) -> bool:
+    """Whether a member trained in the STARLESS regime (erase stars), read from
+    its ``origin.json``. Members predating the star knob have no field → they
+    are STARFULL (the original reconstruct-stars behavior)."""
+    try:
+        with open(os.path.join(member_dir, "origin.json")) as f:
+            return bool(json.load(f).get("starless", False))
+    except (OSError, ValueError):
+        return False
+
+
 class EnsembleModel:
     """A seed-diverse ensemble of WDSR checkpoints under one base directory.
 
@@ -208,6 +220,7 @@ class EnsembleModel:
         num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
         n_members: int | None = None,
         include_loss_best: bool = False,
+        starless: bool | None = None,
         _models: Sequence[Model] | None = None,
     ) -> None:
         self.base_dir = base_dir
@@ -223,6 +236,10 @@ class EnsembleModel:
         # still sit on disk (e.g. mirrored back from FASRC) but never loads.
         dirs = [d for d in ensemble_registry.active_member_dirs(base_dir)
                 if os.path.isdir(d) and _checkpoint_exists(d)]
+        # Star-regime filter: a starless/starfull eval mixes only members of the
+        # matching regime (they score against different targets — clean vs hr).
+        if starless is not None:
+            dirs = [d for d in dirs if member_is_starless(d) == bool(starless)]
         if n_members is not None:
             dirs = dirs[: int(n_members)]
         models: list[Model] = []
@@ -353,6 +370,11 @@ class EnsembleModel:
                         "psf_subset": spec.psf_subset,
                         "crops_per_field": int(spec.crops_per_field),
                         "icnr": bool(spec.icnr),
+                        # Star regime: starless members erase stars (target =
+                        # the starless `clean`), starfull reconstruct them
+                        # (target = the starfull `hr`). Drives the /ensemble
+                        # eval mode + which target record scores each member.
+                        "starless": bool(spec.starless),
                         "created_at": datetime.now(UTC).isoformat(
                             timespec="seconds"),
                         "commit": commit,
@@ -370,6 +392,7 @@ class EnsembleModel:
                     forward_onthefly=spec.forward_onthefly,
                     psf_subset=spec.psf_subset,
                     crops_per_field=spec.crops_per_field,
+                    starless=spec.starless,
                     **train_kwargs)
             self._models.append(m)
             if on_member is not None:
@@ -607,6 +630,7 @@ def evaluate_on_records(
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     include_loss_best: bool = False,
+    starless: bool | None = None,
     on_field: Callable[
         [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
          np.ndarray | None], None
@@ -615,21 +639,24 @@ def evaluate_on_records(
 ) -> dict:
     """Convenience: evaluate the ensemble on a generated subset's TFRecords.
 
-    Reads ``dirty_<subset>`` (LR) + ``hr_<subset>`` (HR target) from
-    ``records_dir`` — defaulting ``subset`` to the held-out eval split — and runs
-    :meth:`EnsembleModel.evaluate`. Scores each member's PSNR-best checkpoint
-    only; ``include_loss_best=True`` opts the correlated ``loss_best/`` models
-    back in — see :class:`EnsembleModel`.
+    Reads ``dirty_<subset>`` (LR) + the mode's HR target — ``hr_`` (STARFULL,
+    reconstruct stars) or ``clean_`` (STARLESS, erase them) per ``starless`` —
+    from ``records_dir``, defaulting ``subset`` to the held-out eval split, and
+    runs :meth:`EnsembleModel.evaluate` over the matching-regime members only
+    (``starless=None`` → all members, ``hr_`` target: the legacy behavior).
+    Scores each member's PSNR-best checkpoint only; ``include_loss_best=True``
+    opts the correlated ``loss_best/`` models back in — see :class:`EnsembleModel`.
     """
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import tfrecord_path
 
     sub = subset or eval_subset(records_dir)
     ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
-                        include_loss_best=include_loss_best)
+                        include_loss_best=include_loss_best, starless=starless)
+    target_kind = "clean" if starless else "hr"
     lr = ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                        num_images=num_images)
-    hr = ImageSet.read(tfrecord_path(records_dir, f"hr_{sub}"),
+    hr = ImageSet.read(tfrecord_path(records_dir, f"{target_kind}_{sub}"),
                        num_images=num_images)
     out = ens.evaluate(list(lr), list(hr), on_field=on_field,
                        on_progress=on_progress)

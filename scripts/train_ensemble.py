@@ -127,6 +127,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "the default 16 makes one batch = one forward). A "
                         "510² field holds 25 non-overlapping 96² crops, so "
                         "up to ~25 barely re-samples pixels.")
+    p.add_argument("--starless", type=int, default=1,
+                   help="1/0 — STARLESS member: the forward injects a fresh "
+                        "star realization each visit and the target is the "
+                        "starless scene, so the model learns to ERASE stars "
+                        "(scored on lr↔clean). 0 = starfull: keep the scene's "
+                        "stars, reconstruct them (scored on lr↔hr). Recorded "
+                        "in origin.json; drives the /ensemble eval mode.")
     p.add_argument("--icnr", action="store_true",
                    help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "
                         "so the upsampler starts as a checkerboard-free "
@@ -242,7 +249,8 @@ def _member_overrides(args, k: int) -> list[dict]:
         print("✗ --member-spec must be a JSON LIST of objects (one per member)")
         raise SystemExit(2)
     allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
-               "forward_onthefly", "psf_subset", "crops_per_field", "icnr"}
+               "forward_onthefly", "psf_subset", "crops_per_field", "icnr",
+               "starless"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -268,7 +276,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "psf_subset": subset if subset > 0 else None,
             "crops_per_field": int(over.get("crops_per_field",
                                             args.crops_per_field) or 16),
-            "icnr": bool(over.get("icnr", args.icnr))}
+            "icnr": bool(over.get("icnr", args.icnr)),
+            "starless": bool(over.get("starless", args.starless))}
 
 
 def build_specs(args, base: str) -> list[MemberTrainSpec]:

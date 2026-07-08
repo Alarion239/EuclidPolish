@@ -8,6 +8,14 @@
     <code>{{ base_dir }}</code>
     · eval subset <code>{{ eval_subset }}</code>
     {% if test_present %}✓ present{% else %}✗ not synced{% endif %}</span>
+  <label class="muted" style="margin-left:auto;"
+         title="Star regime. STARFULL models reconstruct stars and are scored on lr↔hr (the starfull target); STARLESS models erase stars and are scored on lr↔clean (the starless target). The two never mix — this filters the member list and picks the eval target. All members trained before the star knob are starfull.">
+    mode:
+    <select id="ens-mode">
+      <option value="starfull">starfull (reconstruct · hr)</option>
+      <option value="starless">starless (erase · clean)</option>
+    </select>
+  </label>
 </div>
 {% endblock %}
 
@@ -114,6 +122,7 @@
       <th>Checkpoint</th>
       <th title="Mean PSNR over {{ psnr_fields }} held-out {{ eval_subset }} fields, computed in asinh (stretched) space — the same metric as the training curves. Cached per checkpoint fingerprint; a member is only re-scored when its checkpoint changes.">PSNR (asinh, {{ eval_subset }})</th>
       <th title="Reconstruction loss the member trained with (origin.json): L1/L2/L3 p-norms or BerHu reverse-Huber. Members created before the loss knob all trained with L1.">Loss</th>
+      <th title="Star regime (origin.json): starfull reconstructs stars (hr target), starless erases them (clean target). Pre-knob members are starfull.">Regime</th>
       <th>Training seed</th>
       <th title="Training also saves a best-LOSS checkpoint in loss_best/. It is NOT part of the ensemble (correlated with the PSNR-best one — it just doubled eval time), but it can seed a fork.">loss-best ckpt</th>
       <th title="Last logged training step (from training_log.csv).">Step</th>
@@ -121,13 +130,14 @@
       <th>Size</th><th></th></tr></thead>
     <tbody>
       {% for m in members %}
-      <tr><td>{% if m.psnr_rank %}<b>{{ m.psnr_rank }}</b>{% else %}—{% endif %}</td>
+      <tr data-starless="{{ 1 if m.starless else 0 }}"><td>{% if m.psnr_rank %}<b>{{ m.psnr_rank }}</b>{% else %}—{% endif %}</td>
           <td><code>{{ m.name }}</code>
           {% if m.origin and m.origin.op == 'fork' %}
           <span title="forked from {{ m.origin.forked_from }}{% if m.origin.created_at %} ({{ m.origin.created_at }}){% endif %}">⑂</span>
           {% endif %}</td>
           <td>{% if m.psnr is not none %}{{ "%.3f"|format(m.psnr) }} dB{% else %}<span class="muted" title="not scored yet, or the checkpoint changed since its last score — press ↻ PSNR (only changed members are evaluated)">—</span>{% endif %}</td>
           <td><code>{{ m.loss | upper }}</code></td>
+          <td>{% if m.starless %}<span title="starless — erases stars (clean target)">✦ starless</span>{% else %}<span class="muted" title="starfull — reconstructs stars (hr target)">★ starfull</span>{% endif %}</td>
           <td>{{ m.seed if m.seed is not none else "—" }}</td>
           <td>{% if m.has_loss_best %}✓ on disk{% else %}—{% endif %}</td>
           <td class="muted">{{ "{:,}".format(m.step) if m.step else "—" }}</td>
@@ -204,11 +214,14 @@
 <section class="card">
   <h3>Evaluate on test set</h3>
   <form id="ens-eval-form" action="/ensemble/evaluate">
+    <input type="hidden" name="mode" id="ens-eval-mode" value="starfull">
     <label title="How many held-out test fields to score.">
       Number of fields
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
     <p class="hint" style="flex-basis:100%;">Per-member + ensemble PSNR and
-       disagreement stats on the held-out <code>{{ eval_subset }}</code> set.</p>
+       disagreement stats on the held-out <code>{{ eval_subset }}</code> set,
+       for the <b id="ens-eval-mode-label">starfull</b> members only (target
+       picked to match the regime).</p>
     <button type="submit">Evaluate</button>
   </form>
   <div id="ens-eval-status"></div>
@@ -219,6 +232,33 @@
 <script>
 // The train step card's Continue/Fork field groups read the member list.
 window.ENSEMBLE_MEMBERS = {{ members | tojson }};
+
+// Star-regime mode toggle (top): filter the member table to the regime,
+// sync the Evaluate form's target, and hide the disagreement-viewer/train
+// curves that belong to the other regime's members. Purely client-side.
+(function () {
+  const sel = document.getElementById("ens-mode");
+  if (!sel) return;
+  const modeInput = document.getElementById("ens-eval-mode");
+  const modeLabel = document.getElementById("ens-eval-mode-label");
+  function apply() {
+    const starless = sel.value === "starless";
+    let shown = 0;
+    document.querySelectorAll("tr[data-starless]").forEach((tr) => {
+      const match = (tr.getAttribute("data-starless") === "1") === starless;
+      tr.style.display = match ? "" : "none";
+      if (match) shown += 1;
+    });
+    if (modeInput) modeInput.value = sel.value;
+    if (modeLabel) modeLabel.textContent = sel.value;
+    // Expose for the train curves / evals modules to filter their own series.
+    window.ENSEMBLE_MODE = sel.value;
+    document.dispatchEvent(new CustomEvent("ensemble-mode-change",
+      { detail: { mode: sel.value, starless, shown } }));
+  }
+  sel.addEventListener("change", apply);
+  apply();
+})();
 
 document.getElementById("ens-pull-form").addEventListener("submit", (e) => {
   e.preventDefault();

@@ -449,7 +449,7 @@ def step_convolve(args: argparse.Namespace) -> None:
                                          unit="img", total=n_total)):
                 hr_4ch = Image.from_tfrecord(raw)
                 if write_dirty:
-                    lr, hr = _forward_starless(
+                    lr, hr = _forward_with_stars(
                         fwd, hr_4ch, stars_by_field.get(i), rng)
                     lr.index = i
                     lr.subset = subset
@@ -564,14 +564,15 @@ def _trimmed_hr(sky: Image) -> Image:
                  metadata=sky.metadata)
 
 
-def _forward_starless(fwd, sky_starless: Image, stars, rng) -> tuple:
-    """Forward-model the WITH-stars scene but keep the target STARLESS.
+def _forward_with_stars(fwd, sky_starless: Image, stars, rng) -> tuple:
+    """Re-deposit the field's fixed stars, then forward → ``(lr, hr)`` — BOTH
+    with stars (the STARFULL pair generated together, second).
 
-    The generated scene is starless. For the record-mode LR (validate/test) we
-    re-deposit the field's fixed ``stars`` (HR deltas, pre-PSF) onto a copy and
-    forward THAT → ``lr`` carries realistic star contamination; the ``hr``
-    target is the trimmed STARLESS scene, so the model is supervised to erase
-    the stars. Mirrors :meth:`OnTheFlyForward.crops` for the on-the-fly split.
+    The scene is stored starless (the ``clean`` record, generated first =
+    starless target). Here we add back the recorded ``stars`` (HR deltas,
+    pre-PSF) so ``lr`` (dirty) carries realistic contamination and ``hr`` is
+    the starfull HR target — exactly the pair the old pipeline produced, only
+    reconstructed from starless + stars instead of stored with stars.
     """
     if stars:
         scene = sky_starless.data.copy()
@@ -584,8 +585,7 @@ def _forward_starless(fwd, sky_starless: Image, stars, rng) -> tuple:
                           index=sky_starless.index, subset=sky_starless.subset)
     else:
         scene_img = sky_starless
-    lr, _hr_with_stars = fwd.process(scene_img, rng=rng)
-    return lr, _trimmed_hr(sky_starless)
+    return fwd.process(scene_img, rng=rng)          # (lr, hr) both starfull
 
 
 def _remove_subset_finals(records_dir: str, subset: str,
@@ -869,7 +869,7 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
             sky.index = i
             sky.subset = subset
             if write_dirty:
-                lr, hr = _forward_starless(fwd, sky, meta.get("stars"), rng)
+                lr, hr = _forward_with_stars(fwd, sky, meta.get("stars"), rng)
                 lr.index = i
                 lr.subset = subset
             else:
