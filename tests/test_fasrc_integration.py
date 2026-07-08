@@ -129,8 +129,8 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
         "confirm": "yes",
         "label": "integration",
         "n_gpus": 2, "n_cpus": 16, "memory": "64G", "time_limit": "06:00:00",
-        "n_train": 100, "n_valid": 5, "image_size": 60, "batch_size": 4,
-        "steps": 2000, "extra_flags": "--skip-generate",
+        "n_train": 100, "n_valid": 5, "image_size": 60,
+        "extra_flags": "--skip-generate",
     })
     assert r.status_code == 200, r.get_json()
     data = r.get_json()
@@ -148,7 +148,7 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     assert "#SBATCH --cpus-per-task=16" in body
     assert "#SBATCH --mem=64G" in body
     assert "#SBATCH --time=06:00:00" in body
-    # Training knobs reached the run_pipeline command. Each argv token
+    # Generation knobs reached the run_pipeline command. Each argv token
     # is rendered on its own continuation line by the consolidated
     # builder, so we check the tokens individually instead of as a
     # joined ``--name value`` substring.
@@ -156,11 +156,13 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
         "--ntrain", "100",
         "--nvalid", "5",
         "--image-size", "60",
-        "--batch-size", "4",
-        "--steps", "2000",
         "--skip-generate",
+        "--skip-train",
     ):
         assert token in body, f"missing argv token: {token!r}"
+    # Standalone generation: the training-only knobs are gone.
+    assert "--batch-size" not in body
+    assert "--steps" not in body
     # Conda env path is the test's, not the developer default.
     assert str(fake_remote["cfg"].conda_env_path) in body
     assert str(fake_remote["cfg"].data_dir) in body
@@ -210,15 +212,18 @@ def test_submit_records_job_in_sqlite(fake_remote, client):
         "confirm": "yes",
         "label": "remember me",
         "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
-        "n_train": 6400, "n_valid": 200, "image_size": 510, "batch_size": 16,
-        "steps": 400000, "extra_flags": "",
+        "n_train": 6400, "n_valid": 200, "image_size": 510, "extra_flags": "",
     })
     row = fake_remote["db"].get("99999")
     assert row is not None
     assert row["label"] == "remember me"
     assert row["state"] == "PENDING"
     p = json.loads(row["params_json"])
-    assert p["steps"] == 400000
+    # Generation params are persisted; the decoupled training knobs are not.
+    assert p["n_train"] == 6400
+    assert p["image_size"] == 510
+    assert "steps" not in p
+    assert "batch_size" not in p
 
 
 def test_submit_refuses_when_disconnected(client, monkeypatch):

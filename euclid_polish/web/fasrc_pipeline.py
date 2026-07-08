@@ -1161,17 +1161,16 @@ class RunPipelineStep(FASRCPipelineStep):
     """A ``scripts/run_pipeline.py`` job.
 
     Subclasses set ``defaults`` (resources) and ``skip_flags``; the
-    argv shape (--ntrain / --nvalid / --image-size / --batch-size /
-    --steps + extra) is shared.
+    argv shape (--ntrain / --nvalid / --ntest / --image-size + extra) is
+    shared. Generation is decoupled from training — no --batch-size / --steps
+    (those were an artifact of when generation flowed straight into a train
+    step; training now goes exclusively through ``EnsembleTrainStep``).
     """
 
     #: Extra ``--skip-…`` flags appended to the run_pipeline.py argv.
     #: Stored as a tuple so instances stay hashable (the dataclass
     #: ``defaults`` field is mutable, but this one is set per-class).
     skip_flags:        tuple[str, ...] = ()
-    #: Whether the UI should show the training-only knob fields
-    #: (n_train / n_valid / image_size / batch_size / steps).
-    needs_train_knobs: bool = True
 
     log_dir_prefix:  ClassVar[str] = "logs/jobs"
 
@@ -1188,8 +1187,6 @@ class RunPipelineStep(FASRCPipelineStep):
             "--nvalid",     str(int(params.get("n_valid",    0))),
             "--ntest",      str(int(params.get("n_test",     0))),
             "--image-size", str(int(params.get("image_size", 0))),
-            "--batch-size", str(int(params.get("batch_size", 0))),
-            "--steps",      str(int(params.get("steps",      0))),
         ]
         cmd.extend(self.skip_flags)
         # Override: discard any prior on-disk data for this dataset and
@@ -1234,7 +1231,6 @@ class SyntheticGenerateStep(RunPipelineStep):
                 memory="64G", time_limit="6:00:00",
             ),
             skip_flags=("--skip-train",),
-            needs_train_knobs=True,
         )
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -1299,7 +1295,6 @@ class LensfinderGenerateStep(SyntheticGenerateStep):
                 memory="64G", time_limit="6:00:00",
             ),
             skip_flags=("--skip-train",),
-            needs_train_knobs=True,
         )
 
     def build_command(self, params: dict[str, Any]) -> list[str]:

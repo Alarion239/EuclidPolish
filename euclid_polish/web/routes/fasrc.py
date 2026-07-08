@@ -366,12 +366,12 @@ def register(app):
             # Partition is fixed per job type — never taken from the form.
             resources.partition = step.defaults.partition
             params = {
+                # Generation is standalone — no training knobs (batch_size /
+                # steps). Training runs separately via the ensemble step.
                 "n_train":     int(form.get("n_train",    cfg.n_train)),
                 "n_valid":     int(form.get("n_valid",    cfg.n_valid)),
                 "n_test":      int(form.get("n_test",     cfg.n_test)),
                 "image_size":  int(form.get("image_size", cfg.image_size)),
-                "batch_size":  int(form.get("batch_size", cfg.batch_size)),
-                "steps":       int(form.get("steps",      cfg.steps)),
                 "extra_flags": (form.get("extra_flags", "") or "").strip(),
                 # "Override existing data" checkbox → run_pipeline --force
                 # (regenerate from scratch instead of resuming prior shards).

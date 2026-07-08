@@ -27,7 +27,7 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 def _params(**overrides):
     p = {
         "n_train": 6400, "n_valid": 200, "image_size": 510,
-        "batch_size": 16, "steps": 400_000, "extra_flags": "",
+        "extra_flags": "",
     }
     p.update(overrides)
     return p
@@ -66,13 +66,17 @@ def test_basic_script_contains_all_sbatch_fields():
     # log paths match the returned hints
     assert f"#SBATCH --output={built['out']}" in body
     assert f"#SBATCH --error={built['err']}" in body
-    # python command uses the form's training params. Each argv token is
+    # python command uses the form's GENERATION params. Each argv token is
     # rendered on its own continuation line, so we check the tokens
     # individually rather than as a joined ``--name value`` substring.
     for token in ("--ntrain", "6400", "--nvalid", "200",
-                  "--image-size", "510", "--batch-size", "16",
-                  "--steps", "400000"):
+                  "--image-size", "510"):
         assert token in body, f"missing argv token: {token!r}"
+    # Generation is standalone (decoupled from training): --skip-train is set
+    # and the training-only knobs are gone entirely.
+    assert "--skip-train" in body
+    assert "--batch-size" not in body
+    assert "--steps" not in body
 
 
 def test_custom_resources_are_propagated():
@@ -80,15 +84,12 @@ def test_custom_resources_are_propagated():
         label="big run",
         resources=_resources(n_gpus=2, n_cpus=24, memory="128G",
                              time_limit="2-00:00:00"),
-        params=_params(steps=600_000),
     )
     body = built["body"]
     assert "#SBATCH --gres=gpu:2" in body
     assert "#SBATCH --cpus-per-task=24" in body
     assert "#SBATCH --mem=128G" in body
     assert "#SBATCH --time=2-00:00:00" in body
-    assert "--steps" in body
-    assert "600000" in body
 
 
 def test_paths_route_through_user_config():
@@ -113,10 +114,9 @@ def test_extra_flags_appended_verbatim():
     )["body"]
     # The argv tokens are shell-quoted individually and joined with
     # ``\``-continuations across multiple lines; both --skip-* flags
-    # appear as standalone tokens after --steps.
+    # appear as standalone tokens.
     assert "--skip-generate" in body
     assert "--skip-convolve" in body
-    assert "--steps" in body
 
 
 def test_log_paths_consistent_between_metadata_and_script():

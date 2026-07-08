@@ -341,11 +341,22 @@ def test_subset_incomplete_while_parts_remain(tmp_path):
 def test_synthetic_step_forwards_onthefly_flag():
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     step = REGISTRY.get("synthetic_generate")
-    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
-            "batch_size": 4, "steps": 10}
+    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96}
     assert "--onthefly-train" in step.build_command(
         {**base, "onthefly_train": "1"})
     assert "--onthefly-train" not in step.build_command(base)
+
+
+def test_synthetic_step_is_standalone_no_training_knobs():
+    """Generation is decoupled from training — the command carries --skip-train
+    and NONE of the training-only knobs (--batch-size / --steps)."""
+    from euclid_polish.web.fasrc_pipeline import REGISTRY
+    step = REGISTRY.get("synthetic_generate")
+    cmd = step.build_command({"n_train": 10, "n_valid": 2, "n_test": 2,
+                              "image_size": 96})
+    assert "--skip-train" in cmd
+    assert "--batch-size" not in cmd
+    assert "--steps" not in cmd
 
 
 def test_tng_density_with_empty_atlas_is_fatal(tmp_path):
