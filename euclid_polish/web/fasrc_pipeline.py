@@ -39,6 +39,7 @@ from typing import Any, ClassVar
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
+from euclid_polish.training.loss_names import LOSS_NAMES
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 
@@ -1079,7 +1080,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
         # the per-member JSON override list (validated here so a typo 400s at
         # submit instead of burning a queued GPU job on an argparse exit).
         loss = str(params.get("loss", "")).strip()
-        if loss in ("l1", "l2", "l3"):
+        if loss in LOSS_NAMES:
             cmd += ["--loss", loss]
         for flag, key in (("--noise-aug", "noise_aug"),
                           ("--bootstrap", "bootstrap")):

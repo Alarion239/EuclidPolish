@@ -52,7 +52,7 @@
 
   <div class="ens-eval-panel" data-eval-tab="power-spectrum">
     <label class="muted" style="font-size:0.85em;"
-           title="Color the per-member T(k)/r(k) lines by reconstruction norm (L1 blue · L2 green · L3 orange) or trunk depth — redraws instantly, no recompute.">
+           title="Color the per-member T(k)/r(k) lines by reconstruction loss (L1 blue · L2 green · L3 orange · BerHu purple) or trunk depth — redraws instantly, no recompute.">
       member lines:
       <select id="ens-ps-color">
         <option value="">uniform</option>
@@ -113,7 +113,7 @@
       <th title="Rank by test-set PSNR (1 = best). Unscored members are unranked.">#</th>
       <th>Checkpoint</th>
       <th title="Mean PSNR over {{ psnr_fields }} held-out {{ eval_subset }} fields, computed in asinh (stretched) space — the same metric as the training curves. Cached per checkpoint fingerprint; a member is only re-scored when its checkpoint changes.">PSNR (asinh, {{ eval_subset }})</th>
-      <th title="Reconstruction p-norm the member trained with (origin.json). Members created before the loss knob all trained with L1.">Loss</th>
+      <th title="Reconstruction loss the member trained with (origin.json): L1/L2/L3 p-norms or BerHu reverse-Huber. Members created before the loss knob all trained with L1.">Loss</th>
       <th>Training seed</th>
       <th title="Training also saves a best-LOSS checkpoint in loss_best/. It is NOT part of the ensemble (correlated with the PSNR-best one — it just doubled eval time), but it can seed a fork.">loss-best ckpt</th>
       <th title="Last logged training step (from training_log.csv).">Step</th>

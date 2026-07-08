@@ -44,7 +44,7 @@ from euclid_polish.training.forward_onthefly import (
     OnTheFlyForward,
     member_psf_sets,
 )
-from euclid_polish.training.losses import lp_loss
+from euclid_polish.training.losses import build_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.trainer import Trainer, seed_everything
@@ -351,8 +351,8 @@ class Model:
         (e.g. ``evaluate_every``, ``step_callback``, ``eval_callback``).
 
         Ensemble-diversity knobs: ``loss_norm`` picks the reconstruction
-        p-norm (``l1``/``l2``/``l3``, see
-        :func:`~euclid_polish.training.losses.lp_loss`); ``noise_aug`` adds
+        loss (``l1``/``l2``/``l3`` p-norms or ``berhu`` reverse-Huber, see
+        :func:`~euclid_polish.training.losses.build_loss`); ``noise_aug`` adds
         extra LR noise in read-noise units; ``bootstrap`` ∈ (0, 1) trains on
         that fraction of the fields (deterministic subset keyed by the seed).
 
@@ -416,7 +416,7 @@ class Model:
         )
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
-                          loss=lp_loss(loss_norm),
+                          loss=build_loss(loss_norm),
                           seed=self._seed, deterministic=self._deterministic,
                           plateau_lr_enabled=plateau_lr_enabled,
                           plateau_lr_factor=plateau_lr_factor,

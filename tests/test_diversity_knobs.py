@@ -17,7 +17,7 @@ from euclid_polish.training.augmentation import (
     add_lr_noise,
     random_dihedral,
 )
-from euclid_polish.training.losses import lp_loss
+from euclid_polish.training.losses import berhu_loss, build_loss, lp_loss
 from scripts.train_ensemble import build_specs, parse_args
 
 
@@ -54,6 +54,67 @@ def test_lp_losses_share_scale_and_order():
 def test_lp_loss_rejects_unknown_norm():
     with pytest.raises(ValueError, match="unknown loss norm"):
         lp_loss("l4")
+
+
+# --------------------------------------------------------------------------- #
+# BerHu (reverse-Huber) loss                                                   #
+# --------------------------------------------------------------------------- #
+def test_berhu_l1_below_threshold_l2_above():
+    """L1 on residuals ≤ δ, quadratic on the outlier above δ. With c=0.2 the
+    batch max sets δ = 0.2·max, so the outlier is amplified while the small
+    residuals stay linear. Hand-computed: residuals [0.1,0.1,0.1,1.0] →
+    δ=0.2; the three 0.1s contribute 0.1 each, the 1.0 → (1+0.04)/0.4 = 2.6;
+    mean = (0.3 + 2.6)/4 = 0.725."""
+    a = tf.constant([0.1, 0.1, 0.1, 1.0])
+    b = tf.zeros_like(a)
+    assert float(berhu_loss(c=0.2)(a, b)) == pytest.approx(0.725, rel=1e-6)
+
+
+def test_berhu_amplifies_outliers_beyond_mae():
+    """The whole point vs L1: a bright-peak residual costs more than its
+    absolute value (quadratic branch), so BerHu > MAE on a peaked batch."""
+    a = tf.constant([0.1, 0.1, 0.1, 1.0])
+    b = tf.zeros_like(a)
+    mae = float(lp_loss("l1")(a, b))
+    assert float(berhu_loss(c=0.2)(a, b)) > mae
+
+
+def test_berhu_collapses_to_mae_when_threshold_covers_batch():
+    """δ ≥ max|residual| ⇒ every residual is in the L1 branch ⇒ exactly MAE.
+    c=1.0 puts δ at the batch max, so the loss equals the mean abs error."""
+    a = tf.constant([0.1, 0.1, 0.1, 1.0])
+    b = tf.zeros_like(a)
+    assert float(berhu_loss(c=1.0)(a, b)) == pytest.approx(
+        float(lp_loss("l1")(a, b)), rel=1e-6)
+
+
+def test_berhu_is_continuous_and_finite_on_perfect_batch():
+    """All-zero residuals (δ→0 guarded) must not divide by zero."""
+    a = tf.zeros([4, 4])
+    assert float(berhu_loss()(a, a)) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_berhu_gradient_flows():
+    a = tf.Variable(tf.constant([0.1, 0.5, 2.0]))
+    b = tf.zeros(3)
+    with tf.GradientTape() as tape:
+        loss = berhu_loss(c=0.2)(a, b)
+    g = tape.gradient(loss, a)
+    assert g is not None and bool(tf.reduce_all(tf.math.is_finite(g)))
+
+
+def test_build_loss_dispatches_berhu_and_pnorms():
+    a = tf.constant([0.1, 0.1, 0.1, 1.0])
+    b = tf.zeros_like(a)
+    assert float(build_loss("berhu")(a, b)) == pytest.approx(
+        float(berhu_loss()(a, b)))
+    assert float(build_loss("l2")(a, b)) == pytest.approx(
+        float(lp_loss("l2")(a, b)))
+
+
+def test_build_loss_rejects_unknown():
+    with pytest.raises(ValueError, match="unknown loss"):
+        build_loss("l7")
 
 
 # --------------------------------------------------------------------------- #
@@ -214,6 +275,13 @@ def test_member_spec_rejects_bad_loss(tmp_path):
                        "--member-spec", '[{"loss":"l9"}]'])
     with pytest.raises(SystemExit):
         build_specs(args, str(tmp_path / "ens"))
+
+
+def test_member_spec_accepts_berhu(tmp_path):
+    args = parse_args(["--count", "1", "--steps", "10",
+                       "--member-spec", '[{"loss":"berhu"}]'])
+    specs = build_specs(args, str(tmp_path / "ens"))
+    assert specs[0].loss_norm == "berhu"
 
 
 def test_ensemble_train_step_forwards_diversity_flags(monkeypatch):

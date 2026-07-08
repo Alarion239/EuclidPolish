@@ -46,6 +46,7 @@ from euclid_polish.ensemble import (  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
+from euclid_polish.training.loss_names import LOSS_NAMES  # noqa: E402
 from euclid_polish.training.staging import stage_records  # noqa: E402
 
 
@@ -87,12 +88,14 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "each member's provenance for replay.")
     p.add_argument("--steps", type=int, default=Config.DEFAULT_TRAIN_STEPS)
     # Diversity knobs — run-wide defaults; --member-spec overrides per member.
-    p.add_argument("--loss", choices=["l1", "l2", "l3"], default="l1",
-                   help="Reconstruction p-norm: (mean|SR−HR|^p)^(1/p) on the "
-                        "asinh residuals. The root keeps all three on the L1 "
-                        "scale (no LR retuning); L2/L3 weight large residuals "
-                        "harder — different norms → different estimators "
-                        "(posterior mean vs median) → ensemble diversity.")
+    p.add_argument("--loss", choices=list(LOSS_NAMES), default="l1",
+                   help="Reconstruction loss on the asinh residuals. l1/l2/l3 "
+                        "are the p-norms (mean|SR−HR|^p)^(1/p) — the root keeps "
+                        "them on the L1 scale (no LR retuning), L2/L3 weight "
+                        "large residuals harder. berhu is reverse-Huber: L1 "
+                        "below δ=0.2·max|resid|, L2 above — robust on extended "
+                        "flux, quadratic on bright peaks (stars). Different "
+                        "losses → different estimators → ensemble diversity.")
     p.add_argument("--noise-aug", type=float, default=0.0,
                    help="Extra Gaussian LR noise in READ-NOISE units (VIS "
                         "3.6 e⁻, NISP 6.1 e⁻ per unit), drawn fresh per crop "
@@ -237,9 +240,9 @@ def _member_overrides(args, k: int) -> list[dict]:
             print(f"✗ --member-spec[{i}]: unknown key(s) {sorted(bad)} "
                   f"(allowed: {sorted(allowed)})")
             raise SystemExit(2)
-        if o.get("loss") is not None and o["loss"] not in ("l1", "l2", "l3"):
-            print(f"✗ --member-spec[{i}]: loss must be l1/l2/l3, "
-                  f"got {o['loss']!r}")
+        if o.get("loss") is not None and o["loss"] not in LOSS_NAMES:
+            print(f"✗ --member-spec[{i}]: loss must be one of "
+                  f"{list(LOSS_NAMES)}, got {o['loss']!r}")
             raise SystemExit(2)
     return [dict(spec[i]) if i < len(spec) else {} for i in range(k)]
 
