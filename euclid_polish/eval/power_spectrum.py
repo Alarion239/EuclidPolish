@@ -228,16 +228,21 @@ class EnsembleSpectrumAccumulator:
         self._r_members: list[np.ndarray] = []          # each (M, nbins)
         self._p_members: list[np.ndarray] = []          # each (M, nbins)
         self._r_pairs: list[np.ndarray] = []            # each (M·(M−1)/2, nbins)
+        self._p_comb: list[np.ndarray] = []             # combiner auto-power
+        self._r_comb: list[np.ndarray] = []             # combiner vs HR coherence
         self.n_fields = 0
         self.n_members = 0
+        self.has_combiner = False
 
     def _asinh(self, x: np.ndarray) -> np.ndarray:
         return np.arcsinh(np.asarray(x, np.float64) / self.stretch)
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
-            members: np.ndarray) -> None:
+            members: np.ndarray, combiner: np.ndarray | None = None) -> None:
         """Accumulate one field (asinh space). ``hr``/``mean`` are ``(n, n)``;
-        ``members`` is ``(M, n, n)`` — all single-band, HR-grid."""
+        ``members`` is ``(M, n, n)`` — all single-band, HR-grid. ``combiner``
+        (optional, ``(n, n)``) is the combined reconstruction → its own
+        ``P_comb``/``r_comb`` series alongside the ensemble mean."""
         hr = np.asarray(hr, np.float64)
         mean = np.asarray(mean, np.float64)
         if hr.shape != (self.n, self.n) or mean.shape != hr.shape:
@@ -291,6 +296,20 @@ class EnsembleSpectrumAccumulator:
             a[empty] = np.nan
         self._p_hr.append(p_hr); self._p_sr.append(p_sr); self._p_dis.append(p_dis)
         self._r.append(r); self._t.append(t); self._rho.append(rho)
+
+        # Combiner: its own auto-power + HR cross-correlation (asinh space).
+        if combiner is not None:
+            ac = self._asinh(np.asarray(combiner, np.float64))
+            if ac.shape == hr.shape:
+                _bhc, bsc, bxc, bcc = bin_powers(ah, ac, self.pix,
+                                                 self.k_edges, self.window)
+                _tc, rc = ratios_from_powers(_bhc, bsc, bxc, bcc)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    pc = bsc / bcc
+                ce = bcc <= 0
+                pc[ce] = np.nan; rc[ce] = np.nan
+                self._p_comb.append(pc); self._r_comb.append(rc)
+                self.has_combiner = True
         self.n_fields += 1
 
     def _med(self, rows: list[np.ndarray]) -> np.ndarray:
@@ -317,6 +336,9 @@ class EnsembleSpectrumAccumulator:
                 # per-pair median over fields, then a single median curve
                 out["r_pairs"] = np.nanmedian(np.stack(self._r_pairs, 0), axis=0)
                 out["r_cross"] = np.nanmedian(out["r_pairs"], axis=0)
+        if self._p_comb:
+            out["P_comb"] = self._med(self._p_comb)
+            out["r_comb"] = self._med(self._r_comb)
         return out
 
 
@@ -340,14 +362,18 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     r_members = np.asarray(curves.get("r_members", np.empty((0, k.size))), float)
     r_pairs = np.asarray(curves.get("r_pairs", np.empty((0, k.size))), float)
     r_cross = np.asarray(curves.get("r_cross", nan_k), float)
+    p_comb = np.asarray(curves.get("P_comb", nan_k), float)
+    r_comb = np.asarray(curves.get("r_comb", nan_k), float)
     with np.errstate(divide="ignore", invalid="ignore"):
         theta = 0.5 / k
         t_mean = np.sqrt(p_sr / p_hr)
         t_members = (np.sqrt(p_members / p_hr[None, :])
                      if p_members.size else np.empty((0, k.size)))
+        t_comb = np.sqrt(p_comb / p_hr)
     return {"theta": theta, "T": t_mean, "T_members": t_members,
             "r": r, "r_members": r_members,
-            "r_pairs": r_pairs, "r_cross": r_cross}
+            "r_pairs": r_pairs, "r_cross": r_cross,
+            "T_comb": t_comb, "r_comb": r_comb}
 
 
 #: Categorical colors for the per-member line grouping in the ensemble

@@ -165,6 +165,37 @@ def test_ensemble_accumulator_emits_cross_model_curves():
     assert np.nanmin(r_cross[m]) < np.nanmax(r_cross[m])
 
 
+def test_ensemble_accumulator_combiner_series():
+    """A combiner plane fed to add() yields its own P_comb/r_comb series; a
+    perfect combiner (== HR) reads T_comb≈1 and r_comb≈1 on signal scales."""
+    n = 64
+    rng = np.random.default_rng(5)
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, members.mean(0), members, combiner=hr)        # perfect combiner
+    assert acc.has_combiner
+    curves = acc.curves()
+    assert "P_comb" in curves and "r_comb" in curves
+    plot = ensemble_ps_plot_curves(curves)
+    assert plot["T_comb"].shape == plot["theta"].shape
+    m = np.isfinite(plot["T_comb"]) & (acc.k_cen < 5.0)
+    assert np.nanmedian(plot["T_comb"][m]) == pytest.approx(1.0, abs=0.05)
+    assert np.nanmedian(plot["r_comb"][np.isfinite(plot["r_comb"])
+                                       & (acc.k_cen < 5.0)]) > 0.95
+
+
+def test_ensemble_ps_plot_curves_no_combiner_is_nan():
+    """No combiner fed → T_comb/r_comb are present but all-NaN (the JS hides
+    the series)."""
+    k = np.array([0.5, 1.0])
+    curves = {"k": k, "P_hr": np.array([1.0, 1.0]),
+              "P_sr": np.array([1.0, 1.0]), "r": np.array([1.0, 1.0])}
+    out = ensemble_ps_plot_curves(curves)
+    assert out["T_comb"].shape == (2,) and np.isnan(out["T_comb"]).all()
+    assert np.isnan(out["r_comb"]).all()
+
+
 def test_ensemble_ps_plot_curves_derives_per_member_transfer():
     k = np.array([0.5, 1.0, 2.0])
     curves = {
