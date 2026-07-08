@@ -400,6 +400,10 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     has_hr = bool(sub) and bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
+    # Combiner reconstruction tier — only when the last eval wrote comb_ cubes
+    # (a fitted starfull combiner). Placed right after the ensemble mean.
+    if man.get("has_combiner"):
+        tiers.insert(2, {"key": "comb", "label": "combiner"})
     # Individual member SR tiers (per-seed / loss-best), labelled from the eval.
     member_labels = man.get("member_labels", []) or []
     tiers += [{"key": f"member{i}", "label": f"SR {lab}"}
@@ -453,7 +457,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     # sr / std, the PCA eigen-images (pca0…) and individual member SRs
     # (member0…) are cached .npy cubes; lr / hr come from the records. pcaN are
     # served on demand for the animation (not advertised as static tiers).
-    is_npy = (tier in ("sr", "std")
+    is_npy = (tier in ("sr", "std", "comb")
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
     if is_npy:
@@ -468,7 +472,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     else:
         raise ViewerError(400, "bad tier")
     labels = {"lr": "LR", "sr": "SR (ensemble mean)",
-              "std": "stdSR (member std)", "hr": "HR"}
+              "std": "stdSR (member std)", "hr": "HR",
+              "comb": "SR (combiner)"}
     if tier.startswith("member") and tier[6:].isdigit():
         mlabels = man.get("member_labels", []) or []
         mi = int(tier[6:])

@@ -136,3 +136,53 @@ def test_job_combiner_fit_requires_validate_records(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: rdir)
     with pytest.raises(RuntimeError, match="validate records"):
         ev.job_combiner_fit(_Cap(), num_images=2)
+
+
+# ---------------------------------------------------------------------------
+# combiner as a first-class series in the evaluations payload
+# ---------------------------------------------------------------------------
+
+def test_compute_evaluation_payload_includes_combiner(tmp_path, monkeypatch):
+    """When the cached fields carry a combiner plane, the evals payload gains
+    ps.T_comb/r_comb and a combiner comparison block (combiner vs mean vs best
+    member)."""
+    n, M = 48, 3
+    rng = np.random.default_rng(0)
+
+    def _field(seed):
+        r = np.random.default_rng(seed)
+        hr = np.cumsum(r.normal(0, 1, (n, n)), axis=0).astype(np.float32) * 20
+        members = np.stack([hr + r.normal(0, 3, (n, n)) for _ in range(M)])
+        return hr, members.mean(0), members, hr        # perfect combiner == hr
+
+    fields = [_field(1), _field(2)]
+    monkeypatch.setattr(ev, "_iter_cached_fields", lambda: iter(fields))
+
+    cubes = ev._ensemble_cubes_dir()
+    os.makedirs(cubes, exist_ok=True)
+    with open(os.path.join(cubes, "viz_index.json"), "w") as f:
+        json.dump({"subset": "test", "indices": [0, 1],
+                   "member_labels": ["00·psnr", "01·psnr", "02·psnr"],
+                   "has_combiner": True}, f)
+
+    payload = ev.compute_evaluation_payload()
+    assert payload is not None
+    assert payload["ps"] is not None and "T_comb" in payload["ps"]
+    cb = payload["combiner"]
+    assert cb is not None and cb["available"] is True
+    assert cb["psnr"] is not None and cb["ensemble_mean_psnr"] is not None
+    # perfect combiner (== HR) beats the noisy ensemble mean
+    assert cb["psnr"] > cb["ensemble_mean_psnr"]
+
+
+def test_viewer_advertises_combiner_tier_only_when_present(monkeypatch):
+    from euclid_polish.web.helpers import viewer_data as vd
+    base = {"subset": "test", "indices": [0, 1], "member_labels": ["00·psnr"]}
+    monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: "")   # no hr tier
+
+    monkeypatch.setattr(vd, "_ensemble_manifest", lambda: {**base, "has_combiner": True})
+    keys = [t["key"] for t in vd._ensemble_meta({})["tiers"]]
+    assert "comb" in keys
+
+    monkeypatch.setattr(vd, "_ensemble_manifest", lambda: {**base, "has_combiner": False})
+    assert "comb" not in [t["key"] for t in vd._ensemble_meta({})["tiers"]]

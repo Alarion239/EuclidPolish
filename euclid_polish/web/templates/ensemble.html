@@ -226,6 +226,31 @@
   </form>
   <div id="ens-eval-status"></div>
 </section>
+
+<section class="card" id="ens-combiner-card">
+  <h3>Combiner (starfull)</h3>
+  <p class="hint" style="flex-basis:100%;">A tiny per-band model that fuses the
+     members into one reconstruction — fit <b>locally on the validate split</b>
+     (reusing cached member inference when available), evaluated on
+     <code>{{ eval_subset }}</code>. Starfull only. It does <b>not</b> change the
+     default ensemble-mean SR; it's an extra series in the figures + a viewer
+     tier. Re-run <b>Evaluate on test set</b> afterwards to score it on test.</p>
+  <form id="ens-combiner-form" action="/ensemble/combiner/fit">
+    <input type="hidden" name="mode" id="ens-combiner-mode" value="starfull">
+    <label title="How many validate fields to fit on (member inference is cached + reused).">
+      Validate fields
+      <input type="number" name="num_images" value="100" min="1" max="2000"></label>
+    <label title="Hidden units in each per-band MLP. Tiny (2–4) keeps it interpretable.">
+      Hidden units
+      <input type="number" name="hidden" value="3" min="1" max="8"></label>
+    <label title="Group-L1 strength — larger prunes more members to zero.">
+      L1 (prune)
+      <input type="number" name="lam_group" value="0.001" min="0" max="1" step="0.001"></label>
+    <button type="submit">Fit combiner</button>
+  </form>
+  <div id="ens-combiner-status"></div>
+  <div id="ens-combiner-results" style="margin-top:0.75rem;"></div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -251,6 +276,12 @@ window.ENSEMBLE_MEMBERS = {{ members | tojson }};
     });
     if (modeInput) modeInput.value = sel.value;
     if (modeLabel) modeLabel.textContent = sel.value;
+    // Combiner is starfull-only — hide its card (+ sync its hidden mode) when
+    // the page is in starless mode.
+    const cc = document.getElementById("ens-combiner-card");
+    if (cc) cc.style.display = starless ? "none" : "";
+    const cm = document.getElementById("ens-combiner-mode");
+    if (cm) cm.value = sel.value;
     // Expose for the train curves / evals modules to filter their own series.
     window.ENSEMBLE_MODE = sel.value;
     document.dispatchEvent(new CustomEvent("ensemble-mode-change",
@@ -272,6 +303,15 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
     onDone: () => setTimeout(() => location.reload(), 1500),
   });
 });
+{
+  const cf = document.getElementById("ens-combiner-form");
+  if (cf) cf.addEventListener("submit", (e) => {
+    e.preventDefault();
+    polishUI.run(e.target, document.getElementById("ens-combiner-status"), {
+      onDone: () => setTimeout(() => location.reload(), 1500),
+    });
+  });
+}
 // Per-member archive: confirm, POST /ensemble/archive-member, reload on done.
 document.querySelectorAll(".ens-archive-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -347,6 +387,17 @@ const evalsCard = document.getElementById("ens-evals-card");
 if (evalsCard) {
   mountEnsembleEvals(evalsCard, "{{ url_for('ensemble_evals_json') }}");
 }
+</script>
+<script type="module">
+// Combiner card: survivors, val/test metrics, and effective-weight-vs-brightness
+// curves — from /ensemble/combiner.json (fit-time) + /ensemble/evals.json
+// (test-time). Renders "not fitted yet" until the first fit.
+import { mountEnsembleCombiner } from "{{ url_for('static', filename='ensemble_combiner.js') }}";
+mountEnsembleCombiner(
+  document.getElementById("ens-combiner-card"),
+  "{{ url_for('ensemble_combiner_json') }}",
+  "{{ url_for('ensemble_evals_json') }}",
+);
 </script>
 <script type="module">
 // In-browser per-member training curves (PSNR + loss). Card hides itself when

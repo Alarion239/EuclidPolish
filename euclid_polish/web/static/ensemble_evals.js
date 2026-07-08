@@ -212,11 +212,13 @@ function renderPS(el, payload, mode) {
   row.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;";
   el.appendChild(row);
 
+  const COMB_COLOR = "#ee7733";
+  const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
   const panels = [
-    ["transfer function  T = √(P_SR/P_HR)", ps.T, ps.T_members, [0, 1.45], "T(k)"],
-    ["cross-correlation  r(k) vs HR", ps.r, ps.r_members, [0, 1.05], "r(k)"],
+    ["transfer function  T = √(P_SR/P_HR)", ps.T, ps.T_members, [0, 1.45], "T(k)", ps.T_comb],
+    ["cross-correlation  r(k) vs HR", ps.r, ps.r_members, [0, 1.05], "r(k)", ps.r_comb],
   ];
-  for (const [title, mean, memberRows, yd, ylabel] of panels) {
+  for (const [title, mean, memberRows, yd, ylabel, comb] of panels) {
     const box = document.createElement("div");
     box.style.cssText = "flex:1 1 420px;min-width:320px;";
     row.appendChild(box);
@@ -246,11 +248,16 @@ function renderPS(el, payload, mode) {
                { color: "#555", width: 2, dash: [6, 3] });
     }
     drawLine(p, xd, yd, theta, mean, { color: VIS_COLOR, width: 2, dots: true });
+    if (hasComb(comb)) {
+      drawLine(p, xd, yd, theta, comb, { color: COMB_COLOR, width: 2, dots: true });
+    }
   }
   const groups = [...new Map(colors.map(([l, c]) => [l, c])).entries()];
   el.appendChild(legendHtml([
     ...groups.map(([l, c]) => [l, c, false]),
     ["ensemble mean", VIS_COLOR, false],
+    ...(hasComb(ps.T_comb) || hasComb(ps.r_comb)
+        ? [["combiner", COMB_COLOR, false]] : []),
     ["model–model r̃(k) (no HR)", "#555", true],
     ["LR sampling (0.1″)", "#333", true],
     ["VIS PSF FWHM", VIS_COLOR, true],

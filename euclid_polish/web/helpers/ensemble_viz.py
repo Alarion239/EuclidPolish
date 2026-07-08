@@ -487,8 +487,64 @@ def _jsonable(v):
             else [[fmt(x) for x in row] for row in a])
 
 
+def _vis_stretched_psnr(a_vis, hr_vis) -> float:
+    """Stretched-space PSNR (dB) of a VIS plane vs HR — the same asinh metric
+    the ensemble/member curves use, so combiner vs mean vs member is
+    apples-to-apples."""
+    knee = float(Config.STRETCH_SCALE_E)
+    peak = float(Config.PSNR_PEAK_STRETCHED)
+    aa = np.arcsinh(np.asarray(a_vis, np.float64) / knee)
+    hh = np.arcsinh(np.asarray(hr_vis, np.float64) / knee)
+    mse = float(np.mean((aa - hh) ** 2))
+    if mse <= 0.0:
+        return float("inf")
+    return float(10.0 * np.log10(peak * peak / mse))
+
+
+class _CombinerMetricAcc:
+    """Running VIS stretched-PSNR of the ensemble mean, the combiner, and each
+    member vs HR — for the combiner comparison block (combiner vs mean vs best
+    single member). Fed the same VIS planes as the spectrum accumulator, live
+    and on lazy re-render, so both paths agree."""
+
+    def __init__(self) -> None:
+        self.mean = 0.0
+        self.comb = 0.0
+        self.mem: np.ndarray | None = None
+        self.n = 0
+        self.n_comb = 0
+
+    def add(self, hr_v, mean_v, mem_v, comb_v) -> None:
+        self.mean += _vis_stretched_psnr(mean_v, hr_v)
+        mem_v = np.asarray(mem_v)
+        if self.mem is None:
+            self.mem = np.zeros(len(mem_v))
+        for i, m in enumerate(mem_v):
+            self.mem[i] += _vis_stretched_psnr(m, hr_v)
+        if comb_v is not None:
+            self.comb += _vis_stretched_psnr(comb_v, hr_v)
+            self.n_comb += 1
+        self.n += 1
+
+    def block(self, member_labels) -> dict | None:
+        if not self.n:
+            return None
+        mem = (self.mem / self.n) if self.mem is not None else np.array([])
+        best_i = int(np.argmax(mem)) if mem.size else -1
+        has_comb = self.n_comb > 0
+        return {
+            "available": bool(has_comb),
+            "psnr": (self.comb / self.n_comb) if has_comb else None,
+            "ensemble_mean_psnr": self.mean / self.n,
+            "best_member_psnr": float(mem[best_i]) if mem.size else None,
+            "best_member_label": (member_labels[best_i]
+                                  if 0 <= best_i < len(member_labels) else None),
+        }
+
+
 def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
-                   member_labels: list, subset: str) -> dict:
+                   member_labels: list, subset: str,
+                   combiner: dict | None = None) -> dict:
     """The complete Evaluations-card dataset, JSON-ready.
 
     Everything the FRONTEND renderers draw — power-spectrum curves,
@@ -516,6 +572,7 @@ def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
     if ps_curves is not None:
         cv = ensemble_ps_plot_curves(ps_curves)
         payload["ps"] = {k: _jsonable(v) for k, v in cv.items()}
+    payload["combiner"] = combiner       # test-time combiner metrics (or None)
     return payload
 
 
@@ -678,12 +735,14 @@ def compute_evaluation_payload() -> dict | None:
     when nothing (valid) is cached."""
     ps_acc = None
     diag = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v in _iter_cached_fields():
+    cmet = _CombinerMetricAcc()
+    for hr_v, mean_v, mem_v, comb_v in _iter_cached_fields():
         if ps_acc is None:
             ps_acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        ps_acc.add(hr_v, mean_v, mem_v)
+        ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v)
         diag.add(hr_v, mean_v, mem_v)
+        cmet.add(hr_v, mean_v, mem_v, comb_v)
     if diag.n_fields == 0:
         return None
     man_path = os.path.join(_ensemble_cubes_dir(), "viz_index.json")
@@ -695,7 +754,8 @@ def compute_evaluation_payload() -> dict | None:
     curves = (ps_acc.curves() if ps_acc is not None
               and float(ps_acc.bc.sum()) > 0 else None)
     payload = _evals_payload(curves, diag, man.get("member_labels", []),
-                             man.get("subset", ""))
+                             man.get("subset", ""),
+                             combiner=cmet.block(man.get("member_labels", [])))
     with open(_evals_payload_path(), "w") as f:
         json.dump(payload, f)
     return payload
@@ -730,19 +790,35 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     pca_var: dict[int, list[float]] = {}         # rec_index → variance explained
     ps_acc: list = [None]                        # lazy EnsembleSpectrumAccumulator
     diag_acc = EnsembleDiagnosticsAccumulator()  # pixel-level diagnostics
+    cmet = _CombinerMetricAcc()                  # combiner vs mean vs member PSNR
+
+    # STARFULL only: apply the fitted combiner as an extra reconstruction series
+    # (it reconstructs stars — starless members merely erase them). Skipped if
+    # no combiner is saved or it is stale for the current starfull membership.
+    combiner_model = None
+    if not starless:
+        from euclid_polish.eval.combiner import load_combiner
+        combiner_model = load_combiner(
+            _ensemble_out_dir(), member_labels=_starfull_labels(base))
 
     def _on_field(rec_index, _lr_cube, preds, mean, std, hr_cube):
+        comb_full = None
         # Power spectrum over ALL fields that have HR (VIS band): HR vs
         # ensemble-mean (+ coherence r(k)) and the member-disagreement spectrum.
         if hr_cube is not None:
             hr_v, mean_v = _vis(hr_cube), _vis(mean)
             mem = np.asarray(preds, np.float32)
             mem_v = mem[..., 0] if mem.ndim == 4 else mem      # (M, H, W)
+            if combiner_model is not None and mem.ndim == 4 and \
+                    mem.shape[0] == len(combiner_model.member_labels):
+                comb_full = combiner_model.apply_field(mem)    # (H, W, C) electrons
+            comb_v = _vis(comb_full) if comb_full is not None else None
             if ps_acc[0] is None:
                 ps_acc[0] = EnsembleSpectrumAccumulator(
                     int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-            ps_acc[0].add(hr_v, mean_v, mem_v)
+            ps_acc[0].add(hr_v, mean_v, mem_v, combiner=comb_v)
             diag_acc.add(hr_v, mean_v, mem_v)
+            cmet.add(hr_v, mean_v, mem_v, comb_v)
 
         # LR/HR are read back from the records by the viewer; persist the
         # computed mean (SR) + std (stdSR) and the PCA disagreement basis
@@ -751,6 +827,9 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             return
         rec = int(rec_index)
         amps, var_exp = _cache_field_cubes(cubes_dir, rec, preds, mean, std)
+        if comb_full is not None:
+            np.save(os.path.join(cubes_dir, f"comb_{rec:05d}.npy"),
+                    np.asarray(comb_full, dtype=np.float32))
         pca_amps[rec] = amps
         pca_var[rec] = var_exp
         saved.append(rec)
@@ -779,11 +858,14 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         if scores:
             update_member_psnr_cache(
                 scores, sub, records_fp=_eval_records_fingerprint(rdir, sub))
+    combiner_block = cmet.block(member_labels)
+    has_combiner = bool(combiner_model is not None and cmet.n_comb > 0)
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": sub, "indices": saved,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
                    "pca_var": pca_var,
                    "member_labels": member_labels,
+                   "has_combiner": has_combiner,
                    # Eval-dataset identity: the cubes are position-keyed into
                    # THESE records — regenerated records make them garbage.
                    "records_fp": _eval_records_fingerprint(rdir, sub)}, f)
@@ -803,7 +885,16 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     # accumulators, so this is a free serialization (no cube re-read).
     if diag_acc.n_fields:
         with open(_evals_payload_path(), "w") as f:
-            json.dump(_evals_payload(curves, diag_acc, member_labels, sub), f)
+            json.dump(_evals_payload(curves, diag_acc, member_labels, sub,
+                                     combiner=combiner_block), f)
+
+    # Combiner comparison numbers into the run summary (starfull only).
+    if combiner_block is not None and combiner_block.get("available"):
+        out["combiner_psnr"] = combiner_block["psnr"]
+        out["combiner_vs_mean_db"] = (
+            combiner_block["psnr"] - combiner_block["ensemble_mean_psnr"])
+        out["combiner_vs_best_member_db"] = (
+            combiner_block["psnr"] - (combiner_block["best_member_psnr"] or 0.0))
 
     # The pixel-level diagnostic figures render lazily from the fresh cubes —
     # drop the ones from the previous eval so the page never serves stale plots.
@@ -821,14 +912,16 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
 
 def _iter_cached_fields():
-    """Yield ``(hr_vis, mean_vis, members_vis)`` per cached evaluated field.
+    """Yield ``(hr_vis, mean_vis, members_vis, combiner_vis)`` per cached field.
 
     Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
     cubes the last Evaluate wrote, paired with HR from the records — so any
     evaluation figure can be recomputed (e.g. after a code fix) in seconds with
-    NO model inference and no full re-run. Yields nothing when the cache is
-    missing, or when the membership changed since the cubes were written (a
-    member archived/added → the position-keyed cubes are invalid).
+    NO model inference and no full re-run. ``combiner_vis`` is the VIS plane of
+    the ``comb_*.npy`` cube when present (starfull runs with a fitted combiner),
+    else ``None``. Yields nothing when the cache is missing, or when the
+    membership changed since the cubes were written (a member archived/added →
+    the position-keyed cubes are invalid).
     """
     cubes_dir = _ensemble_cubes_dir()
     man_path = os.path.join(cubes_dir, "viz_index.json")
@@ -863,8 +956,10 @@ def _iter_cached_fields():
                    if os.path.isfile(mf := os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"))]
         if not members:
             continue
+        comb_f = os.path.join(cubes_dir, f"comb_{rec:05d}.npy")
+        comb_v = _vis(np.load(comb_f)) if os.path.isfile(comb_f) else None
         yield (_vis(np.asarray(hr.data, np.float32)), _vis(np.load(sr_f)),
-               np.stack([_vis(m) for m in members], 0))
+               np.stack([_vis(m) for m in members], 0), comb_v)
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
@@ -886,11 +981,11 @@ def regenerate_power_spectrum(color_by: str | None = None) -> str | None:
     colors the per-member lines by that grouping. Returns the PNG path, or
     ``None`` if nothing is cached."""
     acc = None
-    for hr_v, mean_v, mem_v in _iter_cached_fields():
+    for hr_v, mean_v, mem_v, comb_v in _iter_cached_fields():
         if acc is None:
             acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        acc.add(hr_v, mean_v, mem_v)
+        acc.add(hr_v, mean_v, mem_v, combiner=comb_v)
     if acc is None or float(acc.bc.sum()) <= 0:
         return None
     member_meta = None
@@ -926,7 +1021,7 @@ def regenerate_eval_diagnostics() -> dict[str, str] | None:
     ``{slug: png_path}`` or ``None`` when nothing is cached.
     """
     acc = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v in _iter_cached_fields():
+    for hr_v, mean_v, mem_v, _comb_v in _iter_cached_fields():
         acc.add(hr_v, mean_v, mem_v)
     if acc.n_fields == 0:
         return None
