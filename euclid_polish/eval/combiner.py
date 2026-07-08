@@ -173,53 +173,71 @@ class Combiner:
 # Fit-data assembly
 # ---------------------------------------------------------------------------
 
-def build_fit_buffers_from_fields(field_iter, band_names, *,
-                                  max_rows: int = 3_000_000,
-                                  n_bright_bins: int = 8,
-                                  per_bin_per_field: int = 2000,
-                                  level_range: tuple[float, float] = (-1.0, 12.0),
-                                  seed: int = 0) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Stream ``(preds(M,H,W,C), hr(H,W,C))`` fields (electrons) → per-band
-    ``{band: (X(N,M), y(N,))}`` in asinh space, subsampling pixels **stratified
-    by brightness** (equal quota per asinh-brightness bin) so faint structure
-    isn't drowned by the dominant sky pixels."""
-    rng = np.random.default_rng(seed)
-    edges = np.linspace(level_range[0], level_range[1], int(n_bright_bins) + 1)
-    Xacc: dict[str, list] = {b: [] for b in band_names}
-    yacc: dict[str, list] = {b: [] for b in band_names}
-    counts = {b: 0 for b in band_names}
+class FitBufferAccumulator:
+    """Streaming per-band fit-buffer builder. ``add(preds, hr)`` one field at a
+    time — so the caller never retains the full (multi-GB) member stack — pixel-
+    subsampling **stratified by brightness** (equal quota per asinh-brightness
+    bin) so faint structure isn't drowned by the dominant sky. ``buffers()``
+    returns ``{band: (X(N,M), y(N,))}`` in asinh space."""
 
-    for preds, hr in field_iter:
+    def __init__(self, band_names, *, max_rows: int = 3_000_000,
+                 n_bright_bins: int = 8, per_bin_per_field: int = 2000,
+                 level_range: tuple[float, float] = (-1.0, 12.0), seed: int = 0):
+        self.band_names = tuple(band_names)
+        self.max_rows = int(max_rows)
+        self.n_bright_bins = int(n_bright_bins)
+        self.per_bin_per_field = int(per_bin_per_field)
+        self.edges = np.linspace(level_range[0], level_range[1],
+                                 int(n_bright_bins) + 1)
+        self._rng = np.random.default_rng(seed)
+        self._X = {b: [] for b in self.band_names}
+        self._y = {b: [] for b in self.band_names}
+        self._n = {b: 0 for b in self.band_names}
+
+    def add(self, preds: np.ndarray, hr: np.ndarray) -> None:
         preds = np.asarray(preds, np.float32)
         hr = np.asarray(hr, np.float32)
         m = preds.shape[0]
-        for ci, name in enumerate(band_names):
-            if counts[name] >= max_rows:
+        for ci, name in enumerate(self.band_names):
+            if self._n[name] >= self.max_rows:
                 continue
             scale = _band_scale(name)
             xs = np.arcsinh(preds[..., ci].reshape(m, -1).T / scale)   # (P, M)
             ys = np.arcsinh(hr[..., ci].reshape(-1) / scale)           # (P,)
-            bin_idx = np.clip(np.digitize(ys, edges) - 1, 0, int(n_bright_bins) - 1)
-            for b in range(int(n_bright_bins)):
-                if counts[name] >= max_rows:
+            bin_idx = np.clip(np.digitize(ys, self.edges) - 1,
+                              0, self.n_bright_bins - 1)
+            for b in range(self.n_bright_bins):
+                if self._n[name] >= self.max_rows:
                     break
                 sel = np.where(bin_idx == b)[0]
                 if sel.size == 0:
                     continue
-                take = int(min(per_bin_per_field, sel.size, max_rows - counts[name]))
-                pick = rng.choice(sel, size=take, replace=False)
-                Xacc[name].append(xs[pick])
-                yacc[name].append(ys[pick])
-                counts[name] += take
+                take = int(min(self.per_bin_per_field, sel.size,
+                               self.max_rows - self._n[name]))
+                pick = self._rng.choice(sel, size=take, replace=False)
+                self._X[name].append(xs[pick])
+                self._y[name].append(ys[pick])
+                self._n[name] += take
 
-    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for name in band_names:
-        if Xacc[name]:
-            out[name] = (np.concatenate(Xacc[name]).astype(np.float32),
-                         np.concatenate(yacc[name]).astype(np.float32))
-        else:
-            out[name] = (np.zeros((0, 0), np.float32), np.zeros((0,), np.float32))
-    return out
+    def buffers(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for name in self.band_names:
+            if self._X[name]:
+                out[name] = (np.concatenate(self._X[name]).astype(np.float32),
+                             np.concatenate(self._y[name]).astype(np.float32))
+            else:
+                out[name] = (np.zeros((0, 0), np.float32), np.zeros((0,), np.float32))
+        return out
+
+
+def build_fit_buffers_from_fields(field_iter, band_names, **kw
+                                  ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Convenience: drive a :class:`FitBufferAccumulator` from an iterator of
+    ``(preds(M,H,W,C), hr(H,W,C))`` fields (electrons)."""
+    acc = FitBufferAccumulator(band_names, **kw)
+    for preds, hr in field_iter:
+        acc.add(preds, hr)
+    return acc.buffers()
 
 
 def build_fit_buffers(base_dir: str, records_dir: str, *, subset: str = "validate",

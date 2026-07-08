@@ -10,12 +10,15 @@ from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
+    _combiner_payload_path,
     _ensemble_out_dir,
     _evals_payload_path,
+    compute_combiner_payload,
     compute_evaluation_payload,
     ensemble_dir,
     ensemble_status,
     job_archive_member,
+    job_combiner_fit,
     job_ensemble_evaluate,
     job_ensemble_pull,
     job_ensemble_render,
@@ -61,6 +64,43 @@ def register(app):
                 cap, num_images=num_images, starless=starless),
         )
         return jsonify({"job_id": job_id})
+
+    @app.route("/ensemble/combiner/fit", methods=["POST"])
+    def ensemble_combiner_fit():
+        """Fit the STARFULL combiner locally on the validate split. Rejected in
+        starless mode (starless members all just erase stars — nothing to fuse)."""
+        if request.form.get("mode", "starfull").lower() != "starfull":
+            abort(400, "combiner is starfull-only")
+        try:
+            num_images = max(1, int(request.form.get("num_images", 100) or 100))
+        except (TypeError, ValueError):
+            num_images = 100
+        try:
+            hidden = max(1, min(8, int(request.form.get("hidden", 3) or 3)))
+        except (TypeError, ValueError):
+            hidden = 3
+        try:
+            lam_group = float(request.form.get("lam_group", 1e-3) or 1e-3)
+        except (TypeError, ValueError):
+            lam_group = 1e-3
+        job_id = REGISTRY.spawn(
+            f"combiner: fit on validate ({num_images} fields, hidden={hidden})",
+            target=lambda cap: job_combiner_fit(
+                cap, num_images=num_images, hidden=hidden, lam_group=lam_group),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/ensemble/combiner.json")
+    def ensemble_combiner_json():
+        """The Combiner card's dataset: per-band effective-weight curves,
+        survivors and val loss (plus test metrics/curves once Phase 3 lands).
+        ``?fresh=1`` recomputes from the saved combiner. 404 before any fit."""
+        path = _combiner_payload_path()
+        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        if fresh or not os.path.isfile(path):
+            if compute_combiner_payload() is None and not os.path.isfile(path):
+                abort(404)
+        return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/member-psnr", methods=["POST"])
     def ensemble_member_psnr():

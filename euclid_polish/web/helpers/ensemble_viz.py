@@ -519,6 +519,154 @@ def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Combiner (starfull): local fit on validate + payload
+# ---------------------------------------------------------------------------
+
+def _combiner_payload_path() -> str:
+    return os.path.join(_ensemble_out_dir(), "combiner_evals.json")
+
+
+def _validate_records_present(rdir: str | None) -> bool:
+    return bool(rdir) and all(
+        os.path.exists(tfrecord_path(rdir, f"{k}_validate"))
+        for k in ("dirty", "hr"))
+
+
+def _starfull_labels(base: str) -> list[str]:
+    """The active STARFULL members' labels (``NN·psnr``), computed without
+    loading any model — mirrors :class:`EnsembleModel`'s default (psnr-best)
+    labelling, for cheap combiner-staleness checks."""
+    from euclid_polish.ensemble import member_is_starless
+    out = []
+    try:
+        dirs = ensemble_registry.active_member_dirs(base)
+    except Exception:
+        return out
+    for d in dirs:
+        if _checkpoint_exists(d) and not member_is_starless(d):
+            out.append(f"{os.path.basename(d).removeprefix('member_')}·psnr")
+    return out
+
+
+def _reuse_validate_cubes(val_dir: str, records_fp) -> tuple[list[int], list[str]] | None:
+    """If ``cubes_validate/`` holds a manifest matching the current validate
+    records fingerprint, return ``(indices, member_labels)`` so the fit can reuse
+    the cached member inference. Otherwise ``None`` (must re-infer)."""
+    try:
+        with open(os.path.join(val_dir, "viz_index.json")) as f:
+            man = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if str(man.get("subset")) != "validate":
+        return None
+    if records_fp is not None and man.get("records_fp") != records_fp:
+        return None
+    labels = [str(x) for x in man.get("member_labels", []) or []]
+    indices = [int(i) for i in man.get("indices", []) or []]
+    if not labels or not indices:
+        return None
+    return indices, labels
+
+
+def job_combiner_fit(cap, *, num_images: int, hidden: int = 3,
+                     lam_group: float = 1e-3, activation: str = "tanh") -> dict:
+    """Fit the STARFULL combiner LOCALLY on the validate split. Reuses cached
+    validate member cubes when their fingerprint matches; else runs member
+    inference once and caches them (``cubes_validate/``). Persists the combiner
+    to ``<ensemble>/combiner/`` and writes the combiner payload."""
+    from euclid_polish.eval.combiner import (
+        BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner)
+    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
+
+    base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    if not rdir:
+        raise RuntimeError("no local sky records — sync them on the /sky page.")
+    if not _validate_records_present(rdir):
+        raise RuntimeError(
+            "validate records not synced — enable 'Include validate' on the "
+            "/sky page so dirty_validate + hr_validate are local.")
+
+    fp = _eval_records_fingerprint(rdir, "validate")
+    val_dir = _ensemble_cubes_dir("validate")
+    acc = FitBufferAccumulator(BAND_NAMES)
+
+    reuse = _reuse_validate_cubes(val_dir, fp)
+    if reuse is not None:
+        indices, labels = reuse
+        hr_by = {h.index: h for h in read_images(
+            tfrecord_path(rdir, "hr_validate"), num_images=int(num_images))}
+        n = len(indices)
+        for k, idx in enumerate(indices):
+            stack = load_cached_member_stack(idx, subset="validate",
+                                             cubes_dir=val_dir, active=labels)
+            hr = hr_by.get(idx)
+            if stack is not None and hr is not None:
+                acc.add(stack, np.asarray(hr.data, np.float32))
+            cap.tick(k + 1, n, f"reuse field {idx}")
+    else:
+        shutil.rmtree(val_dir, ignore_errors=True)
+        os.makedirs(val_dir, exist_ok=True)
+        saved: list[int] = []
+
+        def _on_field(rec_index, _lr, preds, mean, std, hr):
+            _cache_field_cubes(val_dir, rec_index, preds, mean, std)
+            saved.append(int(rec_index))
+            if hr is not None:
+                acc.add(np.asarray(preds, np.float32), np.asarray(hr, np.float32))
+
+        out = evaluate_on_records(
+            base, rdir, subset="validate", num_images=int(num_images),
+            starless=False, on_field=_on_field,
+            on_progress=lambda i, n, l: cap.tick(i, n, l))
+        labels = list(out.get("member_labels", []))
+        with open(os.path.join(val_dir, "viz_index.json"), "w") as f:
+            json.dump({"subset": "validate", "indices": saved,
+                       "member_labels": labels, "records_fp": fp,
+                       "pca_n": ENSEMBLE_PCA_COMPONENTS}, f)
+
+    buffers = acc.buffers()
+    if not any(np.asarray(X).size for X, _ in buffers.values()):
+        raise RuntimeError("no validate pixels collected — check the records.")
+    comb = fit_combiner(buffers, labels, hidden=int(hidden),
+                        activation=activation, lam_group=float(lam_group))
+    comb.records_fp = fp
+    comb.starfull = True
+    comb.fit_meta = {"subset": "validate", "num_images": int(num_images)}
+    save_combiner(comb, _ensemble_out_dir())
+    compute_combiner_payload()
+    return {"n_members": len(labels), "hidden": int(hidden),
+            "lam_group": float(lam_group), "val_l1": comb.val_l1,
+            "surviving": comb.surviving_members(), "subset": "validate"}
+
+
+def compute_combiner_payload() -> dict | None:
+    """(Re)compute the combiner payload from the persisted combiner: the
+    per-band effective-weight (Jacobian) curves, survivors, and val loss.
+    Returns the payload, or ``None`` when no combiner is saved."""
+    from euclid_polish.eval.combiner import load_combiner
+    comb = load_combiner(_ensemble_out_dir())
+    if comb is None:
+        return None
+    stale = list(comb.member_labels) != _starfull_labels(ensemble_dir())
+    eff = {}
+    for b in comb.bands:
+        ew = comb.effective_weights(b)
+        eff[b] = {"brightness_e": _jsonable(ew["brightness_e"]),
+                  "jacobian": _jsonable(ew["jacobian"])}
+    payload = {
+        "available": True, "stale": bool(stale),
+        "member_labels": list(comb.member_labels), "hidden": int(comb.hidden),
+        "lam_group": float(comb.lam_group), "activation": comb.activation,
+        "val_l1": comb.val_l1, "band_names": list(comb.band_names),
+        "surviving": comb.surviving_members(), "eff_weights": eff,
+    }
+    with open(_combiner_payload_path(), "w") as f:
+        json.dump(payload, f)
+    return payload
+
+
 def _evals_payload_path() -> str:
     return os.path.join(_ensemble_out_dir(), "ensemble_evals.json")
 
