@@ -1046,6 +1046,13 @@ large cutout don't leak across train/validate."></label>`;
              title="ICNR-initialise the sub-pixel upsampler so it starts as a checkerboard-free nearest-neighbour resize — kills the L2 background speckle / peristellar hot-dots the net otherwise learns to cancel over many steps. Init-only (fresh add members); no effect on fork/continue.">
         <input data-f="icnr" type="checkbox"> ICNR</label>
       <label style="font-weight:normal;"
+             title="Star regime. Stars are injected on-the-fly every visit in BOTH cases; STARLESS supervises against the starless scene (erase them, scored on lr↔clean), STARFULL against the with-stars scene (reconstruct them, scored on lr↔hr). Recorded in origin.json; drives the /ensemble mode filter + eval target.">
+        stars
+        <select data-f="starless">
+          <option value="1">starless (erase)</option>
+          <option value="0">starfull (reconstruct)</option>
+        </select></label>
+      <label style="font-weight:normal;"
              title="Explicit RNG seed for this member (weight init + data order + bootstrap subset). Blank = base_seed+i (or entropy). Intentionally NOT cloned by ＋ — two members with one seed are the same model.">
         seed
         <input data-f="seed" type="number" value="" placeholder="auto"
@@ -1077,6 +1084,7 @@ large cutout don't leak across train/validate."></label>`;
       specInp.value = JSON.stringify(rs.map((r) => {
         const g = (f) => r.querySelector(`[data-f="${f}"]`).value.trim();
         const o = { loss: g('loss') };
+        if (g('starless') === '0') o.starless = false;   // default 1 (starless)
         const noise = parseFloat(g('noise_aug'));
         if (noise > 0) o.noise_aug = noise;
         const boot = parseFloat(g('bootstrap'));
@@ -1110,10 +1118,11 @@ large cutout don't leak across train/validate."></label>`;
       div.innerHTML = _ensMemberRowHtml();
       // Autofill from the previous row — everything EXCEPT the seed.
       if (src) {
-        ['loss', 'noise_aug', 'bootstrap', 'num_res_blocks'].forEach((f) => {
-          div.querySelector(`[data-f="${f}"]`).value =
-            src.querySelector(`[data-f="${f}"]`).value;
-        });
+        ['loss', 'starless', 'noise_aug', 'bootstrap', 'num_res_blocks']
+          .forEach((f) => {
+            div.querySelector(`[data-f="${f}"]`).value =
+              src.querySelector(`[data-f="${f}"]`).value;
+          });
         div.querySelector('[data-f="icnr"]').checked =
           src.querySelector('[data-f="icnr"]').checked;
       }

@@ -117,6 +117,26 @@ def test_crops_target_is_starless_even_with_injection(gaussian_sets):
         assert found, f"HR crop {k} is not a starless sub-tile of the field"
 
 
+def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):
+    """Both starless and starfull inject the SAME fresh stars (identical LR);
+    the target is what differs — starless erases them, starfull keeps them."""
+    field = _field()
+    kw = dict(seed=5, crops_per_field=4, add_noise=False, add_artifacts=False,
+              add_saturation=False, inject_stars=True, star_density_arcmin2=500.0)
+    lr_less, hr_less = OnTheFlyForward(gaussian_sets, starless=True, **kw).crops(field)
+    lr_full, hr_full = OnTheFlyForward(gaussian_sets, starless=False, **kw).crops(field)
+    # Same seed → same injected stars → IDENTICAL LR in both regimes.
+    np.testing.assert_array_equal(lr_less, lr_full)
+    # The starfull target keeps the stars (more flux); starless erases them.
+    assert hr_full.sum() > hr_less.sum()
+    # ...and each starless HR crop is a pure sub-tile of the ORIGINAL field.
+    for k in range(hr_less.shape[0]):
+        assert any(
+            np.array_equal(hr_less[k], field[x: x + CROP, y: y + CROP, :])
+            for x in range(0, FIELD - CROP + 1, 2)
+            for y in range(0, FIELD - CROP + 1, 2))
+
+
 def test_inject_stars_off_reproduces_plain_forward(gaussian_sets):
     """inject_stars=False (validate/test-style) is deterministic per seed."""
     field = _field()

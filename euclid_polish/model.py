@@ -391,13 +391,13 @@ class Model:
                                              psf_subset=psf_subset)
             print(f"  on-the-fly forward: {note} · "
                   f"{int(crops_per_field)} crops/field")
-            # Starless members erase stars: inject a fresh star realization
-            # each visit (target stays the starless scene). Starfull members
-            # keep the scene's own sources (no injection).
+            # Stars are injected fresh each visit in BOTH regimes; ``starless``
+            # only picks the target — the starless scene (erase) vs the
+            # with-stars scene (reconstruct).
             fwd = OnTheFlyForward(psf_sets, seed=self._seed,
                                   crops_per_field=int(crops_per_field),
                                   scale=self._scale,
-                                  inject_stars=bool(starless))
+                                  starless=bool(starless))
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

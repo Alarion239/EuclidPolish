@@ -108,6 +108,7 @@ class OnTheFlyForward:
         add_noise: bool = True,
         add_artifacts: bool = True,
         add_saturation: bool = True,
+        starless: bool = True,
         inject_stars: bool = True,
         star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2,
         star_mag_slope: float = Config.STAR_MAG_SLOPE,
@@ -119,9 +120,10 @@ class OnTheFlyForward:
         self.hr_crop_size = int(hr_crop_size)
         self.scale = int(scale)
         # Stars-as-artifacts: a FRESH star realization is drawn and deposited
-        # (HR deltas, before the PSF) on every visit — the scene records are
-        # starless, so the network is supervised to erase whatever point
-        # sources the forward injects. Densities/mags mirror generation.
+        # (HR deltas, before the PSF) on every visit in BOTH regimes. ``starless``
+        # picks the TARGET — the starless scene (erase the injected stars) vs the
+        # with-stars scene (reconstruct them). Densities/mags mirror generation.
+        self.starless = bool(starless)
         self.inject_stars = bool(inject_stars)
         self.star_density_arcmin2 = float(star_density_arcmin2)
         self.star_mag_slope = float(star_mag_slope)
@@ -173,8 +175,10 @@ class OnTheFlyForward:
 
         # The scene is STARLESS. Inject a fresh star realization onto a COPY
         # (HR deltas, before the PSF) and forward THAT → LR carries realistic
-        # star contamination (incl. out-of-crop wings, full-field). The TARGET
-        # stays the starless field, so the model learns to erase the stars.
+        # star contamination (incl. out-of-crop wings, full-field) in BOTH
+        # regimes. The TARGET is what differs: starless → the ORIGINAL field
+        # (erase the injected stars); starfull → the with-stars scene (the same
+        # stars survive → reconstruct them).
         scene = field.copy()
         self._inject_stars(scene, rng)
         hr_img = Image(data=scene,
@@ -182,10 +186,12 @@ class OnTheFlyForward:
                        band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
         lr_img, hr_out = self._sim.process(hr_img, rng)
         lr = np.asarray(lr_img.data, np.float32)      # (H/s, W/s, 4) w/ stars
-        # Starless target: the ORIGINAL field, trimmed exactly as process
-        # trimmed its (with-stars) HR output, so LR/HR stay block-aligned.
+        # Target, trimmed exactly as process trimmed its HR output so LR/HR stay
+        # block-aligned: starless = the original field, starfull = process's
+        # (with-stars) HR.
         ht, wt = hr_out.data.shape[:2]
-        hr = np.ascontiguousarray(field[:ht, :wt, :], np.float32)  # starless
+        hr = (np.ascontiguousarray(field[:ht, :wt, :], np.float32)
+              if self.starless else np.asarray(hr_out.data, np.float32))
 
         lr_crops = np.empty((self.crops_per_field, c // s, c // s, lr.shape[-1]),
                             np.float32)
