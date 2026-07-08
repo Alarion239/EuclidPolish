@@ -194,10 +194,10 @@
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
       <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">SR training · reduce-LR-on-plateau guard</legend>
       <div class="form-row">
-        <label title="Cut the LR when the validation metric stalls (the complement of the gradient-spike guard, which cuts on divergence). Lets a spike-free member leave the plateau early instead of waiting for the schedule.">
-          Plateau guard
+        <label title="Cut the LR (and roll back to best) when the validation metric stalls — the complement of the gradient-spike guard, which cuts on divergence. It exists to escape L1's degenerate skip-only basin (~43.5 dB), so it is applied to L1 members ONLY: L2/L3/BerHu have no such basin and the stall detector misfires on their genuine slow climbs, so it is forced off for them regardless of this switch.">
+          Plateau guard <span class="hint">(L1 only)</span>
           <select name="plateau_lr_enabled">
-            <option value="1" {{ 'selected' if cfg.plateau_lr_enabled else '' }}>on</option>
+            <option value="1" {{ 'selected' if cfg.plateau_lr_enabled else '' }}>on (L1 members)</option>
             <option value="0" {{ '' if cfg.plateau_lr_enabled else 'selected' }}>off</option>
           </select>
         </label>

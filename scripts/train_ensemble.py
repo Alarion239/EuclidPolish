@@ -157,7 +157,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--lr-warmup-steps", type=int, default=Config.LR_WARMUP_STEPS)
     p.add_argument("--plateau-lr-enabled", type=int,
                    default=int(Config.PLATEAU_LR_ENABLED),
-                   help="1/0 — reduce LR when the val metric stalls.")
+                   help="1/0 — reduce LR (+ rollback) when the val metric "
+                        "stalls. Applies to L1 members ONLY (its job is "
+                        "escaping L1's degenerate skip-only basin); forced off "
+                        "for L2/L3/BerHu, which have no such basin.")
     p.add_argument("--plateau-lr-factor", type=float,
                    default=Config.PLATEAU_LR_FACTOR)
     p.add_argument("--plateau-lr-patience", type=int,

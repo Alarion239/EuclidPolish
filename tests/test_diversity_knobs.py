@@ -187,6 +187,76 @@ def test_member_spec_icnr_override(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Plateau LR guard is L1-only (degenerate-basin escape)                        #
+# --------------------------------------------------------------------------- #
+def test_plateau_guard_applies_l1_only():
+    from euclid_polish.training.loss_names import plateau_guard_applies
+    assert plateau_guard_applies("l1") is True
+    assert plateau_guard_applies("L1") is True                # case-insensitive
+    for n in ("l2", "l3", "berhu"):
+        assert plateau_guard_applies(n) is False
+
+
+def _write_train_val_records(tmp_path, n=4):
+    """Minimal 4-band train+validate record pairs so ``Model.train`` can build
+    both pipelines (it derives the validate path from the train path)."""
+    size = Config.DEFAULT_HR_CROP_SIZE
+    d = str(tmp_path)
+    for split in ("train", "validate"):
+        lrs, hrs = [], []
+        for i in range(n):
+            lrs.append(Image(
+                data=np.full((size // 2, size // 2, 4), float(i), np.float32),
+                pixel_scale_arcsec=0.10, band_names=Config.LR_INPUT_BAND_NAMES,
+                is_clean=False, index=i))
+            hrs.append(Image(
+                data=np.full((size, size, 4), float(i), np.float32),
+                pixel_scale_arcsec=0.05, band_names=Config.HR_TARGET_BAND_NAMES,
+                is_clean=True, index=i))
+        write_images(lrs, f"dirty_{split}", records_dir=d)
+        write_images(hrs, f"clean_{split}", records_dir=d)
+    return tfrecord_path(d, "dirty_train"), tfrecord_path(d, "clean_train")
+
+
+class _CaptureTrainer:
+    """Stand-in Trainer that records the kwargs it was built with; its train()
+    is a no-op (writes no checkpoint, so Model.train's reload tail is skipped)."""
+    last: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        _CaptureTrainer.last = kwargs
+
+    def train(self, *args, **kwargs):
+        pass
+
+
+@pytest.mark.parametrize("loss,guard_on",
+                         [("l1", True), ("l2", False),
+                          ("l3", False), ("berhu", False)])
+def test_train_gates_plateau_guard_by_loss(tmp_path, monkeypatch, loss, guard_on):
+    """model.train forces the plateau guard off for the large-residual losses
+    even when plateau_lr_enabled=True — it is meaningful only for L1."""
+    import euclid_polish.model as model_mod
+    monkeypatch.setattr(model_mod, "Trainer", _CaptureTrainer)
+    lr, hr = _write_train_val_records(tmp_path)
+    m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1)
+    m.train(lr, hr, steps=1, batch_size=1, loss_norm=loss,
+            plateau_lr_enabled=True)
+    assert _CaptureTrainer.last["plateau_lr_enabled"] is guard_on
+
+
+def test_train_respects_explicit_plateau_off_for_l1(tmp_path, monkeypatch):
+    """The loss gate only ever DISABLES; an explicit off on L1 stays off."""
+    import euclid_polish.model as model_mod
+    monkeypatch.setattr(model_mod, "Trainer", _CaptureTrainer)
+    lr, hr = _write_train_val_records(tmp_path)
+    m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1)
+    m.train(lr, hr, steps=1, batch_size=1, loss_norm="l1",
+            plateau_lr_enabled=False)
+    assert _CaptureTrainer.last["plateau_lr_enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
 # Dihedral augmentation                                                        #
 # --------------------------------------------------------------------------- #
 def test_random_dihedral_applies_same_transform_to_both():

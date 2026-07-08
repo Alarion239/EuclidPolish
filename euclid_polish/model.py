@@ -44,6 +44,7 @@ from euclid_polish.training.forward_onthefly import (
     OnTheFlyForward,
     member_psf_sets,
 )
+from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import build_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
@@ -361,6 +362,13 @@ class Model:
         extra LR noise in read-noise units; ``bootstrap`` ∈ (0, 1) trains on
         that fraction of the fields (deterministic subset keyed by the seed).
 
+        ``loss_norm`` also gates the plateau LR guard: it applies ONLY to
+        losses with a degenerate skip-only basin (L1, see
+        :func:`~euclid_polish.training.loss_names.plateau_guard_applies`).
+        For L2/L3/BerHu the guard is forced off regardless of
+        ``plateau_lr_enabled`` — that basin isn't a low-loss optimum for them,
+        so the guard never helps and misfires on their genuine slow climbs.
+
         ``forward_onthefly`` switches the TRAINING inputs to the live forward
         model (see :class:`~euclid_polish.training.forward_onthefly
         .OnTheFlyForward`): the dirty records are ignored; each visit of a
@@ -419,6 +427,14 @@ class Model:
             peak_lr=lr_peak, final_lr=lr_final,
             warmup_steps=lr_warmup_steps, total_steps=steps,
         )
+        # The plateau guard (reduce-LR + degenerate-basin rollback) exists only
+        # to escape L1's skip-only basin. For the large-residual losses that
+        # basin isn't a low-loss optimum, so the guard never helps and its
+        # stall detector misfires on their genuine slow climbs — disable it.
+        if plateau_lr_enabled and not plateau_guard_applies(loss_norm):
+            print(f"  plateau LR guard OFF for loss={loss_norm} "
+                  f"(no degenerate basin off L1 — guard is L1-only)")
+            plateau_lr_enabled = False
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
                           loss=build_loss(loss_norm),
