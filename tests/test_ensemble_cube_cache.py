@@ -79,3 +79,41 @@ def test_cached_member_labels(tmp_path):
     labels = _write_cache(d, subset="test", indices=[3], n_members=2)
     assert cached_member_labels(d) == labels
     assert cached_member_labels(str(tmp_path / "nope")) is None
+
+
+# ---------------------------------------------------------------------------
+# subset-keyed cube directories + the factored per-field cube writer
+# ---------------------------------------------------------------------------
+
+def test_ensemble_cubes_dir_is_subset_keyed():
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    test_dir = ev._ensemble_cubes_dir()               # no-arg = test bucket
+    val_dir = ev._ensemble_cubes_dir("validate")
+    assert test_dir.endswith(os.sep + "cubes")
+    assert val_dir.endswith(os.sep + "cubes_validate")
+    assert test_dir != val_dir
+
+
+def test_cache_field_cubes_roundtrips_through_reader(tmp_path):
+    """The factored writer lays down member/sr/std cubes that the cube-cache
+    reader can load back as a stack (with a matching manifest)."""
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    d = str(tmp_path / "cubes_validate")
+    os.makedirs(d, exist_ok=True)
+    rng = np.random.default_rng(1)
+    preds = rng.normal(10, 1, (4, 8, 8, 4)).astype(np.float32)
+    mean, std = preds.mean(0), preds.std(0)
+    amps, var = ev._cache_field_cubes(d, 5, preds, mean, std)
+    assert len(amps) == 3 and len(var) == 3
+    assert os.path.isfile(os.path.join(d, "sr_00005.npy"))
+    assert os.path.isfile(os.path.join(d, "member3_00005.npy"))
+
+    labels = [f"{i:02d}" for i in range(4)]
+    with open(os.path.join(d, "viz_index.json"), "w") as f:
+        json.dump({"subset": "validate", "indices": [5],
+                   "member_labels": labels}, f)
+    out = load_cached_member_stack(5, subset="validate", cubes_dir=d,
+                                   active=labels)
+    assert out is not None and out.shape == (4, 8, 8, 4)
+    np.testing.assert_allclose(out, preds, rtol=1e-6)

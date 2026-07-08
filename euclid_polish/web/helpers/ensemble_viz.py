@@ -450,8 +450,33 @@ ENSEMBLE_VIZ_FIELDS_MAX = 200
 ENSEMBLE_PCA_COMPONENTS = 3
 
 
-def _ensemble_cubes_dir() -> str:
-    return os.path.join(_ensemble_out_dir(), "cubes")
+def _ensemble_cubes_dir(subset: str | None = None) -> str:
+    """The per-field cube bucket. No arg → ``cubes/`` (the TEST-eval bucket,
+    unchanged). A named ``subset`` (e.g. ``"validate"``, used by the combiner
+    fit) → a sibling ``cubes_<subset>/`` so the buckets never clobber."""
+    name = "cubes" if not subset else f"cubes_{subset}"
+    return os.path.join(_ensemble_out_dir(), name)
+
+
+def _cache_field_cubes(cubes_dir: str, rec: int, preds: np.ndarray,
+                       mean: np.ndarray, std: np.ndarray, *,
+                       pca_components: int = ENSEMBLE_PCA_COMPONENTS
+                       ) -> tuple[list[float], list[float]]:
+    """Write one field's cubes (``sr_``, ``std_``, ``pcaN_``, ``memberi_``) into
+    ``cubes_dir`` and return ``(pca_amps, pca_var)``. Shared by the test-eval and
+    the validate combiner-fit caching so both lay out identical buckets."""
+    rec = int(rec)
+    np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
+            np.asarray(mean, dtype=np.float32))
+    np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
+            np.asarray(std, dtype=np.float32))
+    _m, comps, amps, var_exp = pca_field(preds, n_components=pca_components)
+    for i, comp in enumerate(comps):
+        np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
+                np.asarray(comp, dtype=np.float32))
+    for i, mem in enumerate(np.asarray(preds, dtype=np.float32)):
+        np.save(os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"), mem)
+    return [float(a) for a in amps], [float(v) for v in var_exp]
 
 
 def _jsonable(v):
@@ -577,20 +602,9 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         if len(saved) >= viz_cap:
             return
         rec = int(rec_index)
-        np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
-                np.asarray(mean, dtype=np.float32))
-        np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
-                np.asarray(std, dtype=np.float32))
-        _m, comps, amps, var_exp = pca_field(
-            preds, n_components=ENSEMBLE_PCA_COMPONENTS)
-        for i, comp in enumerate(comps):
-            np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
-                    np.asarray(comp, dtype=np.float32))
-        pca_amps[rec] = [float(a) for a in amps]
-        pca_var[rec] = [float(v) for v in var_exp]
-        # Individual member SR cubes → per-member viewer tiers.
-        for i, mem in enumerate(np.asarray(preds, dtype=np.float32)):
-            np.save(os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"), mem)
+        amps, var_exp = _cache_field_cubes(cubes_dir, rec, preds, mean, std)
+        pca_amps[rec] = amps
+        pca_var[rec] = var_exp
         saved.append(rec)
 
     def _prog(i, n, lbl):
@@ -840,7 +854,9 @@ def job_archive_member(cap, *, name: str) -> dict:
         commit=commit)
     cap.tick(2, 4, "deleting member dir + caches")
     shutil.rmtree(src, ignore_errors=True)
-    shutil.rmtree(_ensemble_cubes_dir(), ignore_errors=True)  # position-keyed
+    # Both position-keyed cube buckets (test eval + validate combiner fit).
+    shutil.rmtree(_ensemble_cubes_dir(), ignore_errors=True)
+    shutil.rmtree(_ensemble_cubes_dir("validate"), ignore_errors=True)
     cap.tick(3, 4, "deleting FASRC copy")
     remote_status = _delete_remote_member(name)
     store.append_log(
