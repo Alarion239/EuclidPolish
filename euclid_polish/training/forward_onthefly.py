@@ -44,6 +44,7 @@ from euclid_polish.image import Image
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.psf.rotpool import load_all_band_rotpools
+from euclid_polish.sky.generation.sky_simulator import inject_random_stars
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -107,10 +108,26 @@ class OnTheFlyForward:
         add_noise: bool = True,
         add_artifacts: bool = True,
         add_saturation: bool = True,
+        inject_stars: bool = True,
+        star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2,
+        star_mag_slope: float = Config.STAR_MAG_SLOPE,
+        star_mag_bright: float = Config.STAR_MAG_BRIGHT,
+        star_mag_faint: float = Config.STAR_MAG_FAINT,
+        pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         self.hr_crop_size = int(hr_crop_size)
         self.scale = int(scale)
+        # Stars-as-artifacts: a FRESH star realization is drawn and deposited
+        # (HR deltas, before the PSF) on every visit — the scene records are
+        # starless, so the network is supervised to erase whatever point
+        # sources the forward injects. Densities/mags mirror generation.
+        self.inject_stars = bool(inject_stars)
+        self.star_density_arcmin2 = float(star_density_arcmin2)
+        self.star_mag_slope = float(star_mag_slope)
+        self.star_mag_bright = float(star_mag_bright)
+        self.star_mag_faint = float(star_mag_faint)
+        self.pixel_scale_arcsec = float(pixel_scale_arcsec)
         if self.crops_per_field < 1:
             raise ValueError("crops_per_field must be >= 1")
         if self.hr_crop_size % self.scale:
@@ -134,6 +151,16 @@ class OnTheFlyForward:
             child = self._seq.spawn(1)[0]
         return np.random.default_rng(child)
 
+    def _inject_stars(self, canvas: np.ndarray, rng: np.random.Generator) -> None:
+        """Deposit a fresh random star realization onto ``canvas`` in place."""
+        if not self.inject_stars or self.star_density_arcmin2 <= 0.0:
+            return
+        side_arcmin = canvas.shape[0] * self.pixel_scale_arcsec / 60.0
+        n_stars = int(rng.poisson(self.star_density_arcmin2 * side_arcmin ** 2))
+        inject_random_stars(
+            canvas, rng, n_stars=n_stars, mag_slope=self.star_mag_slope,
+            mag_bright=self.star_mag_bright, mag_faint=self.star_mag_faint)
+
     def crops(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         field = np.asarray(field, np.float32)
         if field.ndim != 3 or field.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
@@ -144,12 +171,21 @@ class OnTheFlyForward:
                 f"field {field.shape[:2]} smaller than the HR crop {c}")
         rng = self._rng()
 
-        hr_img = Image(data=field,
+        # The scene is STARLESS. Inject a fresh star realization onto a COPY
+        # (HR deltas, before the PSF) and forward THAT → LR carries realistic
+        # star contamination (incl. out-of-crop wings, full-field). The TARGET
+        # stays the starless field, so the model learns to erase the stars.
+        scene = field.copy()
+        self._inject_stars(scene, rng)
+        hr_img = Image(data=scene,
                        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                        band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
         lr_img, hr_out = self._sim.process(hr_img, rng)
-        lr = np.asarray(lr_img.data, np.float32)      # (H/s, W/s, 4)
-        hr = np.asarray(hr_out.data, np.float32)      # (H', W', 4) trimmed
+        lr = np.asarray(lr_img.data, np.float32)      # (H/s, W/s, 4) w/ stars
+        # Starless target: the ORIGINAL field, trimmed exactly as process
+        # trimmed its (with-stars) HR output, so LR/HR stay block-aligned.
+        ht, wt = hr_out.data.shape[:2]
+        hr = np.ascontiguousarray(field[:ht, :wt, :], np.float32)  # starless
 
         lr_crops = np.empty((self.crops_per_field, c // s, c // s, lr.shape[-1]),
                             np.float32)

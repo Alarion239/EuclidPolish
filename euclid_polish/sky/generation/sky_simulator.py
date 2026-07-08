@@ -166,6 +166,32 @@ def _deposit_star(
         canvas_4ch[iy, ix, k] += np.float32(ab_mag_to_electrons(mag_k, band))
 
 
+def inject_random_stars(
+    canvas_4ch: np.ndarray, rng: np.random.Generator, *,
+    n_stars: int, mag_slope: float, mag_bright: float, mag_faint: float,
+) -> list[dict]:
+    """Draw ``n_stars`` random point sources and DEPOSIT them onto ``canvas_4ch``.
+
+    The shared star primitive: generation uses it to place a field's fixed
+    stars (validate/test), and the on-the-fly forward calls it to inject a
+    FRESH star realization per visit — stars are HR deltas added *before* the
+    PSF/rebin, so the forward gives them realistic shape and the model learns
+    to erase them (the target stays starless). Returns the per-star metadata
+    (position + VIS magnitude), so a caller can persist it to the source CSV.
+    """
+    N = canvas_4ch.shape[0]
+    stars: list[dict] = []
+    for _ in range(int(n_stars)):
+        x_pix = float(rng.uniform(0.0, N - 1))
+        y_pix = float(rng.uniform(0.0, N - 1))
+        mag = _sample_star_mag(rng, slope=mag_slope,
+                               m_bright=mag_bright, m_faint=mag_faint)
+        _deposit_star(canvas_4ch, x_pix, y_pix, mag)
+        stars.append({"type": "star", "x_pix": x_pix, "y_pix": y_pix,
+                      "mag_vis": float(mag)})
+    return stars
+
+
 # ---------------------------------------------------------------------------
 # Multi-band simulator
 # ---------------------------------------------------------------------------
@@ -376,15 +402,17 @@ class SkySimulator:
             "flux_e_per_band": list(map(float, [g.total_flux_e(k) for k in range(4)])),
         }
 
-    def _add_star(
-        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-    ) -> dict:
+    def _draw_star(self, rng: np.random.Generator) -> dict:
+        """Draw one star's position + VIS magnitude — WITHOUT depositing it.
+
+        Deposition is deferred: at generation the base scene stays starless
+        (stars are re-added in the forward op — fresh per visit on-the-fly, or
+        from this recorded metadata for the fixed validate/test fields)."""
         x_pix, y_pix = self._random_pix(rng)
         cfg = self.config
         mag = _sample_star_mag(
             rng, slope=cfg.star_mag_slope,
             m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint)
-        _deposit_star(canvas_4ch, x_pix, y_pix, mag)
         return {
             "type": "star",
             "x_pix": float(x_pix),
@@ -583,13 +611,22 @@ class SkySimulator:
         n_tng:     int | None = None,
         n_stars:   int | None = None,
         n_lenses:  int | None = None,
+        deposit_stars: bool = False,
     ) -> tuple[Image, dict]:
         """Render one clean HR field in 4 bands.
+
+        The rendered scene is STARLESS by default (galaxies + lenses only) —
+        the network's target. Stars are still DRAWN and returned in
+        ``metadata["stars"]`` (positions + VIS mag) so the forward op can
+        re-inject them: fresh per visit for on-the-fly training, or from this
+        record for the fixed validate/test fields. Pass ``deposit_stars=True``
+        to also stamp them onto the canvas (the with-stars scene, e.g. for
+        inspection); ``n_stars=0`` draws none (the training split).
 
         Returns
         -------
         sky_image : :class:`Image` with shape ``(image_size, image_size, 4)``
-                    in raw electrons.
+                    in raw electrons (starless unless ``deposit_stars``).
         metadata  : dict with per-source parameter records.
         """
         cfg  = self.config
@@ -616,8 +653,14 @@ class SkySimulator:
             if rec is not None:
                 galaxies.append(rec)
 
+        # Stars are DRAWN (recorded) but not deposited — the base stays
+        # starless; the forward op re-injects them (see inject_random_stars).
         for _ in range(n_stars):
-            stars.append(self._add_star(canvas, rng))
+            star = self._draw_star(rng)
+            if deposit_stars:
+                _deposit_star(canvas, star["x_pix"], star["y_pix"],
+                              star["mag_vis"])
+            stars.append(star)
 
         for _ in range(n_lenses):
             rec = self._add_lens(canvas, rng)

@@ -1,10 +1,11 @@
 """Per-source sidecar catalog for synthetic fields.
 
-``SkySimulator.simulate_field`` knows every galaxy/lens it places, but the
+``SkySimulator.simulate_field`` knows every galaxy/lens/star it places, but the
 TFRecord schema stores only pixels. This module persists that source list as a
 CSV next to the records (``sources_<subset>.csv``) so the evaluation can crop
-postage stamps centered on a known lens or galaxy. One row per galaxy and per
-lens; stars are not recorded (we never center morphology on them).
+postage stamps centered on a known lens or galaxy, and so the forward op can
+re-inject a field's fixed stars (the scene is stored STARLESS). One row per
+galaxy, per lens, and per star.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "z", "subhalo_id", "theta_E_arcsec",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
-               "re_arcsec", "logmass", "mass_scale"]
+               "re_arcsec", "logmass", "mass_scale",
+               # Star VIS magnitude (empty for galaxies/lenses); the forward op
+               # re-injects fixed stars from (x_pix, y_pix, mag_vis).
+               "mag_vis"]
 
 
 def _flux_vis(src: dict[str, Any]):
@@ -74,8 +78,18 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "field_index": field_index, "type": "star", "render": "",
+        "x_pix": float(star["x_pix"]), "y_pix": float(star["y_pix"]),
+        "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
+        "re_arcsec": "", "logmass": "", "mass_scale": "",
+        "mag_vis": _num(star.get("mag_vis")),
+    }
+
+
 class SourceCatalogWriter:
-    """Append galaxy/lens rows to ``path`` as fields are generated."""
+    """Append galaxy/lens/star rows to ``path`` as fields are generated."""
 
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -88,6 +102,8 @@ class SourceCatalogWriter:
             self._w.writerow(_galaxy_row(field_index, g))
         for lens in meta.get("lenses", []) or []:
             self._w.writerow(_lens_row(field_index, lens))
+        for star in meta.get("stars", []) or []:
+            self._w.writerow(_star_row(field_index, star))
 
     def close(self) -> None:
         self._f.close()
@@ -104,7 +120,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
                            "subhalo_id": row["subhalo_id"] or None}
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
-              "re_arcsec", "logmass", "mass_scale"):
+              "re_arcsec", "logmass", "mass_scale", "mag_vis"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
     return out

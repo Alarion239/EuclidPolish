@@ -95,9 +95,21 @@ def test_lens_density_produces_lens_records():
 
 def test_stars_appear_in_all_bands(simulator: SkySimulator):
     rng = np.random.default_rng(0)
-    img, _ = simulator.simulate_field(rng, n_sersic=0, n_stars=20, n_lenses=0)
+    img, _ = simulator.simulate_field(rng, n_sersic=0, n_stars=20, n_lenses=0,
+                                      deposit_stars=True)
     for k in range(Config.NUM_LR_CHANNELS):
         assert img.data[..., k].max() > 0
+
+
+def test_field_is_starless_by_default_but_records_stars(simulator: SkySimulator):
+    """The scene is the starless TARGET: stars are drawn + recorded in the
+    metadata (so the forward op can re-inject them) but NOT deposited."""
+    rng = np.random.default_rng(0)
+    img, meta = simulator.simulate_field(rng, n_sersic=0, n_tng=0,
+                                         n_stars=20, n_lenses=0)
+    assert np.all(img.data == 0.0)                      # no star flux deposited
+    assert meta["n_stars"] == 20 and len(meta["stars"]) == 20
+    assert all({"x_pix", "y_pix", "mag_vis"} <= set(s) for s in meta["stars"])
 
 
 # ---------------------------------------------------------------------------

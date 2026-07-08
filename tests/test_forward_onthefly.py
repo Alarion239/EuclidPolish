@@ -57,7 +57,7 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
     field = _field()
     fwd = OnTheFlyForward(gaussian_sets, seed=2, crops_per_field=3,
                           add_noise=False, add_artifacts=False,
-                          add_saturation=False)
+                          add_saturation=False, inject_stars=False)
     lr_crops, hr_crops = fwd.crops(field)
     # Reference full-field forward (deterministic: 1-kernel sets, no noise).
     img = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
@@ -83,6 +83,48 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
             lr_full[x // 2: (x + CROP) // 2, y // 2: (y + CROP) // 2, :],
             rtol=1e-5,
             err_msg="LR crop != matching tile of the full-field forward")
+
+
+def test_inject_stars_adds_flux_before_forward(gaussian_sets):
+    """The injection primitive deposits fresh star flux onto the scene copy
+    (HR deltas, pre-PSF) — directly, without the crop-offset RNG in play."""
+    fwd = OnTheFlyForward(gaussian_sets, seed=5, inject_stars=True,
+                          star_density_arcmin2=500.0)
+    field = _field()
+    scene = field.copy()
+    fwd._inject_stars(scene, np.random.default_rng(0))
+    assert scene.sum() > field.sum()             # stars deposited → more flux
+    # ...and only added flux (deltas are non-negative on top of the field).
+    assert np.all(scene >= field - 1e-3)
+
+
+def test_crops_target_is_starless_even_with_injection(gaussian_sets):
+    """Stars-as-artifacts: with injection on, every HR crop is still an exact
+    block-aligned sub-tile of the ORIGINAL starless field — the injected stars
+    reach the LR but never the target, so the model is supervised to erase
+    them."""
+    field = _field()
+    fwd = OnTheFlyForward(gaussian_sets, seed=5, crops_per_field=4,
+                          add_noise=False, add_artifacts=False,
+                          add_saturation=False, inject_stars=True,
+                          star_density_arcmin2=500.0)
+    _lr, hr_crops = fwd.crops(field)
+    for k in range(hr_crops.shape[0]):
+        found = any(
+            np.array_equal(hr_crops[k], field[x: x + CROP, y: y + CROP, :])
+            for x in range(0, FIELD - CROP + 1, 2)
+            for y in range(0, FIELD - CROP + 1, 2))
+        assert found, f"HR crop {k} is not a starless sub-tile of the field"
+
+
+def test_inject_stars_off_reproduces_plain_forward(gaussian_sets):
+    """inject_stars=False (validate/test-style) is deterministic per seed."""
+    field = _field()
+    a = OnTheFlyForward(gaussian_sets, seed=9, crops_per_field=2,
+                        add_noise=False, inject_stars=False).crops(field)
+    b = OnTheFlyForward(gaussian_sets, seed=9, crops_per_field=2,
+                        add_noise=False, inject_stars=False).crops(field)
+    np.testing.assert_array_equal(a[0], b[0])
 
 
 def test_seeded_draws_reproduce_and_differ(gaussian_sets):

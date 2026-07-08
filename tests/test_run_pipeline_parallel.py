@@ -14,9 +14,12 @@ import os
 
 import tensorflow as tf
 
+import numpy as np
+
 from euclid_polish.config import Config
-from euclid_polish.image import ImageSet
-from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.image import Image, ImageSet
+from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.sky.generation.source_catalog import read_sources
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
@@ -191,6 +194,72 @@ def test_skip_dirty_shard_writes_no_dirty_and_hr_is_trimmed_clean(tmp_path):
     # sources sidecar still written
     src = tfrecord_path(rdir, "sources_train.part0000").replace(".tfrecord", ".csv")
     assert os.path.isfile(src)
+
+
+# ---------------------------------------------------------------------------
+# Starless scenes + stars re-injected in the forward (stars-as-artifacts)
+# ---------------------------------------------------------------------------
+
+def _sim_fwd_dense_stars():
+    sim = SkySimulator(
+        TinyCosmosCatalog(n_galaxies=200, seed=0),
+        SkySimulatorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+                           star_density_arcmin2=5000.0))       # guarantee stars
+    fwd = ObservationSimulator(
+        psfs_by_band=load_all_band_psfs(psf_dir="/nonexistent_dir_for_test"),
+        config=ObservationSimulatorConfig(add_noise=False))
+    return sim, fwd
+
+
+def test_forward_starless_injects_into_lr_not_target():
+    """The shared helper forwards the WITH-stars scene (→ LR carries the star
+    flux) but returns the STARLESS scene as the target."""
+    _sim, fwd = _sim_fwd_dense_stars()
+    field = np.abs(np.random.default_rng(0).normal(
+        10, 2, (96, 96, 4))).astype(np.float32)
+    sky = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
+                index=0, subset="validate")
+    star = [{"x_pix": 48.0, "y_pix": 48.0, "mag_vis": 17.0}]
+    lr_s, hr_s = rp._forward_starless(fwd, sky, star, np.random.default_rng(1))
+    lr_0, hr_0 = rp._forward_starless(fwd, sky, None, np.random.default_rng(1))
+    # target is the starless scene either way (no star flux, no rng)...
+    np.testing.assert_array_equal(hr_s.data, field)     # 96 % rebin == 0 → no-op
+    np.testing.assert_array_equal(hr_s.data, hr_0.data)
+    # ...but the injected star lifts the LR flux (same noise seed).
+    assert lr_s.data.sum() > lr_0.data.sum()
+
+
+def test_validate_shard_records_stars_target_starless(tmp_path):
+    """Validate split: fixed stars land in the CSV and the LR (dirty), but the
+    clean/hr target is the starless scene."""
+    sim, fwd = _sim_fwd_dense_stars()
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, fwd, rdir, "validate", 0, 2, 0,
+                                seed=[1, 1, 0], write_dirty=True)
+    src = tfrecord_path(rdir, "sources_validate.part0000").replace(
+        ".tfrecord", ".csv")
+    stars = [r for rows in read_sources(src).values()
+             for r in rows if r["type"] == "star"]
+    assert len(stars) > 0                                   # fixed stars recorded
+    clean = read_images(tfrecord_path(rdir, "clean_validate.part0000"), 2)
+    hr = read_images(tfrecord_path(rdir, "hr_validate.part0000"), 2)
+    for c, h in zip(clean, hr, strict=False):
+        np.testing.assert_array_equal(h.data, c.data)      # target = starless scene
+
+
+def test_train_shard_draws_no_fixed_stars(tmp_path):
+    """Train split draws NO fixed stars — the on-the-fly forward injects a
+    fresh realization per visit, so none are baked into the records/CSV."""
+    sim, fwd = _sim_fwd_dense_stars()
+    rdir = str(tmp_path)
+    rp._generate_convolve_range(sim, fwd, rdir, "train", 0, 2, 0,
+                                seed=[1, 1, 0], write_dirty=False)
+    src = tfrecord_path(rdir, "sources_train.part0000").replace(
+        ".tfrecord", ".csv")
+    stars = [r for rows in read_sources(src).values()
+             for r in rows if r["type"] == "star"]
+    assert stars == []
 
 
 def test_merge_subset_kinds_skips_dirty(tmp_path):

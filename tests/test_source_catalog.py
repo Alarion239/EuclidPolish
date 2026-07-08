@@ -39,6 +39,21 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["subhalo_id"] == "99" and tng["z"] is None   # NaN -> None
 
 
+def test_stars_are_recorded(tmp_path):
+    """Stars are now persisted (scene is starless → the forward re-injects
+    them from these rows for the fixed validate/test fields)."""
+    p = str(tmp_path / "sources_test.csv")
+    w = sc.SourceCatalogWriter(p)
+    w.add_field(0, {"galaxies": [], "lenses": [],
+                    "stars": [{"type": "star", "x_pix": 12.0, "y_pix": 34.0,
+                               "mag_vis": 19.5}]})
+    w.close()
+    rows = sc.read_sources(p)[0]
+    star = next(r for r in rows if r["type"] == "star")
+    assert star["x_pix"] == 12.0 and star["y_pix"] == 34.0
+    assert float(star["mag_vis"]) == 19.5
+
+
 def test_read_sources_missing_file(tmp_path):
     assert sc.read_sources(str(tmp_path / "nope.csv")) == {}
 

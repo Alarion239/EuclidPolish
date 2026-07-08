@@ -66,11 +66,13 @@ from euclid_polish.sky.generation.gen_provenance import (
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
+    _deposit_star,
 )
 from euclid_polish.sky.generation.source_catalog import (
     SOURCE_COLS,
     SourceCatalogWriter,
     concat_source_csvs,
+    read_sources,
 )
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
@@ -322,8 +324,11 @@ def step_generate(args: argparse.Namespace) -> None:
              SourceCatalogWriter(
                  tfrecord_path(args.records_dir, f"sources_{subset}")
                  .replace(".tfrecord", ".csv")) as sources:
+            # Train draws no fixed stars (on-the-fly injects them per visit);
+            # validate/test draw + record fixed stars for a reproducible LR.
+            n_stars = 0 if subset == "train" else None
             for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
-                sky, meta = sim.simulate_field(rng)
+                sky, meta = sim.simulate_field(rng, n_stars=n_stars)
                 sky.index = i
                 sky.subset = subset
                 if gen_ctx is not None:
@@ -404,6 +409,18 @@ def step_convolve(args: argparse.Namespace) -> None:
         # Stream records from the clean TFRecord (do NOT materialise the
         # whole list — same OOM hazard as step_generate at 6400 images).
         clean_ds = tf.data.TFRecordDataset(clean_path)
+        # The scene records are starless; re-inject each field's FIXED stars
+        # (recorded in the source CSV) before the forward so the LR carries
+        # star contamination while the HR target stays starless.
+        stars_by_field = {}
+        if write_dirty:
+            sources_csv = tfrecord_path(
+                args.records_dir, f"sources_{subset}").replace(".tfrecord",
+                                                               ".csv")
+            for fidx, rows in read_sources(sources_csv).items():
+                fld = [r for r in rows if r.get("type") == "star"]
+                if fld:
+                    stars_by_field[fidx] = fld
 
         # The clean record file id (if stamped) is the lineage parent of the
         # hr+dirty files produced from it. Peek the first record once.
@@ -432,7 +449,8 @@ def step_convolve(args: argparse.Namespace) -> None:
                                          unit="img", total=n_total)):
                 hr_4ch = Image.from_tfrecord(raw)
                 if write_dirty:
-                    lr, hr = fwd.process(hr_4ch, rng=rng)
+                    lr, hr = _forward_starless(
+                        fwd, hr_4ch, stars_by_field.get(i), rng)
                     lr.index = i
                     lr.subset = subset
                 else:
@@ -544,6 +562,30 @@ def _trimmed_hr(sky: Image) -> Image:
                  band_names=Config.HR_TARGET_BAND_NAMES,
                  is_clean=True, index=sky.index, subset=sky.subset,
                  metadata=sky.metadata)
+
+
+def _forward_starless(fwd, sky_starless: Image, stars, rng) -> tuple:
+    """Forward-model the WITH-stars scene but keep the target STARLESS.
+
+    The generated scene is starless. For the record-mode LR (validate/test) we
+    re-deposit the field's fixed ``stars`` (HR deltas, pre-PSF) onto a copy and
+    forward THAT → ``lr`` carries realistic star contamination; the ``hr``
+    target is the trimmed STARLESS scene, so the model is supervised to erase
+    the stars. Mirrors :meth:`OnTheFlyForward.crops` for the on-the-fly split.
+    """
+    if stars:
+        scene = sky_starless.data.copy()
+        for s in stars:
+            _deposit_star(scene, float(s["x_pix"]), float(s["y_pix"]),
+                          float(s["mag_vis"]))
+        scene_img = Image(data=scene,
+                          pixel_scale_arcsec=sky_starless.pixel_scale_arcsec,
+                          band_names=sky_starless.band_names, is_clean=True,
+                          index=sky_starless.index, subset=sky_starless.subset)
+    else:
+        scene_img = sky_starless
+    lr, _hr_with_stars = fwd.process(scene_img, rng=rng)
+    return lr, _trimmed_hr(sky_starless)
 
 
 def _remove_subset_finals(records_dir: str, subset: str,
@@ -818,11 +860,16 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
           if write_dirty else contextlib.nullcontext()) as dw, \
          SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
-            sky, meta = sim.simulate_field(rng)
+            # Scene is starless. The training split (no dirty) draws no fixed
+            # stars — on-the-fly training injects a fresh realization per
+            # visit; validate/test draw + record fixed stars for a
+            # reproducible LR.
+            sky, meta = sim.simulate_field(rng, n_stars=(0 if not write_dirty
+                                                         else None))
             sky.index = i
             sky.subset = subset
             if write_dirty:
-                lr, hr = fwd.process(sky, rng=rng)
+                lr, hr = _forward_starless(fwd, sky, meta.get("stars"), rng)
                 lr.index = i
                 lr.subset = subset
             else:
