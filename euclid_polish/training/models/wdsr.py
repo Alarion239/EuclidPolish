@@ -19,7 +19,7 @@ import tensorflow_probability as tfp
 from tf_keras.layers import Add, Concatenate, Conv2D, Input, Lambda
 from tf_keras.models import Model
 
-from euclid_polish.training.models.common import pixel_shuffle
+from euclid_polish.training.models.common import ICNR, pixel_shuffle
 
 
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
@@ -49,7 +49,7 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
-         nchan=None, per_band_skip=None):
+         nchan=None, per_band_skip=None, icnr=False):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -68,6 +68,12 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
     skip_kernel_size : kernel of the skip branch's conv(s).
     nchan        : back-compat alias for ``nchan_in`` (also sets
                    ``nchan_out = nchan`` if ``nchan_out`` is None).
+    icnr         : initialise the three pre-``pixel_shuffle`` convs with
+                   :class:`~euclid_polish.training.models.common.ICNR` so the
+                   upsampler starts as a checkerboard-free nearest-neighbour
+                   resize (see that class). Init-only — the layer graph is
+                   unchanged, so it is a per-member knob for NEW members and
+                   old checkpoints restore identically with it off.
     per_band_skip : make the residual (skip) branch PER-BAND — output
                    band ``k``'s skip conv sees ONLY input channel ``k``,
                    so every cross-band path runs through the shared
@@ -98,6 +104,13 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
 
     x_in = Input(shape=(None, None, nchan_in))
 
+    # ICNR init for the sub-pixel convs (checkerboard-free upsample at step 0);
+    # ``None`` → Conv2D's own default (glorot_uniform), i.e. bit-identical to
+    # the pre-knob build. Each pre-shuffle conv gets its OWN ICNR instance so
+    # their random base draws stay independent (they output different planes).
+    def _shuffle_init():
+        return ICNR(scale) if icnr else None
+
     # Main branch — the SHARED trunk: the entry conv mixes all input
     # bands into one feature stack, so every res block learns the
     # cross-band correlations jointly.
@@ -106,7 +119,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
         m = res_block(m, num_filters, res_block_expansion,
                       kernel_size=3, scaling=res_block_scaling)
     m = conv2d_weightnorm(nchan_out * scale ** 2, 3, padding='same',
-                          name=f'conv2d_main_scale_{scale}')(m)
+                          name=f'conv2d_main_scale_{scale}',
+                          kernel_initializer=_shuffle_init())(m)
     m = Lambda(pixel_shuffle(scale))(m)
 
     # Skip branch
@@ -124,6 +138,7 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
             s_k = conv2d_weightnorm(
                 scale ** 2, skip_kernel_size, padding='same',
                 name=f'conv2d_skip_band_{k}_scale_{scale}',
+                kernel_initializer=_shuffle_init(),
             )(band_in)
             s_bands.append(Lambda(pixel_shuffle(scale))(s_k))
         s = Concatenate(axis=-1)(s_bands)
@@ -132,7 +147,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
         # restore against this structure).
         s = conv2d_weightnorm(nchan_out * scale ** 2, skip_kernel_size,
                               padding='same',
-                              name=f'conv2d_skip_scale_{scale}')(x_in)
+                              name=f'conv2d_skip_scale_{scale}',
+                              kernel_initializer=_shuffle_init())(x_in)
         s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])

@@ -1042,6 +1042,10 @@ large cutout don't leak across train/validate."></label>`;
         blocks
         <input data-f="num_res_blocks" type="number" value="32" min="1"
                max="128" style="width:4.5em;"></label>
+      <label data-mode-group="add" class="checkbox-field"
+             style="font-weight:normal;"
+             title="ICNR-initialise the sub-pixel upsampler so it starts as a checkerboard-free nearest-neighbour resize — kills the L2 background speckle / peristellar hot-dots the net otherwise learns to cancel over many steps. Init-only (fresh add members); no effect on fork/continue.">
+        <input data-f="icnr" type="checkbox"> ICNR</label>
       <label style="font-weight:normal;"
              title="Explicit RNG seed for this member (weight init + data order + bootstrap subset). Blank = base_seed+i (or entropy). Intentionally NOT cloned by ＋ — two members with one seed are the same model.">
         seed
@@ -1081,6 +1085,8 @@ large cutout don't leak across train/validate."></label>`;
         if (mode === 'add') {
           const b = parseInt(g('num_res_blocks'), 10);
           if (b > 0) o.num_res_blocks = b;
+          const icnr = r.querySelector('[data-f="icnr"]');
+          if (icnr && icnr.checked) o.icnr = true;
         }
         if (g('seed') !== '') o.seed = parseInt(g('seed'), 10);
         return o;
@@ -1109,6 +1115,8 @@ large cutout don't leak across train/validate."></label>`;
           div.querySelector(`[data-f="${f}"]`).value =
             src.querySelector(`[data-f="${f}"]`).value;
         });
+        div.querySelector('[data-f="icnr"]').checked =
+          src.querySelector('[data-f="icnr"]').checked;
       }
       // blocks apply to add mode only (a fork inherits its source's depth);
       // the shared mode toggler keeps this in sync on later mode changes.

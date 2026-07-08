@@ -18,6 +18,7 @@ from euclid_polish.training.augmentation import (
     random_dihedral,
 )
 from euclid_polish.training.losses import berhu_loss, build_loss, lp_loss
+from euclid_polish.training.models.common import ICNR
 from scripts.train_ensemble import build_specs, parse_args
 
 
@@ -115,6 +116,74 @@ def test_build_loss_dispatches_berhu_and_pnorms():
 def test_build_loss_rejects_unknown():
     with pytest.raises(ValueError, match="unknown loss"):
         build_loss("l7")
+
+
+# --------------------------------------------------------------------------- #
+# ICNR sub-pixel init (checkerboard-free upsampler)                            #
+# --------------------------------------------------------------------------- #
+def test_icnr_upsampler_is_nearest_neighbor_at_init():
+    """The whole point: a conv ICNR-initialised then pixel-shuffled must emit
+    CONSTANT scale×scale output blocks at init (an exact nearest-neighbour
+    resize) — i.e. zero checkerboard. This also pins the tile-vs-repeat channel
+    layout: get it wrong and the sub-pixels of a block differ."""
+    from tf_keras.initializers import GlorotUniform
+    from tf_keras.layers import Conv2D
+
+    scale, c_out = 2, 3
+    conv = Conv2D(c_out * scale ** 2, 3, padding="same",
+                  kernel_initializer=ICNR(scale, GlorotUniform(seed=0)))
+    x = tf.random.stateless_normal([1, 6, 6, 4], seed=[1, 2])
+    y = tf.nn.depth_to_space(conv(x), scale)               # [1, 12, 12, c_out]
+    # variance WITHIN each 2×2 output block (across the sub-pixel offsets):
+    blocks = tf.reshape(y, [1, 6, scale, 6, scale, c_out])
+    within = tf.math.reduce_variance(blocks, axis=[2, 4])
+    assert float(tf.reduce_max(within)) < 1e-10
+
+
+def test_icnr_rejects_indivisible_channels():
+    with pytest.raises(ValueError, match="not divisible"):
+        ICNR(2)([3, 3, 4, 5])                              # 5 not divisible by 4
+
+
+def test_icnr_survives_weightnorm():
+    """Production wraps the sub-pixel conv in tfp WeightNorm (data_init=False).
+    WeightNorm reparametrises W = g·v/‖v‖ with v = kernel, g = ‖kernel‖, so the
+    EFFECTIVE weights at init still equal the ICNR kernel — the nearest-neighbour
+    (checkerboard-free) property must hold through the wrapper too."""
+    from euclid_polish.training.models.common import ICNR
+    from euclid_polish.training.models.wdsr import conv2d_weightnorm
+
+    scale, c_out = 2, 2
+    conv = conv2d_weightnorm(c_out * scale ** 2, 3, padding="same",
+                             kernel_initializer=ICNR(scale))
+    x = tf.random.stateless_normal([1, 5, 5, 3], seed=[3, 4])
+    y = tf.nn.depth_to_space(conv(x), scale)
+    blocks = tf.reshape(y, [1, 5, scale, 5, scale, c_out])
+    within = tf.math.reduce_variance(blocks, axis=[2, 4])
+    assert float(tf.reduce_max(within)) < 1e-8
+
+
+def test_wdsr_icnr_builds_and_upsamples():
+    """The flag threads through the real network: builds, and the output is
+    the scale-upsampled shape (4-band config)."""
+    from euclid_polish.training.models.wdsr import wdsr
+    model = wdsr(scale=2, num_res_blocks=1, nchan_in=4, nchan_out=4, icnr=True)
+    y = model(tf.zeros([1, 8, 8, 4]))
+    assert y.shape.as_list() == [1, 16, 16, 4]
+
+
+def test_build_specs_icnr_flag_and_default(tmp_path):
+    on = parse_args(["--count", "2", "--steps", "10", "--icnr"])
+    assert all(s.icnr for s in build_specs(on, str(tmp_path / "a")))
+    off = parse_args(["--count", "1", "--steps", "10"])
+    assert build_specs(off, str(tmp_path / "b"))[0].icnr is False
+
+
+def test_member_spec_icnr_override(tmp_path):
+    args = parse_args(["--count", "2", "--steps", "10",
+                       "--member-spec", '[{"icnr": true}, {}]'])
+    specs = build_specs(args, str(tmp_path / "ens"))
+    assert specs[0].icnr is True and specs[1].icnr is False
 
 
 # --------------------------------------------------------------------------- #
@@ -299,6 +368,19 @@ def test_ensemble_train_step_forwards_diversity_flags(monkeypatch):
     assert "--bootstrap 0.7" in joined
     assert "--member-spec" in cmd
     assert '"l1"' in cmd[cmd.index("--member-spec") + 1]
+
+
+def test_ensemble_train_step_forwards_icnr(monkeypatch):
+    from euclid_polish.web.fasrc_pipeline import EnsembleTrainStep
+    monkeypatch.setattr(
+        "euclid_polish.web.fasrc_pipeline.next_member_names",
+        lambda base, k: [f"member_{i:02d}" for i in range(k)])
+    cmd = EnsembleTrainStep().build_command({
+        "mode": "add", "count": "1", "steps": "1000", "icnr": "1"})
+    assert "--icnr" in cmd
+    off = EnsembleTrainStep().build_command({
+        "mode": "add", "count": "1", "steps": "1000"})
+    assert "--icnr" not in off
 
 
 def test_ensemble_train_step_rejects_bad_member_spec(monkeypatch):

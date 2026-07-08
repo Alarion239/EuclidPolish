@@ -101,12 +101,16 @@ class Model:
         seed: int | None = None,
         deterministic: bool = False,
         init_weights_from: str | None = None,
+        icnr: bool = False,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
         self._checkpoint_dir = checkpoint_dir
         self._scale = scale
         self._num_res_blocks = num_res_blocks
+        # ICNR init only shapes a FROM-SCRATCH build (below); fork/resume load
+        # weights from a checkpoint, so it has no effect there.
+        self._icnr = bool(icnr)
         self._seed = seed
         self._deterministic = bool(deterministic)
         # Seed BEFORE building so a from-scratch model's weight init is
@@ -164,7 +168,8 @@ class Model:
             self._tf_model = _wdsr_build(
                 scale=scale, num_res_blocks=num_res_blocks,
                 nchan_in=Config.NUM_LR_CHANNELS,
-                nchan_out=Config.NUM_HR_CHANNELS)
+                nchan_out=Config.NUM_HR_CHANNELS,
+                icnr=self._icnr)
             self.id = None
 
         self._reconstruct_fn: Callable = (

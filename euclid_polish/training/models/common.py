@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tf_keras.initializers import GlorotUniform, Initializer
 
 from euclid_polish.config import Config
 
@@ -93,3 +94,50 @@ def evaluate(model, dataset):
 
 def pixel_shuffle(scale):
     return lambda x: tf.nn.depth_to_space(x, scale)
+
+
+class ICNR(Initializer):
+    """ICNR init (Aitken+17) for the conv that feeds a ``pixel_shuffle``.
+
+    A sub-pixel (pixel-shuffle) upsampler is ``depth_to_space`` over a conv
+    whose ``C_out · scale²`` output channels are unpacked into a ``scale×scale``
+    output block. With independent random filters those ``scale²`` sub-pixels
+    start uncorrelated, so the upsampler emits a ``scale``-periodic checkerboard
+    that the network then spends training budget learning to cancel — visible
+    as background speckle / peristellar hot-dots, especially under L2.
+
+    ICNR instead initialises the ``scale²`` sub-pixel filters of each output
+    channel as **identical copies** of one base-initialised filter. Then every
+    sub-pixel in a block gets the same value ⇒ the block is constant ⇒ the
+    upsampler starts as an exact nearest-neighbour resize, checkerboard-free.
+    Training departs from there and the copies diverge as needed; ICNR only
+    fixes the starting point (it is init-only — the layer graph is unchanged,
+    so existing checkpoints restore identically).
+
+    ``base`` defaults to ``GlorotUniform`` — the Conv2D default — so with
+    ``scale == 1`` (no upsampling) this is a plain passthrough of that init.
+
+    The copy layout is a ``tile`` (not a ``repeat``): ``depth_to_space`` routes
+    the ``scale²`` sub-pixels of output channel ``c`` to the *strided* input
+    channels ``{c, C_out+c, 2·C_out+c, …}``, so the base block must repeat as a
+    whole (``[s₀…s_{C-1}, s₀…s_{C-1}, …]``) for those strided picks to coincide.
+    """
+
+    def __init__(self, scale, base=None):
+        self.scale = int(scale)
+        self.base = base if base is not None else GlorotUniform()
+
+    def __call__(self, shape, dtype=None):
+        scale2 = self.scale * self.scale
+        out = int(shape[-1])
+        if out % scale2 != 0:
+            raise ValueError(
+                f"ICNR: output channels {out} not divisible by scale² "
+                f"({self.scale}² = {scale2})")
+        sub_shape = list(shape[:-1]) + [out // scale2]
+        sub = self.base(sub_shape, dtype=dtype)          # [kh, kw, in, C_out]
+        return tf.tile(sub, [1, 1, 1, scale2])           # strided-copy layout
+
+    def get_config(self):
+        return {"scale": self.scale,
+                "base": tf.keras.initializers.serialize(self.base)}

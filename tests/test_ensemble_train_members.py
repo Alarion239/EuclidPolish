@@ -14,10 +14,11 @@ class _FakeModel:
     calls: list = []
 
     def __init__(self, checkpoint_dir, *, scale=2, num_res_blocks=32,
-                 seed=None, init_weights_from=None):
+                 seed=None, init_weights_from=None, icnr=False):
         self.checkpoint_dir = checkpoint_dir
         self._num_res_blocks = num_res_blocks
-        self.kwargs = {"seed": seed, "init_weights_from": init_weights_from}
+        self.kwargs = {"seed": seed, "init_weights_from": init_weights_from,
+                       "icnr": icnr}
 
     def train(self, lr, hr, steps=0, batch_size=16, resume_track="latest",
               **kw):
@@ -50,7 +51,8 @@ def test_train_members_runs_specs_in_order(tmp_path):
         ["member_09", "member_03", "member_10"]
     assert _FakeModel.calls[0] == {
         "dir": os.path.join(base, "member_09"), "steps": 1000,
-        "seed": 7, "init_weights_from": None, "resume_track": "latest"}
+        "seed": 7, "init_weights_from": None, "resume_track": "latest",
+        "icnr": False}
     assert _FakeModel.calls[2]["init_weights_from"] == \
         os.path.join(base, "member_03")
     # continue resumes from the PSNR-best track (the model eval uses);

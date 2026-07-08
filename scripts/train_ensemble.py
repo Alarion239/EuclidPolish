@@ -129,6 +129,14 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "the default 16 makes one batch = one forward). A "
                         "510² field holds 25 non-overlapping 96² crops, so "
                         "up to ~25 barely re-samples pixels.")
+    p.add_argument("--icnr", action="store_true",
+                   help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "
+                        "so the upsampler starts as a checkerboard-free "
+                        "nearest-neighbour resize — kills the background "
+                        "speckle / peristellar hot-dots that L2 otherwise "
+                        "spends training budget learning to cancel. Init-only "
+                        "(ADD members only; fork/continue load weights and "
+                        "ignore it); old checkpoints restore identically.")
     p.add_argument("--member-spec", default="",
                    help='Per-member override JSON, applied positionally: '
                         '\'[{"loss":"l2","noise_aug":1.0,"bootstrap":0.7,'
@@ -136,7 +144,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "list length use the run-wide flags. Keys: loss, "
                         "noise_aug, bootstrap, num_res_blocks (add mode), "
                         "seed, forward_onthefly, psf_subset, "
-                        "crops_per_field.")
+                        "crops_per_field, icnr.")
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -233,7 +241,7 @@ def _member_overrides(args, k: int) -> list[dict]:
         print("✗ --member-spec must be a JSON LIST of objects (one per member)")
         raise SystemExit(2)
     allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
-               "forward_onthefly", "psf_subset", "crops_per_field"}
+               "forward_onthefly", "psf_subset", "crops_per_field", "icnr"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -258,7 +266,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
                                               args.forward_onthefly)),
             "psf_subset": subset if subset > 0 else None,
             "crops_per_field": int(over.get("crops_per_field",
-                                            args.crops_per_field) or 16)}
+                                            args.crops_per_field) or 16),
+            "icnr": bool(over.get("icnr", args.icnr))}
 
 
 def build_specs(args, base: str) -> list[MemberTrainSpec]:
@@ -366,6 +375,9 @@ def main() -> int:
         if s.forward_onthefly:
             knobs += (f" forward=onthefly(psf_subset={s.psf_subset or 'dflt'},"
                       f" {s.crops_per_field} crops/field)")
+        if s.icnr:
+            knobs += " icnr" + ("" if s.op == "add"
+                                else "(ignored: not an add)")
         print(f"  · {s.name}: seed={s.seed} target_steps={s.target_steps}"
               + knobs
               + (f" init_from={s.init_from}" if s.init_from else ""))

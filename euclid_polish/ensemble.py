@@ -105,6 +105,11 @@ class MemberTrainSpec:
     member's pre-rotated PSF pool, ``crops_per_field`` amortises one field
     forward over K crops). They apply to every op — continue/fork runs can
     adopt them too (they shape the *run*, not the architecture).
+
+    ``icnr`` is the exception: it is an INIT-time knob (checkerboard-free
+    sub-pixel upsampler, see :class:`~euclid_polish.training.models.common
+    .ICNR`), so it only affects a from-scratch ``add`` — continue/fork load
+    weights from a checkpoint and ignore it.
     """
     name: str
     seed: int
@@ -120,6 +125,7 @@ class MemberTrainSpec:
     forward_onthefly: bool = False
     psf_subset: int | None = None
     crops_per_field: int = 16
+    icnr: bool = False
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -326,7 +332,8 @@ class EnsembleModel:
             m = Model(d, scale=self._scale,
                       num_res_blocks=(spec.num_res_blocks
                                       or self._num_res_blocks),
-                      seed=int(spec.seed), init_weights_from=spec.init_from)
+                      seed=int(spec.seed), init_weights_from=spec.init_from,
+                      icnr=spec.icnr)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
                 with open(os.path.join(d, "origin.json"), "w") as f:
@@ -345,6 +352,7 @@ class EnsembleModel:
                         "forward_onthefly": bool(spec.forward_onthefly),
                         "psf_subset": spec.psf_subset,
                         "crops_per_field": int(spec.crops_per_field),
+                        "icnr": bool(spec.icnr),
                         "created_at": datetime.now(UTC).isoformat(
                             timespec="seconds"),
                         "commit": commit,

@@ -1088,6 +1088,10 @@ class EnsembleTrainStep(FASRCPipelineStep):
             if val not in ("", "0", "0.0"):
                 with contextlib.suppress(ValueError):
                     cmd += [flag, f"{float(val):g}"]
+        # ICNR init: checkerboard-free sub-pixel upsampler (add members only).
+        if str(params.get("icnr", "")).strip().lower() in (
+                "1", "true", "yes", "on"):
+            cmd += ["--icnr"]
         # Live forward model: full-field PSF+noise re-realization per visit.
         if str(params.get("forward_onthefly", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
