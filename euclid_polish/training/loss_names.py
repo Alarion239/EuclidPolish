@@ -14,9 +14,16 @@ LOSS_NORMS = {"l1": 1, "l2": 2, "l3": 3}
 #: The fraction of the batch's max residual used as the BerHu L1↔L2 threshold.
 BERHU_DEFAULT_C = 0.2
 
-#: Every valid ``loss_norm`` knob value (p-norms + reverse-Huber). Shared by
-#: the CLI / web validators so a new loss is allowed in exactly one place.
-LOSS_NAMES = (*LOSS_NORMS, "berhu")
+#: Every SELECTABLE ``loss_norm`` knob value. Shared by the CLI / web validators
+#: so a new loss is allowed in exactly one place.
+#:
+#: ``berhu`` is DEPRECATED (2026-07-08) and deliberately absent: the experiment
+#: failed — BerHu members did not resolve stars, had worse PSNR and power
+#: spectra than L2, and hit degenerate plateaus. It stays dispatchable in
+#: :func:`~euclid_polish.training.losses.build_loss` (so the few existing
+#: members still load / continue / display) but can no longer be SELECTED for a
+#: new member. Do not re-add it without a new, better result.
+LOSS_NAMES = tuple(LOSS_NORMS)
 
 #: Losses whose median-like optimum admits the DEGENERATE skip-only basin — the
 #: flat ~43.5 dB PSNR floor where the trunk collapses to 0 and only the bilinear

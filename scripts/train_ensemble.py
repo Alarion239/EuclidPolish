@@ -89,13 +89,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--steps", type=int, default=Config.DEFAULT_TRAIN_STEPS)
     # Diversity knobs — run-wide defaults; --member-spec overrides per member.
     p.add_argument("--loss", choices=list(LOSS_NAMES), default="l1",
-                   help="Reconstruction loss on the asinh residuals. l1/l2/l3 "
-                        "are the p-norms (mean|SR−HR|^p)^(1/p) — the root keeps "
-                        "them on the L1 scale (no LR retuning), L2/L3 weight "
-                        "large residuals harder. berhu is reverse-Huber: L1 "
-                        "below δ=0.2·max|resid|, L2 above — robust on extended "
-                        "flux, quadratic on bright peaks (stars). Different "
-                        "losses → different estimators → ensemble diversity.")
+                   help="Reconstruction p-norm on the asinh residuals: "
+                        "(mean|SR−HR|^p)^(1/p). The root keeps l1/l2/l3 on the "
+                        "L1 scale (no LR retuning); L2/L3 weight large residuals "
+                        "harder → different estimators (median vs mean) → "
+                        "ensemble diversity. (berhu was tried and deprecated.)")
     p.add_argument("--noise-aug", type=float, default=0.0,
                    help="Extra Gaussian LR noise in READ-NOISE units (VIS "
                         "3.6 e⁻, NISP 6.1 e⁻ per unit), drawn fresh per crop "

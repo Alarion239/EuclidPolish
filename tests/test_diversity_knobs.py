@@ -416,11 +416,21 @@ def test_member_spec_rejects_bad_loss(tmp_path):
         build_specs(args, str(tmp_path / "ens"))
 
 
-def test_member_spec_accepts_berhu(tmp_path):
+def test_member_spec_rejects_deprecated_berhu(tmp_path):
+    """BerHu is deprecated — no longer SELECTABLE for a new member (though
+    build_loss still dispatches it so existing members load/continue)."""
     args = parse_args(["--count", "1", "--steps", "10",
                        "--member-spec", '[{"loss":"berhu"}]'])
-    specs = build_specs(args, str(tmp_path / "ens"))
-    assert specs[0].loss_norm == "berhu"
+    with pytest.raises(SystemExit):
+        build_specs(args, str(tmp_path / "ens"))
+
+
+def test_build_loss_still_dispatches_deprecated_berhu():
+    """Back-compat: the loss stays constructible for the existing members."""
+    a = tf.constant([0.1, 0.1, 0.1, 1.0])
+    b = tf.zeros_like(a)
+    assert float(build_loss("berhu")(a, b)) == pytest.approx(
+        float(berhu_loss()(a, b)))
 
 
 def test_ensemble_train_step_forwards_diversity_flags(monkeypatch):
