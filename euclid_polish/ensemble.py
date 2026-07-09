@@ -127,6 +127,11 @@ class MemberTrainSpec:
     crops_per_field: int = 16
     icnr: bool = False
     starless: bool = False
+    #: Per-member asinh stretch knee (electrons) — the input/output
+    #: normalization the member trains under. ``None`` → the per-band config
+    #: default (100 e⁻). A NEW-member (add) knob, like depth; continue/fork
+    #: inherit the existing/source member's knee from its ``origin.json``.
+    asinh_knee: float | None = None
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -350,7 +355,7 @@ class EnsembleModel:
                       num_res_blocks=(spec.num_res_blocks
                                       or self._num_res_blocks),
                       seed=int(spec.seed), init_weights_from=spec.init_from,
-                      icnr=spec.icnr)
+                      icnr=spec.icnr, asinh_knee=spec.asinh_knee)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
                 with open(os.path.join(d, "origin.json"), "w") as f:
@@ -361,6 +366,10 @@ class EnsembleModel:
                         "target_steps": int(spec.target_steps),
                         # The ACTUAL depth (a fork inherits its source's).
                         "num_res_blocks": int(m._num_res_blocks),
+                        # The ACTUAL asinh knee (electrons): None = the per-band
+                        # config default (100 e⁻); a fork inherits its source's.
+                        # Drives the input/output stretch at train + inference.
+                        "asinh_knee": m._asinh_knee,
                         # Diversity knobs, recorded so the member's training
                         # distribution is reconstructible from its sidecar.
                         "loss_norm": spec.loss_norm,

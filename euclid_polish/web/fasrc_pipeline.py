@@ -1088,6 +1088,12 @@ class EnsembleTrainStep(FASRCPipelineStep):
             if val not in ("", "0", "0.0"):
                 with contextlib.suppress(ValueError):
                     cmd += [flag, f"{float(val):g}"]
+        # Per-member asinh stretch knee (electrons) — a fresh-member (add)
+        # normalization knob; blank/0/default-100 → unset (per-band 100 e⁻).
+        knee = str(params.get("asinh_knee", "")).strip()
+        if knee not in ("", "0", "0.0", "100", "100.0"):
+            with contextlib.suppress(ValueError):
+                cmd += ["--asinh-knee", f"{float(knee):g}"]
         # ICNR init: checkerboard-free sub-pixel upsampler (add members only).
         if str(params.get("icnr", "")).strip().lower() in (
                 "1", "true", "yes", "on"):

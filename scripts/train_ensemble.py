@@ -134,6 +134,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(scored on lr↔clean). 0 = starfull: keep the scene's "
                         "stars, reconstruct them (scored on lr↔hr). Recorded "
                         "in origin.json; drives the /ensemble eval mode.")
+    p.add_argument("--asinh-knee", type=float, default=None,
+                   help="Per-member asinh stretch knee in ELECTRONS — the "
+                        "linear/log crossover of asinh(x/knee) the network "
+                        "sees on both input and target. Default (unset) = the "
+                        "per-band config 100 e⁻ (what every existing member "
+                        "trained under). A different knee reweights the loss "
+                        "across brightness (a lower knee compresses bright "
+                        "cores harder, a higher one keeps them more linear) → "
+                        "a genuinely different estimator → ensemble diversity, "
+                        "with no TFRecord regen (it's an on-the-fly "
+                        "normalization). ADD members only; continue/fork "
+                        "inherit the existing/source member's knee.")
     p.add_argument("--icnr", action="store_true",
                    help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "
                         "so the upsampler starts as a checkerboard-free "
@@ -250,7 +262,7 @@ def _member_overrides(args, k: int) -> list[dict]:
         raise SystemExit(2)
     allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
                "forward_onthefly", "psf_subset", "crops_per_field", "icnr",
-               "starless"}
+               "starless", "asinh_knee"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -268,7 +280,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
     """The spec kwargs shared by every mode: run-wide flag, member override."""
     boot = float(over.get("bootstrap", args.bootstrap) or 0.0)
     subset = int(over.get("psf_subset", args.psf_subset) or 0)
+    knee = over.get("asinh_knee", args.asinh_knee)
     return {"loss_norm": str(over.get("loss", args.loss)),
+            "asinh_knee": (float(knee) if knee not in (None, "", 0) else None),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -378,6 +392,8 @@ def main() -> int:
     print(f"Ensemble training ({label}) → {base}")
     for s in specs:
         knobs = f" loss={s.loss_norm}"
+        if s.asinh_knee is not None:
+            knobs += f" asinh_knee={s.asinh_knee:g}e"
         if s.noise_aug:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.bootstrap:

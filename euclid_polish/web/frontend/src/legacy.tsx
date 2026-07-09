@@ -8,9 +8,10 @@ type ViewerState = {
   index: number; tier: string; tiers: string[]; color: string;
   params: Record<string, string>;
 };
-type ViewerApi = {
+export type ViewerApi = {
   goTo(i: number): void;
   setTiers(keys: string | string[]): void;
+  setMorphMembers(csv: string | null): void;
   getIndex(): number;
   isReady(): boolean;
   getState(): ViewerState;
@@ -36,18 +37,24 @@ export type CutoutViewerProps = {
   compact?: boolean;
   initialIndex?: number;
   onChange?: (s: ViewerState) => void;
+  /** Called with the imperative engine handle once mounted (and null on
+   *  teardown) — lets a sibling panel drive tiers / the movie subset without
+   *  re-mounting the viewer. */
+  onReady?: (api: ViewerApi | null) => void;
   className?: string;
 };
 
 /** Mount the shared canvas cutout viewer for a `collection`, re-mounting when
  *  the collection or its params change. Cleans up on unmount. */
 export function CutoutViewer(
-  { collection, params, compact, initialIndex, onChange, className }: CutoutViewerProps,
+  { collection, params, compact, initialIndex, onChange, onReady, className }: CutoutViewerProps,
 ) {
   const host = useRef<HTMLDivElement>(null);
   const paramsKey = JSON.stringify(params ?? {});
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   useEffect(() => {
     let api: ViewerApi | null = null;
@@ -64,8 +71,13 @@ export function CutoutViewer(
         initialIndex,
         onChange: (s: ViewerState) => onChangeRef.current?.(s),
       });
+      onReadyRef.current?.(api);
     });
-    return () => { dead = true; try { api?.destroy(); } catch { /* noop */ } };
+    return () => {
+      dead = true;
+      onReadyRef.current?.(null);
+      try { api?.destroy(); } catch { /* noop */ }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collection, paramsKey, compact, initialIndex]);
 

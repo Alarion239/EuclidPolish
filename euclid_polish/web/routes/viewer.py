@@ -22,9 +22,11 @@ from euclid_polish.web.helpers.viewer_data import ViewerError
 
 
 def _params() -> dict:
-    """Whitelisted collection params from the query string."""
+    """Whitelisted collection params from the query string. ``members`` is the
+    ensemble disagreement movie's member subset (CSV of indices) — the sr/pcaN
+    cubes are then recomputed on the fly over just those members."""
     out = {}
-    for key in ("subset", "mode"):
+    for key in ("subset", "mode", "members"):
         val = request.args.get(key)
         if val is not None:
             out[key] = val
@@ -64,8 +66,18 @@ def register(app):
         resp.headers["X-Cube-Label"] = str(info.get("label", ""))
         resp.headers["X-Cube-Asinh"] = repr(float(info.get("asinh", 100.0)))
         resp.headers["X-Cube-Pixscale"] = repr(float(info.get("pixscale", 0.0)))
+        exposed = ["X-Cube-Shape", "X-Cube-Bands", "X-Cube-Label",
+                   "X-Cube-Asinh", "X-Cube-Pixscale"]
+        # PCA eigen-image cubes carry the (subset-dependent) amplitude + variance
+        # the disagreement movie animates by — the client reads them per-PC off
+        # the header rather than a static per-field manifest.
+        if "amp" in info:
+            resp.headers["X-Cube-Amp"] = repr(float(info["amp"]))
+            exposed.append("X-Cube-Amp")
+        if "var" in info:
+            resp.headers["X-Cube-Var"] = repr(float(info["var"]))
+            exposed.append("X-Cube-Var")
         # Expose the custom headers to fetch() under any CORS posture.
-        resp.headers["Access-Control-Expose-Headers"] = (
-            "X-Cube-Shape,X-Cube-Bands,X-Cube-Label,X-Cube-Asinh,X-Cube-Pixscale")
+        resp.headers["Access-Control-Expose-Headers"] = ",".join(exposed)
         resp.headers["Cache-Control"] = "no-cache"
         return resp

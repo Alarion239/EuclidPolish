@@ -34,6 +34,9 @@ from euclid_polish.training.inference import (
     infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
 )
 from euclid_polish.training.inference import (
+    infer_checkpoint_asinh_knee as _infer_asinh_knee,
+)
+from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
 )
 from euclid_polish.training.inference import (
@@ -103,12 +106,20 @@ class Model:
         deterministic: bool = False,
         init_weights_from: str | None = None,
         icnr: bool = False,
+        asinh_knee: float | None = None,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
         self._checkpoint_dir = checkpoint_dir
         self._scale = scale
         self._num_res_blocks = num_res_blocks
+        # Per-member asinh stretch knee (electrons), a diversity knob: the
+        # input/output normalization this member trains and infers under.
+        # Resolved per branch below (parallels how depth is introspected):
+        # a resumed checkpoint / fork source dictates it via its origin.json,
+        # a fresh build takes the passed value. ``None`` → per-band config
+        # default (100 e⁻), so pre-knob members are bit-identical.
+        self._asinh_knee: float | None = asinh_knee
         # ICNR init only shapes a FROM-SCRATCH build (below); fork/resume load
         # weights from a checkpoint, so it has no effect there.
         self._icnr = bool(icnr)
@@ -139,6 +150,10 @@ class Model:
             actual = _infer_num_res_blocks(checkpoint_dir)
             if actual is not None:
                 self._num_res_blocks = actual
+            # A resumed member trains/infers under the knee it was created
+            # with — read it from the sidecar (the passed value is ignored,
+            # like depth), so continue never silently re-normalizes.
+            self._asinh_knee = _infer_asinh_knee(checkpoint_dir)
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         elif init_weights_from is not None:
             # Fork: build the new member AS the source model — loading the
@@ -156,6 +171,12 @@ class Model:
                           f"{src_blocks} (requested {num_res_blocks}); "
                           "the source's architecture is preserved.")
                 self._num_res_blocks = src_blocks
+            # A fork loads weights the source trained under its knee — inherit
+            # it so the new member stays self-consistent (its inputs must be
+            # normalized the way the copied weights expect). An explicitly
+            # passed knee still wins (e.g. a deliberate re-normalizing fork).
+            if asinh_knee is None:
+                self._asinh_knee = _infer_asinh_knee(init_weights_from)
             self.id = None
             print(f"  ✓ fork: architecture + weights from {init_weights_from}")
         else:
@@ -239,17 +260,24 @@ class Model:
             hr_crop = Config.DEFAULT_HR_CROP_SIZE
             noise_rn = float(noise_aug_rn)
 
+            knee = self._asinh_knee    # per-member stretch (None → per-band 100 e⁻)
+
             def _crop_then_stretch(lr, hr):
                 lr, hr = _augment_multiband(lr, hr, hr_crop, scale)
                 lr, hr = random_dihedral(lr, hr)
                 lr = add_lr_noise(lr, noise_rn)
-                return asinh_stretch_lr(lr), asinh_stretch_hr(hr)
+                return asinh_stretch_lr(lr, knee=knee), asinh_stretch_hr(hr, knee=knee)
 
             ds = (ds.shuffle(200)
                     .map(_crop_then_stretch, num_parallel_calls=AUTOTUNE)
                     .repeat())
         else:
-            ds = ds.map(lambda lr, hr: (asinh_stretch_lr(lr), asinh_stretch_hr(hr)),
+            # Validation MUST stretch with the SAME member knee, or the model
+            # (trained on knee-normalized inputs) would be validated on a
+            # different normalization and save-best would track garbage.
+            knee = self._asinh_knee
+            ds = ds.map(lambda lr, hr: (asinh_stretch_lr(lr, knee=knee),
+                                        asinh_stretch_hr(hr, knee=knee)),
                         num_parallel_calls=AUTOTUNE)
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 
@@ -302,11 +330,12 @@ class Model:
             return lr, hr
 
         noise_rn = float(noise_aug_rn)
+        knee = self._asinh_knee    # per-member stretch (None → per-band 100 e⁻)
 
         def _augment_then_stretch(lr, hr):
             lr, hr = random_dihedral(lr, hr)
             lr = add_lr_noise(lr, noise_rn)
-            return asinh_stretch_lr(lr), asinh_stretch_hr(hr)
+            return asinh_stretch_lr(lr, knee=knee), asinh_stretch_hr(hr, knee=knee)
 
         # Field-level shuffle is small (each element is a full 510² field);
         # the crop-level shuffle after unbatch de-correlates the K siblings
@@ -465,6 +494,13 @@ class Model:
 
     # -- inference interface --
 
+    def _knee_kw(self) -> dict:
+        """``{"knee": …}`` for the reconstruct call when this member trained
+        under a non-default asinh knee, else ``{}`` — so the default-100 e⁻
+        path is byte-for-byte the old call and test-injected reconstruct
+        doubles (which take no ``knee``) keep working."""
+        return {} if self._asinh_knee is None else {"knee": self._asinh_knee}
+
     def upsample_array(self, arr: np.ndarray) -> np.ndarray:
         """Super-resolve a bare numpy array (raw electrons); return the SR array.
 
@@ -472,7 +508,8 @@ class Model:
         ``(H·scale, W·scale)`` (single-output) or ``(H·scale, W·scale, C)``
         (4-band model).
         """
-        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, arr)
+        _lr_display, sr_data = self._reconstruct_fn(
+            self._tf_model, arr, **self._knee_kw())
         return np.asarray(sr_data, dtype=np.float32)
 
     def upsample(self, lr: Image, *, store=None) -> Image:
@@ -486,7 +523,8 @@ class Model:
         minted via ``store`` (or ``default_store()``), guarded so a store
         failure degrades to an unstamped-but-correct artifact.
         """
-        _lr_display, sr_data = self._reconstruct_fn(self._tf_model, lr.data)
+        _lr_display, sr_data = self._reconstruct_fn(
+            self._tf_model, lr.data, **self._knee_kw())
         sr_data = np.asarray(sr_data, dtype=np.float32)
         bands = lr.band_names if sr_data.ndim == 3 and sr_data.shape[-1] == len(lr.band_names) else ("VIS",)
         lr_id = lr.stamp.id if lr.stamp is not None else None

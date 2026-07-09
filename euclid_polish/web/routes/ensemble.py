@@ -146,7 +146,7 @@ def register(app):
                                "ensemble_power_spectrum.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         color = request.args.get("color", "").lower()
-        color_by = color if color in ("loss", "depth") else None
+        color_by = color if color in ("loss", "depth", "knee") else None
         if fresh or not os.path.isfile(out_png):
             if (regenerate_power_spectrum(starless, color_by=color_by) is None
                     and not os.path.isfile(out_png)):

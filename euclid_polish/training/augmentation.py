@@ -43,25 +43,46 @@ def _hr_scale_for(x: tf.Tensor, num_channels: int | None) -> np.ndarray:
     return k[:int(n)] if n is not None else k
 
 
-def asinh_stretch_lr(x: tf.Tensor) -> tf.Tensor:
-    """asinh(x / k) per LR channel; ``x`` has shape ``(..., C)`` where C ≤ 4."""
+def asinh_stretch_lr(x: tf.Tensor, knee: float | None = None) -> tf.Tensor:
+    """asinh(x / k) per LR channel; ``x`` has shape ``(..., C)`` where C ≤ 4.
+
+    ``knee`` (electrons) is a per-MEMBER diversity knob: when set, it replaces
+    the per-band config scale with a single scalar uniformly across all bands
+    (all bands share 100 e⁻ today, so a scalar override is exact). ``None`` →
+    the per-band config default — the behavior every pre-knob member trained
+    under, so those stay bit-identical.
+    """
+    if knee is not None:
+        return tf.asinh(x / tf.cast(knee, x.dtype))
     c = x.shape[-1]
     k = _lr_stretch_scale()[:int(c)] if c is not None else _lr_stretch_scale()
     return tf.asinh(x / k)
 
 
-def asinh_stretch_hr(x: tf.Tensor, num_channels: int | None = None) -> tf.Tensor:
-    """asinh(x / k) per HR band; ``x`` has shape ``(..., C)``, C ≤ 4."""
+def asinh_stretch_hr(x: tf.Tensor, num_channels: int | None = None,
+                     knee: float | None = None) -> tf.Tensor:
+    """asinh(x / k) per HR band; ``x`` has shape ``(..., C)``, C ≤ 4.
+
+    ``knee`` (electrons): scalar per-member override — see
+    :func:`asinh_stretch_lr`. ``None`` → per-band config default.
+    """
+    if knee is not None:
+        return tf.asinh(x / tf.cast(knee, x.dtype))
     return tf.asinh(x / _hr_scale_for(x, num_channels))
 
 
-def inverse_asinh_stretch_lr(y: tf.Tensor) -> tf.Tensor:
-    """Inverse of :func:`asinh_stretch_lr`."""
+def inverse_asinh_stretch_lr(y: tf.Tensor, knee: float | None = None) -> tf.Tensor:
+    """Inverse of :func:`asinh_stretch_lr` (``knee`` scalar override, else per-band)."""
+    if knee is not None:
+        return tf.sinh(y) * tf.cast(knee, y.dtype)
     return tf.sinh(y) * _lr_stretch_scale()
 
 
-def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: int | None = None) -> tf.Tensor:
-    """Inverse of :func:`asinh_stretch_hr`."""
+def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: int | None = None,
+                             knee: float | None = None) -> tf.Tensor:
+    """Inverse of :func:`asinh_stretch_hr` (``knee`` scalar override, else per-band)."""
+    if knee is not None:
+        return tf.sinh(y) * tf.cast(knee, y.dtype)
     return tf.sinh(y) * _hr_scale_for(y, num_channels)
 
 

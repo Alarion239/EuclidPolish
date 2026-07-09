@@ -405,8 +405,8 @@ GROUP_PALETTE = ["#3b6fb0", "#5aae61", "#e08214", "#d6604d",
 
 def _member_group_colors(member_meta, color_by):
     """Per-member ``(group_label, color)`` for ``color_by`` ∈ {"loss",
-    "depth"}; ``None`` when grouping is off/unavailable."""
-    if not member_meta or color_by not in ("loss", "depth"):
+    "depth", "knee"}; ``None`` when grouping is off/unavailable."""
+    if not member_meta or color_by not in ("loss", "depth", "knee"):
         return None
     out = []
     if color_by == "loss":
@@ -414,6 +414,19 @@ def _member_group_colors(member_meta, color_by):
             loss = str(m.get("loss") or "l1").lower()
             out.append((loss.upper(),
                         LOSS_LINE_COLORS.get(loss, GROUP_PALETTE[0])))
+        return out
+    if color_by == "knee":
+        # None → the per-band default (100 e⁻); a categorical palette over the
+        # ensemble's distinct knees (like depth).
+        def _k(m):
+            v = m.get("asinh_knee")
+            return float(v) if v is not None else 100.0
+        knees = sorted({_k(m) for m in member_meta})
+        by_knee = {k: GROUP_PALETTE[i % len(GROUP_PALETTE)]
+                   for i, k in enumerate(knees)}
+        for m in member_meta:
+            k = _k(m)
+            out.append((f"{k:g}e", by_knee[k]))
         return out
     depths = sorted({int(m["blocks"]) for m in member_meta if m.get("blocks")})
     by_depth = {d: GROUP_PALETTE[i % len(GROUP_PALETTE)]

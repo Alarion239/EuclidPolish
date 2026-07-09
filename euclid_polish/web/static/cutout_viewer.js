@@ -150,6 +150,7 @@ export function mountCutoutViewer(root, opts = {}) {
     hot: false,
     morphAmp: 1.6,              // "morph" tier: amplitude (member-σ) + speed
     morphSpeed: 0.5,
+    morphMembers: null,         // CSV of member indices → subset movie (null=all)
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
 
@@ -166,7 +167,10 @@ export function mountCutoutViewer(root, opts = {}) {
 
   // --- helpers -------------------------------------------------------------
   const band = (name) => state.meta.color.bands[name];
-  const cacheKey = (tier, index) => `${tier}:${index}`;
+  // `extra` (e.g. the movie's member subset) belongs in the key so a subset
+  // frame never collides with the plain tier's cached cube.
+  const cacheKey = (tier, index, extra) =>
+    `${tier}:${index}${extra ? ":" + new URLSearchParams(extra).toString() : ""}`;
   /** Selected tiers in the meta's canonical order ([{key,label}]). */
   const orderedSelected = () =>
     ((state.meta && state.meta.tiers) || []).filter((t) => state.tiers.includes(t.key));
@@ -189,20 +193,24 @@ export function mountCutoutViewer(root, opts = {}) {
     if (opts.onChange) opts.onChange(api.getState());
   }
 
-  async function fetchCube(tier, index) {
-    const key = cacheKey(tier, index);
+  async function fetchCube(tier, index, extra) {
+    const key = cacheKey(tier, index, extra);
     if (state.cubeCache.has(key)) return state.cubeCache.get(key);
-    const qs = new URLSearchParams(Object.assign({ tier }, state.params));
+    const qs = new URLSearchParams(Object.assign({ tier }, state.params, extra || {}));
     const r = await fetch(`/viewer/cube/${collection}/${index}?${qs}`);
     if (!r.ok) throw new Error(`cube ${r.status}`);
     const shape = (r.headers.get("X-Cube-Shape") || "").split(",").map(Number);
     const buf = await r.arrayBuffer();
+    const amp = parseFloat(r.headers.get("X-Cube-Amp"));
     const rec = {
       key, h: shape[0], w: shape[1], c: shape[2],
       data: new Float32Array(buf),
       label: r.headers.get("X-Cube-Label") || "",
       asinh: parseFloat(r.headers.get("X-Cube-Asinh")) || 100,
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
+      // PCA eigen-image amplitude/variance (subset-aware) for the movie.
+      amp: Number.isFinite(amp) ? amp : null,
+      varexp: parseFloat(r.headers.get("X-Cube-Var")) || 0,
     };
     state.cubeCache.set(key, rec);
     if (state.cubeCache.size > 96) state.cubeCache.delete(state.cubeCache.keys().next().value);
@@ -490,27 +498,38 @@ export function mountCutoutViewer(root, opts = {}) {
   // the SAME colour pipeline as the static frames (so band/colour/asinh match).
   async function startMorph(fr, index) {
     stopMorph();
-    const n = (state.meta && state.meta.pca_n) | 0;
+    // Member subset (null → all): the sr/pcaN cubes are then recomputed server-
+    // side over just those members, so their mean + amplitudes are subset-aware.
+    const subset = state.morphMembers;
+    const extra = subset ? { members: subset } : undefined;
+    const nSub = subset ? subset.split(",").filter(Boolean).length : 0;
+    // Kept PCs: min(pca_max, |subset|−1) for a subset, else the baked pca_n.
+    const pcaMax = (state.meta && state.meta.pca_max) || 3;
+    const n = subset ? Math.max(0, Math.min(pcaMax, nSub - 1))
+                     : ((state.meta && state.meta.pca_n) | 0);
     let sr;
     const comps = [];
     try {
-      sr = await fetchCube("sr", index);
+      sr = await fetchCube("sr", index, extra);
       for (let k = 0; k < n; k++) {
-        try { comps.push(await fetchCube(`pca${k}`, index)); } catch { /* <2 members */ }
+        try { comps.push(await fetchCube(`pca${k}`, index, extra)); }
+        catch { /* fewer components than requested */ }
       }
     } catch { setFrameMsg(fr, "movie unavailable"); return; }
     fr.frame.classList.remove("cv-loading");
-    const amps = (state.meta.pca_amps && state.meta.pca_amps[index]) || [];
-    // How much of the ensemble's real disagreement the kept PCs carry.
-    const varExp = (state.meta.pca_var && state.meta.pca_var[index]) || [];
-    const varTot = varExp.reduce((a, v) => a + v, 0);
+    // Amplitudes/variance now ride on each PC's cube header (subset-aware),
+    // falling back to the baked per-field manifest for the full-ensemble movie.
+    const metaAmps = (state.meta.pca_amps && state.meta.pca_amps[index]) || [];
+    const amps = comps.map((c, k) => (c.amp != null ? c.amp : (metaAmps[k] || 0)));
+    const varTot = comps.reduce((a, c) => a + (c.varexp || 0), 0);
+    const subLbl = subset ? ` · ${nSub} members` : "";
     const varLbl = varTot > 0
       ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance`
       : "";
     const len = sr.data.length;
     const data = new Float32Array(len);
     const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
-                  label: `disagreement movie${varLbl}`, asinh: sr.asinh,
+                  label: `disagreement movie${subLbl}${varLbl}`, asinh: sr.asinh,
                   noCache: true };
     const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
     let phase = 0, last = performance.now();          // accumulate phase so a
@@ -635,10 +654,13 @@ export function mountCutoutViewer(root, opts = {}) {
   function buildToolbar() {
     toolbar.innerHTML = "";
     const tiers = state.meta.tiers || [];
-    if (tiers.length > 1) {
+    // `hidden` tiers (e.g. the 22 individual member SRs) stay loadable via
+    // setTiers but are kept out of the chip row — an external panel drives them.
+    const shown = tiers.filter((t) => !t.hidden);
+    if (shown.length > 1) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: "Tier" }));
       const g = el("div", { class: "cv-group" });
-      tiers.forEach((t) => g.append(chip("tier", t.key, t.label,
+      shown.forEach((t) => g.append(chip("tier", t.key, t.label,
         "toggle — select more than one to compare side by side")));
       toolbar.append(g);
     }
@@ -935,6 +957,15 @@ export function mountCutoutViewer(root, opts = {}) {
       state.tiers = next;
       syncChips();
       show();
+    },
+    /** Set the disagreement movie's member subset — a CSV of member indices
+     *  (e.g. "0,3,7"), or null/"" for the full ensemble. The sr/pcaN cubes are
+     *  recomputed server-side over the subset. Re-arms the movie if shown. */
+    setMorphMembers(csv) {
+      const v = (csv == null || csv === "") ? null : String(csv);
+      if (v === state.morphMembers) return;
+      state.morphMembers = v;
+      if (state.tiers.includes("morph")) show();
     },
     getIndex() { return state.index; },
     isReady() { return !!state.meta; },

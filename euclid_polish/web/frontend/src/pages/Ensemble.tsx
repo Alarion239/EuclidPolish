@@ -3,29 +3,34 @@
    diagnostics, the per-band combiner (fit + gate curves), and the disagreement
    cutout viewer. Full parity with the classic page, drawn from the JSON
    endpoints (status.json / evals.json / combiner.json / training-curves.json). */
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import { StepById } from "../fasrc";
 import { useThemeValue } from "../theme";
-import { CutoutViewer } from "../legacy";
+import { CutoutViewer, type ViewerApi } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick } from "../charts/Plot";
 import {
-  Badge, Button, Card, CardBody, CardHead, Checkbox, DefList, Empty, Field,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, DefList, Empty, Field,
   Input, NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
   Tabs, type Column,
 } from "../ui";
 
 type Mode = "starfull" | "starless";
-type ColorBy = "uniform" | "loss" | "depth";
+type ColorBy = "uniform" | "loss" | "depth" | "knee";
+
+/* Per-member asinh stretch knee (electrons). `null`/absent → the per-band
+   config default, which every pre-knob member trained under → render as 100. */
+const kneeOf = (k?: number | null): number => (k == null ? 100 : k);
+const kneeTag = (k?: number | null): string => `${kneeOf(k)}e`;
 
 /* ── status.json ─────────────────────────────────────────────────────────── */
 type Member = {
   name: string; seed?: number | null; size_mb?: number; step?: number | null;
-  blocks?: number; loss?: string; psnr?: number | null; psnr_rank?: number | null;
-  starless?: boolean; has_loss_best?: boolean;
+  blocks?: number; loss?: string; asinh_knee?: number | null; psnr?: number | null;
+  psnr_rank?: number | null; starless?: boolean; has_loss_best?: boolean;
 };
 type EvalSummary = { ensemble_psnr?: number; mean_member_psnr?: number; ensemble_gain_db?: number } | null;
 type Status = {
@@ -43,7 +48,7 @@ type PS = {
 };
 type Evals = {
   ps: PS | null; guides?: { theta_min?: number; lr_scale?: number; vis_fwhm?: number };
-  members?: { label: string; loss?: string; blocks?: number }[];
+  members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null }[];
   n_fields?: number; n_members?: number;
   combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
 };
@@ -53,7 +58,7 @@ type EffW = { brightness_asinh?: (number | null)[]; brightness_e?: (number | nul
 type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
-  members?: { label: string; loss?: string; blocks?: number; step?: number | null; psnr?: number | null }[];
+  members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
   n_kernels?: number; min_usage?: number; val_l1?: number | null;
   band_names?: string[]; surviving?: Record<string, boolean[]>;
   eff_weights?: Record<string, EffW>;
@@ -62,7 +67,7 @@ type Combiner = {
 /* ── training-curves.json ────────────────────────────────────────────────── */
 /* Note: the payload overwrites the loss *series* with the loss-*norm* string,
    so only the PSNR series is chartable; `loss` here is the norm ("l1"…). */
-type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; starless?: boolean };
+type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; asinh_knee?: number | null; starless?: boolean };
 
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const hasData = (a?: (number | null)[]) => !!a && a.some((v) => v != null && isFinite(v as number));
@@ -119,10 +124,7 @@ export default function EnsemblePage() {
         <TrainingCurves curves={curves.data?.members ?? []} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll} />
-        <Card>
-          <CardHead title="Disagreement viewer" sub="per-field members · mean · std — where the ensemble hallucinates" />
-          <CardBody><CutoutViewer collection="ensemble" params={{ mode }} /></CardBody>
-        </Card>
+        <DisagreementCard key={mode} mode={mode} members={status.data?.members ?? []} />
       </div>
     </Page>
   );
@@ -178,6 +180,7 @@ function Members(
     { header: "PSNR", cell: (m) => m.psnr != null ? `${m.psnr.toFixed(3)} dB` : <span className="muted">—</span>, align: "right" },
     { header: "loss", cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge> },
     { header: "depth", cell: (m) => m.blocks ?? "—", align: "right" },
+    { header: "knee", cell: (m) => <span className="mono">{kneeTag(m.asinh_knee)}</span>, align: "right" },
     { header: "step", cell: (m) => m.step ? m.step.toLocaleString() : "—", align: "right" },
     { header: "", align: "right", cell: (m) => (
       <div className="row" style={{ gap: 4, justifyContent: "flex-end" }}>
@@ -215,6 +218,7 @@ function TrainMembers(
   const [count, setCount] = useState("5");
   const [depth, setDepth] = useState("16");
   const [loss, setLoss] = useState("l1");
+  const [knee, setKnee] = useState("100");
   const [steps, setSteps] = useState("50000");
   const [extraSteps, setExtraSteps] = useState("50000");
   const [starless, setStarless] = useState(starlessDefault);
@@ -225,13 +229,13 @@ function TrainMembers(
   const extra = useMemo(() => {
     const p: Record<string, string | number> = { mode };
     if (mode === "add") Object.assign(p, {
-      count, num_res_blocks: depth, loss, steps, starless: starless ? 1 : 0,
+      count, num_res_blocks: depth, loss, asinh_knee: knee, steps, starless: starless ? 1 : 0,
       icnr: icnr ? 1 : 0, bootstrap, forward_onthefly: forwardOtf ? 1 : 0,
     });
     else if (mode === "continue") Object.assign(p, { members: prefill.member, extra_steps: extraSteps });
     else Object.assign(p, { fork_from: prefill.member, count, steps });
     return p;
-  }, [mode, count, depth, loss, steps, extraSteps, starless, icnr, bootstrap, forwardOtf, prefill.member]);
+  }, [mode, count, depth, loss, knee, steps, extraSteps, starless, icnr, bootstrap, forwardOtf, prefill.member]);
 
   return (
     <Card>
@@ -245,6 +249,7 @@ function TrainMembers(
             <NumberField label="depth (blocks)" value={depth} onChange={setDepth} min={4} max={64} />
             <Field label="loss"><Select value={loss} onChange={setLoss}
               options={["l1", "l2", "l3", "berhu"].map((v) => ({ value: v, label: v }))} /></Field>
+            <NumberField label="asinh knee [e⁻]" value={knee} onChange={setKnee} min={1} max={100000} step={10} />
             <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
             <NumberField label="bootstrap" value={bootstrap} onChange={setBootstrap} min={0} max={1} step={0.05} />
             <Checkbox checked={starless} onChange={setStarless}>starless</Checkbox>
@@ -279,6 +284,7 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
     const series: Series[] = [];
     let xMax = 1, yMin = Infinity, yMax = -Infinity;
     const depths = [...new Set(rows.map((c) => c.blocks ?? 0))].sort((a, b) => a - b);
+    const knees = [...new Set(rows.map((c) => kneeOf(c.asinh_knee)))].sort((a, b) => a - b);
     rows.forEach((c) => {
       if (!c.psnr?.length) return;
       const x = finite(c.psnr, 0), y = finite(c.psnr, 1);
@@ -286,6 +292,7 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
       for (const v of y) { if (isFinite(v)) { yMin = Math.min(yMin, v); yMax = Math.max(yMax, v); } }
       const color = colorBy === "loss" ? (LOSS_COLOR[c.loss ?? "l1"])
         : colorBy === "depth" ? categorical(depths.indexOf(c.blocks ?? 0))
+        : colorBy === "knee" ? categorical(knees.indexOf(kneeOf(c.asinh_knee)))
         : C.mean;
       series.push({ x, y, color, width: 1.4, alpha: 0.85 });
     });
@@ -303,7 +310,7 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
       <CardHead title="Training curves" sub={`${rows.length} member(s) · validation PSNR, rollback-deduped`}
         right={
           <Select<ColorBy> value={colorBy} onChange={setColorBy}
-            options={[{ value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "uniform", label: "uniform" }]} />
+            options={[{ value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }, { value: "uniform", label: "uniform" }]} />
         } />
       <CardBody>
         {!chart ? <Empty>no training logs yet</Empty> : (
@@ -334,10 +341,19 @@ function Evaluations(
     const xDomain: [number, number] = [g.theta_min ?? 0.05, Math.max(...xs)];
     const xTicks: Tick[] = XTICKS.filter((v) => v >= xDomain[0] && v <= xDomain[1]).map((v) => ({ v, label: String(v) }));
     const yTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((v) => ({ v, label: String(v) }));
-    const memberColor = (i: number) => colorBy === "loss" ? (LOSS_COLOR[members[i]?.loss ?? "l1"] ?? C.muted) : C.muted;
+    const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
+    const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
+    const memberColor = (i: number) => {
+      const mm = members[i];
+      if (colorBy === "loss") return LOSS_COLOR[mm?.loss ?? "l1"] ?? C.muted;
+      if (colorBy === "depth") return categorical(depths.indexOf(mm?.blocks ?? 0));
+      if (colorBy === "knee") return categorical(knees.indexOf(kneeOf(mm?.asinh_knee)));
+      return C.muted;
+    };
+    const grouped = colorBy !== "uniform";
     const series: Series[] = [];
     for (const pair of ps.r_pairs ?? []) series.push({ x: theta, y: pair, color: C.muted, width: 0.7, alpha: 0.18 });
-    (ps.r_members ?? []).forEach((row, i) => series.push({ x: theta, y: row, color: memberColor(i), width: 1, alpha: colorBy === "loss" ? 0.6 : 0.4 }));
+    (ps.r_members ?? []).forEach((row, i) => series.push({ x: theta, y: row, color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
     if (hasData(ps.r_cross)) series.push({ x: theta, y: ps.r_cross!, color: C.cross, width: 2, dash: [6, 3] });
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
     series.push({ x: theta, y: ps.r, color: C.mean, width: 2.6, dots: true });
@@ -371,7 +387,7 @@ function Evaluations(
               <>
                 <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
                   <Select<ColorBy> value={colorBy} onChange={setColorBy}
-                    options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }]} />
+                    options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
                 </div>
                 <Plot title="cross-correlation r(k) vs HR   (1 = perfect)" xScale="log"
                   xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
@@ -399,7 +415,7 @@ function Evaluations(
 }
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
-type GateColorBy = "loss" | "psnr" | "depth";
+type GateColorBy = "loss" | "psnr" | "depth" | "knee";
 
 function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit }:
@@ -440,9 +456,11 @@ function CombinerCard(
     const M = comb?.member_labels.length ?? 0;
     const survIdx = Array.from({ length: M }, (_, m) => m).filter((m) => surv[m] !== false);
 
-    // Facet colorer. depth → categorical over the ensemble's distinct depths;
-    // psnr → viridis over the surviving members' PSNR range; loss → loss token.
+    // Facet colorer. depth/knee → categorical over the ensemble's distinct
+    // depths/knees; psnr → viridis over the surviving members' PSNR range;
+    // loss → loss token.
     const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
+    const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
     const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
     const pMin = psnrs.length ? Math.min(...psnrs) : 0;
     const pMax = psnrs.length ? Math.max(...psnrs) : 1;
@@ -450,6 +468,7 @@ function CombinerCard(
       const meta = members[m];
       if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
       if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
+      if (colorBy === "knee") return categorical(knees.indexOf(kneeOf(meta?.asinh_knee)));
       const p = meta?.psnr;
       return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
     };
@@ -463,6 +482,7 @@ function CombinerCard(
       const meta = members[m];
       const tag = colorBy === "loss" ? (meta?.loss ?? "l1")
         : colorBy === "depth" ? `${meta?.blocks ?? "?"}b`
+        : colorBy === "knee" ? kneeTag(meta?.asinh_knee)
         : (meta?.psnr != null ? `${meta.psnr.toFixed(1)}dB` : "—");
       return { label: `${comb?.member_labels[m]} · ${tag}`, color: memberColor(m) };
     });
@@ -506,7 +526,7 @@ function CombinerCard(
                   <span className="ens-imp__label mono">{r.label}</span>
                   <div className="ens-imp__bar"><div className="ens-imp__fill" style={{ width: `${Math.min(100, (r.total / (importance[0]?.total || 1)) * 100)}%`, background: LOSS_COLOR[r.meta?.loss ?? "l1"] ?? "var(--accent)" }} /></div>
                   <span className="ens-imp__val mono">{r.total.toFixed(2)}</span>
-                  <span className="ens-imp__meta muted">{[r.meta?.loss, r.meta?.blocks && `${r.meta.blocks}b`, r.meta?.psnr != null && `${r.meta.psnr.toFixed(1)}dB`].filter(Boolean).join(" · ")}</span>
+                  <span className="ens-imp__meta muted">{[r.meta?.loss, r.meta?.blocks && `${r.meta.blocks}b`, kneeTag(r.meta?.asinh_knee), r.meta?.psnr != null && `${r.meta.psnr.toFixed(1)}dB`].filter(Boolean).join(" · ")}</span>
                 </div>
               ))}
             </div>
@@ -517,7 +537,7 @@ function CombinerCard(
                   <div className="eyebrow">gate weight vs brightness</div>
                   <div className="row" style={{ gap: 8 }}>
                     <Select<GateColorBy> value={colorBy} onChange={setColorBy}
-                      options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }]} />
+                      options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
                     <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
                   </div>
                 </div>
@@ -533,6 +553,141 @@ function CombinerCard(
             )}
           </div>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+/* ── disagreement viewer + member panel ──────────────────────────────────────
+   The tier row is trimmed to LR · SR (mean) · combiner · HR · Movie. The 22
+   individual member SRs live here instead — a searchable, sortable panel that
+   (a) toggles a member's SR into the viewer as a frame, and (b) selects the
+   member SUBSET the disagreement movie decomposes (PCA recomputed on the fly,
+   server-side, over just the checked members). */
+type ViewMeta = { member_labels: string[]; count?: number; pca_max?: number };
+type MemRow = {
+  i: number; key: string; label: string;
+  psnr: number | null; loss: string; depth: number | null; knee: number | null;
+};
+type SortBy = "index" | "psnr" | "loss" | "depth";
+
+function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) {
+  const meta = useResource<ViewMeta>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
+  const apiRef = useRef<ViewerApi | null>(null);
+  const [subset, setSubset] = useState<Set<number>>(new Set());
+  const [viewing, setViewing] = useState<Set<number>>(new Set());
+  const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState<SortBy>("index");
+
+  // Join the viewer's member_labels (cube stack order, "NN·psnr") onto the
+  // status members (facets) by dir name member_NN.
+  const rows: MemRow[] = useMemo(() => {
+    const byName = new Map(members.map((m) => [m.name, m]));
+    return (meta.data?.member_labels ?? []).map((label, i) => {
+      const m = byName.get(`member_${label.split("·")[0]}`);
+      return {
+        i, key: `member${i}`, label,
+        psnr: m?.psnr ?? null, loss: m?.loss ?? "l1",
+        depth: m?.blocks ?? null, knee: m?.asinh_knee ?? null,
+      };
+    });
+  }, [meta.data, members]);
+
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const filtered = rows.filter((x) => !needle
+      || x.label.toLowerCase().includes(needle) || x.loss.includes(needle));
+    const cmp: Record<SortBy, (a: MemRow, b: MemRow) => number> = {
+      index: (a, b) => a.i - b.i,
+      psnr: (a, b) => (b.psnr ?? -Infinity) - (a.psnr ?? -Infinity),
+      loss: (a, b) => a.loss.localeCompare(b.loss) || a.i - b.i,
+      depth: (a, b) => (a.depth ?? 0) - (b.depth ?? 0) || a.i - b.i,
+    };
+    return [...filtered].sort(cmp[sortBy]);
+  }, [rows, q, sortBy]);
+
+  const csv = (s: Set<number>) => [...s].sort((a, b) => a - b).join(",");
+  // Preserve the user's base chip selection (lr/sr/comb/hr), swap in the viewed
+  // members + the movie, all in the viewer's canonical tier order.
+  const applyTiers = useCallback((view: Set<number>, sub: Set<number>) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const cur = api.getState().tiers;
+    const base = cur.filter((t) => !/^member\d+$/.test(t) && t !== "morph");
+    const memberKeys = [...view].sort((a, b) => a - b).map((i) => `member${i}`);
+    const wantMovie = sub.size >= 2 || cur.includes("morph");
+    api.setTiers([...base, ...memberKeys, ...(wantMovie ? ["morph"] : [])]);
+  }, []);
+
+  const commitSubset = (next: Set<number>) => {
+    setSubset(next);
+    apiRef.current?.setMorphMembers(next.size >= 2 ? csv(next) : null);
+    applyTiers(viewing, next);
+  };
+  const toggleMovie = (i: number) => {
+    const next = new Set(subset);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    commitSubset(next);
+  };
+  const toggleView = (i: number) => {
+    const next = new Set(viewing);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    setViewing(next);
+    applyTiers(next, subset);
+  };
+  const topByPsnr = (k: number) => commitSubset(new Set(
+    [...rows].filter((r) => r.psnr != null)
+      .sort((a, b) => b.psnr! - a.psnr!).slice(0, k).map((r) => r.i)));
+
+  const columns: Column<MemRow>[] = [
+    {
+      header: "movie", align: "center", width: 52,
+      cell: (r) => <input type="checkbox" checked={subset.has(r.i)}
+        onChange={() => toggleMovie(r.i)} aria-label={`movie ${r.label}`} />,
+    },
+    { header: "member", cell: (r) => <span className="mono">{r.label}</span> },
+    {
+      header: "PSNR", align: "right",
+      cell: (r) => <span className="mono">{r.psnr != null ? r.psnr.toFixed(2) : "—"}</span>,
+    },
+    {
+      header: "loss",
+      cell: (r) => <span className="mono" style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>,
+    },
+    { header: "depth", align: "right", cell: (r) => <span className="mono">{r.depth ?? "—"}</span> },
+    { header: "knee", align: "right", cell: (r) => <span className="mono muted">{kneeTag(r.knee)}</span> },
+    {
+      header: "", align: "right", width: 64,
+      cell: (r) => <Chip on={viewing.has(r.i)} onClick={() => toggleView(r.i)}
+        title="show this member's SR as a frame">{viewing.has(r.i) ? "shown" : "view"}</Chip>,
+    },
+  ];
+
+  const nSel = subset.size;
+  return (
+    <Card>
+      <CardHead title="Disagreement viewer"
+        sub="LR · mean · combiner · HR · movie — pick a member subset to see where just those reconstructions disagree" />
+      <CardBody>
+        <CutoutViewer collection="ensemble" params={{ mode }}
+          onReady={(api) => { apiRef.current = api; }} />
+        <div style={{ marginTop: "var(--s4)" }}>
+          <div className="row" style={{ justifyContent: "space-between", gap: "var(--s3)", marginBottom: 8, flexWrap: "wrap" }}>
+            <div className="eyebrow">members ({rows.length}) · {nSel >= 2
+              ? `movie over ${nSel}` : "movie: all (select ≥2 for a subset)"}</div>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <Input value={q} onChange={setQ} placeholder="filter…" style={{ width: 120 }} />
+              <Select<SortBy> value={sortBy} onChange={setSortBy}
+                options={[{ value: "index", label: "by index" }, { value: "psnr", label: "by PSNR" },
+                { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }]} />
+              <Button size="sm" onClick={() => topByPsnr(5)} disabled={!rows.some((r) => r.psnr != null)}
+                title="select the 5 highest-PSNR members for the movie">top 5</Button>
+              <Button size="sm" onClick={() => commitSubset(new Set())} disabled={nSel === 0}>clear</Button>
+            </div>
+          </div>
+          <Table<MemRow> columns={columns} rows={shown} rowKey={(r) => r.key}
+            empty="no members in this regime's cube cache — run an evaluation first" />
+        </div>
       </CardBody>
     </Card>
   );

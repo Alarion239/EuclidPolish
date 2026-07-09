@@ -1093,8 +1093,9 @@ def _iter_cached_fields(starless: bool):
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
-    """Per-member ``{"loss", "blocks", "psnr"}`` for line coloring (loss / depth
-    / test-PSNR gradient), positional with ``labels`` ("NN·psnr" → member_NN)."""
+    """Per-member ``{"loss", "blocks", "asinh_knee", "step", "psnr"}`` for line
+    coloring (loss / depth / knee / test-PSNR gradient), positional with
+    ``labels`` ("NN·psnr" → member_NN)."""
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"

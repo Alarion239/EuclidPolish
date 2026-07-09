@@ -132,6 +132,27 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
     return trunk // 3
 
 
+def infer_checkpoint_asinh_knee(checkpoint_dir: str) -> float | None:
+    """The per-member asinh stretch knee (electrons) a checkpoint trained under,
+    read from its ``origin.json`` (checkpoint dir, then its parent so a
+    ``member_NN/loss_best`` sub-checkpoint inherits the member's knee). Unlike
+    depth, the knee can't be introspected from weights — it's a normalization
+    of the *inputs*, recorded only in the sidecar. ``None`` when there is no
+    sidecar or no ``asinh_knee`` field → the caller falls back to the per-band
+    config default (100 e⁻), which is what every pre-knob member trained under.
+    """
+    import json
+    for d in (checkpoint_dir, os.path.dirname(checkpoint_dir.rstrip("/"))):
+        try:
+            with open(os.path.join(d, "origin.json")) as f:
+                v = json.load(f).get("asinh_knee")
+            if v is not None:
+                return float(v)
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
+
+
 def checkpoint_step(checkpoint_dir: str) -> int | None:
     """The persisted ``ckpt.step`` of the latest checkpoint, or ``None``.
 
@@ -292,6 +313,8 @@ def load_model_from_weights(
 def reconstruct(
     model,
     lr_input,
+    *,
+    knee: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply super-resolution to a single LR image.
@@ -299,7 +322,7 @@ def reconstruct(
     Inputs and outputs are raw float32 electrons (over the stacked Euclid VIS
     integration). Internally this function
 
-      1. asinh-stretches the input by Config.STRETCH_SCALE_E,
+      1. asinh-stretches the input by the model's training knee,
       2. runs the model (which operates entirely in stretched space),
       3. clips the stretched output for safety, and
       4. applies sinh × scale to recover electrons.
@@ -310,6 +333,13 @@ def reconstruct(
         Trained WDSR model.
     lr_input : str or np.ndarray
         Either a ``.npy`` file path or a numpy array in raw electron units.
+    knee : float, optional
+        The asinh stretch knee (electrons) this model was TRAINED under —
+        the input stretch and output un-stretch must match it, or the model
+        sees a different normalization than it learned. ``None`` → the
+        per-band config default (100 e⁻), correct for every pre-knob model.
+        A member with a non-default knee passes its own here so its electron
+        output is exact and stays comparable with the rest of the ensemble.
 
     Returns
     -------
@@ -369,11 +399,12 @@ def reconstruct(
     # above any realistic source, but finite in float32 (sinh overflows at ~89).
     # Per-band asinh stretch mirrors the training pipeline (different scale per
     # band) rather than a single scalar Config.STRETCH_SCALE_E.
-    lr_stretched = asinh_stretch_lr(tf.constant(lr_for_model)).numpy().astype(np.float32)
+    lr_stretched = asinh_stretch_lr(
+        tf.constant(lr_for_model), knee=knee).numpy().astype(np.float32)
     sr_stretched = resolve_single(model, tf.constant(lr_stretched)).numpy().astype(np.float32)
     sr_stretched = np.clip(sr_stretched, -20.0, 20.0)
     sr_data = inverse_asinh_stretch_hr(
-        tf.constant(sr_stretched)
+        tf.constant(sr_stretched), knee=knee
     ).numpy().astype(np.float32)
     # Single-output models: squeeze the channel axis for the 2-D
     # visualizers downstream. The 4-band model keeps its (H, W, 4) cube —

@@ -32,6 +32,7 @@ import contextlib
 import json
 import math
 import os
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -374,9 +375,15 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
 _ENSEMBLE_TIERS = [
     {"key": "lr", "label": "LR"},
     {"key": "sr", "label": "SR (mean)"},
-    {"key": "std", "label": "stdSR"},
+    # stdSR stays available (it powers the ±σ magnitude on the mean frame) but
+    # is hidden from the chip row per the trimmed tier set.
+    {"key": "std", "label": "stdSR", "hidden": True},
     {"key": "hr", "label": "HR"},
 ]
+
+#: How many PCA components the on-the-fly (member-subset) disagreement movie
+#: keeps — matches the baked ``ENSEMBLE_PCA_COMPONENTS``.
+_MORPH_PCA_COMPONENTS = 3
 
 
 def _ensemble_starless(params: dict[str, str]) -> bool:
@@ -412,9 +419,12 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     # (a fitted combiner for this regime). Placed right after the ensemble mean.
     if man.get("has_combiner"):
         tiers.insert(2, {"key": "comb", "label": "combiner"})
-    # Individual member SR tiers (per-seed / loss-best), labelled from the eval.
+    # Individual member SR tiers, labelled from the eval. HIDDEN from the tier
+    # chip row (they'd swamp it at 22 members) but still loadable on demand:
+    # the React member panel searches/sorts them and toggles one in via the
+    # engine's setTiers, and their cubes feed the member-subset movie.
     member_labels = man.get("member_labels", []) or []
-    tiers += [{"key": f"member{i}", "label": f"SR {lab}"}
+    tiers += [{"key": f"member{i}", "label": f"SR {lab}", "hidden": True}
               for i, lab in enumerate(member_labels)]
     # PCA disagreement basis for the morphing animation: per-field amplitudes
     # (population std the members span along each component), aligned to the
@@ -435,6 +445,10 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
         "subset": sub,
         "pca_n": pca_n,
         "pca_amps": pca_amps,
+        # Member index → label, for the React panel to join psnr/loss/depth
+        # (from status.json) and drive the member-subset disagreement movie.
+        "member_labels": list(member_labels),
+        "pca_max": _MORPH_PCA_COMPONENTS,
     }
 
 
@@ -452,6 +466,54 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
             float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0))
 
 
+# On-the-fly member-subset PCA. The disagreement movie normally decomposes ALL
+# members' variation about the mean (baked pca0…N cubes). When the viewer asks
+# for a SUBSET (``?members=0,3,7``) we recompute PCA over just those members
+# from their cached ``member{i}`` cubes — the SVD of a k-row residual matrix is
+# tens of ms, so this is fully interactive. A tiny LRU lets the sr + pca0…N
+# fetches for one frame share a single SVD.
+_SUBSET_PCA_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_SUBSET_PCA_MAX = 8
+
+
+def _parse_member_subset(raw: str | None, n_members: int) -> list[int] | None:
+    """``"0,3,7"`` → sorted unique valid member indices, or ``None`` (all)."""
+    if not raw or not str(raw).strip():
+        return None
+    out: list[int] = []
+    for tok in str(raw).split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            i = int(tok)
+            if 0 <= i < n_members and i not in out:
+                out.append(i)
+    # A single member has no residual subspace — treat as "no subset".
+    return sorted(out) if len(out) >= 2 else None
+
+
+def _subset_pca(starless: bool, rec_index: int, subset: list[int]):
+    """``(mean, components, amplitudes, var_explained)`` of the member-subset
+    residuals for one field, from the cached ``member{i}`` cubes. LRU-cached."""
+    key = ("starless" if starless else "starfull", int(rec_index), tuple(subset))
+    hit = _SUBSET_PCA_CACHE.get(key)
+    if hit is not None:
+        _SUBSET_PCA_CACHE.move_to_end(key)
+        return hit
+    from euclid_polish.ensemble import pca_field
+    cdir = _ensemble_cubes_dir(starless)
+    stack = []
+    for i in subset:
+        p = os.path.join(cdir, f"member{i}_{int(rec_index):05d}.npy")
+        if not os.path.isfile(p):
+            raise ViewerError(404, f"member{i} cube missing")
+        stack.append(np.load(p).astype(np.float32))
+    res = pca_field(np.stack(stack, axis=0), n_components=_MORPH_PCA_COMPONENTS)
+    _SUBSET_PCA_CACHE[key] = res
+    if len(_SUBSET_PCA_CACHE) > _SUBSET_PCA_MAX:
+        _SUBSET_PCA_CACHE.popitem(last=False)
+    return res
+
+
 def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     starless = _ensemble_starless(params)
     man = _ensemble_manifest(starless)
@@ -460,6 +522,27 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     if index < 0 or index >= len(idxs):
         raise ViewerError(404, "index out of range")
     rec_index = int(idxs[index])
+
+    # Member-subset disagreement movie: recompute sr (=subset mean) and the PCA
+    # eigen-images on the fly for the requested members. amp/var are subset-
+    # dependent → returned as headers so the animation reads the right spread.
+    is_pca = tier.startswith("pca") and tier[3:].isdigit()
+    subset = _parse_member_subset(
+        params.get("members"), len(man.get("member_labels", []) or []))
+    if subset is not None and (tier == "sr" or is_pca):
+        mean, comps, amps, var = _subset_pca(starless, rec_index, subset)
+        tag = f"{len(subset)} of {len(man.get('member_labels', []) or [])} members"
+        if tier == "sr":
+            return _as_hwc(mean), {
+                "label": f"SR (subset mean · {tag}) · {sub} · idx {rec_index}",
+                "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
+        k = int(tier[3:])
+        if k >= len(comps):
+            raise ViewerError(404, "pca component out of range")
+        return _as_hwc(comps[k]), {
+            "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": 0.0, "amp": float(amps[k]),
+            "var": float(var[k]) if k < len(var) else 0.0}
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
@@ -490,8 +573,20 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         label = f"SR {mlabels[mi]}" if mi < len(mlabels) else tier
     else:
         label = labels.get(tier, tier)
-    return cube, {"label": f"{label} · {sub} · idx {rec_index}",
-                  "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
+    info = {"label": f"{label} · {sub} · idx {rec_index}",
+            "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
+    # Baked full-ensemble PCA: surface the per-field amplitude/variance from the
+    # manifest so the client reads amps from the cube header uniformly (subset
+    # and full paths alike), not a separate meta lookup.
+    if is_pca:
+        k = int(tier[3:])
+        amp = (man.get("pca_amps", {}) or {}).get(str(rec_index), [])
+        var = (man.get("pca_var", {}) or {}).get(str(rec_index), [])
+        if k < len(amp):
+            info["amp"] = float(amp[k])
+        if k < len(var):
+            info["var"] = float(var[k])
+    return cube, info
 
 
 # ---------------------------------------------------------------------------
