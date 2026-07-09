@@ -462,8 +462,14 @@ def main() -> int:
         print(f"\n=== {specs[i - 1].name} done ({i}/{n}) ===\n")
         reporter.set_step(_done_before(), total, f"{specs[i - 1].name} done")
 
+    # Build the training handle WITHOUT discovering existing members:
+    # train_members() resets self._models on entry and only constructs the
+    # members it is told to train, so restoring every active checkpoint here
+    # (the ctor's default) is pure waste — tens of GPU checkpoint loads that
+    # are immediately discarded. The post-training eval builds its own
+    # ensemble via evaluate_on_records(); this handle is used only to train.
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
-                        num_res_blocks=args.num_res_blocks)
+                        num_res_blocks=args.num_res_blocks, _models=[])
     try:
         ens.train_members(
             lr, hr, specs,
