@@ -229,23 +229,25 @@
 
 <section class="card" id="ens-combiner-card">
   <h3>Combiner (starfull)</h3>
-  <p class="hint" style="flex-basis:100%;">A tiny per-band model that fuses the
-     members into one reconstruction — fit <b>locally on the validate split</b>
-     (reusing cached member inference when available), evaluated on
-     <code>{{ eval_subset }}</code>. Starfull only. It does <b>not</b> change the
-     default ensemble-mean SR; it's an extra series in the figures + a viewer
-     tier. Re-run <b>Evaluate on test set</b> afterwards to score it on test.</p>
+  <p class="hint" style="flex-basis:100%;">A tiny per-band <b>brightness gate</b>:
+     a pixel's brightness picks a convex mix of the members (RBF kernels →
+     softmax), so faint pixels can lean fully on the L1 members (killing the L2
+     floor) and star cores on the star-reproducing members. Fit <b>locally on the
+     validate split</b> (reusing cached member inference), evaluated on
+     <code>{{ eval_subset }}</code>. Starfull only; does <b>not</b> change the
+     default ensemble-mean SR. Re-run <b>Evaluate on test set</b> afterwards to
+     score it on test.</p>
   <form id="ens-combiner-form" action="/ensemble/combiner/fit">
     <input type="hidden" name="mode" id="ens-combiner-mode" value="starfull">
     <label title="How many validate fields to fit on (member inference is cached + reused).">
       Validate fields
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
-    <label title="Hidden units in each per-band MLP. Tiny (2–4) keeps it interpretable.">
-      Hidden units
-      <input type="number" name="hidden" value="3" min="1" max="8"></label>
-    <label title="Group-L1 strength — larger prunes more members to zero.">
-      L1 (prune)
-      <input type="number" name="lam_group" value="0.001" min="0" max="1" step="0.001"></label>
+    <label title="Number of RBF kernels tiling the brightness axis. More = finer brightness resolution of the weights.">
+      Kernels (K)
+      <input type="number" name="n_kernels" value="12" min="2" max="32"></label>
+    <label title="Post-hoc prune: drop members whose average weight is below this (0 = keep all). Cannot collapse onto one regime.">
+      Prune (min usage)
+      <input type="number" name="min_usage" value="0" min="0" max="0.5" step="0.01"></label>
     <button type="submit">Fit combiner</button>
   </form>
   <div id="ens-combiner-status"></div>

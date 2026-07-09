@@ -1,37 +1,39 @@
-"""Deep-ensemble **combiner** — a tiny per-band mixture of the member SR cubes.
+"""Deep-ensemble **combiner** — a tiny per-band brightness-gated mixture.
 
 For the STARFULL regime the reconstruction is normally the naive per-pixel mean
 of the ``M`` ensemble members. That discards their complementary strengths
 (L1-trained members render faint galaxies cleanly but erase star cores;
-L2-trained members keep the point sources but leave speckle). This module learns
-a tiny **per-band** model ``f: ℝ^M → ℝ`` applied at every pixel that fuses the
-members — leaning on the right member at the right brightness.
+L2-trained members keep the point sources but leave a speckle floor). This
+module learns a tiny **per-band** model that fuses the members — leaning on the
+right member at the right brightness.
 
-Design (locked with the user):
+Design (RBF brightness gate — replaced the earlier skip-MLP, which couldn't
+route faint pixels to the L1 members: near zero it collapsed to a fixed linear
+blend that inherited the L2 floor, and its tanh gate modulated strongest at
+faint, i.e. the wrong direction):
 
-* **Direct MLP with a linear skip, per band.** One small model per output band
-  (VIS, Y_E, J_E, H_E): ``y = x·w_skip + b + MLP(x)`` where ``MLP`` is a single
-  hidden layer of **2–4 units** (default 3, tanh). The linear skip carries the
-  weighted-average bulk (so the model reproduces the wide asinh range even when a
-  member is already good, which a bounded tanh cannot); the tiny hidden part is a
-  brightness-dependent *correction*. Still a direct ``ℝ^M → ℝ`` map, and more
-  interpretable — the skip weights are the base per-member mixture (see
-  :meth:`Combiner.effective_weights`). Brightness-adaptivity is automatic: the
-  input magnitudes *are* the brightness.
-* **asinh space.** Everything runs in ``arcsinh(electrons / STRETCH_SCALE_E)``;
-  the output is inverse-stretched with ``sinh(·)·scale`` after the same ±clip the
-  inference path uses, so it can't overflow.
+* **Per-band gated convex mixture.** One model per output band (VIS, Y_E, J_E,
+  H_E). At each pixel a **brightness scalar** ``b`` (the max over members, asinh)
+  is expanded in ``K`` fixed **RBF kernels**, mapped to per-member logits and
+  soft-maxed to weights ``w(b)`` (≥0, sum to 1); the output is the convex
+  combination ``Σ wₘ(b)·xₘ``. Localized kernels give an ARBITRARY weight-vs-
+  brightness profile — faint bins can put ~all weight on the L1 members (killing
+  the L2 floor exactly, since it's a convex combination) while bright bins pick
+  the star-reproducing members. The weight curves ARE the model (see
+  :meth:`Combiner.effective_weights`). No saturation issue: a convex combo of
+  members never has to extrapolate.
+* **asinh space.** ``arcsinh(electrons / STRETCH_SCALE_E)`` in; output inverse-
+  stretched with ``sinh(·)·scale`` after the same ±clip the inference path uses.
 * **L1 loss** (asinh-space ``mean|·|``), fit LOCALLY on the ``validate`` split.
-* **Group-L1 pruning.** An L1 penalty on each member's *whole input footprint*
-  (its hidden column + its skip weight) drives unhelpful members to ~0; pruned
-  members are hard-zeroed so they read exactly 0 in the effective-weight probe
-  (survivors are reported).
+* **Optional post-hoc pruning.** After fitting, members whose average weight
+  falls below ``min_usage`` are dropped (masked + renormalised). Default 0 (keep
+  all) — a usage threshold can only remove members the gate already ignores, so
+  it cannot collapse onto one regime the way the old group-L1 did.
 * **Starfull-only** (the ``hr_`` target — starless members merely erase stars).
 
-Persistence: ``<dir>/combiner/combiner.npz`` (weights) + ``combiner.json``
-(metadata: member labels it was fit against, arch, λ, per-band survivors, the
-validate records fingerprint). :func:`load_combiner` returns ``None`` when the
-saved member labels no longer match the active ensemble (stale).
+Persistence: ``<dir>/combiner/combiner.npz`` + ``combiner.json``.
+:func:`load_combiner` returns ``None`` when the saved member labels no longer
+match the active ensemble (stale) or the format is incompatible.
 """
 
 from __future__ import annotations
@@ -52,9 +54,11 @@ _BAND_SCALE = {name: float(Config.get_band(name).asinh_stretch_scale_e)
 #: Clip on the asinh output before ``sinh`` (matches training/inference.py).
 SINH_CLIP = float(getattr(Config, "SINH_STRETCH_CLIP", 20.0))
 
-#: Survivor threshold: a member survives if its first-layer column norm exceeds
-#: this fraction of the largest column norm in that band.
-SURVIVOR_TAU = 0.05
+#: Brightness (asinh) sweep the RBF kernels tile — faint sky (~0) to a bright
+#: star core (asinh of a very bright source).
+GATE_LEVEL_RANGE = (-1.0, 13.0)
+DEFAULT_N_KERNELS = 12
+DEFAULT_SIGMA_SCALE = 1.0
 
 BAND_NAMES = tuple(Config.HR_TARGET_BAND_NAMES)
 
@@ -63,20 +67,23 @@ def _band_scale(name: str) -> float:
     return _BAND_SCALE.get(name, float(Config.STRETCH_SCALE_E))
 
 
-def _act_np(z: np.ndarray, activation: str) -> np.ndarray:
-    if activation == "linear":
-        return z
-    if activation == "relu":
-        return np.maximum(z, 0.0)
-    return np.tanh(z)
+def _brightness(X: np.ndarray) -> np.ndarray:
+    """Per-pixel brightness scalar from the member vector (asinh): the max over
+    members — 'is there a bright source here'. Sharpens star (all-high) vs floor
+    (one member's small speckle) far better than the mean."""
+    return np.max(np.asarray(X, np.float64), axis=1)
 
 
-def _act_deriv_np(z: np.ndarray, activation: str) -> np.ndarray:
-    if activation == "linear":
-        return np.ones_like(z)
-    if activation == "relu":
-        return (z > 0.0).astype(z.dtype)
-    return 1.0 - np.tanh(z) ** 2
+def _rbf(b: np.ndarray, centers: np.ndarray, sigma: float) -> np.ndarray:
+    z = (np.asarray(b, np.float64)[:, None] - np.asarray(centers)[None, :]) / sigma
+    return np.exp(-0.5 * z * z)
+
+
+def _softmax_masked(logits: np.ndarray, surviving: np.ndarray) -> np.ndarray:
+    logits = np.where(surviving[None, :], logits, -1e9)
+    logits = logits - logits.max(axis=1, keepdims=True)
+    e = np.exp(logits)
+    return e / e.sum(axis=1, keepdims=True)
 
 
 # ---------------------------------------------------------------------------
@@ -85,44 +92,49 @@ def _act_deriv_np(z: np.ndarray, activation: str) -> np.ndarray:
 
 @dataclass
 class BandCombiner:
-    """One band's tiny skip-MLP: ``(N, M) asinh members → (N,) asinh combined``.
+    """One band's RBF brightness gate: ``(N, M) asinh members → (N,) asinh``.
 
-    ``y = X·w_skip + b2 + act(X·W1 + b1)·W2``.
+    ``b = max_m x`` → ``φ = rbf(b)`` (K kernels) → ``w = softmax(φ·V + a)`` →
+    ``y = Σ wₘ·xₘ`` (convex combination).
     """
 
-    W1: np.ndarray                 # (M, H)
-    b1: np.ndarray                 # (H,)
-    W2: np.ndarray                 # (H,)
-    b2: float
-    w_skip: np.ndarray             # (M,) linear per-member skip weights
+    V: np.ndarray                  # (K, M)
+    a: np.ndarray                  # (M,)
+    centers: np.ndarray            # (K,)
+    sigma: float
     surviving: np.ndarray          # (M,) bool
-    activation: str = "tanh"
+
+    def weights(self, X: np.ndarray) -> np.ndarray:
+        """Per-pixel member weights ``(N, M)`` for a member stack ``(N, M)``."""
+        X = np.asarray(X, np.float64)
+        logits = _rbf(_brightness(X), self.centers, self.sigma) @ self.V + self.a
+        return _softmax_masked(logits, self.surviving)
 
     def forward_asinh(self, X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, np.float64)
-        h = _act_np(X @ self.W1 + self.b1, self.activation)   # (N, H)
-        return X @ self.w_skip + self.b2 + h @ self.W2        # (N,)
+        return np.sum(self.weights(X) * X, axis=1)
 
-    def group_norms(self) -> np.ndarray:
-        """Per-member input footprint: ``sqrt(||W1[m]||² + w_skip[m]²)``."""
-        w1 = np.asarray(self.W1, np.float64)
-        ws = np.asarray(self.w_skip, np.float64)
-        return np.sqrt(np.sum(w1 ** 2, axis=1) + ws ** 2)
+    def weights_at(self, b_levels: np.ndarray) -> np.ndarray:
+        """Gate weights ``(L, M)`` at given brightness levels (asinh)."""
+        logits = _rbf(b_levels, self.centers, self.sigma) @ self.V + self.a
+        return _softmax_masked(logits, self.surviving)
 
 
 @dataclass
 class Combiner:
-    """The 4-band combiner + the metadata needed to apply/persist/validate it."""
+    """The 4-band combiner + metadata to apply/persist/validate it."""
 
     member_labels: list[str]
-    hidden: int
-    lam_group: float
+    n_kernels: int
+    sigma_scale: float
+    min_usage: float
     bands: dict[str, BandCombiner]
     band_names: tuple[str, ...] = BAND_NAMES
-    activation: str = "tanh"
+    level_range: tuple[float, float] = GATE_LEVEL_RANGE
     records_fp: str | None = None
     starfull: bool = True
     val_l1: float | None = None
+    kind: str = "rbf_gate"
     fit_meta: dict = field(default_factory=dict)
 
     # -- inference -- #
@@ -146,23 +158,16 @@ class Combiner:
 
     # -- interpretability -- #
     def effective_weights(self, band: str, *, n_levels: int = 25,
-                          level_range: tuple[float, float] = (-1.0, 12.0)
-                          ) -> dict:
-        """Local Jacobian ``∂output/∂memberₘ`` over an all-members-equal
-        brightness sweep — the "how much is member m trusted vs brightness"
-        curve. Pruned members read ≈0 everywhere."""
+                          level_range: tuple[float, float] | None = None) -> dict:
+        """The gate weight of each member vs pixel brightness — the model made
+        visible. Weights are ≥0 and sum to 1 at every brightness."""
         bc = self.bands[band]
-        m = bc.W1.shape[0]
-        levels = np.linspace(level_range[0], level_range[1], int(n_levels))
-        X0 = np.repeat(levels[:, None], m, axis=1)             # (L, M)
-        z = X0 @ bc.W1 + bc.b1                                 # (L, H)
-        dact = _act_deriv_np(z, bc.activation)                 # (L, H)
-        jac = (np.einsum("mh,lh,h->lm", bc.W1, dact, bc.W2)    # nonlinear part
-               + bc.w_skip[None, :])                           # + linear skip
+        lr = level_range or self.level_range
+        levels = np.linspace(lr[0], lr[1], int(n_levels))
         scale = _band_scale(band)
         return {"brightness_asinh": levels,
                 "brightness_e": np.sinh(levels) * scale,
-                "jacobian": jac}
+                "jacobian": bc.weights_at(levels)}       # (L, M), rows sum to 1
 
     def surviving_members(self) -> dict[str, list[bool]]:
         return {b: self.bands[b].surviving.astype(bool).tolist()
@@ -170,7 +175,7 @@ class Combiner:
 
 
 # ---------------------------------------------------------------------------
-# Fit-data assembly
+# Fit-data assembly (unchanged — streaming, brightness-stratified)
 # ---------------------------------------------------------------------------
 
 class FitBufferAccumulator:
@@ -245,9 +250,7 @@ def build_fit_buffers(base_dir: str, records_dir: str, *, subset: str = "validat
                       **kw) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], list[str]]:
     """Records-backed convenience: run each ``validate`` field through the
     STARFULL ensemble and assemble the per-band fit buffers. Returns
-    ``(buffers, member_labels)``. Members are inferred fresh here; the fit job
-    prefers reusing cached member cubes and calls
-    :func:`build_fit_buffers_from_fields` directly."""
+    ``(buffers, member_labels)``."""
     from euclid_polish.ensemble import EnsembleModel
     from euclid_polish.image.collection import ImageSet
     from euclid_polish.image.tfio import tfrecord_path
@@ -278,10 +281,10 @@ def build_fit_buffers(base_dir: str, records_dir: str, *, subset: str = "validat
 # Fit
 # ---------------------------------------------------------------------------
 
-def _fit_one_band(X: np.ndarray, y: np.ndarray, *, hidden: int, activation: str,
-                  lam_group: float, steps: int, lr: float, batch: int,
-                  seed: int, holdout: float,
-                  eps: float = 1e-12) -> tuple[BandCombiner, float]:
+def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
+                  sigma_scale: float, level_range: tuple[float, float],
+                  min_usage: float, steps: int, lr: float, batch: int,
+                  seed: int, holdout: float) -> tuple[BandCombiner, float]:
     import tensorflow as tf
 
     X = np.asarray(X, np.float32)
@@ -294,34 +297,31 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, hidden: int, activation: str,
     Xtr, ytr = (X[n_val:], y[n_val:]) if n_val > 0 else (X, y)
     Xval, yval = (X[:n_val], y[:n_val]) if n_val > 0 else (X, y)
 
-    tf.random.set_seed(seed)
-    init = tf.keras.initializers.GlorotUniform(seed=seed)
-    W1 = tf.Variable(init((m, hidden)), dtype=tf.float32)
-    b1 = tf.Variable(tf.zeros((hidden,), tf.float32))
-    W2 = tf.Variable(init((hidden, 1)), dtype=tf.float32)
-    b2 = tf.Variable(tf.zeros((1,), tf.float32))
-    # Linear skip, initialised to the plain mean (a sensible starting mixture).
-    w_skip = tf.Variable(tf.fill((m, 1), 1.0 / float(m)), dtype=tf.float32)
-    variables = [W1, b1, W2, b2, w_skip]
-    opt = tf.keras.optimizers.Adam(lr)
-    act = {"tanh": tf.nn.tanh, "relu": tf.nn.relu, "linear": tf.identity}[activation]
-    lam = tf.constant(float(lam_group), tf.float32)
+    centers = np.linspace(level_range[0], level_range[1],
+                          int(n_kernels)).astype(np.float32)
+    sigma = float((level_range[1] - level_range[0])
+                  / max(int(n_kernels) - 1, 1) * float(sigma_scale))
 
-    def _forward(xb):
-        h = act(tf.matmul(xb, W1) + b1)
-        return tf.squeeze(tf.matmul(xb, w_skip) + tf.matmul(h, W2) + b2, axis=-1)
+    tf.random.set_seed(seed)
+    V = tf.Variable(tf.zeros((int(n_kernels), m), tf.float32))   # start uniform
+    a = tf.Variable(tf.zeros((m,), tf.float32))
+    cen = tf.constant(centers)
+    opt = tf.keras.optimizers.Adam(lr)
+
+    def _weights(Xb):
+        b = tf.reduce_max(Xb, axis=1, keepdims=True)            # (n, 1)
+        phi = tf.exp(-0.5 * ((b - cen) / sigma) ** 2)           # (n, K)
+        return tf.nn.softmax(tf.matmul(phi, V) + a, axis=1)     # (n, M)
+
+    def _forward(Xb):
+        return tf.reduce_sum(_weights(Xb) * Xb, axis=1)
 
     @tf.function
     def train_step(xb, yb):
         with tf.GradientTape() as tape:
-            data = tf.reduce_mean(tf.abs(_forward(xb) - yb))
-            # Group-L1 over each member's whole input footprint (hidden col +
-            # skip weight) → prunes entire members.
-            group = tf.sqrt(tf.reduce_sum(W1 ** 2, axis=1)
-                            + tf.squeeze(w_skip, axis=-1) ** 2 + eps)
-            loss = data + lam * tf.reduce_sum(group)
-        grads = tape.gradient(loss, variables)
-        opt.apply_gradients(zip(grads, variables))
+            loss = tf.reduce_mean(tf.abs(_forward(xb) - yb))
+        grads = tape.gradient(loss, [V, a])
+        opt.apply_gradients(zip(grads, [V, a]))
 
     bs = int(min(batch, max(1, len(Xtr))))
     ds = (tf.data.Dataset.from_tensor_slices((Xtr, ytr))
@@ -331,10 +331,6 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, hidden: int, activation: str,
 
     def _val_l1():
         return float(np.mean(np.abs(_forward(tf.constant(Xval)).numpy() - yval)))
-
-    def _snapshot():
-        return [W1.numpy().copy(), b1.numpy().copy(), W2.numpy().copy(),
-                float(b2.numpy()[0]), w_skip.numpy().copy()]
 
     eval_every = max(1, int(steps) // 20)
     patience = 5
@@ -348,51 +344,54 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, hidden: int, activation: str,
             v = _val_l1()
             if v < best - 1e-6:
                 best, stale = v, 0
-                best_w = _snapshot()
+                best_w = [V.numpy().copy(), a.numpy().copy()]
             else:
                 stale += 1
                 if stale >= patience:
                     break
     if best_w is None:
-        best_w = _snapshot()
+        best_w = [V.numpy().copy(), a.numpy().copy()]
+    Vn, an = best_w
 
-    w1, b1n, w2, b2n, wskip = best_w
-    w2 = np.asarray(w2, np.float32).reshape(-1)                 # (H,)
-    wskip = np.asarray(wskip, np.float32).reshape(-1)           # (M,)
-    group = np.sqrt(np.sum(w1.astype(np.float64) ** 2, axis=1) + wskip.astype(np.float64) ** 2)
-    mx = float(group.max()) if group.size else 0.0
-    surviving = (group > SURVIVOR_TAU * mx) if mx > 0 else np.ones(m, bool)
-    # Hard-zero pruned members so they contribute exactly nothing.
-    w1 = w1.copy()
-    wskip = wskip.copy()
-    w1[~surviving] = 0.0
-    wskip[~surviving] = 0.0
-    bc = BandCombiner(W1=w1.astype(np.float32), b1=np.asarray(b1n, np.float32),
-                      W2=w2, b2=float(b2n), w_skip=wskip,
-                      surviving=np.asarray(surviving, bool), activation=activation)
+    # Post-hoc usage-based pruning: drop members the gate barely uses. Cannot
+    # collapse onto one regime — it only removes members already near-zero.
+    surviving = np.ones(m, bool)
+    bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
+                      centers=centers, sigma=sigma, surviving=surviving)
+    if float(min_usage) > 0.0 and len(Xval):
+        usage = bc.weights(Xval).mean(axis=0)                   # (M,)
+        surviving = usage >= float(min_usage)
+        if not surviving.any():
+            surviving = np.ones(m, bool)                        # never prune all
+        bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
+                          centers=centers, sigma=sigma, surviving=surviving)
     val_l1 = float(np.mean(np.abs(bc.forward_asinh(Xval) - yval)))
     return bc, val_l1
 
 
-def fit_combiner(buffers, member_labels, *, hidden: int = 3, activation: str = "tanh",
-                 lam_group: float = 1e-3, steps: int = 2000, lr: float = 3e-3,
-                 batch: int = 16384, seed: int = 0, holdout: float = 0.1) -> Combiner:
-    """Fit one tiny per-band MLP (L1 loss + group-L1 pruning) for each band in
-    ``buffers`` (``{band: (X(N,M), y(N,))}`` asinh space)."""
+def fit_combiner(buffers, member_labels, *, n_kernels: int = DEFAULT_N_KERNELS,
+                 sigma_scale: float = DEFAULT_SIGMA_SCALE, min_usage: float = 0.0,
+                 level_range: tuple[float, float] = GATE_LEVEL_RANGE,
+                 steps: int = 3000, lr: float = 1e-2, batch: int = 16384,
+                 seed: int = 0, holdout: float = 0.1) -> Combiner:
+    """Fit one per-band RBF brightness gate (convex mixture, L1 loss) for each
+    band in ``buffers`` (``{band: (X(N,M), y(N,))}`` asinh space)."""
     bands: dict[str, BandCombiner] = {}
     vals: list[float] = []
     for name, (X, y) in buffers.items():
         if np.asarray(X).size == 0:
             continue
-        bc, vl = _fit_one_band(X, y, hidden=int(hidden), activation=activation,
-                               lam_group=float(lam_group), steps=int(steps),
-                               lr=float(lr), batch=int(batch), seed=int(seed),
-                               holdout=float(holdout))
+        bc, vl = _fit_one_band(X, y, n_kernels=int(n_kernels),
+                               sigma_scale=float(sigma_scale),
+                               level_range=level_range, min_usage=float(min_usage),
+                               steps=int(steps), lr=float(lr), batch=int(batch),
+                               seed=int(seed), holdout=float(holdout))
         bands[name] = bc
         vals.append(vl)
-    return Combiner(member_labels=list(member_labels), hidden=int(hidden),
-                    lam_group=float(lam_group), bands=bands,
-                    band_names=tuple(buffers.keys()), activation=activation,
+    return Combiner(member_labels=list(member_labels), n_kernels=int(n_kernels),
+                    sigma_scale=float(sigma_scale), min_usage=float(min_usage),
+                    bands=bands, band_names=tuple(buffers.keys()),
+                    level_range=tuple(level_range),
                     val_l1=(float(np.mean(vals)) if vals else None))
 
 
@@ -409,18 +408,19 @@ def save_combiner(comb: Combiner, base_dir: str) -> None:
     os.makedirs(d, exist_ok=True)
     arrays: dict[str, np.ndarray] = {}
     for name, bc in comb.bands.items():
-        arrays[f"{name}__w1"] = np.asarray(bc.W1, np.float32)
-        arrays[f"{name}__b1"] = np.asarray(bc.b1, np.float32)
-        arrays[f"{name}__w2"] = np.asarray(bc.W2, np.float32)
-        arrays[f"{name}__b2"] = np.asarray([bc.b2], np.float32)
-        arrays[f"{name}__wskip"] = np.asarray(bc.w_skip, np.float32)
+        arrays[f"{name}__V"] = np.asarray(bc.V, np.float32)
+        arrays[f"{name}__a"] = np.asarray(bc.a, np.float32)
+        arrays[f"{name}__centers"] = np.asarray(bc.centers, np.float32)
+        arrays[f"{name}__sigma"] = np.asarray([bc.sigma], np.float32)
         arrays[f"{name}__mask"] = np.asarray(bc.surviving, bool)
     np.savez_compressed(os.path.join(d, "combiner.npz"), **arrays)
     manifest = {
+        "kind": comb.kind,
         "member_labels": list(comb.member_labels),
-        "hidden": int(comb.hidden),
-        "lam_group": float(comb.lam_group),
-        "activation": comb.activation,
+        "n_kernels": int(comb.n_kernels),
+        "sigma_scale": float(comb.sigma_scale),
+        "min_usage": float(comb.min_usage),
+        "level_range": list(comb.level_range),
         "band_names": list(comb.band_names),
         "stretch_e": {b: _band_scale(b) for b in comb.band_names},
         "records_fp": comb.records_fp,
@@ -435,27 +435,36 @@ def save_combiner(comb: Combiner, base_dir: str) -> None:
 
 def load_combiner(base_dir: str, *, member_labels: list[str] | None = None
                   ) -> Combiner | None:
-    """Load a persisted combiner, or ``None`` if absent or **stale** (its saved
-    member labels no longer match ``member_labels``, i.e. the ensemble changed)."""
+    """Load a persisted combiner, or ``None`` if absent, **stale** (its saved
+    member labels no longer match ``member_labels``), or an incompatible/old
+    format (e.g. a pre-RBF combiner)."""
     d = _combiner_dir(base_dir)
     jp, npzp = os.path.join(d, "combiner.json"), os.path.join(d, "combiner.npz")
     if not (os.path.exists(jp) and os.path.exists(npzp)):
         return None
-    with open(jp) as f:
-        man = json.load(f)
-    if member_labels is not None and list(man["member_labels"]) != list(member_labels):
+    try:
+        with open(jp) as f:
+            man = json.load(f)
+        if man.get("kind") != "rbf_gate":
+            return None
+        if member_labels is not None and list(man["member_labels"]) != list(member_labels):
+            return None
+        z = np.load(npzp)
+        bands: dict[str, BandCombiner] = {}
+        for name in man["band_names"]:
+            bands[name] = BandCombiner(
+                V=z[f"{name}__V"], a=z[f"{name}__a"],
+                centers=z[f"{name}__centers"].reshape(-1),
+                sigma=float(z[f"{name}__sigma"][0]),
+                surviving=z[f"{name}__mask"])
+        return Combiner(
+            member_labels=list(man["member_labels"]),
+            n_kernels=int(man.get("n_kernels", DEFAULT_N_KERNELS)),
+            sigma_scale=float(man.get("sigma_scale", DEFAULT_SIGMA_SCALE)),
+            min_usage=float(man.get("min_usage", 0.0)), bands=bands,
+            band_names=tuple(man["band_names"]),
+            level_range=tuple(man.get("level_range", GATE_LEVEL_RANGE)),
+            records_fp=man.get("records_fp"), starfull=bool(man.get("starfull", True)),
+            val_l1=man.get("val_l1"), fit_meta=man.get("fit_meta", {}))
+    except (OSError, ValueError, KeyError, TypeError):
         return None
-    z = np.load(npzp)
-    bands: dict[str, BandCombiner] = {}
-    for name in man["band_names"]:
-        bands[name] = BandCombiner(
-            W1=z[f"{name}__w1"], b1=z[f"{name}__b1"],
-            W2=z[f"{name}__w2"].reshape(-1), b2=float(z[f"{name}__b2"][0]),
-            w_skip=z[f"{name}__wskip"].reshape(-1),
-            surviving=z[f"{name}__mask"], activation=man["activation"])
-    return Combiner(
-        member_labels=list(man["member_labels"]), hidden=int(man["hidden"]),
-        lam_group=float(man["lam_group"]), bands=bands,
-        band_names=tuple(man["band_names"]), activation=man["activation"],
-        records_fp=man.get("records_fp"), starfull=bool(man.get("starfull", True)),
-        val_l1=man.get("val_l1"), fit_meta=man.get("fit_meta", {}))

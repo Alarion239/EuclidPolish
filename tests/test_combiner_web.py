@@ -34,7 +34,7 @@ def _fit_tiny_combiner():
     y = np.arcsinh(np.abs(rng.normal(30, 20, n)) ** 2 / 100.0).astype(np.float32)
     X = np.stack([y + rng.normal(0, .02, n), rng.normal(0, 1, n)], 1).astype(np.float32)
     buffers = {b: (X, y) for b in BANDS}
-    comb = fit_combiner(buffers, ["00·psnr", "01·psnr"], hidden=2, steps=150)
+    comb = fit_combiner(buffers, ["00·psnr", "01·psnr"], n_kernels=6, steps=150)
     save_combiner(comb, ev._ensemble_out_dir())
     return comb
 
@@ -119,7 +119,7 @@ def test_job_combiner_fit_reuses_validate_cubes(tmp_path, monkeypatch):
         raise AssertionError("evaluate_on_records ran despite a valid cache")
     monkeypatch.setattr(ev, "evaluate_on_records", _boom)
 
-    summary = ev.job_combiner_fit(_Cap(), num_images=2, hidden=2, lam_group=1e-3)
+    summary = ev.job_combiner_fit(_Cap(), num_images=2, n_kernels=6)
     assert summary["n_members"] == 2
     assert set(summary["surviving"]) == set(BANDS)
 

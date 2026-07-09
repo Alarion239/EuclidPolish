@@ -626,12 +626,13 @@ def _reuse_validate_cubes(val_dir: str, records_fp) -> tuple[list[int], list[str
     return indices, labels
 
 
-def job_combiner_fit(cap, *, num_images: int, hidden: int = 3,
-                     lam_group: float = 1e-3, activation: str = "tanh") -> dict:
-    """Fit the STARFULL combiner LOCALLY on the validate split. Reuses cached
-    validate member cubes when their fingerprint matches; else runs member
-    inference once and caches them (``cubes_validate/``). Persists the combiner
-    to ``<ensemble>/combiner/`` and writes the combiner payload."""
+def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
+                     min_usage: float = 0.0) -> dict:
+    """Fit the STARFULL combiner (per-band RBF brightness gate) LOCALLY on the
+    validate split. Reuses cached validate member cubes when their fingerprint
+    matches; else runs member inference once and caches them
+    (``cubes_validate/``). Persists to ``<ensemble>/combiner/`` + writes the
+    combiner payload."""
     from euclid_polish.eval.combiner import (
         BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner)
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
@@ -686,15 +687,15 @@ def job_combiner_fit(cap, *, num_images: int, hidden: int = 3,
     buffers = acc.buffers()
     if not any(np.asarray(X).size for X, _ in buffers.values()):
         raise RuntimeError("no validate pixels collected — check the records.")
-    comb = fit_combiner(buffers, labels, hidden=int(hidden),
-                        activation=activation, lam_group=float(lam_group))
+    comb = fit_combiner(buffers, labels, n_kernels=int(n_kernels),
+                        min_usage=float(min_usage))
     comb.records_fp = fp
     comb.starfull = True
     comb.fit_meta = {"subset": "validate", "num_images": int(num_images)}
     save_combiner(comb, _ensemble_out_dir())
     compute_combiner_payload()
-    return {"n_members": len(labels), "hidden": int(hidden),
-            "lam_group": float(lam_group), "val_l1": comb.val_l1,
+    return {"n_members": len(labels), "n_kernels": int(n_kernels),
+            "min_usage": float(min_usage), "val_l1": comb.val_l1,
             "surviving": comb.surviving_members(), "subset": "validate"}
 
 
@@ -713,9 +714,9 @@ def compute_combiner_payload() -> dict | None:
         eff[b] = {"brightness_e": _jsonable(ew["brightness_e"]),
                   "jacobian": _jsonable(ew["jacobian"])}
     payload = {
-        "available": True, "stale": bool(stale),
-        "member_labels": list(comb.member_labels), "hidden": int(comb.hidden),
-        "lam_group": float(comb.lam_group), "activation": comb.activation,
+        "available": True, "stale": bool(stale), "kind": comb.kind,
+        "member_labels": list(comb.member_labels),
+        "n_kernels": int(comb.n_kernels), "min_usage": float(comb.min_usage),
         "val_l1": comb.val_l1, "band_names": list(comb.band_names),
         "surviving": comb.surviving_members(), "eff_weights": eff,
     }

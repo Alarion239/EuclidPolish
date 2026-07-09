@@ -30,7 +30,7 @@ function metricsHtml(comb, evals) {
     ? ` · <b style="color:#c33">STALE</b> (membership changed since fit — re-fit)` : "";
   return `<table class="mini-table">${rows}</table>`
        + `<p class="hint">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
-       + ` · hidden ${comb.hidden} · λ<sub>L1</sub> ${comb.lam_group}${stale}</p>`;
+       + ` · RBF gate, K=${comb.n_kernels} kernels · prune ${comb.min_usage}${stale}</p>`;
 }
 
 function survivorsHtml(comb) {
@@ -116,9 +116,9 @@ function render(root, comb, evals) {
         ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
       </select>
       <div id="ens-comb-eff"></div>
-      <p class="hint">Local ∂output/∂member at each brightness (all-members-equal
-        baseline): how much the combiner leans on each member as pixels get
-        brighter. Pruned members read ≈0.</p>
+      <p class="hint">The gate weight of each member vs pixel brightness (convex,
+        sums to 1): how much the combiner leans on each member as pixels get
+        brighter. Faint → L1 members; bright → star-reproducing members.</p>
     </div>`;
   const sel = root.querySelector("#ens-comb-band");
   const host = root.querySelector("#ens-comb-eff");

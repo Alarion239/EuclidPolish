@@ -76,17 +76,17 @@ def register(app):
         except (TypeError, ValueError):
             num_images = 100
         try:
-            hidden = max(1, min(8, int(request.form.get("hidden", 3) or 3)))
+            n_kernels = max(2, min(32, int(request.form.get("n_kernels", 12) or 12)))
         except (TypeError, ValueError):
-            hidden = 3
+            n_kernels = 12
         try:
-            lam_group = float(request.form.get("lam_group", 1e-3) or 1e-3)
+            min_usage = max(0.0, float(request.form.get("min_usage", 0.0) or 0.0))
         except (TypeError, ValueError):
-            lam_group = 1e-3
+            min_usage = 0.0
         job_id = REGISTRY.spawn(
-            f"combiner: fit on validate ({num_images} fields, hidden={hidden})",
+            f"combiner: fit on validate ({num_images} fields, K={n_kernels})",
             target=lambda cap: job_combiner_fit(
-                cap, num_images=num_images, hidden=hidden, lam_group=lam_group),
+                cap, num_images=num_images, n_kernels=n_kernels, min_usage=min_usage),
         )
         return jsonify({"job_id": job_id})
 
