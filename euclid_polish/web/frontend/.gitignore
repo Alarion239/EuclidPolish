@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.vite/
+# NOTE: ../static/dist (the build output) is intentionally COMMITTED so the
+# Flask app serves the SPA without requiring an npm build on every machine.

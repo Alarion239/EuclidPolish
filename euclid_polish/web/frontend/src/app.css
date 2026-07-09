@@ -1,0 +1,54 @@
+/* App shell: fixed rail + fluid full-bleed stage. Uses the whole screen. */
+.shell { display: grid; grid-template-columns: var(--rail-w) 1fr; height: 100%; }
+
+/* ---- rail ---- */
+.rail {
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #0b1019, var(--bg-1));
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+.rail__brand { display: flex; align-items: center; gap: var(--s3); padding: var(--s5) var(--s4) var(--s4); }
+.rail__logo { font-size: 26px; color: var(--accent); text-shadow: 0 0 18px var(--accent-soft); }
+.rail__title { font: 700 15px/1 var(--font-mono); letter-spacing: .06em; }
+.rail__title span { color: var(--accent); }
+.rail__tag { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); margin-top: 3px; }
+
+.rail__scroll { flex: 1; overflow-y: auto; padding: var(--s2) var(--s3) var(--s4); min-height: 0; }
+.rail__sec { margin-top: var(--s4); }
+.rail__sechead { padding: 0 var(--s3) var(--s2); }
+
+.rail__item {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 8px var(--s3); border-radius: var(--r-sm);
+  color: var(--text-dim); font-size: 13px; font-weight: 500;
+  transition: background .1s, color .1s;
+}
+.rail__item span:first-child { flex: 1; }
+.rail__item:hover { background: var(--surface-1); color: var(--text); }
+.rail__item.is-active { background: var(--accent-soft); color: var(--accent-press); }
+.rail__item.is-active::before {
+  content: ""; position: absolute; left: 0; width: 3px; height: 18px;
+  background: var(--accent); border-radius: 0 3px 3px 0; margin-left: calc(-1 * var(--s3));
+}
+.rail__item { position: relative; }
+.rail__item--legacy { color: var(--text-faint); }
+.rail__ext { font-size: 12px; opacity: .5; }
+.rail__badge {
+  font: 600 9px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft); padding: 3px 5px; border-radius: var(--r-pill);
+}
+.rail__foot { padding: var(--s3) var(--s4); border-top: 1px solid var(--border); }
+.rail__foot-link { font-size: 12px; color: var(--text-faint); }
+.rail__foot-link:hover { color: var(--text); }
+
+/* ---- stage ---- */
+.stage { overflow-y: auto; min-width: 0; }
+.page { padding: var(--s5) var(--s6) var(--s7); max-width: 1600px; margin: 0 auto; }
+.page__head { display: flex; align-items: flex-end; gap: var(--s4); margin-bottom: var(--s5); }
+.page__title { font-size: 24px; letter-spacing: -0.02em; }
+.page__sub { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+.page__spacer { flex: 1; }
+
+.grid { display: grid; gap: var(--s4); }
+.row { display: flex; gap: var(--s4); flex-wrap: wrap; align-items: center; }

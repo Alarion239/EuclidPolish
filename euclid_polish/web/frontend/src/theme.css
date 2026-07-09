@@ -1,0 +1,107 @@
+/* ============================================================================
+   EuclidPolish — "observatory console" design system.
+   Dark, high-contrast instrumentation. One source of truth for color, space,
+   type and radius; every component reads these tokens (no hardcoded hex).
+   ============================================================================ */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+:root {
+  /* — surfaces (deep space → panel) — */
+  --bg-0: #080b11;          /* app background */
+  --bg-1: #0e131c;          /* rail / sunken */
+  --surface-1: #131a26;     /* card */
+  --surface-2: #1a2333;     /* raised / hover */
+  --surface-3: #222d40;     /* active / input */
+  --border: #26303f;
+  --border-strong: #33415a;
+
+  /* — ink — */
+  --text: #e5edf7;
+  --text-dim: #9aa8bd;
+  --text-faint: #64728a;
+
+  /* — instrument accents — */
+  --accent: #4c9ffe;        /* primary (interactive) */
+  --accent-press: #6fb2ff;
+  --accent-soft: #4c9ffe22;
+  --amber: #ffb454;         /* SR / highlight */
+  --cyan: #33d6c4;
+  --violet: #b48ef2;
+  --magenta: #ff77c8;
+
+  /* — status — */
+  --good: #56d68a;
+  --warn: #ffcc66;
+  --bad: #ff6b6b;
+  --good-soft: #56d68a1c;
+  --warn-soft: #ffcc661c;
+  --bad-soft: #ff6b6b1c;
+
+  /* — data-series palette (charts) — */
+  --series-baseline: #ff5c6c;   /* LR / floor-to-beat */
+  --series-mean: #4c9ffe;       /* ensemble mean */
+  --series-comb: #ffb454;       /* combiner */
+  --series-muted: #55627a;      /* faint member / model–model pairs */
+
+  /* — type — */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* — space scale (4px base) — */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+
+  /* — radius / elevation — */
+  --r-sm: 5px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --shadow-1: 0 1px 2px #0006;
+  --shadow-2: 0 6px 22px -8px #000a;
+  --ring: 0 0 0 2px var(--accent-soft), 0 0 0 1px var(--accent);
+
+  /* — layout — */
+  --rail-w: 232px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background:
+    radial-gradient(1200px 700px at 78% -12%, #16233a55, transparent 60%),
+    radial-gradient(900px 600px at -8% 8%, #12203a44, transparent 55%),
+    var(--bg-0);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-press); }
+
+::selection { background: var(--accent-soft); }
+
+/* tabular figures for all numeric/mono contexts */
+.mono, code, kbd { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* scrollbars — thin, on-theme */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-pill); border: 3px solid transparent; background-clip: content-box; }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+
+/* uppercase micro-label used for section headers / eyebrows */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}

@@ -28,6 +28,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     url_for,
 )
 
@@ -147,6 +148,8 @@ def create_app() -> Flask:
         "/ensemble/",            # records; render + evaluate jobs need no SSH
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
+        "/app",                  # new React console (SPA) — local-first, reads
+                                 # the same offline endpoints as the classic UI
     )
 
     @app.before_request
@@ -206,6 +209,26 @@ def create_app() -> Flask:
         # call sites (e.g. the connection-error bounce) still resolve, and
         # the root URL lands somewhere useful instead of 404ing.
         return redirect(url_for("fasrc_page"))
+
+    # ---- new React console (SPA) ----
+    # The redesigned UI is a Vite/React single-page app built into
+    # static/dist/. Flask serves its shell for every /app/* path (client-side
+    # routing) and Flask's own static handler serves /static/dist/* assets.
+    # The classic Jinja pages stay live at their routes during the migration.
+    _spa_index = os.path.join(here, "static", "dist", "index.html")
+
+    @app.route("/app")
+    @app.route("/app/")
+    @app.route("/app/<path:_sub>")
+    def react_console(_sub: str = ""):
+        if not os.path.isfile(_spa_index):
+            return (
+                "React console not built. Run:\n"
+                "  cd euclid_polish/web/frontend && npm install && npm run build\n",
+                503,
+                {"Content-Type": "text/plain"},
+            )
+        return send_file(_spa_index)
 
     # ---- modular route groups (extracted from this file) ----
     config.register(app)
