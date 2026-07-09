@@ -711,7 +711,8 @@ def compute_combiner_payload() -> dict | None:
     eff = {}
     for b in comb.bands:
         ew = comb.effective_weights(b)
-        eff[b] = {"brightness_e": _jsonable(ew["brightness_e"]),
+        eff[b] = {"brightness_asinh": _jsonable(ew["brightness_asinh"]),
+                  "brightness_e": _jsonable(ew["brightness_e"]),
                   "jacobian": _jsonable(ew["jacobian"])}
     payload = {
         "available": True, "stale": bool(stale), "kind": comb.kind,

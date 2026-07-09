@@ -105,17 +105,20 @@ function drawImportance(host, comb) {
 function drawEffWeights(host, comb, band) {
   const ew = (comb.eff_weights || {})[band];
   host.innerHTML = "";
-  if (!ew || !ew.brightness_asinh || !ew.jacobian) {
+  // x = asinh brightness levels; derive from brightness_e if not sent explicitly.
+  const bx = (ew && ew.brightness_asinh)
+    || ((ew && ew.brightness_e) || []).map((e) => (e == null ? null : Math.asinh(e / 100)));
+  if (!ew || !ew.jacobian || !bx || !bx.length) {
     host.innerHTML = `<p class="muted">no curve for ${band}</p>`;
     return;
   }
-  const bx = ew.brightness_asinh;                 // asinh brightness levels
   const jac = ew.jacobian;                        // [L][M], rows sum to 1
   const nM = (jac[0] || []).length;
   const surviving = (comb.surviving || {})[band] || [];
   const labels = comb.member_labels || [];
   const W = 800, H = 300, PL = 56, PR = 150, PT = 16, PB = 46;
-  const xmin = Math.min(...bx), xmax = Math.max(...bx);
+  const fin = bx.filter((v) => v != null && isFinite(v));
+  const xmin = Math.min(...fin), xmax = Math.max(...fin);
   const sx = (v) => PL + (v - xmin) / (xmax - xmin || 1) * (W - PL - PR);
   const sy = (w) => H - PB - w * (H - PT - PB);
   let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="gate weight vs brightness" style="color:${TXT};font:12px sans-serif">`;
@@ -139,7 +142,7 @@ function drawEffWeights(host, comb, band) {
     let d = "";
     for (let i = 0; i < bx.length; i++) {
       const v = jac[i] && jac[i][m];
-      if (v == null || !isFinite(v)) continue;
+      if (v == null || !isFinite(v) || bx[i] == null || !isFinite(bx[i])) continue;
       d += (d ? "L" : "M") + sx(bx[i]).toFixed(1) + "," + sy(v).toFixed(1) + " ";
     }
     if (d) s += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${dead ? 1 : 2}" opacity="${dead ? 0.3 : 1}"/>`;
