@@ -717,6 +717,9 @@ def compute_combiner_payload() -> dict | None:
     payload = {
         "available": True, "stale": bool(stale), "kind": comb.kind,
         "member_labels": list(comb.member_labels),
+        "members": [{"label": str(lbl), **meta} for lbl, meta in
+                    zip(comb.member_labels,
+                        _member_meta_from_labels(comb.member_labels))],
         "n_kernels": int(comb.n_kernels), "min_usage": float(comb.min_usage),
         "val_l1": comb.val_l1, "band_names": list(comb.band_names),
         "surviving": comb.surviving_members(), "eff_weights": eff,
@@ -965,15 +968,22 @@ def _iter_cached_fields():
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
-    """Per-member ``{"loss", "blocks"}`` for the power-spectrum line
-    grouping, positional with ``labels`` ("NN·psnr" → member_NN)."""
+    """Per-member ``{"loss", "blocks", "psnr"}`` for line coloring (loss / depth
+    / test-PSNR gradient), positional with ``labels`` ("NN·psnr" → member_NN)."""
     base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    sub = eval_subset(rdir) if rdir else "test"
+    rec_fp = _eval_records_fingerprint(rdir, sub)
+    cache = _load_member_psnr_cache()
     meta = []
     for lbl in labels:
-        d = os.path.join(base, f"member_{str(lbl).split('·')[0]}")
+        name = f"member_{str(lbl).split('·')[0]}"
+        d = os.path.join(base, name)
         origin = _member_origin(d)
+        entry = _member_psnr_entry(cache, name, d, sub, records_fp=rec_fp)
         meta.append({"loss": ((origin or {}).get("loss_norm") or "l1"),
-                     "blocks": infer_checkpoint_num_res_blocks(d)})
+                     "blocks": infer_checkpoint_num_res_blocks(d),
+                     "psnr": (entry or {}).get("psnr")})
     return meta
 
 

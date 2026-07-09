@@ -9,6 +9,50 @@ const COLORS = [
 ];
 const BAND_COLORS = { VIS: "#4477aa", Y_E: "#66ccee", J_E: "#228833", H_E: "#ccbb44" };
 const TXT = "var(--text-primary,#333)";
+// Member-line coloring, matching the power-spectrum plot's palettes.
+const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214", berhu: "#9970ab" };
+const GROUP_PALETTE = ["#3b6fb0", "#5aae61", "#e08214", "#d6604d",
+                       "#9970ab", "#e8c944", "#59c7d6", "#e07356"];
+const NO_DATA = "#7a8292";
+const VIRIDIS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+function viridis(t) {
+  const x = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const i = Math.min(VIRIDIS.length - 2, Math.floor(x)), f = x - i;
+  const c = VIRIDIS[i].map((a, k) => Math.round(a + (VIRIDIS[i + 1][k] - a) * f));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+// Per-member metadata aligned to comb.member_labels (from the combiner payload,
+// falling back to evals.members), then a color+tag per member for a color mode.
+function memberMeta(comb, evals) {
+  const src = (comb.members && comb.members.length) ? comb.members
+    : ((evals && evals.members) || []);
+  const byLabel = new Map(src.map((m) => [m.label, m]));
+  return (comb.member_labels || []).map((lbl, i) => byLabel.get(lbl) || src[i] || { label: lbl });
+}
+
+function memberColorsFor(members, mode) {
+  if (mode === "loss") {
+    return members.map((m) => {
+      const l = (m.loss || "l1").toLowerCase();
+      return { color: LOSS_COLORS[l] || NO_DATA, tag: l.toUpperCase() };
+    });
+  }
+  if (mode === "depth") {
+    const ds = [...new Set(members.map((m) => m.blocks).filter(Boolean))].sort((a, b) => a - b);
+    const by = new Map(ds.map((d, i) => [d, GROUP_PALETTE[i % GROUP_PALETTE.length]]));
+    return members.map((m) => (m.blocks ? { color: by.get(m.blocks), tag: `${m.blocks}b` }
+      : { color: NO_DATA, tag: "?" }));
+  }
+  if (mode === "psnr") {
+    const ps = members.map((m) => m.psnr).filter((v) => v != null && isFinite(v));
+    const lo = Math.min(...ps), hi = Math.max(...ps);
+    return members.map((m) => ((m.psnr != null && isFinite(m.psnr))
+      ? { color: viridis((m.psnr - lo) / ((hi - lo) || 1)), tag: (+m.psnr).toFixed(2) }
+      : { color: NO_DATA, tag: "?" }));
+  }
+  return members.map(() => ({ color: null, tag: null }));   // uniform → per-member COLORS
+}
 
 function fmt(x, d = 3) {
   return (x == null || !isFinite(x)) ? "—" : (Math.round(x * 10 ** d) / 10 ** d);
@@ -102,7 +146,7 @@ function drawImportance(host, comb) {
 
 // Gate weight (convex, sums to 1) of each member vs pixel brightness, one line
 // per member, for the selected band — with axis ticks, labels and a legend.
-function drawEffWeights(host, comb, band) {
+function drawEffWeights(host, comb, band, members, mode) {
   const ew = (comb.eff_weights || {})[band];
   host.innerHTML = "";
   // x = asinh brightness levels; derive from brightness_e if not sent explicitly.
@@ -136,8 +180,10 @@ function drawEffWeights(host, comb, band) {
   s += `<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H - PB}" stroke="currentColor" opacity="0.4"/>`;
   s += `<text x="${(PL + W - PR) / 2}" y="${H - 6}" text-anchor="middle" fill="currentColor" opacity="0.85">pixel brightness [e⁻]</text>`;
   s += `<text transform="translate(14 ${(PT + H - PB) / 2}) rotate(-90)" text-anchor="middle" fill="currentColor" opacity="0.85">gate weight</text>`;
+  const cm = memberColorsFor(members || [], mode);
   for (let m = 0; m < nM; m++) {
-    const col = COLORS[m % COLORS.length];
+    const col = (cm[m] && cm[m].color) || COLORS[m % COLORS.length];
+    const tag = cm[m] && cm[m].tag;
     const dead = surviving[m] === false;
     let d = "";
     for (let i = 0; i < bx.length; i++) {
@@ -148,7 +194,7 @@ function drawEffWeights(host, comb, band) {
     if (d) s += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${dead ? 1 : 2}" opacity="${dead ? 0.3 : 1}"/>`;
     const ly = PT + 14 + m * 16;
     s += `<line x1="${W - PR + 8}" y1="${ly - 4}" x2="${W - PR + 24}" y2="${ly - 4}" stroke="${col}" stroke-width="2" opacity="${dead ? 0.3 : 1}"/>`;
-    s += `<text x="${W - PR + 28}" y="${ly}" dominant-baseline="central" fill="currentColor" opacity="${dead ? 0.4 : 0.9}">${labels[m] || m}${dead ? " (pruned)" : ""}</text>`;
+    s += `<text x="${W - PR + 28}" y="${ly}" dominant-baseline="central" fill="currentColor" opacity="${dead ? 0.4 : 0.9}">${labels[m] || m}${tag ? ` · ${tag}` : ""}${dead ? " (pruned)" : ""}</text>`;
   }
   host.innerHTML = s + "</svg>";
 }
@@ -163,6 +209,12 @@ function render(root, comb, evals) {
       <h4 style="margin:1rem 0 .2rem;text-align:center">gate weight vs brightness
         <select id="ens-comb-band" style="margin-left:.4rem">
           ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
+        </select>
+        <select id="ens-comb-color" style="margin-left:.4rem">
+          <option value="">uniform</option>
+          <option value="loss">by loss</option>
+          <option value="depth">by depth</option>
+          <option value="psnr">by psnr</option>
         </select></h4>
       <div id="ens-comb-eff"></div>
       <p class="hint" style="text-align:center">Convex gate weight of each member (sums to 1)
@@ -170,10 +222,13 @@ function render(root, comb, evals) {
         star-reproducing members.</p>
     </div>`;
   drawImportance(root.querySelector("#ens-comb-imp"), comb);
+  const members = memberMeta(comb, evals);
   const sel = root.querySelector("#ens-comb-band");
+  const colorSel = root.querySelector("#ens-comb-color");
   const host = root.querySelector("#ens-comb-eff");
-  const draw = () => drawEffWeights(host, comb, sel.value);
+  const draw = () => drawEffWeights(host, comb, sel.value, members, colorSel.value);
   sel.addEventListener("change", draw);
+  colorSel.addEventListener("change", draw);
   draw();
 }
 
