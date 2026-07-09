@@ -2,6 +2,7 @@
    as {domain, ticks, series, guides}; no page hand-rolls axes again. Retina
    crisp, resizes with its container, themed from CSS tokens. */
 import { useEffect, useRef } from "react";
+import { viridis } from "../colors";
 
 export type Series = {
   x: number[];
@@ -22,6 +23,19 @@ export type Guide = {
 };
 export type Tick = { v: number; label: string };
 
+/* Optional density layer drawn UNDER the grid/guides/series — a 2D histogram
+   painted as a viridis heatmap (log-count normalized, empty cells transparent).
+   Edges are in the same data units as the axes (pre-transform your log axes
+   into log10 values and keep the plot linear). Lets the std-vs-error /
+   std-vs-brightness diagnostics render fully client-side, cloud and all. */
+export type Heat = {
+  z: number[][];        // z[i][j] = count in x-bin i, y-bin j
+  xEdges: number[];     // length z.length + 1
+  yEdges: number[];     // length z[0].length + 1
+  max?: number;         // log-norm ceiling (default = max positive count)
+  color?: (t: number) => string;  // t∈[0,1] → css color (default viridis)
+};
+
 export type PlotProps = {
   xDomain: [number, number];
   yDomain: [number, number];
@@ -33,6 +47,7 @@ export type PlotProps = {
   title?: string;
   series: Series[];
   guides?: Guide[];
+  heat?: Heat;
   height?: number;      /* fixed px; omit → aspect-driven */
   aspect?: number;      /* height = width * aspect (default 0.5) */
 };
@@ -104,6 +119,30 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     ctx.font = '600 13px "IBM Plex Sans", sans-serif';
     ctx.textAlign = "left";
     ctx.fillText(p.title, m.l, 16);
+  }
+
+  // density heatmap (under everything) — clipped to the plot area
+  if (p.heat && p.heat.z.length && p.heat.z[0]?.length) {
+    const { z, xEdges, yEdges } = p.heat;
+    const color = p.heat.color ?? viridis;
+    let zmax = p.heat.max ?? 0;
+    if (!p.heat.max) for (const row of z) for (const v of row) if (v > zmax) zmax = v;
+    const denom = Math.log10(Math.max(zmax, 2));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+    for (let i = 0; i < z.length; i++) {
+      const x0 = tx(xEdges[i]), x1 = tx(xEdges[i + 1]);
+      for (let j = 0; j < z[i].length; j++) {
+        const c = z[i][j];
+        if (!(c > 0)) continue;
+        const t = denom > 0 ? Math.min(1, Math.log10(c) / denom) : 1;
+        const y0 = ty(yEdges[j]), y1 = ty(yEdges[j + 1]);
+        ctx.fillStyle = color(t);
+        // +0.6 overlap kills seams between adjacent cells on retina.
+        ctx.fillRect(x0, Math.min(y0, y1), x1 - x0 + 0.6, Math.abs(y1 - y0) + 0.6);
+      }
+    }
+    ctx.restore();
   }
 
   // grid + ticks

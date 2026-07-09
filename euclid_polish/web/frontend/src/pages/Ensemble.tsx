@@ -11,7 +11,7 @@ import { StepById } from "../fasrc";
 import { useThemeValue } from "../theme";
 import { CutoutViewer, type ViewerApi } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
-import Plot, { Legend, type Series, type Guide, type Tick } from "../charts/Plot";
+import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, DefList, Empty, Field,
   Input, NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
@@ -46,10 +46,23 @@ type PS = {
   r_comb?: (number | null)[]; r_members?: (number | null)[][];
   r_pairs?: (number | null)[][]; r_cross?: (number | null)[];
 };
+/* Pixel diagnostics (VIS, electrons). All *_edges / med_* arrays are already in
+   the axis units the frontend plots: std_err in log10(e⁻) on both axes;
+   bright_std x is asinh(HR/stretch), y is log10(e⁻). hist[i][j] = pixel count. */
+type StdErr = {
+  edges: (number | null)[]; hist: number[][];
+  med_std: (number | null)[]; med_err: (number | null)[];
+};
+type BrightStd = {
+  bright_edges: (number | null)[]; std_edges: (number | null)[]; hist: number[][];
+  bright: (number | null)[]; lo: (number | null)[]; med: (number | null)[]; hi: (number | null)[];
+  stretch: number;
+};
 type Evals = {
   ps: PS | null; guides?: { theta_min?: number; lr_scale?: number; vis_fwhm?: number };
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null }[];
   n_fields?: number; n_members?: number;
+  std_err?: StdErr | null; bright_std?: BrightStd | null;
   combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
 };
 
@@ -72,6 +85,21 @@ type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psn
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const hasData = (a?: (number | null)[]) => !!a && a.some((v) => v != null && isFinite(v as number));
 const finite = (a: [number, number][], i: 0 | 1) => a.map((p) => p[i]);
+const num = (a?: (number | null)[]) => (a ?? []).map((v) => (v == null ? NaN : v));
+
+const SUP: Record<string, string> = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
+const sup = (n: number) => String(n).split("").map((c) => SUP[c] ?? c).join("");
+/* Integer-decade ticks on a log10-valued (linear-drawn) axis → 10ⁿ labels. */
+const logDecadeTicks = (lo: number, hi: number, step = 2): Tick[] => {
+  const out: Tick[] = [];
+  for (let e = Math.ceil(lo); e <= Math.floor(hi); e += step) out.push({ v: e, label: `10${sup(e)}` });
+  return out;
+};
+/* Brightness axis: asinh(e⁻/stretch) tick positions labelled in electrons. */
+const brightTicks = (stretch: number): Tick[] =>
+  [0, 100, 1e3, 1e4, 1e5, 1e6].map((e, i) => ({
+    v: Math.asinh(e / stretch), label: i === 0 ? "0" : i === 1 ? "100" : `10${sup([0, 0, 3, 4, 5, 6][i])}`,
+  }));
 
 const DIAG_TABS = [
   { id: "power-spectrum", label: "power spectrum" },
@@ -374,6 +402,56 @@ function Evaluations(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ps, members, colorBy, evals, theme]);
 
+  // std vs error — density cloud + median-|error|-per-std curve, both axes
+  // log10(e⁻). Diagonal reference lines (|err|=σ, 0.674σ) ride as 2-pt series.
+  const stdErr = useMemo(() => {
+    const d = evals?.std_err;
+    if (!d?.hist?.length) return null;
+    const edges = num(d.edges);
+    const lo = edges[0], hi = edges[edges.length - 1];
+    const heat: Heat = { z: d.hist, xEdges: edges, yEdges: edges };
+    const g = Math.log10(0.6745);
+    const series: Series[] = [
+      { x: [lo, hi], y: [lo, hi], color: C.guide, width: 1.3, dash: [6, 3] },
+      { x: [lo, hi], y: [lo + g, hi + g], color: C.guide, width: 1.3, dash: [2, 3] },
+      { x: num(d.med_std), y: num(d.med_err), color: C.baseline, width: 2.6, dots: true },
+    ];
+    const ticks = logDecadeTicks(lo, hi);
+    const legend = [
+      { label: "median |error| per σ bin", color: C.baseline },
+      { label: "|error| = σ", color: C.guide, dash: true },
+      { label: "0.674·σ (calibrated Gaussian)", color: C.guide, dash: true },
+    ];
+    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evals, theme]);
+
+  // std vs brightness — density cloud + median σ (with 16–84%) per HR-brightness
+  // bin. x = asinh(HR/stretch), y = log10 σ(e⁻).
+  const brightStd = useMemo(() => {
+    const d = evals?.bright_std;
+    if (!d?.hist?.length) return null;
+    const bx = num(d.bright_edges), sy = num(d.std_edges);
+    const heat: Heat = { z: d.hist, xEdges: bx, yEdges: sy };
+    const bright = num(d.bright);
+    const series: Series[] = [
+      { x: bright, y: num(d.lo), color: C.baseline, width: 1, alpha: 0.5, dash: [4, 3] },
+      { x: bright, y: num(d.hi), color: C.baseline, width: 1, alpha: 0.5, dash: [4, 3] },
+      { x: bright, y: num(d.med), color: C.baseline, width: 2.6, dots: true },
+    ];
+    const legend = [
+      { label: "median σ per brightness bin", color: C.baseline },
+      { label: "16–84%", color: C.baseline, dash: true },
+    ];
+    return {
+      heat, series,
+      xDomain: [bx[0], bx[bx.length - 1]] as [number, number],
+      yDomain: [sy[0], sy[sy.length - 1]] as [number, number],
+      xTicks: brightTicks(d.stretch), yTicks: logDecadeTicks(sy[0], sy[sy.length - 1]), legend,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evals, theme]);
+
   const cb = evals?.combiner;
   return (
     <Card>
@@ -402,6 +480,26 @@ function Evaluations(
                       {cb.psnr >= cb.ensemble_mean_psnr ? "+" : ""}{(cb.psnr - cb.ensemble_mean_psnr).toFixed(2)} vs mean
                     </Badge>}
                 </div>
+              </>
+            )
+          ) : tab === "std-error" ? (
+            !stdErr ? <Empty>no evaluation cached for <b>{mode}</b> — run “Evaluate on test set”.</Empty> : (
+              <>
+                <Plot title="Does disagreement predict error?  (VIS, per pixel)"
+                  xDomain={stdErr.domain} yDomain={stdErr.domain} xTicks={stdErr.ticks} yTicks={stdErr.ticks}
+                  xLabel="cross-member per-pixel σ  [e⁻]" yLabel="|ensemble mean − HR|  [e⁻]"
+                  heat={stdErr.heat} series={stdErr.series} aspect={0.62} />
+                <Legend items={stdErr.legend} />
+              </>
+            )
+          ) : tab === "std-brightness" ? (
+            !brightStd ? <Empty>no evaluation cached for <b>{mode}</b> — run “Evaluate on test set”.</Empty> : (
+              <>
+                <Plot title="Where does disagreement live?  (VIS, per pixel)"
+                  xDomain={brightStd.xDomain} yDomain={brightStd.yDomain} xTicks={brightStd.xTicks} yTicks={brightStd.yTicks}
+                  xLabel="HR pixel brightness  [e⁻]  (asinh axis)" yLabel="cross-member per-pixel σ  [e⁻]"
+                  heat={brightStd.heat} series={brightStd.series} aspect={0.62} />
+                <Legend items={brightStd.legend} />
               </>
             )
           ) : (
