@@ -24,7 +24,7 @@ from euclid_polish.web.helpers.viewer_data import ViewerError
 def _params() -> dict:
     """Whitelisted collection params from the query string."""
     out = {}
-    for key in ("subset",):
+    for key in ("subset", "mode"):
         val = request.args.get(key)
         if val is not None:
             out[key] = val

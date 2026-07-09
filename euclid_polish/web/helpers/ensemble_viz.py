@@ -8,6 +8,7 @@ where the SR is invented), and the HR truth when available.
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
@@ -63,12 +64,58 @@ def ensemble_dir() -> str:
     return default_ensemble_dir()
 
 
+_LEGACY_LAYOUT_MIGRATED = False
+
+#: Artifacts that lived flat under ``<ensemble>/`` before the starfull/starless
+#: regime split — moved once into their regime dir so an upgrade doesn't orphan a
+#: fitted combiner, its eval payloads or the cached cubes (which is why the
+#: combiner card + viewer would go blank after relaunching on the new code).
+_LEGACY_FLAT_NAMES = (
+    "combiner", "combiner_evals.json", "cubes", "cubes_validate",
+    "ensemble_evals.json", "ensemble_power_spectrum.json",
+    "ensemble_power_spectrum.png", "eval_summary.json",
+)
+
+
+def _migrate_legacy_flat_layout(out_dir: str) -> None:
+    """One-time: relocate pre-regime-split flat artifacts into their regime dir.
+
+    The pre-split layout was single-regime; its regime is read from the flat
+    combiner (``starfull`` flag), defaulting to starfull (the historical
+    combiner regime, and the pre-knob member default). Idempotent + best-effort;
+    a move only happens when the source exists and the destination doesn't."""
+    global _LEGACY_LAYOUT_MIGRATED
+    if _LEGACY_LAYOUT_MIGRATED:
+        return
+    _LEGACY_LAYOUT_MIGRATED = True
+    try:
+        if not any(os.path.exists(os.path.join(out_dir, n))
+                   for n in _LEGACY_FLAT_NAMES):
+            return
+        starless = False
+        cj = os.path.join(out_dir, "combiner", "combiner.json")
+        if os.path.isfile(cj):
+            with contextlib.suppress(OSError, ValueError):
+                with open(cj) as f:
+                    starless = not bool(json.load(f).get("starfull", True))
+        regime_dir = os.path.join(out_dir, "starless" if starless else "starfull")
+        for name in _LEGACY_FLAT_NAMES:
+            src = os.path.join(out_dir, name)
+            dst = os.path.join(regime_dir, name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                os.makedirs(regime_dir, exist_ok=True)
+                shutil.move(src, dst)
+    except Exception:                                   # noqa: BLE001 — best-effort
+        pass
+
+
 def _ensemble_out_dir() -> str:
     # Config.VIS_DIR may be relative (the default is "./data/vis"). Flask's
     # send_file resolves relative paths against app.root_path, so keep all
     # ensemble artifacts pinned to the process cwd instead.
     d = os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble"))
     os.makedirs(d, exist_ok=True)
+    _migrate_legacy_flat_layout(d)
     return d
 
 
