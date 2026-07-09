@@ -8,33 +8,70 @@ export type Resource<T> = {
   reload: () => void;
 };
 
-/** Fetch JSON from `url` (null → skip), tracking loading/error and exposing a
- *  manual `reload`. The DRY data-loading primitive every page uses. `deps`
- *  refetches when they change (e.g. a subset/mode selector). */
+/* ── shared response cache ─────────────────────────────────────────────────
+   A process-wide Map keyed by request URL. Navigating between pages (or back
+   to one) reuses the last response INSTANTLY instead of re-hitting the server
+   — several endpoints do real work per request (status walks, viewer meta,
+   listings), so this is the difference between snappy and sluggish. Freshness
+   is preserved two ways: stale entries revalidate in the background (SWR), and
+   `reload()` (the ↻ buttons + every post-job onDone) always force-fetches and
+   overwrites the entry. */
+type Entry = { data: unknown; ts: number };
+const CACHE = new Map<string, Entry>();
+
+/** How long a cached entry is served without a background refetch. Within this
+    window navigation makes ZERO server calls; past it, the cached copy shows
+    immediately while a fresh one loads. */
+export const DEFAULT_TTL_MS = 5 * 60_000;
+
+/** Drop cached entries whose URL contains `substr` (or the whole cache when
+    omitted) — for the rare mutation that invalidates unrelated resources. */
+export function invalidateCache(substr?: string): void {
+  if (!substr) { CACHE.clear(); return; }
+  for (const k of CACHE.keys()) if (k.includes(substr)) CACHE.delete(k);
+}
+
+/** Fetch JSON from `url` (null → skip), cache-first with stale-while-revalidate.
+ *  The DRY data-loading primitive every page uses. `deps` refetch when they
+ *  change (e.g. a subset/mode selector); `reload()` forces a fresh fetch. */
 export function useResource<T = unknown>(
   url: string | null,
   deps: React.DependencyList = [],
+  opts: { ttl?: number } = {},
 ): Resource<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState<boolean>(!!url);
+  const ttl = opts.ttl ?? DEFAULT_TTL_MS;
+  const cached = url ? CACHE.get(url) : undefined;
+  const [data, setData] = useState<T | null>(() => (cached ? (cached.data as T) : null));
+  const [loading, setLoading] = useState<boolean>(!!url && !cached);
   const [error, setError] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const lastNonce = useRef(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
-    if (!url) { setData(null); setLoading(false); return; }
+    if (!url) { setData(null); setLoading(false); setError(false); return; }
+    const force = nonce !== lastNonce.current;
+    lastNonce.current = nonce;
+
+    const entry = CACHE.get(url);
+    if (entry) { setData(entry.data as T); setError(false); setLoading(false); }
+    else { setLoading(true); }
+
+    // Fresh-enough cache and not an explicit reload → serve it, no server hit.
+    const fresh = entry != null && Date.now() - entry.ts < ttl;
+    if (entry && fresh && !force) return;
+
+    // Otherwise (re)validate. Cached copy (if any) stays on screen meanwhile.
     let live = true;
-    setLoading(true);
-    setError(false);
     getJSON<T>(url).then((d) => {
       if (!live) return;
-      if (d == null) setError(true);
-      setData(d);
+      if (d == null) { if (!entry) setError(true); }
+      else { CACHE.set(url, { data: d, ts: Date.now() }); setData(d); setError(false); }
       setLoading(false);
     });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, nonce, ...deps]);
+  }, [url, nonce, ttl, ...deps]);
 
   return { data, loading, error, reload };
 }
