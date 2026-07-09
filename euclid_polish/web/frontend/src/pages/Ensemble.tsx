@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
+import { StepById } from "../fasrc";
 import { useThemeValue } from "../theme";
 import { CutoutViewer } from "../legacy";
 import { C, LOSS_COLOR, categorical } from "../colors";
@@ -87,6 +88,8 @@ export default function EnsemblePage() {
   const evalJob = useJob();
   const opJob = useJob();
   const fitJob = useJob();
+  // Train-card prefill (continue/fork buttons in the members table set these).
+  const [train, setTrain] = useState<{ mode: "add" | "continue" | "fork"; member: string }>({ mode: "add", member: "" });
 
   const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); curves.reload(); };
 
@@ -103,7 +106,11 @@ export default function EnsemblePage() {
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Controls status={status.data} mode={mode} evalJob={evalJob} opJob={opJob} onDone={reloadAll} />
-        <Members status={status.data} loading={status.loading} starless={starless} opJob={opJob} onArchived={reloadAll} />
+        <Members status={status.data} loading={status.loading} starless={starless} opJob={opJob}
+          onArchived={reloadAll}
+          onContinue={(m) => setTrain({ mode: "continue", member: m })}
+          onFork={(m) => setTrain({ mode: "fork", member: m })} />
+        <TrainMembers starlessDefault={starless} prefill={train} onPrefill={setTrain} />
         <TrainingCurves curves={curves.data?.members ?? []} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll} />
@@ -155,8 +162,9 @@ function Controls(
 
 /* ── members table ───────────────────────────────────────────────────────── */
 function Members(
-  { status, loading, starless, opJob, onArchived }:
-  { status: Status | null; loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>; onArchived: () => void },
+  { status, loading, starless, opJob, onArchived, onContinue, onFork }:
+  { status: Status | null; loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>;
+    onArchived: () => void; onContinue: (m: string) => void; onFork: (m: string) => void },
 ) {
   const rows = (status?.members ?? []).filter((m) => !!m.starless === starless);
   const cols: Column<Member>[] = [
@@ -170,11 +178,17 @@ function Members(
     { header: "size", cell: (m) => m.size_mb != null ? `${m.size_mb} MB` : "—", align: "right" },
     { header: "loss-best", cell: (m) => m.has_loss_best ? "✓" : "—", align: "center" },
     { header: "", align: "right", cell: (m) => (
-      <Button size="sm" variant="ghost" disabled={opJob.busy}
-        title="zip → tracking, tombstone, delete, purge caches"
-        onClick={() => { if (window.confirm(`Archive ${m.name}? This retires it from the ensemble.`)) opJob.run("/ensemble/archive-member", { member: m.name }, { onDone: onArchived }); }}>
-        📦 archive
-      </Button>
+      <div className="row" style={{ gap: 4, justifyContent: "flex-end" }}>
+        <Button size="sm" variant="ghost" title="continue training this member"
+          onClick={() => onContinue(m.name)}>▶ continue</Button>
+        <Button size="sm" variant="ghost" title="fork a new member from this one"
+          onClick={() => onFork(m.name)}>⑂ fork</Button>
+        <Button size="sm" variant="ghost" disabled={opJob.busy}
+          title="zip → tracking, tombstone, delete, purge caches"
+          onClick={() => { if (window.confirm(`Archive ${m.name}? This retires it from the ensemble.`)) opJob.run("/ensemble/archive-member", { member: m.name }, { onDone: onArchived }); }}>
+          📦
+        </Button>
+      </div>
     ) },
   ];
   return (
@@ -184,6 +198,70 @@ function Members(
         {loading ? <Empty><Spinner /> loading…</Empty>
           : <Table columns={cols} rows={rows} rowKey={(m) => m.name}
               empty={`no ${starless ? "starless" : "starfull"} members — train some, then ⬇ pull from FASRC`} />}
+      </CardBody>
+    </Card>
+  );
+}
+
+/* ── train members (add / continue / fork via the ensemble_train step) ────── */
+function TrainMembers(
+  { starlessDefault, prefill, onPrefill }:
+  { starlessDefault: boolean; prefill: { mode: "add" | "continue" | "fork"; member: string }; onPrefill: (p: { mode: "add" | "continue" | "fork"; member: string }) => void },
+) {
+  const mode = prefill.mode;
+  const setMode = (m: "add" | "continue" | "fork") => onPrefill({ mode: m, member: prefill.member });
+  const [count, setCount] = useState("5");
+  const [depth, setDepth] = useState("16");
+  const [loss, setLoss] = useState("l1");
+  const [steps, setSteps] = useState("50000");
+  const [extraSteps, setExtraSteps] = useState("50000");
+  const [starless, setStarless] = useState(starlessDefault);
+  const [icnr, setIcnr] = useState(true);
+  const [bootstrap, setBootstrap] = useState("0.7");
+  const [forwardOtf, setForwardOtf] = useState(true);
+
+  const extra = useMemo(() => {
+    const p: Record<string, string | number> = { mode };
+    if (mode === "add") Object.assign(p, {
+      count, num_res_blocks: depth, loss, steps, starless: starless ? 1 : 0,
+      icnr: icnr ? 1 : 0, bootstrap, forward_onthefly: forwardOtf ? 1 : 0,
+    });
+    else if (mode === "continue") Object.assign(p, { members: prefill.member, extra_steps: extraSteps });
+    else Object.assign(p, { fork_from: prefill.member, count, steps });
+    return p;
+  }, [mode, count, depth, loss, steps, extraSteps, starless, icnr, bootstrap, forwardOtf, prefill.member]);
+
+  return (
+    <Card>
+      <CardHead title="Train members" sub="submit an ensemble_train SLURM job — add fresh members, or continue/fork an existing one"
+        right={<Segmented<"add" | "continue" | "fork"> value={mode} onChange={setMode}
+          options={[{ value: "add", label: "add" }, { value: "continue", label: "continue" }, { value: "fork", label: "fork" }]} />} />
+      <CardBody>
+        <div className="fasrc-step__res">
+          {mode === "add" && <>
+            <NumberField label="count" value={count} onChange={setCount} min={1} max={20} />
+            <NumberField label="depth (blocks)" value={depth} onChange={setDepth} min={4} max={64} />
+            <Field label="loss"><Select value={loss} onChange={setLoss}
+              options={["l1", "l2", "l3", "berhu"].map((v) => ({ value: v, label: v }))} /></Field>
+            <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
+            <NumberField label="bootstrap" value={bootstrap} onChange={setBootstrap} min={0} max={1} step={0.05} />
+            <Checkbox checked={starless} onChange={setStarless}>starless</Checkbox>
+            <Checkbox checked={icnr} onChange={setIcnr}>ICNR init</Checkbox>
+            <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
+          </>}
+          {mode === "continue" && <>
+            <Field label="member"><Input value={prefill.member} onChange={(m) => onPrefill({ mode, member: m })} placeholder="member_00" /></Field>
+            <NumberField label="extra steps" value={extraSteps} onChange={setExtraSteps} min={1000} max={500000} step={1000} />
+          </>}
+          {mode === "fork" && <>
+            <Field label="fork from"><Input value={prefill.member} onChange={(m) => onPrefill({ mode, member: m })} placeholder="member_02" /></Field>
+            <NumberField label="new members" value={count} onChange={setCount} min={1} max={10} />
+            <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
+          </>}
+        </div>
+        <div style={{ marginTop: "var(--s3)" }}>
+          <StepById stepId="ensemble_train" extraParams={extra} />
+        </div>
       </CardBody>
     </Card>
   );
