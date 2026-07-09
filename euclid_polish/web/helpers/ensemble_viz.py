@@ -188,18 +188,20 @@ def _member_psnr_cache_path() -> str:
                                         "member_psnr.json"))
 
 
-def _eval_records_fingerprint(records_dir: str | None,
-                              subset: str) -> str | None:
-    """Identity of the eval dataset itself: size+mtime of the ``dirty_`` and
-    ``hr_`` records the PSNR scores against. A regenerated test set keeps its
-    subset name, field count AND the member checkpoints unchanged — without
-    this in the cache key, every PSNR shown after a dataset regen silently
-    referred to the OLD records. rsync preserves mtimes, so a no-op sync
-    keeps the fingerprint stable while a real change bumps it."""
+def _eval_records_fingerprint(records_dir: str | None, subset: str, *,
+                              starless: bool = False) -> str | None:
+    """Identity of the eval dataset itself: size+mtime of the ``dirty_`` and the
+    regime's TARGET records the reconstruction is scored against — ``clean_`` for
+    starless (star-erased), ``hr_`` for starfull. A regenerated test set keeps
+    its subset name, field count AND the member checkpoints unchanged — without
+    this in the cache key, cached figures shown after a dataset regen silently
+    referred to the OLD records. rsync preserves mtimes, so a no-op sync keeps
+    the fingerprint stable while a real change bumps it. (Default starfull/``hr``
+    so the member-PSNR cache and existing starfull cubes are unaffected.)"""
     if not records_dir:
         return None
     parts = []
-    for kind in ("dirty", "hr"):
+    for kind in ("dirty", "clean" if starless else "hr"):
         p = tfrecord_path(records_dir, f"{kind}_{subset}")
         try:
             st = os.stat(p)
@@ -735,7 +737,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
             "validate records not synced — enable 'Include validate' on the "
             f"/sky page so dirty_validate + {target}_validate are local.")
 
-    fp = _eval_records_fingerprint(rdir, "validate")
+    fp = _eval_records_fingerprint(rdir, "validate", starless=starless)
     val_dir = _ensemble_cubes_dir("validate", starless=starless)
     acc = FitBufferAccumulator(BAND_NAMES)
 
@@ -969,7 +971,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                    "has_combiner": has_combiner,
                    # Eval-dataset identity: the cubes are position-keyed into
                    # THESE records — regenerated records make them garbage.
-                   "records_fp": _eval_records_fingerprint(rdir, sub)}, f)
+                   "records_fp": _eval_records_fingerprint(rdir, sub, starless=starless)}, f)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
     curves = None
@@ -1051,7 +1053,7 @@ def _iter_cached_fields(starless: bool):
     # named in the manifest — pairing them with REGENERATED records would
     # silently mix two datasets (old SR vs new HR). Legacy manifests without
     # the fingerprint are treated as stale for the same reason.
-    if man.get("records_fp") != _eval_records_fingerprint(rdir, sub):
+    if man.get("records_fp") != _eval_records_fingerprint(rdir, sub, starless=starless):
         return
 
     hr_by = {r.index: r for r in read_images(hr_path, num_images=max(idxs) + 1)}
