@@ -9,10 +9,13 @@ import {
   Input, LogTail, Page, PageHead, Spinner, Table, Textarea, type Column,
 } from "../ui";
 
-type Campaign = { title: string; description?: string; slug: string; created_at?: string; created_commit?: string };
-type ModelRec = { name: string; size_bytes: number; created_at?: string; commit?: string };
-type Archived = Campaign & { _dir: string; saved_at?: string; saved_commit?: string; models: ModelRec[] };
-type BackupRec = { name: string; kind: string; comment?: string; size_bytes: number; created_at?: string; commit?: string };
+type Commit = { short?: string; hash?: string; branch?: string; dirty?: boolean } | string | null;
+const commitStr = (c?: Commit): string => !c ? "—" : typeof c === "string" ? c : (c.short ?? c.hash ?? "—");
+
+type Campaign = { title: string; description?: string; slug: string; created_at?: string; created_commit?: Commit };
+type ModelRec = { name: string; size_bytes: number; created_at?: string; commit?: Commit };
+type Archived = Campaign & { _dir: string; saved_at?: string; saved_commit?: Commit; models: ModelRec[] };
+type BackupRec = { name: string; kind: string; comment?: string; size_bytes: number; created_at?: string; commit?: Commit };
 type Sandbox = { short: string; created_at?: string; source?: string; running: boolean; url?: string; remote?: boolean };
 type TrackState = {
   active: Campaign | null;
@@ -31,7 +34,7 @@ const backupCols = (): Column<BackupRec>[] => [
   { header: "name", cell: (r) => <code className="mono">{r.name}</code> },
   { header: "comment", cell: (r) => <span className="muted">{r.comment || "—"}</span> },
   { header: "size", cell: (r) => mb(r.size_bytes), align: "right" },
-  { header: "commit", cell: (r) => r.commit ? <code className="mono">{r.commit}</code> : "—" },
+  { header: "commit", cell: (r) => r.commit ? <code className="mono">{commitStr(r.commit)}</code> : "—" },
   { header: "when", cell: (r) => <span className="muted">{r.created_at || ""}</span>, align: "right" },
 ];
 
@@ -83,7 +86,7 @@ export default function TrackingPage() {
                 <DefList items={[
                   ["title", s.active.title],
                   ["description", s.active.description || "—"],
-                  ["created", <span className="muted">{s.active.created_at} · <code className="mono">{s.active.created_commit}</code></span>],
+                  ["created", <span className="muted">{s.active.created_at} · <code className="mono">{commitStr(s.active.created_commit)}</code></span>],
                   ["dir", <code className="mono">{s.tracking_dir}</code>],
                 ]} />
               ) : <Empty>no active campaign — create one below</Empty>}
@@ -135,7 +138,7 @@ export default function TrackingPage() {
                   {s.archived.map((a) => (
                     <div key={a.slug} className="track-arch">
                       <div className="row" style={{ justifyContent: "space-between" }}>
-                        <div><b>{a.title}</b> <span className="muted mono">{a.saved_commit}</span> <span className="muted">· {a.saved_at}</span></div>
+                        <div><b>{a.title}</b> <span className="muted mono">{commitStr(a.saved_commit)}</span> <span className="muted">· {a.saved_at}</span></div>
                         <Button size="sm" onClick={() => act("/api/tracking/timetravel/restore", { campaign: a.slug, remote: "0" }, "✓ sandbox launching")}
                           disabled={busy != null}>⏱ time-travel</Button>
                       </div>
