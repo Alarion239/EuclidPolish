@@ -21,6 +21,83 @@ from euclid_polish.web.helpers.status import (
 from euclid_polish.web.jobs import REGISTRY
 
 
+def _inference_gallery() -> dict[str, Any]:
+    """Recent reconstruction PNGs + the persistent Euclid/synthetic inference
+    runs (newest first). Shared by the /inference page render and the JSON
+    endpoint the React console reads."""
+    recon_pngs: list[dict[str, Any]] = []
+    rdir = Config.VIS_RECONSTRUCTION_DIR
+    if os.path.isdir(rdir):
+        for fname in os.listdir(rdir):
+            if not fname.lower().endswith(".png"):
+                continue
+            full = os.path.join(rdir, fname)
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, Config.VIS_DIR)
+            fits_rel = None
+            stem = os.path.splitext(fname)[0]
+            for suffix in ("_eye", "_solar"):
+                if stem.endswith(suffix):
+                    stem = stem[: -len(suffix)]
+                    break
+            fits_local = os.path.join(rdir, f"{stem}.fits")
+            if os.path.isfile(fits_local):
+                fits_rel = os.path.relpath(fits_local, Config.VIS_DIR)
+            recon_pngs.append({"rel": rel, "name": fname, "mtime": mtime,
+                               "fits_rel": fits_rel})
+        recon_pngs.sort(key=lambda d: d["mtime"], reverse=True)
+
+    def _runs(root: str, names: tuple[str, ...], label_from_sr: bool) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if not os.path.isdir(root):
+            return out
+        for tag in os.listdir(root):
+            d = os.path.join(root, tag)
+            if not os.path.isdir(d):
+                continue
+            files = []
+            for name in names:
+                f = os.path.join(d, name)
+                if os.path.isfile(f):
+                    files.append({
+                        "name": name,
+                        "rel": os.path.relpath(f, Config.EUCLID_INFERENCE_DIR),
+                        "size_kb": int(os.path.getsize(f) / 1024),
+                    })
+            if not files:
+                continue
+            label = tag
+            sr_local = os.path.join(d, "SR.fits")
+            if label_from_sr and os.path.isfile(sr_local):
+                try:
+                    hdr = fits.getheader(sr_local)
+                    if hdr.get("RA") is not None and hdr.get("DEC") is not None:
+                        label = (f"RA {float(hdr['RA']):.4f}, "
+                                 f"Dec {float(hdr['DEC']):+.4f}")
+                        if hdr.get("CSIZE") is not None:
+                            label += f"  ({int(hdr['CSIZE'])} px)"
+                except Exception:  # noqa: BLE001 — label is cosmetic
+                    pass
+            out.append({"tag": tag, "label": label, "files": files,
+                        "mtime": max(os.path.getmtime(os.path.join(d, x["name"]))
+                                     for x in files)})
+        out.sort(key=lambda d: d["mtime"], reverse=True)
+        return out
+
+    euclid_runs = _runs(
+        os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts"),
+        ("original_stack.fits", "VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits", "SR.fits"),
+        label_from_sr=True)
+    synthetic_runs = _runs(
+        os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic"),
+        ("original_stack.fits", "SR.fits", "HR.fits"), label_from_sr=False)
+    return {"recon_pngs": recon_pngs, "euclid_runs": euclid_runs,
+            "synthetic_runs": synthetic_runs}
+
+
 def register(app):
 
     # ---------------- Training (folded into /ensemble) ----------------
@@ -33,123 +110,22 @@ def register(app):
     # ---------------- Inference page ----------------
     @app.route("/inference")
     def inference_page():
-        # Most-recent reconstruction PNGs (newest first). Each thumbnail
-        # links to its sidecar SR.fits when one exists on disk.
-        recon_pngs: list[dict[str, Any]] = []
-        rdir = Config.VIS_RECONSTRUCTION_DIR
-        if os.path.isdir(rdir):
-            for fname in os.listdir(rdir):
-                if not fname.lower().endswith(".png"):
-                    continue
-                full = os.path.join(rdir, fname)
-                try:
-                    mtime = os.path.getmtime(full)
-                except OSError:
-                    continue
-                rel = os.path.relpath(full, Config.VIS_DIR)
-                # Synthetic path saves one SR FITS per scene next to the
-                # PNGs. PNGs come in color-regime pairs ("…_eye.png" /
-                # "…_solar.png") sharing one FITS — strip the regime
-                # suffix before looking the sidecar up.
-                fits_rel = None
-                stem = os.path.splitext(fname)[0]
-                for suffix in ("_eye", "_solar"):
-                    if stem.endswith(suffix):
-                        stem = stem[: -len(suffix)]
-                        break
-                fits_local = os.path.join(rdir, f"{stem}.fits")
-                if os.path.isfile(fits_local):
-                    fits_rel = os.path.relpath(fits_local, Config.VIS_DIR)
-                recon_pngs.append({
-                    "rel": rel, "name": fname, "mtime": mtime,
-                    "fits_rel": fits_rel,
-                })
-            recon_pngs.sort(key=lambda d: d["mtime"], reverse=True)
-
-        # Persistent Euclid inference cutouts: one entry per cache dir.
-        # Each entry exposes the four LR FITS + the SR FITS as download
-        # links so the user can re-load them in their own tools.
-        euclid_runs: list[dict[str, Any]] = []
-        eroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
-        if os.path.isdir(eroot):
-            for tag in os.listdir(eroot):
-                d = os.path.join(eroot, tag)
-                if not os.path.isdir(d):
-                    continue
-                files = []
-                for name in ("original_stack.fits",
-                             "VIS.fits", "Y_E.fits", "J_E.fits", "H_E.fits",
-                             "SR.fits"):
-                    f = os.path.join(d, name)
-                    if os.path.isfile(f):
-                        rel = os.path.relpath(f, Config.EUCLID_INFERENCE_DIR)
-                        files.append({
-                            "name":     name,
-                            "rel":      rel,
-                            "size_kb":  int(os.path.getsize(f) / 1024),
-                        })
-                if files:
-                    # The dir name is now a fixed "latest" slot, so read the
-                    # real position out of the SR header for a useful label.
-                    label = tag
-                    sr_local = os.path.join(d, "SR.fits")
-                    if os.path.isfile(sr_local):
-                        try:
-                            hdr = fits.getheader(sr_local)
-                            if hdr.get("RA") is not None and hdr.get("DEC") is not None:
-                                label = (f"RA {float(hdr['RA']):.4f}, "
-                                         f"Dec {float(hdr['DEC']):+.4f}")
-                                if hdr.get("CSIZE") is not None:
-                                    label += f"  ({int(hdr['CSIZE'])} px)"
-                        except Exception:  # noqa: BLE001 — label is cosmetic
-                            pass
-                    euclid_runs.append({
-                        "tag":   tag,
-                        "label": label,
-                        "files": files,
-                        "mtime": max(os.path.getmtime(os.path.join(d, f["name"]))
-                                     for f in files),
-                    })
-            euclid_runs.sort(key=lambda d: d["mtime"], reverse=True)
-
-        # Synthetic reconstruction runs: per-scene inspectable FITS set
-        # (original_stack + SR + HR), the same downloadable/inspectable
-        # outputs the real-Euclid cutouts produce.
-        synthetic_runs: list[dict[str, Any]] = []
-        sroot = os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic")
-        if os.path.isdir(sroot):
-            for tag in os.listdir(sroot):
-                d = os.path.join(sroot, tag)
-                if not os.path.isdir(d):
-                    continue
-                files = []
-                for name in ("original_stack.fits", "SR.fits", "HR.fits"):
-                    f = os.path.join(d, name)
-                    if os.path.isfile(f):
-                        files.append({
-                            "name":    name,
-                            "rel":     os.path.relpath(f, Config.EUCLID_INFERENCE_DIR),
-                            "size_kb": int(os.path.getsize(f) / 1024),
-                        })
-                if files:
-                    synthetic_runs.append({
-                        "tag":   tag,
-                        "label": tag,
-                        "files": files,
-                        "mtime": max(os.path.getmtime(os.path.join(d, x["name"]))
-                                     for x in files),
-                    })
-            synthetic_runs.sort(key=lambda d: d["mtime"], reverse=True)
-
+        gallery = _inference_gallery()
         return render_template(
             "inference.html",
             checkpoints=_checkpoints_status(),
             tfrecords=_tfrecords_status(),
-            recon_pngs=recon_pngs,
-            euclid_runs=euclid_runs,
-            synthetic_runs=synthetic_runs,
+            recon_pngs=gallery["recon_pngs"],
+            euclid_runs=gallery["euclid_runs"],
+            synthetic_runs=gallery["synthetic_runs"],
             default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
         )
+
+    @app.route("/api/inference/recent.json")
+    def api_inference_recent():
+        """The reconstruction gallery + persistent inference runs as JSON for
+        the React console (PNGs at /vis/<rel>, run FITS at /inference-files/<rel>)."""
+        return jsonify(_inference_gallery())
 
     @app.route("/inference/generate-reconstruct", methods=["POST"])
     def inference_generate_reconstruct():

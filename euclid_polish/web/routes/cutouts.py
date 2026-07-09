@@ -63,6 +63,31 @@ def register(app):
             per_page=per_page, output_dir=out_dir,
         )
 
+    @app.route("/api/cutouts/<band_name>/list.json")
+    def api_cutouts_list(band_name: str):
+        """Paginated per-band cutout filenames as JSON for the React gallery.
+        Thumbnails load from /cutout-image/<band>/<filename>?size=…&output_dir=…"""
+        try:
+            Config.get_band(band_name)
+        except Exception:
+            abort(404)
+        out_dir = request.args.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
+        try:
+            page = max(1, int(request.args.get("page", 1)))
+        except ValueError:
+            page = 1
+        per_page = 60
+        files = _list_band_cutouts(band_name, out_dir)
+        total = len(files)
+        n_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, n_pages)
+        start = (page - 1) * per_page
+        return jsonify({
+            "band": band_name, "files": files[start:start + per_page],
+            "total": total, "page": page, "n_pages": n_pages,
+            "per_page": per_page, "output_dir": out_dir,
+        })
+
     @app.route("/cutout-image/<band_name>/<path:filename>")
     def cutout_image(band_name: str, filename: str):
         out_dir = request.args.get("output_dir", Config.DEFAULT_OUTPUT_DIR)

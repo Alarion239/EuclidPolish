@@ -164,6 +164,18 @@
 }
 .ui-figure__paper img { max-width: 100%; height: auto; display: block; }
 
+/* ---- Gallery (thumbnail grid) ---- */
+.ui-gallery { display: grid; gap: var(--s2); }
+.ui-gallery__cell {
+  border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden;
+  background: #fff; display: block; padding: 0; cursor: pointer; text-align: left;
+  transition: border-color .12s, transform .05s;
+}
+.ui-gallery__cell:hover { border-color: var(--accent); }
+.ui-gallery__cell:active { transform: translateY(1px); }
+.ui-gallery__cell img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; display: block; background: #05070d; }
+.ui-gallery__cap { display: block; font-size: 10.5px; padding: 3px 6px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- Local job progress panel (jobs.tsx) ---- */
 .job-panel {
   border: 1px solid var(--border); border-radius: var(--r-md);

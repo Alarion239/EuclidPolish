@@ -38,6 +38,13 @@ def register(app):
         return render_template("visualization.html",
                                pngs=_list_vis_pngs())
 
+    @app.route("/api/vis/list.json")
+    def api_vis_list():
+        """The `data/vis/` PNG gallery as JSON (newest first) — each entry has
+        `rel` (served at /vis/<rel>) + an optional `inspect_fits` sibling. The
+        React Visualization page's gallery reads this."""
+        return jsonify({"pngs": _list_vis_pngs()})
+
     # ---------------- Live view renderers (PNG) ----------------
     @app.route("/view/psfs")
     def view_psfs():

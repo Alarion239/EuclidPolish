@@ -277,6 +277,26 @@ export function LogTail({ text, style }: { text: string; style?: CSSProperties }
 
 /* ─── figures ────────────────────────────────────────────────────────────── */
 
+export type GalleryItem = { src: string; href?: string; label?: string; onClick?: () => void };
+/** Responsive thumbnail grid on paper-white cells — image galleries (vis PNGs,
+ *  cutouts, reconstructions). Each cell links out (new tab) or fires onClick. */
+export function Gallery({ items, thumb = 150, empty }: { items: GalleryItem[]; thumb?: number; empty?: ReactNode }) {
+  if (!items.length) return <Empty>{empty ?? "nothing rendered yet"}</Empty>;
+  return (
+    <div className="ui-gallery" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumb}px, 1fr))` }}>
+      {items.map((it, i) => {
+        const inner = <>
+          <img src={it.src} loading="lazy" alt={it.label ?? ""} />
+          {it.label && <span className="ui-gallery__cap mono">{it.label}</span>}
+        </>;
+        return it.href
+          ? <a key={i} className="ui-gallery__cell" href={it.href} target="_blank" rel="noreferrer">{inner}</a>
+          : <button key={i} className="ui-gallery__cell" onClick={it.onClick} type="button">{inner}</button>;
+      })}
+    </div>
+  );
+}
+
 /** A server-rendered matplotlib PNG on a paper-white inset (readable in both
  *  themes), with an optional chip toolbar and a reload nonce so `?fresh=1`
  *  re-renders. `srcFor(active)` builds the URL for the selected toolbar key. */

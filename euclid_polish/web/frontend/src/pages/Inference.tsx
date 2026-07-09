@@ -8,7 +8,7 @@ import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, DefList, Empty, Field,
-  Input, NumberField, Page, PageHead, Spinner,
+  Gallery, Input, NumberField, Page, PageHead, Spinner, Table, type Column,
 } from "../ui";
 
 // ---- API JSON (subset we consume) --------------------------------------
@@ -16,15 +16,29 @@ type CheckpointFile = { name: string; rel: string; member: string; size_mb: numb
 type CheckpointsStatus = { dir: string; files: CheckpointFile[] };
 type TfrecordFile = { name: string; size_mb: number };
 type TfrecordsStatus = { dir: string; files: TfrecordFile[] };
-type StatusResp = {
-  checkpoints: CheckpointsStatus;
-  tfrecords: TfrecordsStatus;
-};
+type StatusResp = { checkpoints: CheckpointsStatus; tfrecords: TfrecordsStatus };
 
-const CLASSIC = "/inference";
+type ReconPng = { rel: string; name: string; mtime: number; fits_rel: string | null };
+type RunFile = { name: string; rel: string; size_kb: number };
+type Run = { tag: string; label: string; files: RunFile[]; mtime: number };
+type Gallery_ = { recon_pngs: ReconPng[]; euclid_runs: Run[]; synthetic_runs: Run[] };
+
+const runCols: Column<Run>[] = [
+  { header: "run", cell: (r) => <span>{r.label}</span> },
+  { header: "files", cell: (r) => (
+    <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      {r.files.map((f) => (
+        <a key={f.name} className="mono" style={{ fontSize: 12 }}
+          href={`/inference-files/${f.rel}`} title={`${f.size_kb} kB`}>{f.name}</a>
+      ))}
+    </div>
+  ) },
+];
 
 export default function InferencePage() {
   const { data, loading } = useResource<StatusResp>("/api/status");
+  const gallery = useResource<Gallery_>("/api/inference/recent.json");
+  const reloadGallery = () => gallery.reload();
 
   const ckpts = data?.checkpoints;
   const recs = data?.tfrecords;
@@ -36,7 +50,7 @@ export default function InferencePage() {
   const genJob = useJob();
   const runGen = () => {
     const n = Math.max(1, Math.min(8, Math.round(Number(nPairs) || 1)));
-    genJob.run("/inference/generate-reconstruct", { n_pairs: n });
+    genJob.run("/inference/generate-reconstruct", { n_pairs: n }, { onDone: reloadGallery });
   };
 
   // --- real Euclid cutout ---
@@ -58,7 +72,7 @@ export default function InferencePage() {
       dec: decNum,
       cutout_size: size,
       show_all_bands: allBands ? "1" : undefined,
-    });
+    }, { onDone: reloadGallery });
   };
 
   const readiness = (
@@ -177,17 +191,32 @@ export default function InferencePage() {
           </Card>
 
           <Card>
-            <CardHead title="Recent outputs" sub="Reconstruction PNGs + inspectable SR FITS." />
+            <CardHead title="Recent reconstructions" sub={`${gallery.data?.recon_pngs.length ?? 0} PNG(s), newest first`}
+              right={<Button size="sm" variant="ghost" onClick={reloadGallery}>↻</Button>} />
             <CardBody>
-              <Empty>
-                <span>
-                  Recent reconstruction PNGs are served under <code className="mono">/vis/reconstruction/</code>{" "}
-                  (with per-scene SR FITS sidecars). The full gallery + FITS inspector links live on the{" "}
-                  <a href={CLASSIC}>classic Inference page</a>.
-                </span>
-              </Empty>
+              {gallery.loading ? <Empty><Spinner /> loading…</Empty> : (
+                <Gallery thumb={160} empty="no reconstructions yet — run one above"
+                  items={(gallery.data?.recon_pngs ?? []).slice(0, 48).map((p) => ({
+                    src: `/vis/${p.rel}`,
+                    href: p.fits_rel ? `/inspect?fits=${encodeURIComponent(p.fits_rel)}` : `/vis/${p.rel}`,
+                    label: p.name,
+                  }))} />
+              )}
             </CardBody>
           </Card>
+
+          {!!gallery.data?.euclid_runs.length && (
+            <Card>
+              <CardHead title="Real Euclid runs" sub="downloadable / inspectable FITS per position" />
+              <CardBody><Table columns={runCols} rows={gallery.data.euclid_runs} rowKey={(r) => r.tag} /></CardBody>
+            </Card>
+          )}
+          {!!gallery.data?.synthetic_runs.length && (
+            <Card>
+              <CardHead title="Synthetic runs" sub="per-scene original_stack · SR · HR FITS" />
+              <CardBody><Table columns={runCols} rows={gallery.data.synthetic_runs} rowKey={(r) => r.tag} /></CardBody>
+            </Card>
+          )}
         </div>
       )}
     </Page>

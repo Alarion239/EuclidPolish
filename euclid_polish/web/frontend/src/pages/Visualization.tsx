@@ -7,11 +7,21 @@
    have live PNG endpoints (/view/*), plus a FITS-inspector helper that links
    into the universal /inspect page. */
 import { useState } from "react";
+import { useResource } from "../hooks";
 import {
-  Button, Card, CardBody, CardHead, Field, Input, Page, PageHead, PngFigure,
+  Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, Page,
+  PageHead, PngFigure, Spinner,
 } from "../ui";
 
+type VisPng = { rel: string; mtime: number; size_kb: number; inspect_fits: string | null };
+
 export default function VisualizationPage() {
+  const gallery = useResource<{ pngs: VisPng[] }>("/api/vis/list.json");
+  const items = (gallery.data?.pngs ?? []).slice(0, 60).map((p) => ({
+    src: `/vis/${p.rel}`,
+    href: p.inspect_fits ? `/inspect?fits=${encodeURIComponent(p.inspect_fits)}` : `/vis/${p.rel}`,
+    label: p.rel.split("/").pop(),
+  }));
   // Cache-buster for the training-log "regenerate" chip: bumping this forces a
   // fresh ?force=1 render (the endpoint re-plots the CSV when force is set).
   const [logNonce, setLogNonce] = useState<number | null>(null);
@@ -38,6 +48,15 @@ export default function VisualizationPage() {
       />
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
+        <Card>
+          <CardHead title="Rendered figures" sub={`data/vis/ · ${gallery.data?.pngs.length ?? 0} PNG(s), newest first`}
+            right={<Button size="sm" variant="ghost" onClick={() => gallery.reload()}>↻</Button>} />
+          <CardBody>
+            {gallery.loading ? <Empty><Spinner /> loading…</Empty>
+              : <Gallery items={items} thumb={150} empty="no PNGs under data/vis/ yet" />}
+          </CardBody>
+        </Card>
+
         <Card>
           <CardHead
             title="Training curve"

@@ -7,8 +7,8 @@ import { getJSON, postForm } from "../api";
 import { useResource } from "../hooks";
 import { CutoutViewer } from "../legacy";
 import {
-  Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, LogTail,
-  Page, PageHead, Spinner, Stat, Table, type Column,
+  Badge, Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, LogTail,
+  Page, PageHead, Segmented, Spinner, Stat, Table, type Column,
 } from "../ui";
 
 // ── API shapes ─────────────────────────────────────────────────────────────
@@ -52,10 +52,22 @@ const BAND_COLS: Column<BandRow>[] = [
   { header: "valid (catalog)", cell: (b) => b.valid.toLocaleString(), align: "right" },
 ];
 
+type CutoutList = { band: string; files: string[]; total: number; page: number; n_pages: number; output_dir: string };
+
 export default function CutoutsPage() {
   const { data: totals } = useResource<Totals>("/api/star-cutouts/totals");
   const { data: status, loading: statusLoading } =
     useResource<StatusResp>("/api/status");
+
+  // ── per-band cutout gallery ─────────────────────────────────────────────
+  const [galBand, setGalBand] = useState<string>("VIS");
+  const [galPage, setGalPage] = useState(1);
+  const gal = useResource<CutoutList>(`/api/cutouts/${galBand}/list.json?page=${galPage}`, [galBand, galPage]);
+  const galItems = (gal.data?.files ?? []).map((f) => ({
+    src: `/cutout-image/${galBand}/${encodeURIComponent(f)}?size=170&output_dir=${encodeURIComponent(gal.data?.output_dir ?? "")}`,
+    href: `/cutout-image/${galBand}/${encodeURIComponent(f)}?size=768&output_dir=${encodeURIComponent(gal.data?.output_dir ?? "")}`,
+    label: f.replace(/^star_/, "").replace(/\.fits$/, ""),
+  }));
 
   const catalog = status?.catalog;
   const validByBand = catalog?.summary?.valid_by_band;
@@ -152,6 +164,28 @@ export default function CutoutsPage() {
               <Empty>
                 <Spinner /> loading totals…
               </Empty>
+            )}
+          </CardBody>
+        </Card>
+
+        {/* Per-band gallery */}
+        <Card>
+          <CardHead title="Cutout gallery" sub={gal.data ? `${galBand} · ${gal.data.total} cutout(s)` : galBand}
+            right={
+              <div className="row" style={{ gap: 8 }}>
+                <Segmented<string> value={galBand} onChange={(b) => { setGalBand(b); setGalPage(1); }}
+                  options={BAND_ORDER.map((b) => ({ value: b, label: b }))} />
+              </div>
+            } />
+          <CardBody>
+            {gal.loading ? <Empty><Spinner /> loading…</Empty>
+              : <Gallery items={galItems} thumb={130} empty={`no ${galBand} cutouts on disk yet`} />}
+            {(gal.data?.n_pages ?? 1) > 1 && (
+              <div className="row" style={{ marginTop: "var(--s3)", gap: "var(--s2)", alignItems: "center" }}>
+                <Button size="sm" disabled={galPage <= 1} onClick={() => setGalPage((p) => p - 1)}>← prev</Button>
+                <span className="muted mono">page {gal.data?.page} / {gal.data?.n_pages}</span>
+                <Button size="sm" disabled={galPage >= (gal.data?.n_pages ?? 1)} onClick={() => setGalPage((p) => p + 1)}>next →</Button>
+              </div>
             )}
           </CardBody>
         </Card>
