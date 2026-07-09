@@ -108,9 +108,16 @@ class BandCombiner:
     surviving: np.ndarray          # (M,) bool
 
     def weights(self, X: np.ndarray) -> np.ndarray:
-        """Per-pixel member weights ``(N, M)`` for a member stack ``(N, M)``."""
+        """Per-pixel member weights ``(N, M)`` for a member stack ``(N, M)``.
+
+        The brightness scalar is the max over the SURVIVING members only, so
+        pruned members influence neither the gate nor the convex sum (weight 0):
+        their SR is genuinely unused and need never be computed. With no pruning
+        (all surviving) this is identical to the max over all members."""
         X = np.asarray(X, np.float64)
-        logits = _rbf(_brightness(X), self.centers, self.sigma) @ self.V + self.a
+        surv = np.asarray(self.surviving, bool)
+        b = np.max(X[:, surv] if surv.any() else X, axis=1)
+        logits = _rbf(b, self.centers, self.sigma) @ self.V + self.a
         return _softmax_masked(logits, self.surviving)
 
     def forward_asinh(self, X: np.ndarray) -> np.ndarray:
@@ -158,6 +165,33 @@ class Combiner:
             y = np.clip(bc.forward_asinh(x), -SINH_CLIP, SINH_CLIP)
             out[..., ci] = (np.sinh(y) * scale).reshape(h, w).astype(np.float32)
         return out
+
+    def needed_member_indices(self) -> list[int]:
+        """Indices of the members actually used by the gate (surviving in any
+        band). Pruned members contribute nothing and don't need to be run."""
+        m = len(self.member_labels)
+        mask = np.zeros(m, bool)
+        for bc in self.bands.values():
+            s = np.asarray(bc.surviving, bool)
+            mask[:len(s)] |= s
+        return [int(i) for i in np.where(mask)[0]]
+
+    def upsample(self, ens, lr_array: np.ndarray) -> np.ndarray:
+        """Combine one LR field, running ONLY the surviving members — the pruned
+        members' super-resolutions are never computed. Returns ``(H,W,C)``
+        electrons. ``ens`` is an ``EnsembleModel`` whose member order matches
+        this combiner's ``member_labels``."""
+        keep = self.needed_member_indices()
+        if not keep:
+            raise RuntimeError("combiner has no surviving members")
+        m = len(self.member_labels)
+        preds = None
+        for i in keep:
+            sr = np.asarray(ens._models[i].upsample_array(lr_array), np.float32)
+            if preds is None:
+                preds = np.zeros((m, *sr.shape), np.float32)   # pruned slots stay 0
+            preds[i] = sr
+        return self.apply_field(preds)
 
     # -- interpretability -- #
     def effective_weights(self, band: str, *, n_levels: int = 25,
