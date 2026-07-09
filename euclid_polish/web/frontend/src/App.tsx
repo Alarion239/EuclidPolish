@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes, Navigate } from "react-router-dom";
-import { NAV } from "./nav";
-import { useTheme, type Theme } from "./theme";
-import EnsemblePage from "./pages/Ensemble";
+import { NAV, PAGES } from "./pages/registry";
+import { ThemeContext, useTheme, type Theme } from "./theme";
+import { ErrorBoundary } from "./ErrorBoundary";
 import Placeholder from "./pages/Placeholder";
 import "./app.css";
 
@@ -37,20 +37,12 @@ function Rail({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
         {NAV.map((sec) => (
           <div className="rail__sec" key={sec.title}>
             <div className="eyebrow rail__sechead">{sec.title}</div>
-            {sec.items.map((it) =>
-              it.to ? (
-                <NavLink key={it.label} to={it.to}
-                  className={({ isActive }) => `rail__item ${isActive ? "is-active" : ""}`}>
-                  <span>{it.label}</span>
-                  {it.done && <span className="rail__badge">new</span>}
-                </NavLink>
-              ) : (
-                <a key={it.label} href={it.legacy} className="rail__item rail__item--legacy">
-                  <span>{it.label}</span>
-                  <span className="rail__ext" title="legacy page">↗</span>
-                </a>
-              ),
-            )}
+            {sec.items.map((it) => (
+              <NavLink key={it.label} to={it.path}
+                className={({ isActive }) => `rail__item ${isActive ? "is-active" : ""}`}>
+                <span>{it.label}</span>
+              </NavLink>
+            ))}
           </div>
         ))}
       </div>
@@ -68,11 +60,19 @@ export default function App() {
     <div className="shell">
       <Rail theme={theme} onToggle={toggle} />
       <main className="stage">
-        <Routes>
-          <Route path="/" element={<Navigate to="/ensemble" replace />} />
-          <Route path="/ensemble" element={<EnsemblePage theme={theme} />} />
-          <Route path="*" element={<Placeholder />} />
-        </Routes>
+        <ThemeContext.Provider value={theme}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/ensemble" replace />} />
+            {PAGES.map((p) => {
+              const C = p.component;
+              return (
+                <Route key={p.path} path={p.path}
+                  element={<ErrorBoundary routeKey={p.path}><C /></ErrorBoundary>} />
+              );
+            })}
+            <Route path="*" element={<Placeholder />} />
+          </Routes>
+        </ThemeContext.Provider>
       </main>
     </div>
   );

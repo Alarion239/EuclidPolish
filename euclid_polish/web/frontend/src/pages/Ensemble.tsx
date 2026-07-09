@@ -3,6 +3,7 @@
    in the observatory-console language. The exemplar the other tabs follow. */
 import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "../api";
+import { useThemeValue } from "../theme";
 import { C, LOSS_COLOR } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick } from "../charts/Plot";
 import {
@@ -28,7 +29,8 @@ type Evals = {
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const hasData = (a?: (number | null)[]) => !!a && a.some((v) => v != null && isFinite(v as number));
 
-export default function EnsemblePage({ theme }: { theme?: string }) {
+export default function EnsemblePage() {
+  const theme = useThemeValue();
   const [mode, setMode] = useState<Mode>("starfull");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
   const [data, setData] = useState<Evals | null>(null);

@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 
 export type Theme = "light" | "dark";
 const KEY = "ep-theme";
+
+/** Current theme, for components that must recompute on a theme flip (e.g. the
+ *  canvas figures whose series colors read live from the CSS tokens). Provided
+ *  at the app root; read via `useThemeValue()` and add to the relevant deps. */
+export const ThemeContext = createContext<Theme>("light");
+export const useThemeValue = (): Theme => useContext(ThemeContext);
 
 /** The persisted theme (default light). Mirrors the pre-paint script in
  *  index.html so the first React render matches what's already on <html>. */

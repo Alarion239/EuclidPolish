@@ -63,7 +63,7 @@
 
 /* ---- Select / input ---- */
 .ui-field { display: inline-flex; flex-direction: column; gap: 5px; }
-.ui-field > span { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--text-faint); text-transform: uppercase; }
+.ui-field > span:first-child { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--text-faint); text-transform: uppercase; }
 .ui-input, .ui-select {
   font: 400 13px/1 var(--font-mono);
   background: var(--surface-3); color: var(--text);
@@ -94,3 +94,107 @@
 
 /* ---- Empty state ---- */
 .ui-empty { color: var(--text-faint); font-size: 13px; padding: var(--s6); text-align: center; }
+
+/* ---- Field hint / textarea / checkbox ---- */
+.ui-field__hint { font-family: var(--font-sans); font-size: 11px; line-height: 1.4; letter-spacing: normal; text-transform: none; color: var(--text-faint); max-width: 240px; }
+.ui-textarea {
+  font: 400 13px/1.5 var(--font-mono);
+  background: var(--surface-3); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  padding: 8px 10px; width: 100%; resize: vertical;
+}
+.ui-textarea:focus { outline: none; box-shadow: var(--ring); }
+.ui-check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+.ui-check input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+/* ---- Tabs (chip strip) ---- */
+.ui-tabs { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.ui-tab {
+  font: 500 12.5px/1 var(--font-mono); letter-spacing: .02em;
+  padding: 7px 13px; border-radius: var(--r-pill); cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text-dim);
+}
+.ui-tab:hover { color: var(--text); }
+.ui-tab[data-on="true"] { background: var(--accent-soft); color: var(--accent-press); border-color: var(--accent); }
+
+/* ---- Table ---- */
+.ui-table-wrap { overflow-x: auto; }
+.ui-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ui-table th {
+  font: 600 11px/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-faint); text-align: left; padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+.ui-table td {
+  padding: 9px 12px 9px 0; border-bottom: 1px solid var(--border);
+  color: var(--text); vertical-align: middle;
+}
+.ui-table tbody tr:hover { background: var(--surface-2); }
+.ui-table code { font-size: 12px; }
+
+/* ---- Definition list (key/value) ---- */
+.ui-deflist { margin: 0; display: grid; gap: 1px; }
+.ui-deflist > div { display: grid; grid-template-columns: minmax(120px, 40%) 1fr; gap: var(--s3); padding: 6px 0; border-bottom: 1px solid var(--border); }
+.ui-deflist > div:last-child { border-bottom: 0; }
+.ui-deflist dt { color: var(--text-faint); font-size: 12px; }
+.ui-deflist dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---- Progress bar ---- */
+.ui-progress { display: flex; align-items: center; gap: var(--s3); }
+.ui-progress__track { flex: 1; height: 7px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; position: relative; }
+.ui-progress__fill { height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width .3s ease; }
+.ui-progress__track.is-indeterminate .ui-progress__fill { width: 40%; position: absolute; animation: ui-indet 1.1s ease-in-out infinite; }
+@keyframes ui-indet { 0% { left: -40%; } 100% { left: 100%; } }
+.ui-progress__label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+/* ---- Log tail ---- */
+.ui-logtail {
+  font: 12px/1.5 var(--font-mono); color: var(--text-dim);
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 10px 12px; margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+
+/* ---- Figure (server PNG on a paper inset) ---- */
+.ui-figure { display: flex; flex-direction: column; gap: var(--s3); }
+.ui-figure__bar { display: flex; gap: 6px; flex-wrap: wrap; }
+.ui-figure__paper {
+  background: #fff; border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: var(--s3); display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-1); overflow: auto;
+}
+.ui-figure__paper img { max-width: 100%; height: auto; display: block; }
+
+/* ---- Local job progress panel (jobs.tsx) ---- */
+.job-panel {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2); padding: var(--s3) var(--s4); margin-top: var(--s3);
+  display: flex; flex-direction: column; gap: var(--s2);
+}
+.job-panel--done { border-color: var(--good); }
+.job-panel--failed, .job-panel--err { border-color: var(--bad); }
+.job-panel__head { display: flex; align-items: center; gap: var(--s3); }
+.job-panel__label { font-weight: 500; }
+.job-panel__dur { margin-left: auto; color: var(--text-faint); font-size: 12px; }
+.job-panel__bar { display: flex; align-items: center; gap: var(--s3); }
+.job-bar { flex: 1; height: 7px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; position: relative; }
+.job-bar__fill { height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width .3s ease; }
+.job-bar--indeterminate .job-bar__fill { width: 40%; position: absolute; animation: ui-indet 1.1s ease-in-out infinite; }
+.job-panel__pct { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.job-panel__err { color: var(--bad); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; margin: 0; }
+.job-panel__log { font: 12px/1.5 var(--font-mono); color: var(--text-dim); background: var(--bg-1); border-radius: var(--r-sm); padding: 8px 10px; margin: 6px 0 0; max-height: 240px; overflow: auto; white-space: pre-wrap; }
+.job-panel details summary { cursor: pointer; font-size: 12px; color: var(--text-faint); }
+
+/* ---- FASRC step card + SLURM monitor (fasrc.tsx) ---- */
+.fasrc-step__res { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); align-items: flex-end; }
+.fasrc-mon {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2); padding: var(--s3) var(--s4); margin-top: var(--s3);
+  display: flex; flex-direction: column; gap: var(--s2);
+}
+.fasrc-mon__head { display: flex; align-items: center; gap: var(--s3); }
+.fasrc-mon__jobid { color: var(--text-faint); font-size: 12px; }
+.fasrc-mon__stage { font-size: 12px; color: var(--text-dim); }
+.fasrc-mon__res { display: flex; gap: var(--s4); font-size: 12px; color: var(--text-dim); }
+.fasrc-mon__events { margin: 0; padding-left: 16px; font-size: 12px; }
+.fasrc-mon__events--warn { color: var(--warn); }
+.fasrc-mon__events--err { color: var(--bad); }
