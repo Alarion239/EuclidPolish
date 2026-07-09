@@ -368,6 +368,10 @@ def ensemble_status() -> dict:
                             "blocks": infer_checkpoint_num_res_blocks(d),
                             "origin": origin,
                             "loss": ((origin or {}).get("loss_norm") or "l1"),
+                            # Star regime for the table's Regime column + the
+                            # mode-toggle filter (origin.json; pre-knob members
+                            # → starfull). Must match member_is_starless().
+                            "starless": bool((origin or {}).get("starless", False)),
                             "psnr": (entry or {}).get("psnr")})
     # Rank by cached PSNR (1 = best); unscored members rank last, unranked.
     by_psnr = sorted((m for m in members if m["psnr"] is not None),
