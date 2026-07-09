@@ -110,15 +110,14 @@ def register(app):
     @app.route("/ensemble/combiner.json")
     def ensemble_combiner_json():
         """The Combiner card's dataset for a regime (``?mode=``): per-band
-        effective-weight curves, survivors and val loss. ``?fresh=1`` recomputes
-        from the saved combiner. 404 before any fit for that regime."""
+        effective-weight curves, survivors, val loss and per-member meta
+        (loss/depth/PSNR — the facets the gate plot colors by). Always recomputed
+        from the saved combiner (cheap: reads the npz + member origins, no
+        inference) so the member meta stays current; 404 before any fit."""
         starless = _mode_starless(default="starfull")
         path = _combiner_payload_path(starless)
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        if fresh or not os.path.isfile(path):
-            if (compute_combiner_payload(starless) is None
-                    and not os.path.isfile(path)):
-                abort(404)
+        if compute_combiner_payload(starless) is None and not os.path.isfile(path):
+            abort(404)
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/member-psnr", methods=["POST"])

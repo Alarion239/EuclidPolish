@@ -10,7 +10,7 @@ import { useJob, JobProgressView } from "../jobs";
 import { StepById } from "../fasrc";
 import { useThemeValue } from "../theme";
 import { CutoutViewer } from "../legacy";
-import { C, LOSS_COLOR, categorical } from "../colors";
+import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick } from "../charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, DefList, Empty, Field,
@@ -179,9 +179,6 @@ function Members(
     { header: "loss", cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge> },
     { header: "depth", cell: (m) => m.blocks ?? "—", align: "right" },
     { header: "step", cell: (m) => m.step ? m.step.toLocaleString() : "—", align: "right" },
-    { header: "seed", cell: (m) => <span className="muted mono">{m.seed ?? "—"}</span> },
-    { header: "size", cell: (m) => m.size_mb != null ? `${m.size_mb} MB` : "—", align: "right" },
-    { header: "loss-best", cell: (m) => m.has_loss_best ? "✓" : "—", align: "center" },
     { header: "", align: "right", cell: (m) => (
       <div className="row" style={{ gap: 4, justifyContent: "flex-end" }}>
         <Button size="sm" variant="ghost" title="continue training this member"
@@ -402,6 +399,8 @@ function Evaluations(
 }
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
+type GateColorBy = "loss" | "psnr" | "depth";
+
 function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit }:
   { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void },
@@ -410,6 +409,7 @@ function CombinerCard(
   const [nKernels, setNKernels] = useState("12");
   const [minUsage, setMinUsage] = useState("0");
   const [band, setBand] = useState<string>("");
+  const [colorBy, setColorBy] = useState<GateColorBy>("loss");
 
   const bands = comb?.band_names ?? [];
   const activeBand = band || bands[0] || "";
@@ -436,20 +436,41 @@ function CombinerCard(
     if (!ew?.jacobian?.length) return null;
     const bx = (ew.brightness_e ?? []).map((e) => (e == null ? NaN : Math.asinh(e / 100))) as number[];
     const surv = comb?.surviving?.[activeBand] ?? [];
+    const members = comb?.members ?? [];
     const M = comb?.member_labels.length ?? 0;
+    const survIdx = Array.from({ length: M }, (_, m) => m).filter((m) => surv[m] !== false);
+
+    // Facet colorer. depth → categorical over the ensemble's distinct depths;
+    // psnr → viridis over the surviving members' PSNR range; loss → loss token.
+    const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
+    const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
+    const pMin = psnrs.length ? Math.min(...psnrs) : 0;
+    const pMax = psnrs.length ? Math.max(...psnrs) : 1;
+    const memberColor = (m: number): string => {
+      const meta = members[m];
+      if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
+      if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
+      const p = meta?.psnr;
+      return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
+    };
+
     const xs = bx.filter((v) => isFinite(v));
     const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs)];
-    const series: Series[] = [];
-    for (let m = 0; m < M; m++) {
-      if (surv[m] === false) continue;
-      const y = ew.jacobian.map((row) => (row?.[m] ?? null));
-      series.push({ x: bx, y, color: LOSS_COLOR[comb?.members?.[m]?.loss ?? "l1"] ?? C.muted, width: 1.8 });
-    }
+    const series: Series[] = survIdx.map((m) => ({
+      x: bx, y: ew.jacobian!.map((row) => (row?.[m] ?? null)), color: memberColor(m), width: 1.8,
+    }));
+    const legend = survIdx.map((m) => {
+      const meta = members[m];
+      const tag = colorBy === "loss" ? (meta?.loss ?? "l1")
+        : colorBy === "depth" ? `${meta?.blocks ?? "?"}b`
+        : (meta?.psnr != null ? `${meta.psnr.toFixed(1)}dB` : "—");
+      return { label: `${comb?.member_labels[m]} · ${tag}`, color: memberColor(m) };
+    });
     const xTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((f) => { const v = xDomain[0] + f * (xDomain[1] - xDomain[0]); return { v, label: Math.round(100 * Math.sinh(v)).toString() }; });
     const yTicks: Tick[] = [0, 0.5, 1].map((v) => ({ v, label: String(v) }));
-    return { series, xDomain, yDomain: [0, 1.02] as [number, number], xTicks, yTicks };
+    return { series, legend, xDomain, yDomain: [0, 1.02] as [number, number], xTicks, yTicks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comb, activeBand, theme]);
+  }, [comb, activeBand, colorBy, theme]);
 
   return (
     <Card>
@@ -492,14 +513,21 @@ function CombinerCard(
 
             {bands.length > 0 && (
               <div style={{ marginTop: "var(--s4)" }}>
-                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
                   <div className="eyebrow">gate weight vs brightness</div>
-                  <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
+                  <div className="row" style={{ gap: 8 }}>
+                    <Select<GateColorBy> value={colorBy} onChange={setColorBy}
+                      options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }]} />
+                    <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
+                  </div>
                 </div>
                 {!gate ? <Empty>no gate data for {activeBand}</Empty> : (
-                  <Plot title={`${activeBand} — convex member weights`} xDomain={gate.xDomain} yDomain={gate.yDomain}
-                    xTicks={gate.xTicks} yTicks={gate.yTicks} xLabel="pixel brightness [e⁻]" yLabel="gate weight"
-                    series={gate.series} aspect={0.4} />
+                  <>
+                    <Plot title={`${activeBand} — convex member weights`} xDomain={gate.xDomain} yDomain={gate.yDomain}
+                      xTicks={gate.xTicks} yTicks={gate.yTicks} xLabel="pixel brightness [e⁻]" yLabel="gate weight"
+                      series={gate.series} aspect={0.4} />
+                    <Legend items={gate.legend} />
+                  </>
                 )}
               </div>
             )}

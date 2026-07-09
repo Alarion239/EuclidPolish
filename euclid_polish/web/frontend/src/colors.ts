@@ -43,3 +43,19 @@ const LOSS_FALLBACK: Record<string, string> = {
 export const LOSS_COLOR = new Proxy({} as Record<string, string>, {
   get: (_t, k: string) => cvar(`--loss-${k}`, LOSS_FALLBACK[k] ?? "#55627a"),
 });
+
+/* Perceptual value gradient (viridis) for coloring lines by a continuous
+   quantity like test PSNR. Theme-independent — reads well on light and dark. */
+const VIRIDIS = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"];
+function lerpHex(a: string, b: string, t: number): string {
+  const p = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [ar, ag, ab] = p(a), [br, bg, bb] = p(b);
+  const m = (x: number, y: number) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
+  return `#${m(ar, br)}${m(ag, bg)}${m(ab, bb)}`;
+}
+/** viridis(t): t in [0,1] → hex. */
+export function viridis(t: number): string {
+  const x = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const i = Math.min(VIRIDIS.length - 2, Math.floor(x));
+  return lerpHex(VIRIDIS[i], VIRIDIS[i + 1], x - i);
+}
