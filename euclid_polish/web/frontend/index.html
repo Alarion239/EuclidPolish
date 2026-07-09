@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EuclidPolish · console</title>
+    <!-- Apply the persisted theme before first paint (no flash). Default light. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("ep-theme");
+          document.documentElement.setAttribute(
+            "data-theme", t === "dark" || t === "light" ? t : "light");
+        } catch (e) { document.documentElement.setAttribute("data-theme", "light"); }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

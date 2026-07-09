@@ -1,10 +1,29 @@
 import { NavLink, Route, Routes, Navigate } from "react-router-dom";
 import { NAV } from "./nav";
+import { useTheme, type Theme } from "./theme";
 import EnsemblePage from "./pages/Ensemble";
 import Placeholder from "./pages/Placeholder";
 import "./app.css";
 
-function Rail() {
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const next = theme === "light" ? "dark" : "light";
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={onToggle}
+      title={`Switch to ${next} theme`}
+      aria-label={`Switch to ${next} theme`}
+    >
+      <span className="theme-toggle__track" data-theme={theme}>
+        <span className="theme-toggle__thumb">{theme === "light" ? "☀" : "☾"}</span>
+      </span>
+      <span className="theme-toggle__label">{theme}</span>
+    </button>
+  );
+}
+
+function Rail({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   return (
     <nav className="rail">
       <div className="rail__brand">
@@ -37,19 +56,21 @@ function Rail() {
       </div>
       <div className="rail__foot">
         <a href="/" className="rail__foot-link">← classic UI</a>
+        <ThemeToggle theme={theme} onToggle={onToggle} />
       </div>
     </nav>
   );
 }
 
 export default function App() {
+  const { theme, toggle } = useTheme();
   return (
     <div className="shell">
-      <Rail />
+      <Rail theme={theme} onToggle={toggle} />
       <main className="stage">
         <Routes>
           <Route path="/" element={<Navigate to="/ensemble" replace />} />
-          <Route path="/ensemble" element={<EnsemblePage />} />
+          <Route path="/ensemble" element={<EnsemblePage theme={theme} />} />
           <Route path="*" element={<Placeholder />} />
         </Routes>
       </main>

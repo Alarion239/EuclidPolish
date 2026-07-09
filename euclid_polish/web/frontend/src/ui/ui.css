@@ -2,7 +2,7 @@
 
 /* ---- Card ---- */
 .ui-card {
-  background: linear-gradient(180deg, var(--surface-1), #10161f);
+  background: linear-gradient(180deg, var(--surface-1), var(--surface-grad));
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
@@ -30,7 +30,7 @@
 .ui-btn:hover { background: var(--surface-3); border-color: var(--accent); }
 .ui-btn:active { transform: translateY(1px); }
 .ui-btn:disabled { opacity: .5; cursor: not-allowed; }
-.ui-btn--primary { background: var(--accent); border-color: var(--accent); color: #04101f; }
+.ui-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .ui-btn--primary:hover { background: var(--accent-press); border-color: var(--accent-press); }
 .ui-btn--ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 .ui-btn--ghost:hover { background: var(--surface-2); color: var(--text); }

@@ -1,7 +1,9 @@
 /* ============================================================================
    EuclidPolish — "observatory console" design system.
-   Dark, high-contrast instrumentation. One source of truth for color, space,
-   type and radius; every component reads these tokens (no hardcoded hex).
+   Two themes, one token contract: every component reads these variables (no
+   hardcoded hex). LIGHT is the default (a crisp daylight-instrument look —
+   journal-figure legibility for the plots); DARK is the original deep-space
+   console, preserved under [data-theme="dark"].
    ============================================================================ */
 @import "@fontsource/ibm-plex-sans/400.css";
 @import "@fontsource/ibm-plex-sans/500.css";
@@ -10,43 +12,62 @@
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "@fontsource/ibm-plex-mono/600.css";
 
+/* ── LIGHT (default) — daylight instrument ─────────────────────────────────
+   White cards on a soft cool-gray canvas; ink is near-black; the blue
+   instrument accent is darkened for contrast; chart series are saturated but
+   DARK so lines read like a well-typeset figure on paper. */
 :root {
-  /* — surfaces (deep space → panel) — */
-  --bg-0: #080b11;          /* app background */
-  --bg-1: #0e131c;          /* rail / sunken */
-  --surface-1: #131a26;     /* card */
-  --surface-2: #1a2333;     /* raised / hover */
-  --surface-3: #222d40;     /* active / input */
-  --border: #26303f;
-  --border-strong: #33415a;
+  /* — surfaces — */
+  --bg-0: #eef1f6;          /* app background */
+  --bg-1: #e6eaf1;          /* rail / sunken */
+  --surface-1: #ffffff;     /* card */
+  --surface-2: #f3f5fa;     /* raised / hover */
+  --surface-3: #e9edf4;     /* active / input */
+  --surface-grad: #f7f9fc;  /* card gradient foot */
+  --border: #dce1ea;
+  --border-strong: #c3ccd9;
+  --rail-bg: linear-gradient(180deg, #f1f4f9, #e6eaf1);
+  --app-bg:
+    radial-gradient(1100px 640px at 82% -12%, #dde7f7 0%, transparent 58%),
+    radial-gradient(820px 560px at -6% 6%, #e4ecf8 0%, transparent 52%),
+    #eef1f6;
 
   /* — ink — */
-  --text: #e5edf7;
-  --text-dim: #9aa8bd;
-  --text-faint: #64728a;
+  --text: #17202e;
+  --text-dim: #4a566a;
+  --text-faint: #7a8698;
 
   /* — instrument accents — */
-  --accent: #4c9ffe;        /* primary (interactive) */
-  --accent-press: #6fb2ff;
-  --accent-soft: #4c9ffe22;
-  --amber: #ffb454;         /* SR / highlight */
-  --cyan: #33d6c4;
-  --violet: #b48ef2;
-  --magenta: #ff77c8;
+  --accent: #2563eb;        /* primary (interactive) */
+  --accent-press: #1d4ed8;
+  --accent-soft: #2563eb1a;
+  --on-accent: #ffffff;     /* ink ON a filled accent surface */
+  --amber: #c2680a;         /* SR / highlight */
+  --cyan: #0e8f96;
+  --violet: #7c5cf0;
+  --magenta: #d63384;
 
   /* — status — */
-  --good: #56d68a;
-  --warn: #ffcc66;
-  --bad: #ff6b6b;
-  --good-soft: #56d68a1c;
-  --warn-soft: #ffcc661c;
-  --bad-soft: #ff6b6b1c;
+  --good: #12925a;
+  --warn: #b57400;
+  --bad: #d64545;
+  --good-soft: #12925a1c;
+  --warn-soft: #b574001c;
+  --bad-soft: #d645451c;
 
   /* — data-series palette (charts) — */
-  --series-baseline: #ff5c6c;   /* LR / floor-to-beat */
-  --series-mean: #4c9ffe;       /* ensemble mean */
-  --series-comb: #ffb454;       /* combiner */
-  --series-muted: #55627a;      /* faint member / model–model pairs */
+  --series-baseline: #e11d48;   /* LR / floor-to-beat */
+  --series-mean: #2563eb;       /* ensemble mean */
+  --series-comb: #c2680a;       /* combiner */
+  --series-muted: #9aa6b6;      /* faint member / model–model pairs */
+  --series-cross: #5b6879;      /* model–model r̃(k) */
+  --series-guide: #c2ccd9;      /* grid guide */
+  --series-visfwhm: #2563eb;    /* VIS PSF marker */
+
+  /* — categorical (facet coloring: loss / depth) — */
+  --cat-0: #2563eb; --cat-1: #0f9d58; --cat-2: #d97706; --cat-3: #7c3aed;
+  --cat-4: #db2777; --cat-5: #0e8f96; --cat-6: #dc2626; --cat-7: #927608;
+  --loss-l1: #2563eb; --loss-l2: #0f9d58; --loss-l3: #d97706; --loss-berhu: #7c3aed;
 
   /* — type — */
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -57,12 +78,64 @@
 
   /* — radius / elevation — */
   --r-sm: 5px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
-  --shadow-1: 0 1px 2px #0006;
-  --shadow-2: 0 6px 22px -8px #000a;
+  --shadow-1: 0 1px 2px #1a2a4a14;
+  --shadow-2: 0 10px 28px -12px #1a2a4a33;
   --ring: 0 0 0 2px var(--accent-soft), 0 0 0 1px var(--accent);
 
   /* — layout — */
   --rail-w: 232px;
+}
+
+/* ── DARK — deep-space console (the original) ──────────────────────────────*/
+:root[data-theme="dark"] {
+  --bg-0: #080b11;
+  --bg-1: #0e131c;
+  --surface-1: #131a26;
+  --surface-2: #1a2333;
+  --surface-3: #222d40;
+  --surface-grad: #10161f;
+  --border: #26303f;
+  --border-strong: #33415a;
+  --rail-bg: linear-gradient(180deg, #0b1019, var(--bg-1));
+  --app-bg:
+    radial-gradient(1200px 700px at 78% -12%, #16233a55, transparent 60%),
+    radial-gradient(900px 600px at -8% 8%, #12203a44, transparent 55%),
+    #080b11;
+
+  --text: #e5edf7;
+  --text-dim: #9aa8bd;
+  --text-faint: #64728a;
+
+  --accent: #4c9ffe;
+  --accent-press: #6fb2ff;
+  --accent-soft: #4c9ffe22;
+  --on-accent: #04101f;
+  --amber: #ffb454;
+  --cyan: #33d6c4;
+  --violet: #b48ef2;
+  --magenta: #ff77c8;
+
+  --good: #56d68a;
+  --warn: #ffcc66;
+  --bad: #ff6b6b;
+  --good-soft: #56d68a1c;
+  --warn-soft: #ffcc661c;
+  --bad-soft: #ff6b6b1c;
+
+  --series-baseline: #ff5c6c;
+  --series-mean: #4c9ffe;
+  --series-comb: #ffb454;
+  --series-muted: #55627a;
+  --series-cross: #8794a8;
+  --series-guide: #3a475c;
+  --series-visfwhm: #4c9ffe;
+
+  --cat-0: #4c9ffe; --cat-1: #56d68a; --cat-2: #ffb454; --cat-3: #b48ef2;
+  --cat-4: #ff77c8; --cat-5: #33d6c4; --cat-6: #ff6b6b; --cat-7: #c7d05e;
+  --loss-l1: #4c9ffe; --loss-l2: #56d68a; --loss-l3: #ffb454; --loss-berhu: #b48ef2;
+
+  --shadow-1: 0 1px 2px #0006;
+  --shadow-2: 0 6px 22px -8px #000a;
 }
 
 * { box-sizing: border-box; }
@@ -70,10 +143,7 @@
 html, body, #root { height: 100%; margin: 0; }
 
 body {
-  background:
-    radial-gradient(1200px 700px at 78% -12%, #16233a55, transparent 60%),
-    radial-gradient(900px 600px at -8% 8%, #12203a44, transparent 55%),
-    var(--bg-0);
+  background: var(--app-bg);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -81,6 +151,9 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* Theme cross-fade — flipping the toggle glides instead of snapping. */
+body, .rail, .ui-card, .ui-btn, .ui-chip, .ui-input, .ui-select { transition: background-color .2s ease, border-color .2s ease, color .2s ease; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-press); }

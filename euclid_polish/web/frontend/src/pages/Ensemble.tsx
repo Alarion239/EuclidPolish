@@ -28,7 +28,7 @@ type Evals = {
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const hasData = (a?: (number | null)[]) => !!a && a.some((v) => v != null && isFinite(v as number));
 
-export default function EnsemblePage() {
+export default function EnsemblePage({ theme }: { theme?: string }) {
   const [mode, setMode] = useState<Mode>("starfull");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
   const [data, setData] = useState<Evals | null>(null);
@@ -92,7 +92,9 @@ export default function EnsemblePage() {
       { label: "VIS PSF FWHM", color: C.visfwhm, dash: true },
     ];
     return { series, guides, xDomain, yDomain, xTicks, yTicks, legend };
-  }, [ps, members, colorBy, data]);
+    // `theme` participates so the series/legend colors (read live from the
+    // theme's CSS tokens via C/LOSS_COLOR) rebuild when the toggle flips.
+  }, [ps, members, colorBy, data, theme]);
 
   const comb = data?.combiner;
 
