@@ -1,15 +1,24 @@
 // Combiner card renderer. Pulls fit-time info from /ensemble/combiner.json
-// (survivors, val loss, effective-weight-vs-brightness Jacobian curves) and
-// test-time metrics from /ensemble/evals.json (combiner vs mean vs best member,
-// VIS stretched PSNR). All drawn client-side; no server round-trips after load.
+// (member weight-vs-brightness gate curves, val loss) and test-time metrics from
+// /ensemble/evals.json (combiner vs mean vs best member, VIS stretched PSNR).
+// All drawn client-side; no server round-trips after load.
 
 const COLORS = [
   "#4477aa", "#ee6677", "#228833", "#ccbb44", "#66ccee", "#aa3377",
-  "#ee8866", "#44bb99", "#bbbb44", "#99ddff", "#cc6677", "#000000",
+  "#ee8866", "#44bb99", "#bbbb44", "#99ddff", "#cc6677", "#555555",
 ];
+const BAND_COLORS = { VIS: "#4477aa", Y_E: "#66ccee", J_E: "#228833", H_E: "#ccbb44" };
+const TXT = "var(--text-primary,#333)";
 
 function fmt(x, d = 3) {
   return (x == null || !isFinite(x)) ? "—" : (Math.round(x * 10 ** d) / 10 ** d);
+}
+
+function fmtE(e) {
+  const a = Math.abs(e);
+  if (a < 1000) return String(Math.round(e));
+  if (a < 1e6) return (e / 1e3).toFixed(a < 1e4 ? 1 : 0) + "k";
+  return (e / 1e6).toFixed(1) + "M";
 }
 
 function metricsHtml(comb, evals) {
@@ -28,98 +37,136 @@ function metricsHtml(comb, evals) {
   }
   const stale = comb.stale
     ? ` · <b style="color:#c33">STALE</b> (membership changed since fit — re-fit)` : "";
-  return `<table class="mini-table">${rows}</table>`
-       + `<p class="hint">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
+  return `<div style="display:flex;justify-content:center"><table class="mini-table">${rows}</table></div>`
+       + `<p class="hint" style="text-align:center">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
        + ` · RBF gate, K=${comb.n_kernels} kernels · prune ${comb.min_usage}${stale}</p>`;
 }
 
-function survivorsHtml(comb) {
+// Per-member, per-band importance = mean gate weight over the brightness sweep.
+function importanceData(comb) {
+  const bands = comb.band_names || Object.keys(comb.eff_weights || {});
   const labels = comb.member_labels || [];
-  const bands = comb.band_names || Object.keys(comb.surviving || {});
-  let h = `<table class="mini-table"><tr><th>member</th>`
-        + bands.map((b) => `<th>${b}</th>`).join("") + `</tr>`;
-  labels.forEach((lab, i) => {
-    h += `<tr><td>${lab}</td>` + bands.map((b) => {
-      const alive = ((comb.surviving || {})[b] || [])[i];
-      return `<td style="text-align:center;color:${alive ? "#228833" : "#bbb"}">`
-           + `${alive ? "✔" : "·"}</td>`;
-    }).join("") + `</tr>`;
+  const eff = comb.eff_weights || {};
+  const imp = labels.map(() => bands.map(() => 0));
+  bands.forEach((b, bi) => {
+    const J = (eff[b] || {}).jacobian || [];              // [L][M]
+    for (let m = 0; m < labels.length; m++) {
+      let s = 0, c = 0;
+      for (let l = 0; l < J.length; l++) {
+        const v = J[l][m];
+        if (v != null && isFinite(v)) { s += v; c += 1; }
+      }
+      imp[m][bi] = c ? s / c : 0;
+    }
   });
-  return h + `</table><p class="hint">✔ = member kept for that band; · = pruned by group-L1.</p>`;
+  return { bands, labels, imp, totals: imp.map((r) => r.reduce((a, v) => a + v, 0)) };
 }
 
-// Compact SVG line plot: effective weight (Jacobian) vs pixel brightness, one
-// line per surviving member, for the selected band.
+// One horizontal bar per member, stacked into the 4 band segments; sorted by
+// total importance. Shows which members the gate leans on, and in which bands.
+function drawImportance(host, comb) {
+  const { bands, labels, imp, totals } = importanceData(comb);
+  const M = labels.length;
+  const order = labels.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
+  const xmax = Math.max(1e-6, ...totals);
+  const W = 800, PL = 66, PR = 64, PT = 10, rowH = 26;
+  const H = PT + M * rowH + 46;
+  const barW = W - PL - PR;
+  const sx = (v) => v / xmax * barW;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="member importance" style="color:${TXT};font:12px sans-serif">`;
+  [0, 0.5, 1].forEach((f) => {
+    const tv = f * xmax, x = PL + sx(tv);
+    s += `<line x1="${x}" y1="${PT}" x2="${x}" y2="${PT + M * rowH}" stroke="currentColor" opacity="0.1"/>`;
+    s += `<text x="${x}" y="${PT + M * rowH + 16}" text-anchor="middle" fill="currentColor" opacity="0.7">${tv.toFixed(2)}</text>`;
+  });
+  order.forEach((m, row) => {
+    const y = PT + row * rowH + 4, h = rowH - 10;
+    s += `<text x="${PL - 8}" y="${y + h / 2}" text-anchor="end" dominant-baseline="central" fill="currentColor" opacity="0.9">${labels[m]}</text>`;
+    let x0 = PL;
+    bands.forEach((b, bi) => {
+      const w = sx(imp[m][bi]);
+      if (w > 0.3) s += `<rect x="${x0.toFixed(1)}" y="${y}" width="${w.toFixed(1)}" height="${h}" fill="${BAND_COLORS[b] || "#888"}"/>`;
+      x0 += w;
+    });
+    s += `<text x="${x0 + 6}" y="${y + h / 2}" dominant-baseline="central" fill="currentColor" opacity="0.6">${totals[m].toFixed(2)}</text>`;
+  });
+  let lx = PL;
+  const ly = PT + M * rowH + 36;
+  bands.forEach((b) => {
+    s += `<rect x="${lx}" y="${ly - 10}" width="12" height="12" fill="${BAND_COLORS[b] || "#888"}"/>`;
+    s += `<text x="${lx + 16}" y="${ly}" dominant-baseline="central" fill="currentColor" opacity="0.8">${b}</text>`;
+    lx += 34 + b.length * 7;
+  });
+  host.innerHTML = s + "</svg>";
+}
+
+// Gate weight (convex, sums to 1) of each member vs pixel brightness, one line
+// per member, for the selected band — with axis ticks, labels and a legend.
 function drawEffWeights(host, comb, band) {
   const ew = (comb.eff_weights || {})[band];
   host.innerHTML = "";
-  if (!ew || !ew.brightness_e || !ew.jacobian) {
+  if (!ew || !ew.brightness_asinh || !ew.jacobian) {
     host.innerHTML = `<p class="muted">no curve for ${band}</p>`;
     return;
   }
-  const xs = ew.brightness_e.map((v) => (v == null ? NaN : Math.log10(Math.max(v, 1e-3))));
-  const jac = ew.jacobian;                      // [nLevels][nMembers]
+  const bx = ew.brightness_asinh;                 // asinh brightness levels
+  const jac = ew.jacobian;                        // [L][M], rows sum to 1
   const nM = (jac[0] || []).length;
   const surviving = (comb.surviving || {})[band] || [];
-  const W = 480, H = 240, PL = 44, PR = 90, PT = 12, PB = 30;
-  const finite = [];
-  jac.forEach((row) => row.forEach((v) => { if (v != null && isFinite(v)) finite.push(v); }));
-  const xmin = Math.min(...xs.filter(isFinite)), xmax = Math.max(...xs.filter(isFinite));
-  let ymin = Math.min(0, ...finite), ymax = Math.max(1, ...finite);
-  if (!isFinite(ymin)) ymin = 0; if (!isFinite(ymax)) ymax = 1;
-  const pad = (ymax - ymin) * 0.08 || 0.1;
-  ymin -= pad; ymax += pad;
-  const sx = (x) => PL + (x - xmin) / (xmax - xmin || 1) * (W - PL - PR);
-  const sy = (y) => H - PB - (y - ymin) / (ymax - ymin || 1) * (H - PT - PB);
   const labels = comb.member_labels || [];
-  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;font:11px sans-serif">`;
-  // axes
-  svg += `<line x1="${PL}" y1="${sy(0)}" x2="${W - PR}" y2="${sy(0)}" stroke="#ccc"/>`;
-  svg += `<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H - PB}" stroke="#888"/>`;
-  svg += `<text x="${PL}" y="${H - 8}" fill="#666">faint</text>`;
-  svg += `<text x="${W - PR}" y="${H - 8}" text-anchor="end" fill="#666">bright →</text>`;
-  svg += `<text x="8" y="${PT + 8}" fill="#666">weight</text>`;
+  const W = 800, H = 300, PL = 56, PR = 150, PT = 16, PB = 46;
+  const xmin = Math.min(...bx), xmax = Math.max(...bx);
+  const sx = (v) => PL + (v - xmin) / (xmax - xmin || 1) * (W - PL - PR);
+  const sy = (w) => H - PB - w * (H - PT - PB);
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="gate weight vs brightness" style="color:${TXT};font:12px sans-serif">`;
+  [0, 0.25, 0.5, 0.75, 1].forEach((t) => {
+    const y = sy(t);
+    s += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="currentColor" opacity="0.12"/>`;
+    s += `<text x="${PL - 8}" y="${y}" text-anchor="end" dominant-baseline="central" fill="currentColor" opacity="0.7">${t}</text>`;
+  });
+  for (let v = Math.max(0, Math.ceil(xmin)); v <= xmax; v += 2) {
+    const x = sx(v);
+    s += `<line x1="${x}" y1="${PT}" x2="${x}" y2="${H - PB}" stroke="currentColor" opacity="0.08"/>`;
+    s += `<text x="${x}" y="${H - PB + 16}" text-anchor="middle" fill="currentColor" opacity="0.7">${fmtE(100 * Math.sinh(v))}</text>`;
+  }
+  s += `<line x1="${PL}" y1="${H - PB}" x2="${W - PR}" y2="${H - PB}" stroke="currentColor" opacity="0.4"/>`;
+  s += `<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${H - PB}" stroke="currentColor" opacity="0.4"/>`;
+  s += `<text x="${(PL + W - PR) / 2}" y="${H - 6}" text-anchor="middle" fill="currentColor" opacity="0.85">pixel brightness [e⁻]</text>`;
+  s += `<text transform="translate(14 ${(PT + H - PB) / 2}) rotate(-90)" text-anchor="middle" fill="currentColor" opacity="0.85">gate weight</text>`;
   for (let m = 0; m < nM; m++) {
     const col = COLORS[m % COLORS.length];
     const dead = surviving[m] === false;
     let d = "";
-    for (let i = 0; i < xs.length; i++) {
+    for (let i = 0; i < bx.length; i++) {
       const v = jac[i] && jac[i][m];
-      if (!isFinite(xs[i]) || v == null || !isFinite(v)) continue;
-      d += (d ? "L" : "M") + sx(xs[i]).toFixed(1) + "," + sy(v).toFixed(1) + " ";
+      if (v == null || !isFinite(v)) continue;
+      d += (d ? "L" : "M") + sx(bx[i]).toFixed(1) + "," + sy(v).toFixed(1) + " ";
     }
-    if (d) {
-      svg += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${dead ? 1 : 2}" `
-           + `opacity="${dead ? 0.25 : 1}"/>`;
-    }
-    const ly = PT + 12 + m * 14;
-    svg += `<line x1="${W - PR + 6}" y1="${ly - 4}" x2="${W - PR + 22}" y2="${ly - 4}" `
-         + `stroke="${col}" stroke-width="2" opacity="${dead ? 0.25 : 1}"/>`;
-    svg += `<text x="${W - PR + 26}" y="${ly}" fill="#333" opacity="${dead ? 0.4 : 1}">`
-         + `${labels[m] || m}${dead ? " (pruned)" : ""}</text>`;
+    if (d) s += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${dead ? 1 : 2}" opacity="${dead ? 0.3 : 1}"/>`;
+    const ly = PT + 14 + m * 16;
+    s += `<line x1="${W - PR + 8}" y1="${ly - 4}" x2="${W - PR + 24}" y2="${ly - 4}" stroke="${col}" stroke-width="2" opacity="${dead ? 0.3 : 1}"/>`;
+    s += `<text x="${W - PR + 28}" y="${ly}" dominant-baseline="central" fill="currentColor" opacity="${dead ? 0.4 : 0.9}">${labels[m] || m}${dead ? " (pruned)" : ""}</text>`;
   }
-  svg += `</svg>`;
-  host.innerHTML = svg;
+  host.innerHTML = s + "</svg>";
 }
 
 function render(root, comb, evals) {
-  root.innerHTML = "";
   const bands = comb.band_names || Object.keys(comb.eff_weights || {});
   root.innerHTML = `
-    <div class="ens-comb-grid" style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start">
-      <div><h4 style="margin:.2rem 0">test metrics</h4>${metricsHtml(comb, evals)}</div>
-      <div><h4 style="margin:.2rem 0">surviving members</h4>${survivorsHtml(comb)}</div>
-    </div>
-    <div style="margin-top:.75rem">
-      <h4 style="margin:.2rem 0;display:inline-block">effective member weight vs brightness</h4>
-      <select id="ens-comb-band" style="margin-left:.5rem">
-        ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
-      </select>
+    <div style="max-width:860px;margin:0 auto">
+      <div style="margin-bottom:1rem">${metricsHtml(comb, evals)}</div>
+      <h4 style="margin:.2rem 0;text-align:center">member importance (mean gate weight, stacked by band)</h4>
+      <div id="ens-comb-imp"></div>
+      <h4 style="margin:1rem 0 .2rem;text-align:center">gate weight vs brightness
+        <select id="ens-comb-band" style="margin-left:.4rem">
+          ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
+        </select></h4>
       <div id="ens-comb-eff"></div>
-      <p class="hint">The gate weight of each member vs pixel brightness (convex,
-        sums to 1): how much the combiner leans on each member as pixels get
-        brighter. Faint → L1 members; bright → star-reproducing members.</p>
+      <p class="hint" style="text-align:center">Convex gate weight of each member (sums to 1)
+        as pixels get brighter — faint → the L1 members, star cores → the
+        star-reproducing members.</p>
     </div>`;
+  drawImportance(root.querySelector("#ens-comb-imp"), comb);
   const sel = root.querySelector("#ens-comb-band");
   const host = root.querySelector("#ens-comb-eff");
   const draw = () => drawEffWeights(host, comb, sel.value);
