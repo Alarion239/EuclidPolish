@@ -13,7 +13,7 @@ import { CutoutViewer, type ViewerApi } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
 import {
-  Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, DefList, Empty, Field,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, DefList, Empty, Field,
   Input, NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
   Tabs, type Column,
 } from "../ui";
@@ -659,7 +659,7 @@ function CombinerCard(
    server-side, over just the checked members). */
 type ViewMeta = { member_labels: string[]; count?: number; pca_max?: number };
 type MemRow = {
-  i: number; key: string; label: string;
+  i: number; key: string; label: string; num: string;
   psnr: number | null; loss: string; depth: number | null; knee: number | null;
 };
 type SortBy = "index" | "psnr" | "loss" | "depth";
@@ -677,9 +677,11 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
   const rows: MemRow[] = useMemo(() => {
     const byName = new Map(members.map((m) => [m.name, m]));
     return (meta.data?.member_labels ?? []).map((label, i) => {
-      const m = byName.get(`member_${label.split("·")[0]}`);
+      // Labels are "NN·psnr" (the PSNR-best checkpoint fingerprint); show just NN.
+      const num = label.split("·")[0];
+      const m = byName.get(`member_${num}`);
       return {
-        i, key: `member${i}`, label,
+        i, key: `member${i}`, label, num,
         psnr: m?.psnr ?? null, loss: m?.loss ?? "l1",
         depth: m?.blocks ?? null, knee: m?.asinh_knee ?? null,
       };
@@ -732,30 +734,6 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
     [...rows].filter((r) => r.psnr != null)
       .sort((a, b) => b.psnr! - a.psnr!).slice(0, k).map((r) => r.i)));
 
-  const columns: Column<MemRow>[] = [
-    {
-      header: "movie", align: "center", width: 52,
-      cell: (r) => <input type="checkbox" checked={subset.has(r.i)}
-        onChange={() => toggleMovie(r.i)} aria-label={`movie ${r.label}`} />,
-    },
-    { header: "member", cell: (r) => <span className="mono">{r.label}</span> },
-    {
-      header: "PSNR", align: "right",
-      cell: (r) => <span className="mono">{r.psnr != null ? r.psnr.toFixed(2) : "—"}</span>,
-    },
-    {
-      header: "loss",
-      cell: (r) => <span className="mono" style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>,
-    },
-    { header: "depth", align: "right", cell: (r) => <span className="mono">{r.depth ?? "—"}</span> },
-    { header: "knee", align: "right", cell: (r) => <span className="mono muted">{kneeTag(r.knee)}</span> },
-    {
-      header: "", align: "right", width: 64,
-      cell: (r) => <Chip on={viewing.has(r.i)} onClick={() => toggleView(r.i)}
-        title="show this member's SR as a frame">{viewing.has(r.i) ? "shown" : "view"}</Chip>,
-    },
-  ];
-
   const nSel = subset.size;
   return (
     <Card>
@@ -778,8 +756,27 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
               <Button size="sm" onClick={() => commitSubset(new Set())} disabled={nSel === 0}>clear</Button>
             </div>
           </div>
-          <Table<MemRow> columns={columns} rows={shown} rowKey={(r) => r.key}
-            empty="no members in this regime's cube cache — run an evaluation first" />
+          {!shown.length
+            ? <Empty>no members in this regime's cube cache — run an evaluation first</Empty>
+            : (
+              <div className="ens-mpanel"><div className="ens-mgrid">
+                {shown.map((r) => (
+                  <div key={r.key} className="ens-mcell" data-on={subset.has(r.i)}
+                    onClick={() => toggleMovie(r.i)} title="toggle in the disagreement movie">
+                    <input type="checkbox" readOnly tabIndex={-1} checked={subset.has(r.i)} />
+                    <span className="mono ens-mcell__num">{r.num}</span>
+                    <span className="ens-mcell__facets mono">
+                      {r.psnr != null ? `${r.psnr.toFixed(1)}dB` : "—"}
+                      {" · "}<span style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>
+                      {r.depth != null && ` · ${r.depth}b`}{` · ${kneeTag(r.knee)}`}
+                    </span>
+                    <button type="button" className="ui-chip ens-mcell__view" data-on={viewing.has(r.i)}
+                      onClick={(e) => { e.stopPropagation(); toggleView(r.i); }}
+                      title="show this member's SR as a frame">{viewing.has(r.i) ? "shown" : "view"}</button>
+                  </div>
+                ))}
+              </div></div>
+            )}
         </div>
       </CardBody>
     </Card>

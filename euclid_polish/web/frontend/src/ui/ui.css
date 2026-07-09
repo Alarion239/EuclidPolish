@@ -218,3 +218,23 @@
 .ens-imp__fill { height: 100%; border-radius: var(--r-pill); }
 .ens-imp__val { font-size: 12px; text-align: right; color: var(--text); }
 .ens-imp__meta { font-size: 11px; }
+
+/* ---- Ensemble member panel: multi-column picker (Ensemble.tsx) ----
+   Columns track the panel's OWN width (container query), not the viewport, so
+   it lays out 3-up in the wide card and collapses gracefully when narrow. */
+.ens-mpanel { container-type: inline-size; }
+.ens-mgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; }
+@container (max-width: 640px) { .ens-mgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 380px) { .ens-mgrid { grid-template-columns: 1fr; } }
+.ens-mcell {
+  display: flex; align-items: center; gap: 7px; padding: 4px 8px;
+  border: 1px solid var(--border); border-radius: var(--r-2);
+  cursor: pointer; user-select: none; background: var(--surface-1);
+  transition: border-color .12s, background .12s;
+}
+.ens-mcell:hover { border-color: var(--border-strong); }
+.ens-mcell[data-on="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.ens-mcell input { pointer-events: none; margin: 0; }
+.ens-mcell__num { font-weight: 600; min-width: 1.6em; }
+.ens-mcell__facets { font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.ens-mcell__view { margin-left: auto; flex: none; }
