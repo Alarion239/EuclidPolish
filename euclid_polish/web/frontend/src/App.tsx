@@ -2,6 +2,7 @@ import { NavLink, Route, Routes, Navigate } from "react-router-dom";
 import { NAV, PAGES } from "./pages/registry";
 import { ThemeContext, useTheme, type Theme } from "./theme";
 import { ErrorBoundary } from "./ErrorBoundary";
+import EnsemblePage from "./pages/Ensemble";
 import Placeholder from "./pages/Placeholder";
 import "./app.css";
 
@@ -62,8 +63,13 @@ export default function App() {
       <main className="stage">
         <ThemeContext.Provider value={theme}>
           <Routes>
-            <Route path="/" element={<Navigate to="/ensemble" replace />} />
-            {PAGES.map((p) => {
+            <Route path="/" element={<Navigate to="/ensemble/starfull" replace />} />
+            {/* Ensemble carries its star regime in the URL: /ensemble/starfull
+                | /ensemble/starless. Bare /ensemble redirects to starfull. */}
+            <Route path="/ensemble" element={<Navigate to="/ensemble/starfull" replace />} />
+            <Route path="/ensemble/:mode"
+              element={<ErrorBoundary routeKey="/ensemble"><EnsemblePage /></ErrorBoundary>} />
+            {PAGES.filter((p) => p.path !== "/ensemble").map((p) => {
               const C = p.component;
               return (
                 <Route key={p.path} path={p.path}

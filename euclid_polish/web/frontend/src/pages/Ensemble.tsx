@@ -4,6 +4,7 @@
    cutout viewer. Full parity with the classic page, drawn from the JSON
    endpoints (status.json / evals.json / combiner.json / training-curves.json). */
 import { useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import { StepById } from "../fasrc";
@@ -77,7 +78,11 @@ type DiagTab = typeof DIAG_TABS[number]["id"];
 
 export default function EnsemblePage() {
   const theme = useThemeValue();
-  const [mode, setMode] = useState<Mode>("starfull");
+  // Star regime lives in the URL (/ensemble/starfull | /ensemble/starless).
+  const navigate = useNavigate();
+  const { mode: modeParam } = useParams<{ mode: string }>();
+  const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
+  const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
 
   const status = useResource<Status>("/ensemble/status.json", [mode]);
