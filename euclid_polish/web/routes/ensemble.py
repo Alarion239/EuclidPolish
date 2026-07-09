@@ -44,6 +44,13 @@ def register(app):
     def ensemble_page():
         return render_template("ensemble.html", **ensemble_status())
 
+    @app.route("/ensemble/status.json")
+    def ensemble_status_json():
+        """Everything the members table + summary render from — the JSON twin of
+        the classic page's render context (members, archived, eval summary,
+        data presence). Consumed by the React console."""
+        return jsonify(ensemble_status())
+
     @app.route("/ensemble/render", methods=["POST"])
     def ensemble_render():
         try:
