@@ -25,10 +25,12 @@ faint, i.e. the wrong direction):
 * **asinh space.** ``arcsinh(electrons / STRETCH_SCALE_E)`` in; output inverse-
   stretched with ``sinh(·)·scale`` after the same ±clip the inference path uses.
 * **L1 loss** (asinh-space ``mean|·|``), fit LOCALLY on the ``validate`` split.
-* **Optional post-hoc pruning.** After fitting, members whose average weight
-  falls below ``min_usage`` are dropped (masked + renormalised). Default 0 (keep
-  all) — a usage threshold can only remove members the gate already ignores, so
-  it cannot collapse onto one regime the way the old group-L1 did.
+* **Optional post-hoc pruning.** After fitting, members whose **importance**
+  (mean gate weight over the brightness sweep — the number the importance chart
+  shows) falls below ``min_usage`` are dropped (masked + renormalised). Default
+  0 (keep all). Importance-based (not pixel-frequency): it keeps rare-but-
+  critical specialists (the L2 star members) and drops only members never
+  favoured at any brightness, so it cannot collapse onto one regime.
 * **Starfull-only** (the ``hr_`` target — starless members merely erase stars).
 
 Persistence: ``<dir>/combiner/combiner.npz`` + ``combiner.json``.
@@ -353,14 +355,19 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
         best_w = [V.numpy().copy(), a.numpy().copy()]
     Vn, an = best_w
 
-    # Post-hoc usage-based pruning: drop members the gate barely uses. Cannot
-    # collapse onto one regime — it only removes members already near-zero.
+    # Post-hoc pruning by MEMBER IMPORTANCE = mean gate weight over the
+    # brightness sweep (the exact number the importance chart shows), NOT pixel
+    # frequency. Frequency would kill rare-but-critical specialists (the L2
+    # star members fire on <10% of pixels but own the bright half of the gate);
+    # importance keeps them and drops only members never favoured at ANY
+    # brightness.
     surviving = np.ones(m, bool)
     bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
                       centers=centers, sigma=sigma, surviving=surviving)
-    if float(min_usage) > 0.0 and len(Xval):
-        usage = bc.weights(Xval).mean(axis=0)                   # (M,)
-        surviving = usage >= float(min_usage)
+    if float(min_usage) > 0.0:
+        levels = np.linspace(level_range[0], level_range[1], 25)
+        importance = bc.weights_at(levels).mean(axis=0)         # (M,)
+        surviving = importance >= float(min_usage)
         if not surviving.any():
             surviving = np.ones(m, bool)                        # never prune all
         bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),

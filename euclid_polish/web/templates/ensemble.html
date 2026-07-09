@@ -245,8 +245,8 @@
     <label title="Number of RBF kernels tiling the brightness axis. More = finer brightness resolution of the weights.">
       Kernels (K)
       <input type="number" name="n_kernels" value="12" min="2" max="32"></label>
-    <label title="Post-hoc prune: drop members whose average weight is below this (0 = keep all). Cannot collapse onto one regime.">
-      Prune (min usage)
+    <label title="Post-hoc prune: drop members whose IMPORTANCE (mean gate weight over the brightness sweep — the bars in the importance chart) is below this. 0 = keep all. Keeps rare-but-critical star specialists.">
+      Prune (min importance)
       <input type="number" name="min_usage" value="0" min="0" max="0.5" step="0.01"></label>
     <button type="submit">Fit combiner</button>
   </form>
