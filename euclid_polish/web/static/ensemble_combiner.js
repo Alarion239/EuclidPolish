@@ -106,17 +106,38 @@ function importanceData(comb) {
   return { bands, labels, imp, totals: imp.map((r) => r.reduce((a, v) => a + v, 0)) };
 }
 
+function fmtSteps(s) {
+  if (s == null || !isFinite(s)) return null;
+  return s >= 1000 ? (s / 1000).toFixed(s < 10000 ? 1 : 0) + "k" : String(s);
+}
+function paramStr(meta) {
+  if (!meta) return "";
+  const p = [];
+  if (meta.loss) p.push(String(meta.loss));
+  if (meta.blocks) p.push(`${meta.blocks}b`);
+  const st = fmtSteps(meta.step);
+  if (st) p.push(st);
+  if (meta.psnr != null && isFinite(meta.psnr)) p.push(`${(+meta.psnr).toFixed(1)}dB`);
+  return p.join(" · ");
+}
+
 // One horizontal bar per member, stacked into the 4 band segments; sorted by
-// total importance. Shows which members the gate leans on, and in which bands.
-function drawImportance(host, comb) {
+// total importance. Pruned members are omitted; each row is annotated with the
+// member's essential params (loss · depth · steps · PSNR).
+function drawImportance(host, comb, members) {
   const { bands, labels, imp, totals } = importanceData(comb);
-  const M = labels.length;
-  const order = labels.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
-  const xmax = Math.max(1e-6, ...totals);
-  const W = 800, PL = 66, PR = 64, PT = 10, rowH = 26;
+  const surv = comb.surviving || {};
+  const kept = labels.map((_, m) => bands.some((b) => (surv[b] || [])[m] !== false));
+  const order = labels.map((_, i) => i).filter((i) => kept[i])
+    .sort((a, b) => totals[b] - totals[a]);
+  const M = order.length;
+  if (!M) { host.innerHTML = `<p class="muted">no surviving members</p>`; return; }
+  const xmax = Math.max(1e-6, ...order.map((i) => totals[i]));
+  const W = 800, PL = 72, PR = 214, PT = 10, rowH = 26;
   const H = PT + M * rowH + 46;
   const barW = W - PL - PR;
   const sx = (v) => v / xmax * barW;
+  const xR = W - PR + 8;
   let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="member importance" style="color:${TXT};font:12px sans-serif">`;
   [0, 0.5, 1].forEach((f) => {
     const tv = f * xmax, x = PL + sx(tv);
@@ -132,7 +153,9 @@ function drawImportance(host, comb) {
       if (w > 0.3) s += `<rect x="${x0.toFixed(1)}" y="${y}" width="${w.toFixed(1)}" height="${h}" fill="${BAND_COLORS[b] || "#888"}"/>`;
       x0 += w;
     });
-    s += `<text x="${x0 + 6}" y="${y + h / 2}" dominant-baseline="central" fill="currentColor" opacity="0.6">${totals[m].toFixed(2)}</text>`;
+    const ps = paramStr((members || [])[m]);
+    s += `<text x="${xR}" y="${y + h / 2}" dominant-baseline="central" fill="currentColor" opacity="0.7">`
+       + `<tspan opacity="0.6">${totals[m].toFixed(2)}</tspan>${ps ? `  ${ps}` : ""}</text>`;
   });
   let lx = PL;
   const ly = PT + M * rowH + 36;
@@ -221,8 +244,8 @@ function render(root, comb, evals) {
         as pixels get brighter — faint → the L1 members, star cores → the
         star-reproducing members.</p>
     </div>`;
-  drawImportance(root.querySelector("#ens-comb-imp"), comb);
   const members = memberMeta(comb, evals);
+  drawImportance(root.querySelector("#ens-comb-imp"), comb, members);
   const sel = root.querySelector("#ens-comb-band");
   const colorSel = root.querySelector("#ens-comb-color");
   const host = root.querySelector("#ens-comb-eff");

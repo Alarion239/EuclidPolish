@@ -983,6 +983,7 @@ def _member_meta_from_labels(labels) -> list[dict]:
         entry = _member_psnr_entry(cache, name, d, sub, records_fp=rec_fp)
         meta.append({"loss": ((origin or {}).get("loss_norm") or "l1"),
                      "blocks": infer_checkpoint_num_res_blocks(d),
+                     "step": _member_last_step(d),
                      "psnr": (entry or {}).get("psnr")})
     return meta
 
