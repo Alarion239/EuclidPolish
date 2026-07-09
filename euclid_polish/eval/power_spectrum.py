@@ -230,6 +230,7 @@ class EnsembleSpectrumAccumulator:
         self._r_pairs: list[np.ndarray] = []            # each (M·(M−1)/2, nbins)
         self._p_comb: list[np.ndarray] = []             # combiner auto-power
         self._r_comb: list[np.ndarray] = []             # combiner vs HR coherence
+        self._r_lr: list[np.ndarray] = []               # LR(up)↔HR baseline r(k)
         self.n_fields = 0
         self.n_members = 0
         self.has_combiner = False
@@ -238,11 +239,15 @@ class EnsembleSpectrumAccumulator:
         return np.arcsinh(np.asarray(x, np.float64) / self.stretch)
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
-            members: np.ndarray, combiner: np.ndarray | None = None) -> None:
+            members: np.ndarray, combiner: np.ndarray | None = None,
+            lr: np.ndarray | None = None) -> None:
         """Accumulate one field (asinh space). ``hr``/``mean`` are ``(n, n)``;
         ``members`` is ``(M, n, n)`` — all single-band, HR-grid. ``combiner``
         (optional, ``(n, n)``) is the combined reconstruction → its own
-        ``P_comb``/``r_comb`` series alongside the ensemble mean."""
+        ``P_comb``/``r_comb`` series alongside the ensemble mean. ``lr``
+        (optional, the LR plane resampled to the HR grid, ``(n, n)``) is the
+        no-super-resolution BASELINE → an ``r_lr`` cross-correlation curve the
+        network must beat."""
         hr = np.asarray(hr, np.float64)
         mean = np.asarray(mean, np.float64)
         if hr.shape != (self.n, self.n) or mean.shape != hr.shape:
@@ -310,6 +315,17 @@ class EnsembleSpectrumAccumulator:
                 pc[ce] = np.nan; rc[ce] = np.nan
                 self._p_comb.append(pc); self._r_comb.append(rc)
                 self.has_combiner = True
+
+        # LR baseline: cross-correlation of the LR plane (resampled to the HR
+        # grid, i.e. no super-resolution) with HR — the floor the network beats.
+        if lr is not None:
+            al = self._asinh(np.asarray(lr, np.float64))
+            if al.shape == hr.shape:
+                _bhl, _bsl, bxl, bcl = bin_powers(ah, al, self.pix,
+                                                  self.k_edges, self.window)
+                _tl, rl = ratios_from_powers(_bhl, _bsl, bxl, bcl)
+                rl[bcl <= 0] = np.nan
+                self._r_lr.append(rl)
         self.n_fields += 1
 
     def _med(self, rows: list[np.ndarray]) -> np.ndarray:
@@ -339,6 +355,8 @@ class EnsembleSpectrumAccumulator:
         if self._p_comb:
             out["P_comb"] = self._med(self._p_comb)
             out["r_comb"] = self._med(self._r_comb)
+        if self._r_lr:
+            out["r_lr"] = self._med(self._r_lr)
         return out
 
 
@@ -364,6 +382,7 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     r_cross = np.asarray(curves.get("r_cross", nan_k), float)
     p_comb = np.asarray(curves.get("P_comb", nan_k), float)
     r_comb = np.asarray(curves.get("r_comb", nan_k), float)
+    r_lr = np.asarray(curves.get("r_lr", nan_k), float)
     with np.errstate(divide="ignore", invalid="ignore"):
         theta = 0.5 / k
         t_mean = np.sqrt(p_sr / p_hr)
@@ -373,7 +392,7 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     return {"theta": theta, "T": t_mean, "T_members": t_members,
             "r": r, "r_members": r_members,
             "r_pairs": r_pairs, "r_cross": r_cross,
-            "T_comb": t_comb, "r_comb": r_comb}
+            "T_comb": t_comb, "r_comb": r_comb, "r_lr": r_lr}
 
 
 #: Categorical colors for the per-member line grouping in the ensemble

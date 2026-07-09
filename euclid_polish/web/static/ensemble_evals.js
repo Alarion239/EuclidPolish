@@ -208,56 +208,58 @@ function renderPS(el, payload, mode) {
   const colors = memberColors(payload.members || [], mode);
   const uniformAlpha = mode ? 0.55 : 0.3;
 
-  const row = document.createElement("div");
-  row.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;";
-  el.appendChild(row);
-
   const COMB_COLOR = "#ee7733";
+  const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
-  const panels = [
-    ["transfer function  T = √(P_SR/P_HR)", ps.T, ps.T_members, [0, 1.45], "T(k)", ps.T_comb],
-    ["cross-correlation  r(k) vs HR", ps.r, ps.r_members, [0, 1.05], "r(k)", ps.r_comb],
-  ];
-  for (const [title, mean, memberRows, yd, ylabel, comb] of panels) {
-    const box = document.createElement("div");
-    box.style.cssText = "flex:1 1 420px;min-width:320px;";
-    row.appendChild(box);
-    const p = makePlot(box, 560, 360, title);
-    frameAxes(p, xd, yd, {
-      xticks,
-      yticks: [[0, "0"], [0.25, ""], [0.5, "0.5"], [0.75, ""], [1.0, "1"],
-               ...(yd[1] > 1.2 ? [[1.25, ""]] : [])],
-      xlabel: "angular scale θ = 1/2k [arcsec]",
-      ylabel: `${ylabel}  [VIS]`,
-    });
-    hline(p, xd, yd, 1.0, { color: "#888", dash: [2, 3] });
-    vline(p, xd, yd, Math.log10(g.lr_scale || 0.1),
-          { color: "#333", width: 1.3, dash: [6, 3] });
-    vline(p, xd, yd, Math.log10(g.vis_fwhm || 0.16),
-          { color: VIS_COLOR, alpha: 0.55, width: 1.5, dash: [5, 2] });
-    for (let j = 0; j < (memberRows || []).length; j++) {
-      const [, color] = colors[j] || ["", VIS_COLOR];
-      drawLine(p, xd, yd, theta, memberRows[j],
-               { color, width: 0.9, alpha: uniformAlpha });
-    }
-    if (ylabel.startsWith("r")) {
-      for (const pair of ps.r_pairs || []) {
-        drawLine(p, xd, yd, theta, pair, { color: "#777", width: 0.6, alpha: 0.15 });
-      }
-      drawLine(p, xd, yd, theta, ps.r_cross || [],
-               { color: "#555", width: 2, dash: [6, 3] });
-    }
-    drawLine(p, xd, yd, theta, mean, { color: VIS_COLOR, width: 2, dots: true });
-    if (hasComb(comb)) {
-      drawLine(p, xd, yd, theta, comb, { color: COMB_COLOR, width: 2, dots: true });
-    }
+  const hasLR = hasComb(ps.r_lr);
+
+  // A single, LARGE cross-correlation r(k) panel (the transfer-function panel
+  // was removed — r(k) is the headline metric). Fills the card width.
+  const yd = [0, 1.05];
+  const box = document.createElement("div");
+  box.style.cssText = "width:100%;";
+  el.appendChild(box);
+  const w = Math.max(720, Math.min(1180, (el.clientWidth || 980) - 8));
+  const p = makePlot(box, w, Math.round(w * 0.5),
+                     "cross-correlation  r(k) vs HR  (1 = perfect; higher is better)");
+  frameAxes(p, xd, yd, {
+    xticks,
+    yticks: [[0, "0"], [0.25, "0.25"], [0.5, "0.5"], [0.75, "0.75"], [1.0, "1"]],
+    xlabel: "angular scale θ = 1/2k [arcsec]",
+    ylabel: "r(k)  [VIS]",
+  });
+  hline(p, xd, yd, 1.0, { color: "#888", dash: [2, 3] });
+  vline(p, xd, yd, Math.log10(g.lr_scale || 0.1),
+        { color: "#333", width: 1.3, dash: [6, 3] });
+  vline(p, xd, yd, Math.log10(g.vis_fwhm || 0.16),
+        { color: VIS_COLOR, alpha: 0.55, width: 1.5, dash: [5, 2] });
+  // per-member r(k)
+  for (let j = 0; j < (ps.r_members || []).length; j++) {
+    const [, color] = colors[j] || ["", VIS_COLOR];
+    drawLine(p, xd, yd, theta, ps.r_members[j],
+             { color, width: 0.9, alpha: uniformAlpha });
   }
+  // truth-free model–model agreement
+  for (const pair of ps.r_pairs || []) {
+    drawLine(p, xd, yd, theta, pair, { color: "#777", width: 0.6, alpha: 0.15 });
+  }
+  drawLine(p, xd, yd, theta, ps.r_cross || [],
+           { color: "#555", width: 2, dash: [6, 3] });
+  // LR baseline (no SR) — the floor the network must beat
+  if (hasLR) {
+    drawLine(p, xd, yd, theta, ps.r_lr, { color: LR_COLOR, width: 2.5, dash: [7, 4] });
+  }
+  drawLine(p, xd, yd, theta, ps.r, { color: VIS_COLOR, width: 2.5, dots: true });
+  if (hasComb(ps.r_comb)) {
+    drawLine(p, xd, yd, theta, ps.r_comb, { color: COMB_COLOR, width: 2, dots: true });
+  }
+
   const groups = [...new Map(colors.map(([l, c]) => [l, c])).entries()];
   el.appendChild(legendHtml([
+    ...(hasLR ? [["LR baseline (no SR)", LR_COLOR, true]] : []),
     ...groups.map(([l, c]) => [l, c, false]),
     ["ensemble mean", VIS_COLOR, false],
-    ...(hasComb(ps.T_comb) || hasComb(ps.r_comb)
-        ? [["combiner", COMB_COLOR, false]] : []),
+    ...(hasComb(ps.r_comb) ? [["combiner", COMB_COLOR, false]] : []),
     ["model–model r̃(k) (no HR)", "#555", true],
     ["LR sampling (0.1″)", "#333", true],
     ["VIS PSF FWHM", VIS_COLOR, true],

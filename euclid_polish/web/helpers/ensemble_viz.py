@@ -390,6 +390,22 @@ def _vis(arr: np.ndarray) -> np.ndarray:
     return a[..., 0] if a.ndim == 3 else a
 
 
+def _lr_on_hr_grid(lr_cube, n: int) -> np.ndarray | None:
+    """The LR VIS plane bicubic-resampled onto the ``(n, n)`` HR grid — the
+    no-super-resolution baseline for the power-spectrum r(k) reference. Returns
+    ``None`` if the LR cube is missing/degenerate."""
+    if lr_cube is None:
+        return None
+    a = np.asarray(_vis(lr_cube), np.float64)
+    if a.ndim != 2 or a.size == 0:
+        return None
+    if a.shape == (n, n):
+        return a
+    from scipy.ndimage import zoom
+    up = zoom(a, (n / a.shape[0], n / a.shape[1]), order=3)  # bicubic baseline
+    return up[:n, :n]
+
+
 def _render_disagreement_png(lr_vis, sr_vis, std_vis, hr_vis, out_png) -> str:
     """LR | ensemble-mean SR | disagreement (std) | HR — VIS planes, asinh."""
     cols = 4 if hr_vis is not None else 3
@@ -765,11 +781,11 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
     ps_acc = None
     diag = EnsembleDiagnosticsAccumulator()
     cmet = _CombinerMetricAcc()
-    for hr_v, mean_v, mem_v, comb_v in _iter_cached_fields(starless):
+    for hr_v, mean_v, mem_v, comb_v, lr_v in _iter_cached_fields(starless):
         if ps_acc is None:
             ps_acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v)
+        ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
         diag.add(hr_v, mean_v, mem_v)
         cmet.add(hr_v, mean_v, mem_v, comb_v)
     if diag.n_fields == 0:
@@ -834,7 +850,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     combiner_model = load_combiner(
         out_dir, member_labels=_regime_labels(base, starless))
 
-    def _on_field(rec_index, _lr_cube, preds, mean, std, hr_cube):
+    def _on_field(rec_index, lr_cube, preds, mean, std, hr_cube):
         comb_full = None
         # Power spectrum over ALL fields that have HR (VIS band): HR vs
         # ensemble-mean (+ coherence r(k)) and the member-disagreement spectrum.
@@ -846,10 +862,11 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                     mem.shape[0] == len(combiner_model.member_labels):
                 comb_full = combiner_model.apply_field(mem)    # (H, W, C) electrons
             comb_v = _vis(comb_full) if comb_full is not None else None
+            lr_v = _lr_on_hr_grid(lr_cube, int(hr_v.shape[0]))  # baseline r(k)
             if ps_acc[0] is None:
                 ps_acc[0] = EnsembleSpectrumAccumulator(
                     int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-            ps_acc[0].add(hr_v, mean_v, mem_v, combiner=comb_v)
+            ps_acc[0].add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
             diag_acc.add(hr_v, mean_v, mem_v)
             cmet.add(hr_v, mean_v, mem_v, comb_v)
 
@@ -948,16 +965,18 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
 
 def _iter_cached_fields(starless: bool):
-    """Yield ``(target_vis, mean_vis, members_vis, combiner_vis)`` per cached
-    field of one regime.
+    """Yield ``(target_vis, mean_vis, members_vis, combiner_vis, lr_vis)`` per
+    cached field of one regime.
 
     Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
     cubes the last Evaluate wrote for this regime, paired with the regime's
     TARGET from the records (``clean`` for starless, ``hr`` for starfull) — so
     any evaluation figure can be recomputed (e.g. after a code fix) in seconds
     with NO model inference and no full re-run. ``combiner_vis`` is the VIS
-    plane of the ``comb_*.npy`` cube when present, else ``None``. Yields nothing
-    when the cache is missing, or when the regime's membership changed since the
+    plane of the ``comb_*.npy`` cube when present, else ``None``; ``lr_vis`` is
+    the LR plane bicubic-resampled onto the HR grid (the no-SR baseline for
+    r(k)), or ``None`` when the dirty records are absent. Yields nothing when
+    the cache is missing, or when the regime's membership changed since the
     cubes were written (a member archived/added → position-keyed cubes invalid).
     """
     cubes_dir = _ensemble_cubes_dir(starless=starless)
@@ -985,6 +1004,11 @@ def _iter_cached_fields(starless: bool):
         return
 
     hr_by = {r.index: r for r in read_images(hr_path, num_images=max(idxs) + 1)}
+    # LR baseline (optional): the dirty records, matched by index. Absent → the
+    # r_lr curve is simply skipped, no error.
+    lr_path = tfrecord_path(rdir, f"dirty_{sub}") if rdir else ""
+    lr_by = ({r.index: r for r in read_images(lr_path, num_images=max(idxs) + 1)}
+             if lr_path and os.path.exists(lr_path) else {})
     for rec in idxs:
         sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
         hr = hr_by.get(rec)
@@ -996,8 +1020,12 @@ def _iter_cached_fields(starless: bool):
             continue
         comb_f = os.path.join(cubes_dir, f"comb_{rec:05d}.npy")
         comb_v = _vis(np.load(comb_f)) if os.path.isfile(comb_f) else None
-        yield (_vis(np.asarray(hr.data, np.float32)), _vis(np.load(sr_f)),
-               np.stack([_vis(m) for m in members], 0), comb_v)
+        hr_v = _vis(np.asarray(hr.data, np.float32))
+        lr_rec = lr_by.get(rec)
+        lr_v = (_lr_on_hr_grid(np.asarray(lr_rec.data, np.float32),
+                               int(hr_v.shape[0])) if lr_rec is not None else None)
+        yield (hr_v, _vis(np.load(sr_f)),
+               np.stack([_vis(m) for m in members], 0), comb_v, lr_v)
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
@@ -1028,11 +1056,11 @@ def regenerate_power_spectrum(starless: bool,
     colors the per-member lines by that grouping. Returns the PNG path, or
     ``None`` if nothing is cached."""
     acc = None
-    for hr_v, mean_v, mem_v, comb_v in _iter_cached_fields(starless):
+    for hr_v, mean_v, mem_v, comb_v, lr_v in _iter_cached_fields(starless):
         if acc is None:
             acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        acc.add(hr_v, mean_v, mem_v, combiner=comb_v)
+        acc.add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
     if acc is None or float(acc.bc.sum()) <= 0:
         return None
     member_meta = None
@@ -1070,7 +1098,7 @@ def regenerate_eval_diagnostics(starless: bool) -> dict[str, str] | None:
     ``{slug: png_path}`` or ``None`` when nothing is cached.
     """
     acc = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v, _comb_v in _iter_cached_fields(starless):
+    for hr_v, mean_v, mem_v, _comb_v, _lr_v in _iter_cached_fields(starless):
         acc.add(hr_v, mean_v, mem_v)
     if acc.n_fields == 0:
         return None
