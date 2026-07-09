@@ -25,12 +25,13 @@ faint, i.e. the wrong direction):
 * **asinh space.** ``arcsinh(electrons / STRETCH_SCALE_E)`` in; output inverse-
   stretched with ``sinh(·)·scale`` after the same ±clip the inference path uses.
 * **L1 loss** (asinh-space ``mean|·|``), fit LOCALLY on the ``validate`` split.
-* **Optional post-hoc pruning.** After fitting, members whose **importance**
-  (mean gate weight over the brightness sweep — the number the importance chart
-  shows) falls below ``min_usage`` are dropped (masked + renormalised). Default
-  0 (keep all). Importance-based (not pixel-frequency): it keeps rare-but-
-  critical specialists (the L2 star members) and drops only members never
-  favoured at any brightness, so it cannot collapse onto one regime.
+* **Optional post-hoc pruning.** After fitting, a member's **importance** (mean
+  gate weight over the brightness sweep) is summed across the 4 bands — the total
+  bar in the importance chart — and if it falls below ``min_usage`` the member is
+  dropped from ALL bands (masked + renormalised); otherwise kept in all. Default
+  0 (keep all). Whole-member + importance-based (not per-band, not pixel-
+  frequency): it keeps rare-but-critical specialists (the L2 star members) and
+  drops only members unimportant across the whole gate.
 * **Starfull-only** (the ``hr_`` target — starless members merely erase stars).
 
 Persistence: ``<dir>/combiner/combiner.npz`` + ``combiner.json``.
@@ -285,8 +286,8 @@ def build_fit_buffers(base_dir: str, records_dir: str, *, subset: str = "validat
 
 def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
                   sigma_scale: float, level_range: tuple[float, float],
-                  min_usage: float, steps: int, lr: float, batch: int,
-                  seed: int, holdout: float) -> tuple[BandCombiner, float]:
+                  steps: int, lr: float, batch: int, seed: int, holdout: float
+                  ) -> tuple[BandCombiner, np.ndarray, np.ndarray]:
     import tensorflow as tf
 
     X = np.asarray(X, np.float32)
@@ -354,26 +355,12 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
     if best_w is None:
         best_w = [V.numpy().copy(), a.numpy().copy()]
     Vn, an = best_w
-
-    # Post-hoc pruning by MEMBER IMPORTANCE = mean gate weight over the
-    # brightness sweep (the exact number the importance chart shows), NOT pixel
-    # frequency. Frequency would kill rare-but-critical specialists (the L2
-    # star members fire on <10% of pixels but own the bright half of the gate);
-    # importance keeps them and drops only members never favoured at ANY
-    # brightness.
-    surviving = np.ones(m, bool)
+    # No pruning here — the survivor mask is a CUMULATIVE (cross-band) decision
+    # made once in fit_combiner. Return the holdout so the final (post-prune)
+    # loss can be measured there.
     bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
-                      centers=centers, sigma=sigma, surviving=surviving)
-    if float(min_usage) > 0.0:
-        levels = np.linspace(level_range[0], level_range[1], 25)
-        importance = bc.weights_at(levels).mean(axis=0)         # (M,)
-        surviving = importance >= float(min_usage)
-        if not surviving.any():
-            surviving = np.ones(m, bool)                        # never prune all
-        bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
-                          centers=centers, sigma=sigma, surviving=surviving)
-    val_l1 = float(np.mean(np.abs(bc.forward_asinh(Xval) - yval)))
-    return bc, val_l1
+                      centers=centers, sigma=sigma, surviving=np.ones(m, bool))
+    return bc, Xval, yval
 
 
 def fit_combiner(buffers, member_labels, *, n_kernels: int = DEFAULT_N_KERNELS,
@@ -382,19 +369,44 @@ def fit_combiner(buffers, member_labels, *, n_kernels: int = DEFAULT_N_KERNELS,
                  steps: int = 3000, lr: float = 1e-2, batch: int = 16384,
                  seed: int = 0, holdout: float = 0.1) -> Combiner:
     """Fit one per-band RBF brightness gate (convex mixture, L1 loss) for each
-    band in ``buffers`` (``{band: (X(N,M), y(N,))}`` asinh space)."""
+    band in ``buffers`` (``{band: (X(N,M), y(N,))}`` asinh space).
+
+    Pruning (``min_usage`` > 0) is a **cumulative, whole-member** decision: a
+    member's importance is summed across the 4 bands (the total bar in the
+    importance chart) and, if below the threshold, the member is pruned in ALL
+    bands; otherwise it is kept in all bands. So a member is either in the
+    ensemble or not — never per-band."""
     bands: dict[str, BandCombiner] = {}
-    vals: list[float] = []
+    holdouts: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for name, (X, y) in buffers.items():
         if np.asarray(X).size == 0:
             continue
-        bc, vl = _fit_one_band(X, y, n_kernels=int(n_kernels),
-                               sigma_scale=float(sigma_scale),
-                               level_range=level_range, min_usage=float(min_usage),
-                               steps=int(steps), lr=float(lr), batch=int(batch),
-                               seed=int(seed), holdout=float(holdout))
+        bc, Xval, yval = _fit_one_band(X, y, n_kernels=int(n_kernels),
+                                       sigma_scale=float(sigma_scale),
+                                       level_range=level_range, steps=int(steps),
+                                       lr=float(lr), batch=int(batch),
+                                       seed=int(seed), holdout=float(holdout))
         bands[name] = bc
-        vals.append(vl)
+        holdouts[name] = (Xval, yval)
+
+    # Cumulative pruning: sum each member's per-band importance (mean gate weight
+    # over the brightness sweep) across bands → one keep/drop mask applied to
+    # every band. Renormalising over survivors only raises their weight, so each
+    # survivor's cumulative importance ends up >= the threshold.
+    if float(min_usage) > 0.0 and bands:
+        m = next(iter(bands.values())).V.shape[1]
+        levels = np.linspace(level_range[0], level_range[1], 25)
+        cum = np.zeros(m)
+        for bc in bands.values():
+            cum += bc.weights_at(levels).mean(axis=0)
+        surviving = cum >= float(min_usage)
+        if not surviving.any():
+            surviving = np.ones(m, bool)
+        for bc in bands.values():
+            bc.surviving = surviving.copy()
+
+    vals = [float(np.mean(np.abs(bc.forward_asinh(holdouts[name][0]) - holdouts[name][1])))
+            for name, bc in bands.items()]
     return Combiner(member_labels=list(member_labels), n_kernels=int(n_kernels),
                     sigma_scale=float(sigma_scale), min_usage=float(min_usage),
                     bands=bands, band_names=tuple(buffers.keys()),

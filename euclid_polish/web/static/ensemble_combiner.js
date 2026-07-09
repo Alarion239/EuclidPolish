@@ -39,7 +39,7 @@ function metricsHtml(comb, evals) {
     ? ` · <b style="color:#c33">STALE</b> (membership changed since fit — re-fit)` : "";
   return `<div style="display:flex;justify-content:center"><table class="mini-table">${rows}</table></div>`
        + `<p class="hint" style="text-align:center">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
-       + ` · RBF gate, K=${comb.n_kernels} kernels · prune &lt;${comb.min_usage} importance${stale}</p>`;
+       + ` · RBF gate, K=${comb.n_kernels} kernels · prune &lt;${comb.min_usage} cumulative importance${stale}</p>`;
 }
 
 // Per-member, per-band importance = mean gate weight over the brightness sweep.
