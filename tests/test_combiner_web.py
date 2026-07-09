@@ -1,5 +1,5 @@
-"""Combiner web layer: fit route (starfull-only), combiner.json, the local fit
-job's reuse-of-cached-validate-inference path, and the payload builder."""
+"""Combiner web layer: fit route (per star regime), combiner.json, the local
+fit job's reuse-of-cached-validate-inference path, and the payload builder."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ def client():
         yield c
 
 
-def _fit_tiny_combiner():
-    """A saved combiner in _ensemble_out_dir() without any real ensemble."""
+def _fit_tiny_combiner(starless=False):
+    """A saved combiner in a regime dir (default starfull) w/o a real ensemble."""
     from euclid_polish.eval.combiner import fit_combiner, save_combiner
     rng = np.random.default_rng(0)
     n = 2000
@@ -35,7 +35,7 @@ def _fit_tiny_combiner():
     X = np.stack([y + rng.normal(0, .02, n), rng.normal(0, 1, n)], 1).astype(np.float32)
     buffers = {b: (X, y) for b in BANDS}
     comb = fit_combiner(buffers, ["00·psnr", "01·psnr"], n_kernels=6, steps=150)
-    save_combiner(comb, ev._ensemble_out_dir())
+    save_combiner(comb, ev._ensemble_regime_dir(starless))
     return comb
 
 
@@ -43,9 +43,12 @@ def _fit_tiny_combiner():
 # routes
 # ---------------------------------------------------------------------------
 
-def test_combiner_fit_rejects_starless(client):
+def test_combiner_fit_allows_starless(client):
+    # The combiner is now available in BOTH regimes: a starless fit is accepted
+    # (it spawns a job) rather than rejected.
     r = client.post("/ensemble/combiner/fit", data={"mode": "starless"})
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert "job_id" in r.get_json()
 
 
 def test_combiner_json_404_before_fit(client):
@@ -71,10 +74,10 @@ def test_combiner_json_served_after_fit(client):
 
 def test_compute_combiner_payload_from_saved():
     _fit_tiny_combiner()
-    payload = ev.compute_combiner_payload()
+    payload = ev.compute_combiner_payload(False)
     assert payload is not None
     assert payload["available"] and set(payload["surviving"]) == set(BANDS)
-    assert os.path.isfile(ev._combiner_payload_path())
+    assert os.path.isfile(ev._combiner_payload_path(False))
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ def test_job_combiner_fit_reuses_validate_cubes(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: rdir)
 
     fp = ev._eval_records_fingerprint(rdir, "validate")
-    val_dir = ev._ensemble_cubes_dir("validate")
+    val_dir = ev._ensemble_cubes_dir("validate", starless=False)
     os.makedirs(val_dir, exist_ok=True)
     labels = ["00·psnr", "01·psnr"]
     rng = np.random.default_rng(3)
@@ -124,10 +127,10 @@ def test_job_combiner_fit_reuses_validate_cubes(tmp_path, monkeypatch):
     assert set(summary["surviving"]) == set(BANDS)
 
     from euclid_polish.eval.combiner import load_combiner
-    comb = load_combiner(ev._ensemble_out_dir())
+    comb = load_combiner(ev._ensemble_regime_dir(False))
     assert comb is not None and comb.member_labels == labels
     assert comb.records_fp == fp
-    assert os.path.isfile(ev._combiner_payload_path())
+    assert os.path.isfile(ev._combiner_payload_path(False))
 
 
 def test_job_combiner_fit_requires_validate_records(tmp_path, monkeypatch):
@@ -156,16 +159,16 @@ def test_compute_evaluation_payload_includes_combiner(tmp_path, monkeypatch):
         return hr, members.mean(0), members, hr        # perfect combiner == hr
 
     fields = [_field(1), _field(2)]
-    monkeypatch.setattr(ev, "_iter_cached_fields", lambda: iter(fields))
+    monkeypatch.setattr(ev, "_iter_cached_fields", lambda starless: iter(fields))
 
-    cubes = ev._ensemble_cubes_dir()
+    cubes = ev._ensemble_cubes_dir(starless=False)
     os.makedirs(cubes, exist_ok=True)
     with open(os.path.join(cubes, "viz_index.json"), "w") as f:
         json.dump({"subset": "test", "indices": [0, 1],
                    "member_labels": ["00·psnr", "01·psnr", "02·psnr"],
                    "has_combiner": True}, f)
 
-    payload = ev.compute_evaluation_payload()
+    payload = ev.compute_evaluation_payload(False)
     assert payload is not None
     assert payload["ps"] is not None and "T_comb" in payload["ps"]
     cb = payload["combiner"]

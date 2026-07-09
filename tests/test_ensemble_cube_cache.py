@@ -87,11 +87,16 @@ def test_cached_member_labels(tmp_path):
 
 def test_ensemble_cubes_dir_is_subset_keyed():
     from euclid_polish.web.helpers import ensemble_viz as ev
-    test_dir = ev._ensemble_cubes_dir()               # no-arg = test bucket
-    val_dir = ev._ensemble_cubes_dir("validate")
+    test_dir = ev._ensemble_cubes_dir(starless=False)     # no subset = test bucket
+    val_dir = ev._ensemble_cubes_dir("validate", starless=False)
     assert test_dir.endswith(os.sep + "cubes")
     assert val_dir.endswith(os.sep + "cubes_validate")
     assert test_dir != val_dir
+    # ...and detached by star regime.
+    starless_dir = ev._ensemble_cubes_dir(starless=True)
+    assert starless_dir != test_dir
+    assert os.sep + "starfull" + os.sep in test_dir
+    assert os.sep + "starless" + os.sep in starless_dir
 
 
 def test_cache_field_cubes_roundtrips_through_reader(tmp_path):

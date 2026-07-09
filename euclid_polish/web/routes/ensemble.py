@@ -11,7 +11,7 @@ from flask import abort, jsonify, render_template, request, send_file
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
     _combiner_payload_path,
-    _ensemble_out_dir,
+    _ensemble_regime_dir,
     _evals_payload_path,
     compute_combiner_payload,
     compute_evaluation_payload,
@@ -28,6 +28,14 @@ from euclid_polish.web.helpers.ensemble_viz import (
     training_curves_payload,
 )
 from euclid_polish.web.jobs import REGISTRY
+
+
+def _mode_starless(default: str = "starless") -> bool:
+    """Star regime for a request (``?mode=`` / form ``mode=``). starfull and
+    starless artifacts are fully detached; the client sends the active regime
+    on every read so the page shows that regime's data."""
+    src = request.args if request.args.get("mode") is not None else request.form
+    return (src.get("mode", default) or default).lower() != "starfull"
 
 
 def register(app):
@@ -67,10 +75,10 @@ def register(app):
 
     @app.route("/ensemble/combiner/fit", methods=["POST"])
     def ensemble_combiner_fit():
-        """Fit the STARFULL combiner locally on the validate split. Rejected in
-        starless mode (starless members all just erase stars — nothing to fuse)."""
-        if request.form.get("mode", "starfull").lower() != "starfull":
-            abort(400, "combiner is starfull-only")
+        """Fit the combiner for the requested star regime locally on the
+        validate split. Available in both regimes — starfull fuses star
+        reconstructions, starless fuses the star-erasing members."""
+        starless = _mode_starless(default="starfull")
         try:
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
@@ -83,22 +91,26 @@ def register(app):
             min_usage = max(0.0, float(request.form.get("min_usage", 0.0) or 0.0))
         except (TypeError, ValueError):
             min_usage = 0.0
+        regime = "starless" if starless else "starfull"
         job_id = REGISTRY.spawn(
-            f"combiner: fit on validate ({num_images} fields, K={n_kernels})",
+            f"combiner: fit {regime} on validate ({num_images} fields, K={n_kernels})",
             target=lambda cap: job_combiner_fit(
-                cap, num_images=num_images, n_kernels=n_kernels, min_usage=min_usage),
+                cap, num_images=num_images, n_kernels=n_kernels,
+                min_usage=min_usage, starless=starless),
         )
         return jsonify({"job_id": job_id})
 
     @app.route("/ensemble/combiner.json")
     def ensemble_combiner_json():
-        """The Combiner card's dataset: per-band effective-weight curves,
-        survivors and val loss (plus test metrics/curves once Phase 3 lands).
-        ``?fresh=1`` recomputes from the saved combiner. 404 before any fit."""
-        path = _combiner_payload_path()
+        """The Combiner card's dataset for a regime (``?mode=``): per-band
+        effective-weight curves, survivors and val loss. ``?fresh=1`` recomputes
+        from the saved combiner. 404 before any fit for that regime."""
+        starless = _mode_starless(default="starfull")
+        path = _combiner_payload_path(starless)
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(path):
-            if compute_combiner_payload() is None and not os.path.isfile(path):
+            if (compute_combiner_payload(starless) is None
+                    and not os.path.isfile(path)):
                 abort(404)
         return send_file(path, mimetype="application/json", max_age=0)
 
@@ -123,12 +135,14 @@ def register(app):
     def ensemble_power_spectrum():
         """Serve the ensemble power-spectrum PNG. ``?fresh=1`` re-renders it from
         the cached per-field cubes (no full re-run / inference)."""
-        out_png = os.path.join(_ensemble_out_dir(), "ensemble_power_spectrum.png")
+        starless = _mode_starless()
+        out_png = os.path.join(_ensemble_regime_dir(starless),
+                               "ensemble_power_spectrum.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         color = request.args.get("color", "").lower()
         color_by = color if color in ("loss", "depth") else None
         if fresh or not os.path.isfile(out_png):
-            if (regenerate_power_spectrum(color_by=color_by) is None
+            if (regenerate_power_spectrum(starless, color_by=color_by) is None
                     and not os.path.isfile(out_png)):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
@@ -140,10 +154,12 @@ def register(app):
         FRONTEND renders all figures from this JSON, so styling (member-line
         coloring, tab switches) never recomputes anything. ``?fresh=1``
         recomputes the payload from the cached cubes (one sweep, seconds)."""
-        path = _evals_payload_path()
+        starless = _mode_starless()
+        path = _evals_payload_path(starless)
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(path):
-            if compute_evaluation_payload() is None and not os.path.isfile(path):
+            if (compute_evaluation_payload(starless) is None
+                    and not os.path.isfile(path)):
                 abort(404)
         return send_file(path, mimetype="application/json", max_age=0)
 
@@ -156,10 +172,12 @@ def register(app):
         png_name = EVAL_DIAGNOSTIC_PNGS.get(plot)
         if png_name is None:
             abort(404)
-        out_png = os.path.join(_ensemble_out_dir(), png_name)
+        starless = _mode_starless()
+        out_png = os.path.join(_ensemble_regime_dir(starless), png_name)
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
-            if regenerate_eval_diagnostics() is None and not os.path.isfile(out_png):
+            if (regenerate_eval_diagnostics(starless) is None
+                    and not os.path.isfile(out_png)):
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

@@ -23,17 +23,21 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
-from euclid_polish.ensemble_registry import active_labels
+from euclid_polish.ensemble_registry import regime_labels
 
 
-def _default_cubes_dir() -> str:
+def _default_cubes_dir(starless: bool = True) -> str:
     # Must match euclid_polish.web.helpers.viewer_data._ensemble_cubes_dir().
-    return os.path.join(Config.VIS_DIR, "ensemble", "cubes")
+    # starfull and starless caches are fully detached; the synthetic evaluator
+    # reuses the STARLESS (production) reconstruction, so that is the default.
+    regime = "starless" if starless else "starfull"
+    return os.path.join(Config.VIS_DIR, "ensemble", regime, "cubes")
 
 
-def cached_member_labels(cubes_dir: str | None = None) -> list[str] | None:
+def cached_member_labels(cubes_dir: str | None = None, *,
+                         starless: bool = True) -> list[str] | None:
     """The ``member_labels`` recorded in the cache manifest, or ``None``."""
-    d = cubes_dir or _default_cubes_dir()
+    d = cubes_dir or _default_cubes_dir(starless)
     try:
         with open(os.path.join(d, "viz_index.json")) as f:
             return [str(x) for x in json.load(f).get("member_labels", [])]
@@ -43,24 +47,25 @@ def cached_member_labels(cubes_dir: str | None = None) -> list[str] | None:
 
 def load_cached_member_stack(field_index: int, *, subset: str,
                              cubes_dir: str | None = None,
-                             active: list[str] | None = None
+                             active: list[str] | None = None,
+                             starless: bool = True
                              ) -> np.ndarray | None:
     """Return the cached ``(M, H, W, C)`` member stack for ``field_index``, or ``None``.
 
     Returns ``None`` unless ``<cubes_dir>/viz_index.json`` loads, its ``subset`` equals
-    ``subset``, its ``member_labels`` match the registry's ACTIVE labels
-    (``active`` overrides the registry lookup, for tests), ``field_index`` is among
-    its ``indices``, and every ``member{i}_{field_index:05d}.npy`` exists.
+    ``subset``, its ``member_labels`` match the ACTIVE labels of the ``starless``
+    regime (``active`` overrides the registry lookup, for tests), ``field_index``
+    is among its ``indices``, and every ``member{i}_{field_index:05d}.npy`` exists.
     A membership mismatch DELETES the cache dir (stale, position-keyed) before
     returning ``None``. Never raises — any error degrades to ``None`` so callers
     fall back to inference.
     """
-    d = cubes_dir or _default_cubes_dir()
+    d = cubes_dir or _default_cubes_dir(starless)
     try:
         with open(os.path.join(d, "viz_index.json")) as f:
             man = json.load(f)
         want = (active if active is not None
-                else active_labels(default_ensemble_dir()))
+                else regime_labels(default_ensemble_dir(), starless))
         have = [str(x) for x in man.get("member_labels", []) or []]
         if have != list(want):
             # Archived/added member since this cache was written → purge lazily.

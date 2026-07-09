@@ -93,6 +93,24 @@ def active_labels(base_dir: str) -> list[str]:
             for d in active_member_dirs(base_dir)]
 
 
+def regime_labels(base_dir: str, starless: bool) -> list[str]:
+    """Active-member labels of ONE star regime, matching exactly what
+    :class:`~euclid_polish.ensemble.EnsembleModel` loads for that regime:
+    registry-active ∩ has-checkpoint ∩ matching star regime, in member order.
+
+    The starfull and starless reconstructions are fully detached — each keeps
+    its own cube/eval/combiner artifacts — so this (NOT :func:`active_labels`,
+    which spans both regimes) is the per-regime membership fingerprint those
+    caches validate against."""
+    from euclid_polish.ensemble import member_is_starless  # lazy: avoid cycle
+    out = []
+    for d in active_member_dirs(base_dir):
+        if (os.path.isdir(d) and _checkpoint_exists(d)
+                and member_is_starless(d) == bool(starless)):
+            out.append(os.path.basename(d).removeprefix("member_") + "·psnr")
+    return out
+
+
 def _member_index(name: str) -> int | None:
     tail = str(name).removeprefix("member_")
     return int(tail) if tail.isdigit() else None

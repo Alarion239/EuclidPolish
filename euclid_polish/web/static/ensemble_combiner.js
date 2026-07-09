@@ -259,14 +259,26 @@ export async function mountEnsembleCombiner(card, combinerUrl, evalsUrl) {
   if (!card) return;
   const results = card.querySelector("#ens-combiner-results");
   if (!results) return;
-  let comb = null, evals = null;
-  try { const r = await fetch(combinerUrl); if (r.ok) comb = await r.json(); } catch (_) {}
-  try { const r = await fetch(evalsUrl); if (r.ok) evals = await r.json(); } catch (_) {}
-  if (!comb || !comb.available) {
-    results.innerHTML = `<p class="muted">No combiner fitted yet — make sure the`
-      + ` page mode is <b>starfull</b>, validate records are synced (/sky), then`
-      + ` press <b>Fit combiner</b>.</p>`;
-    return;
+  // Combiner + evals are detached per star regime — fetch the current mode's,
+  // and reload when the top toggle changes.
+  const modeSel = document.getElementById("ens-mode");
+  const curMode = () => (modeSel ? modeSel.value : "starfull");
+  const withMode = (u) =>
+    u + (u.includes("?") ? "&" : "?") + "mode=" + encodeURIComponent(curMode());
+
+  async function load() {
+    let comb = null, evals = null;
+    try { const r = await fetch(withMode(combinerUrl)); if (r.ok) comb = await r.json(); } catch (_) {}
+    try { const r = await fetch(withMode(evalsUrl)); if (r.ok) evals = await r.json(); } catch (_) {}
+    if (!comb || !comb.available) {
+      results.innerHTML = `<p class="muted">No combiner fitted yet for the`
+        + ` <b>${curMode()}</b> regime — sync validate records (/sky), then`
+        + ` press <b>Fit combiner</b>.</p>`;
+      return;
+    }
+    render(results, comb, evals);
   }
-  render(results, comb, evals);
+
+  document.addEventListener("ensemble-mode-change", () => { load(); });
+  await load();
 }

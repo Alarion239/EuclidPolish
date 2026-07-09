@@ -379,12 +379,20 @@ _ENSEMBLE_TIERS = [
 ]
 
 
-def _ensemble_cubes_dir() -> str:
-    return os.path.join(Config.VIS_DIR, "ensemble", "cubes")
+def _ensemble_starless(params: dict[str, str]) -> bool:
+    """The star regime the viewer is showing (``?mode=starfull|starless``). The
+    two regimes' cubes are fully detached; default starless (the production
+    reconstruction)."""
+    return (params.get("mode", "starless") or "starless").lower() != "starfull"
 
 
-def _ensemble_manifest() -> dict[str, Any]:
-    p = os.path.join(_ensemble_cubes_dir(), "viz_index.json")
+def _ensemble_cubes_dir(starless: bool) -> str:
+    regime = "starless" if starless else "starfull"
+    return os.path.join(Config.VIS_DIR, "ensemble", regime, "cubes")
+
+
+def _ensemble_manifest(starless: bool) -> dict[str, Any]:
+    p = os.path.join(_ensemble_cubes_dir(starless), "viz_index.json")
     if os.path.isfile(p):
         with contextlib.suppress(OSError, ValueError):
             with open(p) as f:
@@ -393,7 +401,7 @@ def _ensemble_manifest() -> dict[str, Any]:
 
 
 def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
-    man = _ensemble_manifest()
+    man = _ensemble_manifest(_ensemble_starless(params))
     idxs = man.get("indices", [])
     sub = man.get("subset", "")
     rdir = _sky_records_local_dir()
@@ -401,7 +409,7 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
     # Combiner reconstruction tier — only when the last eval wrote comb_ cubes
-    # (a fitted starfull combiner). Placed right after the ensemble mean.
+    # (a fitted combiner for this regime). Placed right after the ensemble mean.
     if man.get("has_combiner"):
         tiers.insert(2, {"key": "comb", "label": "combiner"})
     # Individual member SR tiers (per-seed / loss-best), labelled from the eval.
@@ -445,7 +453,8 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
 
 
 def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
-    man = _ensemble_manifest()
+    starless = _ensemble_starless(params)
+    man = _ensemble_manifest(starless)
     idxs = man.get("indices", [])
     sub = man.get("subset", "")
     if index < 0 or index >= len(idxs):
@@ -461,7 +470,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
     if is_npy:
-        path = os.path.join(_ensemble_cubes_dir(), f"{tier}_{rec_index:05d}.npy")
+        path = os.path.join(_ensemble_cubes_dir(starless),
+                            f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
         cube, pix = _as_hwc(np.load(path)), 0.0

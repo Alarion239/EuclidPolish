@@ -420,6 +420,9 @@ export async function mountEnsembleEvals(card, url) {
     calibration: card.querySelector('[data-plot="calibration"]'),
   };
   const colorSel = card.querySelector("#ens-ps-color");
+  // The evals payload is detached per star regime; follow the top mode toggle.
+  const modeSel = document.getElementById("ens-mode");
+  const curMode = () => (modeSel ? modeSel.value : "starfull");
   let payload = null;
 
   function renderAll() {
@@ -431,7 +434,9 @@ export async function mountEnsembleEvals(card, url) {
   }
 
   async function load(fresh) {
-    const r = await fetch(url + (fresh ? "?fresh=1&_t=" + Date.now() : ""));
+    const q = new URLSearchParams({ mode: curMode() });
+    if (fresh) { q.set("fresh", "1"); q.set("_t", Date.now()); }
+    const r = await fetch(url + "?" + q.toString());
     if (!r.ok) {
       const msg = '<p class="muted">no evaluation data cached — run ' +
         "“Evaluate on test set”, then ↻ Recompute.</p>";
@@ -461,5 +466,7 @@ export async function mountEnsembleEvals(card, url) {
       }
     });
   }
+  // Switching the star regime swaps to that regime's detached evals payload.
+  document.addEventListener("ensemble-mode-change", () => { load(false); });
   await load(false);
 }

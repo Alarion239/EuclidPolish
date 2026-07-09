@@ -228,13 +228,14 @@
 </section>
 
 <section class="card" id="ens-combiner-card">
-  <h3>Combiner (starfull)</h3>
+  <h3>Combiner (<span id="ens-combiner-regime">starfull</span>)</h3>
   <p class="hint" style="flex-basis:100%;">A tiny per-band <b>brightness gate</b>:
      a pixel's brightness picks a convex mix of the members (RBF kernels →
      softmax), so faint pixels can lean fully on the L1 members (killing the L2
      floor) and star cores on the star-reproducing members. Fit <b>locally on the
      validate split</b> (reusing cached member inference), evaluated on
-     <code>{{ eval_subset }}</code>. Starfull only; does <b>not</b> change the
+     <code>{{ eval_subset }}</code>, <b>per regime</b> (the fitted combiner and
+     its curves belong to the current mode only). Does <b>not</b> change the
      default ensemble-mean SR. Re-run <b>Evaluate on test set</b> afterwards to
      score it on test.</p>
   <form id="ens-combiner-form" action="/ensemble/combiner/fit">
@@ -278,12 +279,13 @@ window.ENSEMBLE_MEMBERS = {{ members | tojson }};
     });
     if (modeInput) modeInput.value = sel.value;
     if (modeLabel) modeLabel.textContent = sel.value;
-    // Combiner is starfull-only — hide its card (+ sync its hidden mode) when
-    // the page is in starless mode.
-    const cc = document.getElementById("ens-combiner-card");
-    if (cc) cc.style.display = starless ? "none" : "";
+    // Combiner works in BOTH regimes (starfull fuses star reconstructions,
+    // starless fuses the star-erasing members) — sync its hidden mode + label
+    // so a fit targets the current regime and the card reads its data for it.
     const cm = document.getElementById("ens-combiner-mode");
     if (cm) cm.value = sel.value;
+    const cr = document.getElementById("ens-combiner-regime");
+    if (cr) cr.textContent = sel.value;
     // Expose for the train curves / evals modules to filter their own series.
     window.ENSEMBLE_MODE = sel.value;
     document.dispatchEvent(new CustomEvent("ensemble-mode-change",
@@ -419,14 +421,31 @@ mountEnsembleTrainCurves(
 // Mount the unified cutout viewer on the ensemble cubes cached by the last
 // evaluate (LR · SR mean · stdSR · HR). Hidden until at least one field exists.
 import { mountCutoutViewer } from "{{ url_for('static', filename='cutout_viewer.js') }}";
-fetch("/viewer/meta/ensemble")
-  .then((r) => (r.ok ? r.json() : null))
-  .then((m) => {
-    if (!m || !m.count) return;
-    document.getElementById("ens-viewer-card").style.display = "";
-    mountCutoutViewer(document.getElementById("ensemble-viewer"),
-                      { collection: "ensemble" });
-  })
-  .catch(() => {});
+// The cubes are detached per star regime, so the viewer reloads for the current
+// mode: fetch that regime's meta, and re-mount when the top toggle changes.
+(function () {
+  const mount = document.getElementById("ensemble-viewer");
+  const card = document.getElementById("ens-viewer-card");
+  if (!mount || !card) return;
+  const curMode = () =>
+    (document.getElementById("ens-mode") || {}).value || "starfull";
+  let viewer = null;
+  function remount() {
+    const mode = curMode();
+    fetch("/viewer/meta/ensemble?mode=" + encodeURIComponent(mode))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (viewer) { try { viewer.destroy(); } catch (_) {} viewer = null; }
+        mount.innerHTML = "";
+        if (!m || !m.count) { card.style.display = "none"; return; }
+        card.style.display = "";
+        viewer = mountCutoutViewer(mount,
+          { collection: "ensemble", params: { mode } });
+      })
+      .catch(() => {});
+  }
+  remount();
+  document.addEventListener("ensemble-mode-change", remount);
+})();
 </script>
 {% endblock %}
