@@ -30,7 +30,6 @@ from euclid_polish.ensemble import (
 )
 from euclid_polish.eval.ensemble_diagnostics import (
     EnsembleDiagnosticsAccumulator,
-    render_calibration,
     render_std_vs_brightness,
     render_std_vs_error,
 )
@@ -1147,11 +1146,10 @@ def regenerate_power_spectrum(starless: bool,
 
 
 #: Diagnostic figures rendered from the cached cubes: URL slug → PNG basename.
-#: One sweep renders all three (they share the same pixel statistics pass).
+#: One sweep renders both (they share the same pixel statistics pass).
 EVAL_DIAGNOSTIC_PNGS = {
     "std-error": "ensemble_std_vs_error.png",
     "std-brightness": "ensemble_std_vs_brightness.png",
-    "calibration": "ensemble_calibration.png",
 }
 
 
@@ -1170,8 +1168,7 @@ def regenerate_eval_diagnostics(starless: bool) -> dict[str, str] | None:
         return None
     out_dir = _ensemble_regime_dir(starless)
     renderers = {"std-error": render_std_vs_error,
-                 "std-brightness": render_std_vs_brightness,
-                 "calibration": render_calibration}
+                 "std-brightness": render_std_vs_brightness}
     out = {}
     for slug, render in renderers.items():
         png = os.path.join(out_dir, EVAL_DIAGNOSTIC_PNGS[slug])

@@ -105,7 +105,6 @@ const DIAG_TABS = [
   { id: "power-spectrum", label: "power spectrum" },
   { id: "std-error", label: "std vs error" },
   { id: "std-brightness", label: "std vs brightness" },
-  { id: "calibration", label: "calibration" },
 ] as const;
 type DiagTab = typeof DIAG_TABS[number]["id"];
 
@@ -492,7 +491,7 @@ function Evaluations(
                 <Legend items={stdErr.legend} />
               </>
             )
-          ) : tab === "std-brightness" ? (
+          ) : (
             !brightStd ? <Empty>no evaluation cached for <b>{mode}</b> — run “Evaluate on test set”.</Empty> : (
               <>
                 <Plot title="Where does disagreement live?  (VIS, per pixel)"
@@ -502,10 +501,6 @@ function Evaluations(
                 <Legend items={brightStd.legend} />
               </>
             )
-          ) : (
-            <div className="ui-figure__paper" style={{ minHeight: 300 }}>
-              <img src={`/ensemble/eval-plot/${tab}.png?mode=${mode}`} alt={tab} loading="lazy" style={{ maxWidth: "100%" }} />
-            </div>
           )}
       </CardBody>
     </Card>
