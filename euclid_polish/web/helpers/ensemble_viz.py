@@ -289,6 +289,9 @@ def training_curves_payload() -> list[dict]:
         # loss knob existed all trained with the then-hardcoded L1.
         origin = _member_origin(d)
         s["loss"] = ((origin or {}).get("loss_norm") or "l1")
+        # Per-member asinh knee (electrons) for the "by knee" coloring; None →
+        # the per-band default (the client renders it as 100).
+        s["asinh_knee"] = (origin or {}).get("asinh_knee")
         # Star regime (origin.json): starless members erase stars (clean
         # target), starfull reconstruct them (hr target). Pre-knob members
         # have no field → starfull. Drives the /ensemble mode toggle + filter.
@@ -370,6 +373,9 @@ def ensemble_status() -> dict:
                             "blocks": infer_checkpoint_num_res_blocks(d),
                             "origin": origin,
                             "loss": ((origin or {}).get("loss_norm") or "l1"),
+                            # Per-member asinh knee (electrons); None → default
+                            # 100. Shown in the members table + "by knee" color.
+                            "asinh_knee": (origin or {}).get("asinh_knee"),
                             # Star regime for the table's Regime column + the
                             # mode-toggle filter (origin.json; pre-knob members
                             # → starfull). Must match member_is_starless().
@@ -384,7 +390,6 @@ def ensemble_status() -> dict:
     # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
     # stays on disk as a fork source but is not an ensemble model.
     n_models = len(members)
-    active_labels = ensemble_registry.active_labels(base)
 
     # Same abspath as _ensemble_out_dir() but WITHOUT the makedirs — a page
     # render is read-only and must not create directories. Artifacts are keyed
@@ -405,9 +410,13 @@ def ensemble_status() -> dict:
 
     summary = None
     summary_stale = False
-    summary_path = next((p for d in regime_dirs
-                         if os.path.isfile(p := os.path.join(
-                             d, "eval_summary.json"))), None)
+    summary_starless = False
+    summary_path = None
+    for r in ("starless", "starfull"):
+        p = os.path.join(out_dir, r, "eval_summary.json")
+        if os.path.isfile(p):
+            summary_path, summary_starless = p, (r == "starless")
+            break
     if summary_path:
         try:
             with open(summary_path) as f:
@@ -415,11 +424,13 @@ def ensemble_status() -> dict:
         except (OSError, json.JSONDecodeError):
             summary = None
     if summary is not None:
-        # Membership changed since this eval ran → numbers describe a
-        # different ensemble. Shown as a badge, not silently deleted.
+        # Membership changed since this eval ran → the numbers describe a
+        # different ensemble. Compare against THIS regime's active members only:
+        # starfull and starless are detached, so adding starless members must NOT
+        # mark the starfull summary stale. Shown as a badge, not silently deleted.
         recorded = [str(x) for x in (summary.get("member_labels")
                     or summary.get("per_member_labels") or [])]
-        summary_stale = recorded != active_labels
+        summary_stale = recorded != _regime_labels(base, summary_starless)
 
     return {
         "base_dir": base,
@@ -1097,6 +1108,7 @@ def _member_meta_from_labels(labels) -> list[dict]:
         entry = _member_psnr_entry(cache, name, d, sub, records_fp=rec_fp)
         meta.append({"loss": ((origin or {}).get("loss_norm") or "l1"),
                      "blocks": infer_checkpoint_num_res_blocks(d),
+                     "asinh_knee": (origin or {}).get("asinh_knee"),
                      "step": _member_last_step(d),
                      "psnr": (entry or {}).get("psnr")})
     return meta
@@ -1105,9 +1117,9 @@ def _member_meta_from_labels(labels) -> list[dict]:
 def regenerate_power_spectrum(starless: bool,
                               color_by: str | None = None) -> str | None:
     """Re-render one regime's ensemble power spectrum from the CACHED per-field
-    cubes (see :func:`_iter_cached_fields`). ``color_by`` ∈ {"loss", "depth"}
-    colors the per-member lines by that grouping. Returns the PNG path, or
-    ``None`` if nothing is cached."""
+    cubes (see :func:`_iter_cached_fields`). ``color_by`` ∈ {"loss", "depth",
+    "knee"} colors the per-member lines by that grouping. Returns the PNG path,
+    or ``None`` if nothing is cached."""
     acc = None
     for hr_v, mean_v, mem_v, comb_v, lr_v in _iter_cached_fields(starless):
         if acc is None:
@@ -1117,7 +1129,7 @@ def regenerate_power_spectrum(starless: bool,
     if acc is None or float(acc.bc.sum()) <= 0:
         return None
     member_meta = None
-    if color_by in ("loss", "depth"):
+    if color_by in ("loss", "depth", "knee"):
         man_path = os.path.join(_ensemble_cubes_dir(starless=starless),
                                 "viz_index.json")
         try:
