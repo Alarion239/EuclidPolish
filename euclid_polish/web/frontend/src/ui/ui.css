@@ -242,3 +242,22 @@
 .ens-mcard__num { font-weight: 600; font-size: 12px; }
 .ens-mcard__psnr { font-size: 10.5px; color: var(--text-dim); }
 .ens-mcard__meta { font-size: 10px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Train-members per-model row editor (TrainMembers.tsx) ---- */
+.ens-spec { display: flex; flex-direction: column; gap: 6px; }
+.ens-spec__row {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-2);
+  background: var(--surface-1);
+}
+.ens-spec__idx { align-self: center; font-weight: 600; min-width: 2em; color: var(--text-dim); }
+.ens-spec__row .ui-field { position: relative; }
+.ens-spec__row .ui-input, .ens-spec__row .ui-select { width: 6.5em; }
+.ens-spec__dot { position: absolute; right: 6px; bottom: 9px; width: 8px; height: 8px; border-radius: 50%; pointer-events: none; }
+.ens-spec__del {
+  margin-left: auto; align-self: center; width: 26px; height: 26px; border-radius: var(--r-1);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
+  cursor: pointer; font-size: 16px; line-height: 1;
+}
+.ens-spec__del:hover:not(:disabled) { border-color: var(--danger, #d6604d); color: var(--danger, #d6604d); }
+.ens-spec__del:disabled { opacity: .35; cursor: default; }
