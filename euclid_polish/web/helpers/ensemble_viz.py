@@ -380,10 +380,18 @@ def ensemble_status() -> dict:
                             # → starfull). Must match member_is_starless().
                             "starless": bool((origin or {}).get("starless", False)),
                             "psnr": (entry or {}).get("psnr")})
-    # Rank by cached PSNR (1 = best); unscored members rank last, unranked.
-    by_psnr = sorted((m for m in members if m["psnr"] is not None),
-                     key=lambda m: -m["psnr"])
-    ranks = {m["name"]: i + 1 for i, m in enumerate(by_psnr)}
+    # Rank by cached PSNR (1 = best) WITHIN each star regime. starfull and
+    # starless are scored against different targets (hr vs clean) and render in
+    # separate tables, so a shared 1..N enumeration across both would be
+    # meaningless — each regime restarts at 1. Unscored members rank last,
+    # unranked.
+    ranks: dict[str, int] = {}
+    for regime in (False, True):
+        group = sorted((m for m in members
+                        if m["starless"] is regime and m["psnr"] is not None),
+                       key=lambda m: -m["psnr"])
+        for i, m in enumerate(group):
+            ranks[m["name"]] = i + 1
     for m in members:
         m["psnr_rank"] = ranks.get(m["name"])
     # The ensemble uses each member's PSNR-best checkpoint only; loss_best/
