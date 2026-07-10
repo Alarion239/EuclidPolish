@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -175,6 +175,32 @@ class Combiner:
             s = np.asarray(bc.surviving, bool)
             mask[:len(s)] |= s
         return [int(i) for i in np.where(mask)[0]]
+
+    def member_pruned(self, index: int) -> bool:
+        """True when the member at ``index`` is dropped in EVERY band — its gate
+        weight is 0 everywhere, so the fused output does not depend on it (and it
+        can be removed without changing anything)."""
+        return 0 <= index < len(self.member_labels) \
+            and index not in set(self.needed_member_indices())
+
+    def without_member(self, index: int) -> "Combiner":
+        """A copy with the member at ``index`` removed from ``member_labels`` and
+        every band's weights (``V`` column, bias ``a``, ``surviving`` mask),
+        reindexed contiguous. **Exact only for a PRUNED member** (see
+        :meth:`member_pruned`): dropping a weight-0, masked-off column leaves the
+        max-over-surviving brightness and the softmax over the surviving members
+        unchanged, so every kept member's weight — and the fused output — is
+        identical. Lets the combiner survive archiving a member it never used."""
+        keep = [i for i in range(len(self.member_labels)) if i != index]
+        bands = {
+            name: BandCombiner(
+                V=np.asarray(bc.V)[:, keep], a=np.asarray(bc.a)[keep],
+                centers=bc.centers, sigma=bc.sigma,
+                surviving=np.asarray(bc.surviving, bool)[keep])
+            for name, bc in self.bands.items()
+        }
+        return replace(self, member_labels=[self.member_labels[i] for i in keep],
+                       bands=bands)
 
     def upsample(self, ens, lr_array: np.ndarray) -> np.ndarray:
         """Combine one LR field, running ONLY the surviving members — the pruned

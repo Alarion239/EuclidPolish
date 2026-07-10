@@ -1102,16 +1102,19 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
     return payload
 
 
-def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str) -> bool:
+def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
+                                    *, keep_combiner: bool = False) -> bool:
     """Drop one member from a position-keyed cube bucket, REUSING the cached
     per-member inference (no model re-run).
 
     The archived member's per-member cubes are deleted, the higher-indexed
     members shift down to stay contiguous, and the aggregate ``sr_``/``std_``/
     ``pcaN_`` cubes are recomputed from the remaining stack (the ensemble mean IS
-    the plain member mean, so this is exact). The combiner is now stale for the
-    smaller set, so its ``comb_`` cubes are dropped. Returns ``True`` iff this
-    bucket contained the member (and was rebuilt)."""
+    the plain member mean, so this is exact). ``keep_combiner`` preserves the
+    ``comb_`` cubes + the manifest flag — set only when the archived member was
+    PRUNED by the combiner (weight 0 everywhere), so its output is unchanged;
+    otherwise the combiner is stale and its cubes are dropped. Returns ``True``
+    iff this bucket contained the member (and was rebuilt)."""
     man_path = os.path.join(cubes_dir, "viz_index.json")
     try:
         with open(man_path) as f:
@@ -1157,13 +1160,14 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str) -> bool:
         for i, comp in enumerate(comps):
             np.save(os.path.join(cubes_dir, f"pca{i}_{tag}.npy"),
                     np.asarray(comp, dtype=np.float32))
-        comb = os.path.join(cubes_dir, f"comb_{tag}.npy")   # combiner now stale
-        if os.path.isfile(comb):
-            os.remove(comb)
+        if not keep_combiner:                               # else output unchanged
+            comb = os.path.join(cubes_dir, f"comb_{tag}.npy")
+            if os.path.isfile(comb):
+                os.remove(comb)
         pca_amps[str(rec)] = [float(a) for a in amps]
         pca_var[str(rec)] = [float(v) for v in var]
     man["member_labels"] = new_labels
-    man["has_combiner"] = False
+    man["has_combiner"] = bool(keep_combiner)
     man["pca_amps"] = pca_amps
     man["pca_var"] = pca_var
     with open(man_path, "w") as f:
@@ -1251,6 +1255,41 @@ def _reevaluate_from_cached_cubes(starless: bool,
         with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(out_dir, png))
     return summary
+
+
+def _reconcile_combiner_on_archive(regime_dir: str, starless: bool,
+                                   member_nn: str) -> bool:
+    """Keep the regime's combiner across an archive when it doesn't use the
+    departing member; otherwise drop it.
+
+    If the archived member is PRUNED by the combiner (gate weight 0 in every
+    band), the combiner is reindexed to drop that column and re-saved — the fused
+    output is unchanged, so it stays valid (and its cached ``comb_`` cubes too).
+    If the member CONTRIBUTES, the combiner is stale for the smaller ensemble and
+    is deleted (refit when wanted). Returns ``True`` iff the combiner was kept.
+    A missing combiner returns ``False`` (nothing to keep)."""
+    from euclid_polish.eval.combiner import load_combiner, save_combiner
+    comb = load_combiner(regime_dir)              # raw load, no staleness gate
+    if comb is None:
+        return False
+
+    def _drop() -> bool:
+        shutil.rmtree(os.path.join(regime_dir, "combiner"), ignore_errors=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(_combiner_payload_path(starless))
+        return False
+
+    pos = next((i for i, lbl in enumerate(comb.member_labels)
+                if str(lbl).split("·")[0] == member_nn), None)
+    if pos is not None:
+        if not comb.member_pruned(pos):
+            return _drop()                        # member is used → stale
+        comb = comb.without_member(pos)           # reindex out the pruned column
+    # Keep only if the (reindexed) combiner now matches the active ensemble.
+    if list(comb.member_labels) != _regime_labels(ensemble_dir(), starless):
+        return _drop()
+    save_combiner(comb, regime_dir)
+    return True
 
 
 def job_ensemble_evaluate(cap, *, num_images: int,
@@ -1633,8 +1672,9 @@ def job_archive_member(cap, *, name: str) -> dict:
     per-member cubes are still valid inference, so the position-keyed cube
     buckets are surgically rebuilt for the smaller set and the evaluation is
     re-derived from them (see :func:`_rebuild_bucket_dropping_member` /
-    :func:`_reevaluate_from_cached_cubes`) — cheap, no model re-run. The combiner
-    was fit on the old membership, so it is dropped (refit when wanted).
+    :func:`_reevaluate_from_cached_cubes`) — cheap, no model re-run. A combiner
+    that had PRUNED the departing member stays valid (reindexed in place); one
+    that actually used it is dropped (refit when wanted).
     """
     if not re.fullmatch(r"member_\d{2,}", name or ""):
         raise RuntimeError(f"invalid member name {name!r}")
@@ -1669,28 +1709,35 @@ def job_archive_member(cap, *, name: str) -> dict:
     # from those cubes — ensemble/member PSNR, diagnostics, back-trace samples —
     # with no model re-run. The combiner was fit on the old set, so it's dropped.
     member_nn = name.split("_", 1)[1]
+    # A combiner that PRUNED the departing member stays valid (reindexed); one
+    # that used it is dropped. Decide per regime BEFORE rebuilding cubes, so the
+    # rebuild knows whether to keep the (still-correct) comb_ cubes.
+    keep_comb = {sl: _reconcile_combiner_on_archive(
+        _ensemble_regime_dir(sl), sl, member_nn) for sl in (True, False)}
     affected: set[bool] = set()
     for sl in (True, False):
-        held = _rebuild_bucket_dropping_member(_ensemble_cubes_dir(starless=sl), member_nn)
-        _rebuild_bucket_dropping_member(_ensemble_cubes_dir("validate", starless=sl), member_nn)
+        held = _rebuild_bucket_dropping_member(
+            _ensemble_cubes_dir(starless=sl), member_nn, keep_combiner=keep_comb[sl])
+        _rebuild_bucket_dropping_member(
+            _ensemble_cubes_dir("validate", starless=sl), member_nn,
+            keep_combiner=keep_comb[sl])
         if held:
             affected.add(sl)
     for sl in affected:
-        reg_dir = _ensemble_regime_dir(sl)
-        shutil.rmtree(os.path.join(reg_dir, "combiner"), ignore_errors=True)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(_combiner_payload_path(sl))
         prev = (_read_eval_summary(sl) or {}).get("eval_identity") or {}
         _reevaluate_from_cached_cubes(sl, num_images=prev.get("num_images"))
     cap.tick(3, 4, "deleting FASRC copy")
     remote_status = _delete_remote_member(name)
+    comb_note = ("combiner kept (member was pruned)"
+                 if any(keep_comb.values()) else "combiner dropped")
     store.append_log(
         f"Archived ensemble member `{name}` → `models/{meta['name']}` "
         f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
-        f"ensemble re-derived from cached cubes (no re-inference); combiner "
-        f"dropped. FASRC copy: {remote_status}")
+        f"ensemble re-derived from cached cubes (no re-inference); "
+        f"{comb_note}. FASRC copy: {remote_status}")
     print(f"  ✓ {name} → tracking {meta['name']}; ensemble re-derived from "
-          f"cached cubes (no re-inference); FASRC copy: {remote_status}")
+          f"cached cubes (no re-inference); {comb_note}; "
+          f"FASRC copy: {remote_status}")
     return {"zip": meta["name"], "member": name,
             "remote": remote_status}
 

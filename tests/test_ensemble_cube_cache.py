@@ -220,6 +220,31 @@ def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
     assert man["has_combiner"] is False
 
 
+def test_rebuild_bucket_keeps_combiner_cubes_when_flagged(tmp_path):
+    """keep_combiner=True (archived member was pruned) preserves the comb_ cubes
+    and the manifest flag — the combiner output is unchanged, so it stays valid."""
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    d = str(tmp_path / "cubes")
+    os.makedirs(d)
+    rec, tag, shape = 5, "00005", (6, 6, 4)
+    for i in range(3):
+        np.save(os.path.join(d, f"member{i}_{tag}.npy"), np.full(shape, i + 1, np.float32))
+    np.save(os.path.join(d, f"sr_{tag}.npy"), np.zeros(shape, np.float32))
+    np.save(os.path.join(d, f"std_{tag}.npy"), np.zeros(shape, np.float32))
+    np.save(os.path.join(d, f"comb_{tag}.npy"), np.full(shape, 7.0, np.float32))
+    with open(os.path.join(d, "viz_index.json"), "w") as f:
+        json.dump({"subset": "test", "indices": [rec],
+                   "member_labels": ["00·x", "01·y", "02·z"], "has_combiner": True}, f)
+
+    assert ev._rebuild_bucket_dropping_member(d, "01", keep_combiner=True) is True
+    assert os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))          # kept
+    assert json.load(open(os.path.join(d, "viz_index.json")))["has_combiner"] is True
+    # …and dropping it (default) removes it.
+    assert ev._rebuild_bucket_dropping_member(d, "00", keep_combiner=False) is True
+    assert not os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))
+    assert json.load(open(os.path.join(d, "viz_index.json")))["has_combiner"] is False
+
+
 def test_rebuild_bucket_noop_when_member_absent(tmp_path):
     from euclid_polish.web.helpers import ensemble_viz as ev
     d = str(tmp_path / "cubes")

@@ -121,6 +121,36 @@ def test_min_usage_prunes_unused_member():
     #  only if it is genuinely unused — assert the useful one stays)
 
 
+def test_without_member_drops_pruned_column_exactly():
+    """A PRUNED member can be removed with `without_member` without changing the
+    fused output — the same result the combiner would give including it (weight
+    0). This is what lets a combiner survive archiving a member it never used."""
+    M, H, W, K = 3, 6, 6, 5
+    names = ("VIS", "Y_E", "J_E", "H_E")
+    centers = np.linspace(-1.0, 13.0, K).astype(np.float32)
+    rng = np.random.default_rng(3)
+    surv = np.array([True, False, True], bool)          # member 1 pruned in all bands
+    bands = {b: BandCombiner(
+        V=rng.normal(size=(K, M)).astype(np.float32),
+        a=rng.normal(size=(M,)).astype(np.float32),
+        centers=centers, sigma=2.0, surviving=surv.copy()) for b in names}
+    comb = Combiner(member_labels=["00·a", "01·b", "02·c"], n_kernels=K,
+                    sigma_scale=1.0, min_usage=0.1, bands=bands, band_names=names)
+
+    assert comb.member_pruned(1) is True
+    assert comb.member_pruned(0) is False and comb.member_pruned(2) is False
+
+    small = comb.without_member(1)
+    assert small.member_labels == ["00·a", "02·c"]
+    assert all(small.bands[b].V.shape == (K, 2) for b in names)
+    assert all(small.bands[b].surviving.tolist() == [True, True] for b in names)
+
+    field = np.abs(rng.normal(400, 300, (M, H, W, 4))).astype(np.float32)
+    out_full = comb.apply_field(field)                  # 3-member stack, member 1 unused
+    out_small = small.apply_field(field[[0, 2]])        # 2-member reindexed stack
+    np.testing.assert_allclose(out_full, out_small, rtol=1e-5, atol=1e-3)
+
+
 def test_single_member_degenerate():
     rng = np.random.default_rng(6)
     y = _asinh(np.abs(rng.normal(40, 30, 4000)) ** 2).astype(np.float32)
