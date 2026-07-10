@@ -100,6 +100,19 @@ const brightTicks = (stretch: number): Tick[] =>
     v: Math.asinh(e / stretch), label: i === 0 ? "0" : i === 1 ? "100" : `10${sup([0, 0, 3, 4, 5, 6][i])}`,
   }));
 
+/* Legend for the member-line coloring facet: maps each distinct loss / depth /
+   knee to its swatch, so "color by X" always says what each colour means. The
+   depth/knee colours are categorical() over the SORTED distinct values, matching
+   how the charts pick memberColor (categorical(values.indexOf(v))). */
+function facetLegend(
+  colorBy: ColorBy, losses: string[], depths: number[], knees: number[],
+): { label: string; color: string }[] {
+  if (colorBy === "loss") return losses.map((l) => ({ label: l, color: LOSS_COLOR[l] ?? C.muted }));
+  if (colorBy === "depth") return depths.map((d, i) => ({ label: `${d}b`, color: categorical(i) }));
+  if (colorBy === "knee") return knees.map((k, i) => ({ label: kneeTag(k), color: categorical(i) }));
+  return [];
+}
+
 const DIAG_TABS = [
   { id: "power-spectrum", label: "power spectrum" },
   { id: "std-error", label: "std vs error" },
@@ -246,6 +259,7 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
     let xMax = 1, yMin = Infinity, yMax = -Infinity;
     const depths = [...new Set(rows.map((c) => c.blocks ?? 0))].sort((a, b) => a - b);
     const knees = [...new Set(rows.map((c) => kneeOf(c.asinh_knee)))].sort((a, b) => a - b);
+    const losses = [...new Set(rows.map((c) => c.loss ?? "l1"))].sort();
     rows.forEach((c) => {
       if (!c.psnr?.length) return;
       const x = finite(c.psnr, 0), y = finite(c.psnr, 1);
@@ -262,7 +276,8 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
     const yDomain: [number, number] = [yMin - pad, yMax + pad];
     const xTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ v: f * xMax, label: `${Math.round((f * xMax) / 1000)}k` }));
     const yTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((f) => { const v = yDomain[0] + f * (yDomain[1] - yDomain[0]); return { v, label: v.toFixed(1) }; });
-    return { series, xDomain: [0, xMax] as [number, number], yDomain, xTicks, yTicks };
+    return { series, xDomain: [0, xMax] as [number, number], yDomain, xTicks, yTicks,
+             legend: facetLegend(colorBy, losses, depths, knees) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, colorBy, theme]);
 
@@ -275,9 +290,12 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
         } />
       <CardBody>
         {!chart ? <Empty>no training logs yet</Empty> : (
-          <Plot title="validation PSNR (asinh) vs step"
-            xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
-            xLabel="training step" yLabel="PSNR [dB]" series={chart.series} aspect={0.4} />
+          <>
+            <Plot title="validation PSNR (asinh) vs step"
+              xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
+              xLabel="training step" yLabel="PSNR [dB]" series={chart.series} aspect={0.4} />
+            {chart.legend.length > 0 && <Legend items={chart.legend} />}
+          </>
         )}
       </CardBody>
     </Card>
@@ -304,6 +322,7 @@ function Evaluations(
     const yTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((v) => ({ v, label: String(v) }));
     const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
     const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
+    const losses = [...new Set(members.map((mm) => mm?.loss ?? "l1"))].sort();
     const memberColor = (i: number) => {
       const mm = members[i];
       if (colorBy === "loss") return LOSS_COLOR[mm?.loss ?? "l1"] ?? C.muted;
@@ -324,11 +343,14 @@ function Evaluations(
       { axis: "x", v: g.lr_scale ?? 0.1, color: C.guide, width: 1.3, dash: [6, 3] },
       { axis: "x", v: g.vis_fwhm ?? 0.16, color: C.visfwhm, alpha: 0.5, width: 1.5, dash: [5, 2] },
     ];
+    // When coloured by a facet, the legend spells out each loss/depth/knee
+    // swatch instead of a single grey "individual models" entry.
+    const facet = facetLegend(colorBy, losses, depths, knees);
     const legend = [
       ...(hasData(ps.r_lr) ? [{ label: "LR baseline", color: C.baseline, dash: true }] : []),
       { label: "ensemble mean", color: C.mean },
       ...(hasData(ps.r_comb) ? [{ label: "combiner", color: C.comb }] : []),
-      { label: "individual models", color: C.muted },
+      ...(facet.length ? facet : [{ label: "individual models", color: C.muted }]),
       { label: "model–model r̃(k)", color: C.cross, dash: true },
     ];
     return { series, guides, xDomain, yDomain: [0, 1.05] as [number, number], xTicks, yTicks, legend };
