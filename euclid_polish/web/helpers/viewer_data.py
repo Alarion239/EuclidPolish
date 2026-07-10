@@ -415,9 +415,14 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     has_hr = bool(sub) and bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
-    # Combiner reconstruction tier — only when the last eval wrote comb_ cubes
-    # (a fitted combiner for this regime). Placed right after the ensemble mean.
-    if man.get("has_combiner"):
+    member_labels0 = man.get("member_labels", []) or []
+    # Combiner reconstruction tier: show it whenever a fitted combiner EXISTS for
+    # this regime + membership — its cube is computed on the fly from the cached
+    # member stack, so it no longer depends on the last eval having baked comb_
+    # cubes. Placed right after the ensemble mean.
+    if man.get("has_combiner") or (
+            member_labels0 and _load_field_combiner(
+                _ensemble_starless(params), member_labels0) is not None):
         tiers.insert(2, {"key": "comb", "label": "combiner"})
     # Individual member SR tiers, labelled from the eval. HIDDEN from the tier
     # chip row (they'd swamp it at 22 members) but still loadable on demand:
@@ -514,6 +519,57 @@ def _subset_pca(starless: bool, rec_index: int, subset: list[int]):
     return res
 
 
+def _ensemble_regime_dir(starless: bool) -> str:
+    """Regime root (parent of ``cubes/``) — where ``combiner/`` lives."""
+    return os.path.dirname(_ensemble_cubes_dir(starless))
+
+
+def _load_field_combiner(starless: bool, member_labels: list[str]):
+    """The regime's fitted combiner if it exists AND its membership matches the
+    cube stack (``member_labels``), else ``None``. Cheap (an ~8 KB npz)."""
+    if not member_labels:
+        return None
+    from euclid_polish.eval.combiner import load_combiner
+    try:
+        return load_combiner(_ensemble_regime_dir(starless),
+                             member_labels=list(member_labels))
+    except Exception:
+        return None
+
+
+# On-the-fly combiner reconstruction (per field), so the "combiner" tier shows
+# whenever a combiner is fitted — not only when the last eval baked comb_ cubes.
+_COMB_CUBE_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_COMB_CUBE_MAX = 8
+
+
+def _combiner_field_cube(starless: bool, rec_index: int,
+                         member_labels: list[str]) -> np.ndarray:
+    """The combiner reconstruction ``(H,W,C)`` for one field, applied to the
+    cached full member stack. LRU-cached; raises 404 if no combiner / cubes."""
+    key = ("starless" if starless else "starfull", int(rec_index),
+           tuple(member_labels))
+    hit = _COMB_CUBE_CACHE.get(key)
+    if hit is not None:
+        _COMB_CUBE_CACHE.move_to_end(key)
+        return hit
+    comb = _load_field_combiner(starless, member_labels)
+    if comb is None:
+        raise ViewerError(404, "no combiner for this regime")
+    cdir = _ensemble_cubes_dir(starless)
+    stack = []
+    for i in range(len(member_labels)):
+        p = os.path.join(cdir, f"member{i}_{int(rec_index):05d}.npy")
+        if not os.path.isfile(p):
+            raise ViewerError(404, f"member{i} cube missing")
+        stack.append(np.load(p).astype(np.float32))
+    out = np.asarray(comb.apply_field(np.stack(stack, axis=0)), np.float32)
+    _COMB_CUBE_CACHE[key] = out
+    if len(_COMB_CUBE_CACHE) > _COMB_CUBE_MAX:
+        _COMB_CUBE_CACHE.popitem(last=False)
+    return out
+
+
 def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     starless = _ensemble_starless(params)
     man = _ensemble_manifest(starless)
@@ -543,13 +599,24 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
             "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": 0.0, "amp": float(amps[k]),
             "var": float(var[k]) if k < len(var) else 0.0}
+    # Combiner reconstruction: prefer a baked comb_ cube; otherwise apply the
+    # fitted combiner to the cached member stack on the fly (so the tier works
+    # even when the last eval predates the combiner fit).
+    if tier == "comb":
+        baked = os.path.join(_ensemble_cubes_dir(starless),
+                             f"comb_{rec_index:05d}.npy")
+        cube = (_as_hwc(np.load(baked)) if os.path.isfile(baked)
+                else _as_hwc(_combiner_field_cube(
+                    starless, rec_index, man.get("member_labels", []) or [])))
+        return cube, {"label": f"SR (combiner) · {sub} · idx {rec_index}",
+                      "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
     # sr / std, the PCA eigen-images (pca0…) and individual member SRs
     # (member0…) are cached .npy cubes; lr / hr come from the records. pcaN are
     # served on demand for the animation (not advertised as static tiers).
-    is_npy = (tier in ("sr", "std", "comb")
+    is_npy = (tier in ("sr", "std")
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
     if is_npy:
