@@ -3,7 +3,7 @@
    diagnostics, the per-band combiner (fit + gate curves), and the disagreement
    cutout viewer. Full parity with the classic page, drawn from the JSON
    endpoints (status.json / evals.json / combiner.json / training-curves.json). */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
@@ -716,6 +716,7 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
               <div className="ens-mpanel"><div className="ens-mgrid">
                 {shown.map((r) => (
                   <button key={r.key} type="button" className="ens-mcard" data-on={selection.has(r.i)}
+                    style={{ "--lc": LOSS_COLOR[r.loss] } as CSSProperties}
                     onClick={() => toggle(r.i)}
                     title="click to add — one member shows a still, two or more play the movie">
                     <div className="ens-mcard__hd">
@@ -723,7 +724,7 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
                       <span className="ens-mcard__psnr mono">{r.psnr != null ? `${r.psnr.toFixed(1)} dB` : "—"}</span>
                     </div>
                     <div className="ens-mcard__meta mono">
-                      <span style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>
+                      <span>{r.loss}</span>
                       {" · "}{r.depth != null ? `${r.depth}b` : "—"}{" · "}{kneeTag(r.knee)}
                     </div>
                   </button>
