@@ -217,15 +217,30 @@ export function mountCutoutViewer(root, opts = {}) {
     return rec;
   }
 
+  // Warm the cubes for the upcoming indices so next/prev is instant. Crucially
+  // this now includes the "morph" tier: the movie's sr + pcaN cubes (subset-
+  // aware) are the expensive ones — a subset PCA is a fresh server SVD — so
+  // pre-fetching them ahead is what kills the per-switch lag.
   function prefetch(index) {
-    const jobs = [];
-    for (const di of [1, -1, 2]) {
+    const subset = state.morphMembers;
+    const extra = subset ? { members: subset } : undefined;
+    const nSub = subset ? subset.split(",").filter(Boolean).length : 0;
+    const pcaMax = (state.meta && state.meta.pca_max) || 3;
+    const nPca = subset ? Math.max(0, Math.min(pcaMax, nSub - 1))
+                        : ((state.meta && state.meta.pca_n) | 0);
+    const warm = (t, j) => fetchCube(t, j).catch(() => {});
+    for (const di of [1, 2, 3, -1]) {
       const j = index + di;
-      if (j >= 0 && j < state.meta.count) {
-        for (const t of state.tiers) if (tierAvail(t) && t !== "morph") jobs.push([t, j]);
+      if (j < 0 || j >= state.meta.count) continue;
+      for (const t of state.tiers) {
+        if (t === "morph") {
+          fetchCube("sr", j, extra).catch(() => {});
+          for (let k = 0; k < nPca; k++) fetchCube(`pca${k}`, j, extra).catch(() => {});
+        } else if (tierAvail(t)) {
+          warm(t, j);
+        }
       }
     }
-    for (const [t, j] of jobs) fetchCube(t, j).catch(() => {});
   }
 
   // --- colour prepare (pure, memoised by cube + colour mode) ---------------

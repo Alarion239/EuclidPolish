@@ -667,8 +667,10 @@ type SortBy = "index" | "psnr" | "loss" | "depth";
 function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) {
   const meta = useResource<ViewMeta>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
   const apiRef = useRef<ViewerApi | null>(null);
-  const [subset, setSubset] = useState<Set<number>>(new Set());
-  const [viewing, setViewing] = useState<Set<number>>(new Set());
+  // One selection drives the viewer: 0 → just the base tiers, 1 → that member's
+  // SR as a STILL, 2+ → the disagreement MOVIE over the picked members. No
+  // separate movie/view controls — the count decides.
+  const [selection, setSelection] = useState<Set<number>>(new Set());
   const [q, setQ] = useState("");
   const [sortBy, setSortBy] = useState<SortBy>("index");
 
@@ -702,58 +704,59 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
   }, [rows, q, sortBy]);
 
   const csv = (s: Set<number>) => [...s].sort((a, b) => a - b).join(",");
-  // Preserve the user's base chip selection (lr/sr/comb/hr), swap in the viewed
-  // members + the movie, all in the viewer's canonical tier order.
-  const applyTiers = useCallback((view: Set<number>, sub: Set<number>) => {
+  // Map the selection onto the viewer, preserving the user's base chip picks
+  // (lr/sr/comb/hr): 2+ → the movie over the subset; 1 → that member's still;
+  // 0 → base only.
+  const apply = useCallback((sel: Set<number>) => {
     const api = apiRef.current;
     if (!api) return;
     const cur = api.getState().tiers;
     const base = cur.filter((t) => !/^member\d+$/.test(t) && t !== "morph");
-    const memberKeys = [...view].sort((a, b) => a - b).map((i) => `member${i}`);
-    const wantMovie = sub.size >= 2 || cur.includes("morph");
-    api.setTiers([...base, ...memberKeys, ...(wantMovie ? ["morph"] : [])]);
+    const arr = [...sel].sort((a, b) => a - b);
+    if (arr.length >= 2) {
+      api.setMorphMembers(csv(sel));
+      api.setTiers([...base, "morph"]);
+    } else if (arr.length === 1) {
+      api.setMorphMembers(null);
+      api.setTiers([...base, `member${arr[0]}`]);
+    } else {
+      api.setMorphMembers(null);
+      api.setTiers(base.length ? base : ["sr"]);
+    }
   }, []);
 
-  const commitSubset = (next: Set<number>) => {
-    setSubset(next);
-    apiRef.current?.setMorphMembers(next.size >= 2 ? csv(next) : null);
-    applyTiers(viewing, next);
-  };
-  const toggleMovie = (i: number) => {
-    const next = new Set(subset);
+  const commit = (next: Set<number>) => { setSelection(next); apply(next); };
+  const toggle = (i: number) => {
+    const next = new Set(selection);
     if (next.has(i)) next.delete(i); else next.add(i);
-    commitSubset(next);
+    commit(next);
   };
-  const toggleView = (i: number) => {
-    const next = new Set(viewing);
-    if (next.has(i)) next.delete(i); else next.add(i);
-    setViewing(next);
-    applyTiers(next, subset);
-  };
-  const topByPsnr = (k: number) => commitSubset(new Set(
+  const topByPsnr = (k: number) => commit(new Set(
     [...rows].filter((r) => r.psnr != null)
       .sort((a, b) => b.psnr! - a.psnr!).slice(0, k).map((r) => r.i)));
 
-  const nSel = subset.size;
+  const nSel = selection.size;
+  const status = nSel >= 2 ? `disagreement movie · ${nSel} members`
+    : nSel === 1 ? `showing member #${rows.find((r) => selection.has(r.i))?.num} (still)`
+    : "click a member — one shows a still, two+ play the movie";
   return (
     <Card>
       <CardHead title="Disagreement viewer"
-        sub="LR · mean · combiner · HR · movie — pick a member subset to see where just those reconstructions disagree" />
+        sub="LR · mean · combiner · HR · movie — pick members to see where those reconstructions disagree" />
       <CardBody>
         <CutoutViewer collection="ensemble" params={{ mode }}
           onReady={(api) => { apiRef.current = api; }} />
         <div style={{ marginTop: "var(--s4)" }}>
           <div className="row" style={{ justifyContent: "space-between", gap: "var(--s3)", marginBottom: 8, flexWrap: "wrap" }}>
-            <div className="eyebrow">members ({rows.length}) · {nSel >= 2
-              ? `movie over ${nSel}` : "movie: all (select ≥2 for a subset)"}</div>
+            <div className="eyebrow">members ({rows.length}) · {status}</div>
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <Input value={q} onChange={setQ} placeholder="filter…" style={{ width: 120 }} />
               <Select<SortBy> value={sortBy} onChange={setSortBy}
                 options={[{ value: "index", label: "by index" }, { value: "psnr", label: "by PSNR" },
                 { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }]} />
               <Button size="sm" onClick={() => topByPsnr(5)} disabled={!rows.some((r) => r.psnr != null)}
-                title="select the 5 highest-PSNR members for the movie">top 5</Button>
-              <Button size="sm" onClick={() => commitSubset(new Set())} disabled={nSel === 0}>clear</Button>
+                title="movie over the 5 highest-PSNR members">top 5</Button>
+              <Button size="sm" onClick={() => commit(new Set())} disabled={nSel === 0}>clear</Button>
             </div>
           </div>
           {!shown.length
@@ -761,19 +764,18 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
             : (
               <div className="ens-mpanel"><div className="ens-mgrid">
                 {shown.map((r) => (
-                  <div key={r.key} className="ens-mcell" data-on={subset.has(r.i)}
-                    onClick={() => toggleMovie(r.i)} title="toggle in the disagreement movie">
-                    <input type="checkbox" readOnly tabIndex={-1} checked={subset.has(r.i)} />
-                    <span className="mono ens-mcell__num">{r.num}</span>
-                    <span className="ens-mcell__facets mono">
-                      {r.psnr != null ? `${r.psnr.toFixed(1)}dB` : "—"}
-                      {" · "}<span style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>
-                      {r.depth != null && ` · ${r.depth}b`}{` · ${kneeTag(r.knee)}`}
-                    </span>
-                    <button type="button" className="ui-chip ens-mcell__view" data-on={viewing.has(r.i)}
-                      onClick={(e) => { e.stopPropagation(); toggleView(r.i); }}
-                      title="show this member's SR as a frame">{viewing.has(r.i) ? "shown" : "view"}</button>
-                  </div>
+                  <button key={r.key} type="button" className="ens-mcard" data-on={selection.has(r.i)}
+                    onClick={() => toggle(r.i)}
+                    title="click to add — one member shows a still, two or more play the movie">
+                    <div className="ens-mcard__hd">
+                      <span className="ens-mcard__num mono">#{r.num}</span>
+                      <span className="ens-mcard__psnr mono">{r.psnr != null ? `${r.psnr.toFixed(1)} dB` : "—"}</span>
+                    </div>
+                    <div className="ens-mcard__meta mono">
+                      <span style={{ color: LOSS_COLOR[r.loss] ?? "inherit" }}>{r.loss}</span>
+                      {" · "}{r.depth != null ? `${r.depth}b` : "—"}{" · "}{kneeTag(r.knee)}
+                    </div>
+                  </button>
                 ))}
               </div></div>
             )}
