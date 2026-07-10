@@ -322,18 +322,20 @@ export function mountCutoutViewer(root, opts = {}) {
     return prepared;
   }
 
-  // --- transfer (per slider tick) → one frame's canvas ---------------------
-  function renderInto(fr, rec) {
-    const prep = prepare(rec);
+  // --- transfer (per slider tick) → ImageData ------------------------------
+  // The CHEAP half of rendering: maps a prepared frame's linear intensity to
+  // display pixels via the asinh transfer, reading the knee/brightness sliders
+  // live. Split out from renderInto so the movie can cache the EXPENSIVE half
+  // (prepare's per-pixel colour/temp-fit) once per frame and re-run only this
+  // on every blit — so the brightness slider rescales instantly with no rebuild.
+  function transferPrepared(prep) {
     const { h, w, npx, I, factor } = prep;
     // Kc = knee·factor; white reference Wref = 30·K0·factor (e⁻). norm cancels
     // factor → asinh(30·K0/knee); at knee=K0, gain=1 this matches eye_rgb.
     const Kc = Math.max(state.knee * factor, 1e-30);
     const norm = Math.max(Math.asinh((30.0 * state.K0 * factor) / Kc), 1e-6);
     const G = state.gain;
-    const canvas = fr.canvas;
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    const img = fr.ctx.createImageData(w, h);
+    const img = new ImageData(w, h);
     const out = img.data;
 
     if (prep.mode === "gray") {
@@ -363,7 +365,15 @@ export function mountCutoutViewer(root, opts = {}) {
         out[o + 3] = 255;
       }
     }
-    fr.ctx.putImageData(img, 0, 0);
+    return img;
+  }
+
+  function renderInto(fr, rec) {
+    const prep = prepare(rec);
+    if (fr.canvas.width !== prep.w || fr.canvas.height !== prep.h) {
+      fr.canvas.width = prep.w; fr.canvas.height = prep.h;
+    }
+    fr.ctx.putImageData(transferPrepared(prep), 0, 0);
     fr.overlay.textContent = rec.label + magLabel(rec);
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
@@ -503,99 +513,199 @@ export function mountCutoutViewer(root, opts = {}) {
     framesRow.classList.toggle("cv-multi", state.frames.length > 1);
   }
 
-  // --- "morph" tier: an animated frame in the row (ensemble disagreement) ---
+  // --- "morph" tier: an animated ensemble-disagreement frame ----------------
+  //
+  // The movie is a fixed loop of MORPH_FRAMES frames (periodic: mean +
+  // Σ aᵢ·sin(2π·kᵢ·φ)·PCᵢ has period φ=1). Drawing a frame has an EXPENSIVE half
+  // — prepare()'s per-pixel colour/temp-fit — and a CHEAP half — the asinh
+  // brightness transfer. So we PRE-RENDER every frame's prepare() output once,
+  // cache it, and each animation tick re-runs only the cheap transfer. Hence:
+  //   • first arm shows a progress bar while the loop is cached, then plays;
+  //   • the brightness/knee sliders rescale instantly (just a fresh transfer
+  //     over the cached frames — no rebuild);
+  //   • neighbouring fields are cached in the background so next/prev is instant.
+  // Keyed by field+subset; colour or morph-amplitude changes (they alter
+  // prepare) rebuild; an LRU bounds memory (each full-res movie is sizeable).
+  const MORPH_FRAMES = 48;
+  const FRQ = [1, 2, 3], MPH = [0, Math.PI / 2, Math.PI / 3];
+  const MOVIE_RADIUS = 10;                 // fields to pre-cache in each direction
+  const MOVIE_BUDGET_BYTES = 1.4e9;        // ~1.4 GB cap on the movie LRU
+  const movieStore = new Map();            // key → cached movie entry (LRU order)
+  let buildToken = 0;                      // bump to abort an in-flight build
+  let playingKey = null;                   // never evict the movie on screen
+
+  const movieKey = (index, subset) => `${index}|${subset || ""}`;
+  const movieFresh = (e) =>
+    e && e.done && e.color === state.color && e.amp === state.morphAmp;
+
   function stopMorph() {
     if (morphRaf != null) cancelAnimationFrame(morphRaf);
     morphRaf = null;
   }
 
-  // Drive one frame with mean + Σ aᵢ·sin(2π fᵢ t)·componentᵢ, rendered through
-  // the SAME colour pipeline as the static frames (so band/colour/asinh match).
-  async function startMorph(fr, index) {
-    stopMorph();
-    // Member subset (null → all): the sr/pcaN cubes are then recomputed server-
-    // side over just those members, so their mean + amplitudes are subset-aware.
-    const subset = state.morphMembers;
+  function evictMovies() {                 // drop LRU entries until under budget
+    let total = 0;
+    for (const e of movieStore.values()) total += e.bytes || 0;
+    for (const k of [...movieStore.keys()]) {
+      if (total <= MOVIE_BUDGET_BYTES) break;
+      if (k === playingKey) continue;      // keep what's on screen
+      total -= (movieStore.get(k).bytes || 0);
+      movieStore.delete(k);
+    }
+  }
+
+  // Progress bar overlaid on the frame while a movie loop is being cached.
+  function movieProgress(fr, p) {
+    let bar = fr.frame.querySelector(".cv-movie-prog");
+    if (p == null) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = el("div", { class: "cv-movie-prog", style:
+        "position:absolute;left:14%;right:14%;bottom:16px;height:20px;z-index:6;" +
+        "border-radius:10px;background:rgba(0,0,0,.5);overflow:hidden;" +
+        "font:600 11px 'IBM Plex Mono',monospace;color:#fff;" });
+      bar.append(
+        el("div", { class: "cv-movie-prog__fill", style:
+          "position:absolute;inset:0;width:0;background:rgba(120,170,255,.55);" +
+          "transition:width .08s linear;" }),
+        el("div", { class: "cv-movie-prog__lbl", style:
+          "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" }));
+      fr.frame.appendChild(bar);
+    }
+    bar.querySelector(".cv-movie-prog__fill").style.width = `${Math.round(p * 100)}%`;
+    bar.querySelector(".cv-movie-prog__lbl").textContent = `caching movie… ${Math.round(p * 100)}%`;
+  }
+
+  // Fetch a field's movie ingredients: sr (mean) + PCA cubes (subset-aware).
+  async function movieCubes(index, subset) {
     const extra = subset ? { members: subset } : undefined;
     const nSub = subset ? subset.split(",").filter(Boolean).length : 0;
-    // Kept PCs: min(pca_max, |subset|−1) for a subset, else the baked pca_n.
     const pcaMax = (state.meta && state.meta.pca_max) || 3;
     const n = subset ? Math.max(0, Math.min(pcaMax, nSub - 1))
                      : ((state.meta && state.meta.pca_n) | 0);
-    let sr;
+    const sr = await fetchCube("sr", index, extra);
     const comps = [];
-    try {
-      sr = await fetchCube("sr", index, extra);
-      for (let k = 0; k < n; k++) {
-        try { comps.push(await fetchCube(`pca${k}`, index, extra)); }
-        catch { /* fewer components than requested */ }
-      }
-    } catch { setFrameMsg(fr, "movie unavailable"); return; }
-    fr.frame.classList.remove("cv-loading");
-    // Amplitudes/variance now ride on each PC's cube header (subset-aware),
-    // falling back to the baked per-field manifest for the full-ensemble movie.
+    for (let k = 0; k < n; k++) {
+      try { comps.push(await fetchCube(`pca${k}`, index, extra)); } catch { /* fewer PCs */ }
+    }
     const metaAmps = (state.meta.pca_amps && state.meta.pca_amps[index]) || [];
     const amps = comps.map((c, k) => (c.amp != null ? c.amp : (metaAmps[k] || 0)));
     const varTot = comps.reduce((a, c) => a + (c.varexp || 0), 0);
     const subLbl = subset ? ` · ${nSub} members` : "";
     const varLbl = varTot > 0
-      ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance`
-      : "";
-    const len = sr.data.length;
-    const data = new Float32Array(len);
-    const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
-                  label: `disagreement movie${subLbl}${varLbl}`, asinh: sr.asinh,
-                  noCache: true };
-    const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
-    // The animation is PERIODIC in phase (period 1 — the FRQ are integers), so
-    // it's a fixed loop of FRAMES frames, not an endless unique sequence. Each
-    // slot's fully-rendered pixels are cached the first time it's drawn — the
-    // per-pixel colour temp-fit in prepare() is the expensive part, ~one pass
-    // over the field per frame — and just blitted on replay. So the FIRST loop
-    // builds the cache (a little slow), then playback is smooth reuse, no
-    // per-frame recompute. The cache invalidates when something that changes the
-    // pixels OTHER than phase does (amplitude, colour, or the stretch sliders).
-    const FRAMES = 48;
-    let frameCache = new Array(FRAMES).fill(null);
-    let cacheSig = "";
-    const renderSlot = (slot) => {          // compute + cache one loop frame
-      const ph = slot / FRAMES;
-      const amp = state.morphAmp;
-      data.set(sr.data);                             // mean (full res)
+      ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance` : "";
+    return { sr, comps, amps, label: `disagreement movie${subLbl}${varLbl}` };
+  }
+
+  // Build (cache) one field's movie loop — MORPH_FRAMES prepared frames at the
+  // current colour + amplitude. Async, yields between frames so the progress bar
+  // animates and the UI stays responsive; abortable via `token`. Returns the
+  // entry or null (aborted / no cubes).
+  async function buildMovie(index, subset, { token, onProgress } = {}) {
+    const key = movieKey(index, subset);
+    const existing = movieStore.get(key);
+    if (movieFresh(existing)) {
+      movieStore.delete(key); movieStore.set(key, existing);   // touch LRU
+      return existing;
+    }
+    const color = state.color, amp = state.morphAmp;
+    let ing;
+    try { ing = await movieCubes(index, subset); } catch { return null; }
+    if (token != null && token !== buildToken) return null;
+    const { sr, comps, amps, label } = ing;
+    const len = sr.data.length, data = new Float32Array(len);
+    const entry = { frames: new Array(MORPH_FRAMES).fill(null), w: sr.w, h: sr.h,
+                    mode: "gray", bytes: 0, color, amp, done: false, label };
+    movieStore.set(key, entry);
+    for (let slot = 0; slot < MORPH_FRAMES; slot++) {
+      if (token != null && token !== buildToken) { movieStore.delete(key); return null; }
+      const ph = slot / MORPH_FRAMES;
+      data.set(sr.data);                              // mean (full res)
       for (let k = 0; k < comps.length; k++) {
-        const ck = (amps[k] || 0) * amp
-          * Math.sin(2 * Math.PI * FRQ[k % 3] * ph + PH[k % 3]);
+        const ck = (amps[k] || 0) * amp * Math.sin(2 * Math.PI * FRQ[k % 3] * ph + MPH[k % 3]);
         const cd = comps[k].data;
         for (let i = 0; i < len; i++) data[i] += ck * cd[i];
       }
-      renderInto(fr, rec);
-      try { frameCache[slot] = fr.ctx.getImageData(0, 0, rec.w, rec.h); }
-      catch { frameCache[slot] = null; }
+      entry.frames[slot] = prepare({ key: `mv:${key}:${slot}`, h: sr.h, w: sr.w,
+                                     c: sr.c, data, noCache: true });
+      if (onProgress) onProgress((slot + 1) / MORPH_FRAMES);
+      await new Promise((r) => setTimeout(r, 0));     // yield to the event loop
+    }
+    entry.mode = entry.frames[0] ? entry.frames[0].mode : "gray";
+    // ~bytes: frames × pixels × Float32 planes kept (temp/lupton 4, gray 1).
+    entry.bytes = MORPH_FRAMES * entry.w * entry.h * 4 * (entry.mode === "gray" ? 1 : 4);
+    entry.done = true;
+    evictMovies();
+    return entry;
+  }
+
+  // Play a cached movie: each tick blits transferPrepared(frame) — only the
+  // cheap brightness transfer, so the sliders rescale live with no rebuild. If
+  // colour / amplitude change (they alter prepare), settle then re-arm.
+  function playMovie(fr, index, entry) {
+    stopMorph();
+    let phase = 0, last = performance.now();
+    let lastAmp = state.morphAmp, lastColor = state.color, changedAt = 0;
+    const drawSlot = (slot) => {
+      const prep = entry.frames[slot];
+      if (!prep) return;
+      if (fr.canvas.width !== entry.w || fr.canvas.height !== entry.h) {
+        fr.canvas.width = entry.w; fr.canvas.height = entry.h;
+      }
+      fr.ctx.putImageData(transferPrepared(prep), 0, 0);
+      fr.overlay.textContent = entry.label;           // magLabel="" for morph
+      fr.legendWrap.style.display = entry.mode === "temp" ? "flex" : "none";
+      setFrameMsg(fr, "");
     };
-    renderSlot(0);   // draw the first frame synchronously — instant feedback and
-                     // correct even before rAF (which is paused in a bg tab)
-    let phase = 0, last = performance.now();          // accumulate phase so a
-    const tick = (now) => {                            // speed change never jumps
+    drawSlot(0);                                       // instant first frame
+    const tick = (now) => {
+      // Colour / amplitude drive prepare → need a rebuild, but debounce so a
+      // slider drag doesn't storm rebuilds: only re-arm once it settles.
+      if (state.morphAmp !== lastAmp || state.color !== lastColor) {
+        lastAmp = state.morphAmp; lastColor = state.color; changedAt = now;
+      }
+      if ((entry.amp !== state.morphAmp || entry.color !== state.color)
+          && now - changedAt > 250) { startMorph(fr, index); return; }
       phase += ((now - last) / 1000) * state.morphSpeed;
       last = now;
-      // Pixels depend on phase (→ slot) plus these; a change rebuilds the loop.
-      const sig = `${state.color}|${state.knee}|${state.gain}|${state.morphAmp}`;
-      if (sig !== cacheSig) { frameCache = new Array(FRAMES).fill(null); cacheSig = sig; }
-      const loopPhase = phase - Math.floor(phase);    // [0, 1)
-      const slot = Math.min(FRAMES - 1, Math.floor(loopPhase * FRAMES));
-      const cached = frameCache[slot];
-      if (cached) {                                   // fast path: blit the frame
-        if (fr.canvas.width !== rec.w || fr.canvas.height !== rec.h) {
-          fr.canvas.width = rec.w; fr.canvas.height = rec.h;
-        }
-        fr.ctx.putImageData(cached, 0, 0);
-        fr.overlay.textContent = rec.label;           // static (magLabel="" for morph)
-      } else {
-        renderSlot(slot);
-      }
+      drawSlot(Math.min(MORPH_FRAMES - 1,
+                        Math.floor((phase - Math.floor(phase)) * MORPH_FRAMES)));
       morphRaf = requestAnimationFrame(tick);
     };
     morphRaf = requestAnimationFrame(tick);
+  }
+
+  // Cache neighbouring fields' movies in the background (interleaved outward) so
+  // next/prev is instant. Stops if a newer arm bumps the token or budget is hit.
+  async function prefetchMovies(index, subset, token) {
+    for (let d = 1; d <= MOVIE_RADIUS; d++) {
+      for (const j of [index + d, index - d]) {
+        if (token !== buildToken) return;
+        if (j < 0 || j >= state.meta.count) continue;
+        let total = 0; for (const e of movieStore.values()) total += e.bytes || 0;
+        if (total > MOVIE_BUDGET_BYTES) return;        // buffer full → stop reaching
+        if (movieFresh(movieStore.get(movieKey(j, subset)))) continue;
+        await buildMovie(j, subset, { token });
+      }
+    }
+  }
+
+  async function startMorph(fr, index) {
+    stopMorph();
+    const token = ++buildToken;                        // supersede any older build
+    const subset = state.morphMembers;
+    const key = movieKey(index, subset);
+    playingKey = key;
+    let entry = movieStore.get(key);
+    fr.frame.classList.remove("cv-loading");
+    if (!movieFresh(entry)) {                          // build with a progress bar
+      movieProgress(fr, 0);
+      entry = await buildMovie(index, subset, { token, onProgress: (p) => movieProgress(fr, p) });
+      movieProgress(fr, null);
+      if (token !== buildToken) return;                // superseded while building
+      if (!entry) { setFrameMsg(fr, "movie unavailable"); return; }
+    }
+    playMovie(fr, index, entry);
+    prefetchMovies(index, subset, token);              // background, not awaited
   }
 
   // --- load + show current index across all selected tiers -----------------
@@ -1026,6 +1136,9 @@ export function mountCutoutViewer(root, opts = {}) {
     destroy() {
       document.removeEventListener("keydown", onKey);
       if (state.playTimer) clearInterval(state.playTimer);
+      stopMorph();
+      buildToken++;                 // abort any in-flight movie build
+      movieStore.clear();           // free the cached movie frames
       root.innerHTML = "";
     },
   };
