@@ -59,6 +59,7 @@ export default function TrainMembersPage() {
     ["add", "continue", "fork"].includes(mode0) ? mode0 : "add");
   const [member, setMember] = useState(sp.get("member") ?? "");
   const [starlessDefault, setStarlessDefault] = useState(true);
+  const [forwardOtf, setForwardOtf] = useState(true);   // run-wide forward model
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("50000");
   const [extraSteps, setExtraSteps] = useState("50000");
@@ -73,11 +74,12 @@ export default function TrainMembersPage() {
       return { mode, members: member.trim(), extra_steps: extraSteps };
     const p: Record<string, string> = {
       mode, count: String(rows.length), steps,
+      forward_onthefly: forwardOtf ? "1" : "0",
       member_spec: JSON.stringify(buildSpec(rows, mode)),
     };
     if (mode === "fork") p.fork_from = member.trim();
     return p;
-  }, [mode, member, extraSteps, rows, steps]);
+  }, [mode, member, extraSteps, rows, steps, forwardOtf]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
 
@@ -114,11 +116,13 @@ export default function TrainMembersPage() {
               <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
                 <Field label="fork from"><Input value={member} onChange={setMember} placeholder="member_02" /></Field>
                 <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
+                <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
               </div>
             )}
             {mode === "add" && (
               <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
                 <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
+                <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
               </div>
             )}
 
