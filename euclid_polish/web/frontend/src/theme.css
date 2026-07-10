@@ -18,19 +18,16 @@
    DARK so lines read like a well-typeset figure on paper. */
 :root {
   /* — surfaces — */
-  --bg-0: #eef1f6;          /* app background */
-  --bg-1: #e6eaf1;          /* rail / sunken */
+  --bg-0: #f7f7f8;          /* app background (clean neutral near-white) */
+  --bg-1: #eeeef1;          /* rail / sunken */
   --surface-1: #ffffff;     /* card */
-  --surface-2: #f3f5fa;     /* raised / hover */
-  --surface-3: #e9edf4;     /* active / input */
-  --surface-grad: #f7f9fc;  /* card gradient foot */
-  --border: #dce1ea;
-  --border-strong: #c3ccd9;
-  --rail-bg: linear-gradient(180deg, #f1f4f9, #e6eaf1);
-  --app-bg:
-    radial-gradient(1100px 640px at 82% -12%, #dde7f7 0%, transparent 58%),
-    radial-gradient(820px 560px at -6% 6%, #e4ecf8 0%, transparent 52%),
-    #eef1f6;
+  --surface-2: #f4f4f6;     /* raised / hover */
+  --surface-3: #ececef;     /* active / input */
+  --surface-grad: #fafafb;  /* card gradient foot */
+  --border: #e2e2e6;
+  --border-strong: #c9c9d0;
+  --rail-bg: linear-gradient(180deg, #f4f4f6, #eeeef1);
+  --app-bg: #f7f7f8;        /* flat neutral — no blue tint */
 
   /* — ink — */
   --text: #17202e;
