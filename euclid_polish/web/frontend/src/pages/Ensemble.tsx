@@ -3,7 +3,7 @@
    diagnostics, the per-band combiner (fit + gate curves), and the disagreement
    cutout viewer. Full parity with the classic page, drawn from the JSON
    endpoints (status.json / evals.json / combiner.json / training-curves.json). */
-import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
@@ -119,6 +119,109 @@ const DIAG_TABS = [
   { id: "std-brightness", label: "std vs brightness" },
 ] as const;
 type DiagTab = typeof DIAG_TABS[number]["id"];
+
+/* ── pixel back-tracing (click a heatmap cell → real image stamps) ─────────── */
+type PickDiag = "std_err" | "bright_std";
+type Stamp = {
+  field: number; y: number; x: number; cy: number; cx: number;
+  hr: number[][]; sr: number[][]; std: number[][];
+  hr_val: number; sr_val: number; std_val: number; err_val: number; bright_asinh: number;
+};
+type Trace = { diag: string; i: number; j: number; half: number; stretch: number; stamps: Stamp[] };
+
+/* Compact electron formatter for the stamp captions / cell ranges. */
+const fmtE = (v: number): string =>
+  !isFinite(v) ? "—" : Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
+    ? v.toExponential(1) : String(Number(v.toPrecision(3)));
+/* "10^lo–10^hi" range for cell k of a log10-valued edge array. */
+const logRange = (edges: number[], k: number): string =>
+  `${fmtE(10 ** edges[k])}–${fmtE(10 ** edges[k + 1])}`;
+const gray = (t: number): string => {
+  const g = Math.round(Math.max(0, Math.min(1, t)) * 255);
+  return `rgb(${g},${g},${g})`;
+};
+
+/* One asinh-stretched VIS stamp (electrons), per-stamp normalized, center pixel
+   ringed. Small + static — drawn as scaled cells, pixelated. */
+function StampCanvas(
+  { data, cx, cy, cmap, stretch, px = 5, label }:
+  { data: number[][]; cx: number; cy: number; cmap: (t: number) => string; stretch: number; px?: number; label: string },
+) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv || !data.length || !data[0]?.length) return;
+    const H = data.length, W = data[0].length;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = W * px * dpr; cv.height = H * px * dpr;
+    cv.style.width = W * px + "px"; cv.style.height = H * px + "px";
+    const ctx = cv.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    let amin = Infinity, amax = -Infinity;
+    const a = data.map((row) => row.map((v) => {
+      const t = Math.asinh(v / stretch);
+      if (t < amin) amin = t; if (t > amax) amax = t; return t;
+    }));
+    const span = amax - amin || 1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      ctx.fillStyle = cmap((a[y][x] - amin) / span);
+      ctx.fillRect(x * px, y * px, px + 0.5, px + 0.5);
+    }
+    ctx.strokeStyle = "#ff3b6b"; ctx.lineWidth = 1.4;
+    ctx.strokeRect(cx * px - 0.7, cy * px - 0.7, px + 1.4, px + 1.4);
+  });
+  return (
+    <div style={{ textAlign: "center" }}>
+      <canvas ref={ref} style={{ imageRendering: "pixelated", borderRadius: 3, display: "block" }} />
+      <div className="mono" style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function TraceHint() {
+  return (
+    <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+      Click any cell to back-trace it — a handful of the real pixels that landed there,
+      as VIS stamps (HR · SR mean · σ) from across the test fields.
+    </div>
+  );
+}
+
+function PixelTrace(
+  { mode, pick, cellLabel, onClose }:
+  { mode: Mode; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string; onClose: () => void },
+) {
+  const url = `/ensemble/pixel-trace.json?mode=${mode}&diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
+  const trace = useResource<Trace>(url, [mode, pick.diag, pick.i, pick.j]);
+  const t = trace.data;
+  return (
+    <div className="ens-trace">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+        <div className="eyebrow">back-trace · <span className="mono" style={{ textTransform: "none" }}>{cellLabel}</span></div>
+        <Button size="sm" variant="ghost" onClick={onClose}>✕ close</Button>
+      </div>
+      {trace.loading ? <Empty><Spinner /> pulling stamps…</Empty>
+        : !t || !t.stamps.length
+          ? <Empty>no pixels were sampled in this cell — try a denser (brighter-colored) one</Empty>
+          : (
+            <div className="ens-trace__grid">
+              {t.stamps.map((s, k) => (
+                <div key={k} className="ens-trace__card">
+                  <div className="row" style={{ gap: 6, justifyContent: "center" }}>
+                    <StampCanvas data={s.hr} cx={s.cx} cy={s.cy} cmap={gray} stretch={t.stretch} label="HR" />
+                    <StampCanvas data={s.sr} cx={s.cx} cy={s.cy} cmap={gray} stretch={t.stretch} label="SR mean" />
+                    <StampCanvas data={s.std} cx={s.cx} cy={s.cy} cmap={viridis} stretch={t.stretch} label="σ" />
+                  </div>
+                  <div className="mono ens-trace__nums">
+                    #{s.field} · σ={fmtE(s.std_val)} · |err|={fmtE(s.err_val)} · HR={fmtE(s.hr_val)} e⁻
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+    </div>
+  );
+}
 
 export default function EnsemblePage() {
   const theme = useThemeValue();
@@ -312,6 +415,10 @@ function Evaluations(
   // Which overlay curves to draw on the power spectrum.
   const [show, setShow] = useState({ cross: true, mean: true, comb: true });
   const toggle = (k: keyof typeof show) => setShow((s) => ({ ...s, [k]: !s[k] }));
+  // Back-traced heatmap cell (click-to-inspect). Cleared when the tab/regime
+  // changes — a cell only means something within one diagnostic.
+  const [pick, setPick] = useState<{ diag: PickDiag; i: number; j: number } | null>(null);
+  useEffect(() => setPick(null), [tab, mode]);
   const ps = evals?.ps ?? null;
   const members = evals?.members ?? [];
 
@@ -383,7 +490,10 @@ function Evaluations(
       { label: "|error| = σ", color: C.guide, dash: true },
       { label: "0.674·σ (calibrated Gaussian)", color: C.guide, dash: true },
     ];
-    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend };
+    // Human range for a clicked cell (both axes log10 e⁻).
+    const describe = (c: { i: number; j: number }) =>
+      `σ ${logRange(edges, c.i)} e⁻ · |err| ${logRange(edges, c.j)} e⁻`;
+    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evals, theme]);
 
@@ -404,11 +514,16 @@ function Evaluations(
       { label: "median σ per brightness bin", color: C.baseline },
       { label: "16–84%", color: C.baseline, dash: true },
     ];
+    // Human range for a clicked cell: x = HR brightness (asinh), y = σ (log10).
+    const st = d.stretch;
+    const describe = (c: { i: number; j: number }) =>
+      `HR ${fmtE(st * Math.sinh(bx[c.i]))}–${fmtE(st * Math.sinh(bx[c.i + 1]))} e⁻` +
+      ` · σ ${logRange(sy, c.j)} e⁻`;
     return {
       heat, series,
       xDomain: [bx[0], bx[bx.length - 1]] as [number, number],
       yDomain: [sy[0], sy[sy.length - 1]] as [number, number],
-      xTicks: brightTicks(d.stretch), yTicks: logDecadeTicks(sy[0], sy[sy.length - 1]), legend,
+      xTicks: brightTicks(d.stretch), yTicks: logDecadeTicks(sy[0], sy[sy.length - 1]), legend, describe,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evals, theme]);
@@ -457,8 +572,14 @@ function Evaluations(
                 <Plot title="Does disagreement predict error?  (VIS, per pixel)"
                   xDomain={stdErr.domain} yDomain={stdErr.domain} xTicks={stdErr.ticks} yTicks={stdErr.ticks}
                   xLabel="cross-member per-pixel σ  [e⁻]" yLabel="|ensemble mean − HR|  [e⁻]"
-                  heat={stdErr.heat} series={stdErr.series} aspect={0.62} />
+                  heat={stdErr.heat} series={stdErr.series} aspect={0.62}
+                  onHeatClick={(c) => setPick({ diag: "std_err", ...c })}
+                  highlight={pick?.diag === "std_err" ? pick : null} />
                 <Legend items={stdErr.legend} />
+                <TraceHint />
+                {pick?.diag === "std_err" &&
+                  <PixelTrace mode={mode} pick={pick} cellLabel={stdErr.describe(pick)}
+                    onClose={() => setPick(null)} />}
               </>
             )
           ) : (
@@ -467,8 +588,14 @@ function Evaluations(
                 <Plot title="Where does disagreement live?  (VIS, per pixel)"
                   xDomain={brightStd.xDomain} yDomain={brightStd.yDomain} xTicks={brightStd.xTicks} yTicks={brightStd.yTicks}
                   xLabel="HR pixel brightness  [e⁻]  (asinh axis)" yLabel="cross-member per-pixel σ  [e⁻]"
-                  heat={brightStd.heat} series={brightStd.series} aspect={0.62} />
+                  heat={brightStd.heat} series={brightStd.series} aspect={0.62}
+                  onHeatClick={(c) => setPick({ diag: "bright_std", ...c })}
+                  highlight={pick?.diag === "bright_std" ? pick : null} />
                 <Legend items={brightStd.legend} />
+                <TraceHint />
+                {pick?.diag === "bright_std" &&
+                  <PixelTrace mode={mode} pick={pick} cellLabel={brightStd.describe(pick)}
+                    onClose={() => setPick(null)} />}
               </>
             )
           )}

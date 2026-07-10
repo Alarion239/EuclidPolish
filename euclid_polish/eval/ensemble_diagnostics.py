@@ -50,7 +50,8 @@ class EnsembleDiagnosticsAccumulator:
     recomputed from the members (population std, matching ``EnsembleModel``).
     """
 
-    def __init__(self, *, stretch: float | None = None) -> None:
+    def __init__(self, *, stretch: float | None = None,
+                 sample_k: int = 6) -> None:
         self.stretch = float(stretch if stretch is not None else
                              Config.STRETCH_SCALE_E)
         lo, hi = LOG_E_RANGE
@@ -69,8 +70,52 @@ class EnsembleDiagnosticsAccumulator:
         self.n_fields = 0
         self.n_members = 0
 
+        # ---- pixel back-tracing reservoirs --------------------------------- #
+        # For each 2D-histogram cell keep up to ``sample_k`` example pixel
+        # locations ``(field, y, x)``, so a click on a heatmap cell can pull the
+        # real image stamps that fell into it. Sampling is stratified by FIELD
+        # (one representative pixel per field per occupied cell, reservoir-
+        # replaced) — the examples then span different fields, which is what a
+        # human wants when inspecting "what lives here". Keyed by ``i*NB + j``.
+        self.sample_k = int(sample_k)
+        self.se_samples: dict[int, list[tuple[int, int, int]]] = {}
+        self.se_seen: dict[int, int] = {}
+        self.bs_samples: dict[int, list[tuple[int, int, int]]] = {}
+        self.bs_seen: dict[int, int] = {}
+        # Deterministic given call order → reproducible sidecars + testable.
+        self._rng = np.random.default_rng(0)
+
+    def _reservoir_add_field(self, samples, seen, bin_ids, W, field_index):
+        """Insert one random representative pixel per occupied cell of one
+        field into ``samples`` (capacity ``sample_k`` per cell), reservoir-
+        replacing across fields. ``bin_ids`` is the flattened ``i*NB + j`` cell
+        key per pixel; pixel index → ``(y, x) = divmod(idx, W)``."""
+        k = self.sample_k
+        rng = self._rng
+        order = np.argsort(bin_ids, kind="stable")
+        sb = bin_ids[order]
+        if sb.size == 0:
+            return
+        change = np.ones(sb.size, bool)
+        change[1:] = sb[1:] != sb[:-1]
+        starts = np.flatnonzero(change)
+        ends = np.append(starts[1:], sb.size)
+        for s0, s1 in zip(starts, ends):
+            key = int(sb[s0])
+            pick = int(order[s0 + int(rng.integers(s1 - s0))])
+            y, x = divmod(pick, W)
+            cnt = seen.get(key, 0) + 1
+            seen[key] = cnt
+            lst = samples.setdefault(key, [])
+            if len(lst) < k:
+                lst.append((int(field_index), int(y), int(x)))
+            else:
+                j = int(rng.integers(cnt))
+                if j < k:
+                    lst[j] = (int(field_index), int(y), int(x))
+
     def add(self, hr: np.ndarray, mean: np.ndarray,
-            members: np.ndarray) -> None:
+            members: np.ndarray, *, field_index: int | None = None) -> None:
         hr = np.asarray(hr, np.float64)
         mean = np.asarray(mean, np.float64)
         members = np.asarray(members, np.float64)
@@ -105,6 +150,24 @@ class EnsembleDiagnosticsAccumulator:
         self.field_rmse.append(float(np.sqrt(np.mean(err ** 2))))
         self.n_fields += 1
         self.n_members = max(self.n_members, len(members))
+
+        # Back-tracing reservoirs — only for fields whose cubes are cached (the
+        # caller passes ``field_index``), so a sampled pixel is always
+        # reconstructable into an image stamp on click.
+        if field_index is not None:
+            NB = LOG_E_BINS
+            W = int(hr.shape[1])
+            std_bin = np.clip(
+                np.searchsorted(self.log_edges, ls, side="right") - 1, 0, NB - 1)
+            err_bin = np.clip(
+                np.searchsorted(self.log_edges, le, side="right") - 1, 0, NB - 1)
+            bright_bin = np.clip(
+                np.searchsorted(self.bright_edges, bright, side="right") - 1,
+                0, NB - 1)
+            self._reservoir_add_field(self.se_samples, self.se_seen,
+                                      std_bin * NB + err_bin, W, field_index)
+            self._reservoir_add_field(self.bs_samples, self.bs_seen,
+                                      bright_bin * NB + std_bin, W, field_index)
 
     # ---- derived curves (pure, testable) ---------------------------------- #
     def binned_median_err(self) -> tuple[np.ndarray, np.ndarray]:
@@ -175,6 +238,26 @@ class EnsembleDiagnosticsAccumulator:
                 "field_std": _l(self.field_mean_std),
                 "field_rmse": _l(self.field_rmse),
             },
+        }
+
+    def samples_payload(self) -> dict:
+        """Back-tracing sidecar: per diagnostic, a ``{"i,j": [[field, y, x], …]}``
+        map of example pixel locations per histogram cell. Small (≤ ``sample_k``
+        per occupied cell). A click on a heatmap cell reads this to fetch the
+        real image stamps for that cell."""
+        NB = LOG_E_BINS
+
+        def enc(res: dict) -> dict:
+            return {f"{key // NB},{key % NB}":
+                    [[int(f), int(y), int(x)] for f, y, x in v]
+                    for key, v in res.items()}
+
+        return {
+            "n_fields": int(self.n_fields),
+            "n_members": int(self.n_members),
+            "sample_k": int(self.sample_k),
+            "std_err": enc(self.se_samples),
+            "bright_std": enc(self.bs_samples),
         }
 
     def z_stats(self) -> dict[str, float]:

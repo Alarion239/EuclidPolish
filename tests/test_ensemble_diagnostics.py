@@ -138,3 +138,70 @@ def test_to_payload_empty_accumulator_serializes():
     p = EnsembleDiagnosticsAccumulator().to_payload()
     json.dumps(p)
     assert p["n_fields"] == 0
+
+
+def test_samples_only_recorded_with_field_index():
+    """Back-tracing reservoirs stay empty unless the caller opts a field in via
+    ``field_index`` (only cached fields are reconstructable)."""
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble()
+    acc.add(hr, mean, members)                       # no field_index → no samples
+    assert not acc.se_samples and not acc.bs_samples
+    acc.add(hr, mean, members, field_index=7)
+    assert acc.se_samples and acc.bs_samples
+
+
+def test_samples_point_at_the_cell_they_are_binned_into():
+    """Every stored ``(field, y, x)`` sample must fall in the histogram cell it
+    is keyed under — the click-to-inspect contract."""
+    from euclid_polish.eval.ensemble_diagnostics import LOG_E_BINS
+
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble(n=128, seed=3)
+    acc.add(hr, mean, members, field_index=0)
+    std = members.std(0)
+    err = np.abs(mean - hr)
+    ls = np.log10(np.maximum(std, 1e-12))
+    le = np.log10(np.maximum(err, 1e-12))
+    for key, picks in acc.se_samples.items():
+        i, j = key // LOG_E_BINS, key % LOG_E_BINS
+        assert len(picks) <= acc.sample_k
+        for field, y, x in picks:
+            assert field == 0
+            si = np.clip(np.searchsorted(acc.log_edges, ls[y, x], "right") - 1,
+                         0, LOG_E_BINS - 1)
+            ej = np.clip(np.searchsorted(acc.log_edges, le[y, x], "right") - 1,
+                         0, LOG_E_BINS - 1)
+            assert (si, ej) == (i, j)
+
+
+def test_samples_span_multiple_fields():
+    """Field-stratified reservoir: a popular cell draws examples from different
+    fields, not five pixels of one."""
+    acc = EnsembleDiagnosticsAccumulator()
+    for f in range(6):
+        hr, mean, members = _calibrated_ensemble(n=96, seed=f)
+        acc.add(hr, mean, members, field_index=f)
+    # the busiest std_err cell should reference >1 distinct field
+    busiest = max(acc.se_samples.values(), key=len)
+    assert len({field for field, _, _ in busiest}) >= 2
+
+
+def test_samples_payload_is_json_ready():
+    import json
+
+    acc = EnsembleDiagnosticsAccumulator()
+    for f in range(2):
+        hr, mean, members = _calibrated_ensemble(seed=f)
+        acc.add(hr, mean, members, field_index=f)
+    p = acc.samples_payload()
+    s = json.dumps(p)
+    assert "NaN" not in s
+    assert p["n_fields"] == 2 and p["sample_k"] == acc.sample_k
+    assert set(p) >= {"std_err", "bright_std"}
+    # keys are "i,j" and values are lists of [field, y, x] triples
+    for cell, picks in p["std_err"].items():
+        i, j = map(int, cell.split(","))
+        assert 0 <= i < len(acc.log_edges) - 1
+        for triple in picks:
+            assert len(triple) == 3

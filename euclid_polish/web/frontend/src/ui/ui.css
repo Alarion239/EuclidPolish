@@ -247,6 +247,18 @@
 .ens-mcard__psnr { font-size: 10.5px; color: var(--text-dim); }
 .ens-mcard__meta { font-size: 10px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---- Pixel back-trace panel (click a heatmap cell → real image stamps) ---- */
+.ens-trace {
+  margin-top: var(--s3); padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--r-2); background: var(--surface-1);
+}
+.ens-trace__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ens-trace__card {
+  padding: 8px; border: 1px solid var(--border); border-radius: var(--r-1);
+  background: var(--surface-2);
+}
+.ens-trace__nums { margin-top: 6px; font-size: 10.5px; color: var(--text-dim); text-align: center; }
+
 /* ---- Train-members per-model row editor (TrainMembers.tsx) ---- */
 .ens-spec { display: flex; flex-direction: column; gap: 6px; }
 .ens-spec__row {

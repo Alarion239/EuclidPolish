@@ -1,7 +1,7 @@
 /* Plot — one reusable canvas line-chart. Every figure in the app is expressed
    as {domain, ticks, series, guides}; no page hand-rolls axes again. Retina
    crisp, resizes with its container, themed from CSS tokens. */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MouseEvent } from "react";
 import { viridis } from "../colors";
 
 export type Series = {
@@ -36,6 +36,10 @@ export type Heat = {
   color?: (t: number) => string;  // t∈[0,1] → css color (default viridis)
 };
 
+/* A histogram cell selected in a heat plot — reported by onHeatClick, outlined
+   by `highlight`. */
+export type Cell = { i: number; j: number };
+
 export type PlotProps = {
   xDomain: [number, number];
   yDomain: [number, number];
@@ -48,6 +52,10 @@ export type PlotProps = {
   series: Series[];
   guides?: Guide[];
   heat?: Heat;
+  /* When set (heat plots only) a click reports the histogram cell under the
+     cursor; `highlight` outlines a picked cell. Powers click-to-inspect. */
+  onHeatClick?: (cell: Cell) => void;
+  highlight?: Cell | null;
   height?: number;      /* fixed px; omit → aspect-driven */
   aspect?: number;      /* height = width * aspect (default 0.5) */
 };
@@ -57,9 +65,23 @@ function css(name: string, fallback: string) {
   return v || fallback;
 }
 
+/* Plot geometry captured on every draw so the click handler can invert screen
+   px → data coords → histogram cell without re-deriving margins. */
+type Geo = { m: { l: number; r: number; t: number; b: number }; iw: number; ih: number;
+  logx: boolean; xDomain: [number, number]; yDomain: [number, number] };
+
+/* Largest k with edges[k] <= v (edges strictly increasing); -1 if out of range. */
+function binOf(edges: number[], v: number): number {
+  if (!(v >= edges[0]) || !(v <= edges[edges.length - 1])) return -1;
+  let lo = 0, hi = edges.length - 1;
+  while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (edges[mid] <= v) lo = mid; else hi = mid; }
+  return lo;
+}
+
 export default function Plot(p: PlotProps) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const geo = useRef<Geo | null>(null);
 
   useEffect(() => {
     const el = wrap.current, cv = canvas.current;
@@ -74,7 +96,7 @@ export default function Plot(p: PlotProps) {
       cv.style.height = cssH + "px";
       const ctx = cv.getContext("2d")!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      render(ctx, cssW, cssH, p);
+      geo.current = render(ctx, cssW, cssH, p);
     };
     draw();
     const ro = new ResizeObserver(draw);
@@ -82,14 +104,29 @@ export default function Plot(p: PlotProps) {
     return () => ro.disconnect();
   });
 
+  const onClick = (e: MouseEvent<HTMLCanvasElement>) => {
+    const g = geo.current, heat = p.heat;
+    if (!p.onHeatClick || !g || !heat) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const [xa, xb] = g.xDomain, [ya, yb] = g.yDomain;
+    const fx = (px - g.m.l) / g.iw, fy = 1 - (py - g.m.t) / g.ih;
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+    const dataX = g.logx ? 10 ** (Math.log10(xa) + fx * (Math.log10(xb) - Math.log10(xa))) : xa + fx * (xb - xa);
+    const dataY = ya + fy * (yb - ya);
+    const i = binOf(heat.xEdges, dataX), j = binOf(heat.yEdges, dataY);
+    if (i >= 0 && j >= 0) p.onHeatClick({ i, j });
+  };
+
   return (
     <div ref={wrap} style={{ width: "100%" }}>
-      <canvas ref={canvas} />
+      <canvas ref={canvas} onClick={onClick}
+        style={p.onHeatClick && p.heat ? { cursor: "crosshair" } : undefined} />
     </div>
   );
 }
 
-function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProps) {
+function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProps): Geo {
   const ink = css("--text", "#e5edf7");
   const dim = css("--text-dim", "#9aa8bd");
   const faint = css("--text-faint", "#64728a");
@@ -97,7 +134,8 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   const gridS = css("--border-strong", "#33415a");
 
   ctx.clearRect(0, 0, W, H);
-  const m = { l: 58, r: 16, t: p.title ? 30 : 12, b: 44 };
+  // A heat plot reserves the right margin for its density colorbar.
+  const m = { l: 58, r: p.heat ? 74 : 16, t: p.title ? 30 : 12, b: 44 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
 
   const logx = p.xScale === "log";
@@ -122,12 +160,14 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   }
 
   // density heatmap (under everything) — clipped to the plot area
+  let heatNorm: { zmax: number; denom: number; color: (t: number) => string } | null = null;
   if (p.heat && p.heat.z.length && p.heat.z[0]?.length) {
     const { z, xEdges, yEdges } = p.heat;
     const color = p.heat.color ?? viridis;
     let zmax = p.heat.max ?? 0;
     if (!p.heat.max) for (const row of z) for (const v of row) if (v > zmax) zmax = v;
     const denom = Math.log10(Math.max(zmax, 2));
+    heatNorm = { zmax, denom, color };
     ctx.save();
     ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
     for (let i = 0; i < z.length; i++) {
@@ -211,12 +251,62 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   }
   ctx.restore();
 
+  // picked-cell outline (heat plots): highlight the back-traced histogram cell.
+  if (p.heat && p.highlight) {
+    const { xEdges, yEdges } = p.heat;
+    const { i, j } = p.highlight;
+    if (i >= 0 && i < xEdges.length - 1 && j >= 0 && j < yEdges.length - 1) {
+      const x0 = tx(xEdges[i]), x1 = tx(xEdges[i + 1]);
+      const y0 = ty(yEdges[j]), y1 = ty(yEdges[j + 1]);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+      ctx.strokeStyle = css("--text", "#e5edf7");
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      const pad = 1.5;
+      ctx.strokeRect(Math.min(x0, x1) - pad, Math.min(y0, y1) - pad,
+        Math.abs(x1 - x0) + 2 * pad, Math.abs(y1 - y0) + 2 * pad);
+      ctx.restore();
+    }
+  }
+
   // axis frame
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
   ctx.strokeStyle = gridS;
   ctx.lineWidth = 1;
   ctx.strokeRect(m.l, m.t, iw, ih);
+
+  // density colorbar (heat plots) — a log-count viridis strip in the right
+  // margin, ticked at decades of pixel count so a cell's colour is readable.
+  if (heatNorm) {
+    const bx = W - m.r + 14, bw = 12, bt = m.t, bh = ih;
+    const steps = 48;
+    for (let s = 0; s < steps; s++) {
+      const t = s / (steps - 1);                 // 0 (bottom) … 1 (top)
+      ctx.fillStyle = heatNorm.color(t);
+      const yy = bt + (1 - t) * bh;
+      ctx.fillRect(bx, yy - bh / steps - 0.5, bw, bh / steps + 1);
+    }
+    ctx.strokeStyle = gridS; ctx.lineWidth = 1; ctx.strokeRect(bx, bt, bw, bh);
+    // decade ticks: count 10^e sits at t = e / denom on the log-norm strip.
+    ctx.font = '10px "IBM Plex Mono", monospace';
+    ctx.fillStyle = faint; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.strokeStyle = faint;
+    for (let e = 0; 10 ** e <= heatNorm.zmax + 0.5; e++) {
+      const t = heatNorm.denom > 0 ? e / heatNorm.denom : 1;
+      if (t < 0 || t > 1) continue;
+      const yy = bt + (1 - t) * bh;
+      ctx.beginPath(); ctx.moveTo(bx + bw, yy); ctx.lineTo(bx + bw + 3, yy); ctx.stroke();
+      ctx.fillText(e === 0 ? "1" : `10${supN(e)}`, bx + bw + 5, yy);
+    }
+    ctx.save();
+    ctx.translate(bx + bw + 34, bt + bh / 2); ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = dim; ctx.font = '500 11px "IBM Plex Mono", monospace';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("pixels / cell", 0, 0);
+    ctx.restore();
+  }
 
   // axis labels
   ctx.fillStyle = dim;
@@ -226,6 +316,13 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     ctx.save(); ctx.translate(14, m.t + ih / 2); ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillText(p.yLabel, 0, 0); ctx.restore();
   }
+  return { m, iw, ih, logx, xDomain: p.xDomain, yDomain: p.yDomain };
+}
+
+/* Superscript a small non-negative integer for the colorbar decade labels. */
+const SUP_DIGITS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
+function supN(n: number): string {
+  return String(n).split("").map((d) => SUP_DIGITS[+d] ?? d).join("");
 }
 
 export function Legend({ items }: { items: { label: string; color: string; dash?: boolean }[] }) {

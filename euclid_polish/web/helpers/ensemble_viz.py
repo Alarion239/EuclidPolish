@@ -844,6 +844,104 @@ def _evals_payload_path(starless: bool) -> str:
     return os.path.join(_ensemble_regime_dir(starless), "ensemble_evals.json")
 
 
+def _diag_samples_path(starless: bool) -> str:
+    """Sidecar for the pixel back-tracing samples (per histogram cell → example
+    ``(field, y, x)`` locations). Loaded only on a heatmap-cell click, so it
+    lives apart from ``ensemble_evals.json`` (which drives every redraw)."""
+    return os.path.join(_ensemble_regime_dir(starless),
+                        "ensemble_diag_samples.json")
+
+
+def _write_diag_samples(starless: bool, diag) -> None:
+    """Persist the accumulator's back-tracing reservoirs. Best-effort — a write
+    failure never fails the evaluation (the plots still render, just without the
+    click-to-inspect examples)."""
+    try:
+        with open(_diag_samples_path(starless), "w") as f:
+            json.dump(diag.samples_payload(), f)
+    except OSError:
+        pass
+
+
+#: VIS zoom stamps returned per back-traced pixel (half-window in HR pixels).
+PIXEL_TRACE_HALF = 12
+
+
+def pixel_trace(starless: bool, diag: str, i: int, j: int,
+                *, half: int = PIXEL_TRACE_HALF, max_stamps: int = 5) -> dict:
+    """Back-trace one heatmap cell to real image stamps.
+
+    Given a diagnostic (``"std_err"`` | ``"bright_std"``) and its histogram cell
+    ``(i, j)``, read the sidecar's example pixel locations for that cell and cut
+    a ``(2·half+1)²`` VIS window (electrons) of the HR truth, the ensemble-mean
+    SR and the cross-member std around each — the real pixels that landed in the
+    clicked cell, with the exact per-pixel numbers that place them there.
+    Returns ``{stamps: [...], ...}`` (``stamps`` empty when nothing sampled)."""
+    out = {"diag": diag, "i": int(i), "j": int(j), "half": int(half),
+           "stretch": float(Config.STRETCH_SCALE_E), "stamps": []}
+    try:
+        with open(_diag_samples_path(starless)) as f:
+            side = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return out
+    cells = side.get(diag) or {}
+    picks = cells.get(f"{int(i)},{int(j)}") or []
+    if not picks:
+        return out
+
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    rdir = _sky_records_local_dir()
+    if not rdir:
+        return out
+    sub = eval_subset(rdir)
+    target = "clean" if starless else "hr"
+    hr_path = tfrecord_path(rdir, f"{target}_{sub}")
+    if not os.path.exists(hr_path):
+        return out
+
+    # Group the (field, y, x) picks by field so each HR record + cube is read
+    # once. Cap the total stamps returned.
+    picks = [tuple(int(v) for v in p) for p in picks][:max_stamps]
+    by_rec: dict[int, list[tuple[int, int]]] = {}
+    for rec, y, x in picks:
+        by_rec.setdefault(rec, []).append((y, x))
+    max_idx = max(by_rec) + 1
+    hr_by = {r.index: r for r in read_images(hr_path, num_images=max_idx)}
+
+    def _crop(a2d, y, x):
+        H, W = a2d.shape
+        y0, y1 = max(0, y - half), min(H, y + half + 1)
+        x0, x1 = max(0, x - half), min(W, x + half + 1)
+        return a2d[y0:y1, x0:x1], (y - y0, x - x0)  # patch + center offset
+
+    for rec, coords in by_rec.items():
+        sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
+        std_f = os.path.join(cubes_dir, f"std_{rec:05d}.npy")
+        hr_rec = hr_by.get(rec)
+        if not (os.path.isfile(sr_f) and os.path.isfile(std_f)
+                and hr_rec is not None):
+            continue
+        sr_v = _vis(np.load(sr_f)).astype(np.float64)
+        std_v = _vis(np.load(std_f)).astype(np.float64)
+        hr_v = _vis(np.asarray(hr_rec.data, np.float32)).astype(np.float64)
+        for (y, x) in coords:
+            if not (0 <= y < hr_v.shape[0] and 0 <= x < hr_v.shape[1]):
+                continue
+            hr_p, cen = _crop(hr_v, y, x)
+            sr_p, _ = _crop(sr_v, y, x)
+            std_p, _ = _crop(std_v, y, x)
+            hv, sv, dv = float(hr_v[y, x]), float(sr_v[y, x]), float(std_v[y, x])
+            out["stamps"].append({
+                "field": int(rec), "y": int(y), "x": int(x),
+                "cy": int(cen[0]), "cx": int(cen[1]),
+                "hr": hr_p.tolist(), "sr": sr_p.tolist(), "std": std_p.tolist(),
+                "hr_val": hv, "sr_val": sv, "std_val": dv,
+                "err_val": abs(sv - hv),
+                "bright_asinh": float(np.arcsinh(hv / Config.STRETCH_SCALE_E)),
+            })
+    return out
+
+
 def compute_evaluation_payload(starless: bool) -> dict | None:
     """(Re)compute the Evaluations payload from the CACHED cubes — ONE sweep
     fills both the spectrum and the pixel-diagnostics accumulators — and
@@ -852,15 +950,16 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
     ps_acc = None
     diag = EnsembleDiagnosticsAccumulator()
     cmet = _CombinerMetricAcc()
-    for hr_v, mean_v, mem_v, comb_v, lr_v in _iter_cached_fields(starless):
+    for hr_v, mean_v, mem_v, comb_v, lr_v, rec in _iter_cached_fields(starless):
         if ps_acc is None:
             ps_acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
         ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
-        diag.add(hr_v, mean_v, mem_v)
+        diag.add(hr_v, mean_v, mem_v, field_index=rec)
         cmet.add(hr_v, mean_v, mem_v, comb_v)
     if diag.n_fields == 0:
         return None
+    _write_diag_samples(starless, diag)
     man_path = os.path.join(_ensemble_cubes_dir(starless=starless),
                             "viz_index.json")
     try:
@@ -938,7 +1037,11 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                 ps_acc[0] = EnsembleSpectrumAccumulator(
                     int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
             ps_acc[0].add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
-            diag_acc.add(hr_v, mean_v, mem_v)
+            # Back-tracing samples only for fields whose cubes are cached (within
+            # viz_cap) — beyond that the sr_/std_ stamps don't exist to show.
+            diag_acc.add(hr_v, mean_v, mem_v,
+                         field_index=(int(rec_index) if len(saved) < viz_cap
+                                      else None))
             cmet.add(hr_v, mean_v, mem_v, comb_v)
 
         # LR/HR are read back from the records by the viewer; persist the
@@ -1010,6 +1113,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         payload["regime"] = _regime_slug(starless)
         with open(_evals_payload_path(starless), "w") as f:
             json.dump(payload, f)
+        _write_diag_samples(starless, diag_acc)
 
     # Combiner comparison numbers into the run summary.
     if combiner_block is not None and combiner_block.get("available"):
@@ -1036,8 +1140,9 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
 
 def _iter_cached_fields(starless: bool):
-    """Yield ``(target_vis, mean_vis, members_vis, combiner_vis, lr_vis)`` per
-    cached field of one regime.
+    """Yield ``(target_vis, mean_vis, members_vis, combiner_vis, lr_vis, rec)``
+    per cached field of one regime (``rec`` = the field's record index — the key
+    the ``sr_``/``std_`` cubes and the back-tracing sidecar are stored under).
 
     Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
     cubes the last Evaluate wrote for this regime, paired with the regime's
@@ -1096,7 +1201,7 @@ def _iter_cached_fields(starless: bool):
         lr_v = (_lr_on_hr_grid(np.asarray(lr_rec.data, np.float32),
                                int(hr_v.shape[0])) if lr_rec is not None else None)
         yield (hr_v, _vis(np.load(sr_f)),
-               np.stack([_vis(m) for m in members], 0), comb_v, lr_v)
+               np.stack([_vis(m) for m in members], 0), comb_v, lr_v, rec)
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
@@ -1129,7 +1234,7 @@ def regenerate_power_spectrum(starless: bool,
     "knee"} colors the per-member lines by that grouping. Returns the PNG path,
     or ``None`` if nothing is cached."""
     acc = None
-    for hr_v, mean_v, mem_v, comb_v, lr_v in _iter_cached_fields(starless):
+    for hr_v, mean_v, mem_v, comb_v, lr_v, _rec in _iter_cached_fields(starless):
         if acc is None:
             acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
@@ -1170,10 +1275,11 @@ def regenerate_eval_diagnostics(starless: bool) -> dict[str, str] | None:
     ``{slug: png_path}`` or ``None`` when nothing is cached.
     """
     acc = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v, _comb_v, _lr_v in _iter_cached_fields(starless):
-        acc.add(hr_v, mean_v, mem_v)
+    for hr_v, mean_v, mem_v, _comb_v, _lr_v, rec in _iter_cached_fields(starless):
+        acc.add(hr_v, mean_v, mem_v, field_index=rec)
     if acc.n_fields == 0:
         return None
+    _write_diag_samples(starless, acc)
     out_dir = _ensemble_regime_dir(starless)
     renderers = {"std-error": render_std_vs_error,
                  "std-brightness": render_std_vs_brightness}

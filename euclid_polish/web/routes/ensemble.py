@@ -23,6 +23,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_pull,
     job_ensemble_render,
     job_member_psnr,
+    pixel_trace,
     regenerate_eval_diagnostics,
     regenerate_power_spectrum,
     training_curves_payload,
@@ -168,6 +169,26 @@ def register(app):
                     and not os.path.isfile(path)):
                 abort(404)
         return send_file(path, mimetype="application/json", max_age=0)
+
+    @app.route("/ensemble/pixel-trace.json")
+    def ensemble_pixel_trace():
+        """Back-trace a diagnostic heatmap cell to real image stamps.
+
+        ``?mode=&diag=std_err|bright_std&i=<int>&j=<int>`` → up to a handful of
+        VIS zoom stamps (HR / ensemble-mean SR / cross-member std, electrons) of
+        the actual pixels that fell into the clicked cell, each with the exact
+        per-pixel σ / |error| / brightness so the user can see WHY it landed
+        there. Empty ``stamps`` when nothing was sampled for that cell."""
+        starless = _mode_starless()
+        diag = (request.args.get("diag") or "").strip()
+        if diag not in ("std_err", "bright_std"):
+            abort(404)
+        try:
+            i = int(request.args.get("i", ""))
+            j = int(request.args.get("j", ""))
+        except (TypeError, ValueError):
+            abort(400)
+        return jsonify(pixel_trace(starless, diag, i, j))
 
     @app.route("/ensemble/eval-plot/<plot>.png")
     def ensemble_eval_plot(plot: str):
