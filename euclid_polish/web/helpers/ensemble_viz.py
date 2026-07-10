@@ -1012,7 +1012,7 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
             ps_acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
         ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
-        diag.add(hr_v, mean_v, mem_v, field_index=rec)
+        diag.add(hr_v, mean_v, mem_v, combiner=comb_v, field_index=rec)
         cmet.add(hr_v, mean_v, mem_v, comb_v)
     if diag.n_fields == 0:
         return None
@@ -1096,7 +1096,9 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             ps_acc[0].add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
             # Back-tracing samples only for fields whose cubes are cached (within
             # viz_cap) — beyond that the sr_/std_ stamps don't exist to show.
-            diag_acc.add(hr_v, mean_v, mem_v,
+            # Error is scored against the combiner when present (the shipped
+            # point estimate), else the ensemble mean.
+            diag_acc.add(hr_v, mean_v, mem_v, combiner=comb_v,
                          field_index=(int(rec_index) if len(saved) < viz_cap
                                       else None))
             cmet.add(hr_v, mean_v, mem_v, comb_v)
@@ -1332,8 +1334,8 @@ def regenerate_eval_diagnostics(starless: bool) -> dict[str, str] | None:
     ``{slug: png_path}`` or ``None`` when nothing is cached.
     """
     acc = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v, _comb_v, _lr_v, rec in _iter_cached_fields(starless):
-        acc.add(hr_v, mean_v, mem_v, field_index=rec)
+    for hr_v, mean_v, mem_v, comb_v, _lr_v, rec in _iter_cached_fields(starless):
+        acc.add(hr_v, mean_v, mem_v, combiner=comb_v, field_index=rec)
     if acc.n_fields == 0:
         return None
     _write_diag_samples(starless, acc)

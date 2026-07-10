@@ -51,6 +51,7 @@ type PS = {
 type StdErr = {
   edges: (number | null)[]; hist: number[][];
   med_std: (number | null)[]; med_err: (number | null)[];
+  pred?: string;   // point estimate the error is measured against ("combiner" | "ensemble mean")
 };
 type BrightStd = {
   bright_edges: (number | null)[]; std_edges: (number | null)[]; hist: number[][];
@@ -182,14 +183,15 @@ function ImageStamp(
   { b64?: string; size: number; center: number; bands: string[]; colorMeta?: ColorMeta;
     opts: RenderOpts; render: RenderFn | null; px: number; label: string; badge?: string },
 ) {
+  const c = bands?.length || 0;
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
-    if (!cv || !b64 || !render || !colorMeta) return;
+    if (!cv || !b64 || !render || !colorMeta || !c) return;
     const data = b64ToF32(b64);
-    const img = render({ data, h: size, w: size, c: bands.length }, colorMeta, opts);
+    const img = render({ data, h: size, w: size, c }, colorMeta, opts);
     blitStamp(cv, img, size, center, px);
-  }, [b64, size, center, bands.length, colorMeta, opts, render, px]);
+  }, [b64, size, center, c, colorMeta, opts, render, px]);
   return (
     <div style={{ textAlign: "center" }}>
       {b64 ? <canvas ref={ref} style={{ imageRendering: "pixelated", borderRadius: 3, display: "block" }} />
@@ -580,7 +582,9 @@ function Evaluations(
     // Human range for a clicked cell (both axes log10 e⁻).
     const describe = (c: { i: number; j: number }) =>
       `σ ${logRange(edges, c.i)} e⁻ · |err| ${logRange(edges, c.j)} e⁻`;
-    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe };
+    const pred = d.pred || "ensemble mean";
+    const yLabel = `|${pred} − HR|  [e⁻]`;
+    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe, yLabel };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evals, theme]);
 
@@ -658,7 +662,7 @@ function Evaluations(
               <>
                 <Plot title="Does disagreement predict error?  (VIS, per pixel)"
                   xDomain={stdErr.domain} yDomain={stdErr.domain} xTicks={stdErr.ticks} yTicks={stdErr.ticks}
-                  xLabel="cross-member per-pixel σ  [e⁻]" yLabel="|ensemble mean − HR|  [e⁻]"
+                  xLabel="cross-member per-pixel σ  [e⁻]" yLabel={stdErr.yLabel}
                   heat={stdErr.heat} series={stdErr.series} aspect={0.62}
                   onHeatClick={(c) => setPick({ diag: "std_err", ...c })}
                   highlight={pick?.diag === "std_err" ? pick : null} />

@@ -140,6 +140,38 @@ def test_to_payload_empty_accumulator_serializes():
     assert p["n_fields"] == 0
 
 
+def test_error_scored_against_combiner_when_given():
+    """With a combiner passed, the std-vs-error histogram measures |combiner −
+    HR|, not |mean − HR| — a combiner that nails the truth pushes the error mass
+    to the floor bin, and the payload labels the axis 'combiner'."""
+    hr, mean, members = _calibrated_ensemble(n=128, seed=1)
+
+    acc_mean = EnsembleDiagnosticsAccumulator()
+    acc_mean.add(hr, mean, members)
+    assert acc_mean.pred_label() == "ensemble mean"
+    assert acc_mean.to_payload()["std_err"]["pred"] == "ensemble mean"
+
+    # A combiner equal to HR ⇒ zero error everywhere ⇒ all error mass in bin 0.
+    acc_comb = EnsembleDiagnosticsAccumulator()
+    acc_comb.add(hr, mean, members, combiner=hr.copy())
+    assert acc_comb.pred_label() == "combiner"
+    assert acc_comb.n_pred_combiner == acc_comb.n_fields == 1
+    err_marginal = acc_comb.h_std_err.sum(axis=0)   # over σ → |err| distribution
+    assert err_marginal[0] == hr.size               # everything in the floor bin
+    assert acc_comb.to_payload()["std_err"]["pred"] == "combiner"
+
+
+def test_mixed_combiner_run_labels_as_mean():
+    """If only SOME fields carry a combiner, the label degrades to the mean —
+    the histogram is a mix, so we don't over-claim it's the combiner's error."""
+    hr, mean, members = _calibrated_ensemble()
+    acc = EnsembleDiagnosticsAccumulator()
+    acc.add(hr, mean, members, combiner=hr.copy())   # field 0: combiner
+    acc.add(hr, mean, members)                        # field 1: mean only
+    assert acc.n_pred_combiner == 1 and acc.n_fields == 2
+    assert acc.pred_label() == "ensemble mean"
+
+
 def test_samples_only_recorded_with_field_index():
     """Back-tracing reservoirs stay empty unless the caller opts a field in via
     ``field_index`` (only cached fields are reconstructable)."""

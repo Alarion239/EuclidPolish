@@ -69,6 +69,7 @@ class EnsembleDiagnosticsAccumulator:
         self.field_rmse: list[float] = []
         self.n_fields = 0
         self.n_members = 0
+        self.n_pred_combiner = 0   # fields whose error was scored vs the combiner
 
         # ---- pixel back-tracing reservoirs --------------------------------- #
         # For each 2D-histogram cell keep up to ``sample_k`` example pixel
@@ -115,7 +116,8 @@ class EnsembleDiagnosticsAccumulator:
                     lst[j] = (int(field_index), int(y), int(x))
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
-            members: np.ndarray, *, field_index: int | None = None) -> None:
+            members: np.ndarray, *, combiner: np.ndarray | None = None,
+            field_index: int | None = None) -> None:
         hr = np.asarray(hr, np.float64)
         mean = np.asarray(mean, np.float64)
         members = np.asarray(members, np.float64)
@@ -123,7 +125,16 @@ class EnsembleDiagnosticsAccumulator:
                 or members.shape[1:] != hr.shape or len(members) < 2):
             return
         std = members.std(axis=0)
-        err = mean - hr
+        # The ERROR whose predictability we test is that of the ensemble's point
+        # estimate. When the combiner is available it IS the point estimate we
+        # ship, so score its residual; otherwise fall back to the ensemble mean.
+        pred = mean
+        if combiner is not None:
+            combiner = np.asarray(combiner, np.float64)
+            if combiner.shape == hr.shape:
+                pred = combiner
+                self.n_pred_combiner += 1
+        err = pred - hr
 
         ls = _log10_clipped(std).ravel()
         le = _log10_clipped(np.abs(err)).ravel()
@@ -168,6 +179,13 @@ class EnsembleDiagnosticsAccumulator:
                                       std_bin * NB + err_bin, W, field_index)
             self._reservoir_add_field(self.bs_samples, self.bs_seen,
                                       bright_bin * NB + std_bin, W, field_index)
+
+    def pred_label(self) -> str:
+        """Which point estimate's error the std-vs-error histogram measures —
+        ``"combiner"`` only when EVERY field was scored against it, else
+        ``"ensemble mean"`` (a mixed run degrades to the mean's label)."""
+        return ("combiner" if self.n_fields > 0
+                and self.n_pred_combiner == self.n_fields else "ensemble mean")
 
     # ---- derived curves (pure, testable) ---------------------------------- #
     def binned_median_err(self) -> tuple[np.ndarray, np.ndarray]:
@@ -219,6 +237,7 @@ class EnsembleDiagnosticsAccumulator:
                 "hist": self.h_std_err.astype(int).tolist(),
                 "med_std": _l(np.log10(cen)),
                 "med_err": _l(np.log10(med)),
+                "pred": self.pred_label(),             # "combiner" | "ensemble mean"
             },
             "bright_std": {
                 "bright_edges": _l(self.bright_edges),  # asinh(x/stretch)
@@ -303,6 +322,7 @@ def render_std_vs_error(out_png: str, acc: EnsembleDiagnosticsAccumulator,
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    pred = acc.pred_label()
     fig, ax = plt.subplots(figsize=(7.4, 6.2))
     m = _density_panel(ax, acc.h_std_err, acc.log_edges, acc.log_edges)
     cen, med = acc.binned_median_err()
@@ -315,7 +335,7 @@ def render_std_vs_error(out_png: str, acc: EnsembleDiagnosticsAccumulator,
     ax.set_xlim(*lim)
     ax.set_ylim(*lim)
     ax.set_xlabel("cross-member per-pixel std  σ  [e⁻]")
-    ax.set_ylabel("actual error  |ensemble mean − HR|  [e⁻]")
+    ax.set_ylabel(f"actual error  |{pred} − HR|  [e⁻]")
     ax.set_title("Does disagreement predict error?  "
                  f"(VIS, {acc.n_fields} fields, {acc.n_members} members)")
     ax.legend(fontsize=8, loc="upper left")
