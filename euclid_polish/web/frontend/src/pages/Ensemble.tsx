@@ -13,7 +13,7 @@ import { CutoutViewer, type ViewerApi } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
 import {
-  Badge, Button, Card, CardBody, CardHead, Checkbox, DefList, Empty, Field,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, DefList, Empty, Field,
   Input, NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
   Tabs, type Column,
 } from "../ui";
@@ -675,7 +675,7 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
   // SR as a STILL, 2+ → the disagreement MOVIE over the picked members. No
   // separate movie/view controls — the count decides.
   const [selection, setSelection] = useState<Set<number>>(new Set());
-  const [q, setQ] = useState("");
+  const [lossFilter, setLossFilter] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<SortBy>("index");
 
   // Join the viewer's member_labels (cube stack order, "NN·psnr") onto the
@@ -694,10 +694,12 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
     });
   }, [meta.data, members]);
 
+  // Distinct loss norms present, for the filter tags.
+  const losses = useMemo(
+    () => [...new Set(rows.map((r) => r.loss))].sort(), [rows]);
+
   const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const filtered = rows.filter((x) => !needle
-      || x.label.toLowerCase().includes(needle) || x.loss.includes(needle));
+    const filtered = rows.filter((x) => !lossFilter.size || lossFilter.has(x.loss));
     const cmp: Record<SortBy, (a: MemRow, b: MemRow) => number> = {
       index: (a, b) => a.i - b.i,
       psnr: (a, b) => (b.psnr ?? -Infinity) - (a.psnr ?? -Infinity),
@@ -705,7 +707,13 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
       depth: (a, b) => (a.depth ?? 0) - (b.depth ?? 0) || a.i - b.i,
     };
     return [...filtered].sort(cmp[sortBy]);
-  }, [rows, q, sortBy]);
+  }, [rows, lossFilter, sortBy]);
+
+  const toggleLoss = (l: string) => setLossFilter((s) => {
+    const n = new Set(s);
+    if (n.has(l)) n.delete(l); else n.add(l);
+    return n;
+  });
 
   const csv = (s: Set<number>) => [...s].sort((a, b) => a - b).join(",");
   // Map the selection onto the viewer, preserving the user's base chip picks
@@ -754,7 +762,10 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
           <div className="row" style={{ justifyContent: "space-between", gap: "var(--s3)", marginBottom: 8, flexWrap: "wrap" }}>
             <div className="eyebrow">members ({rows.length}) · {status}</div>
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <Input value={q} onChange={setQ} placeholder="filter…" style={{ width: 120 }} />
+              {losses.length > 1 && losses.map((l) => (
+                <Chip key={l} on={lossFilter.has(l)} dot={LOSS_COLOR[l]} onClick={() => toggleLoss(l)}
+                  title={`show only ${l} members`}>{l}</Chip>
+              ))}
               <Select<SortBy> value={sortBy} onChange={setSortBy}
                 options={[{ value: "index", label: "by index" }, { value: "psnr", label: "by PSNR" },
                 { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }]} />
