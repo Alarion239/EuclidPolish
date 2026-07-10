@@ -541,31 +541,9 @@ export function mountCutoutViewer(root, opts = {}) {
     const varLbl = varTot > 0
       ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance`
       : "";
-    // Downsample to a PREVIEW resolution. The colour pipeline (a per-pixel
-    // Planckian temp-fit in "temp" mode) is O(pixels) and dominates each frame;
-    // a "where do the members wiggle" animation doesn't need full res. Nearest
-    // sampling to ~180px on the long side cuts per-frame cost ~9× (510→170), so
-    // the frame cache warms in a couple seconds and the canvas scales it up.
-    const DS = Math.max(1, Math.round(Math.max(sr.h, sr.w) / 180));
-    const down = (cube) => {
-      if (DS <= 1) return cube;
-      const h2 = Math.ceil(cube.h / DS), w2 = Math.ceil(cube.w / DS), c = cube.c;
-      const out = new Float32Array(h2 * w2 * c);
-      for (let y = 0; y < h2; y++) {
-        const sy = Math.min(cube.h - 1, y * DS);
-        for (let x = 0; x < w2; x++) {
-          const sx = Math.min(cube.w - 1, x * DS);
-          const so = (sy * cube.w + sx) * c, dO = (y * w2 + x) * c;
-          for (let k = 0; k < c; k++) out[dO + k] = cube.data[so + k];
-        }
-      }
-      return { h: h2, w: w2, c, data: out };
-    };
-    const srD = down(sr);
-    const compsD = comps.map(down);
-    const len = srD.data.length;
+    const len = sr.data.length;
     const data = new Float32Array(len);
-    const rec = { key: `morph:${index}`, h: srD.h, w: srD.w, c: srD.c, data,
+    const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
                   label: `disagreement movie${subLbl}${varLbl}`, asinh: sr.asinh,
                   noCache: true };
     const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
@@ -583,11 +561,11 @@ export function mountCutoutViewer(root, opts = {}) {
     const renderSlot = (slot) => {          // compute + cache one loop frame
       const ph = slot / FRAMES;
       const amp = state.morphAmp;
-      data.set(srD.data);                            // mean (preview res)
-      for (let k = 0; k < compsD.length; k++) {
+      data.set(sr.data);                             // mean (full res)
+      for (let k = 0; k < comps.length; k++) {
         const ck = (amps[k] || 0) * amp
           * Math.sin(2 * Math.PI * FRQ[k % 3] * ph + PH[k % 3]);
-        const cd = compsD[k].data;
+        const cd = comps[k].data;
         for (let i = 0; i < len; i++) data[i] += ck * cd[i];
       }
       renderInto(fr, rec);
