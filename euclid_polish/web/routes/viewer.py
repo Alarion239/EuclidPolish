@@ -38,7 +38,13 @@ def register(app):
     @app.route("/viewer/meta/<collection>")
     def viewer_meta(collection: str):
         try:
-            return jsonify(viewer_data.get_meta(collection, _params()))
+            resp = jsonify(viewer_data.get_meta(collection, _params()))
+            # Never let a stale meta stick: the ensemble cube cache is wiped +
+            # rebuilt during an evaluation, so a meta fetched mid-run is briefly
+            # empty — caching that would leave the viewer showing "no members"
+            # long after the eval finished.
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
         except ViewerError as e:
             abort(e.code)
 

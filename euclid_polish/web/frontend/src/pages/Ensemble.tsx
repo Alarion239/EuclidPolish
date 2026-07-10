@@ -665,7 +665,11 @@ type MemRow = {
 type SortBy = "index" | "psnr" | "loss" | "depth";
 
 function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) {
-  const meta = useResource<ViewMeta>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
+  // ttl:0 → always background-revalidate. The cube cache is wiped+rebuilt during
+  // an evaluation, so a meta cached mid-run is briefly empty; revalidating on
+  // every mount lets the panel self-heal (shows cached instantly, then refreshes
+  // to the real membership) instead of staying stuck on "no members".
+  const meta = useResource<ViewMeta>(`/viewer/meta/ensemble?mode=${mode}`, [mode], { ttl: 0 });
   const apiRef = useRef<ViewerApi | null>(null);
   // One selection drives the viewer: 0 → just the base tiers, 1 → that member's
   // SR as a STILL, 2+ → the disagreement MOVIE over the picked members. No
@@ -757,6 +761,8 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
               <Button size="sm" onClick={() => topByPsnr(5)} disabled={!rows.some((r) => r.psnr != null)}
                 title="movie over the 5 highest-PSNR members">top 5</Button>
               <Button size="sm" onClick={() => commit(new Set())} disabled={nSel === 0}>clear</Button>
+              <Button size="sm" onClick={() => { meta.reload(); apiRef.current?.reload(); }}
+                title="re-pull the cube cache (after an evaluation finishes)">↻</Button>
             </div>
           </div>
           {!shown.length
