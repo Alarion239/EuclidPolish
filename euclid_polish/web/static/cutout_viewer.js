@@ -541,25 +541,80 @@ export function mountCutoutViewer(root, opts = {}) {
     const varLbl = varTot > 0
       ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance`
       : "";
-    const len = sr.data.length;
+    // Downsample to a PREVIEW resolution. The colour pipeline (a per-pixel
+    // Planckian temp-fit in "temp" mode) is O(pixels) and dominates each frame;
+    // a "where do the members wiggle" animation doesn't need full res. Nearest
+    // sampling to ~180px on the long side cuts per-frame cost ~9× (510→170), so
+    // the frame cache warms in a couple seconds and the canvas scales it up.
+    const DS = Math.max(1, Math.round(Math.max(sr.h, sr.w) / 180));
+    const down = (cube) => {
+      if (DS <= 1) return cube;
+      const h2 = Math.ceil(cube.h / DS), w2 = Math.ceil(cube.w / DS), c = cube.c;
+      const out = new Float32Array(h2 * w2 * c);
+      for (let y = 0; y < h2; y++) {
+        const sy = Math.min(cube.h - 1, y * DS);
+        for (let x = 0; x < w2; x++) {
+          const sx = Math.min(cube.w - 1, x * DS);
+          const so = (sy * cube.w + sx) * c, dO = (y * w2 + x) * c;
+          for (let k = 0; k < c; k++) out[dO + k] = cube.data[so + k];
+        }
+      }
+      return { h: h2, w: w2, c, data: out };
+    };
+    const srD = down(sr);
+    const compsD = comps.map(down);
+    const len = srD.data.length;
     const data = new Float32Array(len);
-    const rec = { key: `morph:${index}`, h: sr.h, w: sr.w, c: sr.c, data,
+    const rec = { key: `morph:${index}`, h: srD.h, w: srD.w, c: srD.c, data,
                   label: `disagreement movie${subLbl}${varLbl}`, asinh: sr.asinh,
                   noCache: true };
     const FRQ = [1, 2, 3], PH = [0, Math.PI / 2, Math.PI / 3];
+    // The animation is PERIODIC in phase (period 1 — the FRQ are integers), so
+    // it's a fixed loop of FRAMES frames, not an endless unique sequence. Each
+    // slot's fully-rendered pixels are cached the first time it's drawn — the
+    // per-pixel colour temp-fit in prepare() is the expensive part, ~one pass
+    // over the field per frame — and just blitted on replay. So the FIRST loop
+    // builds the cache (a little slow), then playback is smooth reuse, no
+    // per-frame recompute. The cache invalidates when something that changes the
+    // pixels OTHER than phase does (amplitude, colour, or the stretch sliders).
+    const FRAMES = 48;
+    let frameCache = new Array(FRAMES).fill(null);
+    let cacheSig = "";
+    const renderSlot = (slot) => {          // compute + cache one loop frame
+      const ph = slot / FRAMES;
+      const amp = state.morphAmp;
+      data.set(srD.data);                            // mean (preview res)
+      for (let k = 0; k < compsD.length; k++) {
+        const ck = (amps[k] || 0) * amp
+          * Math.sin(2 * Math.PI * FRQ[k % 3] * ph + PH[k % 3]);
+        const cd = compsD[k].data;
+        for (let i = 0; i < len; i++) data[i] += ck * cd[i];
+      }
+      renderInto(fr, rec);
+      try { frameCache[slot] = fr.ctx.getImageData(0, 0, rec.w, rec.h); }
+      catch { frameCache[slot] = null; }
+    };
+    renderSlot(0);   // draw the first frame synchronously — instant feedback and
+                     // correct even before rAF (which is paused in a bg tab)
     let phase = 0, last = performance.now();          // accumulate phase so a
     const tick = (now) => {                            // speed change never jumps
       phase += ((now - last) / 1000) * state.morphSpeed;
       last = now;
-      const amp = state.morphAmp;                     // live from the sliders
-      data.set(sr.data);                             // mean
-      for (let k = 0; k < comps.length; k++) {
-        const ck = (amps[k] || 0) * amp
-          * Math.sin(2 * Math.PI * FRQ[k % 3] * phase + PH[k % 3]);
-        const cd = comps[k].data;
-        for (let i = 0; i < len; i++) data[i] += ck * cd[i];
+      // Pixels depend on phase (→ slot) plus these; a change rebuilds the loop.
+      const sig = `${state.color}|${state.knee}|${state.gain}|${state.morphAmp}`;
+      if (sig !== cacheSig) { frameCache = new Array(FRAMES).fill(null); cacheSig = sig; }
+      const loopPhase = phase - Math.floor(phase);    // [0, 1)
+      const slot = Math.min(FRAMES - 1, Math.floor(loopPhase * FRAMES));
+      const cached = frameCache[slot];
+      if (cached) {                                   // fast path: blit the frame
+        if (fr.canvas.width !== rec.w || fr.canvas.height !== rec.h) {
+          fr.canvas.width = rec.w; fr.canvas.height = rec.h;
+        }
+        fr.ctx.putImageData(cached, 0, 0);
+        fr.overlay.textContent = rec.label;           // static (magLabel="" for morph)
+      } else {
+        renderSlot(slot);
       }
-      renderInto(fr, rec);
       morphRaf = requestAnimationFrame(tick);
     };
     morphRaf = requestAnimationFrame(tick);
