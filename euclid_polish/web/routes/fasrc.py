@@ -1120,34 +1120,18 @@ def register(app):
             },
         )
 
-    @app.route("/api/fasrc/runs/training-plot.png")
-    def api_fasrc_runs_training_plot():
-        """PNG of the validation log restricted to one run's wall-time window.
-
-        The trainer writes ``training_log.csv`` (append-only across all
-        sessions sharing the same ckpt dir). We fetch the file over SSH,
-        filter rows by ``[started_at, ended_at]``, render with
-        :func:`plot_training_records`, and return the bytes.
-        """
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        try:
-            started_at = float(request.args.get("started_at", "0"))
-            ended_at   = float(request.args.get("ended_at",   "0"))
-        except ValueError:
-            return jsonify({"ok": False, "error": "bad started_at/ended_at"}), 400
-        if ended_at <= 0:
-            ended_at = time.time() + 1.0   # ongoing run — include up to now
-        if started_at <= 0:
-            return jsonify({"ok": False, "error": "missing started_at"}), 400
-
+    def _training_run_rows(started_at: float, ended_at: float):
+        """Windowed training-log records for one run, with the ensemble active-
+        member fallback. Returns ``(rows, member_label)`` (rows empty if none in
+        the window). Shared by the training-plot PNG + training-curve JSON
+        endpoints. The trainer writes ``training_log.csv`` (append-only across
+        sessions sharing the ckpt dir); we fetch it over SSH (cap 50k lines) and
+        keep only rows inside ``[started_at, ended_at]``."""
         cfg = fasrc_config.load()
         base = cfg.ckpt_dir.rstrip("/")
         csv_path   = f"{base}/{TrainingLog.FILENAME}"
         jsonl_path = f"{base}/training_log.jsonl"
 
-        # Fetch a log file (cap 50k lines ~20 MB so the SSH payload stays
-        # bounded) and return only the rows inside this run's wall-time window.
         def _windowed(csv_p: str, jsonl_p: str = "") -> list[dict]:
             parts = [f" if [ -f {shlex.quote(csv_p)} ]; then "
                      f"head -n 50000 {shlex.quote(csv_p)};"]
@@ -1155,8 +1139,11 @@ def register(app):
                 parts.append(f" elif [ -f {shlex.quote(jsonl_p)} ]; then "
                              f"head -n 50000 {shlex.quote(jsonl_p)};")
             parts.append(" fi")
-            rc, text, _err = STATE.ssh.run("{" + "".join(parts) + " ; }; exit 0",
-                                           timeout=30)
+            try:
+                rc, text, _err = STATE.ssh.run("{" + "".join(parts) + " ; }; exit 0",
+                                               timeout=30)
+            except (subprocess.TimeoutExpired, SSHError):
+                return []
             if rc != 0 or not text.strip():
                 return []
             allr = fasrc_log_parser.parse_training_log(text, max_records=10_000_000)
@@ -1169,18 +1156,69 @@ def register(app):
             # An ensemble_train run logs into <ckpt parent>/ensemble/member_NN/,
             # not the single-model ckpt dir — so the read above finds nothing in
             # this window. Fall back to the ACTIVE member (the most-recently
-            # modified member log) so the live plot works during ensemble runs.
+            # modified member log) so the live curve works during ensemble runs.
             ens_dir = f"{os.path.dirname(base)}/ensemble"
             pick = (f"ls -t {shlex.quote(ens_dir)}/member_*/"
                     f"{shlex.quote(TrainingLog.FILENAME)} 2>/dev/null | head -n1; "
                     f"exit 0")
-            _rc, picked, _e = STATE.ssh.run(pick, timeout=15)
-            member_csv = (picked.strip().splitlines()[0].strip()
-                          if picked.strip() else "")
-            if member_csv:
-                rows = _windowed(member_csv)
-                if rows:
-                    member_label = os.path.basename(os.path.dirname(member_csv))
+            with contextlib.suppress(subprocess.TimeoutExpired, SSHError):
+                _rc, picked, _e = STATE.ssh.run(pick, timeout=15)
+                member_csv = (picked.strip().splitlines()[0].strip()
+                              if picked.strip() else "")
+                if member_csv:
+                    rows = _windowed(member_csv)
+                    if rows:
+                        member_label = os.path.basename(os.path.dirname(member_csv))
+        return rows, member_label
+
+    def _run_window() -> tuple[float, float] | None:
+        """Parse + validate the ``started_at``/``ended_at`` run-window query
+        params (ongoing run → ended_at = now). ``None`` on a bad/missing start."""
+        try:
+            started_at = float(request.args.get("started_at", "0"))
+            ended_at   = float(request.args.get("ended_at",   "0"))
+        except ValueError:
+            return None
+        if ended_at <= 0:
+            ended_at = time.time() + 1.0
+        if started_at <= 0:
+            return None
+        return started_at, ended_at
+
+    #: Curve fields surfaced to the browser plot (per-eval training records).
+    _CURVE_FIELDS = ("step", "psnr_stretched", "psnr_raw", "loss",
+                     "psnr_vis", "psnr_y_e", "psnr_j_e", "psnr_h_e")
+
+    @app.route("/api/fasrc/runs/training-curve.json")
+    def api_fasrc_runs_training_curve():
+        """Per-step training records for one run's wall-time window, as JSON, so
+        the browser draws the curves live (no server-side matplotlib). Empty
+        ``records`` while the run hasn't logged an eval yet — not an error."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        win = _run_window()
+        if win is None:
+            return jsonify({"ok": False, "error": "bad/missing started_at"}), 400
+        rows, member_label = _training_run_rows(*win)
+        # Downsample to ~600 points so a long run stays a light payload + fast
+        # redraw; the newest point is always kept.
+        if len(rows) > 600:
+            stride = (len(rows) + 599) // 600
+            rows = rows[::stride] + ([rows[-1]] if (len(rows) - 1) % stride else [])
+        records = [{k: r.get(k) for k in _CURVE_FIELDS} for r in rows]
+        return jsonify({"ok": True, "member": member_label, "records": records})
+
+    @app.route("/api/fasrc/runs/training-plot.png")
+    def api_fasrc_runs_training_plot():
+        """PNG of the validation log restricted to one run's wall-time window.
+        (Kept for the classic page; the SPA renders the curve client-side.)"""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"ok": False, "error": "not connected"}), 400
+        win = _run_window()
+        if win is None:
+            return jsonify({"ok": False, "error": "bad/missing started_at"}), 400
+        started_at, ended_at = win
+        rows, member_label = _training_run_rows(started_at, ended_at)
         if not rows:
             return jsonify({"ok": False,
                             "error": f"no training-log rows in window "

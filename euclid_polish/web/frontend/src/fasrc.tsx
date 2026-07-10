@@ -3,12 +3,13 @@
    resources; `<SlurmMonitor>` folds the event stream into stage/progress/
    warnings/errors. Shared by Catalog, PSFs, TNG, Lens-finder and the FASRC
    page — the DRY replacement for the classic `fasrc_step_card.js`. */
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { getJSON, postForm } from "./api";
 import { useResource, usePolling } from "./hooks";
+import Plot, { Legend } from "./charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, LogTail,
-  NumberField, Field, Input, ProgressBar, Spinner,
+  NumberField, Field, Input, ProgressBar, Segmented, Spinner,
 } from "./ui";
 
 export type StepDefaults = {
@@ -111,6 +112,7 @@ export function SlurmMonitor({ jobid }: { jobid: string }) {
 type CSJob = {
   jobid?: string; label?: string; state?: string; nodes?: string;
   time?: string; time_limit?: string; start_time?: string; reason?: string;
+  started_at?: number; ended_at?: number;
 };
 type CSQueue = {
   count: number; halted: boolean; halted_reason?: string | null;
@@ -178,16 +180,107 @@ export function CurrentSubmission() {
                 onClick={() => control("/api/fasrc/cancel", { jobid: cur.job.jobid || "" })}>cancel job</Button>
             </div>
             <div style={{ marginTop: "var(--s3)" }}><JobStatusBody status={cur.status} /></div>
-            {cur.job.jobid && (cur.job.state === "RUNNING" || cur.job.state === "COMPLETED") && (
-              <img className="fasrc-plot" alt="training curves"
-                src={`/api/fasrc/runs/training-plot.png?jobid=${cur.job.jobid}`}
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-                style={{ maxWidth: "100%", marginTop: "var(--s3)", borderRadius: "var(--r-2)" }} />
-            )}
           </CardBody>
         </Card>
       )}
+      {cur?.job.started_at && <TrainingCurve startedAt={cur.job.started_at} endedAt={cur.job.ended_at} />}
     </div>
+  );
+}
+
+/* ── Training curves (browser-rendered) ─────────────────────────────────────
+   The per-step validation records for a run's wall-time window, drawn live in
+   the browser with the shared <Plot> — no server matplotlib. Polls while the
+   card is up so an in-flight run's curve grows. */
+type CurveRec = {
+  step: number; psnr_stretched?: number | null; psnr_raw?: number | null;
+  loss?: number | null; psnr_vis?: number | null; psnr_y_e?: number | null;
+  psnr_j_e?: number | null; psnr_h_e?: number | null;
+};
+type CurveResp = { ok: boolean; member?: string; records: CurveRec[] };
+type CurveMetric = "psnr" | "loss";
+
+const BANDS: [keyof CurveRec, string, string][] = [
+  ["psnr_vis", "VIS", "--series-mean"],
+  ["psnr_y_e", "Y_E", "--cat-6"],
+  ["psnr_j_e", "J_E", "--series-comb"],
+  ["psnr_h_e", "H_E", "--series-baseline"],
+];
+
+function niceTicks(lo: number, hi: number, kilo = false): { v: number; label: string }[] {
+  if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return [];
+  const out: { v: number; label: string }[] = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) * i) / 4;
+    out.push({ v, label: kilo ? `${Math.round(v / 1000)}k` : (v >= 100 ? v.toFixed(0) : v.toFixed(2)) });
+  }
+  return out;
+}
+
+export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; endedAt?: number }) {
+  const [resp, setResp] = useState<CurveResp | null>(null);
+  const [metric, setMetric] = useState<CurveMetric>("psnr");
+  usePolling(() => {
+    if (!startedAt) return;
+    getJSON<CurveResp>(`/api/fasrc/runs/training-curve.json?started_at=${startedAt}${endedAt ? `&ended_at=${endedAt}` : ""}`)
+      .then((r) => r && setResp(r));
+  }, 20000, !!startedAt);
+
+  const recs = resp?.records ?? [];
+  const chart = useMemo(() => {
+    if (!recs.length) return null;
+    const css = (n: string, f: string) => {
+      if (typeof document === "undefined") return f;
+      return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || f;
+    };
+    const xs = recs.map((r) => r.step);
+    const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs) || 1];
+    const series: { x: number[]; y: (number | null)[]; color: string; width?: number; alpha?: number }[] = [];
+    const legend: { label: string; color: string }[] = [];
+    const ys: number[] = [];
+    const push = (key: keyof CurveRec, color: string, label: string, width = 2) => {
+      const y = recs.map((r) => { const v = r[key]; return typeof v === "number" && isFinite(v) ? v : null; });
+      if (!y.some((v) => v != null)) return;
+      series.push({ x: xs, y, color, width });
+      legend.push({ label, color });
+      for (const v of y) if (v != null) ys.push(v);
+    };
+    if (metric === "psnr") {
+      BANDS.forEach(([k, lbl, tok]) => push(k, css(tok, "#888"), lbl, 1));
+      push("psnr_stretched", css("--text", "#111"), "PSNR (joint)", 2.4);
+    } else {
+      push("loss", css("--series-baseline", "#e11d48"), "loss", 2.4);
+    }
+    if (!series.length || !ys.length) return null;
+    let lo = Math.min(...ys), hi = Math.max(...ys);
+    const pad = (hi - lo) * 0.06 || 0.5;
+    lo -= pad; hi += pad;
+    return {
+      series, legend, xDomain, yDomain: [lo, hi] as [number, number],
+      xTicks: niceTicks(xDomain[0], xDomain[1], true),
+      yTicks: niceTicks(lo, hi),
+    };
+  }, [recs, metric]);
+
+  if (!startedAt) return null;
+  return (
+    <Card>
+      <CardHead title="Training curves" sub={resp?.member || (resp ? "this run" : undefined)}
+        right={<Segmented<CurveMetric> value={metric} onChange={setMetric}
+          options={[{ value: "psnr", label: "PSNR" }, { value: "loss", label: "loss" }]} />} />
+      <CardBody>
+        {!resp ? <Empty><Spinner /> loading curves…</Empty>
+          : !recs.length ? <Empty>no eval logged yet — the curve appears after the first validation</Empty>
+          : !chart ? <Empty>no {metric} data for this run</Empty>
+          : (<>
+            <Plot title={metric === "psnr" ? "validation PSNR vs step [dB]" : "training loss vs step"}
+              xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
+              xLabel="step" yLabel={metric === "psnr" ? "PSNR [dB]" : "loss"}
+              series={chart.series} aspect={0.42} />
+            <Legend items={chart.legend} />
+          </>)}
+      </CardBody>
+    </Card>
   );
 }
 
