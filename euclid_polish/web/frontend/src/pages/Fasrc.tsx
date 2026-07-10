@@ -1,160 +1,182 @@
-/* FASRC — the SLURM ops console: connection, remote config + git, the live
-   squeue, recent jobs with a live monitor + cancel, remote storage, and the
-   granular pipeline steps (reused StepById cards). */
+/* FASRC — the SLURM ops console, as a classic-style tabbed dashboard:
+   Current Submission · Git · Storage · Logs. Step-submit forms live on their
+   own domain pages now (Train members, Sky, Cutouts, …); this page is purely
+   monitoring + cluster ops. */
 import { useState } from "react";
 import { postForm } from "../api";
 import { useResource, usePolling } from "../hooks";
-import { ConnectionBar, SlurmMonitor, useHstStatus, StepCard } from "../fasrc";
+import { ConnectionBar, CurrentSubmission, SlurmMonitor } from "../fasrc";
 import {
   Badge, Button, Card, CardBody, CardHead, DefList, Empty, LogTail, Page,
-  PageHead, Spinner, Table, type Column,
+  PageHead, Spinner, Table, Tabs, type Column,
 } from "../ui";
 
-type QueueRow = { jobid: string; name: string; state: string; time: string; nodes: string; reason?: string };
-type QueueResp = { ok: boolean; rows: QueueRow[] };
-type JobRow = { jobid: string; label: string; state: string; submitted_at?: number; started_at?: number; ended_at?: number; eta_seconds?: number };
-type JobsResp = { jobs: JobRow[] };
 type GitStatus = { ok: boolean; repo?: string; branch?: string; ahead?: number; behind?: number; last?: { hash: string; subject: string; relative: string } };
 type DataListing = {
-  ok: boolean; data_dir?: string; ckpt_dir?: string;
+  ok: boolean; error?: string; data_dir?: string; ckpt_dir?: string;
   du?: [string, string][]; tfrecords?: { path: string; size: string }[];
   checkpoints?: { path: string; size: string; mtime?: string }[];
 };
+type RunRow = {
+  name: string; jobid?: string | null; label?: string | null; state?: string | null;
+  submitted_at?: number; out_size?: number; err_size?: number; missing?: boolean;
+};
+type RunsResp = { ok: boolean; log_dir?: string; runs: RunRow[]; total_runs: number; page: number; page_size: number };
 
-const stateTone = (s: string): "good" | "warn" | "bad" | undefined =>
+const TABS = [
+  { id: "current", label: "Current submission" },
+  { id: "git", label: "Git" },
+  { id: "storage", label: "Storage" },
+  { id: "logs", label: "Logs" },
+] as const;
+type TabId = typeof TABS[number]["id"];
+
+const stateTone = (s?: string | null): "good" | "warn" | "bad" | undefined =>
   s === "RUNNING" ? undefined : s === "PENDING" ? "warn"
     : s === "COMPLETED" || s === "DONE" ? "good"
     : s === "FAILED" || s === "CANCELLED" || s === "TIMEOUT" ? "bad" : undefined;
 
-const QUEUE_COLS: Column<QueueRow>[] = [
-  { header: "job", cell: (r) => <code className="mono">{r.jobid}</code> },
-  { header: "name", cell: (r) => r.name },
-  { header: "state", cell: (r) => <Badge tone={stateTone(r.state)}>{r.state}</Badge> },
-  { header: "time", cell: (r) => <span className="mono">{r.time}</span>, align: "right" },
-  { header: "nodes", cell: (r) => <span className="muted">{r.nodes || r.reason || "—"}</span> },
-];
-
 export default function FasrcPage() {
-  const cfg = useResource<Record<string, string>>("/api/fasrc/config");
-  const git = useResource<GitStatus>("/api/fasrc/git-status");
-  const queue = useResource<QueueResp>("/api/fasrc/queue");
-  const jobs = useResource<JobsResp>("/api/fasrc/jobs");
-  const data = useResource<DataListing>("/api/fasrc/data-listing");
-  const hst = useHstStatus();
-  const [sel, setSel] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-
-  usePolling(() => { queue.reload(); jobs.reload(); }, 10000);
-
-  async function control(url: string, body: Record<string, string>, msg: string) {
-    setBusy(url); setNote(null);
-    try {
-      const r = await postForm<{ ok?: boolean; error?: string }>(url, body);
-      setNote(r.error ? `✗ ${r.error}` : `✓ ${msg}`);
-      queue.reload(); jobs.reload();
-    } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
-    finally { setBusy(null); }
-  }
-
-  const jobCols: Column<JobRow>[] = [
-    { header: "job", cell: (r) => <code className="mono">{r.jobid}</code> },
-    { header: "label", cell: (r) => r.label },
-    { header: "state", cell: (r) => <Badge tone={stateTone(r.state)}>{r.state}</Badge> },
-    { header: "", align: "right", cell: (r) => (
-      <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
-        <Button size="sm" onClick={() => setSel(sel === r.jobid ? null : r.jobid)}>{sel === r.jobid ? "hide" : "monitor"}</Button>
-        <Button size="sm" variant="ghost" disabled={busy != null}
-          onClick={() => control("/api/fasrc/cancel", { jobid: r.jobid }, `cancelled ${r.jobid}`)}>cancel</Button>
-      </div>
-    ) },
-  ];
+  const status = useResource<{ ssh_connected: boolean }>("/api/fasrc/status");
+  const [tab, setTab] = useState<TabId>("current");
+  const connected = !!status.data?.ssh_connected;
 
   return (
     <Page>
       <PageHead eyebrow="ops · fasrc" title="FASRC"
-        sub="The SLURM cluster console: connection, remote code + storage, the live queue, and the training pipeline."
+        sub="The SLURM cluster console — what's running, the remote repo, storage, and past-run logs. Submit jobs from their own pages."
         right={<ConnectionBar />} />
 
-      {note && <div className="job-panel" style={{ marginBottom: "var(--s4)" }}><LogTail text={note} /></div>}
-
-      <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
-        <div className="row" style={{ gap: "var(--s4)", alignItems: "stretch" }}>
-          <Card style={{ flex: "1 1 360px" }}>
-            <CardHead title="Remote config" />
-            <CardBody>
-              {cfg.loading ? <Empty><Spinner /> loading…</Empty>
-                : <DefList items={Object.entries(cfg.data ?? {}).slice(0, 10).map(([k, v]) => [k, <code className="mono">{String(v)}</code>])} />}
-            </CardBody>
-          </Card>
-          <Card style={{ flex: "1 1 360px" }}>
-            <CardHead title="Remote git"
-              right={<Button size="sm" disabled={busy != null}
-                onClick={() => control("/api/fasrc/git-pull", {}, "pulled")}>git pull</Button>} />
-            <CardBody>
-              {git.data?.ok ? (
-                <DefList items={[
-                  ["branch", <code className="mono">{git.data.branch}</code>],
-                  ["ahead / behind", `${git.data.ahead ?? 0} / ${git.data.behind ?? 0}`],
-                  ["last", git.data.last ? <span><code className="mono">{git.data.last.hash}</code> {git.data.last.subject}</span> : "—"],
-                ]} />
-              ) : <Empty>connect to FASRC to read the remote repo</Empty>}
-            </CardBody>
-          </Card>
-        </div>
-
-        <Card>
-          <CardHead title="Live queue" sub="squeue · refreshes every 10s"
-            right={<Button size="sm" variant="ghost" onClick={() => queue.reload()}>↻</Button>} />
-          <CardBody>
-            <Table columns={QUEUE_COLS} rows={queue.data?.rows ?? []} rowKey={(r) => r.jobid}
-              empty={queue.loading ? "loading…" : "queue empty"} />
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHead title="Recent jobs" sub="last 30 submissions" />
-          <CardBody>
-            <Table columns={jobCols} rows={jobs.data?.jobs ?? []} rowKey={(r) => r.jobid}
-              empty={jobs.loading ? "loading…" : "no jobs yet"} />
-            {sel && <SlurmMonitor jobid={sel} />}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHead title="Remote storage" sub={data.data?.data_dir} />
-          <CardBody>
-            {data.loading ? <Empty><Spinner /> loading…</Empty> : (
-              <>
-                {!!data.data?.du?.length && (
-                  <Table
-                    columns={[
-                      { header: "size", cell: (r: [string, string]) => <span className="mono">{r[0]}</span>, width: 90 },
-                      { header: "path", cell: (r: [string, string]) => <code className="mono">{r[1]}</code> },
-                    ]}
-                    rows={data.data.du} rowKey={(r, i) => i} />
-                )}
-                <div className="muted" style={{ marginTop: "var(--s3)", fontSize: 12 }}>
-                  {data.data?.tfrecords?.length ?? 0} tfrecords · {data.data?.checkpoints?.length ?? 0} checkpoints
-                </div>
-              </>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHead title="Pipeline steps" sub="submit a SLURM job for any stage" />
-          <CardBody>
-            {hst.loading ? <Empty><Spinner /> loading step registry…</Empty> : (
-              <div className="grid" style={{ gap: "var(--s4)" }}>
-                {(hst.data?.steps ?? []).map((s) => (
-                  <StepCard key={s.step_id} step={s} sshConnected={!!hst.data?.ssh_connected} />
-                ))}
-              </div>
-            )}
-          </CardBody>
-        </Card>
+      <div style={{ marginBottom: "var(--s4)" }}>
+        <Tabs<TabId> value={tab} tabs={TABS.map((t) => ({ id: t.id, label: t.label }))} onChange={setTab} />
       </div>
+
+      {tab === "current" && <CurrentSubmission />}
+      {tab === "git" && <GitTab connected={connected} />}
+      {tab === "storage" && <StorageTab connected={connected} />}
+      {tab === "logs" && <LogsTab connected={connected} />}
     </Page>
+  );
+}
+
+/* ── Git ─────────────────────────────────────────────────────────────────── */
+function GitTab({ connected }: { connected: boolean }) {
+  const git = useResource<GitStatus>(connected ? "/api/fasrc/git-status" : null, [connected]);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  async function pull() {
+    setBusy(true); setNote(null);
+    try {
+      const r = await postForm<{ ok?: boolean; error?: string }>("/api/fasrc/git-pull", {});
+      setNote(r.error ? `✗ ${r.error}` : "✓ pulled");
+    } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setBusy(false); git.reload(); }
+  }
+  return (
+    <Card>
+      <CardHead title="Repo on FASRC"
+        right={<div className="row" style={{ gap: 8 }}>
+          <Button size="sm" variant="ghost" onClick={() => git.reload()} disabled={!connected}>↻</Button>
+          <Button size="sm" variant="primary" onClick={pull} disabled={busy || !connected}>git pull</Button>
+        </div>} />
+      <CardBody>
+        {!connected ? <Empty>connect to FASRC to read the remote repo</Empty>
+          : git.loading ? <Empty><Spinner /> loading…</Empty>
+          : git.data?.ok ? (
+            <DefList items={[
+              ["repo", <code className="mono">{git.data.repo}</code>],
+              ["branch", <code className="mono">{git.data.branch}</code>],
+              ["ahead / behind", `${git.data.ahead ?? 0} / ${git.data.behind ?? 0}`],
+              ["last commit", git.data.last
+                ? <span><code className="mono">{git.data.last.hash}</code> {git.data.last.subject} <span className="muted">· {git.data.last.relative}</span></span>
+                : "—"],
+            ]} />
+          ) : <Empty>couldn't read the remote repo</Empty>}
+        {note && <div className="job-panel" style={{ marginTop: "var(--s3)" }}><LogTail text={note} /></div>}
+      </CardBody>
+    </Card>
+  );
+}
+
+/* ── Storage ─────────────────────────────────────────────────────────────── */
+function StorageTab({ connected }: { connected: boolean }) {
+  // Only fetch once connected — the old page fired on mount before the SSH
+  // session existed and got stuck on an empty/loading listing forever.
+  const data = useResource<DataListing>(connected ? "/api/fasrc/data-listing" : null, [connected]);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  async function control(url: string, msg: string) {
+    setBusy(true); setNote(null);
+    try {
+      const r = await postForm<{ ok?: boolean; error?: string }>(url, {});
+      setNote(r.error ? `✗ ${r.error}` : `✓ ${msg}`);
+    } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setBusy(false); data.reload(); }
+  }
+  if (!connected) return <Card><CardBody><Empty>connect to FASRC to browse remote storage</Empty></CardBody></Card>;
+  return (
+    <div className="grid" style={{ gap: "var(--s4)" }}>
+      <Card>
+        <CardHead title="Remote storage" sub={data.data?.data_dir}
+          right={<div className="row" style={{ gap: 8 }}>
+            <Button size="sm" variant="ghost" onClick={() => data.reload()}>↻</Button>
+            <Button size="sm" disabled={busy} onClick={() => control("/api/fasrc/bootstrap-data", "synced from holylabs")}>sync from holylabs</Button>
+            <Button size="sm" disabled={busy} onClick={() => control("/api/fasrc/mirror/trigger", "pulling checkpoints to local")}>pull ckpts → local</Button>
+          </div>} />
+        <CardBody>
+          {data.loading ? <Empty><Spinner /> scanning netscratch… (remote du can take ~20 s)</Empty>
+            : (data.data && data.data.ok === false) ? <Empty>{data.data.error || "listing unavailable"}</Empty>
+            : !data.data?.du?.length ? <Empty>no listing — is the data dir set?</Empty>
+            : (<>
+              <Table
+                columns={[
+                  { header: "size", cell: (r: [string, string]) => <span className="mono">{r[0]}</span>, width: 90 },
+                  { header: "path", cell: (r: [string, string]) => <code className="mono">{r[1]}</code> },
+                ]}
+                rows={data.data.du} rowKey={(_r, i) => i} />
+              <div className="muted" style={{ marginTop: "var(--s3)", fontSize: 12 }}>
+                {data.data?.tfrecords?.length ?? 0} tfrecords · {data.data?.checkpoints?.length ?? 0} checkpoints
+                {data.data?.ckpt_dir ? ` · ${data.data.ckpt_dir}` : ""}
+              </div>
+            </>)}
+          {note && <div className="job-panel" style={{ marginTop: "var(--s3)" }}><LogTail text={note} /></div>}
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+/* ── Logs (past runs) ────────────────────────────────────────────────────── */
+function LogsTab({ connected }: { connected: boolean }) {
+  const [page, setPage] = useState(0);
+  const runs = useResource<RunsResp>(connected ? `/api/fasrc/runs?page=${page}` : null, [connected, page]);
+  const [sel, setSel] = useState<string | null>(null);
+
+  const cols: Column<RunRow>[] = [
+    { header: "job", cell: (r) => <code className="mono">{r.jobid ?? "—"}</code> },
+    { header: "label", cell: (r) => r.label ?? r.name },
+    { header: "state", cell: (r) => r.state ? <Badge tone={stateTone(r.state)}>{r.state}</Badge> : <span className="muted">—</span> },
+    { header: "", align: "right", cell: (r) => r.jobid
+      ? <Button size="sm" onClick={() => setSel(sel === r.jobid ? null : (r.jobid ?? null))}>{sel === r.jobid ? "hide" : "monitor"}</Button>
+      : null },
+  ];
+  if (!connected) return <Card><CardBody><Empty>connect to FASRC to browse past runs</Empty></CardBody></Card>;
+  const d = runs.data;
+  const hasOlder = d ? (d.page + 1) * d.page_size < d.total_runs : false;
+  return (
+    <Card>
+      <CardHead title="Past runs" sub={d ? `${d.total_runs} total` : undefined}
+        right={<div className="row" style={{ gap: 8 }}>
+          <Button size="sm" variant="ghost" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← newer</Button>
+          <span className="muted mono" style={{ fontSize: 12 }}>pg {page + 1}</span>
+          <Button size="sm" variant="ghost" disabled={!hasOlder} onClick={() => setPage((p) => p + 1)}>older →</Button>
+          <Button size="sm" variant="ghost" onClick={() => runs.reload()}>↻</Button>
+        </div>} />
+      <CardBody>
+        <Table columns={cols} rows={d?.runs ?? []} rowKey={(r) => r.name}
+          empty={runs.loading ? "loading…" : "no past runs found"} />
+        {sel && <SlurmMonitor jobid={sel} />}
+      </CardBody>
+    </Card>
   );
 }

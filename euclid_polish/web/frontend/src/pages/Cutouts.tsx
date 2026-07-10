@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getJSON, postForm } from "../api";
 import { useResource } from "../hooks";
+import { StepById } from "../fasrc";
 import { CutoutViewer } from "../legacy";
 import {
   Badge, Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, LogTail,
@@ -254,6 +255,8 @@ export default function CutoutsPage() {
             )}
           </CardBody>
         </Card>
+
+        <StepById stepId="download_euclid_cutouts" />
       </div>
     </Page>
   );

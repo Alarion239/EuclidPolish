@@ -8,6 +8,7 @@
    into the universal /inspect page. */
 import { useState } from "react";
 import { useResource } from "../hooks";
+import { StepById } from "../fasrc";
 import {
   Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, Page,
   PageHead, PngFigure, Spinner,
@@ -129,6 +130,8 @@ export default function VisualizationPage() {
             )}
           </CardBody>
         </Card>
+
+        <StepById stepId="poster_cutout" />
       </div>
     </Page>
   );

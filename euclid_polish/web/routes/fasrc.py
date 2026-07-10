@@ -192,24 +192,34 @@ def register(app):
         # ``du`` reports the link itself (~60 B, rounds to 0). ``-L``
         # follows the link and reports the contents. ``find -L`` mirrors
         # that semantic for the tfrecord / checkpoint sweeps below.
+        # Each section is capped with a remote ``timeout`` so a slow ``du -L``
+        # (it dereferences symlinks into big holylabs trees) can't hang the whole
+        # call — it returns whatever completed and the sweeps still run. Without
+        # this the request sat for 30 s then 500'd, so the Storage tab "never
+        # loaded".
         cmd = (
             f"{{ "
             f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
-            f"    du -shL {shlex.quote(cfg.data_dir)}/* 2>/dev/null | sort -k2 ; "
+            f"    timeout 12 du -shL {shlex.quote(cfg.data_dir)}/* 2>/dev/null | sort -k2 ; "
             f"  echo '---' ; "
             f"  [ -d {shlex.quote(cfg.data_dir)} ] && "
-            f"    find -L {shlex.quote(cfg.data_dir)} -maxdepth 3 -type f "
+            f"    timeout 8 find -L {shlex.quote(cfg.data_dir)} -maxdepth 3 -type f "
             f"      -name '*.tfrecord' -printf '%p\\t%s\\n' 2>/dev/null ; "
             f"  echo '---' ; "
             f"  [ -d {shlex.quote(cfg.ckpt_dir)} ] && "
-            f"    find -L {shlex.quote(cfg.ckpt_dir)} -maxdepth 2 -type f "
+            f"    timeout 8 find -L {shlex.quote(cfg.ckpt_dir)} -maxdepth 2 -type f "
             f"      -printf '%p\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' 2>/dev/null ; "
             f"}}; exit 0"
         )
-        rc, out, err = STATE.ssh.run(cmd, timeout=30)
+        try:
+            rc, out, err = STATE.ssh.run(cmd, timeout=32)
+        except (subprocess.TimeoutExpired, SSHError):
+            return jsonify({"ok": False, "error":
+                            "remote listing timed out — netscratch is slow right "
+                            "now; hit ↻ to retry."}), 200
         if rc != 0:
             return jsonify({"ok": False,
-                            "error": f"remote du/find failed: {err.strip()}"}), 500
+                            "error": f"remote du/find failed: {err.strip()}"}), 200
         sections = out.split("---")
         du_lines     = (sections[0].splitlines() if len(sections) > 0 else [])
         tfr_lines    = (sections[1].splitlines() if len(sections) > 1 else [])

@@ -3,12 +3,12 @@
    resources; `<SlurmMonitor>` folds the event stream into stage/progress/
    warnings/errors. Shared by Catalog, PSFs, TNG, Lens-finder and the FASRC
    page — the DRY replacement for the classic `fasrc_step_card.js`. */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { getJSON, postForm } from "./api";
 import { useResource, usePolling } from "./hooks";
 import {
-  Badge, Button, Card, CardBody, CardHead, ConnBadge, Empty, NumberField,
-  Field, Input, ProgressBar, Spinner,
+  Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, LogTail,
+  NumberField, Field, Input, ProgressBar, Spinner,
 } from "./ui";
 
 export type StepDefaults = {
@@ -35,7 +35,7 @@ type SlurmResources = {
   cpu_percent?: number; gpu_percent?: number; gpu_mem_percent?: number;
   cpu_peak?: number; gpu_peak?: number;
 };
-type SlurmStatus = {
+export type SlurmStatus = {
   stage?: string; step?: SlurmStep | null;
   warnings?: SlurmEvent[]; errors?: SlurmEvent[];
   resources?: SlurmResources | null;
@@ -45,33 +45,20 @@ type JobStatusResp = {
 };
 
 const TERMINAL_SLURM = new Set(["COMPLETED", "DONE", "TIMEOUT", "FAILED", "CANCELLED"]);
-const stateTone = (s: string): "good" | "warn" | "bad" | undefined =>
+export const jobStateTone = (s: string): "good" | "warn" | "bad" | undefined =>
   s === "COMPLETED" || s === "DONE" ? "good"
     : s === "FAILED" || s === "CANCELLED" || s === "TIMEOUT" ? "bad"
     : s === "RUNNING" ? undefined : "warn";
 
-/** Live SLURM job monitor — polls `/api/fasrc/jobs/<jobid>/status` and folds the
- *  event stream into a stage chip, progress bar, resource gauges + warn/err
- *  lists. Stops polling once the job reaches a terminal state. */
-export function SlurmMonitor({ jobid }: { jobid: string }) {
-  const [resp, setResp] = useState<JobStatusResp | null>(null);
-  const terminal = resp ? TERMINAL_SLURM.has(resp.state) : false;
-
-  usePolling(() => {
-    getJSON<JobStatusResp>(`/api/fasrc/jobs/${jobid}/status`).then((r) => r && setResp(r));
-  }, 1500, !terminal);
-
-  if (!resp) return <div className="fasrc-mon"><Spinner /> <span className="mono">job {jobid}</span></div>;
-  const st = resp.status ?? {};
+/** The stage/progress/gauges/warnings/errors body of a job's live status —
+ *  shared by the inline `<SlurmMonitor>` and the Current Submission panel. */
+export function JobStatusBody({ status }: { status?: SlurmStatus | null }) {
+  const st = status ?? {};
   const step = st.step;
   const res = st.resources;
   return (
-    <div className="fasrc-mon">
-      <div className="fasrc-mon__head">
-        <Badge tone={stateTone(resp.state)}>{resp.state || "…"}</Badge>
-        <span className="mono fasrc-mon__jobid">#{jobid}</span>
-        {st.stage && <span className="fasrc-mon__stage">{st.stage}</span>}
-      </div>
+    <>
+      {st.stage && <div className="fasrc-mon__stage">{st.stage}</div>}
       {step && step.total > 0 && (
         <ProgressBar value={step.current} max={step.total}
           label={`${step.label ? step.label + " " : ""}${step.current}/${step.total}`} />
@@ -92,6 +79,119 @@ export function SlurmMonitor({ jobid }: { jobid: string }) {
         <ul className="fasrc-mon__events fasrc-mon__events--err">
           {st.errors.slice(-4).map((e, i) => <li key={i}>{e.msg}</li>)}
         </ul>
+      )}
+    </>
+  );
+}
+
+/** Live SLURM job monitor — polls `/api/fasrc/jobs/<jobid>/status` and folds the
+ *  event stream into a stage chip, progress bar, resource gauges + warn/err
+ *  lists. Stops polling once the job reaches a terminal state. */
+export function SlurmMonitor({ jobid }: { jobid: string }) {
+  const [resp, setResp] = useState<JobStatusResp | null>(null);
+  const terminal = resp ? TERMINAL_SLURM.has(resp.state) : false;
+
+  usePolling(() => {
+    getJSON<JobStatusResp>(`/api/fasrc/jobs/${jobid}/status`).then((r) => r && setResp(r));
+  }, 1500, !terminal);
+
+  if (!resp) return <div className="fasrc-mon"><Spinner /> <span className="mono">job {jobid}</span></div>;
+  return (
+    <div className="fasrc-mon">
+      <div className="fasrc-mon__head">
+        <Badge tone={jobStateTone(resp.state)}>{resp.state || "…"}</Badge>
+        <span className="mono fasrc-mon__jobid">#{jobid}</span>
+      </div>
+      <JobStatusBody status={resp.status} />
+    </div>
+  );
+}
+
+/* ── Current Submission ─────────────────────────────────────────────────── */
+type CSJob = {
+  jobid?: string; label?: string; state?: string; nodes?: string;
+  time?: string; time_limit?: string; start_time?: string; reason?: string;
+};
+type CSQueue = {
+  count: number; halted: boolean; halted_reason?: string | null;
+  names: string[]; active_jobid?: string | null;
+};
+type CurrentSubmissionResp = {
+  ok: boolean; stale?: boolean;
+  current: { job: CSJob; status?: SlurmStatus | null } | null;
+  queue: CSQueue;
+};
+
+/** The live "what's running right now" panel — the local submission queue plus
+ *  the current PENDING/RUNNING job (state, elapsed, limit + extend, cancel,
+ *  stage/progress/warnings/errors). Job-agnostic; polls current-submission. */
+export function CurrentSubmission() {
+  const [resp, setResp] = useState<CurrentSubmissionResp | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [hours, setHours] = useState("2");
+  const load = () =>
+    getJSON<CurrentSubmissionResp>("/api/fasrc/current-submission").then((r) => r && setResp(r));
+  usePolling(load, 5000);
+
+  async function control(url: string, body: Record<string, string>) {
+    setBusy(true);
+    try { await postForm(url, body); } catch { /* re-polled below */ }
+    finally { setBusy(false); load(); }
+  }
+
+  const cur = resp?.current;
+  const q = resp?.queue;
+  return (
+    <div className="grid" style={{ gap: "var(--s4)" }}>
+      {q && (q.count > 0 || q.halted) && (
+        <Card>
+          <CardHead title="Submission queue" sub={`${q.count} queued`}
+            right={q.count > 0 && <Button size="sm" variant="ghost" disabled={busy}
+              onClick={() => control("/api/fasrc/queue/clear", {})}>clear</Button>} />
+          <CardBody>
+            {q.halted && <div className="job-panel job-panel--err"><LogTail text={q.halted_reason || "queue halted"} /></div>}
+            {q.names?.length
+              ? <ul className="fasrc-queue">{q.names.map((n, i) => <li key={i}>{n}</li>)}</ul>
+              : <span className="muted">nothing queued</span>}
+          </CardBody>
+        </Card>
+      )}
+      {!cur ? (
+        <Card><CardBody><Empty>{resp
+          ? "No active job — submit one from its page (Train members, Sky, Cutouts, …)."
+          : <><Spinner /> loading…</>}</Empty></CardBody></Card>
+      ) : (
+        <Card>
+          <CardHead title={cur.job.label || "job"} sub={<code className="mono">#{cur.job.jobid}</code>}
+            right={<Badge tone={jobStateTone(cur.job.state || "")}>{cur.job.state || "…"}{resp?.stale ? " · stale" : ""}</Badge>} />
+          <CardBody>
+            <DefList items={[
+              ["node", cur.job.nodes || "—"],
+              ["elapsed", <span className="mono">{cur.job.time || "—"}</span>],
+              ["limit", <span className="mono">{cur.job.time_limit || "—"}</span>],
+              ...(cur.job.state === "PENDING" ? [
+                ["est. start", cur.job.start_time || "—"] as [string, ReactNode],
+                ["reason", cur.job.reason || "—"] as [string, ReactNode],
+              ] : []),
+            ]} />
+            <div className="row" style={{ gap: 8, marginTop: "var(--s3)", flexWrap: "wrap" }}>
+              <div className="row" style={{ gap: 6 }}>
+                <Input value={hours} onChange={setHours} style={{ width: 56 }} />
+                <Button size="sm" disabled={busy}
+                  onClick={() => control("/api/fasrc/extend-time", { jobid: cur.job.jobid || "", hours })}>+ hours</Button>
+              </div>
+              <Button size="sm" variant="ghost" disabled={busy}
+                onClick={() => control("/api/fasrc/cancel", { jobid: cur.job.jobid || "" })}>cancel job</Button>
+            </div>
+            <div style={{ marginTop: "var(--s3)" }}><JobStatusBody status={cur.status} /></div>
+            {cur.job.jobid && (cur.job.state === "RUNNING" || cur.job.state === "COMPLETED") && (
+              <img className="fasrc-plot" alt="training curves"
+                src={`/api/fasrc/runs/training-plot.png?jobid=${cur.job.jobid}`}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                style={{ maxWidth: "100%", marginTop: "var(--s3)", borderRadius: "var(--r-2)" }} />
+            )}
+          </CardBody>
+        </Card>
       )}
     </div>
   );

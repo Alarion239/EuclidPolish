@@ -5,6 +5,7 @@ import { useState } from "react";
 import { postForm } from "../api";
 import { useResource, usePolling } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
+import { StepById } from "../fasrc";
 import { CutoutViewer } from "../legacy";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, LogTail, Page,
@@ -196,6 +197,8 @@ export default function SkyPage() {
             )}
           </CardBody>
         </Card>
+
+        <StepById stepId="synthetic_generate" />
       </div>
     </Page>
   );

@@ -150,6 +150,8 @@ export default function CatalogPage() {
           </CardBody>
         </Card>
 
+        <StepById stepId="euclid_verify_photometry" />
+
         <Card>
           <CardHead
             title="Euclid archive"
