@@ -6,6 +6,7 @@ images and visualizing the results.
 """
 
 
+import os
 import re
 
 import numpy as np
