@@ -18,8 +18,21 @@ export type ViewerApi = {
   reload(): Promise<void>;
   destroy(): void;
 };
+/** A raw N-band stamp for the shared colour renderer. */
+export type CubeRec = { data: Float32Array; h: number; w: number; c: number };
+/** The field viewer's `color` meta block (band constants + rgb scheme). */
+export type ColorMeta = {
+  band_names: string[];
+  bands: Record<string, unknown>;
+  rgb_scheme: string[];
+  default_asinh?: number;
+};
+export type RenderOpts = { color: string; knee: number; gain: number; K0: number };
 type ViewerModule = {
   mountCutoutViewer(root: HTMLElement, opts: Record<string, unknown>): ViewerApi;
+  /** Render one cube to ImageData with the viewer's exact colour pipeline —
+   *  reused by the ensemble back-trace stamps for viewer-parity colour. */
+  renderCubeImageData(rec: CubeRec, colorMeta: ColorMeta, opts: RenderOpts): ImageData;
 };
 
 let viewerMod: Promise<ViewerModule> | null = null;
@@ -29,6 +42,13 @@ function loadViewer(): Promise<ViewerModule> {
   const url = "/static/cutout_viewer.js";
   if (!viewerMod) viewerMod = import(/* @vite-ignore */ url) as Promise<ViewerModule>;
   return viewerMod;
+}
+
+/** Load the shared colour engine (same module as the viewer). Lets a non-viewer
+ *  surface — the back-trace stamps — render byte-identically to the field
+ *  viewer's colour / knee / brightness. */
+export function loadColorEngine(): Promise<ViewerModule["renderCubeImageData"]> {
+  return loadViewer().then((m) => m.renderCubeImageData);
 }
 
 export type CutoutViewerProps = {

@@ -100,6 +100,124 @@ function asinhTransfer(I, gain, Kc, norm) {
 }
 
 // ----------------------------------------------------------------------------
+// Colour render core (pure) — the two halves of turning an N-band cube into
+// display pixels, factored out of the viewer's closure so OTHER surfaces (e.g.
+// the ensemble back-trace stamps) render byte-identically to the field viewer.
+//   prepareCore : cube + colour mode → { mode, factor, I, … }  (EXPENSIVE:
+//                 per-pixel temp fit for "temp", band composite for "lupton")
+//   transferCore: prepared + knee/gain/K0 → ImageData          (CHEAP: the
+//                 asinh brightness transfer, re-run on every slider tick)
+// `colorMeta` is the served meta's `color` block (band_names, bands, rgb_scheme).
+// ----------------------------------------------------------------------------
+
+function prepareCore(rec, colorMeta, color) {
+  const names = colorMeta.band_names;
+  const bandOf = (n) => colorMeta.bands[n];
+  const npx = rec.h * rec.w;
+  const at = (p, k) => rec.data[p * rec.c + k];   // band k at pixel p
+
+  let prepared;
+  if (color === "lupton" || color === "temp") {
+    const useSolar = color === "lupton";
+    const calib = names.map((n) => {
+      let f = abFluxNorm(bandOf(n));
+      if (useSolar) f *= solarBalance(bandOf(n));
+      return f;
+    });
+    if (color === "lupton") {
+      const sel = colorMeta.rgb_scheme.map((n) => names.indexOf(n)); // [H_E,J_E,VIS]
+      const R = new Float32Array(npx), G = new Float32Array(npx), B = new Float32Array(npx);
+      const I = new Float32Array(npx);
+      for (let p = 0; p < npx; p++) {
+        const r = at(p, sel[0]) * calib[sel[0]];
+        const g = at(p, sel[1]) * calib[sel[1]];
+        const b = at(p, sel[2]) * calib[sel[2]];
+        R[p] = r; G[p] = g; B[p] = b; I[p] = (r + g + b) / 3.0;
+      }
+      const visB = bandOf("VIS");
+      prepared = { mode: "lupton", R, G, B, I,
+                   factor: abFluxNorm(visB) * solarBalance(visB) };
+    } else {
+      const lam = names.map((n) => bandOf(n).pivot_um);
+      const ts = eyeTGrid(96);
+      const pvecs = [];
+      for (const T of ts) {
+        const p = planckFnu(lam, T);
+        let nrm = 0; for (const v of p) nrm += v * v; nrm = Math.sqrt(nrm);
+        pvecs.push(p.map((v) => v / nrm));
+      }
+      const hueR = new Float32Array(npx), hueG = new Float32Array(npx), hueB = new Float32Array(npx);
+      const I = new Float32Array(npx);
+      const cal = new Float64Array(names.length);
+      for (let p = 0; p < npx; p++) {
+        let sum = 0;
+        for (let k = 0; k < names.length; k++) { cal[k] = at(p, k) * calib[k]; sum += cal[k]; }
+        I[p] = Math.max(sum / names.length, 0);
+        let bestScore = -Infinity, bestT = 6500.0;
+        for (let ti = 0; ti < ts.length; ti++) {
+          const pv = pvecs[ti];
+          let s = 0; for (let k = 0; k < names.length; k++) s += cal[k] * pv[k];
+          if (s > bestScore) { bestScore = s; bestT = ts[ti]; }
+        }
+        const T = bestScore > 0 ? bestT : 6500.0;
+        const [x, y] = planckianXY(T);
+        const [hr, hg, hb] = xyToLinearSrgb(x, y);
+        hueR[p] = hr; hueG[p] = hg; hueB[p] = hb;
+      }
+      const visB = bandOf("VIS");
+      prepared = { mode: "temp", hueR, hueG, hueB, I, factor: abFluxNorm(visB) };
+    }
+  } else {
+    const k = Math.max(0, names.indexOf(color));
+    const I = new Float32Array(npx);
+    for (let p = 0; p < npx; p++) I[p] = at(p, k);
+    prepared = { mode: "gray", I, factor: 1.0 };
+  }
+  prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
+  return prepared;
+}
+
+function transferCore(prep, knee, gain, K0) {
+  const { h, w, npx, I, factor } = prep;
+  // Kc = knee·factor; white reference Wref = 30·K0·factor (e⁻). norm cancels
+  // factor → asinh(30·K0/knee); at knee=K0, gain=1 this matches eye_rgb.
+  const Kc = Math.max(knee * factor, 1e-30);
+  const norm = Math.max(Math.asinh((30.0 * K0 * factor) / Kc), 1e-6);
+  const G = gain;
+  const img = new ImageData(w, h);
+  const out = img.data;
+
+  if (prep.mode === "gray") {
+    for (let p = 0; p < npx; p++) {
+      const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
+      const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
+    }
+  } else if (prep.mode === "lupton") {
+    const { R, G: GG, B } = prep;
+    for (let p = 0; p < npx; p++) {
+      const t = asinhTransfer(I[p], G, Kc, norm);
+      const rescale = I[p] > 1e-30 ? t / I[p] : 0;
+      const o = p * 4;
+      out[o] = Math.min(Math.max(R[p] * rescale, 0), 1) * 255;
+      out[o + 1] = Math.min(Math.max(GG[p] * rescale, 0), 1) * 255;
+      out[o + 2] = Math.min(Math.max(B[p] * rescale, 0), 1) * 255;
+      out[o + 3] = 255;
+    }
+  } else { // temp
+    const { hueR, hueG, hueB } = prep;
+    for (let p = 0; p < npx; p++) {
+      const lum = asinhTransfer(I[p], G, Kc, norm);
+      const o = p * 4;
+      out[o] = srgbGamma(hueR[p] * lum) * 255;
+      out[o + 1] = srgbGamma(hueG[p] * lum) * 255;
+      out[o + 2] = srgbGamma(hueB[p] * lum) * 255;
+      out[o + 3] = 255;
+    }
+  }
+  return img;
+}
+
+// ----------------------------------------------------------------------------
 // Small DOM helper
 // ----------------------------------------------------------------------------
 
@@ -251,70 +369,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const key = `${rec.key}:${state.color}`;
     // The morph frame's data changes every tick (rec.noCache) → never cache it.
     if (!rec.noCache && state.prepCache.has(key)) return state.prepCache.get(key);
-
-    const C = state.meta.color;
-    const names = C.band_names;
-    const npx = rec.h * rec.w;
-    const at = (p, k) => rec.data[p * rec.c + k];   // band k at pixel p
-
-    let prepared;
-    if (state.color === "lupton" || state.color === "temp") {
-      const useSolar = state.color === "lupton";
-      const calib = names.map((n, k) => {
-        let f = abFluxNorm(band(n));
-        if (useSolar) f *= solarBalance(band(n));
-        return f;
-      });
-      if (state.color === "lupton") {
-        const sel = C.rgb_scheme.map((n) => names.indexOf(n)); // [H_E,J_E,VIS]
-        const R = new Float32Array(npx), G = new Float32Array(npx), B = new Float32Array(npx);
-        const I = new Float32Array(npx);
-        for (let p = 0; p < npx; p++) {
-          const r = at(p, sel[0]) * calib[sel[0]];
-          const g = at(p, sel[1]) * calib[sel[1]];
-          const b = at(p, sel[2]) * calib[sel[2]];
-          R[p] = r; G[p] = g; B[p] = b; I[p] = (r + g + b) / 3.0;
-        }
-        const visB = band("VIS");
-        prepared = { mode: "lupton", R, G, B, I,
-                     factor: abFluxNorm(visB) * solarBalance(visB) };
-      } else {
-        const lam = names.map((n) => band(n).pivot_um);
-        const ts = eyeTGrid(96);
-        const pvecs = [];
-        for (const T of ts) {
-          const p = planckFnu(lam, T);
-          let nrm = 0; for (const v of p) nrm += v * v; nrm = Math.sqrt(nrm);
-          pvecs.push(p.map((v) => v / nrm));
-        }
-        const hueR = new Float32Array(npx), hueG = new Float32Array(npx), hueB = new Float32Array(npx);
-        const I = new Float32Array(npx);
-        const cal = new Float64Array(names.length);
-        for (let p = 0; p < npx; p++) {
-          let sum = 0;
-          for (let k = 0; k < names.length; k++) { cal[k] = at(p, k) * calib[k]; sum += cal[k]; }
-          I[p] = Math.max(sum / names.length, 0);
-          let bestScore = -Infinity, bestT = 6500.0;
-          for (let ti = 0; ti < ts.length; ti++) {
-            const pv = pvecs[ti];
-            let s = 0; for (let k = 0; k < names.length; k++) s += cal[k] * pv[k];
-            if (s > bestScore) { bestScore = s; bestT = ts[ti]; }
-          }
-          const T = bestScore > 0 ? bestT : 6500.0;
-          const [x, y] = planckianXY(T);
-          const [hr, hg, hb] = xyToLinearSrgb(x, y);
-          hueR[p] = hr; hueG[p] = hg; hueB[p] = hb;
-        }
-        const visB = band("VIS");
-        prepared = { mode: "temp", hueR, hueG, hueB, I, factor: abFluxNorm(visB) };
-      }
-    } else {
-      const k = Math.max(0, names.indexOf(state.color));
-      const I = new Float32Array(npx);
-      for (let p = 0; p < npx; p++) I[p] = at(p, k);
-      prepared = { mode: "gray", I, factor: 1.0 };
-    }
-    prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
+    const prepared = prepareCore(rec, state.meta.color, state.color);
     if (!rec.noCache) {
       state.prepCache.set(key, prepared);
       if (state.prepCache.size > 48) state.prepCache.delete(state.prepCache.keys().next().value);
@@ -329,43 +384,7 @@ export function mountCutoutViewer(root, opts = {}) {
   // (prepare's per-pixel colour/temp-fit) once per frame and re-run only this
   // on every blit — so the brightness slider rescales instantly with no rebuild.
   function transferPrepared(prep) {
-    const { h, w, npx, I, factor } = prep;
-    // Kc = knee·factor; white reference Wref = 30·K0·factor (e⁻). norm cancels
-    // factor → asinh(30·K0/knee); at knee=K0, gain=1 this matches eye_rgb.
-    const Kc = Math.max(state.knee * factor, 1e-30);
-    const norm = Math.max(Math.asinh((30.0 * state.K0 * factor) / Kc), 1e-6);
-    const G = state.gain;
-    const img = new ImageData(w, h);
-    const out = img.data;
-
-    if (prep.mode === "gray") {
-      for (let p = 0; p < npx; p++) {
-        const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
-        const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
-      }
-    } else if (prep.mode === "lupton") {
-      const { R, G: GG, B } = prep;
-      for (let p = 0; p < npx; p++) {
-        const t = asinhTransfer(I[p], G, Kc, norm);
-        const rescale = I[p] > 1e-30 ? t / I[p] : 0;
-        const o = p * 4;
-        out[o] = Math.min(Math.max(R[p] * rescale, 0), 1) * 255;
-        out[o + 1] = Math.min(Math.max(GG[p] * rescale, 0), 1) * 255;
-        out[o + 2] = Math.min(Math.max(B[p] * rescale, 0), 1) * 255;
-        out[o + 3] = 255;
-      }
-    } else { // temp
-      const { hueR, hueG, hueB } = prep;
-      for (let p = 0; p < npx; p++) {
-        const lum = asinhTransfer(I[p], G, Kc, norm);
-        const o = p * 4;
-        out[o] = srgbGamma(hueR[p] * lum) * 255;
-        out[o + 1] = srgbGamma(hueG[p] * lum) * 255;
-        out[o + 2] = srgbGamma(hueB[p] * lum) * 255;
-        out[o + 3] = 255;
-      }
-    }
-    return img;
+    return transferCore(prep, state.knee, state.gain, state.K0);
   }
 
   function renderInto(fr, rec) {
@@ -1161,4 +1180,16 @@ export function mountCutoutViewer(root, opts = {}) {
 export const _internals = {
   abFluxNorm, solarBalance, planckFnu, planckianXY,
   xyToLinearSrgb, srgbGamma, eyeTGrid, asinhTransfer,
+  prepareCore, transferCore,
 };
+
+/** Render one N-band cube to an ImageData with the SAME pipeline the field
+ *  viewer uses — so the ensemble back-trace stamps match the viewer's colour /
+ *  knee / brightness exactly. `rec` = { data:Float32Array, h, w, c }; `colorMeta`
+ *  = the served meta's `color` block; `opts` = { color, knee, gain, K0 }. */
+export function renderCubeImageData(rec, colorMeta, opts = {}) {
+  const prep = prepareCore(rec, colorMeta, opts.color || "VIS");
+  const knee = opts.knee || 100;
+  return transferCore(prep, knee, opts.gain != null ? opts.gain : 1.0,
+                      opts.K0 || knee);
+}

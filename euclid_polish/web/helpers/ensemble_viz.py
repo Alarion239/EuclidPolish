@@ -8,6 +8,7 @@ where the SR is invented), and the HR truth when available.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import glob
 import json
@@ -863,21 +864,57 @@ def _write_diag_samples(starless: bool, diag) -> None:
         pass
 
 
-#: VIS zoom stamps returned per back-traced pixel (half-window in HR pixels).
-PIXEL_TRACE_HALF = 12
+#: Zoom stamps returned per back-traced pixel (half-window in HR pixels). Bigger
+#: than the histogram cell needs → gives the eye some context around the pixel.
+PIXEL_TRACE_HALF = 20
+#: Example pixels returned per clicked cell (one per field, reservoir-sampled).
+PIXEL_TRACE_STAMPS = 8
+
+
+def _b64_f32(arr: np.ndarray) -> str:
+    """Little-endian float32 C-order → base64. The stamps travel as compact
+    typed blobs (not JSON number arrays) so a full-colour multi-band window is
+    ~half the size and decodes to a Float32Array in one step."""
+    return base64.b64encode(
+        np.ascontiguousarray(arr, dtype="<f4").tobytes()).decode("ascii")
+
+
+def _lr_cube_on_hr_grid(lr_cube, n: int):
+    """All LR bands bicubic-resampled onto the ``(n, n)`` HR grid — the same
+    no-super-resolution baseline the field viewer's LR tier shows, but keeping
+    every band so the stamp can be coloured. ``None`` if the LR cube is bad."""
+    if lr_cube is None:
+        return None
+    a = np.asarray(lr_cube, np.float64)
+    if a.ndim == 2:
+        a = a[..., None]
+    if a.ndim != 3 or a.size == 0:
+        return None
+    if a.shape[0] == n and a.shape[1] == n:
+        return a
+    from scipy.ndimage import zoom
+    up = zoom(a, (n / a.shape[0], n / a.shape[1], 1), order=3)  # bicubic
+    return up[:n, :n]
 
 
 def pixel_trace(starless: bool, diag: str, i: int, j: int,
-                *, half: int = PIXEL_TRACE_HALF, max_stamps: int = 5) -> dict:
+                *, half: int = PIXEL_TRACE_HALF,
+                max_stamps: int = PIXEL_TRACE_STAMPS) -> dict:
     """Back-trace one heatmap cell to real image stamps.
 
     Given a diagnostic (``"std_err"`` | ``"bright_std"``) and its histogram cell
     ``(i, j)``, read the sidecar's example pixel locations for that cell and cut
-    a ``(2·half+1)²`` VIS window (electrons) of the HR truth, the ensemble-mean
-    SR and the cross-member std around each — the real pixels that landed in the
-    clicked cell, with the exact per-pixel numbers that place them there.
+    a ``(2·half+1)²`` window around each — the real pixels that landed in the
+    clicked cell. Each stamp carries the **full N-band** LR, HR and SR cubes
+    (SR = the regime's combiner where available, else the ensemble mean) as
+    base64 float32 so the frontend can render them with the field viewer's exact
+    colour / knee / brightness, plus the single-band cross-member σ, and the
+    per-pixel VIS numbers that place the pixel in the plot. Windows are zero-
+    padded to a fixed ``(2·half+1)²`` with the sampled pixel at the centre.
     Returns ``{stamps: [...], ...}`` (``stamps`` empty when nothing sampled)."""
+    S = 2 * int(half) + 1
     out = {"diag": diag, "i": int(i), "j": int(j), "half": int(half),
+           "size": S, "bands": list(Config.LR_INPUT_BAND_NAMES),
            "stretch": float(Config.STRETCH_SCALE_E), "stamps": []}
     try:
         with open(_diag_samples_path(starless)) as f:
@@ -899,46 +936,66 @@ def pixel_trace(starless: bool, diag: str, i: int, j: int,
     if not os.path.exists(hr_path):
         return out
 
-    # Group the (field, y, x) picks by field so each HR record + cube is read
-    # once. Cap the total stamps returned.
+    # Group the (field, y, x) picks by field so each record + cube reads once.
     picks = [tuple(int(v) for v in p) for p in picks][:max_stamps]
     by_rec: dict[int, list[tuple[int, int]]] = {}
     for rec, y, x in picks:
         by_rec.setdefault(rec, []).append((y, x))
     max_idx = max(by_rec) + 1
     hr_by = {r.index: r for r in read_images(hr_path, num_images=max_idx)}
+    # LR baseline (dirty records), matched by index — optional (skip the LR tier
+    # if the dirty records aren't synced).
+    lr_path = tfrecord_path(rdir, f"dirty_{sub}")
+    lr_by = ({r.index: r for r in read_images(lr_path, num_images=max_idx)}
+             if os.path.exists(lr_path) else {})
 
-    def _crop(a2d, y, x):
-        H, W = a2d.shape
+    def _crop(cube, y, x):
+        """Zero-padded (S, S, C) window centred on (y, x) at (half, half)."""
+        if cube.ndim == 2:
+            cube = cube[..., None]
+        H, W, C = cube.shape
+        win = np.zeros((S, S, C), np.float32)
         y0, y1 = max(0, y - half), min(H, y + half + 1)
         x0, x1 = max(0, x - half), min(W, x + half + 1)
-        return a2d[y0:y1, x0:x1], (y - y0, x - x0)  # patch + center offset
+        win[y0 - (y - half):y1 - (y - half),
+            x0 - (x - half):x1 - (x - half)] = cube[y0:y1, x0:x1]
+        return win
 
     for rec, coords in by_rec.items():
         sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
         std_f = os.path.join(cubes_dir, f"std_{rec:05d}.npy")
+        comb_f = os.path.join(cubes_dir, f"comb_{rec:05d}.npy")
         hr_rec = hr_by.get(rec)
         if not (os.path.isfile(sr_f) and os.path.isfile(std_f)
                 and hr_rec is not None):
             continue
-        sr_v = _vis(np.load(sr_f)).astype(np.float64)
-        std_v = _vis(np.load(std_f)).astype(np.float64)
-        hr_v = _vis(np.asarray(hr_rec.data, np.float32)).astype(np.float64)
+        hr_cube = np.asarray(hr_rec.data, np.float32)           # (H, W, C)
+        n = int(hr_cube.shape[0])
+        # SR = combiner where this field has it, else the ensemble mean.
+        use_comb = os.path.isfile(comb_f)
+        sr_cube = np.load(comb_f if use_comb else sr_f).astype(np.float32)
+        std_v = _vis(np.load(std_f)).astype(np.float32)          # scalar σ (VIS)
+        lr_rec = lr_by.get(rec)
+        lr_cube = _lr_cube_on_hr_grid(
+            np.asarray(lr_rec.data, np.float32), n) if lr_rec is not None else None
+        hr_v, sr_v = _vis(hr_cube), _vis(sr_cube)
         for (y, x) in coords:
-            if not (0 <= y < hr_v.shape[0] and 0 <= x < hr_v.shape[1]):
+            if not (0 <= y < n and 0 <= x < n):
                 continue
-            hr_p, cen = _crop(hr_v, y, x)
-            sr_p, _ = _crop(sr_v, y, x)
-            std_p, _ = _crop(std_v, y, x)
             hv, sv, dv = float(hr_v[y, x]), float(sr_v[y, x]), float(std_v[y, x])
-            out["stamps"].append({
-                "field": int(rec), "y": int(y), "x": int(x),
-                "cy": int(cen[0]), "cx": int(cen[1]),
-                "hr": hr_p.tolist(), "sr": sr_p.tolist(), "std": std_p.tolist(),
+            stamp = {
+                "field": int(rec), "y": int(y), "x": int(x), "center": int(half),
+                "sr_is_combiner": bool(use_comb),
+                "hr": _b64_f32(_crop(hr_cube, y, x)),
+                "sr": _b64_f32(_crop(sr_cube, y, x)),
+                "std": _b64_f32(_crop(std_v, y, x)[..., 0]),
                 "hr_val": hv, "sr_val": sv, "std_val": dv,
                 "err_val": abs(sv - hv),
                 "bright_asinh": float(np.arcsinh(hv / Config.STRETCH_SCALE_E)),
-            })
+            }
+            if lr_cube is not None:
+                stamp["lr"] = _b64_f32(_crop(lr_cube, y, x))
+            out["stamps"].append(stamp)
     return out
 
 

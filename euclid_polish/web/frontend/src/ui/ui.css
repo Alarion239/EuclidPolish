@@ -252,10 +252,18 @@
   margin-top: var(--s3); padding: 12px; border: 1px solid var(--border);
   border-radius: var(--r-2); background: var(--surface-1);
 }
-.ens-trace__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ens-trace__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .ens-trace__card {
   padding: 8px; border: 1px solid var(--border); border-radius: var(--r-1);
   background: var(--surface-2);
+}
+.ens-trace__stamps { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.ens-trace__tier { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+.ens-trace__tier b { color: var(--text-dim); font-weight: 600; }
+.ens-trace__na {
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--border); border-radius: 3px;
+  color: var(--text-faint); font-size: 10px;
 }
 .ens-trace__nums { margin-top: 6px; font-size: 10.5px; color: var(--text-dim); text-align: center; }
 

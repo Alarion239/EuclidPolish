@@ -51,7 +51,7 @@ class EnsembleDiagnosticsAccumulator:
     """
 
     def __init__(self, *, stretch: float | None = None,
-                 sample_k: int = 6) -> None:
+                 sample_k: int = 10) -> None:
         self.stretch = float(stretch if stretch is not None else
                              Config.STRETCH_SCALE_E)
         lo, hi = LOG_E_RANGE

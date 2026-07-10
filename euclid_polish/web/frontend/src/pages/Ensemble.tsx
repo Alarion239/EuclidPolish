@@ -8,7 +8,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import { useThemeValue } from "../theme";
-import { CutoutViewer, type ViewerApi } from "../legacy";
+import { CutoutViewer, loadColorEngine, type ViewerApi, type ColorMeta, type RenderOpts } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
 import {
@@ -122,12 +122,27 @@ type DiagTab = typeof DIAG_TABS[number]["id"];
 
 /* ── pixel back-tracing (click a heatmap cell → real image stamps) ─────────── */
 type PickDiag = "std_err" | "bright_std";
+/* Stamps arrive as base64 little-endian float32 blobs (one per tier): the
+   full N-band LR/HR/SR cubes (rendered with the field viewer's colour engine)
+   and the single-band σ. */
 type Stamp = {
-  field: number; y: number; x: number; cy: number; cx: number;
-  hr: number[][]; sr: number[][]; std: number[][];
+  field: number; y: number; x: number; center: number; sr_is_combiner: boolean;
+  lr?: string; hr: string; sr: string; std: string;
   hr_val: number; sr_val: number; std_val: number; err_val: number; bright_asinh: number;
 };
-type Trace = { diag: string; i: number; j: number; half: number; stretch: number; stamps: Stamp[] };
+type Trace = {
+  diag: string; i: number; j: number; half: number; size: number;
+  bands: string[]; stretch: number; stamps: Stamp[];
+};
+type RenderFn = (rec: { data: Float32Array; h: number; w: number; c: number },
+  colorMeta: ColorMeta, opts: RenderOpts) => ImageData;
+type ViewerMetaColor = { color?: ColorMeta };
+
+const COLOR_OPTS = [
+  { value: "VIS", label: "VIS" }, { value: "Y_E", label: "Y_E" },
+  { value: "J_E", label: "J_E" }, { value: "H_E", label: "H_E" },
+  { value: "lupton", label: "Lupton" }, { value: "temp", label: "Temp" },
+];
 
 /* Compact electron formatter for the stamp captions / cell ranges. */
 const fmtE = (v: number): string =>
@@ -136,44 +151,85 @@ const fmtE = (v: number): string =>
 /* "10^lo–10^hi" range for cell k of a log10-valued edge array. */
 const logRange = (edges: number[], k: number): string =>
   `${fmtE(10 ** edges[k])}–${fmtE(10 ** edges[k + 1])}`;
-const gray = (t: number): string => {
-  const g = Math.round(Math.max(0, Math.min(1, t)) * 255);
-  return `rgb(${g},${g},${g})`;
-};
 
-/* One asinh-stretched VIS stamp (electrons), per-stamp normalized, center pixel
-   ringed. Small + static — drawn as scaled cells, pixelated. */
-function StampCanvas(
-  { data, cx, cy, cmap, stretch, px = 5, label }:
-  { data: number[][]; cx: number; cy: number; cmap: (t: number) => string; stretch: number; px?: number; label: string },
+function b64ToF32(b64: string): Float32Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+
+/* Draw one S×S ImageData scaled up ×px (pixelated) with the center pixel ringed. */
+function blitStamp(cv: HTMLCanvasElement, img: ImageData, size: number, center: number, px: number) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = size * px * dpr; cv.height = size * px * dpr;
+  cv.style.width = size * px + "px"; cv.style.height = size * px + "px";
+  const off = document.createElement("canvas");
+  off.width = size; off.height = size;
+  off.getContext("2d")!.putImageData(img, 0, 0);
+  const ctx = cv.getContext("2d")!;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, size * px, size * px);
+  ctx.drawImage(off, 0, 0, size * px, size * px);
+  ctx.strokeStyle = "#ff3b6b"; ctx.lineWidth = 1.4;
+  ctx.strokeRect(center * px - 0.7, center * px - 0.7, px + 1.4, px + 1.4);
+}
+
+/* An LR/HR/SR image stamp, rendered with the field viewer's colour/knee/gain. */
+function ImageStamp(
+  { b64, size, center, bands, colorMeta, opts, render, px, label, badge }:
+  { b64?: string; size: number; center: number; bands: string[]; colorMeta?: ColorMeta;
+    opts: RenderOpts; render: RenderFn | null; px: number; label: string; badge?: string },
 ) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
-    if (!cv || !data.length || !data[0]?.length) return;
-    const H = data.length, W = data[0].length;
+    if (!cv || !b64 || !render || !colorMeta) return;
+    const data = b64ToF32(b64);
+    const img = render({ data, h: size, w: size, c: bands.length }, colorMeta, opts);
+    blitStamp(cv, img, size, center, px);
+  }, [b64, size, center, bands.length, colorMeta, opts, render, px]);
+  return (
+    <div style={{ textAlign: "center" }}>
+      {b64 ? <canvas ref={ref} style={{ imageRendering: "pixelated", borderRadius: 3, display: "block" }} />
+        : <div className="ens-trace__na" style={{ width: size * px, height: size * px }}>n/a</div>}
+      <div className="mono ens-trace__tier">{label}{badge && <b> · {badge}</b>}</div>
+    </div>
+  );
+}
+
+/* The σ (disagreement) stamp — a scalar map in fixed viridis, asinh + per-stamp
+   normalized (unaffected by the colour/knee controls: it IS the thing shown). */
+function SigmaStamp(
+  { b64, size, center, stretch, px, label }:
+  { b64: string; size: number; center: number; stretch: number; px: number; label: string },
+) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const a = b64ToF32(b64);
+    const t = new Float32Array(a.length);
+    let amin = Infinity, amax = -Infinity;
+    for (let i = 0; i < a.length; i++) { const v = Math.asinh(a[i] / stretch); t[i] = v; if (v < amin) amin = v; if (v > amax) amax = v; }
+    const span = amax - amin || 1;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    cv.width = W * px * dpr; cv.height = H * px * dpr;
-    cv.style.width = W * px + "px"; cv.style.height = H * px + "px";
+    cv.width = size * px * dpr; cv.height = size * px * dpr;
+    cv.style.width = size * px + "px"; cv.style.height = size * px + "px";
     const ctx = cv.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    let amin = Infinity, amax = -Infinity;
-    const a = data.map((row) => row.map((v) => {
-      const t = Math.asinh(v / stretch);
-      if (t < amin) amin = t; if (t > amax) amax = t; return t;
-    }));
-    const span = amax - amin || 1;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      ctx.fillStyle = cmap((a[y][x] - amin) / span);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      ctx.fillStyle = viridis((t[y * size + x] - amin) / span);
       ctx.fillRect(x * px, y * px, px + 0.5, px + 0.5);
     }
     ctx.strokeStyle = "#ff3b6b"; ctx.lineWidth = 1.4;
-    ctx.strokeRect(cx * px - 0.7, cy * px - 0.7, px + 1.4, px + 1.4);
-  });
+    ctx.strokeRect(center * px - 0.7, center * px - 0.7, px + 1.4, px + 1.4);
+  }, [b64, size, center, stretch, px]);
   return (
     <div style={{ textAlign: "center" }}>
       <canvas ref={ref} style={{ imageRendering: "pixelated", borderRadius: 3, display: "block" }} />
-      <div className="mono" style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 2 }}>{label}</div>
+      <div className="mono ens-trace__tier">{label}</div>
     </div>
   );
 }
@@ -181,24 +237,47 @@ function StampCanvas(
 function TraceHint() {
   return (
     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-      Click any cell to back-trace it — a handful of the real pixels that landed there,
-      as VIS stamps (HR · SR mean · σ) from across the test fields.
+      Click any cell to back-trace it — a handful of the real pixels that landed there, as
+      stamps (LR · HR · SR/combiner · σ) from across the test fields, with the field viewer's colour controls.
     </div>
   );
 }
 
+const STAMP_PX = 3;
+
 function PixelTrace(
-  { mode, pick, cellLabel, onClose }:
-  { mode: Mode; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string; onClose: () => void },
+  { mode, pick, cellLabel, colorMeta, onClose }:
+  { mode: Mode; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string;
+    colorMeta?: ColorMeta; onClose: () => void },
 ) {
   const url = `/ensemble/pixel-trace.json?mode=${mode}&diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
   const trace = useResource<Trace>(url, [mode, pick.diag, pick.i, pick.j]);
   const t = trace.data;
+
+  // Load the viewer's colour engine once; render null until it's ready.
+  const [render, setRender] = useState<RenderFn | null>(null);
+  useEffect(() => { let live = true; loadColorEngine().then((fn) => { if (live) setRender(() => fn as RenderFn); }); return () => { live = false; }; }, []);
+
+  // Viewer-parity controls: colour mode, asinh knee (K), brightness (gain). K0
+  // (the white reference) is pinned to the served default, as the viewer does.
+  const K0 = colorMeta?.default_asinh ?? 100;
+  const [color, setColor] = useState("VIS");
+  const [knee, setKnee] = useState(String(K0));
+  const [gain, setGain] = useState("1");
+  const opts: RenderOpts = useMemo(
+    () => ({ color, knee: Number(knee) || K0, gain: Number(gain) || 1, K0 }),
+    [color, knee, gain, K0]);
+
   return (
     <div className="ens-trace">
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
         <div className="eyebrow">back-trace · <span className="mono" style={{ textTransform: "none" }}>{cellLabel}</span></div>
-        <Button size="sm" variant="ghost" onClick={onClose}>✕ close</Button>
+        <div className="row" style={{ gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <Select value={color} onChange={setColor} options={COLOR_OPTS} />
+          <NumberField label="asinh knee [e⁻]" value={knee} onChange={setKnee} min={5} max={5000} />
+          <NumberField label="brightness ×" value={gain} onChange={setGain} min={0.1} max={10} step={0.1} />
+          <Button size="sm" variant="ghost" onClick={onClose}>✕ close</Button>
+        </div>
       </div>
       {trace.loading ? <Empty><Spinner /> pulling stamps…</Empty>
         : !t || !t.stamps.length
@@ -207,10 +286,15 @@ function PixelTrace(
             <div className="ens-trace__grid">
               {t.stamps.map((s, k) => (
                 <div key={k} className="ens-trace__card">
-                  <div className="row" style={{ gap: 6, justifyContent: "center" }}>
-                    <StampCanvas data={s.hr} cx={s.cx} cy={s.cy} cmap={gray} stretch={t.stretch} label="HR" />
-                    <StampCanvas data={s.sr} cx={s.cx} cy={s.cy} cmap={gray} stretch={t.stretch} label="SR mean" />
-                    <StampCanvas data={s.std} cx={s.cx} cy={s.cy} cmap={viridis} stretch={t.stretch} label="σ" />
+                  <div className="ens-trace__stamps">
+                    <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands}
+                      colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="LR" />
+                    <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands}
+                      colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="HR" />
+                    <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands}
+                      colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX}
+                      label="SR" badge={s.sr_is_combiner ? "combiner" : "mean"} />
+                    <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} px={STAMP_PX} label="σ" />
                   </div>
                   <div className="mono ens-trace__nums">
                     #{s.field} · σ={fmtE(s.std_val)} · |err|={fmtE(s.err_val)} · HR={fmtE(s.hr_val)} e⁻
@@ -419,6 +503,9 @@ function Evaluations(
   // changes — a cell only means something within one diagnostic.
   const [pick, setPick] = useState<{ diag: PickDiag; i: number; j: number } | null>(null);
   useEffect(() => setPick(null), [tab, mode]);
+  // Viewer colour meta (band constants) so back-trace stamps colour like the viewer.
+  const vmeta = useResource<ViewerMetaColor>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
+  const colorMeta = vmeta.data?.color;
   const ps = evals?.ps ?? null;
   const members = evals?.members ?? [];
 
@@ -579,7 +666,7 @@ function Evaluations(
                 <TraceHint />
                 {pick?.diag === "std_err" &&
                   <PixelTrace mode={mode} pick={pick} cellLabel={stdErr.describe(pick)}
-                    onClose={() => setPick(null)} />}
+                    colorMeta={colorMeta} onClose={() => setPick(null)} />}
               </>
             )
           ) : (
@@ -595,7 +682,7 @@ function Evaluations(
                 <TraceHint />
                 {pick?.diag === "bright_std" &&
                   <PixelTrace mode={mode} pick={pick} cellLabel={brightStd.describe(pick)}
-                    onClose={() => setPick(null)} />}
+                    colorMeta={colorMeta} onClose={() => setPick(null)} />}
               </>
             )
           )}
