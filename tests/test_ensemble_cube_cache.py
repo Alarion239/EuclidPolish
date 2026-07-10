@@ -178,6 +178,58 @@ def test_evaluate_reuses_cached_result_without_inference(tmp_path, monkeypatch):
         ev.job_ensemble_evaluate(_Cap(), num_images=100, starless=False, force=True)
 
 
+def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
+    """Archiving a member rebuilds the bucket from the REMAINING cached member
+    cubes — renumbered contiguous, aggregates (sr/std) recomputed, combiner
+    dropped — with no model re-inference."""
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    d = str(tmp_path / "cubes")
+    os.makedirs(d)
+    rec = 5
+    tag = f"{rec:05d}"
+    shape = (6, 6, 4)
+    # 5 members with distinct constant values 1..5.
+    for i in range(5):
+        np.save(os.path.join(d, f"member{i}_{tag}.npy"),
+                np.full(shape, i + 1, np.float32))
+    np.save(os.path.join(d, f"sr_{tag}.npy"), np.full(shape, 3.0, np.float32))
+    np.save(os.path.join(d, f"std_{tag}.npy"), np.zeros(shape, np.float32))
+    np.save(os.path.join(d, f"pca0_{tag}.npy"), np.zeros(shape, np.float32))
+    np.save(os.path.join(d, f"comb_{tag}.npy"), np.zeros(shape, np.float32))
+    labels = [f"{i:02d}·x" for i in range(5)]
+    with open(os.path.join(d, "viz_index.json"), "w") as f:
+        json.dump({"subset": "test", "indices": [rec], "member_labels": labels,
+                   "has_combiner": True, "records_fp": "rfp"}, f)
+
+    assert ev._rebuild_bucket_dropping_member(d, "02") is True     # drop the '02' member
+
+    # 4 members remain, renumbered 0..3 with the '02' value (3) gone.
+    assert not os.path.isfile(os.path.join(d, f"member4_{tag}.npy"))
+    vals = [float(np.load(os.path.join(d, f"member{i}_{tag}.npy")).flat[0])
+            for i in range(4)]
+    assert vals == [1.0, 2.0, 4.0, 5.0]                            # 3 dropped, rest shifted
+    # sr = mean of the remaining stack, std recomputed.
+    np.testing.assert_allclose(np.load(os.path.join(d, f"sr_{tag}.npy")),
+                               np.full(shape, np.mean([1, 2, 4, 5]), np.float32))
+    assert np.load(os.path.join(d, f"std_{tag}.npy")).std() >= 0  # recomputed, non-null
+    # Combiner cube dropped (stale for the smaller set); manifest updated.
+    assert not os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))
+    man = json.load(open(os.path.join(d, "viz_index.json")))
+    assert [lbl.split("·")[0] for lbl in man["member_labels"]] == ["00", "01", "03", "04"]
+    assert man["has_combiner"] is False
+
+
+def test_rebuild_bucket_noop_when_member_absent(tmp_path):
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    d = str(tmp_path / "cubes")
+    _write_cache(d, subset="test", indices=[1], n_members=3)       # labels 00,01,02
+    before = sorted(os.listdir(d))
+    assert ev._rebuild_bucket_dropping_member(d, "99") is False     # not in this bucket
+    assert sorted(os.listdir(d)) == before                          # untouched
+    assert ev._rebuild_bucket_dropping_member(str(tmp_path / "nope"), "00") is False
+
+
 def test_cache_field_cubes_roundtrips_through_reader(tmp_path):
     """The factored writer lays down member/sr/std cubes that the cube-cache
     reader can load back as a stack (with a matching manifest)."""

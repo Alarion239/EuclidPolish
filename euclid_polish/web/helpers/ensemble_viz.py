@@ -1102,6 +1102,157 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
     return payload
 
 
+def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str) -> bool:
+    """Drop one member from a position-keyed cube bucket, REUSING the cached
+    per-member inference (no model re-run).
+
+    The archived member's per-member cubes are deleted, the higher-indexed
+    members shift down to stay contiguous, and the aggregate ``sr_``/``std_``/
+    ``pcaN_`` cubes are recomputed from the remaining stack (the ensemble mean IS
+    the plain member mean, so this is exact). The combiner is now stale for the
+    smaller set, so its ``comb_`` cubes are dropped. Returns ``True`` iff this
+    bucket contained the member (and was rebuilt)."""
+    man_path = os.path.join(cubes_dir, "viz_index.json")
+    try:
+        with open(man_path) as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    old_labels = [str(x) for x in man.get("member_labels", []) or []]
+    drop_pos = next((i for i, lbl in enumerate(old_labels)
+                     if lbl.split("·")[0] == member_nn), None)
+    if drop_pos is None:
+        return False
+    new_labels = [lbl for i, lbl in enumerate(old_labels) if i != drop_pos]
+    old_n, new_n = len(old_labels), len(new_labels)
+    pca_amps: dict[str, list[float]] = {}
+    pca_var: dict[str, list[float]] = {}
+    for rec in (int(i) for i in man.get("indices", []) or []):
+        tag = f"{rec:05d}"
+        arch = os.path.join(cubes_dir, f"member{drop_pos}_{tag}.npy")
+        if os.path.isfile(arch):
+            os.remove(arch)
+        # Shift member{p} → member{p-1} for p above the gap (ascending order so
+        # each destination slot is already vacated).
+        for p in range(drop_pos + 1, old_n):
+            src = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
+            if os.path.isfile(src):
+                os.replace(src, os.path.join(cubes_dir, f"member{p - 1}_{tag}.npy"))
+        stack = []
+        for p in range(new_n):
+            mf = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
+            if not os.path.isfile(mf):
+                break
+            stack.append(np.load(mf))
+        if len(stack) != new_n or new_n == 0:
+            continue
+        preds = np.stack(stack, 0)
+        np.save(os.path.join(cubes_dir, f"sr_{tag}.npy"),
+                preds.mean(0).astype(np.float32))
+        np.save(os.path.join(cubes_dir, f"std_{tag}.npy"),
+                preds.std(0).astype(np.float32))
+        for f in glob.glob(os.path.join(cubes_dir, f"pca*_{tag}.npy")):
+            os.remove(f)
+        _m, comps, amps, var = pca_field(preds, n_components=ENSEMBLE_PCA_COMPONENTS)
+        for i, comp in enumerate(comps):
+            np.save(os.path.join(cubes_dir, f"pca{i}_{tag}.npy"),
+                    np.asarray(comp, dtype=np.float32))
+        comb = os.path.join(cubes_dir, f"comb_{tag}.npy")   # combiner now stale
+        if os.path.isfile(comb):
+            os.remove(comb)
+        pca_amps[str(rec)] = [float(a) for a in amps]
+        pca_var[str(rec)] = [float(v) for v in var]
+    man["member_labels"] = new_labels
+    man["has_combiner"] = False
+    man["pca_amps"] = pca_amps
+    man["pca_var"] = pca_var
+    with open(man_path, "w") as f:
+        json.dump(man, f)
+    return True
+
+
+def _reevaluate_from_cached_cubes(starless: bool,
+                                  *, num_images: int | None = None) -> dict | None:
+    """Re-derive a full evaluation ENTIRELY from the cached per-member cubes —
+    no model inference. Recomputes the ensemble/member PSNR summary, the pixel
+    diagnostics + back-trace samples, the power spectrum and the combiner block,
+    then rewrites ``eval_summary.json`` (with a fresh identity so a later
+    ``Evaluate`` reuses it) and the evals payload. Returns the summary, or
+    ``None`` when no valid cubes are cached. Used after archiving a member so the
+    ensemble updates cheaply instead of forcing a full re-inference."""
+    base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    if not rdir:
+        return None
+    sub = eval_subset(rdir)
+    out_dir = _ensemble_regime_dir(starless)
+
+    ps_acc = None
+    diag = EnsembleDiagnosticsAccumulator()
+    cmet = _CombinerMetricAcc()
+    for hr_v, mean_v, mem_v, comb_v, lr_v, rec in _iter_cached_fields(starless):
+        if ps_acc is None:
+            ps_acc = EnsembleSpectrumAccumulator(
+                int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
+        ps_acc.add(hr_v, mean_v, mem_v, combiner=comb_v, lr=lr_v)
+        diag.add(hr_v, mean_v, mem_v, combiner=comb_v, field_index=rec)
+        cmet.add(hr_v, mean_v, mem_v, comb_v)
+    if cmet.n == 0:
+        return None
+    _write_diag_samples(starless, diag)
+
+    try:
+        with open(os.path.join(_ensemble_cubes_dir(starless=starless),
+                               "viz_index.json")) as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    labels = [str(x) for x in man.get("member_labels", []) or []]
+    curves = (ps_acc.curves() if ps_acc is not None
+              and float(ps_acc.bc.sum()) > 0 else None)
+    comb_block = cmet.block(labels)
+    payload = _evals_payload(curves, diag, labels, man.get("subset", ""),
+                             combiner=comb_block)
+    payload["regime"] = _regime_slug(starless)
+    with open(_evals_payload_path(starless), "w") as f:
+        json.dump(payload, f)
+    if curves is not None:
+        with open(os.path.join(out_dir, "ensemble_power_spectrum.json"), "w") as f:
+            json.dump({k: _jsonable(v) for k, v in curves.items()}, f)
+
+    per_member = ((cmet.mem / cmet.n).tolist()
+                  if cmet.mem is not None else [])
+    ensemble_psnr = cmet.mean / cmet.n
+    mean_member = float(np.mean(per_member)) if per_member else None
+    if num_images is None:
+        num_images = cmet.n
+    summary = {
+        "regime": _regime_slug(starless),
+        "member_labels": list(labels),
+        "n_scored": int(cmet.n),
+        "ensemble_psnr": float(ensemble_psnr),
+        "mean_member_psnr": mean_member,
+        "ensemble_gain_db": (float(ensemble_psnr - mean_member)
+                             if mean_member is not None else None),
+        "per_member_psnr_stretched": [float(x) for x in per_member],
+        "recomputed_from_cubes": True,
+        "reused": False,
+    }
+    if comb_block and comb_block.get("available"):
+        summary["combiner_psnr"] = comb_block["psnr"]
+        summary["combiner_vs_mean_db"] = (
+            comb_block["psnr"] - comb_block["ensemble_mean_psnr"])
+    summary["eval_identity"] = _eval_identity(
+        base, rdir, sub, out_dir, starless=starless, num_images=int(num_images))
+    with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    # Classic-page diagnostic PNGs render lazily from the fresh cubes.
+    for png in EVAL_DIAGNOSTIC_PNGS.values():
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(out_dir, png))
+    return summary
+
+
 def job_ensemble_evaluate(cap, *, num_images: int,
                           starless: bool = True, force: bool = False) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
@@ -1471,14 +1622,19 @@ def _delete_remote_member(name: str) -> str:
 
 
 def job_archive_member(cap, *, name: str) -> dict:
-    """Retire one ensemble member: zip → tracking, tombstone, delete, purge.
+    """Retire one ensemble member: zip → tracking, tombstone, delete, re-derive.
 
     The zip lands in the active tracking campaign's ``models/``; the registry
     gets a permanent tombstone (so a FASRC mirror pulling the dir back never
     re-activates it); the local member dir is deleted; the FASRC-side copy is
-    deleted too (best-effort, needs the SSH session); and the position-keyed
-    ensemble cube cache is purged eagerly (eval summaries/plots invalidate
-    lazily via the membership fingerprint).
+    deleted too (best-effort, needs the SSH session).
+
+    Crucially it does NOT force a full re-evaluation: the remaining members'
+    per-member cubes are still valid inference, so the position-keyed cube
+    buckets are surgically rebuilt for the smaller set and the evaluation is
+    re-derived from them (see :func:`_rebuild_bucket_dropping_member` /
+    :func:`_reevaluate_from_cached_cubes`) — cheap, no model re-run. The combiner
+    was fit on the old membership, so it is dropped (refit when wanted).
     """
     if not re.fullmatch(r"member_\d{2,}", name or ""):
         raise RuntimeError(f"invalid member name {name!r}")
@@ -1504,23 +1660,37 @@ def job_archive_member(cap, *, name: str) -> dict:
     ensemble_registry.archive_member_entry(
         base, name, zip_path=os.path.join("models", meta["name"]),
         commit=commit)
-    cap.tick(2, 4, "deleting member dir + caches")
+    cap.tick(2, 4, "rebuilding ensemble from cached cubes (no re-inference)")
     shutil.rmtree(src, ignore_errors=True)
-    # Every position-keyed cube bucket: test eval + validate combiner fit, in
-    # BOTH star regimes (the archived member belongs to one, but purging all is
-    # cheap and keeps no stale position-keyed cubes behind).
+    # Reuse the cached per-member inference instead of forcing a full
+    # re-evaluation: surgically drop this member from every position-keyed cube
+    # bucket (test + validate, both regimes) and rebuild the aggregates. The
+    # regime that actually held the member then has its evaluation RE-DERIVED
+    # from those cubes — ensemble/member PSNR, diagnostics, back-trace samples —
+    # with no model re-run. The combiner was fit on the old set, so it's dropped.
+    member_nn = name.split("_", 1)[1]
+    affected: set[bool] = set()
     for sl in (True, False):
-        shutil.rmtree(_ensemble_cubes_dir(starless=sl), ignore_errors=True)
-        shutil.rmtree(_ensemble_cubes_dir("validate", starless=sl),
-                      ignore_errors=True)
+        held = _rebuild_bucket_dropping_member(_ensemble_cubes_dir(starless=sl), member_nn)
+        _rebuild_bucket_dropping_member(_ensemble_cubes_dir("validate", starless=sl), member_nn)
+        if held:
+            affected.add(sl)
+    for sl in affected:
+        reg_dir = _ensemble_regime_dir(sl)
+        shutil.rmtree(os.path.join(reg_dir, "combiner"), ignore_errors=True)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(_combiner_payload_path(sl))
+        prev = (_read_eval_summary(sl) or {}).get("eval_identity") or {}
+        _reevaluate_from_cached_cubes(sl, num_images=prev.get("num_images"))
     cap.tick(3, 4, "deleting FASRC copy")
     remote_status = _delete_remote_member(name)
     store.append_log(
         f"Archived ensemble member `{name}` → `models/{meta['name']}` "
         f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
-        f"cube cache purged. FASRC copy: {remote_status}")
-    print(f"  ✓ {name} → tracking {meta['name']}; caches purged; "
-          f"FASRC copy: {remote_status}")
+        f"ensemble re-derived from cached cubes (no re-inference); combiner "
+        f"dropped. FASRC copy: {remote_status}")
+    print(f"  ✓ {name} → tracking {meta['name']}; ensemble re-derived from "
+          f"cached cubes (no re-inference); FASRC copy: {remote_status}")
     return {"zip": meta["name"], "member": name,
             "remote": remote_status}
 
