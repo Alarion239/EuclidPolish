@@ -142,6 +142,13 @@ def create_app() -> Flask:
                                  #  degrades gracefully when disconnected)
         "/config",               # universal job-config tab is local-first
         "/api/config",           # (persists to ~/.euclid_polish; no SSH)
+        "/api/jobs",             # the LOCAL background-job registry (spawn +
+                                 # poll). Polling job progress must never be
+                                 # gated on SSH — the job itself may need FASRC
+                                 # and its failure is reported IN the job, but
+                                 # the poll is in-process. Without this every
+                                 # local job showed "job not found" when SSH was
+                                 # down/flaky (the XHR got redirected to HTML).
         "/evaluation",           # results gallery reads local eval_results/
         "/api/evaluation/",      # (only .../sync needs SSH; it 400s when down)
         "/ensemble",             # local: runs ensemble checkpoints on local test
@@ -161,7 +168,12 @@ def create_app() -> Flask:
             return None
         if any(request.path.startswith(p) for p in _ALWAYS_REACHABLE_PREFIXES):
             return None
-        # All other paths: redirect to the error page so the user can
+        # API (XHR) callers can't follow an HTML redirect — the SPA would parse
+        # the connection-error page as JSON and fail confusingly. Give them a
+        # clean JSON 503 instead.
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "FASRC not connected"}), 503
+        # Full-page navigations: redirect to the error page so the user can
         # fix settings + retry without poking through the UI for it.
         return redirect(url_for("connection_error_page"))
 
