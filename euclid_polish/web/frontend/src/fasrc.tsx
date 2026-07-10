@@ -219,11 +219,24 @@ function niceTicks(lo: number, hi: number, kilo = false): { v: number; label: st
 
 export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; endedAt?: number }) {
   const [resp, setResp] = useState<CurveResp | null>(null);
+  // `loading` only until the FIRST fetch resolves; after that we show the curve,
+  // a "no eval yet" note, or the error — never an endless spinner. `err` holds a
+  // transient failure (e.g. FASRC SSH dropped); we keep polling so the curve
+  // self-heals when the connection returns, and keep any prior curve on screen.
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string>("");
   const [metric, setMetric] = useState<CurveMetric>("psnr");
   usePolling(() => {
     if (!startedAt) return;
-    getJSON<CurveResp>(`/api/fasrc/runs/training-curve.json?started_at=${startedAt}${endedAt ? `&ended_at=${endedAt}` : ""}`)
-      .then((r) => r && setResp(r));
+    const url = `/api/fasrc/runs/training-curve.json?started_at=${startedAt}${endedAt ? `&ended_at=${endedAt}` : ""}`;
+    fetch(url, { headers: { Accept: "application/json" } })
+      .then(async (r) => {
+        const j = (await r.json().catch(() => null)) as (CurveResp & { error?: string }) | null;
+        setLoading(false);
+        if (!r.ok || !j || j.ok === false) { setErr(j?.error || `HTTP ${r.status}`); return; }
+        setErr(""); setResp(j);
+      })
+      .catch(() => { setLoading(false); setErr("request failed"); });
   }, 20000, !!startedAt);
 
   const recs = resp?.records ?? [];
@@ -269,10 +282,12 @@ export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; ende
         right={<Segmented<CurveMetric> value={metric} onChange={setMetric}
           options={[{ value: "psnr", label: "PSNR" }, { value: "loss", label: "loss" }]} />} />
       <CardBody>
-        {!resp ? <Empty><Spinner /> loading curves…</Empty>
+        {loading ? <Empty><Spinner /> loading curves…</Empty>
+          : !resp ? <Empty>curves unavailable{err ? ` — ${err}` : ""} · retrying every 20 s</Empty>
           : !recs.length ? <Empty>no eval logged yet — the curve appears after the first validation</Empty>
           : !chart ? <Empty>no {metric} data for this run</Empty>
           : (<>
+            {err && <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>last refresh failed ({err}) — showing the last good curve</div>}
             <Plot title={metric === "psnr" ? "validation PSNR vs step [dB]" : "training loss vs step"}
               xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
               xLabel="step" yLabel={metric === "psnr" ? "PSNR [dB]" : "loss"}
