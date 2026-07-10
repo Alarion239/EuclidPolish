@@ -309,6 +309,9 @@ function Evaluations(
 ) {
   const [tab, setTab] = useState<DiagTab>("power-spectrum");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
+  // Which overlay curves to draw on the power spectrum.
+  const [show, setShow] = useState({ cross: true, mean: true, comb: true });
+  const toggle = (k: keyof typeof show) => setShow((s) => ({ ...s, [k]: !s[k] }));
   const ps = evals?.ps ?? null;
   const members = evals?.members ?? [];
 
@@ -332,12 +335,15 @@ function Evaluations(
     };
     const grouped = colorBy !== "uniform";
     const series: Series[] = [];
-    for (const pair of ps.r_pairs ?? []) series.push({ x: theta, y: pair, color: C.muted, width: 0.7, alpha: 0.18 });
+    // Member↔member cross-correlation (pairwise cloud + the model–model r̃(k)).
+    if (show.cross) {
+      for (const pair of ps.r_pairs ?? []) series.push({ x: theta, y: pair, color: C.muted, width: 0.7, alpha: 0.18 });
+      if (hasData(ps.r_cross)) series.push({ x: theta, y: ps.r_cross!, color: C.cross, width: 2, dash: [6, 3] });
+    }
     (ps.r_members ?? []).forEach((row, i) => series.push({ x: theta, y: row, color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
-    if (hasData(ps.r_cross)) series.push({ x: theta, y: ps.r_cross!, color: C.cross, width: 2, dash: [6, 3] });
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
-    series.push({ x: theta, y: ps.r, color: C.mean, width: 2.6, dots: true });
-    if (hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
+    if (show.mean) series.push({ x: theta, y: ps.r, color: C.mean, width: 2.6, dots: true });
+    if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
     const guides: Guide[] = [
       { axis: "y", v: 1, color: C.guide, dash: [2, 3] },
       { axis: "x", v: g.lr_scale ?? 0.1, color: C.guide, width: 1.3, dash: [6, 3] },
@@ -348,14 +354,14 @@ function Evaluations(
     const facet = facetLegend(colorBy, losses, depths, knees);
     const legend = [
       ...(hasData(ps.r_lr) ? [{ label: "LR baseline", color: C.baseline, dash: true }] : []),
-      { label: "ensemble mean", color: C.mean },
-      ...(hasData(ps.r_comb) ? [{ label: "combiner", color: C.comb }] : []),
+      ...(show.mean ? [{ label: "ensemble mean", color: C.mean }] : []),
+      ...(show.comb && hasData(ps.r_comb) ? [{ label: "combiner", color: C.comb }] : []),
       ...(facet.length ? facet : [{ label: "individual models", color: C.muted }]),
-      { label: "model–model r̃(k)", color: C.cross, dash: true },
+      ...(show.cross && hasData(ps.r_cross) ? [{ label: "model–model r̃(k)", color: C.cross, dash: true }] : []),
     ];
     return { series, guides, xDomain, yDomain: [0, 1.05] as [number, number], xTicks, yTicks, legend };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ps, members, colorBy, evals, theme]);
+  }, [ps, members, colorBy, show, evals, theme]);
 
   // std vs error — density cloud + median-|error|-per-std curve, both axes
   // log10(e⁻). Diagonal reference lines (|err|=σ, 0.674σ) ride as 2-pt series.
@@ -418,7 +424,15 @@ function Evaluations(
           : tab === "power-spectrum" ? (
             !chart ? <Empty>no evaluation cached for <b>{mode}</b> — run “Evaluate on test set”.</Empty> : (
               <>
-                <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
+                <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+                  <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                    <Chip on={show.cross} dot={C.cross} onClick={() => toggle("cross")}
+                      title="member↔member cross-correlation curves">cross-corr</Chip>
+                    <Chip on={show.mean} dot={C.mean} onClick={() => toggle("mean")}
+                      title="ensemble-mean r(k)">mean</Chip>
+                    {hasData(ps?.r_comb) && <Chip on={show.comb} dot={C.comb} onClick={() => toggle("comb")}
+                      title="combiner r(k)">combiner</Chip>}
+                  </div>
                   <Select<ColorBy> value={colorBy} onChange={setColorBy}
                     options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
                 </div>
