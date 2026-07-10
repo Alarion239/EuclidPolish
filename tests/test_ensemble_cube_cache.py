@@ -99,6 +99,85 @@ def test_ensemble_cubes_dir_is_subset_keyed():
     assert os.sep + "starless" + os.sep in starless_dir
 
 
+# ---------------------------------------------------------------------------
+# Idempotent evaluate: never re-infer when the dataset + model are unchanged
+# ---------------------------------------------------------------------------
+
+def test_combiner_fingerprint(tmp_path):
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    regime = tmp_path / "r"
+    (regime / "combiner").mkdir(parents=True)
+    assert ev._combiner_fingerprint(str(regime)) is None       # none saved yet
+    (regime / "combiner" / "combiner.npz").write_bytes(b"x" * 10)
+    fp = ev._combiner_fingerprint(str(regime))
+    assert fp and fp.startswith("10:")                         # size:mtime
+
+
+def test_reusable_eval_matches_only_on_identity_and_records(tmp_path, monkeypatch):
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    regime = tmp_path / "regime"
+    cubes = regime / "cubes"
+    cubes.mkdir(parents=True)
+    monkeypatch.setattr(ev, "_ensemble_regime_dir", lambda starless: str(regime))
+    monkeypatch.setattr(ev, "_ensemble_cubes_dir", lambda *a, **k: str(cubes))
+
+    ident = {"records_fp": "rfp1", "num_images": 100, "member_fps": ["a"]}
+    (regime / "eval_summary.json").write_text(
+        json.dumps({"eval_identity": ident, "ensemble_psnr": 1.0}))
+    (cubes / "viz_index.json").write_text(json.dumps({"records_fp": "rfp1"}))
+
+    assert ev._reusable_eval(False, ident) is not None          # full match → reuse
+    # A different field count / dataset / membership is a different eval.
+    assert ev._reusable_eval(False, {**ident, "num_images": 50}) is None
+    assert ev._reusable_eval(False, {**ident, "records_fp": "rfp2"}) is None
+    # Cubes wiped/regenerated since the summary → manifest records_fp drifts.
+    (cubes / "viz_index.json").write_text(json.dumps({"records_fp": "OTHER"}))
+    assert ev._reusable_eval(False, ident) is None
+    # No summary at all → nothing to reuse.
+    (cubes / "viz_index.json").write_text(json.dumps({"records_fp": "rfp1"}))
+    (regime / "eval_summary.json").unlink()
+    assert ev._reusable_eval(False, ident) is None
+
+
+def test_evaluate_reuses_cached_result_without_inference(tmp_path, monkeypatch):
+    """A cache hit rebuilds figures from cubes and returns the cached metrics —
+    evaluate_on_records (the GPU inference) must never run."""
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ev, "eval_subset", lambda rdir: "test")
+    monkeypatch.setattr(ev, "ensemble_dir", lambda: str(tmp_path / "ens"))
+    monkeypatch.setattr(ev, "_ensemble_regime_dir", lambda starless: str(tmp_path / "regime"))
+    # Keep the (destructive) rmtree that the force path runs inside tmp.
+    monkeypatch.setattr(ev, "_ensemble_cubes_dir",
+                        lambda *a, **k: str(tmp_path / "regime" / "cubes"))
+    fake_identity = {"records_fp": "rfp", "num_images": 100}
+    monkeypatch.setattr(ev, "_eval_identity", lambda *a, **k: fake_identity)
+    monkeypatch.setattr(ev, "_reusable_eval",
+                        lambda starless, ident: {"ensemble_psnr": 42.0}
+                        if ident == fake_identity else None)
+    payload_calls = {"n": 0}
+    monkeypatch.setattr(ev, "compute_evaluation_payload",
+                        lambda starless: payload_calls.__setitem__("n", payload_calls["n"] + 1))
+
+    def _no_infer(*a, **k):
+        raise AssertionError("evaluate_on_records must NOT run on a cache hit")
+    monkeypatch.setattr(ev, "evaluate_on_records", _no_infer)
+
+    class _Cap:
+        def tick(self, *a, **k): pass
+
+    out = ev.job_ensemble_evaluate(_Cap(), num_images=100, starless=False)
+    assert out["reused"] is True
+    assert out["ensemble_psnr"] == 42.0
+    assert payload_calls["n"] == 1        # figures rebuilt from cubes, cheaply
+
+    # force=True bypasses reuse and would re-infer (proven by the guard raising).
+    import pytest
+    with pytest.raises(AssertionError, match="must NOT run"):
+        ev.job_ensemble_evaluate(_Cap(), num_images=100, starless=False, force=True)
+
+
 def test_cache_field_cubes_roundtrips_through_reader(tmp_path):
     """The factored writer lays down member/sr/std cubes that the cube-cache
     reader can load back as a stack (with a matching manifest)."""

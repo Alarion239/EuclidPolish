@@ -211,6 +211,73 @@ def _eval_records_fingerprint(records_dir: str | None, subset: str, *,
     return "|".join(parts)
 
 
+def _combiner_fingerprint(regime_dir: str) -> str | None:
+    """Identity of a regime's fitted combiner (size+mtime of ``combiner.npz``),
+    or ``None`` when none is saved. Part of the eval identity so refitting the
+    combiner correctly invalidates a cached evaluation — the combiner is applied
+    to the cubes during the eval, so a new fit is a different result."""
+    npz = os.path.join(regime_dir, "combiner", "combiner.npz")
+    try:
+        st = os.stat(npz)
+    except OSError:
+        return None
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def _eval_identity(base: str, rdir: str | None, sub: str, regime_dir: str,
+                   *, starless: bool, num_images: int) -> dict:
+    """Everything that determines an evaluation's numbers: the eval dataset
+    (records fingerprint), the exact member weights (per-member checkpoint
+    fingerprints), the fitted combiner and the requested field count. Two evals
+    with the same identity produce the same results — so a cached one with a
+    matching identity is reused instead of re-running model inference."""
+    labels = _regime_labels(base, starless)
+    member_fps = [
+        member_fingerprint(os.path.join(base, f"member_{str(lbl).split('·')[0]}"))
+        for lbl in labels
+    ]
+    return {
+        "records_fp": _eval_records_fingerprint(rdir, sub, starless=starless),
+        "subset": sub,
+        "num_images": int(num_images),
+        "regime": _regime_slug(starless),
+        "member_fps": member_fps,
+        "combiner_fp": _combiner_fingerprint(regime_dir),
+    }
+
+
+def _read_eval_summary(starless: bool) -> dict | None:
+    try:
+        with open(os.path.join(_ensemble_regime_dir(starless),
+                               "eval_summary.json")) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _reusable_eval(starless: bool, identity: dict) -> dict | None:
+    """The cached summary of a completed evaluation whose identity matches
+    ``identity`` AND whose cubes are still on disk pointing at the same dataset
+    — else ``None`` (a real re-evaluation is needed). ``eval_summary.json`` is
+    written last, so its presence with a matching identity means that run
+    finished; the cube-manifest ``records_fp`` guards against a cube wipe/regen
+    since then."""
+    summary = _read_eval_summary(starless)
+    if not summary or summary.get("eval_identity") != identity:
+        return None
+    man_path = os.path.join(_ensemble_cubes_dir(starless=starless),
+                            "viz_index.json")
+    try:
+        with open(man_path) as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if man.get("records_fp") != identity["records_fp"]:
+        return None
+    return summary
+
+
 def _load_member_psnr_cache() -> dict:
     try:
         with open(_member_psnr_cache_path()) as f:
@@ -1036,13 +1103,19 @@ def compute_evaluation_payload(starless: bool) -> dict | None:
 
 
 def job_ensemble_evaluate(cap, *, num_images: int,
-                          starless: bool = True) -> dict:
+                          starless: bool = True, force: bool = False) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
 
     ``starless`` selects the regime: STARLESS members scored against the
     starless ``clean`` target (erase stars), STARFULL against the starfull
     ``hr`` target (reconstruct them). Only members of the matching regime are
     evaluated together (their targets differ, so a mixed mean is meaningless).
+
+    Idempotent: a completed evaluation with the SAME identity — the dataset, the
+    member weights, the fitted combiner and the field count all unchanged —
+    is never re-run. Its cheap browser figures (payload + back-trace samples) are
+    rebuilt from the cached cubes (no model inference) and the cached metrics are
+    returned. Pass ``force=True`` to bypass and re-infer.
 
     Also caches every evaluated field's ensemble-mean (SR), per-pixel std
     (stdSR) and PCA cubes under ``<vis>/ensemble/<regime>/cubes/`` (up to
@@ -1058,6 +1131,25 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     sub = eval_subset(rdir)
     viz_cap = min(int(num_images), ENSEMBLE_VIZ_FIELDS_MAX)
     out_dir = _ensemble_regime_dir(starless)
+
+    # Never re-infer on an unchanged dataset+model. If a completed evaluation
+    # with this exact identity is already cached, rebuild only the cheap figures
+    # from the stored cubes (seconds, no GPU) and return the cached metrics.
+    identity = _eval_identity(base, rdir, sub, out_dir,
+                              starless=starless, num_images=int(num_images))
+    if not force:
+        cached = _reusable_eval(starless, identity)
+        if cached is not None:
+            cap.tick(0, 1, "cached evaluation found — rebuilding figures (no inference)")
+            compute_evaluation_payload(starless)   # payload + back-trace samples
+            cap.tick(1, 1, "reused cached evaluation (dataset + model unchanged)")
+            summary = dict(cached)
+            summary["reused"] = True
+            summary["regime"] = _regime_slug(starless)
+            summary.setdefault("viz_fields", 0)
+            print(f"[ensemble evaluate] reused cached result for "
+                  f"{_regime_slug(starless)} (identity unchanged)")
+            return summary
 
     cubes_dir = _ensemble_cubes_dir(starless=starless)
     shutil.rmtree(cubes_dir, ignore_errors=True)      # fresh viz set per eval
@@ -1191,6 +1283,10 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             pass
 
     out["regime"] = _regime_slug(starless)
+    # Stamp the identity LAST (with the summary) so its presence means this run
+    # finished — the reuse guard keys off it to skip a redundant re-evaluation.
+    out["eval_identity"] = identity
+    out["reused"] = False
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
     print(json.dumps(out, indent=2))
