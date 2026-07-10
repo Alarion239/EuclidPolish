@@ -49,8 +49,11 @@ def register(app):
     def ensemble_status_json():
         """Everything the members table + summary render from — the JSON twin of
         the classic page's render context (members, archived, eval summary,
-        data presence). Consumed by the React console."""
-        return jsonify(ensemble_status())
+        data presence). Consumed by the React console. ``?mode=`` selects which
+        regime's eval summary + staleness to report (mode-specific badge)."""
+        mode = request.args.get("mode")
+        starless = None if mode is None else (mode.lower() != "starfull")
+        return jsonify(ensemble_status(starless))
 
     @app.route("/ensemble/render", methods=["POST"])
     def ensemble_render():

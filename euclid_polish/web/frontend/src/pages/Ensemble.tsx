@@ -37,6 +37,7 @@ type Status = {
   n_members: number; n_models: number; records_dir?: string | null;
   eval_subset?: string; test_present: boolean; psnr_fields: number;
   evaluations_available: boolean; eval_summary: EvalSummary; eval_summary_stale?: boolean;
+  evaluations_ready?: boolean;
 };
 
 /* ── evals.json ──────────────────────────────────────────────────────────── */
@@ -318,7 +319,7 @@ export default function EnsemblePage() {
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
 
-  const status = useResource<Status>("/ensemble/status.json", [mode]);
+  const status = useResource<Status>(`/ensemble/status.json?mode=${mode}`, [mode]);
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
   const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}`, [mode]);
   const curves = useResource<{ members: Curve[] }>("/ensemble/training-curves.json");
@@ -352,7 +353,8 @@ export default function EnsemblePage() {
           onFork={(m) => toTrain("fork", m)} />
         <TrainingCurves curves={curves.data?.members ?? []} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
-        <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll} />
+        <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
+          evalReady={status.data?.evaluations_ready ?? false} />
         <DisagreementCard key={mode} mode={mode} members={status.data?.members ?? []} />
       </div>
     </Page>
@@ -699,8 +701,8 @@ function Evaluations(
 type GateColorBy = "loss" | "psnr" | "depth" | "knee";
 
 function CombinerCard(
-  { comb, loading, mode, theme, fitJob, onFit }:
-  { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void },
+  { comb, loading, mode, theme, fitJob, onFit, evalReady }:
+  { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean },
 ) {
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("12");
@@ -783,11 +785,17 @@ function CombinerCard(
           <NumberField label="validate fields" value={nImg} onChange={setNImg} min={1} max={2000} />
           <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={32} />
           <NumberField label="prune (min importance)" value={minUsage} onChange={setMinUsage} min={0} max={0.5} step={0.01} />
-          <Button variant="primary" disabled={fitJob.busy}
+          <Button variant="primary" disabled={fitJob.busy || !evalReady}
+            title={evalReady ? undefined : `evaluate ${mode} on the test set first — its evaluation must match the current members`}
             onClick={() => fitJob.run("/ensemble/combiner/fit", { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
             Fit combiner
           </Button>
         </div>
+        {!evalReady && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+            Evaluations for <b>{mode}</b> aren’t ready — run “Evaluate on test set” (for the current members) before fitting a combiner.
+          </div>
+        )}
         <JobProgressView job={fitJob.job} error={fitJob.error} />
 
         {loading ? <Empty><Spinner /> loading…</Empty>

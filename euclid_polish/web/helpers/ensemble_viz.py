@@ -407,10 +407,15 @@ def job_member_psnr(cap) -> dict:
     return {"evaluated": sorted(scores), "reused": reused, "subset": sub}
 
 
-def ensemble_status() -> dict:
+def ensemble_status(starless: bool | None = None) -> dict:
     """Everything the ensemble page renders: registry-active members
     (+ seeds, sizes, cached test PSNR + rank), archived tombstones,
-    test-data presence, and the latest eval summary (+ staleness)."""
+    test-data presence, and the latest eval summary (+ staleness).
+
+    ``starless`` picks WHICH regime's eval summary + staleness to report — the
+    badge/stats must reflect the regime the user is viewing (``?mode=``), not
+    just the first one present. ``None`` (the classic page) keeps the old
+    first-present behaviour (starless priority)."""
     base = ensemble_dir()
     reg = ensemble_registry.load_registry(base)
 
@@ -487,7 +492,13 @@ def ensemble_status() -> dict:
     summary_stale = False
     summary_starless = False
     summary_path = None
-    for r in ("starless", "starfull"):
+    # Report the REQUESTED regime's summary (mode-specific badge); fall back to
+    # the first present when no regime is requested (classic page).
+    if starless is None:
+        order = ("starless", "starfull")
+    else:
+        order = ("starless",) if starless else ("starfull",)
+    for r in order:
         p = os.path.join(out_dir, r, "eval_summary.json")
         if os.path.isfile(p):
             summary_path, summary_starless = p, (r == "starless")
@@ -521,6 +532,10 @@ def ensemble_status() -> dict:
         "evaluations_available": evaluations_available,
         "eval_summary": summary,
         "eval_summary_stale": summary_stale,
+        # The viewed regime's evaluation exists AND matches the current members
+        # — the signal the combiner-fit button gates on (fit against a known
+        # baseline, not a stale/absent one).
+        "evaluations_ready": bool(summary is not None and not summary_stale),
     }
 
 
