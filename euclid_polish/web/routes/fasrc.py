@@ -434,7 +434,21 @@ def register(app):
         # Lane free → a fresh submit also clears any prior halt (resume).
         if fasrc_queue.QUEUE.halted:
             fasrc_queue.QUEUE.resume()
-        slurm_id, payload = _submit_spec_now(spec)
+        try:
+            slurm_id, payload = _submit_spec_now(spec)
+        except subprocess.TimeoutExpired:
+            # The sbatch/scp over SSH timed out — usually the login node being
+            # briefly slow, not a bad submit. Give a clear, retryable message
+            # instead of a bare 500.
+            return jsonify({"ok": False, "error":
+                "FASRC connection timed out while submitting — the login node "
+                "may be briefly slow. Try again in a moment (reconnect if it "
+                "persists)."}), 503
+        except SSHError as e:
+            return jsonify({"ok": False, "error": f"FASRC SSH error: {e}"}), 503
+        except ValueError as e:
+            # e.g. a malformed per-member spec — surface the reason, not a 500.
+            return jsonify({"ok": False, "error": str(e)}), 400
         if slurm_id is None:
             return jsonify(payload), 500
         fasrc_queue.QUEUE.on_direct_submit(slurm_id)
@@ -852,11 +866,17 @@ def register(app):
         # Reconcile DB rows against squeue first — without this, a job
         # that already finished still shows up as RUNNING in the DB and
         # the tab would lie. One squeue call per refresh; the same one
-        # the Logs tab already makes.
-        rc_q, out_q, _err_q = STATE.ssh.run(
-            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
-            timeout=15,
-        )
+        # the Logs tab already makes. A slow login node can time this out —
+        # skip the reconcile for this tick (flagging the data stale) rather
+        # than 500 the poll; the next tick retries.
+        stale = False
+        try:
+            rc_q, out_q, _err_q = STATE.ssh.run(
+                f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, SSHError):
+            rc_q, out_q, stale = 1, "", True
         squeue_rows: list[dict[str, Any]] = []
         if rc_q == 0:
             squeue_rows = fasrc_jobs.parse_squeue(out_q)
@@ -875,7 +895,14 @@ def register(app):
             None,
         )
         if current_row is None:
-            return jsonify({"ok": True, "current": None, "queue": queue_public})
+            return jsonify({"ok": True, "current": None, "queue": queue_public,
+                            "stale": stale})
+        if stale:
+            # Login node slow this tick — return the last-known DB row without
+            # the extra SSH calls (squeue merge + event fetch) that would also
+            # hang and 500. The next poll fills the live fields back in.
+            return jsonify({"ok": True, "stale": True, "queue": queue_public,
+                            "current": {"job": current_row, "status": None}})
 
         # Merge live squeue fields into the row so the UI sees the
         # current ``start_time`` (PENDING jobs only), ``reason`` (why
@@ -896,6 +923,7 @@ def register(app):
         status  = fetcher.fetch(events_path=current_row.get("events_path"))
         return jsonify({
             "ok":      True,
+            "stale":   False,
             "current": {
                 "job":    current_row,
                 "status": status.to_dict(),
