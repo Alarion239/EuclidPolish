@@ -108,7 +108,7 @@
       </section>
     </div>
 
-    <!-- Live job: header (state + cancel + extend), then stage +
+    <!-- Live job: header (state + cancel), then stage +
          progress, then full stage history, then warnings/errors. -->
     <div id="cs-live-panel" style="display:none;">
       <section class="card">
@@ -121,19 +121,7 @@
           <dt>Node</dt>        <dd><code id="cs-node">—</code></dd>
           <dt>Elapsed</dt>     <dd id="cs-elapsed">—</dd>
           <dt>Limit</dt>
-          <dd>
-            <span id="cs-limit">—</span>
-            <span style="margin-left:8px; display:inline-flex; gap:4px; align-items:center;">
-              <input id="extend-hours" type="number" min="0.25" max="24"
-                     step="0.25" value="1" style="width:55px; padding:2px 4px;">
-              <button id="btn-extend" type="button" class="secondary"
-                      style="padding:2px 8px;"
-                      title="scontrol update job=… TimeLimit=+HH:MM:SS">
-                + hours
-              </button>
-            </span>
-            <span id="extend-msg" class="muted" style="margin-left:6px; font-size:11px;"></span>
-          </dd>
+          <dd><span id="cs-limit">—</span></dd>
           <dt>Started</dt>     <dd id="cs-started" class="muted">—</dd>
           <!-- PENDING-only: SLURM's estimated start time + the wait
                reason it reports (Priority / Resources / Dependency / …).
@@ -516,7 +504,7 @@ $('settings-form').addEventListener('submit', async (e) => {
    warnings, errors).
 ============================================================ */
 
-// Remember the last job id we rendered so the cancel + extend buttons
+// Remember the last job id we rendered so the cancel button
 // can read it without scraping the DOM (the textContent dance the old
 // renderer did broke when the chip's :before content shifted).
 let __CS_JOBID = null;
@@ -792,27 +780,6 @@ async function refreshCurrentSubmission() {
     }).join('');
   }
 }
-
-$('btn-extend').onclick = async () => {
-  const jid   = __CS_JOBID;
-  const hours = $('extend-hours').value;
-  if (!jid || !/^\d+$/.test(jid)) {
-    $('extend-msg').textContent = 'no live job to extend';
-    return;
-  }
-  $('extend-msg').textContent = 'extending…';
-  const r = await fetch('/api/fasrc/extend-time', {
-    method: 'POST',
-    body: new URLSearchParams({ jobid: jid, hours }),
-  });
-  const data = await r.json();
-  if (data.ok) {
-    $('extend-msg').textContent = `+${hours}h (${data.delta}) — ${data.scontrol || ''}`;
-    setTimeout(refreshCurrentSubmission, 800);
-  } else {
-    $('extend-msg').textContent = 'failed: ' + (data.error || '?');
-  }
-};
 
 $('btn-run-cancel').onclick = async () => {
   const msg = $('cancel-msg');

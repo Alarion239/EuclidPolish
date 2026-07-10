@@ -128,7 +128,6 @@ type CurrentSubmissionResp = {
 export function CurrentSubmission() {
   const [resp, setResp] = useState<CurrentSubmissionResp | null>(null);
   const [busy, setBusy] = useState(false);
-  const [hours, setHours] = useState("2");
   const load = () =>
     getJSON<CurrentSubmissionResp>("/api/fasrc/current-submission").then((r) => r && setResp(r));
   usePolling(load, 5000);
@@ -174,12 +173,7 @@ export function CurrentSubmission() {
                 ["reason", cur.job.reason || "—"] as [string, ReactNode],
               ] : []),
             ]} />
-            <div className="row" style={{ gap: 8, marginTop: "var(--s3)", flexWrap: "wrap" }}>
-              <div className="row" style={{ gap: 6 }}>
-                <Input value={hours} onChange={setHours} style={{ width: 56 }} />
-                <Button size="sm" disabled={busy}
-                  onClick={() => control("/api/fasrc/extend-time", { jobid: cur.job.jobid || "", hours })}>+ hours</Button>
-              </div>
+            <div className="row" style={{ gap: 8, marginTop: "var(--s3)" }}>
               <Button size="sm" variant="ghost" disabled={busy}
                 onClick={() => control("/api/fasrc/cancel", { jobid: cur.job.jobid || "" })}>cancel job</Button>
             </div>
