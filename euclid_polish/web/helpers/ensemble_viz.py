@@ -795,10 +795,18 @@ def _regime_labels(base: str, starless: bool) -> list[str]:
         return []
 
 
-def _reuse_validate_cubes(val_dir: str, records_fp) -> tuple[list[int], list[str]] | None:
+def _reuse_validate_cubes(val_dir: str, records_fp,
+                          active_labels: list[str] | None = None
+                          ) -> tuple[list[int], list[str]] | None:
     """If ``cubes_validate/`` holds a manifest matching the current validate
-    records fingerprint, return ``(indices, member_labels)`` so the fit can reuse
-    the cached member inference. Otherwise ``None`` (must re-infer)."""
+    records fingerprint AND the current active member set, return ``(indices,
+    member_labels)`` so the fit can reuse the cached member inference. Otherwise
+    ``None`` (must re-infer).
+
+    The member-set check is load-bearing: without it a fit after members were
+    added/archived would reuse the OLD validate cubes and fit the combiner over
+    a stale member set — so ``save_combiner`` records the wrong labels and the
+    combiner shows 'stale' the instant it's fitted."""
     try:
         with open(os.path.join(val_dir, "viz_index.json")) as f:
             man = json.load(f)
@@ -812,6 +820,8 @@ def _reuse_validate_cubes(val_dir: str, records_fp) -> tuple[list[int], list[str
     indices = [int(i) for i in man.get("indices", []) or []]
     if not labels or not indices:
         return None
+    if active_labels is not None and labels != [str(x) for x in active_labels]:
+        return None                         # member set changed → re-infer
     return indices, labels
 
 
@@ -849,7 +859,9 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     val_dir = _ensemble_cubes_dir("validate", starless=starless)
     acc = FitBufferAccumulator(BAND_NAMES)
 
-    reuse = _reuse_validate_cubes(val_dir, fp)
+    # Reuse cached validate inference ONLY when it covers the CURRENT member set
+    # (else the combiner would be fit over stale members → 'stale' on arrival).
+    reuse = _reuse_validate_cubes(val_dir, fp, _regime_labels(base, starless))
     if reuse is not None:
         indices, labels = reuse
         hr_by = {h.index: h for h in read_images(

@@ -247,3 +247,24 @@ def test_apply_combiner_to_test_cubes_noops_without_combiner(tmp_path, monkeypat
     (cubes / "viz_index.json").write_text(json.dumps(
         {"subset": "test", "indices": [0], "member_labels": ["00·p"]}))
     assert ev2._apply_combiner_to_test_cubes(False) is False    # no combiner saved
+
+
+def test_reuse_validate_cubes_rejects_member_set_change(tmp_path):
+    """A fit must NOT reuse cached validate cubes whose member set no longer
+    matches the active ensemble — else the combiner is fit over a stale set and
+    shows 'stale' the instant it's fitted."""
+    vd = tmp_path / "cubes_validate"
+    vd.mkdir()
+    (vd / "viz_index.json").write_text(json.dumps(
+        {"subset": "validate", "indices": [0, 1],
+         "member_labels": ["00·psnr", "01·psnr"], "records_fp": "fp1"}))
+
+    # same set + fingerprint → reuse
+    assert ev._reuse_validate_cubes(str(vd), "fp1", ["00·psnr", "01·psnr"]) is not None
+    # a member was added → reject (re-infer over the current members)
+    assert ev._reuse_validate_cubes(str(vd), "fp1",
+                                    ["00·psnr", "01·psnr", "02·psnr"]) is None
+    # records changed → reject (existing behaviour)
+    assert ev._reuse_validate_cubes(str(vd), "fp2", ["00·psnr", "01·psnr"]) is None
+    # no active_labels passed → member check skipped (back-compat)
+    assert ev._reuse_validate_cubes(str(vd), "fp1") is not None
