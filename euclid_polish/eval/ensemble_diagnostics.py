@@ -6,8 +6,8 @@ measure on real Euclid images where there is no HR truth?
 
 - **std vs error** — joint distribution of the member std σ(x) and the actual
   absolute error |mean − HR|(x) per pixel. If disagreement predicts error the
-  binned median tracks the Gaussian guide 0.674·σ (half the |error| mass below
-  it); a flat median means the members agree confidently on the *wrong* answer.
+  binned median rises with σ (tracking the |error|=σ diagonal); a flat median
+  means the members agree confidently on the *wrong* answer.
 - **std vs brightness** — where the disagreement lives: σ(x) against the HR
   pixel value. Separates photon-noise-driven spread (rises with flux) from
   hallucination on faint structure (excess spread at low flux).
@@ -330,8 +330,6 @@ def render_std_vs_error(out_png: str, acc: EnsembleDiagnosticsAccumulator,
             label="median |error| per std bin")
     lim = 10.0 ** np.array(LOG_E_RANGE)
     ax.plot(lim, lim, ls="--", color="#333", lw=1.2, label="|error| = std")
-    ax.plot(lim, 0.6745 * lim, ls=":", color="#333", lw=1.2,
-            label="0.674·std (calibrated Gaussian)")
     ax.set_xlim(*lim)
     ax.set_ylim(*lim)
     ax.set_xlabel("cross-member per-pixel std  σ  [e⁻]")

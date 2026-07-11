@@ -562,24 +562,21 @@ function Evaluations(
   }, [ps, members, colorBy, show, evals, theme]);
 
   // std vs error — density cloud + median-|error|-per-std curve, both axes
-  // log10(e⁻). Diagonal reference lines (|err|=σ, 0.674σ) ride as 2-pt series.
+  // log10(e⁻). The |err|=σ diagonal reference rides as a 2-pt series.
   const stdErr = useMemo(() => {
     const d = evals?.std_err;
     if (!d?.hist?.length) return null;
     const edges = num(d.edges);
     const lo = edges[0], hi = edges[edges.length - 1];
     const heat: Heat = { z: d.hist, xEdges: edges, yEdges: edges };
-    const g = Math.log10(0.6745);
     const series: Series[] = [
       { x: [lo, hi], y: [lo, hi], color: C.guide, width: 1.3, dash: [6, 3] },
-      { x: [lo, hi], y: [lo + g, hi + g], color: C.guide, width: 1.3, dash: [2, 3] },
       { x: num(d.med_std), y: num(d.med_err), color: C.baseline, width: 2.6, dots: true },
     ];
     const ticks = logDecadeTicks(lo, hi);
     const legend = [
       { label: "median |error| per σ bin", color: C.baseline },
       { label: "|error| = σ", color: C.guide, dash: true },
-      { label: "0.674·σ (calibrated Gaussian)", color: C.guide, dash: true },
     ];
     // Human range for a clicked cell (both axes log10 e⁻).
     const describe = (c: { i: number; j: number }) =>
