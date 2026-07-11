@@ -724,11 +724,37 @@ function CombinerCard(
     }
     const surv = comb.member_labels.map((_, i) => Object.values(comb.surviving ?? {}).some((arr) => arr[i] !== false));
     return comb.member_labels
-      .map((label, i) => ({ label, total: cum[i], kept: surv[i], meta: comb.members?.[i] }))
+      .map((label, i) => ({ i, label, total: cum[i], kept: surv[i], meta: comb.members?.[i] }))
       .filter((r) => r.kept)
       .sort((a, b2) => b2.total - a.total);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comb, theme]);
+
+  // Shared facet colorer (member index → colour by `colorBy`) so the importance
+  // bars and the gate-weight curves colour a member the SAME way — and both
+  // recolour when the characteristic changes. depth/knee → categorical over the
+  // ensemble's distinct values; psnr → viridis over the surviving members' PSNR
+  // range; loss → loss token.
+  const memberColor = useMemo(() => {
+    const members = comb?.members ?? [];
+    const M = comb?.member_labels.length ?? 0;
+    const survIdx = Array.from({ length: M }, (_, m) => m)
+      .filter((m) => Object.values(comb?.surviving ?? {}).some((arr) => arr[m] !== false));
+    const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
+    const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
+    const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
+    const pMin = psnrs.length ? Math.min(...psnrs) : 0;
+    const pMax = psnrs.length ? Math.max(...psnrs) : 1;
+    return (m: number): string => {
+      const meta = members[m];
+      if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
+      if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
+      if (colorBy === "knee") return categorical(knees.indexOf(kneeOf(meta?.asinh_knee)));
+      const p = meta?.psnr;
+      return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comb, colorBy, theme]);
 
   const gate = useMemo(() => {
     const ew = comb?.eff_weights?.[activeBand];
@@ -738,23 +764,6 @@ function CombinerCard(
     const members = comb?.members ?? [];
     const M = comb?.member_labels.length ?? 0;
     const survIdx = Array.from({ length: M }, (_, m) => m).filter((m) => surv[m] !== false);
-
-    // Facet colorer. depth/knee → categorical over the ensemble's distinct
-    // depths/knees; psnr → viridis over the surviving members' PSNR range;
-    // loss → loss token.
-    const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
-    const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
-    const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
-    const pMin = psnrs.length ? Math.min(...psnrs) : 0;
-    const pMax = psnrs.length ? Math.max(...psnrs) : 1;
-    const memberColor = (m: number): string => {
-      const meta = members[m];
-      if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
-      if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
-      if (colorBy === "knee") return categorical(knees.indexOf(kneeOf(meta?.asinh_knee)));
-      const p = meta?.psnr;
-      return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
-    };
 
     const xs = bx.filter((v) => isFinite(v));
     const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs)];
@@ -773,7 +782,7 @@ function CombinerCard(
     const yTicks: Tick[] = [0, 0.5, 1].map((v) => ({ v, label: String(v) }));
     return { series, legend, xDomain, yDomain: [0, 1.02] as [number, number], xTicks, yTicks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comb, activeBand, colorBy, theme]);
+  }, [comb, activeBand, colorBy, memberColor, theme]);
 
   return (
     <Card>
@@ -809,11 +818,15 @@ function CombinerCard(
             ]} />
 
             <div style={{ marginTop: "var(--s4)" }}>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>member importance (cumulative gate weight)</div>
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
+                <div className="eyebrow">member importance (cumulative gate weight)</div>
+                <Select<GateColorBy> value={colorBy} onChange={setColorBy}
+                  options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
+              </div>
               {importance.map((r) => (
                 <div key={r.label} className="ens-imp">
                   <span className="ens-imp__label mono">{r.label}</span>
-                  <div className="ens-imp__bar"><div className="ens-imp__fill" style={{ width: `${Math.min(100, (r.total / (importance[0]?.total || 1)) * 100)}%`, background: LOSS_COLOR[r.meta?.loss ?? "l1"] ?? "var(--accent)" }} /></div>
+                  <div className="ens-imp__bar"><div className="ens-imp__fill" style={{ width: `${Math.min(100, (r.total / (importance[0]?.total || 1)) * 100)}%`, background: memberColor(r.i) }} /></div>
                   <span className="ens-imp__val mono">{r.total.toFixed(2)}</span>
                   <span className="ens-imp__meta muted">{[r.meta?.loss, r.meta?.blocks && `${r.meta.blocks}b`, kneeTag(r.meta?.asinh_knee), r.meta?.psnr != null && `${r.meta.psnr.toFixed(1)}dB`].filter(Boolean).join(" · ")}</span>
                 </div>
@@ -824,11 +837,7 @@ function CombinerCard(
               <div style={{ marginTop: "var(--s4)" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
                   <div className="eyebrow">gate weight vs brightness</div>
-                  <div className="row" style={{ gap: 8 }}>
-                    <Select<GateColorBy> value={colorBy} onChange={setColorBy}
-                      options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
-                    <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
-                  </div>
+                  <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
                 </div>
                 {!gate ? <Empty>no gate data for {activeBand}</Empty> : (
                   <>
