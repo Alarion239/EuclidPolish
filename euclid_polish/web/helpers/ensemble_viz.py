@@ -823,7 +823,14 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     (``<regime>/cubes_validate/``). Persists to ``<regime>/combiner/`` + writes
     the combiner payload. Starfull fuses star reconstructions; starless fuses
     the star-erasing members (still useful — different members denoise/erase
-    faint structure differently)."""
+    faint structure differently).
+
+    Then it AUTOMATICALLY scores the new combiner on the TEST set: the combiner
+    is applied to the cached test member cubes and the evaluation is re-derived
+    from them (see :func:`_apply_combiner_to_test_cubes` /
+    :func:`_reevaluate_from_cached_cubes`) — no model re-inference, since only the
+    fusion changed. So the combiner's test PSNR + the ``|combiner − HR|``
+    diagnostic are current the moment the fit finishes."""
     from euclid_polish.eval.combiner import (
         BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner)
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
@@ -886,10 +893,28 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     comb.fit_meta = {"subset": "validate", "num_images": int(num_images)}
     save_combiner(comb, _ensemble_regime_dir(starless))
     compute_combiner_payload(starless)
-    return {"n_members": len(labels), "n_kernels": int(n_kernels),
-            "min_usage": float(min_usage), "val_l1": comb.val_l1,
-            "surviving": comb.surviving_members(), "subset": "validate",
-            "regime": _regime_slug(starless)}
+
+    # Score the new combiner on the TEST set automatically: apply it to the
+    # cached test member cubes and re-derive the evaluation — no re-inference
+    # (only the fusion changed, not the members). The Fit-combiner button is
+    # gated on a ready test eval, so the cubes are present + matching.
+    cap.tick(0, 1, "scoring combiner on the test set")
+    test_summary = None
+    if _apply_combiner_to_test_cubes(starless):
+        prev = (_read_eval_summary(starless) or {}).get("eval_identity") or {}
+        test_summary = _reevaluate_from_cached_cubes(
+            starless, num_images=prev.get("num_images"))
+    cap.tick(1, 1, "done")
+
+    result = {"n_members": len(labels), "n_kernels": int(n_kernels),
+              "min_usage": float(min_usage), "val_l1": comb.val_l1,
+              "surviving": comb.surviving_members(), "subset": "validate",
+              "regime": _regime_slug(starless),
+              "test_scored": test_summary is not None}
+    if test_summary is not None:
+        result["combiner_psnr"] = test_summary.get("combiner_psnr")
+        result["combiner_vs_mean_db"] = test_summary.get("combiner_vs_mean_db")
+    return result
 
 
 def compute_combiner_payload(starless: bool) -> dict | None:
@@ -1270,6 +1295,49 @@ def _reevaluate_from_cached_cubes(starless: bool,
         with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(out_dir, png))
     return summary
+
+
+def _apply_combiner_to_test_cubes(starless: bool) -> bool:
+    """Apply the regime's fitted combiner to the cached TEST member cubes,
+    writing fresh ``comb_`` cubes — so a combiner refit is scored on the test set
+    WITHOUT re-running member inference (the members are unchanged; only their
+    fusion is). Sets ``has_combiner`` in the manifest. Returns ``True`` iff the
+    combiner applied to at least one cached field (the test cubes are present and
+    match the combiner's member set)."""
+    from euclid_polish.eval.combiner import load_combiner
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    man_path = os.path.join(cubes_dir, "viz_index.json")
+    try:
+        with open(man_path) as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    labels = [str(x) for x in man.get("member_labels", []) or []]
+    comb = load_combiner(_ensemble_regime_dir(starless), member_labels=labels)
+    if comb is None:                     # no combiner, or stale for these cubes
+        return False
+    n_members = len(labels)
+    applied = 0
+    for rec in (int(i) for i in man.get("indices", []) or []):
+        tag = f"{rec:05d}"
+        stack = []
+        for p in range(n_members):
+            mf = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
+            if not os.path.isfile(mf):
+                break
+            stack.append(np.load(mf))
+        if len(stack) != n_members:
+            continue
+        comb_full = comb.apply_field(np.stack(stack, 0))     # (H, W, C) electrons
+        np.save(os.path.join(cubes_dir, f"comb_{tag}.npy"),
+                np.asarray(comb_full, np.float32))
+        applied += 1
+    if applied == 0:
+        return False
+    man["has_combiner"] = True
+    with open(man_path, "w") as f:
+        json.dump(man, f)
+    return True
 
 
 def _reconcile_combiner_on_archive(regime_dir: str, starless: bool,

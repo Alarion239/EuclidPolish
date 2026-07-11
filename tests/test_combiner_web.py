@@ -189,3 +189,61 @@ def test_viewer_advertises_combiner_tier_only_when_present(monkeypatch):
 
     monkeypatch.setattr(vd, "_ensemble_manifest", lambda: {**base, "has_combiner": False})
     assert "comb" not in [t["key"] for t in vd._ensemble_meta({})["tiers"]]
+
+
+# ---------------------------------------------------------------------------
+# auto-score the combiner on test after a fit (no re-inference)
+# ---------------------------------------------------------------------------
+
+def test_apply_combiner_to_test_cubes_from_cached_members(tmp_path, monkeypatch):
+    """Applying a fitted combiner to the cached TEST member cubes writes comb_
+    cubes equal to combiner.apply_field(stack) and flips the manifest flag —
+    the mechanism behind auto-scoring a fresh combiner without re-inference."""
+    from euclid_polish.eval.combiner import fit_combiner, save_combiner, load_combiner
+
+    regime = tmp_path / "starfull"
+    cubes = regime / "cubes"
+    cubes.mkdir(parents=True)
+    monkeypatch.setattr(ev, "_ensemble_regime_dir",
+                        lambda sl: str(tmp_path / ("starless" if sl else "starfull")))
+    monkeypatch.setattr(ev, "_ensemble_cubes_dir", lambda *a, **k: str(cubes))
+
+    rng = np.random.default_rng(0)
+    n = 2000
+    y = np.arcsinh(np.abs(rng.normal(30, 20, n)) ** 2 / 100.0).astype(np.float32)
+    X = np.stack([y + rng.normal(0, .02, n), rng.normal(0, 1, n)], 1).astype(np.float32)
+    comb = fit_combiner({b: (X, y) for b in BANDS}, ["00·p", "01·p"],
+                        n_kernels=6, steps=120)
+    save_combiner(comb, str(regime))
+
+    labels = ["00·p", "01·p"]
+    for rec in (3, 7):                       # cached test member cubes, 2 members
+        for i in range(2):
+            np.save(cubes / f"member{i}_{rec:05d}.npy",
+                    np.abs(rng.normal(200, 150, (5, 5, 4))).astype(np.float32))
+    (cubes / "viz_index.json").write_text(json.dumps(
+        {"subset": "test", "indices": [3, 7], "member_labels": labels,
+         "has_combiner": False}))
+
+    assert ev._apply_combiner_to_test_cubes(False) is True
+    man = json.load(open(cubes / "viz_index.json"))
+    assert man["has_combiner"] is True
+
+    loaded = load_combiner(str(regime), member_labels=labels)
+    for rec in (3, 7):
+        stack = np.stack([np.load(cubes / f"member{i}_{rec:05d}.npy")
+                          for i in range(2)], 0)
+        got = np.load(cubes / f"comb_{rec:05d}.npy")
+        np.testing.assert_allclose(got, loaded.apply_field(stack),
+                                   rtol=1e-5, atol=1e-2)
+
+
+def test_apply_combiner_to_test_cubes_noops_without_combiner(tmp_path, monkeypatch):
+    from euclid_polish.web.helpers import ensemble_viz as ev2
+    cubes = tmp_path / "starfull" / "cubes"
+    cubes.mkdir(parents=True)
+    monkeypatch.setattr(ev2, "_ensemble_regime_dir", lambda sl: str(tmp_path / "starfull"))
+    monkeypatch.setattr(ev2, "_ensemble_cubes_dir", lambda *a, **k: str(cubes))
+    (cubes / "viz_index.json").write_text(json.dumps(
+        {"subset": "test", "indices": [0], "member_labels": ["00·p"]}))
+    assert ev2._apply_combiner_to_test_cubes(False) is False    # no combiner saved
