@@ -3,11 +3,12 @@ star-anchor work). These are the formulas the anchor delta-targets (from
 catalog magnitude) and the model input (from archive ADU/s) must share so
 the two are on one electron-over-the-stack scale."""
 
+import math
+
 import numpy as np
 import pytest
 
-import math
-
+from euclid_polish.config import Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     ab_mag_to_uJy,
@@ -19,7 +20,6 @@ from euclid_polish.photometry import (
     uJy_to_ab_mag,
     uJy_to_electrons,
 )
-from euclid_polish.config import Config
 
 BAND = Config.BAND_VIS
 
@@ -90,7 +90,7 @@ def test_adu_conversion_consistent_with_mag_chain():
 def test_ab_zp_ujy_is_exact_ab_definition():
     # AB is DEFINED by m = 8.90 − 2.5·log10(F[Jy]); in µJy the constant is
     # 8.90 + 2.5·log10(1e6) = 23.90 exactly (2.5·log10(1e6) = 15 exactly).
-    assert Config.AB_ZP_UJY == 8.90 + 2.5 * math.log10(1e6)
+    assert 8.90 + 2.5 * math.log10(1e6) == Config.AB_ZP_UJY
     assert Config.AB_ZP_UJY == 23.90
 
 

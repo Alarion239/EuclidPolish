@@ -11,8 +11,8 @@ import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.config import Config
+from euclid_polish.photometry import ab_mag_to_electrons
 
 gen = importlib.import_module("scripts.fasrc_generate_star_anchor_tfrecords")
 

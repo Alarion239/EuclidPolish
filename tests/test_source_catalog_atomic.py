@@ -47,8 +47,7 @@ def test_concat_leaves_no_temp_file(tmp_path):
 def test_galaxy_row_persists_size_and_mass(tmp_path):
     """The enriched galaxy truth (re_arcsec / logmass / mass_scale) round-trips
     through the writer and read_sources."""
-    from euclid_polish.sky.generation.source_catalog import (
-        SourceCatalogWriter, read_sources)
+    from euclid_polish.sky.generation.source_catalog import SourceCatalogWriter, read_sources
 
     path = str(tmp_path / "sources_train.csv")
     tng = {"type": "galaxy", "render": "tng", "x_pix": 10.0, "y_pix": 20.0,

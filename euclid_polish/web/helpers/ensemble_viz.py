@@ -46,10 +46,10 @@ from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
-from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
-from euclid_polish.training.trainer import prune_orphaned_checkpoints
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
+from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
+from euclid_polish.training.trainer import prune_orphaned_checkpoints
 from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
@@ -95,9 +95,8 @@ def _migrate_legacy_flat_layout(out_dir: str) -> None:
         starless = False
         cj = os.path.join(out_dir, "combiner", "combiner.json")
         if os.path.isfile(cj):
-            with contextlib.suppress(OSError, ValueError):
-                with open(cj) as f:
-                    starless = not bool(json.load(f).get("starfull", True))
+            with contextlib.suppress(OSError, ValueError), open(cj) as f:
+                starless = not bool(json.load(f).get("starfull", True))
         regime_dir = os.path.join(out_dir, "starless" if starless else "starfull")
         for name in _LEGACY_FLAT_NAMES:
             src = os.path.join(out_dir, name)
@@ -165,10 +164,8 @@ def _dir_size_mb(d: str) -> float:
     total = 0
     for dp, _dirs, fns in os.walk(d):
         for fn in fns:
-            try:
+            with contextlib.suppress(OSError):
                 total += os.path.getsize(os.path.join(dp, fn))
-            except OSError:
-                pass
     return total / 1e6
 
 
@@ -394,8 +391,8 @@ def job_member_psnr(cap) -> dict:
         cap.tick(i, len(todo), name)
         out = evaluate_member_on_records(
             d, rdir, subset=sub, num_images=MEMBER_PSNR_FIELDS,
-            on_progress=lambda j, n, lbl, _i=i: cap.tick(
-                _i, len(todo), f"{name}: {lbl}"))
+            on_progress=lambda j, n, lbl, _i=i, _name=name: cap.tick(
+                _i, len(todo), f"{_name}: {lbl}"))
         scores[name] = {"fingerprint": fp,
                         "psnr": out["psnr_stretched"],
                         "n_scored": out["n_scored"]}
@@ -494,10 +491,8 @@ def ensemble_status(starless: bool | None = None) -> dict:
     summary_path = None
     # Report the REQUESTED regime's summary (mode-specific badge); fall back to
     # the first present when no regime is requested (classic page).
-    if starless is None:
-        order = ("starless", "starfull")
-    else:
-        order = ("starless",) if starless else ("starfull",)
+    order = (("starless", "starfull") if starless is None
+             else ("starless",) if starless else ("starfull",))
     for r in order:
         p = os.path.join(out_dir, r, "eval_summary.json")
         if os.path.isfile(p):
@@ -752,7 +747,8 @@ def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
         "members": [{"label": str(lbl), **meta}
                     for lbl, meta in zip(
                         member_labels,
-                        _member_meta_from_labels(member_labels))],
+                        _member_meta_from_labels(member_labels),
+                        strict=True)],
         "guides": {
             "lr_scale": 0.5 / LR_NYQUIST_CYC_ARCSEC,
             "vis_fwhm": float(Config.get_band("VIS").psf_fwhm_arcsec),
@@ -841,8 +837,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     :func:`_reevaluate_from_cached_cubes`) — no model re-inference, since only the
     fusion changed. So the combiner's test PSNR + the ``|combiner − HR|``
     diagnostic are current the moment the fit finishes."""
-    from euclid_polish.eval.combiner import (
-        BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner)
+    from euclid_polish.eval.combiner import BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     base = ensemble_dir()
@@ -950,7 +945,8 @@ def compute_combiner_payload(starless: bool) -> dict | None:
         "member_labels": list(comb.member_labels),
         "members": [{"label": str(lbl), **meta} for lbl, meta in
                     zip(comb.member_labels,
-                        _member_meta_from_labels(comb.member_labels))],
+                        _member_meta_from_labels(comb.member_labels),
+                        strict=True)],
         "n_kernels": int(comb.n_kernels), "min_usage": float(comb.min_usage),
         "val_l1": comb.val_l1, "band_names": list(comb.band_names),
         "surviving": comb.surviving_members(), "eff_weights": eff,
@@ -1508,8 +1504,11 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     # metric. Labels are "NN·psnr" → dir "member_NN".
     if int(num_images) == MEMBER_PSNR_FIELDS and out.get("n_scored"):
         scores = {}
-        for lbl, p in zip(member_labels,
-                          out.get("per_member_psnr_stretched", [])):
+        for lbl, p in zip(
+            member_labels,
+            out.get("per_member_psnr_stretched", []),
+            strict=False,
+        ):
             name = f"member_{lbl.split('·')[0]}"
             fp = member_fingerprint(os.path.join(base, name))
             if fp is not None:
@@ -1562,10 +1561,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     # The pixel-level diagnostic figures render lazily from the fresh cubes —
     # drop the ones from the previous eval so the page never serves stale plots.
     for png in EVAL_DIAGNOSTIC_PNGS.values():
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(out_dir, png))
-        except FileNotFoundError:
-            pass
 
     out["regime"] = _regime_slug(starless)
     # Stamp the identity LAST (with the summary) so its presence means this run

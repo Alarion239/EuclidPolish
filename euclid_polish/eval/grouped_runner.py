@@ -14,12 +14,11 @@ import shutil
 from collections.abc import Callable
 from typing import Any
 
-from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.ensemble_registry import active_labels
 from euclid_polish.eval import catalog_runner, galaxy_catalog, synthetic_runner
-from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.eval_catalog import read_eval_catalog
 
 #: Manifest columns for a grouped run (superset: PSNR is synthetic-only).

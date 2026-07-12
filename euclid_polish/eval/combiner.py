@@ -183,7 +183,7 @@ class Combiner:
         return 0 <= index < len(self.member_labels) \
             and index not in set(self.needed_member_indices())
 
-    def without_member(self, index: int) -> "Combiner":
+    def without_member(self, index: int) -> Combiner:
         """A copy with the member at ``index`` removed from ``member_labels`` and
         every band's weights (``V`` column, bias ``a``, ``surviving`` mask),
         reindexed contiguous. **Exact only for a PRUNED member** (see
@@ -260,7 +260,7 @@ class FitBufferAccumulator:
         self._rng = np.random.default_rng(seed)
         self._X = {b: [] for b in self.band_names}
         self._y = {b: [] for b in self.band_names}
-        self._n = {b: 0 for b in self.band_names}
+        self._n = dict.fromkeys(self.band_names, 0)
 
     def add(self, preds: np.ndarray, hr: np.ndarray) -> None:
         preds = np.asarray(preds, np.float32)
@@ -384,7 +384,7 @@ def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
         with tf.GradientTape() as tape:
             loss = tf.reduce_mean(tf.abs(_forward(xb) - yb))
         grads = tape.gradient(loss, [V, a])
-        opt.apply_gradients(zip(grads, [V, a]))
+        opt.apply_gradients(zip(grads, [V, a], strict=True))
 
     bs = int(min(batch, max(1, len(Xtr))))
     ds = (tf.data.Dataset.from_tensor_slices((Xtr, ytr))

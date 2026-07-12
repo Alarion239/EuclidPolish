@@ -41,14 +41,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from euclid_polish.config import Config
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import open_writer
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
     uJy_to_electrons,
 )
-from euclid_polish.config import Config
-from euclid_polish.image import Image
-from euclid_polish.image.tfio import open_writer
 
 SCALE = Config.DEFAULT_REBIN_FACTOR          # LR→HR factor (2)
 STAR_ANCHOR_RECORDS_DIR = os.path.join(Config.DATA_DIR, "images/records_v2_star_anchor")

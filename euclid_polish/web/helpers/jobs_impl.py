@@ -19,12 +19,12 @@ from astropy.io import fits as _fits
 from scipy import signal as scipy_signal
 
 from euclid_polish.catalog.downloader import fetch_cutout_at
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 from euclid_polish.eval.sr_provenance import stamp_sr_fits
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
 from euclid_polish.training.inference import (

@@ -187,20 +187,24 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     return out_png
 
 
-def _shared_run_summary() -> dict[str, Any]:
-    """Summary for the single shared evaluation store."""
-    root = Config.EVAL_RESULTS_DIR
-    rows = _read_manifest(root)
+def _run_summary(run_dir: str, run_name: str) -> dict[str, Any]:
+    """Summary for one resolved evaluation run directory."""
+    rows = _read_manifest(run_dir)
     n_ok = sum(1 for r in rows if str(r.get("ok", "")).lower() == "true")
-    mani = os.path.join(root, "manifest.csv")
+    mani = os.path.join(run_dir, "manifest.csv")
     return {
-        "name": "eval_results",
-        "run": "eval_results",
+        "name": run_name,
+        "run": run_name,
         "rows": rows,
         "n": len(rows),
         "n_ok": n_ok,
         "mtime": os.path.getmtime(mani) if os.path.isfile(mani) else 0,
     }
+
+
+def _shared_run_summary() -> dict[str, Any]:
+    """Summary for the root shared evaluation store."""
+    return _run_summary(Config.EVAL_RESULTS_DIR, "eval_results")
 
 
 def _list_runs() -> list[dict[str, Any]]:
@@ -218,6 +222,8 @@ def _list_runs() -> list[dict[str, Any]]:
         return runs
     for name in sorted(os.listdir(root)):
         rd = os.path.join(root, name)
+        if os.path.dirname(os.path.realpath(rd)) != os.path.realpath(root):
+            continue
         mani = os.path.join(rd, "manifest.csv")
         if not (os.path.isdir(rd) and os.path.isfile(mani)):
             continue
@@ -235,9 +241,37 @@ def _list_runs() -> list[dict[str, Any]]:
 
 def _bad_run_arg(value: str) -> bool:
     return bool(value) and (
-        os.sep in value or (os.altsep and os.altsep in value)
+        "/" in value or "\\" in value
         or value in (".", "..")
     )
+
+
+def _resolve_run_dir(
+    value: str | None,
+    *,
+    required_file: str | None = None,
+    allow_missing_root_file: bool = False,
+) -> tuple[str, str]:
+    """Resolve a root alias or direct child run without allowing escapes."""
+    run = (value or "").strip()
+    if _bad_run_arg(run) or "\x00" in run:
+        abort(400)
+
+    root = os.path.realpath(Config.EVAL_RESULTS_DIR)
+    is_root = run in {"", "eval_results"}
+    run_name = "eval_results" if is_root else run
+    run_dir = root if is_root else os.path.realpath(os.path.join(root, run))
+    if not is_root and os.path.dirname(run_dir) != root:
+        abort(400)
+    if not os.path.isdir(run_dir):
+        if is_root and (required_file is None or allow_missing_root_file):
+            return run_dir, run_name
+        abort(404)
+    if (required_file
+            and not os.path.isfile(os.path.join(run_dir, required_file))
+            and not (is_root and allow_missing_root_file)):
+        abort(404)
+    return run_dir, run_name
 
 
 def register(app):
@@ -351,10 +385,7 @@ def register(app):
         log. Returns a job id, or 400 with an install hint if the env is missing.
         """
         run = (request.form.get("run") or "").strip()
-        if _bad_run_arg(run):
-            return jsonify({"ok": False, "error": "bad run name"}), 400
-        if not os.path.isdir(Config.EVAL_RESULTS_DIR):
-            return jsonify({"ok": False, "error": "eval_results not found"}), 404
+        run_dir, run_name = _resolve_run_dir(run, required_file="manifest.csv")
         py = _zoobot_python()
         if py is None:
             return jsonify({"ok": False, "error": (
@@ -362,9 +393,9 @@ def register(app):
                 "`mamba env create -f environment-zoobot.yml`, or set "
                 "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
         cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
-               "--run-dir", Config.EVAL_RESULTS_DIR, "--device", "cpu"]
+               "--run-dir", run_dir, "--device", "cpu"]
         job_id = _spawn_subprocess_job(
-            "zoobot: eval_results", cmd, {"run": "eval_results"})
+            f"zoobot: {run_name}", cmd, {"run": run_name})
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/run-lensfinder", methods=["POST"])
@@ -378,8 +409,9 @@ def register(app):
         rsync them from FASRC). Returns a job id, or 400 with an install hint if
         the env is missing.
         """
-        if not os.path.isdir(Config.EVAL_RESULTS_DIR):
-            return jsonify({"ok": False, "error": "eval_results not found"}), 404
+        run_dir, run_name = _resolve_run_dir(
+            request.form.get("run"), required_file="manifest.csv"
+        )
         py = _zoobot_python()
         if py is None:
             return jsonify({"ok": False, "error": (
@@ -387,18 +419,20 @@ def register(app):
                 "`mamba env create -f environment-zoobot.yml`.")}), 400
         heads = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
         cmd = [py, os.path.join(_REPO_ROOT, "scripts", "lensfinder_score_eval.py"),
-               "--run-dir", Config.EVAL_RESULTS_DIR, "--heads-dir", heads,
+               "--run-dir", run_dir, "--heads-dir", heads,
                "--device", "cpu"]
         job_id = _spawn_subprocess_job(
-            "lensfinder: eval_results", cmd, {"run": "eval_results"})
+            f"lensfinder: {run_name}", cmd, {"run": run_name})
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/evaluation/runs")
     def api_evaluation_runs():
-        run = request.args.get("run", "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        return jsonify(_shared_run_summary())
+        run_dir, run_name = _resolve_run_dir(
+            request.args.get("run"),
+            required_file="manifest.csv",
+            allow_missing_root_file=True,
+        )
+        return jsonify(_run_summary(run_dir, run_name))
 
     @app.route("/api/evaluation/fetch-catalog", methods=["POST"])
     def api_evaluation_fetch_catalog():
@@ -514,9 +548,7 @@ def register(app):
         plotting code — no cluster round-trip.
         """
         run = (request.form.get("run") or request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        rd = Config.EVAL_RESULTS_DIR
+        rd, _run_name = _resolve_run_dir(run)
         if not os.path.isdir(rd):
             abort(404)
         removed = 0
@@ -542,14 +574,9 @@ def register(app):
         cached to ``<run>/morphology_summary.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        # Absolute path: send_file resolves a *relative* path against the app
-        # root (euclid_polish/web), not the CWD, so a relative EVAL_RESULTS_DIR
-        # would 500 at serve time.
-        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
-        if not os.path.isfile(os.path.join(run_dir, "morphology_manifest.csv")):
-            abort(404)
+        run_dir, _run_name = _resolve_run_dir(
+            run, required_file="morphology_manifest.csv"
+        )
         out_png = os.path.join(run_dir, "morphology_summary.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
@@ -567,11 +594,9 @@ def register(app):
         present-but-empty value → empty payload (every class unchecked).
         """
         run = (request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
-        if not os.path.isfile(os.path.join(run_dir, "zoobot_predictions.csv")):
-            abort(404)
+        run_dir, run_name = _resolve_run_dir(
+            run, required_file="zoobot_predictions.csv"
+        )
         raw_groups = request.args.get("groups")
         groups = None if raw_groups is None else {
             g for g in (s.strip() for s in raw_groups.split(",")) if g
@@ -580,7 +605,7 @@ def register(app):
         payload = zoobot_morph.morphology_embedding_payload(run_dir, groups=groups)
         if payload is None:
             abort(404)
-        payload["run"] = "eval_results"
+        payload["run"] = run_name
         return jsonify(payload)
 
     @app.route("/api/evaluation/transformation")
@@ -591,11 +616,7 @@ def register(app):
         ``<run>/transformation_summary.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
-        if not os.path.isfile(os.path.join(run_dir, "manifest.csv")):
-            abort(404)
+        run_dir, _run_name = _resolve_run_dir(run, required_file="manifest.csv")
         out_png = os.path.join(run_dir, "transformation_summary.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
@@ -612,11 +633,7 @@ def register(app):
         Cached to ``<run>/lensfinder_summary.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        run_dir = os.path.abspath(Config.EVAL_RESULTS_DIR)
-        if not os.path.isfile(os.path.join(run_dir, "lens_scores.csv")):
-            abort(404)
+        run_dir, _run_name = _resolve_run_dir(run, required_file="lens_scores.csv")
         out_png = os.path.join(run_dir, "lensfinder_summary.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
@@ -635,11 +652,10 @@ def register(app):
         ``<eval_results>/angular_power_spectrum.png``; ``?fresh=1`` re-renders.
         """
         run = (request.args.get("run") or "").strip()
-        if _bad_run_arg(run):
-            abort(400)
-        out_png = os.path.join(
-            os.path.abspath(Config.EVAL_RESULTS_DIR), "angular_power_spectrum.png"
-        )
+        run_dir, _run_name = _resolve_run_dir(run)
+        if not os.path.isdir(run_dir):
+            abort(404)
+        out_png = os.path.join(run_dir, "angular_power_spectrum.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
             from euclid_polish.eval import power_spectrum

@@ -19,6 +19,7 @@ from euclid_polish.eval.eval_catalog import CatalogError, read_eval_catalog
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
+
 @pytest.fixture(autouse=True)
 def _isolate_galaxy_cache(tmp_path_factory, monkeypatch):
     """Keep grouped-runner tests hermetic against the machine's galaxy cache.

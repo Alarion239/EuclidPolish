@@ -47,18 +47,20 @@ def test_download_failed_flag():
 
 
 def test_to_row_from_row_roundtrip():
-    o = _obj(i=3)
+    o = _obj(i=3, ra=0.0, dec=0.0)
+    o.kind = "galaxy"
     o.set_valid(64, "VIS")
     o.set_corrupted(128, "Y_E")
     back = CatalogObject.from_row(o.to_row())
-    assert (back.id, back.ra, back.dec) == (3, 10.0, -5.0)
+    assert (back.id, back.ra, back.dec, back.kind) == (3, 0.0, 0.0, "galaxy")
     assert back.flux_psf_uJy == 123.0
     assert back.is_valid(64, "VIS") and back.is_corrupted(128, "Y_E")
 
 
 def test_write_read_roundtrip_and_stable_prov(tmp_path):
     path = str(tmp_path / "stars.csv")
-    objs = [_obj(0), _obj(1)]
+    objs = [_obj(0, ra=0.0, dec=0.0), _obj(1)]
+    objs[0].kind = "galaxy"
     objs[0].set_valid(64, "VIS")
     CatalogObject.write(objs, path)
     assert os.path.exists(path)
@@ -67,11 +69,18 @@ def test_write_read_roundtrip_and_stable_prov(tmp_path):
 
     back = CatalogObject.read(path)
     assert sorted(o.id for o in back) == [0, 1]
-    assert next(o for o in back if o.id == 0).is_valid(64, "VIS")
+    first = next(o for o in back if o.id == 0)
+    assert (first.ra, first.dec, first.kind) == (0.0, 0.0, "galaxy")
+    assert first.is_valid(64, "VIS")
 
     # rewriting reuses the same provenance id
     CatalogObject.write(back, path)
     assert CatalogObject.prov_id(path) == pid
+
+
+def test_legacy_row_without_kind_defaults_to_star():
+    obj = CatalogObject.from_row({"id": 7, "ra": 1.0, "dec": 2.0})
+    assert obj.kind == "star"
 
 
 def test_read_missing_file_is_empty(tmp_path):

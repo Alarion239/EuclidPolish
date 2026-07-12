@@ -19,6 +19,7 @@ from __future__ import annotations
 import builtins
 import contextlib
 import io
+import sys
 import threading
 import time
 import traceback
@@ -51,47 +52,70 @@ class Job:
     progress_current: int = 0
     progress_total:   int = 0
     progress_label:   str = ""
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def append_log(self, msg: str) -> None:
-        self.log_buf.write(msg)
+        with self._lock:
+            self.log_buf.write(msg)
 
     def set_progress(self, current: int, total: int, label: str = "") -> None:
-        self.progress_current = int(current)
-        self.progress_total   = int(total)
-        if label:
-            self.progress_label = label
+        with self._lock:
+            self.progress_current = int(current)
+            self.progress_total   = int(total)
+            if label:
+                self.progress_label = label
 
     @property
     def log(self) -> str:
-        return self.log_buf.getvalue()
+        with self._lock:
+            return self.log_buf.getvalue()
 
     @property
     def progress_pct(self) -> float:
-        if self.progress_total <= 0:
-            return 0.0
-        return 100.0 * self.progress_current / self.progress_total
+        with self._lock:
+            if self.progress_total <= 0:
+                return 0.0
+            return 100.0 * self.progress_current / self.progress_total
+
+    def complete(self, result: Any) -> None:
+        with self._lock:
+            self.result = result
+            self.finished = time.time()
+            self.status = "done"
+
+    def fail(self, error: str) -> None:
+        with self._lock:
+            self.error = error
+            self.log_buf.write(f"\nERROR: {error}\n")
+            self.finished = time.time()
+            self.status = "failed"
 
     def to_dict(self) -> dict[str, Any]:
-        # Keep the log payload small — the UI only renders the last ~4 KB.
-        log = self.log
-        log_tail = log[-4000:] if len(log) > 4000 else log
-        return {
-            "job_id":   self.job_id,
-            "label":    self.label,
-            "status":   self.status,
-            "started":  self.started,
-            "finished": self.finished,
-            "duration": (self.finished or time.time()) - self.started,
-            "error":    self.error,
-            "log":      log_tail,
-            "log_truncated": len(log) > len(log_tail),
-            "progress": {
-                "current": self.progress_current,
-                "total":   self.progress_total,
-                "pct":     round(self.progress_pct, 1),
-                "label":   self.progress_label,
-            },
-        }
+        with self._lock:
+            # Keep the log payload small — the UI only renders the last ~4 KB.
+            log = self.log_buf.getvalue()
+            log_tail = log[-4000:] if len(log) > 4000 else log
+            if self.progress_total <= 0:
+                progress_pct = 0.0
+            else:
+                progress_pct = 100.0 * self.progress_current / self.progress_total
+            return {
+                "job_id":   self.job_id,
+                "label":    self.label,
+                "status":   self.status,
+                "started":  self.started,
+                "finished": self.finished,
+                "duration": (self.finished or time.time()) - self.started,
+                "error":    self.error,
+                "log":      log_tail,
+                "log_truncated": len(log) > len(log_tail),
+                "progress": {
+                    "current": self.progress_current,
+                    "total":   self.progress_total,
+                    "pct":     round(progress_pct, 1),
+                    "label":   self.progress_label,
+                },
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -132,18 +156,61 @@ class JobRegistry:
             try:
                 cap = _LogCapture(job)
                 with cap:
-                    job.result = target(cap)
-                job.finished = time.time()
-                job.status   = "done"        # set status LAST so pollers
-                                              # always see populated fields
+                    result = target(cap)
+                job.complete(result)
             except Exception as e:
-                job.error    = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-                job.append_log(f"\nERROR: {job.error}\n")
-                job.finished = time.time()
-                job.status   = "failed"      # status flip after error+finished
+                error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+                job.fail(error)
 
         threading.Thread(target=_runner, daemon=True, name=f"job-{job.job_id}").start()
         return job.job_id
+
+
+class _ThreadLocalStream:
+    """Route each bound thread to its job and all other writes downstream."""
+
+    def __init__(self, fallback) -> None:
+        self._fallback = fallback
+        self._local = threading.local()
+
+    @contextlib.contextmanager
+    def bind(self, job: Job):
+        previous = getattr(self._local, "job", None)
+        self._local.job = job
+        try:
+            yield
+        finally:
+            if previous is None:
+                del self._local.job
+            else:
+                self._local.job = previous
+
+    def write(self, message: str):
+        job = getattr(self._local, "job", None)
+        if job is not None:
+            job.append_log(message)
+            return len(message)
+        return self._fallback.write(message)
+
+    def flush(self) -> None:
+        if getattr(self._local, "job", None) is None:
+            self._fallback.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._fallback, name)
+
+
+_STREAM_INSTALL_LOCK = threading.Lock()
+
+
+def _stream_proxies() -> tuple[_ThreadLocalStream, _ThreadLocalStream]:
+    """Install stream routers around the currently active process streams."""
+    with _STREAM_INSTALL_LOCK:
+        if not isinstance(sys.stdout, _ThreadLocalStream):
+            sys.stdout = _ThreadLocalStream(sys.stdout)
+        if not isinstance(sys.stderr, _ThreadLocalStream):
+            sys.stderr = _ThreadLocalStream(sys.stderr)
+        return sys.stdout, sys.stderr
 
 
 class _LogCapture:
@@ -168,9 +235,10 @@ class _LogCapture:
         self._stack: contextlib.ExitStack | None = None
 
     def __enter__(self) -> _LogCapture:
+        stdout, stderr = _stream_proxies()
         self._stack = contextlib.ExitStack()
-        self._stack.enter_context(contextlib.redirect_stdout(self.job.log_buf))
-        self._stack.enter_context(contextlib.redirect_stderr(self.job.log_buf))
+        self._stack.enter_context(stdout.bind(self.job))
+        self._stack.enter_context(stderr.bind(self.job))
         return self
 
     def __exit__(self, *exc):

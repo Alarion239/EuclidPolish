@@ -101,7 +101,7 @@ class EnsembleDiagnosticsAccumulator:
         change[1:] = sb[1:] != sb[:-1]
         starts = np.flatnonzero(change)
         ends = np.append(starts[1:], sb.size)
-        for s0, s1 in zip(starts, ends):
+        for s0, s1 in zip(starts, ends, strict=True):
             key = int(sb[s0])
             pick = int(order[s0 + int(rng.integers(s1 - s0))])
             y, x = divmod(pick, W)

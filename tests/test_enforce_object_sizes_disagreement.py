@@ -4,7 +4,9 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.eval.catalog_runner import (
-    EVAL_HR_SIZE, EVAL_LR_SIZE, enforce_object_sizes,
+    EVAL_HR_SIZE,
+    EVAL_LR_SIZE,
+    enforce_object_sizes,
 )
 
 

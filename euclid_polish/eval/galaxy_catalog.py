@@ -22,10 +22,10 @@ import numpy as np
 from astroquery.esa.euclid import Euclid
 
 from euclid_polish.catalog.client import EuclidAuthError, EuclidCatalog
-from euclid_polish.photometry import uJy_to_ab_mag
 from euclid_polish.catalog.validator import angular_separation_arcsec
 from euclid_polish.config import Config
 from euclid_polish.eval.eval_catalog import read_eval_catalog
+from euclid_polish.photometry import uJy_to_ab_mag
 
 #: Group label for a real field galaxy (parallels the synthetic ``syn-gal``).
 GAL_GRADE = "gal"

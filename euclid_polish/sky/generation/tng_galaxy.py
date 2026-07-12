@@ -42,12 +42,12 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import rotate as _ndi_rotate
 
+from euclid_polish.config import BandConfig, Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
-from euclid_polish.config import BandConfig, Config
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     band_drift_factors,

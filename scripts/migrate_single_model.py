@@ -18,8 +18,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from euclid_polish.config import Config                      # noqa: E402
-from euclid_polish.tracking import default_store             # noqa: E402
+from euclid_polish.config import Config  # noqa: E402
+from euclid_polish.tracking import default_store  # noqa: E402
 
 
 def migrate() -> dict:

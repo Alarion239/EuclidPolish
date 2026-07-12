@@ -10,7 +10,7 @@ operates on objects already in hand.
 
 The CSV schema is one row per object::
 
-    id,ra,dec,magnitude,flux_psf_uJy,fluxerr_psf_uJy,valid:<band>:<size>,...
+    id,ra,dec,magnitude,flux_psf_uJy,fluxerr_psf_uJy,kind,valid:<band>:<size>,...
 
 Flag columns ``{kind}:{band}:{size}`` (``kind ∈ {valid, corrupted,
 download_failed}``) grow lazily as ``(band, size)`` pairs are touched; a ``True``
@@ -38,7 +38,7 @@ from euclid_polish.provenance.records import Stamp
 
 _FLAG_KINDS = ("valid", "corrupted", "download_failed")
 _FLAG_RE = re.compile(r"^(valid|corrupted|download_failed):([^:]+):(\d+)$")
-_BASE_COLS = ("id", "ra", "dec", "magnitude", "flux_psf_uJy", "fluxerr_psf_uJy")
+_BASE_COLS = ("id", "ra", "dec", "magnitude", "flux_psf_uJy", "fluxerr_psf_uJy", "kind")
 _OPT_FLOAT_COLS = ("flux_psf_uJy", "fluxerr_psf_uJy")
 
 #: Serialises catalog writes across threads — parallel band downloads share one
@@ -152,6 +152,7 @@ class CatalogObject:
             "ra":        _finite_float(self.ra),
             "dec":       _finite_float(self.dec),
             "magnitude": _finite_float(self.magnitude),
+            "kind":      self.kind,
         }
         for k in _OPT_FLOAT_COLS:
             v = _finite_float(getattr(self, k))
@@ -169,6 +170,10 @@ class CatalogObject:
         """Build a :class:`CatalogObject` from a CSV row dict."""
         v = _finite_float(row.get("id"))
         obj_id = int(v) if v is not None else None
+        ra = _finite_float(row.get("ra"))
+        dec = _finite_float(row.get("dec"))
+        raw_kind = row.get("kind")
+        object_kind = raw_kind.strip() if isinstance(raw_kind, str) and raw_kind.strip() else "star"
         flags: dict[str, dict[str, dict[str, bool]]] = {k: {} for k in _FLAG_KINDS}
         for col, val in row.items():
             m = _FLAG_RE.match(str(col))
@@ -178,15 +183,16 @@ class CatalogObject:
                                      and val.lower() in ("true", "1", "t"))
             if not truthy:
                 continue
-            kind, band, size = m.group(1), m.group(2), m.group(3)
-            flags[kind].setdefault(band, {})[size] = True
+            flag_kind, band, size = m.group(1), m.group(2), m.group(3)
+            flags[flag_kind].setdefault(band, {})[size] = True
         return cls(
-            ra=_finite_float(row.get("ra")) or float("nan"),
-            dec=_finite_float(row.get("dec")) or float("nan"),
+            ra=ra if ra is not None else float("nan"),
+            dec=dec if dec is not None else float("nan"),
             id=obj_id,
             magnitude=_finite_float(row.get("magnitude")),
             flux_psf_uJy=_finite_float(row.get("flux_psf_uJy")),
             fluxerr_psf_uJy=_finite_float(row.get("fluxerr_psf_uJy")),
+            kind=object_kind,
             flags=flags,
         )
 

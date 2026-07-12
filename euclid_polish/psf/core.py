@@ -231,11 +231,10 @@ class PSF(StampCarrier):
         s = float(out.sum())
         if s > 0:
             out = out / s
-        return PSF(
+        return replace(
+            self,
             data=out.astype(np.float32),
             pixel_scale=target,
-            fwhm_arcsec=self.fwhm_arcsec,         # invariant in arcsec
-            oversampling=self.oversampling,
         )
 
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSF:

@@ -33,7 +33,7 @@ def _fit_tiny_combiner(starless=False):
     n = 2000
     y = np.arcsinh(np.abs(rng.normal(30, 20, n)) ** 2 / 100.0).astype(np.float32)
     X = np.stack([y + rng.normal(0, .02, n), rng.normal(0, 1, n)], 1).astype(np.float32)
-    buffers = {b: (X, y) for b in BANDS}
+    buffers = dict.fromkeys(BANDS, (X, y))
     comb = fit_combiner(buffers, ["00·psnr", "01·psnr"], n_kernels=6, steps=150)
     save_combiner(comb, ev._ensemble_regime_dir(starless))
     return comb
@@ -150,8 +150,6 @@ def test_compute_evaluation_payload_includes_combiner(tmp_path, monkeypatch):
     ps.T_comb/r_comb and a combiner comparison block (combiner vs mean vs best
     member)."""
     n, M = 48, 3
-    rng = np.random.default_rng(0)
-
     def _field(seed):
         r = np.random.default_rng(seed)
         hr = np.cumsum(r.normal(0, 1, (n, n)), axis=0).astype(np.float32) * 20
@@ -199,7 +197,7 @@ def test_apply_combiner_to_test_cubes_from_cached_members(tmp_path, monkeypatch)
     """Applying a fitted combiner to the cached TEST member cubes writes comb_
     cubes equal to combiner.apply_field(stack) and flips the manifest flag —
     the mechanism behind auto-scoring a fresh combiner without re-inference."""
-    from euclid_polish.eval.combiner import fit_combiner, save_combiner, load_combiner
+    from euclid_polish.eval.combiner import fit_combiner, load_combiner, save_combiner
 
     regime = tmp_path / "starfull"
     cubes = regime / "cubes"
@@ -212,7 +210,7 @@ def test_apply_combiner_to_test_cubes_from_cached_members(tmp_path, monkeypatch)
     n = 2000
     y = np.arcsinh(np.abs(rng.normal(30, 20, n)) ** 2 / 100.0).astype(np.float32)
     X = np.stack([y + rng.normal(0, .02, n), rng.normal(0, 1, n)], 1).astype(np.float32)
-    comb = fit_combiner({b: (X, y) for b in BANDS}, ["00·p", "01·p"],
+    comb = fit_combiner(dict.fromkeys(BANDS, (X, y)), ["00·p", "01·p"],
                         n_kernels=6, steps=120)
     save_combiner(comb, str(regime))
 

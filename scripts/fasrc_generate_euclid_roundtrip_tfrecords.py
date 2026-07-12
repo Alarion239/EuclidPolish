@@ -38,11 +38,11 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import open_writer
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.photometry import adu_per_s_to_electrons_factor
 
 # Input dir (bundled per-position cutouts), output records dir, and the
 # sky-catalogue filename now live in Config — see

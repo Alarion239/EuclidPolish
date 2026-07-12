@@ -7,7 +7,6 @@ import io as _io
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 import threading as _t
@@ -17,7 +16,6 @@ from typing import Any
 
 from flask import Response, abort, jsonify, render_template, request, stream_with_context
 
-from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.training.log_plot import plot_training_records
 from euclid_polish.web import (

@@ -56,6 +56,7 @@ from euclid_polish.web.routes import (
     viewer,
     views,
 )
+from euclid_polish.web.security import register_mutation_guard, validate_bind_host
 
 
 def _try_startup_ssh_connect() -> str | None:
@@ -110,6 +111,8 @@ def create_app() -> Flask:
         template_folder=os.path.join(here, "templates"),
         static_folder=os.path.join(here, "static"),
     )
+
+    register_mutation_guard(app)
 
     # EXPERIMENTAL lanes (HST / star-anchor / round-trip supervision):
     # features for the future, disabled for now. Templates read this
@@ -274,6 +277,10 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
+    try:
+        validate_bind_host(args.host)
+    except ValueError as exc:
+        ap.error(str(exc))
     app = create_app()
     print(f"\nEuclidPolish web UI on http://{args.host}:{args.port}\n")
     app.run(host=args.host, port=args.port, debug=args.debug,
@@ -282,4 +289,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

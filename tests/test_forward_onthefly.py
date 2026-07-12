@@ -121,8 +121,9 @@ def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):
     """Both starless and starfull inject the SAME fresh stars (identical LR);
     the target is what differs — starless erases them, starfull keeps them."""
     field = _field()
-    kw = dict(seed=5, crops_per_field=4, add_noise=False, add_artifacts=False,
-              add_saturation=False, inject_stars=True, star_density_arcmin2=500.0)
+    kw = {"seed": 5, "crops_per_field": 4, "add_noise": False,
+          "add_artifacts": False, "add_saturation": False, "inject_stars": True,
+          "star_density_arcmin2": 500.0}
     lr_less, hr_less = OnTheFlyForward(gaussian_sets, starless=True, **kw).crops(field)
     lr_full, hr_full = OnTheFlyForward(gaussian_sets, starless=False, **kw).crops(field)
     # Same seed → same injected stars → IDENTICAL LR in both regimes.

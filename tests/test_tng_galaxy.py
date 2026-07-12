@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from astropy.io import fits as _fits
 
+from euclid_polish.config import Config
 from euclid_polish.photometry import (
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
-from euclid_polish.config import Config
 from euclid_polish.sky.generation.tng_galaxy import (
     block_mean,
     list_tng_galaxies,

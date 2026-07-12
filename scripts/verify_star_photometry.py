@@ -36,12 +36,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from euclid_polish.config import Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
     uJy_to_electrons,
 )
-from euclid_polish.config import Config
 
 
 def _catalog_electrons(row: dict, band) -> float:

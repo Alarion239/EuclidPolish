@@ -135,14 +135,14 @@ def run_synthetic_eval(
     import numpy as np
     from astropy.io import fits
 
-    from euclid_polish.eval.subsets import eval_subset
-    from euclid_polish.image.tfio import read_images, tfrecord_path
-    from euclid_polish.sky.generation.source_catalog import read_sources
-    from euclid_polish.eval.ensemble_infer import sr_from_model
     from euclid_polish.eval.ensemble_cube_cache import (
         cached_member_labels,
         load_cached_member_stack,
     )
+    from euclid_polish.eval.ensemble_infer import sr_from_model
+    from euclid_polish.eval.subsets import eval_subset
+    from euclid_polish.image.tfio import read_images, tfrecord_path
+    from euclid_polish.sky.generation.source_catalog import read_sources
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar

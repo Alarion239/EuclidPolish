@@ -9,7 +9,6 @@ from euclid_polish.training.trainer import (
     _plateau_wants_rollback,
 )
 
-
 # ── pure regime decision ────────────────────────────────────────────────────
 
 def test_rollback_when_score_sits_below_best():

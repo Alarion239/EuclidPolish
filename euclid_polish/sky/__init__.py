@@ -1,74 +1,63 @@
-"""
-Multi-band sky simulation + forward model.
+"""Multi-band sky generation and observation APIs, resolved lazily."""
 
-Public API:
+from __future__ import annotations
 
-* :class:`SkySimulator` — generate 4-channel clean HR fields
-  (galaxies + stars + strong lenses) using the COSMOS2025 catalog and
-  the project's custom Sersic renderer.
-* :class:`ObservationSimulator` — per-band PSF convolution + noise +
-  NISP→VIS-LR resample, returning paired (LR 4-channel, HR-VIS 1-channel).
-* :class:`Image` — typed container for ``(H, W, C)`` records.
-* :class:`Cosmos2025Catalog` — galaxy catalog reader (mandatory).
-* :class:`LensPopulation` — Collett 2015 lens population sampler.
-"""
+from importlib import import_module
 
-from euclid_polish.image import Image
-from euclid_polish.sky.generation.cosmos2025 import (
-    Cosmos2025Catalog,
-    CosmosCatalog,
-    GalaxyParams,
-    open_cosmos2025,
-)
-from euclid_polish.sky.generation.lens_population import (
-    LensParams,
-    LensPopulation,
-    einstein_radius_sis,
-    render_lens_to_canvas,
-    render_lens_to_multiband_canvas,
-)
-from euclid_polish.sky.generation.profiles import (
-    add_sersic_to_bands,
-    compute_sersic_stamp,
-    draw_bulge_disk,
-    draw_sersic,
-    evaluate_sersic_at_coords,
-    sersic_amp_from_flux,
-    sersic_b_n,
-)
-from euclid_polish.sky.generation.sky_simulator import (
-    SkySimulator,
-    SkySimulatorConfig,
-)
-from euclid_polish.sky.observation.observation_simulator import (
-    ObservationSimulator,
-    ObservationSimulatorConfig,
-)
-from euclid_polish.sky.observation.resample import cubic_upsample, lanczos3_upsample, upsample
+_EXPORTS = {
+    "Image": ("euclid_polish.image", "Image"),
+    "Cosmos2025Catalog": ("euclid_polish.sky.generation.cosmos2025", "Cosmos2025Catalog"),
+    "CosmosCatalog": ("euclid_polish.sky.generation.cosmos2025", "CosmosCatalog"),
+    "GalaxyParams": ("euclid_polish.sky.generation.cosmos2025", "GalaxyParams"),
+    "open_cosmos2025": ("euclid_polish.sky.generation.cosmos2025", "open_cosmos2025"),
+    "LensParams": ("euclid_polish.sky.generation.lens_population", "LensParams"),
+    "LensPopulation": ("euclid_polish.sky.generation.lens_population", "LensPopulation"),
+    "einstein_radius_sis": ("euclid_polish.sky.generation.lens_population", "einstein_radius_sis"),
+    "render_lens_to_canvas": (
+        "euclid_polish.sky.generation.lens_population",
+        "render_lens_to_canvas",
+    ),
+    "render_lens_to_multiband_canvas": (
+        "euclid_polish.sky.generation.lens_population",
+        "render_lens_to_multiband_canvas",
+    ),
+    "add_sersic_to_bands": ("euclid_polish.sky.generation.profiles", "add_sersic_to_bands"),
+    "compute_sersic_stamp": ("euclid_polish.sky.generation.profiles", "compute_sersic_stamp"),
+    "draw_bulge_disk": ("euclid_polish.sky.generation.profiles", "draw_bulge_disk"),
+    "draw_sersic": ("euclid_polish.sky.generation.profiles", "draw_sersic"),
+    "evaluate_sersic_at_coords": (
+        "euclid_polish.sky.generation.profiles",
+        "evaluate_sersic_at_coords",
+    ),
+    "sersic_amp_from_flux": ("euclid_polish.sky.generation.profiles", "sersic_amp_from_flux"),
+    "sersic_b_n": ("euclid_polish.sky.generation.profiles", "sersic_b_n"),
+    "SkySimulator": ("euclid_polish.sky.generation.sky_simulator", "SkySimulator"),
+    "SkySimulatorConfig": ("euclid_polish.sky.generation.sky_simulator", "SkySimulatorConfig"),
+    "ObservationSimulator": (
+        "euclid_polish.sky.observation.observation_simulator",
+        "ObservationSimulator",
+    ),
+    "ObservationSimulatorConfig": (
+        "euclid_polish.sky.observation.observation_simulator",
+        "ObservationSimulatorConfig",
+    ),
+    "upsample": ("euclid_polish.sky.observation.resample", "upsample"),
+    "lanczos3_upsample": ("euclid_polish.sky.observation.resample", "lanczos3_upsample"),
+    "cubic_upsample": ("euclid_polish.sky.observation.resample", "cubic_upsample"),
+}
 
-__all__ = [
-    "SkySimulator",
-    "SkySimulatorConfig",
-    "ObservationSimulator",
-    "ObservationSimulatorConfig",
-    "Image",
-    "CosmosCatalog",
-    "Cosmos2025Catalog",
-    "open_cosmos2025",
-    "GalaxyParams",
-    "LensParams",
-    "LensPopulation",
-    "einstein_radius_sis",
-    "render_lens_to_canvas",
-    "render_lens_to_multiband_canvas",
-    "add_sersic_to_bands",
-    "compute_sersic_stamp",
-    "draw_bulge_disk",
-    "draw_sersic",
-    "evaluate_sersic_at_coords",
-    "sersic_b_n",
-    "sersic_amp_from_flux",
-    "upsample",
-    "lanczos3_upsample",
-    "cubic_upsample",
-]
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

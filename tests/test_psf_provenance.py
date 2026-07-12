@@ -60,6 +60,20 @@ def test_psf_without_stamp_still_loads(tmp_path):
     assert back.prov_stamp() is None
 
 
+def test_psf_resampling_preserves_stamp():
+    from euclid_polish.psf.core import PSF
+
+    stamp = Stamp(id=ProvId("feedbeef"), produced_by=ProvId("0f0f0f0f"))
+    psf = PSF(data=_gauss(), pixel_scale=0.025).with_stamp(stamp)
+
+    resampled = psf.resampled_to(0.05)
+
+    assert resampled is not psf
+    assert resampled.pixel_scale == 0.05
+    assert resampled.prov_stamp() == stamp
+    assert resampled.resampled_to(0.05) is resampled
+
+
 def test_psfset_stamp_survives_fits_round_trip(tmp_path):
     from euclid_polish.psf.core import PSF
     from euclid_polish.psf.psf_set import PSFSet

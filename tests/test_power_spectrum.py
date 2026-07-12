@@ -11,9 +11,6 @@ import numpy as np
 import pytest
 
 from euclid_polish.eval.power_spectrum import (
-    _SpectrumAccumulator as SpectrumAccumulator,
-)
-from euclid_polish.eval.power_spectrum import (
     EnsembleSpectrumAccumulator,
     cross_power_2d,
     ensemble_ps_plot_curves,
@@ -21,6 +18,9 @@ from euclid_polish.eval.power_spectrum import (
     log_k_edges,
     pairwise_cross_correlation,
     render_ensemble_power_spectrum,
+)
+from euclid_polish.eval.power_spectrum import (
+    _SpectrumAccumulator as SpectrumAccumulator,
 )
 
 PIXEL_SCALE = 0.05  # arcsec/pixel (HR/SR grid)

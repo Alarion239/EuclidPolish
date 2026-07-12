@@ -401,9 +401,8 @@ def _ensemble_cubes_dir(starless: bool) -> str:
 def _ensemble_manifest(starless: bool) -> dict[str, Any]:
     p = os.path.join(_ensemble_cubes_dir(starless), "viz_index.json")
     if os.path.isfile(p):
-        with contextlib.suppress(OSError, ValueError):
-            with open(p) as f:
-                return json.load(f)
+        with contextlib.suppress(OSError, ValueError), open(p) as f:
+            return json.load(f)
     return {"subset": "", "indices": []}
 
 
@@ -477,7 +476,7 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
 # from their cached ``member{i}`` cubes — the SVD of a k-row residual matrix is
 # tens of ms, so this is fully interactive. A tiny LRU lets the sr + pca0…N
 # fetches for one frame share a single SVD.
-_SUBSET_PCA_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_SUBSET_PCA_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
 _SUBSET_PCA_MAX = 8
 
 
@@ -539,7 +538,7 @@ def _load_field_combiner(starless: bool, member_labels: list[str]):
 
 # On-the-fly combiner reconstruction (per field), so the "combiner" tier shows
 # whenever a combiner is fitted — not only when the last eval baked comb_ cubes.
-_COMB_CUBE_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_COMB_CUBE_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _COMB_CUBE_MAX = 8
 
 

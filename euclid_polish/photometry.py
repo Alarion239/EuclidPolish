@@ -55,7 +55,6 @@ import numpy as np
 
 from euclid_polish.config import BandConfig, Config
 
-
 # --------------------------------------------------------------------------- #
 # AB magnitude ↔ µJy (pure AB-system definition, band-independent)
 # --------------------------------------------------------------------------- #

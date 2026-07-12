@@ -1,0 +1,49 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v4
+        with:
+          activate-environment: EuclidPolishEnv
+          environment-file: environment.yml
+          miniforge-version: latest
+          use-mamba: true
+
+      - name: Compile Python sources
+        run: python -m compileall -q euclid_polish scripts tests
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Collect tests without executing them
+        env:
+          NUMBA_DISABLE_JIT: "1"
+          MPLBACKEND: Agg
+        run: python -m pytest --collect-only -q
+
+      - name: Run focused hardening regressions
+        env:
+          NUMBA_DISABLE_JIT: "1"
+          MPLBACKEND: Agg
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          python -m pytest --noconftest tests/test_web_security.py -q
+          python -m pytest --noconftest tests/test_jobs.py -q
+          python -m pytest --noconftest tests/test_catalog_object.py -q -k 'to_row_from_row or write_read_roundtrip or legacy_row'
+          python -m pytest --noconftest tests/test_evaluation_run_selection.py -q
+          python -m pytest --noconftest tests/test_psf_provenance.py::test_psf_resampling_preserves_stamp -q
+          python -m pytest --noconftest tests/test_sky_lazy_imports.py -q
+          python -m pytest --noconftest tests/test_measure_star_saturation.py -q

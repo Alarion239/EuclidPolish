@@ -46,7 +46,10 @@ def test_galaxy_adql_relax_keeps_full_size_floor():
     strict = gc.galaxy_adql(10.0, -5.0, 0.05)
     relaxed = gc.galaxy_adql(10.0, -5.0, 0.05, relax=True)
     import re
-    lo = lambda q: float(re.search(rf"{gc._SIZE_COL} BETWEEN ([\d.]+) AND", q).group(1))
+
+    def lo(q):
+        return float(re.search(rf"{gc._SIZE_COL} BETWEEN ([\d.]+) AND", q).group(1))
+
     assert lo(relaxed) == pytest.approx(lo(strict))
 
 

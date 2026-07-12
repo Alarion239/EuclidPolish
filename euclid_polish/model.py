@@ -30,22 +30,22 @@ from euclid_polish.training.augmentation import (
     asinh_stretch_lr,
     random_dihedral,
 )
-from euclid_polish.training.inference import (
-    infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
+from euclid_polish.training.forward_onthefly import (
+    DEFAULT_CROPS_PER_FIELD,
+    OnTheFlyForward,
+    member_psf_sets,
 )
 from euclid_polish.training.inference import (
     infer_checkpoint_asinh_knee as _infer_asinh_knee,
+)
+from euclid_polish.training.inference import (
+    infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
 )
 from euclid_polish.training.inference import (
     load_model_from_checkpoint as _default_load,
 )
 from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
-)
-from euclid_polish.training.forward_onthefly import (
-    DEFAULT_CROPS_PER_FIELD,
-    OnTheFlyForward,
-    member_psf_sets,
 )
 from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import build_loss

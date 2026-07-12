@@ -38,14 +38,14 @@ from euclid_polish.catalog.downloader import (
     resolve_mosaics,
     scan_cutouts,
 )
+from euclid_polish.catalog.validator import FitsValidator
+from euclid_polish.config import Config
+from euclid_polish.image import FitsWCS, Image, Role
 from euclid_polish.photometry import (
     ab_mag_to_uJy,
     adu_per_s_to_electrons_factor,
     uJy_to_ab_mag,
 )
-from euclid_polish.catalog.validator import FitsValidator
-from euclid_polish.config import Config
-from euclid_polish.image import FitsWCS, Image, Role
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 

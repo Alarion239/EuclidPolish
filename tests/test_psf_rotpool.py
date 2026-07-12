@@ -103,7 +103,7 @@ def test_loader_bagging_is_seeded_and_cluster_level(pool_dir):
     b = load_band_rotpool(Config.BANDS[0], psf_dir=d,
                           subset_clusters=3, subset_seed=11)
     assert a.n == b.n == 3 * (N_ROT + 1)
-    for pa, pb in zip(a.psfs, b.psfs):
+    for pa, pb in zip(a.psfs, b.psfs, strict=True):
         np.testing.assert_array_equal(pa.data, pb.data)   # deterministic
     # a different seed picks a different cluster subset (6C3=20 — try a few)
     diff = any(

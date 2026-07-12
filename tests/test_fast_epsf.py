@@ -18,7 +18,6 @@ from photutils.psf import EPSFBuilder, EPSFStar, EPSFStars
 from euclid_polish.psf.fast_epsf import FastEPSFBuilder, evaluate_on_grid
 from euclid_polish.psf.psf_extractor import PSFExtractionConfig, PSFExtractor
 
-
 # ---- small, fast fixtures -------------------------------------------------
 
 PSF_SIZE = 21          # odd, small -> 43x43 oversampled grid, sub-second build

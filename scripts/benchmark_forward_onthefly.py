@@ -118,7 +118,7 @@ def main() -> int:
     hr_crop = int(Config.DEFAULT_HR_CROP_SIZE)          # 96 → LR 48
     bands = list(Config.LR_INPUT_BAND_NAMES)
     ncpu = os.cpu_count() or 1
-    print(f"=== on-the-fly forward-model benchmark ===")
+    print("=== on-the-fly forward-model benchmark ===")
     print(f"host CPUs: {ncpu} · batch {args.batch_size} · HR crop {hr_crop}px "
           f"· GPU step budget {args.gpu_step_ms:.0f} ms/batch")
     print("(login node: wall ≫ cpu on a stage ⇒ contention; trust the cpu "
@@ -174,7 +174,6 @@ def main() -> int:
 
     # ---- stage micro-benchmarks (full 510² field) ------------------------- #
     print("— per-stage, FULL field (one channel = VIS unless noted) —")
-    ref = max(psf_sets.values(), key=lambda p: p.n)
     sample = PSFSample(index=0, angle=137.0)            # force a rotation
 
     rotated: dict[str, PSF] = {}
@@ -275,7 +274,7 @@ def main() -> int:
         # truncation accuracy per field: crop-local (truncated, renormalised)
         # vs the full-kernel full-field convolution over the same interior.
         rmss = []
-        for f, c_ref in zip(fields, conv_refs):
+        for f, c_ref in zip(fields, conv_refs, strict=True):
             fp = np.asarray(f.data, np.float32)[
                 y0 - pad: y0 + hr_crop + pad, y0 - pad: y0 + hr_crop + pad, 0]
             c_loc = kern["VIS"].convolved_with(fp)[

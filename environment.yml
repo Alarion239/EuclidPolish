@@ -18,6 +18,7 @@ dependencies:
   - photutils
   - questionary
   - pytest
+  - ruff
   - flask
   - pexpect
   - pip
