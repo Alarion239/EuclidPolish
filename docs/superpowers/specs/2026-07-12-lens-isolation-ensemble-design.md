@@ -1,62 +1,36 @@
-# Lens-Isolation Super-Resolution Ensemble Design
+# Lens-Isolation Training-Pair Design
 
 ## Goal
 
-Add an experimental, pluggable EuclidPolish pipeline that forks strong existing
-super-resolution members and fine-tunes them to reconstruct only complete
-gravitational-lens systems. A target retains both the foreground lensing galaxy
-and the lensed background source (arcs, rings, or multiple images), while stars
-and every unrelated/plain galaxy are removed.
+Train an experimental EuclidPolish ensemble to reconstruct complete
+gravitational-lens systems while suppressing unrelated galaxies and stars.
+Each target retains both the foreground deflector and the lensed background
+source. The experiment changes only the data supplied to normal training; it
+does not introduce a new training regime.
 
-The experiment must have its own generated records, checkpoints, manifests,
-evaluation products, FASRC jobs, and WebUI surface. Existing records and models
-are read-only inputs: this feature must not migrate, overwrite, invalidate, or
-require regeneration of any production artifact.
+The original synthetic pipeline, production records, and production models are
+strictly out of scope for mutation. Lens-isolation records, fine-tuned members,
+and evaluation artifacts are disposable experiment outputs beneath
+`data/experiments/lens_isolation/`.
 
-## Scope and non-goals
+## Governing constraint
 
-This pass includes:
+Generation and training must reuse the existing production behavior:
 
-1. paired-layer synthetic dataset generation;
-2. a separate resumable FASRC generation step;
-3. experiment-specific on-the-fly training and loss;
-4. one-to-one forks from explicitly selected existing ensemble members;
-5. an isolated experimental ensemble and inference API;
-6. classifier and reconstruction evaluation;
-7. dedicated FASRC training/evaluation steps and sync support; and
-8. classic and React WebUI surfaces for operating the experiment.
+- the existing `SkySimulator` supplies every galaxy and lens draw;
+- the existing `ObservationSimulator` supplies PSF convolution, rebinning,
+  noise, detector artifacts, and saturation;
+- the existing record-mode `Model.train` path supplies random crops,
+  augmentation, normalization, optimization, checkpointing, and logging; and
+- the existing WDSR architecture and source-member weights are unchanged.
 
-It does not change the WDSR architecture, production starless/starfull
-semantics, existing TFRecord schemas, the production ensemble registry, current
-checkpoint directories, or existing FASRC step behavior. It does not claim that
-the experimental output is scientifically trustworthy until the acceptance
-metrics below have been measured on held-out data.
+No production generator, forward model, cropper, model, or trainer code is
+modified for this experiment. Experiment code may adapt their outputs, but may
+not copy or independently reimplement their scientific algorithms.
 
-## Additive architecture
+## Artifact boundary
 
-All experiment logic lives below:
-
-```text
-euclid_polish/experiments/lens_isolation/
-```
-
-with standalone scripts:
-
-```text
-scripts/lens_isolation_generate.py
-scripts/lens_isolation_train.py
-scripts/lens_isolation_evaluate.py
-scripts/lens_isolation_infer.py
-```
-
-The only changes outside that namespace are additive integration hooks:
-
-- register three new FASRC step classes;
-- register one new Web route;
-- mount a Lens Isolation navigation entry/page and step-card fields; and
-- add focused tests.
-
-Default local/remote experiment paths are beneath:
+The experiment continues to own only:
 
 ```text
 data/experiments/lens_isolation/
@@ -65,274 +39,272 @@ data/experiments/lens_isolation/
   evaluation/
 ```
 
-Path validation rejects production record/checkpoint directories and rejects an
-output member path equal to or nested inside its source checkpoint. Existing
-source members are opened read-only and fingerprinted before and after a fork.
+The production record and ensemble directories are read-only inputs. Path
+guards reject an experiment output that equals, contains, or is contained by a
+production artifact root. Source checkpoints are fingerprinted before and
+after forking so accidental mutation is detected.
 
-## Physical target definition
+The existing lens-isolation dataset schema and models describe a rejected
+balanced/source-centered experiment and are not compatible with this design.
+They may be deleted and regenerated in the same experiment directories. A
+schema marker prevents old experiment records or checkpoints from being
+silently reused. Production artifacts are never part of cleanup.
 
-Generation retains separate floating-point HR layers:
+## Field population
 
-```text
-B = ordinary/unrelated galaxy layer
-L = complete gravitational-lens-system layer
-S = B + L
-```
-
-`L` includes all light produced by the physically generated lens system:
-
-- the foreground deflector/lensing galaxy; and
-- the lensed background source.
-
-For a negative example, `L` is exactly zero. An unrelated galaxy remains in
-`B` even if it overlaps the lens in projection, so it appears in the observed
-input but not the target. This separation is possible because layers are kept
-during generation; the experiment never attempts to unmix existing composite
-records.
-
-Stars are generated separately and never enter `L`. Thus the supervised pair
-is:
+Lens-isolation fields use the same pure-TNG population as current production
+synthetic generation:
 
 ```text
-input  = dirty_LR(S + stars)
-target = clean_HR(L)
+sersic_density_arcmin2 = 0
+tng_density_arcmin2    = 60
+tng_redshift_mode      = true
+lens_density_arcmin2   = 20
 ```
 
-The dirty observation uses the existing `ObservationSimulator` on the complete
-field: sampled empirical per-band PSFs, convolution, block rebinning, Poisson
-sky/signal noise, read noise, detector artifacts, and saturation. Forward
-modelling occurs before cropping so out-of-crop PSF wings remain physical.
+The lens-density increase from the production default of `16.5 arcmin^-2` to
+`20 arcmin^-2` applies only to this experiment. All other generator parameters
+come from the production configuration used by the normal generation step.
+The obsolete `tng_fraction` concept is not part of the experiment interface.
 
-## Dataset construction and balance
+Every field is sampled normally. There are no positive/negative field labels,
+forced one-lens fields, forced zero-lens fields, bounded retries for crop-safe
+lenses, or lens-aware acceptance rules. A Poisson draw may produce any number
+of lenses, including zero.
 
-The generator composes two independent uses of the existing public sky
-simulator:
+## Exact clean/dirty pair construction
 
-1. generate a galaxy-rich background with no lenses and no deposited stars;
-2. for a positive, generate a lens-only layer with no unrelated galaxies or
-   stars, retrying boundedly until a valid, fully crop-safe system is rendered;
-3. add the layers to form `S`; or use a zero `L` for a negative; and
-4. generate the fixed dirty observation for validate/test.
-
-Each split is exactly balanced by construction (alternating then deterministically
-shuffled): 50% lens positives and 50% hard negatives. A positive training crop
-is centred on the lens-flux centroid with bounded jitter. A negative crop is
-centred on a bright ordinary galaxy, also with jitter. This prevents random
-empty sky and class imbalance from making the all-zero output an attractive
-solution.
-
-The train split stores clean component pairs only; each visit redraws stars,
-PSF, noise, artifacts, and crop jitter:
+For a generated field, define:
 
 ```text
-scene_train.tfrecord
-lens_train.tfrecord
-manifest_train.csv
+G = all ordinary TNG galaxies
+L = all complete lens systems
+S = G + L
 ```
 
-Validate and test are fixed for repeatable checkpoint selection and reporting:
+`L` contains every pixel deposited by each normal lens render: both the
+foreground deflector and the lensed source. Ordinary TNG galaxies never enter
+`L`, even when projected near a lens. Stars never enter `L`.
+
+An experiment-owned capture adapter invokes the existing `SkySimulator`
+field-generation path. When that path asks the simulator to add a lens, the
+adapter lets the existing lens method render the system exactly once into a
+temporary floating-point layer. It adds those same rendered pixels to both the
+normal scene canvas and the accumulated lens-only canvas. The adapter neither
+draws new parameters nor calls the lens renderer a second time.
+
+This produces two aligned HR arrays from one RNG stream and one physical draw:
 
 ```text
-scene_{validate,test}.tfrecord
-lens_{validate,test}.tfrecord
-dirty_{validate,test}.tfrecord
-manifest_{validate,test}.csv
+scene_HR  = G + L
+target_HR = L
 ```
 
-Every aligned manifest row records index, split, binary label, scene seed,
-forward seed, lens centre, Einstein radius, lens/deflector/source rendering
-metadata, ordinary-galaxy count, star count, and schema version. A dataset-level
-`dataset.json` records configuration, counts, balance, master seed, generation
-commit, and file fingerprints. Paired counts, indices, shapes, and channel
-counts are validated before the dataset is accepted.
+The adapter lives entirely in the lens-isolation namespace. Production
+`SkySimulator` code and behavior remain unchanged. Capture state is scoped to
+one field call and is cleared on both success and failure so worker reuse cannot
+leak lens pixels between examples.
 
-## Separate FASRC generation step
-
-`lens_isolation_generate` is a dedicated CPU/shared SLURM step analogous to the
-current synthetic generator but with no shared output path or resume state. It:
-
-- invokes `scripts/lens_isolation_generate.py`;
-- uses its own `records/` directory;
-- supports train/validate/test counts, seed, worker count, and image size;
-- generates process-local shards and atomically concatenates aligned pairs;
-- resumes only shards whose paired records and manifest are complete;
-- supports an explicit override/force flag;
-- emits structured Reporter progress and resource metrics; and
-- fails closed when a lens-positive field cannot be rendered within the bounded
-  retry budget.
-
-Changing or resubmitting this step never inspects or deletes production
-`records_v2` data.
-
-## Fine-tuning and ensemble formation
-
-`lens_isolation_train` is a separate GPU FASRC step. The user supplies one or
-more existing source member names (and optionally a source base directory).
-Each experimental member normally forks a different source member one-to-one;
-reusing one source is allowed explicitly.
-
-Forking uses the existing model loader to preserve the complete architecture and
-weights, but creates a virgin experiment member directory with:
-
-- step zero;
-- a fresh optimizer and low warmup/cosine schedule;
-- a distinct seed and live PSF bag;
-- frequent held-out evaluation; and
-- an `origin.json` identifying the lens-isolation schema, source path and
-  fingerprint, dataset fingerprint, seed, commit, and loss configuration.
-
-No source member is continued or registered in the production ensemble. The
-experimental loader discovers members only beneath its own base directory.
-
-The on-the-fly pipeline zips `scene_train` and `lens_train`, asserts record
-alignment, adds fresh stars to the full scene, applies the existing full-field
-observation simulator, chooses target-aware crops, then applies the same aligned
-dihedral and asinh transformations used by current starless training.
-
-## Collapse-resistant loss and checkpoint selection
-
-Plain image-wide L1 is unsafe because lens light occupies relatively few pixels
-and negatives have an all-zero target. The experiment therefore defines a
-sample-balanced lens-isolation loss without changing production loss code.
-
-For each positive sample, target brightness supplies a smooth weight map:
+The existing observation path then processes the complete scene. Stars are
+drawn and deposited through the same production fixed-record mechanism before
+the full-field observation simulation, so out-of-crop PSF wings remain
+physical:
 
 ```text
-w = 1 + lens_weight * sqrt(target / max(target))
+input_LR  = observe(scene_HR + stars)
+target_HR = L
 ```
 
-The weighted absolute reconstruction error is normalized per sample. Its unit
-background weight still penalizes unrelated output everywhere, while the
-additional lens weight prevents the lens from being numerically overwhelmed by
-empty pixels. A positive-only normalized flux-retention term penalizes erasing
-the lens system. Each negative contributes its own normalized zero-target error.
-Positive and negative per-sample losses are averaged equally, independent of
-pixel count.
+The observation realization is never applied to the target. The target remains
+the clean, native-HR lens-system layer, exactly as the normal training target
+remains a clean native-HR scene.
 
-An experiment-specific `Trainer` subclass reuses the existing training loop,
-optimizer, rollback, logging, and checkpoint machinery but overrides validation
-aggregation. It keeps two tracks:
+## Generated records
 
-- root checkpoint: best held-out detection AUC; and
-- `loss_best/`: best balanced lens-isolation validation loss.
+The separate `lens_isolation_generate` CPU/FASRC step writes position-aligned
+records for train, validate, and test:
 
-Metrics always expose both, preventing an all-zero model from being selected by
-background-dominated PSNR and preventing an AUC-only model from hiding poor lens
-reconstruction. The training step defaults to a conservative peak learning rate
-and supports early manual termination through the normal SLURM controls.
+```text
+dirty_{train,validate,test}.tfrecord
+lens_{train,validate,test}.tfrecord
+sources_{train,validate,test}.csv
+dataset.json
+```
 
-## Experimental inference and classifier score
+`dirty_*` has the same LR shape, units, channel order, and serialization as
+normal dirty records. `lens_*` has the same HR shape, units, channel order, and
+serialization as normal clean records. Consequently the existing record-mode
+training parser can consume the pair without a special dataset contract.
 
-The isolated ensemble loader reads only experiment members and returns:
+The source catalog records the simulator metadata for reproducibility and
+analysis, but neither training nor crop selection reads source positions.
+`dataset.json` records the schema, exact generator and observation
+configuration, master seed, split counts, source commit, and record
+fingerprints.
 
-- per-member lens-only HR reconstructions;
-- ensemble mean;
-- per-pixel disagreement; and
-- scalar detection scores derived from positive ensemble-mean flux after
-  raw-electron inverse stretch (whole-frame plus a configured central aperture
-  for candidate-centred stamps).
+Generation reuses the normal process-shard, deterministic-seed, ordered-merge,
+atomic-replacement, and Reporter-progress conventions. A split is reusable only
+when both aligned records, its source catalog, count, schema, and configuration
+fingerprint agree. A changed scientific configuration requires explicit
+regeneration rather than mixing old and new shards.
 
-`lens_isolation_infer.py` accepts an LR FITS cube and writes mean/disagreement
-FITS plus JSON metadata. It never replaces normal inference output.
+## Training behavior
 
-## Evaluation
+`lens_isolation_train` forks explicitly selected production members into
+experiment-owned member directories, then invokes the existing normal
+record-mode `Model.train` interface with:
 
-`lens_isolation_evaluate` is a separate GPU FASRC step that runs every selected
-experimental member over the fixed test records and writes under `evaluation/`:
+```text
+lr_path = dirty_train.tfrecord
+hr_path = lens_train.tfrecord
+forward_onthefly = false
+```
 
-- `predictions.csv` (labels, scores, Einstein radii, flux metrics);
-- `metrics.json`;
-- ROC and TPR-versus-Einstein-radius plots;
-- positive reconstruction and negative residual galleries; and
-- member/ensemble disagreement summaries.
+This is the normal fixed-record training path. It supplies the same:
 
-Required metrics are:
+- uniformly random, block-aligned `96 x 96` HR / `48 x 48` LR crops;
+- random dihedral augmentation;
+- optional LR noise augmentation and member bootstrap behavior;
+- asinh transform and per-member knee;
+- model architecture and initialized weights;
+- reconstruction loss selected through the normal training interface;
+- optimizer, learning-rate schedule, validation, rollback, save-best behavior,
+  and training logs.
 
-- ROC AUC;
-- TPR at fixed low FPR thresholds;
-- TPR versus Einstein radius, including the smallest supported bin;
-- positive lens-flux retention;
-- positive target PSNR/MAE;
-- residual output flux on hard negatives;
-- ensemble disagreement on positives and negatives; and
-- comparison with every source model and an all-zero baseline.
+Only the HR record paired with each dirty LR record differs. There is no
+lens-specific cropper, source centering, crop jitter, positive/negative sampler,
+custom lens loss, custom optimizer, or custom training loop.
 
-The zero baseline is expected to have zero recall and perfect suppression; it
-must never be presented as a useful classifier merely because it has low global
-pixel error.
+The production on-the-fly path is not used because it accepts one clean scene
+as both forward-model source and target. The separately generated dirty/lens
+records provide the required different target while keeping all training logic
+inside the existing record-mode implementation.
 
-## WebUI
+At `20 arcmin^-2`, a random `96 x 96` HR crop covers `0.0064 arcmin^2` and has
+about a 12% Poisson probability of containing a lens. With batch size 16 this
+is about 1.9 lens-containing crops on average. Batches with no lens are an
+accepted consequence of unbiased normal cropping. Ordinary TNG galaxies in
+those crops are local zero-target controls because the CNN is local.
 
-A dedicated “Lens isolation” page is added to both classic and React navigation.
-It explains that this is an experimental selective-reconstruction classifier
-and mounts three independent cards:
+## Validation and evaluation
 
-1. **Generate lens-isolation pairs (CPU)** — dataset counts, seed, workers,
-   force, and resource controls;
-2. **Fork/train lens-isolation ensemble (GPU)** — source base/members, steps,
-   seeds, learning rate/loss weights, and resources; and
-3. **Evaluate lens-isolation ensemble (GPU)** — member selection, test limit,
-   FPR targets, and resources.
+Training validation uses the existing fixed-record validation path over the
+aligned `dirty_validate` and `lens_validate` records. Checkpoint selection is
+therefore governed by the same loss/metric behavior as normal training.
 
-A fourth local sync/status section pulls only the experiment dataset summary,
-member metadata, evaluation JSON/plots, and optionally selected FITS examples.
-Large training records and checkpoints require explicit opt-in. The generic
-FASRC submit/history APIs remain unchanged; the cards are ordinary registered
-steps with experiment-specific command builders.
+The separate evaluation step reads the held-out test pair and uses uniformly
+random, block-aligned cutouts governed by the same geometry as training. It
+does not center on lenses, galaxies, catalog coordinates, flux centroids, or
+bright pixels, and it does not resample until a desired class appears.
 
-## Error handling and compatibility
+After cutouts are fixed, reporting may group them by the observed target
+content:
 
-- Existing data/model paths are rejected as experiment outputs.
-- Existing experiment output is not overwritten without `--force`.
-- Source checkpoints must exist and targets must be virgin for a new fork.
-- Source fingerprints are checked after forking to prove no mutation.
-- Paired TFRecords and manifests are written via temporary shards and atomic
-  replacement; incomplete shards are not considered resumable.
-- Generation aborts on exhausted lens-render retries rather than silently
-  converting intended positives to negatives.
-- Training aborts on record-count, index, shape, schema, or dataset-fingerprint
-  mismatch.
-- Evaluation reports missing members/checkpoints as explicit errors.
-- Production commands, routes, records, registries, and inference retain their
-  existing defaults and behavior.
+- lens-containing random cutouts report reconstruction error and retained
+  target flux;
+- zero-target random cutouts report residual predicted flux; and
+- an optional crop-level ROC/AUC treats nonzero target flux as the label and
+  predicted positive flux as the score.
+
+This grouping is analysis only; it cannot influence sampling or training. The
+report also includes ungrouped aggregate loss and an all-zero-output baseline
+so sparse targets cannot make a numerically small error look scientifically
+successful.
+
+## FASRC and WebUI behavior
+
+The existing dedicated experiment surface remains additive:
+
+1. `lens_isolation_generate` creates the paired experiment records on CPU;
+2. `lens_isolation_train` forks selected source members and runs normal
+   record-mode training on GPU; and
+3. `lens_isolation_evaluate` evaluates held-out random cutouts.
+
+The classic and React Lens Isolation pages expose these three steps and report
+only experiment-owned paths and status. Generation defaults show pure-TNG and
+`20 arcmin^-2` lens settings truthfully. Training controls use normal training
+terminology and do not expose the removed lens-specific loss or centering
+knobs.
+
+Reporter progress and resource events remain the machine-readable job-status
+channel. Cluster scripts keep the direct-execution import bootstrap so they run
+outside the repository root.
+
+## Failure behavior
+
+- Missing TNG data fails before record writing with a concrete path and setup
+  message; generation never falls back to Sérsic galaxies.
+- Missing required empirical PSFs follows the normal generator's configured
+  fallback/fail-closed policy and is recorded in dataset metadata.
+- A failed lens render follows normal field-generation behavior; it is not
+  converted into a synthetic label or retried for crop placement.
+- A partial shard is not accepted as complete. Completed aligned shards remain
+  resumable according to the normal generation rules.
+- Record counts, shapes, channels, schemas, and configuration fingerprints are
+  validated before training.
+- Existing incompatible experiment artifacts produce a clear reset/regenerate
+  instruction. Cleanup is constrained to `data/experiments/lens_isolation/`.
+- Missing or non-virgin experiment member targets fail before source weights
+  are loaded. Production checkpoints remain unchanged.
+
+## Documentation pass
+
+The top-level README receives a factual whole-file consistency pass. It will:
+
+- describe pure TNG as the current default synthetic population;
+- remove obsolete `tng_fraction` instructions and COSMOS-default claims;
+- align generation, record-mode, and on-the-fly descriptions with current
+  code;
+- document the lens-isolation experiment as an additive three-step workflow;
+  and
+- remove or correct stale command lines, filenames, paths, and UI labels found
+  during the review.
+
+The documentation pass must describe implemented behavior only. It may not
+change production defaults to make old prose true.
 
 ## Focused testing and verification
 
-All behavior is developed with red-green-refactor in new focused test modules.
-Tests cover:
+Implementation follows red-green-refactor with focused tests for:
 
-1. lens layer includes deflector and lensed source but excludes plain galaxies;
-2. negative target is exactly zero;
-3. dirty input is forward-modelled from the full scene plus stars;
-4. exact split balance and deterministic replay;
-5. positive lens-centred and hard-negative galaxy-centred crops;
-6. paired record/manifest integrity and atomic resume rules;
-7. path guards protecting production artifacts;
-8. sample-balanced loss penalizes all-zero positive predictions and false
-   positive negative predictions;
-9. source checkpoint remains unchanged after a fork;
-10. separate experimental member discovery and ensemble mean/disagreement;
-11. AUC, fixed-FPR, Einstein-radius, flux-retention, and zero-baseline metrics;
-12. FASRC commands point only to experiment scripts/paths; and
-13. classic/React WebUI registration and submission fields.
+1. one normal lens draw contributes identical pixels to the complete scene and
+   lens-only target;
+2. ordinary TNG galaxies and stars are absent from the target;
+3. zero-, one-, and multi-lens Poisson outcomes are accepted without labels or
+   source-aware retries;
+4. the experiment uses pure-TNG configuration and `20 arcmin^-2` lens density
+   without changing production defaults;
+5. dirty/lens records are aligned and accepted by the normal record parser;
+6. training dispatches to normal `Model.train` record mode and does not use the
+   custom centered forward, loss, or trainer;
+7. random crop coordinates follow normal block-aligned crop semantics and never
+   consult source metadata or target flux;
+8. incompatible experiment artifacts are rejected or reset without touching a
+   production path;
+9. source model fingerprints are unchanged after an experiment fork;
+10. FASRC commands and classic/React controls expose the corrected workflow;
+11. cluster scripts remain importable when invoked outside the repository; and
+12. README examples and paths match the implemented commands.
 
-Verification runs only these focused tests plus compilation and Ruff. The full
-suite is not run, honoring the user's standing instruction.
+Local verification runs only focused Lens Isolation, normal crop/record
+contract, FASRC, WebUI, runtime-contract, Ruff, compile, and frontend-build
+checks. The full test suite is not run locally. CI may run the complete suite.
 
 ## Acceptance criteria
 
 Implementation is complete when:
 
-- a focused small dataset can be generated end-to-end in an isolated directory;
-- a dry-run FASRC generation command is correct and the WebUI card is mounted;
-- a source member can be forked without source mutation;
-- the experimental training pipeline consumes paired scene/lens records with
-  live forward modelling;
-- the ensemble can infer mean, disagreement, and detection scores;
-- the evaluator produces all required machine-readable metrics/baselines;
-- production paths and registry membership remain unchanged; and
-- focused tests, compilation, and Ruff pass.
-
-Scientific promotion is explicitly separate: a trained run must subsequently
-meet agreed recall, low-FPR, small-Einstein-radius, lens-flux, and negative
-residual thresholds before anyone treats it as more than an experiment.
+- an experiment field is drawn once and yields a complete dirty scene plus an
+  exactly aligned lens-only HR target;
+- generation uses only TNG ordinary galaxies and an experiment-only lens
+  density of `20 arcmin^-2`;
+- generated train/validate/test pairs use the normal record shapes and can be
+  consumed by unchanged normal record-mode training;
+- every training crop is selected by the normal random crop logic;
+- experiment training differs from normal training only in the target record
+  supplied;
+- no production source, record, model, default, route behavior, or artifact is
+  modified or deleted;
+- the separate FASRC/WebUI workflow operates end to end;
+- the README accurately describes the current repository; and
+- all focused local checks pass, with full-suite coverage delegated to CI.
