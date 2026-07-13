@@ -655,6 +655,220 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     return cube, info
 
 
+# Lens isolation deliberately uses a separate collection instead of pretending
+# its ``lens_*`` targets are production ``hr_*`` records.  The viewer contract
+# is otherwise identical to the ensemble collection, so the React viewer gets
+# the same tiers, member-subset PCA movie, and combiner behavior.
+def _lens_isolation_manifest() -> dict[str, Any]:
+    from euclid_polish.web.helpers.lens_isolation_viz import cubes_dir
+
+    path = os.path.join(cubes_dir(), "viz_index.json")
+    if os.path.isfile(path):
+        with contextlib.suppress(OSError, ValueError), open(path) as handle:
+            return json.load(handle)
+    return {"subset": "", "indices": []}
+
+
+def _load_lens_isolation_combiner(member_labels: list[str]):
+    if not member_labels:
+        return None
+    from euclid_polish.eval.combiner import load_combiner
+    from euclid_polish.web.helpers.lens_isolation_viz import output_dir
+
+    with contextlib.suppress(Exception):
+        return load_combiner(output_dir(), member_labels=list(member_labels))
+    return None
+
+
+def _lens_isolation_meta(_params: dict[str, str]) -> dict[str, Any]:
+    from euclid_polish.web.helpers.lens_isolation_viz import records_dir
+
+    manifest = _lens_isolation_manifest()
+    indices = manifest.get("indices", []) or []
+    subset = str(manifest.get("subset", "") or "")
+    has_target = bool(subset) and os.path.isfile(
+        tfrecord_path(records_dir(), f"lens_{subset}")
+    )
+    tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_target]
+    for tier in tiers:
+        if tier["key"] == "hr":
+            tier["label"] = "lens target"
+    member_labels = list(manifest.get("member_labels", []) or [])
+    if manifest.get("has_combiner") or _load_lens_isolation_combiner(member_labels) is not None:
+        tiers.insert(2, {"key": "comb", "label": "combiner"})
+    tiers += [
+        {"key": f"member{i}", "label": f"SR {label}", "hidden": True}
+        for i, label in enumerate(member_labels)
+    ]
+    pca_n = int(manifest.get("pca_n", 0) or 0)
+    amplitudes = manifest.get("pca_amps", {}) or {}
+    if pca_n > 0:
+        tiers.append({"key": "morph", "label": "disagreement movie"})
+    return {
+        "count": len(indices),
+        "tiers": tiers,
+        "default_tier": "sr",
+        "band_names": list(BAND_NAMES),
+        "subset": subset,
+        "pca_n": pca_n,
+        "pca_amps": [list(amplitudes.get(str(int(index)), [])) for index in indices],
+        "member_labels": member_labels,
+        "pca_max": _MORPH_PCA_COMPONENTS,
+        "target_label": "lens target",
+    }
+
+
+def _lens_isolation_record_cube(subset: str, n_read: int, kind: str, rec_index: int):
+    from euclid_polish.web.helpers.lens_isolation_viz import records_dir
+
+    path = tfrecord_path(records_dir(), f"{kind}_{subset}")
+    if not os.path.isfile(path):
+        raise ViewerError(404, f"{kind} records not available")
+    record = {item.index: item for item in read_images(path, num_images=max(n_read, 1))}.get(
+        rec_index
+    )
+    if record is None:
+        raise ViewerError(404, f"record {rec_index} not found")
+    return _as_hwc(record.data), float(getattr(record, "pixel_scale_arcsec", 0.0) or 0.0)
+
+
+def _lens_isolation_subset_pca(rec_index: int, subset: list[int]):
+    from euclid_polish.ensemble import pca_field
+    from euclid_polish.web.helpers.lens_isolation_viz import cubes_dir
+
+    key = ("lens-isolation", int(rec_index), tuple(subset))
+    hit = _SUBSET_PCA_CACHE.get(key)
+    if hit is not None:
+        _SUBSET_PCA_CACHE.move_to_end(key)
+        return hit
+    stack = []
+    for member_index in subset:
+        path = os.path.join(cubes_dir(), f"member{member_index}_{int(rec_index):05d}.npy")
+        if not os.path.isfile(path):
+            raise ViewerError(404, f"member{member_index} cube missing")
+        stack.append(np.load(path).astype(np.float32))
+    result = pca_field(np.stack(stack), n_components=_MORPH_PCA_COMPONENTS)
+    _SUBSET_PCA_CACHE[key] = result
+    if len(_SUBSET_PCA_CACHE) > _SUBSET_PCA_MAX:
+        _SUBSET_PCA_CACHE.popitem(last=False)
+    return result
+
+
+def _lens_isolation_combiner_cube(rec_index: int, member_labels: list[str]) -> np.ndarray:
+    from euclid_polish.web.helpers.lens_isolation_viz import cubes_dir
+
+    key = ("lens-isolation", int(rec_index), tuple(member_labels))
+    hit = _COMB_CUBE_CACHE.get(key)
+    if hit is not None:
+        _COMB_CUBE_CACHE.move_to_end(key)
+        return hit
+    combiner = _load_lens_isolation_combiner(member_labels)
+    if combiner is None:
+        raise ViewerError(404, "no lens-isolation combiner")
+    stack = []
+    for member_index in range(len(member_labels)):
+        path = os.path.join(cubes_dir(), f"member{member_index}_{rec_index:05d}.npy")
+        if not os.path.isfile(path):
+            raise ViewerError(404, f"member{member_index} cube missing")
+        stack.append(np.load(path).astype(np.float32))
+    result = np.asarray(combiner.apply_field(np.stack(stack)), np.float32)
+    _COMB_CUBE_CACHE[key] = result
+    if len(_COMB_CUBE_CACHE) > _COMB_CUBE_MAX:
+        _COMB_CUBE_CACHE.popitem(last=False)
+    return result
+
+
+def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
+    from euclid_polish.web.helpers.lens_isolation_viz import cubes_dir
+
+    manifest = _lens_isolation_manifest()
+    indices = manifest.get("indices", []) or []
+    subset_name = str(manifest.get("subset", "") or "")
+    if index < 0 or index >= len(indices):
+        raise ViewerError(404, "index out of range")
+    rec_index = int(indices[index])
+    member_labels = list(manifest.get("member_labels", []) or [])
+    is_pca = tier.startswith("pca") and tier[3:].isdigit()
+    member_subset = _parse_member_subset(params.get("members"), len(member_labels))
+    if member_subset is not None and (tier == "sr" or is_pca):
+        mean, components, amplitudes, variance = _lens_isolation_subset_pca(
+            rec_index, member_subset
+        )
+        tag = f"{len(member_subset)} of {len(member_labels)} members"
+        if tier == "sr":
+            return _as_hwc(mean), {
+                "label": f"SR (subset mean · {tag}) · {subset_name} · idx {rec_index}",
+                "asinh": float(Config.STRETCH_SCALE_E),
+                "pixscale": 0.0,
+            }
+        component = int(tier[3:])
+        if component >= len(components):
+            raise ViewerError(404, "pca component out of range")
+        return _as_hwc(components[component]), {
+            "label": f"PC{component} · {tag}",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": 0.0,
+            "amp": float(amplitudes[component]),
+            "var": float(variance[component]) if component < len(variance) else 0.0,
+        }
+    if tier == "comb":
+        baked = os.path.join(cubes_dir(), f"comb_{rec_index:05d}.npy")
+        cube = np.load(baked) if os.path.isfile(baked) else _lens_isolation_combiner_cube(
+            rec_index, member_labels
+        )
+        return _as_hwc(cube), {
+            "label": f"SR (combiner) · {subset_name} · idx {rec_index}",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": 0.0,
+        }
+    n_read = max((int(value) for value in indices), default=0) + 1
+    is_npy = (
+        tier in {"sr", "std"}
+        or is_pca
+        or (tier.startswith("member") and tier[6:].isdigit())
+    )
+    if is_npy:
+        path = os.path.join(cubes_dir(), f"{tier}_{rec_index:05d}.npy")
+        if not os.path.isfile(path):
+            raise ViewerError(404, f"{tier} cube missing")
+        cube, pixel_scale = _as_hwc(np.load(path)), 0.0
+    elif tier == "lr":
+        cube, pixel_scale = _lens_isolation_record_cube(
+            subset_name, n_read, "dirty", rec_index
+        )
+    elif tier == "hr":
+        cube, pixel_scale = _lens_isolation_record_cube(
+            subset_name, n_read, "lens", rec_index
+        )
+    else:
+        raise ViewerError(400, "bad tier")
+    labels = {
+        "lr": "LR",
+        "sr": "SR (ensemble mean)",
+        "std": "stdSR (member std)",
+        "hr": "lens target",
+    }
+    if tier.startswith("member") and tier[6:].isdigit():
+        member_index = int(tier[6:])
+        label = f"SR {member_labels[member_index]}" if member_index < len(member_labels) else tier
+    else:
+        label = labels.get(tier, tier)
+    info = {
+        "label": f"{label} · {subset_name} · idx {rec_index}",
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": pixel_scale,
+    }
+    if is_pca:
+        component = int(tier[3:])
+        amplitudes = (manifest.get("pca_amps", {}) or {}).get(str(rec_index), [])
+        variance = (manifest.get("pca_var", {}) or {}).get(str(rec_index), [])
+        if component < len(amplitudes):
+            info["amp"] = float(amplitudes[component])
+        if component < len(variance):
+            info["var"] = float(variance[component])
+    return cube, info
+
+
 # ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
@@ -667,6 +881,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "cutouts": (_cutouts_meta, _cutouts_cube),
     "evaluation": (_eval_meta, _eval_cube),
     "ensemble": (_ensemble_meta, _ensemble_cube),
+    "lens-isolation": (_lens_isolation_meta, _lens_isolation_cube),
 }
 
 

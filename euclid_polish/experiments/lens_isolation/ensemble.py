@@ -52,9 +52,35 @@ class LensIsolationEnsemble:
     def member_names(self) -> list[str]:
         return [os.path.basename(path) for path in self._member_dirs]
 
+    @property
+    def member_labels(self) -> list[str]:
+        """Viewer/evaluation labels aligned with :meth:`member_arrays`."""
+        return [f"{name.removeprefix('member_')}·psnr" for name in self.member_names]
+
+    @property
+    def n_members(self) -> int:
+        return len(self._members)
+
     def member_arrays(self, lr: np.ndarray) -> np.ndarray:
         return np.stack([model.upsample_array(lr) for model in self._members])
 
     def predict(self, lr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         predictions = self.member_arrays(lr)
         return predictions.mean(axis=0), predictions.std(axis=0)
+
+    def evaluate(self, lr_images, hr_images=None, *, on_field=None, on_progress=None) -> dict:
+        """Use the production ensemble's exact PSNR/disagreement evaluator.
+
+        Member discovery remains registry-independent, while all metric math and
+        callbacks stay identical to the starfull/starless evaluation path.
+        """
+        from euclid_polish.ensemble import EnsembleModel
+
+        proxy = EnsembleModel(self.base_dir, _models=self._members)
+        proxy._member_labels = self.member_labels
+        return proxy.evaluate(
+            lr_images,
+            hr_images,
+            on_field=on_field,
+            on_progress=on_progress,
+        )

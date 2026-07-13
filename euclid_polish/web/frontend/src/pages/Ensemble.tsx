@@ -27,7 +27,7 @@ const kneeOf = (k?: number | null): number => (k == null ? 100 : k);
 const kneeTag = (k?: number | null): string => `${kneeOf(k)}e`;
 
 /* ── status.json ─────────────────────────────────────────────────────────── */
-type Member = {
+export type Member = {
   name: string; seed?: number | null; size_mb?: number; step?: number | null;
   blocks?: number; loss?: string; asinh_knee?: number | null; psnr?: number | null;
   psnr_rank?: number | null; starless?: boolean; has_loss_best?: boolean;
@@ -61,7 +61,7 @@ type BrightStd = {
   bright: (number | null)[]; lo: (number | null)[]; med: (number | null)[]; hi: (number | null)[];
   stretch: number;
 };
-type Evals = {
+export type Evals = {
   ps: PS | null; guides?: { theta_min?: number; lr_scale?: number; vis_fwhm?: number };
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null }[];
   n_fields?: number; n_members?: number;
@@ -72,7 +72,7 @@ type Evals = {
 
 /* ── combiner.json ───────────────────────────────────────────────────────── */
 type EffW = { brightness_asinh?: (number | null)[]; brightness_e?: (number | null)[]; jacobian?: (number | null)[][] };
-type Combiner = {
+export type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
@@ -85,7 +85,7 @@ type Combiner = {
 /* ── training-curves.json ────────────────────────────────────────────────── */
 /* Note: the payload overwrites the loss *series* with the loss-*norm* string,
    so only the PSNR series is chartable; `loss` here is the norm ("l1"…). */
-type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; asinh_knee?: number | null; starless?: boolean };
+export type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; asinh_knee?: number | null; starless?: boolean };
 
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
@@ -241,11 +241,11 @@ function SigmaStamp(
   );
 }
 
-function TraceHint() {
+function TraceHint({ targetLabel = "HR" }: { targetLabel?: string }) {
   return (
     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
       Click any cell to back-trace it — a handful of the real pixels that landed there, as
-      stamps (LR · HR · SR/combiner · σ) from across the test fields, with the field viewer's colour controls.
+      stamps (LR · {targetLabel} · SR/combiner · σ) from across the test fields, with the field viewer's colour controls.
     </div>
   );
 }
@@ -253,12 +253,13 @@ function TraceHint() {
 const STAMP_PX = 3;
 
 function PixelTrace(
-  { mode, pick, cellLabel, colorMeta, onClose }:
-  { mode: Mode; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string;
-    colorMeta?: ColorMeta; onClose: () => void },
+  { context, traceBase, targetLabel, pick, cellLabel, colorMeta, onClose }:
+  { context: string; traceBase: string; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string;
+    colorMeta?: ColorMeta; targetLabel: string; onClose: () => void },
 ) {
-  const url = `/ensemble/pixel-trace.json?mode=${mode}&diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
-  const trace = useResource<Trace>(url, [mode, pick.diag, pick.i, pick.j]);
+  const separator = traceBase.includes("?") ? "&" : "?";
+  const url = `${traceBase}${separator}diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
+  const trace = useResource<Trace>(url, [context, traceBase, pick.diag, pick.i, pick.j]);
   const t = trace.data;
   const stamps = asArray<Stamp>(t?.stamps);
   const traceBands = asArray<string>(t?.bands);
@@ -299,14 +300,14 @@ function PixelTrace(
                     <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="LR" />
                     <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={traceBands}
-                      colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="HR" />
+                      colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label={targetLabel} />
                     <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX}
                       label="SR" badge={s.sr_is_combiner ? "combiner" : "mean"} />
                     <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} px={STAMP_PX} label="σ" />
                   </div>
                   <div className="mono ens-trace__nums">
-                    #{s.field} · σ={fmtE(s.std_val)} · |err|={fmtE(s.err_val)} · HR={fmtE(s.hr_val)} e⁻
+                    #{s.field} · σ={fmtE(s.std_val)} · |err|={fmtE(s.err_val)} · {targetLabel}={fmtE(s.hr_val)} e⁻
                   </div>
                 </div>
               ))}
@@ -450,10 +451,10 @@ function Members(
 }
 
 /* ── training curves ─────────────────────────────────────────────────────── */
-function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boolean }) {
+export function TrainingCurves({ curves, starless }: { curves: Curve[]; starless?: boolean }) {
   const theme = useThemeValue();
   const [colorBy, setColorBy] = useState<ColorBy>("loss");
-  const rows = curves.filter((c) => !!c.starless === starless);
+  const rows = starless == null ? curves : curves.filter((c) => !!c.starless === starless);
 
   const chart = useMemo(() => {
     const series: Series[] = [];
@@ -504,9 +505,10 @@ function TrainingCurves({ curves, starless }: { curves: Curve[]; starless: boole
 }
 
 /* ── evaluations: power spectrum + diagnostics ───────────────────────────── */
-function Evaluations(
-  { evals, loading, mode, theme }:
-  { evals: Evals | null; loading: boolean; mode: Mode; theme: string },
+export function Evaluations(
+  { evals, loading, mode, theme, viewerCollection = "ensemble", traceBase, targetLabel = "HR" }:
+  { evals: Evals | null; loading: boolean; mode: string; theme: string;
+    viewerCollection?: string; traceBase?: string; targetLabel?: string },
 ) {
   const [tab, setTab] = useState<DiagTab>("power-spectrum");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
@@ -518,7 +520,9 @@ function Evaluations(
   const [pick, setPick] = useState<{ diag: PickDiag; i: number; j: number } | null>(null);
   useEffect(() => setPick(null), [tab, mode]);
   // Viewer colour meta (band constants) so back-trace stamps colour like the viewer.
-  const vmeta = useResource<ViewerMetaColor>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
+  const viewerQuery = viewerCollection === "ensemble" ? `?mode=${mode}` : "";
+  const vmeta = useResource<ViewerMetaColor>(`/viewer/meta/${viewerCollection}${viewerQuery}`, [viewerCollection, mode]);
+  const pixelTraceBase = traceBase ?? `/ensemble/pixel-trace.json?mode=${mode}`;
   const colorMeta = vmeta.data?.color;
   const ps = evals?.ps ?? null;
   const members = asArray<NonNullable<Evals["members"]>[number]>(evals?.members);
@@ -596,7 +600,7 @@ function Evaluations(
     const describe = (c: { i: number; j: number }) =>
       `σ ${logRange(edges, c.i)} e⁻ · |err| ${logRange(edges, c.j)} e⁻`;
     const pred = d.pred || "ensemble mean";
-    const yLabel = `|${pred} − HR|  [e⁻]`;
+    const yLabel = `|${pred} − ${targetLabel}|  [e⁻]`;
     return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe, yLabel };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evals, theme]);
@@ -623,7 +627,7 @@ function Evaluations(
     // Human range for a clicked cell: x = HR brightness (asinh), y = σ (log10).
     const st = d.stretch;
     const describe = (c: { i: number; j: number }) =>
-      `HR ${fmtE(st * Math.sinh(bx[c.i]))}–${fmtE(st * Math.sinh(bx[c.i + 1]))} e⁻` +
+      `${targetLabel} ${fmtE(st * Math.sinh(bx[c.i]))}–${fmtE(st * Math.sinh(bx[c.i + 1]))} e⁻` +
       ` · σ ${logRange(sy, c.j)} e⁻`;
     return {
       heat, series,
@@ -659,7 +663,7 @@ function Evaluations(
                   <Select<ColorBy> value={colorBy} onChange={setColorBy}
                     options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
                 </div>
-                <Plot title="cross-correlation r(k) vs HR   (1 = perfect)" xScale="log"
+                <Plot title={`cross-correlation r(k) vs ${targetLabel}   (1 = perfect)`} xScale="log"
                   xDomain={chart.xDomain} yDomain={chart.yDomain} xTicks={chart.xTicks} yTicks={chart.yTicks}
                   xLabel="angular scale θ = 1/2k [arcsec]" yLabel="r(k) [VIS]" series={chart.series} guides={chart.guides} aspect={0.46} />
                 <Legend items={chart.legend} />
@@ -684,9 +688,9 @@ function Evaluations(
                   onHeatClick={(c) => setPick({ diag: "std_err", ...c })}
                   highlight={pick?.diag === "std_err" ? pick : null} />
                 <Legend items={stdErr.legend} />
-                <TraceHint />
+                <TraceHint targetLabel={targetLabel} />
                 {pick?.diag === "std_err" &&
-                  <PixelTrace mode={mode} pick={pick} cellLabel={stdErr.describe(pick)}
+                  <PixelTrace context={mode} traceBase={pixelTraceBase} targetLabel={targetLabel} pick={pick} cellLabel={stdErr.describe(pick)}
                     colorMeta={colorMeta} onClose={() => setPick(null)} />}
               </>
             )
@@ -695,14 +699,14 @@ function Evaluations(
               <>
                 <Plot title="Where does disagreement live?  (VIS, per pixel)"
                   xDomain={brightStd.xDomain} yDomain={brightStd.yDomain} xTicks={brightStd.xTicks} yTicks={brightStd.yTicks}
-                  xLabel="HR pixel brightness  [e⁻]  (asinh axis)" yLabel="cross-member per-pixel σ  [e⁻]"
+                  xLabel={`${targetLabel} pixel brightness  [e⁻]  (asinh axis)`} yLabel="cross-member per-pixel σ  [e⁻]"
                   heat={brightStd.heat} series={brightStd.series} aspect={0.62}
                   onHeatClick={(c) => setPick({ diag: "bright_std", ...c })}
                   highlight={pick?.diag === "bright_std" ? pick : null} />
                 <Legend items={brightStd.legend} />
-                <TraceHint />
+                <TraceHint targetLabel={targetLabel} />
                 {pick?.diag === "bright_std" &&
-                  <PixelTrace mode={mode} pick={pick} cellLabel={brightStd.describe(pick)}
+                  <PixelTrace context={mode} traceBase={pixelTraceBase} targetLabel={targetLabel} pick={pick} cellLabel={brightStd.describe(pick)}
                     colorMeta={colorMeta} onClose={() => setPick(null)} />}
               </>
             )
@@ -715,9 +719,11 @@ function Evaluations(
 /* ── combiner ────────────────────────────────────────────────────────────── */
 type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
 
-function CombinerCard(
-  { comb, loading, mode, theme, fitJob, onFit, evalReady, combined = false }:
-  { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean; combined?: boolean },
+export function CombinerCard(
+  { comb, loading, mode, theme, fitJob, onFit, evalReady, combined = false,
+    fitUrl = "/ensemble/combiner/fit", title }:
+  { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean; combined?: boolean;
+    fitUrl?: string; title?: string },
 ) {
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("12");
@@ -808,7 +814,7 @@ function CombinerCard(
 
   return (
     <Card>
-      <CardHead title={`${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
+      <CardHead title={title ?? `${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
         sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "a per-band brightness gate fusing members — fit locally on validate, scored on test"}
         right={comb?.available && <Badge tone={comb.stale ? "warn" : "good"}>{comb.stale ? "stale" : "fitted"}</Badge>} />
       <CardBody>
@@ -818,7 +824,7 @@ function CombinerCard(
           <NumberField label="prune (min importance)" value={minUsage} onChange={setMinUsage} min={0} max={0.5} step={0.01} />
           <Button variant="primary" disabled={fitJob.busy || !evalReady}
             title={evalReady ? undefined : `evaluate ${mode} on the test set first — its evaluation must match the current members`}
-            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : "/ensemble/combiner/fit", { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
+            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : fitUrl, { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
             Fit {combined ? "combined combiner" : "combiner"}
           </Button>
         </div>
@@ -891,12 +897,16 @@ type MemRow = {
 };
 type SortBy = "index" | "psnr" | "loss" | "depth";
 
-function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) {
+export function DisagreementCard(
+  { mode, members, collection = "ensemble", targetLabel = "HR" }:
+  { mode: string; members: Member[]; collection?: string; targetLabel?: string },
+) {
   // ttl:0 → always background-revalidate. The cube cache is wiped+rebuilt during
   // an evaluation, so a meta cached mid-run is briefly empty; revalidating on
   // every mount lets the panel self-heal (shows cached instantly, then refreshes
   // to the real membership) instead of staying stuck on "no members".
-  const meta = useResource<ViewMeta>(`/viewer/meta/ensemble?mode=${mode}`, [mode], { ttl: 0 });
+  const viewerQuery = collection === "ensemble" ? `?mode=${mode}` : "";
+  const meta = useResource<ViewMeta>(`/viewer/meta/${collection}${viewerQuery}`, [collection, mode], { ttl: 0 });
   const apiRef = useRef<ViewerApi | null>(null);
   // One selection drives the viewer: 0 → just the base tiers, 1 → that member's
   // SR as a STILL, 2+ → the disagreement MOVIE over the picked members. No
@@ -981,9 +991,9 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
   return (
     <Card>
       <CardHead title="Disagreement viewer"
-        sub="LR · mean · combiner · HR · movie — pick members to see where those reconstructions disagree" />
+        sub={`LR · mean · combiner · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
       <CardBody>
-        <CutoutViewer collection="ensemble" params={{ mode }}
+        <CutoutViewer collection={collection} params={collection === "ensemble" ? { mode } : {}}
           onReady={(api) => { apiRef.current = api; }} />
         <div style={{ marginTop: "var(--s4)" }}>
           <div className="row" style={{ justifyContent: "space-between", gap: "var(--s3)", marginBottom: 8, flexWrap: "wrap" }}>
