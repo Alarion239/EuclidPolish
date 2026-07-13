@@ -869,7 +869,10 @@ class TestLocalRunRoutes:
     def test_run_zoobot_env_missing_hint(self, client, tmp_path, monkeypatch):
         from euclid_polish.web.routes import evaluation as evmod
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        os.makedirs(Config.EVAL_RESULTS_DIR)
+        run_dir = os.path.join(Config.EVAL_RESULTS_DIR, "run1")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "manifest.csv"), "w") as handle:
+            handle.write("id,ok\n")
         monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
         r = client.post("/api/evaluation/run-zoobot", data={"run": "run1"})
         assert r.status_code == 400
@@ -878,7 +881,10 @@ class TestLocalRunRoutes:
     def test_run_zoobot_spawns_job(self, client, tmp_path, monkeypatch):
         from euclid_polish.web.routes import evaluation as evmod
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        os.makedirs(Config.EVAL_RESULTS_DIR)
+        run_dir = os.path.join(Config.EVAL_RESULTS_DIR, "run1")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "manifest.csv"), "w") as handle:
+            handle.write("id,ok\n")
         monkeypatch.setattr(evmod, "_zoobot_python", lambda: "/fake/python")
         captured = {}
         monkeypatch.setattr(evmod, "_spawn_subprocess_job",
@@ -888,7 +894,7 @@ class TestLocalRunRoutes:
         r = client.post("/api/evaluation/run-zoobot", data={"run": "run1"})
         assert r.status_code == 200 and r.get_json()["job_id"] == "job1"
         assert "--run-dir" in captured["cmd"]
-        assert Config.EVAL_RESULTS_DIR in captured["cmd"]
+        assert run_dir in captured["cmd"]
 
     def test_run_zoobot_missing_run_404(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))

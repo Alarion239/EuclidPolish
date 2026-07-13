@@ -351,11 +351,16 @@ class EnsembleModel:
             d = os.path.join(self.base_dir, spec.name)
             created = not (os.path.isdir(d) and _checkpoint_exists(d))
             os.makedirs(d, exist_ok=True)
-            m = Model(d, scale=self._scale,
-                      num_res_blocks=(spec.num_res_blocks
-                                      or self._num_res_blocks),
-                      seed=int(spec.seed), init_weights_from=spec.init_from,
-                      icnr=spec.icnr, asinh_knee=spec.asinh_knee)
+            model_kwargs = {
+                "scale": self._scale,
+                "num_res_blocks": spec.num_res_blocks or self._num_res_blocks,
+                "seed": int(spec.seed),
+                "init_weights_from": spec.init_from,
+                "icnr": spec.icnr,
+            }
+            if spec.asinh_knee is not None:
+                model_kwargs["asinh_knee"] = spec.asinh_knee
+            m = Model(d, **model_kwargs)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
                 with open(os.path.join(d, "origin.json"), "w") as f:
@@ -369,7 +374,7 @@ class EnsembleModel:
                         # The ACTUAL asinh knee (electrons): None = the per-band
                         # config default (100 e⁻); a fork inherits its source's.
                         # Drives the input/output stretch at train + inference.
-                        "asinh_knee": m._asinh_knee,
+                        "asinh_knee": getattr(m, "_asinh_knee", spec.asinh_knee),
                         # Diversity knobs, recorded so the member's training
                         # distribution is reconstructible from its sidecar.
                         "loss_norm": spec.loss_norm,

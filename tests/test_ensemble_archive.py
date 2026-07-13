@@ -1,6 +1,7 @@
-"""job_archive_member: zip → tracking, tombstone, delete member dir, purge cache."""
+"""job_archive_member: zip → tracking, tombstone, delete, rebuild cache."""
 from __future__ import annotations
 
+import json
 import os
 import zipfile
 
@@ -38,7 +39,6 @@ def _mk_members(base, *idxs):
 
 def test_archive_member_full_flow(env, monkeypatch):
     from euclid_polish import ensemble_registry as er
-    from euclid_polish.config import Config
     from euclid_polish.tracking import default_store
     from euclid_polish.web.helpers import ensemble_viz as ev
     from euclid_polish.web.remote import STATE
@@ -49,16 +49,19 @@ def test_archive_member_full_flow(env, monkeypatch):
 
     base = ev.ensemble_dir()
     _mk_members(base, 0, 1)
-    cubes = os.path.join(Config.VIS_DIR, "ensemble", "cubes")
+    cubes = ev._ensemble_cubes_dir(starless=False)
     os.makedirs(cubes)
     with open(os.path.join(cubes, "viz_index.json"), "w") as f:
-        f.write("{}")
+        json.dump({"member_labels": ["00·psnr", "01·psnr"], "indices": []}, f)
 
     out = ev.job_archive_member(_Cap(), name="member_01")
 
     assert out["member"] == "member_01" and out["zip"].endswith(".zip")
     assert not os.path.isdir(os.path.join(base, "member_01"))   # dir gone
-    assert not os.path.isdir(cubes)                             # eager purge
+    # The detached regime cache is rebuilt in place, retaining only the active
+    # member.  This preserves reusable inference instead of forcing a rerun.
+    with open(os.path.join(cubes, "viz_index.json")) as f:
+        assert json.load(f)["member_labels"] == ["00·psnr"]
     reg = er.load_registry(base)
     assert reg["active"] == ["member_00"]
     tomb = reg["archived"][0]

@@ -499,7 +499,8 @@ class Model:
         under a non-default asinh knee, else ``{}`` — so the default-100 e⁻
         path is byte-for-byte the old call and test-injected reconstruct
         doubles (which take no ``knee``) keep working."""
-        return {} if self._asinh_knee is None else {"knee": self._asinh_knee}
+        knee = getattr(self, "_asinh_knee", None)
+        return {} if knee is None else {"knee": knee}
 
     def upsample_array(self, arr: np.ndarray) -> np.ndarray:
         """Super-resolve a bare numpy array (raw electrons); return the SR array.

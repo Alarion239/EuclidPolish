@@ -21,7 +21,10 @@ def test_classic_page_and_status_are_registered():
     assert "experiments/lens_isolation" in status.get_json()["root"]
 
 
-def test_sync_defaults_to_evaluation_only_when_offline():
+def test_sync_defaults_to_evaluation_only_when_offline(monkeypatch):
+    from euclid_polish.web.remote import STATE
+
+    monkeypatch.setattr(STATE, "ssh", None)
     app = create_app()
     response = app.test_client().post("/api/lens-isolation/sync")
     assert response.status_code == 400

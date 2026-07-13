@@ -480,12 +480,11 @@ class TestRegistry:
             REGISTRY.get("nonexistent")
 
     def test_gpu_steps_are_the_expected_set(self):
-        """The only GPU step is the HST/WDSR trainer; everything else
-        (download, kernel, PSF extract, synthetic generate, catalog eval,
-        Zoobot morphology, …) is CPU by default."""
+        """Only model inference/training/evaluation steps request GPUs."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
         assert gpu_steps == {"ensemble_train",
-                             "lensfinder_sr_infer", "lensfinder_train"}
+                             "lensfinder_sr_infer", "lensfinder_train",
+                             "lens_isolation_train", "lens_isolation_evaluate"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -602,13 +601,23 @@ class TestSbatchRendering:
             "lensfinder_sr_infer":          "lensfinder-sr-infer",
             "lensfinder_build_stamps":      "lensfinder-stamps",
             "lensfinder_train":             "lensfinder-train",
+            "lens_isolation_generate":      "lens-isolation-generate",
+            "lens_isolation_train":         "lens-isolation-train",
+            "lens_isolation_evaluate":      "lens-isolation-evaluate",
         }
         for step in REGISTRY.all():
             assert step.job_name == expected[step.step_id], (
                 f"{step.step_id}: job_name {step.job_name!r}"
             )
             out = step.build_sbatch_body(
-                params={}, resources=step.defaults, cfg=cfg, label="x",
+                params=(
+                    {"sources": "member_00"}
+                    if step.step_id == "lens_isolation_train"
+                    else {}
+                ),
+                resources=step.defaults,
+                cfg=cfg,
+                label="x",
             )
             # name = <job_name>-<timestamp>; no legacy hst-/euclid- prefix
             # bolted onto the step id.
@@ -686,7 +695,12 @@ class TestSbatchRendering:
             for n_gpus in (0, 1, 2):
                 resources = replace(step.defaults, n_gpus=n_gpus)
                 out = step.build_sbatch_body(
-                    params={}, resources=resources, cfg=cfg,
+                    params=(
+                        {"sources": "member_00"}
+                        if step.step_id == "lens_isolation_train"
+                        else {}
+                    ),
+                    resources=resources, cfg=cfg,
                     label=f"shebang test {step.step_id} n_gpus={n_gpus}",
                 )
                 body = out["body"]
@@ -1079,4 +1093,3 @@ class TestFixedCpusEnforcement:
             f"_try_startup_ssh_connect honours "
             f"EUCLID_POLISH_DISABLE_AUTO_SSH."
         )
-

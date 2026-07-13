@@ -131,6 +131,7 @@ def test_tombstoned_members_are_never_pulled(tmp_path, monkeypatch):
     ev, STATE = _setup(tmp_path, monkeypatch)
     base = ev.ensemble_dir()
     _member(base, "member_00")
+    _member(base, "member_09")
     ensemble_registry.load_registry(base)
     ensemble_registry.archive_member_entry(base, "member_09",
                                            zip_path="models/m09.zip",

@@ -116,6 +116,7 @@ def test_job_combiner_fit_reuses_validate_cubes(tmp_path, monkeypatch):
     with open(os.path.join(val_dir, "viz_index.json"), "w") as f:
         json.dump({"subset": "validate", "indices": [0, 1],
                    "member_labels": labels, "records_fp": fp}, f)
+    monkeypatch.setattr(ev, "_regime_labels", lambda *_args: labels)
 
     # A guard so we KNOW inference never ran (reuse path only).
     def _boom(*a, **k):
@@ -150,13 +151,14 @@ def test_compute_evaluation_payload_includes_combiner(tmp_path, monkeypatch):
     ps.T_comb/r_comb and a combiner comparison block (combiner vs mean vs best
     member)."""
     n, M = 48, 3
-    def _field(seed):
+    def _field(seed, rec):
         r = np.random.default_rng(seed)
         hr = np.cumsum(r.normal(0, 1, (n, n)), axis=0).astype(np.float32) * 20
         members = np.stack([hr + r.normal(0, 3, (n, n)) for _ in range(M)])
-        return hr, members.mean(0), members, hr        # perfect combiner == hr
+        # target, mean, members, combiner, LR baseline, record index
+        return hr, members.mean(0), members, hr, None, rec
 
-    fields = [_field(1), _field(2)]
+    fields = [_field(1, 0), _field(2, 1)]
     monkeypatch.setattr(ev, "_iter_cached_fields", lambda starless: iter(fields))
 
     cubes = ev._ensemble_cubes_dir(starless=False)
@@ -181,11 +183,15 @@ def test_viewer_advertises_combiner_tier_only_when_present(monkeypatch):
     base = {"subset": "test", "indices": [0, 1], "member_labels": ["00·psnr"]}
     monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: "")   # no hr tier
 
-    monkeypatch.setattr(vd, "_ensemble_manifest", lambda: {**base, "has_combiner": True})
+    monkeypatch.setattr(
+        vd, "_ensemble_manifest", lambda _starless: {**base, "has_combiner": True}
+    )
     keys = [t["key"] for t in vd._ensemble_meta({})["tiers"]]
     assert "comb" in keys
 
-    monkeypatch.setattr(vd, "_ensemble_manifest", lambda: {**base, "has_combiner": False})
+    monkeypatch.setattr(
+        vd, "_ensemble_manifest", lambda _starless: {**base, "has_combiner": False}
+    )
     assert "comb" not in [t["key"] for t in vd._ensemble_meta({})["tiers"]]
 
 

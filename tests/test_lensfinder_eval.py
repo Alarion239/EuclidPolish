@@ -77,6 +77,9 @@ class TestRoutes:
         from euclid_polish.web.routes import evaluation as evmod
         c = self._client(tmp_path, monkeypatch)
         os.makedirs(Config.EVAL_RESULTS_DIR, exist_ok=True)
+        manifest = os.path.join(Config.EVAL_RESULTS_DIR, "manifest.csv")
+        with open(manifest, "w") as handle:
+            handle.write("id,ok\n")
         monkeypatch.setattr(evmod, "_zoobot_python", lambda: None)
         r = c.post("/api/evaluation/run-lensfinder", data={})
         assert r.status_code == 400 and "Zoobot env" in r.get_json()["error"]

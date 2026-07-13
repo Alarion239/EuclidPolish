@@ -101,11 +101,11 @@ def test_ensemble_page_renders(client):
 def test_ensemble_power_spectrum_serves_with_relative_vis_dir(
         client, tmp_path, monkeypatch):
     """Relative VIS_DIR must not make Flask send_file look under app.root_path."""
-    from euclid_polish.web.helpers.ensemble_viz import _ensemble_out_dir
+    from euclid_polish.web.helpers.ensemble_viz import _ensemble_regime_dir
 
     monkeypatch.setattr(Config, "VIS_DIR",
                         os.path.relpath(str(tmp_path / "vis")))
-    out_dir = _ensemble_out_dir()
+    out_dir = _ensemble_regime_dir(starless=True)
     os.makedirs(out_dir, exist_ok=True)
     minimal_png = (
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"

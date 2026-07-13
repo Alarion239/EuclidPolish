@@ -124,13 +124,14 @@ def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
         d = ckpt_root / "ensemble" / f"member_{i:02d}"
         d.mkdir(parents=True)
         (d / "checkpoint").write_text("x")
+        (d / "origin.json").write_text(json.dumps({"starless": True}))
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
                         str(ckpt_root / "wdsr"))
     labels = [f"{i:02d}·psnr" for i in range(n_members)]
 
     # Stage the ensemble cube cache that synthetic_runner should reuse.
     vis_dir = tmp_path / "vis"
-    cubes_dir = vis_dir / "ensemble" / "cubes"
+    cubes_dir = vis_dir / "ensemble" / "starless" / "cubes"
     cubes_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
     for idx in field_indices:
