@@ -13,7 +13,11 @@ test("prefers stdout and falls back to stderr", () => {
   );
   assert.equal(preferredLogKind({ err_path: "/logs/a.err" }), "err");
   assert.equal(preferredLogKind({}), null);
-  assert.equal(preferredLogKind({ out_path: "/logs/gone.out", missing: true }), null);
+  assert.equal(
+    preferredLogKind({ out_path: "/logs/late.out", missing: true }),
+    "out",
+    "a DB path remains openable even when the directory scan missed it",
+  );
 });
 
 test("selects the requested file without crossing streams", () => {

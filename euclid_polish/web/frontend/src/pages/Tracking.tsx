@@ -3,6 +3,7 @@
    one /api/tracking/state and mutates via small POSTs. */
 import { useEffect, useState } from "react";
 import { postForm } from "../api";
+import { asArray } from "../data";
 import { useResource } from "../hooks";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, Field,
@@ -62,6 +63,13 @@ export default function TrackingPage() {
   }
 
   const s = data;
+  const archived = asArray<Archived>(s?.archived);
+  const sandboxes = asArray<Sandbox>(s?.sandboxes);
+  const backups = {
+    models: asArray<BackupRec>(s?.backups?.models),
+    fits: asArray<BackupRec>(s?.backups?.fits),
+    images: asArray<BackupRec>(s?.backups?.images),
+  };
   return (
     <Page>
       <PageHead eyebrow="ops · tracking" title="Experiment tracking"
@@ -125,26 +133,26 @@ export default function TrackingPage() {
 
           {(["models", "fits", "images"] as const).map((kind) => (
             <Card key={kind}>
-              <CardHead title={`Backups · ${kind}`} sub={`${s.backups[kind]?.length ?? 0} saved`} />
-              <CardBody><Table columns={backupCols()} rows={s.backups[kind] ?? []} rowKey={(r) => r.name} empty={`no ${kind} backed up yet`} /></CardBody>
+              <CardHead title={`Backups · ${kind}`} sub={`${backups[kind].length} saved`} />
+              <CardBody><Table columns={backupCols()} rows={backups[kind]} rowKey={(r) => r.name} empty={`no ${kind} backed up yet`} /></CardBody>
             </Card>
           ))}
 
           <Card>
-            <CardHead title="Archived campaigns" sub={`${s.archived.length} snapshots`} />
+            <CardHead title="Archived campaigns" sub={`${archived.length} snapshots`} />
             <CardBody>
-              {s.archived.length === 0 ? <Empty>no snapshots yet</Empty> : (
+              {archived.length === 0 ? <Empty>no snapshots yet</Empty> : (
                 <div className="grid" style={{ gap: "var(--s3)" }}>
-                  {s.archived.map((a) => (
+                  {archived.map((a) => (
                     <div key={a.slug} className="track-arch">
                       <div className="row" style={{ justifyContent: "space-between" }}>
                         <div><b>{a.title}</b> <span className="muted mono">{commitStr(a.saved_commit)}</span> <span className="muted">· {a.saved_at}</span></div>
                         <Button size="sm" onClick={() => act("/api/tracking/timetravel/restore", { campaign: a.slug, remote: "0" }, "✓ sandbox launching")}
                           disabled={busy != null}>⏱ time-travel</Button>
                       </div>
-                      {a.models.length > 0 && (
+                      {asArray<ModelRec>(a.models).length > 0 && (
                         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                          {a.models.map((m) => `${m.name} (${mb(m.size_bytes)})`).join(" · ")}
+                          {asArray<ModelRec>(a.models).map((m) => `${m.name} (${mb(m.size_bytes)})`).join(" · ")}
                         </div>
                       )}
                     </div>
@@ -155,11 +163,11 @@ export default function TrackingPage() {
           </Card>
 
           <Card>
-            <CardHead title="Time-travel sandboxes" sub={`${s.sandboxes.length} active`} />
+            <CardHead title="Time-travel sandboxes" sub={`${sandboxes.length} active`} />
             <CardBody>
-              {s.sandboxes.length === 0 ? <Empty>no sandboxes running</Empty> : (
+              {sandboxes.length === 0 ? <Empty>no sandboxes running</Empty> : (
                 <Table
-                  rows={s.sandboxes}
+                  rows={sandboxes}
                   rowKey={(sb) => sb.short}
                   columns={[
                     { header: "id", cell: (sb) => <code className="mono">{sb.short}</code> },

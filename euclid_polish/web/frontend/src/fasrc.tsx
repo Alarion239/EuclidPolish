@@ -5,6 +5,8 @@
    page — the DRY replacement for the classic `fasrc_step_card.js`. */
 import { useMemo, useState, type ReactNode } from "react";
 import { getJSON, postForm } from "./api";
+import { curveRecords, type CurveRec } from "./fasrcCurves";
+import { asArray } from "./data";
 import { useResource, usePolling } from "./hooks";
 import Plot, { Legend } from "./charts/Plot";
 import {
@@ -40,6 +42,7 @@ export type SlurmStatus = {
   stage?: string; step?: SlurmStep | null;
   warnings?: SlurmEvent[]; errors?: SlurmEvent[];
   resources?: SlurmResources | null;
+  metrics?: CurveRec[];
 };
 type JobStatusResp = {
   ok: boolean; jobid: string; state: string; status?: SlurmStatus; error?: string;
@@ -57,6 +60,8 @@ export function JobStatusBody({ status }: { status?: SlurmStatus | null }) {
   const st = status ?? {};
   const step = st.step;
   const res = st.resources;
+  const warnings = asArray<SlurmEvent>(st.warnings);
+  const errors = asArray<SlurmEvent>(st.errors);
   return (
     <>
       {st.stage && <div className="fasrc-mon__stage">{st.stage}</div>}
@@ -71,14 +76,14 @@ export function JobStatusBody({ status }: { status?: SlurmStatus | null }) {
           {res.cpu_percent != null && <span>CPU {res.cpu_percent.toFixed(0)}%</span>}
         </div>
       )}
-      {!!st.warnings?.length && (
+      {!!warnings.length && (
         <ul className="fasrc-mon__events fasrc-mon__events--warn">
-          {st.warnings.slice(-4).map((e, i) => <li key={i}>{e.msg}</li>)}
+          {warnings.slice(-4).map((e, i) => <li key={i}>{e.msg}</li>)}
         </ul>
       )}
-      {!!st.errors?.length && (
+      {!!errors.length && (
         <ul className="fasrc-mon__events fasrc-mon__events--err">
-          {st.errors.slice(-4).map((e, i) => <li key={i}>{e.msg}</li>)}
+          {errors.slice(-4).map((e, i) => <li key={i}>{e.msg}</li>)}
         </ul>
       )}
     </>
@@ -113,6 +118,7 @@ type CSJob = {
   jobid?: string; label?: string; state?: string; nodes?: string;
   time?: string; time_limit?: string; start_time?: string; reason?: string;
   started_at?: number; ended_at?: number;
+  step_id?: string | null;
 };
 type CSQueue = {
   count: number; halted: boolean; halted_reason?: string | null;
@@ -142,6 +148,7 @@ export function CurrentSubmission() {
 
   const cur = resp?.current;
   const q = resp?.queue;
+  const queueNames = asArray<string>(q?.names);
   return (
     <div className="grid" style={{ gap: "var(--s4)" }}>
       {q && (q.count > 0 || q.halted) && (
@@ -151,8 +158,8 @@ export function CurrentSubmission() {
               onClick={() => control("/api/fasrc/queue/clear", {})}>clear</Button>} />
           <CardBody>
             {q.halted && <div className="job-panel job-panel--err"><LogTail text={q.halted_reason || "queue halted"} /></div>}
-            {q.names?.length
-              ? <ul className="fasrc-queue">{q.names.map((n, i) => <li key={i}>{n}</li>)}</ul>
+            {queueNames.length
+              ? <ul className="fasrc-queue">{queueNames.map((n, i) => <li key={i}>{n}</li>)}</ul>
               : <span className="muted">nothing queued</span>}
           </CardBody>
         </Card>
@@ -183,7 +190,9 @@ export function CurrentSubmission() {
           </CardBody>
         </Card>
       )}
-      {cur?.job.started_at && <TrainingCurve startedAt={cur.job.started_at} endedAt={cur.job.ended_at} />}
+      {cur?.job.started_at && <TrainingCurve startedAt={cur.job.started_at}
+        endedAt={cur.job.ended_at} stepId={cur.job.step_id}
+        eventRecords={cur.status?.metrics} />}
     </div>
   );
 }
@@ -192,11 +201,6 @@ export function CurrentSubmission() {
    The per-step validation records for a run's wall-time window, drawn live in
    the browser with the shared <Plot> — no server matplotlib. Polls while the
    card is up so an in-flight run's curve grows. */
-type CurveRec = {
-  step: number; psnr_stretched?: number | null; psnr_raw?: number | null;
-  loss?: number | null; psnr_vis?: number | null; psnr_y_e?: number | null;
-  psnr_j_e?: number | null; psnr_h_e?: number | null;
-};
 type CurveResp = { ok: boolean; member?: string; records: CurveRec[] };
 type CurveMetric = "psnr" | "loss";
 
@@ -217,7 +221,10 @@ function niceTicks(lo: number, hi: number, kilo = false): { v: number; label: st
   return out;
 }
 
-export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; endedAt?: number }) {
+export function TrainingCurve(
+  { startedAt, endedAt, stepId, eventRecords }:
+  { startedAt?: number; endedAt?: number; stepId?: string | null; eventRecords?: CurveRec[] },
+) {
   const [resp, setResp] = useState<CurveResp | null>(null);
   // `loading` only until the FIRST fetch resolves; after that we show the curve,
   // a "no eval yet" note, or the error — never an endless spinner. `err` holds a
@@ -228,7 +235,7 @@ export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; ende
   const [metric, setMetric] = useState<CurveMetric>("psnr");
   usePolling(() => {
     if (!startedAt) return;
-    const url = `/api/fasrc/runs/training-curve.json?started_at=${startedAt}${endedAt ? `&ended_at=${endedAt}` : ""}`;
+    const url = `/api/fasrc/runs/training-curve.json?started_at=${startedAt}${endedAt ? `&ended_at=${endedAt}` : ""}${stepId ? `&step_id=${encodeURIComponent(stepId)}` : ""}`;
     fetch(url, { headers: { Accept: "application/json" } })
       .then(async (r) => {
         const j = (await r.json().catch(() => null)) as (CurveResp & { error?: string }) | null;
@@ -237,9 +244,15 @@ export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; ende
         setErr(""); setResp(j);
       })
       .catch(() => { setLoading(false); setErr("request failed"); });
-  }, 20000, !!startedAt);
+  }, 20000, !!startedAt && !curveRecords(eventRecords).length);
 
-  const recs = resp?.records ?? [];
+  // Reporter events are the canonical live source and already arrive with the
+  // current-submission poll.  The file endpoint remains a compatibility
+  // fallback for older jobs that did not emit metric events.
+  const liveRecs = curveRecords(eventRecords);
+  const recs = liveRecs.length ? liveRecs : curveRecords(resp?.records);
+  const liveMember = liveRecs.length ? liveRecs[liveRecs.length - 1].member : null;
+  const sourceReady = liveRecs.length > 0 || resp != null;
   const chart = useMemo(() => {
     if (!recs.length) return null;
     const css = (n: string, f: string) => {
@@ -278,12 +291,13 @@ export function TrainingCurve({ startedAt, endedAt }: { startedAt?: number; ende
   if (!startedAt) return null;
   return (
     <Card>
-      <CardHead title="Training curves" sub={resp?.member || (resp ? "this run" : undefined)}
+      <CardHead title="Training curves"
+        sub={liveRecs.length ? `live events${liveMember != null ? ` · member ${liveMember}` : ""}` : resp?.member || (resp ? "this run" : undefined)}
         right={<Segmented<CurveMetric> value={metric} onChange={setMetric}
           options={[{ value: "psnr", label: "PSNR" }, { value: "loss", label: "loss" }]} />} />
       <CardBody>
-        {loading ? <Empty><Spinner /> loading curves…</Empty>
-          : !resp ? <Empty>curves unavailable{err ? ` — ${err}` : ""} · retrying every 20 s</Empty>
+        {loading && !liveRecs.length ? <Empty><Spinner /> loading curves…</Empty>
+          : !sourceReady ? <Empty>curves unavailable{err ? ` — ${err}` : ""} · retrying every 20 s</Empty>
           : !recs.length ? <Empty>no eval logged yet — the curve appears after the first validation</Empty>
           : !chart ? <Empty>no {metric} data for this run</Empty>
           : (<>
@@ -371,7 +385,7 @@ export function StepById(
 ) {
   const { data, loading } = useHstStatus();
   if (loading) return <Card><CardBody><Empty><Spinner /> loading step…</Empty></CardBody></Card>;
-  const step = data?.steps.find((s) => s.step_id === stepId);
+  const step = asArray<Step>(data?.steps).find((s) => s.step_id === stepId);
   if (!step) {
     return <Card><CardBody><Empty>step <code>{stepId}</code> is not registered on the server</Empty></CardBody></Card>;
   }

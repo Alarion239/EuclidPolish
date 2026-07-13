@@ -4,6 +4,7 @@
    catalog summary), and a save-to-FASRC credentials card. */
 import { useCallback, useEffect, useState } from "react";
 import { getJSON, postForm } from "../api";
+import { asArray } from "../data";
 import { useResource } from "../hooks";
 import { StepById } from "../fasrc";
 import { CutoutViewer } from "../legacy";
@@ -64,7 +65,7 @@ export default function CutoutsPage() {
   const [galBand, setGalBand] = useState<string>("VIS");
   const [galPage, setGalPage] = useState(1);
   const gal = useResource<CutoutList>(`/api/cutouts/${galBand}/list.json?page=${galPage}`, [galBand, galPage]);
-  const galItems = (gal.data?.files ?? []).map((f) => ({
+  const galItems = asArray<string>(gal.data?.files).map((f) => ({
     src: `/cutout-image/${galBand}/${encodeURIComponent(f)}?size=170&output_dir=${encodeURIComponent(gal.data?.output_dir ?? "")}`,
     href: `/cutout-image/${galBand}/${encodeURIComponent(f)}?size=768&output_dir=${encodeURIComponent(gal.data?.output_dir ?? "")}`,
     label: f.replace(/^star_/, "").replace(/\.fits$/, ""),

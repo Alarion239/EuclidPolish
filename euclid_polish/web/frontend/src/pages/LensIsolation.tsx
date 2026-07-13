@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { postForm } from "../api";
 import { ConnectionBar, StepById } from "../fasrc";
 import { useResource } from "../hooks";
+import { asArray } from "../data";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Field, Input,
   NumberField, Page, PageHead, Stat,
@@ -45,7 +46,9 @@ export default function LensIsolationPage() {
     }
   }
 
-  const ensembleMetric = status.data?.evaluation.metrics?.ensemble;
+  const records = status.data?.records;
+  const ensemble = status.data?.ensemble;
+  const ensembleMetric = status.data?.evaluation?.metrics?.ensemble;
   return (
     <Page>
       <PageHead
@@ -73,8 +76,8 @@ export default function LensIsolationPage() {
       </Card>
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "var(--s3)", marginBottom: "var(--s4)" }}>
-        <Card><CardBody><Stat k="paired records" v={status.data?.records.present ? "ready" : "not synced"} /></CardBody></Card>
-        <Card><CardBody><Stat k="trained members" v={status.data?.ensemble.members.length ?? 0} /></CardBody></Card>
+        <Card><CardBody><Stat k="paired records" v={records?.present ? "ready" : "not synced"} /></CardBody></Card>
+        <Card><CardBody><Stat k="trained members" v={asArray(ensemble?.members).length} /></CardBody></Card>
         <Card><CardBody><Stat k="ensemble AUC" v={ensembleMetric?.auc?.toFixed(4) ?? "—"} /></CardBody></Card>
       </div>
 

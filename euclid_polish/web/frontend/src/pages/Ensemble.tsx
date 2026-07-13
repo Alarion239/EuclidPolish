@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useResource } from "../hooks";
+import { asArray } from "../data";
 import { useJob, JobProgressView } from "../jobs";
 import { useThemeValue } from "../theme";
 import { CutoutViewer, loadColorEngine, type ViewerApi, type ColorMeta, type RenderOpts } from "../legacy";
@@ -87,9 +88,9 @@ type Combiner = {
 type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; asinh_knee?: number | null; starless?: boolean };
 
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
-const hasData = (a?: (number | null)[]) => !!a && a.some((v) => v != null && isFinite(v as number));
-const finite = (a: [number, number][], i: 0 | 1) => a.map((p) => p[i]);
-const num = (a?: (number | null)[]) => (a ?? []).map((v) => (v == null ? NaN : v));
+const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
+const finite = (a: unknown, i: 0 | 1) => asArray<[number, number]>(a).map((p) => p[i]);
+const num = (a: unknown) => asArray<number | null>(a).map((v) => (v == null ? NaN : v));
 
 const SUP: Record<string, string> = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
 const sup = (n: number) => String(n).split("").map((c) => SUP[c] ?? c).join("");
@@ -259,6 +260,8 @@ function PixelTrace(
   const url = `/ensemble/pixel-trace.json?mode=${mode}&diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
   const trace = useResource<Trace>(url, [mode, pick.diag, pick.i, pick.j]);
   const t = trace.data;
+  const stamps = asArray<Stamp>(t?.stamps);
+  const traceBands = asArray<string>(t?.bands);
 
   // Load the viewer's colour engine once; render null until it's ready.
   const [render, setRender] = useState<RenderFn | null>(null);
@@ -286,18 +289,18 @@ function PixelTrace(
         </div>
       </div>
       {trace.loading ? <Empty><Spinner /> pulling stamps…</Empty>
-        : !t || !t.stamps.length
+        : !t || !stamps.length
           ? <Empty>no pixels were sampled in this cell — try a denser (brighter-colored) one</Empty>
           : (
             <div className="ens-trace__grid">
-              {t.stamps.map((s, k) => (
+              {stamps.map((s, k) => (
                 <div key={k} className="ens-trace__card">
                   <div className="ens-trace__stamps">
-                    <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands}
+                    <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="LR" />
-                    <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands}
+                    <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label="HR" />
-                    <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands}
+                    <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX}
                       label="SR" badge={s.sr_is_combiner ? "combiner" : "mean"} />
                     <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} px={STAMP_PX} label="σ" />
@@ -326,7 +329,7 @@ export default function EnsemblePage() {
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
   const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}`, [mode]);
   const combined = useResource<Combiner>(`/ensemble/combined-combiner.json?mode=${mode}`, [mode]);
-  const curves = useResource<{ members: Curve[] }>("/ensemble/training-curves.json");
+  const curves = useResource<{ members?: Curve[] }>("/ensemble/training-curves.json");
 
   const evalJob = useJob();
   const opJob = useJob();
@@ -356,11 +359,11 @@ export default function EnsemblePage() {
           onArchived={reloadAll}
           onContinue={(m) => toTrain("continue", m)}
           onFork={(m) => toTrain("fork", m)} />
-        <TrainingCurves curves={curves.data?.members ?? []} starless={starless} />
+        <TrainingCurves curves={asArray<Curve>(curves.data?.members)} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false} />
-        <DisagreementCard key={mode} mode={mode} members={status.data?.members ?? []} />
+        <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)} />
         <CombinerCard comb={combined.data} loading={combined.loading} mode={mode} theme={theme} fitJob={combinedFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false} combined />
       </div>
@@ -411,7 +414,7 @@ function Members(
   { status: Status | null; loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>;
     onArchived: () => void; onContinue: (m: string) => void; onFork: (m: string) => void },
 ) {
-  const rows = (status?.members ?? []).filter((m) => !!m.starless === starless);
+  const rows = asArray<Member>(status?.members).filter((m) => !!m.starless === starless);
   const cols: Column<Member>[] = [
     { header: "#", cell: (m) => m.psnr_rank ? <b>{m.psnr_rank}</b> : <span className="muted">—</span>, width: 40 },
     { header: "member", cell: (m) => <code className="mono">{m.name}</code> },
@@ -518,11 +521,11 @@ function Evaluations(
   const vmeta = useResource<ViewerMetaColor>(`/viewer/meta/ensemble?mode=${mode}`, [mode]);
   const colorMeta = vmeta.data?.color;
   const ps = evals?.ps ?? null;
-  const members = evals?.members ?? [];
+  const members = asArray<NonNullable<Evals["members"]>[number]>(evals?.members);
 
   const chart = useMemo(() => {
     if (!ps || !hasData(ps.theta)) return null;
-    const theta = ps.theta.map((v) => (v == null ? NaN : v)) as number[];
+    const theta = num(ps.theta);
     const xs = theta.filter((v) => isFinite(v));
     const g = evals?.guides ?? {};
     const xDomain: [number, number] = [g.theta_min ?? 0.05, Math.max(...xs)];
@@ -542,12 +545,12 @@ function Evaluations(
     const series: Series[] = [];
     // Member↔member cross-correlation (pairwise cloud + the model–model r̃(k)).
     if (show.cross) {
-      for (const pair of ps.r_pairs ?? []) series.push({ x: theta, y: pair, color: C.muted, width: 0.7, alpha: 0.18 });
+      for (const pair of asArray<(number | null)[]>(ps.r_pairs)) series.push({ x: theta, y: num(pair), color: C.muted, width: 0.7, alpha: 0.18 });
       if (hasData(ps.r_cross)) series.push({ x: theta, y: ps.r_cross!, color: C.cross, width: 2, dash: [6, 3] });
     }
-    (ps.r_members ?? []).forEach((row, i) => series.push({ x: theta, y: row, color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
+    asArray<(number | null)[]>(ps.r_members).forEach((row, i) => series.push({ x: theta, y: num(row), color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
-    if (show.mean) series.push({ x: theta, y: ps.r, color: C.mean, width: 2.6, dots: true });
+    if (show.mean && hasData(ps.r)) series.push({ x: theta, y: num(ps.r), color: C.mean, width: 2.6, dots: true });
     if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
     if (show.combined && hasData(ps.r_combined)) series.push({ x: theta, y: ps.r_combined!, color: "#9d6cff", width: 2.2, dots: true });
     const guides: Guide[] = [
@@ -574,10 +577,12 @@ function Evaluations(
   // log10(e⁻). The |err|=σ diagonal reference rides as a 2-pt series.
   const stdErr = useMemo(() => {
     const d = evals?.std_err;
-    if (!d?.hist?.length) return null;
+    const hist = asArray<number[]>(d?.hist);
+    if (!d || !hist.length) return null;
     const edges = num(d.edges);
+    if (edges.length < 2) return null;
     const lo = edges[0], hi = edges[edges.length - 1];
-    const heat: Heat = { z: d.hist, xEdges: edges, yEdges: edges };
+    const heat: Heat = { z: hist, xEdges: edges, yEdges: edges };
     const series: Series[] = [
       { x: [lo, hi], y: [lo, hi], color: C.guide, width: 1.3, dash: [6, 3] },
       { x: num(d.med_std), y: num(d.med_err), color: C.baseline, width: 2.6, dots: true },
@@ -600,9 +605,11 @@ function Evaluations(
   // bin. x = asinh(HR/stretch), y = log10 σ(e⁻).
   const brightStd = useMemo(() => {
     const d = evals?.bright_std;
-    if (!d?.hist?.length) return null;
+    const hist = asArray<number[]>(d?.hist);
+    if (!d || !hist.length) return null;
     const bx = num(d.bright_edges), sy = num(d.std_edges);
-    const heat: Heat = { z: d.hist, xEdges: bx, yEdges: sy };
+    if (bx.length < 2 || sy.length < 2) return null;
+    const heat: Heat = { z: hist, xEdges: bx, yEdges: sy };
     const bright = num(d.bright);
     const series: Series[] = [
       { x: bright, y: num(d.lo), color: C.baseline, width: 1, alpha: 0.5, dash: [4, 3] },
@@ -718,21 +725,23 @@ function CombinerCard(
   const [band, setBand] = useState<string>("");
   const [colorBy, setColorBy] = useState<GateColorBy>("loss");
 
-  const bands = comb?.band_names ?? [];
+  const bands = asArray<string>(comb?.band_names);
   const activeBand = band || bands[0] || "";
 
   const importance = useMemo(() => {
-    if (!comb?.eff_weights || !comb.member_labels) return [];
-    const m = comb.member_labels.length;
+    if (!comb?.eff_weights) return [];
+    const labels = asArray<string>(comb.member_labels);
+    const memberMeta = asArray<NonNullable<Combiner["members"]>[number]>(comb.members);
+    const m = labels.length;
     const cum = new Array(m).fill(0);
     for (const b of Object.values(comb.eff_weights)) {
-      const jac = b.jacobian ?? [];
+      const jac = asArray<(number | null)[]>(b?.jacobian);
       const L = jac.length || 1;
       for (const row of jac) row?.forEach((w, i) => { if (w != null && isFinite(w)) cum[i] += w / L; });
     }
-    const surv = comb.member_labels.map((_, i) => Object.values(comb.surviving ?? {}).some((arr) => arr[i] !== false));
-    return comb.member_labels
-      .map((label, i) => ({ i, label, total: cum[i], kept: surv[i], meta: comb.members?.[i] }))
+    const surv = labels.map((_, i) => Object.values(comb.surviving ?? {}).some((arr) => asArray<boolean>(arr)[i] !== false));
+    return labels
+      .map((label, i) => ({ i, label, total: cum[i], kept: surv[i], meta: memberMeta[i] }))
       .filter((r) => r.kept)
       .sort((a, b2) => b2.total - a.total);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -744,10 +753,10 @@ function CombinerCard(
   // ensemble's distinct values; psnr → viridis over the surviving members' PSNR
   // range; loss → loss token.
   const memberColor = useMemo(() => {
-    const members = comb?.members ?? [];
-    const M = comb?.member_labels.length ?? 0;
+    const members = asArray<NonNullable<Combiner["members"]>[number]>(comb?.members);
+    const M = asArray<string>(comb?.member_labels).length;
     const survIdx = Array.from({ length: M }, (_, m) => m)
-      .filter((m) => Object.values(comb?.surviving ?? {}).some((arr) => arr[m] !== false));
+      .filter((m) => Object.values(comb?.surviving ?? {}).some((arr) => asArray<boolean>(arr)[m] !== false));
     const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
     const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
     const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
@@ -767,17 +776,20 @@ function CombinerCard(
 
   const gate = useMemo(() => {
     const ew = comb?.eff_weights?.[activeBand];
-    if (!ew?.jacobian?.length) return null;
-    const bx = (ew.brightness_e ?? []).map((e) => (e == null ? NaN : Math.asinh(e / 100))) as number[];
-    const surv = comb?.surviving?.[activeBand] ?? [];
-    const members = comb?.members ?? [];
-    const M = comb?.member_labels.length ?? 0;
+    const jacobian = asArray<(number | null)[]>(ew?.jacobian);
+    if (!ew || !jacobian.length) return null;
+    const bx = asArray<number | null>(ew.brightness_e).map((e) => (e == null ? NaN : Math.asinh(e / 100)));
+    const surv = asArray<boolean>(comb?.surviving?.[activeBand]);
+    const members = asArray<NonNullable<Combiner["members"]>[number]>(comb?.members);
+    const labels = asArray<string>(comb?.member_labels);
+    const M = labels.length;
     const survIdx = Array.from({ length: M }, (_, m) => m).filter((m) => surv[m] !== false);
 
     const xs = bx.filter((v) => isFinite(v));
+    if (!xs.length) return null;
     const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs)];
     const series: Series[] = survIdx.map((m) => ({
-      x: bx, y: ew.jacobian!.map((row) => (row?.[m] ?? null)), color: memberColor(m), width: 1.8,
+      x: bx, y: jacobian.map((row) => (asArray<number | null>(row)[m] ?? null)), color: memberColor(m), width: 1.8,
     }));
     const legend = survIdx.map((m) => {
       const meta = members[m];
@@ -786,7 +798,7 @@ function CombinerCard(
         : colorBy === "knee" ? kneeTag(meta?.asinh_knee)
         : colorBy === "regime" ? (comb?.source_starless?.[m] ? "starless" : "starfull")
         : (meta?.psnr != null ? `${meta.psnr.toFixed(1)}dB` : "—");
-      return { label: `${comb?.member_labels[m]} · ${tag}`, color: memberColor(m) };
+      return { label: `${labels[m]} · ${tag}`, color: memberColor(m) };
     });
     const xTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((f) => { const v = xDomain[0] + f * (xDomain[1] - xDomain[0]); return { v, label: Math.round(100 * Math.sinh(v)).toString() }; });
     const yTicks: Tick[] = [0, 0.5, 1].map((v) => ({ v, label: String(v) }));
@@ -821,7 +833,7 @@ function CombinerCard(
           : !comb?.available ? <Empty>{comb?.reason ?? `no ${combined ? "combined " : ""}combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
           <div style={{ marginTop: "var(--s4)" }}>
             <DefList items={[
-              ["members", `${comb.member_labels.length} (${importance.length} surviving)`],
+              ["members", `${asArray<string>(comb.member_labels).length} (${importance.length} surviving)`],
               ["kernels", String(comb.n_kernels ?? "—")],
               ["prune ≥", String(comb.min_usage ?? 0)],
               ["validate L1", comb.val_l1 != null ? comb.val_l1.toFixed(4) : "—"],
@@ -897,7 +909,7 @@ function DisagreementCard({ mode, members }: { mode: Mode; members: Member[] }) 
   // status members (facets) by dir name member_NN.
   const rows: MemRow[] = useMemo(() => {
     const byName = new Map(members.map((m) => [m.name, m]));
-    return (meta.data?.member_labels ?? []).map((label, i) => {
+    return asArray<string>(meta.data?.member_labels).map((label, i) => {
       // Labels are "NN·psnr" (the PSNR-best checkpoint fingerprint); show just NN.
       const num = label.split("·")[0];
       const m = byName.get(`member_${num}`);

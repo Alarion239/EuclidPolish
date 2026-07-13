@@ -4,6 +4,7 @@
    Readiness comes from /api/status; the render-side gallery has no JSON
    listing, so recent outputs are linked to the classic page instead. */
 import { useState } from "react";
+import { asArray } from "../data";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import {
@@ -27,7 +28,7 @@ const runCols: Column<Run>[] = [
   { header: "run", cell: (r) => <span>{r.label}</span> },
   { header: "files", cell: (r) => (
     <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-      {r.files.map((f) => (
+      {asArray<RunFile>(r.files).map((f) => (
         <a key={f.name} className="mono" style={{ fontSize: 12 }}
           href={`/inference-files/${f.rel}`} title={`${f.size_kb} kB`}>{f.name}</a>
       ))}
@@ -42,8 +43,13 @@ export default function InferencePage() {
 
   const ckpts = data?.checkpoints;
   const recs = data?.tfrecords;
-  const hasModel = (ckpts?.files?.length ?? 0) > 0;
-  const hasRecords = (recs?.files?.length ?? 0) > 0;
+  const checkpointFiles = asArray<CheckpointFile>(ckpts?.files);
+  const recordFiles = asArray<TfrecordFile>(recs?.files);
+  const hasModel = checkpointFiles.length > 0;
+  const hasRecords = recordFiles.length > 0;
+  const reconPngs = asArray<ReconPng>(gallery.data?.recon_pngs);
+  const euclidRuns = asArray<Run>(gallery.data?.euclid_runs);
+  const syntheticRuns = asArray<Run>(gallery.data?.synthetic_runs);
 
   // --- synthetic generate + reconstruct ---
   const [nPairs, setNPairs] = useState("1");
@@ -78,10 +84,10 @@ export default function InferencePage() {
   const readiness = (
     <div className="row" style={{ gap: 8 }}>
       <Badge tone={hasModel ? "good" : "bad"}>
-        {hasModel ? `ensemble · ${ckpts?.files.length} files` : "no active members"}
+        {hasModel ? `ensemble · ${checkpointFiles.length} files` : "no active members"}
       </Badge>
       <Badge tone={hasRecords ? "good" : "warn"}>
-        {hasRecords ? `records · ${recs?.files.length}` : "no records"}
+        {hasRecords ? `records · ${recordFiles.length}` : "no records"}
       </Badge>
     </div>
   );
@@ -108,11 +114,11 @@ export default function InferencePage() {
               <DefList items={[
                 ["model",
                   hasModel
-                    ? <span><b>ensemble</b> · {ckpts?.files.length} checkpoint files in <code className="mono">{ckpts?.dir}</code></span>
+                    ? <span><b>ensemble</b> · {checkpointFiles.length} checkpoint files in <code className="mono">{ckpts?.dir}</code></span>
                     : <span className="muted">no active members — train or pull them on the Ensemble page first</span>],
                 ["records",
                   hasRecords
-                    ? <span>{recs?.files.length} TFRecords in <code className="mono">{recs?.dir}</code></span>
+                    ? <span>{recordFiles.length} TFRecords in <code className="mono">{recs?.dir}</code></span>
                     : <span className="muted">none — the synthetic path generates on the fly</span>],
               ]} />
               <p className="muted" style={{ marginTop: "var(--s3)", fontSize: 12 }}>
@@ -191,12 +197,12 @@ export default function InferencePage() {
           </Card>
 
           <Card>
-            <CardHead title="Recent reconstructions" sub={`${gallery.data?.recon_pngs.length ?? 0} PNG(s), newest first`}
+            <CardHead title="Recent reconstructions" sub={`${reconPngs.length} PNG(s), newest first`}
               right={<Button size="sm" variant="ghost" onClick={reloadGallery}>↻</Button>} />
             <CardBody>
               {gallery.loading ? <Empty><Spinner /> loading…</Empty> : (
                 <Gallery thumb={160} empty="no reconstructions yet — run one above"
-                  items={(gallery.data?.recon_pngs ?? []).slice(0, 48).map((p) => ({
+                  items={reconPngs.slice(0, 48).map((p) => ({
                     src: `/vis/${p.rel}`,
                     href: p.fits_rel ? `/inspect?fits=${encodeURIComponent(p.fits_rel)}` : `/vis/${p.rel}`,
                     label: p.name,
@@ -205,16 +211,16 @@ export default function InferencePage() {
             </CardBody>
           </Card>
 
-          {!!gallery.data?.euclid_runs.length && (
+          {!!euclidRuns.length && (
             <Card>
               <CardHead title="Real Euclid runs" sub="downloadable / inspectable FITS per position" />
-              <CardBody><Table columns={runCols} rows={gallery.data.euclid_runs} rowKey={(r) => r.tag} /></CardBody>
+              <CardBody><Table columns={runCols} rows={euclidRuns} rowKey={(r) => r.tag} /></CardBody>
             </Card>
           )}
-          {!!gallery.data?.synthetic_runs.length && (
+          {!!syntheticRuns.length && (
             <Card>
               <CardHead title="Synthetic runs" sub="per-scene original_stack · SR · HR FITS" />
-              <CardBody><Table columns={runCols} rows={gallery.data.synthetic_runs} rowKey={(r) => r.tag} /></CardBody>
+              <CardBody><Table columns={runCols} rows={syntheticRuns} rowKey={(r) => r.tag} /></CardBody>
             </Card>
           )}
         </div>

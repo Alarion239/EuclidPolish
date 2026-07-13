@@ -102,3 +102,5 @@ def test_training_dispatches_to_normal_model_train_fixed_record_mode(tmp_path):
     call["eval_callback"]({"step": 4, "loss": 0.2})
     assert reporter.steps[-1] == (14, 24, "member 2 step 2")
     assert reporter.metrics[-1]["member"] == 2
+    assert reporter.metrics[-1]["step"] == 16
+    assert reporter.metrics[-1]["total"] == 24

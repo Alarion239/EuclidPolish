@@ -118,7 +118,14 @@ def train_member(
 
     def eval_callback(metrics: dict[str, Any]) -> None:
         if reporter is not None:
-            reporter.metric({**metrics, "member": member_index + 1})
+            event = {**metrics, "member": member_index + 1}
+            # Reporter metrics drive the React current-submission curve.  Match
+            # the cumulative progress bar instead of restarting x at zero for
+            # every isolated member (the on-disk per-member CSV stays local).
+            if event.get("step") is not None:
+                event["step"] = member_index * config.steps + int(event["step"])
+            event["total"] = member_count * config.steps
+            reporter.metric(event)
 
     model.train(
         lr_path=dirty_train,

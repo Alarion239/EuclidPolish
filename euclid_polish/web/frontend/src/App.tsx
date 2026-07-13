@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { NAV, PAGES } from "./pages/registry";
 import { ThemeContext, useTheme, type Theme } from "./theme";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -57,6 +57,7 @@ function Rail({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
 
 export default function App() {
   const { theme, toggle } = useTheme();
+  const location = useLocation();
   return (
     <div className="shell">
       <Rail theme={theme} onToggle={toggle} />
@@ -68,12 +69,12 @@ export default function App() {
                 | /ensemble/starless. Bare /ensemble redirects to starfull. */}
             <Route path="/ensemble" element={<Navigate to="/ensemble/starfull" replace />} />
             <Route path="/ensemble/:mode"
-              element={<ErrorBoundary routeKey="/ensemble"><EnsemblePage /></ErrorBoundary>} />
+              element={<ErrorBoundary key={location.pathname} routeKey="/ensemble"><EnsemblePage /></ErrorBoundary>} />
             {PAGES.filter((p) => p.path !== "/ensemble").map((p) => {
               const C = p.component;
               return (
                 <Route key={p.path} path={p.path}
-                  element={<ErrorBoundary routeKey={p.path}><C /></ErrorBoundary>} />
+                  element={<ErrorBoundary key={location.pathname} routeKey={p.path}><C /></ErrorBoundary>} />
               );
             })}
             <Route path="*" element={<Placeholder />} />

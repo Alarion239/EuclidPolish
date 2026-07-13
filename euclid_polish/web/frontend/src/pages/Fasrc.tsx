@@ -4,6 +4,7 @@
    monitoring + cluster ops. */
 import { useEffect, useRef, useState } from "react";
 import { postForm } from "../api";
+import { asArray } from "../data";
 import { useResource, usePolling } from "../hooks";
 import { ConnectionBar, CurrentSubmission } from "../fasrc";
 import {
@@ -122,6 +123,9 @@ function StorageTab({ connected }: { connected: boolean }) {
     } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
     finally { setBusy(false); data.reload(); }
   }
+  const duRows = asArray<[string, string]>(data.data?.du);
+  const tfrecords = asArray(data.data?.tfrecords);
+  const checkpoints = asArray(data.data?.checkpoints);
   if (!connected) return <Card><CardBody><Empty>connect to FASRC to browse remote storage</Empty></CardBody></Card>;
   return (
     <div className="grid" style={{ gap: "var(--s4)" }}>
@@ -135,16 +139,16 @@ function StorageTab({ connected }: { connected: boolean }) {
         <CardBody>
           {data.loading ? <Empty><Spinner /> scanning netscratch… (remote du can take ~20 s)</Empty>
             : (data.data && data.data.ok === false) ? <Empty>{data.data.error || "listing unavailable"}</Empty>
-            : !data.data?.du?.length ? <Empty>no listing — is the data dir set?</Empty>
+            : !duRows.length ? <Empty>no listing — is the data dir set?</Empty>
             : (<>
               <Table
                 columns={[
                   { header: "size", cell: (r: [string, string]) => <span className="mono">{r[0]}</span>, width: 90 },
                   { header: "path", cell: (r: [string, string]) => <code className="mono">{r[1]}</code> },
                 ]}
-                rows={data.data.du} rowKey={(_r, i) => i} />
+                rows={duRows} rowKey={(_r, i) => i} />
               <div className="muted" style={{ marginTop: "var(--s3)", fontSize: 12 }}>
-                {data.data?.tfrecords?.length ?? 0} tfrecords · {data.data?.checkpoints?.length ?? 0} checkpoints
+                {tfrecords.length} tfrecords · {checkpoints.length} checkpoints
                 {data.data?.ckpt_dir ? ` · ${data.data.ckpt_dir}` : ""}
               </div>
             </>)}
@@ -245,7 +249,7 @@ function LogsTab({ connected }: { connected: boolean }) {
           <Button size="sm" variant="ghost" onClick={() => runs.reload()}>↻</Button>
         </div>} />
       <CardBody>
-        <Table columns={cols} rows={d?.runs ?? []} rowKey={(r) => r.name}
+        <Table columns={cols} rows={asArray<RunRow>(d?.runs)} rowKey={(r) => r.name}
           onRowClick={openRun} isRowClickable={(r) => preferredLogKind(r) != null}
           empty={runs.loading ? "loading…" : "no past runs found"} />
       </CardBody>

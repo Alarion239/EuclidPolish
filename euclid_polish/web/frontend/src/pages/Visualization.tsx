@@ -7,6 +7,7 @@
    have live PNG endpoints (/view/*), plus a FITS-inspector helper that links
    into the universal /inspect page. */
 import { useState } from "react";
+import { asArray } from "../data";
 import { useResource } from "../hooks";
 import { StepById } from "../fasrc";
 import {
@@ -18,7 +19,8 @@ type VisPng = { rel: string; mtime: number; size_kb: number; inspect_fits: strin
 
 export default function VisualizationPage() {
   const gallery = useResource<{ pngs: VisPng[] }>("/api/vis/list.json");
-  const items = (gallery.data?.pngs ?? []).slice(0, 60).map((p) => ({
+  const pngs = asArray<VisPng>(gallery.data?.pngs);
+  const items = pngs.slice(0, 60).map((p) => ({
     src: `/vis/${p.rel}`,
     href: p.inspect_fits ? `/inspect?fits=${encodeURIComponent(p.inspect_fits)}` : `/vis/${p.rel}`,
     label: p.rel.split("/").pop(),
@@ -50,7 +52,7 @@ export default function VisualizationPage() {
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Card>
-          <CardHead title="Rendered figures" sub={`data/vis/ · ${gallery.data?.pngs.length ?? 0} PNG(s), newest first`}
+          <CardHead title="Rendered figures" sub={`data/vis/ · ${pngs.length} PNG(s), newest first`}
             right={<Button size="sm" variant="ghost" onClick={() => gallery.reload()}>↻</Button>} />
           <CardBody>
             {gallery.loading ? <Empty><Spinner /> loading…</Empty>

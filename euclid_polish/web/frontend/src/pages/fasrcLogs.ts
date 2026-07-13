@@ -7,7 +7,10 @@ export type RunLogFiles = {
 };
 
 export function preferredLogKind(files: RunLogFiles): LogKind | null {
-  if (files.missing) return null;
+  // `missing` means the remote directory scan did not see the files.  DB rows
+  // still carry their canonical paths and the classic UI lets the log endpoint
+  // make the authoritative read.  Treat paths as usable here too: scans can be
+  // truncated, delayed, or race a newly-created SLURM output file.
   if (files.out_path) return "out";
   if (files.err_path) return "err";
   return null;
