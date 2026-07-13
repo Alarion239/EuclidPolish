@@ -19,7 +19,6 @@ export default function LensIsolationPage() {
   const [ntrain, setNtrain] = useState("6400");
   const [nvalid, setNvalid] = useState("100");
   const [ntest, setNtest] = useState("100");
-  const [workers, setWorkers] = useState("16");
   const [sources, setSources] = useState("");
   const [steps, setSteps] = useState("50000");
   const [batch, setBatch] = useState("16");
@@ -27,7 +26,7 @@ export default function LensIsolationPage() {
   const [includeEnsemble, setIncludeEnsemble] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
 
-  const generation = useMemo(() => ({ ntrain, nvalid, ntest, workers }), [ntrain, nvalid, ntest, workers]);
+  const generation = useMemo(() => ({ ntrain, nvalid, ntest }), [ntrain, nvalid, ntest]);
   const training = useMemo(() => ({
     sources: sources.trim(), steps, batch_size: batch, evaluate_every: "500",
   }), [sources, steps, batch]);
@@ -87,7 +86,6 @@ export default function LensIsolationPage() {
               <NumberField label="train" value={ntrain} onChange={setNtrain} min={1} step={1} />
               <NumberField label="validate" value={nvalid} onChange={setNvalid} min={1} step={1} />
               <NumberField label="test" value={ntest} onChange={setNtest} min={1} step={1} />
-              <NumberField label="workers" value={workers} onChange={setWorkers} min={1} max={128} />
             </div>
             <StepById stepId="lens_isolation_generate" extraParams={generation} />
           </CardBody>

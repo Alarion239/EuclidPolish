@@ -22,6 +22,10 @@ def build_step_classes(base_class, resources_class):
             )
 
         def build_command(self, params: dict[str, Any]) -> list[str]:
+            try:
+                workers = int(params.get("n_cpus") or self.defaults.n_cpus)
+            except (TypeError, ValueError):
+                workers = self.defaults.n_cpus
             cmd = [
                 "scripts/lens_isolation_generate.py",
                 "--ntrain",
@@ -31,7 +35,7 @@ def build_step_classes(base_class, resources_class):
                 "--ntest",
                 str(int(params.get("ntest", 100) or 100)),
                 "--workers",
-                str(int(params.get("workers", 1) or 1)),
+                str(max(1, workers)),
             ]
             seed = str(params.get("seed", "")).strip()
             if seed:

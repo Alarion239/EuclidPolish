@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 os.environ["EUCLID_POLISH_DISABLE_AUTO_SSH"] = "1"
 
@@ -33,3 +34,19 @@ def test_sync_defaults_to_evaluation_only_when_offline(monkeypatch):
     response = app.test_client().post("/api/lens-isolation/sync")
     assert response.status_code == 400
     assert response.get_json()["error"] == "not connected"
+
+
+def test_react_generation_card_uses_only_fasrc_cpu_resources():
+    page = Path("euclid_polish/web/frontend/src/pages/LensIsolation.tsx").read_text(encoding="utf-8")
+
+    assert 'label="workers"' not in page
+    assert "setWorkers" not in page
+
+
+def test_classic_generation_card_uses_only_fasrc_cpu_resources():
+    page = Path("euclid_polish/web/static/fasrc_step_card.js").read_text(encoding="utf-8")
+    card = page.split("case 'lens_isolation_generate':", 1)[1].split(
+        "case 'lens_isolation_train':", 1
+    )[0]
+
+    assert 'name="workers"' not in card

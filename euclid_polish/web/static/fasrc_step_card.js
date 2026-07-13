@@ -363,7 +363,6 @@ large cutout don't leak across train/validate."></label>`;
           <label>Train examples <input type="number" name="ntrain" value="6400" min="2" step="2"></label>
           <label>Validation examples <input type="number" name="nvalid" value="100" min="2" step="2"></label>
           <label>Test examples <input type="number" name="ntest" value="100" min="2" step="2"></label>
-          <label>Workers <input type="number" name="workers" value="16" min="1" max="128"></label>
           <label>Seed <input type="number" name="seed" value="-1"></label>
           <label class="checkbox-field" style="flex-basis:100%;"><input type="checkbox" name="force" value="1"> Replace complete experiment records</label>`;
       case 'lens_isolation_train':

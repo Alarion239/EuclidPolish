@@ -41,6 +41,7 @@ incompatible existing experiment artifacts require regeneration with `--force`.
 Run the stages in order:
 
 ```bash
+# Direct CLI only; FASRC generation derives this from its allocated CPU count.
 python scripts/lens_isolation_generate.py --workers 16
 python scripts/lens_isolation_train.py --sources member_01,member_04
 python scripts/lens_isolation_evaluate.py

@@ -12,8 +12,11 @@ from euclid_polish.experiments.lens_isolation.generation import GeneratedExample
 from euclid_polish.experiments.lens_isolation.records import (
     dataset_fingerprint,
     generate_split,
+    make_shards,
+    merge_shards,
     validate_split,
     write_dataset_metadata,
+    write_shard,
 )
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import parse_example, tfrecord_path
@@ -57,6 +60,23 @@ def _count(path):
     return sum(1 for _ in tf.data.TFRecordDataset(path))
 
 
+def _record_indices(path):
+    import tensorflow as tf
+
+    indices = []
+    for raw in tf.data.TFRecordDataset(path):
+        example = tf.train.Example.FromString(raw.numpy())
+        indices.append(example.features.feature["index"].int64_list.value[0])
+    return indices
+
+
+def _source_field_indices(path):
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as handle:
+        return [int(row["field_index"]) for row in csv.DictReader(handle)]
+
+
 @pytest.mark.parametrize("subset", ["train", "validate", "test"])
 def test_every_split_writes_aligned_dirty_lens_records_and_sources(tmp_path, subset):
     out = str(tmp_path / "records")
@@ -82,6 +102,45 @@ def test_paired_records_use_the_normal_tensorflow_example_parser(tmp_path):
     lens = parse_example(lens_raw, Config.NUM_HR_CHANNELS)
     assert tuple(dirty.shape) == (4, 4, Config.NUM_LR_CHANNELS)
     assert tuple(lens.shape) == (4, 4, Config.NUM_HR_CHANNELS)
+
+
+def test_process_shards_merge_pairs_and_sources_in_global_index_order(tmp_path):
+    records = str(tmp_path / "records")
+    shards = make_shards("train", count=5, workers=2, seed=17)
+
+    summaries = [
+        write_shard(TinyGenerator(), records, shard, config_fingerprint="cfg")
+        for shard in reversed(shards)
+    ]
+
+    summary = merge_shards(records, "train", reversed(summaries), config_fingerprint="cfg")
+
+    assert summary.count == 5
+    assert _record_indices(tfrecord_path(records, "dirty_train")) == [0, 1, 2, 3, 4]
+    assert _record_indices(tfrecord_path(records, "lens_train")) == [0, 1, 2, 3, 4]
+    assert _source_field_indices(tmp_path / "records" / "sources_train.csv") == [0, 1, 2, 3, 4]
+    assert validate_split(records, "train", 5, config_fingerprint="cfg")
+
+
+def test_generation_resumes_completed_paired_shards_after_interruption(tmp_path):
+    records = str(tmp_path / "records")
+    generator = TinyGenerator()
+    shards = make_shards("train", count=4, workers=2, seed=17)
+    write_shard(generator, records, shards[1], config_fingerprint="cfg")
+
+    summary = generate_split(
+        generator,
+        records,
+        "train",
+        count=4,
+        seed=17,
+        config_fingerprint="cfg",
+        workers=1,
+    )
+
+    assert summary.count == 4
+    assert generator.calls == 4
+    assert validate_split(records, "train", 4, config_fingerprint="cfg")
 
 
 def test_split_reuse_requires_matching_schema_and_configuration_fingerprint(tmp_path):

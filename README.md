@@ -460,6 +460,8 @@ python scripts/run_pipeline.py --skip-generate --skip-convolve   # train on exis
 
 # Additive lens-system isolation experiment: complete lens systems are the
 # clean target, while ordinary TNG galaxies and stars remain only in the input.
+# For direct CLI runs, choose workers explicitly; FASRC derives them from the
+# CPU allocation configured for its generation step.
 python scripts/lens_isolation_generate.py --workers 16
 python scripts/lens_isolation_train.py --sources member_01,member_04
 python scripts/lens_isolation_evaluate.py
