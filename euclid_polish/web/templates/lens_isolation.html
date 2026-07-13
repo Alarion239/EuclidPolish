@@ -6,27 +6,32 @@
   <h3>◉ Lens-system isolation</h3>
   <p class="muted" style="margin-top:0;max-width:78ch;">
     Reconstruct the complete gravitational-lens system — foreground deflector
-    and lensed source — while erasing unrelated galaxies and stars. This is an
-    additive experiment: its records and checkpoints live only under
+    and lensed source — while erasing unrelated galaxies and stars. Pure TNG
+    ordinary galaxies are drawn in unbiased normal fields at 20 lenses / arcmin²;
+    every zero-, one-, and multi-lens outcome is retained. This additive
+    experiment keeps records and checkpoints only under
     <code>data/experiments/lens_isolation</code>.
   </p>
   <div class="form-row" style="align-items:stretch;gap:8px;">
-    <div class="card" style="flex:1;border-left:4px solid #4c9ffe;"><b>Input</b><br><span class="muted">ordinary galaxies + lens system + stars</span></div>
+    <div class="card" style="flex:1;border-left:4px solid #4c9ffe;"><b>Dirty LR input</b><br><span class="muted">ordinary TNG galaxies + every lens system + stars</span></div>
     <div style="align-self:center;font-size:24px;">→</div>
     <div class="card" style="flex:1;border-left:4px solid #56d68a;"><b>Target</b><br><span class="muted">deflector + lensed source only</span></div>
   </div>
 </section>
 
 <section class="card">
-  <h4 style="margin:0 0 8px;">1 · Generate balanced layer pairs</h4>
+  <h4 style="margin:0 0 8px;">1 · Generate paired normal fields</h4>
+  <p class="muted">Pure TNG ordinary galaxies · 20 lenses / arcmin² · CPU</p>
   {% with step_id="lens_isolation_generate" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 <section class="card">
-  <h4 style="margin:0 0 8px;">2 · Fork and fine-tune selected members</h4>
+  <h4 style="margin:0 0 8px;">2 · Fork and train fixed records</h4>
+  <p class="muted">Normal record-mode training from dirty LR to lens-only HR · GPU</p>
   {% with step_id="lens_isolation_train" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 <section class="card">
-  <h4 style="margin:0 0 8px;">3 · Evaluate reconstruction and detection</h4>
+  <h4 style="margin:0 0 8px;">3 · Evaluate random held-out cutouts</h4>
+  <p class="muted">random, block-aligned crops are grouped only after sampling by observed target flux.</p>
   {% with step_id="lens_isolation_evaluate" %}{% include "_step_card_mount.html" %}{% endwith %}
 </section>
 

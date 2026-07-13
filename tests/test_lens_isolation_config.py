@@ -48,13 +48,21 @@ def test_safe_output_accepts_isolated_experiment_path(tmp_path):
     ) == str(output)
 
 
-def test_dataset_config_requires_even_balanced_splits():
-    cfg = DatasetConfig(n_train=20, n_validate=6, n_test=4, image_size=96)
-    assert cfg.positive_fraction == 0.5
-    with pytest.raises(ValueError, match="even"):
-        DatasetConfig(n_train=3)
-    with pytest.raises(ValueError, match="0.5"):
-        DatasetConfig(positive_fraction=0.25)
+def test_dataset_config_accepts_normal_split_counts_and_uses_pure_tng_defaults():
+    cfg = DatasetConfig(n_train=3, n_validate=2, n_test=1, image_size=96)
+    assert cfg.sersic_density_arcmin2 == 0.0
+    assert cfg.tng_density_arcmin2 == 60.0
+    assert cfg.tng_redshift_mode is True
+    assert cfg.lens_density_arcmin2 == 20.0
+
+
+def test_dataset_config_fingerprint_changes_with_scientific_configuration():
+    assert DatasetConfig().fingerprint() != DatasetConfig(image_size=512).fingerprint()
+
+
+def test_dataset_config_fingerprint_includes_generation_runtime_inputs():
+    config = DatasetConfig()
+    assert config.fingerprint(extra={"psf_dir": "/psf/a"}) != config.fingerprint(extra={"psf_dir": "/psf/b"})
 
 
 def test_train_config_validates_sources_and_steps():

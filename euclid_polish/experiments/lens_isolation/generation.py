@@ -1,36 +1,48 @@
-"""Generate physically separated full-scene and lens-only HR layers."""
+"""Capture complete normal lens renders as aligned experiment targets."""
 
 from __future__ import annotations
 
-import json
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
-from euclid_polish.experiments.lens_isolation.config import SCHEMA_VERSION
 from euclid_polish.image import Image, Role
+from euclid_polish.sky.generation.sky_simulator import _deposit_star
+
+StarDepositor = Callable[[np.ndarray, dict[str, Any]], None]
 
 
-class LensRenderError(RuntimeError):
-    """An intended positive could not produce a crop-safe lens system."""
+def _deposit_fixed_star(canvas: np.ndarray, star: dict[str, Any]) -> None:
+    """Use the production star primitive to restore recorded fixed stars."""
+    _deposit_star(
+        canvas,
+        float(star["x_pix"]),
+        float(star["y_pix"]),
+        float(star["mag_vis"]),
+    )
 
 
 @dataclass(frozen=True)
 class GeneratedExample:
-    scene: Image
+    """One dirty normal-field input and its clean lens-system target."""
+
+    dirty: Image
     lens: Image
-    dirty: Image | None
-    row: dict[str, Any]
+    sources: dict[str, Any]
 
 
-class LensIsolationGenerator:
-    """Compose ordinary-galaxy, complete-lens, and stellar layers.
+class LensCaptureAdapter:
+    """Adapt one normal :class:`SkySimulator` draw without changing it.
 
-    ``sky_simulator`` is an existing :class:`SkySimulator`; tests may inject a
-    small object with the same ``simulate_field`` contract. The lens layer is
-    rendered independently, so both deflector and lensed source survive while
-    unrelated galaxies never enter the target.
+    The adapter temporarily intercepts the existing private lens-addition
+    callback for exactly one ``simulate_field`` call.  Each existing render is
+    still executed once on the normal scene canvas; its before/after delta is
+    accumulated in a second canvas.  That delta contains the complete lens
+    system (deflector plus lensed source), but no ordinary galaxies or stars.
     """
 
     def __init__(
@@ -38,108 +50,66 @@ class LensIsolationGenerator:
         sky_simulator,
         observation_simulator,
         *,
-        crop_size: int,
-        max_lens_retries: int = 50,
+        star_depositor: StarDepositor = _deposit_fixed_star,
     ) -> None:
-        if int(crop_size) < 1:
-            raise ValueError("crop_size must be >= 1")
-        if int(max_lens_retries) < 1:
-            raise ValueError("max_lens_retries must be >= 1")
         self.sky = sky_simulator
         self.observation = observation_simulator
-        self.crop_size = int(crop_size)
-        self.max_lens_retries = int(max_lens_retries)
-
-    def _crop_safe(self, record: dict[str, Any], shape: tuple[int, int]) -> bool:
-        half = self.crop_size / 2.0
-        x = float(record.get("x_pix", float("nan")))
-        y = float(record.get("y_pix", float("nan")))
-        return bool(
-            np.isfinite(x)
-            and np.isfinite(y)
-            and half <= x <= shape[1] - half
-            and half <= y <= shape[0] - half
-        )
-
-    def _lens_layer(self, rng: np.random.Generator, shape: tuple[int, int]) -> tuple[Image, dict[str, Any]]:
-        for _attempt in range(1, self.max_lens_retries + 1):
-            image, metadata = self.sky.simulate_field(
-                rng,
-                n_sersic=0,
-                n_tng=0,
-                n_stars=0,
-                n_lenses=1,
-            )
-            lenses = list(metadata.get("lenses") or [])
-            if lenses and self._crop_safe(lenses[0], shape):
-                return image, dict(lenses[0])
-        raise LensRenderError(f"failed to render a crop-safe lens after {self.max_lens_retries} attempts")
+        self.star_depositor = star_depositor
+        self._capture_lock = threading.RLock()
 
     @staticmethod
-    def _copy(template: Image, data: np.ndarray, *, metadata: dict | None = None) -> Image:
+    def _lens_image(template: Image, data: np.ndarray) -> Image:
         return replace(
             template,
             data=np.asarray(data, dtype=np.float32),
             role=Role.HR,
             is_clean=True,
-            metadata=dict(metadata or {}),
+            metadata={"experiment": "lens_isolation", "target": "complete_lens_system"},
             stamp=None,
         )
 
-    def generate_example(
-        self,
-        rng: np.random.Generator,
-        *,
-        label: int,
-        fixed_dirty: bool,
-    ) -> GeneratedExample:
-        """Generate one balanced example; ``label`` must be 0 or 1."""
-        if int(label) not in {0, 1}:
-            raise ValueError("label must be 0 or 1")
+    def _with_fixed_stars(self, scene: Image, sources: dict[str, Any]) -> Image:
+        data = np.asarray(scene.data, dtype=np.float32).copy()
+        for star in sources.get("stars", []):
+            self.star_depositor(data, star)
+        return replace(scene, data=data, stamp=None)
 
-        background, background_meta = self.sky.simulate_field(rng, n_stars=0, n_lenses=0)
-        background_data = np.asarray(background.data, dtype=np.float32)
-        lens_record: dict[str, Any] = {}
-        if int(label) == 1:
-            lens_image, lens_record = self._lens_layer(rng, background_data.shape[:2])
-            lens_data = np.asarray(lens_image.data, dtype=np.float32)
-        else:
-            lens_data = np.zeros_like(background_data)
+    @contextmanager
+    def _capture_lens_deltas(self) -> Iterator[Callable[[Image], np.ndarray]]:
+        """Scope temporary interception to one field and always restore it."""
+        with self._capture_lock:
+            original = self.sky._add_lens
+            target: np.ndarray | None = None
 
-        scene_data = background_data + lens_data
-        lens = self._copy(background, lens_data, metadata={"lens": lens_record})
-        scene = self._copy(
-            background,
-            scene_data,
-            metadata={"label": int(label), "lens": lens_record},
+            def capture(canvas: np.ndarray, rng: np.random.Generator):
+                nonlocal target
+                before = np.asarray(canvas, dtype=np.float32).copy()
+                record = original(canvas, rng)
+                if target is None:
+                    target = np.zeros_like(canvas, dtype=np.float32)
+                target += np.asarray(canvas, dtype=np.float32) - before
+                return record
+
+            self.sky._add_lens = capture
+            try:
+                yield (
+                    lambda scene: (
+                        np.zeros_like(scene.data, dtype=np.float32)
+                        if target is None
+                        else np.asarray(target, dtype=np.float32)
+                    )
+                )
+            finally:
+                self.sky._add_lens = original
+
+    def generate_example(self, rng: np.random.Generator) -> GeneratedExample:
+        """Generate one unbiased normal field and its aligned lens-only target."""
+        with self._capture_lens_deltas() as target_for:
+            scene, sources = self.sky.simulate_field(rng)
+            target = target_for(scene)
+        dirty, _ = self.observation.process(self._with_fixed_stars(scene, sources), rng)
+        return GeneratedExample(
+            dirty=dirty,
+            lens=self._lens_image(scene, target),
+            sources=dict(sources),
         )
-
-        dirty = None
-        n_stars = 0
-        if fixed_dirty:
-            stars, star_meta = self.sky.simulate_field(
-                rng,
-                n_sersic=0,
-                n_tng=0,
-                n_lenses=0,
-                deposit_stars=True,
-            )
-            n_stars = int(star_meta.get("n_stars", len(star_meta.get("stars") or [])))
-            observed_scene = self._copy(
-                scene,
-                scene_data + np.asarray(stars.data, dtype=np.float32),
-            )
-            dirty, _hr = self.observation.process(observed_scene, rng)
-
-        galaxies = list(background_meta.get("galaxies") or [])
-        row = {
-            "schema_version": SCHEMA_VERSION,
-            "label": int(label),
-            "lens_x_pix": lens_record.get("x_pix", ""),
-            "lens_y_pix": lens_record.get("y_pix", ""),
-            "theta_E_arcsec": lens_record.get("theta_E_arcsec", ""),
-            "n_galaxies": int(background_meta.get("n_galaxies", len(galaxies))),
-            "n_stars": n_stars,
-            "lens_json": json.dumps(lens_record, sort_keys=True),
-        }
-        return GeneratedExample(scene=scene, lens=lens, dirty=dirty, row=row)

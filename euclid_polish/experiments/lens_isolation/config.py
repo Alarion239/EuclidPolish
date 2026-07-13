@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir
 
 EXPERIMENT_NAME = "lens_isolation"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _MEMBER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -35,33 +38,56 @@ class ExperimentPaths:
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    """Balanced paired-layer dataset settings."""
+    """Scientific settings for ordinary pure-TNG lens-isolation fields."""
 
     n_train: int = 6400
     n_validate: int = 100
     n_test: int = 100
     image_size: int = 510
-    positive_fraction: float = 0.5
     seed: int = -1
-    max_lens_retries: int = 50
+    sersic_density_arcmin2: float = 0.0
+    tng_density_arcmin2: float = 60.0
+    tng_redshift_mode: bool = True
+    lens_density_arcmin2: float = 20.0
 
     def __post_init__(self) -> None:
         counts = (self.n_train, self.n_validate, self.n_test)
         if any(int(n) < 0 for n in counts):
             raise ValueError("split counts must be non-negative")
-        if any(int(n) % 2 for n in counts):
-            raise ValueError("balanced split counts must be even")
-        if float(self.positive_fraction) != 0.5:
-            raise ValueError("positive_fraction must be exactly 0.5")
         if int(self.image_size) <= 0 or int(self.image_size) % 2:
             raise ValueError("image_size must be a positive even integer")
-        if int(self.max_lens_retries) < 1:
-            raise ValueError("max_lens_retries must be >= 1")
+        densities = (
+            self.sersic_density_arcmin2,
+            self.tng_density_arcmin2,
+            self.lens_density_arcmin2,
+        )
+        if any(float(value) < 0.0 for value in densities):
+            raise ValueError("population densities must be non-negative")
+        if float(self.sersic_density_arcmin2) != 0.0:
+            raise ValueError("lens isolation requires sersic_density_arcmin2=0")
+        if float(self.tng_density_arcmin2) != 60.0:
+            raise ValueError("lens isolation requires tng_density_arcmin2=60")
+        if not self.tng_redshift_mode:
+            raise ValueError("lens isolation requires tng_redshift_mode=true")
+        if float(self.lens_density_arcmin2) != 20.0:
+            raise ValueError("lens isolation requires lens_density_arcmin2=20")
+
+    def scientific_config(self) -> dict[str, object]:
+        """Return the versioned generation inputs persisted with the dataset."""
+        return {"schema_version": SCHEMA_VERSION, **asdict(self)}
+
+    def fingerprint(self, *, extra: Mapping[str, object] | None = None) -> str:
+        """Return the stable identity of scientific and runtime generation inputs."""
+        payload_data: dict[str, object] = dict(self.scientific_config())
+        if extra:
+            payload_data["runtime"] = dict(extra)
+        payload = json.dumps(payload_data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """Fine-tuning controls shared by experimental members."""
+    """Normal fixed-record training controls shared by experimental members."""
 
     sources: tuple[str, ...]
     steps: int = 50_000
@@ -70,8 +96,9 @@ class TrainConfig:
     lr_peak: float = 1e-5
     lr_final: float = 1e-6
     lr_warmup_steps: int = 500
-    lens_weight: float = 8.0
-    flux_weight: float = 0.1
+    loss_norm: str = "l1"
+    noise_aug: float = 0.0
+    bootstrap: float | None = None
     base_seed: int = 0
 
     def __post_init__(self) -> None:
@@ -85,8 +112,12 @@ class TrainConfig:
             raise ValueError("batch_size and evaluate_every must be >= 1")
         if not (0 < float(self.lr_final) <= float(self.lr_peak)):
             raise ValueError("learning rates must satisfy 0 < final <= peak")
-        if float(self.lens_weight) < 0 or float(self.flux_weight) < 0:
-            raise ValueError("loss weights must be non-negative")
+        if self.loss_norm not in {"l1", "l2", "l3", "berhu"}:
+            raise ValueError("loss_norm must be one of l1, l2, l3, or berhu")
+        if float(self.noise_aug) < 0.0:
+            raise ValueError("noise_aug must be non-negative")
+        if self.bootstrap is not None and not (0.0 < float(self.bootstrap) <= 1.0):
+            raise ValueError("bootstrap must be in (0, 1]")
 
 
 def _contains(root: str, path: str) -> bool:

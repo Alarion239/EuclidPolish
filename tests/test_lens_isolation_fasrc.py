@@ -1,7 +1,7 @@
 from euclid_polish.web.fasrc_pipeline import REGISTRY
 
 
-def test_lens_isolation_steps_are_additive_and_isolated():
+def test_lens_isolation_steps_are_additive_and_use_only_normal_record_controls():
     generate = REGISTRY.get("lens_isolation_generate")
     train = REGISTRY.get("lens_isolation_train")
     evaluate = REGISTRY.get("lens_isolation_evaluate")
@@ -10,11 +10,18 @@ def test_lens_isolation_steps_are_additive_and_isolated():
     assert generate.build_command({"ntrain": 4, "nvalid": 2, "ntest": 2})[0].endswith(
         "lens_isolation_generate.py"
     )
-    train_cmd = train.build_command({"sources": "member_01"})
-    eval_cmd = evaluate.build_command({})
+    train_cmd = train.build_command(
+        {"sources": "member_01", "loss_norm": "l2", "lens_weight": "8", "crops_per_field": "16"}
+    )
+    eval_cmd = evaluate.build_command({"seed": "7", "crop_size": "96", "limit": "10"})
     joined = " ".join(generate.build_command({}) + train_cmd + eval_cmd)
     assert joined.count("lens_isolation_") == 3
     assert "records_v2" not in joined
+    assert "--loss-norm" in train_cmd
+    assert "--lens-weight" not in train_cmd
+    assert "--crops-per-field" not in train_cmd
+    assert "--seed" in eval_cmd
+    assert "--crop-size" in eval_cmd
 
 
 def test_existing_ensemble_step_is_still_registered():

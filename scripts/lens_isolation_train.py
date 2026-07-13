@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fork selected production SR members and train lens-isolation members."""
+"""Fork selected production members and train on fixed dirty/lens records."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.ensemble_registry import default_ensemble_dir
 from euclid_polish.experiments.lens_isolation.config import (
+    SCHEMA_VERSION,
     ExperimentPaths,
     TrainConfig,
     assert_safe_output,
@@ -33,12 +34,40 @@ def parse_args(argv=None):
     parser.add_argument("--lr-peak", type=float, default=1e-5)
     parser.add_argument("--lr-final", type=float, default=1e-6)
     parser.add_argument("--lr-warmup-steps", type=int, default=500)
-    parser.add_argument("--lens-weight", type=float, default=8.0)
-    parser.add_argument("--flux-weight", type=float, default=0.1)
-    parser.add_argument("--crops-per-field", type=int, default=16)
-    parser.add_argument("--psf-dir", default=None)
+    parser.add_argument("--loss-norm", choices=("l1", "l2", "l3", "berhu"), default="l1")
+    parser.add_argument("--noise-aug", type=float, default=0.0)
+    parser.add_argument("--bootstrap", type=float, default=None)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
+
+
+def _validate_records(records_dir: str) -> None:
+    from euclid_polish.experiments.lens_isolation.records import validate_split
+
+    metadata_path = os.path.join(records_dir, "dataset.json")
+    try:
+        with open(metadata_path, encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except FileNotFoundError as error:
+        raise FileNotFoundError(f"missing lens-isolation dataset metadata: {metadata_path}") from error
+    if metadata.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            "incompatible lens-isolation records; regenerate with lens_isolation_generate --force"
+        )
+    for subset in ("train", "validate", "test"):
+        split_path = os.path.join(records_dir, f"split_{subset}.json")
+        try:
+            with open(split_path, encoding="utf-8") as handle:
+                split = json.load(handle)
+        except FileNotFoundError as error:
+            raise ValueError(f"missing published {subset} split metadata; regenerate the dataset") from error
+        if not validate_split(
+            records_dir,
+            subset,
+            int(split.get("count", -1)),
+            config_fingerprint=split.get("config_fingerprint"),
+        ):
+            raise ValueError(f"incompatible or incomplete {subset} records; regenerate the dataset")
 
 
 def main(argv=None) -> int:
@@ -52,8 +81,9 @@ def main(argv=None) -> int:
         lr_peak=args.lr_peak,
         lr_final=args.lr_final,
         lr_warmup_steps=args.lr_warmup_steps,
-        lens_weight=args.lens_weight,
-        flux_weight=args.flux_weight,
+        loss_norm=args.loss_norm,
+        noise_aug=args.noise_aug,
+        bootstrap=args.bootstrap,
         base_seed=args.base_seed,
     )
     if len(set(sources)) != len(sources):
@@ -73,6 +103,7 @@ def main(argv=None) -> int:
         )
     plan = {
         "experiment": "lens_isolation",
+        "schema_version": SCHEMA_VERSION,
         "records_dir": os.path.abspath(args.records_dir),
         "out_dir": out_dir,
         "members": members,
@@ -82,32 +113,20 @@ def main(argv=None) -> int:
         "lr_peak": config.lr_peak,
         "lr_final": config.lr_final,
         "lr_warmup_steps": config.lr_warmup_steps,
-        "lens_weight": config.lens_weight,
-        "flux_weight": config.flux_weight,
+        "loss_norm": config.loss_norm,
+        "noise_aug": config.noise_aug,
+        "bootstrap": config.bootstrap,
+        "forward_onthefly": False,
     }
     if args.dry_run:
         print(json.dumps(plan, sort_keys=True))
         return 0
 
-    from euclid_polish.config import Config
-    from euclid_polish.experiments.lens_isolation.datasets import (
-        build_fixed_dataset,
-        build_live_dataset,
-    )
-    from euclid_polish.experiments.lens_isolation.forward import LensIsolationForward
-    from euclid_polish.experiments.lens_isolation.loss import LensIsolationLoss
     from euclid_polish.experiments.lens_isolation.records import dataset_fingerprint
-    from euclid_polish.experiments.lens_isolation.training import (
-        LensIsolationTrainer,
-        fork_member,
-    )
+    from euclid_polish.experiments.lens_isolation.training import fork_member, train_member
     from euclid_polish.observability import Reporter, ResourceSampler
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator,
-        ObservationSimulatorConfig,
-    )
-    from euclid_polish.training.forward_onthefly import member_psf_sets
 
+    _validate_records(args.records_dir)
     records_fingerprint = dataset_fingerprint(args.records_dir)
     reporter = Reporter.from_env()
     sampler = ResourceSampler(reporter).start()
@@ -120,45 +139,13 @@ def main(argv=None) -> int:
                 seed=member["seed"],
                 dataset_fingerprint=records_fingerprint,
             )
-            psf_sets, note = member_psf_sets(
-                seed=member["seed"], psf_dir=args.psf_dir or Config.EUCLID_PSF_DIR
-            )
-            print(f"{member['target']}: {note}")
-            observation = ObservationSimulator(
-                psf_sets_by_band=psf_sets,
-                config=ObservationSimulatorConfig(add_noise=True, add_artifacts=True, add_saturation=True),
-            )
-            forward = LensIsolationForward(
-                observation,
-                seed=member["seed"],
-                crops_per_field=args.crops_per_field,
-            )
-            train_ds = build_live_dataset(args.records_dir, forward, batch_size=config.batch_size)
-            validate_ds = build_fixed_dataset(args.records_dir, "validate", batch_size=config.batch_size)
-            trainer = LensIsolationTrainer(
+            train_member(
                 model,
-                member["target"],
-                steps=config.steps,
-                lr_peak=config.lr_peak,
-                lr_final=config.lr_final,
-                lr_warmup_steps=config.lr_warmup_steps,
-                loss=LensIsolationLoss(config.lens_weight, config.flux_weight),
-            )
-
-            def report(metrics, member_index=index):
-                reporter.metric({**metrics, "member": member_index + 1})
-                reporter.set_step(
-                    member_index * config.steps + metrics["step"],
-                    len(members) * config.steps,
-                    f"member {member_index + 1} step {metrics['step']}",
-                )
-
-            trainer.train(
-                train_ds,
-                validate_ds,
-                steps=config.steps,
-                evaluate_every=config.evaluate_every,
-                callback=report,
+                args.records_dir,
+                config,
+                reporter=reporter,
+                member_index=index,
+                member_count=len(members),
             )
     finally:
         sampler.stop()

@@ -35,3 +35,7 @@ def test_train_dry_run_maps_sources_to_isolated_members(tmp_path, capsys):
     ]
     assert plan["lr_peak"] == 1e-5
     assert plan["lr_final"] == 1e-6
+    assert plan["loss_norm"] == "l1"
+    assert "lens_weight" not in plan
+    assert "flux_weight" not in plan
+    assert plan["forward_onthefly"] is False

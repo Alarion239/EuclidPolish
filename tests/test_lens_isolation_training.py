@@ -4,13 +4,11 @@ import json
 import os
 
 import pytest
-import tensorflow as tf
-import tf_keras
 
 from euclid_polish.experiments.lens_isolation.training import (
-    LensIsolationTrainer,
     checkpoint_fingerprint,
     fork_member,
+    train_member,
 )
 
 
@@ -60,22 +58,47 @@ def test_fork_rejects_nonvirgin_target(tmp_path):
         )
 
 
-def test_dedicated_trainer_runs_from_step_zero_and_writes_both_tracks(tmp_path):
-    tf_model = tf_keras.Sequential(
-        [
-            tf_keras.layers.Input((2, 2, 1)),
-            tf_keras.layers.UpSampling2D(size=2),
-            tf_keras.layers.Conv2D(1, 1),
-        ]
+class RecordingModel:
+    def __init__(self):
+        self.calls = []
+
+    def train(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class RecordingReporter:
+    def __init__(self):
+        self.steps = []
+        self.metrics = []
+
+    def set_step(self, *args):
+        self.steps.append(args)
+
+    def metric(self, value):
+        self.metrics.append(value)
+
+
+def test_training_dispatches_to_normal_model_train_fixed_record_mode(tmp_path):
+    from euclid_polish.experiments.lens_isolation.config import TrainConfig
+
+    model = RecordingModel()
+    reporter = RecordingReporter()
+    train_member(
+        model,
+        str(tmp_path),
+        TrainConfig(sources=("member_00",), steps=12, batch_size=3, evaluate_every=4),
+        reporter=reporter,
+        member_index=1,
+        member_count=2,
     )
-    wrapper = type("Wrapper", (), {"_tf_model": tf_model})()
-    inputs = tf.ones((2, 2, 2, 1), tf.float32)
-    targets = tf.concat([tf.ones((1, 4, 4, 1)), tf.zeros((1, 4, 4, 1))], axis=0)
-    train = tf.data.Dataset.from_tensor_slices((inputs, targets)).repeat().batch(2)
-    validation = tf.data.Dataset.from_tensor_slices((inputs, targets)).batch(2)
-    trainer = LensIsolationTrainer(wrapper, str(tmp_path), steps=1)
-    assert int(trainer.checkpoint.step) == 0
-    trainer.train(train, validation, steps=1, evaluate_every=1)
-    assert int(trainer.checkpoint.step) == 1
-    assert (tmp_path / "checkpoint").exists()
-    assert (tmp_path / "loss_best" / "checkpoint").exists()
+    assert len(model.calls) == 1
+    call = model.calls[0]
+    assert call["lr_path"].endswith("dirty_train.tfrecord")
+    assert call["hr_path"].endswith("lens_train.tfrecord")
+    assert call["forward_onthefly"] is False
+    assert "loss" not in call
+    assert "crops_per_field" not in call
+    call["step_callback"](2, 12)
+    call["eval_callback"]({"step": 4, "loss": 0.2})
+    assert reporter.steps[-1] == (14, 24, "member 2 step 2")
+    assert reporter.metrics[-1]["member"] == 2

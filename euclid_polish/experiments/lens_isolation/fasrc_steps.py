@@ -14,7 +14,7 @@ def build_step_classes(base_class, resources_class):
         def __init__(self):
             super().__init__(
                 step_id="lens_isolation_generate",
-                label="Generate lens-isolation pairs",
+                label="Generate normal lens-isolation pairs",
                 job_name="lens-isolation-generate",
                 defaults=resources_class(
                     partition="shared", n_cpus=16, n_gpus=0, memory="64G", time_limit="12:00:00"
@@ -44,7 +44,7 @@ def build_step_classes(base_class, resources_class):
         def __init__(self):
             super().__init__(
                 step_id="lens_isolation_train",
-                label="Train lens-isolation ensemble",
+                label="Train lens-isolation records",
                 job_name="lens-isolation-train",
                 defaults=resources_class(
                     partition="gpu", n_cpus=4, n_gpus=1, memory="32G", time_limit="48:00:00"
@@ -69,9 +69,9 @@ def build_step_classes(base_class, resources_class):
                 "lr_peak",
                 "lr_final",
                 "lr_warmup_steps",
-                "lens_weight",
-                "flux_weight",
-                "crops_per_field",
+                "loss_norm",
+                "noise_aug",
+                "bootstrap",
             ):
                 value = str(params.get(key, "")).strip()
                 if value:
@@ -92,8 +92,10 @@ def build_step_classes(base_class, resources_class):
 
         def build_command(self, params: dict[str, Any]) -> list[str]:
             cmd = ["scripts/lens_isolation_evaluate.py"]
-            if str(params.get("no_source_baselines", "")).lower() in {"1", "true", "yes", "on"}:
-                cmd.append("--no-source-baselines")
+            for key in ("seed", "crop_size", "limit"):
+                value = str(params.get(key, "")).strip()
+                if value:
+                    cmd += [f"--{key.replace('_', '-')}", value]
             return cmd
 
     return (

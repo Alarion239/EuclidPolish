@@ -1,20 +1,26 @@
-"""Atomic paired TFRecord persistence for the lens-isolation experiment."""
+"""Atomic normal-format paired records for the lens-isolation experiment."""
 
 from __future__ import annotations
 
 import contextlib
-import csv
 import hashlib
+import json
 import os
+import tempfile
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
 import tensorflow as tf
 
-from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.config import Config
+from euclid_polish.experiments.lens_isolation.config import SCHEMA_VERSION
+from euclid_polish.image.tfio import parse_example, tfrecord_path
+from euclid_polish.observability import Reporter
+from euclid_polish.sky.generation.source_catalog import SourceCatalogWriter
 
 _SUBSETS = {"train", "validate", "test"}
 
@@ -23,40 +29,113 @@ _SUBSETS = {"train", "validate", "test"}
 class SplitSummary:
     subset: str
     count: int
-    n_positive: int
-    n_negative: int
     reused: bool = False
 
 
 def _record_count(path: str) -> int:
     if not os.path.isfile(path):
         return -1
-    return sum(1 for _ in tf.data.TFRecordDataset([path]))
+    try:
+        return sum(1 for _ in tf.data.TFRecordDataset([path]))
+    except tf.errors.OpError:
+        return -1
 
 
-def validate_split(records_dir: str, subset: str, expected_count: int) -> bool:
-    """Return whether all paired files exist and contain aligned row counts."""
+def _split_metadata_path(records_dir: str, subset: str) -> str:
+    return os.path.join(records_dir, f"split_{subset}.json")
+
+
+def _read_json(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _file_fingerprint(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _split_paths(records_dir: str, subset: str) -> dict[str, str]:
+    return {
+        "dirty": tfrecord_path(records_dir, f"dirty_{subset}"),
+        "lens": tfrecord_path(records_dir, f"lens_{subset}"),
+        "sources": os.path.join(records_dir, f"sources_{subset}.csv"),
+    }
+
+
+def validate_split(
+    records_dir: str,
+    subset: str,
+    expected_count: int,
+    *,
+    config_fingerprint: str | None = None,
+) -> bool:
+    """Return whether one published dirty/lens/source set is reusable."""
     if subset not in _SUBSETS:
         raise ValueError(f"unknown subset {subset!r}")
-    paths = [
-        tfrecord_path(records_dir, f"scene_{subset}"),
-        tfrecord_path(records_dir, f"lens_{subset}"),
-    ]
-    if subset != "train":
-        paths.append(tfrecord_path(records_dir, f"dirty_{subset}"))
-    manifest = os.path.join(records_dir, f"manifest_{subset}.csv")
-    if not os.path.isfile(manifest):
+    paths = _split_paths(records_dir, subset)
+    metadata = _read_json(_split_metadata_path(records_dir, subset))
+    if metadata is None or int(metadata.get("schema_version", -1)) != SCHEMA_VERSION:
+        return False
+    if int(metadata.get("count", -1)) != int(expected_count):
+        return False
+    if config_fingerprint is not None and metadata.get("config_fingerprint") != config_fingerprint:
+        return False
+    if not all(os.path.isfile(path) for path in paths.values()):
+        return False
+    if any(_record_count(paths[kind]) != expected_count for kind in ("dirty", "lens")):
+        return False
+    fingerprints = metadata.get("fingerprints")
+    if not isinstance(fingerprints, dict):
+        return False
+    shapes = metadata.get("shapes")
+    if not isinstance(shapes, dict):
         return False
     try:
-        with open(manifest, newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
-        return len(rows) == expected_count and all(_record_count(path) == expected_count for path in paths)
-    except (OSError, tf.errors.OpError, UnicodeError, csv.Error):
+        if not all(fingerprints.get(name) == _file_fingerprint(path) for name, path in paths.items()):
+            return False
+        for name, channels in (("dirty", Config.NUM_LR_CHANNELS), ("lens", Config.NUM_HR_CHANNELS)):
+            expected_shape = tuple(shapes.get(name, ()))
+            if (
+                len(expected_shape) != 3
+                or any(not isinstance(value, int) or value < 1 for value in expected_shape)
+            ):
+                return False
+            if expected_shape[-1] != channels:
+                return False
+            raw = next(iter(tf.data.TFRecordDataset([paths[name]])))
+            actual_shape = tuple(int(value) for value in parse_example(raw, channels).shape)
+            if actual_shape != expected_shape:
+                return False
+        return True
+    except (OSError, StopIteration, tf.errors.OpError, ValueError):
         return False
 
 
-def _temp_path(final_path: str, token: str) -> str:
+def _temporary_path(final_path: str, token: str) -> str:
     return f"{final_path}.tmp-{token}"
+
+
+def _write_json_atomic(path: str, payload: Mapping[str, Any]) -> str:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".tmp-",
+        dir=os.path.dirname(path) or ".",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+    return path
 
 
 def generate_split(
@@ -66,131 +145,151 @@ def generate_split(
     *,
     count: int,
     seed: int,
+    config_fingerprint: str,
     force: bool = False,
     workers: int = 1,
 ) -> SplitSummary:
-    """Generate one balanced split and publish it as one atomic file set.
+    """Generate and atomically publish one unbiased normal-field split.
 
-    Files are first completed under unique temporary names. Existing complete
-    splits remain readable until every replacement is ready.
+    The split contains every field that the ordinary simulator produces.  A
+    field with zero lenses is a valid all-zero target; a field with many lenses
+    keeps every captured system.  Per-field seeds and ordered writer output
+    make serial and worker-assisted execution reproducible.
     """
     if subset not in _SUBSETS:
         raise ValueError(f"unknown subset {subset!r}")
-    if count < 0 or count % 2:
-        raise ValueError("balanced split count must be a non-negative even integer")
+    if int(count) < 0:
+        raise ValueError("count must be non-negative")
     if int(workers) < 1:
         raise ValueError("workers must be >= 1")
-    if not force and validate_split(records_dir, subset, count):
-        return SplitSummary(subset, count, count // 2, count // 2, reused=True)
+    if not force and validate_split(
+        records_dir,
+        subset,
+        count,
+        config_fingerprint=config_fingerprint,
+    ):
+        return SplitSummary(subset=subset, count=count, reused=True)
 
     os.makedirs(records_dir, exist_ok=True)
     token = uuid.uuid4().hex
-    final_records = {
-        "scene": tfrecord_path(records_dir, f"scene_{subset}"),
-        "lens": tfrecord_path(records_dir, f"lens_{subset}"),
-    }
-    if subset != "train":
-        final_records["dirty"] = tfrecord_path(records_dir, f"dirty_{subset}")
-    final_manifest = os.path.join(records_dir, f"manifest_{subset}.csv")
-    temp_records = {key: _temp_path(path, token) for key, path in final_records.items()}
-    temp_manifest = _temp_path(final_manifest, token)
+    final_paths = _split_paths(records_dir, subset)
+    temporary_paths = {name: _temporary_path(path, token) for name, path in final_paths.items()}
+    temporary_metadata = _temporary_path(_split_metadata_path(records_dir, subset), token)
+    reporter = Reporter.from_env()
+    reporter.set_stage(f"lens isolation: generate {subset}")
+    reporter.set_worker_step(0, 0, count, subset)
+    master_rng = np.random.default_rng(seed)
+    field_seeds = master_rng.integers(0, np.iinfo(np.int64).max, size=count)
 
-    rng = np.random.default_rng(seed)
-    labels = np.repeat(np.array([0, 1], dtype=np.int8), count // 2)
-    rng.shuffle(labels)
-    example_seeds = rng.integers(0, np.iinfo(np.int64).max, size=count, dtype=np.int64)
     writers: dict[str, tf.io.TFRecordWriter] = {}
-    rows: list[dict[str, Any]] = []
     try:
-        writers = {key: tf.io.TFRecordWriter(path) for key, path in temp_records.items()}
+        writers = {
+            name: tf.io.TFRecordWriter(path)
+            for name, path in temporary_paths.items()
+            if name in {"dirty", "lens"}
+        }
+        shapes: dict[str, tuple[int, int, int]] = {}
 
-        jobs = list(zip(labels, example_seeds, strict=True))
+        def generate_one(field_seed: int):
+            rng = np.random.default_rng(int(field_seed))
+            return generator.generate_example(rng)
 
-        def _generate(job):
-            label, example_seed = job
-            return generator.generate_example(
-                np.random.default_rng(int(example_seed)),
-                label=int(label),
-                fixed_dirty=subset != "train",
-            )
+        if workers == 1:
+            examples = map(generate_one, field_seeds)
+        else:
+            # Capture state is protected by the adapter, while this preserves
+            # deterministic input/output order and lets observation work overlap.
+            executor = ThreadPoolExecutor(max_workers=workers)
+            examples = executor.map(generate_one, field_seeds)
 
-        def _examples():
-            if int(workers) == 1:
-                for job in jobs:
-                    yield _generate(job)
-                return
-            # Only one worker-sized chunk is live at once: parallel simulation
-            # without retaining thousands of 510x510x4 examples in futures.
-            with ThreadPoolExecutor(max_workers=int(workers)) as executor:
-                for start in range(0, len(jobs), int(workers)):
-                    futures = [executor.submit(_generate, job) for job in jobs[start : start + int(workers)]]
-                    for future in futures:
-                        yield future.result()
-
-        for index, (job, example) in enumerate(zip(jobs, _examples(), strict=True)):
-            label, example_seed = job
-            writers["scene"].write(example.scene.to_tfrecord(index=index))
-            writers["lens"].write(example.lens.to_tfrecord(index=index))
-            if subset != "train":
-                if example.dirty is None:
-                    raise ValueError("fixed validation/test examples require dirty images")
-                writers["dirty"].write(example.dirty.to_tfrecord(index=index))
-            rows.append(
-                {
-                    "index": index,
-                    "split": subset,
-                    "example_seed": int(example_seed),
-                    **example.row,
-                    "label": int(label),
-                }
-            )
+        try:
+            with SourceCatalogWriter(temporary_paths["sources"]) as sources:
+                for index, example in enumerate(examples):
+                    images = {"dirty": example.dirty, "lens": example.lens}
+                    for name, image in images.items():
+                        shape = tuple(int(value) for value in image.shape)
+                        expected_channels = (
+                            Config.NUM_LR_CHANNELS if name == "dirty" else Config.NUM_HR_CHANNELS
+                        )
+                        if (
+                            len(shape) != 3
+                            or any(value < 1 for value in shape)
+                            or shape[-1] != expected_channels
+                        ):
+                            raise ValueError(f"{name} record has incompatible shape {shape}")
+                        previous = shapes.setdefault(name, shape)
+                        if previous != shape:
+                            raise ValueError(
+                                f"{name} records must share one shape; saw {previous} then {shape}"
+                            )
+                    writers["dirty"].write(example.dirty.to_tfrecord(index=index))
+                    writers["lens"].write(example.lens.to_tfrecord(index=index))
+                    sources.add_field(index, example.sources)
+                    reporter.set_worker_step(0, index + 1, count, subset)
+        finally:
+            if workers != 1:
+                executor.shutdown(wait=True, cancel_futures=True)
         for writer in writers.values():
             writer.close()
         writers.clear()
 
-        fieldnames = list(rows[0]) if rows else ["index", "split", "example_seed", "label"]
-        with open(temp_manifest, "w", newline="", encoding="utf-8") as handle:
-            manifest_writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
-            manifest_writer.writeheader()
-            manifest_writer.writerows(rows)
-
-        for key, final_path in final_records.items():
-            os.replace(temp_records[key], final_path)
-        os.replace(temp_manifest, final_manifest)
+        fingerprints = {name: _file_fingerprint(path) for name, path in temporary_paths.items()}
+        split_metadata = {
+            "schema_version": SCHEMA_VERSION,
+            "subset": subset,
+            "count": int(count),
+            "seed": int(seed),
+            "config_fingerprint": config_fingerprint,
+            "fingerprints": fingerprints,
+            "shapes": {name: list(shape) for name, shape in shapes.items()},
+        }
+        _write_json_atomic(temporary_metadata, split_metadata)
+        for name, final_path in final_paths.items():
+            os.replace(temporary_paths[name], final_path)
+        os.replace(temporary_metadata, _split_metadata_path(records_dir, subset))
     finally:
         for writer in writers.values():
             writer.close()
-        for path in (*temp_records.values(), temp_manifest):
+        for path in (*temporary_paths.values(), temporary_metadata):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(path)
 
-    return SplitSummary(subset, count, count // 2, count // 2)
+    return SplitSummary(subset=subset, count=count)
 
 
 def dataset_fingerprint(records_dir: str) -> str:
-    """Hash the byte content and names of published experiment records."""
+    """Hash published experiment record files, sidecars, and split metadata."""
     digest = hashlib.sha256()
     if not os.path.isdir(records_dir):
         return digest.hexdigest()
     for name in sorted(os.listdir(records_dir)):
-        if ".tmp-" in name or not (name.startswith("manifest_") or name.endswith(".tfrecord")):
+        if ".tmp-" in name or not (
+            name.endswith(".tfrecord") or name.startswith("sources_") or name.startswith("split_")
+        ):
             continue
-        full = os.path.join(records_dir, name)
+        path = os.path.join(records_dir, name)
+        if not os.path.isfile(path):
+            continue
         digest.update(name.encode("utf-8"))
-        if name.startswith("manifest_"):
-            with open(full, "rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        else:
-            # TFRecords can be tens of gigabytes. The paired manifests are the
-            # replay identity; include record sizes and boundary bytes to catch
-            # truncation/replacement without re-reading the whole dataset at
-            # every training launch.
-            size = os.path.getsize(full)
-            digest.update(str(size).encode("ascii"))
-            with open(full, "rb") as handle:
-                digest.update(handle.read(64 * 1024))
-                if size > 64 * 1024:
-                    handle.seek(max(0, size - 64 * 1024))
-                    digest.update(handle.read(64 * 1024))
+        digest.update(_file_fingerprint(path).encode("ascii"))
     return digest.hexdigest()
+
+
+def write_dataset_metadata(
+    records_dir: str,
+    *,
+    config: Mapping[str, Any],
+    master_seed: int,
+    split_summaries: Mapping[str, SplitSummary],
+    source_commit: str,
+) -> str:
+    """Atomically record the complete dataset identity after all split writes."""
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "config": dict(config),
+        "master_seed": int(master_seed),
+        "source_commit": source_commit,
+        "splits": {name: asdict(summary) for name, summary in split_summaries.items()},
+        "fingerprint": dataset_fingerprint(records_dir),
+    }
+    return _write_json_atomic(os.path.join(records_dir, "dataset.json"), metadata)

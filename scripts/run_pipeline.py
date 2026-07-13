@@ -152,8 +152,7 @@ def parse_args() -> argparse.Namespace:
                          "D_A), (1+z)^-3 dimming, and a randomized spectral "
                          "drift; TNG-lit lenses take σ_v from the subhalo "
                          "stellar mass (tng_properties.csv) and require "
-                         "θ_E ≥ κ × apparent R_e. Implied by "
-                         "--tng-fraction 1.")
+                         "θ_E ≥ κ × apparent R_e.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
