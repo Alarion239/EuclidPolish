@@ -66,13 +66,14 @@ function fmtE(e) {
 }
 
 function metricsHtml(comb, evals) {
-  const c = evals && evals.combiner;
+  const combined = !!(comb.fit_meta && comb.fit_meta.combined);
+  const c = evals && (combined ? evals.combined_combiner : evals.combiner);
   let rows = "<tr><th>series</th><th>VIS PSNR (dB, asinh)</th></tr>";
   if (c && c.available) {
     const g = (v) => (v == null ? "" : ` <span class="muted">(${v >= 0 ? "+" : ""}${fmt(v, 2)} dB)</span>`);
     const vsMean = c.psnr != null && c.ensemble_mean_psnr != null ? c.psnr - c.ensemble_mean_psnr : null;
     const vsBest = c.psnr != null && c.best_member_psnr != null ? c.psnr - c.best_member_psnr : null;
-    rows += `<tr><td><b>combiner</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
+    rows += `<tr><td><b>${combined ? "combined combiner" : "combiner"}</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
     rows += `<tr><td>ensemble mean</td><td>${fmt(c.ensemble_mean_psnr, 3)}${g(vsMean)}</td></tr>`;
     rows += `<tr><td>best member${c.best_member_label ? ` (${c.best_member_label})` : ""}</td>`
           + `<td>${fmt(c.best_member_psnr, 3)}${g(vsBest)}</td></tr>`;
@@ -257,7 +258,8 @@ function render(root, comb, evals) {
 
 export async function mountEnsembleCombiner(card, combinerUrl, evalsUrl) {
   if (!card) return;
-  const results = card.querySelector("#ens-combiner-results");
+  const results = card.querySelector("[data-combiner-results]")
+    || card.querySelector("#ens-combiner-results");
   if (!results) return;
   // Combiner + evals are detached per star regime — fetch the current mode's,
   // and reload when the top toggle changes.

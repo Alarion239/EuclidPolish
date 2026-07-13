@@ -209,6 +209,7 @@ function renderPS(el, payload, mode) {
   const uniformAlpha = mode ? 0.55 : 0.3;
 
   const COMB_COLOR = "#ee7733";
+  const COMBINED_COLOR = "#9d6cff";
   const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
   const hasLR = hasComb(ps.r_lr);
@@ -253,6 +254,9 @@ function renderPS(el, payload, mode) {
   if (hasComb(ps.r_comb)) {
     drawLine(p, xd, yd, theta, ps.r_comb, { color: COMB_COLOR, width: 2, dots: true });
   }
+  if (hasComb(ps.r_combined)) {
+    drawLine(p, xd, yd, theta, ps.r_combined, { color: COMBINED_COLOR, width: 2, dots: true });
+  }
 
   const groups = [...new Map(colors.map(([l, c]) => [l, c])).entries()];
   el.appendChild(legendHtml([
@@ -260,6 +264,7 @@ function renderPS(el, payload, mode) {
     ...groups.map(([l, c]) => [l, c, false]),
     ["ensemble mean", VIS_COLOR, false],
     ...(hasComb(ps.r_comb) ? [["combiner", COMB_COLOR, false]] : []),
+    ...(hasComb(ps.r_combined) ? [["combined combiner", COMBINED_COLOR, false]] : []),
     ["model–model r̃(k) (no HR)", "#555", true],
     ["LR sampling (0.1″)", "#333", true],
     ["VIS PSF FWHM", VIS_COLOR, true],

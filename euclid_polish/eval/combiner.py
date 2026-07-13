@@ -478,12 +478,14 @@ def fit_combiner(buffers, member_labels, *, n_kernels: int = DEFAULT_N_KERNELS,
 # Persistence
 # ---------------------------------------------------------------------------
 
-def _combiner_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, "combiner")
+def _combiner_dir(base_dir: str, artifact_dir: str | None = None) -> str:
+    """Return a combiner artifact directory without changing the default path."""
+    return os.path.join(base_dir, artifact_dir or "combiner")
 
 
-def save_combiner(comb: Combiner, base_dir: str) -> None:
-    d = _combiner_dir(base_dir)
+def save_combiner(comb: Combiner, base_dir: str, *,
+                  artifact_dir: str | None = None) -> None:
+    d = _combiner_dir(base_dir, artifact_dir)
     os.makedirs(d, exist_ok=True)
     arrays: dict[str, np.ndarray] = {}
     for name, bc in comb.bands.items():
@@ -512,12 +514,13 @@ def save_combiner(comb: Combiner, base_dir: str) -> None:
         json.dump(manifest, f, indent=2)
 
 
-def load_combiner(base_dir: str, *, member_labels: list[str] | None = None
+def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
+                  artifact_dir: str | None = None
                   ) -> Combiner | None:
     """Load a persisted combiner, or ``None`` if absent, **stale** (its saved
     member labels no longer match ``member_labels``), or an incompatible/old
     format (e.g. a pre-RBF combiner)."""
-    d = _combiner_dir(base_dir)
+    d = _combiner_dir(base_dir, artifact_dir)
     jp, npzp = os.path.join(d, "combiner.json"), os.path.join(d, "combiner.npz")
     if not (os.path.exists(jp) and os.path.exists(npzp)):
         return None

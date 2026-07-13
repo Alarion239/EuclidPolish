@@ -10,13 +10,16 @@ from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
+    _combined_payload_path,
     _combiner_payload_path,
     _ensemble_regime_dir,
     _evals_payload_path,
+    compute_combined_combiner_payload,
     compute_combiner_payload,
     compute_evaluation_payload,
     ensemble_status,
     job_archive_member,
+    job_combined_combiner_fit,
     job_combiner_fit,
     job_ensemble_evaluate,
     job_ensemble_pull,
@@ -121,6 +124,40 @@ def register(app):
         path = _combiner_payload_path(starless)
         if compute_combiner_payload(starless) is None and not os.path.isfile(path):
             abort(404)
+        return send_file(path, mimetype="application/json", max_age=0)
+
+    @app.route("/ensemble/combined-combiner/fit", methods=["POST"])
+    def ensemble_combined_combiner_fit():
+        """Fit the selected target's additive all-member experimental gate."""
+        starless = _mode_starless(default="starfull")
+        try:
+            num_images = max(1, int(request.form.get("num_images", 100) or 100))
+        except (TypeError, ValueError):
+            num_images = 100
+        try:
+            n_kernels = max(2, min(32, int(request.form.get("n_kernels", 12) or 12)))
+        except (TypeError, ValueError):
+            n_kernels = 12
+        try:
+            min_usage = max(0.0, float(request.form.get("min_usage", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            min_usage = 0.0
+        regime = "starless" if starless else "starfull"
+        job_id = REGISTRY.spawn(
+            f"combined combiner: fit {regime} on validate ({num_images} fields, K={n_kernels})",
+            target=lambda cap: job_combined_combiner_fit(
+                cap, num_images=num_images, n_kernels=n_kernels,
+                min_usage=min_usage, starless=starless),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/ensemble/combined-combiner.json")
+    def ensemble_combined_combiner_json():
+        starless = _mode_starless(default="starfull")
+        payload = compute_combined_combiner_payload(starless)
+        path = _combined_payload_path(starless)
+        if not os.path.isfile(path):
+            return jsonify(payload)
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/member-psnr", methods=["POST"])

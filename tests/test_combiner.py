@@ -88,6 +88,27 @@ def test_load_returns_none_on_member_mismatch(tmp_path):
     assert load_combiner(str(tmp_path)) is not None
 
 
+def test_separate_artifact_directory_preserves_ordinary_combiner(tmp_path):
+    """An experimental combiner must not shadow the ordinary combiner path."""
+    def make_combiner(n_kernels):
+        band = BandCombiner(
+            V=np.zeros((n_kernels, 2), np.float32), a=np.zeros(2, np.float32),
+            centers=np.linspace(-1, 13, n_kernels, dtype=np.float32), sigma=1.0,
+            surviving=np.ones(2, bool))
+        return Combiner(member_labels=["00", "01"], n_kernels=n_kernels,
+                        sigma_scale=1.0, min_usage=0.0, bands={"VIS": band},
+                        band_names=("VIS",))
+
+    ordinary = make_combiner(4)
+    combined = make_combiner(5)
+
+    save_combiner(ordinary, str(tmp_path))
+    save_combiner(combined, str(tmp_path), artifact_dir="combined_combiner")
+
+    assert load_combiner(str(tmp_path)).n_kernels == 4
+    assert load_combiner(str(tmp_path), artifact_dir="combined_combiner").n_kernels == 5
+
+
 def test_apply_field_shape_and_inverse_stretch():
     """apply_field returns (H,W,C) electrons. A convex mix of IDENTICAL members
     must recover those electrons exactly — checks the 100*sinh inverse."""

@@ -44,6 +44,7 @@ type Status = {
 type PS = {
   theta: (number | null)[]; r: (number | null)[]; r_lr?: (number | null)[];
   r_comb?: (number | null)[]; r_members?: (number | null)[][];
+  r_combined?: (number | null)[];
   r_pairs?: (number | null)[][]; r_cross?: (number | null)[];
 };
 /* Pixel diagnostics (VIS, electrons). All *_edges / med_* arrays are already in
@@ -65,6 +66,7 @@ type Evals = {
   n_fields?: number; n_members?: number;
   std_err?: StdErr | null; bright_std?: BrightStd | null;
   combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
+  combined_combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
 };
 
 /* ── combiner.json ───────────────────────────────────────────────────────── */
@@ -76,6 +78,7 @@ type Combiner = {
   n_kernels?: number; min_usage?: number; val_l1?: number | null;
   band_names?: string[]; surviving?: Record<string, boolean[]>;
   eff_weights?: Record<string, EffW>;
+  source_starless?: boolean[]; reason?: string;
 };
 
 /* ── training-curves.json ────────────────────────────────────────────────── */
@@ -322,17 +325,19 @@ export default function EnsemblePage() {
   const status = useResource<Status>(`/ensemble/status.json?mode=${mode}`, [mode]);
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
   const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}`, [mode]);
+  const combined = useResource<Combiner>(`/ensemble/combined-combiner.json?mode=${mode}`, [mode]);
   const curves = useResource<{ members: Curve[] }>("/ensemble/training-curves.json");
 
   const evalJob = useJob();
   const opJob = useJob();
   const fitJob = useJob();
+  const combinedFitJob = useJob();
   // Continue/fork buttons in the members table jump to the Train members page,
   // prefilled via query params.
   const toTrain = (m: "continue" | "fork", member: string) =>
     navigate(`/train-members?mode=${m}&member=${encodeURIComponent(member)}`);
 
-  const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); curves.reload(); };
+  const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); combined.reload(); curves.reload(); };
 
   return (
     <Page>
@@ -356,6 +361,8 @@ export default function EnsemblePage() {
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false} />
         <DisagreementCard key={mode} mode={mode} members={status.data?.members ?? []} />
+        <CombinerCard comb={combined.data} loading={combined.loading} mode={mode} theme={theme} fitJob={combinedFitJob} onFit={reloadAll}
+          evalReady={status.data?.evaluations_ready ?? false} combined />
       </div>
     </Page>
   );
@@ -501,7 +508,7 @@ function Evaluations(
   const [tab, setTab] = useState<DiagTab>("power-spectrum");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
   // Which overlay curves to draw on the power spectrum.
-  const [show, setShow] = useState({ cross: true, mean: true, comb: true });
+  const [show, setShow] = useState({ cross: true, mean: true, comb: true, combined: true });
   const toggle = (k: keyof typeof show) => setShow((s) => ({ ...s, [k]: !s[k] }));
   // Back-traced heatmap cell (click-to-inspect). Cleared when the tab/regime
   // changes — a cell only means something within one diagnostic.
@@ -542,6 +549,7 @@ function Evaluations(
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
     if (show.mean) series.push({ x: theta, y: ps.r, color: C.mean, width: 2.6, dots: true });
     if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
+    if (show.combined && hasData(ps.r_combined)) series.push({ x: theta, y: ps.r_combined!, color: "#9d6cff", width: 2.2, dots: true });
     const guides: Guide[] = [
       { axis: "y", v: 1, color: C.guide, dash: [2, 3] },
       { axis: "x", v: g.lr_scale ?? 0.1, color: C.guide, width: 1.3, dash: [6, 3] },
@@ -554,6 +562,7 @@ function Evaluations(
       ...(hasData(ps.r_lr) ? [{ label: "LR baseline", color: C.baseline, dash: true }] : []),
       ...(show.mean ? [{ label: "ensemble mean", color: C.mean }] : []),
       ...(show.comb && hasData(ps.r_comb) ? [{ label: "combiner", color: C.comb }] : []),
+      ...(show.combined && hasData(ps.r_combined) ? [{ label: "combined combiner", color: "#9d6cff" }] : []),
       ...(facet.length ? facet : [{ label: "individual models", color: C.muted }]),
       ...(show.cross && hasData(ps.r_cross) ? [{ label: "model–model r̃(k)", color: C.cross, dash: true }] : []),
     ];
@@ -637,6 +646,8 @@ function Evaluations(
                       title="ensemble-mean r(k)">mean</Chip>
                     {hasData(ps?.r_comb) && <Chip on={show.comb} dot={C.comb} onClick={() => toggle("comb")}
                       title="combiner r(k)">combiner</Chip>}
+                    {hasData(ps?.r_combined) && <Chip on={show.combined} dot="#9d6cff" onClick={() => toggle("combined")}
+                      title="cross-regime combined-combiner r(k)">combined combiner</Chip>}
                   </div>
                   <Select<ColorBy> value={colorBy} onChange={setColorBy}
                     options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
@@ -695,11 +706,11 @@ function Evaluations(
 }
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
-type GateColorBy = "loss" | "psnr" | "depth" | "knee";
+type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
 
 function CombinerCard(
-  { comb, loading, mode, theme, fitJob, onFit, evalReady }:
-  { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean },
+  { comb, loading, mode, theme, fitJob, onFit, evalReady, combined = false }:
+  { comb: Combiner | null; loading: boolean; mode: Mode; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean; combined?: boolean },
 ) {
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("12");
@@ -747,6 +758,7 @@ function CombinerCard(
       if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
       if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
       if (colorBy === "knee") return categorical(knees.indexOf(kneeOf(meta?.asinh_knee)));
+      if (colorBy === "regime") return comb?.source_starless?.[m] ? "#9d6cff" : "#ee7733";
       const p = meta?.psnr;
       return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
     };
@@ -772,6 +784,7 @@ function CombinerCard(
       const tag = colorBy === "loss" ? (meta?.loss ?? "l1")
         : colorBy === "depth" ? `${meta?.blocks ?? "?"}b`
         : colorBy === "knee" ? kneeTag(meta?.asinh_knee)
+        : colorBy === "regime" ? (comb?.source_starless?.[m] ? "starless" : "starfull")
         : (meta?.psnr != null ? `${meta.psnr.toFixed(1)}dB` : "—");
       return { label: `${comb?.member_labels[m]} · ${tag}`, color: memberColor(m) };
     });
@@ -783,8 +796,8 @@ function CombinerCard(
 
   return (
     <Card>
-      <CardHead title={`Combiner · ${mode}`}
-        sub="a per-band brightness gate fusing members — fit locally on validate, scored on test"
+      <CardHead title={`${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
+        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "a per-band brightness gate fusing members — fit locally on validate, scored on test"}
         right={comb?.available && <Badge tone={comb.stale ? "warn" : "good"}>{comb.stale ? "stale" : "fitted"}</Badge>} />
       <CardBody>
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
@@ -793,8 +806,8 @@ function CombinerCard(
           <NumberField label="prune (min importance)" value={minUsage} onChange={setMinUsage} min={0} max={0.5} step={0.01} />
           <Button variant="primary" disabled={fitJob.busy || !evalReady}
             title={evalReady ? undefined : `evaluate ${mode} on the test set first — its evaluation must match the current members`}
-            onClick={() => fitJob.run("/ensemble/combiner/fit", { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
-            Fit combiner
+            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : "/ensemble/combiner/fit", { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
+            Fit {combined ? "combined combiner" : "combiner"}
           </Button>
         </div>
         {!evalReady && (
@@ -805,7 +818,7 @@ function CombinerCard(
         <JobProgressView job={fitJob.job} error={fitJob.error} />
 
         {loading ? <Empty><Spinner /> loading…</Empty>
-          : !comb?.available ? <Empty>no combiner fitted for <b>{mode}</b> yet — set knobs above and fit.</Empty> : (
+          : !comb?.available ? <Empty>{comb?.reason ?? `no ${combined ? "combined " : ""}combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
           <div style={{ marginTop: "var(--s4)" }}>
             <DefList items={[
               ["members", `${comb.member_labels.length} (${importance.length} surviving)`],
@@ -818,7 +831,7 @@ function CombinerCard(
               <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
                 <div className="eyebrow">member importance (cumulative gate weight)</div>
                 <Select<GateColorBy> value={colorBy} onChange={setColorBy}
-                  options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
+                  options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }, ...(combined ? [{ value: "regime" as GateColorBy, label: "by star regime" }] : [])]} />
               </div>
               {importance.map((r) => (
                 <div key={r.label} className="ens-imp">

@@ -230,16 +230,20 @@ class EnsembleSpectrumAccumulator:
         self._r_pairs: list[np.ndarray] = []            # each (M·(M−1)/2, nbins)
         self._p_comb: list[np.ndarray] = []             # combiner auto-power
         self._r_comb: list[np.ndarray] = []             # combiner vs HR coherence
+        self._p_combined: list[np.ndarray] = []         # cross-regime combiner
+        self._r_combined: list[np.ndarray] = []
         self._r_lr: list[np.ndarray] = []               # LR(up)↔HR baseline r(k)
         self.n_fields = 0
         self.n_members = 0
         self.has_combiner = False
+        self.has_combined_combiner = False
 
     def _asinh(self, x: np.ndarray) -> np.ndarray:
         return np.arcsinh(np.asarray(x, np.float64) / self.stretch)
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
             members: np.ndarray, combiner: np.ndarray | None = None,
+            combined_combiner: np.ndarray | None = None,
             lr: np.ndarray | None = None) -> None:
         """Accumulate one field (asinh space). ``hr``/``mean`` are ``(n, n)``;
         ``members`` is ``(M, n, n)`` — all single-band, HR-grid. ``combiner``
@@ -316,6 +320,19 @@ class EnsembleSpectrumAccumulator:
                 self._p_comb.append(pc); self._r_comb.append(rc)
                 self.has_combiner = True
 
+        if combined_combiner is not None:
+            ac = self._asinh(np.asarray(combined_combiner, np.float64))
+            if ac.shape == hr.shape:
+                _bhc, bsc, bxc, bcc = bin_powers(ah, ac, self.pix,
+                                                 self.k_edges, self.window)
+                _tc, rc = ratios_from_powers(_bhc, bsc, bxc, bcc)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    pc = bsc / bcc
+                ce = bcc <= 0
+                pc[ce] = np.nan; rc[ce] = np.nan
+                self._p_combined.append(pc); self._r_combined.append(rc)
+                self.has_combined_combiner = True
+
         # LR baseline: cross-correlation of the LR plane (resampled to the HR
         # grid, i.e. no super-resolution) with HR — the floor the network beats.
         if lr is not None:
@@ -355,6 +372,9 @@ class EnsembleSpectrumAccumulator:
         if self._p_comb:
             out["P_comb"] = self._med(self._p_comb)
             out["r_comb"] = self._med(self._r_comb)
+        if self._p_combined:
+            out["P_combined"] = self._med(self._p_combined)
+            out["r_combined"] = self._med(self._r_combined)
         if self._r_lr:
             out["r_lr"] = self._med(self._r_lr)
         return out
@@ -382,6 +402,8 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     r_cross = np.asarray(curves.get("r_cross", nan_k), float)
     p_comb = np.asarray(curves.get("P_comb", nan_k), float)
     r_comb = np.asarray(curves.get("r_comb", nan_k), float)
+    p_combined = np.asarray(curves.get("P_combined", nan_k), float)
+    r_combined = np.asarray(curves.get("r_combined", nan_k), float)
     r_lr = np.asarray(curves.get("r_lr", nan_k), float)
     with np.errstate(divide="ignore", invalid="ignore"):
         theta = 0.5 / k
@@ -389,10 +411,13 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
         t_members = (np.sqrt(p_members / p_hr[None, :])
                      if p_members.size else np.empty((0, k.size)))
         t_comb = np.sqrt(p_comb / p_hr)
+        t_combined = np.sqrt(p_combined / p_hr)
     return {"theta": theta, "T": t_mean, "T_members": t_members,
             "r": r, "r_members": r_members,
             "r_pairs": r_pairs, "r_cross": r_cross,
-            "T_comb": t_comb, "r_comb": r_comb, "r_lr": r_lr}
+            "T_comb": t_comb, "r_comb": r_comb,
+            "T_combined": t_combined, "r_combined": r_combined,
+            "r_lr": r_lr}
 
 
 #: Categorical colors for the per-member line grouping in the ensemble
@@ -494,6 +519,10 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
                         label=("individual models" if j == 0 else None))
         ax.plot(x, mean_curve, "-o", ms=3.0, lw=2.0, color=vis_color,
                 label="ensemble mean")
+        combined_curve = cv["T_combined"] if ax is ax_t else cv["r_combined"]
+        if np.isfinite(combined_curve).any():
+            ax.plot(x, combined_curve, "-o", ms=2.5, lw=2.0, color="#9d6cff",
+                    label="combined combiner")
         if ax is ax_r and cv["r_pairs"].size:
             # model–model cross-correlation: the truth-free proxy for r(k).
             # Where it tracks the HR curve, inter-model agreement predicts

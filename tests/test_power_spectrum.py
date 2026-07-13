@@ -185,6 +185,22 @@ def test_ensemble_accumulator_combiner_series():
                                        & (acc.k_cen < 5.0)]) > 0.95
 
 
+def test_ensemble_accumulator_combined_combiner_series_is_independent():
+    """The experimental reconstruction has its own power/coherence keys."""
+    n = 64
+    rng = np.random.default_rng(6)
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, members.mean(0), members, combiner=members.mean(0),
+            combined_combiner=hr)
+    curves = acc.curves()
+    assert "P_comb" in curves and "P_combined" in curves
+    plot = ensemble_ps_plot_curves(curves)
+    m = np.isfinite(plot["T_combined"]) & (acc.k_cen < 5.0)
+    assert np.nanmedian(plot["T_combined"][m]) == pytest.approx(1.0, abs=0.05)
+
+
 def test_ensemble_ps_plot_curves_no_combiner_is_nan():
     """No combiner fed → T_comb/r_comb are present but all-NaN (the JS hides
     the series)."""
