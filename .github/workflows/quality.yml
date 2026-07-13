@@ -28,11 +28,13 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Collect tests without executing them
+      - name: Run full test suite
         env:
+          EUCLID_POLISH_DISABLE_AUTO_SSH: "1"
           NUMBA_DISABLE_JIT: "1"
           MPLBACKEND: Agg
-        run: python -m pytest --collect-only -q
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest -q
 
       - name: Run focused hardening regressions
         env:

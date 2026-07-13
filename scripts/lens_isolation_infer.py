@@ -6,16 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 
 import numpy as np
 from astropy.io import fits
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from euclid_polish.experiments.lens_isolation.config import ExperimentPaths
-from euclid_polish.experiments.lens_isolation.ensemble import (
-    LensIsolationEnsemble,
-    detection_score,
-)
 
 
 def parse_args(argv=None):
@@ -40,6 +41,11 @@ def _write_fits_atomic(path: str, data: np.ndarray) -> None:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    from euclid_polish.experiments.lens_isolation.ensemble import (
+        LensIsolationEnsemble,
+        detection_score,
+    )
+
     with fits.open(args.input_fits) as hdul:
         cube = np.asarray(hdul[0].data, np.float32)
     if cube.ndim != 3:

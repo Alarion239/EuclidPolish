@@ -15,7 +15,9 @@ dependencies:
   - tf-keras
   - tqdm
   - astroquery
-  - photutils
+  # FastEPSFBuilder subclasses the Photutils 2.3 ePSF implementation.
+  # Photutils 3.0 refactored those internals; migrate with numerical parity tests.
+  - photutils=2.3.*
   - questionary
   - pytest
   - ruff

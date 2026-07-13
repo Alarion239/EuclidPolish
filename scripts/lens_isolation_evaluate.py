@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.experiments.lens_isolation.config import ExperimentPaths
-from euclid_polish.experiments.lens_isolation.evaluation import (
-    evaluate_records,
-    write_report,
-)
 
 
 def parse_args(argv=None):
@@ -28,6 +30,11 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(json.dumps(vars(args), sort_keys=True))
         return 0
+    from euclid_polish.experiments.lens_isolation.evaluation import (
+        evaluate_records,
+        write_report,
+    )
+
     metrics, rows = evaluate_records(
         args.ensemble_dir,
         args.records_dir,
