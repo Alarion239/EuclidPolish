@@ -2,14 +2,17 @@
    Current Submission · Git · Storage · Logs. Step-submit forms live on their
    own domain pages now (Train members, Sky, Cutouts, …); this page is purely
    monitoring + cluster ops. */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { postForm } from "../api";
 import { useResource, usePolling } from "../hooks";
-import { ConnectionBar, CurrentSubmission, SlurmMonitor } from "../fasrc";
+import { ConnectionBar, CurrentSubmission } from "../fasrc";
 import {
   Badge, Button, Card, CardBody, CardHead, DefList, Empty, LogTail, Page,
   PageHead, Spinner, Table, Tabs, type Column,
 } from "../ui";
+import {
+  buildLogPageUrl, logPath, preferredLogKind, type LogKind,
+} from "./fasrcLogs";
 
 type GitStatus = { ok: boolean; repo?: string; branch?: string; ahead?: number; behind?: number; last?: { hash: string; subject: string; relative: string } };
 type DataListing = {
@@ -20,8 +23,14 @@ type DataListing = {
 type RunRow = {
   name: string; jobid?: string | null; label?: string | null; state?: string | null;
   submitted_at?: number; out_size?: number; err_size?: number; missing?: boolean;
+  out_path?: string | null; err_path?: string | null;
 };
 type RunsResp = { ok: boolean; log_dir?: string; runs: RunRow[]; total_runs: number; page: number; page_size: number };
+type LogResp = {
+  ok: boolean; path: string; page: number; page_size: number;
+  total_lines: number; start_line: number; end_line: number;
+  has_older: boolean; has_newer: boolean; content: string;
+};
 
 const TABS = [
   { id: "current", label: "Current submission" },
@@ -147,20 +156,83 @@ function StorageTab({ connected }: { connected: boolean }) {
 }
 
 /* ── Logs (past runs) ────────────────────────────────────────────────────── */
+const LOG_PAGE_SIZE = 1000;
+
+function RunLogDetail({ run, onBack }: { run: RunRow; onBack: () => void }) {
+  const [which, setWhich] = useState<LogKind>(() => preferredLogKind(run) ?? "out");
+  const [page, setPage] = useState(0);
+  const contentRef = useRef<HTMLPreElement>(null);
+  const path = logPath(run, which);
+  const url = path ? buildLogPageUrl(path, page, LOG_PAGE_SIZE) : null;
+  const log = useResource<LogResp>(url, [path, page], { ttl: 0 });
+  const data = log.data?.path === path ? log.data : null;
+
+  useEffect(() => {
+    const pre = contentRef.current;
+    if (!pre || !data) return;
+    pre.scrollTop = page === 0 ? pre.scrollHeight : 0;
+  }, [data, page]);
+
+  function show(kind: LogKind) {
+    if (!logPath(run, kind)) return;
+    setWhich(kind);
+    setPage(0);
+  }
+
+  return (
+    <Card>
+      <CardHead title="Run logs"
+        sub={<><code className="mono">{run.name}</code>{run.jobid ? ` · job ${run.jobid}` : ""}</>}
+        right={<div className="fasrc-log__toolbar">
+          <Button size="sm" variant="ghost" onClick={onBack}>← Back to past runs</Button>
+          <Button size="sm" variant={which === "out" ? "primary" : "default"}
+            disabled={!run.out_path} onClick={() => show("out")}>.out</Button>
+          <Button size="sm" variant={which === "err" ? "primary" : "default"}
+            disabled={!run.err_path} onClick={() => show("err")}>.err</Button>
+        </div>} />
+      <CardBody>
+        {!data
+          ? log.error
+            ? <Empty>couldn't load this log</Empty>
+            : <Empty><Spinner /> loading {which}…</Empty>
+          : <pre ref={contentRef} className="ui-logtail fasrc-log__content">{data.content || "(empty)"}</pre>}
+        {data && <div className="fasrc-log__pager">
+          <Button size="sm" variant="ghost" disabled={!data.has_older}
+            onClick={() => setPage((p) => p + 1)}>← older</Button>
+          <Button size="sm" variant="ghost" disabled={!data.has_newer}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}>newer →</Button>
+          <Button size="sm" variant="ghost" disabled={!data.has_newer}
+            onClick={() => setPage(0)}>newest ↓</Button>
+          <span className="muted mono">
+            {data.total_lines
+              ? `lines ${data.start_line}–${data.end_line} of ${data.total_lines}`
+              : "empty file"}
+          </span>
+        </div>}
+      </CardBody>
+    </Card>
+  );
+}
+
 function LogsTab({ connected }: { connected: boolean }) {
   const [page, setPage] = useState(0);
   const runs = useResource<RunsResp>(connected ? `/api/fasrc/runs?page=${page}` : null, [connected, page]);
-  const [sel, setSel] = useState<string | null>(null);
+  const [selected, setSelected] = useState<RunRow | null>(null);
+
+  function openRun(run: RunRow) {
+    if (preferredLogKind(run)) setSelected(run);
+  }
 
   const cols: Column<RunRow>[] = [
     { header: "job", cell: (r) => <code className="mono">{r.jobid ?? "—"}</code> },
     { header: "label", cell: (r) => r.label ?? r.name },
     { header: "state", cell: (r) => r.state ? <Badge tone={stateTone(r.state)}>{r.state}</Badge> : <span className="muted">—</span> },
-    { header: "", align: "right", cell: (r) => r.jobid
-      ? <Button size="sm" onClick={() => setSel(sel === r.jobid ? null : (r.jobid ?? null))}>{sel === r.jobid ? "hide" : "monitor"}</Button>
-      : null },
+    { header: "", align: "right", cell: (r) => preferredLogKind(r)
+      ? <Button size="sm" title="Open raw logs">open logs →</Button>
+      : <span className="muted">no files</span> },
   ];
   if (!connected) return <Card><CardBody><Empty>connect to FASRC to browse past runs</Empty></CardBody></Card>;
+  if (selected) return <RunLogDetail run={selected} onBack={() => setSelected(null)} />;
   const d = runs.data;
   const hasOlder = d ? (d.page + 1) * d.page_size < d.total_runs : false;
   return (
@@ -174,8 +246,8 @@ function LogsTab({ connected }: { connected: boolean }) {
         </div>} />
       <CardBody>
         <Table columns={cols} rows={d?.runs ?? []} rowKey={(r) => r.name}
+          onRowClick={openRun} isRowClickable={(r) => preferredLogKind(r) != null}
           empty={runs.loading ? "loading…" : "no past runs found"} />
-        {sel && <SlurmMonitor jobid={sel} />}
       </CardBody>
     </Card>
   );

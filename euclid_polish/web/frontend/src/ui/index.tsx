@@ -201,9 +201,11 @@ export type Column<T> = {
   width?: string | number;
 };
 export function Table<T>(
-  { columns, rows, empty, rowKey }: {
+  { columns, rows, empty, rowKey, onRowClick, isRowClickable }: {
     columns: Column<T>[]; rows: T[]; empty?: ReactNode;
     rowKey?: (row: T, i: number) => string | number;
+    onRowClick?: (row: T, i: number) => void;
+    isRowClickable?: (row: T, i: number) => boolean;
   },
 ) {
   if (!rows.length) return <Empty>{empty ?? "nothing here yet"}</Empty>;
@@ -216,13 +218,18 @@ export function Table<T>(
           ))}</tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={rowKey ? rowKey(r, i) : i}>
-              {columns.map((c, j) => (
-                <td key={j} style={{ textAlign: c.align }}>{c.cell(r, i)}</td>
-              ))}
-            </tr>
-          ))}
+          {rows.map((r, i) => {
+            const clickable = !!onRowClick && (isRowClickable?.(r, i) ?? true);
+            return (
+              <tr key={rowKey ? rowKey(r, i) : i}
+                className={clickable ? "ui-table__row--action" : undefined}
+                onClick={clickable ? () => onRowClick(r, i) : undefined}>
+                {columns.map((c, j) => (
+                  <td key={j} style={{ textAlign: c.align }}>{c.cell(r, i)}</td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

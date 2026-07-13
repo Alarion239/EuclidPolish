@@ -6,6 +6,7 @@
   "description": "EuclidPolish web UI — React + Vite SPA (dark observatory console).",
   "scripts": {
     "dev": "vite",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

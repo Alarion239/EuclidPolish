@@ -131,6 +131,8 @@
 }
 .ui-table tbody tr:hover { background: var(--surface-2); }
 .ui-table code { font-size: 12px; }
+.ui-table__row--action { cursor: pointer; }
+.ui-table__row--action:focus-within { outline: none; box-shadow: inset 3px 0 0 var(--accent); }
 
 /* ---- Definition list (key/value) ---- */
 .ui-deflist { margin: 0; display: grid; gap: 1px; }
@@ -210,6 +212,12 @@
 .fasrc-mon__events { margin: 0; padding-left: 16px; font-size: 12px; }
 .fasrc-mon__events--warn { color: var(--warn); }
 .fasrc-mon__events--err { color: var(--bad); }
+.fasrc-log__toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
+.fasrc-log__content { min-height: 280px; max-height: min(68vh, 760px); }
+.fasrc-log__pager {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
+  margin-top: var(--s3); font-size: 12px;
+}
 
 /* ---- Ensemble combiner importance bars (Ensemble.tsx) ---- */
 .ens-imp { display: grid; grid-template-columns: 64px 1fr 44px auto; align-items: center; gap: var(--s3); padding: 3px 0; }
