@@ -1443,6 +1443,14 @@ class LensfinderTrainStep(FASRCPipelineStep):
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
 
+from euclid_polish.experiments.lens_isolation.fasrc_steps import (  # noqa: E402
+    build_step_classes as _lens_isolation_step_classes,
+)
+
+_LENS_ISOLATION_STEP_CLASSES = _lens_isolation_step_classes(
+    FASRCPipelineStep, StepResources
+)
+
 STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTDownloadStep,
     HSTPSFExtractStep,
@@ -1466,6 +1474,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     LensfinderSRInferStep,
     LensfinderBuildStampsStep,
     LensfinderTrainStep,
+    *_LENS_ISOLATION_STEP_CLASSES,
 )
 
 

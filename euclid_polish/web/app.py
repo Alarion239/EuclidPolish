@@ -46,6 +46,7 @@ from euclid_polish.web.routes import (
     git,
     hst,
     hstpairs,
+    lens_isolation,
     lensfinder,
     model,
     poster,
@@ -158,8 +159,9 @@ def create_app() -> Flask:
         "/ensemble/",            # records; render + evaluate jobs need no SSH
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
-        "/app",                  # new React console (SPA) — local-first, reads
-                                 # the same offline endpoints as the classic UI
+        "/app",                  # new React console (SPA) — local-first
+        "/lens-isolation",       # additive experiment status works offline
+        "/api/lens-isolation/",
     )
 
     @app.before_request
@@ -259,6 +261,7 @@ def create_app() -> Flask:
     ensemble.register(app)
     evaluation.register(app)
     lensfinder.register(app)
+    lens_isolation.register(app)
     views.register(app)
     hstpairs.register(app)
     files.register(app)

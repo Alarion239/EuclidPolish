@@ -91,6 +91,8 @@ class TestRegistry:
             "ensemble_train",
             "lensfinder_generate", "lensfinder_sr_infer",
             "lensfinder_build_stamps", "lensfinder_train",
+            "lens_isolation_generate", "lens_isolation_train",
+            "lens_isolation_evaluate",
         }
 
     def test_ensemble_train_step_build_command(self, monkeypatch):

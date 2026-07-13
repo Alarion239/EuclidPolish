@@ -11,6 +11,7 @@ import FasrcPage from "./Fasrc";
 import GitPage from "./Git";
 import InferencePage from "./Inference";
 import LensFinderPage from "./LensFinder";
+import LensIsolationPage from "./LensIsolation";
 import PsfsPage from "./Psfs";
 import SkyPage from "./Sky";
 import TngPage from "./Tng";
@@ -34,6 +35,7 @@ export const PAGES: PageDef[] = [
   { label: "Train members", path: "/train-members", component: TrainMembersPage },
   { label: "Evaluation", path: "/evaluation", component: EvaluationPage },
   { label: "Lens finder", path: "/lensfinder", component: LensFinderPage },
+  { label: "Lens isolation", path: "/lens-isolation", component: LensIsolationPage },
   { label: "Tracking", path: "/tracking", component: TrackingPage },
   { label: "Visualization", path: "/visualization", component: VisualizationPage },
   { label: "FASRC", path: "/fasrc", component: FasrcPage },
@@ -47,6 +49,6 @@ const item = (label: string) => ({ label, path: path(label) });
 export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
   { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG")] },
-  { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder")] },
+  { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder"), item("Lens isolation")] },
   { title: "Ops", items: [item("Tracking"), item("Visualization"), item("FASRC"), item("Git")] },
 ];

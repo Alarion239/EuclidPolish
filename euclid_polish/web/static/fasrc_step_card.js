@@ -358,6 +358,26 @@ large cutout don't leak across train/validate."></label>`;
         return _hstTrainFields();
       case 'ensemble_train':
         return _ensembleTrainFields();
+      case 'lens_isolation_generate':
+        return `
+          <label>Train examples <input type="number" name="ntrain" value="6400" min="2" step="2"></label>
+          <label>Validation examples <input type="number" name="nvalid" value="100" min="2" step="2"></label>
+          <label>Test examples <input type="number" name="ntest" value="100" min="2" step="2"></label>
+          <label>Workers <input type="number" name="workers" value="16" min="1" max="128"></label>
+          <label>Seed <input type="number" name="seed" value="-1"></label>
+          <label class="checkbox-field" style="flex-basis:100%;"><input type="checkbox" name="force" value="1"> Replace complete experiment records</label>`;
+      case 'lens_isolation_train':
+        return `
+          <label style="flex-basis:100%;">Source members
+            <input type="text" name="sources" placeholder="member_01,member_04" required
+                   title="Existing starless SR members to fork one-to-one. Production checkpoints remain read-only."></label>
+          <label>Steps <input type="number" name="steps" value="50000" min="1"></label>
+          <label>Batch size <input type="number" name="batch_size" value="16" min="1"></label>
+          <label>Evaluate every <input type="number" name="evaluate_every" value="500" min="1"></label>
+          <label>Lens-pixel weight <input type="number" name="lens_weight" value="8" min="0" step="0.5"></label>
+          <label>Flux weight <input type="number" name="flux_weight" value="0.1" min="0" step="0.05"></label>`;
+      case 'lens_isolation_evaluate':
+        return `<label class="checkbox-field"><input type="checkbox" name="no_source_baselines" value="1"> Skip source-model baselines</label>`;
       default:
         return '';
     }
@@ -617,6 +637,9 @@ large cutout don't leak across train/validate."></label>`;
       extract_euclid_psf:      'euclid_psf',
       euclid_star_anchor_tfrecords: 'star_anchor_records',
       synthetic_generate:      'synthetic_records',
+      lens_isolation_generate: 'lens_isolation_records',
+      lens_isolation_train:    'lens_isolation_ensemble',
+      lens_isolation_evaluate: 'lens_isolation_evaluation',
       download_tng_skirt:      'tng_skirt',
     }[step.step_id];
     const status = artifactStatus[produces];
