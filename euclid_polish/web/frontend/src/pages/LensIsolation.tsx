@@ -151,7 +151,7 @@ export default function LensIsolationPage() {
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Card>
-          <CardHead title="1 · Generate paired normal fields" sub="Pure TNG ordinary galaxies · 20 lenses / arcmin² · CPU" right={<Badge>CPU</Badge>} />
+          <CardHead title="1 · Generate paired normal fields" sub="Pure TNG ordinary galaxies · 10 lenses / arcmin² · CPU" right={<Badge>CPU</Badge>} />
           <CardBody>
             <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
               <NumberField label="train" value={ntrain} onChange={setNtrain} min={1} step={1} />

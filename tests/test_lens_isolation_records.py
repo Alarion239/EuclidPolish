@@ -201,12 +201,12 @@ def test_dataset_metadata_persists_schema_config_and_record_fingerprint(tmp_path
     }
     path = write_dataset_metadata(
         out,
-        config={"schema_version": 2, "lens_density_arcmin2": 20.0},
+        config={"schema_version": 2, "lens_density_arcmin2": 10.0},
         master_seed=9,
         split_summaries=summaries,
         source_commit="abc123",
     )
     metadata = json.loads(open(path, encoding="utf-8").read())
     assert metadata["schema_version"] == 2
-    assert metadata["config"]["lens_density_arcmin2"] == 20.0
+    assert metadata["config"]["lens_density_arcmin2"] == 10.0
     assert metadata["fingerprint"] == dataset_fingerprint(out)

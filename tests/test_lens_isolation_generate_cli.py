@@ -35,7 +35,7 @@ def test_dry_run_reports_isolated_generation_plan(tmp_path, capsys):
         "sersic_density_arcmin2": 0.0,
         "tng_density_arcmin2": 60.0,
         "tng_redshift_mode": True,
-        "lens_density_arcmin2": 20.0,
+        "lens_density_arcmin2": 10.0,
     }
     assert plan["schema_version"] == 2
     assert "records_v2" not in json.dumps(plan)

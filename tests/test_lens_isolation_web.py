@@ -21,7 +21,7 @@ def test_classic_page_and_status_are_registered():
     assert "lens_isolation_train" in body
     assert "lens_isolation_evaluate" in body
     assert "Pure TNG" in body
-    assert "20 lenses / arcmin²" in body
+    assert "10 lenses / arcmin²" in body
     assert "random, block-aligned crops" in body
     assert "balanced" not in body.lower()
     status = client.get("/api/lens-isolation/status")

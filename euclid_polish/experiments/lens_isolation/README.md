@@ -17,7 +17,7 @@ Generation uses ordinary, unbiased pure-TNG fields:
 sersic_density_arcmin2 = 0
 tng_density_arcmin2    = 60
 tng_redshift_mode      = true
-lens_density_arcmin2   = 20
+lens_density_arcmin2   = 10
 ```
 
 Every normal zero-, one-, and multi-lens outcome is accepted. A scoped adapter

@@ -48,7 +48,7 @@ class DatasetConfig:
     sersic_density_arcmin2: float = 0.0
     tng_density_arcmin2: float = 60.0
     tng_redshift_mode: bool = True
-    lens_density_arcmin2: float = 20.0
+    lens_density_arcmin2: float = 10.0
 
     def __post_init__(self) -> None:
         counts = (self.n_train, self.n_validate, self.n_test)
@@ -69,8 +69,8 @@ class DatasetConfig:
             raise ValueError("lens isolation requires tng_density_arcmin2=60")
         if not self.tng_redshift_mode:
             raise ValueError("lens isolation requires tng_redshift_mode=true")
-        if float(self.lens_density_arcmin2) != 20.0:
-            raise ValueError("lens isolation requires lens_density_arcmin2=20")
+        if float(self.lens_density_arcmin2) != 10.0:
+            raise ValueError("lens isolation requires lens_density_arcmin2=10")
 
     def scientific_config(self) -> dict[str, object]:
         """Return the versioned generation inputs persisted with the dataset."""
