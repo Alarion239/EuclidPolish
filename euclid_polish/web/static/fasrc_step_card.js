@@ -63,6 +63,27 @@
     return `${(s / 3600).toFixed(2)} h`;
   }
 
+  function fmtElapsed(s) {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return '—';
+    const minutes = Math.max(0, Math.round(n / 60));
+    return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
+  }
+
+  function memoryMb(value) {
+    const n = historyNumber(value);
+    if (n != null) return n;
+    const match = String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)\s*([KMGT])?i?B?$/i);
+    if (!match) return null;
+    const scale = { k: 1 / 1024, m: 1, g: 1024, t: 1024 * 1024 }[(match[2] || 'm').toLowerCase()];
+    return Number(match[1]) * scale;
+  }
+
+  function fmtMemory(mb) {
+    if (mb == null || !Number.isFinite(mb)) return '—';
+    return mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : `${Math.round(mb)} MB`;
+  }
+
   function fmtIsoLocal(iso) {
     if (!iso) return '';
     return iso.replace('T', ' ').replace('Z', '').slice(0, 16);
@@ -373,8 +394,9 @@ large cutout don't leak across train/validate."></label>`;
           <label>Steps <input type="number" name="steps" value="50000" min="1"></label>
           <label>Batch size <input type="number" name="batch_size" value="16" min="1"></label>
           <label>Evaluate every <input type="number" name="evaluate_every" value="500" min="1"></label>
-          <label>Lens-pixel weight <input type="number" name="lens_weight" value="8" min="0" step="0.5"></label>
-          <label>Flux weight <input type="number" name="flux_weight" value="0.1" min="0" step="0.05"></label>`;
+          <label class="checkbox-field" style="flex-basis:100%;" title="Current experiment members stay available until every replacement finishes training.">
+            <input type="checkbox" name="force" value="1"> Retrain and replace existing lens-isolation members
+          </label>`;
       case 'lens_isolation_evaluate':
         return `<label class="checkbox-field"><input type="checkbox" name="no_source_baselines" value="1"> Skip source-model baselines</label>`;
       default:
@@ -713,73 +735,130 @@ large cutout don't leak across train/validate."></label>`;
     return out;
   }
 
-  function renderHistoryRows(rows) {
-    if (!rows || !rows.length) {
-      return `<span class="muted">no previous runs for this step yet</span>`;
+  function historyParam(row) {
+    try {
+      const value = JSON.parse(row.params_json || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch (_) { return {}; }
+  }
+
+  function historyNumber(value) {
+    const n = Number(value);
+    return value !== '' && value != null && Number.isFinite(n) ? n : null;
+  }
+
+  function historyText(params, key, fallback = '—') {
+    const value = params[key];
+    return value === '' || value == null ? fallback : String(value);
+  }
+
+  function historyCount(params, key, fallback = '—') {
+    const n = historyNumber(params[key]);
+    return n == null ? historyText(params, key, fallback) : n.toLocaleString();
+  }
+
+  function historySum(params, keys) {
+    let total = 0, found = false;
+    keys.forEach(key => {
+      const n = historyNumber(params[key]);
+      if (n != null) { total += n; found = true; }
+    });
+    return found ? total.toLocaleString() : '—';
+  }
+
+  function ensembleMemberCount(params) {
+    const explicit = historyNumber(params.count) ?? historyNumber(params.n_members);
+    if (explicit != null) return explicit;
+    const members = historyText(params, 'members', '').split(',').map(value => value.trim()).filter(Boolean);
+    return members.length || null;
+  }
+
+  function ensembleTotalSteps(params) {
+    const members = ensembleMemberCount(params);
+    const steps = historyNumber(params.steps) ?? historyNumber(params.extra_steps);
+    return members != null && steps != null ? (members * steps).toLocaleString() : '—';
+  }
+
+  function historyTaskSpec(stepId, params) {
+    const field = (label, value) => ({ label, value });
+    // Mirrors Config.TNG_GAL_DENSITY_ARCMIN2: fixed for the pure-TNG
+    // generators, but still useful context for the work represented by a run.
+    switch (stepId) {
+      case 'synthetic_generate':
+      case 'lensfinder_generate':
+        return [field('nfields', historySum(params, ['n_train', 'n_valid', 'n_test'])),
+          field('galaxies / arcmin²', historyText(params, 'tng_density_arcmin2', '60')),
+          field('lenses / arcmin²', historyText(params, 'lens_density_arcmin2'))];
+      case 'lens_isolation_generate':
+        return [field('nfields', historySum(params, ['ntrain', 'nvalid', 'ntest']))];
+      case 'lens_isolation_train':
+        return [field('source members', historyText(params, 'sources')),
+          field('steps', historyCount(params, 'steps')), field('batch', historyCount(params, 'batch_size'))];
+      case 'lens_isolation_evaluate':
+        return [field('fields', historyCount(params, 'limit')), field('crop px', historyCount(params, 'crop_size'))];
+      case 'download_euclid_cutouts':
+        return [field('VIS px', historyCount(params, 'vis_pixels')), field('workers', historyCount(params, 'workers'))];
+      case 'extract_euclid_psf':
+        return [field('stars / PSF', historyCount(params, 'stars_per_psf')), field('max stars', historyCount(params, 'num_stars')), field('kernel px', historyCount(params, 'output_size'))];
+      case 'psf_rotation_pool':
+        return [field('rotations', historyCount(params, 'rotations')), field('crop px', historyCount(params, 'crop'))];
+      case 'download_tng_skirt':
+        return [field('galaxies', historyCount(params, 'limit', 'all')), field('workers', historyCount(params, 'workers'))];
+      case 'tng_grid':
+        return [field('band', historyText(params, 'band')), field('downsample', historyText(params, 'downsample'))];
+      case 'tng_stack':
+        return [field('band', historyText(params, 'band')), field('galaxy', historyText(params, 'galaxy_id', 'selected'))];
+      case 'poster_cutout':
+        return [field('object', historyText(params, 'mode')), field('HR px', historyCount(params, 'image_size'))];
+      case 'euclid_query':
+        return [field('stars', historyCount(params, 'num_stars')), field('mag range', `${historyText(params, 'magnitude_min')}–${historyText(params, 'magnitude_limit')}`), field('min SNR', historyCount(params, 'snr_min'))];
+      case 'euclid_verify_photometry':
+        return [field('stars', historyCount(params, 'n')), field('cutout px', historyCount(params, 'size'))];
+      case 'lensfinder_build_stamps':
+        return [field('fields', historyCount(params, 'max_fields', 'all')), field('neg / lens', historyCount(params, 'neg_per_lens')), field('stamp px', historyCount(params, 'stamp_m'))];
+      case 'lensfinder_sr_infer':
+        return [field('subset', historyText(params, 'subset', 'all'))];
+      case 'lensfinder_train':
+        return [field('epochs', historyCount(params, 'epochs')), field('batch', historyCount(params, 'batch_size')), field('mode', historyText(params, 'training_mode'))];
+      case 'ensemble_train':
+        return [field('total steps', ensembleTotalSteps(params))];
+      case 'download':
+        return [field('tiles', historyCount(params, 'n_tiles'))];
+      case 'extract_psf': {
+        const half = historyNumber(params.half_side);
+        return [field('stars', historyCount(params, 'n_stars')), field('PSF px', half == null ? '—' : (2 * half + 1).toLocaleString())];
+      }
+      default: return [];
     }
-    const head = `
-      <tr>
-        <th>submitted</th><th>state</th><th>task</th>
-        <th>cpus</th><th>gpus</th><th>mem</th><th>time</th>
-        <th>elapsed</th>
-        <th title="CPU efficiency = CPU-time used ÷ (elapsed × allocated CPUs). ~100% means the allocated cores were fully busy; low means cores sat idle.">CPU util</th>
-        <th title="Peak resident memory (MaxRSS) vs the memory you requested.">mem util</th>
-        <th title="GPU compute utilisation (mean, with peak) sampled by nvidia-smi during the run. Blank for CPU-only jobs or runs from before GPU sampling.">GPU util</th>
-      </tr>`;
+  }
+
+  function renderHistoryRows(rows, stepId) {
+    if (!rows || !rows.length) return `<span class="muted">no previous runs for this step yet</span>`;
+    const firstTask = historyTaskSpec(stepId, historyParam(rows[0]));
+    const hasGpu = rows.some(r => (historyNumber(r.req_gpus) || 0) > 0 || (historyNumber(r.alloc_gpus) || 0) > 0 || historyNumber(r.gpu_util_mean) != null || historyNumber(r.gpu_util_peak) != null || historyNumber(r.gpu_mem_peak) != null);
+    const head = `<tr><th>run</th><th>state</th><th>elapsed (H:MM)</th>${firstTask.map(t => `<th>${escapeHtml(t.label)}</th>`).join('')}<th>CPU max used / requested (peak %) · mean %</th><th>memory max used / requested (%)</th>${hasGpu ? '<th>GPU max used / requested (peak %) · mean % · memory %</th>' : ''}</tr>`;
     const rowHtml = rows.slice(0, 20).map(r => {
       const st = (r.state || '').toUpperCase();
-      // CANCELLED / TIMEOUT are not crashes — the job ran and was stopped
-      // (by the user or the wall-clock limit). Flag them amber, not red,
-      // and still show whatever utilisation sacct captured for the partial
-      // run rather than treating the row as a failure with no data.
-      // Prefix-match: sacct emits variants like "CANCELLED by 1234" or
-      // "CANCELLED+" depending on version.
       const stateClass = (st === 'COMPLETED' || st === 'DONE') ? 'badge-done'
                        : (st === '') ? 'badge-running'
                        : (st.startsWith('CANCELLED') || st.startsWith('TIMEOUT')) ? 'badge-cancelled'
                        : 'badge-failed';
-      const taskShort = r.params_json
-        ? escapeHtml(r.params_json.length > 60
-            ? r.params_json.slice(0, 57) + '…' : r.params_json)
-        : '—';
-      const elapsed = r.elapsed_seconds ? fmtRuntime(parseFloat(r.elapsed_seconds)) : '—';
-      // CPU utilisation: sacct's cpu_efficiency (a 0–1 fraction). Recorded
-      // for cancelled/timeout jobs too; blank when sacct had nothing
-      // (e.g. cancelled before the batch step ran) → show "—".
-      const eff     = parseFloat(r.cpu_efficiency);
-      const cpuUtil = Number.isFinite(eff) ? `${(eff * 100).toFixed(0)}%` : '—';
-      // Memory utilisation: peak RSS, and a % of the allocation when known.
-      const rssMb   = parseFloat(r.max_rss_mb);
-      const allocMb = parseFloat(r.alloc_memory_mb);
-      let memUtil = '—';
-      if (Number.isFinite(rssMb)) {
-        memUtil = (Number.isFinite(allocMb) && allocMb > 0)
-          ? `${(100 * rssMb / allocMb).toFixed(0)}% (${rssMb.toFixed(0)} MB)`
-          : `${rssMb.toFixed(0)} MB`;
-      }
-      // GPU utilisation: mean (+ peak) from the run's nvidia-smi samples,
-      // folded into the post-mortem. Blank for CPU-only jobs.
-      const gpuMean = parseFloat(r.gpu_util_mean);
-      const gpuPeak = parseFloat(r.gpu_util_peak);
-      let gpuUtil = '—';
-      if (Number.isFinite(gpuMean)) {
-        gpuUtil = Number.isFinite(gpuPeak)
-          ? `${gpuMean.toFixed(0)}% (peak ${gpuPeak.toFixed(0)}%)`
-          : `${gpuMean.toFixed(0)}%`;
-      }
-      return `<tr>
-        <td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td>
-        <td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td>
-        <td><code title="${escapeHtml(r.params_json || '')}">${taskShort}</code></td>
-        <td>${escapeHtml(r.req_cpus || '')}</td>
-        <td>${escapeHtml(r.req_gpus || '')}</td>
-        <td>${escapeHtml(r.req_memory || '')}</td>
-        <td>${escapeHtml(r.req_time_limit || '')}</td>
-        <td>${elapsed}</td>
-        <td>${cpuUtil}</td>
-        <td>${memUtil}</td>
-        <td>${gpuUtil}</td>
-      </tr>`;
+      const params = historyParam(r);
+      const task = historyTaskSpec(stepId, params).map(t => `<td><code>${escapeHtml(t.value)}</code></td>`).join('');
+      const cpuMean = historyNumber(r.cpu_util_mean), cpuPeak = historyNumber(r.cpu_util_peak);
+      const cpuRequested = historyNumber(r.req_cpus) ?? historyNumber(r.alloc_cpus);
+      const cpuUsed = cpuRequested != null && cpuPeak != null ? cpuRequested * cpuPeak / 100 : null;
+      const rss = historyNumber(r.max_rss_mb);
+      const memoryRequested = memoryMb(r.alloc_memory_mb) ?? memoryMb(r.req_memory);
+      const memPct = rss != null && memoryRequested > 0 ? `${(100 * rss / memoryRequested).toFixed(0)}%` : '—';
+      const memory = `${fmtMemory(rss)} / ${fmtMemory(memoryRequested)} (${memPct})`;
+      const gpuRequested = historyNumber(r.req_gpus) ?? historyNumber(r.alloc_gpus);
+      const gpuPeak = historyNumber(r.gpu_util_peak), gpuMean = historyNumber(r.gpu_util_mean);
+      const gpuUsed = gpuRequested != null && gpuPeak != null ? gpuRequested * gpuPeak / 100 : null;
+      const gpu = hasGpu ? `<td><code>${gpuUsed == null ? '—' : gpuUsed.toFixed(1)} / ${gpuRequested == null ? '—' : gpuRequested} (${gpuPeak == null ? '—' : `${gpuPeak.toFixed(0)}%`}) · ${gpuMean == null ? '—' : `${gpuMean.toFixed(0)}%`} · ${historyNumber(r.gpu_mem_peak) == null ? '—' : `${historyNumber(r.gpu_mem_peak).toFixed(0)}%`}</code></td>` : '';
+      const elapsed = r.elapsed_seconds != null && r.elapsed_seconds !== '' ? fmtElapsed(r.elapsed_seconds) : '—';
+      const cpu = `${cpuUsed == null ? '—' : cpuUsed.toFixed(1)} / ${cpuRequested == null ? '—' : cpuRequested} (${cpuPeak == null ? '—' : `${cpuPeak.toFixed(0)}%`}) · ${cpuMean == null ? '—' : `${cpuMean.toFixed(0)}%`}`;
+      return `<tr><td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td><td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td><td><code>${elapsed}</code></td>${task}<td><code>${cpu}</code></td><td><code>${memory}</code></td>${gpu}</tr>`;
     }).join('');
     return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;
   }
@@ -815,7 +894,7 @@ large cutout don't leak across train/validate."></label>`;
         return;
       }
       const data = await resp.json();
-      panel.innerHTML = renderHistoryRows(data.history);
+      panel.innerHTML = renderHistoryRows(data.history, stepId);
       if (data.match) {
         const filled = maybePrefillResources(form, data.match);
         if (hint) {

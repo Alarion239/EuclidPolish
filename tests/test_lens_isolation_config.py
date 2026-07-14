@@ -53,7 +53,12 @@ def test_dataset_config_accepts_normal_split_counts_and_uses_pure_tng_defaults()
     assert cfg.sersic_density_arcmin2 == 0.0
     assert cfg.tng_density_arcmin2 == 60.0
     assert cfg.tng_redshift_mode is True
-    assert cfg.lens_density_arcmin2 == 20.0
+    assert cfg.lens_density_arcmin2 == 10.0
+
+
+def test_dataset_config_rejects_the_old_high_lens_density():
+    with pytest.raises(ValueError, match="lens_density_arcmin2=10"):
+        DatasetConfig(lens_density_arcmin2=20.0)
 
 
 def test_dataset_config_fingerprint_changes_with_scientific_configuration():

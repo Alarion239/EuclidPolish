@@ -1082,8 +1082,13 @@ def compute_combined_combiner_payload(starless: bool) -> dict:
     comb = load_combiner(_ensemble_regime_dir(starless), artifact_dir=_combined_artifact_dir())
     labels, regimes, _fps = _combined_member_info(ensemble_dir())
     if comb is None:
+        # Stable collection fields are part of the JSON contract.  An optional
+        # feature being unavailable must not require every client expression to
+        # guess which arrays/objects were omitted.
         return {"available": False, "stale": False,
-                "reason": "no combined combiner fitted for this target"}
+                "reason": "no combined combiner fitted for this target",
+                "member_labels": [], "members": [], "band_names": [],
+                "surviving": {}, "eff_weights": {}, "source_starless": []}
     stale = comb.member_labels != labels
     eff = {b: {"brightness_asinh": _jsonable((ew := comb.effective_weights(b))["brightness_asinh"]),
                "brightness_e": _jsonable(ew["brightness_e"]),

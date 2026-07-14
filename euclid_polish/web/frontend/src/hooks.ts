@@ -55,7 +55,14 @@ export function useResource<T = unknown>(
 
     const entry = CACHE.get(url);
     if (entry) { setData(entry.data as T); setError(false); setLoading(false); }
-    else { setLoading(true); }
+    else {
+      // A dependency/URL change must not leave the previous resource on screen.
+      // This matters for mode-specific pages: if the new URL 404s, retaining the
+      // old response permanently presents the other mode's artifacts as current.
+      setData(null);
+      setError(false);
+      setLoading(true);
+    }
 
     // Fresh-enough cache and not an explicit reload → serve it, no server hit.
     const fresh = entry != null && Date.now() - entry.ts < ttl;

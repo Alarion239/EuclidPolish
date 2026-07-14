@@ -5,9 +5,11 @@ import os
 
 import pytest
 
+from euclid_polish.experiments.lens_isolation import training
 from euclid_polish.experiments.lens_isolation.training import (
     checkpoint_fingerprint,
     fork_member,
+    publish_replacement_members,
     train_member,
 )
 
@@ -58,6 +60,82 @@ def test_fork_rejects_nonvirgin_target(tmp_path):
         )
 
 
+def test_forced_publish_replaces_complete_member_set_and_preserves_other_files(tmp_path):
+    out = tmp_path / "ensemble"
+    staging = tmp_path / "staging"
+    for root, names, marker in (
+        (out, ("member_00", "member_01", "member_02"), "old"),
+        (staging, ("member_00", "member_01"), "new"),
+    ):
+        for name in names:
+            member = root / name
+            member.mkdir(parents=True)
+            (member / "checkpoint").write_text(f"{marker}-{name}")
+    (out / "keep.json").write_text("metadata")
+
+    publish_replacement_members(
+        str(staging),
+        str(out),
+        ("member_00", "member_01"),
+        protected_roots=(),
+    )
+
+    assert sorted(path.name for path in out.glob("member_*")) == ["member_00", "member_01"]
+    assert (out / "member_00" / "checkpoint").read_text() == "new-member_00"
+    assert (out / "member_01" / "checkpoint").read_text() == "new-member_01"
+    assert (out / "keep.json").read_text() == "metadata"
+    assert not list(out.glob(".member-rollback-*"))
+
+
+def test_forced_publish_rejects_incomplete_staging_without_touching_current_member(tmp_path):
+    out = tmp_path / "ensemble"
+    old = out / "member_00"
+    old.mkdir(parents=True)
+    (old / "checkpoint").write_text("old")
+    staging = tmp_path / "staging"
+    (staging / "member_00").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="incomplete"):
+        publish_replacement_members(
+            str(staging),
+            str(out),
+            ("member_00",),
+            protected_roots=(),
+        )
+
+    assert (old / "checkpoint").read_text() == "old"
+
+
+def test_forced_publish_rolls_back_if_promotion_fails(tmp_path, monkeypatch):
+    out = tmp_path / "ensemble"
+    old = out / "member_00"
+    old.mkdir(parents=True)
+    (old / "checkpoint").write_text("old")
+    staging = tmp_path / "staging"
+    new = staging / "member_00"
+    new.mkdir(parents=True)
+    (new / "checkpoint").write_text("new")
+    real_replace = training.os.replace
+
+    def fail_new_promotion(source, target):
+        if source == str(new) and target == str(old):
+            raise OSError("simulated publication failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(training.os, "replace", fail_new_promotion)
+    with pytest.raises(OSError, match="publication failure"):
+        publish_replacement_members(
+            str(staging),
+            str(out),
+            ("member_00",),
+            protected_roots=(),
+        )
+
+    assert (old / "checkpoint").read_text() == "old"
+    assert (new / "checkpoint").read_text() == "new"
+    assert not list(out.glob(".member-rollback-*"))
+
+
 class RecordingModel:
     def __init__(self):
         self.calls = []
@@ -102,3 +180,5 @@ def test_training_dispatches_to_normal_model_train_fixed_record_mode(tmp_path):
     call["eval_callback"]({"step": 4, "loss": 0.2})
     assert reporter.steps[-1] == (14, 24, "member 2 step 2")
     assert reporter.metrics[-1]["member"] == 2
+    assert reporter.metrics[-1]["step"] == 16
+    assert reporter.metrics[-1]["total"] == 24

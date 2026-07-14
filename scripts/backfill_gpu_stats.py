@@ -97,7 +97,10 @@ def main() -> int:
     print(f"  {'jobid':>12}  {'state':<11}  {'gpu_util':>8}  {'gpu_mem':>10}")
     for r in gpu_rows:
         util = (r.get("gpu_util_mean") or "").strip() or "—"
-        mem = (r.get("gpu_mem_peak") or "").strip()
+        # ``gpu_mem_peak`` is a legacy live-sampler percentage.  Post-mortem
+        # sacct memory is now kept explicitly in MB so the two units cannot
+        # be confused when a job has both event samples and accounting data.
+        mem = (r.get("gpu_mem_peak_mb") or "").strip()
         mem_s = f"{float(mem):.0f} MB" if mem else "—"
         util_s = f"{util}%" if util != "—" else "—"
         print(f"  {str(r.get('jobid', '')):>12}  "

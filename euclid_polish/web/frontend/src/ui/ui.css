@@ -200,6 +200,35 @@
 
 /* ---- FASRC step card + SLURM monitor (fasrc.tsx) ---- */
 .fasrc-step__res { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); align-items: flex-end; }
+.fasrc-step-inline {
+  margin-top: var(--s3); padding: var(--s3) var(--s4) var(--s2);
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.fasrc-step-inline__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.fasrc-step-inline__head strong { margin-right: var(--s2); font-size: 14px; }
+.fasrc-step-inline__head code { color: var(--text-faint); font-size: 11px; }
+.fasrc-history { margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--border-strong); }
+.fasrc-history__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  margin-bottom: var(--s2);
+}
+.fasrc-history__note { font-size: 11px; margin-top: 2px; }
+.fasrc-history .ui-table { font: 11px/1.25 var(--font-mono); font-variant-numeric: tabular-nums; }
+.fasrc-history .ui-table th,
+.fasrc-history .ui-table td {
+  text-align: left; vertical-align: middle; white-space: nowrap;
+  padding: 7px 10px 7px 0; font: inherit;
+}
+.fasrc-history .ui-table th { font-weight: 600; color: var(--text-faint); }
+.fasrc-history .ui-table td code,
+.fasrc-history .ui-badge,
+.fasrc-history__date,
+.fasrc-history__value { font: inherit; white-space: nowrap; }
+.fasrc-history__date { color: var(--text-dim); }
 .fasrc-mon {
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--surface-2); padding: var(--s3) var(--s4); margin-top: var(--s3);

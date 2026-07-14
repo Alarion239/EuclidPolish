@@ -158,6 +158,43 @@ def test_runs_log_returns_content(client, tmp_repo):
     assert "hello" in body["content"]
 
 
+def test_lens_isolation_training_curve_uses_experiment_member_logs(client, tmp_repo):
+    """Legacy/no-event jobs fall back to the experiment tree, not production."""
+    member_csv = (
+        "/scratch/data/experiments/lens_isolation/ensemble/"
+        "member_00/training_log.csv"
+    )
+    csv_text = (
+        "step,wall_time,loss,psnr_stretched,psnr_raw\n"
+        "500,200,0.2,41.5,39.0\n"
+    )
+    web_app.STATE.ssh = StubSSH([
+        (0, "", ""),             # production single-model log: absent
+        (0, member_csv + "\n", ""),  # newest experiment member log
+        (0, csv_text, ""),         # selected member's training log
+    ])
+
+    response = client.get(
+        "/api/fasrc/runs/training-curve.json"
+        "?started_at=100&ended_at=300&step_id=lens_isolation_train"
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["member"] == "member_00"
+    assert payload["records"] == [{
+        "step": 500,
+        "loss": 0.2,
+        "psnr_stretched": 41.5,
+        "psnr_raw": 39.0,
+        "psnr_vis": None,
+        "psnr_y_e": None,
+        "psnr_j_e": None,
+        "psnr_h_e": None,
+    }]
+    assert "experiments/lens_isolation/ensemble" in web_app.STATE.ssh.calls[1]
+
+
 def test_runs_log_rejects_outside_logs_dir(client, tmp_repo):
     web_app.STATE.ssh = StubSSH([])
     r = client.get("/api/fasrc/runs/log?path=/etc/passwd&lines=100")

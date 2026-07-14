@@ -70,6 +70,47 @@ def job_log(tmp_path):
 
 class TestReconcileSacctHook:
 
+    def test_jobstats_is_merged_with_sacct(self, monkeypatch):
+        monkeypatch.setattr(
+            fasrc_jobs, "fetch_jobstats_stats",
+            lambda _ssh, _jobid: {
+                "state": "COMPLETED",
+                "jobstats_cpu_util": 12.5,
+                "jobstats_gpu_memory_util": 44.0,
+                "jobstats_gpu_memory_used_mb": 18000.0,
+                "jobstats_gpu_memory_total_mb": 40960.0,
+                "jobstats_collected_at": "2026-05-26T14:40:00Z",
+            },
+        )
+        monkeypatch.setattr(
+            fasrc_jobs, "fetch_sacct_stats",
+            lambda _ssh, _jobid: {
+                "exit_code": "0:0",
+                "max_rss_mb": 2048.0,
+            },
+        )
+
+        stats = fasrc_jobs.fetch_accounting_stats(object(), "12345")
+
+        assert stats["accounting_source"] == "jobstats+sacct"
+        assert stats["exit_code"] == "0:0"
+        assert stats["jobstats_cpu_util"] == 12.5
+        assert stats["jobstats_gpu_memory_util"] == 44.0
+        assert stats["accounting_collected_at"] == "2026-05-26T14:40:00Z"
+
+    def test_sacct_is_fallback_when_jobstats_unavailable(self, monkeypatch):
+        monkeypatch.setattr(fasrc_jobs, "fetch_jobstats_stats", lambda *_a: None)
+        monkeypatch.setattr(
+            fasrc_jobs, "fetch_sacct_stats",
+            lambda _ssh, _jobid: {"state": "COMPLETED", "max_rss_mb": 512.0},
+        )
+
+        stats = fasrc_jobs.fetch_accounting_stats(object(), "12345")
+
+        assert stats["accounting_source"] == "sacct"
+        assert stats["state"] == "COMPLETED"
+        assert stats["max_rss_mb"] == 512.0
+
     def test_terminated_job_gets_sacct_post_mortem(self, db, job_log):
         """A DB row that was RUNNING but is now absent from squeue → DONE.
         With ssh provided, sacct is queried and the CSV row gets the

@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 
-from flask import jsonify, render_template, request
+from flask import abort, jsonify, render_template, request, send_file
 
 from euclid_polish.experiments.lens_isolation.config import ExperimentPaths
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.helpers.lens_isolation_viz import (
+    combiner_payload_path,
+    compute_combiner_payload,
+    compute_evaluation_payload,
+    job_combiner_fit,
+    job_evaluate,
+    payload_path,
+    pixel_trace,
+    training_curves_payload,
+)
+from euclid_polish.web.helpers.lens_isolation_viz import (
+    status as ensemble_status,
+)
+from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import STATE
 
 
@@ -23,31 +36,37 @@ def _read_json(path: str):
 
 def _status() -> dict:
     paths = ExperimentPaths()
-    dataset = _read_json(os.path.join(paths.records, "dataset.json"))
     metrics = _read_json(os.path.join(paths.evaluation, "metrics.json"))
-    members = []
-    for directory in sorted(glob.glob(os.path.join(paths.ensemble, "member_*"))):
-        if not os.path.isdir(directory):
-            continue
-        origin = _read_json(os.path.join(directory, "origin.json")) or {}
-        members.append(
-            {
-                "name": os.path.basename(directory),
-                "checkpoint": bool(
-                    os.path.isfile(os.path.join(directory, "checkpoint"))
-                    or glob.glob(os.path.join(directory, "*.index"))
-                ),
-                "source": origin.get("source"),
-                "seed": origin.get("seed"),
-            }
-        )
-    return {
+    result = ensemble_status()
+    result.update({
         "ok": True,
         "root": os.path.abspath(paths.root),
-        "records": {"present": dataset is not None, "dataset": dataset},
-        "ensemble": {"present": bool(members), "members": members},
+        "ensemble": {"present": bool(result["members"]), "members": result["members"]},
         "evaluation": {"present": metrics is not None, "metrics": metrics},
-    }
+    })
+    return result
+
+
+def _truthy(value: object) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(request.form.get(name, default) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _selected_subsets() -> list[str]:
+    raw = str(request.form.get("subsets", "") or "").strip()
+    if not raw and _truthy(request.form.get("records")):
+        return ["train", "validate", "test"]
+    subsets = [value.strip() for value in raw.split(",") if value.strip()]
+    invalid = sorted(set(subsets) - {"train", "validate", "test"})
+    if invalid:
+        raise ValueError(f"unknown record subset(s): {', '.join(invalid)}")
+    return list(dict.fromkeys(subsets))
 
 
 def register(app):
@@ -59,22 +78,102 @@ def register(app):
     def api_lens_isolation_status():
         return jsonify(_status())
 
+    @app.route("/api/lens-isolation/ensemble/evaluate", methods=["POST"])
+    def api_lens_isolation_ensemble_evaluate():
+        num_images = _bounded_int("num_images", 100, 1, 2000)
+        force = _truthy(request.form.get("force"))
+        job_id = REGISTRY.spawn(
+            f"lens isolation: evaluate {num_images} test fields",
+            target=lambda cap: job_evaluate(cap, num_images=num_images, force=force),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/api/lens-isolation/ensemble/evals.json")
+    def api_lens_isolation_ensemble_evals():
+        path = payload_path()
+        fresh = _truthy(request.args.get("fresh"))
+        if ((fresh or not os.path.isfile(path))
+                and compute_evaluation_payload() is None
+                and not os.path.isfile(path)):
+            abort(404)
+        return send_file(path, mimetype="application/json", max_age=0)
+
+    @app.route("/api/lens-isolation/ensemble/combiner/fit", methods=["POST"])
+    def api_lens_isolation_combiner_fit():
+        num_images = _bounded_int("num_images", 100, 1, 2000)
+        n_kernels = _bounded_int("n_kernels", 12, 2, 32)
+        try:
+            min_usage = max(0.0, min(0.5, float(request.form.get("min_usage", 0.0) or 0.0)))
+        except (TypeError, ValueError):
+            min_usage = 0.0
+        job_id = REGISTRY.spawn(
+            f"lens isolation: fit combiner on {num_images} validate fields (K={n_kernels})",
+            target=lambda cap: job_combiner_fit(
+                cap,
+                num_images=num_images,
+                n_kernels=n_kernels,
+                min_usage=min_usage,
+            ),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/api/lens-isolation/ensemble/combiner.json")
+    def api_lens_isolation_combiner():
+        path = combiner_payload_path()
+        if compute_combiner_payload() is None and not os.path.isfile(path):
+            abort(404)
+        return send_file(path, mimetype="application/json", max_age=0)
+
+    @app.route("/api/lens-isolation/ensemble/training-curves.json")
+    def api_lens_isolation_training_curves():
+        return jsonify({"members": training_curves_payload()})
+
+    @app.route("/api/lens-isolation/ensemble/pixel-trace.json")
+    def api_lens_isolation_pixel_trace():
+        diag = str(request.args.get("diag", "") or "").strip()
+        if diag not in {"std_err", "bright_std"}:
+            abort(404)
+        try:
+            i = int(request.args.get("i", ""))
+            j = int(request.args.get("j", ""))
+        except (TypeError, ValueError):
+            abort(400)
+        return jsonify(pixel_trace(diag, i, j))
+
     @app.route("/api/lens-isolation/sync", methods=["POST"])
     def api_lens_isolation_sync():
         if STATE.ssh is None or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         paths = ExperimentPaths()
         cfg = fasrc_config.load()
-        include_records = str(request.form.get("records", "")).lower() in {"1", "true", "yes", "on"}
-        include_ensemble = str(request.form.get("ensemble", "")).lower() in {"1", "true", "yes", "on"}
-        selected = [("evaluation", paths.evaluation)]
-        if include_records:
-            selected.append(("records", paths.records))
+        try:
+            subsets = _selected_subsets()
+        except ValueError as error:
+            return jsonify({"ok": False, "error": str(error)}), 400
+        include_ensemble = _truthy(request.form.get("ensemble"))
+        include_evaluation = request.form.get("evaluation") is None or _truthy(
+            request.form.get("evaluation")
+        )
+        selected = []
+        if include_evaluation:
+            selected.append(("evaluation", "evaluation/", paths.evaluation))
         if include_ensemble:
-            selected.append(("ensemble", paths.ensemble))
+            selected.append(("ensemble", "ensemble/", paths.ensemble))
+        if subsets:
+            selected.append(("dataset metadata", "records/dataset.json", paths.records))
+            for subset in subsets:
+                selected.extend(
+                    (f"{subset} {label}", f"records/{filename}", paths.records)
+                    for label, filename in (
+                        ("dirty", f"dirty_{subset}.tfrecord"),
+                        ("lens", f"lens_{subset}.tfrecord"),
+                        ("sources", f"sources_{subset}.csv"),
+                        ("metadata", f"split_{subset}.json"),
+                    )
+                )
         synced = []
-        for name, local in selected:
-            remote = cfg.data_dir.rstrip("/") + f"/experiments/lens_isolation/{name}/"
+        for name, relative, local in selected:
+            remote = cfg.data_dir.rstrip("/") + f"/experiments/lens_isolation/{relative}"
             os.makedirs(local, exist_ok=True)
             rc, _out, err = STATE.ssh.rsync_pull(remote, local, timeout=1800)
             if rc != 0:

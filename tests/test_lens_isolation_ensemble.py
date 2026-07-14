@@ -30,6 +30,35 @@ def test_explicit_discovery_mean_and_disagreement(tmp_path):
     assert len(ensemble.members) == 2
     assert np.all(mean == 1.5)
     assert np.all(std == 0.5)
+    assert ensemble.member_labels == ["00·psnr", "01·psnr"]
+    assert ensemble.n_members == 2
+
+
+def test_evaluate_delegates_to_production_metric_path(tmp_path, monkeypatch):
+    for name in ("member_00", "member_01"):
+        path = tmp_path / name
+        path.mkdir()
+        (path / "checkpoint").write_text("x")
+    captured = {}
+
+    class FakeProductionEnsemble:
+        def __init__(self, base_dir, _models):
+            captured["base_dir"] = base_dir
+            captured["models"] = _models
+
+        def evaluate(self, lr, hr, **kwargs):
+            captured.update(lr=lr, hr=hr, labels=self._member_labels, kwargs=kwargs)
+            return {"ensemble_psnr": 12.5}
+
+    monkeypatch.setattr("euclid_polish.ensemble.EnsembleModel", FakeProductionEnsemble)
+    ensemble = LensIsolationEnsemble(str(tmp_path), model_factory=FakeModel)
+    result = ensemble.evaluate("dirty", "lens", on_field="field", on_progress="progress")
+
+    assert result == {"ensemble_psnr": 12.5}
+    assert captured["labels"] == ["00·psnr", "01·psnr"]
+    assert captured["lr"] == "dirty"
+    assert captured["hr"] == "lens"
+    assert captured["kwargs"] == {"on_field": "field", "on_progress": "progress"}
 
 
 def test_detection_score_clips_negative_flux_and_supports_aperture():

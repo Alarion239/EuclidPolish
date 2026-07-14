@@ -884,12 +884,20 @@ def register(app):
         # Fold the live event stream into a JobStatus.
         fetcher = JobStatusFetcher(ssh=STATE.ssh)
         status  = fetcher.fetch(events_path=current_row.get("events_path"))
+        # Jobstats is richer than the local event sampler, but the endpoint
+        # polls frequently.  The helper applies a 30-second per-job TTL and
+        # only gets called for a job that is actually running.
+        live_accounting = (
+            fasrc_jobs.fetch_live_jobstats(STATE.ssh, jid)
+            if current_row.get("state") == "RUNNING" else None
+        )
         return jsonify({
             "ok":      True,
             "stale":   False,
             "current": {
                 "job":    current_row,
                 "status": status.to_dict(),
+                "accounting": live_accounting,
             },
             "queue":   queue_public,
         })
@@ -1118,7 +1126,7 @@ def register(app):
             },
         )
 
-    def _training_run_rows(started_at: float, ended_at: float):
+    def _training_run_rows(started_at: float, ended_at: float, *, step_id: str = ""):
         """Windowed training-log records for one run, with the ensemble active-
         member fallback. Returns ``(rows, member_label)`` (rows empty if none in
         the window). Shared by the training-plot PNG + training-curve JSON
@@ -1155,7 +1163,11 @@ def register(app):
             # not the single-model ckpt dir — so the read above finds nothing in
             # this window. Fall back to the ACTIVE member (the most-recently
             # modified member log) so the live curve works during ensemble runs.
-            ens_dir = f"{os.path.dirname(base)}/ensemble"
+            ens_dir = (
+                f"{cfg.data_dir.rstrip('/')}/experiments/lens_isolation/ensemble"
+                if step_id == "lens_isolation_train"
+                else f"{os.path.dirname(base)}/ensemble"
+            )
             pick = (f"ls -t {shlex.quote(ens_dir)}/member_*/"
                     f"{shlex.quote(TrainingLog.FILENAME)} 2>/dev/null | head -n1; "
                     f"exit 0")
@@ -1197,7 +1209,9 @@ def register(app):
         win = _run_window()
         if win is None:
             return jsonify({"ok": False, "error": "bad/missing started_at"}), 400
-        rows, member_label = _training_run_rows(*win)
+        rows, member_label = _training_run_rows(
+            *win, step_id=(request.args.get("step_id") or "").strip()
+        )
         # Downsample to ~600 points so a long run stays a light payload + fast
         # redraw; the newest point is always kept.
         if len(rows) > 600:

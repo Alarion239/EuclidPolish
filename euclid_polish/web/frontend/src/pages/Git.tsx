@@ -2,6 +2,7 @@
    Second exemplar page: useResource for status, postForm for the sync actions,
    Table/DefList from the kit. */
 import { useState } from "react";
+import { asArray } from "../data";
 import { getJSON, postForm } from "../api";
 import { useResource } from "../hooks";
 import {
@@ -36,6 +37,8 @@ export default function GitPage() {
   const [diff, setDiff] = useState<string | null>(null);
 
   const s = data?.status;
+  const files = asArray<NonNullable<GitStatus["files"]>[number]>(s?.files);
+  const logEntries = asArray<LogEntry>(data?.log);
 
   async function act(url: string, body?: Record<string, string>) {
     setBusy(url); setNote(null);
@@ -114,9 +117,9 @@ export default function GitPage() {
 
           <Card>
             <CardHead title="Changed files"
-              sub={`${s.files?.length ?? 0} modified`} />
+              sub={`${files.length} modified`} />
             <CardBody>
-              <Table columns={FILE_COLS} rows={s.files ?? []} empty="working tree clean"
+              <Table columns={FILE_COLS} rows={files} empty="working tree clean"
                 rowKey={(f) => f.path} />
             </CardBody>
           </Card>
@@ -124,7 +127,7 @@ export default function GitPage() {
           <Card>
             <CardHead title="Recent commits" />
             <CardBody>
-              <Table columns={LOG_COLS} rows={data?.log ?? []} rowKey={(c) => c.hash} />
+              <Table columns={LOG_COLS} rows={logEntries} rowKey={(c) => c.hash} />
             </CardBody>
           </Card>
         </div>

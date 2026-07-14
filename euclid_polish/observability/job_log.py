@@ -6,8 +6,9 @@ One row per job. Two write phases:
     the request-time fields (resources asked for, params, paths).
     Post-mortem columns are empty.
   * **Post-mortem** (once the reconcile loop sees a terminal state) —
-    update the same row's post-mortem columns with what ``sacct``
-    reports (state, elapsed time, peak memory, exit code, …).
+    update the same row's post-mortem columns with Jobstats utilization and
+    ``sacct`` lifecycle/accounting data (state, elapsed time, peak memory,
+    exit code, …).
 
 Why CSV?
 --------
@@ -29,6 +30,7 @@ import csv
 import json
 import os
 import threading
+import time
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from typing import Any
@@ -45,7 +47,7 @@ class JobRecord:
 
     Request fields are populated by :meth:`JobLog.record_submission`;
     post-mortem fields default to empty strings and are filled in by
-    :meth:`JobLog.record_post_mortem` once ``sacct`` reports.
+    :meth:`JobLog.record_post_mortem` once Jobstats or ``sacct`` reports.
     """
 
     # ---- Identity & submission timestamps -----------------------------
@@ -72,7 +74,7 @@ class JobRecord:
     started_at:      str = ""           # ISO 8601 UTC
     ended_at:        str = ""           # ISO 8601 UTC
     elapsed_seconds: str = ""           # float as string for CSV neutrality
-    cpu_seconds:     str = ""           # CPUTimeRAW, float
+    cpu_seconds:     str = ""           # consumed CPU seconds, float
     cpu_efficiency:  str = ""           # cpu_seconds / (elapsed × alloc_cpus)
     max_rss_mb:      str = ""           # peak resident memory, MB
     alloc_cpus:      str = ""
@@ -86,9 +88,31 @@ class JobRecord:
     # allocated-core efficiency); ``gpu_*`` come from nvidia-smi.
     gpu_util_mean:   str = ""
     gpu_util_peak:   str = ""
-    gpu_mem_peak:    str = ""           # peak GPU memory utilisation, %
+    gpu_mem_peak:    str = ""           # legacy live-sampler GPU memory %,
     cpu_util_mean:   str = ""
     cpu_util_peak:   str = ""
+
+    # ---- Normalized Jobstats / accounting fields ---------------------
+    # These are additive so old CSV rows remain readable.  Memory values
+    # explicitly carry their unit; utilization values are percentages.
+    accounting_source:             str = ""
+    accounting_collected_at:       str = ""
+    accounting_attempted_at:       str = ""
+    gpu_mem_peak_mb:               str = ""
+    gpu_mem_util_peak:             str = ""
+    jobstats_cpu_util:             str = ""
+    jobstats_cpu_memory_util:      str = ""
+    jobstats_cpu_memory_used_mb:   str = ""
+    jobstats_cpu_memory_alloc_mb:  str = ""
+    jobstats_gpu_util:             str = ""
+    jobstats_gpu_memory_util:      str = ""
+    jobstats_gpu_memory_used_mb:   str = ""
+    jobstats_gpu_memory_total_mb:  str = ""
+    jobstats_cpu_nodes_json:       str = ""
+    jobstats_cpu_memory_nodes_json: str = ""
+    jobstats_gpu_nodes_json:       str = ""
+    jobstats_gpu_memory_nodes_json: str = ""
+    jobstats_notes_json:           str = ""
 
 
 class JobLog:
@@ -150,6 +174,23 @@ class JobLog:
                     self._write_all_locked(rows)
                     return True
             return False
+
+    def mark_accounting_attempt(self, jobid: str, at: float | None = None) -> bool:
+        """Record a failed or in-progress accounting lookup timestamp."""
+        return self.record_post_mortem(
+            jobid, {"accounting_attempted_at": at if at is not None else time.time()},
+        )
+
+    def accounting_attempt_due(self, jobid: str, *, min_interval: float = 60.0) -> bool:
+        """Whether another best-effort accounting lookup should run now."""
+        row = self.get(jobid)
+        if not row:
+            return True
+        try:
+            attempted = float(row.get("accounting_attempted_at") or 0.0)
+        except (TypeError, ValueError):
+            return True
+        return (time.time() - attempted) >= float(min_interval)
 
     def get(self, jobid: str) -> dict[str, str] | None:
         """Return the row for ``jobid`` (or ``None`` if not present)."""
