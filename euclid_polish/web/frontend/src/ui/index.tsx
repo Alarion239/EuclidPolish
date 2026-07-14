@@ -201,17 +201,18 @@ export type Column<T> = {
   width?: string | number;
 };
 export function Table<T>(
-  { columns, rows, empty, rowKey, onRowClick, isRowClickable }: {
+  { columns, rows, empty, rowKey, onRowClick, isRowClickable, className }: {
     columns: Column<T>[]; rows: T[]; empty?: ReactNode;
     rowKey?: (row: T, i: number) => string | number;
     onRowClick?: (row: T, i: number) => void;
     isRowClickable?: (row: T, i: number) => boolean;
+    className?: string;
   },
 ) {
   if (!rows.length) return <Empty>{empty ?? "nothing here yet"}</Empty>;
   return (
     <div className="ui-table-wrap">
-      <table className="ui-table">
+      <table className={`ui-table${className ? ` ${className}` : ""}`}>
         <thead>
           <tr>{columns.map((c, i) => (
             <th key={i} style={{ textAlign: c.align, width: c.width }}>{c.header}</th>

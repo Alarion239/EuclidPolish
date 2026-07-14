@@ -410,22 +410,74 @@ function Controls(
 }
 
 /* ── members table ───────────────────────────────────────────────────────── */
+type MemberSortKey = "rank" | "name" | "psnr" | "loss" | "depth" | "knee" | "step";
+type MemberSort = { key: MemberSortKey; direction: "asc" | "desc" };
+
+function memberSortValue(member: Member, key: MemberSortKey): number | string | null {
+  switch (key) {
+    case "rank": return member.psnr_rank ?? null;
+    case "name": return member.name;
+    case "psnr": return member.psnr ?? null;
+    case "loss": return member.loss ?? "l1";
+    case "depth": return member.blocks ?? null;
+    case "knee": return kneeOf(member.asinh_knee);
+    case "step": return member.step ?? null;
+  }
+}
+
+function compareMemberValues(a: number | string | null, b: number | string | null): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+}
+
 function Members(
   { status, loading, starless, opJob, onArchived, onContinue, onFork }:
   { status: Status | null; loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>;
     onArchived: () => void; onContinue: (m: string) => void; onFork: (m: string) => void },
 ) {
   const rows = asArray<Member>(status?.members).filter((m) => !!m.starless === starless);
+  const [sort, setSort] = useState<MemberSort | null>(null);
+  const shownRows = useMemo(() => {
+    if (!sort) return rows;
+    const direction = sort.direction === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const aValue = memberSortValue(a, sort.key);
+      const bValue = memberSortValue(b, sort.key);
+      // Keep unscored/unavailable values at the bottom in either direction.
+      if (aValue == null || bValue == null) return aValue == null && bValue == null ? 0 : aValue == null ? 1 : -1;
+      const compared = compareMemberValues(aValue, bValue);
+      return compared * direction || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) * direction;
+    });
+  }, [rows, sort]);
+
+  const sortHeader = (key: MemberSortKey, label: string, align?: "right") => {
+    const active = sort?.key === key;
+    return (
+      <button type="button" className={`ui-table__sort${align === "right" ? " ui-table__sort--right" : ""}`}
+        onClick={() => setSort((previous) => previous?.key === key
+          ? { key, direction: previous.direction === "asc" ? "desc" : "asc" }
+          : { key, direction: "asc" })}
+        aria-label={`Sort by ${label}`}
+        title={`Sort by ${label}${active ? ` (${sort.direction === "asc" ? "ascending" : "descending"})` : ""}`}>
+        <span>{label}</span>
+        <span className="ui-table__sort-icon" aria-hidden>{active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
+      </button>
+    );
+  };
+
   const cols: Column<Member>[] = [
-    { header: "#", cell: (m) => m.psnr_rank ? <b>{m.psnr_rank}</b> : <span className="muted">—</span>, width: 40 },
-    { header: "member", cell: (m) => <code className="mono">{m.name}</code> },
-    { header: "PSNR", cell: (m) => m.psnr != null ? `${m.psnr.toFixed(3)} dB` : <span className="muted">—</span>, align: "right" },
-    { header: "loss", cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge> },
-    { header: "depth", cell: (m) => m.blocks ?? "—", align: "right" },
-    { header: "knee", cell: (m) => <span className="mono">{kneeTag(m.asinh_knee)}</span>, align: "right" },
-    { header: "step", cell: (m) => m.step ? m.step.toLocaleString() : "—", align: "right" },
-    { header: "", align: "right", cell: (m) => (
-      <div className="row" style={{ gap: 4, justifyContent: "flex-end" }}>
+    { header: sortHeader("rank", "#", "right"), cell: (m) => m.psnr_rank ? <b>{m.psnr_rank}</b> : <span className="muted">—</span>, width: "5%", align: "right" },
+    { header: sortHeader("name", "member"), cell: (m) => <code className="mono">{m.name}</code>, width: "17%" },
+    { header: sortHeader("psnr", "PSNR", "right"), cell: (m) => m.psnr != null ? `${m.psnr.toFixed(3)} dB` : <span className="muted">—</span>, width: "13%", align: "right" },
+    { header: sortHeader("loss", "loss"), cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge>, width: "9%" },
+    { header: sortHeader("depth", "depth", "right"), cell: (m) => m.blocks ?? "—", width: "8%", align: "right" },
+    { header: sortHeader("knee", "knee", "right"), cell: (m) => <span className="mono">{kneeTag(m.asinh_knee)}</span>, width: "10%", align: "right" },
+    { header: sortHeader("step", "step", "right"), cell: (m) => m.step ? m.step.toLocaleString() : "—", width: "12%", align: "right" },
+    { header: "", align: "right", width: "26%", cell: (m) => (
+      <div className="row" style={{ gap: 4, justifyContent: "flex-end", flexWrap: "nowrap" }}>
         <Button size="sm" variant="ghost" title="continue training this member"
           onClick={() => onContinue(m.name)}>▶ continue</Button>
         <Button size="sm" variant="ghost" title="fork a new member from this one"
@@ -443,7 +495,7 @@ function Members(
       <CardHead title="Members" sub={`${rows.length} ${starless ? "starless" : "starfull"} member(s)${status?.archived?.length ? ` · ${status.archived.length} archived` : ""}`} />
       <CardBody>
         {loading ? <Empty><Spinner /> loading…</Empty>
-          : <Table columns={cols} rows={rows} rowKey={(m) => m.name}
+          : <Table className="ens-members-table" columns={cols} rows={shownRows} rowKey={(m) => m.name}
               empty={`no ${starless ? "starless" : "starfull"} members — train some, then ⬇ pull from FASRC`} />}
       </CardBody>
     </Card>
