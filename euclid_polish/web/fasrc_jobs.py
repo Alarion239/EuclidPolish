@@ -28,12 +28,14 @@ import shlex
 import sqlite3
 import statistics
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.tracking import default_store
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.job_status import fold_events
+from euclid_polish.web.jobstats import fetch_jobstats_stats
 from euclid_polish.web.sacct import fetch_sacct_stats
 
 DB_DIR  = fasrc_config.CONFIG_DIR
@@ -190,6 +192,10 @@ DB = JobDB()
 #: Module-level singleton; tests can swap in their own log via
 #: ``monkeypatch.setattr(fasrc_jobs, "JOBLOG", JobLog(tmp_csv))``.
 JOBLOG = JobLog(JOB_LOG_PATH)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -668,24 +674,74 @@ def fetch_resource_summary(ssh: Any, events_path: str | None) -> dict[str, Any]:
         "gpu_util_mean": _r(res.gpu_mean),
         "gpu_util_peak": _r(res.gpu_peak),
         "gpu_mem_peak":  _r(res.gpu_mem_peak),
+        "gpu_mem_util_peak": _r(res.gpu_mem_peak),
         "cpu_util_mean": _r(res.cpu_mean),
         "cpu_util_peak": _r(res.cpu_peak),
     }
     return {k: v for k, v in stats.items() if v is not None}
 
 
+def fetch_accounting_stats(ssh: Any, jobid: str) -> dict[str, Any] | None:
+    """Collect authoritative Jobstats data with a sacct fallback.
+
+    Jobstats supplies the job-scoped utilization and advisory notes while
+    sacct remains useful for exit codes, MaxRSS, and accounting rows that are
+    too short, too old, or otherwise unavailable to Jobstats.  A successful
+    Jobstats lookup is therefore complemented by sacct when possible; a
+    sacct-only result is still a valid post-mortem.
+    """
+    jobstats_stats = fetch_jobstats_stats(ssh, jobid)
+    sacct_stats = fetch_sacct_stats(ssh, jobid)
+    if not jobstats_stats and not sacct_stats:
+        return None
+
+    merged: dict[str, Any] = dict(sacct_stats or {})
+    merged.update(jobstats_stats or {})
+    if jobstats_stats:
+        merged["accounting_source"] = (
+            "jobstats+sacct" if sacct_stats else "jobstats"
+        )
+        merged["accounting_collected_at"] = (
+            jobstats_stats.get("jobstats_collected_at") or _utc_now_iso()
+        )
+    else:
+        merged["accounting_source"] = "sacct"
+        merged["accounting_collected_at"] = _utc_now_iso()
+    return merged
+
+
+_LIVE_JOBSTATS_TTL_S = 30.0
+_live_jobstats_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
+
+def fetch_live_jobstats(ssh: Any, jobid: str) -> dict[str, Any] | None:
+    """Return a throttled Jobstats snapshot for a running job.
+
+    The current-submission endpoint polls every few seconds.  Jobstats is a
+    login-node report backed by cluster monitoring, so querying it on every
+    UI poll would add needless SSH work.  A short in-process TTL keeps the
+    live view useful without turning the dashboard into an accounting loop.
+    """
+    now = time.monotonic()
+    cached = _live_jobstats_cache.get(str(jobid))
+    if cached is not None and (now - cached[0]) < _LIVE_JOBSTATS_TTL_S:
+        return cached[1]
+    stats = fetch_jobstats_stats(ssh, jobid)
+    _live_jobstats_cache[str(jobid)] = (now, stats)
+    return stats
+
+
 def refresh_all_post_mortems(
     ssh: Any, *, job_log: JobLog | None = None,
 ) -> dict[str, Any]:
-    """Re-pull sacct for every finalised job in the CSV log and re-record.
+    """Re-pull Jobstats plus sacct for every finalised job and re-record.
 
     One-shot maintenance: when the way a post-mortem field is *computed*
-    changes (e.g. cpu_efficiency switching from the always-1.0 CPUTimeRAW
-    to real TotalCPU), rows already written hold the stale value and the
-    normal reconcile won't re-fetch them (it only retries rows with a blank
-    state). This re-queries sacct — authoritative — for each terminal job
-    and overwrites the actuals. Jobs sacct has since purged are skipped
-    (their old values stay). Returns ``{ok, updated, total}``.
+    changes, rows already written hold stale values and the normal reconcile
+    won't re-fetch them (it only retries rows with a blank state). This
+    re-queries Jobstats plus sacct for each terminal job and overwrites the
+    actuals. Jobs whose accounting has expired are skipped (their old values
+    stay). Returns ``{ok, updated, total}``.
     """
     target_log = job_log if job_log is not None else JOBLOG
     if ssh is None or not ssh.is_connected():
@@ -697,8 +753,9 @@ def refresh_all_post_mortems(
     updated = 0
     for r in candidates:
         jobid = r["jobid"]
+        target_log.mark_accounting_attempt(jobid)
         try:
-            stats = fetch_sacct_stats(ssh, jobid)
+            stats = fetch_accounting_stats(ssh, jobid)
         except Exception:
             stats = None
         if stats:
@@ -729,10 +786,10 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
         we can ask about, so mark ``UNKNOWN``.
 
     Side effect: when a job transitions to a terminal state *and* an
-    SSH handle is provided, ``sacct`` is queried for that job and its
-    post-mortem stats are folded into :data:`JOBLOG`. The CSV row was
+    SSH handle is provided, Jobstats plus ``sacct`` are queried for that
+    job and its post-mortem stats are folded into :data:`JOBLOG`. The CSV row was
     already created at submit time; this fills in the actuals columns
-    (elapsed time, max RSS, exit code, …). A sacct failure is silent —
+    (elapsed time, max RSS, exit code, …). Accounting failures are silent —
     we never want to break the reconcile pass over a missing accounting
     row.
 
@@ -825,7 +882,10 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
     if ssh is not None and needs_pm:
         for jobid in needs_pm:
             try:
-                stats = fetch_sacct_stats(ssh, jobid)
+                if not target_log.accounting_attempt_due(jobid):
+                    continue
+                target_log.mark_accounting_attempt(jobid)
+                stats = fetch_accounting_stats(ssh, jobid)
             except Exception:
                 stats = None
             if not stats:

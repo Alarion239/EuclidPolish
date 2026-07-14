@@ -884,12 +884,20 @@ def register(app):
         # Fold the live event stream into a JobStatus.
         fetcher = JobStatusFetcher(ssh=STATE.ssh)
         status  = fetcher.fetch(events_path=current_row.get("events_path"))
+        # Jobstats is richer than the local event sampler, but the endpoint
+        # polls frequently.  The helper applies a 30-second per-job TTL and
+        # only gets called for a job that is actually running.
+        live_accounting = (
+            fasrc_jobs.fetch_live_jobstats(STATE.ssh, jid)
+            if current_row.get("state") == "RUNNING" else None
+        )
         return jsonify({
             "ok":      True,
             "stale":   False,
             "current": {
                 "job":    current_row,
                 "status": status.to_dict(),
+                "accounting": live_accounting,
             },
             "queue":   queue_public,
         })

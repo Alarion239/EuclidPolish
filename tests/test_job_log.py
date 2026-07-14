@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import time
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,14 @@ class TestRecordSubmission:
 # ---------------------------------------------------------------------------
 
 class TestRecordPostMortem:
+
+    def test_accounting_attempts_are_throttled(self, tmp_path):
+        log = JobLog(str(tmp_path / "log.csv"))
+        log.record_submission(JobRecord(jobid="42"))
+        assert log.accounting_attempt_due("42") is True
+        assert log.mark_accounting_attempt("42", at=time.time()) is True
+        assert log.accounting_attempt_due("42", min_interval=60.0) is False
+        assert log.accounting_attempt_due("42", min_interval=0.0) is True
 
     def test_updates_existing_row(self, tmp_path):
         p = tmp_path / "log.csv"

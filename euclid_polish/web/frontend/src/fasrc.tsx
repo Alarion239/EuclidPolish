@@ -120,15 +120,50 @@ type CSJob = {
   started_at?: number; ended_at?: number;
   step_id?: string | null;
 };
+type JobstatsSnapshot = {
+  accounting_source?: string;
+  jobstats_cpu_util?: number | string;
+  jobstats_cpu_memory_util?: number | string;
+  jobstats_cpu_memory_used_mb?: number | string;
+  jobstats_cpu_memory_alloc_mb?: number | string;
+  jobstats_gpu_util?: number | string;
+  jobstats_gpu_memory_util?: number | string;
+  jobstats_gpu_memory_used_mb?: number | string;
+  jobstats_gpu_memory_total_mb?: number | string;
+};
 type CSQueue = {
   count: number; halted: boolean; halted_reason?: string | null;
   names: string[]; active_jobid?: string | null;
 };
 type CurrentSubmissionResp = {
   ok: boolean; stale?: boolean;
-  current: { job: CSJob; status?: SlurmStatus | null } | null;
+  current: { job: CSJob; status?: SlurmStatus | null; accounting?: JobstatsSnapshot | null } | null;
   queue: CSQueue;
 };
+
+function JobstatsSnapshotBody({ snapshot }: { snapshot?: JobstatsSnapshot | null }) {
+  if (!snapshot) return null;
+  const cpu = finiteNumber(snapshot.jobstats_cpu_util);
+  const cpuMemory = finiteNumber(snapshot.jobstats_cpu_memory_util);
+  const gpu = finiteNumber(snapshot.jobstats_gpu_util);
+  const gpuMemory = finiteNumber(snapshot.jobstats_gpu_memory_util);
+  const gpuUsed = finiteNumber(snapshot.jobstats_gpu_memory_used_mb);
+  const gpuTotal = finiteNumber(snapshot.jobstats_gpu_memory_total_mb);
+  if (cpu == null && cpuMemory == null && gpu == null && gpuMemory == null) return null;
+  return (
+    <div className="fasrc-mon__res mono" title="Throttled Jobstats snapshot">
+      <span>Jobstats</span>
+      {cpu != null && <span>CPU {cpu.toFixed(0)}%</span>}
+      {cpuMemory != null && <span>CPU mem {cpuMemory.toFixed(0)}%</span>}
+      {gpu != null && <span>GPU {gpu.toFixed(0)}%</span>}
+      {gpuMemory != null && (
+        <span>GPU mem {gpuUsed != null && gpuTotal != null
+          ? `${formatMemory(gpuUsed)} / ${formatMemory(gpuTotal)} (${gpuMemory.toFixed(0)}%)`
+          : `${gpuMemory.toFixed(0)}%`}</span>
+      )}
+    </div>
+  );
+}
 
 /** The live "what's running right now" panel — the local submission queue plus
  *  the current PENDING/RUNNING job (state, elapsed, limit + extend, cancel,
@@ -186,7 +221,10 @@ export function CurrentSubmission() {
               <Button size="sm" variant="ghost" disabled={busy}
                 onClick={() => control("/api/fasrc/cancel", { jobid: cur.job.jobid || "" })}>cancel job</Button>
             </div>
-            <div style={{ marginTop: "var(--s3)" }}><JobStatusBody status={cur.status} /></div>
+            <div style={{ marginTop: "var(--s3)" }}>
+              <JobStatusBody status={cur.status} />
+              <JobstatsSnapshotBody snapshot={resp?.current?.accounting} />
+            </div>
           </CardBody>
         </Card>
       )}
@@ -320,7 +358,13 @@ type HistoryRow = {
   alloc_cpus?: string | number; alloc_gpus?: string | number;
   cpu_efficiency?: string; max_rss_mb?: string; alloc_memory_mb?: string;
   cpu_util_mean?: string; cpu_util_peak?: string; gpu_util_mean?: string;
-  gpu_util_peak?: string; gpu_mem_peak?: string;
+  gpu_util_peak?: string; gpu_mem_peak?: string; gpu_mem_peak_mb?: string;
+  gpu_mem_util_peak?: string; accounting_source?: string;
+  jobstats_cpu_util?: string; jobstats_cpu_memory_util?: string;
+  jobstats_cpu_memory_used_mb?: string; jobstats_cpu_memory_alloc_mb?: string;
+  jobstats_gpu_util?: string; jobstats_gpu_memory_util?: string;
+  jobstats_gpu_memory_used_mb?: string; jobstats_gpu_memory_total_mb?: string;
+  jobstats_notes_json?: string;
 };
 type HistoryResp = { ok: boolean; history?: HistoryRow[] };
 type HistoryParamsMap = Record<string, unknown>;
@@ -353,6 +397,13 @@ const formatMemory = (megabytes: number | null): string => megabytes == null ? "
 const formatPercent = (value: unknown, scale = 1): string => {
   const number = finiteNumber(value);
   return number == null ? "—" : `${(number * scale).toFixed(0)}%`;
+};
+
+const accountingNote = (row: HistoryRow): string => {
+  try {
+    const notes = JSON.parse(row.jobstats_notes_json || "[]");
+    return Array.isArray(notes) ? notes.filter((note) => typeof note === "string").join(" ") : "";
+  } catch { return ""; }
 };
 
 const parseHistoryParams = (raw?: string): HistoryParamsMap => {
@@ -459,19 +510,32 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
   const rows = asArray<HistoryRow>(history.data?.history);
   const shown = showAll ? rows : rows.slice(0, 8);
   const taskColumns = taskColumnsFor(stepId);
+  const gpuMemoryPercent = (row: HistoryRow): number | null =>
+    finiteNumber(row.jobstats_gpu_memory_util)
+    ?? finiteNumber(row.gpu_mem_util_peak)
+    // ``gpu_mem_peak`` is a legacy live-sampler percentage.  New sacct
+    // rows also carry the explicit ``gpu_mem_peak_mb`` field, so do not
+    // accidentally render absolute MB as a percentage.
+    ?? (finiteNumber(row.gpu_mem_peak_mb) == null ? finiteNumber(row.gpu_mem_peak) : null);
+  const gpuUtilMean = (row: HistoryRow): number | null =>
+    finiteNumber(row.jobstats_gpu_util) ?? finiteNumber(row.gpu_util_mean);
   const hasGpu = rows.some((row) =>
     (finiteNumber(row.req_gpus) ?? 0) > 0 || (finiteNumber(row.alloc_gpus) ?? 0) > 0 ||
-    finiteNumber(row.gpu_util_mean) != null || finiteNumber(row.gpu_util_peak) != null ||
-    finiteNumber(row.gpu_mem_peak) != null,
+    gpuUtilMean(row) != null || finiteNumber(row.gpu_util_peak) != null ||
+    gpuMemoryPercent(row) != null || finiteNumber(row.jobstats_gpu_memory_used_mb) != null,
   );
   const columns: Column<HistoryRow>[] = [
     {
       header: "run", width: 122,
       cell: (row) => {
         const date = row.submitted_at ? new Date(row.submitted_at) : null;
-        return <span className="mono fasrc-history__date">{date && !isNaN(date.getTime())
-          ? date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-          : row.submitted_at || "—"}</span>;
+        const note = accountingNote(row);
+        return <div className="fasrc-history__stack mono" title={note || undefined}>
+          <span className="fasrc-history__date">{date && !isNaN(date.getTime())
+            ? date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+            : row.submitted_at || "—"}</span>
+          {row.accounting_source && <span className="muted" style={{ fontSize: 10 }}>{row.accounting_source}{note ? " · note" : ""}</span>}
+        </div>;
       },
     },
     {
@@ -484,18 +548,24 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
       header: "CPU max used / requested (peak %) · mean %", width: 220,
       cell: (row) => {
         const requested = finiteNumber(row.req_cpus) ?? finiteNumber(row.alloc_cpus);
-        const peak = finiteNumber(row.cpu_util_peak);
+        const peak = finiteNumber(row.cpu_util_peak)
+          ?? finiteNumber(row.jobstats_cpu_util)
+          ?? (finiteNumber(row.cpu_efficiency) == null ? null : finiteNumber(row.cpu_efficiency)! * 100);
+        const mean = finiteNumber(row.jobstats_cpu_util) ?? finiteNumber(row.cpu_util_mean);
         const used = requested != null && peak != null ? requested * peak / 100 : null;
         return <span className="mono fasrc-history__value">
-          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {formatPercent(row.cpu_util_mean)}
+          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {mean == null ? "—" : `${mean.toFixed(0)}%`}
         </span>;
       },
     },
     {
-      header: "memory max used / requested (%)", width: 190,
+      header: "CPU memory max used / requested (%)", width: 210,
       cell: (row) => {
-        const used = finiteNumber(row.max_rss_mb);
-        const requested = memoryMegabytes(row.alloc_memory_mb) ?? memoryMegabytes(row.req_memory);
+        const used = finiteNumber(row.jobstats_cpu_memory_used_mb)
+          ?? finiteNumber(row.max_rss_mb);
+        const requested = finiteNumber(row.jobstats_cpu_memory_alloc_mb)
+          ?? memoryMegabytes(row.alloc_memory_mb)
+          ?? memoryMegabytes(row.req_memory);
         const percent = used != null && requested != null && requested > 0 ? `${(100 * used / requested).toFixed(0)}%` : "—";
         return <span className="mono fasrc-history__value">{formatMemory(used)} / {formatMemory(requested)} ({percent})</span>;
       },
@@ -505,9 +575,15 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
       cell: (row) => {
         const requested = finiteNumber(row.req_gpus) ?? finiteNumber(row.alloc_gpus);
         const peak = finiteNumber(row.gpu_util_peak);
+        const mean = gpuUtilMean(row);
+        const memoryUsed = finiteNumber(row.jobstats_gpu_memory_used_mb);
+        const memoryTotal = finiteNumber(row.jobstats_gpu_memory_total_mb);
+        const memoryText = memoryUsed != null && memoryTotal != null
+          ? `${formatMemory(memoryUsed)} / ${formatMemory(memoryTotal)} (${formatPercent(gpuMemoryPercent(row))})`
+          : `memory ${formatPercent(gpuMemoryPercent(row))}`;
         const used = requested != null && peak != null ? requested * peak / 100 : null;
         return <span className="mono fasrc-history__value">
-          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {formatPercent(row.gpu_util_mean)} · {formatPercent(row.gpu_mem_peak)}
+          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {mean == null ? "—" : `${mean.toFixed(0)}%`} · {memoryText}
         </span>;
       },
     } as Column<HistoryRow>] : []),

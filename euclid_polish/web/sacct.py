@@ -162,7 +162,11 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     if gpu_util is not None:
         out["gpu_util_mean"] = gpu_util
     if gpu_mem_mb is not None:
+        # Keep the historical key for old consumers, but also expose an
+        # explicit unit-bearing key so it cannot be confused with the live
+        # sampler's percentage field.
         out["gpu_mem_peak"] = gpu_mem_mb
+        out["gpu_mem_peak_mb"] = gpu_mem_mb
     return out
 
 
