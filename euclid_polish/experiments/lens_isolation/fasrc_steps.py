@@ -80,6 +80,8 @@ def build_step_classes(base_class, resources_class):
                 value = str(params.get(key, "")).strip()
                 if value:
                     cmd += [f"--{key.replace('_', '-')}", value]
+            if str(params.get("force", "")).lower() in {"1", "true", "yes", "on"}:
+                cmd.append("--force")
             return cmd
 
     class LensIsolationEvaluateStep(base_class):

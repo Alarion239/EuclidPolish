@@ -44,6 +44,8 @@ Run the stages in order:
 # Direct CLI only; FASRC generation derives this from its allocated CPU count.
 python scripts/lens_isolation_generate.py --workers 16
 python scripts/lens_isolation_train.py --sources member_01,member_04
+# Repeat from the same sources without exposing a partial replacement:
+python scripts/lens_isolation_train.py --sources member_01,member_04 --force
 python scripts/lens_isolation_evaluate.py
 ```
 
@@ -55,6 +57,12 @@ record-mode interface with `forward_onthefly=False`:
 lr_path = dirty_train.tfrecord
 hr_path = lens_train.tfrecord
 ```
+
+An ordinary rerun refuses to overwrite an existing experiment member.  A
+forced rerun trains the complete new set in a private staging directory, keeps
+the current members available throughout training, and publishes the
+replacement set only after every member succeeds.  Failed forced runs leave the
+previous members untouched.
 
 Normal random block-aligned crops, augmentation, asinh normalization,
 optimisation, validation, checkpoint selection, and logs remain owned by

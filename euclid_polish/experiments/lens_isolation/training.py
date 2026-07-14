@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from datetime import UTC, datetime
 from typing import Any
@@ -87,6 +88,68 @@ def fork_member(
     if checkpoint_fingerprint(source) != source_before:
         raise RuntimeError("source checkpoint changed while it was being forked")
     return model
+
+
+def publish_replacement_members(
+    staging_dir: str,
+    out_dir: str,
+    member_names: tuple[str, ...],
+    *,
+    protected_roots: tuple[str, ...] | None = None,
+) -> None:
+    """Publish a completely trained member set without exposing partial work.
+
+    Training happens in ``staging_dir`` while the previous experiment members
+    remain usable.  Publication moves the old set into a private rollback
+    directory, promotes every staged member, then removes the rollback copy.
+    Non-member files below ``out_dir`` are preserved.
+    """
+    staging_dir = os.path.abspath(staging_dir)
+    out_dir = assert_safe_output(out_dir, protected_roots=protected_roots)
+    names = tuple(member_names)
+    if not names or len(set(names)) != len(names):
+        raise ValueError("replacement member names must be non-empty and unique")
+    if any(not name.startswith("member_") or os.path.basename(name) != name for name in names):
+        raise ValueError("replacement member names must be simple member_* names")
+    if os.path.commonpath((staging_dir, out_dir)) == staging_dir:
+        raise ValueError("replacement staging directory cannot contain the output directory")
+    for name in names:
+        staged = os.path.join(staging_dir, name)
+        if not os.path.isdir(staged) or not os.listdir(staged):
+            raise ValueError(f"replacement member is incomplete: {staged}")
+
+    os.makedirs(out_dir, exist_ok=True)
+    rollback_dir = tempfile.mkdtemp(prefix=".member-rollback-", dir=out_dir)
+    old_members = sorted(
+        entry.name for entry in os.scandir(out_dir)
+        if entry.name.startswith("member_") and entry.name != os.path.basename(rollback_dir)
+    )
+    moved_old: list[str] = []
+    moved_new: list[str] = []
+    try:
+        for name in old_members:
+            os.replace(os.path.join(out_dir, name), os.path.join(rollback_dir, name))
+            moved_old.append(name)
+        for name in names:
+            os.replace(os.path.join(staging_dir, name), os.path.join(out_dir, name))
+            moved_new.append(name)
+    except Exception:
+        try:
+            for name in reversed(moved_new):
+                published = os.path.join(out_dir, name)
+                if os.path.lexists(published):
+                    os.replace(published, os.path.join(staging_dir, name))
+            for name in moved_old:
+                backup = os.path.join(rollback_dir, name)
+                if os.path.lexists(backup):
+                    os.replace(backup, os.path.join(out_dir, name))
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"member publication failed and rollback data remains at {rollback_dir}"
+            ) from rollback_error
+        shutil.rmtree(rollback_dir, ignore_errors=True)
+        raise
+    shutil.rmtree(rollback_dir, ignore_errors=True)
 
 
 def train_member(

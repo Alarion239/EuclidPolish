@@ -67,6 +67,7 @@ export default function LensIsolationPage() {
   const [sources, setSources] = useState("");
   const [steps, setSteps] = useState("50000");
   const [batch, setBatch] = useState("16");
+  const [forceTraining, setForceTraining] = useState(false);
   const [evalFields, setEvalFields] = useState("100");
   const [syncTrain, setSyncTrain] = useState(false);
   const [syncValidate, setSyncValidate] = useState(true);
@@ -81,7 +82,8 @@ export default function LensIsolationPage() {
   );
   const training = useMemo(() => ({
     sources: sources.trim(), steps, batch_size: batch, evaluate_every: "500",
-  }), [sources, steps, batch]);
+    force: forceTraining ? "1" : "0",
+  }), [sources, steps, batch, forceTraining]);
 
   const reloadEvaluation = () => {
     status.reload();
@@ -182,6 +184,16 @@ export default function LensIsolationPage() {
               <NumberField label="batch size" value={batch} onChange={setBatch} min={1} />
             </div>
             {!sources.trim() && <p className="ui-field__hint">Enter at least one existing production member before submitting.</p>}
+            <div style={{ marginBottom: "var(--s3)" }}>
+              <Checkbox checked={forceTraining} onChange={setForceTraining}>
+                Retrain and replace the existing lens-isolation members
+              </Checkbox>
+              {forceTraining && (
+                <p className="ui-field__hint" style={{ marginBottom: 0 }}>
+                  The current members remain available while all replacements train. They are replaced only after the complete run succeeds.
+                </p>
+              )}
+            </div>
             <StepById stepId="lens_isolation_train" extraParams={training} embedded showHistory />
           </CardBody>
         </Card>

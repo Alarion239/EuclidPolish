@@ -394,8 +394,9 @@ large cutout don't leak across train/validate."></label>`;
           <label>Steps <input type="number" name="steps" value="50000" min="1"></label>
           <label>Batch size <input type="number" name="batch_size" value="16" min="1"></label>
           <label>Evaluate every <input type="number" name="evaluate_every" value="500" min="1"></label>
-          <label>Lens-pixel weight <input type="number" name="lens_weight" value="8" min="0" step="0.5"></label>
-          <label>Flux weight <input type="number" name="flux_weight" value="0.1" min="0" step="0.05"></label>`;
+          <label class="checkbox-field" style="flex-basis:100%;" title="Current experiment members stay available until every replacement finishes training.">
+            <input type="checkbox" name="force" value="1"> Retrain and replace existing lens-isolation members
+          </label>`;
       case 'lens_isolation_evaluate':
         return `<label class="checkbox-field"><input type="checkbox" name="no_source_baselines" value="1"> Skip source-model baselines</label>`;
       default:

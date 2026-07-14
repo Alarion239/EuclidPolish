@@ -183,6 +183,8 @@ def test_react_generation_card_uses_only_fasrc_cpu_resources():
     assert "setWorkers" not in page
     assert "Replace all experiment records and recompute from scratch" in page
     assert 'force: forceGeneration ? "1" : "0"' in page
+    assert "Retrain and replace the existing lens-isolation members" in page
+    assert 'force: forceTraining ? "1" : "0"' in page
     assert 'extraParams={generation} embedded showHistory' in page
     assert 'extraParams={training} embedded showHistory' in page
     assert 'stepId="lens_isolation_evaluate" embedded showHistory' in page
@@ -195,3 +197,14 @@ def test_classic_generation_card_uses_only_fasrc_cpu_resources():
     )[0]
 
     assert 'name="workers"' not in card
+
+
+def test_classic_training_card_exposes_only_real_training_controls():
+    page = Path("euclid_polish/web/static/fasrc_step_card.js").read_text(encoding="utf-8")
+    card = page.split("case 'lens_isolation_train':", 1)[1].split(
+        "case 'lens_isolation_evaluate':", 1
+    )[0]
+
+    assert 'name="force"' in card
+    assert 'name="lens_weight"' not in card
+    assert 'name="flux_weight"' not in card

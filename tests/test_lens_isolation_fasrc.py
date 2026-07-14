@@ -24,6 +24,8 @@ def test_lens_isolation_steps_are_additive_and_use_only_normal_record_controls()
     assert "--loss-norm" in train_cmd
     assert "--lens-weight" not in train_cmd
     assert "--crops-per-field" not in train_cmd
+    assert "--force" not in train_cmd
+    assert "--force" in train.build_command({"sources": "member_01", "force": "1"})
     assert "--seed" in eval_cmd
     assert "--crop-size" in eval_cmd
 
