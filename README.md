@@ -16,7 +16,7 @@ TFRecords. All photometry is calibrated against the published Euclid AB zeropoin
 band; nothing is normalised to a unit interval before noise is injected.
 
 The light-profile renderer is our own vectorised Sérsic implementation
-(`euclid_polish/sky/profiles.py`); **GalSim is not used.** The normal synthetic
+(`euclid_polish/sky/generation/profiles.py`). The normal synthetic
 pipeline controls the COSMOS Sérsic and TNG50 SKIRT populations independently with
 `--sersic-density-arcmin2` and `--tng-density-arcmin2`. Setting the former to zero
 and enabling `--tng-redshift-mode` produces a pure-TNG field without loading the
@@ -24,10 +24,9 @@ COSMOS catalog. The lens-isolation experiment uses that pure-TNG configuration b
 default, with its own record and model namespace.
 
 **What the model learns.** The network input is the 4-channel LR stack
-`(VIS, Y_E, J_E, H_E) @ 0.10″/pix`. The output is a single **deconvolved VIS sky** image
-`SR @ 0.05″/pix` (NISP channels give colour context but are not super-resolved). Each
-training lane supervises that one estimate through its own instrument's forward
-operator (see §5).
+`(VIS, Y_E, J_E, H_E) @ 0.10″/pix`. The output is a 4-channel deconvolved HR sky
+stack `(VIS, Y_E, J_E, H_E) @ 0.05″/pix`. Each training lane supervises the
+corresponding output through its own instrument's forward operator (see §5).
 
 ---
 
