@@ -169,7 +169,7 @@ export default function LensIsolationPage() {
                 </p>
               )}
             </div>
-            <StepById stepId="lens_isolation_generate" extraParams={generation} />
+            <StepById stepId="lens_isolation_generate" extraParams={generation} embedded showHistory />
           </CardBody>
         </Card>
 
@@ -182,14 +182,14 @@ export default function LensIsolationPage() {
               <NumberField label="batch size" value={batch} onChange={setBatch} min={1} />
             </div>
             {!sources.trim() && <p className="ui-field__hint">Enter at least one existing production member before submitting.</p>}
-            <StepById stepId="lens_isolation_train" extraParams={training} />
+            <StepById stepId="lens_isolation_train" extraParams={training} embedded showHistory />
           </CardBody>
         </Card>
 
         <Card>
           <CardHead title="3 · Evaluate detection behavior" sub="Random block-aligned cutouts grouped by observed target flux · GPU" right={<Badge>GPU</Badge>} />
           <CardBody>
-            <StepById stepId="lens_isolation_evaluate" />
+            <StepById stepId="lens_isolation_evaluate" embedded showHistory />
             {ensembleMetric?.auc != null && <Stat k="cached ensemble AUC" v={ensembleMetric.auc.toFixed(4)} />}
           </CardBody>
         </Card>

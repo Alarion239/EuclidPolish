@@ -11,7 +11,7 @@ import { useResource, usePolling } from "./hooks";
 import Plot, { Legend } from "./charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, LogTail,
-  NumberField, Field, Input, ProgressBar, Segmented, Spinner,
+  NumberField, Field, Input, ProgressBar, Segmented, Spinner, Table, type Column,
 } from "./ui";
 
 export type StepDefaults = {
@@ -313,12 +313,150 @@ export function TrainingCurve(
   );
 }
 
+type HistoryRow = {
+  jobid: string; submitted_at?: string; state?: string; params_json?: string;
+  partition?: string; req_cpus?: string | number; req_gpus?: string | number;
+  req_memory?: string; req_time_limit?: string; elapsed_seconds?: string;
+  cpu_efficiency?: string; max_rss_mb?: string; alloc_memory_mb?: string;
+  cpu_util_mean?: string; cpu_util_peak?: string; gpu_util_mean?: string;
+  gpu_util_peak?: string; gpu_mem_peak?: string;
+};
+type HistoryResp = { ok: boolean; history?: HistoryRow[] };
+
+const finiteNumber = (value: unknown): number | null => {
+  const number = Number(value);
+  return value !== "" && value != null && isFinite(number) ? number : null;
+};
+
+const compactDuration = (value: unknown): string => {
+  const seconds = finiteNumber(value);
+  if (seconds == null) return "—";
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(seconds >= 36000 ? 1 : 2)} h`;
+  if (seconds >= 60) return `${(seconds / 60).toFixed(seconds >= 600 ? 1 : 2)} min`;
+  return `${Math.round(seconds)} s`;
+};
+
+const compactMemory = (megabytes: number): string => megabytes >= 1024
+  ? `${(megabytes / 1024).toFixed(megabytes >= 10240 ? 0 : 1)} GB`
+  : `${Math.round(megabytes)} MB`;
+
+const formatPercent = (value: unknown, scale = 1): string => {
+  const number = finiteNumber(value);
+  return number == null ? "—" : `${(number * scale).toFixed(0)}%`;
+};
+
+function HistoryParams({ raw }: { raw?: string }) {
+  let params: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) params = parsed;
+  } catch { /* malformed legacy rows render as unavailable */ }
+  const entries = Object.entries(params).filter(
+    ([key, value]) => key !== "step_id" && value !== "" && value != null,
+  );
+  if (!entries.length) return <span className="muted">—</span>;
+  return (
+    <div className="fasrc-history__params">
+      {entries.map(([key, value]) => (
+        <span className="fasrc-history__param" key={key}>
+          <b>{key.split("_").join(" ")}</b>
+          <span>{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: string | null }) {
+  const history = useResource<HistoryResp>(`/api/fasrc/hst/${stepId}/history`, [refreshKey]);
+  const [showAll, setShowAll] = useState(false);
+  const rows = asArray<HistoryRow>(history.data?.history);
+  const shown = showAll ? rows : rows.slice(0, 8);
+  const columns: Column<HistoryRow>[] = [
+    {
+      header: "submitted", width: 122,
+      cell: (row) => {
+        const date = row.submitted_at ? new Date(row.submitted_at) : null;
+        return <span className="mono fasrc-history__date">{date && !isNaN(date.getTime())
+          ? date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+          : row.submitted_at || "—"}</span>;
+      },
+    },
+    {
+      header: "state", width: 96,
+      cell: (row) => <Badge tone={jobStateTone(row.state || "")}>{row.state || "—"}</Badge>,
+    },
+    { header: "parameters", cell: (row) => <HistoryParams raw={row.params_json} /> },
+    {
+      header: "requested", width: 150,
+      cell: (row) => <div className="fasrc-history__stack mono">
+        <span>{row.partition || "—"} · {row.req_cpus || 0} CPU · {row.req_gpus || 0} GPU</span>
+        <span>{row.req_memory || "—"} · limit {row.req_time_limit || "—"}</span>
+      </div>,
+    },
+    { header: "elapsed", width: 80, align: "right", cell: (row) => <span className="mono">{compactDuration(row.elapsed_seconds)}</span> },
+    {
+      header: "CPU", width: 118,
+      cell: (row) => <div className="fasrc-history__stack mono">
+        <span>alloc {formatPercent(row.cpu_efficiency, 100)}</span>
+        <span>mean/peak {formatPercent(row.cpu_util_mean)} / {formatPercent(row.cpu_util_peak)}</span>
+      </div>,
+    },
+    {
+      header: "memory", width: 128,
+      cell: (row) => {
+        const used = finiteNumber(row.max_rss_mb);
+        const allocated = finiteNumber(row.alloc_memory_mb);
+        const percent = used != null && allocated != null && allocated > 0
+          ? ` · ${formatPercent((used / allocated) * 100)}` : "";
+        return <div className="fasrc-history__stack mono">
+          <span>{used == null ? "—" : compactMemory(used)}{percent}</span>
+          <span>of {allocated == null ? row.req_memory || "—" : compactMemory(allocated)}</span>
+        </div>;
+      },
+    },
+    {
+      header: "GPU", width: 118,
+      cell: (row) => <div className="fasrc-history__stack mono">
+        <span>mean/peak {formatPercent(row.gpu_util_mean)} / {formatPercent(row.gpu_util_peak)}</span>
+        <span>memory peak {formatPercent(row.gpu_mem_peak)}</span>
+      </div>,
+    },
+  ];
+  return (
+    <section className="fasrc-history">
+      <div className="fasrc-history__head">
+        <div>
+          <div className="eyebrow">Previous runs</div>
+          <div className="muted fasrc-history__note">Observed allocations and utilization only — no automatic prediction.</div>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <Badge>{rows.length}</Badge>
+          <Button size="sm" variant="ghost" onClick={() => history.reload()}>↻</Button>
+        </div>
+      </div>
+      {history.loading && !rows.length
+        ? <Empty><Spinner /> loading history…</Empty>
+        : <Table columns={columns} rows={shown} rowKey={(row) => row.jobid}
+            empty="no previous runs for this step" />}
+      {rows.length > 8 && (
+        <Button size="sm" variant="ghost" onClick={() => setShowAll((value) => !value)}>
+          {showAll ? "show newest 8" : `show all ${rows.length}`}
+        </Button>
+      )}
+    </section>
+  );
+}
+
 /** Submit one FASRC pipeline step. Renders the step's resources (prefilled from
  *  server defaults), a confirm-guarded submit, then a live `<SlurmMonitor>`.
- *  `extraParams` carries any step-specific task params the page wants to pass. */
+ *  `extraParams` carries any step-specific task params the page wants to pass.
+ *  Embedded mode removes the surrounding card for pages that already provide
+ *  the workflow card and only need a highlighted submission section. */
 export function StepCard(
-  { step, extraParams, sshConnected }: {
+  { step, extraParams, sshConnected, embedded = false, showHistory = false }: {
     step: Step; extraParams?: Record<string, string | number>; sshConnected: boolean;
+    embedded?: boolean; showHistory?: boolean;
   },
 ) {
   const d = step.defaults;
@@ -350,14 +488,17 @@ export function StepCard(
     } finally { setBusy(false); }
   }
 
-  return (
-    <Card className="fasrc-step">
-      <CardHead
-        title={step.label}
-        sub={<code className="mono">{step.step_id}</code>}
-        right={step.needs_gpu ? <Badge>GPU</Badge> : <Badge>CPU</Badge>}
-      />
-      <CardBody>
+  const content = (
+    <>
+      {embedded && (
+        <div className="fasrc-step-inline__head">
+          <div>
+            <div className="eyebrow">SLURM submission</div>
+            <strong>{step.label}</strong> <code className="mono">{step.step_id}</code>
+          </div>
+          {step.needs_gpu ? <Badge>GPU</Badge> : <Badge>CPU</Badge>}
+        </div>
+      )}
         <div className="fasrc-step__res">
           <Field label="partition"><Input value={partition} onChange={setPartition} /></Field>
           <NumberField label="cpus" value={nCpus} onChange={setNCpus} min={1} disabled={lockedCpus} />
@@ -373,7 +514,18 @@ export function StepCard(
         </div>
         {error && <div className="job-panel job-panel--err"><pre>{error}</pre></div>}
         {jobid && <SlurmMonitor jobid={jobid} />}
-      </CardBody>
+        {showHistory && <PreviousRuns stepId={step.step_id} refreshKey={jobid} />}
+    </>
+  );
+  if (embedded) return <div className="fasrc-step-inline">{content}</div>;
+  return (
+    <Card className="fasrc-step">
+      <CardHead
+        title={step.label}
+        sub={<code className="mono">{step.step_id}</code>}
+        right={step.needs_gpu ? <Badge>GPU</Badge> : <Badge>CPU</Badge>}
+      />
+      <CardBody>{content}</CardBody>
     </Card>
   );
 }
@@ -381,15 +533,22 @@ export function StepCard(
 /** Look up a step by id in the registry and render its `<StepCard>` (or a
  *  loading/empty state). The one-liner pages call to embed a pipeline step. */
 export function StepById(
-  { stepId, extraParams }: { stepId: string; extraParams?: Record<string, string | number> },
+  { stepId, extraParams, embedded = false, showHistory = false }: {
+    stepId: string; extraParams?: Record<string, string | number>;
+    embedded?: boolean; showHistory?: boolean;
+  },
 ) {
   const { data, loading } = useHstStatus();
-  if (loading) return <Card><CardBody><Empty><Spinner /> loading step…</Empty></CardBody></Card>;
+  if (loading) return embedded
+    ? <div className="fasrc-step-inline"><Empty><Spinner /> loading step…</Empty></div>
+    : <Card><CardBody><Empty><Spinner /> loading step…</Empty></CardBody></Card>;
   const step = asArray<Step>(data?.steps).find((s) => s.step_id === stepId);
   if (!step) {
-    return <Card><CardBody><Empty>step <code>{stepId}</code> is not registered on the server</Empty></CardBody></Card>;
+    const empty = <Empty>step <code>{stepId}</code> is not registered on the server</Empty>;
+    return embedded ? <div className="fasrc-step-inline">{empty}</div> : <Card><CardBody>{empty}</CardBody></Card>;
   }
-  return <StepCard step={step} extraParams={extraParams} sshConnected={!!data?.ssh_connected} />;
+  return <StepCard step={step} extraParams={extraParams} sshConnected={!!data?.ssh_connected}
+    embedded={embedded} showHistory={showHistory} />;
 }
 
 /** FASRC SSH connection status + connect/disconnect. */
