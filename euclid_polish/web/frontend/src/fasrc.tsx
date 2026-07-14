@@ -317,11 +317,13 @@ type HistoryRow = {
   jobid: string; submitted_at?: string; state?: string; params_json?: string;
   partition?: string; req_cpus?: string | number; req_gpus?: string | number;
   req_memory?: string; req_time_limit?: string; elapsed_seconds?: string;
+  alloc_cpus?: string | number; alloc_gpus?: string | number;
   cpu_efficiency?: string; max_rss_mb?: string; alloc_memory_mb?: string;
   cpu_util_mean?: string; cpu_util_peak?: string; gpu_util_mean?: string;
   gpu_util_peak?: string; gpu_mem_peak?: string;
 };
 type HistoryResp = { ok: boolean; history?: HistoryRow[] };
+type HistoryParamsMap = Record<string, unknown>;
 
 const finiteNumber = (value: unknown): number | null => {
   const number = Number(value);
@@ -345,26 +347,91 @@ const formatPercent = (value: unknown, scale = 1): string => {
   return number == null ? "—" : `${(number * scale).toFixed(0)}%`;
 };
 
-function HistoryParams({ raw }: { raw?: string }) {
-  let params: Record<string, unknown> = {};
+const parseHistoryParams = (raw?: string): HistoryParamsMap => {
   try {
     const parsed = JSON.parse(raw || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) params = parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
   } catch { /* malformed legacy rows render as unavailable */ }
-  const entries = Object.entries(params).filter(
-    ([key, value]) => key !== "step_id" && value !== "" && value != null,
-  );
-  if (!entries.length) return <span className="muted">—</span>;
-  return (
-    <div className="fasrc-history__params">
-      {entries.map(([key, value]) => (
-        <span className="fasrc-history__param" key={key}>
-          <b>{key.split("_").join(" ")}</b>
-          <span>{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
-        </span>
-      ))}
-    </div>
-  );
+  return {};
+};
+
+// The pure-TNG generator fixes this at Config.TNG_GAL_DENSITY_ARCMIN2; it is
+// shown here because it affects field work but is not a per-run form knob.
+const DEFAULT_TNG_GALAXY_DENSITY = 60;
+const param = (params: HistoryParamsMap, key: string): unknown => {
+  const value = params[key];
+  return value === "" || value == null ? null : value;
+};
+const paramText = (params: HistoryParamsMap, key: string, fallback = "—"): string => {
+  const value = param(params, key);
+  return value == null ? fallback : typeof value === "object" ? JSON.stringify(value) : String(value);
+};
+const paramCount = (params: HistoryParamsMap, key: string, fallback = "—"): string => {
+  const value = param(params, key);
+  const number = finiteNumber(value);
+  return number == null ? paramText(params, key, fallback) : number.toLocaleString();
+};
+const paramSum = (params: HistoryParamsMap, keys: string[]): string => {
+  let total = 0; let found = false;
+  for (const key of keys) {
+    const number = finiteNumber(param(params, key));
+    if (number != null) { total += number; found = true; }
+  }
+  return found ? total.toLocaleString() : "—";
+};
+const taskColumn = (header: string, render: (params: HistoryParamsMap) => string, width?: number): Column<HistoryRow> => ({
+  header, width,
+  cell: (row) => <span className="mono fasrc-history__value">{render(parseHistoryParams(row.params_json))}</span>,
+});
+
+function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
+  switch (stepId) {
+    case "synthetic_generate":
+    case "lensfinder_generate":
+      return [
+        taskColumn("nfields", (p) => paramSum(p, ["n_train", "n_valid", "n_test"]), 92),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(DEFAULT_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
+      ];
+    case "lens_isolation_generate":
+      return [taskColumn("nfields", (p) => paramSum(p, ["ntrain", "nvalid", "ntest"]), 92)];
+    case "lens_isolation_train":
+      return [taskColumn("source members", (p) => paramText(p, "sources"), 150), taskColumn("steps", (p) => paramCount(p, "steps"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70)];
+    case "lens_isolation_evaluate":
+      return [taskColumn("fields", (p) => paramCount(p, "limit"), 76), taskColumn("crop px", (p) => paramCount(p, "crop_size"), 82)];
+    case "download_euclid_cutouts":
+      return [taskColumn("VIS px", (p) => paramCount(p, "vis_pixels"), 76), taskColumn("workers", (p) => paramCount(p, "workers"), 82)];
+    case "extract_euclid_psf":
+      return [taskColumn("stars / PSF", (p) => paramCount(p, "stars_per_psf"), 92), taskColumn("max stars", (p) => paramCount(p, "num_stars"), 88), taskColumn("kernel px", (p) => paramCount(p, "output_size"), 88)];
+    case "psf_rotation_pool":
+      return [taskColumn("rotations", (p) => paramCount(p, "rotations"), 82), taskColumn("crop px", (p) => paramCount(p, "crop"), 78)];
+    case "download_tng_skirt":
+      return [taskColumn("galaxies", (p) => paramCount(p, "limit", "all"), 86), taskColumn("workers", (p) => paramCount(p, "workers"), 82)];
+    case "tng_grid":
+      return [taskColumn("band", (p) => paramText(p, "band"), 72), taskColumn("downsample", (p) => paramText(p, "downsample"), 96)];
+    case "tng_stack":
+      return [taskColumn("band", (p) => paramText(p, "band"), 72), taskColumn("galaxy", (p) => paramText(p, "galaxy_id", "selected"), 100)];
+    case "poster_cutout":
+      return [taskColumn("object", (p) => paramText(p, "mode"), 100), taskColumn("HR px", (p) => paramCount(p, "image_size"), 76)];
+    case "euclid_query":
+      return [taskColumn("stars", (p) => paramCount(p, "num_stars"), 82), taskColumn("mag range", (p) => `${paramText(p, "magnitude_min")}–${paramText(p, "magnitude_limit")}`, 110), taskColumn("min SNR", (p) => paramCount(p, "snr_min"), 82)];
+    case "euclid_verify_photometry":
+      return [taskColumn("stars", (p) => paramCount(p, "n"), 72), taskColumn("cutout px", (p) => paramCount(p, "size"), 92)];
+    case "lensfinder_build_stamps":
+      return [taskColumn("fields", (p) => paramCount(p, "max_fields", "all"), 82), taskColumn("neg / lens", (p) => paramCount(p, "neg_per_lens"), 92), taskColumn("stamp px", (p) => paramCount(p, "stamp_m"), 88)];
+    case "lensfinder_sr_infer":
+      return [taskColumn("subset", (p) => paramText(p, "subset", "all"), 82)];
+    case "lensfinder_train":
+      return [taskColumn("epochs", (p) => paramCount(p, "epochs"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70), taskColumn("mode", (p) => paramText(p, "training_mode"), 104)];
+    case "ensemble_train":
+      return [taskColumn("mode", (p) => paramText(p, "mode"), 82), taskColumn("members", (p) => paramCount(p, "count", paramText(p, "members")), 88), taskColumn("steps", (p) => paramCount(p, "steps", paramText(p, "extra_steps")), 82)];
+    case "download":
+      return [taskColumn("tiles", (p) => paramCount(p, "n_tiles"), 72)];
+    case "extract_psf":
+      return [taskColumn("stars", (p) => paramCount(p, "n_stars"), 72), taskColumn("PSF px", (p) => { const half = finiteNumber(param(p, "half_side")); return half == null ? "—" : (2 * half + 1).toLocaleString(); }, 82)];
+    default:
+      return [];
+  }
 }
 
 function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: string | null }) {
@@ -372,9 +439,15 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
   const [showAll, setShowAll] = useState(false);
   const rows = asArray<HistoryRow>(history.data?.history);
   const shown = showAll ? rows : rows.slice(0, 8);
+  const taskColumns = taskColumnsFor(stepId);
+  const hasGpu = rows.some((row) =>
+    (finiteNumber(row.req_gpus) ?? 0) > 0 || (finiteNumber(row.alloc_gpus) ?? 0) > 0 ||
+    finiteNumber(row.gpu_util_mean) != null || finiteNumber(row.gpu_util_peak) != null ||
+    finiteNumber(row.gpu_mem_peak) != null,
+  );
   const columns: Column<HistoryRow>[] = [
     {
-      header: "submitted", width: 122,
+      header: "run", width: 122,
       cell: (row) => {
         const date = row.submitted_at ? new Date(row.submitted_at) : null;
         return <span className="mono fasrc-history__date">{date && !isNaN(date.getTime())
@@ -386,19 +459,12 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
       header: "state", width: 96,
       cell: (row) => <Badge tone={jobStateTone(row.state || "")}>{row.state || "—"}</Badge>,
     },
-    { header: "parameters", cell: (row) => <HistoryParams raw={row.params_json} /> },
-    {
-      header: "requested", width: 150,
-      cell: (row) => <div className="fasrc-history__stack mono">
-        <span>{row.partition || "—"} · {row.req_cpus || 0} CPU · {row.req_gpus || 0} GPU</span>
-        <span>{row.req_memory || "—"} · limit {row.req_time_limit || "—"}</span>
-      </div>,
-    },
+    ...taskColumns,
     { header: "elapsed", width: 80, align: "right", cell: (row) => <span className="mono">{compactDuration(row.elapsed_seconds)}</span> },
     {
       header: "CPU", width: 118,
       cell: (row) => <div className="fasrc-history__stack mono">
-        <span>alloc {formatPercent(row.cpu_efficiency, 100)}</span>
+        <span>{finiteNumber(row.req_cpus) ?? finiteNumber(row.alloc_cpus) ?? 0} CPU</span>
         <span>mean/peak {formatPercent(row.cpu_util_mean)} / {formatPercent(row.cpu_util_peak)}</span>
       </div>,
     },
@@ -410,25 +476,26 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
         const percent = used != null && allocated != null && allocated > 0
           ? ` · ${formatPercent((used / allocated) * 100)}` : "";
         return <div className="fasrc-history__stack mono">
-          <span>{used == null ? "—" : compactMemory(used)}{percent}</span>
-          <span>of {allocated == null ? row.req_memory || "—" : compactMemory(allocated)}</span>
+          <span>{row.req_memory || "—"} requested</span>
+          <span>peak {used == null ? "—" : compactMemory(used)}{percent}</span>
         </div>;
       },
     },
-    {
+    ...(hasGpu ? [{
       header: "GPU", width: 118,
       cell: (row) => <div className="fasrc-history__stack mono">
+        <span>{finiteNumber(row.req_gpus) ?? finiteNumber(row.alloc_gpus) ?? 0} GPU</span>
         <span>mean/peak {formatPercent(row.gpu_util_mean)} / {formatPercent(row.gpu_util_peak)}</span>
-        <span>memory peak {formatPercent(row.gpu_mem_peak)}</span>
+        <span>mem peak {formatPercent(row.gpu_mem_peak)}</span>
       </div>,
-    },
+    } as Column<HistoryRow>] : []),
   ];
   return (
     <section className="fasrc-history">
       <div className="fasrc-history__head">
         <div>
           <div className="eyebrow">Previous runs</div>
-          <div className="muted fasrc-history__note">Observed allocations and utilization only — no automatic prediction.</div>
+          <div className="muted fasrc-history__note">Work-driving inputs, elapsed time, and observed resource use.</div>
         </div>
         <div className="row" style={{ gap: 8 }}>
           <Badge>{rows.length}</Badge>
@@ -454,7 +521,7 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
  *  Embedded mode removes the surrounding card for pages that already provide
  *  the workflow card and only need a highlighted submission section. */
 export function StepCard(
-  { step, extraParams, sshConnected, embedded = false, showHistory = false }: {
+  { step, extraParams, sshConnected, embedded = false, showHistory = true }: {
     step: Step; extraParams?: Record<string, string | number>; sshConnected: boolean;
     embedded?: boolean; showHistory?: boolean;
   },
@@ -533,7 +600,7 @@ export function StepCard(
 /** Look up a step by id in the registry and render its `<StepCard>` (or a
  *  loading/empty state). The one-liner pages call to embed a pipeline step. */
 export function StepById(
-  { stepId, extraParams, embedded = false, showHistory = false }: {
+  { stepId, extraParams, embedded = false, showHistory = true }: {
     stepId: string; extraParams?: Record<string, string | number>;
     embedded?: boolean; showHistory?: boolean;
   },

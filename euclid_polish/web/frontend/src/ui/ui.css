@@ -218,14 +218,7 @@
 }
 .fasrc-history__note { font-size: 11px; margin-top: 2px; }
 .fasrc-history__date { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
-.fasrc-history__params { display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 220px; max-width: 430px; }
-.fasrc-history__param {
-  display: inline-flex; gap: 4px; align-items: baseline; max-width: 100%;
-  padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--surface-1); font: 10.5px/1.25 var(--font-mono);
-}
-.fasrc-history__param b { color: var(--text-faint); font-weight: 500; }
-.fasrc-history__param span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fasrc-history__value { white-space: nowrap; font-size: 11px; }
 .fasrc-history__stack { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; white-space: nowrap; }
 .fasrc-history__stack span + span { color: var(--text-faint); }
 .fasrc-mon {

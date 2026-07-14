@@ -713,7 +713,7 @@ large cutout don't leak across train/validate."></label>`;
     return out;
   }
 
-  function renderHistoryRows(rows) {
+  function renderHistoryRowsLegacy(rows) {
     if (!rows || !rows.length) {
       return `<span class="muted">no previous runs for this step yet</span>`;
     }
@@ -784,6 +784,114 @@ large cutout don't leak across train/validate."></label>`;
     return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;
   }
 
+  function historyParam(row) {
+    try {
+      const value = JSON.parse(row.params_json || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch (_) { return {}; }
+  }
+
+  function historyNumber(value) {
+    const n = Number(value);
+    return value !== '' && value != null && Number.isFinite(n) ? n : null;
+  }
+
+  function historyText(params, key, fallback = '—') {
+    const value = params[key];
+    return value === '' || value == null ? fallback : String(value);
+  }
+
+  function historyCount(params, key, fallback = '—') {
+    const n = historyNumber(params[key]);
+    return n == null ? historyText(params, key, fallback) : n.toLocaleString();
+  }
+
+  function historySum(params, keys) {
+    let total = 0, found = false;
+    keys.forEach(key => {
+      const n = historyNumber(params[key]);
+      if (n != null) { total += n; found = true; }
+    });
+    return found ? total.toLocaleString() : '—';
+  }
+
+  function historyTaskSpec(stepId, params) {
+    const field = (label, value) => ({ label, value });
+    // Mirrors Config.TNG_GAL_DENSITY_ARCMIN2: fixed for the pure-TNG
+    // generators, but still useful context for the work represented by a run.
+    switch (stepId) {
+      case 'synthetic_generate':
+      case 'lensfinder_generate':
+        return [field('nfields', historySum(params, ['n_train', 'n_valid', 'n_test'])),
+          field('galaxies / arcmin²', historyText(params, 'tng_density_arcmin2', '60')),
+          field('lenses / arcmin²', historyText(params, 'lens_density_arcmin2'))];
+      case 'lens_isolation_generate':
+        return [field('nfields', historySum(params, ['ntrain', 'nvalid', 'ntest']))];
+      case 'lens_isolation_train':
+        return [field('source members', historyText(params, 'sources')),
+          field('steps', historyCount(params, 'steps')), field('batch', historyCount(params, 'batch_size'))];
+      case 'lens_isolation_evaluate':
+        return [field('fields', historyCount(params, 'limit')), field('crop px', historyCount(params, 'crop_size'))];
+      case 'download_euclid_cutouts':
+        return [field('VIS px', historyCount(params, 'vis_pixels')), field('workers', historyCount(params, 'workers'))];
+      case 'extract_euclid_psf':
+        return [field('stars / PSF', historyCount(params, 'stars_per_psf')), field('max stars', historyCount(params, 'num_stars')), field('kernel px', historyCount(params, 'output_size'))];
+      case 'psf_rotation_pool':
+        return [field('rotations', historyCount(params, 'rotations')), field('crop px', historyCount(params, 'crop'))];
+      case 'download_tng_skirt':
+        return [field('galaxies', historyCount(params, 'limit', 'all')), field('workers', historyCount(params, 'workers'))];
+      case 'tng_grid':
+        return [field('band', historyText(params, 'band')), field('downsample', historyText(params, 'downsample'))];
+      case 'tng_stack':
+        return [field('band', historyText(params, 'band')), field('galaxy', historyText(params, 'galaxy_id', 'selected'))];
+      case 'poster_cutout':
+        return [field('object', historyText(params, 'mode')), field('HR px', historyCount(params, 'image_size'))];
+      case 'euclid_query':
+        return [field('stars', historyCount(params, 'num_stars')), field('mag range', `${historyText(params, 'magnitude_min')}–${historyText(params, 'magnitude_limit')}`), field('min SNR', historyCount(params, 'snr_min'))];
+      case 'euclid_verify_photometry':
+        return [field('stars', historyCount(params, 'n')), field('cutout px', historyCount(params, 'size'))];
+      case 'lensfinder_build_stamps':
+        return [field('fields', historyCount(params, 'max_fields', 'all')), field('neg / lens', historyCount(params, 'neg_per_lens')), field('stamp px', historyCount(params, 'stamp_m'))];
+      case 'lensfinder_sr_infer':
+        return [field('subset', historyText(params, 'subset', 'all'))];
+      case 'lensfinder_train':
+        return [field('epochs', historyCount(params, 'epochs')), field('batch', historyCount(params, 'batch_size')), field('mode', historyText(params, 'training_mode'))];
+      case 'ensemble_train':
+        return [field('mode', historyText(params, 'mode')), field('members', historyCount(params, 'count', historyText(params, 'members'))), field('steps', historyCount(params, 'steps', historyText(params, 'extra_steps')))];
+      case 'download':
+        return [field('tiles', historyCount(params, 'n_tiles'))];
+      case 'extract_psf': {
+        const half = historyNumber(params.half_side);
+        return [field('stars', historyCount(params, 'n_stars')), field('PSF px', half == null ? '—' : (2 * half + 1).toLocaleString())];
+      }
+      default: return [];
+    }
+  }
+
+  function renderHistoryRows(rows, stepId) {
+    if (!rows || !rows.length) return `<span class="muted">no previous runs for this step yet</span>`;
+    const firstTask = historyTaskSpec(stepId, historyParam(rows[0]));
+    const hasGpu = rows.some(r => (historyNumber(r.req_gpus) || 0) > 0 || (historyNumber(r.alloc_gpus) || 0) > 0 || historyNumber(r.gpu_util_mean) != null || historyNumber(r.gpu_util_peak) != null || historyNumber(r.gpu_mem_peak) != null);
+    const head = `<tr><th>run</th><th>state</th>${firstTask.map(t => `<th>${escapeHtml(t.label)}</th>`).join('')}<th>elapsed</th><th>CPU</th><th>memory</th>${hasGpu ? '<th>GPU</th>' : ''}</tr>`;
+    const rowHtml = rows.slice(0, 20).map(r => {
+      const st = (r.state || '').toUpperCase();
+      const stateClass = (st === 'COMPLETED' || st === 'DONE') ? 'badge-done'
+                       : (st === '') ? 'badge-running'
+                       : (st.startsWith('CANCELLED') || st.startsWith('TIMEOUT')) ? 'badge-cancelled'
+                       : 'badge-failed';
+      const params = historyParam(r);
+      const task = historyTaskSpec(stepId, params).map(t => `<td><code>${escapeHtml(t.value)}</code></td>`).join('');
+      const mean = historyNumber(r.cpu_util_mean), peak = historyNumber(r.cpu_util_peak);
+      const cpus = r.req_cpus || r.alloc_cpus || '—';
+      const rss = historyNumber(r.max_rss_mb), alloc = historyNumber(r.alloc_memory_mb);
+      const memPct = rss != null && alloc > 0 ? ` (${(100 * rss / alloc).toFixed(0)}%)` : '';
+      const memory = `${escapeHtml(r.req_memory || '—')} requested · peak ${rss == null ? '—' : `${rss.toFixed(0)} MB${memPct}`}`;
+      const gpu = hasGpu ? `<td><code>${escapeHtml(String(r.req_gpus || r.alloc_gpus || '—'))} GPU · mean/peak ${mean == null ? '—' : `${mean.toFixed(0)}%`} / ${peak == null ? '—' : `${peak.toFixed(0)}%`} · mem ${historyNumber(r.gpu_mem_peak) == null ? '—' : `${historyNumber(r.gpu_mem_peak).toFixed(0)}%`}</code></td>` : '';
+      return `<tr><td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td><td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td>${task}<td><code>${r.elapsed_seconds ? fmtRuntime(parseFloat(r.elapsed_seconds)) : '—'}</code></td><td><code>${escapeHtml(String(cpus))} CPU · mean/peak ${mean == null ? '—' : `${mean.toFixed(0)}%`} / ${peak == null ? '—' : `${peak.toFixed(0)}%`}</code></td><td><code>${memory}</code></td>${gpu}</tr>`;
+    }).join('');
+    return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;
+  }
+
   function maybePrefillResources(form, match) {
     if (!match) return false;
     let filled = 0;
@@ -815,7 +923,7 @@ large cutout don't leak across train/validate."></label>`;
         return;
       }
       const data = await resp.json();
-      panel.innerHTML = renderHistoryRows(data.history);
+      panel.innerHTML = renderHistoryRows(data.history, stepId);
       if (data.match) {
         const filled = maybePrefillResources(form, data.match);
         if (hint) {

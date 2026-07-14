@@ -455,7 +455,7 @@ button.secondary:hover { background: #565e64; }
   padding: 0 6px; color: #555;
 }
 .hst-step-form .js-history-panel {
-  max-height: 260px; overflow-y: auto;
+  max-height: 260px; overflow: auto;
 }
 .hst-step-form table.history-table {
   width: 100%; border-collapse: collapse; font-size: 12px;
@@ -469,6 +469,7 @@ button.secondary:hover { background: #565e64; }
 .hst-step-form table.history-table th {
   font-size: 11px; color: #777; font-weight: 600;
 }
+.hst-step-form table.history-table code { font-size: 11px; }
 
 /* ── Ensemble training curves (ensemble_train_curves.js) ─────────────────
    The JS emits .etc-panels (two SVG charts), .etc-legend and per-member
