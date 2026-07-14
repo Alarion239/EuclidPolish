@@ -835,7 +835,7 @@ large cutout don't leak across train/validate."></label>`;
     if (!rows || !rows.length) return `<span class="muted">no previous runs for this step yet</span>`;
     const firstTask = historyTaskSpec(stepId, historyParam(rows[0]));
     const hasGpu = rows.some(r => (historyNumber(r.req_gpus) || 0) > 0 || (historyNumber(r.alloc_gpus) || 0) > 0 || historyNumber(r.gpu_util_mean) != null || historyNumber(r.gpu_util_peak) != null || historyNumber(r.gpu_mem_peak) != null);
-    const head = `<tr><th>run</th><th>state</th><th>elapsed</th>${firstTask.map(t => `<th>${escapeHtml(t.label)}</th>`).join('')}<th>CPU</th><th>memory</th>${hasGpu ? '<th>GPU</th>' : ''}</tr>`;
+    const head = `<tr><th>run</th><th>state</th><th>elapsed (H:MM)</th>${firstTask.map(t => `<th>${escapeHtml(t.label)}</th>`).join('')}<th>CPU max used / requested (peak %) · mean %</th><th>memory max used / requested (%)</th>${hasGpu ? '<th>GPU max used / requested (peak %) · mean % · memory %</th>' : ''}</tr>`;
     const rowHtml = rows.slice(0, 20).map(r => {
       const st = (r.state || '').toUpperCase();
       const stateClass = (st === 'COMPLETED' || st === 'DONE') ? 'badge-done'
@@ -854,9 +854,9 @@ large cutout don't leak across train/validate."></label>`;
       const gpuRequested = historyNumber(r.req_gpus) ?? historyNumber(r.alloc_gpus);
       const gpuPeak = historyNumber(r.gpu_util_peak), gpuMean = historyNumber(r.gpu_util_mean);
       const gpuUsed = gpuRequested != null && gpuPeak != null ? gpuRequested * gpuPeak / 100 : null;
-      const gpu = hasGpu ? `<td><code>${gpuUsed == null ? '—' : gpuUsed.toFixed(1)} / ${gpuRequested == null ? '—' : gpuRequested} (${gpuPeak == null ? '—' : `${gpuPeak.toFixed(0)}%`}) · mean ${gpuMean == null ? '—' : `${gpuMean.toFixed(0)}%`} · mem ${historyNumber(r.gpu_mem_peak) == null ? '—' : `${historyNumber(r.gpu_mem_peak).toFixed(0)}%`}</code></td>` : '';
+      const gpu = hasGpu ? `<td><code>${gpuUsed == null ? '—' : gpuUsed.toFixed(1)} / ${gpuRequested == null ? '—' : gpuRequested} (${gpuPeak == null ? '—' : `${gpuPeak.toFixed(0)}%`}) · ${gpuMean == null ? '—' : `${gpuMean.toFixed(0)}%`} · ${historyNumber(r.gpu_mem_peak) == null ? '—' : `${historyNumber(r.gpu_mem_peak).toFixed(0)}%`}</code></td>` : '';
       const elapsed = r.elapsed_seconds != null && r.elapsed_seconds !== '' ? fmtElapsed(r.elapsed_seconds) : '—';
-      const cpu = `${cpuUsed == null ? '—' : cpuUsed.toFixed(1)} / ${cpuRequested == null ? '—' : cpuRequested} (${cpuPeak == null ? '—' : `${cpuPeak.toFixed(0)}%`}) · mean ${cpuMean == null ? '—' : `${cpuMean.toFixed(0)}%`}`;
+      const cpu = `${cpuUsed == null ? '—' : cpuUsed.toFixed(1)} / ${cpuRequested == null ? '—' : cpuRequested} (${cpuPeak == null ? '—' : `${cpuPeak.toFixed(0)}%`}) · ${cpuMean == null ? '—' : `${cpuMean.toFixed(0)}%`}`;
       return `<tr><td><code>${escapeHtml(fmtIsoLocal(r.submitted_at))}</code></td><td><span class="badge ${stateClass}">${escapeHtml(r.state || 'pending')}</span></td><td><code>${elapsed}</code></td>${task}<td><code>${cpu}</code></td><td><code>${memory}</code></td>${gpu}</tr>`;
     }).join('');
     return `<table class="history-table"><thead>${head}</thead><tbody>${rowHtml}</tbody></table>`;

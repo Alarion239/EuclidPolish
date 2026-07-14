@@ -478,42 +478,37 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
       header: "state", width: 96,
       cell: (row) => <Badge tone={jobStateTone(row.state || "")}>{row.state || "—"}</Badge>,
     },
-    { header: "elapsed", width: 78, align: "right", cell: (row) => <span className="mono">{formatElapsed(row.elapsed_seconds)}</span> },
+    { header: "elapsed (H:MM)", width: 96, cell: (row) => <span className="mono fasrc-history__value">{formatElapsed(row.elapsed_seconds)}</span> },
     ...taskColumns,
     {
-      header: "CPU", width: 148,
+      header: "CPU max used / requested (peak %) · mean %", width: 220,
       cell: (row) => {
         const requested = finiteNumber(row.req_cpus) ?? finiteNumber(row.alloc_cpus);
         const peak = finiteNumber(row.cpu_util_peak);
         const used = requested != null && peak != null ? requested * peak / 100 : null;
-        return <div className="fasrc-history__stack mono">
-          <span>{used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`})</span>
-          <span>mean {formatPercent(row.cpu_util_mean)}</span>
-        </div>;
+        return <span className="mono fasrc-history__value">
+          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {formatPercent(row.cpu_util_mean)}
+        </span>;
       },
     },
     {
-      header: "memory", width: 152,
+      header: "memory max used / requested (%)", width: 190,
       cell: (row) => {
         const used = finiteNumber(row.max_rss_mb);
         const requested = memoryMegabytes(row.alloc_memory_mb) ?? memoryMegabytes(row.req_memory);
         const percent = used != null && requested != null && requested > 0 ? `${(100 * used / requested).toFixed(0)}%` : "—";
-        return <div className="fasrc-history__stack mono">
-          <span>{formatMemory(used)} / {formatMemory(requested)} ({percent})</span>
-          <span>peak resident / requested</span>
-        </div>;
+        return <span className="mono fasrc-history__value">{formatMemory(used)} / {formatMemory(requested)} ({percent})</span>;
       },
     },
     ...(hasGpu ? [{
-      header: "GPU", width: 160,
+      header: "GPU max used / requested (peak %) · mean % · memory %", width: 260,
       cell: (row) => {
         const requested = finiteNumber(row.req_gpus) ?? finiteNumber(row.alloc_gpus);
         const peak = finiteNumber(row.gpu_util_peak);
         const used = requested != null && peak != null ? requested * peak / 100 : null;
-        return <div className="fasrc-history__stack mono">
-          <span>{used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`})</span>
-          <span>mean {formatPercent(row.gpu_util_mean)} · mem {formatPercent(row.gpu_mem_peak)}</span>
-        </div>;
+        return <span className="mono fasrc-history__value">
+          {used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`}) · {formatPercent(row.gpu_util_mean)} · {formatPercent(row.gpu_mem_peak)}
+        </span>;
       },
     } as Column<HistoryRow>] : []),
   ];

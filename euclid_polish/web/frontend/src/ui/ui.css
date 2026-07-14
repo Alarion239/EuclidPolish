@@ -217,10 +217,18 @@
   margin-bottom: var(--s2);
 }
 .fasrc-history__note { font-size: 11px; margin-top: 2px; }
-.fasrc-history__date { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
-.fasrc-history__value { white-space: nowrap; font-size: 11px; }
-.fasrc-history__stack { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; white-space: nowrap; }
-.fasrc-history__stack span + span { color: var(--text-faint); }
+.fasrc-history .ui-table { font: 11px/1.25 var(--font-mono); font-variant-numeric: tabular-nums; }
+.fasrc-history .ui-table th,
+.fasrc-history .ui-table td {
+  text-align: left; vertical-align: middle; white-space: nowrap;
+  padding: 7px 10px 7px 0; font: inherit;
+}
+.fasrc-history .ui-table th { font-weight: 600; color: var(--text-faint); }
+.fasrc-history .ui-table td code,
+.fasrc-history .ui-badge,
+.fasrc-history__date,
+.fasrc-history__value { font: inherit; white-space: nowrap; }
+.fasrc-history__date { color: var(--text-dim); }
 .fasrc-mon {
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--surface-2); padding: var(--s3) var(--s4); margin-top: var(--s3);
