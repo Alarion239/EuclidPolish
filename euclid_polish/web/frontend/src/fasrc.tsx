@@ -330,17 +330,25 @@ const finiteNumber = (value: unknown): number | null => {
   return value !== "" && value != null && isFinite(number) ? number : null;
 };
 
-const compactDuration = (value: unknown): string => {
+const formatElapsed = (value: unknown): string => {
   const seconds = finiteNumber(value);
   if (seconds == null) return "—";
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(seconds >= 36000 ? 1 : 2)} h`;
-  if (seconds >= 60) return `${(seconds / 60).toFixed(seconds >= 600 ? 1 : 2)} min`;
-  return `${Math.round(seconds)} s`;
+  const minutes = Math.max(0, Math.round(seconds / 60));
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
 };
 
-const compactMemory = (megabytes: number): string => megabytes >= 1024
-  ? `${(megabytes / 1024).toFixed(megabytes >= 10240 ? 0 : 1)} GB`
-  : `${Math.round(megabytes)} MB`;
+const memoryMegabytes = (value: unknown): number | null => {
+  const number = finiteNumber(value);
+  if (number != null) return number;
+  const match = String(value ?? "").trim().match(/^([\d.]+)\s*([KMGT])?i?B?$/i);
+  if (!match) return null;
+  const scale = { k: 1 / 1024, m: 1, g: 1024, t: 1024 * 1024 }[String(match[2] || "m").toLowerCase() as "k" | "m" | "g" | "t"];
+  return Number(match[1]) * scale;
+};
+
+const formatMemory = (megabytes: number | null): string => megabytes == null ? "—"
+  : megabytes >= 1024 ? `${(megabytes / 1024).toFixed(megabytes >= 10240 ? 0 : 1)} GB`
+    : `${Math.round(megabytes)} MB`;
 
 const formatPercent = (value: unknown, scale = 1): string => {
   const number = finiteNumber(value);
@@ -378,6 +386,17 @@ const paramSum = (params: HistoryParamsMap, keys: string[]): string => {
     if (number != null) { total += number; found = true; }
   }
   return found ? total.toLocaleString() : "—";
+};
+const ensembleMemberCount = (params: HistoryParamsMap): number | null => {
+  const explicit = finiteNumber(param(params, "count")) ?? finiteNumber(param(params, "n_members"));
+  if (explicit != null) return explicit;
+  const members = paramText(params, "members", "").split(",").map((value) => value.trim()).filter(Boolean);
+  return members.length || null;
+};
+const ensembleTotalSteps = (params: HistoryParamsMap): string => {
+  const members = ensembleMemberCount(params);
+  const steps = finiteNumber(param(params, "steps")) ?? finiteNumber(param(params, "extra_steps"));
+  return members != null && steps != null ? (members * steps).toLocaleString() : "—";
 };
 const taskColumn = (header: string, render: (params: HistoryParamsMap) => string, width?: number): Column<HistoryRow> => ({
   header, width,
@@ -424,7 +443,7 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
     case "lensfinder_train":
       return [taskColumn("epochs", (p) => paramCount(p, "epochs"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70), taskColumn("mode", (p) => paramText(p, "training_mode"), 104)];
     case "ensemble_train":
-      return [taskColumn("mode", (p) => paramText(p, "mode"), 82), taskColumn("members", (p) => paramCount(p, "count", paramText(p, "members")), 88), taskColumn("steps", (p) => paramCount(p, "steps", paramText(p, "extra_steps")), 82)];
+      return [taskColumn("total steps", ensembleTotalSteps, 104)];
     case "download":
       return [taskColumn("tiles", (p) => paramCount(p, "n_tiles"), 72)];
     case "extract_psf":
@@ -459,35 +478,43 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
       header: "state", width: 96,
       cell: (row) => <Badge tone={jobStateTone(row.state || "")}>{row.state || "—"}</Badge>,
     },
+    { header: "elapsed", width: 78, align: "right", cell: (row) => <span className="mono">{formatElapsed(row.elapsed_seconds)}</span> },
     ...taskColumns,
-    { header: "elapsed", width: 80, align: "right", cell: (row) => <span className="mono">{compactDuration(row.elapsed_seconds)}</span> },
     {
-      header: "CPU", width: 118,
-      cell: (row) => <div className="fasrc-history__stack mono">
-        <span>{finiteNumber(row.req_cpus) ?? finiteNumber(row.alloc_cpus) ?? 0} CPU</span>
-        <span>mean/peak {formatPercent(row.cpu_util_mean)} / {formatPercent(row.cpu_util_peak)}</span>
-      </div>,
+      header: "CPU", width: 148,
+      cell: (row) => {
+        const requested = finiteNumber(row.req_cpus) ?? finiteNumber(row.alloc_cpus);
+        const peak = finiteNumber(row.cpu_util_peak);
+        const used = requested != null && peak != null ? requested * peak / 100 : null;
+        return <div className="fasrc-history__stack mono">
+          <span>{used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`})</span>
+          <span>mean {formatPercent(row.cpu_util_mean)}</span>
+        </div>;
+      },
     },
     {
-      header: "memory", width: 128,
+      header: "memory", width: 152,
       cell: (row) => {
         const used = finiteNumber(row.max_rss_mb);
-        const allocated = finiteNumber(row.alloc_memory_mb);
-        const percent = used != null && allocated != null && allocated > 0
-          ? ` · ${formatPercent((used / allocated) * 100)}` : "";
+        const requested = memoryMegabytes(row.alloc_memory_mb) ?? memoryMegabytes(row.req_memory);
+        const percent = used != null && requested != null && requested > 0 ? `${(100 * used / requested).toFixed(0)}%` : "—";
         return <div className="fasrc-history__stack mono">
-          <span>{row.req_memory || "—"} requested</span>
-          <span>peak {used == null ? "—" : compactMemory(used)}{percent}</span>
+          <span>{formatMemory(used)} / {formatMemory(requested)} ({percent})</span>
+          <span>peak resident / requested</span>
         </div>;
       },
     },
     ...(hasGpu ? [{
-      header: "GPU", width: 118,
-      cell: (row) => <div className="fasrc-history__stack mono">
-        <span>{finiteNumber(row.req_gpus) ?? finiteNumber(row.alloc_gpus) ?? 0} GPU</span>
-        <span>mean/peak {formatPercent(row.gpu_util_mean)} / {formatPercent(row.gpu_util_peak)}</span>
-        <span>mem peak {formatPercent(row.gpu_mem_peak)}</span>
-      </div>,
+      header: "GPU", width: 160,
+      cell: (row) => {
+        const requested = finiteNumber(row.req_gpus) ?? finiteNumber(row.alloc_gpus);
+        const peak = finiteNumber(row.gpu_util_peak);
+        const used = requested != null && peak != null ? requested * peak / 100 : null;
+        return <div className="fasrc-history__stack mono">
+          <span>{used == null ? "—" : used.toFixed(1)} / {requested == null ? "—" : requested} ({peak == null ? "—" : `${peak.toFixed(0)}%`})</span>
+          <span>mean {formatPercent(row.gpu_util_mean)} · mem {formatPercent(row.gpu_mem_peak)}</span>
+        </div>;
+      },
     } as Column<HistoryRow>] : []),
   ];
   return (
