@@ -10,6 +10,10 @@ def test_lens_isolation_steps_are_additive_and_use_only_normal_record_controls()
     generate_cmd = generate.build_command({"n_cpus": 32, "ntrain": 4, "nvalid": 2, "ntest": 2})
     assert generate_cmd[0].endswith("lens_isolation_generate.py")
     assert generate_cmd[generate_cmd.index("--workers") + 1] == "32"
+    assert "--force" not in generate_cmd
+    assert "--force" in generate.build_command(
+        {"n_cpus": 16, "ntrain": 4, "nvalid": 2, "ntest": 2, "force": "1"}
+    )
     train_cmd = train.build_command(
         {"sources": "member_01", "loss_norm": "l2", "lens_weight": "8", "crops_per_field": "16"}
     )

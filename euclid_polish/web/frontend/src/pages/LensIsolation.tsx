@@ -63,6 +63,7 @@ export default function LensIsolationPage() {
   const [ntrain, setNtrain] = useState("6400");
   const [nvalid, setNvalid] = useState("100");
   const [ntest, setNtest] = useState("100");
+  const [forceGeneration, setForceGeneration] = useState(false);
   const [sources, setSources] = useState("");
   const [steps, setSteps] = useState("50000");
   const [batch, setBatch] = useState("16");
@@ -75,8 +76,8 @@ export default function LensIsolationPage() {
   const [syncMessage, setSyncMessage] = useState("");
 
   const generation = useMemo(
-    () => ({ ntrain, nvalid, ntest }),
-    [ntrain, nvalid, ntest],
+    () => ({ ntrain, nvalid, ntest, force: forceGeneration ? "1" : "0" }),
+    [ntrain, nvalid, ntest, forceGeneration],
   );
   const training = useMemo(() => ({
     sources: sources.trim(), steps, batch_size: batch, evaluate_every: "500",
@@ -157,6 +158,16 @@ export default function LensIsolationPage() {
               <NumberField label="train" value={ntrain} onChange={setNtrain} min={1} step={1} />
               <NumberField label="validate" value={nvalid} onChange={setNvalid} min={1} step={1} />
               <NumberField label="test" value={ntest} onChange={setNtest} min={1} step={1} />
+            </div>
+            <div style={{ marginBottom: "var(--s3)" }}>
+              <Checkbox checked={forceGeneration} onChange={setForceGeneration}>
+                Replace all experiment records and recompute from scratch
+              </Checkbox>
+              {forceGeneration && (
+                <p className="ui-field__hint" style={{ marginBottom: 0 }}>
+                  Force enabled: the existing train, validate, and test records will be deleted before generation.
+                </p>
+              )}
             </div>
             <StepById stepId="lens_isolation_generate" extraParams={generation} />
           </CardBody>

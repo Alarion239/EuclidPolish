@@ -181,6 +181,8 @@ def test_react_generation_card_uses_only_fasrc_cpu_resources():
 
     assert 'label="workers"' not in page
     assert "setWorkers" not in page
+    assert "Replace all experiment records and recompute from scratch" in page
+    assert 'force: forceGeneration ? "1" : "0"' in page
 
 
 def test_classic_generation_card_uses_only_fasrc_cpu_resources():
