@@ -128,6 +128,7 @@ class MemberTrainSpec:
     psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB
     psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX
     psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA
+    saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB
     icnr: bool = False
     starless: bool = False
     #: Per-member asinh stretch knee (electrons) — the input/output
@@ -389,6 +390,8 @@ class EnsembleModel:
                         "psf_warp_prob": float(spec.psf_warp_prob),
                         "psf_warp_alpha_max": float(spec.psf_warp_alpha_max),
                         "psf_warp_sigma": float(spec.psf_warp_sigma),
+                        "saturation_mask_prob": float(
+                            spec.saturation_mask_prob),
                         "icnr": bool(spec.icnr),
                         # Star regime: starless members erase stars (target =
                         # the starless `clean`), starfull reconstruct them
@@ -415,6 +418,7 @@ class EnsembleModel:
                     psf_warp_prob=spec.psf_warp_prob,
                     psf_warp_alpha_max=spec.psf_warp_alpha_max,
                     psf_warp_sigma=spec.psf_warp_sigma,
+                    saturation_mask_prob=spec.saturation_mask_prob,
                     starless=spec.starless,
                     **train_kwargs)
             self._models.append(m)

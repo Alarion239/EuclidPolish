@@ -149,19 +149,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "missing bands fall back to Gaussian.")
     ap.add_argument("--psf-warp-prob", type=float,
                     default=Config.TRAIN_PSF_WARP_PROB,
-                    help="Probability that injected stars receive an "
-                         "independent empirical PSF draw plus elastic "
-                         "deformation in each generated dirty exposure. "
-                         "Default 1; 0 disables it.")
+                    help="Probability that each generated dirty exposure "
+                         "receives an elastic deformation of its shared "
+                         "empirical PSF. Default 1; 0 disables it.")
     ap.add_argument("--psf-warp-alpha-max", type=float,
                     default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
-                    help="Maximum stellar-wing elastic displacement in HR "
+                    help="Maximum observation-PSF elastic displacement in HR "
                          "pixels; alpha is drawn uniformly from [0, max] "
                          "for each exposure (default 20).")
     ap.add_argument("--psf-warp-sigma", type=float,
                     default=Config.TRAIN_PSF_WARP_SIGMA,
                     help="Gaussian smoothing scale of the elastic "
                          "displacement field in HR pixels (default 3).")
+    ap.add_argument("--saturation-mask-prob", type=float,
+                    default=Config.TRAIN_SATURATION_MASK_PROB,
+                    help="Probability that an above-well source receives a "
+                         "dark rectangular core in generated train, "
+                         "validate, and test data. Default 0.2; capped at "
+                         "0.5 so intact bright cores remain common.")
     ap.add_argument("--records-dir",    default=Config.RECORDS_DIR_V2)
     ap.add_argument("--checkpoint-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
     ap.add_argument("--ntrain",         type=int, default=6400)
@@ -336,6 +341,14 @@ def _observation_config_from_args(
     ``getattr`` fallbacks preserve programmatic callers that construct a
     minimal legacy Namespace while CLI/WebUI runs get the configured warp.
     """
+    saturation_mask_prob = float(getattr(
+        args, "saturation_mask_prob", Config.TRAIN_SATURATION_MASK_PROB,
+    ))
+    if not 0.0 <= saturation_mask_prob <= Config.TRAIN_SATURATION_MASK_PROB_MAX:
+        raise ValueError(
+            "saturation_mask_prob must be in [0, "
+            f"{Config.TRAIN_SATURATION_MASK_PROB_MAX:g}] for training data"
+        )
     return ObservationSimulatorConfig(
         add_noise=True,
         psf_warp_prob=float(getattr(
@@ -344,6 +357,7 @@ def _observation_config_from_args(
             args, "psf_warp_alpha_max", Config.TRAIN_PSF_WARP_ALPHA_MAX)),
         psf_warp_sigma=float(getattr(
             args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA)),
+        saturation_mask_prob=saturation_mask_prob,
     )
 
 
@@ -485,6 +499,10 @@ def step_convolve(args: argparse.Namespace) -> None:
         f"p={fwd.config.psf_warp_prob:g}, "
         f"alpha_max={fwd.config.psf_warp_alpha_max:g} HR px, "
         f"sigma={fwd.config.psf_warp_sigma:g} HR px"
+    )
+    _log(
+        "  saturation dark-core probability: "
+        f"{fwd.config.saturation_mask_prob:g}"
     )
 
     # One master seed for the forward step, recorded on its run so the noise /
@@ -1007,7 +1025,9 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
                      lens_sigma_v_max_kms=Config.LENS_SIGMA_V_MAX_KMS,
                      psf_warp_prob=Config.TRAIN_PSF_WARP_PROB,
                      psf_warp_alpha_max=Config.TRAIN_PSF_WARP_ALPHA_MAX,
-                     psf_warp_sigma=Config.TRAIN_PSF_WARP_SIGMA) -> None:
+                     psf_warp_sigma=Config.TRAIN_PSF_WARP_SIGMA,
+                     saturation_mask_prob=Config.TRAIN_SATURATION_MASK_PROB,
+                     ) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
     memmapped and only the filtered columns are held, so each worker's copy
@@ -1041,6 +1061,7 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
             psf_warp_prob=float(psf_warp_prob),
             psf_warp_alpha_max=float(psf_warp_alpha_max),
             psf_warp_sigma=float(psf_warp_sigma),
+            saturation_mask_prob=float(saturation_mask_prob),
         ),
     )
     _W_RECORDS_DIR = records_dir
@@ -1084,6 +1105,10 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         f"p={observation_cfg.psf_warp_prob:g}, "
         f"alpha_max={observation_cfg.psf_warp_alpha_max:g} HR px, "
         f"sigma={observation_cfg.psf_warp_sigma:g} HR px"
+    )
+    _log(
+        "  saturation dark-core probability: "
+        f"{observation_cfg.saturation_mask_prob:g}"
     )
 
     onthefly_train = bool(getattr(args, "onthefly_train", False))
@@ -1193,7 +1218,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           getattr(args, "psf_warp_alpha_max",
                                   Config.TRAIN_PSF_WARP_ALPHA_MAX),
                           getattr(args, "psf_warp_sigma",
-                                  Config.TRAIN_PSF_WARP_SIGMA)),
+                                  Config.TRAIN_PSF_WARP_SIGMA),
+                          getattr(args, "saturation_mask_prob",
+                                  Config.TRAIN_SATURATION_MASK_PROB)),
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):

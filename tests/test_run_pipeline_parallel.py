@@ -13,6 +13,7 @@ import importlib.util
 import os
 
 import numpy as np
+import pytest
 import tensorflow as tf
 
 from euclid_polish.config import Config
@@ -88,15 +89,23 @@ def test_generation_warp_cli_configures_shared_forward_for_all_splits():
     assert defaults.psf_warp_prob == Config.TRAIN_PSF_WARP_PROB
     assert defaults.psf_warp_alpha_max == Config.TRAIN_PSF_WARP_ALPHA_MAX
     assert defaults.psf_warp_sigma == Config.TRAIN_PSF_WARP_SIGMA
+    assert defaults.saturation_mask_prob == Config.TRAIN_SATURATION_MASK_PROB
 
     configured = rp._observation_config_from_args(rp.parse_args([
         "--psf-warp-prob", "0.4",
         "--psf-warp-alpha-max", "12",
         "--psf-warp-sigma", "5",
+        "--saturation-mask-prob", "0.35",
     ]))
     assert configured.psf_warp_prob == 0.4
     assert configured.psf_warp_alpha_max == 12.0
     assert configured.psf_warp_sigma == 5.0
+    assert configured.saturation_mask_prob == 0.35
+
+    with pytest.raises(ValueError, match="saturation_mask_prob"):
+        rp._observation_config_from_args(rp.parse_args([
+            "--saturation-mask-prob", "0.51",
+        ]))
 
 
 def test_targeted_regeneration_cli_selects_and_forces_only_named_splits():
@@ -390,13 +399,14 @@ def test_synthetic_steps_forward_generation_warp_knobs():
     params = {
         "n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
         "psf_warp_prob": "0.75", "psf_warp_alpha_max": "12",
-        "psf_warp_sigma": "4",
+        "psf_warp_sigma": "4", "saturation_mask_prob": "0.3",
     }
     for step_id in ("synthetic_generate", "lensfinder_generate"):
         cmd = " ".join(REGISTRY.get(step_id).build_command(params))
         assert "--psf-warp-prob 0.75" in cmd
         assert "--psf-warp-alpha-max 12" in cmd
         assert "--psf-warp-sigma 4" in cmd
+        assert "--saturation-mask-prob 0.3" in cmd
 
 
 def test_synthetic_step_forwards_targeted_regeneration_splits():

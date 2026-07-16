@@ -1122,7 +1122,9 @@ class EnsembleTrainStep(FASRCPipelineStep):
                         cmd += [flag, str(int(float(val)))]
             for flag, key in (("--psf-warp-prob", "psf_warp_prob"),
                               ("--psf-warp-alpha-max", "psf_warp_alpha_max"),
-                              ("--psf-warp-sigma", "psf_warp_sigma")):
+                              ("--psf-warp-sigma", "psf_warp_sigma"),
+                              ("--saturation-mask-prob",
+                               "saturation_mask_prob")):
                 val = str(params.get(key, "")).strip()
                 if val != "":
                     with contextlib.suppress(ValueError):
@@ -1312,7 +1314,9 @@ class SyntheticGenerateStep(RunPipelineStep):
                             ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms"),
                             ("psf_warp_prob",        "--psf-warp-prob"),
                             ("psf_warp_alpha_max",   "--psf-warp-alpha-max"),
-                            ("psf_warp_sigma",       "--psf-warp-sigma")):
+                            ("psf_warp_sigma",       "--psf-warp-sigma"),
+                            ("saturation_mask_prob",
+                             "--saturation-mask-prob")):
             val = params.get(param)
             if val not in (None, ""):
                 with contextlib.suppress(TypeError, ValueError):

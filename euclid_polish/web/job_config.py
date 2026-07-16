@@ -43,7 +43,8 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
                                 "psf_warp_prob": "psf_warp_prob",
                                 "psf_warp_alpha_max": "psf_warp_alpha_max",
-                                "psf_warp_sigma": "psf_warp_sigma"},
+                                "psf_warp_sigma": "psf_warp_sigma",
+                                "saturation_mask_prob": "saturation_mask_prob"},
     "lensfinder_generate":     {"n_train": "lensfinder_n_fields",
                                 "n_valid": "lensfinder_n_valid",
                                 "image_size": "lensfinder_image_size",
@@ -56,7 +57,8 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
                                 "psf_warp_prob": "psf_warp_prob",
                                 "psf_warp_alpha_max": "psf_warp_alpha_max",
-                                "psf_warp_sigma": "psf_warp_sigma"},
+                                "psf_warp_sigma": "psf_warp_sigma",
+                                "saturation_mask_prob": "saturation_mask_prob"},
     "lensfinder_train":        {"epochs": "lensfinder_epochs",
                                 "patience": "lensfinder_patience",
                                 "batch_size": "lensfinder_batch_size",
@@ -70,6 +72,7 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "psf_warp_prob": "psf_warp_prob",
                                 "psf_warp_alpha_max": "psf_warp_alpha_max",
                                 "psf_warp_sigma": "psf_warp_sigma",
+                                "saturation_mask_prob": "saturation_mask_prob",
                                 "plateau_lr_enabled": "plateau_lr_enabled",
                                 "plateau_lr_factor": "plateau_lr_factor",
                                 "plateau_lr_patience": "plateau_lr_patience",
@@ -134,6 +137,7 @@ class JobConfig:
     psf_warp_prob:        float = Config.TRAIN_PSF_WARP_PROB
     psf_warp_alpha_max:   float = Config.TRAIN_PSF_WARP_ALPHA_MAX
     psf_warp_sigma:       float = Config.TRAIN_PSF_WARP_SIGMA
+    saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB
     plateau_lr_enabled:   int   = int(Config.PLATEAU_LR_ENABLED)
     plateau_lr_factor:    float = Config.PLATEAU_LR_FACTOR
     plateau_lr_patience:  int   = Config.PLATEAU_LR_PATIENCE
@@ -189,11 +193,19 @@ def load() -> JobConfig:
         if hasattr(cfg, k) and v is not None:
             setattr(cfg, k, v)
     cfg.vis_pixels = _ensure_odd(int(cfg.vis_pixels))
+    cfg.saturation_mask_prob = min(
+        max(float(cfg.saturation_mask_prob), 0.0),
+        Config.TRAIN_SATURATION_MASK_PROB_MAX,
+    )
     return cfg
 
 
 def save(cfg: JobConfig) -> None:
     cfg.vis_pixels = _ensure_odd(int(cfg.vis_pixels))
+    cfg.saturation_mask_prob = min(
+        max(float(cfg.saturation_mask_prob), 0.0),
+        Config.TRAIN_SATURATION_MASK_PROB_MAX,
+    )
     os.makedirs(CONFIG_DIR, exist_ok=True)
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w") as fp:

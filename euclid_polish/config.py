@@ -185,16 +185,20 @@ class Config:
     PSF_TAPER_INNER_FRAC = 0.82
     PSF_TAPER_OUTER_FRAC = 0.98
 
-    # Stellar-wing PSF augmentation. The original POLISH forward model sampled
+    # Observation-PSF augmentation. The original POLISH forward model sampled
     # an elastic PSF warp with alpha ~ Uniform(0, 20), sigma=3 pixels for every
-    # generated pair. Injected stars now live on a separate sparse plane: a
-    # warp draw gives them an independent empirical PSF sample plus elastic
-    # deformation while galaxies keep the nominal scene PSF. The same defaults
-    # drive generated train/validate/test pairs and on-the-fly training without
-    # deforming clean/HR targets.
+    # generated pair. One warped empirical PSF is shared by all sources in the
+    # exposure. The same defaults drive generated train/validate/test pairs and
+    # on-the-fly training without deforming clean/HR targets.
     TRAIN_PSF_WARP_PROB      = 1.0
     TRAIN_PSF_WARP_ALPHA_MAX = 20.0   # maximum displacement-field amplitude
     TRAIN_PSF_WARP_SIGMA     = 3.0    # Gaussian smoothing, HR pixels
+    # MER blackout masks exist in real fields, but they are not applied to
+    # every bright compact source. In the inspected real field, 0/8 brightest
+    # compact star candidates were blacked out; keep a minority masked so
+    # training sees both regimes instead of removing every above-well core.
+    TRAIN_SATURATION_MASK_PROB = 0.2
+    TRAIN_SATURATION_MASK_PROB_MAX = 0.5
 
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's

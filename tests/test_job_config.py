@@ -105,7 +105,8 @@ def test_star_field_mapped_for_synthetic_generate():
 
 
 def test_psf_warp_mapped_for_all_generation_and_training_steps():
-    keys = ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma")
+    keys = ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
+            "saturation_mask_prob")
     for step_id in (
         "synthetic_generate", "lensfinder_generate", "ensemble_train",
     ):
@@ -192,6 +193,7 @@ def test_lr_and_plateau_defaults_from_config(cfg_path):
     assert c.psf_warp_prob == Config.TRAIN_PSF_WARP_PROB
     assert c.psf_warp_alpha_max == Config.TRAIN_PSF_WARP_ALPHA_MAX
     assert c.psf_warp_sigma == Config.TRAIN_PSF_WARP_SIGMA
+    assert c.saturation_mask_prob == Config.TRAIN_SATURATION_MASK_PROB
 
 
 def test_lr_and_plateau_update_and_persist(cfg_path):
@@ -219,8 +221,15 @@ def test_lr_plateau_mapped_for_ensemble_train():
               "plateau_lr_factor", "plateau_lr_patience", "plateau_lr_min_delta",
               "plateau_lr_cooldown", "plateau_lr_min_lr", "plateau_lr_metric"):
         assert m[k] == k                               # identity mapping
-    for k in ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma"):
+    for k in ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
+              "saturation_mask_prob"):
         assert m[k] == k
+
+
+def test_saturation_mask_probability_is_capped_at_half(cfg_path):
+    c = job_config.update({"saturation_mask_prob": "0.9"})
+    assert c.saturation_mask_prob == 0.5
+    assert job_config.load().saturation_mask_prob == 0.5
 
 
 def test_config_page_renders_lr_plateau_section(client, cfg_path):

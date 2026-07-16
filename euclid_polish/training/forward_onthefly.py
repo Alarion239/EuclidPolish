@@ -118,6 +118,7 @@ class OnTheFlyForward:
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
+        saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         self.hr_crop_size = int(hr_crop_size)
@@ -137,6 +138,12 @@ class OnTheFlyForward:
             raise ValueError("crops_per_field must be >= 1")
         if self.hr_crop_size % self.scale:
             raise ValueError("hr_crop_size must be divisible by the scale")
+        if not 0.0 <= float(saturation_mask_prob) <= \
+                Config.TRAIN_SATURATION_MASK_PROB_MAX:
+            raise ValueError(
+                "saturation_mask_prob must be in [0, "
+                f"{Config.TRAIN_SATURATION_MASK_PROB_MAX:g}] for training"
+            )
         self._sim = ObservationSimulator(
             psf_sets_by_band=psf_sets,
             config=ObservationSimulatorConfig(
@@ -151,6 +158,7 @@ class OnTheFlyForward:
                 psf_warp_prob=float(psf_warp_prob),
                 psf_warp_alpha_max=float(psf_warp_alpha_max),
                 psf_warp_sigma=float(psf_warp_sigma),
+                saturation_mask_prob=float(saturation_mask_prob),
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.
@@ -182,10 +190,10 @@ class OnTheFlyForward:
                 f"field {field.shape[:2]} smaller than the HR crop {c}")
         rng = self._rng()
 
-        # Keep stars on a separate sparse plane. A warp draw gives them an
-        # independent empirical PSF plus elastic wing deformation; galaxy
-        # morphology keeps the nominal scene PSF. The TARGET is what differs:
-        # starless → the ORIGINAL field; starfull → field + star deltas.
+        # Keep stars on a separate sparse plane for target bookkeeping. They
+        # share the scene's sampled, elastically deformed observation PSF. The
+        # TARGET is what differs: starless → the ORIGINAL field; starfull →
+        # field + star deltas.
         stars = np.zeros_like(field)
         self._inject_stars(stars, rng)
         hr_img = Image(data=field,

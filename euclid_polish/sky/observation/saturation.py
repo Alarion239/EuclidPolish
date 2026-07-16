@@ -5,9 +5,10 @@ bright stars AND bright galaxy nuclei — saturates. In the Euclid (MER)
 pipeline the saturated pixels are *masked*: a rectangular patch around the
 source is set to a fill value (≈0), NOT recorded at the clipped well level.
 This module reproduces that on the forward-modelled LR image: it finds the
-pixels that exceed each band's well depth and zeros a blocky rectangular
-patch around them, so nothing in the dirty image sits above the physical
-well and the masked region reads ~0.
+pixels that exceed each band's well depth and can zero a blocky rectangular
+patch around them. The training forward model applies the mask
+probabilistically because real MER cutouts also contain intact bright stellar
+cores; standalone callers retain the legacy always-mask default.
 
 Well depth (the saturation level, in electrons on the shared 0.10″ LR stack):
 
@@ -98,6 +99,7 @@ def apply_saturation_masking(
     *,
     band_names: Sequence[str],
     trigger_4ch: np.ndarray | None = None,
+    mask_probability: float = 1.0,
 ) -> None:
     """Zero a blocky rectangular patch over every saturated scene region.
 
@@ -108,6 +110,13 @@ def apply_saturation_masking(
     above a low NISP effective well.  The trigger remains source-agnostic:
     bright stars and bright galaxy nuclei alike are masked.  Omitting
     ``trigger_4ch`` retains the direct-array behaviour for standalone callers.
+
+    ``mask_probability`` controls whether each spatially connected above-well
+    source is converted to a blackout. The Bernoulli draw is shared across
+    bands, so 0.2 means a 20% chance per bright source, not four independent
+    chances. A skipped source remains intact in ``lr_4ch``; this represents
+    the bright, unmasked compact stars present in the real MER cutouts while
+    retaining a minority of genuine blackout artifacts.
 
     For each band:
 
@@ -121,17 +130,36 @@ def apply_saturation_masking(
     grid), so the network must inpaint the source from its surroundings. The
     clean HR target is untouched."""
     trigger = lr_4ch if trigger_4ch is None else np.asarray(trigger_4ch)
+    probability = float(mask_probability)
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("mask_probability must be in [0, 1]")
     if trigger.shape != lr_4ch.shape:
         raise ValueError(
             f"trigger_4ch shape {trigger.shape} must match lr_4ch shape "
             f"{lr_4ch.shape}"
         )
+    if probability <= 0.0:
+        return
     H, W = lr_4ch.shape[:2]
-    for k, bn in enumerate(band_names):
-        well = np.float32(model.well_depth_e(Config.get_band(bn)))
+    wells = np.asarray([
+        model.well_depth_e(Config.get_band(name)) for name in band_names
+    ], dtype=np.float32)
+    saturated_by_band = trigger >= wells.reshape((1, 1, -1))
+    selected_spatial = np.any(saturated_by_band, axis=-1)
+    if probability < 1.0:
+        source_labels, n_sources = label(selected_spatial)
+        if n_sources == 0:
+            return
+        selected_ids = np.nonzero(
+            rng.random(n_sources) < probability,
+        )[0] + 1
+        if selected_ids.size == 0:
+            return
+        selected_spatial = np.isin(source_labels, selected_ids)
+    for k, _band_name in enumerate(band_names):
         ch = lr_4ch[..., k]                      # view → writes propagate
         trigger_ch = trigger[..., k]
-        sat = trigger_ch >= well
+        sat = saturated_by_band[..., k] & selected_spatial
         if not sat.any():
             continue
         labelled, n_regions = label(sat)

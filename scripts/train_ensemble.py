@@ -129,12 +129,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "up to ~25 barely re-samples pixels.")
     p.add_argument("--psf-warp-prob", type=float,
                    default=Config.TRAIN_PSF_WARP_PROB,
-                   help="On-the-fly mode: probability that injected stars "
-                        "receive an independent empirical PSF plus elastic "
-                        "warp. Default 1; 0 disables.")
+                   help="On-the-fly mode: probability that the shared "
+                        "observation PSF receives an elastic warp. Default 1; "
+                        "0 disables.")
     p.add_argument("--psf-warp-alpha-max", type=float,
                    default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
-                   help="On-the-fly mode: upper bound for stellar-wing "
+                   help="On-the-fly mode: upper bound for observation-PSF "
                         "elastic-warp alpha, sampled uniformly from [0,max] "
                         "per exposure. Default 20, matching polish-pub.")
     p.add_argument("--psf-warp-sigma", type=float,
@@ -142,6 +142,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="On-the-fly mode: Gaussian smoothing scale of the "
                         "warp displacement field in HR pixels. Default 3, "
                         "matching polish-pub.")
+    p.add_argument("--saturation-mask-prob", type=float,
+                   default=Config.TRAIN_SATURATION_MASK_PROB,
+                   help="On-the-fly mode: probability that an above-well "
+                        "source receives a dark rectangular core. Default "
+                        "0.2; maximum 0.5 so intact bright stars remain "
+                        "common.")
     p.add_argument("--starless", type=int, default=1,
                    help="1/0 — STARLESS member: the forward injects a fresh "
                         "star realization each visit and the target is the "
@@ -177,7 +183,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "noise_aug, bootstrap, num_res_blocks (add mode), "
                         "seed, forward_onthefly, psf_subset, "
                         "crops_per_field, psf_warp_prob, "
-                        "psf_warp_alpha_max, psf_warp_sigma, icnr.")
+                        "psf_warp_alpha_max, psf_warp_sigma, "
+                        "saturation_mask_prob, icnr.")
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -279,6 +286,7 @@ def _member_overrides(args, k: int) -> list[dict]:
     allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
                "forward_onthefly", "psf_subset", "crops_per_field", "icnr",
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
+               "saturation_mask_prob",
                "starless", "asinh_knee"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -298,6 +306,14 @@ def _diversity_kwargs(args, over: dict) -> dict:
     boot = float(over.get("bootstrap", args.bootstrap) or 0.0)
     subset = int(over.get("psf_subset", args.psf_subset) or 0)
     knee = over.get("asinh_knee", args.asinh_knee)
+    saturation_mask_prob = float(over.get(
+        "saturation_mask_prob", args.saturation_mask_prob,
+    ))
+    if not 0.0 <= saturation_mask_prob <= \
+            Config.TRAIN_SATURATION_MASK_PROB_MAX:
+        print("✗ saturation_mask_prob must be in [0, "
+              f"{Config.TRAIN_SATURATION_MASK_PROB_MAX:g}]")
+        raise SystemExit(2)
     return {"loss_norm": str(over.get("loss", args.loss)),
             "asinh_knee": (float(knee) if knee not in (None, "", 0) else None),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
@@ -313,6 +329,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
                                                    args.psf_warp_alpha_max)),
             "psf_warp_sigma": float(over.get("psf_warp_sigma",
                                                args.psf_warp_sigma)),
+            "saturation_mask_prob": saturation_mask_prob,
             "icnr": bool(over.get("icnr", args.icnr)),
             "starless": bool(over.get("starless", args.starless))}
 
@@ -425,7 +442,8 @@ def main() -> int:
             knobs += (f" forward=onthefly(psf_subset={s.psf_subset or 'dflt'},"
                       f" {s.crops_per_field} crops/field, "
                       f"warp=p{s.psf_warp_prob:g}/a{s.psf_warp_alpha_max:g}/"
-                      f"s{s.psf_warp_sigma:g})")
+                      f"s{s.psf_warp_sigma:g} · "
+                      f"dark-core=p{s.saturation_mask_prob:g})")
         if s.icnr:
             knobs += " icnr" + ("" if s.op == "add"
                                 else "(ignored: not an add)")

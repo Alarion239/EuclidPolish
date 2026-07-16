@@ -39,6 +39,7 @@ interface JobConfig {
   psf_warp_prob: number;
   psf_warp_alpha_max: number;
   psf_warp_sigma: number;
+  saturation_mask_prob: number;
   // Strong lenses
   lens_density_arcmin2: number;
   lens_sigma_v_min_kms: number;
@@ -75,6 +76,7 @@ const FIELDS: Field[] = [
   "lensfinder_learning_rate", "lensfinder_training_mode",
   "star_density_arcmin2", "star_mag_slope", "star_mag_bright", "star_mag_faint",
   "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
+  "saturation_mask_prob",
   "lens_density_arcmin2", "lens_sigma_v_min_kms", "lens_sigma_v_max_kms",
   "asinh_scale",
   "lr_peak", "lr_final", "lr_warmup_steps",
@@ -300,19 +302,22 @@ export default function ConfigPage() {
           </Card>
 
           <Card>
-            <CardHead title="Synthetic data + SR training · stellar wings"
-              sub="→ only injected-star PSFs are warped; galaxy PSFs and clean/HR targets stay nominal." />
+            <CardHead title="Synthetic data + SR training · PSF distribution"
+              sub="→ one elastic PSF is shared by every source; clean/HR targets stay nominal." />
             <CardBody>
               <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
                 {num("psf_warp_prob", "Warp probability",
                   { min: 0, max: 1, step: 0.01,
-                    hint: "Probability that injected stars receive an independent empirical PSF draw plus elastic deformation. The ordinary galaxy scene keeps its nominal PSF. In on-the-fly train mode, a fresh stellar-wing draw is made on every visit. 1 = every draw; 0 = disabled." })}
+                    hint: "Probability that each dirty exposure receives an elastic deformation of its shared empirical PSF. In on-the-fly train mode, a fresh warp is drawn on every visit. 1 = every draw; 0 = disabled." })}
                 {num("psf_warp_alpha_max", "Warp α max (HR px)",
                   { min: 0, max: 100, step: 0.1,
-                    hint: "Per exposure, stellar-wing α is sampled uniformly from [0, max]. The seeded draw is fixed in generated validation/test records; default 20 matches polish-pub." })}
+                    hint: "Per exposure, α is sampled uniformly from [0, max]. The seeded draw is fixed in generated validation/test records; default 20 matches polish-pub." })}
                 {num("psf_warp_sigma", "Warp σ (HR px)",
                   { min: 0.1, max: 100, step: 0.1,
-                    hint: "Gaussian smoothing scale of the shared four-band stellar-wing displacement field in 0.05″ HR pixels. Default 3 matches polish-pub." })}
+                    hint: "Gaussian smoothing scale of the shared four-band PSF displacement field in 0.05″ HR pixels. Default 3 matches polish-pub." })}
+                {num("saturation_mask_prob", "Dark-core probability",
+                  { min: 0, max: 0.5, step: 0.01,
+                    hint: "Chance that each above-well source is replaced by a rectangular blackout. Default 0.2; capped at 0.5 so at least half of bright stars retain the intact cores seen in real Euclid fields." })}
               </div>
             </CardBody>
           </Card>

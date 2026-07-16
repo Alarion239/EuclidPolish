@@ -379,6 +379,7 @@ class Model:
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
+        saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         starless: bool = True,
         **kwargs,
     ) -> None:
@@ -410,6 +411,9 @@ class Model:
         to that many source clusters (keyed by the seed). ``psf_warp_*``
         controls polish-pub-style elastic deformation of each training
         exposure's sampled PSF; the clean/HR target is never warped.
+        ``saturation_mask_prob`` controls the minority of above-well sources
+        converted to dark-core MER masks; it is capped at 0.5 so intact bright
+        stars remain common in the live training distribution.
 
         Validation always uses the record-based full set, no noise/forward
         randomness, and the L1 metric-space pipeline — members with
@@ -427,7 +431,8 @@ class Model:
                   f"{int(crops_per_field)} crops/field · "
                   f"PSF warp p={float(psf_warp_prob):g}, "
                   f"alpha<= {float(psf_warp_alpha_max):g}, "
-                  f"sigma={float(psf_warp_sigma):g}px")
+                  f"sigma={float(psf_warp_sigma):g}px · "
+                  f"dark-core p={float(saturation_mask_prob):g}")
             # Stars are injected fresh each visit in BOTH regimes; ``starless``
             # only picks the target — the starless scene (erase) vs the
             # with-stars scene (reconstruct).
@@ -437,7 +442,9 @@ class Model:
                                   starless=bool(starless),
                                   psf_warp_prob=float(psf_warp_prob),
                                   psf_warp_alpha_max=float(psf_warp_alpha_max),
-                                  psf_warp_sigma=float(psf_warp_sigma))
+                                  psf_warp_sigma=float(psf_warp_sigma),
+                                  saturation_mask_prob=float(
+                                      saturation_mask_prob))
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

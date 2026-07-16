@@ -141,6 +141,56 @@ def test_separate_trigger_shape_must_match_dirty_image():
         )
 
 
+def test_zero_mask_probability_preserves_bright_core():
+    m = StarSaturationModel()
+    lr = np.zeros((24, 24, len(_BANDS)), dtype=np.float32)
+    well = m.well_depth_e(Config.get_band(_BANDS[0]))
+    lr[10:14, 10:14, 0] = np.float32(well * 3.0)
+
+    apply_saturation_masking(
+        lr,
+        m,
+        np.random.default_rng(0),
+        band_names=_BANDS,
+        mask_probability=0.0,
+    )
+
+    assert lr[10:14, 10:14, 0].min() == pytest.approx(well * 3.0)
+
+
+def test_mask_probability_must_be_unit_interval():
+    m = StarSaturationModel()
+    lr = np.zeros((20, 20, len(_BANDS)), dtype=np.float32)
+    with pytest.raises(ValueError, match="mask_probability"):
+        apply_saturation_masking(
+            lr,
+            m,
+            np.random.default_rng(0),
+            band_names=_BANDS,
+            mask_probability=1.01,
+        )
+
+
+def test_mask_probability_draw_is_shared_across_bands():
+    m = StarSaturationModel()
+    lr = np.zeros((28, 28, len(_BANDS)), dtype=np.float32)
+    for k, name in enumerate(_BANDS):
+        well = m.well_depth_e(Config.get_band(name))
+        lr[12:16, 12:16, k] = np.float32(well * 2.0)
+
+    apply_saturation_masking(
+        lr,
+        m,
+        np.random.default_rng(3),
+        band_names=_BANDS,
+        mask_probability=0.5,
+    )
+
+    masked = [bool(np.all(lr[12:16, 12:16, k] == 0.0))
+              for k in range(len(_BANDS))]
+    assert len(set(masked)) == 1
+
+
 # ---------------------------------------------------------------------------
 # Forward-model integration
 # ---------------------------------------------------------------------------

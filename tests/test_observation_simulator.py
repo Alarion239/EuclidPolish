@@ -109,7 +109,7 @@ def test_sparse_star_convolution_matches_fft(forward: ObservationSimulator):
     np.testing.assert_allclose(sparse, fft, rtol=2e-5, atol=3e-5)
 
 
-def test_separate_star_warp_changes_only_stellar_psf():
+def test_separate_star_plane_shares_warped_observation_psf():
     base = np.zeros((96, 96, 4), dtype=np.float32)
     base[20, 20, :] = 1.0e5
     stars = np.zeros_like(base)
@@ -135,6 +135,12 @@ def test_separate_star_warp_changes_only_stellar_psf():
     warped = ObservationSimulator(config=ObservationSimulatorConfig(
         **common, psf_warp_prob=1.0,
     ))
+    combined_image = Image(
+        data=base + stars,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=Config.LR_INPUT_BAND_NAMES,
+        is_clean=True,
+    )
 
     lr_plain, _ = plain.process(
         image, np.random.default_rng(4), star_hr_4ch=stars,
@@ -142,12 +148,18 @@ def test_separate_star_warp_changes_only_stellar_psf():
     lr_warped, _ = warped.process(
         image, np.random.default_rng(4), star_hr_4ch=stars,
     )
+    lr_warped_combined, _ = warped.process(
+        combined_image, np.random.default_rng(4),
+    )
     difference = np.abs(lr_plain.data - lr_warped.data)
 
-    # HR (20,20) lands at LR (10,10): the ordinary scene PSF is identical.
-    assert difference[4:17, 4:17].max() == 0.0
-    # HR (72,72) lands at LR (36,36): the star-only PSF is augmented.
+    # HR (20,20) lands at LR (10,10), HR (72,72) at LR (36,36): both the
+    # ordinary scene and star plane receive the same observation-level warp.
+    assert difference[4:17, 4:17].max() > 100.0
     assert difference[29:44, 29:44].max() > 100.0
+    np.testing.assert_allclose(
+        lr_warped.data, lr_warped_combined.data, rtol=2e-5, atol=1e-3,
+    )
 
 
 def test_lr_band_names_in_canonical_order(forward: ObservationSimulator, hr_field):
@@ -246,6 +258,8 @@ def test_invalid_kernel_raises():
     {"psf_warp_prob": 1.1},
     {"psf_warp_alpha_max": -1.0},
     {"psf_warp_sigma": 0.0},
+    {"saturation_mask_prob": -0.1},
+    {"saturation_mask_prob": 1.1},
 ])
 def test_invalid_psf_warp_config_raises(kwargs):
     with pytest.raises(ValueError):

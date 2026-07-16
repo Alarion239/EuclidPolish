@@ -79,14 +79,18 @@ class ObservationSimulatorConfig:
     # add roll-rotation augmentation.
     randomize_psf: bool = True
     psf_unrotated_prob: float = 1.0
-    # Optional elastic stellar-wing augmentation. When callers provide the
-    # injected stars as a separate sparse plane, only their PSF is deformed;
-    # the ordinary scene keeps the nominal PSF. Combined-scene legacy callers
-    # retain the former whole-scene behaviour. The generic operator defaults
-    # OFF; generation and OnTheFlyForward configure it persistently.
+    # Optional elastic observation-PSF augmentation. One deformed PSF sample
+    # is shared by the ordinary scene and the separately carried star plane,
+    # matching a single physical exposure. The generic operator defaults OFF;
+    # generation and OnTheFlyForward configure it persistently.
     psf_warp_prob: float = 0.0
     psf_warp_alpha_max: float = 0.0
     psf_warp_sigma: float = 3.0
+    # Probability that an above-well connected source is converted into the
+    # MER-style rectangular blackout. A value of one keeps the legacy
+    # always-mask operator; train/validate/test and on-the-fly configs pass the
+    # lower, real-field-calibrated training default explicitly.
+    saturation_mask_prob: float = 1.0
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -102,6 +106,8 @@ class ObservationSimulatorConfig:
             raise ValueError("psf_warp_alpha_max must be >= 0")
         if float(self.psf_warp_sigma) <= 0.0:
             raise ValueError("psf_warp_sigma must be > 0")
+        if not 0.0 <= float(self.saturation_mask_prob) <= 1.0:
+            raise ValueError("saturation_mask_prob must be in [0, 1]")
 
 
 # ---------------------------------------------------------------------------
@@ -292,10 +298,8 @@ class ObservationSimulator:
         ] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return final dirty LR plus its pre-noise optical trigger plane."""
-        # The ordinary scene keeps its nominal field-position/roll PSF.  An
-        # augmented sparse star plane may use an independent empirical PSF
-        # draw plus elastic deformation: this widens the stellar-wing family
-        # without warping galaxy morphology too.
+        # The ordinary scene and sparse star plane share the same sampled,
+        # optionally elastically deformed observation PSF.
         psf = self._psf_for_sample(band, psf_spec, warp_displacements)
         target_scale = self.target_lr_pixel_scale_arcsec
 
@@ -373,11 +377,10 @@ class ObservationSimulator:
                  ``pixel_scale_arcsec == hr_pixel_scale``, band order
                  ``Config.LR_INPUT_BAND_NAMES``.
         rng    : reproducible noise source; ``np.random.default_rng()`` if None.
-        star_hr_4ch : optional sparse star-only HR plane.  When supplied, it
-                 is forwarded separately. A warp draw gives it an independent
-                 empirical PSF sample plus elastic deformation while the scene
-                 keeps its nominal sample. The returned HR target contains
-                 ``hr_4ch + star_hr_4ch``.
+        star_hr_4ch : optional sparse star-only HR plane. It is forwarded
+                 separately only so the caller can choose a starless or
+                 starfull target; it shares the scene's observation PSF. The
+                 returned HR target contains ``hr_4ch + star_hr_4ch``.
 
         Returns
         -------
@@ -426,27 +429,13 @@ class ObservationSimulator:
         # Draw ONE PSF sample (cluster index + roll) for the whole scene so all
         # four bands share the field position and the telescope roll — one
         # physical pointing. ``None`` (randomisation off) → each band's mean.
-        if star_data_trim is not None and self.config.randomize_psf:
-            # The galaxy scene gets one nominal physical PSF.  When the warp
-            # draw fires, stars get an independent cluster/roll plus elastic
-            # deformation, deliberately spanning wing appearances beyond the
-            # one scene PSF.  When it does not fire, both share the nominal
-            # sample exactly, so psf_warp_prob=0 truly disables augmentation.
-            psf_spec = self._draw_psf_sample(rng, allow_warp=False)
-            augmented_star_spec = self._draw_psf_sample(rng, allow_warp=True)
-            star_psf_spec = (
-                augmented_star_spec
-                if augmented_star_spec.warp_seed is not None
-                else psf_spec
-            )
-        else:
-            # Backwards-compatible path for callers that provide a combined
-            # scene: its configured PSF sample (including warp) is unchanged.
-            psf_spec = (
-                self._draw_psf_sample(rng)
-                if self.config.randomize_psf else None
-            )
-            star_psf_spec = None
+        psf_spec = (
+            self._draw_psf_sample(rng)
+            if self.config.randomize_psf else None
+        )
+        # The star plane is separate for target semantics, not a second
+        # optical exposure: every source shares the same deformed PSF.
+        star_psf_spec = psf_spec
 
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
@@ -491,6 +480,7 @@ class ObservationSimulator:
                 lr_stack, self._sat_model, rng,
                 band_names=Config.LR_INPUT_BAND_NAMES,
                 trigger_4ch=saturation_trigger_stack,
+                mask_probability=self.config.saturation_mask_prob,
             )
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
