@@ -13,6 +13,7 @@ import {
 } from "../ui";
 
 type Subset = "test" | "validate" | "train";
+const GENERATION_SPLITS: Subset[] = ["train", "validate", "test"];
 
 interface SrStatus {
   records: boolean;
@@ -37,6 +38,12 @@ interface SyncResult {
 export default function SkyPage() {
   const [subset, setSubset] = useState<Subset>("test");
   const [viewerKey, setViewerKey] = useState(0);
+  const [regenerateSplits, setRegenerateSplits] = useState<Subset[]>([]);
+
+  function toggleRegenerationSplit(split: Subset, checked: boolean) {
+    setRegenerateSplits((current) => GENERATION_SPLITS.filter((candidate) =>
+      candidate === split ? checked : current.includes(candidate)));
+  }
 
   const { data: status, reload: reloadStatus } =
     useResource<SrStatus>("/api/sky/sr-status");
@@ -193,7 +200,49 @@ export default function SkyPage() {
           </CardBody>
         </Card>
 
-        <StepById stepId="synthetic_generate" />
+        <Card>
+          <CardHead
+            title="Generate synthetic training pairs"
+            sub="resume incomplete data normally, or explicitly replace only selected splits"
+            right={regenerateSplits.length
+              ? <Badge tone="warn">targeted rebuild</Badge>
+              : <Badge>resume mode</Badge>}
+          />
+          <CardBody>
+            <div className="row" style={{ gap: "var(--s5)", flexWrap: "wrap", alignItems: "center" }}>
+              <span className="eyebrow">regenerate only</span>
+              {GENERATION_SPLITS.map((split) => (
+                <Checkbox key={split} checked={regenerateSplits.includes(split)}
+                  onChange={(checked) => toggleRegenerationSplit(split, checked)}>
+                  {split}
+                </Checkbox>
+              ))}
+              <Button size="sm" variant="ghost"
+                onClick={() => setRegenerateSplits(["validate", "test"])}>
+                validate + test
+              </Button>
+              {!!regenerateSplits.length && (
+                <Button size="sm" variant="ghost" onClick={() => setRegenerateSplits([])}>
+                  clear
+                </Button>
+              )}
+            </div>
+            {regenerateSplits.length ? (
+              <div className="job-panel job-panel--warn" style={{ marginTop: "var(--s3)" }}>
+                Selected splits are deleted at job start and rebuilt from zero.
+                Unselected splits are left untouched, even if incomplete.
+              </div>
+            ) : (
+              <div className="muted" style={{ marginTop: "var(--s3)" }}>
+                No target selected: complete splits are reused and incomplete splits resume.
+              </div>
+            )}
+            <div style={{ marginTop: "var(--s4)" }}>
+              <StepById stepId="synthetic_generate" embedded
+                extraParams={{ regenerate_splits: regenerateSplits.join(",") }} />
+            </div>
+          </CardBody>
+        </Card>
       </div>
     </Page>
   );

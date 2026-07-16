@@ -145,6 +145,20 @@ class TestRegistry:
         assert argv[argv.index("--extra-steps") + 1] == "500"
         assert "--member-names" not in argv and "--count" not in argv
 
+    def test_ensemble_train_continue_normalizes_and_validates_members(self):
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "continue",
+             "members": " member_03,member_05,member_03 ",
+             "extra_steps": 500})
+        assert argv[argv.index("--members") + 1] == "member_03,member_05"
+        with pytest.raises(ValueError, match="at least one member"):
+            REGISTRY.get("ensemble_train").build_command(
+                {"mode": "continue", "members": " , "})
+        with pytest.raises(ValueError, match="positive"):
+            REGISTRY.get("ensemble_train").build_command(
+                {"mode": "continue", "members": "member_03",
+                 "extra_steps": -1})
+
     def test_ensemble_train_fork_mode(self, monkeypatch):
         monkeypatch.setattr(
             "euclid_polish.web.fasrc_pipeline.next_member_names",

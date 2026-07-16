@@ -3,20 +3,28 @@
    each with its own loss / depth / knee / noise / bootstrap / ICNR / regime /
    seed, exactly like the classic card. The rows are the source of truth — they
    build the positional `member_spec` JSON (+ `count`) the backend consumes
-   (build_command → --member-spec). Continue mode just extends an existing
-   member. Row/continue prefill arrives via ?mode=&member= (the Ensemble members
-   table's ▶continue / ⑂fork buttons link here). */
-import { useMemo, useState } from "react";
+   (build_command → --member-spec). Continue mode selects one or more existing
+   members and extends each by the same number of steps. Row/continue prefill
+   arrives via ?mode=&member= (the Ensemble members table's ▶continue / ⑂fork
+   buttons link here). */
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { StepById } from "../fasrc";
 import { LOSS_COLOR } from "../colors";
+import { useResource } from "../hooks";
 import {
-  Button, Card, CardBody, CardHead, Checkbox, Field, Input, NumberField,
-  Page, PageHead, Segmented, Select,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Field, Input,
+  NumberField, Page, PageHead, Segmented, Select, Spinner,
 } from "../ui";
 
 type Mode = "add" | "continue" | "fork";
 const LOSSES = ["l1", "l2", "l3"];
+
+type ContinueMember = {
+  name: string; step?: number | null; loss?: string; blocks?: number | null;
+  starless?: boolean;
+};
+type ContinueStatus = { members?: ContinueMember[] };
 
 /* One new member's knobs. Blank fields fall back to the train-wide defaults. */
 type SpecRow = {
@@ -55,9 +63,12 @@ function buildSpec(rows: SpecRow[], mode: Mode): Record<string, unknown>[] {
 export default function TrainMembersPage() {
   const [sp] = useSearchParams();
   const mode0 = (sp.get("mode") as Mode) || "add";
+  const prefilledMember = sp.get("member") ?? "";
   const [mode, setMode] = useState<Mode>(
     ["add", "continue", "fork"].includes(mode0) ? mode0 : "add");
-  const [member, setMember] = useState(sp.get("member") ?? "");
+  const [member, setMember] = useState(prefilledMember);
+  const [selectedMembers, setSelectedMembers] = useState<string[]>(
+    prefilledMember ? [prefilledMember] : []);
   const [starlessDefault, setStarlessDefault] = useState(true);
   const [forwardOtf, setForwardOtf] = useState(true);   // run-wide forward model
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
@@ -69,9 +80,36 @@ export default function TrainMembersPage() {
   const addRow = () => setRows((rs) => [...rs, newRow(starlessDefault, rs[rs.length - 1])]);
   const delRow = (i: number) => setRows((rs) => rs.length > 1 ? rs.filter((_, j) => j !== i) : rs);
 
+  const continueStatus = useResource<ContinueStatus>(
+    mode === "continue" ? "/ensemble/status.json" : null, [mode]);
+  const continueMembers = useMemo(
+    () => continueStatus.data?.members ?? [], [continueStatus.data?.members]);
+
+  // A ?member= deep-link preselects that row. Once the live active-member list
+  // arrives, discard stale/archived names so an invisible selection can never
+  // be submitted accidentally.
+  useEffect(() => {
+    if (!continueStatus.data) return;
+    const available = new Set(continueMembers.map((m) => m.name));
+    setSelectedMembers((current) => {
+      const next = current.filter((name) => available.has(name));
+      return next.length === current.length ? current : next;
+    });
+  }, [continueMembers, continueStatus.data]);
+
+  const toggleContinueMember = (name: string, checked: boolean) =>
+    setSelectedMembers((current) => checked
+      ? (current.includes(name) ? current : [...current, name])
+      : current.filter((value) => value !== name));
+
+  const selectedMemberNames = useMemo(() => {
+    const selected = new Set(selectedMembers);
+    return continueMembers.filter((m) => selected.has(m.name)).map((m) => m.name);
+  }, [continueMembers, selectedMembers]);
+
   const extra = useMemo<Record<string, string>>(() => {
     if (mode === "continue")
-      return { mode, members: member.trim(), extra_steps: extraSteps };
+      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps };
     const p: Record<string, string> = {
       mode, count: String(rows.length), steps,
       forward_onthefly: forwardOtf ? "1" : "0",
@@ -79,9 +117,16 @@ export default function TrainMembersPage() {
     };
     if (mode === "fork") p.fork_from = member.trim();
     return p;
-  }, [mode, member, extraSteps, rows, steps, forwardOtf]);
+  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
+  const extraStepCount = Number(extraSteps);
+  const extraStepsValid = Number.isInteger(extraStepCount) && extraStepCount > 0;
+  const continueSubmitDisabled = mode === "continue"
+    && (selectedMemberNames.length === 0 || !extraStepsValid);
+  const selectedSummary = selectedMemberNames.length === 0 ? "…"
+    : selectedMemberNames.length <= 3 ? selectedMemberNames.join(", ")
+      : `${selectedMemberNames.length} selected members`;
 
   return (
     <Page>
@@ -92,12 +137,44 @@ export default function TrainMembersPage() {
 
       {mode === "continue" ? (
         <Card>
-          <CardHead title="Continue a member" sub="train an existing member for more steps (its knobs are unchanged)" />
+          <CardHead title="Continue members"
+            sub="select one or more active models; one FASRC job trains them sequentially for the same number of additional steps"
+            right={<div className="row" style={{ gap: 6 }}>
+              <Badge>{selectedMemberNames.length} selected</Badge>
+              <Button size="sm" variant="ghost"
+                onClick={() => setSelectedMembers(continueMembers.map((m) => m.name))}
+                disabled={!continueMembers.length}>select all</Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedMembers([])}
+                disabled={!selectedMemberNames.length}>clear</Button>
+            </div>} />
           <CardBody>
-            <div className="fasrc-step__res">
-              <Field label="member"><Input value={member} onChange={setMember} placeholder="member_00" /></Field>
+            <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
               <NumberField label="extra steps" value={extraSteps} onChange={setExtraSteps} min={1000} max={500000} step={1000} />
+              <span className="ui-field__hint">Applied to every selected member from its current checkpoint.</span>
             </div>
+            {continueStatus.loading ? <Empty><Spinner /> loading active members…</Empty>
+              : continueStatus.error ? <Empty>could not load active ensemble members</Empty>
+                : !continueMembers.length ? <Empty>no active members are available to continue</Empty>
+                  : <div className="continue-members">
+                    {continueMembers.map((m) => {
+                      const checked = selectedMemberNames.includes(m.name);
+                      return <label key={m.name} className="continue-member" data-selected={checked}>
+                        <input type="checkbox" checked={checked}
+                          onChange={(event) => toggleContinueMember(m.name, event.target.checked)} />
+                        <span className="continue-member__body">
+                          <span className="continue-member__name mono">{m.name}</span>
+                          <span className="continue-member__meta">
+                            <Badge>{m.starless ? "starless" : "starfull"}</Badge>
+                            <span>{(m.loss ?? "l1").toUpperCase()}</span>
+                            {m.blocks != null && <span>{m.blocks} blocks</span>}
+                          </span>
+                        </span>
+                        <span className="continue-member__step mono">
+                          {m.step != null ? m.step.toLocaleString() : "—"} steps
+                        </span>
+                      </label>;
+                    })}
+                  </div>}
           </CardBody>
         </Card>
       ) : (
@@ -164,10 +241,14 @@ export default function TrainMembersPage() {
       <Card style={{ marginTop: "var(--s4)" }}>
         <CardHead title="Submit"
           sub={mode === "continue"
-            ? `continue ${member || "…"} for ${extraSteps} steps`
+            ? `continue ${selectedSummary} for ${extraSteps} more steps each`
             : `${rows.length} member${rows.length > 1 ? "s" : ""} · ${steps} steps each`} />
         <CardBody>
-          <StepById stepId="ensemble_train" extraParams={extra} />
+          <StepById stepId="ensemble_train" extraParams={extra}
+            submitDisabled={continueSubmitDisabled}
+            submitDisabledHint={selectedMemberNames.length === 0
+              ? "select at least one member above"
+              : "enter a positive whole number of extra steps"} />
         </CardBody>
       </Card>
     </Page>

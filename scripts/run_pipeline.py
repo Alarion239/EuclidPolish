@@ -99,6 +99,43 @@ def _banner(msg: str) -> None:
     print(f"\n{bar}\n[{_ts()}] {msg}\n{bar}", flush=True)
 
 
+_SPLITS = ("train", "validate", "test")
+
+
+def _parse_regenerate_splits(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated, de-duplicated list of dataset splits."""
+    splits = tuple(dict.fromkeys(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    ))
+    invalid = [split for split in splits if split not in _SPLITS]
+    if not splits:
+        raise argparse.ArgumentTypeError(
+            "--regenerate-splits needs train, validate, and/or test")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            "invalid regeneration split(s): " + ", ".join(invalid))
+    return splits
+
+
+def _regenerate_splits(args: argparse.Namespace) -> tuple[str, ...]:
+    """Targeted destructive splits, with a legacy-Namespace fallback."""
+    value = getattr(args, "regenerate_splits", ())
+    if isinstance(value, str):
+        return _parse_regenerate_splits(value) if value.strip() else ()
+    return tuple(value or ())
+
+
+def _split_selected(args: argparse.Namespace, subset: str) -> bool:
+    """No target means normal all-split resume; a target means only those."""
+    targets = _regenerate_splits(args)
+    return not targets or subset in targets
+
+
+def _split_forced(args: argparse.Namespace, subset: str) -> bool:
+    return bool(getattr(args, "force", False) or
+                subset in _regenerate_splits(args))
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -208,10 +245,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "them). Any stale hr_train/dirty_train (+ provenance "
                          "sidecars) left by an earlier record-mode run is "
                          "DELETED — they must not linger.")
-    ap.add_argument("--force", action="store_true",
-                    help="Regenerate every subset from scratch, ignoring "
-                         "already-complete data on disk (default: resume — "
-                         "skip subsets whose records + sidecar are complete).")
+    regeneration = ap.add_mutually_exclusive_group()
+    regeneration.add_argument(
+        "--force", action="store_true",
+        help="Regenerate every subset from scratch, ignoring already-complete "
+             "data on disk (default: resume — skip complete subsets).")
+    regeneration.add_argument(
+        "--regenerate-splits", type=_parse_regenerate_splits, default=(),
+        metavar="SPLITS",
+        help="Delete and rebuild only these comma-separated splits (train, "
+             "validate, test). Unselected splits are left untouched even if "
+             "incomplete.")
     ap.add_argument("--stages-csv", default="",
                     help="Path to per-stage timings CSV. "
                          "Default: <records-dir>/stages_${SLURM_JOB_ID}.csv "
@@ -326,22 +370,41 @@ def step_generate(args: argparse.Namespace) -> None:
     gen_ctx = make_generation_context(cfg, seed=run_seed)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
+    subsets = (("train", args.ntrain), ("validate", args.nvalid),
+               ("test", _ntest(args)))
+    targets = _regenerate_splits(args)
+    if targets:
+        _log("  targeted regeneration: " + ", ".join(targets) +
+             " (all other splits remain untouched)")
+
+    # A destructive run removes every selected split before writing any of
+    # them. This prevents a wall-time kill from leaving matching-count stale
+    # finals that a later resume could mistake for the new calibration.
+    if getattr(args, "force", False) or targets:
+        for subset, n in subsets:
+            if n > 0 and _split_selected(args, subset):
+                _cleanup_parts(args.records_dir, subset)
+                _remove_subset_finals(args.records_dir, subset)
+
     # Structured progress for the WebUI (no terminal for tqdm under SLURM).
-    # One cumulative bar across train + validate.
+    # In targeted mode, the total includes only the selected splits.
     reporter = Reporter.from_env()
     # Sample CPU (and GPU, if the train step runs on one) through the whole
     # pipeline so the WebUI shows live utilisation — confirms the parallel
     # generate workers are actually busy. Daemon thread; dies at exit.
     ResourceSampler(reporter).start()
     reporter.set_stage("generating clean HR fields")
-    grand_total = int(args.ntrain) + int(args.nvalid) + _ntest(args)
+    grand_total = sum(int(n) for subset, n in subsets
+                      if _split_selected(args, subset))
     done = 0
 
-    for subset, n in (("train", args.ntrain), ("validate", args.nvalid),
-                      ("test", _ntest(args))):
+    for subset, n in subsets:
         if n <= 0:
             continue
-        if not args.force and _subset_complete(
+        if not _split_selected(args, subset):
+            _log(f"  {subset}: not selected — leaving existing data untouched")
+            continue
+        if not _split_forced(args, subset) and _subset_complete(
                 args.records_dir, subset, ("clean", "sources"), n):
             done += n
             _log(f"  {subset}: clean already complete ({n} records) — skipping")
@@ -389,6 +452,20 @@ def step_generate(args: argparse.Namespace) -> None:
 def step_convolve(args: argparse.Namespace) -> None:
     _banner("STEP 2: HR → LR  (per-band PSF + noise + NISP→VIS-LR resample)")
 
+    targets = _regenerate_splits(args)
+    if targets and getattr(args, "skip_generate", False):
+        _log("  targeted regeneration: " + ", ".join(targets) +
+             " (all other splits remain untouched)")
+
+    # In a convolve-only targeted run, preserve clean inputs while removing
+    # just the stale forward products. In a normal generate+convolve run these
+    # files were already removed by step_generate, so this is harmless.
+    if getattr(args, "force", False) or targets:
+        for subset in _SPLITS:
+            if _split_selected(args, subset):
+                _remove_subset_finals(
+                    args.records_dir, subset, kinds=("hr", "dirty"))
+
     psf_sets = load_all_band_psf_sets(
         psf_dir=args.psf_dir,
         require_empirical=args.require_empirical_psf,
@@ -424,13 +501,17 @@ def step_convolve(args: argparse.Namespace) -> None:
         p = tfrecord_path(args.records_dir, f"clean_{subset}")
         counts[subset] = (sum(1 for _ in tf.data.TFRecordDataset(p))
                           if os.path.exists(p) else 0)
-    grand_total = sum(counts.values())
+    grand_total = sum(count for subset, count in counts.items()
+                      if _split_selected(args, subset))
     done = 0
 
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     n_expected_by_subset = {"train": args.ntrain, "validate": args.nvalid,
                             "test": _ntest(args)}
     for subset in ("train", "validate", "test"):
+        if not _split_selected(args, subset):
+            _log(f"  {subset}: not selected — leaving existing data untouched")
+            continue
         clean_path = tfrecord_path(args.records_dir, f"clean_{subset}")
         if not os.path.exists(clean_path):
             _log(f"⚠️  {clean_path} not found, skipping {subset}")
@@ -448,7 +529,7 @@ def step_convolve(args: argparse.Namespace) -> None:
             continue
 
         n_expected = n_expected_by_subset[subset]
-        if not args.force and _subset_complete(
+        if not _split_forced(args, subset) and _subset_complete(
                 args.records_dir, subset, ("hr", "dirty"), n_expected):
             done += counts[subset]
             _log(f"  {subset}: already complete — skipping")
@@ -609,12 +690,9 @@ def _remove_subset_finals(records_dir: str, subset: str,
                                                     "sources")) -> None:
     """Delete ``subset``'s FINAL record files (+ provenance sidecars).
 
-    ``--force`` means "discard the existing data" — deleting up-front (rather
-    than lazily overwriting at merge time) closes a real trap: a force run
-    that hits its wall-clock mid-way leaves the OLD finals on disk, and the
-    follow-up resume run counts them as "already complete" and skips the
-    subset with stale-calibration data. (Exactly what happened on FASRC jobs
-    28884305 → 28960256.)"""
+    Destructive regeneration deletes up-front (rather than lazily overwriting
+    at merge time). Otherwise a wall-time kill can leave OLD finals on disk,
+    and a follow-up resume can count them as complete and keep stale data."""
     removed = []
     for kind in kinds:
         path = tfrecord_path(records_dir, f"{kind}_{subset}")
@@ -625,7 +703,7 @@ def _remove_subset_finals(records_dir: str, subset: str,
             removed.append(os.path.basename(path))
     if removed:
         _log(f"  {subset}: deleted stale final(s) {', '.join(removed)} "
-             "(--force discards existing data up-front)")
+             "(destructive regeneration starts clean)")
     for sc in glob.glob(os.path.join(records_dir, "*.skytfrecordartifact.json")):
         try:
             with open(sc) as f:
@@ -1012,19 +1090,24 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
                ("test", _ntest(args)))
-    # --force discards ALL requested subsets' data UP-FRONT (parts + final
-    # files + sidecars), before any generation starts. Deleting lazily (old
-    # finals overwritten only at merge time) left a trap: a force run killed
-    # by its wall-clock leaves stale finals whose record counts still match,
-    # and the follow-up resume "completes" instantly with old-calibration
-    # data for every subset the force run never reached.
-    if args.force:
+    targets = _regenerate_splits(args)
+    if targets:
+        _log("  targeted regeneration: " + ", ".join(targets) +
+             " (all other splits remain untouched)")
+
+    # Destructive modes discard every selected subset UP-FRONT (parts + final
+    # files + sidecars), before any generation starts. Deleting lazily leaves
+    # stale matching-count finals behind when a job hits its wall clock.
+    if getattr(args, "force", False) or targets:
         for subset, n in subsets:
-            if n > 0:
+            if n > 0 and _split_selected(args, subset):
                 _cleanup_parts(args.records_dir, subset)
                 _remove_subset_finals(args.records_dir, subset)
     for subset, n in subsets:
         if n <= 0:
+            continue
+        if not _split_selected(args, subset):
+            _log(f"  {subset}: not selected — leaving existing data untouched")
             continue
         # --onthefly-train: the TRAIN split gets clean records ONLY (on-the-fly
         # training reads clean_train and builds LR+target live); validate/test
@@ -1036,14 +1119,14 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         # record-mode run left behind so nothing downstream reads them.
         if not write_forward:
             _remove_subset_finals(args.records_dir, subset, kinds=("hr", "dirty"))
-        if not args.force and _subset_complete(
+        if not _split_forced(args, subset) and _subset_complete(
                 args.records_dir, subset, (*rec_kinds, "sources"), n):
             _log(f"  {subset}: already complete ({n} records) — skipping")
             continue
 
         # Resume: salvage the intact records a killed run left on disk so we
         # only regenerate the shortfall. --force discarded them up-front.
-        if args.force:
+        if _split_forced(args, subset):
             done, used_idx, base_sid = 0, [], 0
         else:
             done, used_idx, base_sid = _salvage_subset(
@@ -1198,6 +1281,8 @@ def main() -> int:
         jobid=slurm_jobid,
         params={
             "n_train": args.ntrain, "n_valid": args.nvalid,
+            "n_test": _ntest(args),
+            "regenerate_splits": ",".join(_regenerate_splits(args)),
             "image_size": args.image_size, "batch_size": args.batch_size,
             "steps": args.steps,
         },

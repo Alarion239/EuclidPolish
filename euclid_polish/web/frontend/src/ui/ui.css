@@ -340,3 +340,26 @@
 }
 .ens-spec__del:hover:not(:disabled) { border-color: var(--danger, #d6604d); color: var(--danger, #d6604d); }
 .ens-spec__del:disabled { opacity: .35; cursor: default; }
+
+/* ---- Continue-training member checklist (TrainMembers.tsx) ---- */
+.continue-members {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 8px;
+}
+.continue-member {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 10px; min-height: 58px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: var(--r-2);
+  background: var(--surface-1); color: var(--text-dim); cursor: pointer;
+  transition: border-color .12s ease, background .12s ease, box-shadow .12s ease;
+}
+.continue-member:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.continue-member[data-selected="true"] {
+  border-color: var(--accent); background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.continue-member > input { width: 16px; height: 16px; accent-color: var(--accent); }
+.continue-member__body { display: flex; flex-direction: column; min-width: 0; gap: 5px; }
+.continue-member__name { color: var(--text); font-size: 13px; font-weight: 600; }
+.continue-member__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; font-size: 11px; }
+.continue-member__step { color: var(--text-faint); font-size: 11px; white-space: nowrap; }

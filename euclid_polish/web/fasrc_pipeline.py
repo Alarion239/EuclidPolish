@@ -1050,10 +1050,18 @@ class EnsembleTrainStep(FASRCPipelineStep):
                     Config.DEFAULT_TRAIN_STEPS)
         cmd = ["scripts/train_ensemble.py", "--mode", mode]
         if mode == "continue":
-            members = str(params.get("members", "")).strip()
-            cmd += ["--members", members,
-                    "--extra-steps",
-                    str(int(params.get("extra_steps", 50_000) or 50_000))]
+            members = list(dict.fromkeys(
+                name.strip()
+                for name in str(params.get("members", "")).split(",")
+                if name.strip()
+            ))
+            if not members:
+                raise ValueError("continue mode needs at least one member")
+            extra_steps = int(params.get("extra_steps", 50_000) or 50_000)
+            if extra_steps <= 0:
+                raise ValueError("extra_steps must be positive")
+            cmd += ["--members", ",".join(members),
+                    "--extra-steps", str(extra_steps)]
         else:
             # add / fork create members → allocate names from the LOCAL
             # registry now (tombstones must never be reused, and the remote
@@ -1202,13 +1210,28 @@ class RunPipelineStep(FASRCPipelineStep):
             "--image-size", str(int(params.get("image_size", 0))),
         ]
         cmd.extend(self.skip_flags)
-        # Override: discard any prior on-disk data for this dataset and
-        # regenerate from scratch. The default resumes from salvaged shards
-        # (reusing previous data); the /sky "Override existing data" checkbox
-        # forces a clean run so new parameters aren't mixed with old fields.
-        if str(params.get("force", "")).strip().lower() in (
-                "1", "true", "yes", "on"):
+        # Default: cache-first resume. ``force`` rebuilds everything, while
+        # ``regenerate_splits`` deletes and rebuilds only the named splits;
+        # run_pipeline leaves every unselected split entirely untouched.
+        force = str(params.get("force", "")).strip().lower() in (
+            "1", "true", "yes", "on")
+        regenerate_raw = str(params.get("regenerate_splits", "")).strip()
+        regenerate_splits = list(dict.fromkeys(
+            part.strip().lower() for part in regenerate_raw.split(",")
+            if part.strip()
+        ))
+        invalid_splits = [split_name for split_name in regenerate_splits
+                          if split_name not in ("train", "validate", "test")]
+        if invalid_splits:
+            raise ValueError(
+                "invalid regeneration split(s): " + ", ".join(invalid_splits))
+        if force and regenerate_splits:
+            raise ValueError(
+                "force and targeted split regeneration are mutually exclusive")
+        if force:
             cmd.append("--force")
+        elif regenerate_splits:
+            cmd += ["--regenerate-splits", ",".join(regenerate_splits)]
         # On-the-fly training reads clean_train directly and builds LR+target
         # live — generate the train split as clean-only (no hr, no dirty);
         # validate/test keep the full triple. Stale hr/dirty_train are deleted.

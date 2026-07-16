@@ -438,6 +438,22 @@ const paramSum = (params: HistoryParamsMap, keys: string[]): string => {
   }
   return found ? total.toLocaleString() : "—";
 };
+const regenerationSplits = (params: HistoryParamsMap): string[] =>
+  paramText(params, "regenerate_splits", "").split(",")
+    .map((value) => value.trim()).filter(Boolean);
+const syntheticFieldCount = (params: HistoryParamsMap): string => {
+  const selected = regenerationSplits(params);
+  const keyBySplit: Record<string, string> = {
+    train: "n_train", validate: "n_valid", test: "n_test",
+  };
+  return paramSum(params, selected.length
+    ? selected.map((split) => keyBySplit[split]).filter(Boolean)
+    : ["n_train", "n_valid", "n_test"]);
+};
+const syntheticSplitMode = (params: HistoryParamsMap): string => {
+  const selected = regenerationSplits(params);
+  return selected.length ? `rebuild ${selected.join("+")}` : "resume all";
+};
 const ensembleMemberCount = (params: HistoryParamsMap): number | null => {
   const explicit = finiteNumber(param(params, "count")) ?? finiteNumber(param(params, "n_members"));
   if (explicit != null) return explicit;
@@ -457,6 +473,12 @@ const taskColumn = (header: string, render: (params: HistoryParamsMap) => string
 function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
   switch (stepId) {
     case "synthetic_generate":
+      return [
+        taskColumn("splits", syntheticSplitMode, 132),
+        taskColumn("nfields", syntheticFieldCount, 92),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(DEFAULT_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
+      ];
     case "lensfinder_generate":
       return [
         taskColumn("nfields", (p) => paramSum(p, ["n_train", "n_valid", "n_test"]), 92),
@@ -619,9 +641,11 @@ function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: str
  *  Embedded mode removes the surrounding card for pages that already provide
  *  the workflow card and only need a highlighted submission section. */
 export function StepCard(
-  { step, extraParams, sshConnected, embedded = false, showHistory = true }: {
+  { step, extraParams, sshConnected, embedded = false, showHistory = true,
+    submitDisabled = false, submitDisabledHint }: {
     step: Step; extraParams?: Record<string, string | number>; sshConnected: boolean;
-    embedded?: boolean; showHistory?: boolean;
+    embedded?: boolean; showHistory?: boolean; submitDisabled?: boolean;
+    submitDisabledHint?: string;
   },
 ) {
   const d = step.defaults;
@@ -672,10 +696,13 @@ export function StepCard(
           <Field label="time limit"><Input value={timeLimit} onChange={setTimeLimit} /></Field>
         </div>
         <div className="row" style={{ marginTop: "var(--s3)" }}>
-          <Button variant="primary" onClick={submit} disabled={busy || !sshConnected}>
+          <Button variant="primary" onClick={submit}
+            disabled={busy || !sshConnected || submitDisabled}>
             {busy ? "submitting…" : "Submit to SLURM"}
           </Button>
           {!sshConnected && <span className="ui-field__hint">connect to FASRC first</span>}
+          {sshConnected && submitDisabled && submitDisabledHint &&
+            <span className="ui-field__hint">{submitDisabledHint}</span>}
         </div>
         {error && <div className="job-panel job-panel--err"><pre>{error}</pre></div>}
         {jobid && <SlurmMonitor jobid={jobid} />}
@@ -698,9 +725,11 @@ export function StepCard(
 /** Look up a step by id in the registry and render its `<StepCard>` (or a
  *  loading/empty state). The one-liner pages call to embed a pipeline step. */
 export function StepById(
-  { stepId, extraParams, embedded = false, showHistory = true }: {
+  { stepId, extraParams, embedded = false, showHistory = true,
+    submitDisabled = false, submitDisabledHint }: {
     stepId: string; extraParams?: Record<string, string | number>;
-    embedded?: boolean; showHistory?: boolean;
+    embedded?: boolean; showHistory?: boolean; submitDisabled?: boolean;
+    submitDisabledHint?: string;
   },
 ) {
   const { data, loading } = useHstStatus();
@@ -713,7 +742,8 @@ export function StepById(
     return embedded ? <div className="fasrc-step-inline">{empty}</div> : <Card><CardBody>{empty}</CardBody></Card>;
   }
   return <StepCard step={step} extraParams={extraParams} sshConnected={!!data?.ssh_connected}
-    embedded={embedded} showHistory={showHistory} />;
+    embedded={embedded} showHistory={showHistory} submitDisabled={submitDisabled}
+    submitDisabledHint={submitDisabledHint} />;
 }
 
 /** FASRC SSH connection status + connect/disconnect. */

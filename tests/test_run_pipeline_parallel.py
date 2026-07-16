@@ -99,6 +99,27 @@ def test_generation_warp_cli_configures_shared_forward_for_all_splits():
     assert configured.psf_warp_sigma == 5.0
 
 
+def test_targeted_regeneration_cli_selects_and_forces_only_named_splits():
+    args = rp.parse_args([
+        "--regenerate-splits", "validate,test,validate",
+    ])
+    assert args.regenerate_splits == ("validate", "test")
+    assert rp._split_selected(args, "validate")
+    assert rp._split_selected(args, "test")
+    assert not rp._split_selected(args, "train")
+    assert rp._split_forced(args, "validate")
+    assert not rp._split_forced(args, "train")
+
+
+def test_targeted_regeneration_cli_rejects_invalid_or_global_force_mix():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        rp.parse_args(["--regenerate-splits", "validate,holdout"])
+    with pytest.raises(SystemExit):
+        rp.parse_args(["--force", "--regenerate-splits", "test"])
+
+
 def test_shard_bounds_partition_is_contiguous():
     b = rp._shard_bounds(10, 3)
     assert b[0][0] == 0 and b[-1][1] == 10
@@ -376,6 +397,26 @@ def test_synthetic_steps_forward_generation_warp_knobs():
         assert "--psf-warp-prob 0.75" in cmd
         assert "--psf-warp-alpha-max 12" in cmd
         assert "--psf-warp-sigma 4" in cmd
+
+
+def test_synthetic_step_forwards_targeted_regeneration_splits():
+    import pytest
+
+    from euclid_polish.web.fasrc_pipeline import REGISTRY
+    step = REGISTRY.get("synthetic_generate")
+    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96}
+    command = step.build_command({
+        **base, "regenerate_splits": " validate,test,validate ",
+    })
+    flag_index = command.index("--regenerate-splits")
+    assert command[flag_index + 1] == "validate,test"
+
+    with pytest.raises(ValueError, match="invalid regeneration split"):
+        step.build_command({**base, "regenerate_splits": "holdout"})
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        step.build_command({
+            **base, "force": "1", "regenerate_splits": "test",
+        })
 
 
 def test_synthetic_step_is_standalone_no_training_knobs():
