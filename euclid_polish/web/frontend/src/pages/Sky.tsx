@@ -239,7 +239,14 @@ export default function SkyPage() {
             )}
             <div style={{ marginTop: "var(--s4)" }}>
               <StepById stepId="synthetic_generate" embedded
-                extraParams={{ regenerate_splits: regenerateSplits.join(",") }} />
+                extraParams={{
+                  // Keep the structured value for history/new backends, and
+                  // also use the long-standing extra_flags path so a resident
+                  // pre-upgrade Flask process still forwards the new CLI flag.
+                  regenerate_splits: regenerateSplits.join(","),
+                  extra_flags: regenerateSplits.length
+                    ? `--regenerate-splits=${regenerateSplits.join(",")}` : "",
+                }} />
             </div>
           </CardBody>
         </Card>

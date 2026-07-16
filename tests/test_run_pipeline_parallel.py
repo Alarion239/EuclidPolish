@@ -411,6 +411,15 @@ def test_synthetic_step_forwards_targeted_regeneration_splits():
     flag_index = command.index("--regenerate-splits")
     assert command[flag_index + 1] == "validate,test"
 
+    mirrored = step.build_command({
+        **base,
+        "regenerate_splits": "validate,test",
+        "extra_flags": "--regenerate-splits=validate,test",
+    })
+    assert [token for token in mirrored
+            if token.startswith("--regenerate-splits")] == [
+                "--regenerate-splits=validate,test"]
+
     with pytest.raises(ValueError, match="invalid regeneration split"):
         step.build_command({**base, "regenerate_splits": "holdout"})
     with pytest.raises(ValueError, match="mutually exclusive"):

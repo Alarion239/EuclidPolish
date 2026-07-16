@@ -1210,6 +1210,18 @@ class RunPipelineStep(FASRCPipelineStep):
             "--image-size", str(int(params.get("image_size", 0))),
         ]
         cmd.extend(self.skip_flags)
+        # ``extra_flags`` predates the structured split selector. The Sky UI
+        # intentionally mirrors the target into this channel so a resident
+        # pre-upgrade Flask process can still forward the new run_pipeline CLI
+        # option before it is restarted. New backends detect that mirror and
+        # emit the option only once.
+        extra = (params.get("extra_flags") or "").strip()
+        extra_tokens = shlex.split(extra) if extra else []
+        extra_has_regenerate_splits = any(
+            token == "--regenerate-splits" or
+            token.startswith("--regenerate-splits=")
+            for token in extra_tokens
+        )
         # Default: cache-first resume. ``force`` rebuilds everything, while
         # ``regenerate_splits`` deletes and rebuilds only the named splits;
         # run_pipeline leaves every unselected split entirely untouched.
@@ -1230,7 +1242,7 @@ class RunPipelineStep(FASRCPipelineStep):
                 "force and targeted split regeneration are mutually exclusive")
         if force:
             cmd.append("--force")
-        elif regenerate_splits:
+        elif regenerate_splits and not extra_has_regenerate_splits:
             cmd += ["--regenerate-splits", ",".join(regenerate_splits)]
         # On-the-fly training reads clean_train directly and builds LR+target
         # live — generate the train split as clean-only (no hr, no dirty);
@@ -1241,9 +1253,7 @@ class RunPipelineStep(FASRCPipelineStep):
         # Free-form user-supplied flags. ``shlex.split`` so individual
         # tokens get re-quoted by ``render_sbatch_body`` instead of being
         # smuggled in as one shell-expandable string.
-        extra = (params.get("extra_flags") or "").strip()
-        if extra:
-            cmd.extend(shlex.split(extra))
+        cmd.extend(extra_tokens)
         return cmd
 
 
