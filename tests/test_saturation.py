@@ -101,6 +101,46 @@ def test_apply_saturation_masking_galaxy_core_not_just_stars():
     assert lr[..., 0].max() < well                         # whole core masked
 
 
+def test_separate_trigger_does_not_expand_detector_artifacts():
+    """Only the optical scene triggers blackout geometry.
+
+    A post-noise hot/CR-like spike can stay above the effective well, while a
+    genuinely saturated source in the trigger is zeroed in the final image.
+    """
+    m = StarSaturationModel()
+    lr = np.zeros((40, 40, len(_BANDS)), dtype=np.float32)
+    trigger = np.zeros_like(lr)
+    band_index = 1
+    well = m.well_depth_e(Config.get_band(_BANDS[band_index]))
+    lr[5, 5, band_index] = np.float32(well * 20.0)       # detector artifact
+    lr[18:22, 18:22, band_index] = np.float32(well * 5.0)
+    trigger[18:22, 18:22, band_index] = np.float32(well * 5.0)
+
+    apply_saturation_masking(
+        lr,
+        m,
+        np.random.default_rng(2),
+        band_names=_BANDS,
+        trigger_4ch=trigger,
+    )
+
+    assert lr[5, 5, band_index] == pytest.approx(well * 20.0)
+    assert lr[18:22, 18:22, band_index].max() == 0.0
+
+
+def test_separate_trigger_shape_must_match_dirty_image():
+    m = StarSaturationModel()
+    lr = np.zeros((20, 20, len(_BANDS)), dtype=np.float32)
+    with pytest.raises(ValueError, match="trigger_4ch shape"):
+        apply_saturation_masking(
+            lr,
+            m,
+            np.random.default_rng(0),
+            band_names=_BANDS,
+            trigger_4ch=np.zeros((19, 20, len(_BANDS)), dtype=np.float32),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Forward-model integration
 # ---------------------------------------------------------------------------
@@ -143,3 +183,34 @@ def test_forward_saturation_can_be_disabled():
     lr, _ = fwd.process(_hr_field_with_bright_source(1e6), np.random.default_rng(0))
     # Saturation off → the over-well core is NOT masked (stays far above well).
     assert lr.data[..., 0].max() > well_vis
+
+
+def test_forward_hot_pixels_do_not_trigger_blackout_rectangles():
+    from euclid_polish.sky.observation.artifacts import ArtifactConfig
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+
+    artifact_config = ArtifactConfig(
+        add_cosmic_rays=False,
+        add_hot_pixels=True,
+        hot_pixel_fraction=1.0,
+        hot_pixel_charge_mean_e=1.0e7,
+        add_dead_pixels=False,
+        add_streaks=False,
+    )
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=True,
+        add_artifacts=True,
+        artifact_config=artifact_config,
+        add_saturation=True,
+    ))
+    lr, _ = fwd.process(
+        _hr_field_with_bright_source(0.0),
+        np.random.default_rng(4),
+    )
+
+    for band_index, band_name in enumerate(_BANDS):
+        well = StarSaturationModel().well_depth_e(Config.get_band(band_name))
+        assert lr.data[..., band_index].max() > well

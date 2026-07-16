@@ -97,14 +97,21 @@ def apply_saturation_masking(
     rng: np.random.Generator,
     *,
     band_names: Sequence[str],
+    trigger_4ch: np.ndarray | None = None,
 ) -> None:
-    """Zero a blocky rectangular patch over every saturated region (in place).
+    """Zero a blocky rectangular patch over every saturated scene region.
 
-    The trigger is the rendered pixel value, not the source type: any pixel at
-    or above a band's well depth is saturated, so **bright stars and bright
-    galaxy nuclei alike** are masked. For each band:
+    ``trigger_4ch`` is the pre-noise, pre-artifact optical scene when supplied;
+    the blackout is still written into the final dirty ``lr_4ch``.  Separating
+    those arrays prevents hot pixels and cosmic rays from being expanded into
+    stellar-sized blackout rectangles merely because their injected charge is
+    above a low NISP effective well.  The trigger remains source-agnostic:
+    bright stars and bright galaxy nuclei alike are masked.  Omitting
+    ``trigger_4ch`` retains the direct-array behaviour for standalone callers.
 
-    1. label the connected regions of pixels ``>= well_depth``;
+    For each band:
+
+    1. label connected regions in the trigger at ``>= well_depth``;
     2. zero each region's bounding box (so nothing stays above the well), then
     3. zero a union of 1–3 small overlapping rectangles
        (:meth:`StarSaturationModel.rectangles`, the current 3–6 px scale) at
@@ -113,11 +120,18 @@ def apply_saturation_masking(
     The masked patch reads ~0 (the MER fill value on the sky-subtracted LR
     grid), so the network must inpaint the source from its surroundings. The
     clean HR target is untouched."""
+    trigger = lr_4ch if trigger_4ch is None else np.asarray(trigger_4ch)
+    if trigger.shape != lr_4ch.shape:
+        raise ValueError(
+            f"trigger_4ch shape {trigger.shape} must match lr_4ch shape "
+            f"{lr_4ch.shape}"
+        )
     H, W = lr_4ch.shape[:2]
     for k, bn in enumerate(band_names):
         well = np.float32(model.well_depth_e(Config.get_band(bn)))
         ch = lr_4ch[..., k]                      # view → writes propagate
-        sat = ch >= well
+        trigger_ch = trigger[..., k]
+        sat = trigger_ch >= well
         if not sat.any():
             continue
         labelled, n_regions = label(sat)
@@ -127,7 +141,7 @@ def apply_saturation_masking(
             if sl is None:
                 continue
             ys, xs = sl                          # bounding-box slices
-            sub = ch[ys, xs]
+            sub = trigger_ch[ys, xs]
             pj, pi = np.unravel_index(int(np.argmax(sub)), sub.shape)
             cy, cx = ys.start + int(pj), xs.start + int(pi)
             # Zero the whole bounding box → no pixel survives above the well.

@@ -158,25 +158,25 @@
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
-      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Synthetic data + SR training · PSF distribution</legend>
+      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Synthetic data + SR training · stellar wings</legend>
       <div class="form-row">
-        <label title="Probability that each generated dirty exposure receives an elastic PSF deformation. In on-the-fly train mode, a fresh warp is drawn on every visit. 1 = every draw; 0 = disabled.">
+        <label title="Probability that injected stars receive an independent empirical PSF draw plus elastic deformation. The ordinary galaxy scene keeps its nominal PSF. In on-the-fly train mode, a fresh stellar-wing draw is made on every visit. 1 = every draw; 0 = disabled.">
           Warp probability
           <input type="number" name="psf_warp_prob" value="{{ cfg.psf_warp_prob }}"
                  min="0" max="1" step="any" required>
         </label>
-        <label title="Per exposure, alpha is sampled uniformly from [0,max] and scales the smoothed displacement field. The seeded draw is fixed in generated validation/test records. Default 20 matches polish-pub.">
+        <label title="Per exposure, stellar-wing alpha is sampled uniformly from [0,max] and scales the smoothed displacement field. The seeded draw is fixed in generated validation/test records. Default 20 matches polish-pub.">
           Warp α max (HR px)
           <input type="number" name="psf_warp_alpha_max" value="{{ cfg.psf_warp_alpha_max }}"
                  min="0" max="100" step="any" required>
         </label>
-        <label title="Gaussian smoothing scale of the shared four-band random displacement field in 0.05 arcsec HR pixels. Default 3 matches polish-pub.">
+        <label title="Gaussian smoothing scale of the shared four-band stellar-wing displacement field in 0.05 arcsec HR pixels. Default 3 matches polish-pub.">
           Warp σ (HR px)
           <input type="number" name="psf_warp_sigma" value="{{ cfg.psf_warp_sigma }}"
                  min="0.1" max="100" step="any" required>
         </label>
       </div>
-      <p class="hint">→ dirty train/validate/test exposures are warped during generation; clean/HR targets remain nominal. In clean-only on-the-fly training, train gets a fresh warp on every visit while validate/test stay fixed and reproducible.</p>
+      <p class="hint">→ only injected-star PSFs are warped in dirty train/validate/test exposures; the galaxy scene and clean/HR targets stay nominal. In clean-only on-the-fly training, train gets a fresh stellar-wing warp on every visit while validate/test stay fixed and reproducible.</p>
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">

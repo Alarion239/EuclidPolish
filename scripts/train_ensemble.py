@@ -129,14 +129,14 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "up to ~25 barely re-samples pixels.")
     p.add_argument("--psf-warp-prob", type=float,
                    default=Config.TRAIN_PSF_WARP_PROB,
-                   help="On-the-fly mode: probability that a training "
-                        "exposure's sampled PSF receives an elastic warp. "
-                        "Default 1 (original POLISH behavior); 0 disables.")
+                   help="On-the-fly mode: probability that injected stars "
+                        "receive an independent empirical PSF plus elastic "
+                        "warp. Default 1; 0 disables.")
     p.add_argument("--psf-warp-alpha-max", type=float,
                    default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
-                   help="On-the-fly mode: upper bound for elastic-warp alpha, "
-                        "sampled uniformly from [0,max] per exposure. Default "
-                        "20, matching polish-pub.")
+                   help="On-the-fly mode: upper bound for stellar-wing "
+                        "elastic-warp alpha, sampled uniformly from [0,max] "
+                        "per exposure. Default 20, matching polish-pub.")
     p.add_argument("--psf-warp-sigma", type=float,
                    default=Config.TRAIN_PSF_WARP_SIGMA,
                    help="On-the-fly mode: Gaussian smoothing scale of the "

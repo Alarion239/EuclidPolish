@@ -182,18 +182,18 @@ class OnTheFlyForward:
                 f"field {field.shape[:2]} smaller than the HR crop {c}")
         rng = self._rng()
 
-        # The scene is STARLESS. Inject a fresh star realization onto a COPY
-        # (HR deltas, before the PSF) and forward THAT → LR carries realistic
-        # star contamination (incl. out-of-crop wings, full-field) in BOTH
-        # regimes. The TARGET is what differs: starless → the ORIGINAL field
-        # (erase the injected stars); starfull → the with-stars scene (the same
-        # stars survive → reconstruct them).
-        scene = field.copy()
-        self._inject_stars(scene, rng)
-        hr_img = Image(data=scene,
+        # Keep stars on a separate sparse plane. A warp draw gives them an
+        # independent empirical PSF plus elastic wing deformation; galaxy
+        # morphology keeps the nominal scene PSF. The TARGET is what differs:
+        # starless → the ORIGINAL field; starfull → field + star deltas.
+        stars = np.zeros_like(field)
+        self._inject_stars(stars, rng)
+        hr_img = Image(data=field,
                        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                        band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
-        lr_img, hr_out = self._sim.process(hr_img, rng)
+        lr_img, hr_out = self._sim.process(
+            hr_img, rng, star_hr_4ch=stars,
+        )
         lr = np.asarray(lr_img.data, np.float32)      # (H/s, W/s, 4) w/ stars
         # Target, trimmed exactly as process trimmed its HR output so LR/HR stay
         # block-aligned: starless = the original field, starfull = process's

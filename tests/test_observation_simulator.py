@@ -65,6 +65,91 @@ def test_hr_target_keeps_all_bands_clean(forward: ObservationSimulator, hr_field
     np.testing.assert_array_equal(hr.data, hr_field.data)
 
 
+def test_separate_star_plane_matches_combined_scene_without_warp(
+    forward: ObservationSimulator,
+):
+    base = np.zeros((96, 96, 4), dtype=np.float32)
+    base[24:28, 20:30, :] = 100.0
+    stars = np.zeros_like(base)
+    stars[70, 68, :] = 2.0e4
+    base_image = Image(
+        data=base,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=Config.LR_INPUT_BAND_NAMES,
+        is_clean=True,
+    )
+    combined_image = Image(
+        data=base + stars,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=Config.LR_INPUT_BAND_NAMES,
+        is_clean=True,
+    )
+
+    lr_separate, hr_separate = forward.process(
+        base_image, np.random.default_rng(3), star_hr_4ch=stars,
+    )
+    lr_combined, _ = forward.process(
+        combined_image, np.random.default_rng(3),
+    )
+
+    np.testing.assert_allclose(
+        lr_separate.data, lr_combined.data, rtol=2e-5, atol=3e-4,
+    )
+    np.testing.assert_array_equal(hr_separate.data, base + stars)
+
+
+def test_sparse_star_convolution_matches_fft(forward: ObservationSimulator):
+    psf = default_psf_for_band(Config.BAND_VIS, Config.DEFAULT_PIXEL_SCALE)
+    stars = np.zeros((72, 72), dtype=np.float32)
+    stars[2, 3] = 7.0
+    stars[35, 40] = 11.0
+    stars[70, 68] = 5.0
+    sparse = forward._convolve_sparse_deltas(stars, psf)
+    fft = psf.convolved_with(stars)
+    np.testing.assert_allclose(sparse, fft, rtol=2e-5, atol=3e-5)
+
+
+def test_separate_star_warp_changes_only_stellar_psf():
+    base = np.zeros((96, 96, 4), dtype=np.float32)
+    base[20, 20, :] = 1.0e5
+    stars = np.zeros_like(base)
+    stars[72, 72, :] = 1.0e5
+    image = Image(
+        data=base,
+        pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        band_names=Config.LR_INPUT_BAND_NAMES,
+        is_clean=True,
+    )
+    common = {
+        "add_noise": False,
+        "add_artifacts": False,
+        "add_saturation": False,
+        "randomize_psf": True,
+        "psf_unrotated_prob": 1.0,
+        "psf_warp_alpha_max": 20.0,
+        "psf_warp_sigma": 3.0,
+    }
+    plain = ObservationSimulator(config=ObservationSimulatorConfig(
+        **common, psf_warp_prob=0.0,
+    ))
+    warped = ObservationSimulator(config=ObservationSimulatorConfig(
+        **common, psf_warp_prob=1.0,
+    ))
+
+    lr_plain, _ = plain.process(
+        image, np.random.default_rng(4), star_hr_4ch=stars,
+    )
+    lr_warped, _ = warped.process(
+        image, np.random.default_rng(4), star_hr_4ch=stars,
+    )
+    difference = np.abs(lr_plain.data - lr_warped.data)
+
+    # HR (20,20) lands at LR (10,10): the ordinary scene PSF is identical.
+    assert difference[4:17, 4:17].max() == 0.0
+    # HR (72,72) lands at LR (36,36): the star-only PSF is augmented.
+    assert difference[29:44, 29:44].max() > 100.0
+
+
 def test_lr_band_names_in_canonical_order(forward: ObservationSimulator, hr_field):
     lr, _ = forward.process(hr_field, rng=np.random.default_rng(0))
     assert lr.band_names == Config.LR_INPUT_BAND_NAMES

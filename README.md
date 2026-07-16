@@ -409,10 +409,13 @@ identical to the sky objective.
   ([Pascanu+ 2013](https://arxiv.org/abs/1211.5063)). A **divergence guard** rolls back to
   the last checkpoint when the post-warmup pre-clip grad norm exceeds 50, halving the LR
   after repeated rollbacks — this recovers from rare loss spikes that corrupt weights.
-- **Augmentation:** random aligned 96×96 HR / 48×48 LR crops plus elastic PSF warps in
-  the forward operator. Record-mode generation applies a seeded warp to every dirty
-  train/validate/test exposure. Clean-only on-the-fly training draws a fresh train warp on
-  every visit; its generated validation/test records remain fixed and replayable. **No image
+- **Augmentation:** random aligned 96×96 HR / 48×48 LR crops plus elastic stellar-wing
+  warps in the forward operator. Injected stars are carried on a sparse plane so they can
+  receive an independent empirical PSF draw plus deformation without warping galaxy
+  morphology. Record-mode generation applies a seeded
+  star-PSF warp to every dirty train/validate/test exposure. Clean-only on-the-fly training
+  draws a fresh stellar-wing warp on every visit; generated validation/test records remain
+  fixed and replayable. **No image
   flips/rotations** — the empirical PSF is asymmetric, so a flipped target is a different SR
   task. Clean/HR targets are never deformed.
 

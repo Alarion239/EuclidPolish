@@ -185,12 +185,13 @@ class Config:
     PSF_TAPER_INNER_FRAC = 0.82
     PSF_TAPER_OUTER_FRAC = 0.98
 
-    # On-the-fly TRAINING PSF augmentation.  The original POLISH forward
-    # model sampled an elastic PSF warp with alpha ~ Uniform(0, 20), sigma=3
-    # pixels for every generated pair.  Keep the ordinary generation /
-    # validation forward model nominal; these defaults are applied only by
-    # OnTheFlyForward so the network learns a PSF distribution without
-    # changing the clean/HR record contract.
+    # Stellar-wing PSF augmentation. The original POLISH forward model sampled
+    # an elastic PSF warp with alpha ~ Uniform(0, 20), sigma=3 pixels for every
+    # generated pair. Injected stars now live on a separate sparse plane: a
+    # warp draw gives them an independent empirical PSF sample plus elastic
+    # deformation while galaxies keep the nominal scene PSF. The same defaults
+    # drive generated train/validate/test pairs and on-the-fly training without
+    # deforming clean/HR targets.
     TRAIN_PSF_WARP_PROB      = 1.0
     TRAIN_PSF_WARP_ALPHA_MAX = 20.0   # maximum displacement-field amplitude
     TRAIN_PSF_WARP_SIGMA     = 3.0    # Gaussian smoothing, HR pixels

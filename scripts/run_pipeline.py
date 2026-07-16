@@ -149,12 +149,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "missing bands fall back to Gaussian.")
     ap.add_argument("--psf-warp-prob", type=float,
                     default=Config.TRAIN_PSF_WARP_PROB,
-                    help="Probability of an elastic PSF deformation for each "
-                         "generated dirty exposure in train, validate, and "
-                         "test. Default 1; 0 disables it.")
+                    help="Probability that injected stars receive an "
+                         "independent empirical PSF draw plus elastic "
+                         "deformation in each generated dirty exposure. "
+                         "Default 1; 0 disables it.")
     ap.add_argument("--psf-warp-alpha-max", type=float,
                     default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
-                    help="Maximum elastic displacement amplitude in HR "
+                    help="Maximum stellar-wing elastic displacement in HR "
                          "pixels; alpha is drawn uniformly from [0, max] "
                          "for each exposure (default 20).")
     ap.add_argument("--psf-warp-sigma", type=float,
@@ -672,17 +673,15 @@ def _forward_with_stars(fwd, sky_starless: Image, stars, rng) -> tuple:
     reconstructed from starless + stars instead of stored with stars.
     """
     if stars:
-        scene = sky_starless.data.copy()
+        star_scene = np.zeros_like(sky_starless.data)
         for s in stars:
-            _deposit_star(scene, float(s["x_pix"]), float(s["y_pix"]),
+            _deposit_star(star_scene, float(s["x_pix"]), float(s["y_pix"]),
                           float(s["mag_vis"]))
-        scene_img = Image(data=scene,
-                          pixel_scale_arcsec=sky_starless.pixel_scale_arcsec,
-                          band_names=sky_starless.band_names, is_clean=True,
-                          index=sky_starless.index, subset=sky_starless.subset)
     else:
-        scene_img = sky_starless
-    return fwd.process(scene_img, rng=rng)          # (lr, hr) both starfull
+        star_scene = None
+    return fwd.process(
+        sky_starless, rng=rng, star_hr_4ch=star_scene,
+    )                                               # (lr, hr) both starfull
 
 
 def _remove_subset_finals(records_dir: str, subset: str,

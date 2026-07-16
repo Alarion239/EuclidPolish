@@ -79,9 +79,11 @@ class ObservationSimulatorConfig:
     # add roll-rotation augmentation.
     randomize_psf: bool = True
     psf_unrotated_prob: float = 1.0
-    # Optional elastic PSF-distribution augmentation. The generic operator
-    # defaults OFF; data generation and OnTheFlyForward explicitly enable it
-    # from their shared persistent configuration.
+    # Optional elastic stellar-wing augmentation. When callers provide the
+    # injected stars as a separate sparse plane, only their PSF is deformed;
+    # the ordinary scene keeps the nominal PSF. Combined-scene legacy callers
+    # retain the former whole-scene behaviour. The generic operator defaults
+    # OFF; generation and OnTheFlyForward configure it persistently.
     psf_warp_prob: float = 0.0
     psf_warp_alpha_max: float = 0.0
     psf_warp_sigma: float = 3.0
@@ -199,7 +201,12 @@ class ObservationSimulator:
         """
         return Config.BAND_VIS.pixel_scale_lr_arcsec
 
-    def _draw_psf_sample(self, rng: np.random.Generator) -> PSFSample:
+    def _draw_psf_sample(
+        self,
+        rng: np.random.Generator,
+        *,
+        allow_warp: bool = True,
+    ) -> PSFSample:
         """Draw ONE :class:`PSFSample` (cluster index + roll) for the whole
         scene, from the band with the most cluster PSFs (the reference for the
         common clustering). Applied to every band so all four share the field
@@ -207,10 +214,70 @@ class ObservationSimulator:
         ref = max(self._psf_sets.values(), key=lambda p: p.n)
         return ref.draw_sample(
             rng, use_unrotated_prob=self.config.psf_unrotated_prob,
-            warp_prob=self.config.psf_warp_prob,
-            warp_alpha_max=self.config.psf_warp_alpha_max,
+            warp_prob=(self.config.psf_warp_prob if allow_warp else 0.0),
+            warp_alpha_max=(self.config.psf_warp_alpha_max
+                            if allow_warp else 0.0),
             warp_sigma=self.config.psf_warp_sigma,
         )
+
+    def _psf_for_sample(
+        self,
+        band: BandConfig,
+        psf_spec: PSFSample | None,
+        warp_displacements: dict[
+            tuple[int, int], tuple[np.ndarray, np.ndarray]
+        ] | None,
+    ) -> PSF:
+        """Realise one shared scene/star PSF sample for ``band``."""
+        pset = self._psf_sets[band.name]
+        if psf_spec is None:
+            return pset.mean()
+        displacement = None
+        if (warp_displacements is not None
+                and psf_spec.warp_seed is not None
+                and psf_spec.warp_alpha > 0.0):
+            shape = tuple(int(v) for v in pset.shape)
+            displacement = warp_displacements.get(shape)
+            if displacement is None:
+                displacement = PSF.elastic_displacement(
+                    shape,
+                    psf_spec.warp_alpha,
+                    psf_spec.warp_sigma,
+                    seed=int(psf_spec.warp_seed),
+                )
+                warp_displacements[shape] = displacement
+        return pset.apply_sample(
+            psf_spec, warp_displacement=displacement,
+        )
+
+    @staticmethod
+    def _convolve_sparse_deltas(image: np.ndarray, psf: PSF) -> np.ndarray:
+        """Convolve a sparse HR star plane by stamping ``psf`` at its deltas.
+
+        Star injection deposits one value at each integer HR coordinate.  A
+        direct sparse stamp is exactly the same linear convolution as
+        ``fftconvolve(..., mode="same")`` for that representation, without a
+        second full-field FFT merely to render a handful of stars.
+        """
+        source = np.asarray(image, np.float32)
+        out = np.zeros_like(source)
+        ys, xs = np.nonzero(source)
+        if ys.size == 0:
+            return out
+        kernel = np.asarray(psf.data, np.float32)
+        kh, kw = kernel.shape
+        cy, cx = (kh - 1) // 2, (kw - 1) // 2
+        height, width = source.shape
+        for y, x in zip(ys, xs, strict=False):
+            oy0, ox0 = max(0, y - cy), max(0, x - cx)
+            oy1 = min(height, y - cy + kh)
+            ox1 = min(width, x - cx + kw)
+            ky0, kx0 = oy0 - (y - cy), ox0 - (x - cx)
+            ky1, kx1 = ky0 + (oy1 - oy0), kx0 + (ox1 - ox0)
+            out[oy0:oy1, ox0:ox1] += (
+                source[y, x] * kernel[ky0:ky1, kx0:kx1]
+            )
+        return out
 
     def _process_one_band(
         self,
@@ -218,40 +285,28 @@ class ObservationSimulator:
         band: BandConfig,
         rng: np.random.Generator,
         psf_spec: PSFSample | None = None,
+        star_hr_channel: np.ndarray | None = None,
+        star_psf_spec: PSFSample | None = None,
         warp_displacements: dict[
             tuple[int, int], tuple[np.ndarray, np.ndarray]
         ] | None = None,
-    ) -> np.ndarray:
-        """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
-        # Realise the scene's shared PSF sample against this band's set: cluster
-        # ``psf_spec.index`` rotated by the shared roll (no blending).
-        # ``psf_spec=None`` → the field-mean PSF.
-        pset = self._psf_sets[band.name]
-        if psf_spec is None:
-            psf = pset.mean()
-        else:
-            displacement = None
-            if (warp_displacements is not None
-                    and psf_spec.warp_seed is not None
-                    and psf_spec.warp_alpha > 0.0):
-                shape = tuple(int(v) for v in pset.shape)
-                displacement = warp_displacements.get(shape)
-                if displacement is None:
-                    displacement = PSF.elastic_displacement(
-                        shape,
-                        psf_spec.warp_alpha,
-                        psf_spec.warp_sigma,
-                        seed=int(psf_spec.warp_seed),
-                    )
-                    warp_displacements[shape] = displacement
-            psf = pset.apply_sample(
-                psf_spec, warp_displacement=displacement,
-            )
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return final dirty LR plus its pre-noise optical trigger plane."""
+        # The ordinary scene keeps its nominal field-position/roll PSF.  An
+        # augmented sparse star plane may use an independent empirical PSF
+        # draw plus elastic deformation: this widens the stellar-wing family
+        # without warping galaxy morphology too.
+        psf = self._psf_for_sample(band, psf_spec, warp_displacements)
         target_scale = self.target_lr_pixel_scale_arcsec
 
         # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
         #    the kernel and runs fftconvolve mode="same" + float32 cast).
         hr_e = psf.convolved_with(hr_channel)
+        if star_hr_channel is not None and np.any(star_hr_channel):
+            star_psf = self._psf_for_sample(
+                band, star_psf_spec, warp_displacements,
+            )
+            hr_e += self._convolve_sparse_deltas(star_hr_channel, star_psf)
 
         # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
         #    statistics at the right pixel size for the per-band noise step).
@@ -274,7 +329,15 @@ class ObservationSimulator:
             lr_e = resample_upsample(
                 lr_e, factor=upsample_factor, kernel=self.config.nisp_resample_kernel,
             )
-        return lr_e.astype(np.float32, copy=False)
+            lr_signal_e = resample_upsample(
+                lr_signal_e,
+                factor=upsample_factor,
+                kernel=self.config.nisp_resample_kernel,
+            )
+        return (
+            lr_e.astype(np.float32, copy=False),
+            lr_signal_e.astype(np.float32, copy=False),
+        )
 
     # ------------------------------------------------------------------ #
     def apply(self, hr: Image, rng=None, *, store=None) -> Image:
@@ -299,6 +362,8 @@ class ObservationSimulator:
         self,
         hr_4ch: Image,
         rng: np.random.Generator | None = None,
+        *,
+        star_hr_4ch: np.ndarray | None = None,
     ) -> tuple[Image, Image]:
         """Run the full forward model on one HR clean 4-channel field.
 
@@ -308,6 +373,11 @@ class ObservationSimulator:
                  ``pixel_scale_arcsec == hr_pixel_scale``, band order
                  ``Config.LR_INPUT_BAND_NAMES``.
         rng    : reproducible noise source; ``np.random.default_rng()`` if None.
+        star_hr_4ch : optional sparse star-only HR plane.  When supplied, it
+                 is forwarded separately. A warp draw gives it an independent
+                 empirical PSF sample plus elastic deformation while the scene
+                 keeps its nominal sample. The returned HR target contains
+                 ``hr_4ch + star_hr_4ch``.
 
         Returns
         -------
@@ -328,6 +398,14 @@ class ObservationSimulator:
             )
         if rng is None:
             rng = np.random.default_rng()
+        star_data = None
+        if star_hr_4ch is not None:
+            star_data = np.asarray(star_hr_4ch, np.float32)
+            if star_data.shape != hr_4ch.data.shape:
+                raise ValueError(
+                    f"star_hr_4ch shape {star_data.shape} must match HR scene "
+                    f"shape {hr_4ch.data.shape}"
+                )
 
         # HR canvas must be divisible by every band's rebin factor so all four
         # LR channels land on the same grid after the band-specific rebin (and
@@ -341,14 +419,38 @@ class ObservationSimulator:
         H_trim = (H_full // max_rebin) * max_rebin
         W_trim = (W_full // max_rebin) * max_rebin
         hr_data_trim = hr_4ch.data[:H_trim, :W_trim, :]
+        star_data_trim = (
+            star_data[:H_trim, :W_trim, :] if star_data is not None else None
+        )
 
         # Draw ONE PSF sample (cluster index + roll) for the whole scene so all
         # four bands share the field position and the telescope roll — one
         # physical pointing. ``None`` (randomisation off) → each band's mean.
-        psf_spec = self._draw_psf_sample(rng) if self.config.randomize_psf else None
+        if star_data_trim is not None and self.config.randomize_psf:
+            # The galaxy scene gets one nominal physical PSF.  When the warp
+            # draw fires, stars get an independent cluster/roll plus elastic
+            # deformation, deliberately spanning wing appearances beyond the
+            # one scene PSF.  When it does not fire, both share the nominal
+            # sample exactly, so psf_warp_prob=0 truly disables augmentation.
+            psf_spec = self._draw_psf_sample(rng, allow_warp=False)
+            augmented_star_spec = self._draw_psf_sample(rng, allow_warp=True)
+            star_psf_spec = (
+                augmented_star_spec
+                if augmented_star_spec.warp_seed is not None
+                else psf_spec
+            )
+        else:
+            # Backwards-compatible path for callers that provide a combined
+            # scene: its configured PSF sample (including warp) is unchanged.
+            psf_spec = (
+                self._draw_psf_sample(rng)
+                if self.config.randomize_psf else None
+            )
+            star_psf_spec = None
 
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
+        saturation_trigger_channels = []
         # Same-shaped band kernels share one displacement field for this
         # physical exposure. Coordinate generation is the expensive part of
         # an elastic warp; reuse keeps live augmentation cheap without
@@ -358,10 +460,15 @@ class ObservationSimulator:
         ] = {}
         for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
-            lr_channels.append(self._process_one_band(
+            lr_channel, trigger_channel = self._process_one_band(
                 hr_data_trim[..., k], band, rng, psf_spec=psf_spec,
+                star_hr_channel=(star_data_trim[..., k]
+                                 if star_data_trim is not None else None),
+                star_psf_spec=star_psf_spec,
                 warp_displacements=warp_displacements,
-            ))
+            )
+            lr_channels.append(lr_channel)
+            saturation_trigger_channels.append(trigger_channel)
         # All channels must end on the same grid (the VIS LR grid).
         target_shape = lr_channels[0].shape
         for k, ch in enumerate(lr_channels):
@@ -371,6 +478,9 @@ class ObservationSimulator:
                     "Check rebin / resample factors."
                 )
         lr_stack = np.stack(lr_channels, axis=-1)
+        saturation_trigger_stack = np.stack(
+            saturation_trigger_channels, axis=-1,
+        )
 
         # Detector saturation masking: any pixel past the band well depth
         # (bright stars OR bright galaxy nuclei) is masked to ~0 over a blocky
@@ -379,12 +489,16 @@ class ObservationSimulator:
         if self._sat_model is not None:
             apply_saturation_masking(
                 lr_stack, self._sat_model, rng,
-                band_names=Config.LR_INPUT_BAND_NAMES)
+                band_names=Config.LR_INPUT_BAND_NAMES,
+                trigger_4ch=saturation_trigger_stack,
+            )
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is
         # band k of the LR input — the model super-resolves VIS+NISP jointly.
         hr_clean = hr_data_trim.astype(np.float32, copy=True)
+        if star_data_trim is not None:
+            hr_clean += star_data_trim
 
         lr_img = Image(
             data=lr_stack,
