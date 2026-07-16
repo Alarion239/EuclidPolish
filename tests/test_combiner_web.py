@@ -51,6 +51,29 @@ def test_combiner_fit_allows_starless(client):
     assert "job_id" in r.get_json()
 
 
+def test_combiner_fit_api_preserves_explicit_zero_min_usage(client, monkeypatch):
+    from euclid_polish.web.routes import ensemble as ensemble_routes
+
+    seen = {}
+
+    def fake_job(_cap, **kwargs):
+        seen.update(kwargs)
+
+    def fake_spawn(_description, target):
+        target(_Cap())
+        return "zero-min-usage"
+
+    monkeypatch.setattr(ensemble_routes, "job_combiner_fit", fake_job)
+    monkeypatch.setattr(ensemble_routes.REGISTRY, "spawn", fake_spawn)
+    response = client.post("/ensemble/combiner/fit", data={
+        "mode": "starfull", "model_kind": "stats_rbf_gate",
+        "n_kernels": "32", "min_usage": "0",
+    })
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "zero-min-usage"
+    assert seen["min_usage"] == 0.0
+
+
 def test_combiner_json_404_before_fit(client):
     assert client.get("/ensemble/combiner.json").status_code == 404
 
@@ -88,6 +111,48 @@ def test_compute_combiner_payload_from_saved():
     assert payload is not None
     assert payload["available"] and set(payload["surviving"]) == set(BANDS)
     assert os.path.isfile(ev._combiner_payload_path(False))
+
+
+def test_hr_weight_diagnostic_groups_stack_weights_by_target(tmp_path, monkeypatch):
+    """HR is only the grouping variable; the combiner still sees predictions."""
+    from euclid_polish.eval.combiner import BandCombiner, Combiner
+
+    rdir = str(tmp_path / "records")
+    os.makedirs(rdir, exist_ok=True)
+    _write_records(rdir, "hr_validate", 1, shape=(8, 8, 4))
+    monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: rdir)
+
+    cubes = tmp_path / "cubes_validate"
+    cubes.mkdir()
+    rng = np.random.default_rng(4)
+    for i in range(2):
+        np.save(cubes / f"member{i}_00000.npy",
+                np.abs(rng.normal(50, 10, (8, 8, 4))).astype(np.float32))
+    with open(cubes / "viz_index.json", "w") as f:
+        json.dump({"subset": "validate", "indices": [0],
+                   "member_labels": ["00", "01"], "records_fp": "fp"}, f)
+
+    bands = {}
+    for name in BANDS:
+        bands[name] = BandCombiner(
+            V=np.zeros((3, 2), np.float32), a=np.zeros(2, np.float32),
+            centers=np.linspace(-1, 13, 3, dtype=np.float32), sigma=1.0,
+            surviving=np.ones(2, bool))
+    comb = Combiner(member_labels=["00", "01"], n_kernels=3,
+                    sigma_scale=1.0, min_usage=0.0, bands=bands,
+                    band_names=BANDS, records_fp="fp")
+
+    payload = ev._hr_weight_diagnostic_from_bucket(
+        comb, starless=False, cubes_dir=str(cubes), target="hr")
+    assert payload["available"] is True
+    assert payload["n_fields"] == 1
+    assert payload["n_pixels"] == 64
+    for band in BANDS:
+        data = payload["bands"][band]
+        assert any(count > 0 for count in data["counts"])
+        for row in data["mean"]:
+            if row[0] is not None:
+                assert sum(row) == pytest.approx(1.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +315,43 @@ def test_apply_combiner_to_test_cubes_from_cached_members(tmp_path, monkeypatch)
         got = np.load(cubes / f"comb_{rec:05d}.npy")
         np.testing.assert_allclose(got, loaded.apply_field(stack),
                                    rtol=1e-5, atol=1e-2)
+
+
+def test_apply_all_combiners_writes_independent_rbf_and_stats_cubes(tmp_path, monkeypatch):
+    """Fitting one model must not skip or overwrite the other model's cache."""
+    from euclid_polish.eval.combiner import fit_combiner, save_combiner
+
+    regime = tmp_path / "starfull"
+    cubes = regime / "cubes"
+    cubes.mkdir(parents=True)
+    monkeypatch.setattr(ev, "_ensemble_regime_dir", lambda sl: str(regime))
+    monkeypatch.setattr(ev, "_ensemble_cubes_dir", lambda *a, **k: str(cubes))
+
+    rng = np.random.default_rng(21)
+    n = 500
+    y = rng.normal(1.0, .3, n).astype(np.float32)
+    X = np.stack([y + rng.normal(0, .02, n), y + rng.normal(0, .04, n)], 1)
+    buffers = dict.fromkeys(BANDS, (X, y))
+    labels = ["00·p", "01·p"]
+    rbf = fit_combiner(buffers, labels, n_kernels=4, steps=20)
+    stats = fit_combiner(buffers, labels, model_kind="stats_rbf_gate",
+                         n_kernels=4, steps=20, batch=128)
+    save_combiner(rbf, str(regime), artifact_dir="combiner")
+    save_combiner(stats, str(regime), artifact_dir="stats_rbf_combiner")
+
+    rec, tag = 3, "00003"
+    for i in range(2):
+        np.save(cubes / f"member{i}_{tag}.npy",
+                np.abs(rng.normal(200, 50, (5, 5, 4))).astype(np.float32))
+    (cubes / "viz_index.json").write_text(json.dumps(
+        {"subset": "test", "indices": [rec], "member_labels": labels}))
+
+    assert ev._apply_all_combiners_to_test_cubes(False) is True
+    assert (cubes / f"comb_{tag}.npy").is_file()
+    assert (cubes / f"comb_stats_rbf_{tag}.npy").is_file()
+    man = json.loads((cubes / "viz_index.json").read_text())
+    assert man["has_combiner_rbf_gate"] is True
+    assert man["has_combiner_stats_rbf_gate"] is True
 
 
 def test_apply_combiner_to_test_cubes_noops_without_combiner(tmp_path, monkeypatch):

@@ -48,10 +48,17 @@ class PSFSample:
     ``index`` selects the cluster PSF (the band PSFSets share a common
     clustering + numbering, so the same index is the same field region in
     every band). ``angle`` is the telescope roll in degrees, or ``None`` for
-    no rotation. The same :class:`PSFSample` is applied to every band's set."""
+    no rotation. ``warp_*`` optionally describes one replayable elastic
+    deformation of the forward PSF. The same :class:`PSFSample` is applied to
+    every band's set."""
 
     index: int
     angle: float | None = None
+    # Optional elastic forward-model augmentation.  The same sample object is
+    # applied across bands, so the seed couples their geometric deformation.
+    warp_seed: int | None = None
+    warp_alpha: float = 0.0
+    warp_sigma: float = 3.0
 
 
 @dataclass
@@ -182,6 +189,9 @@ class PSFSet(StampCarrier):
         use_unrotated_prob: float = 0.3,
         angle_min: int = 1,
         angle_max: int = 359,
+        warp_prob: float = 0.0,
+        warp_alpha_max: float = 0.0,
+        warp_sigma: float = 3.0,
     ) -> PSFSample:
         """Draw a :class:`PSFSample` (cluster index + roll) for one scene.
 
@@ -191,26 +201,63 @@ class PSFSet(StampCarrier):
         2. With probability ``use_unrotated_prob`` (default 0.3) no rotation.
         3. Otherwise a random integer roll in ``[angle_min, angle_max]``
            (default 1..359 — 0/360 is the identity, covered by step 2).
+        4. Optionally draw an elastic warp with
+           ``alpha ~ Uniform(0, warp_alpha_max)`` and a replay seed.
 
         Drawn ONCE per scene from a reference set and applied to every band
-        via :meth:`apply_sample`, so all bands share the field position + roll.
+        via :meth:`apply_sample`, so all bands share the field position, roll,
+        and warp realization.
         """
-        idx = int(rng.choice(self.n, p=self._pick_weights()))
-        if rng.random() < float(use_unrotated_prob):
-            return PSFSample(index=idx, angle=None)
-        return PSFSample(index=idx,
-                         angle=float(rng.integers(int(angle_min),
-                                                  int(angle_max) + 1)))
+        warp_prob = float(warp_prob)
+        warp_alpha_max = float(warp_alpha_max)
+        warp_sigma = float(warp_sigma)
+        if not 0.0 <= warp_prob <= 1.0:
+            raise ValueError(f"warp_prob must be in [0, 1], got {warp_prob}")
+        if warp_alpha_max < 0.0:
+            raise ValueError(
+                f"warp_alpha_max must be >= 0, got {warp_alpha_max}")
+        if warp_sigma <= 0.0:
+            raise ValueError(f"warp_sigma must be > 0, got {warp_sigma}")
 
-    def apply_sample(self, sample: PSFSample, *, rotation_order: int = 3) -> PSF:
+        idx = int(rng.choice(self.n, p=self._pick_weights()))
+        angle = (None if rng.random() < float(use_unrotated_prob)
+                 else float(rng.integers(int(angle_min),
+                                         int(angle_max) + 1)))
+        warp_seed = None
+        warp_alpha = 0.0
+        if (warp_prob > 0.0 and warp_alpha_max > 0.0
+                and rng.random() < warp_prob):
+            # alpha ~ U(0, alpha_max), matching polish-pub.  Store a seed
+            # rather than an array so one compact sample can be replayed by
+            # all four band PSFSets.
+            warp_alpha = float(rng.uniform(0.0, warp_alpha_max))
+            warp_seed = int(rng.integers(0, np.iinfo(np.uint32).max,
+                                         dtype=np.uint32))
+        return PSFSample(index=idx, angle=angle, warp_seed=warp_seed,
+                         warp_alpha=warp_alpha, warp_sigma=warp_sigma)
+
+    def apply_sample(
+        self,
+        sample: PSFSample,
+        *,
+        rotation_order: int = 3,
+        warp_displacement: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> PSF:
         """Realise a :class:`PSFSample` against THIS band's set: take cluster
         ``sample.index`` (clamped if this set has fewer members — e.g. a
-        Gaussian-fallback band) and rotate by the shared roll. No blending,
-        no cropping — one real single-roll kernel."""
+        Gaussian-fallback band), rotate by the shared roll, and optionally
+        apply the shared elastic warp. No blending, no cropping — one real
+        single-roll kernel."""
         psf = self.psfs[min(int(sample.index), self.n - 1)]
-        if sample.angle is None:
-            return psf
-        return psf.rotated(float(sample.angle), order=int(rotation_order))
+        if sample.angle is not None:
+            psf = psf.rotated(float(sample.angle), order=int(rotation_order))
+        if sample.warp_seed is not None and sample.warp_alpha > 0.0:
+            psf = psf.elastic_warp(
+                sample.warp_alpha, sample.warp_sigma,
+                seed=int(sample.warp_seed), order=1,
+                displacement=warp_displacement,
+            )
+        return psf
 
     def sample_for_generation(
         self,
@@ -220,12 +267,19 @@ class PSFSet(StampCarrier):
         angle_min: int = 1,
         angle_max: int = 359,
         rotation_order: int = 3,
+        warp_prob: float = 0.0,
+        warp_alpha_max: float = 0.0,
+        warp_sigma: float = 3.0,
     ) -> PSF:
         """Single-set convenience: ``apply_sample(draw_sample(rng))``. The
         multi-band generator instead draws one :class:`PSFSample` and applies
         it across all bands so the roll + field position are shared."""
-        spec = self.draw_sample(rng, use_unrotated_prob=use_unrotated_prob,
-                                angle_min=angle_min, angle_max=angle_max)
+        spec = self.draw_sample(
+            rng, use_unrotated_prob=use_unrotated_prob,
+            angle_min=angle_min, angle_max=angle_max,
+            warp_prob=warp_prob, warp_alpha_max=warp_alpha_max,
+            warp_sigma=warp_sigma,
+        )
         return self.apply_sample(spec, rotation_order=rotation_order)
 
     # ------------------------------------------------------------------

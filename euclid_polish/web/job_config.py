@@ -40,7 +40,10 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "star_mag_faint": "star_mag_faint",
                                 "lens_density_arcmin2": "lens_density_arcmin2",
                                 "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
-                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms"},
+                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
+                                "psf_warp_prob": "psf_warp_prob",
+                                "psf_warp_alpha_max": "psf_warp_alpha_max",
+                                "psf_warp_sigma": "psf_warp_sigma"},
     "lensfinder_generate":     {"n_train": "lensfinder_n_fields",
                                 "n_valid": "lensfinder_n_valid",
                                 "image_size": "lensfinder_image_size",
@@ -50,7 +53,10 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "star_mag_faint": "star_mag_faint",
                                 "lens_density_arcmin2": "lens_density_arcmin2",
                                 "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
-                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms"},
+                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
+                                "psf_warp_prob": "psf_warp_prob",
+                                "psf_warp_alpha_max": "psf_warp_alpha_max",
+                                "psf_warp_sigma": "psf_warp_sigma"},
     "lensfinder_train":        {"epochs": "lensfinder_epochs",
                                 "patience": "lensfinder_patience",
                                 "batch_size": "lensfinder_batch_size",
@@ -61,6 +67,9 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
     "ensemble_train":          {"lr_peak": "lr_peak",
                                 "lr_final": "lr_final",
                                 "lr_warmup_steps": "lr_warmup_steps",
+                                "psf_warp_prob": "psf_warp_prob",
+                                "psf_warp_alpha_max": "psf_warp_alpha_max",
+                                "psf_warp_sigma": "psf_warp_sigma",
                                 "plateau_lr_enabled": "plateau_lr_enabled",
                                 "plateau_lr_factor": "plateau_lr_factor",
                                 "plateau_lr_patience": "plateau_lr_patience",
@@ -118,6 +127,13 @@ class JobConfig:
     lr_peak:              float = Config.LR_PEAK
     lr_final:             float = Config.LR_FINAL
     lr_warmup_steps:      int   = Config.LR_WARMUP_STEPS
+    # PSF-distribution augmentation shared by synthetic generation and live
+    # training. Generated train/validate/test dirty exposures receive seeded,
+    # reproducible draws; clean/HR targets are never deformed. In clean-only
+    # on-the-fly training, train instead draws a fresh warp on every visit.
+    psf_warp_prob:        float = Config.TRAIN_PSF_WARP_PROB
+    psf_warp_alpha_max:   float = Config.TRAIN_PSF_WARP_ALPHA_MAX
+    psf_warp_sigma:       float = Config.TRAIN_PSF_WARP_SIGMA
     plateau_lr_enabled:   int   = int(Config.PLATEAU_LR_ENABLED)
     plateau_lr_factor:    float = Config.PLATEAU_LR_FACTOR
     plateau_lr_patience:  int   = Config.PLATEAU_LR_PATIENCE

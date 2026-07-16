@@ -42,12 +42,10 @@
   {% endif %}
   <form id="sky-sync-form">
     <p class="muted" style="margin:0 0 4px;">
-      Pulls the held-out <strong>test</strong> split (the eval set) by default.
-      Validate and the large train split are opt-in.
+      Pulls the held-out <strong>test</strong> split (the eval set) and
+      <strong>validate</strong> split (combiner fitting) together. Only the
+      large train split is opt-in.
     </p>
-    <label style="display:inline-flex; align-items:center; gap:6px;">
-      <input type="checkbox" name="include_validate"> also pull validate shards
-    </label>
     <label style="display:inline-flex; align-items:center; gap:6px;">
       <input type="checkbox" name="include_train"> also pull train shards
     </label>

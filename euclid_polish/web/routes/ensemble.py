@@ -8,6 +8,7 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
+from euclid_polish.eval.combiner import COMBINER_MODELS
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
     _combined_payload_path,
@@ -26,6 +27,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_render,
     job_member_psnr,
     pixel_trace,
+    refresh_evaluation_diagnostics,
     regenerate_eval_diagnostics,
     regenerate_power_spectrum,
     training_curves_payload,
@@ -97,19 +99,36 @@ def register(app):
         except (TypeError, ValueError):
             num_images = 100
         try:
-            n_kernels = max(2, min(32, int(request.form.get("n_kernels", 12) or 12)))
+            n_kernels = max(2, min(64, int(request.form.get("n_kernels", 12) or 12)))
         except (TypeError, ValueError):
             n_kernels = 12
+        raw_min_usage = request.form.get("min_usage")
         try:
-            min_usage = max(0.0, float(request.form.get("min_usage", 0.0) or 0.0))
+            min_usage = (None if raw_min_usage in (None, "")
+                         else max(0.0, float(raw_min_usage)))
         except (TypeError, ValueError):
-            min_usage = 0.0
+            min_usage = None
+        from euclid_polish.eval.combiner import (
+            DEFAULT_N_KERNELS,
+            combiner_model_spec,
+            normalize_model_kind,
+        )
+        try:
+            model_kind = normalize_model_kind(request.form.get("model_kind"))
+        except ValueError:
+            model_kind = "rbf_gate"
+        spec = combiner_model_spec(model_kind)
+        if spec.feature_names is not None and n_kernels == DEFAULT_N_KERNELS:
+            n_kernels = spec.default_kernels
         regime = "starless" if starless else "starfull"
+        model_label = f"{spec.label} K={n_kernels}"
         job_id = REGISTRY.spawn(
-            f"combiner: fit {regime} on validate ({num_images} fields, K={n_kernels})",
+            f"combiner: fit {regime} on validate ({num_images} fields, {model_label})",
             target=lambda cap: job_combiner_fit(
                 cap, num_images=num_images, n_kernels=n_kernels,
-                min_usage=min_usage, starless=starless),
+                min_usage=min_usage,
+                starless=starless,
+                model_kind=model_kind),
         )
         return jsonify({"job_id": job_id})
 
@@ -121,8 +140,13 @@ def register(app):
         from the saved combiner (cheap: reads the npz + member origins, no
         inference) so the member meta stays current; 404 before any fit."""
         starless = _mode_starless(default="starfull")
-        path = _combiner_payload_path(starless)
-        if compute_combiner_payload(starless) is None and not os.path.isfile(path):
+        from euclid_polish.eval.combiner import normalize_model_kind
+        try:
+            model_kind = normalize_model_kind(request.args.get("model_kind"))
+        except ValueError:
+            model_kind = "rbf_gate"
+        path = _combiner_payload_path(starless, model_kind)
+        if compute_combiner_payload(starless, model_kind=model_kind) is None and not os.path.isfile(path):
             abort(404)
         return send_file(path, mimetype="application/json", max_age=0)
 
@@ -138,16 +162,24 @@ def register(app):
             n_kernels = max(2, min(32, int(request.form.get("n_kernels", 12) or 12)))
         except (TypeError, ValueError):
             n_kernels = 12
+        raw_min_usage = request.form.get("min_usage")
         try:
-            min_usage = max(0.0, float(request.form.get("min_usage", 0.0) or 0.0))
+            min_usage = (None if raw_min_usage in (None, "")
+                         else max(0.0, float(raw_min_usage)))
         except (TypeError, ValueError):
-            min_usage = 0.0
+            min_usage = None
+        from euclid_polish.eval.combiner import normalize_model_kind
+        try:
+            model_kind = normalize_model_kind(request.form.get("model_kind"))
+        except ValueError:
+            model_kind = "rbf_gate"
         regime = "starless" if starless else "starfull"
+        model_label = f"RBF K={n_kernels}"
         job_id = REGISTRY.spawn(
-            f"combined combiner: fit {regime} on validate ({num_images} fields, K={n_kernels})",
+            f"combined combiner: fit {regime} on validate ({num_images} fields, {model_label})",
             target=lambda cap: job_combined_combiner_fit(
                 cap, num_images=num_images, n_kernels=n_kernels,
-                min_usage=min_usage, starless=starless),
+                min_usage=min_usage, starless=starless, model_kind=model_kind),
         )
         return jsonify({"job_id": job_id})
 
@@ -203,6 +235,23 @@ def register(app):
         starless = _mode_starless()
         path = _evals_payload_path(starless)
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        needs_diagnostics = False
+        if os.path.isfile(path) and not fresh:
+            # Older payloads predate one or more cache-derived diagnostics.
+            # Rebuild once from existing cubes, with no model inference or
+            # recaching; this also refreshes the per-model trace sidecar.
+            try:
+                import json
+                with open(path) as f:
+                    cached = json.load(f)
+                    fresh = "coherence" not in cached
+                    feature_error = cached.get("combiner_feature_error") or {}
+                    needs_diagnostics = "axes" not in feature_error
+            except (OSError, ValueError):
+                fresh = True
+        if (needs_diagnostics
+                and refresh_evaluation_diagnostics(starless) is None):
+            fresh = True
         if ((fresh or not os.path.isfile(path))
                 and compute_evaluation_payload(starless) is None
                 and not os.path.isfile(path)):
@@ -213,21 +262,34 @@ def register(app):
     def ensemble_pixel_trace():
         """Back-trace a diagnostic heatmap cell to real image stamps.
 
-        ``?mode=&diag=std_err|bright_std&i=<int>&j=<int>`` → up to a handful of
+        ``?mode=&diag=std_err|bright_std|combiner_feature_error&model=&axis=&i=&j=``
+        → up to a handful of
         VIS zoom stamps (HR / ensemble-mean SR / cross-member std, electrons) of
         the actual pixels that fell into the clicked cell, each with the exact
         per-pixel σ / |error| / brightness so the user can see WHY it landed
         there. Empty ``stamps`` when nothing was sampled for that cell."""
         starless = _mode_starless()
         diag = (request.args.get("diag") or "").strip()
-        if diag not in ("std_err", "bright_std"):
+        if diag not in ("std_err", "bright_std", "combiner_feature_error"):
             abort(404)
+        model_kind = (request.args.get("model") or "").strip()
+        axis_mode = (request.args.get("axis") or "").strip()
+        if model_kind and model_kind not in ("ensemble_mean", *COMBINER_MODELS):
+            abort(400)
+        if (diag == "combiner_feature_error"
+                and model_kind not in ("ensemble_mean", *COMBINER_MODELS)):
+            abort(400)
+        if diag == "combiner_feature_error" and axis_mode not in (
+                "mean_std", "min_max"):
+            abort(400)
         try:
             i = int(request.args.get("i", ""))
             j = int(request.args.get("j", ""))
         except (TypeError, ValueError):
             abort(400)
-        return jsonify(pixel_trace(starless, diag, i, j))
+        return jsonify(pixel_trace(starless, diag, i, j,
+                                   model_kind=model_kind or None,
+                                   axis_mode=axis_mode or None))
 
     @app.route("/ensemble/eval-plot/<plot>.png")
     def ensemble_eval_plot(plot: str):

@@ -125,6 +125,9 @@ class MemberTrainSpec:
     forward_onthefly: bool = False
     psf_subset: int | None = None
     crops_per_field: int = 16
+    psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB
+    psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX
+    psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA
     icnr: bool = False
     starless: bool = False
     #: Per-member asinh stretch knee (electrons) — the input/output
@@ -383,6 +386,9 @@ class EnsembleModel:
                         "forward_onthefly": bool(spec.forward_onthefly),
                         "psf_subset": spec.psf_subset,
                         "crops_per_field": int(spec.crops_per_field),
+                        "psf_warp_prob": float(spec.psf_warp_prob),
+                        "psf_warp_alpha_max": float(spec.psf_warp_alpha_max),
+                        "psf_warp_sigma": float(spec.psf_warp_sigma),
                         "icnr": bool(spec.icnr),
                         # Star regime: starless members erase stars (target =
                         # the starless `clean`), starfull reconstruct them
@@ -406,6 +412,9 @@ class EnsembleModel:
                     forward_onthefly=spec.forward_onthefly,
                     psf_subset=spec.psf_subset,
                     crops_per_field=spec.crops_per_field,
+                    psf_warp_prob=spec.psf_warp_prob,
+                    psf_warp_alpha_max=spec.psf_warp_alpha_max,
+                    psf_warp_sigma=spec.psf_warp_sigma,
                     starless=spec.starless,
                     **train_kwargs)
             self._models.append(m)

@@ -71,7 +71,7 @@
     <p class="hint"><b>Left:</b> transfer function T(k) — does the ensemble mean
        carry the right amount of power per scale (T&lt;1 over-smoothed, T&gt;1
        hallucinated power). <b>Right:</b> correlation with the truth
-       <b>r(k)</b> per model + ensemble mean, and the <b>model–model</b>
+       <b>r(k)</b> per model + displayed ensemble mean, and the <b>model–model</b>
        cross-correlation r̃(k) (grey dashed; median over member pairs). r̃ needs
        <i>no HR</i>, so where it tracks r(k) the inter-model agreement is a
        validated stand-in for “did we recover real structure?” on real Euclid
@@ -229,10 +229,10 @@
 
 <section class="card" id="ens-combiner-card">
   <h3>Combiner (<span id="ens-combiner-regime">starfull</span>)</h3>
-  <p class="hint" style="flex-basis:100%;">A tiny per-band <b>brightness gate</b>:
-     a pixel's brightness picks a convex mix of the members (RBF kernels →
-     softmax), so faint pixels can lean fully on the L1 members (killing the L2
-     floor) and star cores on the star-reproducing members. Fit <b>locally on the
+  <p class="hint" style="flex-basis:100%;">Choose the tiny per-band <b>max-conditioned RBF gate</b>
+     or a compact <b>mean + std RBF</b> that sees two permutation-invariant summary
+     numbers from the full stack. All end in a convex softmax mix. Their
+     fits, parameters, and plots are stored separately. Fit <b>locally on the
      validate split</b> (reusing cached member inference), evaluated on
      <code>{{ eval_subset }}</code>, <b>per regime</b> (the fitted combiner and
      its curves belong to the current mode only). Does <b>not</b> change the
@@ -243,12 +243,12 @@
     <label title="How many validate fields to fit on (member inference is cached + reused).">
       Validate fields
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
-    <label title="Number of RBF kernels tiling the brightness axis. More = finer brightness resolution of the weights.">
+    <label title="Each model has a separate fitted artifact for this regime; choosing a model only switches which one is shown or fitted.">
+      Model
+      <select name="model_kind"><option value="rbf_gate">max-conditioned RBF</option><option value="stats_rbf_gate">mean + std RBF</option><option value="minmax_rbf_gate">min + max RBF</option></select></label>
+    <label title="Number of RBF kernels. The mean+std and min+max models use 32 compact 2-D kernels by default.">
       Kernels (K)
-      <input type="number" name="n_kernels" value="12" min="2" max="32"></label>
-    <label title="Post-hoc prune: drop a member entirely (all bands) when its CUMULATIVE importance — the total bar in the importance chart, summed over the 4 bands — is below this. 0 = keep all. Keeps rare-but-critical star specialists.">
-      Prune (min cumulative importance)
-      <input type="number" name="min_usage" value="0" min="0" max="0.5" step="0.01"></label>
+      <input type="number" name="n_kernels" value="12" min="2" max="64"></label>
     <button type="submit">Fit combiner</button>
   </form>
   <div id="ens-combiner-status"></div>
@@ -257,7 +257,7 @@
 
 <section class="card" id="ens-combined-combiner-card">
   <h3>Combined combiner (<span id="ens-combined-combiner-regime">starfull</span>)</h3>
-  <p class="hint">Experimental: one unchanged RBF brightness gate per band over
+  <p class="hint">Experimental: one selected combiner per band over
      <b>all</b> active starfull + starless members. This target remains
      <b id="ens-combined-target">hr</b>; the ordinary combiner, viewer tier,
      and disagreement diagnostics remain unchanged.</p>
@@ -265,7 +265,8 @@
     <input type="hidden" name="mode" id="ens-combined-combiner-mode" value="starfull">
     <label>Validate fields <input type="number" name="num_images" value="100" min="1" max="2000"></label>
     <label>Kernels (K) <input type="number" name="n_kernels" value="12" min="2" max="32"></label>
-    <label>Prune (min cumulative importance) <input type="number" name="min_usage" value="0" min="0" max="0.5" step="0.01"></label>
+    <label title="The experimental cross-regime combiner is fit without automatic pruning.">
+      Pruning disabled <input type="number" value="0" disabled></label>
     <button type="submit">Fit combined combiner</button>
   </form>
   <div id="ens-combined-combiner-status"></div>

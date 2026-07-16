@@ -15,9 +15,13 @@ from flask import abort
 from PIL import Image
 
 from euclid_polish.config import BandConfig, Config
+from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
-from euclid_polish.web.helpers.status import _fasrc_psf_dir
+from euclid_polish.web.helpers.status import (
+    _cached_fasrc_psf_dir,
+    _fasrc_psf_dir,
+)
 
 
 def _resolve_cutout_path(band_name: str, filename: str,
@@ -234,6 +238,67 @@ def _render_psf_panel_png(band: str | None) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _psf_preview_payload(band: str | None = None,
+                         *, max_side: int = 256) -> dict[str, Any]:
+    """Return bounded display arrays for browser-side PSF rendering.
+
+    This reads only the already-synchronised FASRC cache. The React console
+    owns colour mapping and canvas rendering; this helper avoids putting
+    matplotlib or a multi-hundred-MB FITS transfer on the page request path.
+    ``HDU0`` is the mean PSF for the multi-extension PSFSet format.
+    """
+    valid = {b.name for b in Config.BANDS}
+    if band and band != "all" and band not in valid:
+        abort(404)
+
+    psf_dir = _cached_fasrc_psf_dir()
+    if not psf_dir:
+        return {
+            "available": False,
+            "source": "FASRC cache",
+            "message": "No synchronised FASRC ePSFs are available.",
+            "bands": [],
+        }
+
+    names = ([band] if band and band != "all" else
+             [b.name for b in Config.BANDS])
+    previews: list[dict[str, Any]] = []
+    for name in names:
+        cfg = Config.get_band(name)
+        path = os.path.join(psf_dir, cfg.psf_fits_filename)
+        if not os.path.isfile(path):
+            continue
+        psf = PSF.from_fits(path)
+        data = np.asarray(psf.data, dtype=np.float32)
+        finite = np.isfinite(data)
+        if not finite.any():
+            continue
+        data = np.where(finite, data, 0.0)
+        logged = np.log10(np.clip(data, 1e-12, None))
+        original_shape = [int(v) for v in logged.shape]
+        if max(logged.shape) > max_side:
+            ys = np.linspace(0, logged.shape[0] - 1, max_side).astype(int)
+            xs = np.linspace(0, logged.shape[1] - 1, max_side).astype(int)
+            logged = logged[np.ix_(ys, xs)]
+        previews.append({
+            "name": name,
+            "values": logged.astype(float).tolist(),
+            "shape": original_shape,
+            "pixel_scale": float(psf.pixel_scale),
+            "fwhm": (float(psf.fwhm_arcsec)
+                     if psf.fwhm_arcsec is not None else cfg.psf_fwhm_arcsec),
+            "n_psf": int(fits.getheader(path, 0).get("NPSF", 1)),
+        })
+
+    return {
+        "available": bool(previews),
+        "source": "FASRC cache",
+        "message": (None if previews else
+                     "No synchronised FASRC ePSFs are available."),
+        "bands": previews,
+    }
 
 
 def _arrays_to_fits_bytes(

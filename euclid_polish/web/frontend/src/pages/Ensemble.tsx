@@ -45,40 +45,98 @@ type Status = {
 type PS = {
   theta: (number | null)[]; r: (number | null)[]; r_lr?: (number | null)[];
   r_comb?: (number | null)[]; r_members?: (number | null)[][];
+  r_stats_rbf_comb?: (number | null)[];
   r_combined?: (number | null)[];
   r_pairs?: (number | null)[][]; r_cross?: (number | null)[];
+  model_combiners?: Record<string, { r?: (number | null)[]; T?: (number | null)[] }>;
+};
+type CoherenceScore = {
+  id: string; label: string;
+  overall: number | null; sr: number | null;
+  overall_lo?: number | null; overall_hi?: number | null;
+  sr_lo?: number | null; sr_hi?: number | null;
+  n_fields?: number;
+};
+type Coherence = {
+  metric?: string; measure?: string;
+  domains?: { overall?: { k_min?: number; k_max?: number; theta_min?: number; theta_max?: number };
+    sr?: { k_min?: number; k_max?: number; theta_min?: number; theta_max?: number } };
+  scores?: CoherenceScore[];
 };
 /* Pixel diagnostics (VIS, electrons). All *_edges / med_* arrays are already in
    the axis units the frontend plots: std_err in log10(e⁻) on both axes;
    bright_std x is asinh(HR/stretch), y is log10(e⁻). hist[i][j] = pixel count. */
-type StdErr = {
+type StdErrModel = {
   edges: (number | null)[]; hist: number[][];
   med_std: (number | null)[]; med_err: (number | null)[];
-  pred?: string;   // point estimate the error is measured against ("combiner" | "ensemble mean")
+  n_fields?: number;
+};
+type StdErr = StdErrModel & {
+  pred?: string;
+  primary?: string;
+  models?: Record<string, StdErrModel>;
 };
 type BrightStd = {
   bright_edges: (number | null)[]; std_edges: (number | null)[]; hist: number[][];
   bright: (number | null)[]; lo: (number | null)[]; med: (number | null)[]; hi: (number | null)[];
   stretch: number;
 };
+type CombinerFeatureErrorModel = {
+  median_log_error: (number | null)[][]; counts: number[][];
+};
+type CombinerFeatureErrorAxis = {
+  axis_names: string[]; edges: number[][];
+  models: Record<string, CombinerFeatureErrorModel>;
+};
+type CombinerFeatureError = {
+  axes: Record<string, CombinerFeatureErrorAxis>;
+  color_range: number[]; error_unit?: string;
+};
 export type Evals = {
   ps: PS | null; guides?: { theta_min?: number; lr_scale?: number; vis_fwhm?: number };
+  coherence?: Coherence | null;
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null }[];
   n_fields?: number; n_members?: number;
   std_err?: StdErr | null; bright_std?: BrightStd | null;
+  combiner_feature_error?: CombinerFeatureError;
   combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
+  stats_rbf_combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
+  model_combiners?: Record<string, { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null>;
   combined_combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
 };
 
 /* ── combiner.json ───────────────────────────────────────────────────────── */
 type EffW = { brightness_asinh?: (number | null)[]; brightness_e?: (number | null)[]; jacobian?: (number | null)[][] };
+type FeatureGrid = {
+  mean_asinh?: (number | null)[]; std_asinh?: (number | null)[];
+  std_log?: (number | null)[];
+  center_mean_asinh?: (number | null)[]; center_std_asinh?: (number | null)[];
+  center_std_log?: (number | null)[];
+  x_label?: string; y_label?: string; y_is_log?: boolean;
+  weights?: (number | null)[][][];
+};
+type HRWeightBand = {
+  brightness_asinh?: (number | null)[]; brightness_e?: (number | null)[];
+  mean?: (number | null)[][]; p16?: (number | null)[][]; p84?: (number | null)[][];
+  counts?: number[];
+};
+type HRWeights = {
+  available?: boolean; reason?: string; subset?: string; target?: string;
+  member_labels?: string[]; bands?: Record<string, HRWeightBand>;
+  n_fields?: number; n_pixels?: number;
+};
 export type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
-  n_kernels?: number; min_usage?: number; val_l1?: number | null;
-  band_names?: string[]; surviving?: Record<string, boolean[]>;
+  kind?: "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate"; n_kernels?: number;
+  min_usage?: number; val_l1?: number | null;
+  band_names?: string[];
+  member_weight_peaks?: Record<string, number[]>;
+  member_weight_integrals?: Record<string, number[]>;
   eff_weights?: Record<string, EffW>;
+  feature_grid?: Record<string, FeatureGrid>;
+  hr_weights?: HRWeights;
   source_starless?: boolean[]; reason?: string;
 };
 
@@ -88,6 +146,15 @@ export type Combiner = {
 export type Curve = { name: string; psnr: [number, number][]; blocks?: number; test_psnr?: number | null; loss?: string; asinh_knee?: number | null; starless?: boolean };
 
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
+const COMBINER_META: Record<string, { label: string; color: string }> = {
+  ensemble_mean: { label: "ensemble mean", color: C.mean },
+  rbf_gate: { label: "max RBF", color: C.comb },
+  stats_rbf_gate: { label: "mean + std RBF", color: "#2a9d8f" },
+  minmax_rbf_gate: { label: "min + max RBF", color: "#d47f34" },
+};
+const combinerMeta = (kind: string) => COMBINER_META[kind] ?? {
+  label: kind.replace(/_/g, " "), color: categorical(kind.length),
+};
 const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
 const finite = (a: unknown, i: 0 | 1) => asArray<[number, number]>(a).map((p) => p[i]);
 const num = (a: unknown) => asArray<number | null>(a).map((v) => (v == null ? NaN : v));
@@ -121,13 +188,15 @@ function facetLegend(
 
 const DIAG_TABS = [
   { id: "power-spectrum", label: "power spectrum" },
+  { id: "coherence", label: "coherence score" },
   { id: "std-error", label: "std vs error" },
+  { id: "combiner-error", label: "combiner axes vs error" },
   { id: "std-brightness", label: "std vs brightness" },
 ] as const;
 type DiagTab = typeof DIAG_TABS[number]["id"];
 
 /* ── pixel back-tracing (click a heatmap cell → real image stamps) ─────────── */
-type PickDiag = "std_err" | "bright_std";
+type PickDiag = "std_err" | "bright_std" | "combiner_feature_error";
 /* Stamps arrive as base64 little-endian float32 blobs (one per tier): the
    full N-band LR/HR/SR cubes (rendered with the field viewer's colour engine)
    and the single-band σ. */
@@ -135,6 +204,7 @@ type Stamp = {
   field: number; y: number; x: number; center: number; sr_is_combiner: boolean;
   lr?: string; hr: string; sr: string; std: string;
   hr_val: number; sr_val: number; std_val: number; err_val: number; bright_asinh: number;
+  model_kind?: string;
 };
 type Trace = {
   diag: string; i: number; j: number; half: number; size: number;
@@ -253,13 +323,15 @@ function TraceHint({ targetLabel = "HR" }: { targetLabel?: string }) {
 const STAMP_PX = 3;
 
 function PixelTrace(
-  { context, traceBase, targetLabel, pick, cellLabel, colorMeta, onClose }:
+  { context, traceBase, targetLabel, pick, modelKind, axisMode, cellLabel, colorMeta, onClose }:
   { context: string; traceBase: string; pick: { diag: PickDiag; i: number; j: number }; cellLabel: string;
-    colorMeta?: ColorMeta; targetLabel: string; onClose: () => void },
+    modelKind?: string; axisMode?: string; colorMeta?: ColorMeta; targetLabel: string; onClose: () => void },
 ) {
   const separator = traceBase.includes("?") ? "&" : "?";
-  const url = `${traceBase}${separator}diag=${pick.diag}&i=${pick.i}&j=${pick.j}`;
-  const trace = useResource<Trace>(url, [context, traceBase, pick.diag, pick.i, pick.j]);
+  const modelQuery = modelKind ? `&model=${encodeURIComponent(modelKind)}` : "";
+  const axisQuery = axisMode ? `&axis=${encodeURIComponent(axisMode)}` : "";
+  const url = `${traceBase}${separator}diag=${pick.diag}&i=${pick.i}&j=${pick.j}${modelQuery}${axisQuery}`;
+  const trace = useResource<Trace>(url, [context, traceBase, pick.diag, pick.i, pick.j, modelKind, axisMode]);
   const t = trace.data;
   const stamps = asArray<Stamp>(t?.stamps);
   const traceBands = asArray<string>(t?.bands);
@@ -303,7 +375,7 @@ function PixelTrace(
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX} label={targetLabel} />
                     <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={traceBands}
                       colorMeta={colorMeta} opts={opts} render={render} px={STAMP_PX}
-                      label="SR" badge={s.sr_is_combiner ? "combiner" : "mean"} />
+                      label="SR" badge={combinerMeta(s.model_kind ?? (s.sr_is_combiner ? "rbf_gate" : "ensemble_mean")).label} />
                     <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} px={STAMP_PX} label="σ" />
                   </div>
                   <div className="mono ens-trace__nums">
@@ -325,10 +397,11 @@ export default function EnsemblePage() {
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
+  const [combinerKind, setCombinerKind] = useState<CombinerModelKind>("rbf_gate");
 
   const status = useResource<Status>(`/ensemble/status.json?mode=${mode}`, [mode]);
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
-  const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}`, [mode]);
+  const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${combinerKind}`, [mode, combinerKind]);
   const combined = useResource<Combiner>(`/ensemble/combined-combiner.json?mode=${mode}`, [mode]);
   const curves = useResource<{ members?: Curve[] }>("/ensemble/training-curves.json");
 
@@ -363,7 +436,8 @@ export default function EnsemblePage() {
         <TrainingCurves curves={asArray<Curve>(curves.data?.members)} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
-          evalReady={status.data?.evaluations_ready ?? false} />
+          evalReady={status.data?.evaluations_ready ?? false}
+          modelKind={combinerKind} onModelKindChange={setCombinerKind} />
         <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)} />
         <CombinerCard comb={combined.data} loading={combined.loading} mode={mode} theme={theme} fitJob={combinedFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false} combined />
@@ -565,12 +639,18 @@ export function Evaluations(
   const [tab, setTab] = useState<DiagTab>("power-spectrum");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
   // Which overlay curves to draw on the power spectrum.
-  const [show, setShow] = useState({ cross: true, mean: true, comb: true, combined: true });
+  const [show, setShow] = useState({ cross: true, mean: true, comb: true, stats: true, combined: true });
+  const [showModels, setShowModels] = useState<Record<string, boolean>>({});
+  const [stdErrKind, setStdErrKind] = useState("rbf_gate");
+  const [combinerErrorKind, setCombinerErrorKind] = useState("rbf_gate");
+  const [combinerAxisMode, setCombinerAxisMode] = useState("mean_std");
   const toggle = (k: keyof typeof show) => setShow((s) => ({ ...s, [k]: !s[k] }));
+  const modelShown = (kind: string) => showModels[kind] ?? true;
+  const toggleModel = (kind: string) => setShowModels((s) => ({ ...s, [kind]: !(s[kind] ?? true) }));
   // Back-traced heatmap cell (click-to-inspect). Cleared when the tab/regime
   // changes — a cell only means something within one diagnostic.
   const [pick, setPick] = useState<{ diag: PickDiag; i: number; j: number } | null>(null);
-  useEffect(() => setPick(null), [tab, mode]);
+  useEffect(() => setPick(null), [tab, mode, stdErrKind, combinerErrorKind, combinerAxisMode]);
   // Viewer colour meta (band constants) so back-trace stamps colour like the viewer.
   const viewerQuery = viewerCollection === "ensemble" ? `?mode=${mode}` : "";
   const vmeta = useResource<ViewerMetaColor>(`/viewer/meta/${viewerCollection}${viewerQuery}`, [viewerCollection, mode]);
@@ -578,6 +658,14 @@ export function Evaluations(
   const colorMeta = vmeta.data?.color;
   const ps = evals?.ps ?? null;
   const members = asArray<NonNullable<Evals["members"]>[number]>(evals?.members);
+  const availableModelCurves = Object.entries(ps?.model_combiners ?? {})
+    .filter(([, curve]) => hasData(curve?.r));
+  const availableStdErrModels = Object.entries(evals?.std_err?.models ?? {})
+    .filter(([, diagnostic]) => asArray<number[]>(diagnostic?.hist).length > 0);
+  const availableCombinerErrorAxes = Object.entries(evals?.combiner_feature_error?.axes ?? {});
+  const selectedCombinerErrorAxis = evals?.combiner_feature_error?.axes?.[combinerAxisMode]
+    ?? availableCombinerErrorAxes[0]?.[1];
+  const availableCombinerErrorModels = Object.keys(selectedCombinerErrorAxis?.models ?? {});
 
   const chart = useMemo(() => {
     if (!ps || !hasData(ps.theta)) return null;
@@ -590,6 +678,8 @@ export function Evaluations(
     const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
     const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
     const losses = [...new Set(members.map((mm) => mm?.loss ?? "l1"))].sort();
+    const modelCurves = Object.entries(ps.model_combiners ?? {})
+      .filter(([, curve]) => hasData(curve?.r));
     const memberColor = (i: number) => {
       const mm = members[i];
       if (colorBy === "loss") return LOSS_COLOR[mm?.loss ?? "l1"] ?? C.muted;
@@ -607,7 +697,14 @@ export function Evaluations(
     asArray<(number | null)[]>(ps.r_members).forEach((row, i) => series.push({ x: theta, y: num(row), color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
     if (show.mean && hasData(ps.r)) series.push({ x: theta, y: num(ps.r), color: C.mean, width: 2.6, dots: true });
-    if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
+    if (modelCurves.length) {
+      modelCurves.forEach(([kind, curve]) => {
+        if (modelShown(kind)) series.push({ x: theta, y: curve.r!, color: combinerMeta(kind).color, width: 2.2, dots: true });
+      });
+    } else {
+      if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
+      if (show.stats && hasData(ps.r_stats_rbf_comb)) series.push({ x: theta, y: ps.r_stats_rbf_comb!, color: "#2a9d8f", width: 2.2, dots: true });
+    }
     if (show.combined && hasData(ps.r_combined)) series.push({ x: theta, y: ps.r_combined!, color: "#9d6cff", width: 2.2, dots: true });
     const guides: Guide[] = [
       { axis: "y", v: 1, color: C.guide, dash: [2, 3] },
@@ -619,43 +716,130 @@ export function Evaluations(
     const facet = facetLegend(colorBy, losses, depths, knees);
     const legend = [
       ...(hasData(ps.r_lr) ? [{ label: "LR baseline", color: C.baseline, dash: true }] : []),
-      ...(show.mean ? [{ label: "ensemble mean", color: C.mean }] : []),
-      ...(show.comb && hasData(ps.r_comb) ? [{ label: "combiner", color: C.comb }] : []),
+      ...(show.mean ? [{ label: "displayed ensemble mean", color: C.mean }] : []),
+      ...(modelCurves.length
+        ? modelCurves.filter(([kind]) => modelShown(kind)).map(([kind]) => ({ label: combinerMeta(kind).label, color: combinerMeta(kind).color }))
+        : [
+          ...(show.comb && hasData(ps.r_comb) ? [{ label: "max RBF combiner", color: C.comb }] : []),
+          ...(show.stats && hasData(ps.r_stats_rbf_comb) ? [{ label: "mean + std RBF", color: "#2a9d8f" }] : []),
+        ]),
       ...(show.combined && hasData(ps.r_combined) ? [{ label: "combined combiner", color: "#9d6cff" }] : []),
       ...(facet.length ? facet : [{ label: "individual models", color: C.muted }]),
       ...(show.cross && hasData(ps.r_cross) ? [{ label: "model–model r̃(k)", color: C.cross, dash: true }] : []),
     ];
     return { series, guides, xDomain, yDomain: [0, 1.05] as [number, number], xTicks, yTicks, legend };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ps, members, colorBy, show, evals, theme]);
+  }, [ps, members, colorBy, show, showModels, evals, theme]);
+
+  const coherenceChart = useMemo(() => {
+    const rows = asArray<CoherenceScore>(evals?.coherence?.scores)
+      .filter((r) => r && (r.overall != null || r.sr != null));
+    if (!rows.length) return null;
+    const shortLabel = (r: CoherenceScore, i: number) => {
+      if (r.id === "ensemble_mean") return "mean";
+      if (r.id === "lr_baseline") return "LR";
+      if (r.id === "combiner") return "comb";
+      if (r.id === "stats_rbf_combiner") return "μσ RBF";
+      if (r.id === "combined_combiner") return "combined";
+      if (r.id === "model_agreement") return "agree";
+      return `m${String(i).padStart(2, "0")}`;
+    };
+    const series: Series[] = [];
+    rows.forEach((r, i) => {
+      if (r.overall != null) {
+        if (r.overall_lo != null && r.overall_hi != null)
+          series.push({ x: [i, i], y: [r.overall_lo, r.overall_hi], color: C.mean, width: 1, alpha: 0.45 });
+        series.push({ x: [i], y: [r.overall], color: C.mean, width: 2.8, dots: true });
+      }
+      if (r.sr != null) {
+        if (r.sr_lo != null && r.sr_hi != null)
+          series.push({ x: [i, i], y: [r.sr_lo, r.sr_hi], color: C.comb, width: 1, alpha: 0.45 });
+        series.push({ x: [i], y: [r.sr], color: C.comb, width: 2.8, dots: true });
+      }
+    });
+    return {
+      rows, series,
+      xDomain: [-0.5, Math.max(0.5, rows.length - 0.5)] as [number, number],
+      xTicks: rows.map((r, i) => ({ v: i, label: shortLabel(r, i) })),
+      legend: [
+        { label: "overall log-k mean", color: C.mean },
+        { label: "super-resolution range", color: C.comb },
+        { label: "16–84% field spread", color: C.guide, dash: true },
+      ],
+    };
+  }, [evals, theme]);
 
   // std vs error — density cloud + median-|error|-per-std curve, both axes
   // log10(e⁻). The |err|=σ diagonal reference rides as a 2-pt series.
   const stdErr = useMemo(() => {
     const d = evals?.std_err;
-    const hist = asArray<number[]>(d?.hist);
-    if (!d || !hist.length) return null;
-    const edges = num(d.edges);
+    const chosenKind = d?.models?.[stdErrKind] ? stdErrKind : (d?.primary ?? "ensemble_mean");
+    const selected = d?.models?.[chosenKind] ?? d;
+    const hist = asArray<number[]>(selected?.hist);
+    if (!d || !selected || !hist.length) return null;
+    const edges = num(selected.edges);
     if (edges.length < 2) return null;
     const lo = edges[0], hi = edges[edges.length - 1];
     const heat: Heat = { z: hist, xEdges: edges, yEdges: edges };
     const series: Series[] = [
       { x: [lo, hi], y: [lo, hi], color: C.guide, width: 1.3, dash: [6, 3] },
-      { x: num(d.med_std), y: num(d.med_err), color: C.baseline, width: 2.6, dots: true },
+      { x: num(selected.med_std), y: num(selected.med_err), color: combinerMeta(chosenKind).color, width: 2.6, dots: true },
     ];
     const ticks = logDecadeTicks(lo, hi);
     const legend = [
-      { label: "median |error| per σ bin", color: C.baseline },
+      { label: `median |error| · ${combinerMeta(chosenKind).label}`, color: combinerMeta(chosenKind).color },
       { label: "|error| = σ", color: C.guide, dash: true },
     ];
     // Human range for a clicked cell (both axes log10 e⁻).
     const describe = (c: { i: number; j: number }) =>
       `σ ${logRange(edges, c.i)} e⁻ · |err| ${logRange(edges, c.j)} e⁻`;
-    const pred = d.pred || "ensemble mean";
-    const yLabel = `|${pred} − ${targetLabel}|  [e⁻]`;
-    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe, yLabel };
+    const yLabel = `|${combinerMeta(chosenKind).label} − ${targetLabel}|  [e⁻]`;
+    return { heat, series, domain: [lo, hi] as [number, number], ticks, legend, describe, yLabel,
+      chosenKind };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evals, theme]);
+  }, [evals, stdErrKind, theme]);
+
+  const combinerError = useMemo(() => {
+    const diagnostic = evals?.combiner_feature_error;
+    const axes = diagnostic?.axes ?? {};
+    const chosenAxisMode = axes[combinerAxisMode]
+      ? combinerAxisMode : (Object.keys(axes)[0] ?? "mean_std");
+    const axis = axes[chosenAxisMode];
+    if (!axis || !axis.edges?.[0]?.length) return null;
+    const modelKinds = Object.keys(axis.models ?? {});
+    const chosenKind = axis.models?.[combinerErrorKind]
+      ? combinerErrorKind : (modelKinds[0] ?? "ensemble_mean");
+    const model = axis.models?.[chosenKind];
+    if (!model) return null;
+    const xEdges = num(axis.edges[0]);
+    const yEdges = num(axis.edges[1]);
+    const xDomain: [number, number] = [xEdges[0], xEdges[xEdges.length - 1]];
+    const featureTicks = (edges: number[]) => {
+      const lo = edges[0], hi = edges[edges.length - 1];
+      const values = [-1, 0, 2, 4, 6, 8, 10, 12].filter((v) => v >= lo && v <= hi);
+      return values.map((v) => ({ v, label: String(v) }));
+    };
+    const z = asArray<(number | null)[]>(model.median_log_error).map(num);
+    const finiteZ = z.flat().filter(Number.isFinite);
+    if (!finiteZ.length) return null;
+    const sharedRange = num(diagnostic?.color_range);
+    const zlo = sharedRange[0] ?? Math.floor(Math.min(...finiteZ));
+    const zhi = sharedRange[1] ?? Math.ceil(Math.max(...finiteZ));
+    const colorTicks = [];
+    for (let e = zlo; e <= zhi; e += Math.max(1, Math.ceil((zhi - zlo) / 4)))
+      colorTicks.push({ v: e, label: `10${sup(e)}` });
+    const describe = (c: { i: number; j: number }) =>
+      `${axis.axis_names[0]} ${xEdges[c.i].toFixed(2)}–${xEdges[c.i + 1].toFixed(2)} · ` +
+      `${axis.axis_names[1]} ${yEdges[c.j].toFixed(2)}–${yEdges[c.j + 1].toFixed(2)} asinh · ` +
+      `median |error| ${fmtE(10 ** z[c.i][c.j])} e⁻`;
+    return { chosenKind, chosenAxisMode, xEdges, yEdges, xDomain,
+      yDomain: [yEdges[0], yEdges[yEdges.length - 1]] as [number, number],
+      xTicks: featureTicks(xEdges), yTicks: featureTicks(yEdges),
+      heat: { z, xEdges, yEdges, scale: "linear" as const, min: zlo, max: zhi,
+        colorTicks, colorLabel: "median |error| [e⁻]" },
+      xLabel: `${axis.axis_names[0]}  [asinh member space]`,
+      yLabel: `${axis.axis_names[1]}  [asinh member space]`, describe };
+  }, [evals, combinerErrorKind, combinerAxisMode, theme]);
 
   // std vs brightness — density cloud + median σ (with 16–84%) per HR-brightness
   // bin. x = asinh(HR/stretch), y = log10 σ(e⁻).
@@ -691,6 +875,9 @@ export function Evaluations(
   }, [evals, theme]);
 
   const cb = evals?.combiner;
+  const statsRbfCb = evals?.stats_rbf_combiner;
+  const modelMetrics = Object.entries(evals?.model_combiners ?? {})
+    .filter(([, metric]) => Boolean(metric?.available));
   return (
     <Card>
       <CardHead title="Evaluations"
@@ -707,8 +894,15 @@ export function Evaluations(
                       title="member↔member cross-correlation curves">cross-corr</Chip>
                     <Chip on={show.mean} dot={C.mean} onClick={() => toggle("mean")}
                       title="ensemble-mean r(k)">mean</Chip>
-                    {hasData(ps?.r_comb) && <Chip on={show.comb} dot={C.comb} onClick={() => toggle("comb")}
-                      title="combiner r(k)">combiner</Chip>}
+                    {availableModelCurves.length ? availableModelCurves.map(([kind]) => (
+                      <Chip key={kind} on={modelShown(kind)} dot={combinerMeta(kind).color} onClick={() => toggleModel(kind)}
+                        title={`${combinerMeta(kind).label} combiner r(k)`}>{combinerMeta(kind).label}</Chip>
+                    )) : <>
+                      {hasData(ps?.r_comb) && <Chip on={show.comb} dot={C.comb} onClick={() => toggle("comb")}
+                        title="max-conditioned RBF combiner r(k)">max RBF</Chip>}
+                      {hasData(ps?.r_stats_rbf_comb) && <Chip on={show.stats} dot="#2a9d8f" onClick={() => toggle("stats")}
+                        title="mean-and-standard-deviation RBF combiner r(k)">mean+std RBF</Chip>}
+                    </>}
                     {hasData(ps?.r_combined) && <Chip on={show.combined} dot="#9d6cff" onClick={() => toggle("combined")}
                       title="cross-regime combined-combiner r(k)">combined combiner</Chip>}
                   </div>
@@ -722,7 +916,10 @@ export function Evaluations(
                 <div className="row" style={{ gap: "var(--s5)", marginTop: "var(--s4)" }}>
                   <Stat k="fields" v={evals?.n_fields ?? "—"} />
                   <Stat k="members" v={evals?.n_members ?? "—"} />
-                  {cb?.available && <Stat k="combiner PSNR" v={cb.psnr != null ? `${cb.psnr.toFixed(2)} dB` : "—"} />}
+                  {cb?.available && <Stat k="max RBF PSNR" v={cb.psnr != null ? `${cb.psnr.toFixed(2)} dB` : "—"} />}
+                  {statsRbfCb?.available && <Stat k="mean+std RBF PSNR" v={statsRbfCb.psnr != null ? `${statsRbfCb.psnr.toFixed(2)} dB` : "—"} />}
+                  {modelMetrics.filter(([kind]) => kind !== "rbf_gate" && kind !== "stats_rbf_gate").map(([kind, metric]) =>
+                    <Stat key={kind} k={`${combinerMeta(kind).label} PSNR`} v={metric?.psnr != null ? `${metric.psnr.toFixed(2)} dB` : "—"} />)}
                   {cb?.available && cb.psnr != null && cb.ensemble_mean_psnr != null &&
                     <Badge tone={cb.psnr >= cb.ensemble_mean_psnr ? "good" : "warn"}>
                       {cb.psnr >= cb.ensemble_mean_psnr ? "+" : ""}{(cb.psnr - cb.ensemble_mean_psnr).toFixed(2)} vs mean
@@ -730,9 +927,40 @@ export function Evaluations(
                 </div>
               </>
             )
+          ) : tab === "coherence" ? (
+            !coherenceChart ? <Empty>no spectral coherence cached for <b>{mode}</b> — refresh the evaluation from cached cubes.</Empty> : (
+              <>
+                <Plot title="one-number spectral coherence  (median across fields)"
+                  xDomain={coherenceChart.xDomain} yDomain={[-1, 1.05]} xTicks={coherenceChart.xTicks}
+                  yTicks={[{ v: -1, label: "−1" }, { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" }]}
+                  xLabel="reconstruction / reference" yLabel="mean r(k) over d log(k)"
+                  series={coherenceChart.series}
+                  guides={[{ axis: "y", v: 1, color: C.guide, dash: [2, 3] }]}
+                  aspect={0.42} />
+                <Legend items={coherenceChart.legend} />
+                <div className="muted" style={{ marginTop: "var(--s3)", lineHeight: 1.5 }}>
+                  Equal weight per spatial-frequency octave. “Overall” spans the measured spectrum;
+                  “super-resolution” is restricted to scales finer than the LR sampling limit.
+                  Whiskers show the 16–84% field spread.
+                </div>
+                <div className="row" style={{ gap: "var(--s5)", marginTop: "var(--s4)", flexWrap: "wrap" }}>
+                  {coherenceChart.rows.slice(0, 3).map((r) => (
+                    <Stat key={r.id} k={`${r.label} · SR`} v={r.sr != null ? r.sr.toFixed(3) : "—"} />
+                  ))}
+                </div>
+              </>
+            )
           ) : tab === "std-error" ? (
             !stdErr ? <Empty>no evaluation cached for <b>{mode}</b> — run “Evaluate on test set”.</Empty> : (
               <>
+                {availableStdErrModels.length > 0 && <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                  {availableStdErrModels.map(([kind]) => (
+                    <Chip key={kind} on={stdErr.chosenKind === kind} dot={combinerMeta(kind).color}
+                      onClick={() => setStdErrKind(kind)} title={`error distribution of ${combinerMeta(kind).label}`}>
+                      {combinerMeta(kind).label}
+                    </Chip>
+                  ))}
+                </div>}
                 <Plot title="Does disagreement predict error?  (VIS, per pixel)"
                   xDomain={stdErr.domain} yDomain={stdErr.domain} xTicks={stdErr.ticks} yTicks={stdErr.ticks}
                   xLabel="cross-member per-pixel σ  [e⁻]" yLabel={stdErr.yLabel}
@@ -743,6 +971,45 @@ export function Evaluations(
                 <TraceHint targetLabel={targetLabel} />
                 {pick?.diag === "std_err" &&
                   <PixelTrace context={mode} traceBase={pixelTraceBase} targetLabel={targetLabel} pick={pick} cellLabel={stdErr.describe(pick)}
+                    modelKind={stdErr.chosenKind} colorMeta={colorMeta} onClose={() => setPick(null)} />}
+              </>
+            )
+          ) : tab === "combiner-error" ? (
+            !combinerError ? <Empty>no combiner-coordinate diagnostic cached for <b>{mode}</b> — refresh the evaluation from cached cubes.</Empty> : (
+              <>
+                <div style={{ display: "grid", gap: 7, marginBottom: 10 }}>
+                  <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                    <span className="mono muted" style={{ width: 70, fontSize: 11 }}>axes</span>
+                    {availableCombinerErrorAxes.map(([axisMode]) => (
+                      <Chip key={axisMode} on={combinerError.chosenAxisMode === axisMode}
+                        onClick={() => setCombinerAxisMode(axisMode)}
+                        title={`project every model error onto ${axisMode === "mean_std" ? "mean–std" : "min–max"} coordinates`}>
+                        {axisMode === "mean_std" ? "mean – std" : "min – max"}
+                      </Chip>
+                    ))}
+                  </div>
+                  <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                    <span className="mono muted" style={{ width: 70, fontSize: 11 }}>error of</span>
+                    {availableCombinerErrorModels.map((kind) => (
+                    <Chip key={kind} on={combinerError.chosenKind === kind} dot={combinerMeta(kind).color}
+                      onClick={() => setCombinerErrorKind(kind)} title={`absolute error of ${combinerMeta(kind).label}`}>
+                      {combinerMeta(kind).label}
+                    </Chip>
+                    ))}
+                  </div>
+                </div>
+                <Plot title={`${combinerMeta(combinerError.chosenKind).label} error on ${combinerError.chosenAxisMode === "mean_std" ? "mean–std" : "min–max"} coordinates  (VIS, per pixel)`}
+                  xDomain={combinerError.xDomain} yDomain={combinerError.yDomain}
+                  xTicks={combinerError.xTicks} yTicks={combinerError.yTicks}
+                  xLabel={combinerError.xLabel} yLabel={combinerError.yLabel}
+                  heat={combinerError.heat} series={[]} aspect={0.62}
+                  onHeatClick={(c) => setPick({ diag: "combiner_feature_error", ...c })}
+                  highlight={pick?.diag === "combiner_feature_error" ? pick : null} />
+                <TraceHint targetLabel={targetLabel} />
+                {pick?.diag === "combiner_feature_error" &&
+                  <PixelTrace context={mode} traceBase={pixelTraceBase} targetLabel={targetLabel} pick={pick}
+                    modelKind={combinerError.chosenKind} axisMode={combinerError.chosenAxisMode}
+                    cellLabel={combinerError.describe(pick)}
                     colorMeta={colorMeta} onClose={() => setPick(null)} />}
               </>
             )
@@ -770,54 +1037,267 @@ export function Evaluations(
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
 type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
+type CombinerModelKind = "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate";
+type SurfaceView = { yaw: number; pitch: number; zoom: number };
+
+function WeightSurface3D(
+  { grid, member, memberLabel, theme, stdAxis, view, onViewChange, onMemberStep }:
+  { grid: FeatureGrid; member: number; memberLabel: string; theme: string; stdAxis: "raw" | "log";
+    view: SurfaceView; onViewChange: (view: SurfaceView) => void;
+    onMemberStep?: (step: -1 | 1) => void },
+) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null);
+  const [size, setSize] = useState({ width: 640, height: 480 });
+
+  const mean = num(grid.mean_asinh).filter(isFinite);
+  const std = num(grid.std_asinh).filter(isFinite);
+  const savedLogStd = num(grid.std_log).filter(isFinite);
+  // Existing fitted payloads predate std_log. Keep their log view usable until
+  // the endpoint reserializes them with the exact model-coordinate samples.
+  const useLogAxis = stdAxis === "log" && grid.y_is_log !== false;
+  const stdCoord = useLogAxis
+    ? (savedLogStd.length === std.length ? savedLogStd : std.map((v) => Math.log(v + 0.005)))
+    : std;
+  const weights = grid.weights ?? [];
+  const values = std.flatMap((_, i) => mean.map((_, j) => weights[i]?.[j]?.[member]))
+    .filter((w): w is number => w != null && isFinite(w));
+  const maxWeight = values.length ? Math.max(...values) : 0;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return undefined;
+    const resize = () => setSize({ width: Math.max(320, host.clientWidth), height: 480 });
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || mean.length < 2 || std.length < 2 || stdCoord.length !== std.length || !maxWeight) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(size.width * dpr);
+    canvas.height = Math.round(size.height * dpr);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.width, size.height);
+    const css = getComputedStyle(document.documentElement);
+    const text = css.getPropertyValue("--text").trim() || "#dce6f2";
+    const muted = css.getPropertyValue("--muted").trim() || C.muted;
+    const guide = css.getPropertyValue("--guide").trim() || C.guide;
+    const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw);
+    const cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+    const scale = Math.min(size.width * 0.35, size.height * 0.42) * view.zoom;
+    const stdLo = stdCoord[0], stdHi = stdCoord[stdCoord.length - 1];
+    const project = (x: number, y: number, z: number) => {
+      const rx = x * cy - y * sy;
+      const ry = x * sy + y * cy;
+      const py = ry * cp - z * sp;
+      const depth = ry * sp + z * cp;
+      const perspective = 0.82 + (depth + 1.8) * 0.08;
+      return { x: size.width * 0.5 + rx * scale * perspective,
+        y: size.height * 0.66 - py * scale * perspective, depth };
+    };
+    const point = (i: number, j: number) => {
+      const w = weights[i]?.[j]?.[member];
+      const value = typeof w === "number" && isFinite(w) ? w : 0;
+      const y = stdHi === stdLo ? 0 : -1 + 2 * (stdCoord[i] - stdLo) / (stdHi - stdLo);
+      return project(-1 + 2 * j / (mean.length - 1), y, Math.max(0, Math.min(1, value)));
+    };
+    const cells: { q: ReturnType<typeof point>[]; depth: number; value: number }[] = [];
+    for (let i = 0; i < std.length - 1; i += 1) for (let j = 0; j < mean.length - 1; j += 1) {
+      const q = [point(i, j), point(i, j + 1), point(i + 1, j + 1), point(i + 1, j)];
+      const value = [weights[i]?.[j]?.[member], weights[i]?.[j + 1]?.[member],
+        weights[i + 1]?.[j + 1]?.[member], weights[i + 1]?.[j]?.[member]]
+        .filter((w): w is number => typeof w === "number" && isFinite(w))
+        .reduce((sum, w, _, a) => sum + w / a.length, 0);
+      cells.push({ q, depth: q.reduce((sum, p) => sum + p.depth, 0) / 4, value });
+    }
+    for (const cell of cells.sort((a, b) => a.depth - b.depth)) {
+      ctx.beginPath();
+      cell.q.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.closePath();
+      ctx.fillStyle = viridis(Math.max(0, Math.min(1, cell.value)));
+      ctx.globalAlpha = 0.8;
+      ctx.fill();
+      ctx.strokeStyle = guide;
+      ctx.globalAlpha = 0.28;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    const centerMean = num(grid.center_mean_asinh);
+    const centerStd = (useLogAxis ? num(grid.center_std_log) : num(grid.center_std_asinh));
+    for (let i = 0; i < Math.min(centerMean.length, centerStd.length); i += 1) {
+      if (!isFinite(centerMean[i]) || !isFinite(centerStd[i])) continue;
+      const x = -1 + 2 * (centerMean[i] - mean[0]) / (mean[mean.length - 1] - mean[0]);
+      const y = stdHi === stdLo ? 0 : -1 + 2 * (centerStd[i] - stdLo) / (stdHi - stdLo);
+      const p = project(x, y, 0.025);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3.8, 0, Math.PI * 2);
+      ctx.fillStyle = text; ctx.fill(); ctx.strokeStyle = guide; ctx.lineWidth = 1.3; ctx.stroke();
+    }
+    ctx.lineWidth = 1.2;
+    const axis = (a: [number, number, number], b: [number, number, number], label: string) => {
+      const p = project(...a), q = project(...b);
+      ctx.strokeStyle = muted;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      ctx.fillStyle = text; ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.fillText(label, q.x + 6, q.y - 4);
+    };
+    axis([-1, -1, 0], [1, -1, 0], grid.x_label ?? "mean");
+    axis([-1, -1, 0], [-1, 1, 0], useLogAxis ? `log ${grid.y_label ?? "std"}` : (grid.y_label ?? "std"));
+    axis([-1, -1, 0], [-1, -1, 1], "relative weight [0–1]");
+    const fmtTick = (v: number) => Math.abs(v) >= 10 ? v.toFixed(0)
+      : Math.abs(v) >= 1 ? v.toFixed(1) : v.toPrecision(2);
+    const tick = (p: ReturnType<typeof project>, q: ReturnType<typeof project>, label: string) => {
+      ctx.strokeStyle = muted; ctx.fillStyle = muted; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.fillText(label, q.x + 4, q.y + 3);
+    };
+    for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+      const x = -1 + 2 * f;
+      const meanValue = mean[0] + f * (mean[mean.length - 1] - mean[0]);
+      tick(project(x, -1, 0), project(x, -0.93, 0), fmtTick(meanValue));
+      const i = Math.round(f * (std.length - 1));
+      const y = stdHi === stdLo ? 0 : -1 + 2 * (stdCoord[i] - stdLo) / (stdHi - stdLo);
+      tick(project(-1, y, 0), project(-0.93, y, 0), fmtTick(std[i]));
+    }
+  }, [grid, maxWeight, mean, member, size, std, stdAxis, stdCoord, theme, useLogAxis, view, weights]);
+
+  return (
+    <div ref={hostRef} style={{ border: "1px solid var(--guide)", borderRadius: 8, overflow: "hidden" }}>
+      <canvas ref={canvasRef} width={size.width} height={size.height}
+        aria-label={`Interactive ${grid.x_label ?? "mean"} and ${grid.y_label ?? "std"} gate-weight surface for ${memberLabel}`}
+        style={{ display: "block", width: "100%", height: size.height, cursor: dragRef.current ? "grabbing" : "grab", touchAction: "none" }}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = { x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch };
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+          onViewChange({ ...view, yaw: drag.yaw + (event.clientX - drag.x) * 0.012,
+            pitch: Math.max(-1.35, Math.min(1.35, drag.pitch + (event.clientY - drag.y) * 0.01)) });
+        }}
+        onPointerUp={(event) => { dragRef.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }}
+        onPointerCancel={() => { dragRef.current = null; }}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          onMemberStep?.(event.key === "ArrowLeft" ? -1 : 1);
+        }}
+        onWheel={(event) => {
+          event.preventDefault();
+          onViewChange({ ...view,
+            zoom: Math.max(0.55, Math.min(2.5, view.zoom * (event.deltaY > 0 ? 0.9 : 1.1))),
+          });
+        }} />
+      <div className="row muted" style={{ padding: "6px 10px", justifyContent: "space-between", fontSize: 12, gap: "var(--s3)" }}>
+        <span>{memberLabel} · max weight {(maxWeight * 100).toFixed(1)}%</span>
+      <Button variant="ghost" onClick={() => onViewChange({ yaw: -0.72, pitch: 0.58, zoom: 1 })}>reset view</Button>
+      </div>
+    </div>
+  );
+}
 
 export function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit, evalReady, combined = false,
-    fitUrl = "/ensemble/combiner/fit", title }:
+    fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind,
+    onModelKindChange }:
   { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean; combined?: boolean;
-    fitUrl?: string; title?: string },
+    fitUrl?: string; title?: string; modelKind?: CombinerModelKind;
+    onModelKindChange?: (kind: CombinerModelKind) => void },
 ) {
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("12");
-  const [minUsage, setMinUsage] = useState("0");
+  const [localModelKind, setLocalModelKind] = useState<CombinerModelKind>("rbf_gate");
   const [band, setBand] = useState<string>("");
   const [colorBy, setColorBy] = useState<GateColorBy>("loss");
+  const [surfaceMember, setSurfaceMember] = useState("0");
+  const [surfaceStdAxis, setSurfaceStdAxis] = useState<"raw" | "log">("log");
+  const [surfaceView, setSurfaceView] = useState<SurfaceView>({ yaw: -0.72, pitch: 0.58, zoom: 1 });
+  const [focusedSurfaceBand, setFocusedSurfaceBand] = useState<string | null>(null);
+
+  const modelKind = controlledKind ?? localModelKind;
+  const setModelKind = onModelKindChange ?? setLocalModelKind;
+  const allowModelChoice = !combined;
+
+  // Fit controls are defaults for the next fit, not a replay of the artifact.
+  useEffect(() => {
+    setNKernels(modelKind === "rbf_gate" ? "12" : "32");
+  }, [combined, modelKind]);
 
   const bands = asArray<string>(comb?.band_names);
   const activeBand = band || bands[0] || "";
+  const fittingStatsRBF = modelKind === "stats_rbf_gate";
+  const fittedStatsRBF = comb?.kind === "stats_rbf_gate";
+  const fittedMinmaxRBF = comb?.kind === "minmax_rbf_gate";
+  const featureRBF = fittedStatsRBF || fittedMinmaxRBF;
+  const fittedModelLabel = fittedStatsRBF ? "mean + std RBF"
+    : fittedMinmaxRBF ? "min + max RBF" : "max-conditioned RBF";
+  const surfaceLabels = asArray<string>(comb?.member_labels);
+  const selectedSurfaceMember = Math.max(0, Math.min(surfaceLabels.length - 1, Number(surfaceMember) || 0));
+  const surfaceBands = bands.filter((b) => comb?.feature_grid?.[b]);
+
+  useEffect(() => {
+    if (selectedSurfaceMember >= surfaceLabels.length) setSurfaceMember("0");
+  }, [selectedSurfaceMember, surfaceLabels.length]);
 
   const importance = useMemo(() => {
-    if (!comb?.eff_weights) return [];
+    if (!comb) return [];
     const labels = asArray<string>(comb.member_labels);
     const memberMeta = asArray<NonNullable<Combiner["members"]>[number]>(comb.members);
-    const m = labels.length;
-    const cum = new Array(m).fill(0);
-    for (const b of Object.values(comb.eff_weights)) {
-      const jac = asArray<(number | null)[]>(b?.jacobian);
-      const L = jac.length || 1;
-      for (const row of jac) row?.forEach((w, i) => { if (w != null && isFinite(w)) cum[i] += w / L; });
-    }
-    const surv = labels.map((_, i) => Object.values(comb.surviving ?? {}).some((arr) => asArray<boolean>(arr)[i] !== false));
     return labels
-      .map((label, i) => ({ i, label, total: cum[i], kept: surv[i], meta: memberMeta[i] }))
-      .filter((r) => r.kept)
-      .sort((a, b2) => b2.total - a.total);
+      .map((label, i) => {
+        return { i, label, meta: memberMeta[i],
+          peaks: Object.fromEntries(bands.map((b) => [b, comb.member_weight_peaks?.[b]?.[i] ?? null])),
+          integrals: Object.fromEntries(bands.map((b) => [b, comb.member_weight_integrals?.[b]?.[i] ?? null])) };
+      })
+      .sort((a, b2) => a.i - b2.i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comb, theme]);
+
+  const weightColumns = useMemo<Column<(typeof importance)[number]>[]>(() => [
+    { header: "member", cell: (row) => <code>{row.label}</code> },
+    ...bands.flatMap((b) => ([
+      { header: `${b} peak`, align: "right" as const,
+        cell: (row: (typeof importance)[number]) => row.peaks[b] == null ? "—" : `${(100 * row.peaks[b]!).toFixed(2)}%` },
+      { header: `${b} integral`, align: "right" as const,
+        cell: (row: (typeof importance)[number]) => row.integrals[b] == null ? "—" : `${(100 * row.integrals[b]!).toFixed(2)}%` },
+    ])),
+  ], [bands, importance]);
+
+  const surfaceMembers = importance;
+  const surfaceMemberPosition = surfaceMembers.findIndex((r) => r.i === selectedSurfaceMember);
+  const moveSurfaceMember = (step: -1 | 1) => {
+    const next = surfaceMemberPosition + step;
+    if (surfaceMemberPosition >= 0 && next >= 0 && next < surfaceMembers.length) {
+      setSurfaceMember(String(surfaceMembers[next].i));
+    }
+  };
+  useEffect(() => {
+    if ((fittedStatsRBF || fittedMinmaxRBF) && surfaceMembers.length && surfaceMemberPosition < 0) {
+      setSurfaceMember(String(surfaceMembers[0].i));
+    }
+  }, [fittedMinmaxRBF, fittedStatsRBF, selectedSurfaceMember, surfaceMemberPosition, surfaceMembers]);
 
   // Shared facet colorer (member index → colour by `colorBy`) so the importance
   // bars and the gate-weight curves colour a member the SAME way — and both
   // recolour when the characteristic changes. depth/knee → categorical over the
-  // ensemble's distinct values; psnr → viridis over the surviving members' PSNR
+  // ensemble's distinct values; psnr → viridis over the members' PSNR
   // range; loss → loss token.
   const memberColor = useMemo(() => {
     const members = asArray<NonNullable<Combiner["members"]>[number]>(comb?.members);
     const M = asArray<string>(comb?.member_labels).length;
-    const survIdx = Array.from({ length: M }, (_, m) => m)
-      .filter((m) => Object.values(comb?.surviving ?? {}).some((arr) => asArray<boolean>(arr)[m] !== false));
+    const memberIdx = Array.from({ length: M }, (_, m) => m);
     const depths = [...new Set(members.map((mm) => mm?.blocks ?? 0))].sort((a, b) => a - b);
     const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
-    const psnrs = survIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
+    const psnrs = memberIdx.map((m) => members[m]?.psnr).filter((p): p is number => p != null && isFinite(p));
     const pMin = psnrs.length ? Math.min(...psnrs) : 0;
     const pMax = psnrs.length ? Math.max(...psnrs) : 1;
     return (m: number): string => {
@@ -837,19 +1317,18 @@ export function CombinerCard(
     const jacobian = asArray<(number | null)[]>(ew?.jacobian);
     if (!ew || !jacobian.length) return null;
     const bx = asArray<number | null>(ew.brightness_e).map((e) => (e == null ? NaN : Math.asinh(e / 100)));
-    const surv = asArray<boolean>(comb?.surviving?.[activeBand]);
     const members = asArray<NonNullable<Combiner["members"]>[number]>(comb?.members);
     const labels = asArray<string>(comb?.member_labels);
     const M = labels.length;
-    const survIdx = Array.from({ length: M }, (_, m) => m).filter((m) => surv[m] !== false);
+    const memberIdx = Array.from({ length: M }, (_, m) => m);
 
     const xs = bx.filter((v) => isFinite(v));
     if (!xs.length) return null;
     const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs)];
-    const series: Series[] = survIdx.map((m) => ({
+    const series: Series[] = memberIdx.map((m) => ({
       x: bx, y: jacobian.map((row) => (asArray<number | null>(row)[m] ?? null)), color: memberColor(m), width: 1.8,
     }));
-    const legend = survIdx.map((m) => {
+    const legend = memberIdx.map((m) => {
       const meta = members[m];
       const tag = colorBy === "loss" ? (meta?.loss ?? "l1")
         : colorBy === "depth" ? `${meta?.blocks ?? "?"}b`
@@ -864,20 +1343,67 @@ export function CombinerCard(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comb, activeBand, colorBy, memberColor, theme]);
 
+  const hrGate = useMemo(() => {
+    const d = comb?.hr_weights?.bands?.[activeBand];
+    const xs = asArray<number | null>(d?.brightness_asinh);
+    const mean = asArray<(number | null)[]>(d?.mean);
+    const counts = asArray<number>(d?.counts);
+    if (!d || !xs.length || !mean.length) return null;
+    const valid = xs.map((x, i) => x != null && isFinite(x) && (counts[i] ?? 0) > 0);
+    const finiteX = xs.filter((x, i) => valid[i]).map((x) => x as number);
+    if (!finiteX.length) return null;
+    const labels = asArray<string>(comb?.member_labels);
+    const members = asArray<NonNullable<Combiner["members"]>[number]>(comb?.members);
+    const M = labels.length;
+    const memberIdx = Array.from({ length: M }, (_, m) => m);
+    const plotX = xs.map((x) => x == null ? NaN : x);
+    const series: Series[] = memberIdx.map((m) => ({
+      x: plotX,
+      y: mean.map((row) => asArray<number | null>(row)[m] ?? null),
+      color: memberColor(m), width: 1.8,
+    }));
+    const legend = memberIdx.map((m) => ({
+      label: labels[m] || members[m]?.label || String(m), color: memberColor(m),
+    }));
+    const xDomain: [number, number] = [Math.min(...finiteX), Math.max(...finiteX)];
+    const xTicks: Tick[] = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+      const v = xDomain[0] + f * (xDomain[1] - xDomain[0]);
+      return { v, label: Math.round(100 * Math.sinh(v)).toString() };
+    });
+    return {
+      series, legend, xDomain, xTicks, yDomain: [0, 1.02] as [number, number],
+      nFields: comb.hr_weights?.n_fields ?? 0,
+      nPixels: comb.hr_weights?.n_pixels ?? 0,
+      target: comb.hr_weights?.target ?? "HR",
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comb, activeBand, memberColor, theme]);
+
   return (
     <Card>
       <CardHead title={title ?? `${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
-        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "a per-band brightness gate fusing members — fit locally on validate, scored on test"}
+        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "independent max-RBF and mean+std-RBF convex fusers — fit locally on validate, scored on test"}
         right={comb?.available && <Badge tone={comb.stale ? "warn" : "good"}>{comb.stale ? "stale" : "fitted"}</Badge>} />
       <CardBody>
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
           <NumberField label="validate fields" value={nImg} onChange={setNImg} min={1} max={2000} />
-          <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={32} />
-          <NumberField label="prune (min importance)" value={minUsage} onChange={setMinUsage} min={0} max={0.5} step={0.01} />
+          {allowModelChoice && <div>
+            <div className="field__label">combiner model</div>
+            <Segmented<CombinerModelKind> value={modelKind}
+              onChange={(next) => {
+                setModelKind(next);
+              }}
+              options={[{ value: "rbf_gate", label: "max RBF" }, { value: "stats_rbf_gate", label: "mean+std RBF" }, { value: "minmax_rbf_gate", label: "min+max RBF" }]} />
+          </div>}
+          <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={64} />
           <Button variant="primary" disabled={fitJob.busy || !evalReady}
             title={evalReady ? undefined : `evaluate ${mode} on the test set first — its evaluation must match the current members`}
-            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : fitUrl, { num_images: nImg, n_kernels: nKernels, min_usage: minUsage, mode }, { onDone: onFit })}>
-            Fit {combined ? "combined combiner" : "combiner"}
+            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : fitUrl, {
+              num_images: nImg, n_kernels: nKernels,
+              ...(combined ? { min_usage: "0" } : {}),
+              model_kind: modelKind, mode,
+            }, { onDone: onFit })}>
+            Fit {fittingStatsRBF ? "mean+std RBF" : (combined ? "combined combiner" : "combiner")}
           </Button>
         </div>
         {!evalReady && (
@@ -891,42 +1417,98 @@ export function CombinerCard(
           : !comb?.available ? <Empty>{comb?.reason ?? `no ${combined ? "combined " : ""}combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
           <div style={{ marginTop: "var(--s4)" }}>
             <DefList items={[
-              ["members", `${asArray<string>(comb.member_labels).length} (${importance.length} surviving)`],
+              ["members", String(asArray<string>(comb.member_labels).length)],
+              ["model", fittedModelLabel],
               ["kernels", String(comb.n_kernels ?? "—")],
-              ["prune ≥", String(comb.min_usage ?? 0)],
               ["validate L1", comb.val_l1 != null ? comb.val_l1.toFixed(4) : "—"],
             ]} />
 
             <div style={{ marginTop: "var(--s4)" }}>
               <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                <div className="eyebrow">member importance (cumulative gate weight)</div>
+                <div className="eyebrow">member weight diagnostics</div>
                 <Select<GateColorBy> value={colorBy} onChange={setColorBy}
                   options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }, ...(combined ? [{ value: "regime" as GateColorBy, label: "by star regime" }] : [])]} />
               </div>
-              {importance.map((r) => (
-                <div key={r.label} className="ens-imp">
-                  <span className="ens-imp__label mono">{r.label}</span>
-                  <div className="ens-imp__bar"><div className="ens-imp__fill" style={{ width: `${Math.min(100, (r.total / (importance[0]?.total || 1)) * 100)}%`, background: memberColor(r.i) }} /></div>
-                  <span className="ens-imp__val mono">{r.total.toFixed(2)}</span>
-                  <span className="ens-imp__meta muted">{[r.meta?.loss, r.meta?.blocks && `${r.meta.blocks}b`, kneeTag(r.meta?.asinh_knee), r.meta?.psnr != null && `${r.meta.psnr.toFixed(1)}dB`].filter(Boolean).join(" · ")}</span>
-                </div>
-              ))}
+              <Table columns={weightColumns} rows={importance} rowKey={(row) => row.label}
+                empty="fit the combiner to compute member weights" />
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                Peak is the maximum fitted gate share on represented validation pixels. Integral is the mean gate share over the brightness-stratified validation rows. Values are computed independently for every band; no member is removed.
+              </div>
             </div>
 
             {bands.length > 0 && (
               <div style={{ marginTop: "var(--s4)" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                  <div className="eyebrow">gate weight vs brightness</div>
+                  <div className="eyebrow">{featureRBF ? "member gate weight surface" : "gate weight vs brightness"}</div>
                   <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
                 </div>
-                {!gate ? <Empty>no gate data for {activeBand}</Empty> : (
+                {!featureRBF && (!gate ? <Empty>no gate data for {activeBand}</Empty> : (
                   <>
                     <Plot title={`${activeBand} — convex member weights`} xDomain={gate.xDomain} yDomain={gate.yDomain}
                       xTicks={gate.xTicks} yTicks={gate.yTicks} xLabel="pixel brightness [e⁻]" yLabel="gate weight"
                       series={gate.series} aspect={0.4} />
                     <Legend items={gate.legend} />
                   </>
+                ))}
+                {featureRBF && surfaceBands.length > 0 && surfaceMembers.length > 0 && (
+                  <div style={{ marginTop: "var(--s4)" }}>
+                    <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
+                      <div className="eyebrow">member gate-weight surfaces · click a band to focus</div>
+                      <div className="row" style={{ gap: 4 }}>
+                        <Button size="sm" variant="ghost" title="previous member"
+                          onClick={() => moveSurfaceMember(-1)}
+                          disabled={surfaceMemberPosition <= 0}>←</Button>
+                        <Select<string> value={surfaceMember} onChange={setSurfaceMember}
+                          options={surfaceMembers.map((r) => ({ value: String(r.i), label: r.label }))} />
+                        <Button size="sm" variant="ghost" title="next member"
+                          onClick={() => moveSurfaceMember(1)}
+                          disabled={surfaceMemberPosition < 0 || surfaceMemberPosition >= surfaceMembers.length - 1}>→</Button>
+                      </div>
+                      {surfaceBands.some((b) => comb?.feature_grid?.[b]?.y_is_log !== false) && <Select<"raw" | "log"> value={surfaceStdAxis} onChange={setSurfaceStdAxis}
+                        options={[{ value: "log", label: "log std" }, { value: "raw", label: "raw std" }]} />
+                      }
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: focusedSurfaceBand ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: "var(--s3)" }}>
+                      {(focusedSurfaceBand ? surfaceBands.filter((b) => b === focusedSurfaceBand) : surfaceBands).map((surfaceBand) => {
+                        const grid = comb?.feature_grid?.[surfaceBand];
+                        if (!grid) return null;
+                        const focused = focusedSurfaceBand === surfaceBand;
+                        return (
+                          <div key={surfaceBand}>
+                            <button type="button" aria-pressed={focused} title={focused ? "restore 2×2 band grid" : "focus this band"}
+                              onClick={() => setFocusedSurfaceBand(focused ? null : surfaceBand)}
+                              style={{ display: "block", width: "100%", border: 0, padding: "6px 8px", textAlign: "left", cursor: "pointer", color: "var(--text)", background: "var(--panel-2)", font: "600 12px ui-monospace, SFMono-Regular, Menlo, monospace", letterSpacing: ".04em" }}>
+                              {surfaceBand} · {grid.x_label ?? "mean"} × {grid.y_label ?? "std"} {focused ? "· focused" : ""}
+                            </button>
+                            <WeightSurface3D grid={grid} member={selectedSurfaceMember}
+                              memberLabel={surfaceLabels[selectedSurfaceMember] ?? `member ${selectedSurfaceMember}`} theme={theme}
+                              stdAxis={surfaceStdAxis} view={surfaceView} onViewChange={setSurfaceView}
+                              onMemberStep={moveSurfaceMember} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                      Drag any surface to rotate all bands together, scroll to zoom, or use the keyboard arrow keys. Click a band header to focus it; click again to restore the 2×2 grid. The floor is the two asinh-space features; height and color use the shared 0–1 relative-weight scale.
+                    </div>
+                  </div>
                 )}
+                <div style={{ marginTop: "var(--s4)" }}>
+                  <div className="eyebrow">weights conditioned on underlying HR brightness</div>
+                  {!hrGate ? <Empty>{comb.hr_weights?.reason ?? "no HR-conditioned validation diagnostic available"}</Empty> : (
+                    <>
+                      <Plot title={`${activeBand} — observed weights by ${hrGate.target} brightness`} xDomain={hrGate.xDomain}
+                        yDomain={hrGate.yDomain} xTicks={hrGate.xTicks} yTicks={[0, 0.5, 1].map((v) => ({ v, label: String(v) }))}
+                        xLabel={`${hrGate.target} pixel brightness [e⁻]`} yLabel="mean member weight"
+                        series={hrGate.series} aspect={0.4} />
+                      <Legend items={hrGate.legend} />
+                      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                        Offline diagnostic: weights were computed from the member stack only, then grouped by the corresponding
+                        {" "}{hrGate.target} pixel. {hrGate.nFields.toLocaleString()} fields · {hrGate.nPixels.toLocaleString()} pixels.
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1043,7 +1625,7 @@ export function DisagreementCard(
   return (
     <Card>
       <CardHead title="Disagreement viewer"
-        sub={`LR · mean · combiner · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
+        sub={`LR · mean · max RBF · mean+std RBF · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
       <CardBody>
         <CutoutViewer collection={collection} params={collection === "ensemble" ? { mode } : {}}
           onReady={(api) => { apiRef.current = api; }} />

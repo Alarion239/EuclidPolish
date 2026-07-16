@@ -170,8 +170,20 @@ function prepareCore(rec, colorMeta, color) {
   } else {
     const k = Math.max(0, names.indexOf(color));
     const I = new Float32Array(npx);
-    for (let p = 0; p < npx; p++) I[p] = at(p, k);
-    prepared = { mode: "gray", I, factor: 1.0 };
+    if (colorMeta.render_mode === "log") {
+      let hi = -Infinity;
+      for (let p = 0; p < npx; p++) {
+        I[p] = Math.log10(Math.max(at(p, k), 1e-12));
+        hi = Math.max(hi, I[p]);
+      }
+      prepared = {
+        mode: "gray-log", I, factor: 1.0,
+        logLo: Math.max(hi - 6.0, -12.0), logHi: hi,
+      };
+    } else {
+      for (let p = 0; p < npx; p++) I[p] = at(p, k);
+      prepared = { mode: "gray", I, factor: 1.0 };
+    }
   }
   prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
   return prepared;
@@ -187,7 +199,14 @@ function transferCore(prep, knee, gain, K0) {
   const img = new ImageData(w, h);
   const out = img.data;
 
-  if (prep.mode === "gray") {
+  if (prep.mode === "gray-log") {
+    const lo = prep.logLo, span = Math.max(prep.logHi - lo, 1e-6);
+    for (let p = 0; p < npx; p++) {
+      const t = Math.min(Math.max((I[p] - lo) / span, 0), 1);
+      const v = Math.min(1, t * G) * 255;
+      const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
+    }
+  } else if (prep.mode === "gray") {
     for (let p = 0; p < npx; p++) {
       const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
       const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
@@ -271,6 +290,7 @@ export function mountCutoutViewer(root, opts = {}) {
     morphMembers: null,         // CSV of member indices → subset movie (null=all)
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
+  let paramRefreshToken = 0;    // rejects a slower, superseded PSF warp response
 
   // --- DOM scaffold --------------------------------------------------------
   root.classList.add("cutout-viewer");
@@ -340,6 +360,10 @@ export function mountCutoutViewer(root, opts = {}) {
   // aware) are the expensive ones — a subset PCA is a fresh server SVD — so
   // pre-fetching them ahead is what kills the per-switch lag.
   function prefetch(index) {
+    // The PSF page changes its replay seed every few seconds.  Warming four
+    // invisible neighbours for every seed would spend most of the preview's
+    // CPU on arrays the user never sees.
+    if (state.params.psf_warp === "1") return;
     const subset = state.morphMembers;
     const extra = subset ? { members: subset } : undefined;
     const nSub = subset ? subset.split(",").filter(Boolean).length : 0;
@@ -408,6 +432,7 @@ export function mountCutoutViewer(root, opts = {}) {
    *  cube+band; the morph tier (data mutates every animation tick) is
    *  excluded. */
   function magInfo(rec) {
+    if (state.meta && state.meta.render_mode === "log") return null;
     const bands = state.meta && state.meta.color && state.meta.color.bands;
     if (!bands || rec.noCache || !rec.data) return null;
     const names = state.meta.band_names || [];
@@ -731,7 +756,9 @@ export function mountCutoutViewer(root, opts = {}) {
   async function show() {
     if (!state.meta || state.meta.count === 0) {
       rebuildFrames();
-      for (const fr of state.frames) setFrameMsg(fr, "No cutouts available.");
+      for (const fr of state.frames) {
+        setFrameMsg(fr, state.meta?.empty_label || "No cutouts available.");
+      }
       updateNav();
       return;
     }
@@ -755,6 +782,35 @@ export function mountCutoutViewer(root, opts = {}) {
     }));
     updateNav();
     prefetch(state.index);
+    notify();
+  }
+
+  // Refresh only the currently visible cubes after a parameter change.  Keep
+  // the existing frames mounted so a live PSF warp swaps cleanly instead of
+  // resetting the selected cluster/tier or flashing the viewer chrome.
+  async function refreshVisible() {
+    if (!state.meta || state.meta.count === 0) return;
+    const token = ++paramRefreshToken;
+    stopMorph();
+    state.cubeCache.clear();
+    state.prepCache.clear();
+    state.shown.clear();
+    await Promise.all(state.frames.map(async (fr) => {
+      if (!tierAvail(fr.tier)) return;
+      if (fr.tier === "morph") { await startMorph(fr, state.index); return; }
+      fr.frame.classList.add("cv-loading");
+      try {
+        const rec = await fetchCube(fr.tier, state.index);
+        if (token !== paramRefreshToken) return;
+        state.shown.set(fr.tier, rec);
+        renderInto(fr, rec);
+      } catch {
+        if (token !== paramRefreshToken) return;
+        setFrameMsg(fr, tierAvail(fr.tier) ? "not synced yet" : `no ${fr.tier}`);
+      } finally {
+        if (token === paramRefreshToken) fr.frame.classList.remove("cv-loading");
+      }
+    }));
     notify();
   }
 
@@ -847,19 +903,22 @@ export function mountCutoutViewer(root, opts = {}) {
       pc.options.forEach((o) => g.append(chip(pc.key, o.value, o.label)));
       toolbar.append(g);
     }
-    toolbar.append(el("span", { class: "cv-grouplabel", text: "Colour" }));
-    const cg = el("div", { class: "cv-group" });
-    state.meta.band_names.forEach((n) => cg.append(chip("color", n, n)));
-    COLOR_MODES_EXTRA.forEach((m) => cg.append(chip("color", m.key, m.label, m.title)));
-    toolbar.append(cg);
+    const logMode = state.meta.render_mode === "log";
+    if (!logMode) {
+      toolbar.append(el("span", { class: "cv-grouplabel", text: "Colour" }));
+      const cg = el("div", { class: "cv-group" });
+      state.meta.band_names.forEach((n) => cg.append(chip("color", n, n)));
+      COLOR_MODES_EXTRA.forEach((m) => cg.append(chip("color", m.key, m.label, m.title)));
+      toolbar.append(cg);
+    }
 
     const sg = el("div", { class: "cv-group cv-sliders" });
-    sg.append(
-      slider("asinh knee", 5, 5000, state.knee,
-        (v) => `${Math.round(v)} e⁻`, (v) => { state.knee = v; rerender(); }),
-      slider("brightness", 0.1, 10, state.gain,
-        (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); }),
-    );
+    if (!logMode) {
+      sg.append(slider("asinh knee", 5, 5000, state.knee,
+        (v) => `${Math.round(v)} e⁻`, (v) => { state.knee = v; rerender(); }));
+    }
+    sg.append(slider("brightness", 0.1, 10, state.gain,
+      (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); }));
     toolbar.append(sg);
 
     // "morph" tier controls — amplitude + speed (live; the rAF loop reads them).
@@ -1135,6 +1194,12 @@ export function mountCutoutViewer(root, opts = {}) {
       syncChips();
       show();
     },
+    /** Patch cube-query parameters without reloading metadata or rebuilding
+     *  frames. Used by the PSF page's replayable live-warp preview. */
+    setParams(patch) {
+      Object.assign(state.params, patch || {});
+      return refreshVisible();
+    },
     /** Set the disagreement movie's member subset — a CSV of member indices
      *  (e.g. "0,3,7"), or null/"" for the full ensemble. The sr/pcaN cubes are
      *  recomputed server-side over the subset. Re-arms the movie if shown. */
@@ -1153,6 +1218,7 @@ export function mountCutoutViewer(root, opts = {}) {
     },
     reload() { return loadMeta().then(show); },
     destroy() {
+      paramRefreshToken++;
       document.removeEventListener("keydown", onKey);
       if (state.playTimer) clearInterval(state.playTimer);
       stopMorph();

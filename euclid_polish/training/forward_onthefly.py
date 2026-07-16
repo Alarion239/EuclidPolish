@@ -115,6 +115,9 @@ class OnTheFlyForward:
         star_mag_bright: float = Config.STAR_MAG_BRIGHT,
         star_mag_faint: float = Config.STAR_MAG_FAINT,
         pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+        psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
+        psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
+        psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         self.hr_crop_size = int(hr_crop_size)
@@ -142,6 +145,12 @@ class OnTheFlyForward:
                 # Pool members are PRE-rotated: pick one at random per scene
                 # (star-count weighted), never rotate at train time.
                 randomize_psf=True, psf_unrotated_prob=1.0,
+                # Learn a PSF distribution (polish-pub-style elastic warp).
+                # Training gets a fresh draw per visit; generated validation
+                # and test records use their own fixed, seeded draws.
+                psf_warp_prob=float(psf_warp_prob),
+                psf_warp_alpha_max=float(psf_warp_alpha_max),
+                psf_warp_sigma=float(psf_warp_sigma),
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.

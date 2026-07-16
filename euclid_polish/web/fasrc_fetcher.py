@@ -18,7 +18,7 @@ https://docs.rc.fas.harvard.edu/kb/rsync/, https://docs.rc.fas.harvard.edu/kb/fa
   * **Single-flight**: a per-path lock prevents concurrent pulls of the
     same file from competing for SSH.
   * **LRU eviction**: when the cache exceeds ``max_cache_bytes``
-    (default 2 GB) we delete the oldest files.
+    (default 4 GB) we delete the oldest files.
   * **Allowed roots**: pulls are restricted to known data dirs on the
     remote (``data_dir``, ``ckpt_dir``, ``repo_path/logs``). Anything
     else gets a 403.
@@ -29,6 +29,7 @@ initiated by clicking a thumbnail or a "fetch from FASRC" button.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import threading
@@ -221,6 +222,7 @@ def fetch_one_file(
     max_bytes: int = Config.WebFetch.MAX_PULL_BYTES,
     cache_ttl: int = Config.WebFetch.CACHE_TTL_SECONDS,
     force: bool = False,
+    protect_paths: set[str] | None = None,
 ) -> FetchResult:
     """Pull one file from FASRC into the local cache.
 
@@ -231,6 +233,10 @@ def fetch_one_file(
     Use this for explicit "Sync now" buttons — rsync itself is still
     incremental at the byte level, so a no-op sync of an unchanged file
     is cheap.
+
+    ``protect_paths`` lets an explicit multi-file sync keep its whole requested
+    set intact while the LRU makes room.  Paths are local cache paths; they are
+    never read or written except as exclusion entries for eviction.
 
     The function intentionally does no batching or background sync —
     every call corresponds to a user-initiated action (click on a
@@ -315,14 +321,22 @@ def fetch_one_file(
                 error=f"rsync reported success but local file missing: {local}",
             )
 
+        # ``rsync --inplace`` may leave an unchanged destination carrying its
+        # old remote mtime.  The cache's TTL/LRU semantics are about when *we*
+        # fetched it, so stamp the successful local fetch explicitly.
+        with contextlib.suppress(OSError):
+            os.utime(local, None)
+
         # Background cleanup: keep cache below the cap. Cheap; only walks
         # the cache subtree. ``protect`` the file we just pulled so the
         # eviction can never delete it out from under the ``getsize`` below
         # (it now also has a fresh mtime, so it's the LAST eviction
         # candidate anyway — belt and suspenders).
         if cache_size_bytes() > Config.WebFetch.MAX_CACHE_BYTES:
+            protected = {local}
+            protected.update(protect_paths or ())
             _evict_lru_until_under(Config.WebFetch.MAX_CACHE_BYTES,
-                                   protect={local})
+                                   protect=protected)
 
         # Defensive ``getsize``: honour the "never raises" contract even if
         # a concurrent pull/eviction removed the file in the gap above.

@@ -56,7 +56,6 @@ export default function SkyPage() {
   }
 
   // --- Sync records from FASRC (plain POST) -----------------------------
-  const [includeValidate, setIncludeValidate] = useState(false);
   const [includeTrain, setIncludeTrain] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncNote, setSyncNote] = useState<{ ok: boolean; text: string } | null>(null);
@@ -66,7 +65,6 @@ export default function SkyPage() {
     setSyncNote(null);
     try {
       const r = await postForm<SyncResult>("/api/sky/sync", {
-        include_validate: includeValidate ? 1 : 0,
         include_train: includeTrain ? 1 : 0,
       });
       if (r.ok) {
@@ -173,13 +171,10 @@ export default function SkyPage() {
         <Card>
           <CardHead
             title="Sync records from FASRC"
-            sub="pulls the held-out test split by default; validate & the large train split are opt-in"
+            sub="pulls held-out test and validation splits together; only the large train split is opt-in"
           />
           <CardBody>
             <div className="row" style={{ gap: "var(--s6)", flexWrap: "wrap" }}>
-              <Checkbox checked={includeValidate} onChange={setIncludeValidate} disabled={syncBusy}>
-                also pull validate shards
-              </Checkbox>
               <Checkbox checked={includeTrain} onChange={setIncludeTrain} disabled={syncBusy}>
                 also pull train shards
               </Checkbox>

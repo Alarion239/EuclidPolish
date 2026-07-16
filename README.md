@@ -210,6 +210,15 @@ kernels. Roll-rotation augmentation is implemented (`PSF.rotated`) but **disable
 default** (`MultiBandForwardConfig.psf_unrotated_prob = 1.0`): the default behaviour is a
 random cluster pick with no rotation.
 
+The forward model also samples a smooth elastic deformation of that PSF for each exposure
+(`alpha ~ Uniform(0, 20)`, `sigma=3` HR pixels by default), following the original POLISH
+PSF-distribution augmentation. Record-mode generation uses seeded, replayable draws for
+dirty train/validate/test records. Clean-only on-the-fly training instead draws a fresh
+train deformation on every visit; generated validation/test inputs remain fixed. One
+deformation is shared across all four bands, and it changes only the forward PSF used to
+make LR, never the clean/HR target. The probability, maximum alpha, and smoothing scale are
+persistent controls on `/config`.
+
 `differential_kernel.py` is a **separate** path used only by the HST→Euclid training lane
 (§5): it solves `A ⊛ H ≈ E` (Wiener) so that convolving a real HST F814W cutout with `A`
 yields a correct Euclid-PSF LR instead of double-convolving through HST's own PSF. It is
@@ -400,8 +409,12 @@ identical to the sky objective.
   ([Pascanu+ 2013](https://arxiv.org/abs/1211.5063)). A **divergence guard** rolls back to
   the last checkpoint when the post-warmup pre-clip grad norm exceeds 50, halving the LR
   after repeated rollbacks — this recovers from rare loss spikes that corrupt weights.
-- **Augmentation:** random aligned 96×96 HR / 48×48 LR crops only. **No flips/rotations** —
-  the empirical PSF is asymmetric, so a flipped target is a different SR task.
+- **Augmentation:** random aligned 96×96 HR / 48×48 LR crops plus elastic PSF warps in
+  the forward operator. Record-mode generation applies a seeded warp to every dirty
+  train/validate/test exposure. Clean-only on-the-fly training draws a fresh train warp on
+  every visit; its generated validation/test records remain fixed and replayable. **No image
+  flips/rotations** — the empirical PSF is asymmetric, so a flipped target is a different SR
+  task. Clean/HR targets are never deformed.
 
 ### 5.3 Validation metrics
 

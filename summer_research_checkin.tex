@@ -1,0 +1,84 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{wrapfig}
+\usepackage{setspace}
+\usepackage{caption}
+\captionsetup{font={singlespacing}}
+\usepackage{subcaption}
+\usepackage[utf8x]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[backend=biber,style=authoryear]{biblatex}
+\addbibresource{references.bib}
+\usepackage[pdftex]{graphicx}
+\usepackage[pdftex,linkcolor=black,pdfborder={0 0 0}]{hyperref}
+\usepackage{calc}
+\usepackage{enumitem}
+\usepackage[margin=1in]{geometry}
+
+\author{Aleksandr Belotserkovtsev}
+\title{}
+
+\begin{document}
+\maketitle\doublespacing
+
+\section{Project status}
+
+My project is progressing towards its original goal of developing super-resolution methods for astronomical images from the Euclid space telescope. So far, I have developed a pipeline for simulating realistic fields for training; adapted a radio-astronomical super-resolution model to better suit the needs of optical astronomy; and worked on evaluating and reducing uncertainty in its predictions. I have assembled from scratch a reproducible pipeline that extracts information from real observations, simulates realistic fields, trains models, evaluates their reconstructions, and plots and reports all the results.
+
+The model works with four Euclid bands (VIS, $Y_E$, $J_E$, and $H_E$), converting $0.10''$-per-pixel inputs into $0.05''$-per-pixel outputs. The simulator uses point-spread functions extracted from Euclid stars and includes band-dependent convolution, rebinning, noise, detector artifacts, and saturation. The generated training fields combine realistic galaxies with gravitational-lens systems.
+
+Now I am progressing steadily from refining my simulated data and the models' hyperparameters towards evaluation on real data for the concrete goal of my project: finding more gravitational lenses. The results look promising. Figures~\ref{fig:real-lens} and~\ref{fig:real-field} show examples of the model's work; the reconstructions reveal substantially more structure than the original images, although I am also evaluating whether any detail has been invented by the model.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/evaluation_idx0_LR-SR_VIS.png}
+        \caption{VIS band (grayscale)}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/evaluation_idx0_LR-SR_temp.png}
+        \caption{Temperature-coloured rendering}
+    \end{subfigure}
+    \caption{A real Euclid gravitational-lens candidate from Lines et al.\ \parencite{Lines2025}. In both panels, the low-resolution (LR) input is on the left and the super-resolved (SR) reconstruction is on the right.}
+    \label{fig:real-lens}
+\end{figure}
+
+\section{Progress towards intellectual goals}
+
+I attended a week-long AstroAI workshop in June, delving into modern AI research and its interaction with science. I found the topics that interest me the most: interpretability and mathematical machine learning.
+
+During the process of developing my project, I encountered many new machine-learning, simulation, and astronomical problems that I learned how to solve: galaxy simulations, point-spread-function extraction, power-spectrum cross-correlation, and large-data analysis. My mathematics, statistics, and computer-science coursework gives me the foundation for this work, while my astronomy background helps me understand the scientific meaning of the images and the limitations of the models.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/real-field_idx8_lr-comb_stats_rbf_VIS.png}
+        \caption{VIS band (grayscale)}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/real-field_idx8_lr-comb_stats_rbf_temp.png}
+        \caption{Temperature-coloured rendering}
+    \end{subfigure}
+    \caption{A real Euclid field processed by the pipeline. In both panels, the low-resolution (LR) input is on the left and the super-resolved (SR) reconstruction is on the right.}
+    \label{fig:real-field}
+\end{figure}
+
+\section{Professional and personal development}
+
+My research is almost entirely self-driven. I present my progress at multiple meetings throughout the week and receive feedback from various groups. I have also learned many new concepts from my mentors, and then I delve deeper into them on my own. This experience is helping me become more confident in communicating technical decisions and in working independently in a research environment.
+
+On a personal level, I am trying to maintain a regular sleep schedule and continue exercising, although the summer heat remains challenging. Spending time in the research community is also helping me become a better listener and scientific presenter.
+
+\section{Future}
+
+With a working end-to-end pipeline for training the model, my next steps are evaluation on real data, specific adjustments to the model and simulated data, and measuring final performance for lens discovery. Because the real Euclid images do not have high-resolution ground truth, this evaluation is challenging. I am combining synthetic tests with morphology, Fourier, and ensemble-disagreement diagnostics to assess the reconstructions and identify hallucinated detail.
+
+\printbibliography
+
+\end{document}

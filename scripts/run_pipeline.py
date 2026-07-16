@@ -4,10 +4,12 @@
 Mirrors the three CLI menu steps but drives them sequentially without prompts:
 
     1. Generate clean HR fields with COSMOS2025 galaxies + stars + lenses
-       (saved as ``clean_{train,validate}.tfrecord`` in v2 schema, 4 channels).
+       (saved as ``clean_{train,validate,test}.tfrecord`` in v2 schema,
+       4 channels).
     2. Run the per-band forward model HR → LR (PSF convolution + noise + NISP
-       upsample to VIS LR grid). Saved as ``dirty_{train,validate}.tfrecord``,
-       4-channel LR at 0.10″/pix.
+       upsample to VIS LR grid), including a seeded elastic PSF deformation.
+       Saved as ``dirty_{train,validate,test}.tfrecord``, 4-channel LR at
+       0.10″/pix.
     3. Train WDSR (4-channel input, 4-channel VIS+NISP HR target).
 
 Any step can be skipped via ``--skip-{generate,convolve,train}``.
@@ -101,13 +103,27 @@ def _banner(msg: str) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--catalog",        default=Config.COSMOS2025_CATALOG_PATH,
                     help="Path to the COSMOS2025 master FITS file (required)")
     ap.add_argument("--psf-dir",        default=Config.EUCLID_PSF_DIR,
                     help="Directory containing per-band ePSF FITS files; "
                          "missing bands fall back to Gaussian.")
+    ap.add_argument("--psf-warp-prob", type=float,
+                    default=Config.TRAIN_PSF_WARP_PROB,
+                    help="Probability of an elastic PSF deformation for each "
+                         "generated dirty exposure in train, validate, and "
+                         "test. Default 1; 0 disables it.")
+    ap.add_argument("--psf-warp-alpha-max", type=float,
+                    default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
+                    help="Maximum elastic displacement amplitude in HR "
+                         "pixels; alpha is drawn uniformly from [0, max] "
+                         "for each exposure (default 20).")
+    ap.add_argument("--psf-warp-sigma", type=float,
+                    default=Config.TRAIN_PSF_WARP_SIGMA,
+                    help="Gaussian smoothing scale of the elastic "
+                         "displacement field in HR pixels (default 3).")
     ap.add_argument("--records-dir",    default=Config.RECORDS_DIR_V2)
     ap.add_argument("--checkpoint-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
     ap.add_argument("--ntrain",         type=int, default=6400)
@@ -200,7 +216,7 @@ def parse_args() -> argparse.Namespace:
                     help="Path to per-stage timings CSV. "
                          "Default: <records-dir>/stages_${SLURM_JOB_ID}.csv "
                          "(or stages_local.csv outside SLURM).")
-    return ap.parse_args()
+    return ap.parse_args(argv)
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +280,25 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
         lens_density_arcmin2=args.lens_density_arcmin2,
         lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
         lens_sigma_v_max_kms=args.lens_sigma_v_max_kms,
+    )
+
+
+def _observation_config_from_args(
+    args: argparse.Namespace,
+) -> ObservationSimulatorConfig:
+    """Build the forward config shared by train, validate, and test.
+
+    ``getattr`` fallbacks preserve programmatic callers that construct a
+    minimal legacy Namespace while CLI/WebUI runs get the configured warp.
+    """
+    return ObservationSimulatorConfig(
+        add_noise=True,
+        psf_warp_prob=float(getattr(
+            args, "psf_warp_prob", Config.TRAIN_PSF_WARP_PROB)),
+        psf_warp_alpha_max=float(getattr(
+            args, "psf_warp_alpha_max", Config.TRAIN_PSF_WARP_ALPHA_MAX)),
+        psf_warp_sigma=float(getattr(
+            args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA)),
     )
 
 
@@ -363,8 +398,16 @@ def step_convolve(args: argparse.Namespace) -> None:
         _log(f"  PSF[{name}]: {pset.n} kernel(s), shape={pset.shape}, "
              f"{pset.pixel_scale}\"/pix")
 
-    fwd = ObservationSimulator(psf_sets_by_band=psf_sets,
-                           config=ObservationSimulatorConfig(add_noise=True))
+    fwd = ObservationSimulator(
+        psf_sets_by_band=psf_sets,
+        config=_observation_config_from_args(args),
+    )
+    _log(
+        "  PSF warp: "
+        f"p={fwd.config.psf_warp_prob:g}, "
+        f"alpha_max={fwd.config.psf_warp_alpha_max:g} HR px, "
+        f"sigma={fwd.config.psf_warp_sigma:g} HR px"
+    )
 
     # One master seed for the forward step, recorded on its run so the noise /
     # artifact realisations can be replayed via --seed.
@@ -884,7 +927,10 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
                      star_mag_faint=Config.STAR_MAG_FAINT,
                      lens_density_arcmin2=Config.LENS_DENSITY_ARCMIN2,
                      lens_sigma_v_min_kms=Config.LENS_SIGMA_V_MIN_KMS,
-                     lens_sigma_v_max_kms=Config.LENS_SIGMA_V_MAX_KMS) -> None:
+                     lens_sigma_v_max_kms=Config.LENS_SIGMA_V_MAX_KMS,
+                     psf_warp_prob=Config.TRAIN_PSF_WARP_PROB,
+                     psf_warp_alpha_max=Config.TRAIN_PSF_WARP_ALPHA_MAX,
+                     psf_warp_sigma=Config.TRAIN_PSF_WARP_SIGMA) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
     memmapped and only the filtered columns are held, so each worker's copy
@@ -911,8 +957,15 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
         psf_dir=psf_dir, require_empirical=require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
-    _W_FWD = ObservationSimulator(psf_sets_by_band=psf_sets,
-                              config=ObservationSimulatorConfig(add_noise=True))
+    _W_FWD = ObservationSimulator(
+        psf_sets_by_band=psf_sets,
+        config=ObservationSimulatorConfig(
+            add_noise=True,
+            psf_warp_prob=float(psf_warp_prob),
+            psf_warp_alpha_max=float(psf_warp_alpha_max),
+            psf_warp_sigma=float(psf_warp_sigma),
+        ),
+    )
     _W_RECORDS_DIR = records_dir
 
 
@@ -945,9 +998,16 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     run_seed = _resolve_run_seed(args)
     # Provenance (best-effort): one generation run for the whole parallel step;
     # per-subset ids are pre-minted in this parent and shipped to the workers.
+    observation_cfg = _observation_config_from_args(args)
     gen_ctx = make_generation_context(
         _generator_config_from_args(args), seed=run_seed)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
+    _log(
+        "  PSF warp: "
+        f"p={observation_cfg.psf_warp_prob:g}, "
+        f"alpha_max={observation_cfg.psf_warp_alpha_max:g} HR px, "
+        f"sigma={observation_cfg.psf_warp_sigma:g} HR px"
+    )
 
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
@@ -1045,7 +1105,13 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           args.star_density_arcmin2,
                           args.star_mag_slope, args.star_mag_bright,
                           args.star_mag_faint, args.lens_density_arcmin2,
-                          args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms),
+                          args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms,
+                          getattr(args, "psf_warp_prob",
+                                  Config.TRAIN_PSF_WARP_PROB),
+                          getattr(args, "psf_warp_alpha_max",
+                                  Config.TRAIN_PSF_WARP_ALPHA_MAX),
+                          getattr(args, "psf_warp_sigma",
+                                  Config.TRAIN_PSF_WARP_SIGMA)),
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):

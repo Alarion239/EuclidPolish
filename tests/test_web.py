@@ -289,7 +289,7 @@ def test_training_redirects_to_ensemble(client):
 def test_inference_page_renders(client):
     r = client.get("/inference")
     assert r.status_code == 200
-    assert b"Reconstruct" in r.data
+    assert b"Real Euclid field inference" in r.data
 
 
 def test_no_experimental_lane_traces_in_ui(client):
@@ -570,12 +570,11 @@ def test_tng_result_missing_returns_404(client, monkeypatch):
     assert "submit the job" in r.get_json()["error"]
 
 
-def test_post_inference_generate_reconstruct_returns_job_id(client):
-    # Spawns a background job and returns its id even without a live FASRC
-    # connection — the job itself fails fast ("not connected") in that case.
-    r = client.post("/inference/generate-reconstruct", data={
-        "checkpoint_dir": "/tmp/nope", "hr_image_size": 510, "n_pairs": 1,
-    })
+def test_post_inference_cache_real_field_returns_job_id(client, monkeypatch):
+    """The real-field request validates coordinates then runs as a job."""
+    monkeypatch.setattr("euclid_polish.web.routes.model.cache_real_field",
+                        lambda *args, **kwargs: {})
+    r = client.post("/inference/cache-real-field", data={"ra": 267.4229, "dec": 64.8873})
     assert r.status_code == 200
     assert "job_id" in r.get_json()
 
@@ -1170,52 +1169,14 @@ def test_hst_status_omits_deleted_two_stage_chain_keys(client, monkeypatch):
         )
 
 
-def test_inference_lists_synthetic_runs_and_drops_deprecated(client, tmp_path, monkeypatch):
+def test_inference_field_status_uses_real_field_manifest(client, tmp_path, monkeypatch):
     inf = tmp_path / "euclid_inference"
-    cut = inf / "cutouts" / "latest"; cut.mkdir(parents=True)
-    for n in ("original_stack.fits", "SR.fits", "SR_forward.fits", "residual.fits"):
-        (cut / n).write_bytes(b"x")          # deprecated present ON DISK
-    syn = inf / "synthetic" / "gensynth_510px_idx0000"; syn.mkdir(parents=True)
-    for n in ("original_stack.fits", "SR.fits", "HR.fits"):
-        (syn / n).write_bytes(b"x")
+    field = inf / "real_fields" / "ra0267.42290_decp064.88730"
+    field.mkdir(parents=True)
+    (field / "manifest.json").write_text(
+        '{"field_id":"ra0267.42290_decp064.88730","ra":267.4229,"dec":64.8873,'
+        '"field_size":2560,"tile_size":256,"count":100,"member_labels":[],"combiner_kinds":[]}')
     monkeypatch.setattr(Config, "EUCLID_INFERENCE_DIR", str(inf))
-
-    body = client.get("/inference").get_data(as_text=True)
-    # synthetic run is listed with its inspectable FITS set
-    assert "Synthetic reconstructions" in body
-    assert "gensynth_510px_idx0000" in body
-    assert "synthetic/gensynth_510px_idx0000/SR.fits" in body
-    assert "HR.fits" in body
-    # the real-Euclid run still shows the kept files
-    assert "cutouts/latest/SR.fits" in body
-    # deprecated files are NOT listed anywhere, though they exist on disk
-    assert "SR_forward.fits" not in body
-    assert "residual.fits" not in body
-
-
-def test_inference_gallery_links_fits_for_regime_pair(client, tmp_path, monkeypatch):
-    """The synthetic job writes one SR FITS per scene but TWO PNGs
-    (…_eye.png / …_solar.png); both gallery thumbnails must link the
-    shared sidecar FITS."""
-    rdir = tmp_path / "vis" / "reconstruction"
-    rdir.mkdir(parents=True)
-    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
-    monkeypatch.setattr(Config, "VIS_RECONSTRUCTION_DIR", str(rdir))
-    stem = "gensynth_510px_idx0001"
-    minimal_png = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-        b"\x00\x00\x00\rIDATx\x9cc\xfc\xcf\xc0\x00\x00\x00\x03\x00\x01\x9b\xc8"
-        b"\x9d\xed\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-    for regime in ("eye", "solar"):
-        (rdir / f"{stem}_{regime}.png").write_bytes(minimal_png)
-    (rdir / f"{stem}.fits").write_bytes(b"SIMPLE  =                    T")
-
-    r = client.get("/inference")
-    assert r.status_code == 200
-    body = r.data.decode()
-    # Both regime PNGs are in the gallery and both link the one FITS.
-    assert f"{stem}_eye.png" in body
-    assert f"{stem}_solar.png" in body
-    assert body.count(f"{stem}.fits") >= 2
+    result = client.get("/api/inference/field.json").get_json()
+    assert result["field"]["field_id"] == "ra0267.42290_decp064.88730"
+    assert result["field"]["count"] == 100

@@ -57,7 +57,8 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
     field = _field()
     fwd = OnTheFlyForward(gaussian_sets, seed=2, crops_per_field=3,
                           add_noise=False, add_artifacts=False,
-                          add_saturation=False, inject_stars=False)
+                          add_saturation=False, inject_stars=False,
+                          psf_warp_prob=0.0)
     lr_crops, hr_crops = fwd.crops(field)
     # Reference full-field forward (deterministic: 1-kernel sets, no noise).
     img = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
@@ -212,11 +213,17 @@ def test_build_specs_forward_flags(tmp_path):
     args = parse_args(["--mode", "add", "--count", "2", "--steps", "10",
                        "--forward-onthefly", "1", "--psf-subset", "48",
                        "--crops-per-field", "8",
+                       "--psf-warp-prob", "0.75",
+                       "--psf-warp-alpha-max", "12",
+                       "--psf-warp-sigma", "4",
                        "--member-spec",
                        '[{"forward_onthefly": false}]'])
     s0, s1 = build_specs(args, str(tmp_path / "ens"))
     assert (s0.forward_onthefly, s1.forward_onthefly) == (False, True)
     assert s1.psf_subset == 48 and s1.crops_per_field == 8
+    assert s1.psf_warp_prob == pytest.approx(0.75)
+    assert s1.psf_warp_alpha_max == pytest.approx(12.0)
+    assert s1.psf_warp_sigma == pytest.approx(4.0)
 
 
 def test_ensemble_train_step_forwards_onthefly_flags(monkeypatch):
@@ -227,10 +234,14 @@ def test_ensemble_train_step_forwards_onthefly_flags(monkeypatch):
     cmd = " ".join(EnsembleTrainStep().build_command({
         "mode": "add", "count": "1", "steps": "1000",
         "forward_onthefly": "1", "psf_subset": "48",
-        "crops_per_field": "8"}))
+        "crops_per_field": "8", "psf_warp_prob": "0.75",
+        "psf_warp_alpha_max": "12", "psf_warp_sigma": "4"}))
     assert "--forward-onthefly 1" in cmd
     assert "--psf-subset 48" in cmd
     assert "--crops-per-field 8" in cmd
+    assert "--psf-warp-prob 0.75" in cmd
+    assert "--psf-warp-alpha-max 12" in cmd
+    assert "--psf-warp-sigma 4" in cmd
     # unchecked box → none of the on-the-fly flags
     cmd = " ".join(EnsembleTrainStep().build_command({
         "mode": "add", "count": "1", "steps": "1000",

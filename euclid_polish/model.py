@@ -376,6 +376,9 @@ class Model:
         forward_onthefly: bool = False,
         psf_subset: int | None = None,
         crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
+        psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
+        psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
+        psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
         starless: bool = True,
         **kwargs,
     ) -> None:
@@ -404,7 +407,9 @@ class Model:
         .OnTheFlyForward`): the dirty records are ignored; each visit of a
         clean field re-draws PSF + noise on the FULL field and cuts
         ``crops_per_field`` crops. ``psf_subset`` bags the member's PSF pool
-        to that many source clusters (keyed by the seed).
+        to that many source clusters (keyed by the seed). ``psf_warp_*``
+        controls polish-pub-style elastic deformation of each training
+        exposure's sampled PSF; the clean/HR target is never warped.
 
         Validation always uses the record-based full set, no noise/forward
         randomness, and the L1 metric-space pipeline — members with
@@ -419,14 +424,20 @@ class Model:
             psf_sets, note = member_psf_sets(seed=self._seed,
                                              psf_subset=psf_subset)
             print(f"  on-the-fly forward: {note} · "
-                  f"{int(crops_per_field)} crops/field")
+                  f"{int(crops_per_field)} crops/field · "
+                  f"PSF warp p={float(psf_warp_prob):g}, "
+                  f"alpha<= {float(psf_warp_alpha_max):g}, "
+                  f"sigma={float(psf_warp_sigma):g}px")
             # Stars are injected fresh each visit in BOTH regimes; ``starless``
             # only picks the target — the starless scene (erase) vs the
             # with-stars scene (reconstruct).
             fwd = OnTheFlyForward(psf_sets, seed=self._seed,
                                   crops_per_field=int(crops_per_field),
                                   scale=self._scale,
-                                  starless=bool(starless))
+                                  starless=bool(starless),
+                                  psf_warp_prob=float(psf_warp_prob),
+                                  psf_warp_alpha_max=float(psf_warp_alpha_max),
+                                  psf_warp_sigma=float(psf_warp_sigma))
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

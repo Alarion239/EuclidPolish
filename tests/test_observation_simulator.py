@@ -156,6 +156,17 @@ def test_invalid_kernel_raises():
         ObservationSimulatorConfig(nisp_resample_kernel="bogus")
 
 
+@pytest.mark.parametrize("kwargs", [
+    {"psf_warp_prob": -0.1},
+    {"psf_warp_prob": 1.1},
+    {"psf_warp_alpha_max": -1.0},
+    {"psf_warp_sigma": 0.0},
+])
+def test_invalid_psf_warp_config_raises(kwargs):
+    with pytest.raises(ValueError):
+        ObservationSimulatorConfig(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Position-dependent PSF sets
 # ---------------------------------------------------------------------------
@@ -226,6 +237,56 @@ def test_forward_shares_one_psf_sample_across_bands(hr_field, monkeypatch):
     fwd.process(hr_field, rng=np.random.default_rng(1))
     assert len(seen) == 4                      # one apply per band
     assert all(s == seen[0] for s in seen)     # the SAME shared sample
+
+
+def test_forward_psf_warp_changes_dirty_not_target(hr_field):
+    sets = {b.name: _vis_psf_set(1, [4.0]) for b in Config.BANDS}
+    nominal = ObservationSimulator(
+        psf_sets_by_band=sets,
+        config=ObservationSimulatorConfig(
+            add_noise=False, add_saturation=False, randomize_psf=True,
+            psf_unrotated_prob=1.0, psf_warp_prob=0.0),
+    )
+    warped = ObservationSimulator(
+        psf_sets_by_band=sets,
+        config=ObservationSimulatorConfig(
+            add_noise=False, add_saturation=False, randomize_psf=True,
+            psf_unrotated_prob=1.0, psf_warp_prob=1.0,
+            psf_warp_alpha_max=20.0, psf_warp_sigma=3.0),
+    )
+    lr_nominal, hr_nominal = nominal.process(
+        hr_field, rng=np.random.default_rng(4))
+    lr_warped, hr_warped = warped.process(
+        hr_field, rng=np.random.default_rng(4))
+    assert not np.array_equal(lr_nominal.data, lr_warped.data)
+    np.testing.assert_array_equal(hr_nominal.data, hr_warped.data)
+
+
+def test_forward_reuses_one_warp_field_for_same_shape_bands(
+    hr_field, monkeypatch,
+):
+    """A four-band exposure filters one displacement field, then reuses it."""
+    from euclid_polish.psf import PSF
+
+    calls = []
+    original = PSF.elastic_displacement
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(PSF, "elastic_displacement", staticmethod(counted))
+    sets = {b.name: _vis_psf_set(1, [4.0]) for b in Config.BANDS}
+    fwd = ObservationSimulator(
+        psf_sets_by_band=sets,
+        config=ObservationSimulatorConfig(
+            add_noise=False, add_saturation=False, randomize_psf=True,
+            psf_unrotated_prob=1.0, psf_warp_prob=1.0,
+            psf_warp_alpha_max=20.0, psf_warp_sigma=3.0,
+        ),
+    )
+    fwd.process(hr_field, rng=np.random.default_rng(4))
+    assert calls == [(31, 31)]
 
 
 def test_randomize_off_uses_mean_deterministically(hr_field):

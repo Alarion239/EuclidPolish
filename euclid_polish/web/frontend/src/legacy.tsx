@@ -11,6 +11,8 @@ type ViewerState = {
 export type ViewerApi = {
   goTo(i: number): void;
   setTiers(keys: string | string[]): void;
+  /** Patch cube-query parameters and refresh the visible pixels in place. */
+  setParams(patch: Record<string, string>): Promise<void>;
   setMorphMembers(csv: string | null): void;
   getIndex(): number;
   isReady(): boolean;

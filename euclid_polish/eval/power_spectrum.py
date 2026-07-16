@@ -199,8 +199,9 @@ class EnsembleSpectrumAccumulator:
     per-pixel variance: *at which scales the members disagree / hallucinate*).
 
     :meth:`curves` then yields ``P_hr(k)``, ``P_sr(k)``, ``P_disagree(k)``, the
-    cross-correlation coefficient ``r(k)`` (how correlated the ensemble mean is
-    with the truth at scale k) and the transfer function ``T(k)``.
+    cross-correlation coefficient ``r(k)`` (how correlated the displayed
+    ensemble-mean prediction is with the truth at scale k) and the transfer
+    function ``T(k)``.
     """
 
     def __init__(self, n: int, pixel_scale_arcsec: float, *,
@@ -228,14 +229,22 @@ class EnsembleSpectrumAccumulator:
         self._r_members: list[np.ndarray] = []          # each (M, nbins)
         self._p_members: list[np.ndarray] = []          # each (M, nbins)
         self._r_pairs: list[np.ndarray] = []            # each (M·(M−1)/2, nbins)
-        self._p_comb: list[np.ndarray] = []             # combiner auto-power
-        self._r_comb: list[np.ndarray] = []             # combiner vs HR coherence
+        # Model-specific combiner curves.  The historical lists below remain
+        # as compatibility aliases for stored JSON and the static report, but
+        # new combiners are carried by this map rather than needing fields here.
+        self._p_model_comb: dict[str, list[np.ndarray]] = {}
+        self._r_model_comb: dict[str, list[np.ndarray]] = {}
+        self._p_comb: list[np.ndarray] = []             # legacy max-RBF alias
+        self._r_comb: list[np.ndarray] = []
+        self._p_stats_rbf_comb: list[np.ndarray] = []   # legacy mean/std alias
+        self._r_stats_rbf_comb: list[np.ndarray] = []
         self._p_combined: list[np.ndarray] = []         # cross-regime combiner
         self._r_combined: list[np.ndarray] = []
         self._r_lr: list[np.ndarray] = []               # LR(up)↔HR baseline r(k)
         self.n_fields = 0
         self.n_members = 0
         self.has_combiner = False
+        self.has_stats_rbf_combiner = False
         self.has_combined_combiner = False
 
     def _asinh(self, x: np.ndarray) -> np.ndarray:
@@ -243,12 +252,14 @@ class EnsembleSpectrumAccumulator:
 
     def add(self, hr: np.ndarray, mean: np.ndarray,
             members: np.ndarray, combiner: np.ndarray | None = None,
+            stats_rbf_combiner: np.ndarray | None = None,
             combined_combiner: np.ndarray | None = None,
+            model_combiners: dict[str, np.ndarray | None] | None = None,
             lr: np.ndarray | None = None) -> None:
         """Accumulate one field (asinh space). ``hr``/``mean`` are ``(n, n)``;
         ``members`` is ``(M, n, n)`` — all single-band, HR-grid. ``combiner``
         (optional, ``(n, n)``) is the combined reconstruction → its own
-        ``P_comb``/``r_comb`` series alongside the ensemble mean. ``lr``
+        ``P_comb``/``r_comb`` series alongside the displayed ensemble mean. ``lr``
         (optional, the LR plane resampled to the HR grid, ``(n, n)``) is the
         no-super-resolution BASELINE → an ``r_lr`` cross-correlation curve the
         network must beat."""
@@ -257,15 +268,20 @@ class EnsembleSpectrumAccumulator:
         if hr.shape != (self.n, self.n) or mean.shape != hr.shape:
             return
         ah = self._asinh(hr)
+        # The primary spectrum must describe the actual point estimate shown
+        # by EnsembleModel.predict(): the arithmetic raw-electron mean. The
+        # statistic is still measured in asinh space, so transform that image
+        # once here rather than averaging transformed members.
+        a_mean = self._asinh(mean)
         members = np.asarray(members, np.float64)
         have = members.ndim == 3 and members.shape[1:] == hr.shape and len(members)
-        # asinh-space ensemble "mean" = mean of the asinh members (keeps the
-        # variance identity ⟨P_member⟩ = P_mean + P_disagree exact); falls back to
-        # asinh(raw mean) with no members.
+        # A separate transformed-member mean is retained for the disagreement
+        # decomposition below. It is not the primary plotted prediction:
+        # mean(asinh(member)) != asinh(mean(member)) in general.
         am = [self._asinh(m) for m in members] if have else None
-        asm = np.mean(np.stack(am, 0), 0) if have else self._asinh(mean)
+        a_member_mean = np.mean(np.stack(am, 0), 0) if have else a_mean
 
-        bh, bs, bx, bc = bin_powers(ah, asm, self.pix, self.k_edges, self.window)
+        bh, bs, bx, bc = bin_powers(ah, a_mean, self.pix, self.k_edges, self.window)
         self.bc += bc
         with np.errstate(divide="ignore", invalid="ignore"):
             p_hr, p_sr = bh / bc, bs / bc
@@ -278,7 +294,7 @@ class EnsembleSpectrumAccumulator:
             dacc = np.zeros(self.nbins)
             r_rows, p_rows = [], []
             for amk in am:
-                resid = amk - asm
+                resid = amk - a_member_mean
                 ph, _ps, _px, _bc = bin_powers(resid, resid, self.pix, self.k_edges, self.window)
                 dacc += ph
                 _bh, bsk, bxk, bck = bin_powers(ah, amk, self.pix, self.k_edges, self.window)
@@ -288,7 +304,15 @@ class EnsembleSpectrumAccumulator:
                     p_rows.append(bsk / bck)
             with np.errstate(divide="ignore", invalid="ignore"):
                 p_dis = (dacc / float(mm)) / bc
-                coh = p_sr / (p_sr + p_dis)
+                # This coherence fraction belongs to the exact transformed-
+                # member variance identity, so use the power of
+                # mean(asinh(member)) here rather than the primary power of
+                # asinh(raw mean). The user-facing r/T curves remain tied to
+                # the actual displayed mean image.
+                _bhm, bsm, _bxm, bcm = bin_powers(
+                    ah, a_member_mean, self.pix, self.k_edges, self.window)
+                p_member_mean = bsm / bcm
+                coh = p_member_mean / (p_member_mean + p_dis)
                 mfac = max(mm, 2)
                 rho = (mfac * coh - 1.0) / (mfac - 1.0)
             if not self.n_members or mm == self.n_members:
@@ -306,9 +330,18 @@ class EnsembleSpectrumAccumulator:
         self._p_hr.append(p_hr); self._p_sr.append(p_sr); self._p_dis.append(p_dis)
         self._r.append(r); self._t.append(t); self._rho.append(rho)
 
-        # Combiner: its own auto-power + HR cross-correlation (asinh space).
+        # Each ordinary combiner gets its own auto-power and HR coherence.
+        # ``combiner`` / ``stats_rbf_combiner`` retain the public API used by
+        # older call sites; ``model_combiners`` is the extensible path.
+        models = dict(model_combiners or {})
         if combiner is not None:
-            ac = self._asinh(np.asarray(combiner, np.float64))
+            models.setdefault("rbf_gate", combiner)
+        if stats_rbf_combiner is not None:
+            models.setdefault("stats_rbf_gate", stats_rbf_combiner)
+        for model_kind, model_image in models.items():
+            if model_image is None:
+                continue
+            ac = self._asinh(np.asarray(model_image, np.float64))
             if ac.shape == hr.shape:
                 _bhc, bsc, bxc, bcc = bin_powers(ah, ac, self.pix,
                                                  self.k_edges, self.window)
@@ -317,8 +350,14 @@ class EnsembleSpectrumAccumulator:
                     pc = bsc / bcc
                 ce = bcc <= 0
                 pc[ce] = np.nan; rc[ce] = np.nan
-                self._p_comb.append(pc); self._r_comb.append(rc)
-                self.has_combiner = True
+                self._p_model_comb.setdefault(str(model_kind), []).append(pc)
+                self._r_model_comb.setdefault(str(model_kind), []).append(rc)
+                if model_kind == "rbf_gate":
+                    self._p_comb.append(pc); self._r_comb.append(rc)
+                    self.has_combiner = True
+                elif model_kind == "stats_rbf_gate":
+                    self._p_stats_rbf_comb.append(pc); self._r_stats_rbf_comb.append(rc)
+                    self.has_stats_rbf_combiner = True
 
         if combined_combiner is not None:
             ac = self._asinh(np.asarray(combined_combiner, np.float64))
@@ -372,6 +411,15 @@ class EnsembleSpectrumAccumulator:
         if self._p_comb:
             out["P_comb"] = self._med(self._p_comb)
             out["r_comb"] = self._med(self._r_comb)
+        if self._p_stats_rbf_comb:
+            out["P_stats_rbf_comb"] = self._med(self._p_stats_rbf_comb)
+            out["r_stats_rbf_comb"] = self._med(self._r_stats_rbf_comb)
+        if self._p_model_comb:
+            out["model_combiners"] = {
+                kind: {"P": self._med(self._p_model_comb[kind]),
+                       "r": self._med(self._r_model_comb[kind])}
+                for kind in self._p_model_comb
+            }
         if self._p_combined:
             out["P_combined"] = self._med(self._p_combined)
             out["r_combined"] = self._med(self._r_combined)
@@ -379,14 +427,131 @@ class EnsembleSpectrumAccumulator:
             out["r_lr"] = self._med(self._r_lr)
         return out
 
+    def coherence_scores(self, *, sr_k_min: float = LR_NYQUIST_CYC_ARCSEC
+                         ) -> dict:
+        """Summarize cached ``r(k)`` rows as normalized log-scale means.
+
+        Scores are computed per field and then reported as the field median with
+        a 16--84% spread.  The integration measure is ``d log(k)``, so every
+        spatial-frequency octave contributes equally.  ``overall`` covers the
+        complete measured range; ``sr`` covers only the super-resolution range
+        above the LR Nyquist.  This is intentionally derived from the retained
+        per-field rows rather than integrating the already-median curve.
+        """
+        k = np.asarray(self.k_cen, dtype=float)
+        mean_rows = np.asarray(self._r, dtype=float)
+        valid_bins = (np.any(np.isfinite(mean_rows), axis=0)
+                      if mean_rows.ndim == 2 else np.zeros(k.size, dtype=bool))
+        finite_k = k[np.isfinite(k) & (k > 0) & valid_bins]
+        if finite_k.size < 2:
+            return {"metric": "normalized mean spectral coherence",
+                    "measure": "mean r(k) over d log(k)", "scores": []}
+        k_min, k_max = float(finite_k[0]), float(finite_k[-1])
+        sr_candidates = finite_k[finite_k >= max(k_min, float(sr_k_min))]
+        sr_min = float(sr_candidates[0]) if sr_candidates.size else k_max
+        sr_max = float(sr_candidates[-1]) if sr_candidates.size else k_max
+
+        def _one(y, lo, hi) -> float:
+            return normalized_log_scale_mean(k, y, k_min=lo, k_max=hi)
+
+        def _stats(rows, label: str, *, per_field_pairs: bool = False) -> dict:
+            if rows is None or len(rows) == 0:
+                return {"id": label, "overall": None, "sr": None,
+                        "overall_lo": None, "overall_hi": None,
+                        "sr_lo": None, "sr_hi": None, "n_fields": 0}
+            overall_rows = []
+            sr_rows = []
+            for row in rows:
+                if per_field_pairs:
+                    row = np.asarray(row, dtype=float)
+                    row = ([_one(pair, k_min, k_max) for pair in row],
+                           [_one(pair, sr_min, sr_max) for pair in row])
+                    overall_rows.append(np.nanmedian(row[0]))
+                    sr_rows.append(np.nanmedian(row[1]))
+                else:
+                    overall_rows.append(_one(row, k_min, k_max))
+                    sr_rows.append(_one(row, sr_min, sr_max))
+
+            def _summary(values) -> tuple[float | None, float | None, float | None, int]:
+                a = np.asarray(values, dtype=float)
+                a = a[np.isfinite(a)]
+                if not a.size:
+                    return None, None, None, 0
+                return (float(np.nanmedian(a)), float(np.nanpercentile(a, 16)),
+                        float(np.nanpercentile(a, 84)), int(a.size))
+
+            om, olo, ohi, on = _summary(overall_rows)
+            sm, slo, shi, sn = _summary(sr_rows)
+            return {"id": label, "overall": om, "sr": sm,
+                    "overall_lo": olo, "overall_hi": ohi,
+                    "sr_lo": slo, "sr_hi": shi,
+                    "n_fields": max(on, sn)}
+
+        scores = [_stats(self._r, "ensemble_mean")]
+        if self._r_members:
+            member_rows = np.asarray(self._r_members, dtype=float)
+            for i in range(member_rows.shape[1]):
+                scores.append(_stats(member_rows[:, i, :], f"member_{i}"))
+        if self._r_lr:
+            scores.append(_stats(self._r_lr, "lr_baseline"))
+        if self._r_comb:
+            scores.append(_stats(self._r_comb, "combiner"))
+        if self._r_stats_rbf_comb:
+            scores.append(_stats(self._r_stats_rbf_comb, "stats_rbf_combiner"))
+        for kind, rows in self._r_model_comb.items():
+            if kind not in {"rbf_gate", "stats_rbf_gate"}:
+                scores.append(_stats(rows, f"{kind}_combiner"))
+        if self._r_combined:
+            scores.append(_stats(self._r_combined, "combined_combiner"))
+        if self._r_pairs:
+            scores.append(_stats(self._r_pairs, "model_agreement",
+                                 per_field_pairs=True))
+        return {
+            "metric": "normalized mean spectral coherence",
+            "measure": "mean r(k) over d log(k)",
+            "domains": {
+                "overall": {"k_min": k_min, "k_max": k_max,
+                             "theta_min": 0.5 / k_max,
+                             "theta_max": 0.5 / k_min},
+                "sr": {"k_min": sr_min, "k_max": sr_max,
+                       "theta_min": 0.5 / sr_max,
+                       "theta_max": 0.5 / sr_min}
+            },
+            "scores": scores,
+        }
+
+
+def normalized_log_scale_mean(k: np.ndarray, y: np.ndarray, *,
+                              k_min: float, k_max: float) -> float:
+    """Return the normalized area under ``y(k)`` with equal weight per octave.
+
+    The result is dimensionless and normally lies in ``[-1, 1]`` for a
+    cross-correlation curve.  Invalid bins are skipped; the denominator remains
+    the requested fixed domain so all reconstructions are compared fairly.
+    """
+    if not (k_max > k_min > 0):
+        return float("nan")
+    kk = np.asarray(k, dtype=float)
+    yy = np.asarray(y, dtype=float)
+    mask = np.isfinite(kk) & np.isfinite(yy) & (kk > 0) & (kk >= k_min) & (kk <= k_max)
+    if int(mask.sum()) < 2:
+        return float("nan")
+    order = np.argsort(kk[mask])
+    x = np.log(kk[mask][order])
+    values = np.clip(yy[mask][order], -1.0, 1.0)
+    integral = (np.trapezoid(values, x) if hasattr(np, "trapezoid")
+                else np.trapz(values, x))
+    return float(integral / np.log(k_max / k_min))
+
 
 def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """Derive the VIS T(k)/r(k) plot arrays (per-member + ensemble mean).
+    """Derive the VIS T(k)/r(k) plot arrays (per-member + displayed mean).
 
     Pure transform of an :meth:`EnsembleSpectrumAccumulator.curves` dict. Returns
     ``{theta, T, T_members, r, r_members}`` where ``theta = 1/(2k)`` arcsec,
     ``T = sqrt(P_sr/P_hr)`` (mean), ``T_members[j] = sqrt(P_members[j]/P_hr)``,
-    ``r`` is the ensemble mean vs HR, ``r_members`` the per-member correlations,
+    ``r`` is the displayed raw-electron ensemble mean (evaluated in asinh space)
+    vs HR, ``r_members`` the per-member correlations,
     ``r_pairs``/``r_cross`` the model–model cross-correlations (per pair /
     median). Member arrays are ``(M, nbins)`` and empty ``(0, nbins)`` when <2
     members.
@@ -402,6 +567,8 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
     r_cross = np.asarray(curves.get("r_cross", nan_k), float)
     p_comb = np.asarray(curves.get("P_comb", nan_k), float)
     r_comb = np.asarray(curves.get("r_comb", nan_k), float)
+    p_stats_rbf_comb = np.asarray(curves.get("P_stats_rbf_comb", nan_k), float)
+    r_stats_rbf_comb = np.asarray(curves.get("r_stats_rbf_comb", nan_k), float)
     p_combined = np.asarray(curves.get("P_combined", nan_k), float)
     r_combined = np.asarray(curves.get("r_combined", nan_k), float)
     r_lr = np.asarray(curves.get("r_lr", nan_k), float)
@@ -411,11 +578,21 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
         t_members = (np.sqrt(p_members / p_hr[None, :])
                      if p_members.size else np.empty((0, k.size)))
         t_comb = np.sqrt(p_comb / p_hr)
+        t_stats_rbf_comb = np.sqrt(p_stats_rbf_comb / p_hr)
         t_combined = np.sqrt(p_combined / p_hr)
+    model_combiners = {}
+    for kind, model in (curves.get("model_combiners", {}) or {}).items():
+        p_model = np.asarray(model.get("P", nan_k), float)
+        model_combiners[str(kind)] = {
+            "r": np.asarray(model.get("r", nan_k), float),
+            "T": np.sqrt(p_model / p_hr),
+        }
     return {"theta": theta, "T": t_mean, "T_members": t_members,
             "r": r, "r_members": r_members,
             "r_pairs": r_pairs, "r_cross": r_cross,
             "T_comb": t_comb, "r_comb": r_comb,
+            "T_stats_rbf_comb": t_stats_rbf_comb, "r_stats_rbf_comb": r_stats_rbf_comb,
+            "model_combiners": model_combiners,
             "T_combined": t_combined, "r_combined": r_combined,
             "r_lr": r_lr}
 
@@ -472,7 +649,8 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
     Two panels — left the transfer function ``T(k) = sqrt(P_SR/P_HR)``, right the
     cross-correlation ``r(k)`` — each drawn against angular scale ``theta =
     1/(2k)`` (arcsec) on a log axis. Every ensemble member is a faint line; the
-    ensemble mean is bold. Guides: LR sampling (0.10\") and the VIS PSF FWHM.
+    displayed raw-electron ensemble mean is bold. Guides: LR sampling (0.10\")
+    and the VIS PSF FWHM.
 
     ``member_meta`` (one ``{"loss", "blocks"}`` dict per member, positional)
     + ``color_by`` ∈ {"loss", "depth"} colors the member lines by that
@@ -518,7 +696,31 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
                 ax.plot(x, row, color=vis_color, lw=0.7, alpha=0.30,
                         label=("individual models" if j == 0 else None))
         ax.plot(x, mean_curve, "-o", ms=3.0, lw=2.0, color=vis_color,
-                label="ensemble mean")
+                label="displayed ensemble mean")
+        model_curves = cv.get("model_combiners", {})
+        model_style = {
+            "rbf_gate": ("max RBF combiner", "#e05a47"),
+            "stats_rbf_gate": ("mean+std RBF", "#2a9d8f"),
+            "minmax_rbf_gate": ("min+max RBF", "#d47f34"),
+        }
+        if model_curves:
+            for kind, curve_set in model_curves.items():
+                curve = curve_set["T"] if ax is ax_t else curve_set["r"]
+                if np.isfinite(curve).any():
+                    label, color = model_style.get(
+                        kind, (kind.replace("_", " "), "#6f7a8a"))
+                    ax.plot(x, curve, "-o", ms=2.5, lw=2.0, color=color,
+                            label=label)
+        else:
+            rbf_curve = cv["T_comb"] if ax is ax_t else cv["r_comb"]
+            if np.isfinite(rbf_curve).any():
+                ax.plot(x, rbf_curve, "-o", ms=2.5, lw=2.0, color="#e05a47",
+                        label="max RBF combiner")
+            stats_rbf_curve = (cv["T_stats_rbf_comb"] if ax is ax_t
+                               else cv["r_stats_rbf_comb"])
+            if np.isfinite(stats_rbf_curve).any():
+                ax.plot(x, stats_rbf_curve, "-o", ms=2.5, lw=2.0, color="#2a9d8f",
+                        label="mean+std RBF")
         combined_curve = cv["T_combined"] if ax is ax_t else cv["r_combined"]
         if np.isfinite(combined_curve).any():
             ax.plot(x, combined_curve, "-o", ms=2.5, lw=2.0, color="#9d6cff",
@@ -551,7 +753,7 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
     fig.suptitle(
         "Ensemble angular power spectrum — VIS (test fields"
         + (f", {n_fields} fields" if n_fields else "") + ")\n"
-        "each line = one model · bold = ensemble mean · finer (smaller θ) → left",
+        "each line = one model · bold = displayed ensemble mean · finer (smaller θ) → left",
         fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.92))
     os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)

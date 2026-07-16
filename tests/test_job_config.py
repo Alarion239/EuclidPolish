@@ -104,6 +104,16 @@ def test_star_field_mapped_for_synthetic_generate():
         assert m[k] == k
 
 
+def test_psf_warp_mapped_for_all_generation_and_training_steps():
+    keys = ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma")
+    for step_id in (
+        "synthetic_generate", "lensfinder_generate", "ensemble_train",
+    ):
+        mapping = job_config.FASRC_STEP_PARAMS[step_id]
+        for key in keys:
+            assert mapping[key] == key
+
+
 def test_lensfinder_training_defaults_and_update(cfg_path):
     c = job_config.load()
     assert c.lensfinder_epochs == 10          # mirrors scripts/lensfinder_train.py
@@ -179,6 +189,9 @@ def test_lr_and_plateau_defaults_from_config(cfg_path):
     assert c.lr_warmup_steps == Config.LR_WARMUP_STEPS
     assert c.plateau_lr_enabled == int(Config.PLATEAU_LR_ENABLED)
     assert c.plateau_lr_metric == Config.PLATEAU_LR_METRIC
+    assert c.psf_warp_prob == Config.TRAIN_PSF_WARP_PROB
+    assert c.psf_warp_alpha_max == Config.TRAIN_PSF_WARP_ALPHA_MAX
+    assert c.psf_warp_sigma == Config.TRAIN_PSF_WARP_SIGMA
 
 
 def test_lr_and_plateau_update_and_persist(cfg_path):
@@ -206,6 +219,8 @@ def test_lr_plateau_mapped_for_ensemble_train():
               "plateau_lr_factor", "plateau_lr_patience", "plateau_lr_min_delta",
               "plateau_lr_cooldown", "plateau_lr_min_lr", "plateau_lr_metric"):
         assert m[k] == k                               # identity mapping
+    for k in ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma"):
+        assert m[k] == k
 
 
 def test_config_page_renders_lr_plateau_section(client, cfg_path):
@@ -214,6 +229,7 @@ def test_config_page_renders_lr_plateau_section(client, cfg_path):
     assert b"warmup" in r.data.lower()
     assert b"plateau_lr_patience" in r.data
     assert b"plateau_lr_metric" in r.data
+    assert b"psf_warp_alpha_max" in r.data
 
 
 def test_ensemble_train_build_command_injects_lr_plateau_flags(monkeypatch):

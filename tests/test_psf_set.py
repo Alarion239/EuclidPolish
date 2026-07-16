@@ -60,6 +60,38 @@ def test_sample_for_generation_unit_sum_and_reproducible():
     np.testing.assert_allclose(a.data, b.data)          # seed-reproducible
 
 
+def test_elastic_warp_is_reproducible_flux_preserving_and_nontrivial():
+    psf = _gauss(51, 4.0)
+    a = psf.elastic_warp(20.0, 3.0, seed=7)
+    b = psf.elastic_warp(20.0, 3.0, seed=7)
+    c = psf.elastic_warp(20.0, 3.0, seed=8)
+    np.testing.assert_array_equal(a.data, b.data)
+    assert a.total_flux == pytest.approx(1.0, abs=1e-6)
+    assert np.all(a.data >= 0.0)
+    assert not np.array_equal(a.data, psf.data)
+    assert not np.array_equal(a.data, c.data)
+
+
+def test_elastic_warp_zero_is_exact_noop():
+    psf = _gauss(31, 3.0)
+    assert psf.elastic_warp(0.0, 3.0, seed=1) is psf
+
+
+def test_draw_sample_carries_replayable_warp():
+    pset = PSFSet.from_psfs([_gauss(51, 4.0)])
+    spec = pset.draw_sample(
+        np.random.default_rng(9), use_unrotated_prob=1.0,
+        warp_prob=1.0, warp_alpha_max=20.0, warp_sigma=3.0,
+    )
+    assert spec.warp_seed is not None
+    assert 0.0 <= spec.warp_alpha <= 20.0
+    assert spec.warp_sigma == pytest.approx(3.0)
+    a = pset.apply_sample(spec)
+    b = pset.apply_sample(spec)
+    np.testing.assert_array_equal(a.data, b.data)
+    assert not np.array_equal(a.data, pset.psfs[0].data)
+
+
 def test_sample_weights_by_star_count():
     """A cluster's pick probability is proportional to its star count, so a
     heavily-outnumbered few-star PSF is drawn rarely."""
@@ -112,6 +144,18 @@ def test_draw_and_apply_couples_index_and_roll():
     pa = a.apply_sample(spec)
     np.testing.assert_allclose(pa.data, a.psfs[spec.index].rotated(spec.angle).data)
     assert b.apply_sample(spec).shape == (21, 21)   # b's same-index cluster, same roll
+
+
+def test_draw_and_apply_couples_warp_across_same_grid_bands():
+    """Same-shaped band kernels receive the exact same coordinate warp."""
+    a = PSFSet.from_psfs([_gauss(51, 4.0)])
+    b = PSFSet.from_psfs([_gauss(51, 4.0)])
+    spec = a.draw_sample(
+        np.random.default_rng(11), use_unrotated_prob=1.0,
+        warp_prob=1.0, warp_alpha_max=20.0, warp_sigma=3.0,
+    )
+    np.testing.assert_array_equal(
+        a.apply_sample(spec).data, b.apply_sample(spec).data)
 
 
 def test_apply_sample_clamps_index_for_smaller_set():

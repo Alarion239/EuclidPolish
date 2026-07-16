@@ -185,6 +185,16 @@ class Config:
     PSF_TAPER_INNER_FRAC = 0.82
     PSF_TAPER_OUTER_FRAC = 0.98
 
+    # On-the-fly TRAINING PSF augmentation.  The original POLISH forward
+    # model sampled an elastic PSF warp with alpha ~ Uniform(0, 20), sigma=3
+    # pixels for every generated pair.  Keep the ordinary generation /
+    # validation forward model nominal; these defaults are applied only by
+    # OnTheFlyForward so the network learns a PSF distribution without
+    # changing the clean/HR record contract.
+    TRAIN_PSF_WARP_PROB      = 1.0
+    TRAIN_PSF_WARP_ALPHA_MAX = 20.0   # maximum displacement-field amplitude
+    TRAIN_PSF_WARP_SIGMA     = 3.0    # Gaussian smoothing, HR pixels
+
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
     # flux columns (flux_vis_psf, flux_vis_*fwhm_aper, …) are in µJy, and for
@@ -1057,7 +1067,11 @@ class Config:
         # bounded (K kernels), so the PSF fetch path uses this larger cap.
         MAX_PSF_PULL_BYTES: int    = 512 * 1024 * 1024       # ePSF stack pull cap
         CACHE_TTL_SECONDS: int     = 300                     # re-pull after this
-        MAX_CACHE_BYTES: int       = 2 * 1024 * 1024 * 1024  # 2 GB LRU budget
+        # Four multi-extension ePSFs alone use ~1.5 GB; the regular test +
+        # validation TFRecord pairs need another ~1 GB.  A 2 GB generic cap
+        # made a successful validation sync evict ``hr_test`` before ensemble
+        # evaluation could start.
+        MAX_CACHE_BYTES: int       = 4 * 1024 * 1024 * 1024  # 4 GB LRU budget
         STEP_RATE_EMA_ALPHA: float = 0.1                     # job step-rate EMA
 
     @dataclass(frozen=True)

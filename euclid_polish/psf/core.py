@@ -28,9 +28,17 @@ from typing import ClassVar
 
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import rotate as ndi_rotate
-from scipy.ndimage import shift as ndi_shift
-from scipy.ndimage import zoom
+from scipy.ndimage import (
+    gaussian_filter,
+    map_coordinates,
+    zoom,
+)
+from scipy.ndimage import (
+    rotate as ndi_rotate,
+)
+from scipy.ndimage import (
+    shift as ndi_shift,
+)
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
@@ -378,6 +386,110 @@ class PSF(StampCarrier):
             self,
             data=out.astype(self.data.dtype, copy=False),
         )
+
+    def elastic_warp(
+        self,
+        alpha: float,
+        sigma: float,
+        *,
+        seed: int | None = None,
+        order: int = 1,
+        clip_negative: bool = True,
+        displacement: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> PSF:
+        """Return a smoothly, randomly warped PSF kernel.
+
+        This is the flux-preserving equivalent of the original POLISH
+        ``elastic_transform`` augmentation: two independent uniform random
+        displacement fields are Gaussian-smoothed by ``sigma`` pixels and
+        scaled by ``alpha``, then the kernel is sampled at the displaced
+        coordinates.  ``seed`` makes the coordinate deformation replayable;
+        applying the same seed to same-shaped kernels gives every band the
+        same geometric warp for one physical exposure.
+
+        The operation is intended for forward-model augmentation, not for
+        deforming an HR target.  Bilinear interpolation (``order=1``) matches
+        the reference implementation, reflected boundaries avoid artificial
+        zero seams, negative interpolation values are clipped, and the result
+        is renormalised to unit sum so a warp cannot change source flux.
+        ``alpha=0`` is an exact no-op.
+        """
+        alpha = float(alpha)
+        sigma = float(sigma)
+        if alpha < 0.0:
+            raise ValueError(f"alpha must be >= 0, got {alpha}")
+        if sigma <= 0.0:
+            raise ValueError(f"sigma must be > 0, got {sigma}")
+        if int(order) < 0 or int(order) > 5:
+            raise ValueError(f"order must be in [0, 5], got {order}")
+        if alpha == 0.0:
+            return self
+
+        data = np.asarray(self.data, dtype=np.float64)
+        if data.ndim != 2:
+            raise ValueError(f"PSF data must be 2-D, got shape {data.shape}")
+        if displacement is None:
+            dy, dx = self.elastic_displacement(
+                data.shape, alpha, sigma, seed=seed,
+            )
+        else:
+            dy, dx = displacement
+            if dy.shape != data.shape or dx.shape != data.shape:
+                raise ValueError(
+                    "elastic displacement shape must match PSF data: "
+                    f"dy={dy.shape}, dx={dx.shape}, PSF={data.shape}"
+                )
+        yy, xx = np.indices(data.shape, dtype=np.float64)
+        out = map_coordinates(
+            data, (yy + dy, xx + dx), order=int(order), mode="reflect",
+        )
+        if clip_negative:
+            out = np.clip(out, 0.0, None)
+        out = np.ascontiguousarray(out, dtype=np.float64)
+        total = float(out.sum())
+        if total > 0.0:
+            out /= total
+        return replace(
+            self,
+            data=out.astype(self.data.dtype, copy=False),
+            # A cached measurement from the unwarped kernel is no longer true.
+            fwhm_arcsec=None,
+        )
+
+    @staticmethod
+    def elastic_displacement(
+        shape: tuple[int, int],
+        alpha: float,
+        sigma: float,
+        *,
+        seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Build the replayable ``(dy, dx)`` field for an elastic warp.
+
+        Keeping coordinate generation separate lets a multi-band exposure
+        reuse one physical deformation for every same-shaped PSF kernel. That
+        avoids repeating the two Gaussian filters four times while preserving
+        exactly the same geometry across bands.
+        """
+        shape = tuple(int(v) for v in shape)
+        alpha = float(alpha)
+        sigma = float(sigma)
+        if len(shape) != 2 or any(v <= 0 for v in shape):
+            raise ValueError(f"shape must contain two positive sizes, got {shape}")
+        if alpha < 0.0:
+            raise ValueError(f"alpha must be >= 0, got {alpha}")
+        if sigma <= 0.0:
+            raise ValueError(f"sigma must be > 0, got {sigma}")
+        rng = np.random.default_rng(seed)
+        dy = gaussian_filter(
+            rng.uniform(-1.0, 1.0, size=shape), sigma,
+            mode="reflect",
+        ) * alpha
+        dx = gaussian_filter(
+            rng.uniform(-1.0, 1.0, size=shape), sigma,
+            mode="reflect",
+        ) * alpha
+        return dy, dx
 
     def convolved_with(self, image: np.ndarray) -> np.ndarray:
         """``scipy.signal.fftconvolve(image, self.data, mode='same')``.

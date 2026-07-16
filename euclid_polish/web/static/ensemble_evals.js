@@ -209,6 +209,7 @@ function renderPS(el, payload, mode) {
   const uniformAlpha = mode ? 0.55 : 0.3;
 
   const COMB_COLOR = "#ee7733";
+  const STATS_RBF_COMB_COLOR = "#2a9d8f";
   const COMBINED_COLOR = "#9d6cff";
   const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
@@ -254,6 +255,9 @@ function renderPS(el, payload, mode) {
   if (hasComb(ps.r_comb)) {
     drawLine(p, xd, yd, theta, ps.r_comb, { color: COMB_COLOR, width: 2, dots: true });
   }
+  if (hasComb(ps.r_stats_rbf_comb)) {
+    drawLine(p, xd, yd, theta, ps.r_stats_rbf_comb, { color: STATS_RBF_COMB_COLOR, width: 2, dots: true });
+  }
   if (hasComb(ps.r_combined)) {
     drawLine(p, xd, yd, theta, ps.r_combined, { color: COMBINED_COLOR, width: 2, dots: true });
   }
@@ -263,7 +267,8 @@ function renderPS(el, payload, mode) {
     ...(hasLR ? [["LR baseline (no SR)", LR_COLOR, true]] : []),
     ...groups.map(([l, c]) => [l, c, false]),
     ["ensemble mean", VIS_COLOR, false],
-    ...(hasComb(ps.r_comb) ? [["combiner", COMB_COLOR, false]] : []),
+    ...(hasComb(ps.r_comb) ? [["max RBF combiner", COMB_COLOR, false]] : []),
+    ...(hasComb(ps.r_stats_rbf_comb) ? [["mean + std RBF", STATS_RBF_COMB_COLOR, false]] : []),
     ...(hasComb(ps.r_combined) ? [["combined combiner", COMBINED_COLOR, false]] : []),
     ["model–model r̃(k) (no HR)", "#555", true],
     ["LR sampling (0.1″)", "#333", true],
@@ -273,8 +278,26 @@ function renderPS(el, payload, mode) {
 
 function renderStdErr(el, payload) {
   el.innerHTML = "";
-  const d = payload.std_err;
-  if (!d) { el.innerHTML = '<p class="muted">no data — run Evaluate.</p>'; return; }
+  const base = payload.std_err;
+  if (!base) { el.innerHTML = '<p class="muted">no data — run Evaluate.</p>'; return; }
+  const labels = { ensemble_mean: "ensemble mean", rbf_gate: "max RBF",
+    stats_rbf_gate: "mean + std RBF", minmax_rbf_gate: "min + max RBF" };
+  const colors = { ensemble_mean: VIS_COLOR, rbf_gate: "#ee7733",
+    stats_rbf_gate: "#2a9d8f", minmax_rbf_gate: "#d47f34" };
+  const models = base.models || {};
+  const kinds = Object.keys(models);
+  let kind = models[base.primary] ? base.primary : (kinds[0] || "ensemble_mean");
+  const render = () => {
+    el.innerHTML = "";
+    if (kinds.length) {
+      const row = document.createElement("div");
+      row.style.cssText = "margin:0 0 .5rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;";
+      row.innerHTML = `<span class="muted">error of</span><select>${kinds.map((k) => `<option value="${k}">${labels[k] || k}</option>`).join("")}</select>`;
+      const select = row.querySelector("select"); select.value = kind;
+      select.addEventListener("change", () => { kind = select.value; render(); });
+      el.appendChild(row);
+    }
+    const d = models[kind] || base;
   const xd = [d.edges[0], d.edges[d.edges.length - 1]];
   const p = makePlot(el, 620, 480,
     `Does disagreement predict error?  (VIS, ${payload.n_fields} fields, ` +
@@ -283,7 +306,7 @@ function renderStdErr(el, payload) {
     xticks: decadeTicks(xd[0], xd[1]),
     yticks: decadeTicks(xd[0], xd[1]),
     xlabel: "cross-member per-pixel std σ [e⁻]",
-    ylabel: "actual error |mean − HR| [e⁻]",
+    ylabel: `actual error |${labels[kind] || kind} − HR| [e⁻]`,
   });
   heatmap(p, xd, xd, d.edges, d.edges, d.hist);
   drawLine(p, xd, xd, [xd[0], xd[1]], [xd[0], xd[1]],
@@ -292,12 +315,14 @@ function renderStdErr(el, payload) {
   drawLine(p, xd, xd, [xd[0], xd[1]], [xd[0] + off, xd[1] + off],
            { color: "#333", dash: [2, 3], width: 1.2 });
   drawLine(p, xd, xd, d.med_std, d.med_err,
-           { color: ACCENT, width: 2, dots: true });
+           { color: colors[kind] || ACCENT, width: 2, dots: true });
   el.appendChild(legendHtml([
-    ["median |error| per std bin", ACCENT, false],
+    [`median |error| · ${labels[kind] || kind}`, colors[kind] || ACCENT, false],
     ["|error| = std", "#333", true],
     ["0.674·std (calibrated Gaussian)", "#333", true],
   ]));
+  };
+  render();
 }
 
 function renderBrightStd(el, payload) {

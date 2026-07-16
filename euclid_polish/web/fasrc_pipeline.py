@@ -1112,6 +1112,13 @@ class EnsembleTrainStep(FASRCPipelineStep):
                 if val not in ("", "0"):
                     with contextlib.suppress(ValueError):
                         cmd += [flag, str(int(float(val)))]
+            for flag, key in (("--psf-warp-prob", "psf_warp_prob"),
+                              ("--psf-warp-alpha-max", "psf_warp_alpha_max"),
+                              ("--psf-warp-sigma", "psf_warp_sigma")):
+                val = str(params.get(key, "")).strip()
+                if val != "":
+                    with contextlib.suppress(ValueError):
+                        cmd += [flag, f"{float(val):g}"]
         member_spec = str(params.get("member_spec", "")).strip()
         if member_spec:
             try:
@@ -1259,15 +1266,20 @@ class SyntheticGenerateStep(RunPipelineStep):
         cmd += ["--sersic-density-arcmin2", "0",
                 "--tng-density-arcmin2", f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}",
                 "--tng-redshift-mode"]
-        # Star field knobs (from /config). Emit only when supplied so a default
-        # submit stays unchanged.
+        # Scene-population and forward-PSF knobs (from /config). Emit only when
+        # supplied so direct programmatic callers can still rely on CLI
+        # defaults. The warp is realised while each dirty exposure is rendered;
+        # no warped kernels are precomputed or stored.
         for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),
                             ("star_mag_slope",       "--star-mag-slope"),
                             ("star_mag_bright",      "--star-mag-bright"),
                             ("star_mag_faint",       "--star-mag-faint"),
                             ("lens_density_arcmin2", "--lens-density-arcmin2"),
                             ("lens_sigma_v_min_kms", "--lens-sigma-v-min-kms"),
-                            ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms")):
+                            ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms"),
+                            ("psf_warp_prob",        "--psf-warp-prob"),
+                            ("psf_warp_alpha_max",   "--psf-warp-alpha-max"),
+                            ("psf_warp_sigma",       "--psf-warp-sigma")):
             val = params.get(param)
             if val not in (None, ""):
                 with contextlib.suppress(TypeError, ValueError):

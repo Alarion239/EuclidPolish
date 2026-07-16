@@ -169,10 +169,19 @@ def register(app):
             targets[f"sources_{sub}"] = f"{remote_dir}/sources_{sub}.csv"
 
         max_bytes = 5 * 1024 * 1024 * 1024
+        # A sky sync is one coherent dataset operation.  Do not let the generic
+        # cache's LRU evict an older test shard while the validation shards are
+        # arriving; otherwise an immediate ensemble evaluation fails only after
+        # restoring every checkpoint.  The fetcher may evict unrelated cache
+        # entries (such as bulky PSFs), but all requested records survive.
+        protected = {_fasrc_fetcher._local_path_for(remote)
+                     for remote in targets.values()}
         results: dict[str, dict[str, Any]] = {}
         any_ok = False
         for key, remote in targets.items():
-            r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=max_bytes)
+            r = _fasrc_fetcher.fetch_one_file(
+                remote, force=True, max_bytes=max_bytes,
+                protect_paths=protected)
             entry: dict[str, Any] = {"ok": r.ok, "size_bytes": r.size_bytes}
             if r.ok:
                 any_ok = True

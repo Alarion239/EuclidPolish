@@ -35,6 +35,10 @@ interface JobConfig {
   star_mag_slope: number;
   star_mag_bright: number;
   star_mag_faint: number;
+  // SR training · PSF distribution
+  psf_warp_prob: number;
+  psf_warp_alpha_max: number;
+  psf_warp_sigma: number;
   // Strong lenses
   lens_density_arcmin2: number;
   lens_sigma_v_min_kms: number;
@@ -70,6 +74,7 @@ const FIELDS: Field[] = [
   "lensfinder_epochs", "lensfinder_patience", "lensfinder_batch_size",
   "lensfinder_learning_rate", "lensfinder_training_mode",
   "star_density_arcmin2", "star_mag_slope", "star_mag_bright", "star_mag_faint",
+  "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
   "lens_density_arcmin2", "lens_sigma_v_min_kms", "lens_sigma_v_max_kms",
   "asinh_scale",
   "lr_peak", "lr_final", "lr_warmup_steps",
@@ -290,6 +295,24 @@ export default function ConfigPage() {
                 {num("lens_sigma_v_max_kms", "σ_v max (km/s)",
                   { min: 50, max: 600, step: 1,
                     hint: "Maximum lens velocity dispersion (km/s). Raise for bigger Einstein radii (θ_E ∝ σ_v²). θ_E clamped to 0.10–3.5″." })}
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHead title="Synthetic data + SR training · PSF distribution"
+              sub="→ warped dirty exposures in train, validation, and test; clean/HR targets stay nominal." />
+            <CardBody>
+              <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
+                {num("psf_warp_prob", "Warp probability",
+                  { min: 0, max: 1, step: 0.01,
+                    hint: "Probability that each generated dirty exposure receives an elastic PSF deformation. In on-the-fly train mode, a fresh warp is drawn on every visit. 1 = every draw; 0 = disabled." })}
+                {num("psf_warp_alpha_max", "Warp α max (HR px)",
+                  { min: 0, max: 100, step: 0.1,
+                    hint: "Per exposure, α is sampled uniformly from [0, max]. The seeded draw is fixed in generated validation/test records; default 20 matches polish-pub." })}
+                {num("psf_warp_sigma", "Warp σ (HR px)",
+                  { min: 0.1, max: 100, step: 0.1,
+                    hint: "Gaussian smoothing scale of the shared four-band displacement field in 0.05″ HR pixels. Default 3 matches polish-pub." })}
               </div>
             </CardBody>
           </Card>

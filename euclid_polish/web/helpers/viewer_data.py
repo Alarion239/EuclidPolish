@@ -22,6 +22,7 @@ collection      params     tiers                                    source
 ``sky``         subset     dirty→LR, clean→HR, hr→HR-target          TFRecords
 ``cutouts``     —          real→Euclid                               per-band FITS
 ``evaluation``  —          LR / SR / HR (per object)                 object FITS
+``psfs``        —          VIS / Y_E / J_E / H_E cluster kernels     FASRC ePSF FITS
 ==============  =========  ======================================  ==========
 
 Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
@@ -40,8 +41,10 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.eval.combiner import COMBINER_MODELS
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.psf.core import PSF
 from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
@@ -415,14 +418,16 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
         tfrecord_path(rdir, f"hr_{sub}"))
     tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
     member_labels0 = man.get("member_labels", []) or []
-    # Combiner reconstruction tier: show it whenever a fitted combiner EXISTS for
-    # this regime + membership — its cube is computed on the fly from the cached
-    # member stack, so it no longer depends on the last eval having baked comb_
-    # cubes. Placed right after the ensemble mean.
-    if man.get("has_combiner") or (
-            member_labels0 and _load_field_combiner(
-                _ensemble_starless(params), member_labels0) is not None):
-        tiers.insert(2, {"key": "comb", "label": "combiner"})
+    # Each ordinary combiner model gets its own selectable tier. Cubes are
+    # computed on demand from the shared member cache when not baked by eval.
+    for kind, key, label in reversed(tuple(
+            (kind, "comb_rbf" if kind == "rbf_gate" else spec.cube_prefix, spec.label)
+            for kind, spec in COMBINER_MODELS.items())):
+        if man.get(f"has_combiner_{kind}") or (
+                key == "comb_rbf" and man.get("has_combiner")) or (
+                member_labels0 and _load_field_combiner(
+                    _ensemble_starless(params), member_labels0, kind) is not None):
+            tiers.insert(2, {"key": key, "label": label})
     # Individual member SR tiers, labelled from the eval. HIDDEN from the tier
     # chip row (they'd swamp it at 22 members) but still loadable on demand:
     # the React member panel searches/sorts them and toggles one in via the
@@ -523,7 +528,8 @@ def _ensemble_regime_dir(starless: bool) -> str:
     return os.path.dirname(_ensemble_cubes_dir(starless))
 
 
-def _load_field_combiner(starless: bool, member_labels: list[str]):
+def _load_field_combiner(starless: bool, member_labels: list[str],
+                         model_kind: str = "rbf_gate"):
     """The regime's fitted combiner if it exists AND its membership matches the
     cube stack (``member_labels``), else ``None``. Cheap (an ~8 KB npz)."""
     if not member_labels:
@@ -531,7 +537,8 @@ def _load_field_combiner(starless: bool, member_labels: list[str]):
     from euclid_polish.eval.combiner import load_combiner
     try:
         return load_combiner(_ensemble_regime_dir(starless),
-                             member_labels=list(member_labels))
+                             member_labels=list(member_labels),
+                             artifact_dir=COMBINER_MODELS[model_kind].artifact_dir)
     except Exception:
         return None
 
@@ -543,16 +550,17 @@ _COMB_CUBE_MAX = 8
 
 
 def _combiner_field_cube(starless: bool, rec_index: int,
-                         member_labels: list[str]) -> np.ndarray:
+                         member_labels: list[str],
+                         model_kind: str = "rbf_gate") -> np.ndarray:
     """The combiner reconstruction ``(H,W,C)`` for one field, applied to the
     cached full member stack. LRU-cached; raises 404 if no combiner / cubes."""
     key = ("starless" if starless else "starfull", int(rec_index),
-           tuple(member_labels))
+           tuple(member_labels), model_kind)
     hit = _COMB_CUBE_CACHE.get(key)
     if hit is not None:
         _COMB_CUBE_CACHE.move_to_end(key)
         return hit
-    comb = _load_field_combiner(starless, member_labels)
+    comb = _load_field_combiner(starless, member_labels, model_kind)
     if comb is None:
         raise ViewerError(404, "no combiner for this regime")
     cdir = _ensemble_cubes_dir(starless)
@@ -598,16 +606,21 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
             "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": 0.0, "amp": float(amps[k]),
             "var": float(var[k]) if k < len(var) else 0.0}
-    # Combiner reconstruction: prefer a baked comb_ cube; otherwise apply the
-    # fitted combiner to the cached member stack on the fly (so the tier works
-    # even when the last eval predates the combiner fit).
-    if tier == "comb":
+    # Combiner reconstruction: prefer a baked model-specific cube; otherwise
+    # apply that fitted model to the cached member stack on the fly.
+    tier_kinds = {"comb": "rbf_gate", "comb_rbf": "rbf_gate"}
+    tier_kinds.update({spec.cube_prefix: kind
+                       for kind, spec in COMBINER_MODELS.items() if kind != "rbf_gate"})
+    if tier in tier_kinds:
+        model_kind = tier_kinds[tier]
+        prefix = COMBINER_MODELS[model_kind].cube_prefix
         baked = os.path.join(_ensemble_cubes_dir(starless),
-                             f"comb_{rec_index:05d}.npy")
+                             f"{prefix}_{rec_index:05d}.npy")
         cube = (_as_hwc(np.load(baked)) if os.path.isfile(baked)
                 else _as_hwc(_combiner_field_cube(
-                    starless, rec_index, man.get("member_labels", []) or [])))
-        return cube, {"label": f"SR (combiner) · {sub} · idx {rec_index}",
+                    starless, rec_index, man.get("member_labels", []) or [], model_kind)))
+        label = COMBINER_MODELS[model_kind].label
+        return cube, {"label": f"SR ({label}) · {sub} · idx {rec_index}",
                       "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
@@ -653,6 +666,209 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         if k < len(var):
             info["var"] = float(var[k])
     return cube, info
+
+
+# ---------------------------------------------------------------------------
+# real-field — cached 10x10 tiles from one real Euclid archive field
+# ---------------------------------------------------------------------------
+
+def _real_field_manifest(params: dict[str, str]) -> dict[str, Any]:
+    from euclid_polish.web.helpers.real_field import latest_field, manifest_path
+
+    identifier = (params.get("field") or "").strip()
+    if identifier:
+        try:
+            with manifest_path(identifier).open() as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            raise ViewerError(404, "real field not cached") from None
+    manifest = latest_field()
+    if manifest is None:
+        raise ViewerError(404, "no real Euclid field cached")
+    return manifest
+
+
+def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
+    manifest = _real_field_manifest(params)
+    labels = list(manifest.get("member_labels", []) or [])
+    tiers = [
+        {"key": "lr", "label": "LR"},
+        {"key": "sr", "label": "SR (mean)"},
+        {"key": "std", "label": "stdSR", "hidden": True},
+    ]
+    for kind, spec in COMBINER_MODELS.items():
+        if kind in set(manifest.get("combiner_kinds", []) or []):
+            tiers.append({"key": spec.cube_prefix, "label": spec.label})
+    tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True}
+              for i, label in enumerate(labels)]
+    if int(manifest.get("pca_n", 0) or 0) > 0:
+        tiers.append({"key": "morph", "label": "disagreement movie"})
+    count = int(manifest.get("count", 0) or 0)
+    side = int(manifest.get("grid_side", 10) or 10)
+    return {
+        "count": count, "tiers": tiers, "default_tier": "sr",
+        "band_names": list(BAND_NAMES), "member_labels": labels,
+        "pca_n": int(manifest.get("pca_n", 0) or 0),
+        "pca_amps": [list((manifest.get("pca_amps", {}) or {}).get(str(i), []))
+                     for i in range(count)],
+        "pca_var": [list((manifest.get("pca_var", {}) or {}).get(str(i), []))
+                    for i in range(count)],
+        "objects": [
+            {"label": f"tile {i + 1:03d} · row {i // side + 1}, col {i % side + 1}",
+             "tiers": [t["key"] for t in tiers]}
+            for i in range(count)
+        ],
+    }
+
+
+def _real_field_cube(index: int, tier: str, params: dict[str, str]):
+    manifest = _real_field_manifest(params)
+    count = int(manifest.get("count", 0) or 0)
+    if index < 0 or index >= count:
+        raise ViewerError(404, "tile index out of range")
+    from euclid_polish.web.helpers.real_field import field_dir
+    path = field_dir(str(manifest["field_id"])) / "cubes" / f"{tier}_{index:03d}.npy"
+    if not path.is_file():
+        raise ViewerError(404, f"{tier} cube is not cached")
+    cube = _as_hwc(np.load(path))
+    labels = list(manifest.get("member_labels", []) or [])
+    if tier.startswith("member") and tier[6:].isdigit():
+        mi = int(tier[6:])
+        label = f"SR {labels[mi]}" if mi < len(labels) else tier
+    elif tier == "sr":
+        label = "SR (STARFULL mean)"
+    elif tier == "std":
+        label = "stdSR (STARFULL members)"
+    elif tier == "lr":
+        label = "LR"
+    else:
+        label = next((spec.label for spec in COMBINER_MODELS.values()
+                      if spec.cube_prefix == tier), tier)
+    return cube, {"label": f"{label} · tile {index + 1:03d}",
+                  "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# psfs — one navigable object per spatial ePSF cluster, one tier per band
+# ---------------------------------------------------------------------------
+
+def _psf_paths() -> dict[str, str]:
+    """Return the already-synchronised FASRC ePSF paths by band."""
+    from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
+
+    psf_dir = _cached_fasrc_psf_dir()
+    if not psf_dir:
+        return {}
+    return {
+        band.name: os.path.join(psf_dir, band.psf_fits_filename)
+        for band in Config.BANDS
+        if os.path.isfile(os.path.join(psf_dir, band.psf_fits_filename))
+    }
+
+
+def _psf_count(path: str) -> int:
+    """Read the cluster count from FITS headers without materialising pixels."""
+    with fits.open(path, memmap=True) as hdul:
+        header_count = hdul[0].header.get("NPSF")
+        if header_count is not None:
+            return max(1, int(header_count))
+        image_hdus = [h for h in hdul if getattr(h, "data", None) is not None]
+        return max(1, len(image_hdus) - 1) if len(image_hdus) > 1 else 1
+
+
+def _psf_meta(_params: dict[str, str]) -> dict[str, Any]:
+    paths = _psf_paths()
+    counts = {name: _psf_count(path) for name, path in paths.items()}
+    count = max(counts.values(), default=0)
+    tiers = [
+        {"key": name, "label": name, "disabled": name not in counts}
+        for name in BAND_NAMES
+    ]
+    objects = [
+        {
+            "label": f"PSF cluster {index + 1:03d}",
+            "tiers": [name for name, n in counts.items() if index < n],
+        }
+        for index in range(count)
+    ]
+    return {
+        "count": count,
+        "tiers": tiers,
+        "default_tier": next(iter(counts), BAND_NAMES[0]),
+        "band_names": list(BAND_NAMES),
+        "objects": objects,
+        "source": "FASRC cache",
+        "render_mode": "log",
+        "empty_label": "No synchronised FASRC PSFs are available.",
+    }
+
+
+def _psf_preview_warp_settings() -> tuple[float, float]:
+    """Current persisted training warp ``(alpha_max, sigma)`` for the demo."""
+    from euclid_polish.web import job_config
+
+    cfg = job_config.load()
+    return float(cfg.psf_warp_alpha_max), float(cfg.psf_warp_sigma)
+
+
+def _psf_cube(index: int, tier: str, params: dict[str, str]):
+    if tier not in BAND_NAMES:
+        raise ViewerError(400, f"bad PSF band: {tier}")
+    path = _psf_paths().get(tier)
+    if path is None:
+        raise ViewerError(404, f"{tier} PSF not synchronised")
+
+    with fits.open(path, memmap=True) as hdul:
+        image_hdus = [h for h in hdul if getattr(h, "data", None) is not None]
+        cluster_hdus = image_hdus[1:] if len(image_hdus) > 1 else image_hdus
+        if index < 0 or index >= len(cluster_hdus):
+            raise ViewerError(404, "PSF cluster out of range")
+        hdu = cluster_hdus[index]
+        data = np.asarray(hdu.data, dtype=np.float32).copy()
+        header = hdu.header
+        pixel_scale = float(header.get(
+            "PXSCALE", header.get("PIXSCALE", 0.0)))
+        n_stars = header.get("NSTARS")
+        label = f"{tier} PSF · cluster {index + 1:03d}"
+        if n_stars is not None:
+            label += f" · {int(n_stars):,} stars"
+
+    if params.get("psf_warp") == "1":
+        try:
+            preview_seed = int(params.get("psf_warp_seed", "0"))
+        except ValueError as exc:
+            raise ViewerError(400, "psf_warp_seed must be an integer") from exc
+        if preview_seed < 0 or preview_seed > np.iinfo(np.uint32).max:
+            raise ViewerError(400, "psf_warp_seed must be a uint32")
+
+        # Derive both draws from the visible sample seed.  The same request
+        # parameters therefore reproduce the same alpha + displacement field
+        # in every band, exactly like one shared training PSFSample.
+        alpha_max, sigma = _psf_preview_warp_settings()
+        if alpha_max < 0.0 or sigma <= 0.0:
+            raise ViewerError(400, "invalid persisted PSF warp settings")
+        rng = np.random.default_rng(preview_seed)
+        alpha = float(rng.uniform(0.0, alpha_max))
+        warp_seed = int(rng.integers(
+            0, np.iinfo(np.uint32).max, dtype=np.uint32,
+        ))
+        data = PSF(
+            data=data,
+            pixel_scale=pixel_scale,
+        ).elastic_warp(
+            alpha,
+            sigma,
+            seed=warp_seed,
+        ).data
+        # This label travels in ``X-Cube-Label``.  Werkzeug's development
+        # server serialises HTTP headers as Latin-1, so keep parameter names
+        # ASCII even though the React control can safely render Greek symbols.
+        label += f" · warped alpha={alpha:.1f}, sigma={sigma:g} px"
+    return _as_hwc(data), {
+        "label": label,
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": pixel_scale,
+    }
 
 
 # Lens isolation deliberately uses a separate collection instead of pretending
@@ -881,6 +1097,8 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "cutouts": (_cutouts_meta, _cutouts_cube),
     "evaluation": (_eval_meta, _eval_cube),
     "ensemble": (_ensemble_meta, _ensemble_cube),
+    "real-field": (_real_field_meta, _real_field_cube),
+    "psfs": (_psf_meta, _psf_cube),
     "lens-isolation": (_lens_isolation_meta, _lens_isolation_cube),
 }
 
@@ -891,6 +1109,8 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
     meta = _REGISTRY[collection][0](params)
     meta["collection"] = collection
     meta["color"] = color_constants()
+    if meta.get("render_mode"):
+        meta["color"]["render_mode"] = meta["render_mode"]
     return meta
 
 

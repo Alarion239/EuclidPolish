@@ -79,6 +79,12 @@ class ObservationSimulatorConfig:
     # add roll-rotation augmentation.
     randomize_psf: bool = True
     psf_unrotated_prob: float = 1.0
+    # Optional elastic PSF-distribution augmentation. The generic operator
+    # defaults OFF; data generation and OnTheFlyForward explicitly enable it
+    # from their shared persistent configuration.
+    psf_warp_prob: float = 0.0
+    psf_warp_alpha_max: float = 0.0
+    psf_warp_sigma: float = 3.0
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -88,6 +94,12 @@ class ObservationSimulatorConfig:
             )
         if self.hr_pixel_scale <= 0:
             raise ValueError("hr_pixel_scale must be positive")
+        if not 0.0 <= float(self.psf_warp_prob) <= 1.0:
+            raise ValueError("psf_warp_prob must be in [0, 1]")
+        if float(self.psf_warp_alpha_max) < 0.0:
+            raise ValueError("psf_warp_alpha_max must be >= 0")
+        if float(self.psf_warp_sigma) <= 0.0:
+            raise ValueError("psf_warp_sigma must be > 0")
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +206,11 @@ class ObservationSimulator:
         position and the telescope roll — physically one pointing."""
         ref = max(self._psf_sets.values(), key=lambda p: p.n)
         return ref.draw_sample(
-            rng, use_unrotated_prob=self.config.psf_unrotated_prob)
+            rng, use_unrotated_prob=self.config.psf_unrotated_prob,
+            warp_prob=self.config.psf_warp_prob,
+            warp_alpha_max=self.config.psf_warp_alpha_max,
+            warp_sigma=self.config.psf_warp_sigma,
+        )
 
     def _process_one_band(
         self,
@@ -202,13 +218,35 @@ class ObservationSimulator:
         band: BandConfig,
         rng: np.random.Generator,
         psf_spec: PSFSample | None = None,
+        warp_displacements: dict[
+            tuple[int, int], tuple[np.ndarray, np.ndarray]
+        ] | None = None,
     ) -> np.ndarray:
         """HR (0.05″) → LR-on-the-shared-grid (= VIS LR) for one channel."""
         # Realise the scene's shared PSF sample against this band's set: cluster
         # ``psf_spec.index`` rotated by the shared roll (no blending).
         # ``psf_spec=None`` → the field-mean PSF.
         pset = self._psf_sets[band.name]
-        psf = pset.apply_sample(psf_spec) if psf_spec is not None else pset.mean()
+        if psf_spec is None:
+            psf = pset.mean()
+        else:
+            displacement = None
+            if (warp_displacements is not None
+                    and psf_spec.warp_seed is not None
+                    and psf_spec.warp_alpha > 0.0):
+                shape = tuple(int(v) for v in pset.shape)
+                displacement = warp_displacements.get(shape)
+                if displacement is None:
+                    displacement = PSF.elastic_displacement(
+                        shape,
+                        psf_spec.warp_alpha,
+                        psf_spec.warp_sigma,
+                        seed=int(psf_spec.warp_seed),
+                    )
+                    warp_displacements[shape] = displacement
+            psf = pset.apply_sample(
+                psf_spec, warp_displacement=displacement,
+            )
         target_scale = self.target_lr_pixel_scale_arcsec
 
         # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
@@ -311,10 +349,18 @@ class ObservationSimulator:
 
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
+        # Same-shaped band kernels share one displacement field for this
+        # physical exposure. Coordinate generation is the expensive part of
+        # an elastic warp; reuse keeps live augmentation cheap without
+        # coupling separate exposures or retaining a global cache.
+        warp_displacements: dict[
+            tuple[int, int], tuple[np.ndarray, np.ndarray]
+        ] = {}
         for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
             lr_channels.append(self._process_one_band(
                 hr_data_trim[..., k], band, rng, psf_spec=psf_spec,
+                warp_displacements=warp_displacements,
             ))
         # All channels must end on the same grid (the VIS LR grid).
         target_shape = lr_channels[0].shape

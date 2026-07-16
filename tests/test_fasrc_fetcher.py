@@ -225,6 +225,37 @@ class TestFetchSelfEvictionRegression:
         assert res.local_path and os.path.isfile(res.local_path)
         assert res.size_bytes == 2000
 
+    def test_fetch_preserves_the_rest_of_an_explicit_sync_set(self, tmp_path, monkeypatch):
+        """A later shard in a batch must not evict an earlier requested shard."""
+        from euclid_polish.web import fasrc_fetcher as ff
+        from euclid_polish.web import remote as remote_module
+        monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(Config.WebFetch, "MAX_CACHE_BYTES", 500)
+        monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
+
+        earlier_remote = "/n/netscratch/foo/images/records_v2/hr_test.tfrecord"
+        later_remote = "/n/netscratch/foo/images/records_v2/hr_validate.tfrecord"
+        earlier_local = ff._local_path_for(earlier_remote)
+        os.makedirs(os.path.dirname(earlier_local), exist_ok=True)
+        with open(earlier_local, "wb") as fh:
+            fh.write(b"a" * 400)
+        os.utime(earlier_local, (1_000_000, 1_000_000))
+
+        class _FakeSSH:
+            def rsync_pull(self_inner, remote_path, local_dir, **kw):
+                os.makedirs(local_dir, exist_ok=True)
+                with open(os.path.join(local_dir, os.path.basename(remote_path)), "wb") as fh:
+                    fh.write(b"b" * 400)
+                return 0, "", ""
+
+        monkeypatch.setattr(ff, "_remote_size_bytes", lambda p: (True, 400, None))
+        monkeypatch.setattr(remote_module.STATE, "ssh", _FakeSSH())
+        res = ff.fetch_one_file(later_remote, force=True, max_bytes=1000,
+                                protect_paths={earlier_local})
+        assert res.ok is True, res.error
+        assert os.path.isfile(earlier_local)
+        assert res.local_path and os.path.isfile(res.local_path)
+
 
 # ---------------------------------------------------------------------------
 # Connection gate

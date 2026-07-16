@@ -127,6 +127,21 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "the default 16 makes one batch = one forward). A "
                         "510² field holds 25 non-overlapping 96² crops, so "
                         "up to ~25 barely re-samples pixels.")
+    p.add_argument("--psf-warp-prob", type=float,
+                   default=Config.TRAIN_PSF_WARP_PROB,
+                   help="On-the-fly mode: probability that a training "
+                        "exposure's sampled PSF receives an elastic warp. "
+                        "Default 1 (original POLISH behavior); 0 disables.")
+    p.add_argument("--psf-warp-alpha-max", type=float,
+                   default=Config.TRAIN_PSF_WARP_ALPHA_MAX,
+                   help="On-the-fly mode: upper bound for elastic-warp alpha, "
+                        "sampled uniformly from [0,max] per exposure. Default "
+                        "20, matching polish-pub.")
+    p.add_argument("--psf-warp-sigma", type=float,
+                   default=Config.TRAIN_PSF_WARP_SIGMA,
+                   help="On-the-fly mode: Gaussian smoothing scale of the "
+                        "warp displacement field in HR pixels. Default 3, "
+                        "matching polish-pub.")
     p.add_argument("--starless", type=int, default=1,
                    help="1/0 — STARLESS member: the forward injects a fresh "
                         "star realization each visit and the target is the "
@@ -161,7 +176,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "list length use the run-wide flags. Keys: loss, "
                         "noise_aug, bootstrap, num_res_blocks (add mode), "
                         "seed, forward_onthefly, psf_subset, "
-                        "crops_per_field, icnr.")
+                        "crops_per_field, psf_warp_prob, "
+                        "psf_warp_alpha_max, psf_warp_sigma, icnr.")
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
@@ -262,6 +278,7 @@ def _member_overrides(args, k: int) -> list[dict]:
         raise SystemExit(2)
     allowed = {"loss", "noise_aug", "bootstrap", "num_res_blocks", "seed",
                "forward_onthefly", "psf_subset", "crops_per_field", "icnr",
+               "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "starless", "asinh_knee"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -290,6 +307,12 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "psf_subset": subset if subset > 0 else None,
             "crops_per_field": int(over.get("crops_per_field",
                                             args.crops_per_field) or 16),
+            "psf_warp_prob": float(over.get("psf_warp_prob",
+                                              args.psf_warp_prob)),
+            "psf_warp_alpha_max": float(over.get("psf_warp_alpha_max",
+                                                   args.psf_warp_alpha_max)),
+            "psf_warp_sigma": float(over.get("psf_warp_sigma",
+                                               args.psf_warp_sigma)),
             "icnr": bool(over.get("icnr", args.icnr)),
             "starless": bool(over.get("starless", args.starless))}
 
@@ -400,7 +423,9 @@ def main() -> int:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:
             knobs += (f" forward=onthefly(psf_subset={s.psf_subset or 'dflt'},"
-                      f" {s.crops_per_field} crops/field)")
+                      f" {s.crops_per_field} crops/field, "
+                      f"warp=p{s.psf_warp_prob:g}/a{s.psf_warp_alpha_max:g}/"
+                      f"s{s.psf_warp_sigma:g})")
         if s.icnr:
             knobs += " icnr" + ("" if s.op == "add"
                                 else "(ignored: not an add)")

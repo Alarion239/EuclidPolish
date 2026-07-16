@@ -1,10 +1,11 @@
 /* PSFs — empirical ePSF inventory per band, ePSF panel + cluster-map PNGs,
    FASRC sync buttons (plain JSON POSTs, not jobs), and the two extraction
    pipeline steps. Ported from the classic psfs.html/psfs.py. */
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { postForm } from "../api";
 import { StepById } from "../fasrc";
 import { useResource } from "../hooks";
+import { CutoutViewer, type ViewerApi } from "../legacy";
 import {
   Badge, Button, Card, CardBody, CardHead, Empty, PageHead, Page,
   PngFigure, Spinner, Table, type Column,
@@ -25,6 +26,9 @@ interface PsfBand {
 interface StatusResp {
   psfs: { bands: PsfBand[] };
 }
+interface ConfigResp {
+  config: { psf_warp_alpha_max?: number; psf_warp_sigma?: number };
+}
 
 interface SyncFile {
   ok: boolean;
@@ -43,8 +47,6 @@ interface SyncMetaResp {
   local_path?: string;
   error?: string;
 }
-
-const BAND_CHIPS = ["all", "VIS", "NIR1", "NIR2", "NISP"];
 
 const fmt = (v: number | undefined, d: number): string =>
   typeof v === "number" ? v.toFixed(d) : "—";
@@ -94,11 +96,69 @@ const COLS: Column<PsfBand>[] = [
 
 export default function PsfsPage() {
   const { data, loading, reload } = useResource<StatusResp>("/api/status");
-  const [band, setBand] = useState("all");
+  const { data: configData } = useResource<ConfigResp>("/api/config");
+  const viewerRef = useRef<ViewerApi | null>(null);
+  const warpSeedRef = useRef(Math.floor(Math.random() * 0xffff_ffff));
+  const warpInFlightRef = useRef(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [viewerReady, setViewerReady] = useState(false);
+  const [warpOn, setWarpOn] = useState(false);
+  const [warpLoading, setWarpLoading] = useState(false);
+  const [warpSample, setWarpSample] = useState(0);
+  const [warpIntervalSec, setWarpIntervalSec] = useState(1.0);
+  const [reduceMotion] = useState(() =>
+    typeof window !== "undefined"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
 
   const bands = data?.psfs?.bands ?? [];
+  const warpAlphaMax = configData?.config?.psf_warp_alpha_max ?? 20;
+  const warpSigma = configData?.config?.psf_warp_sigma ?? 3;
+
+  const showNewWarp = useCallback(async () => {
+    const api = viewerRef.current;
+    if (!api || warpInFlightRef.current) return;
+    warpInFlightRef.current = true;
+    setWarpLoading(true);
+    warpSeedRef.current = (warpSeedRef.current + 1) >>> 0;
+    setWarpSample((n) => n + 1);
+    try {
+      await api.setParams({
+        psf_warp: "1",
+        psf_warp_seed: String(warpSeedRef.current),
+      });
+    } finally {
+      warpInFlightRef.current = false;
+      setWarpLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!warpOn || !viewerReady) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const cycle = async () => {
+      await showNewWarp();
+      if (!stopped && !reduceMotion) {
+        timer = window.setTimeout(cycle, warpIntervalSec * 1_000);
+      }
+    };
+    void cycle();
+    return () => {
+      stopped = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [reduceMotion, showNewWarp, viewerReady, warpIntervalSec, warpOn]);
+
+  function toggleWarp() {
+    const next = !warpOn;
+    setWarpOn(next);
+    if (!next) {
+      setWarpSample(0);
+      void viewerRef.current?.setParams({ psf_warp: "0" });
+    }
+  }
 
   async function syncEpsfs() {
     setBusy("sync"); setNote(null);
@@ -110,9 +170,11 @@ export default function PsfsPage() {
       if (r.ok && failed.length === 0) {
         setNote({ ok: true, text: "synced — reloading…" });
         reload();
+        viewerRef.current?.reload();
       } else if (r.ok) {
         setNote({ ok: true, text: `synced (some bands skipped: ${failed.join("; ")})` });
         reload();
+        viewerRef.current?.reload();
       } else {
         setNote({ ok: false, text: failed.join("; ") || "sync failed — connect to FASRC first" });
       }
@@ -143,12 +205,48 @@ export default function PsfsPage() {
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Card>
-          <CardHead title="ePSF panel" sub="server-rendered per-band PSF montage" />
+          <CardHead title="ePSF viewer"
+            sub="FASRC cache · one spatial cluster per slide · band tiers"
+            right={(
+              <div className="psf-warp-ctl">
+                <button type="button" className="psf-warp-toggle"
+                  aria-pressed={warpOn} onClick={toggleWarp}
+                  disabled={!viewerReady}
+                  title="Apply the training-time elastic PSF distribution to this preview">
+                  <span className="psf-warp-toggle__track" aria-hidden="true">
+                    <span className="psf-warp-toggle__thumb" />
+                  </span>
+                  <span>{warpOn ? "Live warps" : "Warps off"}</span>
+                </button>
+                <label className="psf-warp-speed"
+                  title="Delay between completed warped previews">
+                  <span>swap</span>
+                  <input type="range" min="0.3" max="2" step="0.1"
+                    value={warpIntervalSec} disabled={reduceMotion}
+                    aria-label="Seconds between PSF warps"
+                    onChange={(e) => setWarpIntervalSec(Number(e.target.value))} />
+                  <output>{warpIntervalSec.toFixed(1)} s</output>
+                </label>
+                <span className="psf-warp-status">
+                  {warpOn
+                    ? (reduceMotion
+                      ? `sample ${warpSample} · manual refresh`
+                      : `sample ${warpSample}`)
+                    : `α∈[0,${warpAlphaMax}] · σ=${warpSigma} px`}
+                </span>
+                <Button size="sm" onClick={() => { void showNewWarp(); }}
+                  disabled={!viewerReady || !warpOn || warpLoading}
+                  title="Draw another replayable warp now">
+                  {warpLoading ? "Warping…" : "New warp"}
+                </Button>
+              </div>
+            )} />
           <CardBody>
-            <PngFigure
-              srcFor={(a) => `/view/psfs?band=${encodeURIComponent(a || "all")}`}
-              toolbar={BAND_CHIPS.map((b) => ({ key: b, label: b }))}
-              active={band} onActive={setBand} alt="PSF panel" />
+            <CutoutViewer collection="psfs"
+              onReady={(api) => {
+                viewerRef.current = api;
+                setViewerReady(api != null);
+              }} />
           </CardBody>
         </Card>
 

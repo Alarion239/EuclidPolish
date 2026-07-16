@@ -33,6 +33,10 @@ export type Heat = {
   xEdges: number[];     // length z.length + 1
   yEdges: number[];     // length z[0].length + 1
   max?: number;         // log-norm ceiling (default = max positive count)
+  min?: number;         // linear-norm floor (default = min finite value)
+  scale?: "log" | "linear"; // default log (pixel-density diagnostics)
+  colorTicks?: Tick[];  // values/labels in z units
+  colorLabel?: string;
   color?: (t: number) => string;  // t∈[0,1] → css color (default viridis)
 };
 
@@ -55,6 +59,7 @@ export type PlotProps = {
   /* When set (heat plots only) a click reports the histogram cell under the
      cursor; `highlight` outlines a picked cell. Powers click-to-inspect. */
   onHeatClick?: (cell: Cell) => void;
+  onPlotClick?: (point: { x: number; y: number }) => void;
   highlight?: Cell | null;
   height?: number;      /* fixed px; omit → aspect-driven */
   aspect?: number;      /* height = width * aspect (default 0.5) */
@@ -106,7 +111,7 @@ export default function Plot(p: PlotProps) {
 
   const onClick = (e: MouseEvent<HTMLCanvasElement>) => {
     const g = geo.current, heat = p.heat;
-    if (!p.onHeatClick || !g || !heat) return;
+    if ((!p.onHeatClick && !p.onPlotClick) || !g) return;
     const r = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     const [xa, xb] = g.xDomain, [ya, yb] = g.yDomain;
@@ -114,14 +119,16 @@ export default function Plot(p: PlotProps) {
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
     const dataX = g.logx ? 10 ** (Math.log10(xa) + fx * (Math.log10(xb) - Math.log10(xa))) : xa + fx * (xb - xa);
     const dataY = ya + fy * (yb - ya);
-    const i = binOf(heat.xEdges, dataX), j = binOf(heat.yEdges, dataY);
-    if (i >= 0 && j >= 0) p.onHeatClick({ i, j });
+    if (p.onHeatClick && heat) {
+      const i = binOf(heat.xEdges, dataX), j = binOf(heat.yEdges, dataY);
+      if (i >= 0 && j >= 0) p.onHeatClick({ i, j });
+    } else p.onPlotClick?.({ x: dataX, y: dataY });
   };
 
   return (
     <div ref={wrap} style={{ width: "100%" }}>
       <canvas ref={canvas} onClick={onClick}
-        style={p.onHeatClick && p.heat ? { cursor: "crosshair" } : undefined} />
+        style={p.onHeatClick || p.onPlotClick ? { cursor: "crosshair" } : undefined} />
     </div>
   );
 }
@@ -160,22 +167,31 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   }
 
   // density heatmap (under everything) — clipped to the plot area
-  let heatNorm: { zmax: number; denom: number; color: (t: number) => string } | null = null;
+  let heatNorm: { zmin: number; zmax: number; denom: number; scale: "log" | "linear";
+    color: (t: number) => string; ticks?: Tick[]; label?: string } | null = null;
   if (p.heat && p.heat.z.length && p.heat.z[0]?.length) {
     const { z, xEdges, yEdges } = p.heat;
     const color = p.heat.color ?? viridis;
-    let zmax = p.heat.max ?? 0;
-    if (!p.heat.max) for (const row of z) for (const v of row) if (v > zmax) zmax = v;
-    const denom = Math.log10(Math.max(zmax, 2));
-    heatNorm = { zmax, denom, color };
+    const scale = p.heat.scale ?? "log";
+    let zmin = p.heat.min ?? Infinity, zmax = p.heat.max ?? -Infinity;
+    for (const row of z) for (const v of row) if (isFinite(v)) {
+      if (p.heat.min == null && v < zmin) zmin = v;
+      if (p.heat.max == null && v > zmax) zmax = v;
+    }
+    if (!isFinite(zmin)) zmin = 0;
+    if (!isFinite(zmax)) zmax = scale === "log" ? 1 : zmin + 1;
+    const denom = scale === "log" ? Math.log10(Math.max(zmax, 2)) : Math.max(zmax - zmin, 1e-12);
+    heatNorm = { zmin, zmax, denom, scale, color, ticks: p.heat.colorTicks, label: p.heat.colorLabel };
     ctx.save();
     ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
     for (let i = 0; i < z.length; i++) {
       const x0 = tx(xEdges[i]), x1 = tx(xEdges[i + 1]);
       for (let j = 0; j < z[i].length; j++) {
         const c = z[i][j];
-        if (!(c > 0)) continue;
-        const t = denom > 0 ? Math.min(1, Math.log10(c) / denom) : 1;
+        if (!isFinite(c) || (scale === "log" && !(c > 0))) continue;
+        const t = scale === "log"
+          ? (denom > 0 ? Math.min(1, Math.log10(c) / denom) : 1)
+          : Math.max(0, Math.min(1, (c - zmin) / denom));
         const y0 = ty(yEdges[j]), y1 = ty(yEdges[j + 1]);
         ctx.fillStyle = color(t);
         // +0.6 overlap kills seams between adjacent cells on retina.
@@ -289,22 +305,30 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
       ctx.fillRect(bx, yy - bh / steps - 0.5, bw, bh / steps + 1);
     }
     ctx.strokeStyle = gridS; ctx.lineWidth = 1; ctx.strokeRect(bx, bt, bw, bh);
-    // decade ticks: count 10^e sits at t = e / denom on the log-norm strip.
+    // Default density ticks are decades; value heatmaps provide explicit ticks.
     ctx.font = '10px "IBM Plex Mono", monospace';
     ctx.fillStyle = faint; ctx.textAlign = "left"; ctx.textBaseline = "middle";
     ctx.strokeStyle = faint;
-    for (let e = 0; 10 ** e <= heatNorm.zmax + 0.5; e++) {
-      const t = heatNorm.denom > 0 ? e / heatNorm.denom : 1;
+    const colorTicks = heatNorm.ticks ?? (() => {
+      const ticks: Tick[] = [];
+      for (let e = 0; 10 ** e <= heatNorm.zmax + 0.5; e++)
+        ticks.push({ v: 10 ** e, label: e === 0 ? "1" : `10${supN(e)}` });
+      return ticks;
+    })();
+    for (const tick of colorTicks) {
+      const t = heatNorm.scale === "log"
+        ? (heatNorm.denom > 0 ? Math.log10(Math.max(tick.v, 1)) / heatNorm.denom : 1)
+        : (tick.v - heatNorm.zmin) / heatNorm.denom;
       if (t < 0 || t > 1) continue;
       const yy = bt + (1 - t) * bh;
       ctx.beginPath(); ctx.moveTo(bx + bw, yy); ctx.lineTo(bx + bw + 3, yy); ctx.stroke();
-      ctx.fillText(e === 0 ? "1" : `10${supN(e)}`, bx + bw + 5, yy);
+      ctx.fillText(tick.label, bx + bw + 5, yy);
     }
     ctx.save();
     ctx.translate(bx + bw + 34, bt + bh / 2); ctx.rotate(-Math.PI / 2);
     ctx.fillStyle = dim; ctx.font = '500 11px "IBM Plex Mono", monospace';
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("pixels / cell", 0, 0);
+    ctx.fillText(heatNorm.label ?? "pixels / cell", 0, 0);
     ctx.restore();
   }
 

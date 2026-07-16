@@ -26,7 +26,12 @@ def _params() -> dict:
     ensemble disagreement movie's member subset (CSV of indices) — the sr/pcaN
     cubes are then recomputed on the fly over just those members."""
     out = {}
-    for key in ("subset", "mode", "members"):
+    for key in (
+        "subset", "mode", "members", "field",
+        # PSF-page live preview: the client changes only the replay seed every
+        # few seconds.  These remain harmless for every other collection.
+        "psf_warp", "psf_warp_seed",
+    ):
         val = request.args.get(key)
         if val is not None:
             out[key] = val

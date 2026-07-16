@@ -161,6 +161,65 @@ def test_error_scored_against_combiner_when_given():
     assert acc_comb.to_payload()["std_err"]["pred"] == "combiner"
 
 
+def test_std_error_payload_keeps_one_distribution_per_combiner():
+    """Every point estimate is compared to the same disagreement map."""
+    hr, mean, members = _calibrated_ensemble(n=64, seed=4)
+    acc = EnsembleDiagnosticsAccumulator()
+    acc.add(hr, mean, members, combiners={
+        "rbf_gate": hr.copy(),
+        "minmax_rbf_gate": mean + 10.0,
+    })
+    models = acc.to_payload()["std_err"]["models"]
+    assert set(models) == {"ensemble_mean", "rbf_gate", "minmax_rbf_gate"}
+    assert models["rbf_gate"]["n_fields"] == 1
+    # Truth-valued max RBF has all its error mass in the floor bin, while the
+    # deliberately shifted min/max output does not.
+    assert np.asarray(models["rbf_gate"]["hist"]).sum(axis=0)[0] == hr.size
+    assert np.asarray(models["minmax_rbf_gate"]["hist"]).sum(axis=0)[0] < hr.size
+
+
+def test_combiner_feature_error_separates_axes_from_error_model():
+    """Every point estimate is projected onto both comparison planes."""
+    hr, mean, members = _calibrated_ensemble(n=64, seed=8)
+    acc = EnsembleDiagnosticsAccumulator()
+    acc.add(hr, mean, members, combiners={
+        "rbf_gate": mean,
+        "stats_rbf_gate": mean + 1.0,
+        "minmax_rbf_gate": mean + 2.0,
+    }, field_index=3)
+    block = acc.to_payload()["combiner_feature_error"]
+    axes = block["axes"]
+    assert set(axes) == {"mean_std", "min_max"}
+    expected_models = {
+        "ensemble_mean", "rbf_gate", "stats_rbf_gate", "minmax_rbf_gate",
+    }
+    assert set(axes["mean_std"]["models"]) == expected_models
+    assert set(axes["min_max"]["models"]) == expected_models
+    assert axes["mean_std"]["axis_names"] == ["mean member", "member std"]
+    assert axes["min_max"]["axis_names"] == ["min member", "max member"]
+    assert len(block["color_range"]) == 2
+
+
+def test_backtrace_samples_are_separate_for_every_point_estimate():
+    hr, mean, members = _calibrated_ensemble(n=64, seed=9)
+    acc = EnsembleDiagnosticsAccumulator()
+    acc.add(hr, mean, members, combiners={
+        "rbf_gate": hr,
+        "stats_rbf_gate": mean + 4.0,
+    }, field_index=5)
+    samples = acc.samples_payload()
+    assert set(samples["std_err_models"]) == {
+        "ensemble_mean", "rbf_gate", "stats_rbf_gate",
+    }
+    assert set(samples["combiner_feature_error"]) == {"mean_std", "min_max"}
+    for axis_mode in ("mean_std", "min_max"):
+        assert set(samples["combiner_feature_error"][axis_mode]) == {
+            "ensemble_mean", "rbf_gate", "stats_rbf_gate",
+        }
+    assert samples["std_err_models"]["rbf_gate"]
+    assert samples["combiner_feature_error"]["mean_std"]["stats_rbf_gate"]
+
+
 def test_mixed_combiner_run_labels_as_mean():
     """If only SOME fields carry a combiner, the label degrades to the mean —
     the histogram is a mix, so we don't over-claim it's the combiner's error."""

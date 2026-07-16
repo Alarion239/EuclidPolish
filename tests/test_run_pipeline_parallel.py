@@ -81,6 +81,24 @@ def test_resolve_run_seed_honours_arg_else_entropy():
     assert s1 != s2                                       # -1 -> fresh entropy
 
 
+def test_generation_warp_cli_configures_shared_forward_for_all_splits():
+    """One forward config is constructed before the train/validate/test loop,
+    so these defaults enable the warp for every generated dirty split."""
+    defaults = rp._observation_config_from_args(rp.parse_args([]))
+    assert defaults.psf_warp_prob == Config.TRAIN_PSF_WARP_PROB
+    assert defaults.psf_warp_alpha_max == Config.TRAIN_PSF_WARP_ALPHA_MAX
+    assert defaults.psf_warp_sigma == Config.TRAIN_PSF_WARP_SIGMA
+
+    configured = rp._observation_config_from_args(rp.parse_args([
+        "--psf-warp-prob", "0.4",
+        "--psf-warp-alpha-max", "12",
+        "--psf-warp-sigma", "5",
+    ]))
+    assert configured.psf_warp_prob == 0.4
+    assert configured.psf_warp_alpha_max == 12.0
+    assert configured.psf_warp_sigma == 5.0
+
+
 def test_shard_bounds_partition_is_contiguous():
     b = rp._shard_bounds(10, 3)
     assert b[0][0] == 0 and b[-1][1] == 10
@@ -344,6 +362,20 @@ def test_synthetic_step_forwards_onthefly_flag():
     assert "--onthefly-train" in step.build_command(
         {**base, "onthefly_train": "1"})
     assert "--onthefly-train" not in step.build_command(base)
+
+
+def test_synthetic_steps_forward_generation_warp_knobs():
+    from euclid_polish.web.fasrc_pipeline import REGISTRY
+    params = {
+        "n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+        "psf_warp_prob": "0.75", "psf_warp_alpha_max": "12",
+        "psf_warp_sigma": "4",
+    }
+    for step_id in ("synthetic_generate", "lensfinder_generate"):
+        cmd = " ".join(REGISTRY.get(step_id).build_command(params))
+        assert "--psf-warp-prob 0.75" in cmd
+        assert "--psf-warp-alpha-max 12" in cmd
+        assert "--psf-warp-sigma 4" in cmd
 
 
 def test_synthetic_step_is_standalone_no_training_knobs():

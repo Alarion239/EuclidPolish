@@ -12,11 +12,14 @@ import pytest
 
 from euclid_polish.eval.power_spectrum import (
     EnsembleSpectrumAccumulator,
+    bin_powers,
     cross_power_2d,
     ensemble_ps_plot_curves,
     k_magnitude_2d,
     log_k_edges,
+    normalized_log_scale_mean,
     pairwise_cross_correlation,
+    ratios_from_powers,
     render_ensemble_power_spectrum,
 )
 from euclid_polish.eval.power_spectrum import (
@@ -146,6 +149,27 @@ def test_pairwise_cross_correlation_single_image_empty():
     assert rows.shape[0] == 0
 
 
+def test_normalized_log_scale_mean_weights_frequency_octaves_equally():
+    k = np.array([1.0, 2.0, 4.0])
+    r = np.array([1.0, 0.5, 0.0])
+    assert normalized_log_scale_mean(k, r, k_min=1.0, k_max=4.0) == pytest.approx(0.5)
+    assert normalized_log_scale_mean(k, r, k_min=2.0, k_max=4.0) == pytest.approx(0.25)
+
+
+def test_ensemble_coherence_scores_are_field_balanced():
+    n = 64
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr.copy(), hr.copy()])
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, hr, members, lr=hr)
+    scores = acc.coherence_scores(sr_k_min=5.0)
+    by_id = {row["id"]: row for row in scores["scores"]}
+    assert by_id["ensemble_mean"]["overall"] == pytest.approx(1.0, abs=1e-6)
+    assert by_id["ensemble_mean"]["sr"] == pytest.approx(1.0, abs=1e-6)
+    assert by_id["lr_baseline"]["overall"] == pytest.approx(1.0, abs=1e-6)
+    assert by_id["member_0"]["n_fields"] == 1
+
+
 def test_ensemble_accumulator_emits_cross_model_curves():
     n = 64
     rng = np.random.default_rng(3)
@@ -163,6 +187,31 @@ def test_ensemble_accumulator_emits_cross_model_curves():
     # signal-dominated scales agree; the noise-dominated Nyquist bins decorrelate
     assert np.nanmedian(r_cross[m & (acc.k_cen < 5.0)]) > 0.9
     assert np.nanmin(r_cross[m]) < np.nanmax(r_cross[m])
+
+
+def test_ensemble_spectrum_uses_displayed_raw_mean():
+    """The primary r/T curves describe raw-mean inference output.
+
+    The disagreement decomposition may use mean(asinh(member)), but the
+    plotted ensemble line must be the displayed arithmetic raw-electron mean
+    evaluated in the spectrum's asinh space.
+    """
+    n = 64
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr, 8.0 * hr + 1000.0])
+    raw_mean = members.mean(axis=0)
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, raw_mean, members)
+    curves = acc.curves()
+
+    ah = acc._asinh(hr)
+    a_mean = acc._asinh(raw_mean)
+    bh, bs, bx, bc = bin_powers(
+        ah, a_mean, PIXEL_SCALE, acc.k_edges, acc.window)
+    expected_t, expected_r = ratios_from_powers(bh, bs, bx, bc)
+    finite = np.isfinite(expected_r) & np.isfinite(expected_t)
+    assert np.allclose(curves["r"][finite], expected_r[finite])
+    assert np.allclose(curves["T"][finite], expected_t[finite])
 
 
 def test_ensemble_accumulator_combiner_series():
@@ -183,6 +232,23 @@ def test_ensemble_accumulator_combiner_series():
     assert np.nanmedian(plot["T_comb"][m]) == pytest.approx(1.0, abs=0.05)
     assert np.nanmedian(plot["r_comb"][np.isfinite(plot["r_comb"])
                                        & (acc.k_cen < 5.0)]) > 0.95
+
+
+def test_ensemble_accumulator_stats_rbf_series_is_independent():
+    """The third combiner gets a separate curve rather than overwriting RBF."""
+    n = 64
+    rng = np.random.default_rng(15)
+    hr = _smooth_field(n, sigma=1.0)
+    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
+    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
+    acc.add(hr, members.mean(0), members, combiner=members.mean(0),
+            stats_rbf_combiner=hr)
+    assert acc.has_combiner and acc.has_stats_rbf_combiner
+    curves = acc.curves()
+    assert "P_comb" in curves and "P_stats_rbf_comb" in curves
+    plot = ensemble_ps_plot_curves(curves)
+    m = np.isfinite(plot["T_stats_rbf_comb"]) & (acc.k_cen < 5.0)
+    assert np.nanmedian(plot["T_stats_rbf_comb"][m]) == pytest.approx(1.0, abs=0.05)
 
 
 def test_ensemble_accumulator_combined_combiner_series_is_independent():

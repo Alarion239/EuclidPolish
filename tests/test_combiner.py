@@ -11,11 +11,15 @@ import numpy as np
 import pytest
 
 from euclid_polish.eval.combiner import (
+    MINMAX_RBF_GATE_KIND,
+    STATS_RBF_GATE_KIND,
     BandCombiner,
     Combiner,
+    StatsRBFBandCombiner,
     build_fit_buffers_from_fields,
     fit_combiner,
     load_combiner,
+    member_weight_diagnostics,
     save_combiner,
 )
 
@@ -129,17 +133,33 @@ def test_apply_field_shape_and_inverse_stretch():
     np.testing.assert_allclose(out, field, rtol=1e-4, atol=1e-2)
 
 
-def test_min_usage_prunes_unused_member():
-    """A member the gate never favours is dropped when min_usage > 0."""
+def test_legacy_min_usage_does_not_prune_during_fit():
+    """Gate-frequency usage is no longer allowed to remove rare members."""
     X, y, _ = _brightness_routed()
     # member 1 is pure noise → the gate should barely use it.
     rng = np.random.default_rng(1)
     X2 = np.stack([X[:, 0], rng.normal(0, 1.0, len(y)).astype(np.float32)], axis=1)
     comb = fit_combiner({"VIS": (X2, y)}, ["00", "01"], n_kernels=10,
                         steps=500, min_usage=0.15)
-    assert comb.bands["VIS"].surviving[0]               # useful member kept
-    # (the noise member is likely pruned; at minimum, not everything survives
-    #  only if it is genuinely unused — assert the useful one stays)
+    assert comb.bands["VIS"].surviving.tolist() == [True, True]
+    assert comb.member_importance == {}
+
+
+def test_member_weight_diagnostics_report_peak_and_integral_per_band():
+    probabilities = np.asarray([0.8, 0.15, 0.05], np.float32)
+    band = BandCombiner(
+        V=np.zeros((1, 3), np.float32), a=np.log(probabilities),
+        centers=np.zeros(1, np.float32), sigma=1.0,
+        surviving=np.ones(3, bool))
+    comb = Combiner(
+        member_labels=["00", "01", "02"], n_kernels=1,
+        sigma_scale=1.0, min_usage=0.0, bands={"VIS": band},
+        band_names=("VIS",))
+    X = np.zeros((32, 3), np.float32)
+    peaks, integrals = member_weight_diagnostics(
+        comb, {"VIS": (X, np.zeros(32, np.float32))}, chunk_rows=7)
+    np.testing.assert_allclose(peaks["VIS"], probabilities, atol=1e-6)
+    np.testing.assert_allclose(integrals["VIS"], probabilities, atol=1e-6)
 
 
 def test_without_member_drops_pruned_column_exactly():
@@ -191,6 +211,104 @@ def test_effective_weights_shape():
     assert w.shape == (20, 2)
     np.testing.assert_allclose(w.sum(axis=1), 1.0, atol=1e-5)
     assert np.asarray(eff["brightness_e"]).shape == (20,)
+
+
+def test_stats_rbf_is_convex_uses_mean_std_centers_and_roundtrips(tmp_path):
+    """The compact second regime has 2-D frozen RBF centres and a normal
+    convex member mixture while retaining a compact hot path."""
+    X, _y, _ = _brightness_routed(n=600, seed=19)
+    # Hand-build a small trained-looking gate: the focused test is deliberately
+    # TensorFlow-free so it verifies the hot-path representation and persistence
+    # without opening the heavyweight training runtime.
+    band = StatsRBFBandCombiner(
+        V=np.array([[0.8, -0.8], [-0.6, 0.6], [0.4, -0.4], [0.0, 0.0]], np.float32),
+        a=np.array([0.1, -0.1], np.float32),
+        centers=np.array([[0.0, 0.0], [0.8, 0.1],
+                          [2.0, 0.3], [3.5, 0.8]], np.float32),
+        scales=np.array([1.0, 0.25], np.float32), sigma=1.0,
+        surviving=np.ones(2, bool), std_floor=0.1,
+    )
+    comb = Combiner(member_labels=["00", "01"], n_kernels=4,
+                    sigma_scale=1.0, min_usage=0.1, bands={"VIS": band},
+                    band_names=("VIS",), kind=STATS_RBF_GATE_KIND)
+    assert comb.kind == STATS_RBF_GATE_KIND
+    assert comb.n_kernels == 4 and comb.min_usage == pytest.approx(0.1)
+    assert band.centers.shape == (4, 2)
+    assert band.scales.shape == (2,)
+    assert band.std_floor == pytest.approx(0.1)
+    weights = band.weights(X[:300])
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=1e-5)
+    assert np.all(weights >= 0.0)
+    surface = band.weight_surface(n_mean=5, n_std=4)
+    assert np.asarray(surface["mean_asinh"]).shape == (5,)
+    assert np.asarray(surface["std_asinh"]).shape == (4,)
+    assert float(surface["std_asinh"][0]) == 0.0
+    assert float(surface["std_asinh"][-1]) > float(np.exp(band.centers[:, 1].max()) - band.std_floor)
+    surface_w = np.asarray(surface["weights"])
+    assert surface_w.shape == (4, 5, 2)
+    np.testing.assert_allclose(surface_w.sum(axis=2), 1.0, atol=1e-5)
+
+    save_combiner(comb, str(tmp_path), artifact_dir="stats_rbf_combiner")
+    loaded = load_combiner(str(tmp_path), member_labels=["00", "01"],
+                           artifact_dir="stats_rbf_combiner")
+    assert loaded is not None and loaded.kind == STATS_RBF_GATE_KIND
+    assert loaded.bands["VIS"].std_floor == pytest.approx(band.std_floor)
+    np.testing.assert_allclose(loaded.bands["VIS"].forward_asinh(X[:300]),
+                               band.forward_asinh(X[:300]), rtol=1e-5, atol=1e-5)
+
+
+def test_minmax_rbf_surface_adapts_to_fitted_feature_range():
+    band = StatsRBFBandCombiner(
+        V=np.zeros((3, 2), np.float32), a=np.zeros(2, np.float32),
+        centers=np.array([[-2.0, 4.0], [14.0, 21.0], [8.0, 16.0]], np.float32),
+        scales=np.array([1.0, 2.0], np.float32), sigma=1.0,
+        surviving=np.ones(2, bool), std_floor=0.1,
+        feature_kind=MINMAX_RBF_GATE_KIND,
+    )
+
+    surface = band.weight_surface(n_mean=7, n_std=6)
+    minimum = np.asarray(surface["mean_asinh"])
+    maximum = np.asarray(surface["std_asinh"])
+    assert minimum[0] < -2.0 and minimum[-1] > 14.0
+    assert maximum[0] < 4.0 and maximum[-1] > 21.0
+    assert surface["x_label"] == "min"
+    assert surface["y_label"] == "max"
+
+
+def test_stats_rbf_fit_keeps_all_members_and_persists_weight_diagnostics(monkeypatch, tmp_path):
+    import euclid_polish.eval.combiner as combiner_mod
+
+    X = np.tile(np.array([[2.0, 0.0]], np.float32), (200, 1))
+    y = X[:, 0].copy()
+    std_floor = 0.1
+
+    def fake_fit(*_args, **_kwargs):
+        # On the occupied point (mean=1, std=1), the RBF strongly selects
+        # member 0. Away from it, the bias selects member 1; consequently the
+        # former 1-D std=0 probe would make the opposite pruning decision.
+        band = StatsRBFBandCombiner(
+            V=np.array([[6.0, -6.0]], np.float32),
+            a=np.array([-3.0, 3.0], np.float32),
+            centers=np.array([[1.0, np.log(1.0 + std_floor)]], np.float32),
+            scales=np.ones(2, np.float32), sigma=0.25,
+            surviving=np.ones(2, bool), std_floor=std_floor,
+        )
+        return band, X, y
+
+    monkeypatch.setattr(combiner_mod, "_fit_one_band_stats_rbf", fake_fit)
+    buffers = {"VIS": (X, y)}
+    unpruned = fit_combiner(buffers, ["00", "01"], n_kernels=2,
+                            min_usage=0.4, model_kind=STATS_RBF_GATE_KIND)
+    assert unpruned.bands["VIS"].surviving.tolist() == [True, True]
+    assert unpruned.member_importance == {}
+    peaks, integrals = member_weight_diagnostics(unpruned, buffers)
+    unpruned.member_weight_peaks = peaks
+    unpruned.member_weight_integrals = integrals
+    save_combiner(unpruned, str(tmp_path), artifact_dir="stats_rbf_combiner")
+    loaded = load_combiner(str(tmp_path), artifact_dir="stats_rbf_combiner")
+    assert loaded is not None
+    assert loaded.member_weight_peaks == peaks
+    assert loaded.member_weight_integrals == integrals
 
 
 def test_build_fit_buffers_stratified_balances_brightness():

@@ -5,13 +5,14 @@ import shlex
 import textwrap
 from typing import Any
 
-from flask import jsonify, render_template
+from flask import jsonify, render_template, request
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.helpers.status import PSF_CLUSTERS_META, _psf_status
+from euclid_polish.web.helpers.fits_render import _psf_preview_payload
 from euclid_polish.web.remote import STATE
 
 
@@ -122,6 +123,15 @@ def register(app):
             results[band.name] = entry
         meta = _sync_clusters_meta(cfg_loaded)
         return jsonify({"ok": any_ok, "files": results, "clusters_meta": meta})
+
+    @app.route("/api/euclid-psf/preview")
+    def api_euclid_psf_preview():
+        """Serve bounded PSF arrays for the React canvas renderer.
+
+        Synchronisation remains an explicit user action. A page render cannot
+        silently trigger SSH/rsync or confuse a FASRC outage with rendering.
+        """
+        return jsonify(_psf_preview_payload(request.args.get("band", "all")))
 
     @app.route("/api/euclid-psf/sync-meta", methods=["POST"])
     def api_euclid_psf_sync_meta():
