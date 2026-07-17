@@ -173,16 +173,15 @@ class PSF(StampCarrier):
         taper_inner_frac: float = Config.PSF_TAPER_INNER_FRAC,
         taper_outer_frac: float = Config.PSF_TAPER_OUTER_FRAC,
     ) -> PSF:
-        """Strip the empirical kernel's noise floor and square edges.
+        """Preserve the empirical wings while removing square stamp edges.
 
         An EPSFBuilder kernel carries residual stacking noise across the
-        whole square stamp; convolved with a bright star it imprints a
-        visible square far above the Euclid noise. Two cuts (each ≤ 0
-        disables it):
+        whole square stamp. A radial taper prevents the stamp boundary from
+        being imprinted around a bright star without deleting faint flux.
+        Two controls are retained (each ≤ 0 disables it):
 
-        * **floor**: pixels at or below the stamp's ``floor_percentile``-th
-          percentile are zeroed — the bulk of a large stamp is noise, and
-          real PSF flux sits orders of magnitude above it;
+        * **floor**: optional legacy percentile cut. It is disabled by
+          default because the old 90th-percentile setting erased real wings;
         * **radial taper**: a cosine roll-off takes the kernel smoothly to
           zero between ``taper_inner_frac`` and ``taper_outer_frac`` of the
           half-side, so no square boundary survives.

@@ -311,8 +311,8 @@ class PSFSet(StampCarrier):
         return self._with_psfs(out, pixel_scale=target_pixel_scale)
 
     def background_cleaned(self) -> PSFSet:
-        """Apply :meth:`PSF.background_cleaned` to every member (noise-floor
-        cut + radial taper, Config-tuned)."""
+        """Apply the Config-tuned, wing-preserving radial taper to every
+        member via :meth:`PSF.background_cleaned`."""
         return self._with_psfs([p.background_cleaned() for p in self.psfs])
 
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSFSet:

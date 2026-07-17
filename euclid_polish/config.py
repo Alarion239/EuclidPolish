@@ -171,19 +171,22 @@ class Config:
     DEFAULT_STAR_DENSITY_ARCMIN2 = 5.0e3 / 3600.0   # ≈ 1.389/arcmin²
     DEFAULT_NIMAGES              = 100
 
-    # Empirical-ePSF background cleaning (psf/core.PSF.background_cleaned,
-    # applied on load). The EPSFBuilder kernels carry a noise floor across
-    # the whole square stamp; convolving a bright star imprints it as a
-    # visible square well above the Euclid noise. Two cuts, both ≤ 0 to
-    # disable: pixels at or below the FLOOR_PERCENTILE-th percentile of the
-    # stamp are zeroed (the bulk of a 511² stamp is noise — real PSF pixels
-    # sit far above it), and a radial cosine taper takes the kernel
-    # smoothly to zero between INNER_FRAC and OUTER_FRAC of the half-side
-    # (0.82→0.98 of half-256 ≈ 210→250 px on a 511² stamp), so no square
-    # edge survives. Kernels are re-normalised to sum=1 afterwards.
-    PSF_FLOOR_PERCENTILE = 90.0
+    # Empirical-ePSF cleaning (psf/core.PSF.background_cleaned, applied on
+    # load). Do NOT percentile-cut the low-valued pixels: the old 90th-
+    # percentile cut also erased real stellar wings. The radial cosine taper
+    # alone removes the square stamp edge, rolling smoothly to zero between
+    # INNER_FRAC and OUTER_FRAC of the half-side (0.82→0.98 of half-256 ≈
+    # 210→250 px on a 511² stamp). Kernels are re-normalised afterwards.
+    PSF_FLOOR_PERCENTILE = 0.0
     PSF_TAPER_INNER_FRAC = 0.82
     PSF_TAPER_OUTER_FRAC = 0.98
+
+    # Spatial ePSF extraction. Elastic per-exposure warps provide continuous
+    # PSF diversity, so use four times as many stars per empirical regional
+    # kernel as the old 100/50 defaults. This gives about one quarter as many
+    # regions and halves the per-kernel stacking-noise amplitude.
+    PSF_STARS_PER_CLUSTER = 400
+    PSF_MIN_STARS_PER_CLUSTER = 200
 
     # Observation-PSF augmentation. The original POLISH forward model sampled
     # an elastic PSF warp with alpha ~ Uniform(0, 20), sigma=3 pixels for every

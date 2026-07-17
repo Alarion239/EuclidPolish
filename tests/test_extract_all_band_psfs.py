@@ -20,6 +20,13 @@ from euclid_polish.psf.psf_extractor import PSFExtractor
 gen = importlib.import_module("scripts.extract_all_band_psfs")
 
 
+def test_extraction_defaults_reduce_region_count_fourfold(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["extract_all_band_psfs.py"])
+    args = gen.parse_args()
+    assert args.stars_per_psf == Config.PSF_STARS_PER_CLUSTER == 400
+    assert args.min_stars_per_psf == Config.PSF_MIN_STARS_PER_CLUSTER == 200
+
+
 def test_cluster_splits_into_round_n_over_k_groups():
     # 30 stars in 3 tight spatial blobs; N=10 → K=round(30/10)=3.
     # min_stars=5 so the (intended) 10-star clusters aren't merged.
@@ -227,6 +234,27 @@ def test_main_clusters_only_all_band_common_stars(tmp_path, monkeypatch):
     from euclid_polish.psf import PSFSet
     vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
     assert vis.n == 1 and vis.n_stars == [2]
+
+
+def test_successful_extraction_invalidates_stale_rotation_pools(
+    tmp_path, monkeypatch,
+):
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2], [3, 4, 5]])
+    monkeypatch.setattr(gen, "_build_cluster_psf",
+                        lambda payload: PSF(
+                            data=np.full((5, 5), 1.0 / 25, np.float32),
+                            pixel_scale=payload[1]))
+    psf_dir = tmp_path / "psf"
+    psf_dir.mkdir()
+    stale = [psf_dir / f"euclid_psf_rotpool_{name}.fits"
+             for name in ("VIS", "Y_E")]
+    for path in stale:
+        path.write_bytes(b"old percentile-cut pool")
+
+    assert gen.main() == 0
+    assert all(not path.exists() for path in stale)
 
 
 def test_resume_reuses_cached_epsfs(tmp_path, monkeypatch):

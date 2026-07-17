@@ -524,9 +524,11 @@ class TestRegistry:
         })
         assert argv[argv.index("--stars-per-psf") + 1] == "120"
         assert argv[argv.index("--min-stars-per-psf") + 1] == "30"
-        # min defaults to 50 when the form omits it
-        argv2 = step.build_command({"stars_per_psf": "100", "n_cpus": "8"})
-        assert argv2[argv2.index("--min-stars-per-psf") + 1] == "50"
+        # The extraction defaults pool 4× more stars than the former 100/50
+        # regime, producing ~1/4 as many lower-noise regional kernels.
+        argv2 = step.build_command({"n_cpus": "8"})
+        assert argv2[argv2.index("--stars-per-psf") + 1] == "400"
+        assert argv2[argv2.index("--min-stars-per-psf") + 1] == "200"
 
     def test_other_steps_do_not_lock_cpus(self):
         """Only the HST ePSF step (single-threaded → 1 CPU) still pins CPUs;

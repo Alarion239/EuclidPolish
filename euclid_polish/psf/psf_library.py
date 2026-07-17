@@ -202,9 +202,8 @@ def load_band_psf_set(
     """
     path = psf_path_for_band(band, psf_dir)
     if os.path.isfile(path):
-        # background_cleaned strips the EPSFBuilder noise floor + square
-        # edges (radial taper) so bright stars don't imprint the stamp
-        # boundary; the Gaussian fallback below is analytically clean.
+        # background_cleaned applies the radial cosine edge taper while
+        # preserving faint wings; the Gaussian fallback is analytically clean.
         return (PSFSet.from_fits(path)
                 .background_cleaned()
                 .resampled_to(target_pixel_scale))

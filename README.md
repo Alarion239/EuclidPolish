@@ -196,8 +196,11 @@ with `photutils.psf.EPSFBuilder`
 ([Anderson & King 2000](https://ui.adsabs.harvard.edu/abs/2000PASP..112.1360A)) from bright
 isolated stars in real Euclid cutouts, oversampled ×2 relative to the 0.10″ detector
 (→ 0.05″/pix HR grid). Saturated cores and edge stars are rejected. Stars are clustered
-**once** by sky position (K-Means++, ~100 stars per cluster) on stars valid in all four
-bands, so cluster index *ci* maps to the same field region in every band.
+**once** by sky position (K-Means++, ~400 stars per cluster—four times the former
+default) on stars valid in all four bands, so cluster
+index *ci* maps to the same field region in every band. The larger stacks halve
+the approximate per-kernel noise amplitude; elastic warps supply continuous
+exposure-to-exposure diversity despite the smaller regional set.
 
 Each band is saved as a multi-extension FITS at `data/euclid_psf/euclid_psf_<BAND>.fits`:
 `HDU[0]` is the **field-mean** PSF (so legacy single-PSF readers still work), and

@@ -22,8 +22,8 @@ UNROTATED kernels). This module precomputes the rotations once:
     centre-crops kernels at read time (the crop-local forward only needs the
     truncated support; a 257² crop is 4× less RAM than the full 511²).
 
-Pool kernels are stored CLEANED (background floor + radial taper) and at the
-target pixel scale — build from :func:`load_all_band_psf_sets` output — so
+Pool kernels are stored CLEANED (wing-preserving radial taper) and at the
+target pixel scale — built from :func:`load_all_band_psf_sets` output — so
 the loader must NOT re-clean them.
 """
 

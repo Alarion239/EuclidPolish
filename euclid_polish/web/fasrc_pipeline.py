@@ -673,7 +673,7 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
                 # One band's stars held in memory + n_cpus EPSFBuilders (each
-                # on a ~100-star cluster). Scale memory up with the CPU count
+                # on a ~400-star cluster). Scale memory up with the CPU count
                 # and the cutout size.
                 memory="48G", time_limit="6:00:00",
             ),
@@ -682,10 +682,14 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels    = int(params.get("vis_pixels", 512))
-        stars_per_psf = int(params.get("stars_per_psf", 100))
+        stars_per_psf = int(params.get(
+            "stars_per_psf", Config.PSF_STARS_PER_CLUSTER,
+        ))
         # Minimum cluster size: clusters smaller than this are merged into a
         # neighbour, so no ePSF is built from fewer than ``min_stars`` stars.
-        min_stars     = int(params.get("min_stars_per_psf", 50) or 50)
+        min_stars = int(params.get(
+            "min_stars_per_psf", Config.PSF_MIN_STARS_PER_CLUSTER,
+        ) or Config.PSF_MIN_STARS_PER_CLUSTER)
         # Use every allocated CPU to build cluster PSFs in parallel.
         n_cpus = int(params.get("n_cpus", 8) or 8)
         cmd = [

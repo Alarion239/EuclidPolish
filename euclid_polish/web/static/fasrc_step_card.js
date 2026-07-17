@@ -181,10 +181,10 @@ large cutout don't leak across train/validate."></label>`;
         // groups of 'stars per PSF' → one ePSF per cluster.
         return `
           <label>Stars per PSF (N) <span class="muted">(average per cluster)</span>
-            <input type="number" name="stars_per_psf" value="100" min="10" max="2000"
-                   title="Target average stars per spatial cluster. K = round(n_good / N) clusters via K-Means++ on sky position, one ePSF per cluster (the PSF varies across the field). 3000 good stars at N=100 → ~30 PSFs."></label>
+            <input type="number" name="stars_per_psf" value="400" min="10" max="2000"
+                   title="Target average stars per spatial cluster. K = round(n_good / N) clusters via K-Means++ on sky position, one ePSF per cluster. 3200 good stars at N=400 → ~8 lower-noise PSFs; elastic warps supply continuous diversity."></label>
           <label>Minimum stars per cluster
-            <input type="number" name="min_stars_per_psf" value="50" min="1" max="2000"
+            <input type="number" name="min_stars_per_psf" value="200" min="1" max="2000"
                    title="Clusters smaller than this are merged into their nearest neighbour, so no ePSF is ever built from fewer than this many stars (avoids noisy, under-sampled PSFs)."></label>
           <label>Max stars per band <span class="muted">(blank = all)</span>
             <input type="number" name="num_stars" value="" min="10" max="100000"

@@ -143,7 +143,7 @@ def cluster_star_indices(
     positions: dict[int, tuple[float, float]],
     stars_per_psf: int,
     *,
-    min_stars: int = 50,
+    min_stars: int = Config.PSF_MIN_STARS_PER_CLUSTER,
 ) -> list[list[int]]:
     """Group the ``ids`` into spatially-coherent clusters of ~``stars_per_psf``.
 
@@ -197,17 +197,19 @@ def parse_args() -> argparse.Namespace:
                     help="Optional cap on stars considered per band "
                          "(default: use ALL good cutouts). The stars are then "
                          "clustered into groups of --stars-per-psf.")
-    ap.add_argument("--stars-per-psf", type=int, default=100,
+    ap.add_argument("--stars-per-psf", type=int,
+                    default=Config.PSF_STARS_PER_CLUSTER,
                     help="Target (average) stars per extracted PSF (N). The "
                          "band's good stars are K-Means++ clustered by sky "
                          "position into K=round(n_good/N) groups, one ePSF "
-                         "each. 3000 good stars at N=100 → ~30 PSFs. Default "
-                         "100.")
-    ap.add_argument("--min-stars-per-psf", type=int, default=50,
+                         "each. 3200 good stars at N=400 → ~8 PSFs. Default "
+                         f"{Config.PSF_STARS_PER_CLUSTER}.")
+    ap.add_argument("--min-stars-per-psf", type=int,
+                    default=Config.PSF_MIN_STARS_PER_CLUSTER,
                     help="Hard floor on stars per cluster: clusters smaller "
                          "than this are merged into their nearest neighbour, "
                          "so no ePSF is built from too few (noisy) stars. "
-                         "Default 50.")
+                         f"Default {Config.PSF_MIN_STARS_PER_CLUSTER}.")
     ap.add_argument("--stars-csv", default=os.path.join(
                         Config.DEFAULT_OUTPUT_DIR, "stars.csv"),
                     help="Catalog CSV (id, ra, dec) used to spatially cluster "
@@ -512,7 +514,10 @@ def main() -> int:
                 psf = None
             _flush(bn, ci, psf)
     else:
-        chunk = max(n_workers, 4 * n_workers)      # bound in-flight payloads
+        # A default cluster now carries ~400 full-resolution stamps. Keep only
+        # one payload per worker in flight so pickled stamp copies do not erase
+        # the memory savings from building four times fewer regional kernels.
+        chunk = n_workers
         stalls = 0
         while pending:
             before = len(pending)
@@ -583,6 +588,15 @@ def main() -> int:
             n_stars=[star_counts[ci] for ci in survive])
         os.makedirs(args.psf_dir, exist_ok=True)
         saved = psf_set.save(args.psf_dir, filename=band_data[band.name]["filename"])
+        # Rotation pools are derivatives of these source kernels. Leaving an
+        # old pool in place would make on-the-fly training silently keep using
+        # the former percentile-cut wings after a successful re-extraction.
+        stale_pool = os.path.join(
+            args.psf_dir, f"euclid_psf_rotpool_{band.name}.fits",
+        )
+        if os.path.isfile(stale_pool):
+            os.remove(stale_pool)
+            print(f"  ↻ removed stale rotation pool → {stale_pool}")
         print(f"  ✓ {band.name}: {psf_set.n} PSF(s), shape={psf_set.shape} "
               f"→ {saved}")
         succeeded.append((band.name, True))

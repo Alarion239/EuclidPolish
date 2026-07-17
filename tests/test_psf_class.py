@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from euclid_polish.config import Config
 from euclid_polish.psf import (
     DEFAULT_HR_PIXEL_SCALE,
     PSF,
@@ -353,7 +354,7 @@ class TestRotation:
 
 
 # ---------------------------------------------------------------------------
-# Background cleaning (noise floor + radial taper)
+# Background cleaning (wing-preserving radial taper; optional legacy floor)
 # ---------------------------------------------------------------------------
 
 def _noisy_gaussian_kernel(n=257, sigma=3.0, pedestal=1e-6):
@@ -363,19 +364,27 @@ def _noisy_gaussian_kernel(n=257, sigma=3.0, pedestal=1e-6):
     return (g / g.sum() + pedestal)
 
 
-def test_background_cleaned_strips_floor_and_corners():
+def test_background_cleaned_preserves_wings_and_tapers_corners():
     psf = PSF(data=_noisy_gaussian_kernel(),
               pixel_scale=0.05).with_unit_sum()
     out = psf.background_cleaned()
-    # Square boundary gone: corners exactly zero, kernel still unit-sum,
-    # centre untouched.
+    assert Config.PSF_FLOOR_PERCENTILE == 0.0
+    # Square boundary gone: corners exactly zero and kernel still unit-sum.
     assert out.data[:20, :20].max() == 0.0
     assert out.data[-20:, -20:].max() == 0.0
     assert out.total_flux == pytest.approx(1.0, abs=1e-9)
     c = (out.shape[0] - 1) // 2
     assert np.unravel_index(np.argmax(out.data), out.shape) == (c, c)
-    # The uniform pedestal dominates the stamp, so it IS the 90th
-    # percentile -> wiped outside the core even inside the taper radius.
+    # Radius 60 is well inside the cosine taper. The former 90th-percentile
+    # cut zeroed this low-valued wing/pedestal; the default must retain it.
+    assert out.data[c, c + 60] > 0.0
+
+
+def test_background_cleaned_legacy_floor_is_explicit_only():
+    psf = PSF(data=_noisy_gaussian_kernel(),
+              pixel_scale=0.05).with_unit_sum()
+    out = psf.background_cleaned(floor_percentile=90.0)
+    c = (out.shape[0] - 1) // 2
     assert out.data[c, c + 60] == 0.0
 
 
